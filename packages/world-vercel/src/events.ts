@@ -40,7 +40,6 @@ import {
   type EventDataPayloadField,
   type EventResult,
   EventSchema,
-  EventTypeSchema,
   type GetEventParams,
   getEventDataPayloadField,
   isHookEventRequiringExistence,
@@ -53,6 +52,7 @@ import {
   type WorkflowRun,
 } from '@workflow/world';
 import { decode } from 'cbor-x';
+import { coerceEventDates } from './event-coerce.js';
 import { withEventPostRetry } from './event-retry.js';
 import {
   createWorkflowRunEventV4,
@@ -430,37 +430,6 @@ export function splitEventDataForV4(data: AnyEventRequest): SplitEventData {
   return { payload, meta };
 }
 
-/**
- * Run an assembled event through EventSchema so per-event-type
- * z.coerce.date() (wait_created.resumeAt, wait_completed.resumeAt,
- * step_retrying.retryAfter) converts the ISO strings the backing store
- * returns back into Date instances — the workflow runtime calls .getTime() on
- * these and would otherwise crash. safeParse: pass the event through
- * unchanged if it doesn't match a known shape (legacy / mid-rollout).
- *
- * Used by every path that hands events to the runtime: GET/LIST frames
- * (via buildEventFromV4) and the POST response's `event` / preloaded
- * `events` bag — all of these can carry events read back from the
- * backing store, where nested eventData dates are stored as ISO strings.
- */
-function coerceEventDates(raw: Record<string, unknown>): Event {
-  const parsed = EventSchema.safeParse(raw);
-  if (parsed.success) return parsed.data as unknown as Event;
-  if (EventTypeSchema.safeParse(raw.eventType).success) {
-    // The raw-event fallback is for unknown/future event types. A parse
-    // failure on a *known* type means a schema/coercion regression that
-    // would otherwise only surface later as a crash deep in the runtime
-    // (e.g. .getTime() on a resumeAt that stayed a string) — leave a
-    // breadcrumb at the actual failure point.
-    console.debug(
-      `[workflow:world-vercel] v4 event ${raw.eventId} failed ` +
-        `EventSchema parse for known eventType '${raw.eventType}'; ` +
-        `passing through unparsed: ${parsed.error.message}`
-    );
-  }
-  return raw as unknown as Event;
-}
-
 function coerceNormalizedEvent(raw: Record<string, unknown>): Event {
   return coerceEventDates(normalizeEventData(raw));
 }
@@ -589,8 +558,18 @@ export async function getWorkflowRunEvents(
     buildEventFromV4(listed.event, listed.body, resolveData)
   );
 
+  // A correlation id is unique per run, not globally — a slot-numbered run
+  // numbers its own steps, so `step_…001` names the first step of every such
+  // run. The backend selects by correlation id alone, so the run scope is
+  // applied here. `hasMore`/`cursor` stay the backend's, so a page that
+  // filters down to nothing is still followed by the next one.
+  const runScoped =
+    'correlationId' in params
+      ? events.filter((event) => event.runId === params.runId)
+      : events;
+
   return {
-    data: events,
+    data: runScoped,
     // `next` is present even on the final page (it's the incremental-load
     // resume cursor), so prefer the server's explicit `hasMore`. The
     // `Boolean(next)` fallback covers older servers that don't emit it —
@@ -705,8 +684,22 @@ async function createWorkflowRunEventInner(
       specVersion: data.specVersion ?? 2,
       ...(data.correlationId ? { correlationId: data.correlationId } : {}),
       ...(params?.requestId ? { vercelId: params.requestId } : {}),
+      ...(params?.computeInstanceId
+        ? { computeInstanceId: params.computeInstanceId }
+        : {}),
+      // Precondition snapshot. The three fields describe one snapshot and the
+      // runtime always sends them together (or not at all); each is spread
+      // independently only so an older server that knows one but not the
+      // others still gets what it understands.
       ...(params?.stateUpdatedAt !== undefined
         ? { stateUpdatedAt: params.stateUpdatedAt }
+        : {}),
+      ...(params?.stateEventCount !== undefined
+        ? { stateEventCount: params.stateEventCount }
+        : {}),
+      ...(params?.stateCursor ? { stateCursor: params.stateCursor } : {}),
+      ...(params?.replayDivergenceCount !== undefined
+        ? { replayDivergenceCount: params.replayDivergenceCount }
         : {}),
       occurredAt: params?.occurredAt ?? new Date(),
       // Opt-in inline-delta: forward the cursor the runtime held before
@@ -721,6 +714,15 @@ async function createWorkflowRunEventInner(
       // skip the list+resolve. The server only acts on it for run_started;
       // older servers ignore it and simply preload as before.
       ...(params?.skipPreload ? { skipPreload: true } : {}),
+      // Lazy hook resume idempotency key (hook_received only). Routes the
+      // write through the server's (runId, resumeId) constraint so a
+      // concurrent queue-consumer re-ensure deduplicates to one event.
+      ...(params?.resumeId ? { resumeId: params.resumeId } : {}),
+      // Content digest forwarded alongside resumeId so the direct write and the
+      // queue re-ensure record an identical digest on the server constraint.
+      ...(params?.resumePayloadDigest
+        ? { resumePayloadDigest: params.resumePayloadDigest }
+        : {}),
       remoteRefBehavior,
       payload,
       ...meta,

@@ -247,10 +247,16 @@ jobs:
           APP_NAME: "nextjs-turbopack"
 
   vitest-plugin:
-    name: Vitest Plugin Tests
+    name: Vitest Plugin Tests (${{ matrix.vm }})
     runs-on: ubuntu-latest
     needs: ci-scope
     if: ${{ needs.ci-scope.outputs.fast-path != 'true' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Workflow VM engines: node:vm (default) and the opt-in QuickJS
+        # WASM engine (WORKFLOW_VM=quickjs).
+        vm: [node, quickjs]
     env:
       TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
       TURBO_TEAM: ${{ vars.TURBO_TEAM }}
@@ -271,6 +277,8 @@ jobs:
       - name: Run Vitest Plugin Tests
         run: pnpm test
         working-directory: workbench/vitest
+        env:
+          WORKFLOW_VM: ${{ matrix.vm }}
 
   e2e-package-build:
     name: Build Shared E2E Packages
@@ -302,13 +310,15 @@ jobs:
             packages/*/dist
             packages/*/.well-known
             packages/*/src/version.ts
+            packages/core/src/runtime/vm-serde-bundle.generated.ts
+            packages/core/src/runtime/quickjs-assets.generated.ts
             packages/swc-plugin-workflow/swc_plugin_workflow.wasm
             packages/swc-plugin-workflow/build-hash.json
           include-hidden-files: true
           retention-days: 1
 
   e2e-vercel-prod:
-    name: E2E Vercel Prod Tests (${{ matrix.app.name }})
+    name: E2E Vercel Prod Tests (${{ matrix.app.name }} - ${{ matrix.vm }})
     runs-on: ubuntu-latest
     timeout-minutes: 30
     needs: ci-scope
@@ -321,6 +331,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # Workflow VM engines: node:vm (default) and the opt-in QuickJS
+        # WASM engine. The env var is set on the e2e test runner, which is
+        # the client that starts runs against the deployed app — start()
+        # stamps executionContext.workflowVm so the deployed handler
+        # executes each run on the requested engine.
+        vm: [node, quickjs]
         app:
           - name: "example"
             project-id: "prj_xWq20Dd860HHAfzMjK2Mb6TPVxMa"
@@ -365,6 +381,7 @@ jobs:
       TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
       TURBO_TEAM: ${{ vars.TURBO_TEAM }}
       WORKFLOW_PUBLIC_MANIFEST: '1'
+      WORKFLOW_RETURN_VALUE_POLL_INTERVAL_MS: '5000'
     steps:
       - name: Checkout Repo
         uses: actions/checkout@v4
@@ -379,8 +396,18 @@ jobs:
       - name: Build CLI
         run: pnpm turbo run build --filter='@workflow/cli'
 
+      # `changeset-release/*` PRs (the changesets "Version Packages" PR) are
+      # deliberately not deployed: the branch is force-pushed and can point at
+      # main's HEAD SHA, and Vercel keeps one commit status per project per
+      # SHA, so a same-SHA preview deployment overwrites the production one
+      # that the step below reads the deployment ID from. Every project's
+      # vercel.json therefore sets `git.deploymentEnabled` false for that
+      # branch, which leaves these PRs with no deployment of their own to wait
+      # for. Their content is main plus a version-bump commit, so they run
+      # against the production deployment main already produced instead.
       - name: Waiting for the Vercel deployment
         id: waitForDeployment
+        if: ${{ !startsWith(github.head_ref, 'changeset-release/') }}
         uses: vercel/wait-for-deployment-action@0e2b0c5c5cce31f1648108aeec56467187aca037
         with:
           project-slug: ${{ matrix.app.project-slug }}
@@ -388,18 +415,39 @@ jobs:
           check-interval: 15
           environment: ${{ github.ref == 'refs/heads/main' && 'production' || 'preview' }}
 
+      # The base SHA, not the PR head: that is the main commit whose
+      # production deployment carries the code under test. Waiting on it also
+      # means a production build still in flight is waited out instead of
+      # testing whatever happens to be aliased to production. The commit-status
+      # ID this action reads is unambiguous for main SHAs once this repo stops
+      # deploying `changeset-release/main` (see above) — that branch was the
+      # only one that ever deployed a commit main also deployed.
+      - name: Waiting for the Vercel deployment (changeset-release PR)
+        id: prodDeployment
+        if: ${{ startsWith(github.head_ref, 'changeset-release/') }}
+        uses: vercel/wait-for-deployment-action@0e2b0c5c5cce31f1648108aeec56467187aca037
+        with:
+          project-slug: ${{ matrix.app.project-slug }}
+          timeout: 1000
+          check-interval: 15
+          environment: production
+          sha: ${{ github.event.pull_request.base.sha }}
+
       - name: Record E2E start time
         id: e2eStart
         run: echo "ms=$(($(date +%s) * 1000))" >> "$GITHUB_OUTPUT"
 
       - name: Run E2E Tests
-        run: pnpm run test:e2e --reporter=verbose --reporter=json --reporter=./packages/core/e2e/github-reporter.ts "--outputFile=e2e-vercel-prod-$APP_NAME.json"
+        run: pnpm run test:e2e --reporter=verbose --reporter=json --reporter=./packages/core/e2e/github-reporter.ts "--outputFile=e2e-vercel-prod-$APP_NAME-$WORKFLOW_VM.json"
         env:
           NODE_OPTIONS: "--enable-source-maps"
-          DEPLOYMENT_URL: ${{ steps.waitForDeployment.outputs.deployment-url }}
-          VERCEL_DEPLOYMENT_ID: ${{ steps.waitForDeployment.outputs.deployment-id }}
+          DEPLOYMENT_URL: ${{ steps.waitForDeployment.outputs.deployment-url || steps.prodDeployment.outputs.deployment-url }}
+          VERCEL_DEPLOYMENT_ID: ${{ steps.waitForDeployment.outputs.deployment-id || steps.prodDeployment.outputs.deployment-id }}
           APP_NAME: ${{ matrix.app.name }}
-          WORKFLOW_VERCEL_ENV: ${{ github.ref == 'refs/heads/main' && 'production' || 'preview' }}
+          WORKFLOW_VM: ${{ matrix.vm }}
+          # changeset-release PRs test main's production deployment, so they
+          # must be treated as a production run everywhere downstream.
+          WORKFLOW_VERCEL_ENV: ${{ (github.ref == 'refs/heads/main' || startsWith(github.head_ref, 'changeset-release/')) && 'production' || 'preview' }}
           WORKFLOW_VERCEL_AUTH_TOKEN: ${{ secrets.VERCEL_LABS_TOKEN }}
           WORKFLOW_VERCEL_TEAM: "team_nO2mCG4W8IxPIeKoSsqwAxxB"
           WORKFLOW_VERCEL_PROJECT: ${{ matrix.app.project-id }}
@@ -413,8 +461,11 @@ jobs:
           # a single pre-minted token that would expire mid-suite.
           # See: https://vercel.com/docs/deployment-protection/methods-to-bypass-deployment-protection/trusted-sources
           # Point PRs at the protected workflow-server preview; unset on main
-          # so production runs hit the public vercel-workflow.com URL.
-          VERCEL_WORKFLOW_SERVER_URL: ${{ github.ref != 'refs/heads/main' && secrets.VERCEL_WORKFLOW_SERVER_URL || '' }}
+          # so production runs hit the public vercel-workflow.com URL. Also
+          # unset for changeset-release PRs: they test a production deployment
+          # that is wired to the production workflow-server, and the harness
+          # has to read run state from the same server the app writes it to.
+          VERCEL_WORKFLOW_SERVER_URL: ${{ github.ref != 'refs/heads/main' && !startsWith(github.head_ref, 'changeset-release/') && secrets.VERCEL_WORKFLOW_SERVER_URL || '' }}
 
       - name: Capture runtime logs on failure
         if: failure()
@@ -423,8 +474,8 @@ jobs:
           WORKFLOW_VERCEL_AUTH_TOKEN: ${{ secrets.VERCEL_LABS_TOKEN }}
           WORKFLOW_VERCEL_TEAM: "team_nO2mCG4W8IxPIeKoSsqwAxxB"
           WORKFLOW_VERCEL_PROJECT: ${{ matrix.app.project-id }}
-          WORKFLOW_VERCEL_ENV: ${{ github.ref == 'refs/heads/main' && 'production' || 'preview' }}
-          VERCEL_DEPLOYMENT_ID: ${{ steps.waitForDeployment.outputs.deployment-id }}
+          WORKFLOW_VERCEL_ENV: ${{ (github.ref == 'refs/heads/main' || startsWith(github.head_ref, 'changeset-release/')) && 'production' || 'preview' }}
+          VERCEL_DEPLOYMENT_ID: ${{ steps.waitForDeployment.outputs.deployment-id || steps.prodDeployment.outputs.deployment-id }}
           E2E_START_MS: ${{ steps.e2eStart.outputs.ms }}
         run: node .github/scripts/fetch-e2e-runtime-logs.mjs
 
@@ -432,15 +483,16 @@ jobs:
         if: always()
         env:
           APP_NAME: ${{ matrix.app.name }}
-        run: node .github/scripts/aggregate-e2e-results.js . --job-name "E2E Vercel Prod ($APP_NAME)" >> $GITHUB_STEP_SUMMARY || true
+          WORKFLOW_VM: ${{ matrix.vm }}
+        run: node .github/scripts/aggregate-e2e-results.js . --job-name "E2E Vercel Prod ($APP_NAME - $WORKFLOW_VM)" >> $GITHUB_STEP_SUMMARY || true
 
       - name: Upload E2E results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: e2e-results-vercel-prod-${{ matrix.app.name }}
+          name: e2e-results-vercel-prod-${{ matrix.app.name }}-${{ matrix.vm }}
           path: |
-            e2e-vercel-prod-${{ matrix.app.name }}.json
+            e2e-vercel-prod-${{ matrix.app.name }}-${{ matrix.vm }}.json
             e2e-metadata-${{ matrix.app.name }}-vercel.json
             e2e-failures-${{ matrix.app.name }}-vercel.json
             e2e-diagnostics-${{ matrix.app.name }}-vercel.json
@@ -471,6 +523,7 @@ jobs:
       TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
       TURBO_TEAM: ${{ vars.TURBO_TEAM }}
       WORKFLOW_PUBLIC_MANIFEST: '1'
+      WORKFLOW_RETURN_VALUE_POLL_INTERVAL_MS: '5000'
     steps:
       - name: Checkout Repo
         uses: actions/checkout@v4
@@ -485,8 +538,11 @@ jobs:
       - name: Build CLI
         run: pnpm turbo run build --filter='@workflow/cli'
 
+      # See the note on e2e-vercel-prod: `changeset-release/*` PRs have no
+      # deployment of their own and test main's production deployment.
       - name: Waiting for the Vercel deployment
         id: waitForDeployment
+        if: ${{ !startsWith(github.head_ref, 'changeset-release/') }}
         uses: vercel/wait-for-deployment-action@0e2b0c5c5cce31f1648108aeec56467187aca037
         with:
           project-slug: "example-nextjs-workflow-turbopack"
@@ -494,21 +550,34 @@ jobs:
           check-interval: 15
           environment: ${{ github.ref == 'refs/heads/main' && 'production' || 'preview' }}
 
+      - name: Waiting for the Vercel deployment (changeset-release PR)
+        id: prodDeployment
+        if: ${{ startsWith(github.head_ref, 'changeset-release/') }}
+        uses: vercel/wait-for-deployment-action@0e2b0c5c5cce31f1648108aeec56467187aca037
+        with:
+          project-slug: "example-nextjs-workflow-turbopack"
+          timeout: 1000
+          check-interval: 15
+          environment: production
+          sha: ${{ github.event.pull_request.base.sha }}
+
       - name: Run Multi-Region E2E Tests
         run: pnpm vitest run packages/core/e2e/e2e-region.test.ts --reporter=verbose --reporter=json --reporter=./packages/core/e2e/github-reporter.ts "--outputFile=e2e-vercel-multi-region-$APP_NAME.json"
         env:
           NODE_OPTIONS: "--enable-source-maps"
-          DEPLOYMENT_URL: ${{ steps.waitForDeployment.outputs.deployment-url }}
-          VERCEL_DEPLOYMENT_ID: ${{ steps.waitForDeployment.outputs.deployment-id }}
+          DEPLOYMENT_URL: ${{ steps.waitForDeployment.outputs.deployment-url || steps.prodDeployment.outputs.deployment-url }}
+          VERCEL_DEPLOYMENT_ID: ${{ steps.waitForDeployment.outputs.deployment-id || steps.prodDeployment.outputs.deployment-id }}
           APP_NAME: "nextjs-turbopack"
-          WORKFLOW_VERCEL_ENV: ${{ github.ref == 'refs/heads/main' && 'production' || 'preview' }}
+          # changeset-release PRs test main's production deployment, so they
+          # must be treated as a production run everywhere downstream.
+          WORKFLOW_VERCEL_ENV: ${{ (github.ref == 'refs/heads/main' || startsWith(github.head_ref, 'changeset-release/')) && 'production' || 'preview' }}
           WORKFLOW_VERCEL_AUTH_TOKEN: ${{ secrets.VERCEL_LABS_TOKEN }}
           WORKFLOW_VERCEL_TEAM: "team_nO2mCG4W8IxPIeKoSsqwAxxB"
           WORKFLOW_VERCEL_PROJECT: "prj_yjkM7UdHliv8bfxZ1sMJQf1pMpdi"
           WORKFLOW_VERCEL_PROJECT_SLUG: "example-nextjs-workflow-turbopack"
           # See the note on e2e-vercel-prod: PRs point at the protected
           # workflow-server preview; unset on main for production.
-          VERCEL_WORKFLOW_SERVER_URL: ${{ github.ref != 'refs/heads/main' && secrets.VERCEL_WORKFLOW_SERVER_URL || '' }}
+          VERCEL_WORKFLOW_SERVER_URL: ${{ github.ref != 'refs/heads/main' && !startsWith(github.head_ref, 'changeset-release/') && secrets.VERCEL_WORKFLOW_SERVER_URL || '' }}
 
       - name: Capture runtime logs on failure
         if: failure()
@@ -517,8 +586,8 @@ jobs:
           WORKFLOW_VERCEL_AUTH_TOKEN: ${{ secrets.VERCEL_LABS_TOKEN }}
           WORKFLOW_VERCEL_TEAM: "team_nO2mCG4W8IxPIeKoSsqwAxxB"
           WORKFLOW_VERCEL_PROJECT: "prj_yjkM7UdHliv8bfxZ1sMJQf1pMpdi"
-          WORKFLOW_VERCEL_ENV: ${{ github.ref == 'refs/heads/main' && 'production' || 'preview' }}
-          VERCEL_DEPLOYMENT_ID: ${{ steps.waitForDeployment.outputs.deployment-id }}
+          WORKFLOW_VERCEL_ENV: ${{ (github.ref == 'refs/heads/main' || startsWith(github.head_ref, 'changeset-release/')) && 'production' || 'preview' }}
+          VERCEL_DEPLOYMENT_ID: ${{ steps.waitForDeployment.outputs.deployment-id || steps.prodDeployment.outputs.deployment-id }}
         run: node .github/scripts/fetch-e2e-runtime-logs.mjs
 
       - name: Upload E2E results
@@ -633,6 +702,7 @@ jobs:
           DEV_TEST_CONFIG: ${{ toJSON(matrix.app) }}
           WORKFLOW_DEV_HMR_LOGS: "1"
           NEXT_CANARY: ${{ matrix.app.canary && '1' || '' }}
+          WORKFLOW_VM: ${{ matrix.app.vm || '' }}
 
       - name: Generate E2E summary
         if: always()
@@ -721,6 +791,7 @@ jobs:
           WORKBENCH_APP_PATH: ${{ steps.prepare-workbench.outputs.workbench_app_path }}
           DEPLOYMENT_URL: "http://localhost:${{ matrix.app.name == 'sveltekit' && '4173' || (matrix.app.name == 'astro' && '4321' || '3000') }}"
           NEXT_CANARY: ${{ matrix.app.canary && '1' || '' }}
+          WORKFLOW_VM: ${{ matrix.app.vm || '' }}
 
       - name: Generate E2E summary
         if: always()
@@ -829,6 +900,7 @@ jobs:
           WORKBENCH_APP_PATH: ${{ steps.prepare-workbench.outputs.workbench_app_path }}
           DEPLOYMENT_URL: "http://localhost:${{ matrix.app.name == 'sveltekit' && '4173' || (matrix.app.name == 'astro' && '4321' || '3000') }}"
           NEXT_CANARY: ${{ matrix.app.canary && '1' || '' }}
+          WORKFLOW_VM: ${{ matrix.app.vm || '' }}
 
       - name: Generate E2E summary
         if: always()
@@ -844,11 +916,17 @@ jobs:
           if-no-files-found: ignore
 
   e2e-windows:
-    name: E2E Windows Tests
+    name: E2E Windows Tests (${{ matrix.vm }})
     runs-on: windows-latest
     timeout-minutes: 30
     needs: ci-scope
     if: ${{ needs.ci-scope.outputs.fast-path != 'true' && !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Workflow VM engines: node:vm (default) and the opt-in QuickJS
+        # WASM engine (WORKFLOW_VM=quickjs).
+        vm: [node, quickjs]
     env:
       TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
       TURBO_TEAM: ${{ vars.TURBO_TEAM }}
@@ -886,7 +964,10 @@ jobs:
           cd workbench/nextjs-turbopack
           $logFile = "$env:GITHUB_WORKSPACE/nextjs-server.log"
           $env:DEV_SERVER_LOG_PATH = $logFile
-          $job = Start-Job -ScriptBlock { Set-Location $using:PWD; pnpm dev *>&1 | Tee-Object -FilePath $using:logFile }
+          # `$using:` only resolves PowerShell variables, not env vars, so
+          # copy MATRIX_VM into a session variable before Start-Job.
+          $matrixVm = $env:MATRIX_VM
+          $job = Start-Job -ScriptBlock { Set-Location $using:PWD; $env:WORKFLOW_VM = $using:matrixVm; pnpm dev *>&1 | Tee-Object -FilePath $using:logFile }
           Start-Sleep -Seconds 15
           cd ../..
 
@@ -940,7 +1021,7 @@ jobs:
             exit 1
           }
 
-          pnpm run test:e2e --reporter=verbose --reporter=json --reporter=./packages/core/e2e/github-reporter.ts --outputFile=e2e-windows-nextjs-turbopack.json
+          pnpm run test:e2e --reporter=verbose --reporter=json --reporter=./packages/core/e2e/github-reporter.ts --outputFile=e2e-windows-nextjs-turbopack-$env:MATRIX_VM.json
           $e2eExit = $LASTEXITCODE
           Stop-Job $job -ErrorAction SilentlyContinue
           exit $e2eExit
@@ -956,6 +1037,8 @@ jobs:
           DEV_TEST_CONFIG: '{"generatedStepRegistrationPath":"app/.well-known/workflow/v1/flow/__step_registrations.js","generatedWorkflowPath":"app/.well-known/workflow/v1/flow/route.js","apiFilePath":"app/api/chat/route.ts","apiFileImportPath":"../../..","port":3000,"testWorkflowFile":"96_many_steps.ts"}'
           DEV_SERVER_LOG_PATH: "${{ github.workspace }}/nextjs-server.log"
           WORKFLOW_DEV_HMR_LOGS: "1"
+          WORKFLOW_VM: ${{ matrix.vm }}
+          MATRIX_VM: ${{ matrix.vm }}
 
       - name: Print Next.js server logs
         if: always()
@@ -973,14 +1056,16 @@ jobs:
       - name: Generate E2E summary
         if: always()
         shell: bash
-        run: node .github/scripts/aggregate-e2e-results.js . --job-name "E2E Windows (nextjs-turbopack)" >> $GITHUB_STEP_SUMMARY || true
+        env:
+          MATRIX_VM: ${{ matrix.vm }}
+        run: node .github/scripts/aggregate-e2e-results.js . --job-name "E2E Windows (nextjs-turbopack - $MATRIX_VM)" >> $GITHUB_STEP_SUMMARY || true
 
       - name: Upload E2E results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: e2e-results-windows-nextjs-turbopack
-          path: e2e-windows-nextjs-turbopack.json
+          name: e2e-results-windows-nextjs-turbopack-${{ matrix.vm }}
+          path: e2e-windows-nextjs-turbopack-${{ matrix.vm }}.json
           retention-days: 7
           if-no-files-found: ignore
 
@@ -988,7 +1073,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: nextjs-server-logs-windows
+          name: nextjs-server-logs-windows-${{ matrix.vm }}
           path: nextjs-server.log
           retention-days: 7
           if-no-files-found: ignore

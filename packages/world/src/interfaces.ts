@@ -329,6 +329,15 @@ export interface WorldCapabilities {
    * ignore `stateUpdatedAt` must leave this unset so runtime optimizations
    * that rely on the 412 fence (see `WORKFLOW_PRECONDITION_GUARD`) are not
    * enabled without an actual fence behind them.
+   *
+   * A World declaring this should honour the whole snapshot the runtime sends,
+   * not just the watermark: `stateUpdatedAt`, `stateEventCount` (the count
+   * fence, which catches an event missing at or below the watermark — the case
+   * the watermark provably cannot see) and, optionally, `stateCursor` (return
+   * the missing events on the 412 to save the client a reload). See
+   * `CreateEventParams` for each field's contract. The runtime does not branch
+   * on which halves are implemented; a World that ignores the count simply
+   * fences less.
    */
   preconditionGuard?: boolean;
 
@@ -347,6 +356,37 @@ export interface WorldCapabilities {
    * combined with it (and so Worlds document the contract explicitly).
    */
   maxConcurrency?: boolean;
+
+  /**
+   * The World's `events.create` deduplicates concurrent `hook_received` writes
+   * that carry the same `(runId, resumeId)` — collapsing them onto a single
+   * committed event and returning the canonical one to every caller. This is
+   * the backend half of `resumeHook()`'s parallel fast path: the producer's
+   * direct write and the queue consumer's re-ensure both write the same
+   * `resumeId`, and exactly one event must survive or the run replays a
+   * duplicated `hook_received`.
+   *
+   * The core runtime fails closed on this: the parallel path is taken ONLY
+   * when the World declares `hookResumeDedup === true` AND the target run's
+   * deployment can re-ensure from `hookInput` (see the execution-context
+   * marker `hookResumeInputVersion`). A World that accepts a `resumeId` but
+   * does not enforce the `(runId, resumeId)` constraint must leave this unset
+   * so the runtime keeps the sequential single-writer path.
+   *
+   * Enabled statically for `world-local` (filesystem sidecar claim keyed on
+   * `(runId, resumeId)`; the adapter and its backend ship together, so a static
+   * capability can never drift from the backend). `world-vercel` deliberately
+   * leaves this UNSET and instead attests support per-lookup via the
+   * server-computed, response-only `Hook.resumeCapabilities.hookResumeDedupVersion`
+   * (see `HookResumeCapabilitiesSchema`), so a server rollback or kill switch
+   * degrades new resumes to the sequential path immediately without redeploying
+   * the adapter. `world-postgres` leaves it unset for now and stays sequential.
+   *
+   * The resume gate treats EITHER signal as backend support (see
+   * `resume-hook.ts`): this static capability OR a current
+   * `resumeCapabilities.hookResumeDedupVersion` on the by-token hook.
+   */
+  hookResumeDedup?: boolean;
 }
 
 /**
@@ -479,6 +519,29 @@ export interface World extends Queue, Streamer, Storage {
    *   tolerate `undefined` for direct callers.
    */
   createRunId?(options?: Readonly<Record<string, unknown>>): string;
+
+  /**
+   * The environment this World's writes are attributed to by the backend
+   * (`@workflow/world-vercel`: `'production' | 'preview' | 'development'`).
+   *
+   * Synchronous and side-effect free: implementations derive this from
+   * configuration or environment variables they already hold, never from a
+   * network call. Return `undefined` when the environment can't be determined.
+   *
+   * The value MUST match the attribution the backend will actually apply to
+   * this client's writes — for `world-vercel` that means keeping it in lockstep
+   * with the `x-vercel-environment` header (proxy path) and the OIDC token's
+   * `environment` claim (in-deployment path). A value that merely looks
+   * plausible is worse than `undefined`, because callers use it to detect
+   * cross-tenant mismatches and a wrong answer manufactures a false one.
+   *
+   * `start()` stamps this into the queue message's `runInput` so the consuming
+   * deployment can tell that a message it was handed was created against a
+   * different environment than its own. Not all Worlds have an environment
+   * dimension — local dev and Postgres have exactly one tenant, so they omit
+   * this and the check is skipped.
+   */
+  getEnvironment?(): string | undefined;
 
   /**
    * World-specific display fields for a run.

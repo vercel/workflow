@@ -77,6 +77,11 @@ export const WorkflowEventsCount = SemanticConvention<number>(
   'workflow.events.count'
 );
 
+/** Whether workflow execution starts with replay or resumes a retained VM */
+export const WorkflowExecutionMode = SemanticConvention<'replay' | 'retained'>(
+  'workflow.execution.mode'
+);
+
 /** Number of arguments passed to the workflow */
 export const WorkflowArgumentsCount = SemanticConvention<number>(
   'workflow.arguments.count'
@@ -90,6 +95,41 @@ export const WorkflowResultType = SemanticConvention<string>(
 /** Whether trace context was propagated to this workflow execution */
 export const WorkflowTracePropagated = SemanticConvention<boolean>(
   'workflow.trace.propagated'
+);
+
+// QuickJS VM engine attributes
+
+/** The VM engine executing the workflow function for this invocation */
+export const WorkflowVm = SemanticConvention<'node' | 'quickjs'>('workflow.vm');
+
+/** Outcome of a QuickJS VM workflow invocation */
+export const QuickJSOutcome = SemanticConvention<
+  'completed' | 'suspended' | 'failed'
+>('workflow.vm.outcome');
+
+/** Whether preloaded events from `events.create('run_started')` were used */
+export const QuickJSEventsPreloaded = SemanticConvention<boolean>(
+  'workflow.vm.events.preloaded'
+);
+
+/** Total number of events fetched from the world for this invocation */
+export const QuickJSEventsFetchedCount = SemanticConvention<number>(
+  'workflow.vm.events.fetched_count'
+);
+
+/** Number of pages required to fetch all events */
+export const QuickJSEventsFetchedPages = SemanticConvention<number>(
+  'workflow.vm.events.fetched_pages'
+);
+
+/** Number of pending VM operations captured at suspension */
+export const QuickJSPendingOpsCount = SemanticConvention<number>(
+  'workflow.vm.pending_ops_count'
+);
+
+/** Number of steps executed inline (live-VM continuation) this invocation */
+export const QuickJSInlineSteps = SemanticConvention<number>(
+  'quickjs.inline_steps'
 );
 
 /** Active trace-correlation mode for this invocation (linked or continuous) */
@@ -174,6 +214,14 @@ export const WorkflowRouteEntrypointAgeMs = SemanticConvention<number>(
 export const WorkflowRouteModuleBodyInitMs = SemanticConvention<number>(
   'workflow.route.module_body_init_ms'
 );
+
+/**
+ * Compute instance handling this route — the synthesized `COMPUTE_INSTANCE_ID`.
+ * Uses OTEL `faas.instance` (execution-environment id, reused across
+ * invocations to the same function):
+ * https://opentelemetry.io/docs/specs/semconv/attributes-registry/faas/
+ */
+export const FaasInstance = SemanticConvention<string>('faas.instance');
 
 // Step attributes
 
@@ -327,6 +375,26 @@ export const HookId = SemanticConvention<string>('workflow.hook.id');
 /** Whether a hook was found by its token */
 export const HookFound = SemanticConvention<boolean>('workflow.hook.found');
 
+/**
+ * Producer-side signal (on the `hook.resume` span) that the direct
+ * `hook_received` write failed transiently but the queue dispatch succeeded, so
+ * the resume is recovered via the consumer's re-ensure. Corresponds to
+ * `ResumedHook.resilientResume === true`.
+ */
+export const HookResilientResume = SemanticConvention<boolean>(
+  'workflow.hook.resilient_resume'
+);
+
+/**
+ * Consumer-side signal (on the workflow execution span) that this replay
+ * materialized the `hook_received` event from the queue message's `hookInput`
+ * because the producer's direct write had not landed — the completion of the
+ * recovery path {@link HookResilientResume} began.
+ */
+export const HookResilientResumeMaterialized = SemanticConvention<boolean>(
+  'workflow.hook.resilient_resume_materialized'
+);
+
 // Webhook attributes
 
 /** Number of webhook handlers triggered */
@@ -443,6 +511,22 @@ export const SerializationStoredBytes = SemanticConvention<number>(
 /** Fraction of bytes saved by compression (0..1); set only when compressed. */
 export const SerializationCompressionRatio = SemanticConvention<number>(
   'workflow.serialization.compression_ratio'
+);
+
+/**
+ * Number of workflow (guest) code executions serialization could not avoid
+ * (getters, proxies, custom serializers); set only when non-zero.
+ */
+export const SerializationGuestCodeExecutions = SemanticConvention<number>(
+  'workflow.serialization.guest_code_executions'
+);
+
+/**
+ * Deduplicated `kind (detail)` descriptions of the guest-code executions;
+ * set only when non-zero.
+ */
+export const SerializationGuestCodeDetails = SemanticConvention<string[]>(
+  'workflow.serialization.guest_code_details'
 );
 
 // RPC/Peer Service attributes - For service maps and dependency tracking

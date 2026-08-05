@@ -1,0 +1,22 @@
+---
+title: Resilient hook resume
+description: resumeHook() now tolerates transient event storage failures, as long as the queue is healthy, instead of failing the resume.
+---
+
+# Resilient `resumeHook()`
+
+## Motivation
+
+`resumeHook()` used to write the `hook_received` event and dispatch the workflow queue message strictly one after the other, so every resume paid two sequential round trips and a transient event-storage failure failed the whole resume even when the queue was healthy. This change runs both writes **concurrently** — cutting a round trip off resume latency — and, on the same path, brings `resumeHook()` to parity with [resilient `start()`](/docs/changelog/resilient-start): a transient event-write failure no longer fails the resume when the payload can still be delivered through the queue.
+
+## Design
+
+- On the fast path, `resumeHook()` writes the `hook_received` event and dispatches the workflow queue message **concurrently** (`Promise.allSettled`). The queue message carries a `hookInput` payload — the dehydrated hook payload plus a client-minted `resumeId` idempotency key, the hook token, and a payload digest.
+- A `(runId, resumeId)` dedup constraint keeps the two writers converging on **exactly one** `hook_received` event: whichever lands first wins, and the other is resolved server-side as success rather than a duplicate. The queue consumer idempotently re-ensures the event from `hookInput` before replay, so the resume is guaranteed even if the direct write never commits.
+- Replay also deduplicates: `hook_received` events sharing a `resumeId` belong to the same resume attempt, and only the first in the event log is delivered to workflow code. Even if a redelivery materializes the event twice, the payload reaches the workflow exactly once.
+- **Queue dispatch failure is fatal** — the run was not re-triggered, so no consumer will re-ensure the event, and `resumeHook()` throws. A transient event-write failure (429/5xx, a transport error, or an expected `(runId, resumeId)` conflict with the consumer's own re-ensure) is swallowed because the queue delivery still guarantees the resume; a terminal run surfaces as `HookNotFoundError`, and any other event-write error is rethrown.
+- `resumeHook()` returns `ResumedHook` (exported from `workflow/api`), which extends `Hook` with an optional `resilientResume` flag. The flag is `true` only when the direct write failed transiently and the resume was recovered through the queue; on the happy path and the sequential fallback it is absent.
+
+## Compatibility
+
+The parallel fast path is gated per resume: it activates only when both the target run's queue consumer and the live backend independently attest dedup support (re-checked on every resume, so rollout and rollback both degrade safely). Otherwise — for oversized payloads, legacy runs, or with `WORKFLOW_DISABLE_LAZY_HOOK_RESUME=1` — `resumeHook()` falls back to the original sequential write-then-dispatch path. Because runs keep executing on the deployment they were created on, a resume targeting a run from an older deployment simply uses the sequential path.

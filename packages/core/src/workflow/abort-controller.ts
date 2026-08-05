@@ -111,7 +111,7 @@ export function createCreateAbortController(ctx: WorkflowOrchestratorContext) {
     readonly [ABORT_HOOK_TOKEN]: string;
 
     constructor() {
-      const id = ctx.generateUlid();
+      const id = ctx.generateCorrelationId('abort');
       const streamName = getAbortStreamId(id);
       const hookToken = `abrt_${id}`;
 
@@ -120,8 +120,10 @@ export function createCreateAbortController(ctx: WorkflowOrchestratorContext) {
       this.signal = new WorkflowAbortSignal(streamName, hookToken);
 
       // Register an internal system hook in the invocations queue.
-      // isSystem prevents token namespace conflicts with user hooks.
-      const correlationId = `hook_${ctx.generateUlid()}`;
+      // isSystem prevents token namespace conflicts with user hooks. The id
+      // draws from its own family, not `hook`, so constructing an abort
+      // controller does not renumber hooks the workflow creates later.
+      const correlationId = `hook_${ctx.generateCorrelationId('abortHook')}`;
       ctx.invocationsQueue.set(correlationId, {
         type: 'hook',
         correlationId,

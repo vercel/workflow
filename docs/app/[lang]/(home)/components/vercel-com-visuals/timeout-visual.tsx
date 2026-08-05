@@ -1,9 +1,9 @@
 'use client';
 
-import type { JSX } from 'react';
-import { AnimatedBar } from './animated-bar';
 import { useInView, useReducedMotion } from 'motion/react';
+import type { JSX } from 'react';
 import { useRef } from 'react';
+import { AnimatedBar } from './animated-bar';
 
 const ANIMATION_CONFIG = {
   DURATION: 1250,

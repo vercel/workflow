@@ -70,7 +70,8 @@ export function getWritable<W = any>(
   // unsafe pattern correct: writes go through one serial sink in the
   // order the user wrote them. See
   // https://github.com/vercel/workflow/issues/2058.
-  const cache = (ctx.writables ??= new Map<string, CachedWritable>());
+  ctx.writables ??= new Map<string, CachedWritable>();
+  const cache = ctx.writables;
   const cached = cache.get(name);
   if (cached) {
     return cached.writable as WritableStream<W>;

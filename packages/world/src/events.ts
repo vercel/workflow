@@ -644,6 +644,14 @@ export const EventSchema = AllEventsSchema.and(
     createdAt: z.coerce.date(),
     occurredAt: z.coerce.date().optional(),
     specVersion: z.number().optional(),
+    /**
+     * Lazy hook resume idempotency key, persisted on `hook_received` events so
+     * the queue consumer can detect that the producer's concurrent direct write
+     * already landed in the run_started preload and skip its own re-ensure.
+     * Mirrors {@link CreateEventParams.resumeId}; absent on all other events and
+     * on legacy (non-lazy) resumes.
+     */
+    resumeId: z.string().optional(),
   })
 );
 
@@ -704,8 +712,31 @@ export type CreateEventRequest = Exclude<
 export interface CreateEventParams {
   v1Compat?: boolean;
   resolveData?: ResolveData;
+  /**
+   * Lazy hook resume idempotency key. Set only by `resumeHook()` when it
+   * persists a `hook_received` event whose creation must be deduplicated
+   * against a concurrent re-ensure from the queue consumer. The World routes
+   * it to the backend's `(runId, resumeId)` constraint so both writers
+   * converge on exactly one event. Only meaningful for `hook_received`.
+   */
+  resumeId?: string;
+  /**
+   * Content digest of the serialized resume payload, computed once by
+   * `resumeHook()` and forwarded identically on the direct write and the queue
+   * re-ensure. The World routes it to the backend so both writers record the
+   * same digest on the `(runId, resumeId)` constraint. Only meaningful
+   * alongside {@link resumeId}.
+   */
+  resumePayloadDigest?: string;
   /** Request ID (x-vercel-id when on Vercel) for correlating request logs with workflow events. */
   requestId?: string;
+  /**
+   * Compute instance whose handler is writing this event (`COMPUTE_INSTANCE_ID`
+   * in @workflow/core). Ambient per-event identity like {@link requestId},
+   * which distinguishes invocations *within* an instance. Read back via
+   * `AnalyticsEventSchema` / `AnalyticsStepSchema`.
+   */
+  computeInstanceId?: string;
   /**
    * Epoch ms (the ULID time of the latest event the runtime has loaded during
    * replay). Sent by replay-context creates so the backend can reject the event
@@ -722,14 +753,77 @@ export interface CreateEventParams {
    * timestamp must pass (anti-livelock, so an up-to-date client is never
    * rejected). A backend that ignores this field simply disables the guard —
    * the client falls open and behaves as before.
+   *
+   * A watermark alone cannot see an event *missing at or below* it, which is
+   * the failure that actually corrupts a replay — see {@link stateEventCount}
+   * for the second half of the guard.
    */
   stateUpdatedAt?: number;
+  /**
+   * How many loaded events have a ULID time at or below {@link stateUpdatedAt}.
+   * Since `stateUpdatedAt` is the *maximum* ULID time in the loaded log, this
+   * equals the loaded array's length. Sent **only** together with
+   * `stateUpdatedAt`; a World must ignore a count that arrives without one.
+   *
+   * This closes the hole a watermark cannot: the watermark proves only "no
+   * newer event exists", while a replay corrupts its log by missing an event
+   * at or *below* its own frontier — a concurrent writer commits in the same
+   * ULID millisecond as the client's last loaded event, so the two watermarks
+   * compare equal and the write is accepted against a log that is one event
+   * short. Because correlation IDs are positional ordinals of a single seeded
+   * sequence, that one-event difference renames every entity after it.
+   *
+   * Backend contract (for World implementers who want to support this half):
+   *
+   * - Count **every** created event for the run, including replay-origin ones.
+   *   Unlike the watermark, this is not restricted to out-of-band writes: the
+   *   race being fenced is one replay against another.
+   * - Reject with 412 when the count of recorded events at ULID time
+   *   `<= stateUpdatedAt` is strictly **greater** than `stateEventCount`.
+   * - Compare **at or below** `stateUpdatedAt`, never strictly below (the
+   *   missing event routinely shares the client's frontier millisecond) and
+   *   never against a total (all the creates of one suspension share one
+   *   snapshot, so a total would reject every sibling after the first).
+   * - **One-sided safety is mandatory.** Anything that makes the backend's
+   *   count incomplete, uncomputable, or expired must *allow* the write. A
+   *   rejection has to imply a real hole, because the client responds to it by
+   *   discarding and re-deriving its whole replay.
+   *
+   * See also the millisecond-granularity caveat on `stateUpdatedAt`: the count
+   * is what makes an equal-timestamp snapshot safe to accept.
+   */
+  stateEventCount?: number;
+  /**
+   * The client's current event-log cursor (advisory). Sent alongside the other
+   * two snapshot fields so a World that rejects the write MAY return the
+   * events the client is missing on the 412 itself, saving the client a
+   * follow-up `events.list`.
+   *
+   * Distinct from {@link sinceCursor}: a World must **not** compute a delta for
+   * this on the accepted path — it exists purely to make a rejection cheaper.
+   * Returning events on a 412 is OPTIONAL, and the returned set must be
+   * provably complete (it must account for the entire discrepancy the
+   * rejection reported) or omitted entirely: a cursor filters by lexicographic
+   * event id while a hole is defined by ULID time, so a naive
+   * "everything after the cursor" delta can silently exclude the very event
+   * the client is missing. A client that receives nothing does the
+   * authoritative full reload, which is always correct.
+   */
+  stateCursor?: string;
   /**
    * Timestamp for when the event occurred on the client side. Worlds that
    * support this can persist it separately from `createdAt`, which represents
    * when the backing service accepted or stored the event.
    */
   occurredAt?: Date;
+  /**
+   * Number of consecutive replay divergences resolved by this event write.
+   *
+   * This is request telemetry, not workflow state. Worlds may use it for
+   * metrics and diagnostics, but must not require it for event
+   * materialization or persist it into the event log.
+   */
+  replayDivergenceCount?: number;
   /**
    * Inline-delta optimization (opt-in). When set, the World MAY return,
    * on the resulting {@link EventResult}, the first page of events written
@@ -835,6 +929,15 @@ export interface ListEventsParams {
 
 export interface ListEventsByCorrelationIdParams {
   correlationId: string;
+  /**
+   * The run the correlation id belongs to. A correlation id is unique per
+   * run, not globally: a slot-numbered run counts its own steps and waits, so
+   * `step_…001` names the first step of *every* such run. Naming the run is
+   * what makes the answer that run's events, and it is what makes the
+   * pagination cursor unambiguous — `(runId, eventId)` is a key where an
+   * event id alone is not.
+   */
+  runId: string;
   pagination?: PaginationOptions;
   resolveData?: ResolveData;
 }

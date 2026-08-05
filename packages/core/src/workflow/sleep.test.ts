@@ -4,6 +4,7 @@ import type { Event } from '@workflow/world';
 import * as nanoid from 'nanoid';
 import { monotonicFactory } from 'ulid';
 import { describe, expect, it, vi } from 'vitest';
+import { createCorrelationIdGenerator } from '../correlation-id.js';
 import { EventsConsumer } from '../events-consumer.js';
 import { WorkflowSuspension } from '../global.js';
 import type { WorkflowOrchestratorContext } from '../private.js';
@@ -20,6 +21,7 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
   const ulid = monotonicFactory(() => context.globalThis.Math.random());
   const workflowStartedAt = context.globalThis.Date.now();
   const ctx: WorkflowOrchestratorContext = {
+    suspensionGeneration: 0,
     runId: 'wrun_test',
     encryptionKey: undefined,
     replayPayloadCache: new ReplayPayloadCache(undefined),
@@ -37,7 +39,14 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
       getPromiseQueue: () => Promise.resolve(),
     }),
     invocationsQueue: new Map(),
-    generateUlid: () => ulid(workflowStartedAt),
+    generateCorrelationId: createCorrelationIdGenerator({
+      seed: 'test',
+      fixedTimestamp: workflowStartedAt,
+      positional: () => ulid(workflowStartedAt),
+      // The event logs in this file hardcode correlation ids the run-wide
+      // shared sequence minted, so replay only matches under that scheme.
+      perKind: false,
+    }),
     generateNanoid: nanoid.customRandom(nanoid.urlAlphabet, 21, (size) =>
       new Uint8Array(size).map(() => 256 * context.globalThis.Math.random())
     ),
@@ -220,7 +229,7 @@ describe('createSleep', () => {
     const sleep = createSleep(ctx);
 
     // Start the sleep - it will process events asynchronously
-    const sleepPromise = sleep('1s');
+    const _sleepPromise = sleep('1s');
 
     const workflowError = await errorReceived.promise;
     expect(workflowError).toBeInstanceOf(ReplayDivergenceError);
@@ -249,7 +258,7 @@ describe('createSleep', () => {
     const sleep = createSleep(ctx);
 
     // Start the sleep - it will process events asynchronously
-    const sleepPromise = sleep('5s');
+    const _sleepPromise = sleep('5s');
 
     const workflowError = await errorReceived.promise;
 
@@ -287,7 +296,7 @@ describe('createSleep', () => {
     ctx.onWorkflowError = errorReceived.resolve;
 
     const sleep = createSleep(ctx);
-    const sleepPromise = sleep('1s');
+    const _sleepPromise = sleep('1s');
 
     const workflowError = await errorReceived.promise;
     expect(workflowError).toBeInstanceOf(ReplayDivergenceError);
@@ -313,7 +322,7 @@ describe('createSleep', () => {
     ctx.onWorkflowError = errorReceived.resolve;
 
     const sleep = createSleep(ctx);
-    const sleepPromise = sleep('5s');
+    const _sleepPromise = sleep('5s');
 
     const workflowError = await errorReceived.promise;
 

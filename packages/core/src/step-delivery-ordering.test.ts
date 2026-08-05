@@ -4,6 +4,7 @@ import type { Event } from '@workflow/world';
 import * as nanoid from 'nanoid';
 import { monotonicFactory } from 'ulid';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { createCorrelationIdGenerator } from './correlation-id.js';
 import { EventsConsumer } from './events-consumer.js';
 import { WorkflowSuspension } from './global.js';
 import type { WorkflowOrchestratorContext } from './private.js';
@@ -102,6 +103,7 @@ function setupWorkflowContext(
   const promiseQueueHolder = { current: Promise.resolve() };
   const ctxRef: { current?: WorkflowOrchestratorContext } = {};
   const ctx: WorkflowOrchestratorContext = {
+    suspensionGeneration: 0,
     runId: 'wrun_test',
     encryptionKey: undefined,
     replayPayloadCache,
@@ -117,7 +119,14 @@ function setupWorkflowContext(
       getPromiseQueue: () => promiseQueueHolder.current,
     }),
     invocationsQueue: new Map(),
-    generateUlid: () => ulid(workflowStartedAt),
+    generateCorrelationId: createCorrelationIdGenerator({
+      seed: 'test',
+      fixedTimestamp: workflowStartedAt,
+      positional: () => ulid(workflowStartedAt),
+      // The event logs in this file hardcode correlation ids the run-wide
+      // shared sequence minted, so replay only matches under that scheme.
+      perKind: false,
+    }),
     generateNanoid: nanoid.customRandom(nanoid.urlAlphabet, 21, (size) =>
       new Uint8Array(size).map(() => 256 * context.globalThis.Math.random())
     ),

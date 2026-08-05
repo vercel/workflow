@@ -9,6 +9,7 @@ import * as nanoid from 'nanoid';
 import { monotonicFactory } from 'ulid';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { registerSerializationClass } from './class-serialization.js';
+import { createCorrelationIdGenerator } from './correlation-id.js';
 import { EventsConsumer } from './events-consumer.js';
 import { WorkflowSuspension } from './global.js';
 import type { WorkflowOrchestratorContext } from './private.js';
@@ -61,7 +62,14 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
       getPromiseQueue: () => Promise.resolve(),
     }),
     invocationsQueue: new Map(),
-    generateUlid: () => ulid(workflowStartedAt), // All generated ulids use the workflow's started at time
+    generateCorrelationId: createCorrelationIdGenerator({
+      seed: 'test',
+      fixedTimestamp: workflowStartedAt,
+      positional: () => ulid(workflowStartedAt),
+      // The event logs in this file hardcode correlation ids the run-wide
+      // shared sequence minted, so replay only matches under that scheme.
+      perKind: false,
+    }),
     generateNanoid: nanoid.customRandom(nanoid.urlAlphabet, 21, (size) =>
       new Uint8Array(size).map(() => 256 * context.globalThis.Math.random())
     ),
@@ -783,7 +791,7 @@ describe('createUseStep', () => {
     const add = useStep('add');
 
     // Start the step - it will process the event asynchronously
-    const stepPromise = add(1, 2);
+    const _stepPromise = add(1, 2);
 
     const workflowError = await errorReceived.promise;
     expect(workflowError).toBeInstanceOf(ReplayDivergenceError);
@@ -827,8 +835,8 @@ describe('AbortController hook integration', () => {
       const ctx = setupWorkflowContext([]);
       const WorkflowAbortController = createCreateAbortController(ctx);
 
-      const ctrl1 = new WorkflowAbortController();
-      const ctrl2 = new WorkflowAbortController();
+      const _ctrl1 = new WorkflowAbortController();
+      const _ctrl2 = new WorkflowAbortController();
 
       expect(ctx.invocationsQueue.size).toBe(2);
 

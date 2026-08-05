@@ -1,6 +1,11 @@
 import { execSync } from 'node:child_process';
 import { PostgreSqlContainer } from '@testcontainers/postgresql';
-import type { Hook, Step, WorkflowRun } from '@workflow/world';
+import type {
+  Hook,
+  HookCreatedEventRequest,
+  Step,
+  WorkflowRun,
+} from '@workflow/world';
 import { SPEC_VERSION_CURRENT } from '@workflow/world';
 import { encode } from 'cbor-x';
 import { eq } from 'drizzle-orm';
@@ -8,6 +13,7 @@ import { Pool } from 'pg';
 import { decodeTime, ulid } from 'ulid';
 import {
   afterAll,
+  afterEach,
   beforeAll,
   beforeEach,
   describe,
@@ -106,16 +112,13 @@ async function updateStep(
 async function createHook(
   events: EventsStorage,
   runId: string,
-  data: {
-    hookId: string;
-    token: string;
-    metadata?: unknown;
-  }
+  data: HookCreatedEventRequest['eventData'] & { hookId: string }
 ): Promise<Hook> {
+  const { hookId, ...eventData } = data;
   const result = await events.create(runId, {
     eventType: 'hook_created',
-    correlationId: data.hookId,
-    eventData: { token: data.token, metadata: data.metadata },
+    correlationId: hookId,
+    eventData,
   });
   if (!result.hook) {
     throw new Error('Expected hook to be created');
@@ -168,6 +171,10 @@ describe('Storage (Postgres integration)', () => {
 
   beforeEach(async () => {
     await truncateTables();
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
   });
 
   afterAll(async () => {
@@ -921,6 +928,7 @@ describe('Storage (Postgres integration)', () => {
 
         const evts = await events.listByCorrelationId({
           correlationId: 'lazy-step-2',
+          runId: testRunId,
         });
         const created = evts.data.find((e) => e.eventType === 'step_created');
         const started = evts.data.find((e) => e.eventType === 'step_started');
@@ -1305,6 +1313,7 @@ describe('Storage (Postgres integration)', () => {
 
         const result = await events.listByCorrelationId({
           correlationId,
+          runId: testRunId,
           pagination: {},
         });
 
@@ -1317,7 +1326,11 @@ describe('Storage (Postgres integration)', () => {
         expect(result.data[2].correlationId).toBe(correlationId);
       });
 
-      it('should list events across multiple runs with same correlation ID', async () => {
+      it('returns only the named run when two runs share a correlation ID', async () => {
+        // A correlation id names a hook, step or wait within its run. Two runs
+        // can hold the same one — a slot-numbered run counts its own steps, so
+        // `step_…001` is the first step of every such run — and the query
+        // answers for the run it was given, not for both.
         const correlationId = 'hook-xyz789';
 
         // Create another run
@@ -1351,16 +1364,71 @@ describe('Storage (Postgres integration)', () => {
 
         const result = await events.listByCorrelationId({
           correlationId,
+          runId: testRunId,
           pagination: {},
         });
 
-        expect(result.data).toHaveLength(3);
-        expect(result.data[0].eventId).toBe(result1.event.eventId);
-        expect(result.data[0].runId).toBe(testRunId);
-        expect(result.data[1].eventId).toBe(result2.event.eventId);
-        expect(result.data[1].runId).toBe(run2.runId);
-        expect(result.data[2].eventId).toBe(result3.event.eventId);
-        expect(result.data[2].runId).toBe(testRunId);
+        expect(result.data.map((event) => event.eventId)).toEqual([
+          result1.event.eventId,
+          result3.event.eventId,
+        ]);
+        expect(result.data.every((event) => event.runId === testRunId)).toBe(
+          true
+        );
+
+        // The other run's event is not lost, it belongs to the other run.
+        const other = await events.listByCorrelationId({
+          correlationId,
+          runId: run2.runId,
+          pagination: {},
+        });
+        expect(other.data.map((event) => event.eventId)).toEqual([
+          result2.event.eventId,
+        ]);
+      });
+
+      it('pages a scoped query past a sibling run holding the same correlation ID', async () => {
+        // The cursor is an event id, and the scope is what keeps it a key: the
+        // sibling run's rows sort into the same id range, so an unscoped page
+        // would spend the caller's page budget on a run it did not ask for.
+        const correlationId = 'hook_shared_paging';
+        const run2 = await createRun(events, {
+          deploymentId: 'deployment-789',
+          workflowName: 'test-workflow-3',
+          input: new Uint8Array(),
+        });
+
+        const created = await events.create(testRunId, {
+          eventType: 'hook_created',
+          correlationId,
+          eventData: { token: 'test-token-paging' },
+        });
+        await events.create(run2.runId, {
+          eventType: 'hook_created',
+          correlationId,
+          eventData: { token: 'test-token-paging-2' },
+        });
+        const disposed = await events.create(testRunId, {
+          eventType: 'hook_disposed',
+          correlationId,
+        });
+
+        const seen: string[] = [];
+        let cursor: string | undefined;
+        do {
+          const page = await events.listByCorrelationId({
+            correlationId,
+            runId: testRunId,
+            pagination: { limit: 1, cursor },
+          });
+          expect(page.data.every((event) => event.runId === testRunId)).toBe(
+            true
+          );
+          seen.push(...page.data.map((event) => event.eventId));
+          cursor = page.hasMore ? (page.cursor ?? undefined) : undefined;
+        } while (cursor);
+
+        expect(seen).toEqual([created.event.eventId, disposed.event.eventId]);
       });
 
       it('should return empty list for non-existent correlation ID', async () => {
@@ -1377,6 +1445,7 @@ describe('Storage (Postgres integration)', () => {
 
         const result = await events.listByCorrelationId({
           correlationId: 'non-existent-correlation-id',
+          runId: testRunId,
           pagination: {},
         });
 
@@ -1428,6 +1497,7 @@ describe('Storage (Postgres integration)', () => {
         // Get first page (step_created, step_started, step_retrying)
         const page1 = await events.listByCorrelationId({
           correlationId,
+          runId: testRunId,
           pagination: { limit: 3 },
         });
 
@@ -1438,6 +1508,7 @@ describe('Storage (Postgres integration)', () => {
         // Get second page (step_started, step_completed)
         const page2 = await events.listByCorrelationId({
           correlationId,
+          runId: testRunId,
           pagination: { limit: 3, cursor: page1.cursor || undefined },
         });
 
@@ -1466,6 +1537,7 @@ describe('Storage (Postgres integration)', () => {
         // Note: resolveData parameter is ignored by the PG World storage implementation
         const result = await events.listByCorrelationId({
           correlationId: 'step-with-data',
+          runId: testRunId,
           pagination: {},
         });
 
@@ -1500,6 +1572,7 @@ describe('Storage (Postgres integration)', () => {
 
         const result = await events.listByCorrelationId({
           correlationId,
+          runId: testRunId,
           pagination: {},
         });
 
@@ -1537,6 +1610,7 @@ describe('Storage (Postgres integration)', () => {
 
         const result = await events.listByCorrelationId({
           correlationId,
+          runId: testRunId,
           pagination: { sortOrder: 'desc' },
         });
 
@@ -1584,6 +1658,7 @@ describe('Storage (Postgres integration)', () => {
 
         const result = await events.listByCorrelationId({
           correlationId: hookId,
+          runId: testRunId,
           pagination: {},
         });
 
@@ -2502,6 +2577,162 @@ describe('Storage (Postgres integration)', () => {
           correlationId: 'hook_auto_deleted',
         })
       ).rejects.toThrow(/not found/i);
+    });
+
+    it('should retain a hook until its deadline after the run completes', async () => {
+      const token = 'retained-token';
+      const tokenRetentionUntil = new Date(Date.now() + 60_000);
+      const run = await createRun(events, {
+        deploymentId: 'deployment-123',
+        workflowName: 'test-workflow',
+        input: new Uint8Array(),
+      });
+      const hook = await createHook(events, run.runId, {
+        hookId: 'hook_retained',
+        token,
+        tokenRetentionUntil,
+      });
+      expect(hook.tokenRetentionUntil).toEqual(tokenRetentionUntil);
+
+      await updateRun(events, run.runId, 'run_completed', {
+        output: new Uint8Array(),
+      });
+
+      expect((await hooks.get(hook.hookId)).runId).toBe(run.runId);
+      expect(await hooks.getByToken(token)).toMatchObject({
+        runId: run.runId,
+        tokenRetentionUntil,
+      });
+      expect((await hooks.list({ runId: run.runId })).data).toHaveLength(1);
+      await expect(
+        events.create(run.runId, {
+          eventType: 'hook_received',
+          correlationId: hook.hookId,
+          eventData: { payload: {} },
+        })
+      ).rejects.toMatchObject({ name: 'RunExpiredError' });
+
+      const duplicateRun = await createRun(events, {
+        deploymentId: 'deployment-456',
+        workflowName: 'duplicate-workflow',
+        input: new Uint8Array(),
+      });
+      const conflict = await events.create(duplicateRun.runId, {
+        eventType: 'hook_created',
+        correlationId: 'hook_duplicate',
+        eventData: { token },
+      });
+      expect(conflict.event.eventType).toBe('hook_conflict');
+
+      await events.create(run.runId, {
+        eventType: 'hook_disposed',
+        correlationId: hook.hookId,
+      });
+      expect(
+        (
+          await createHook(events, duplicateRun.runId, {
+            hookId: 'hook_replacement',
+            token,
+          })
+        ).runId
+      ).toBe(duplicateRun.runId);
+    });
+
+    it('rejects retention beyond the 30-day default before writing Hook state', async () => {
+      const run = await createRun(events, {
+        deploymentId: 'deployment-123',
+        workflowName: 'test-workflow',
+        input: new Uint8Array(),
+      });
+      const hookId = 'hook_over_retention_limit';
+
+      await expect(
+        createHook(events, run.runId, {
+          hookId,
+          token: 'over-retention-limit',
+          tokenRetentionUntil: new Date(Date.now() + 31 * 24 * 60 * 60 * 1000),
+        })
+      ).rejects.toMatchObject({
+        name: 'WorkflowWorldError',
+        status: 400,
+        message:
+          'Hook minimum retention cannot exceed 30 days in the Postgres World.',
+      });
+
+      await expect(
+        drizzle
+          .select()
+          .from(DrizzleSchema.hooks)
+          .where(eq(DrizzleSchema.hooks.hookId, hookId))
+      ).resolves.toEqual([]);
+      await expect(
+        drizzle
+          .select()
+          .from(DrizzleSchema.events)
+          .where(eq(DrizzleSchema.events.correlationId, hookId))
+      ).resolves.toEqual([]);
+    });
+
+    it('accepts retention within the configured Postgres limit', async () => {
+      vi.stubEnv('WORKFLOW_POSTGRES_HOOK_RETENTION_LIMIT_DAYS', '60');
+      const configuredEvents = createEventsStorage(drizzle);
+      const run = await createRun(configuredEvents, {
+        deploymentId: 'deployment-123',
+        workflowName: 'test-workflow',
+        input: new Uint8Array(),
+      });
+
+      await expect(
+        createHook(configuredEvents, run.runId, {
+          hookId: 'hook_custom_retention_limit',
+          token: 'custom-retention-limit',
+          tokenRetentionUntil: new Date(Date.now() + 31 * 24 * 60 * 60 * 1000),
+        })
+      ).resolves.toMatchObject({ hookId: 'hook_custom_retention_limit' });
+    });
+
+    it('should release a retained hook after its deadline', async () => {
+      const token = 'elapsed-retention-token';
+      const run = await createRun(events, {
+        deploymentId: 'deployment-123',
+        workflowName: 'test-workflow',
+        input: new Uint8Array(),
+      });
+      const hook = await createHook(events, run.runId, {
+        hookId: 'hook_elapsed_retention',
+        token,
+        tokenRetentionUntil: new Date(Date.now() + 60_000),
+      });
+
+      await updateRun(events, run.runId, 'run_completed', {
+        output: new Uint8Array(),
+      });
+      await drizzle
+        .update(DrizzleSchema.hooks)
+        .set({ tokenRetentionUntil: new Date(Date.now() - 1) })
+        .where(eq(DrizzleSchema.hooks.hookId, hook.hookId));
+      await expect(hooks.get(hook.hookId)).rejects.toMatchObject({
+        name: 'HookNotFoundError',
+      });
+      await expect(hooks.getByToken(token)).rejects.toMatchObject({
+        name: 'HookNotFoundError',
+      });
+
+      const replacementRun = await createRun(events, {
+        deploymentId: 'deployment-456',
+        workflowName: 'replacement-workflow',
+        input: new Uint8Array(),
+      });
+      await createHook(events, replacementRun.runId, {
+        hookId: 'hook_after_retention',
+        token,
+      });
+
+      const rows = await drizzle
+        .select({ hookId: DrizzleSchema.hooks.hookId })
+        .from(DrizzleSchema.hooks)
+        .where(eq(DrizzleSchema.hooks.token, token));
+      expect(rows).toEqual([{ hookId: 'hook_after_retention' }]);
     });
   });
 

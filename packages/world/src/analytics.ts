@@ -69,6 +69,8 @@ export const AnalyticsStepSchema = z.object({
   errorCode: NullableStringSchema,
   workflowCoreVersion: NullableStringSchema,
   workflowEncryptionEnabled: NullableBooleanSchema,
+  /** Compute instance of the latest attempt's `step_started`. */
+  computeInstanceId: NullableStringSchema,
 });
 
 export const AnalyticsEventSchema = z.object({
@@ -86,6 +88,8 @@ export const AnalyticsEventSchema = z.object({
   region: NullableStringSchema,
   vercelId: NullableStringSchema,
   requestId: NullableStringSchema,
+  /** Compute instance that wrote the event. See CreateEventParams. */
+  computeInstanceId: NullableStringSchema,
   resumeAt: NullableDateSchema,
   retryAfter: NullableDateSchema,
   errorCode: NullableStringSchema,
@@ -185,6 +189,8 @@ export interface AnalyticsListEventsParams
 
 export interface AnalyticsListEventsByCorrelationIdParams {
   correlationId: string;
+  /** The run the correlation id belongs to; see `ListEventsByCorrelationIdParams`. */
+  runId: string;
   pagination?: PaginationOptions;
 }
 

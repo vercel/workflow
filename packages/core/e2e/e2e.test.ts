@@ -35,6 +35,7 @@ import {
   cliCancel,
   cliHealthJson,
   cliInspectJson,
+  cliInspectJsonUntil,
   fetchManifest,
   getCollectedRunIds,
   getWorkflowMetadata,
@@ -441,6 +442,31 @@ describe('e2e', () => {
     const run = await start(await e2e('promiseAnyWorkflow'), []);
     const returnValue = await run.returnValue;
     expect(returnValue).toBe('B');
+  });
+
+  // Interleaves VM-retention modes: retained boundaries (primitive step
+  // args), demoted boundaries (object args), sleeps, a step-vs-sleep race,
+  // and a hook resolved in parallel with a step. Asserts the exact composite
+  // result so a dropped/duplicated/misordered boundary fails loudly.
+  test('retainedInterleavingWorkflow', { timeout: 90_000 }, async () => {
+    const token = Math.random().toString(36).slice(2);
+    const run = await start(await e2e('retainedInterleavingWorkflow'), [token]);
+
+    const hook = await waitForHook(token, { runId: run.runId });
+    await resumeHook(hook, { delta: 5 });
+
+    const returnValue = await run.returnValue;
+    expect(returnValue).toEqual({
+      a: 3,
+      b: 3,
+      c: 13,
+      d: 23,
+      e: 13,
+      f: 24,
+      winner: 'step',
+      g: 137,
+      h: 142,
+    });
   });
 
   test.skipIf(!isNext)(
@@ -1392,8 +1418,19 @@ describe('e2e', () => {
 
           expect(result.finalAttempt).toBe(3);
 
-          const { json: steps } = await cliInspectJson(
-            `steps --runId ${run.runId}`
+          // --withData forces the storage-backed listing: the analytics
+          // listing may omit the attempt column entirely (it is optional in
+          // the analytics schema), so only the durable step entity can be
+          // asserted on. Poll because rows for a just-finished run can lag.
+          const steps = await cliInspectJsonUntil(
+            `steps --runId ${run.runId} --withData`,
+            (json) =>
+              json.some(
+                (s: any) =>
+                  s.stepName.includes('retryUntilAttempt3') &&
+                  s.status === 'completed' &&
+                  s.attempt === 3
+              )
           );
           const step = steps.find((s: any) =>
             s.stepName.includes('retryUntilAttempt3')
@@ -1418,8 +1455,17 @@ describe('e2e', () => {
           // (which inspect the value inside the SWC-instrumented workflow).
           // Here we only assert step lifecycle behavior.
 
-          const { json: steps } = await cliInspectJson(
-            `steps --runId ${run.runId}`
+          // --withData forces the storage-backed listing — see the
+          // retry-success test above.
+          const steps = await cliInspectJsonUntil(
+            `steps --runId ${run.runId} --withData`,
+            (json) =>
+              json.some(
+                (s: any) =>
+                  s.stepName.includes('throwFatalError') &&
+                  s.status === 'failed' &&
+                  s.attempt === 1
+              )
           );
           const step = steps.find((s: any) =>
             s.stepName.includes('throwFatalError')
@@ -1652,8 +1698,14 @@ describe('e2e', () => {
           expect(runData.status).toBe('completed');
 
           // Verify the step itself failed
-          const { json: steps } = await cliInspectJson(
-            `steps --runId ${run.runId}`
+          const steps = await cliInspectJsonUntil(
+            `steps --runId ${run.runId}`,
+            (json) =>
+              json.some(
+                (s: any) =>
+                  s.stepName.includes('nonExistentStep') &&
+                  s.status === 'failed'
+              )
           );
           const ghostStep = steps.find((s: any) =>
             s.stepName.includes('nonExistentStep')
@@ -2047,6 +2099,36 @@ describe('e2e', () => {
     }
   );
 
+  test.skipIf(!isLocalDeployment())(
+    'hookMinRetentionWorkflow - terminal Hook cannot resume and its token stays unavailable',
+    { timeout: 60_000 },
+    async () => {
+      const token = `retained-${Math.random().toString(36).slice(2)}`;
+      const owner = await start(await e2e('hookMinRetentionWorkflow'), [
+        token,
+        60_000,
+      ]);
+
+      expect(await owner.returnValue).toEqual({ role: 'owner' });
+
+      const hook = await getHookByToken(token);
+      expect(hook.runId).toBe(owner.runId);
+      await expect(resumeHook(hook, { duplicate: true })).rejects.toSatisfy(
+        (error: unknown) => HookNotFoundError.is(error)
+      );
+
+      const duplicate = await start(await e2e('hookMinRetentionWorkflow'), [
+        token,
+        60_000,
+      ]);
+      expect(await duplicate.returnValue).toEqual({
+        role: 'duplicate',
+        conflictRunId: owner.runId,
+        conflictStatus: 'completed',
+      });
+    }
+  );
+
   test(
     'hookAdoptOwnerResultWorkflow - duplicate adopts the owner result via conflict.returnValue',
     { timeout: 120_000 },
@@ -2375,8 +2457,11 @@ describe('e2e', () => {
       // Verify that exactly 2 steps were executed:
       // 1. stepWithStepFunctionArg(doubleNumber)
       //   (doubleNumber(10) is run inside the stepWithStepFunctionArg step)
-      const { json: eventsData } = await cliInspectJson(
-        `events --run ${run.runId} --json`
+      const eventsData = await cliInspectJsonUntil(
+        `events --run ${run.runId} --json`,
+        (json) =>
+          json.filter((event: any) => event.eventType === 'step_completed')
+            .length >= 1
       );
       const stepCompletedEvents = eventsData.filter(
         (event) => event.eventType === 'step_completed'
@@ -2837,8 +2922,26 @@ describe('e2e', () => {
       // - 2 lexical-`this` arrow steps from `makeAdder` (direct + via-step)
       // - 1 invokeAdderFromStep wrapper (which itself triggers another
       //   makeAdder arrow step inside it)
-      const { json: steps } = await cliInspectJson(
-        `steps --runId ${run.runId}`
+      const steps = await cliInspectJsonUntil(
+        `steps --runId ${run.runId}`,
+        (json) => {
+          const byName = (needle: string) =>
+            json.filter((s: any) => s.stepName.includes(needle));
+          const counter = json.filter(
+            (s: any) =>
+              s.stepName.includes('Counter#add') ||
+              s.stepName.includes('Counter#multiply') ||
+              s.stepName.includes('Counter#describe')
+          );
+          return (
+            counter.length === 4 &&
+            counter.every((s: any) => s.status === 'completed') &&
+            byName('_anonymousStep').length === 1 &&
+            byName('_anonymousStep')[0].status === 'completed' &&
+            byName('invokeAdderFromStep').length === 1 &&
+            byName('invokeAdderFromStep')[0].status === 'completed'
+          );
+        }
       );
       // Filter to only Counter instance method steps
       const counterSteps = steps.filter(
