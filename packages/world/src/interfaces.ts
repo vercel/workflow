@@ -219,11 +219,8 @@ export interface Storage {
      * Cancel many runs in a single operation, returning a per-run outcome
      * for each requested ID (order preserved) plus an aggregate summary.
      *
-     * OPTIONAL. Worlds that can cancel a batch in one backend round-trip
-     * (e.g. `@workflow/world-vercel`) implement this; the SDK helper
-     * (`cancelRuns` in `@workflow/core`) feature-detects its absence and
-     * falls back to bounded-concurrency single-run cancellation so
-     * third-party / community worlds keep working without adopting it.
+     * OPTIONAL. The SDK helper `cancelRuns` in `@workflow/core` falls back to
+     * bounded-concurrency single-run cancellation when unavailable.
      */
     cancelMany?(
       request: BulkCancelWorkflowRunsRequest
