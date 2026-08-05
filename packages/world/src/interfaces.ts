@@ -16,6 +16,8 @@ import type {
 import type { GetHookParams, Hook, ListHooksParams } from './hooks.js';
 import type { Queue } from './queue.js';
 import type {
+  BulkCancelWorkflowRunsRequest,
+  BulkCancelWorkflowRunsResult,
   GetWorkflowRunParams,
   ListWorkflowRunsParams,
   WorkflowRun,
@@ -212,6 +214,17 @@ export interface Storage {
       changes: AttributeChange[],
       options?: { allowReservedAttributes?: boolean }
     ): Promise<ExperimentalSetAttributesResult>;
+
+    /**
+     * Cancel many runs in a single operation, returning a per-run outcome
+     * for each requested ID (order preserved) plus an aggregate summary.
+     *
+     * OPTIONAL. The SDK helper `cancelRuns` in `@workflow/core` falls back to
+     * bounded-concurrency single-run cancellation when unavailable.
+     */
+    cancelMany?(
+      request: BulkCancelWorkflowRunsRequest
+    ): Promise<BulkCancelWorkflowRunsResult>;
   };
 
   steps: {

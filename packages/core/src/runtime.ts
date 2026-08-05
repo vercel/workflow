@@ -142,6 +142,7 @@ export {
 export {
   type CancelRunOptions,
   cancelRun,
+  cancelRuns,
   listStreams,
   type ReadStreamOptions,
   type RecreateRunOptions,
