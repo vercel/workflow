@@ -172,7 +172,8 @@ export function captureIntrinsicsSignature(vm: QuickJS): number[] {
     if (
       name === 'makeSparseArray' ||
       name === 'makeThunk' ||
-      name === 'hasOwnCall'
+      name === 'hasOwnCall' ||
+      name === 'escapeString'
     ) {
       continue;
     }
