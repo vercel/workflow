@@ -1,9 +1,9 @@
-import { getDeadline } from '@vercel/functions';
 import type { World } from '@workflow/world';
 import { SPEC_VERSION_SUPPORTS_COMPRESSION } from '@workflow/world';
 import { createAnalytics } from './analytics.js';
 import { createRunId, describeRun } from './create-run-id.js';
 import { createGetEncryptionKeyForRun } from './encryption.js';
+import { getDeadline } from './get-deadline.js';
 import { instrumentObject } from './instrumentObject.js';
 import { createQueue } from './queue.js';
 import { createResolveLatestDeploymentId } from './resolve-latest-deployment.js';

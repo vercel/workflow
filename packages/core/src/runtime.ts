@@ -534,10 +534,10 @@ function canRetainWorkflowSession(
  * 2. Tiered budget derived from `world.getRuntimeDeadline()`
  * 3. Default of 2 minutes
  */
-function getMaxInlineDurationMs(
+async function getMaxInlineDurationMs(
   world: World,
   invocationStartTime: number
-): number {
+): Promise<number> {
   const rawEnvOverride = process.env.WORKFLOW_V2_TIMEOUT_MS;
   if (rawEnvOverride !== undefined && rawEnvOverride !== '') {
     const parsed = Number(rawEnvOverride);
@@ -546,7 +546,7 @@ function getMaxInlineDurationMs(
     }
   }
 
-  const runtimeDeadline = world.getRuntimeDeadline?.();
+  const runtimeDeadline = await world.getRuntimeDeadline?.();
   if (runtimeDeadline !== undefined) {
     const deadlineMs = runtimeDeadline.getTime();
     if (!Number.isNaN(deadlineMs)) {
@@ -784,7 +784,7 @@ export function workflowEntrypoint(
                   });
 
                   const invocationStartTime = Date.now();
-                  const noInlineReplayAfterMs = getMaxInlineDurationMs(
+                  const noInlineReplayAfterMs = await getMaxInlineDurationMs(
                     world,
                     invocationStartTime
                   );
