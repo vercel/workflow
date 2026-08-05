@@ -32,6 +32,7 @@ export {
 export { useWorkflowTraceViewerData } from './client/hooks/use-trace-viewer';
 export { useWorkflowStreams } from './client/hooks/use-workflow-streams';
 export {
+  bulkCancelRuns,
   cancelRun,
   fetchHookToken,
   recreateRun,

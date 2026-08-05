@@ -31,6 +31,7 @@ import {
   type WorkflowRun,
   type World,
 } from '@workflow/world';
+import ms from 'ms';
 import { decodeTime } from 'ulid';
 import {
   classifyRunError,
@@ -55,6 +56,11 @@ import {
   isVmRetentionEnabled,
 } from './runtime/constants.js';
 import { countStepStartedEvents } from './runtime/count-step-started-events.js';
+import {
+  type DeploymentAffinityOutcome,
+  guardDeploymentAffinity,
+  type ReenqueueArgs,
+} from './runtime/deployment-guard.js';
 import {
   appendUniqueEvents,
   type EventCreator,
@@ -528,6 +534,44 @@ function canRetainWorkflowSession(
 }
 
 /**
+ * Maximum inline-execution duration for a single handler invocation.
+ *
+ * Order of precedence:
+ * 1. `WORKFLOW_V2_TIMEOUT_MS` env var
+ * 2. Tiered budget derived from `world.getRuntimeDeadline()`
+ * 3. Default of 2 minutes
+ */
+async function getMaxInlineDurationMs(
+  world: World,
+  invocationStartTime: number
+): Promise<number> {
+  const rawEnvOverride = process.env.WORKFLOW_V2_TIMEOUT_MS;
+  if (rawEnvOverride !== undefined && rawEnvOverride !== '') {
+    const parsed = Number(rawEnvOverride);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      return parsed;
+    }
+  }
+
+  const runtimeDeadline = await world.getRuntimeDeadline?.();
+  if (runtimeDeadline !== undefined) {
+    const deadlineMs = runtimeDeadline.getTime();
+    if (!Number.isNaN(deadlineMs)) {
+      const maxDurationMs = Math.floor(deadlineMs - invocationStartTime);
+      if (maxDurationMs >= ms('25m')) {
+        return ms('10m');
+      }
+
+      if (maxDurationMs >= ms('10m')) {
+        return ms('5m');
+      }
+    }
+  }
+
+  return ms('2m');
+}
+
+/**
  * Creates a single route which handles workflow execution requests,
  * executing steps inline when possible to reduce function invocations
  * and queue overhead.
@@ -547,9 +591,6 @@ export function workflowEntrypoint(
   }
 ): (req: Request) => Promise<Response> {
   setWorkflowBasePath(options?.basePath);
-
-  const NO_INLINE_REPLAY_AFTER_MS =
-    Number(process.env.WORKFLOW_V2_TIMEOUT_MS) || 120_000;
 
   const namespace = resolveQueueNamespace(options?.namespace);
   const workflowPrefix = getQueueTopicPrefix('workflow', namespace);
@@ -579,6 +620,7 @@ export function workflowEntrypoint(
           stepName: incomingStepName,
           replayDivergence,
           preconditionReinvocations,
+          deploymentMismatchRetryCount,
           runInput,
           hookInput,
           stepInput,
@@ -751,6 +793,10 @@ export function workflowEntrypoint(
                   });
 
                   const invocationStartTime = Date.now();
+                  const noInlineReplayAfterMs = await getMaxInlineDurationMs(
+                    world,
+                    invocationStartTime
+                  );
                   let loopIteration = 0;
                   const replayRecoveryReporter = replayDivergence
                     ? new ReplayRecoveryReporter(replayDivergence.count)
@@ -922,6 +968,17 @@ export function workflowEntrypoint(
                     }
                   };
 
+                  // A plain orchestrator-replay message. Omits `runInput` (it
+                  // re-engages turbo on the next delivery and wedges the run —
+                  // see `reinvoke` below) and `replayDivergence` /
+                  // `serverErrorRetryCount` (this delivery chain's budgets).
+                  const replayMessage =
+                    async (): Promise<WorkflowInvokePayload> => ({
+                      runId,
+                      traceCarrier: await nextTraceCarrier(),
+                      requestedAt: new Date(),
+                    });
+
                   const reinvoke = async (
                     delaySeconds: number,
                     /**
@@ -939,12 +996,7 @@ export function workflowEntrypoint(
                     await queueMessage(
                       world,
                       getWorkflowQueueName(workflowName, namespace),
-                      {
-                        runId,
-                        traceCarrier: await nextTraceCarrier(),
-                        requestedAt: new Date(),
-                        ...extraPayload,
-                      },
+                      { ...(await replayMessage()), ...extraPayload },
                       delaySeconds > 0 ? { delaySeconds } : undefined
                     );
                     return undefined;
@@ -1193,6 +1245,46 @@ export function workflowEntrypoint(
                     };
                   };
 
+                  // Deployment-affinity guard, shared by the two paths that
+                  // execute a run: queued step executions and flow replays.
+                  const guardDeployment = async (
+                    run: Pick<
+                      WorkflowRun,
+                      'runId' | 'deploymentId' | 'specVersion'
+                    >,
+                    reenqueuePayload: () => Promise<WorkflowInvokePayload>,
+                    beforeStop?: () => Promise<void>
+                  ): Promise<DeploymentAffinityOutcome> => {
+                    const { outcome, spanAttributes } =
+                      await guardDeploymentAffinity({
+                        world,
+                        run,
+                        requestId,
+                        retryCount: deploymentMismatchRetryCount,
+                        beforeStop,
+                        isDeploymentUnavailableError:
+                          world.isDeploymentUnavailableError,
+                        reenqueue: async ({
+                          deploymentId,
+                          specVersion,
+                          deploymentMismatchRetryCount: retryCount,
+                          delaySeconds,
+                        }: ReenqueueArgs) => {
+                          await queueMessage(
+                            world,
+                            getWorkflowQueueName(workflowName, namespace),
+                            {
+                              ...(await reenqueuePayload()),
+                              deploymentMismatchRetryCount: retryCount,
+                            },
+                            { deploymentId, specVersion, delaySeconds }
+                          );
+                        },
+                      });
+                    if (spanAttributes) span?.setAttributes(spanAttributes);
+                    return outcome;
+                  };
+
                   // If incoming message has a stepId, this is a background step
                   // execution. Execute the step, then check if all parallel steps
                   // from the batch are done. If so, replay inline (saving a queue
@@ -1299,6 +1391,17 @@ export function workflowEntrypoint(
                           'Run already finished, skipping background step',
                           { workflowRunId: runId, status: bgRun.status }
                         );
+                        return;
+                      }
+                      // Covers every queued step execution — first dispatch and
+                      // redeliveries/retries alike.
+                      if (
+                        (await guardDeployment(bgRun, async () => ({
+                          ...(await replayMessage()),
+                          stepId: incomingStepId,
+                          stepName: incomingStepName,
+                        }))) !== 'continue'
+                      ) {
                         return;
                       }
                       const bgStartedAt = bgRun.startedAt
@@ -1757,6 +1860,32 @@ export function workflowEntrypoint(
                     } // end else (non-turbo run_started)
                   } // end if (!workflowRun)
 
+                  // Covers every flow replay — initial start, step completions,
+                  // hook resumptions, wait completions — and stops before any
+                  // workflow code, inline step, or event write happens when the
+                  // run is not pinned here (see `guardDeploymentAffinity`).
+                  // `awaitRunReady` orders turbo's `run_started` before either
+                  // stopping action.
+                  //
+                  // Runs ahead of the lazy-hook re-ensure below, so a misrouted
+                  // resume writes nothing here — which means the re-routed
+                  // message must carry `hookInput`, or a resume whose producer
+                  // write had not yet landed would be lost (that re-ensure is
+                  // idempotent per `resumeId`, so the pinned deployment still
+                  // converges on one event).
+                  if (
+                    (await guardDeployment(
+                      workflowRun,
+                      async () => ({
+                        ...(await replayMessage()),
+                        ...(hookInput ? { hookInput } : {}),
+                      }),
+                      awaitRunReady
+                    )) !== 'continue'
+                  ) {
+                    return;
+                  }
+
                   // Lazy hook resume: the producer (resumeHook fast path)
                   // parallelized the `hook_received` write with this queue
                   // publish, so the event may not be persisted yet. Idempotently
@@ -1958,7 +2087,7 @@ export function workflowEntrypoint(
                     // Check timeout before replay
                     if (
                       Date.now() - invocationStartTime >=
-                      NO_INLINE_REPLAY_AFTER_MS
+                      noInlineReplayAfterMs
                     ) {
                       runtimeLogger.info(
                         'V2 timeout reached, re-scheduling workflow',

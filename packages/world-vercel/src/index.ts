@@ -3,6 +3,7 @@ import { SPEC_VERSION_SUPPORTS_COMPRESSION } from '@workflow/world';
 import { createAnalytics } from './analytics.js';
 import { createRunId, describeRun } from './create-run-id.js';
 import { createGetEncryptionKeyForRun } from './encryption.js';
+import { getDeadline } from './get-deadline.js';
 import { instrumentObject } from './instrumentObject.js';
 import { createQueue } from './queue.js';
 import { createResolveLatestDeploymentId } from './resolve-latest-deployment.js';
@@ -48,6 +49,9 @@ export function createWorld(config?: APIConfig): World {
       // WORKFLOW_SEQUENTIAL_REPLAYS=1 uses for per-run `maxConcurrency: 1`
       // flow topics (see queue.ts and @workflow/builders).
       maxConcurrency: true,
+      // Vercel deployments are atomic and immutable, so a deployment id names
+      // one fixed build for its whole lifetime.
+      deploymentAffinity: true,
       // NOTE: the backend half of resumeHook()'s parallel fast path — that
       // the server enforces the `(runId, resumeId)` dedup constraint — is
       // NO LONGER a static world capability here. It is attested per-lookup by
@@ -62,6 +66,7 @@ export function createWorld(config?: APIConfig): World {
     // `process.exit(1)` is an acceptable response to an exhausted replay
     // budget.
     processExitTriggersQueueRedelivery: true,
+    getRuntimeDeadline: getDeadline,
     ...createQueue(config),
     ...createStorage(config),
     // Analytics list reads are served from an eventually-ingested store.

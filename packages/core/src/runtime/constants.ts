@@ -491,3 +491,21 @@ export function getPreconditionReinvokeDelaySeconds(): number {
     { integer: true }
   );
 }
+
+// A delivery reaching a deployment the run is not pinned to is not treated as
+// permanent. Re-route the message at the run's own deployment a bounded number
+// of times before failing the run with DEPLOYMENT_MISMATCH.
+export const DEPLOYMENT_MISMATCH_MAX_RETRIES = 3;
+
+/**
+ * Effective deployment-mismatch re-route budget. Override via
+ * `WORKFLOW_DEPLOYMENT_MISMATCH_MAX_RETRIES`; `0` fails the run on the first
+ * misrouted delivery instead of attempting recovery.
+ */
+export function getDeploymentMismatchMaxRetries(): number {
+  return envNumber(
+    'WORKFLOW_DEPLOYMENT_MISMATCH_MAX_RETRIES',
+    DEPLOYMENT_MISMATCH_MAX_RETRIES,
+    { integer: true, min: 0 }
+  );
+}

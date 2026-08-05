@@ -415,6 +415,21 @@ export interface WorldCapabilities {
    * `resumeCapabilities.hookResumeDedupVersion` on the by-token hook.
    */
   hookResumeDedup?: boolean;
+
+  /**
+   * Deployments are atomic and immutable: a deployment id names one fixed
+   * build for its whole lifetime, so a run pinned to one may only execute
+   * there. Worlds that declare this get the runtime's deployment-affinity
+   * guard, which re-routes a misrouted delivery to the run's own deployment
+   * and ultimately fails the run with `DEPLOYMENT_MISMATCH`.
+   *
+   * Worlds whose deployment id is synthetic or version-tagged (e.g.
+   * `dpl_local@<sdk-version>`, which legitimately differs across SDK versions
+   * within one logical environment) must leave this unset: there a
+   * "mismatch" is not a real cross-deployment delivery, and guarding would
+   * fail ordinary runs after a version bump.
+   */
+  deploymentAffinity?: boolean;
 }
 
 /**
@@ -467,6 +482,12 @@ export interface World extends Queue, Streamer, Storage {
    * `packages/core/src/runtime/replay-budget.ts`.
    */
   processExitTriggersQueueRedelivery?: boolean;
+
+  /**
+   * Absolute wall-clock time when the current function invocation will be
+   * terminated by the hosting platform, if known. Used to optimize runtime behavior.
+   */
+  getRuntimeDeadline?(): Promise<Date | undefined>;
 
   /**
    * A function that will be called to start any background tasks needed by the World implementation.

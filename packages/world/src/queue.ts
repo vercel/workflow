@@ -227,6 +227,8 @@ export const WorkflowInvokePayloadSchema = z.object({
   preconditionReinvocations: z.number().int().positive().optional(),
   /** Number of times this message has been re-enqueued due to server errors (5xx) */
   serverErrorRetryCount: z.number().int().optional(),
+  /** Number of times this message has been re-routed after a deployment mismatch */
+  deploymentMismatchRetryCount: z.number().int().nonnegative().optional(),
   /** Step ID for inline step execution in combined handler. If provided, the flow execution
    * will jump directly to execute the step with the given ID before doing an event replay. */
   stepId: z.string().optional(),
@@ -319,6 +321,13 @@ export interface QueueOptions {
 
 export interface Queue {
   getDeploymentId(): Promise<string>;
+
+  /**
+   * Returns true only when a queue error definitively means the explicitly
+   * targeted deployment cannot receive the message. Unknown and transient
+   * errors must return false so the current delivery can be retried safely.
+   */
+  isDeploymentUnavailableError?(error: unknown): boolean;
 
   /**
    * Enqueues a message to the specified queue.
