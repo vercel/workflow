@@ -14,24 +14,122 @@
 
 </div>
 
-## Getting Started
+[Workflow SDK](https://workflow-sdk.dev) is an open-source framework for durable
+execution in TypeScript and JavaScript. Add simple directives to ordinary async
+functions to get state persistence, automatic retries, suspension and
+resumption, and end-to-end observability without managing queues or adopting a
+new programming model.
 
-The **Workflow SDK** lets you easily add durability, reliability, and observability to async JavaScript. Build apps and AI agents that can suspend, resume, and maintain state with ease.
+## Async functions are the authoring interface
 
-Visit [https://workflow-sdk.dev](https://workflow-sdk.dev) to view the full documentation.
+A workflow is plain TypeScript:
+
+```ts
+import { sleep } from 'workflow';
+
+type User = {
+  id: string;
+  email: string;
+};
+
+export async function onboardUser(email: string) {
+  'use workflow';
+
+  const user = await createUser(email);
+  await sendEmail(user, 'Welcome!');
+  await sleep('1 day');
+  await sendEmail(user, 'Here is what to do next.');
+
+  return { userId: user.id };
+}
+
+async function createUser(email: string): Promise<User> {
+  'use step';
+
+  return { id: crypto.randomUUID(), email };
+}
+
+async function sendEmail(user: User, message: string) {
+  'use step';
+
+  console.log(`Sending "${message}" to ${user.email}`);
+}
+```
+
+Workflow functions orchestrate deterministic control flow. Step functions do
+the actual work with full runtime and npm package access, and retry
+automatically when they fail. Completed step results are persisted to an event
+log, so a workflow can resume after a restart without repeating completed side
+effects. While waiting on steps, timers, or external events, it can suspend
+without consuming compute.
+
+Read [Workflows and Steps](https://workflow-sdk.dev/docs/foundations/workflows-and-steps)
+for the execution model and core concepts.
+
+## Quick start
+
+Install the SDK in an existing project:
+
+```bash
+npm install workflow
+```
+
+Configure the integration for your framework. For example, with Next.js:
+
+```ts
+// next.config.ts
+import { withWorkflow } from 'workflow/next';
+
+export default withWorkflow({});
+```
+
+Then start a workflow from an API route, Server Action, or other server-side
+code:
+
+```ts
+import { start } from 'workflow/api';
+import { onboardUser } from './workflows/onboard-user';
+
+await start(onboardUser, ['hello@example.com']);
+```
+
+Run your app normally, then open the local observability UI:
+
+```bash
+npm run dev
+npx workflow web
+```
+
+Choose a framework in the
+[getting-started guides](https://workflow-sdk.dev/docs/getting-started) for the
+complete setup.
+
+> [!NOTE]
+> The `workflow` package includes its full documentation, so coding agents can
+> read version-matched guides locally from `node_modules/workflow/docs`.
+
+## Run anywhere
+
+During development, Workflow SDK automatically uses its local backend with no
+backend configuration. Deploy to Vercel for managed storage, queuing, scaling,
+and observability, or self-host with the Postgres backend or a custom
+[World](https://workflow-sdk.dev/worlds).
 
 ## Community
 
-The Workflow SDK community can be found on [GitHub Discussions](https://github.com/vercel/workflow/discussions), where you can ask questions, voice ideas, and share your projects with other people.
+The Workflow SDK community lives on
+[GitHub Discussions](https://github.com/vercel/workflow/discussions), where you
+can ask questions, share ideas, and show what you have built.
 
 ## Contributing
 
-Contributions to Workflow SDK are welcome and highly appreciated. Please use GitHub [issues](https://github.com/vercel/workflow/issues) and [discussions](https://github.com/vercel/workflow/discussions) to collaborate with the team and wider community.
-
----
+Contributions are welcome. Use
+[issues](https://github.com/vercel/workflow/issues) and
+[discussions](https://github.com/vercel/workflow/discussions) to collaborate
+with the team and wider community.
 
 ## Security
 
-If you believe you have found a security vulnerability in Workflow SDK, we encourage you to **_responsibly disclose this and not open a public issue_**.
-
-To participate in our Open Source Software Bug Bounty program, please email [responsible.disclosure@vercel.com](mailto:responsible.disclosure@vercel.com). We will add you to the program and provide further instructions for submitting your report.
+Please do not open public issues for security vulnerabilities. Report them
+responsibly to
+[responsible.disclosure@vercel.com](mailto:responsible.disclosure@vercel.com).
