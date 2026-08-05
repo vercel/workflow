@@ -442,7 +442,7 @@ export interface World extends Queue, Streamer, Storage {
 
   /**
    * Absolute wall-clock time when the current function invocation will be
-   * terminated by the hosting platform, if known.
+   * terminated by the hosting platform, if known. Used to optimize runtime behavior.
    */
   getRuntimeDeadline?(): Promise<Date | undefined>;
 
