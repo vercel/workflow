@@ -1945,6 +1945,16 @@ export function workflowEntrypoint(
                           maxEventsLimit,
                           namespace,
                           nextTraceCarrier,
+                          // Inline-step ownership plumbing: redeliveries of
+                          // this message drive crash recovery for steps an
+                          // earlier invocation claimed inline (see the
+                          // backstop pass in the entrypoint's loop), and
+                          // the message id is stamped as `ownerMessageId`
+                          // on inline lazy step claims so wake replays
+                          // defer to the in-flight body instead of
+                          // requeueing the step.
+                          deliveryAttempt: metadata.attempt,
+                          ownerMessageId: metadata.messageId,
                         });
                         if (quickjsResult?.timeoutSeconds !== undefined) {
                           // Use `reinvoke` rather than returning
