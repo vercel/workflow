@@ -867,6 +867,22 @@ export interface CreateEventParams {
    * across the SDK and the backend.
    */
   skipPreload?: boolean;
+  /**
+   * Replay-log preload opt-in (advisory) — the `hook_received` dual of
+   * {@link skipPreload}. Set only by the queue consumer's idempotent
+   * `hook_received` re-ensure on a lazy hook resume (alongside
+   * {@link resumeId} + {@link resumePayloadDigest}). A World MAY return the
+   * run's current replay event log with the event creation
+   * (`events`/`cursor`/`hasMore`, plus `run` and `maxEvents`) so the runtime
+   * can initialize replay from this one request and skip both the
+   * `run_started` write and the initial `events.list`. A World that ignores
+   * it returns its normal {@link EventResult} and remains fully correct: the
+   * runtime observes that no usable replay preload came back and falls back
+   * to the existing `run_started` setup. Only meaningful for `hook_received`;
+   * ignored for other event types. Producer-side `resumeHook()` must not set
+   * it.
+   */
+  preloadEvents?: true;
 }
 
 /**
@@ -887,7 +903,7 @@ export interface EventResult {
   /** The wait entity (for wait_created/wait_completed events) */
   wait?: import('./waits.js').Wait;
   /**
-   * Events with data resolved. Two producers populate this:
+   * Events with data resolved. Three producers populate this:
    *
    * - On a `run_started` response: all events up to this point, so the
    *   runtime can skip the initial `events.list` call and reduce TTFB.
@@ -895,6 +911,11 @@ export interface EventResult {
    *   the caller passed {@link CreateEventParams.sinceCursor}: the delta
    *   of events written strictly after that cursor, so the inline loop
    *   can skip the per-step incremental `events.list` round-trip.
+   * - On a `hook_received` response when the caller passed
+   *   {@link CreateEventParams.preloadEvents}: the run's current replay
+   *   log through the canonical `hook_received`, so the lazy hook queue
+   *   consumer can skip both the `run_started` write and the initial
+   *   `events.list`.
    */
   events?: Event[];
   /** Pagination cursor for `events`, matching events.list semantics. */

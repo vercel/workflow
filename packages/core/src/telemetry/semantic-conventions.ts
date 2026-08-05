@@ -395,6 +395,26 @@ export const HookResilientResumeMaterialized = SemanticConvention<boolean>(
   'workflow.hook.resilient_resume_materialized'
 );
 
+/**
+ * Consumer-side signal (on the workflow execution span) of how a lazy hook
+ * resume initialized its replay state:
+ *
+ * - `hook_received_stream` — the hoisted `hook_received` write returned a
+ *   usable replay preload (run + complete event log), so the invocation
+ *   skipped both the `run_started` write and the initial `events.list`.
+ * - `hook_received_fallback` — the hoisted write succeeded but returned no
+ *   usable preload (a CBOR response from an older server, a World that
+ *   ignored the opt-in, a bounded `hasMore` page, or a preload that failed
+ *   validation); the invocation fell back to the `run_started` setup without
+ *   re-posting the hook.
+ *
+ * Absent on legacy hook deliveries (no resumeId/digest) and on every other
+ * delivery kind, which take the `run_started` setup unconditionally.
+ */
+export const HookResumeSetupSource = SemanticConvention<string>(
+  'workflow.resume_setup_source'
+);
+
 // Webhook attributes
 
 /** Number of webhook handlers triggered */

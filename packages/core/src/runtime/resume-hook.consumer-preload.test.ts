@@ -1,19 +1,22 @@
 /**
- * Consumer-side coverage for lazy hook resume Perf (Option A): the queue
- * consumer that receives a `hookInput` must idempotently ensure the
- * `hook_received` event before replay — EXCEPT when the producer's concurrent
- * direct write already landed in the `run_started` preload, in which case the
- * re-ensure round trip is pure overhead and is skipped.
+ * Consumer-side coverage for lazy hook resume: the queue consumer that
+ * receives a `hookInput` hoists its idempotent `hook_received` re-ensure
+ * above `run_started` and asks the World to return the current replay log
+ * with the write (`preloadEvents`). A usable preload initializes the whole
+ * invocation from that one call (no `run_started` write, no `events.list`);
+ * anything else — including a bounded `hasMore` page, which this path has no
+ * continuation machinery for — falls back to the generic `run_started` setup
+ * without posting the hook a second time.
  *
  * Drives the real `workflowEntrypoint` replay loop (not just the helpers) so
- * the skip / re-ensure decision, the `eventData` reconstruction from
- * `hookInput`, and the in-order splice into the preloaded log are all exercised
- * end to end. Uses real ULID event IDs and a seeded VM context so the derived
- * hook correlation id matches what replay computes — modeled on
- * precondition-guard-replay.test.ts.
+ * the fast path, the fallback, the preload validation, and the error
+ * classification are all exercised end to end. Uses real ULID event IDs and a
+ * seeded VM context so the derived hook correlation id matches what replay
+ * computes — modeled on precondition-guard-replay.test.ts.
  */
 import { EntityConflictError, HookNotFoundError } from '@workflow/errors';
 import {
+  type CreateEventParams,
   type CreateEventRequest,
   type Event,
   SPEC_VERSION_CURRENT,
@@ -53,21 +56,52 @@ const HOOK_WORKFLOW = `
   ${getWorkflowTransformCode('workflow')}
 `;
 
+/**
+ * What the fake World returns for the consumer's hoisted `hook_received`
+ * create (the one carrying `preloadEvents: true`):
+ *
+ * - 'event-only' — the plain materialized result. Models an older server
+ *   (CBOR response) or a World that ignores `preloadEvents`.
+ * - 'complete' — run + the complete replay log + cursor, hasMore: false.
+ * - 'partial' — same but hasMore: true (bounded stream); the runtime must
+ *   NOT trust it and must fall back to the run_started setup.
+ * - 'missing-run' — the log without a reconstructed run entity.
+ * - 'missing-resume' — run + log whose hook_received lacks the resumeId.
+ * - 'missing-max-events' — complete preload without the event ceiling; the
+ *   runtime must not run with limit enforcement disabled.
+ */
+type HookPreloadMode =
+  | 'event-only'
+  | 'complete'
+  | 'partial'
+  | 'missing-run'
+  | 'missing-resume'
+  | 'missing-max-events';
+
 async function runResumeConsumerScenario(options: {
   /**
-   * When true, seed the run_started preload with the producer's concurrent
-   * hook_received write (carrying the resumeId) so the consumer can skip its
-   * re-ensure. When false, the preload lacks it and the consumer must
-   * re-ensure + splice.
+   * When true, seed the durable log with the producer's concurrent
+   * hook_received write (carrying the resumeId) before the delivery runs —
+   * the producer won the resume claim, so the consumer's hoisted write
+   * converges on that canonical event instead of creating one.
    */
   preloadHasHookReceived: boolean;
+  hookPreload?: HookPreloadMode;
   /**
-   * When set, the consumer's `hook_received` re-ensure `events.create` rejects
+   * When true, a `run_failed` committed concurrently (after the hook claim
+   * won its TOCTOU race) rides in the durable log — and therefore in the
+   * preload. The fast path must consume the delivery before any engine
+   * dispatch instead of replaying against a terminal run.
+   */
+  logHasTerminalEvent?: boolean;
+  /**
+   * When set, the consumer's hoisted `hook_received` `events.create` rejects
    * with this error, exercising the consumer's terminal-vs-transient error
    * classification (consume the message vs rethrow for redelivery).
    */
   reEnsureRejection?: Error;
 }) {
+  const hookPreload = options.hookPreload ?? 'event-only';
   const runId = 'wrun_resume_consumer_preload';
   const workflowName = 'workflow';
   const deploymentId = 'dpl_resume_consumer_preload';
@@ -117,8 +151,8 @@ async function runResumeConsumerScenario(options: {
     } as Event;
   };
 
-  // Bytes the queue message carries in `hookInput.payload` (and, on the skip
-  // path, what the preloaded hook_received also carries).
+  // Bytes the queue message carries in `hookInput.payload` (and what the
+  // canonical hook_received event carries in its eventData).
   const payloadBytes = await dehydrateStepReturnValue(
     { value: 'hook-wins' },
     runId,
@@ -127,7 +161,7 @@ async function runResumeConsumerScenario(options: {
 
   // The event log as it exists on this resume delivery: the hook was created
   // on a prior delivery, so hook_created is always present.
-  const preloadEvents: Event[] = [
+  const durableEvents: Event[] = [
     event({
       eventType: 'run_created',
       specVersion: SPEC_VERSION_CURRENT,
@@ -143,8 +177,8 @@ async function runResumeConsumerScenario(options: {
   ];
   if (options.preloadHasHookReceived) {
     // The producer's concurrent direct write already landed — it carries the
-    // persisted resumeId that the consumer's skip check keys on.
-    preloadEvents.push({
+    // persisted resumeId, so the consumer's hoisted write converges on it.
+    durableEvents.push({
       ...event({
         eventType: 'hook_received',
         specVersion: SPEC_VERSION_CURRENT,
@@ -154,9 +188,18 @@ async function runResumeConsumerScenario(options: {
       resumeId,
     } as Event);
   }
+  if (options.logHasTerminalEvent) {
+    durableEvents.push(
+      event({
+        eventType: 'run_failed',
+        specVersion: SPEC_VERSION_CURRENT,
+        eventData: { error: 'concurrent failure' },
+      } as CreateEventRequest)
+    );
+  }
 
-  const durableEvents: Event[] = [...preloadEvents];
   const createdEvents: CreateEventRequest[] = [];
+  const createdParams: Array<CreateEventParams | undefined> = [];
 
   const listEvents = vi.fn(async () => ({
     data: [...durableEvents],
@@ -165,24 +208,74 @@ async function runResumeConsumerScenario(options: {
   }));
 
   const createEvent = vi.fn(
-    async (_runId: string, request: CreateEventRequest) => {
+    async (
+      _runId: string,
+      request: CreateEventRequest,
+      params?: CreateEventParams
+    ) => {
       createdEvents.push(request);
+      createdParams.push(params);
       if (request.eventType === 'run_started') {
+        // Like the real server, the duplicate run_started preload reads the
+        // CURRENT log — including a hook_received the consumer's hoisted
+        // write committed moments earlier.
         return {
           run: workflowRun,
-          events: [...preloadEvents],
-          cursor: preloadEvents.at(-1)?.eventId ?? null,
+          events: [...durableEvents],
+          cursor: durableEvents.at(-1)?.eventId ?? null,
           hasMore: false,
         };
       }
-      // Simulate the re-ensure failing (terminal or transient) so the
-      // consumer's error classification runs. Recorded in `createdEvents`
-      // above, so the attempt is still observable to assertions.
-      if (
-        request.eventType === 'hook_received' &&
-        options.reEnsureRejection !== undefined
-      ) {
-        throw options.reEnsureRejection;
+      if (request.eventType === 'hook_received') {
+        // Simulate the write failing (terminal or transient) so the
+        // consumer's error classification runs. Recorded in `createdEvents`
+        // above, so the attempt is still observable to assertions.
+        if (options.reEnsureRejection !== undefined) {
+          throw options.reEnsureRejection;
+        }
+        // Converge on the producer's canonical event when it exists
+        // (the (runId, resumeId) claim), otherwise persist ours with the
+        // resumeId stamped on it — like the real server does.
+        let canonical = durableEvents.find(
+          (e) => e.eventType === 'hook_received' && e.resumeId === resumeId
+        );
+        if (!canonical) {
+          canonical = {
+            ...event(request),
+            resumeId: params?.resumeId,
+          } as Event;
+          durableEvents.push(canonical);
+        }
+        if (params?.preloadEvents !== true || hookPreload === 'event-only') {
+          return { event: canonical };
+        }
+        const page = {
+          events: [...durableEvents],
+          cursor: durableEvents.at(-1)?.eventId ?? null,
+          hasMore: hookPreload === 'partial',
+          ...(hookPreload === 'missing-max-events'
+            ? {}
+            : { maxEvents: 25_000 }),
+        };
+        if (hookPreload === 'missing-run') {
+          return { event: canonical, ...page };
+        }
+        if (hookPreload === 'missing-resume') {
+          return {
+            event: canonical,
+            run: workflowRun,
+            ...page,
+            // The streamed log's hook_received lost its resumeId (a server
+            // that doesn't emit it on the wire): the consumer must not trust
+            // the preload as replay input.
+            events: page.events.map((e) =>
+              e.eventType === 'hook_received'
+                ? ({ ...e, resumeId: undefined } as Event)
+                : e
+            ),
+          };
+        }
+        return { event: canonical, run: workflowRun, ...page };
       }
       const created = event(request);
       durableEvents.push(created);
@@ -211,9 +304,9 @@ async function runResumeConsumerScenario(options: {
   expect(capturedHandler).toBeDefined();
 
   // A continuation delivery carrying the resume's hookInput (no runInput, so
-  // turbo is off and the hookInput re-ensure branch runs). Capture whether the
-  // handler rethrew: on the transient re-ensure failure it must reject so the
-  // queue redelivers; on a terminal one it resolves (consumes the message).
+  // turbo is off and the lazy hook fast path runs). Capture whether the
+  // handler rethrew: on a transient failure it must reject so the queue
+  // redelivers; on a terminal one it resolves (consumes the message).
   let handlerError: unknown;
   try {
     await capturedHandler?.(
@@ -240,12 +333,20 @@ async function runResumeConsumerScenario(options: {
   const hookReceivedCreates = createdEvents.filter(
     (e) => e.eventType === 'hook_received'
   );
+  const hookReceivedParams = createdParams.filter(
+    (_, i) => createdEvents[i]?.eventType === 'hook_received'
+  );
+  const runStartedCreates = createdEvents.filter(
+    (e) => e.eventType === 'run_started'
+  );
   const runCompletedCreates = createdEvents.filter(
     (e) => e.eventType === 'run_completed'
   );
 
   return {
     hookReceivedCreates,
+    hookReceivedParams,
+    runStartedCreates,
     runCompletedCreates,
     listEvents,
     createEvent,
@@ -255,42 +356,204 @@ async function runResumeConsumerScenario(options: {
 
 pinSharedCorrelationIds();
 
-describe('lazy hook resume consumer preload (Perf Option A)', () => {
+describe('lazy hook resume consumer preload', () => {
   afterEach(() => {
     setWorld(undefined);
     vi.clearAllMocks();
   });
 
-  it('skips the re-ensure when the run_started preload already carries the matching resumeId', async () => {
-    const { hookReceivedCreates, runCompletedCreates, listEvents } =
-      await runResumeConsumerScenario({ preloadHasHookReceived: true });
+  it('initializes the invocation from a complete hook_received preload: no run_started, no events.list', async () => {
+    const {
+      hookReceivedCreates,
+      hookReceivedParams,
+      runStartedCreates,
+      runCompletedCreates,
+      listEvents,
+      handlerError,
+    } = await runResumeConsumerScenario({
+      preloadHasHookReceived: false,
+      hookPreload: 'complete',
+    });
 
-    // The producer's concurrent write is already in the preloaded log, so the
-    // consumer must NOT issue its own hook_received create.
-    expect(hookReceivedCreates).toHaveLength(0);
-    // Replay still observed the hook and completed the run.
-    expect(runCompletedCreates).toHaveLength(1);
-    // The skip path consumes the preload as-is: no fresh events.list.
-    expect(listEvents).not.toHaveBeenCalled();
-  });
-
-  it('re-ensures and splices the canonical hook_received without a fresh events.list when the preload lacks it', async () => {
-    const { hookReceivedCreates, runCompletedCreates, listEvents } =
-      await runResumeConsumerScenario({ preloadHasHookReceived: false });
-
-    // The producer's write had not landed, so the consumer re-ensures exactly
-    // one hook_received event...
+    expect(handlerError).toBeUndefined();
+    // Exactly one consumer-side HTTP setup request: the hoisted hook_received
+    // with the replay preload opt-in.
     expect(hookReceivedCreates).toHaveLength(1);
-    // ...and replay completes off the spliced-in event.
-    expect(runCompletedCreates).toHaveLength(1);
-    // The canonical event was spliced into the preloaded log in-order, so no
-    // fresh events.list round trip was needed to observe it.
+    expect(hookReceivedParams[0]?.preloadEvents).toBe(true);
+    expect(hookReceivedParams[0]?.resumeId).toBe('resume-consumer-1');
+    expect(hookReceivedParams[0]?.resumePayloadDigest).toBe('c'.repeat(64));
+    // The preload replaced the entire generic setup.
+    expect(runStartedCreates).toHaveLength(0);
     expect(listEvents).not.toHaveBeenCalled();
+    // Replay completed off the preloaded log.
+    expect(runCompletedCreates).toHaveLength(1);
   });
 
-  it('consumes the message (no rethrow, no replay) when the re-ensure hits a terminal run', async () => {
+  it('initializes replay from the producer-won canonical event in the preload', async () => {
+    const {
+      hookReceivedCreates,
+      runStartedCreates,
+      runCompletedCreates,
+      listEvents,
+      handlerError,
+    } = await runResumeConsumerScenario({
+      preloadHasHookReceived: true,
+      hookPreload: 'complete',
+    });
+
+    expect(handlerError).toBeUndefined();
+    // The hoisted write converged on the producer's event (no second event
+    // was persisted — the fake's durable log kept a single hook_received) and
+    // its preload initialized replay.
+    expect(hookReceivedCreates).toHaveLength(1);
+    expect(runStartedCreates).toHaveLength(0);
+    expect(listEvents).not.toHaveBeenCalled();
+    expect(runCompletedCreates).toHaveLength(1);
+  });
+
+  it('falls back to run_started when the preload is bounded (hasMore: true)', async () => {
+    // This path deliberately has no cursor-continuation machinery: a bounded
+    // page must not be replayed (it could be missing the log's tail), so the
+    // runtime takes the generic setup instead.
+    const {
+      hookReceivedCreates,
+      runStartedCreates,
+      runCompletedCreates,
+      handlerError,
+    } = await runResumeConsumerScenario({
+      preloadHasHookReceived: false,
+      hookPreload: 'partial',
+    });
+
+    expect(handlerError).toBeUndefined();
+    expect(hookReceivedCreates).toHaveLength(1);
+    expect(runStartedCreates).toHaveLength(1);
+    expect(runCompletedCreates).toHaveLength(1);
+  });
+
+  it('falls back to run_started without re-posting the hook when the World returns no preload', async () => {
+    const {
+      hookReceivedCreates,
+      hookReceivedParams,
+      runStartedCreates,
+      runCompletedCreates,
+      listEvents,
+      handlerError,
+    } = await runResumeConsumerScenario({
+      preloadHasHookReceived: false,
+      hookPreload: 'event-only',
+    });
+
+    expect(handlerError).toBeUndefined();
+    // The write succeeded (older server / CBOR response) — never posted twice.
+    expect(hookReceivedCreates).toHaveLength(1);
+    expect(hookReceivedParams[0]?.preloadEvents).toBe(true);
+    // Generic setup ran; its preload was read after the hook write committed,
+    // so the canonical event is already in the log — no events.list, no splice.
+    expect(runStartedCreates).toHaveLength(1);
+    expect(listEvents).not.toHaveBeenCalled();
+    expect(runCompletedCreates).toHaveLength(1);
+  });
+
+  it('falls back to run_started when the producer won and the World returns no preload', async () => {
+    const { hookReceivedCreates, runStartedCreates, runCompletedCreates } =
+      await runResumeConsumerScenario({
+        preloadHasHookReceived: true,
+        hookPreload: 'event-only',
+      });
+
+    // The hoisted write converges on the producer's canonical event — exactly
+    // one write despite both sides attempting it.
+    expect(hookReceivedCreates).toHaveLength(1);
+    expect(runStartedCreates).toHaveLength(1);
+    expect(runCompletedCreates).toHaveLength(1);
+  });
+
+  it('uses the safe fallback when the preload lacks a reconstructed run', async () => {
+    const {
+      hookReceivedCreates,
+      runStartedCreates,
+      runCompletedCreates,
+      handlerError,
+    } = await runResumeConsumerScenario({
+      preloadHasHookReceived: false,
+      hookPreload: 'missing-run',
+    });
+
+    expect(handlerError).toBeUndefined();
+    expect(hookReceivedCreates).toHaveLength(1);
+    // Unusable preload → generic run_started setup, no second hook post.
+    expect(runStartedCreates).toHaveLength(1);
+    expect(runCompletedCreates).toHaveLength(1);
+  });
+
+  it('consumes the delivery when the complete preload contains a terminal run event', async () => {
+    // The hook claim won its race, but a run_failed committed concurrently
+    // and rides in the streamed log. The reconstructed run always reads
+    // 'running', and QuickJS dispatches before the node replay loop's
+    // terminal check — so the fast path itself must consume the delivery
+    // before any engine runs.
+    const {
+      hookReceivedCreates,
+      runStartedCreates,
+      runCompletedCreates,
+      listEvents,
+      handlerError,
+    } = await runResumeConsumerScenario({
+      preloadHasHookReceived: false,
+      hookPreload: 'complete',
+      logHasTerminalEvent: true,
+    });
+
+    // The write converged and the delivery was consumed (no rethrow)...
+    expect(handlerError).toBeUndefined();
+    expect(hookReceivedCreates).toHaveLength(1);
+    // ...without falling back to run_started, replaying, or completing.
+    expect(runStartedCreates).toHaveLength(0);
+    expect(listEvents).not.toHaveBeenCalled();
+    expect(runCompletedCreates).toHaveLength(0);
+  });
+
+  it('falls back to run_started when the preload lacks the event ceiling (maxEvents)', async () => {
+    // The preload response plays run_started's role, so a missing/invalid
+    // x-wf-max-events would leave event-limit enforcement disabled for the
+    // whole run. Require it, and take the generic setup when absent.
+    const {
+      hookReceivedCreates,
+      runStartedCreates,
+      runCompletedCreates,
+      handlerError,
+    } = await runResumeConsumerScenario({
+      preloadHasHookReceived: false,
+      hookPreload: 'missing-max-events',
+    });
+
+    expect(handlerError).toBeUndefined();
+    expect(hookReceivedCreates).toHaveLength(1);
+    expect(runStartedCreates).toHaveLength(1);
+    expect(runCompletedCreates).toHaveLength(1);
+  });
+
+  it('uses the safe fallback when the preload lacks the matching resumeId', async () => {
+    const {
+      hookReceivedCreates,
+      runStartedCreates,
+      runCompletedCreates,
+      handlerError,
+    } = await runResumeConsumerScenario({
+      preloadHasHookReceived: false,
+      hookPreload: 'missing-resume',
+    });
+
+    expect(handlerError).toBeUndefined();
+    expect(hookReceivedCreates).toHaveLength(1);
+    expect(runStartedCreates).toHaveLength(1);
+    expect(runCompletedCreates).toHaveLength(1);
+  });
+
+  it('consumes the message (no rethrow, no replay) when the hoisted write hits a terminal run', async () => {
     // The run went terminal between the producer's dispatch and this delivery,
-    // so the re-ensure rejects with HookNotFoundError. There is nothing left to
+    // so the write rejects with HookNotFoundError. There is nothing left to
     // resume: the consumer must consume the message (resolve) and NOT replay —
     // acking a terminal delivery is safe because the run is already ended.
     const { hookReceivedCreates, runCompletedCreates, handlerError } =
@@ -299,7 +562,7 @@ describe('lazy hook resume consumer preload (Perf Option A)', () => {
         reEnsureRejection: new HookNotFoundError('resume-consumer-token'),
       });
 
-    // The re-ensure was attempted...
+    // The write was attempted...
     expect(hookReceivedCreates).toHaveLength(1);
     // ...it rejected terminally, so the handler resolved without rethrowing...
     expect(handlerError).toBeUndefined();
@@ -307,7 +570,7 @@ describe('lazy hook resume consumer preload (Perf Option A)', () => {
     expect(runCompletedCreates).toHaveLength(0);
   });
 
-  it('rethrows for queue redelivery when the re-ensure hits a transient conflict', async () => {
+  it('rethrows for queue redelivery when the hoisted write hits a transient conflict', async () => {
     // The (runId, resumeId) constraint exists but the matching event is not yet
     // observable — the producer's parallel write is still in flight, or a
     // redrive raced the claim. This is transient: the consumer must rethrow so
@@ -319,11 +582,29 @@ describe('lazy hook resume consumer preload (Perf Option A)', () => {
         reEnsureRejection: new EntityConflictError('resumeId claim in flight'),
       });
 
-    // The re-ensure was attempted...
+    // The write was attempted...
     expect(hookReceivedCreates).toHaveLength(1);
     // ...and rethrew so VQS redelivers the message.
     expect(handlerError).toBeInstanceOf(EntityConflictError);
     // Replay never proceeded to complete the run on this failed delivery.
+    expect(runCompletedCreates).toHaveLength(0);
+  });
+
+  it('rethrows for queue redelivery when the preload stream is interrupted', async () => {
+    // world-vercel surfaces a frame stream that ends without the _end
+    // sentinel as a plain error. The write may have committed, but the
+    // (runId, resumeId) claim makes the retry idempotent — rethrow and let
+    // the queue redeliver.
+    const truncated = new Error(
+      'v4 createEvent: frame stream ended without the end-of-stream sentinel'
+    );
+    const { runCompletedCreates, handlerError } =
+      await runResumeConsumerScenario({
+        preloadHasHookReceived: false,
+        reEnsureRejection: truncated,
+      });
+
+    expect(handlerError).toBe(truncated);
     expect(runCompletedCreates).toHaveLength(0);
   });
 });
