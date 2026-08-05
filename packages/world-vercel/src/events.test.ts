@@ -1223,3 +1223,66 @@ describe('getWorkflowRunEvents hasMore mapping', () => {
     expect(result.cursor).toBe('cursor-2');
   });
 });
+
+/**
+ * A correlation id names a step, hook or wait within *its* run: every
+ * slot-numbered run numbers its own steps, so `step_…001` belongs to all of
+ * them. The run id goes out on the request so the backend can answer for one
+ * run, and the page is filtered again on arrival because a backend predating
+ * that parameter answers across runs.
+ */
+describe('getWorkflowRunEvents by correlation id is scoped to the run', () => {
+  it('sends runId and drops any foreign-run event a legacy backend returns', async () => {
+    const agent = mockAgent();
+    const event = (runId: string, eventId: string) =>
+      encodeFrame(
+        {
+          eventId,
+          runId,
+          eventType: 'step_created',
+          correlationId: 'step_001',
+          createdAt: '2026-06-10T00:00:00.000Z',
+          eventData: {},
+        },
+        new Uint8Array(0)
+      );
+    // What the pre-scope backend returns for this correlation id: the step of
+    // the run we asked about plus the identically numbered step of another.
+    const frames = Buffer.concat([
+      event('wrun_1', 'evnt_1'),
+      event('wrun_2', 'evnt_2'),
+      encodeFrame(
+        { _end: 1, next: 'eid:evnt_2', hasMore: true },
+        new Uint8Array(0)
+      ),
+    ]);
+
+    agent
+      .get(ORIGIN)
+      .intercept({
+        path: '/api/v4/events',
+        method: 'GET',
+        query: {
+          correlationId: 'step_001',
+          runId: 'wrun_1',
+          remoteRefBehavior: 'resolve',
+        },
+      })
+      .reply(200, frames, {
+        headers: { 'content-type': V4_FRAME_CONTENT_TYPE },
+      });
+
+    const result = await getWorkflowRunEvents(
+      { correlationId: 'step_001', runId: 'wrun_1' },
+      { token: 'test-token', dispatcher: agent }
+    );
+
+    // The interceptor only fires if runId reached the query string.
+    agent.assertNoPendingInterceptors();
+    expect(result.data.map((e) => e.eventId)).toEqual(['evnt_1']);
+    // Pagination stays the backend's: a page that filters down to nothing is
+    // still followed by the next one.
+    expect(result.hasMore).toBe(true);
+    expect(result.cursor).toBe('eid:evnt_2');
+  });
+});

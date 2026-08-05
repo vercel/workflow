@@ -551,7 +551,12 @@ export async function getWorkflowRunEvents(
   };
 
   const result = await ('correlationId' in params
-    ? getEventsByCorrelationIdV4(params.correlationId, wirePagination, config)
+    ? getEventsByCorrelationIdV4(
+        params.correlationId,
+        params.runId,
+        wirePagination,
+        config
+      )
     : getWorkflowRunEventsV4(params.runId, wirePagination, config));
 
   const events = result.events.map((listed) =>
@@ -560,9 +565,11 @@ export async function getWorkflowRunEvents(
 
   // A correlation id is unique per run, not globally — a slot-numbered run
   // numbers its own steps, so `step_…001` names the first step of every such
-  // run. The backend selects by correlation id alone, so the run scope is
-  // applied here. `hasMore`/`cursor` stay the backend's, so a page that
-  // filters down to nothing is still followed by the next one.
+  // run. The run id goes out on the request above, and a backend that
+  // understands it answers for that run alone. One that predates the parameter
+  // selects by correlation id and spans runs, so the scope is re-applied here.
+  // `hasMore`/`cursor` stay the backend's, so a page that filters down to
+  // nothing is still followed by the next one.
   const runScoped =
     'correlationId' in params
       ? events.filter((event) => event.runId === params.runId)
