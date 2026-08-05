@@ -24,7 +24,6 @@ import {
   ROOT_RUN_ID_ATTRIBUTE,
   type RunInput,
   resolveQueueNamespace,
-  type SerializedData,
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_SUPPORTS_COMPRESSION,
   type WorkflowInvokePayload,
@@ -1233,7 +1232,11 @@ export function workflowEntrypoint(
                               eventData: {
                                 stepName: incomingStepName,
                                 workflowName,
-                                input: stepInput.input as SerializedData,
+                                // Typed Uint8Array by StepDispatchInputSchema:
+                                // a non-binary (mangled) payload fails the
+                                // message parse above and never reaches this
+                                // write.
+                                input: stepInput.input,
                               },
                             },
                             {

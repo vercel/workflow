@@ -167,8 +167,17 @@ export type RunInput = z.infer<typeof RunInputSchema>;
  * the identical bytes the producer also sent on the direct `events.create`.
  */
 export const StepDispatchInputSchema = z.object({
-  /** The serialized step input, reused verbatim from the direct write. */
-  input: z.unknown(),
+  /**
+   * The serialized step input, reused verbatim from the direct write. Always
+   * binary: producers only attach `stepInput` when the dehydrated input is a
+   * `Uint8Array` and the run's queue transport preserves bytes (CBOR).
+   * Validated here so a malformed or transport-mangled payload fails the
+   * message parse instead of being silently written into a `step_created` as
+   * non-binary data. `Buffer` is a `Uint8Array` subclass and passes.
+   */
+  input: z.custom<Uint8Array>((value) => value instanceof Uint8Array, {
+    message: 'stepInput.input must be a Uint8Array',
+  }),
 });
 export type StepDispatchInput = z.infer<typeof StepDispatchInputSchema>;
 
