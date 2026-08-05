@@ -10,7 +10,7 @@ related:
   - /docs/api-reference/workflow-errors/step-not-registered-error
 ---
 
-This error occurs when the Workflow runtime tries to execute a step function that is not registered in the current deployment. When this happens, the step fails (like a `FatalError`) and control is passed back to the workflow function, which can optionally handle the failure.
+This error occurs when the Workflow runtime tries to execute a step function that is not registered in the current deployment. When this happens, the step fails (like a `FatalError`) and control is passed back to the workflow function, which can optionally handle the failure. The runtime surfaces this as a [`StepNotRegisteredError`](/docs/api-reference/workflow-errors/step-not-registered-error).
 
 ## Error Message
 
