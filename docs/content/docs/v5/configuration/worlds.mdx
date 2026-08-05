@@ -303,3 +303,10 @@ When enabled (the default), a suspension's eager `step_created` and `wait_create
 - Default: `ws`
 - Ships workflow run events to the Vercel World over a WebSocket instead of one HTTP request each. Set to exactly `http` to opt out; any other value, including unset or empty, uses the WebSocket.
 - Ignored when the World is configured with `projectConfig` and routes through the `api-workflow` proxy: that endpoint is an HTTP-only REST gateway and does not forward a WebSocket upgrade, so events stay on HTTP.
+
+### `WORKFLOW_STREAMS_TRANSPORT`
+
+- Factory option: none
+- CLI flag: none
+- Default: `http`
+- Experimental. Set to `ws` to write and close streams over a stream-scoped WebSocket instead of HTTP. Reads remain on HTTP.

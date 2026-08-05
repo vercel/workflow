@@ -27,6 +27,7 @@ import {
   type HttpConfig,
   makeRequest,
 } from './utils.js';
+import { isWsStreamsTransportEnabled } from './ws-transport-enabled.js';
 
 /**
  * Maximum number of chunks per request, matching the server-side
@@ -39,7 +40,7 @@ export const MAX_CHUNKS_PER_REQUEST = 1000;
  * `WORKFLOW_MAX_CHUNKS_PER_REQUEST`. Lower it (paired with the server's
  * `MAX_CHUNKS_PER_BATCH` override) to exercise the batch-splitting path.
  */
-const getMaxChunksPerRequest = (): number =>
+export const getMaxChunksPerRequest = (): number =>
   envNumber('WORKFLOW_MAX_CHUNKS_PER_REQUEST', MAX_CHUNKS_PER_REQUEST, {
     integer: true,
     min: 1,
@@ -201,6 +202,89 @@ const StreamChunksResponseSchema = z.object({
   done: z.boolean(),
 });
 
+async function writeStreamOverHttp(
+  runId: string,
+  name: string,
+  chunk: string | Uint8Array,
+  config?: APIConfig
+): Promise<void> {
+  const httpConfig = await getHttpConfig(config);
+  const url = getStreamUrl(name, runId, httpConfig);
+  const response = await instrumentedFetch({
+    method: 'PUT',
+    url: url.toString(),
+    body: chunk,
+    headers: httpConfig.headers,
+    dispatcher: getStreamDispatcher(config),
+    timeoutMs: null,
+    logLabel: url.pathname,
+    spanName: 'workflow.stream.write',
+    durationAttribute: 'workflow.stream.write.chunk_rtt',
+    attributes: streamSpanAttributes({ runId, name, operation: 'write' }),
+    buildError: async (res) =>
+      createStreamRequestError('write', url, res, await res.text()),
+  });
+  await response.text();
+}
+
+async function writeMultiStreamOverHttp(
+  runId: string,
+  name: string,
+  chunks: (string | Uint8Array)[],
+  config?: APIConfig
+): Promise<void> {
+  const httpConfig = await getHttpConfig(config);
+  httpConfig.headers.set('X-Stream-Multi', 'true');
+  const maxChunksPerRequest = getMaxChunksPerRequest();
+  for (let i = 0; i < chunks.length; i += maxChunksPerRequest) {
+    const batch = chunks.slice(i, i + maxChunksPerRequest);
+    const url = getStreamUrl(name, runId, httpConfig);
+    const response = await instrumentedFetch({
+      method: 'PUT',
+      url: url.toString(),
+      body: encodeMultiChunks(batch),
+      headers: httpConfig.headers,
+      dispatcher: getStreamDispatcher(config),
+      timeoutMs: null,
+      logLabel: url.pathname,
+      spanName: 'workflow.stream.write',
+      durationAttribute: 'workflow.stream.write.chunk_rtt',
+      attributes: streamSpanAttributes({
+        runId,
+        name,
+        operation: 'write_multi',
+      }),
+      buildError: async (res) =>
+        createStreamRequestError('write', url, res, await res.text()),
+    });
+    await response.text();
+  }
+}
+
+async function closeStreamOverHttp(
+  runId: string,
+  name: string,
+  config?: APIConfig
+): Promise<void> {
+  const httpConfig = await getHttpConfig(config);
+  httpConfig.headers.set('X-Stream-Done', 'true');
+  const url = getStreamUrl(name, runId, httpConfig);
+  const response = await instrumentedFetch({
+    method: 'PUT',
+    url: url.toString(),
+    headers: httpConfig.headers,
+    dispatcher: getStreamCloseDispatcher(config),
+    timeoutMs: null,
+    logLabel: url.pathname,
+    spanName: 'workflow.stream.write',
+    durationAttribute: 'workflow.stream.write.chunk_rtt',
+    attributes: streamSpanAttributes({ runId, name, operation: 'close' }),
+    buildError: async (res) =>
+      createStreamRequestError('close', url, res, await res.text()),
+  });
+  await response.text();
+}
+
 /** Creates the HTTP-backed streamer that talks to workflow-server. */
 export function createStreamer(config?: APIConfig): Streamer {
   return {
@@ -213,28 +297,14 @@ export function createStreamer(config?: APIConfig): Streamer {
         // Await runId if it's a promise to ensure proper flushing
         const resolvedRunId = await runId;
 
-        const httpConfig = await getHttpConfig(config);
-        const url = getStreamUrl(name, resolvedRunId, httpConfig);
-        const response = await instrumentedFetch({
-          method: 'PUT',
-          url: url.toString(),
-          body: chunk,
-          headers: httpConfig.headers,
-          dispatcher: getStreamDispatcher(config),
-          timeoutMs: null,
-          logLabel: url.pathname,
-          spanName: 'workflow.stream.write',
-          durationAttribute: 'workflow.stream.write.chunk_rtt',
-          attributes: streamSpanAttributes({
-            runId: resolvedRunId,
-            name,
-            operation: 'write',
-          }),
-          buildError: async (res) =>
-            createStreamRequestError('write', url, res, await res.text()),
-        });
-        // Drain the (empty) response so undici can release the pooled connection.
-        await response.text();
+        if (isWsStreamsTransportEnabled()) {
+          const { writeStreamOverWs } = await import('./ws-streamer.js');
+          return writeStreamOverWs(resolvedRunId, name, chunk, config, () =>
+            writeStreamOverHttp(resolvedRunId, name, chunk, config)
+          );
+        }
+
+        return writeStreamOverHttp(resolvedRunId, name, chunk, config);
       },
 
       async writeMulti(
@@ -247,77 +317,32 @@ export function createStreamer(config?: APIConfig): Streamer {
         // Await runId if it's a promise to ensure proper flushing
         const resolvedRunId = await runId;
 
-        const httpConfig = await getHttpConfig(config);
-
-        // Signal to server that this is a multi-chunk batch
-        httpConfig.headers.set('X-Stream-Multi', 'true');
-
-        // Send in pages of MAX_CHUNKS_PER_REQUEST to stay within the
-        // server's per-batch limit (MAX_CHUNKS_PER_BATCH).
-        // Note: for batches spanning multiple pages, atomicity is relaxed.
-        // earlier pages may persist while a later page fails. The caller
-        // retains the full buffer on error, so chunks from successful pages
-        // will be re-sent on retry, producing duplicates. This is acceptable
-        // because the alternative (400 on all >1000 chunk flushes) is worse,
-        // and the scenario requires a network failure mid-batch.
-        const maxChunksPerRequest = getMaxChunksPerRequest();
-        for (let i = 0; i < chunks.length; i += maxChunksPerRequest) {
-          const batch = chunks.slice(i, i + maxChunksPerRequest);
-          const body = encodeMultiChunks(batch);
-          const url = getStreamUrl(name, resolvedRunId, httpConfig);
-          const response = await instrumentedFetch({
-            method: 'PUT',
-            url: url.toString(),
-            body,
-            headers: httpConfig.headers,
-            dispatcher: getStreamDispatcher(config),
-            timeoutMs: null,
-            logLabel: url.pathname,
-            spanName: 'workflow.stream.write',
-            durationAttribute: 'workflow.stream.write.chunk_rtt',
-            attributes: streamSpanAttributes({
-              runId: resolvedRunId,
-              name,
-              operation: 'write_multi',
-            }),
-            buildError: async (res) =>
-              createStreamRequestError('write', url, res, await res.text()),
-          });
-          // Drain so undici can release the pooled connection between pages.
-          await response.text();
+        if (isWsStreamsTransportEnabled()) {
+          const { writeMultiStreamOverWs } = await import('./ws-streamer.js');
+          return writeMultiStreamOverWs(
+            resolvedRunId,
+            name,
+            chunks,
+            config,
+            () => writeMultiStreamOverHttp(resolvedRunId, name, chunks, config)
+          );
         }
+
+        return writeMultiStreamOverHttp(resolvedRunId, name, chunks, config);
       },
 
       async close(runId: string | Promise<string>, name: string) {
         // Await runId if it's a promise to ensure proper flushing
         const resolvedRunId = await runId;
 
-        const httpConfig = await getHttpConfig(config);
-        httpConfig.headers.set('X-Stream-Done', 'true');
-        const url = getStreamUrl(name, resolvedRunId, httpConfig);
-        const response = await instrumentedFetch({
-          method: 'PUT',
-          url: url.toString(),
-          headers: httpConfig.headers,
-          // Close is idempotent (unlike chunk appends), so its dispatcher
-          // retries 5xx, as required by the server's close-barrier protocol,
-          // which surfaces transient reconciliation states as retriable
-          // 503s with the stream left durably closing.
-          dispatcher: getStreamCloseDispatcher(config),
-          timeoutMs: null,
-          logLabel: url.pathname,
-          spanName: 'workflow.stream.write',
-          durationAttribute: 'workflow.stream.write.chunk_rtt',
-          attributes: streamSpanAttributes({
-            runId: resolvedRunId,
-            name,
-            operation: 'close',
-          }),
-          buildError: async (res) =>
-            createStreamRequestError('close', url, res, await res.text()),
-        });
-        // Drain the (empty) response so undici can release the pooled connection.
-        await response.text();
+        if (isWsStreamsTransportEnabled()) {
+          const { closeStreamOverWs } = await import('./ws-streamer.js');
+          return closeStreamOverWs(resolvedRunId, name, config, () =>
+            closeStreamOverHttp(resolvedRunId, name, config)
+          );
+        }
+
+        return closeStreamOverHttp(resolvedRunId, name, config);
       },
 
       async get(runId: string, name: string, startIndex?: number) {

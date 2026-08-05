@@ -29,6 +29,10 @@ import {
 import { encodeFrame, V4_FRAME_CONTENT_TYPE } from './frames.js';
 import { injectTraceContextIntoHeaders } from './telemetry.js';
 import { makeRequest, WORKFLOW_SERVER_URL_OVERRIDE } from './utils.js';
+import {
+  resetWsStreamWritersForTest,
+  writeStreamOverWs,
+} from './ws-streamer.js';
 
 vi.mock('@vercel/oidc', () => ({
   getVercelOidcToken: vi.fn().mockRejectedValue(new Error('no OIDC')),
@@ -51,6 +55,9 @@ vi.mock('ws', () => ({
       wsUpgrades.push({ url, headers: options?.headers ?? {} });
     }
     on() {
+      return this;
+    }
+    once() {
       return this;
     }
     send() {}
@@ -124,6 +131,37 @@ describe('injectTraceContextIntoHeaders', () => {
     const headers = new Headers();
     await injectTraceContextIntoHeaders(headers);
     expect(headers.get('traceparent')).toBeNull();
+  });
+});
+
+describe('stream WebSocket trace propagation', () => {
+  afterEach(() => {
+    resetWsStreamWritersForTest();
+    wsUpgrades.length = 0;
+  });
+
+  it('injects the active trace context on the per-stream upgrade', async () => {
+    const tracer = otelTrace.getTracer('test');
+    let traceId = '';
+    await tracer.startActiveSpan('stream-writer', async (span) => {
+      traceId = span.spanContext().traceId;
+      await writeStreamOverWs(
+        'wrun_trace',
+        'output',
+        new Uint8Array([1]),
+        { baseUrl: 'https://example.test/api', token: 'test-token' },
+        async () => {}
+      );
+      await vi.waitFor(() => expect(wsUpgrades).toHaveLength(1));
+      span.end();
+    });
+
+    expect(wsUpgrades[0].url).toMatch(
+      /\/api\/websockets\/v1\/runs\/wrun_trace\/streams\/output$/
+    );
+    expect(wsUpgrades[0].headers.traceparent).toMatch(
+      new RegExp(`^00-${traceId}-[0-9a-f]{16}-0[01]$`)
+    );
   });
 });
 
