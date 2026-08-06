@@ -23,7 +23,10 @@
 
 import { decode } from 'cbor-x';
 import { decodeFrames, encodeFrame, V4_FRAME_CONTENT_TYPE } from './frames.js';
-import { getEventsDispatcher } from './http-client.js';
+import {
+  getEventsDispatcher,
+  noteEventsTransportOutcome,
+} from './http-client.js';
 import {
   errorForResponse,
   instrumentedFetch,
@@ -60,12 +63,19 @@ async function fetchV4(
   config: APIConfig | undefined,
   opName: string
 ): Promise<Response> {
+  const dispatcher = getEventsDispatcher(config);
   return instrumentedFetch({
     method: init.method,
     url,
     headers: init.headers,
     body: init.body,
-    dispatcher: getEventsDispatcher(config),
+    dispatcher,
+    // Repeated transport failures retire the shared events pool and the next
+    // request builds a fresh one. undici keeps a black-holed HTTP/2 session in
+    // service indefinitely, so without this every request routed onto it fails
+    // until the compute instance is recycled — see noteEventsTransportOutcome.
+    onTransportOutcome: (error) =>
+      noteEventsTransportOutcome(dispatcher, error),
     timeoutMs: null,
     logLabel: opName,
     buildError: async (response) =>
