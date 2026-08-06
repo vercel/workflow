@@ -1,5 +1,18 @@
 # @workflow/web
 
+## 5.0.0-beta.40
+
+### Minor Changes
+
+- [#3349](https://github.com/vercel/workflow/pull/3349) [`371f06e`](https://github.com/vercel/workflow/commit/371f06e5ac777b2c91df479d99a53dcc186b9929) Thanks [@karthikscale3](https://github.com/karthikscale3)! - The runs table now bulk-cancels selected runs in a single request via `bulkCancelRuns`, caps a batch at 500 runs, and reports a single outcome-summary toast.
+
+- [#3280](https://github.com/vercel/workflow/pull/3280) [`de1905f`](https://github.com/vercel/workflow/commit/de1905f15c0a31f272966ac518ebf272864ea5c6) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - **Breaking:** `events.listByCorrelationId` and `analytics.events.listByCorrelationId` now require a `runId`. A correlation id is unique within its run, not across runs, so an unscoped lookup answered with one event per run that numbered a step or wait the same.
+
+### Patch Changes
+
+- Updated dependencies [[`1222aab`](https://github.com/vercel/workflow/commit/1222aab74da39b4a7ae93e6c5ecc2dc4707b68d0), [`de1905f`](https://github.com/vercel/workflow/commit/de1905f15c0a31f272966ac518ebf272864ea5c6), [`e6f1b6f`](https://github.com/vercel/workflow/commit/e6f1b6f5489da19f736fcd86a06a03d8247e5b78)]:
+  - @workflow/world-local@5.0.0-beta.34
+
 ## 5.0.0-beta.39
 
 ### Major Changes
