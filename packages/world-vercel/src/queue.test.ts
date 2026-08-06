@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const {
   mockSend,
+  MockConsumerDiscoveryError,
   MockDuplicateMessageError,
   MockQueueClient,
   mockHandleCallback,
@@ -12,6 +13,13 @@ const {
       super(message);
       this.name = 'DuplicateMessageError';
       this.idempotencyKey = idempotencyKey;
+    }
+  }
+
+  class MockConsumerDiscoveryError extends Error {
+    constructor(message: string) {
+      super(message);
+      this.name = 'ConsumerDiscoveryError';
     }
   }
 
@@ -29,6 +37,7 @@ const {
 
   return {
     mockSend,
+    MockConsumerDiscoveryError,
     MockDuplicateMessageError,
     MockQueueClient,
     mockHandleCallback,
@@ -37,6 +46,7 @@ const {
 
 vi.mock('@vercel/queue', () => ({
   QueueClient: MockQueueClient,
+  ConsumerDiscoveryError: MockConsumerDiscoveryError,
   DuplicateMessageError: MockDuplicateMessageError,
 }));
 
@@ -58,6 +68,19 @@ describe('createQueue', () => {
 
   afterEach(() => {
     vi.clearAllMocks();
+  });
+
+  it('classifies only consumer discovery failures as unavailable deployments', () => {
+    const queue = createQueue();
+
+    expect(
+      queue.isDeploymentUnavailableError?.(
+        new MockConsumerDiscoveryError('deployment not found')
+      )
+    ).toBe(true);
+    expect(
+      queue.isDeploymentUnavailableError?.(new Error('transient send failure'))
+    ).toBe(false);
   });
 
   describe('proxy region header', () => {

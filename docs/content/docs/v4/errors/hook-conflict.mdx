@@ -79,7 +79,7 @@ export async function processPayment() {
 
 ## Handling Hook Conflicts
 
-When a hook conflict occurs, awaiting the hook will throw a `HookConflictError`. The error exposes the token that conflicted and, for current worlds, the run ID that currently owns it. `conflictingRunId` remains optional for compatibility with older persisted events and world implementations, so guard it before delegating:
+When a hook conflict occurs, awaiting the hook will throw a [`HookConflictError`](/docs/api-reference/workflow-errors/hook-conflict-error). The error exposes the token that conflicted and, for current worlds, the run ID that currently owns it. `conflictingRunId` remains optional for compatibility with older persisted events and world implementations, so guard it before delegating:
 
 ```typescript lineNumbers
 import { createHook } from "workflow";

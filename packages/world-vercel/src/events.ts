@@ -51,6 +51,7 @@ import {
 } from '@workflow/world';
 import { withEventPostRetry } from './event-retry.js';
 import {
+  createHookReceivedPreloadEventV4,
   createWorkflowRunEventV4,
   createWorkflowRunStartedEventV4,
   getEventsByCorrelationIdV4,
@@ -443,7 +444,12 @@ export async function getWorkflowRunEvents(
   };
 
   const result = await ('correlationId' in params
-    ? getEventsByCorrelationIdV4(params.correlationId, listParams, config)
+    ? getEventsByCorrelationIdV4(
+        params.correlationId,
+        params.runId,
+        listParams,
+        config
+      )
     : getWorkflowRunEventsV4(
         params.runId,
         { ...listParams, returnAll: params.returnAll },
@@ -452,9 +458,10 @@ export async function getWorkflowRunEvents(
 
   // A correlation id is unique per run, not globally — a slot-numbered run
   // numbers its own steps, so `step_…001` names the first step of every such
-  // run. The backend selects by correlation id alone, so the run scope is
-  // applied here. `hasMore`/`cursor` stay the backend's, so a page that
-  // filters down to nothing is still followed by the next one.
+  // run. The run id scopes the backend query; the filter also protects against
+  // an older backend that ignores that parameter.
+  // `hasMore`/`cursor` stay the backend's, so a page that filters down to
+  // nothing is still followed by the next one.
   return {
     data:
       'correlationId' in params
@@ -484,7 +491,16 @@ export async function createWorkflowRunEvent<T extends AnyEventRequest>(
     // ./event-retry for the validated per-event classification.
     const result = await withEventPostRetry(
       () => createWorkflowRunEventInner(id, data, params, config),
-      data.eventType
+      data.eventType,
+      {
+        // The atomic lazy-resume shape is deduplicated server-side by the
+        // (runId, resumeId) claim, so its POST is idempotent-on-retry even
+        // though plain hook_received is not — see EVENT_RETRY_ELIGIBILITY.
+        idempotentHookResume:
+          data.eventType === 'hook_received' &&
+          params?.resumeId !== undefined &&
+          params?.resumePayloadDigest !== undefined,
+      }
     );
     if (data.eventType === 'run_created' && !result.run) {
       throw new WorkflowWorldError(
@@ -663,11 +679,96 @@ async function createWorkflowRunEventInner(
     };
   }
 
-  const body = await createWorkflowRunEventV4(
+  if (
+    data.eventType === 'hook_received' &&
+    params?.preloadEvents === true &&
+    params.resumeId !== undefined &&
+    params.resumePayloadDigest !== undefined
+  ) {
+    // Lazy hook resume: the queue consumer's idempotent re-ensure doubles
+    // as the invocation's setup request. A supporting server streams the
+    // complete replay log back in this response with resolved frame bodies
+    // — the SERVER owns that resolution (the preload contract requires
+    // replay-ready bytes; v4 has no /refs endpoint to hydrate a lazy
+    // descriptor during replay), so the request keeps hook_received's lazy
+    // default. Against an older server this makes the CBOR fallback
+    // lightweight: it answers the mutation without resolving and echoing
+    // an S3-backed hook payload the runtime would discard anyway.
+    const outcome = await createHookReceivedPreloadEventV4(
+      { ...input, remoteRefBehavior: 'lazy' },
+      config
+    );
+    if (outcome.kind === 'materialized') {
+      // Older server (or optimization declined): the write still succeeded
+      // and this is its normal materialized result. The runtime sees no
+      // replay preload on it and falls back to the run_started setup.
+      return outcome.result;
+    }
+    const { canonicalEventId, maxEvents, events, cursor, hasMore } = outcome;
+    const canonicalEvent = events.find(
+      (event) => event.eventId === canonicalEventId
+    );
+    // Unlike lifecycle streams, a preload missing run_created/run_started is
+    // not fatal here: the write has already converged, so return the page
+    // without a run and let the runtime take its safe fallback.
+    const run = reconstructRunFromReplayEvents(events);
+    return {
+      ...(canonicalEvent ? { event: canonicalEvent } : {}),
+      ...(run ? { run } : {}),
+      events,
+      cursor,
+      hasMore,
+      ...(maxEvents !== undefined ? { maxEvents } : {}),
+    };
+  }
+
+  return createWorkflowRunEventV4(
     data.eventType === 'run_started'
       ? { ...input, eventType: 'run_started', skipPreload: true }
       : { ...input, eventType: data.eventType },
     config
   );
-  return body;
+}
+
+/**
+ * Reconstruct the run entity from a streamed replay log: identity and input
+ * from `run_created`, start time from `run_started`, later `attr_set` events
+ * folded into `attributes`/`updatedAt`. Returns undefined when the log does
+ * not contain both lifecycle events (the caller decides whether that is
+ * fatal). The reconstructed status is always `running` — a terminal event
+ * committed concurrently still rides in the log itself, and the runtime's
+ * replay-time terminal detection handles it.
+ */
+function reconstructRunFromReplayEvents(
+  events: Event[]
+): (WorkflowRun & { startedAt: Date }) | undefined {
+  const runCreated = events.find((event) => event.eventType === 'run_created');
+  const runStarted = events.find((event) => event.eventType === 'run_started');
+  if (!runCreated || !runStarted) {
+    return undefined;
+  }
+
+  let attributes = runCreated.eventData.attributes ?? {};
+  let updatedAt = runStarted.createdAt;
+  for (const event of events) {
+    if (event.eventType === 'attr_set') {
+      attributes = applyAttributeChanges(attributes, event.eventData.changes);
+      updatedAt = event.createdAt;
+    }
+  }
+
+  return {
+    runId: runCreated.runId,
+    status: 'running',
+    deploymentId: runCreated.eventData.deploymentId,
+    workflowName: runCreated.eventData.workflowName,
+    specVersion: runCreated.specVersion,
+    executionContext: runCreated.eventData.executionContext,
+    input: runCreated.eventData.input,
+    attributes,
+    encryptionPublicKey: runCreated.eventData.encryptionPublicKey,
+    startedAt: runStarted.createdAt,
+    createdAt: runCreated.createdAt,
+    updatedAt,
+  };
 }

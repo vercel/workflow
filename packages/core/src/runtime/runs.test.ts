@@ -31,7 +31,12 @@ import {
   hydrateStepReturnValue,
 } from '../serialization.js';
 import { getReturnValuePollIntervalMs, Run } from './run.js';
-import { recreateRunFromExisting, reenqueueRun, wakeUpRun } from './runs.js';
+import {
+  cancelRuns,
+  recreateRunFromExisting,
+  reenqueueRun,
+  wakeUpRun,
+} from './runs.js';
 import { start } from './start.js';
 import { setWorld } from './world.js';
 
@@ -594,5 +599,124 @@ describe('Run.returnValue when run.status === "failed"', () => {
     expect((caught?.cause as Error).message).toContain(
       'Failed to hydrate workflow run error'
     );
+  });
+});
+
+describe('cancelRuns', () => {
+  it('fast path: delegates the whole batch to world.runs.cancelMany once', async () => {
+    const cancelMany = vi.fn().mockResolvedValue({
+      summary: {
+        requested: 3,
+        cancelled: 3,
+        alreadyCancelled: 0,
+        notCancellable: 0,
+        notFound: 0,
+        failed: 0,
+      },
+      results: [
+        { runId: 'a', outcome: 'cancelled' },
+        { runId: 'b', outcome: 'cancelled' },
+        { runId: 'c', outcome: 'cancelled' },
+      ],
+    });
+    const world = {
+      runs: { get: vi.fn(), cancelMany },
+      events: { create: vi.fn() },
+    } as unknown as World;
+
+    const result = await cancelRuns(world, ['a', 'b', 'c'], {
+      cancelReason: 'cleanup',
+    });
+
+    expect(cancelMany).toHaveBeenCalledTimes(1);
+    expect(cancelMany).toHaveBeenCalledWith({
+      runIds: ['a', 'b', 'c'],
+      cancelReason: 'cleanup',
+    });
+    // The single-run path must not be touched on the fast path.
+    expect(world.events.create).not.toHaveBeenCalled();
+    expect(result.summary.cancelled).toBe(3);
+  });
+
+  it('fallback: runs single-run cancellation with at most 20 concurrent operations', async () => {
+    let inFlight = 0;
+    let maxInFlight = 0;
+
+    const create = vi.fn().mockImplementation(async () => {
+      inFlight++;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      // Yield so overlapping calls accumulate before any resolve.
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      inFlight--;
+      return { event: {} };
+    });
+
+    // No cancelMany → forces the fallback path.
+    const world = {
+      runs: {
+        get: vi.fn().mockResolvedValue({
+          runId: 'r',
+          workflowName: 'wf',
+          status: 'running',
+          specVersion: 2,
+          deploymentId: 'dpl',
+        }),
+      },
+      events: { create },
+    } as unknown as World;
+
+    const runIds = Array.from({ length: 100 }, (_, i) => `wrun_${i}`);
+    const result = await cancelRuns(world, runIds);
+
+    expect(create).toHaveBeenCalledTimes(100);
+    expect(maxInFlight).toBeGreaterThan(0);
+    expect(maxInFlight).toBeLessThanOrEqual(20);
+    expect(result.summary.requested).toBe(100);
+    expect(result.summary.cancelled).toBe(100);
+    // Order preserved.
+    expect(result.results.map((r) => r.runId)).toEqual(runIds);
+  });
+
+  it('fallback: reports failures as failed/internal_error/retryable', async () => {
+    const world = {
+      runs: {
+        get: vi.fn().mockRejectedValue(new Error('boom')),
+      },
+      events: { create: vi.fn() },
+    } as unknown as World;
+
+    const result = await cancelRuns(world, ['a', 'b']);
+
+    expect(result.summary.failed).toBe(2);
+    expect(result.results).toEqual([
+      {
+        runId: 'a',
+        outcome: 'failed',
+        code: 'internal_error',
+        retryable: true,
+      },
+      {
+        runId: 'b',
+        outcome: 'failed',
+        code: 'internal_error',
+        retryable: true,
+      },
+    ]);
+  });
+
+  it('rejects an empty list', async () => {
+    const world = { runs: {}, events: {} } as unknown as World;
+    await expect(cancelRuns(world, [])).rejects.toThrow(/at least one/i);
+  });
+
+  it('rejects duplicate IDs', async () => {
+    const world = { runs: {}, events: {} } as unknown as World;
+    await expect(cancelRuns(world, ['a', 'a'])).rejects.toThrow(/unique/i);
+  });
+
+  it('rejects more than 500 IDs', async () => {
+    const world = { runs: {}, events: {} } as unknown as World;
+    const runIds = Array.from({ length: 501 }, (_, i) => `wrun_${i}`);
+    await expect(cancelRuns(world, runIds)).rejects.toThrow(/at most 500/i);
   });
 });

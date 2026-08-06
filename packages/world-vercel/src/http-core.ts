@@ -348,6 +348,14 @@ export interface InstrumentedFetchOptions {
    * `errorForResponse`.
    */
   buildError?: (response: Response) => Error | Promise<Error>;
+  /**
+   * Notified about the transport-level outcome of the `fetch()` call: the thrown
+   * error when no response arrived, `undefined` when one did. An HTTP error
+   * status is *not* reported as a failure — the origin answered, so the transport
+   * worked. Lets a caller that owns a shared dispatcher retire it when its
+   * connections stop delivering (see noteEventsTransportOutcome).
+   */
+  onTransportOutcome?: (error?: unknown) => void;
 }
 
 /**
@@ -380,6 +388,7 @@ export async function instrumentedFetch(
     spanName,
     attributes,
     durationAttribute,
+    onTransportOutcome,
   } = opts;
   const label = logLabel ?? url;
 
@@ -437,6 +446,9 @@ export async function instrumentedFetch(
         } as any);
       } catch (error) {
         const elapsed = Date.now() - start;
+        // Report the raw error, before the timeout mapping below rewraps it: the
+        // undici error code the caller matches on lives in this chain.
+        onTransportOutcome?.(error);
         // AbortSignal.timeout() surfaces as a DOMException named 'TimeoutError'.
         // Map to WorkflowWorldError so existing catch sites treat it like any
         // other world transport failure.
@@ -455,6 +467,7 @@ export async function instrumentedFetch(
         throw error;
       }
       const ms = Date.now() - start;
+      onTransportOutcome?.();
 
       httpLog(method, label, response, ms);
       span?.setAttributes({ ...HttpResponseStatusCode(response.status) });

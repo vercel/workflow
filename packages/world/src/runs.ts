@@ -198,3 +198,84 @@ export interface ListWorkflowRunsParams {
 export interface CancelWorkflowRunParams {
   resolveData?: ResolveData;
 }
+
+/**
+ * Maximum number of run IDs that a single bulk cancellation request may
+ * carry. Kept small enough that the backend can process one request
+ * synchronously without an asynchronous job or cursor.
+ */
+export const BULK_CANCEL_MAX_RUN_IDS = 500;
+
+/**
+ * Request payload for cancelling many runs in a single operation.
+ *
+ * `runIds` must contain 1–{@link BULK_CANCEL_MAX_RUN_IDS} unique IDs.
+ * `cancelReason` (max 512 chars) is recorded on each run_cancelled event,
+ * mirroring the single-run {@link CancelRunOptions.cancelReason}.
+ */
+export const BulkCancelWorkflowRunsRequestSchema = z.object({
+  runIds: z
+    .array(z.string())
+    .min(1)
+    .max(BULK_CANCEL_MAX_RUN_IDS)
+    .refine((ids) => new Set(ids).size === ids.length, {
+      message: 'runIds must not contain duplicates',
+    }),
+  cancelReason: z.string().max(512).optional(),
+});
+export type BulkCancelWorkflowRunsRequest = z.infer<
+  typeof BulkCancelWorkflowRunsRequestSchema
+>;
+
+/**
+ * Per-run outcome of a bulk cancellation.
+ *
+ * - `cancelled`: the run was transitioned to cancelled by this request.
+ * - `already_cancelled`: the run was already cancelled (idempotent success).
+ * - `not_cancellable`: the run is in a terminal, non-cancellable state
+ *   (e.g. `completed`/`failed`); `status` reports the observed status.
+ * - `not_found`: no run exists for this ID.
+ * - `failed`: cancellation failed; `code` is a machine-readable error code
+ *   and `retryable` indicates whether retrying may succeed.
+ */
+export const BulkCancelWorkflowRunResultSchema = z.discriminatedUnion(
+  'outcome',
+  [
+    z.object({ runId: z.string(), outcome: z.literal('cancelled') }),
+    z.object({ runId: z.string(), outcome: z.literal('already_cancelled') }),
+    z.object({
+      runId: z.string(),
+      outcome: z.literal('not_cancellable'),
+      status: z.string(),
+    }),
+    z.object({ runId: z.string(), outcome: z.literal('not_found') }),
+    z.object({
+      runId: z.string(),
+      outcome: z.literal('failed'),
+      code: z.string(),
+      retryable: z.boolean(),
+    }),
+  ]
+);
+export type BulkCancelWorkflowRunResult = z.infer<
+  typeof BulkCancelWorkflowRunResultSchema
+>;
+
+/**
+ * Aggregate result of a bulk cancellation. `results` preserves the order of
+ * the requested `runIds`; `summary` counts each outcome.
+ */
+export const BulkCancelWorkflowRunsResultSchema = z.object({
+  summary: z.object({
+    requested: z.number(),
+    cancelled: z.number(),
+    alreadyCancelled: z.number(),
+    notCancellable: z.number(),
+    notFound: z.number(),
+    failed: z.number(),
+  }),
+  results: z.array(BulkCancelWorkflowRunResultSchema),
+});
+export type BulkCancelWorkflowRunsResult = z.infer<
+  typeof BulkCancelWorkflowRunsResultSchema
+>;
