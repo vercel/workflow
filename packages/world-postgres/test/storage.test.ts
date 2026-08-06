@@ -1301,6 +1301,25 @@ describe('Storage (Postgres integration)', () => {
         expect(result.hasMore).toBe(false);
       });
 
+      it('returns all events across internal query pages', async () => {
+        await drizzle.insert(DrizzleSchema.events).values(
+          Array.from({ length: 500 }, () => ({
+            eventId: `wevt_${ulid()}`,
+            eventType: 'run_started' as const,
+            runId: testRunId,
+          }))
+        );
+
+        const result = await events.list({
+          runId: testRunId,
+          returnAll: true,
+          pagination: { sortOrder: 'asc' },
+        });
+
+        expect(result.data).toHaveLength(501);
+        expect(result.hasMore).toBe(false);
+      });
+
       it('returns a continuation at the configured event ceiling', async () => {
         await events.create(testRunId, {
           eventType: 'run_started',

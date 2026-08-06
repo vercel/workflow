@@ -1315,6 +1315,46 @@ describe('Storage', () => {
         expect(preloaded.events).toEqual(all.data);
       }, 120_000);
 
+      it('returns a resumable partial preload at the event ceiling', async () => {
+        await storage.events.create(testRunId, {
+          eventType: 'run_started',
+          specVersion: SPEC_VERSION_CURRENT,
+        });
+        for (let index = 0; index < 4; index++) {
+          await storage.events.create(testRunId, {
+            eventType: 'attr_set',
+            specVersion: SPEC_VERSION_CURRENT,
+            eventData: {
+              changes: [{ key: 'index', value: String(index) }],
+              writer: { type: 'workflow' },
+            },
+          });
+        }
+        vi.stubEnv('WORKFLOW_MAX_EVENTS', '4');
+
+        const preloaded = await storage.events.create(testRunId, {
+          eventType: 'run_started',
+          specVersion: SPEC_VERSION_CURRENT,
+        });
+        assert(preloaded.events);
+        assert(preloaded.cursor);
+        expect(preloaded.events).toHaveLength(4);
+        expect(preloaded.hasMore).toBe(true);
+
+        const remaining = await storage.events.list({
+          runId: testRunId,
+          returnAll: true,
+          pagination: { sortOrder: 'asc', cursor: preloaded.cursor },
+        });
+        const all = await storage.events.list({
+          runId: testRunId,
+          pagination: { sortOrder: 'asc', limit: 100 },
+        });
+
+        expect([...preloaded.events, ...remaining.data]).toEqual(all.data);
+        expect(remaining.hasMore).toBe(false);
+      });
+
       it('skips the run_started preload when requested', async () => {
         const started = await storage.events.create(
           testRunId,

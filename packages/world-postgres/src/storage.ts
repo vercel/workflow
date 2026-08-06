@@ -1937,31 +1937,42 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
         sortOrder === 'desc'
           ? { by: desc(events.eventId), compare: lt }
           : { by: events.eventId, compare: gt };
-      const all = await drizzle
-        .select()
-        .from(events)
-        .where(
-          and(
-            eq(events.runId, params.runId),
-            map(params.pagination?.cursor, (c) =>
-              order.compare(events.eventId, c)
+      const resolveData = params.resolveData ?? 'all';
+      const data: Event[] = [];
+      let cursor = params.pagination?.cursor;
+      let hasMore = false;
+
+      do {
+        const pageLimit = params.returnAll
+          ? Math.min(500, limit - data.length)
+          : limit;
+        const rows = await drizzle
+          .select()
+          .from(events)
+          .where(
+            and(
+              eq(events.runId, params.runId),
+              map(cursor, (value) => order.compare(events.eventId, value))
             )
           )
-        )
-        .orderBy(order.by)
-        .limit(limit + 1);
+          .orderBy(order.by)
+          .limit(pageLimit + 1);
+        const page = rows.slice(0, pageLimit);
 
-      const values = all.slice(0, limit);
+        for (const row of page) {
+          row.eventData ||= row.eventDataJson;
+          const event = EventSchema.parse(compact(row));
+          data.push(stripEventDataRefs(event, resolveData));
+        }
 
-      const resolveData = params.resolveData ?? 'all';
+        cursor = page.at(-1)?.eventId;
+        hasMore = rows.length > pageLimit;
+      } while (params.returnAll && hasMore && data.length < limit);
+
       return {
-        data: values.map((v) => {
-          v.eventData ||= v.eventDataJson;
-          const parsed = EventSchema.parse(compact(v));
-          return stripEventDataRefs(parsed, resolveData);
-        }),
-        cursor: values.at(-1)?.eventId ?? null,
-        hasMore: all.length > limit,
+        data,
+        cursor: data.at(-1)?.eventId ?? null,
+        hasMore,
       };
     },
     async listByCorrelationId(params) {

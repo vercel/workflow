@@ -937,8 +937,9 @@ export interface ListEventsParams {
    * Ask the World to return every remaining event in one response while
    * retaining the final cursor for later incremental loads. Advisory: Worlds
    * that ignore this remain correct because the runtime follows `hasMore`.
+   * When honored, this overrides `pagination.limit`.
    */
-  returnAll?: true;
+  returnAll?: boolean;
 }
 
 export interface ListEventsByCorrelationIdParams {

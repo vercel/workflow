@@ -340,6 +340,77 @@ describe('getWorkflowRunEventsV4 over HTTP', () => {
       )
     ).rejects.toThrow(/end-of-stream sentinel/);
   });
+
+  it('resumes a truncated returnAll stream after its last accepted event', async () => {
+    const origin =
+      WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
+    const agent = new MockAgent();
+    agent.disableNetConnect();
+
+    agent
+      .get(origin)
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events?returnAll=true',
+        method: 'GET',
+      })
+      .reply(
+        200,
+        encodeFrame(
+          {
+            eventId: 'evnt_1',
+            runId: 'wrun_1',
+            eventType: 'run_created',
+            createdAt: CREATED_AT,
+            eventData: {
+              deploymentId: 'dpl_1',
+              workflowName: 'workflow',
+              input: null,
+            },
+          },
+          new Uint8Array()
+        ),
+        { headers: { 'content-type': V4_FRAME_CONTENT_TYPE } }
+      );
+    agent
+      .get(origin)
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events?cursor=eid%3Aevnt_1&returnAll=true',
+        method: 'GET',
+      })
+      .reply(
+        200,
+        Buffer.concat([
+          encodeFrame(
+            {
+              eventId: 'evnt_2',
+              runId: 'wrun_1',
+              eventType: 'run_started',
+              createdAt: CREATED_AT,
+            },
+            new Uint8Array()
+          ),
+          encodeFrame(
+            { _end: 1, next: 'eid:evnt_2', hasMore: false },
+            new Uint8Array()
+          ),
+        ]),
+        { headers: { 'content-type': V4_FRAME_CONTENT_TYPE } }
+      );
+
+    const result = await getWorkflowRunEventsV4(
+      'wrun_1',
+      { returnAll: true },
+      { token: 'test-token', dispatcher: agent }
+    );
+
+    expect(result.events.map((event) => event.eventId)).toEqual([
+      'evnt_1',
+      'evnt_2',
+    ]);
+    expect(result.cursor).toBe('eid:evnt_2');
+    expect(result.hasMore).toBe(false);
+    agent.assertNoPendingInterceptors();
+  });
 });
 
 /**
