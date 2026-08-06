@@ -35,6 +35,7 @@
 import { HookNotFoundError, WorkflowWorldError } from '@workflow/errors';
 import {
   type AnyEventRequest,
+  applyAttributeChanges,
   type CreateEventParams,
   type Event,
   type EventDataPayloadField,
@@ -54,6 +55,7 @@ import {
 import { decode } from 'cbor-x';
 import { withEventPostRetry } from './event-retry.js';
 import {
+  createHookReceivedPreloadEventV4,
   createWorkflowRunEventV4,
   type DecodedEventFrame,
   getEventsByCorrelationIdV4,
@@ -485,10 +487,10 @@ export async function getWorkflowRunEvents(
 ): Promise<PaginatedResponse<Event>> {
   const { pagination, resolveData = DEFAULT_RESOLVE_DATA_OPTION } = params;
   // `resolveData: 'none'` means the caller only wants metadata — it discards
-  // payloads in buildEventFromV4 below. Tell the backend not to stream them
+  // payloads in decodeEventFrame below. Tell the backend not to stream them
   // in the first place (lazy → empty frame bodies). On `'all'` we resolve
   // (the default). A backend that predates this flag ignores it and streams
-  // full bodies regardless; buildEventFromV4 still strips them when
+  // full bodies regardless; the caller still strips them when
   // resolveData is 'none', so this is purely a bandwidth optimization and is
   // safe against an older backend.
   const remoteRefBehavior: 'lazy' | 'resolve' =
@@ -496,7 +498,12 @@ export async function getWorkflowRunEvents(
   const wirePagination = { ...pagination, remoteRefBehavior };
 
   const result = await ('correlationId' in params
-    ? getEventsByCorrelationIdV4(params.correlationId, wirePagination, config)
+    ? getEventsByCorrelationIdV4(
+        params.correlationId,
+        params.runId,
+        wirePagination,
+        config
+      )
     : getWorkflowRunEventsV4(params.runId, wirePagination, config));
 
   const events = result.events.map((frame) =>
@@ -505,9 +512,11 @@ export async function getWorkflowRunEvents(
 
   // A correlation id is unique per run, not globally — a slot-numbered run
   // numbers its own steps, so `step_…001` names the first step of every such
-  // run. The backend selects by correlation id alone, so the run scope is
-  // applied here. `hasMore`/`cursor` stay the backend's, so a page that
-  // filters down to nothing is still followed by the next one.
+  // run. The run id goes out on the request above, and a backend that
+  // understands it answers for that run alone. One that predates the parameter
+  // selects by correlation id and spans runs, so the scope is re-applied here.
+  // `hasMore`/`cursor` stay the backend's, so a page that filters down to
+  // nothing is still followed by the next one.
   const runScoped =
     'correlationId' in params
       ? events.filter((event) => event.runId === params.runId)
@@ -544,7 +553,16 @@ export async function createWorkflowRunEvent<T extends AnyEventRequest>(
     // ./event-retry for the validated per-event classification.
     const result = await withEventPostRetry(
       () => createWorkflowRunEventInner(id, data, params, config),
-      data.eventType
+      data.eventType,
+      {
+        // The atomic lazy-resume shape is deduplicated server-side by the
+        // (runId, resumeId) claim, so its POST is idempotent-on-retry even
+        // though plain hook_received is not — see EVENT_RETRY_ELIGIBILITY.
+        idempotentHookResume:
+          data.eventType === 'hook_received' &&
+          params?.resumeId !== undefined &&
+          params?.resumePayloadDigest !== undefined,
+      }
     );
     if (data.eventType === 'run_created' && !result.run) {
       throw new WorkflowWorldError(
@@ -635,68 +653,165 @@ async function createWorkflowRunEventInner(
     }
   }
 
-  const remoteRefBehavior = eventsNeedingResolve.has(data.eventType)
+  const remoteRefBehavior: 'resolve' | 'lazy' = eventsNeedingResolve.has(
+    data.eventType
+  )
     ? 'resolve'
     : 'lazy';
 
   const { payload, meta } = splitEventDataForV4(data);
-
-  const body = await createWorkflowRunEventV4(
-    {
-      runId: id,
-      eventType: data.eventType,
-      specVersion: data.specVersion ?? 2,
-      ...(data.correlationId ? { correlationId: data.correlationId } : {}),
-      ...(params?.requestId ? { vercelId: params.requestId } : {}),
-      ...(params?.computeInstanceId
-        ? { computeInstanceId: params.computeInstanceId }
-        : {}),
-      // Precondition snapshot. The three fields describe one snapshot and the
-      // runtime always sends them together (or not at all); each is spread
-      // independently only so an older server that knows one but not the
-      // others still gets what it understands.
-      ...(params?.stateUpdatedAt !== undefined
-        ? { stateUpdatedAt: params.stateUpdatedAt }
-        : {}),
-      ...(params?.stateEventCount !== undefined
-        ? { stateEventCount: params.stateEventCount }
-        : {}),
-      ...(params?.stateCursor ? { stateCursor: params.stateCursor } : {}),
-      ...(params?.replayDivergenceCount !== undefined
-        ? { replayDivergenceCount: params.replayDivergenceCount }
-        : {}),
-      occurredAt: params?.occurredAt ?? new Date(),
-      // Opt-in inline-delta: forward the cursor the runtime held before
-      // this write so the server can return the authoritative event-log
-      // delta on the response (events/cursor/hasMore), letting the inline
-      // loop skip a follow-up events.list. The server only acts on it for
-      // step_completed/step_failed; older servers ignore it and the runtime
-      // falls back to events.list.
-      ...(params?.sinceCursor ? { sinceCursor: params.sinceCursor } : {}),
-      // Run-started preload opt-out: turbo backgrounds run_started as a write
-      // barrier only and never reads the preloaded log, so tell the server to
-      // skip the list+resolve. The server only acts on it for run_started;
-      // older servers ignore it and simply preload as before.
-      ...(params?.skipPreload ? { skipPreload: true } : {}),
-      // Lazy hook resume idempotency key (hook_received only). Routes the
-      // write through the server's (runId, resumeId) constraint so a
-      // concurrent queue-consumer re-ensure deduplicates to one event.
-      ...(params?.resumeId ? { resumeId: params.resumeId } : {}),
-      // Content digest forwarded alongside resumeId so the direct write and the
-      // queue re-ensure record an identical digest on the server constraint.
-      ...(params?.resumePayloadDigest
-        ? { resumePayloadDigest: params.resumePayloadDigest }
-        : {}),
-      remoteRefBehavior,
-      payload,
-      ...meta,
-    },
-    config
-  );
-
-  // Event payloads remain opaque here, just as they do in frame responses.
-  // EventSchema validates the response and converts stored ISO timestamps
-  // back into the Date instances promised by the World interface.
   const resolveData = params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
-  return { ...body, event: stripEventDataRefs(body.event, resolveData) };
+
+  const v4Input = {
+    runId: id,
+    eventType: data.eventType,
+    specVersion: data.specVersion ?? 2,
+    ...(data.correlationId ? { correlationId: data.correlationId } : {}),
+    ...(params?.requestId ? { vercelId: params.requestId } : {}),
+    ...(params?.computeInstanceId
+      ? { computeInstanceId: params.computeInstanceId }
+      : {}),
+    // Precondition snapshot. The three fields describe one snapshot and the
+    // runtime always sends them together (or not at all); each is spread
+    // independently only so an older server that knows one but not the
+    // others still gets what it understands.
+    ...(params?.stateUpdatedAt !== undefined
+      ? { stateUpdatedAt: params.stateUpdatedAt }
+      : {}),
+    ...(params?.stateEventCount !== undefined
+      ? { stateEventCount: params.stateEventCount }
+      : {}),
+    ...(params?.stateCursor ? { stateCursor: params.stateCursor } : {}),
+    ...(params?.replayDivergenceCount !== undefined
+      ? { replayDivergenceCount: params.replayDivergenceCount }
+      : {}),
+    occurredAt: params?.occurredAt ?? new Date(),
+    // Opt-in inline-delta: forward the cursor the runtime held before
+    // this write so the server can return the authoritative event-log
+    // delta on the response (events/cursor/hasMore), letting the inline
+    // loop skip a follow-up events.list. The server only acts on it for
+    // step_completed/step_failed; older servers ignore it and the runtime
+    // falls back to events.list.
+    ...(params?.sinceCursor ? { sinceCursor: params.sinceCursor } : {}),
+    // Run-started preload opt-out: turbo backgrounds run_started as a write
+    // barrier only and never reads the preloaded log, so tell the server to
+    // skip the list+resolve. The server only acts on it for run_started;
+    // older servers ignore it and simply preload as before.
+    ...(params?.skipPreload ? { skipPreload: params.skipPreload } : {}),
+    // Lazy hook resume idempotency key (hook_received only). Routes the
+    // write through the server's (runId, resumeId) constraint so a
+    // concurrent queue-consumer re-ensure deduplicates to one event.
+    ...(params?.resumeId ? { resumeId: params.resumeId } : {}),
+    // Content digest forwarded alongside resumeId so the direct write and the
+    // queue re-ensure record an identical digest on the server constraint.
+    ...(params?.resumePayloadDigest
+      ? { resumePayloadDigest: params.resumePayloadDigest }
+      : {}),
+    remoteRefBehavior,
+    payload,
+    ...meta,
+  };
+
+  if (
+    data.eventType === 'hook_received' &&
+    params?.preloadEvents === true &&
+    params.resumeId !== undefined &&
+    params.resumePayloadDigest !== undefined
+  ) {
+    // Lazy hook resume: the queue consumer's idempotent re-ensure doubles
+    // as the invocation's setup request. A supporting server streams the
+    // complete replay log back in this response with resolved frame bodies
+    // — the SERVER owns that resolution (the preload contract requires
+    // replay-ready bytes; v4 has no /refs endpoint to hydrate a lazy
+    // descriptor during replay), so the request keeps hook_received's lazy
+    // default. Against an older server this makes the CBOR fallback
+    // lightweight: it answers the mutation without resolving and echoing
+    // an S3-backed hook payload the runtime would discard anyway.
+    const outcome = await createHookReceivedPreloadEventV4(
+      {
+        ...v4Input,
+        eventType: 'hook_received',
+        remoteRefBehavior: 'lazy',
+      },
+      config
+    );
+    if (outcome.kind === 'materialized') {
+      // Older server (or optimization declined): the write still succeeded
+      // and this is its normal materialized result. The runtime sees no
+      // replay preload on it and falls back to the run_started setup.
+      return {
+        ...outcome.result,
+        event: stripEventDataRefs(outcome.result.event, resolveData),
+      };
+    }
+    const { canonicalEventId, maxEvents, next, hasMore } = outcome;
+    const events = outcome.events.map(decodeEventFrame);
+    const canonicalEvent = events.find(
+      (event) => event.eventId === canonicalEventId
+    );
+    // Unlike lifecycle streams, a preload missing run_created/run_started is
+    // not fatal here: the write has already converged, so return the page
+    // without a run and let the runtime take its safe fallback.
+    const run = reconstructRunFromReplayEvents(events);
+    return {
+      ...(canonicalEvent ? { event: canonicalEvent } : {}),
+      ...(run ? { run } : {}),
+      events,
+      cursor: next ?? null,
+      // Our streaming server always stamps hasMore on the sentinel; treat a
+      // missing flag as "not the complete log" so the runtime falls back
+      // rather than replaying a possibly-truncated prefix.
+      hasMore: hasMore ?? true,
+      ...(maxEvents !== undefined ? { maxEvents } : {}),
+    };
+  }
+
+  const result = await createWorkflowRunEventV4(v4Input, config);
+  return {
+    ...result,
+    event: stripEventDataRefs(result.event, resolveData),
+  };
+}
+
+/**
+ * Reconstruct the run entity from a streamed replay log: identity and input
+ * from `run_created`, start time from `run_started`, later `attr_set` events
+ * folded into `attributes`/`updatedAt`. Returns undefined when the log does
+ * not contain both lifecycle events (the caller decides whether that is
+ * fatal). The reconstructed status is always `running` — a terminal event
+ * committed concurrently still rides in the log itself, and the runtime's
+ * replay-time terminal detection handles it.
+ */
+function reconstructRunFromReplayEvents(
+  events: Event[]
+): (WorkflowRun & { startedAt: Date }) | undefined {
+  const runCreated = events.find((event) => event.eventType === 'run_created');
+  const runStarted = events.find((event) => event.eventType === 'run_started');
+  if (!runCreated || !runStarted) {
+    return undefined;
+  }
+
+  let attributes = runCreated.eventData.attributes ?? {};
+  let updatedAt = runStarted.createdAt;
+  for (const event of events) {
+    if (event.eventType === 'attr_set') {
+      attributes = applyAttributeChanges(attributes, event.eventData.changes);
+      updatedAt = event.createdAt;
+    }
+  }
+
+  return {
+    runId: runCreated.runId,
+    status: 'running',
+    deploymentId: runCreated.eventData.deploymentId,
+    workflowName: runCreated.eventData.workflowName,
+    specVersion: runCreated.specVersion,
+    executionContext: runCreated.eventData.executionContext,
+    input: runCreated.eventData.input,
+    attributes,
+    encryptionPublicKey: runCreated.eventData.encryptionPublicKey,
+    startedAt: runStarted.createdAt,
+    createdAt: runCreated.createdAt,
+    updatedAt,
+  };
 }

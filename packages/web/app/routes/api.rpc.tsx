@@ -8,6 +8,7 @@
 
 import { decode, encode } from 'cbor-x';
 import {
+  bulkCancelRuns,
   cancelRun,
   fetchEvent,
   fetchEvents,
@@ -54,6 +55,7 @@ const handlers = {
     fetchHookToken(p.worldEnv ?? {}, p.runId, p.hookId),
   fetchHook: (p: any) => fetchHook(p.worldEnv ?? {}, p.hookId, p.resolveData),
   cancelRun: (p: any) => cancelRun(p.worldEnv ?? {}, p.runId),
+  bulkCancelRuns: (p: any) => bulkCancelRuns(p.worldEnv ?? {}, p.runIds ?? []),
   recreateRun: (p: any) =>
     recreateRun(p.worldEnv ?? {}, p.runId, p.deploymentId),
   reenqueueRun: (p: any) => reenqueueRun(p.worldEnv ?? {}, p.runId),

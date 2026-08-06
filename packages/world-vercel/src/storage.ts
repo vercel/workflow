@@ -11,6 +11,7 @@ import {
 import { getHook, getHookByToken, listHooks } from './hooks.js';
 import { instrumentObject } from './instrumentObject.js';
 import {
+  cancelWorkflowRuns,
   experimentalSetAttributes,
   getWorkflowRun,
   getWorkflowRuns,
@@ -33,6 +34,7 @@ export function createStorage(config?: APIConfig): Storage {
         listWorkflowRuns(params, config)) as Storage['runs']['list'],
       experimentalSetAttributes: (runId, changes, options) =>
         experimentalSetAttributes(runId, changes, options, config),
+      cancelMany: (request) => cancelWorkflowRuns(request, config),
     },
     steps: {
       get: ((runId: string, stepId: string, params?: any) =>

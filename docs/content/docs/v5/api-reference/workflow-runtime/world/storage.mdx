@@ -163,6 +163,8 @@ const result = await world.runs.list({ // [!code highlight]
 
 To cancel a run, create a `run_cancelled` event via `world.events.create()` (see [world.events](#worldevents) above), or use the CLI or Web UI helpers.
 
+To cancel a batch in one call, a world may implement the optional `runs.cancelMany({ runIds })`. It returns a summary plus a per-run outcome (`cancelled`, `already_cancelled`, `not_cancellable`, `not_found`, or `failed`). Backends that omit it fall back to per-run cancellation automatically.
+
 ### WorkflowRun Type
 
 | Field | Type | Description |
