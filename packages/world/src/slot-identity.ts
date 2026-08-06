@@ -34,28 +34,47 @@ export const SLOT_ID_WIDTH = 26;
 /** First slot in a run. Slot 0 is unused — it is the inclusive range fence. */
 export const FIRST_SLOT = 1;
 
+/**
+ * Highest slot that can be named.
+ *
+ * 26 digits would hold far more, but a slot is only useful while arithmetic on
+ * it stays exact: a reservation is `maxSlot + n`, a two-event write derives
+ * `slot - 1`, and completeness is a subtraction. Above
+ * `Number.MAX_SAFE_INTEGER` a double stops separating adjacent integers, so
+ * `slot + 1` can equal `slot`, and `String(slot)` turns exponential well before
+ * the digits run out: `1e21` formats as `1e+21`, which pads to exactly 26
+ * characters and so passes a width check while not being a decimal at all. No
+ * run approaches this, so the bound is here to make a corrupt slot number fail
+ * at the edge rather than become an id that looks well-formed.
+ */
+export const MAX_SLOT = Number.MAX_SAFE_INTEGER;
+
 const SLOT_BODY_PATTERN = new RegExp(`^[0-9]{${SLOT_ID_WIDTH}}$`);
 
 /**
  * The id body naming `slot`, e.g. `1` → `00000000000000000000000001`. Callers
  * prepend their own prefix (`evnt_`, `step_`, `wait_`).
+ *
+ * @throws RangeError if `slot` is not an integer in `[FIRST_SLOT, MAX_SLOT]`.
  */
 export function slotIdBody(slot: number): string {
-  if (!Number.isInteger(slot) || slot < FIRST_SLOT) {
-    throw new Error(
-      `Slot must be an integer >= ${FIRST_SLOT}, received ${slot}`
+  if (!Number.isInteger(slot) || slot < FIRST_SLOT || slot > MAX_SLOT) {
+    throw new RangeError(
+      `Slot must be an integer in [${FIRST_SLOT}, ${MAX_SLOT}], received ${slot}`
     );
   }
-  const body = String(slot).padStart(SLOT_ID_WIDTH, '0');
-  if (body.length > SLOT_ID_WIDTH) {
-    throw new Error(`Slot ${slot} does not fit in ${SLOT_ID_WIDTH} digits`);
-  }
-  return body;
+  return String(slot).padStart(SLOT_ID_WIDTH, '0');
 }
 
 /**
  * The slot named by an id, or undefined if the id is not a slot id. Accepts
  * both a prefixed id (`step_0…001`) and a bare body.
+ *
+ * A body outside `[FIRST_SLOT, MAX_SLOT]` reads as "not a slot id" rather than
+ * as a slot, so it is treated as a ULID and rejected downstream as an identity
+ * mismatch. Accepting one would hand `maxSlotOf` a number that `slotIdBody`
+ * cannot round-trip, and every slot derived from it by addition would be an id
+ * this code both minted and cannot parse.
  */
 export function slotFromId(id: string): number | undefined {
   const underscore = id.indexOf('_');
@@ -64,7 +83,7 @@ export function slotFromId(id: string): number | undefined {
     return undefined;
   }
   const slot = Number(body);
-  return slot >= FIRST_SLOT ? slot : undefined;
+  return slot >= FIRST_SLOT && slot <= MAX_SLOT ? slot : undefined;
 }
 
 /** Whether an id numbers itself by slot rather than by ULID. */

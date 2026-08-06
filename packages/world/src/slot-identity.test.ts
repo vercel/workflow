@@ -4,6 +4,7 @@ import { z } from 'zod';
 import {
   FIRST_SLOT,
   isSlotId,
+  MAX_SLOT,
   maxSlotOf,
   SLOT_ID_WIDTH,
   slotEventId,
@@ -33,6 +34,15 @@ describe('slotIdBody', () => {
     expect(() => slotIdBody(-1)).toThrow();
     expect(() => slotIdBody(1.5)).toThrow();
   });
+
+  it('rejects a slot too large for exact arithmetic', () => {
+    expect(slotIdBody(MAX_SLOT)).toHaveLength(SLOT_ID_WIDTH);
+    expect(() => slotIdBody(MAX_SLOT + 1)).toThrow(RangeError);
+    // 1e21 is an integer that `String` renders as `1e+21`, which pads to
+    // exactly 26 characters. A width check alone would pass it and mint
+    // `0000000000000000000001e+21` as an id.
+    expect(() => slotIdBody(1e21)).toThrow(RangeError);
+  });
 });
 
 describe('slotFromId', () => {
@@ -53,6 +63,15 @@ describe('slotFromId', () => {
     // Slot 0 is the inclusive lower fence for range queries over a run's
     // events, never an event.
     expect(slotFromId('0'.repeat(SLOT_ID_WIDTH))).toBeUndefined();
+  });
+
+  it('reads no slot out of a body past exact arithmetic', () => {
+    // A 26-digit decimal can name a number a double cannot hold. Reading one
+    // as a slot would seed `maxSlotOf`, and every id derived from it by
+    // addition would be one this module minted and cannot parse back, so it
+    // reads as a ULID and is rejected downstream as an identity mismatch.
+    expect(slotFromId(`evnt_${'9'.repeat(SLOT_ID_WIDTH)}`)).toBeUndefined();
+    expect(slotFromId(`evnt_${slotIdBody(MAX_SLOT)}`)).toBe(MAX_SLOT);
   });
 
   it('reads no slot out of a body of the wrong width', () => {
