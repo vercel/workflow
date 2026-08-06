@@ -12,11 +12,16 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { splitEventDataForV4 } from './events.js';
 import {
   createWorkflowRunEventV4,
+  getEventsByCorrelationIdV4,
   getEventV4,
   getWorkflowRunEventsV4,
   throwForErrorResponse,
 } from './events-v4.js';
 import { encodeFrame, V4_FRAME_CONTENT_TYPE } from './frames.js';
+import {
+  EVENTS_RECYCLE_AFTER_CONSECUTIVE_FAILURES,
+  getEventsDispatcher,
+} from './http-client.js';
 import { WORKFLOW_SERVER_URL_OVERRIDE } from './utils.js';
 
 /**
@@ -262,6 +267,71 @@ describe('getWorkflowRunEventsV4 over HTTP', () => {
         { token: 'test-token', dispatcher: agent }
       )
     ).rejects.toThrow(/end-of-stream sentinel/);
+  });
+});
+
+/**
+ * A correlation id names a step, hook or wait within *its* run, so the same
+ * one appears in every slot-numbered run (`step_…001` is each run's first
+ * step). The run id has to reach the backend for it to answer for one run.
+ */
+describe('getEventsByCorrelationIdV4 over HTTP', () => {
+  it('sends the run id alongside the correlation id', async () => {
+    const origin =
+      WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
+    const agent = new MockAgent();
+    agent.disableNetConnect();
+
+    const frames = Buffer.concat([
+      encodeFrame(
+        {
+          eventId: 'evnt_1',
+          runId: 'wrun_1',
+          eventType: 'step_created',
+          correlationId: 'step_001',
+          createdAt: '2026-06-10T00:00:00.000Z',
+          eventData: {},
+        },
+        new Uint8Array(0)
+      ),
+      encodeFrame({ _end: 1, hasMore: false }, new Uint8Array(0)),
+    ]);
+
+    // undici consults the matcher more than once per request (raw path and a
+    // query-sorted normalization of it), so assert on the parsed query of
+    // whatever it offered rather than on call counts or string equality.
+    const requestedPaths: string[] = [];
+    agent
+      .get(origin)
+      .intercept({
+        path: (path) => {
+          requestedPaths.push(path);
+          return path.startsWith('/api/v4/events?');
+        },
+        method: 'GET',
+      })
+      .reply(200, frames, {
+        headers: { 'content-type': V4_FRAME_CONTENT_TYPE },
+      });
+
+    const result = await getEventsByCorrelationIdV4(
+      'step_001',
+      'wrun_1',
+      { limit: 10 },
+      { token: 'test-token', dispatcher: agent }
+    );
+
+    expect(requestedPaths.length).toBeGreaterThan(0);
+    for (const path of requestedPaths) {
+      const query = new URL(path, origin).searchParams;
+      expect(query.get('correlationId')).toBe('step_001');
+      expect(query.get('runId')).toBe('wrun_1');
+      expect(query.get('limit')).toBe('10');
+    }
+
+    expect(result.events).toHaveLength(1);
+    expect(result.events[0].event.runId).toBe('wrun_1');
+    agent.assertNoPendingInterceptors();
   });
 });
 
@@ -1083,5 +1153,47 @@ describe('v4 POST frame meta forwards every field the splitter produces', () => 
     // vacuous, so require it to have produced a meaningful set.
     expect(metaKeys.length).toBeGreaterThan(3);
     expect(Object.keys(wireMeta)).toEqual(expect.arrayContaining(metaKeys));
+  });
+});
+
+/**
+ * The recycler in http-client only sees transport failures the v4 client
+ * reports to it. This covers that wiring end to end: a `fetch()` that rejects
+ * the way a wedged HTTP/2 session does must retire the shared events pool once
+ * the failures reach the threshold. Without the `onTransportOutcome` hook in
+ * `fetchV4` the recycler is never told anything and the pool lives forever.
+ */
+describe('v4 transport reports failures to the events recycler', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  // Shape of a wedged-session rejection: `fetch` wraps undici's
+  // InformationalError, so the code the recycler matches on is one `cause` down.
+  const wedgedSessionError = () =>
+    new TypeError('fetch failed', {
+      cause: Object.assign(new Error('HTTP/2: "stream timeout after 300"'), {
+        code: 'UND_ERR_INFO',
+      }),
+    });
+
+  it('rebuilds the shared pool after repeated stream timeouts', async () => {
+    vi.spyOn(globalThis, 'fetch').mockRejectedValue(wedgedSessionError());
+
+    // No `dispatcher` in the config: the request must resolve the shared one,
+    // which is what the recycler owns.
+    const before = getEventsDispatcher({ token: 'test-token' });
+
+    for (let i = 0; i < EVENTS_RECYCLE_AFTER_CONSECUTIVE_FAILURES; i++) {
+      await expect(
+        getWorkflowRunEventsV4('wrun_1', {}, { token: 'test-token' })
+      ).rejects.toThrow();
+      // Still the same pool until the threshold is reached.
+      if (i < EVENTS_RECYCLE_AFTER_CONSECUTIVE_FAILURES - 1) {
+        expect(getEventsDispatcher({ token: 'test-token' })).toBe(before);
+      }
+    }
+
+    expect(getEventsDispatcher({ token: 'test-token' })).not.toBe(before);
   });
 });

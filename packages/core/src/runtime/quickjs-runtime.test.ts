@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { assert, describe, expect, it } from 'vitest';
 import { deserialize, serialize } from '../serialization/workflow-vm.js';
 import {
   __clearBaselineSnapshotCacheForTests,
@@ -107,6 +107,7 @@ describe('runQuickJSWorkflow', () => {
       `,
       workflowId: 'workflow//test//workflow',
       workflowRun: makeRun(),
+      worldCapabilities: { hookRetention: { active: true } },
       events: [],
     });
 
@@ -118,6 +119,35 @@ describe('runQuickJSWorkflow', () => {
           new Date('2025-01-01T00:00:00Z').getTime() + 60_000,
       })
     );
+  });
+
+  it('rejects unsupported Hook retention inside the workflow', async () => {
+    const result = await runQuickJSWorkflow({
+      workflowCode: `
+        async function workflow() {
+          try {
+            globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")]({
+              experimental_minRetention: 60000,
+            });
+            return "registered";
+          } catch (error) {
+            return { name: error.name, fatal: error.fatal };
+          }
+        }
+        workflow.workflowId = "workflow//test//workflow";
+        globalThis.__private_workflows.set("workflow//test//workflow", workflow);
+      `,
+      workflowId: 'workflow//test//workflow',
+      workflowRun: makeRun(),
+      events: [],
+    });
+
+    assert(result.completed);
+    expect(unwrapResult(result.completed.result)).toEqual({
+      name: 'FatalError',
+      fatal: true,
+    });
+    expect(result.completed.drainOperations).toBeUndefined();
   });
 
   it('accepts a Date-like object (getTime only) for minimum retention', async () => {
@@ -138,6 +168,7 @@ describe('runQuickJSWorkflow', () => {
       `,
       workflowId: 'workflow//test//workflow',
       workflowRun: makeRun(),
+      worldCapabilities: { hookRetention: { active: true } },
       events: [],
     });
 

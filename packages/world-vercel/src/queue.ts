@@ -1,6 +1,10 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { Transport } from '@vercel/queue';
-import { DuplicateMessageError, QueueClient } from '@vercel/queue';
+import {
+  ConsumerDiscoveryError,
+  DuplicateMessageError,
+  QueueClient,
+} from '@vercel/queue';
 import {
   MessageId,
   type Queue,
@@ -535,5 +539,14 @@ export function createQueue(config?: APIConfig): Queue {
     return deploymentId;
   };
 
-  return { queue, createQueueHandler, getDeploymentId };
+  const isDeploymentUnavailableError: Queue['isDeploymentUnavailableError'] = (
+    error
+  ) => error instanceof ConsumerDiscoveryError;
+
+  return {
+    queue,
+    createQueueHandler,
+    getDeploymentId,
+    isDeploymentUnavailableError,
+  };
 }

@@ -25,7 +25,10 @@ import { type Event, getEventDataPayloadField } from '@workflow/world';
 import { decode } from 'cbor-x';
 import { coerceEventDates } from './event-coerce.js';
 import { decodeFrames, encodeFrame, V4_FRAME_CONTENT_TYPE } from './frames.js';
-import { getEventsDispatcher } from './http-client.js';
+import {
+  getEventsDispatcher,
+  noteEventsTransportOutcome,
+} from './http-client.js';
 import {
   errorForResponse,
   instrumentedFetch,
@@ -62,12 +65,19 @@ async function fetchV4(
   config: APIConfig | undefined,
   opName: string
 ): Promise<Response> {
+  const dispatcher = getEventsDispatcher(config);
   return instrumentedFetch({
     method: init.method,
     url,
     headers: init.headers,
     body: init.body,
-    dispatcher: getEventsDispatcher(config),
+    dispatcher,
+    // Repeated transport failures retire the shared events pool and the next
+    // request builds a fresh one. undici keeps a black-holed HTTP/2 session in
+    // service indefinitely, so without this every request routed onto it fails
+    // until the compute instance is recycled — see noteEventsTransportOutcome.
+    onTransportOutcome: (error) =>
+      noteEventsTransportOutcome(dispatcher, error),
     timeoutMs: null,
     logLabel: opName,
     buildError: async (response) =>
@@ -99,6 +109,11 @@ export const V4_RESPONSE_HEADERS = {
   eventId: 'x-wf-event-id',
   runId: 'x-wf-run-id',
   createdAt: 'x-wf-created-at',
+  /**
+   * Server-owned per-run event ceiling. Set on streamed replay-log
+   * responses, where there is no CBOR body to carry `maxEvents`.
+   */
+  maxEvents: 'x-wf-max-events',
 } as const;
 
 export interface CreateEventV4Input {
@@ -539,6 +554,13 @@ export async function createWorkflowRunEventV4(
     'createEvent'
   );
 
+  return decodeMaterializedCreateEventResponse(response);
+}
+
+/** Decode the ids + materialized-entity bag of a v4 POST CBOR response. */
+async function decodeMaterializedCreateEventResponse(
+  response: Response
+): Promise<CreateEventV4Result> {
   const eventId = response.headers.get(V4_RESPONSE_HEADERS.eventId);
   const runId = response.headers.get(V4_RESPONSE_HEADERS.runId);
   const createdAt = response.headers.get(V4_RESPONSE_HEADERS.createdAt);
@@ -561,6 +583,89 @@ export async function createWorkflowRunEventV4(
 }
 
 /**
+ * Result of a `hook_received` POST that opted into the replay-log preload,
+ * discriminated on `kind` (keyed on the response content type).
+ */
+export type HookReceivedPreloadV4Result =
+  /** The server streamed the replay log back as v4 frames. */
+  | (ListEventsV4Result & {
+      kind: 'stream';
+      /**
+       * The canonical event this write created or converged on (the resume
+       * claim winner's — ours or the producer's), named by the
+       * {@link V4_RESPONSE_HEADERS.eventId} response header. Undefined when
+       * the server did not send the header.
+       */
+      canonicalEventId: string | undefined;
+      /** Per-run event ceiling from the response header, when present. */
+      maxEvents: number | undefined;
+    })
+  /**
+   * The server answered with the normal materialized CBOR body instead —
+   * an older server, or one that declined the optimization. The
+   * hook_received write itself has still succeeded; callers must not
+   * re-post it.
+   */
+  | { kind: 'materialized'; result: CreateEventV4Result };
+
+/**
+ * POST /api/v4/runs/:runId/events/hook_received with the v4-frame `Accept`,
+ * consuming either response mode.
+ *
+ * A server that supports the lazy-hook replay stream answers the consumer's
+ * idempotent re-ensure with the run's complete replay log as v4 frames —
+ * the same event-frame sequence LIST uses, ending with the `_end` sentinel.
+ * A truncated stream (EOF without the sentinel) throws; the write is
+ * deduplicated by the server's `(runId, resumeId)` constraint, so retrying
+ * the whole request is safe and converges on the same canonical event.
+ */
+export async function createHookReceivedPreloadEventV4(
+  input: CreateEventV4Input,
+  config?: APIConfig
+): Promise<HookReceivedPreloadV4Result> {
+  const { baseUrl, headers: baseHeaders } = await getHttpConfig(config);
+  const headers = new Headers(baseHeaders);
+  headers.set('Content-Type', 'application/octet-stream');
+  headers.set('Accept', V4_FRAME_CONTENT_TYPE);
+
+  const frame = encodeFrame(
+    buildPostFrameMeta(input),
+    input.payload ?? new Uint8Array(0)
+  );
+
+  const url = `${baseUrl}/v4/runs/${encodeURIComponent(input.runId)}/events/${encodeURIComponent(input.eventType)}`;
+  const response = await fetchV4(
+    url,
+    { method: 'POST', headers, body: frame },
+    config,
+    'createEvent'
+  );
+
+  const contentType = response.headers.get('content-type');
+  if (!contentType?.startsWith(V4_FRAME_CONTENT_TYPE)) {
+    return {
+      kind: 'materialized',
+      result: await decodeMaterializedCreateEventResponse(response),
+    };
+  }
+
+  const page = await decodeListFrameResponse(response, 'createEvent');
+  const maxEventsRaw = response.headers.get(V4_RESPONSE_HEADERS.maxEvents);
+  const maxEventsParsed =
+    maxEventsRaw === null ? Number.NaN : Number(maxEventsRaw);
+  return {
+    kind: 'stream',
+    ...page,
+    canonicalEventId:
+      response.headers.get(V4_RESPONSE_HEADERS.eventId) ?? undefined,
+    maxEvents:
+      Number.isInteger(maxEventsParsed) && maxEventsParsed > 0
+        ? maxEventsParsed
+        : undefined,
+  };
+}
+
+/**
  * Decoded event entity returned by GET /api/v4/runs/:runId/events/:eventId.
  * The server CBOR-encodes the full entity with refs resolved server-side,
  * so the payload field (input/output/result/error/payload/metadata
@@ -576,6 +681,13 @@ export interface DecodedV4Event {
   occurredAt?: Date | string;
   specVersion?: number;
   eventData?: Record<string, unknown>;
+  /**
+   * Lazy hook resume idempotency key, persisted on `hook_received` events
+   * created through the `(runId, resumeId)` claim and emitted back in the
+   * frame meta. The runtime matches it against the queue message's
+   * `hookInput.resumeId` to recognize its own resume in a preloaded log.
+   */
+  resumeId?: string;
 }
 
 function readHeader(
@@ -701,6 +813,18 @@ async function consumeListFrameStream(
     config,
     opName
   );
+  return decodeListFrameResponse(response, opName);
+}
+
+/**
+ * Decode a v4 event-frame response body into an in-memory page. Shared by
+ * the GET LIST paths and the streamed `hook_received` replay preload —
+ * the wire shape is identical regardless of the verb that produced it.
+ */
+async function decodeListFrameResponse(
+  response: Response,
+  opName: string
+): Promise<ListEventsV4Result> {
   const contentType = response.headers.get('content-type');
   if (!contentType?.startsWith(V4_FRAME_CONTENT_TYPE)) {
     throw new Error(
@@ -797,21 +921,29 @@ export async function getWorkflowRunEventsV4(
 }
 
 /**
- * GET /api/v4/events?correlationId=...
+ * GET /api/v4/events?correlationId=...&runId=...
  *
- * Same frame stream as getWorkflowRunEventsV4 but selected by
- * correlationId (GSI) instead of runId. Used by the storage adapter's
+ * Same frame stream as getWorkflowRunEventsV4 but selected by correlation id
+ * instead of run id alone. Used by the storage adapter's
  * `events.listByCorrelationId` path — the v3 client used
  * `/v2/events?correlationId=...` for the equivalent query.
+ *
+ * `runId` scopes the lookup. A correlation id names a step, hook or wait
+ * within *its* run, so the same one can appear in many runs; sending the run
+ * is what lets the backend answer for one. A backend that predates the
+ * parameter ignores it and answers across runs, so the caller still filters
+ * the page by run id.
  */
 export async function getEventsByCorrelationIdV4(
   correlationId: string,
+  runId: string,
   params: ListEventsV4Params = {},
   config?: APIConfig
 ): Promise<ListEventsV4Result> {
   const { baseUrl, headers } = await getHttpConfig(config);
   const sp = new URLSearchParams();
   sp.set('correlationId', correlationId);
+  sp.set('runId', runId);
   appendListParams(sp, params);
   const url = `${baseUrl}/v4/events?${sp.toString()}`;
   return consumeListFrameStream(

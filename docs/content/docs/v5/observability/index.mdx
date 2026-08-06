@@ -42,6 +42,8 @@ npx workflow inspect runs --web
 
 ![Workflow SDK Web UI](/o11y-ui.png)
 
+In the runs table, select one or more runs and choose **Cancel** to cancel the batch in a single request. Runs that fail with a retryable error stay selected so you can retry them.
+
 To share a link to a specific run without opening a browser, use the `--url`
 flag. It prints the dashboard deep link to stdout and exits (no browser, no
 local server) — useful for scripts, PR comments, or automation. Add `--json` to

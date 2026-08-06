@@ -1,5 +1,8 @@
 import { EntityConflictError } from '@workflow/errors';
 import {
+  BULK_CANCEL_MAX_RUN_IDS,
+  type BulkCancelWorkflowRunResult,
+  type BulkCancelWorkflowRunsResult,
   type Event,
   isLegacySpecVersion,
   SPEC_VERSION_LEGACY,
@@ -149,6 +152,112 @@ export async function cancelRun(
       { cause: err }
     );
   }
+}
+
+/**
+ * Maximum number of single-run cancellations issued concurrently by the
+ * fallback path (worlds without `runs.cancelMany`).
+ */
+const CANCEL_RUNS_FALLBACK_CONCURRENCY = 20;
+
+/**
+ * Cancel many runs in one call.
+ *
+ * Fast path: if the world implements `runs.cancelMany`, the whole batch is
+ * delegated to it in a single operation (one backend round-trip on
+ * `@workflow/world-vercel`).
+ *
+ * Fallback: for worlds without `cancelMany`, this issues single-run
+ * `cancelRun()` calls with at most {@link CANCEL_RUNS_FALLBACK_CONCURRENCY}
+ * in flight at a time. Fallback successes are reported as `cancelled`;
+ * failures are reported as `failed` with `code: 'internal_error'` and
+ * `retryable: true` — deliberately without per-world error classification.
+ *
+ * @throws if `runIds` is empty, contains duplicates, or exceeds
+ *   {@link BULK_CANCEL_MAX_RUN_IDS}.
+ */
+export async function cancelRuns(
+  world: World,
+  runIds: string[],
+  options?: CancelRunOptions
+): Promise<BulkCancelWorkflowRunsResult> {
+  if (runIds.length === 0) {
+    throw new Error('cancelRuns requires at least one run ID.');
+  }
+  if (runIds.length > BULK_CANCEL_MAX_RUN_IDS) {
+    throw new Error(
+      `cancelRuns accepts at most ${BULK_CANCEL_MAX_RUN_IDS} run IDs (received ${runIds.length}).`
+    );
+  }
+  if (new Set(runIds).size !== runIds.length) {
+    throw new Error('cancelRuns requires unique run IDs (duplicates found).');
+  }
+
+  // Fast path: a single batch operation when the world supports it.
+  if (world.runs.cancelMany) {
+    return world.runs.cancelMany({
+      runIds,
+      ...(options?.cancelReason !== undefined
+        ? { cancelReason: options.cancelReason }
+        : {}),
+    });
+  }
+
+  // Fallback: bounded-concurrency single-run cancellation.
+  const results: BulkCancelWorkflowRunResult[] = new Array(runIds.length);
+  let nextIndex = 0;
+
+  const worker = async (): Promise<void> => {
+    while (true) {
+      const index = nextIndex++;
+      if (index >= runIds.length) return;
+      const runId = runIds[index];
+      try {
+        await cancelRun(world, runId, options);
+        results[index] = { runId, outcome: 'cancelled' };
+      } catch {
+        results[index] = {
+          runId,
+          outcome: 'failed',
+          code: 'internal_error',
+          retryable: true,
+        };
+      }
+    }
+  };
+
+  const workerCount = Math.min(CANCEL_RUNS_FALLBACK_CONCURRENCY, runIds.length);
+  await Promise.all(Array.from({ length: workerCount }, () => worker()));
+
+  const summary = {
+    requested: runIds.length,
+    cancelled: 0,
+    alreadyCancelled: 0,
+    notCancellable: 0,
+    notFound: 0,
+    failed: 0,
+  };
+  for (const result of results) {
+    switch (result.outcome) {
+      case 'cancelled':
+        summary.cancelled++;
+        break;
+      case 'already_cancelled':
+        summary.alreadyCancelled++;
+        break;
+      case 'not_cancellable':
+        summary.notCancellable++;
+        break;
+      case 'not_found':
+        summary.notFound++;
+        break;
+      case 'failed':
+        summary.failed++;
+        break;
+    }
+  }
+
+  return { summary, results };
 }
 
 /**

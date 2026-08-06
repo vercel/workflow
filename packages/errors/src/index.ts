@@ -1,4 +1,4 @@
-import { parseDurationToDate } from '@workflow/utils';
+import { parseDurationToDate, pluralize } from '@workflow/utils';
 
 import type { StringValue } from 'ms';
 
@@ -89,6 +89,7 @@ export const ERROR_SLUGS = {
   STEP_NOT_REGISTERED: 'step-not-registered',
   WORKFLOW_NOT_REGISTERED: 'workflow-not-registered',
   RUNTIME_DECRYPTION_FAILED: 'runtime-decryption-failed',
+  DEPLOYMENT_MISMATCH: 'deployment-mismatch',
 } as const;
 
 type ErrorSlug = (typeof ERROR_SLUGS)[keyof typeof ERROR_SLUGS];
@@ -587,6 +588,53 @@ export class WorkflowNotRegisteredError extends WorkflowRuntimeError {
 
   static is(value: unknown): value is WorkflowNotRegisteredError {
     return isError(value) && value.name === 'WorkflowNotRegisteredError';
+  }
+}
+
+/**
+ * Thrown when a workflow run is delivered to a deployment other than the one
+ * it is pinned to.
+ *
+ * A run is pinned to one deployment when it starts, and executing anywhere
+ * else is unsafe: that deployment's bundles may not match the run's history.
+ */
+export class WorkflowDeploymentMismatchError extends WorkflowRuntimeError {
+  readonly runId: string;
+  readonly expectedDeploymentId: string;
+  readonly actualDeploymentId: string;
+  /**
+   * How many times the runtime re-routed the message before giving up. `0`
+   * means recovery was never attempted: the budget is disabled, or the
+   * re-route itself failed and `cause` holds the enqueue error.
+   */
+  readonly recoveryAttempts: number;
+
+  constructor(
+    runId: string,
+    expectedDeploymentId: string,
+    actualDeploymentId: string,
+    options?: { recoveryAttempts?: number; cause?: unknown }
+  ) {
+    const recoveryAttempts = options?.recoveryAttempts ?? 0;
+    // Carried in the persisted message, not just a log line: the attempt count
+    // separates racing routing from a deployment that is simply gone.
+    const recovery =
+      recoveryAttempts > 0
+        ? ` The runtime re-routed the message to "${expectedDeploymentId}" ${recoveryAttempts} ${pluralize('time', 'times', recoveryAttempts)} and it kept arriving elsewhere, so the run was stopped to protect against code-skew errors.`
+        : ' The run was stopped to protect against code-skew errors.';
+    super(
+      `Workflow run "${runId}" is pinned to deployment "${expectedDeploymentId}", but was received by deployment "${actualDeploymentId}".${recovery} Verify that the run's deployment is still available and that queue callbacks are routed to it.`,
+      { slug: ERROR_SLUGS.DEPLOYMENT_MISMATCH, cause: options?.cause }
+    );
+    this.name = 'WorkflowDeploymentMismatchError';
+    this.runId = runId;
+    this.expectedDeploymentId = expectedDeploymentId;
+    this.actualDeploymentId = actualDeploymentId;
+    this.recoveryAttempts = recoveryAttempts;
+  }
+
+  static is(value: unknown): value is WorkflowDeploymentMismatchError {
+    return isError(value) && value.name === 'WorkflowDeploymentMismatchError';
   }
 }
 
