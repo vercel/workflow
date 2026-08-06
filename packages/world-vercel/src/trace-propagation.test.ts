@@ -18,7 +18,10 @@ import {
   vi,
 } from 'vitest';
 import { z } from 'zod';
-import { getWorkflowRunEventsV4 } from './events-v4.js';
+import {
+  createHookReceivedPreloadEventV4,
+  getWorkflowRunEventsV4,
+} from './events-v4.js';
 import { encodeFrame, V4_FRAME_CONTENT_TYPE } from './frames.js';
 import { injectTraceContextIntoHeaders } from './telemetry.js';
 import { makeRequest, WORKFLOW_SERVER_URL_OVERRIDE } from './utils.js';
@@ -169,6 +172,69 @@ describe('v4 event requests (fetchV4) trace propagation', () => {
     expect(traceparent).toBe(
       `00-${traceId}-${clientSpan?.spanContext().spanId}-01`
     );
+    agent.assertNoPendingInterceptors();
+    fetchSpy.mockRestore();
+  });
+
+  it('sends traceparent and the frame Accept on the hook_received preload POST', async () => {
+    const origin =
+      WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
+    const agent = new MockAgent();
+    agent.disableNetConnect();
+    agent
+      .get(origin)
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events/hook_received',
+        method: 'POST',
+      })
+      .reply(200, encodeFrame({ _end: 1, hasMore: false }, new Uint8Array(0)), {
+        headers: {
+          'content-type': V4_FRAME_CONTENT_TYPE,
+          'x-wf-event-id': 'evnt_1',
+          'x-wf-run-id': 'wrun_1',
+          'x-wf-created-at': '2026-06-10T00:00:00.000Z',
+          'x-wf-max-events': '10000',
+        },
+      });
+
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+
+    const tracer = otelTrace.getTracer('test');
+    let traceId = '';
+    await tracer.startActiveSpan('flow-invocation', async (span) => {
+      traceId = span.spanContext().traceId;
+      await createHookReceivedPreloadEventV4(
+        {
+          runId: 'wrun_1',
+          eventType: 'hook_received',
+          specVersion: 2,
+          correlationId: 'hook_1',
+          resumeId: 'resume-trace-1',
+          resumePayloadDigest: 'e'.repeat(64),
+          hookToken: 'tok-trace',
+        },
+        { token: 'test-token', dispatcher: agent }
+      );
+      span.end();
+    });
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    const calledInit = fetchSpy.mock.calls[0][1];
+    const sent = new Headers(calledInit?.headers as HeadersInit);
+    // The preload POST rides the same fetchV4 envelope as every other v4
+    // event request: trace context injected inside the client span...
+    const traceparent = sent.get('traceparent');
+    expect(traceparent).toMatch(/^00-[0-9a-f]{32}-[0-9a-f]{16}-0[01]$/);
+    const clientSpan = exporter
+      .getFinishedSpans()
+      .find((s) => s.name === 'http POST');
+    expect(clientSpan).toBeDefined();
+    expect(clientSpan?.spanContext().traceId).toBe(traceId);
+    expect(traceparent).toBe(
+      `00-${traceId}-${clientSpan?.spanContext().spanId}-01`
+    );
+    // ...while still negotiating the streamed replay-log response.
+    expect(sent.get('accept')).toBe(V4_FRAME_CONTENT_TYPE);
     agent.assertNoPendingInterceptors();
     fetchSpy.mockRestore();
   });

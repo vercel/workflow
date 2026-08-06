@@ -53,6 +53,8 @@ Why this works:
 - **Stable across retries**: `stepId` does not change between attempts.
 - **Globally unique per step**: Fulfills the uniqueness requirement for an idempotency key.
 
+A step can also run more than once when its function invocation crashes before reporting a result — see [Step executed multiple times](/docs/errors/step-executed-multiple-times) for how to diagnose duplicate step executions.
+
 ## Run idempotency
 
 Step idempotency protects side effects **inside** a workflow run. Run idempotency answers a different question: if the same API request is sent twice, should it create one workflow run or two?
