@@ -218,30 +218,8 @@ const CAPTURE_INTRINSICS = `(() => {
     mapSet: Map.prototype.set,
     objectCreate: Object.create,
     defineProperty: Object.defineProperty,
-    jsonStringify: JSON.stringify,
-    objectKeys: Object.keys,
     dateNow: Date.now,
-    hasOwnCall: (o, k) => Object.prototype.hasOwnProperty.call(o, k),
     objectFreeze: Object.freeze,
-    // Lossless guest→host string escape: every code unit outside
-    // printable ASCII becomes a \\uXXXX escape. Runs on WTF-16 code
-    // units, so lone surrogates survive — unlike JS_ToCString (which
-    // replaces them with U+FFFD) and unlike JSON.stringify (which
-    // passes them through raw, only for the raw form to be corrupted by
-    // the C-string extraction of ITS output). The pure-ASCII result
-    // extracts losslessly through toString().
-    escapeString: (s) => {
-      let out = '';
-      for (let idx = 0; idx < s.length; idx++) {
-        const code = s.charCodeAt(idx);
-        if (code >= 0x20 && code <= 0x7e && code !== 0x22 && code !== 0x5c) {
-          out += s[idx];
-        } else {
-          out += '\\\\u' + code.toString(16).padStart(4, '0');
-        }
-      }
-      return '"' + out + '"';
-    },
     functionBind: Function.prototype.bind,
     makeSparseArray: (length) => {
       const array = [];
@@ -320,13 +298,23 @@ export function captureSerdeRoot(vm: QuickJS): JSValueHandle {
 
 /**
  * Re-create the capture-root handle in a VM restored from a snapshot
- * whose memory image contains the box `captureSerdeRoot` allocated (at
- * the identical offset — snapshots are whole-memory images). The adopted
- * wrapper owns the box's reference: dispose it (via the serde) exactly
- * once per restored VM.
+ * taken while the exported root was alive, via quickjs-wasi's
+ * snapshot-portable handle tokens (`importHandle` duplicates the
+ * underlying value — the returned handle is independently owned and the
+ * serde disposes it per restored VM). No guest code executes.
  */
-export function adoptSerdeRoot(vm: QuickJS, ptr: number): JSValueHandle {
-  return new JSValueHandle(vm, ptr);
+export function adoptSerdeRoot(vm: QuickJS, token: number): JSValueHandle {
+  return vm.importHandle(token);
+}
+
+/**
+ * Export the capture root as a snapshot-portable token to record next to
+ * the baseline snapshot. The root handle must stay undisposed until the
+ * snapshot is taken (its box — and the reference it holds — must be part
+ * of the memory image).
+ */
+export function exportSerdeRoot(vm: QuickJS, root: JSValueHandle): number {
+  return vm.exportHandle(root);
 }
 
 export interface QuickJSSerde {
@@ -460,11 +448,7 @@ export function createQuickJSSerde(
     mapSet: at('mapSet'),
     objectCreate: at('objectCreate'),
     defineProperty: at('defineProperty'),
-    jsonStringify: at('jsonStringify'),
-    objectKeys: at('objectKeys'),
     dateNow: at('dateNow'),
-    escapeString: at('escapeString'),
-    hasOwnCall: at('hasOwnCall'),
     objectFreeze: at('objectFreeze'),
     functionBind: at('functionBind'),
     makeSparseArray: at('makeSparseArray'),
@@ -524,48 +508,6 @@ export function createQuickJSSerde(
 
   const invoke = (fn: JSValueHandle, ...args: JSValueHandle[]): JSValueHandle =>
     vm.callFunction(fn, vm.undefined, ...args);
-
-  /**
-   * Lossless host string from a guest string handle. `handle.toString()`
-   * routes through `JS_ToCString`, which corrupts two shapes: U+0000
-   * truncates the string, and lone surrogates are replaced with U+FFFD.
-   * Neither detection alone is sufficient — the two corruptions can
-   * cancel (a surrogate's replacement-expansion offsetting a NUL's
-   * truncation leaves the lengths equal), and a bare lone surrogate can
-   * replace 1:1 with no length change at all. So the fast value is
-   * accepted only when the length matches the handle's true guest
-   * length AND it contains no U+FFFD; strings that legitimately contain
-   * U+FFFD merely take the slow path, which is loss-free either way.
-   *
-   * The slow path escapes the string INSIDE the VM to printable ASCII
-   * (captured `escapeString` intrinsic — WTF-16-safe, unlike
-   * JSON.stringify, which passes lone surrogates through raw only for
-   * the C-string extraction of its output to corrupt them) and
-   * JSON-parses it host-side. Clean ASCII-ish strings — the
-   * overwhelming majority — pay only the `.length` read and a scan.
-   */
-  const guestString = (handle: JSValueHandle): string => {
-    const fast = handle.toString();
-    if (fast.length === handle.length && !fast.includes('\ufffd')) {
-      return fast;
-    }
-    return JSON.parse(
-      invoke(i.escapeString, handle).consume((h) => h.toString())
-    ) as string;
-  };
-
-  /**
-   * Whether a host-side key string can round-trip through the C-string
-   * property APIs: NUL truncates, and an UNPAIRED surrogate cannot be
-   * UTF-8 encoded (paired surrogates — e.g. emoji keys — encode fine).
-   * Keys that can't are routed through guest string handles instead
-   * (`vm.newString` is length-aware and WTF-16-preserving).
-   */
-  const keyNeedsHandleLookup = (key: string): boolean =>
-    key.includes('\u0000') ||
-    /(?:[\uD800-\uDBFF](?![\uDC00-\uDFFF]))|(?:(?<![\uD800-\uDBFF])[\uDC00-\uDFFF])/.test(
-      key
-    );
 
   /**
    * Guest own-property check through the handle's introspection method.
@@ -633,7 +575,7 @@ export function createQuickJSSerde(
   ): string | undefined => {
     const handle = chained(target, key);
     if (!handle) return undefined;
-    const result = handle.isString ? guestString(handle) : undefined;
+    const result = handle.isString ? handle.toString() : undefined;
     handle.dispose();
     return result;
   };
@@ -644,7 +586,7 @@ export function createQuickJSSerde(
   ): string | undefined => {
     const handle = own(target, key);
     if (!handle) return undefined;
-    const result = handle.isString ? guestString(handle) : undefined;
+    const result = handle.isString ? handle.toString() : undefined;
     handle.dispose();
     return result;
   };
@@ -779,7 +721,7 @@ export function createQuickJSSerde(
     if (handle.isBool) return handle.toBoolean();
     if (handle.isNumber) return handle.toNumber();
     if (handle.isBigInt) return guestBigInt(handle);
-    return guestString(handle);
+    return handle.toString();
   };
 
   /**
@@ -852,8 +794,8 @@ export function createQuickJSSerde(
     regExpInfo: (value) => {
       if (!isHandle(value)) return d.regExpInfo(value);
       return {
-        source: call(i.regExpSource, value).consume(guestString),
-        flags: call(i.regExpFlags, value).consume(guestString),
+        source: call(i.regExpSource, value).consume((h) => h.toString()),
+        flags: call(i.regExpFlags, value).consume((h) => h.toString()),
       };
     },
     valuesOf: (value) =>
@@ -893,22 +835,8 @@ export function createQuickJSSerde(
       const length = own(value, 'length');
       return length?.consume((h) => h.toNumber()) ?? 0;
     },
-    hasOwn: (value, key) => {
-      if (!isHandle(value)) return d.hasOwn(value, key);
-      if (typeof key === 'string' && keyNeedsHandleLookup(key)) {
-        // C-string key APIs mangle NULs and lone surrogates — check
-        // inside the guest.
-        const keyHandle = vm.newString(key);
-        try {
-          return invoke(i.hasOwnCall, value, keyHandle).consume((h) =>
-            h.toBoolean()
-          );
-        } finally {
-          keyHandle.dispose();
-        }
-      }
-      return guestHasOwn(value, String(key));
-    },
+    hasOwn: (value, key) =>
+      isHandle(value) ? guestHasOwn(value, String(key)) : d.hasOwn(value, key),
     indicesOf: (value) =>
       isHandle(value) ? filterArrayIndices(value.keys()) : d.indicesOf(value),
     shapeOf: (value) => {
@@ -930,35 +858,6 @@ export function createQuickJSSerde(
           }
           if (value.propertyIsEnumerable(key)) keys.push(key);
         }
-        // Mangled-key guard: the enumeration above yields HOST strings
-        // that crossed `JS_ToCString`, so a key containing U+0000
-        // arrives truncated — dropped (the truncated name fails the
-        // propertyIsEnumerable probe) or colliding with a sibling — and
-        // a key containing a lone surrogate arrives with U+FFFD
-        // replacements (count and uniqueness intact, content wrong). A
-        // single guest `Object.keys` call exposes the first two shapes
-        // (count mismatch / duplicate); a U+FFFD scan catches the
-        // third (keys legitimately containing U+FFFD just take the
-        // loss-free slow path). The guest array's entries are handles,
-        // re-extracted losslessly via guestString.
-        const guestKeys = invoke(i.objectKeys, value);
-        try {
-          const guestCount = guestKeys.length;
-          if (
-            keys.length !== guestCount ||
-            new Set(keys).size !== keys.length ||
-            keys.some((key) => key.includes('\ufffd'))
-          ) {
-            keys.length = 0;
-            for (let idx = 0; idx < guestCount; idx++) {
-              const keyHandle = guestKeys.getProp(String(idx));
-              keys.push(guestString(keyHandle));
-              keyHandle.dispose();
-            }
-          }
-        } finally {
-          guestKeys.dispose();
-        }
         return {
           kind: prototype.isNull ? ('null-proto' as const) : ('plain' as const),
           keys,
@@ -969,21 +868,6 @@ export function createQuickJSSerde(
     },
     get: (value, key) => {
       if (!isHandle(value)) return d.get(value, key);
-      // A key bearing a NUL or a lone surrogate cannot be looked up
-      // through the C-string APIs (NUL truncates the lookup name; an
-      // unpaired surrogate cannot be UTF-8 encoded). Route it through a
-      // guest string handle instead — `vm.newString` is length-aware
-      // and WTF-16-preserving, and handle-keyed getProp performs a
-      // plain [[Get]] (getters are invoked, matching the descriptor
-      // path's explicit accessor invocation below).
-      if (typeof key === 'string' && keyNeedsHandleLookup(key)) {
-        const keyHandle = vm.newString(key);
-        try {
-          return vm.getProp(value, keyHandle);
-        } finally {
-          keyHandle.dispose();
-        }
-      }
       const descriptor = value.getOwnPropertyDescriptor(String(key));
       if (!descriptor) return undefined;
       if (descriptor.get) {
@@ -1032,7 +916,7 @@ export function createQuickJSSerde(
   ): string | undefined => {
     const handle = own(value, sym(name));
     if (!handle) return undefined;
-    const result = handle.isString ? guestString(handle) : undefined;
+    const result = handle.isString ? handle.toString() : undefined;
     handle.dispose();
     return result;
   };
@@ -1323,8 +1207,8 @@ export function createQuickJSSerde(
     RegExp: (value) => {
       if (!isHandle(value) || tagOfHandle(value) !== 'RegExp') return false;
       return {
-        source: call(i.regExpSource, value).consume(guestString),
-        flags: call(i.regExpFlags, value).consume(guestString),
+        source: call(i.regExpSource, value).consume((h) => h.toString()),
+        flags: call(i.regExpFlags, value).consume((h) => h.toString()),
       };
     },
     Headers: (value) => {
@@ -1341,7 +1225,7 @@ export function createQuickJSSerde(
       const entries: [string, string][] = [];
       const visitor = vm.newEphemeralFunction(
         (headerValue: JSValueHandle, headerKey: JSValueHandle) => {
-          entries.push([guestString(headerKey), guestString(headerValue)]);
+          entries.push([headerKey.toString(), headerValue.toString()]);
           return vm.undefined;
         }
       );
@@ -1464,7 +1348,7 @@ export function createQuickJSSerde(
       ) {
         return false;
       }
-      return call(i.urlHref, value).consume(guestString);
+      return call(i.urlHref, value).consume((h) => h.toString());
     },
     WorkflowFunction: (value) => {
       if (!isHandle(value) || value.typeof !== 'function') return false;

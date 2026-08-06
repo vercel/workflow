@@ -407,33 +407,60 @@ describe('NUL (U+0000) safety across the WASM boundary', () => {
     );
   });
 
-  it('round-trips lone surrogates, including the length-canceling NUL mix (values)', () => {
-    // JS_ToCString has TWO corruptions — NUL truncation and lone-
-    // surrogate → U+FFFD replacement — and they can cancel: the
-    // replacement expansion offsets the truncation so the extracted
-    // length matches the true guest length, defeating a length-only
-    // check. A bare lone surrogate can also replace 1:1 with no length
-    // change at all. The U+FFFD scan must force the loss-free slow path
-    // for every shape.
+  it('lone-surrogate values behave IDENTICALLY to the node engine wire (parity, not preservation)', () => {
+    // The VM boundary is lossless as of quickjs-wasi 3.4.0, but the WIRE
+    // itself is not: devalue emits lone surrogates raw and the wire is
+    // UTF-8, so they degrade to U+FFFD — in the reference codec (node
+    // engine) exactly as here. Bug-compatible parity is the load-bearing
+    // property (event logs replay across engines); wire-level surrogate
+    // preservation is a product-wide devalue/UTF-8 question, out of
+    // scope for this engine. NULs are devalue-escaped and fully
+    // preserved. (Earlier revisions of this test asserted exact
+    // round-trips and passed only because the pre-3.4.0 lossy host→guest
+    // transport corrupted the comparison literals identically — the
+    // mutual-corruption trap.)
+    const values = {
+      bare: '\ud800',
+      cancel: '\ud800\u0000a',
+      trailingPair: 'ok\udfff\u0000tail',
+      legitReplacement: 'already\ufffdhere',
+    } as const;
     const bytes = serializeGuest(`(() => ({
       bare: "\ud800",
       cancel: "\ud800\u0000a",
       trailingPair: "ok\udfff\u0000tail",
       legitReplacement: "already\ufffdhere",
     }))()`);
-    expect(
-      checkInGuest(
-        bytes,
-        `function (v) {
-          return [
-            v.bare === "\ud800",
-            v.cancel === "\ud800\u0000a",
-            v.trailingPair === "ok\udfff\u0000tail",
-            v.legitReplacement === "already\ufffdhere",
-          ].every(Boolean);
-        }`
-      )
-    ).toBe(true);
+    // Byte parity with the reference codec on the wire...
+    expect(Buffer.from(bytes).toString('base64')).toBe(
+      Buffer.from(referenceSerialize(values)).toString('base64')
+    );
+    // ...and the guest observes exactly what the node engine's consumer
+    // would: the reference codec's own round trip of the same values.
+    const expected = referenceDeserialize(referenceSerialize(values)) as Record<
+      string,
+      string
+    >;
+    const guestUnits = checkInGuest(
+      bytes,
+      `function (v) {
+        var out = {};
+        for (var k in v) {
+          var units = [];
+          for (var i = 0; i < v[k].length; i++) units.push(v[k].charCodeAt(i));
+          out[k] = units.join(',');
+        }
+        return out;
+      }`
+    ) as Record<string, string>;
+    for (const key of Object.keys(values)) {
+      const expectedUnits = Array.from(expected[key], (_, i) =>
+        expected[key].charCodeAt(i)
+      ).join(',');
+      expect(guestUnits[key]).toBe(expectedUnits);
+    }
+    // NULs specifically survive end to end.
+    expect(expected.cancel.includes('\u0000')).toBe(true);
   });
 
   it('matches the reference codec byte-for-byte on lone-surrogate strings', () => {
@@ -446,34 +473,45 @@ describe('NUL (U+0000) safety across the WASM boundary', () => {
     }
   });
 
-  it('round-trips lone-surrogate and mixed keys', () => {
-    // Lone-surrogate keys corrupt to U+FFFD with count and uniqueness
-    // intact — the enumeration guard's U+FFFD scan must reroute to the
-    // guest key array, and property reads must go through handle-keyed
-    // lookups (the C-string APIs cannot encode an unpaired surrogate).
+  it('lone-surrogate and mixed keys behave IDENTICALLY to the node engine wire', () => {
+    // Same parity framing as the values test above: the VM boundary is
+    // lossless (quickjs-wasi 3.4.0 enumeration and key lookups preserve
+    // NULs and lone surrogates), but the WIRE degrades lone surrogates
+    // to U+FFFD in keys exactly as the reference codec does. NUL-only
+    // keys survive fully.
+    const value = {
+      '\ud800key': 'surrogate-key',
+      'mix\ud800\u0000ed': 'mixed-key',
+      'nul\u0000only': 'nul-key',
+      plain: 1,
+    };
     const bytes = serializeGuest(`(() => ({
       "\ud800key": "surrogate-key",
       "mix\ud800\u0000ed": "mixed-key",
+      "nul\u0000only": "nul-key",
       plain: 1,
     }))()`);
-    expect(
-      checkInGuest(
-        bytes,
-        `function (v) {
-          return {
-            surrogate: v["\ud800key"],
-            mixed: v["mix\ud800\u0000ed"],
-            plain: v.plain,
-            count: Object.keys(v).length,
-          };
-        }`
-      )
-    ).toEqual({
-      surrogate: 'surrogate-key',
-      mixed: 'mixed-key',
-      plain: 1,
-      count: 3,
-    });
+    expect(Buffer.from(bytes).toString('base64')).toBe(
+      Buffer.from(referenceSerialize(value)).toString('base64')
+    );
+    const expected = referenceDeserialize(referenceSerialize(value)) as Record<
+      string,
+      unknown
+    >;
+    const guestKeys = checkInGuest(
+      bytes,
+      `function (v) { return Object.keys(v).map(function (k) {
+        var units = [];
+        for (var i = 0; i < k.length; i++) units.push(k.charCodeAt(i));
+        return units.join(',');
+      }).join('|'); }`
+    );
+    const expectedKeys = Object.keys(expected)
+      .map((k) => Array.from(k, (_, i) => k.charCodeAt(i)).join(','))
+      .join('|');
+    expect(guestKeys).toBe(expectedKeys);
+    // The NUL-bearing key survives exactly.
+    expect(Object.keys(expected)).toContain('nul\u0000only');
   });
 
   it('deserializes reference-codec NUL keys into the guest correctly', () => {

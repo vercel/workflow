@@ -53,6 +53,7 @@ import {
   adoptSerdeRoot,
   captureSerdeRoot,
   createQuickJSSerde,
+  exportSerdeRoot,
   type QuickJSSerde,
 } from './quickjs-serde.js';
 import { runIdCreatedAt } from './run-id-time.js';
@@ -1261,7 +1262,11 @@ async function prepareBaselineSnapshot(
       workflowId,
       hydrateMs: Date.now() - hydrateStart,
     });
-    return { state: 'ready', snapshot, serdeRootPtr: serdeRoot.ptr };
+    return {
+      state: 'ready',
+      snapshot,
+      serdeRootPtr: exportSerdeRoot(vm, serdeRoot),
+    };
   } finally {
     vm.dispose();
   }
