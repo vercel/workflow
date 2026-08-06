@@ -60,21 +60,22 @@ export function createContext(options: CreateContextOptions) {
   // Deterministic `Math.random()`
   g.Math.random = rng;
 
-  // Override `Date` constructor to return fixed time when called without arguments
+  // Override `Date` constructor to return fixed time when called without
+  // arguments. A `class` (rather than a plain function) keeps `new.target`
+  // intact so user code can still subclass `Date` (e.g. `TZDate` from
+  // `@date-fns/tz`), and `extends` preserves the prototype chain and statics.
   const Date_ = g.Date;
   // biome-ignore lint/suspicious/noShadowRestrictedNames: We're shadowing the global `Date` property to make it deterministic.
-  (g as any).Date = function Date(
-    ...args: Parameters<(typeof globalThis)['Date']>[]
-  ) {
-    if (args.length === 0) {
-      return new Date_(fixedTimestamp);
+  (g as any).Date = class Date extends Date_ {
+    constructor(...args: any[]) {
+      if (args.length === 0) {
+        super(fixedTimestamp);
+      } else {
+        // @ts-expect-error - Args is `Date` constructor arguments
+        super(...args);
+      }
     }
-    // @ts-expect-error - Args is `Date` constructor arguments
-    return new Date_(...args);
   };
-  (g as any).Date.prototype = Date_.prototype;
-  // Preserve static methods
-  Object.setPrototypeOf(g.Date, Date_);
   g.Date.now = () => fixedTimestamp;
 
   // Deterministic `crypto` using Proxy to avoid mutating global objects
