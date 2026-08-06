@@ -236,4 +236,77 @@ describe('withEventPostRetry', () => {
     await expect(withEventPostRetry(fn, 'hook_received')).rejects.toThrow();
     expect(fn).toHaveBeenCalledTimes(1);
   });
+
+  describe('idempotentHookResume opt-in', () => {
+    it('retries an atomic hook resume (resumeId + digest) past an ECONNRESET', async () => {
+      // The (runId, resumeId) claim makes the write idempotent-on-retry: a
+      // retry whose original landed converges on the same canonical event.
+      let calls = 0;
+      const fn = vi.fn(async () => {
+        calls++;
+        if (calls === 1) throw transportErr('ECONNRESET');
+        return 'ok';
+      });
+
+      const p = withEventPostRetry(fn, 'hook_received', {
+        idempotentHookResume: true,
+      });
+      await vi.runAllTimersAsync();
+
+      await expect(p).resolves.toBe('ok');
+      expect(fn).toHaveBeenCalledTimes(2);
+    });
+
+    it('keeps plain hook_received single-attempt when the opt-in is absent', async () => {
+      const fn = vi.fn(async () => {
+        throw transportErr('ECONNRESET');
+      });
+
+      await expect(
+        withEventPostRetry(fn, 'hook_received', {})
+      ).rejects.toThrow();
+      expect(fn).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps an incomplete idempotency shape single-attempt (opt-in false)', async () => {
+      // The caller computes the opt-in from resumeId AND digest presence —
+      // resumeId-only / digest-only writes arrive here with false.
+      const fn = vi.fn(async () => {
+        throw transportErr('ECONNRESET');
+      });
+
+      await expect(
+        withEventPostRetry(fn, 'hook_received', {
+          idempotentHookResume: false,
+        })
+      ).rejects.toThrow();
+      expect(fn).toHaveBeenCalledTimes(1);
+    });
+
+    it('never retries a definitive response, even with the opt-in', async () => {
+      const fn = vi.fn(async () => {
+        throw new WorkflowWorldError('digest reuse', { status: 422 });
+      });
+
+      await expect(
+        withEventPostRetry(fn, 'hook_received', {
+          idempotentHookResume: true,
+        })
+      ).rejects.toThrow();
+      expect(fn).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not widen retries for other event types', async () => {
+      const fn = vi.fn(async () => {
+        throw transportErr('ECONNRESET');
+      });
+
+      await expect(
+        withEventPostRetry(fn, 'step_started', {
+          idempotentHookResume: true,
+        })
+      ).rejects.toThrow();
+      expect(fn).toHaveBeenCalledTimes(1);
+    });
+  });
 });

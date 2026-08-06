@@ -1,5 +1,23 @@
 # @workflow/world-local
 
+## 5.0.0-beta.34
+
+### Major Changes
+
+- [#3280](https://github.com/vercel/workflow/pull/3280) [`de1905f`](https://github.com/vercel/workflow/commit/de1905f15c0a31f272966ac518ebf272864ea5c6) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - **Breaking:** `events.listByCorrelationId` and `analytics.events.listByCorrelationId` now require a `runId`. A correlation id is unique within its run, not across runs, so an unscoped lookup answered with one event per run that numbered a step or wait the same.
+
+### Minor Changes
+
+- [#2866](https://github.com/vercel/workflow/pull/2866) [`e6f1b6f`](https://github.com/vercel/workflow/commit/e6f1b6f5489da19f736fcd86a06a03d8247e5b78) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Keep Hook tokens reserved through their configured minimum retention.
+
+### Patch Changes
+
+- [#3315](https://github.com/vercel/workflow/pull/3315) [`1222aab`](https://github.com/vercel/workflow/commit/1222aab74da39b4a7ae93e6c5ecc2dc4707b68d0) Thanks [@pranaygp](https://github.com/pranaygp)! - Update undici to 7.29.0
+
+- Updated dependencies [[`8d47928`](https://github.com/vercel/workflow/commit/8d479283cabd9de84fa2542c4ff16f2697d16399), [`de1905f`](https://github.com/vercel/workflow/commit/de1905f15c0a31f272966ac518ebf272864ea5c6), [`79e4c04`](https://github.com/vercel/workflow/commit/79e4c044091185e68bbdcc254a86133e54956ad3), [`9c1b3c8`](https://github.com/vercel/workflow/commit/9c1b3c86384181b673d41123d2eec0b987afc75a), [`e6f1b6f`](https://github.com/vercel/workflow/commit/e6f1b6f5489da19f736fcd86a06a03d8247e5b78), [`72efc90`](https://github.com/vercel/workflow/commit/72efc90f286956e6cde25b814f9375a8ecbbff36)]:
+  - @workflow/world@5.0.0-beta.25
+  - @workflow/errors@5.0.0-beta.16
+
 ## 5.0.0-beta.33
 
 ### Minor Changes

@@ -870,6 +870,13 @@ export function workflowEntrypoint(
                   let workflowStartedAt = -1;
                   let preloadedEvents: Event[] | undefined;
                   let preloadedEventsCursor: string | null | undefined;
+                  // True only when `preloadedEvents` is known to be the
+                  // COMPLETE event log (the lazy hook fast path's validated
+                  // hasMore-false preload). Lets QuickJS trust it as-is —
+                  // its own heuristic only recognizes first-invocation
+                  // (run_created/run_started-only) preloads.
+                  let preloadedEventsComplete = false;
+
                   // Latency telemetry (TTFS) state — see runtime/step-latency.ts.
                   // Whether this invocation's FIRST event snapshot contained
                   // nothing beyond run_created/run_started: anything else was
@@ -1235,6 +1242,7 @@ export function workflowEntrypoint(
                       eventsCursor = null;
                       preloadedEvents = undefined;
                       preloadedEventsCursor = undefined;
+                      preloadedEventsComplete = false;
                       pendingInlineDelta = null;
                       slotDensityCheckPending = false;
                       // The corrected log inserts the missing events BELOW the
@@ -1632,9 +1640,213 @@ export function workflowEntrypoint(
                     }
                   }
 
+                  // --- Lazy hook resume fast path ---
+                  // A lazy hook delivery (resumeId + digest on the queue
+                  // message) hoists the consumer's idempotent hook_received
+                  // re-ensure above run_started and asks the World to return
+                  // the current replay log with the write (preloadEvents). A
+                  // supporting World answers with the reconstructed run, the
+                  // complete replay log, and the run's event ceiling —
+                  // everything the generic setup below would spend a
+                  // run_started POST and an events.list on. Any other result
+                  // (older server, a World that ignores the param, or a
+                  // preload that fails validation, including a bounded
+                  // hasMore page) falls back to that generic setup; the
+                  // hook_received write itself has still succeeded either
+                  // way, so the re-ensure block below is skipped via
+                  // `hookEnsured`. Never taken on turbo (turbo deliveries
+                  // carry runInput, not hookInput) or after the background
+                  // step path already loaded the run.
+                  let hookEnsured = false;
+                  if (
+                    !workflowRun &&
+                    hookInput &&
+                    hookInput.resumeId !== undefined &&
+                    hookInput.payloadDigest !== undefined
+                  ) {
+                    const hookResumeInput = hookInput;
+                    // Date the materialized event to when the resume actually
+                    // occurred — same derivation as the re-ensure below (the
+                    // resumeId is a ULID minted by resumeHook() at resume
+                    // time).
+                    let occurredAt: Date | undefined;
+                    try {
+                      occurredAt = new Date(
+                        decodeTime(hookResumeInput.resumeId)
+                      );
+                    } catch {
+                      occurredAt = undefined;
+                    }
+                    try {
+                      span?.addEvent('workflow.hook_received.create.start', {
+                        'workflow.hook_received.preload_events': true,
+                      });
+                      const result = await createEvent(
+                        {
+                          eventType: 'hook_received',
+                          specVersion: SPEC_VERSION_CURRENT,
+                          correlationId: hookResumeInput.hookId,
+                          eventData: {
+                            token: hookResumeInput.token,
+                            payload: hookResumeInput.payload,
+                          },
+                        },
+                        {
+                          requestId,
+                          occurredAt,
+                          resumeId: hookResumeInput.resumeId,
+                          resumePayloadDigest: hookResumeInput.payloadDigest,
+                          preloadEvents: true,
+                        }
+                      );
+                      hookEnsured = true;
+                      // Note: unlike the re-ensure below, this hoisted write
+                      // does NOT set HookResilientResumeMaterialized — it
+                      // runs on every fast-path resume, including the common
+                      // case where the producer's direct write already landed
+                      // and this call merely converged on it, so it carries
+                      // no recovery signal. workflow.resume_setup_source
+                      // (below) describes this path instead.
+
+                      // The preload is usable as replay input only when it is
+                      // demonstrably the complete picture: a reconstructed
+                      // run with a start time, a non-empty COMPLETE log
+                      // (hasMore false — this path has no cursor-continuation
+                      // machinery, so a bounded page must not be trusted),
+                      // the server's event ceiling (this response plays
+                      // run_started's role, so a missing ceiling would leave
+                      // event-limit enforcement disabled for the run),
+                      // both run lifecycle events, the canonical event this
+                      // write converged on, and the hook_received matching
+                      // THIS resume (so we never replay against a log that is
+                      // missing the very event that triggered this delivery).
+                      const usableReplayPreload =
+                        result.run !== undefined &&
+                        result.run.startedAt !== undefined &&
+                        result.event !== undefined &&
+                        result.events !== undefined &&
+                        result.events.length > 0 &&
+                        result.cursor != null &&
+                        result.hasMore === false &&
+                        typeof result.maxEvents === 'number' &&
+                        result.events.some(
+                          (e) => e.eventType === 'run_created'
+                        ) &&
+                        result.events.some(
+                          (e) => e.eventType === 'run_started'
+                        ) &&
+                        result.events.some(
+                          (e) =>
+                            e.eventType === 'hook_received' &&
+                            e.resumeId === hookResumeInput.resumeId
+                        );
+
+                      if (
+                        usableReplayPreload &&
+                        result.run?.startedAt &&
+                        result.events
+                      ) {
+                        // The reconstructed run always reads 'running', but a
+                        // terminal event committed concurrently rides in the
+                        // log itself. The node replay loop would catch it, but
+                        // QuickJS dispatches before that check — so consume
+                        // the delivery here, before any engine runs. Same
+                        // outcome as the run_started path's non-running
+                        // status check.
+                        const terminalEvent = result.events.find(
+                          (e) =>
+                            e.runId === runId &&
+                            (e.eventType === 'run_completed' ||
+                              e.eventType === 'run_failed' ||
+                              e.eventType === 'run_cancelled')
+                        );
+                        if (terminalEvent) {
+                          // The preload still initialized this delivery (it
+                          // is how the terminal state was observed), so the
+                          // setup-source and the run's actual terminal
+                          // status are recorded before consuming.
+                          span?.setAttributes({
+                            ...Attribute.WorkflowRunStatus(
+                              terminalEvent.eventType === 'run_completed'
+                                ? 'completed'
+                                : terminalEvent.eventType === 'run_failed'
+                                  ? 'failed'
+                                  : 'cancelled'
+                            ),
+                            ...Attribute.HookResumeSetupSource(
+                              'hook_received_stream'
+                            ),
+                          });
+                          runtimeLogger.info(
+                            'Run already finished during lazy hook setup, skipping',
+                            {
+                              workflowRunId: runId,
+                              eventType: terminalEvent.eventType,
+                            }
+                          );
+                          return;
+                        }
+                        workflowRun = result.run;
+                        maxEventsLimit = clampMaxEvents(result.maxEvents);
+                        // Anchors RSFS — see the declaration above. This
+                        // response plays run_started's role on this path.
+                        runStartedReceivedAtMs = Date.now();
+                        preloadedEvents = result.events;
+                        preloadedEventsCursor = result.cursor;
+                        // The validated preload is the COMPLETE log (hasMore
+                        // false), so QuickJS may trust it as-is instead of
+                        // refetching — its own first-invocation heuristic
+                        // only recognizes run_created/run_started preloads.
+                        preloadedEventsComplete = true;
+                        workflowStartedAt = +result.run.startedAt;
+                        span?.setAttributes({
+                          ...Attribute.WorkflowRunStatus(result.run.status),
+                          ...Attribute.WorkflowStartedAt(workflowStartedAt),
+                          ...Attribute.HookResumeSetupSource(
+                            'hook_received_stream'
+                          ),
+                        });
+                      } else {
+                        // Successful write, no usable preload (CBOR response
+                        // from an older server, a World that ignored the
+                        // opt-in, a bounded hasMore page, or a preload that
+                        // failed validation): take the generic run_started
+                        // setup below. Its preload is loaded after this write
+                        // committed, so the canonical hook_received is part
+                        // of whatever log that setup reads — no splice
+                        // needed.
+                        span?.setAttributes(
+                          Attribute.HookResumeSetupSource(
+                            'hook_received_fallback'
+                          )
+                        );
+                      }
+                    } catch (err) {
+                      // Same classification as the re-ensure below:
+                      // - HookNotFound / RunExpired: the run went terminal;
+                      //   nothing left to resume, consume the message.
+                      // - anything else (EntityConflict, a truncated preload
+                      //   stream, transport failures): transient — rethrow so
+                      //   the queue redelivers and the idempotent
+                      //   (runId, resumeId) claim converges on retry.
+                      if (
+                        HookNotFoundError.is(err) ||
+                        RunExpiredError.is(err)
+                      ) {
+                        runtimeLogger.info(
+                          'Run already finished during lazy hook setup, skipping',
+                          { workflowRunId: runId, message: err.message }
+                        );
+                        return;
+                      }
+                      throw err;
+                    }
+                  }
+
                   // --- Infrastructure: prepare the run state ---
                   // Skip if workflowRun was already set by the background
-                  // step path (inline replay after all parallel steps done).
+                  // step path (inline replay after all parallel steps done)
+                  // or by the lazy hook fast path above.
                   if (!workflowRun) {
                     // Always call run_started directly — this both transitions
                     // the run to 'running' AND returns the run entity, saving
@@ -1910,8 +2122,12 @@ export function workflowEntrypoint(
                   // (the server resolves a matching claim as success, not an
                   // error). `hookInput` never rides a turbo first-delivery
                   // (that path carries `runInput`, not `hookInput`), so this
-                  // only runs on the normal load-and-replay path.
-                  if (hookInput) {
+                  // only runs on the normal load-and-replay path. Skipped
+                  // entirely when the fast path above already ensured the
+                  // event (`hookEnsured`) — successfully or via its fallback,
+                  // whose run_started preload was loaded after the write and
+                  // therefore already contains the canonical event.
+                  if (hookInput && !hookEnsured) {
                     // Perf (Option A): if the producer's concurrent direct
                     // write already landed in the run_started preload, the
                     // canonical event is in the log and the re-ensure round trip
@@ -1921,6 +2137,13 @@ export function workflowEntrypoint(
                     // hook_received). Best-effort: the win lands only when the
                     // producer's write beat this consumer's load; otherwise we
                     // fall through to the idempotent re-ensure below.
+                    //
+                    // Intentionally unreachable for atomic lazy resumes
+                    // (resumeId + digest): those set `hookEnsured` in the
+                    // hoisted fast path above — on success AND on its
+                    // fallback — so this block (and the skip check) now only
+                    // serves hookInput shapes without the full idempotency
+                    // pair.
                     const alreadyPreloaded =
                       hookInput.resumeId !== undefined &&
                       preloadedEvents?.some(
@@ -2046,6 +2269,7 @@ export function workflowEntrypoint(
                       } else {
                         preloadedEvents = undefined;
                         preloadedEventsCursor = undefined;
+                        preloadedEventsComplete = false;
                       }
                     } // end else (re-ensure needed)
                   }
@@ -2192,6 +2416,7 @@ export function workflowEntrypoint(
                           workflowName,
                           workflowRun,
                           preloadedEvents,
+                          preloadedEventsComplete,
                           runInput,
                           parentSpan: span,
                           maxEventsLimit,

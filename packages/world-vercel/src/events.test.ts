@@ -1286,3 +1286,408 @@ describe('getWorkflowRunEvents by correlation id is scoped to the run', () => {
     expect(result.cursor).toBe('eid:evnt_2');
   });
 });
+
+describe('createWorkflowRunEvent hook_received replay preload', () => {
+  const RESUME_ID = 'resume-preload-1';
+  const DIGEST = 'e'.repeat(64);
+  const PAYLOAD = new TextEncoder().encode('"resume payload"');
+
+  const preloadParams: CreateEventParams = {
+    resumeId: RESUME_ID,
+    resumePayloadDigest: DIGEST,
+    preloadEvents: true,
+  };
+
+  function hookReceivedRequest() {
+    return {
+      eventType: 'hook_received',
+      specVersion: 2,
+      correlationId: 'hook_1',
+      eventData: { token: 'tok-preload', payload: PAYLOAD },
+    } as AnyEventRequest;
+  }
+
+  function concatFrames(frames: Uint8Array[]): Uint8Array {
+    const total = frames.reduce((n, f) => n + f.byteLength, 0);
+    const out = new Uint8Array(total);
+    let off = 0;
+    for (const f of frames) {
+      out.set(f, off);
+      off += f.byteLength;
+    }
+    return out;
+  }
+
+  function hookReplayStreamResponse(): Uint8Array {
+    return concatFrames([
+      encodeFrame(
+        {
+          eventId: 'evnt_1',
+          runId: 'wrun_1',
+          eventType: 'run_created',
+          createdAt: new Date('2026-06-10T00:00:00.000Z'),
+          specVersion: 2,
+          eventData: {
+            deploymentId: 'dpl_1',
+            workflowName: 'wf',
+            executionContext: { region: 'iad1' },
+          },
+        },
+        new Uint8Array()
+      ),
+      encodeFrame(
+        {
+          eventId: 'evnt_2',
+          runId: 'wrun_1',
+          eventType: 'run_started',
+          createdAt: new Date('2026-06-10T00:00:01.000Z'),
+          specVersion: 2,
+          eventData: {},
+        },
+        new Uint8Array()
+      ),
+      encodeFrame(
+        {
+          eventId: 'evnt_3',
+          runId: 'wrun_1',
+          eventType: 'hook_created',
+          correlationId: 'hook_1',
+          createdAt: new Date('2026-06-10T00:00:02.000Z'),
+          specVersion: 2,
+          eventData: { token: 'tok-preload' },
+        },
+        new Uint8Array()
+      ),
+      encodeFrame(
+        {
+          eventId: 'evnt_4',
+          runId: 'wrun_1',
+          eventType: 'hook_received',
+          correlationId: 'hook_1',
+          createdAt: new Date('2026-06-10T00:00:03.000Z'),
+          specVersion: 2,
+          resumeId: RESUME_ID,
+          eventData: { token: 'tok-preload' },
+        },
+        PAYLOAD
+      ),
+      encodeFrame(
+        { _end: 1, next: 'eid:evnt_4', hasMore: false },
+        new Uint8Array()
+      ),
+    ]);
+  }
+
+  it('decodes a streamed replay log into event + reconstructed run + page', async () => {
+    const agent = mockAgent();
+    let capturedMeta: Record<string, unknown> | undefined;
+    agent
+      .get(ORIGIN)
+      .intercept({
+        // The headers matcher proves the frame Accept was sent — an
+        // unmatched request would leave the interceptor pending.
+        path: '/api/v4/runs/wrun_1/events/hook_received',
+        method: 'POST',
+        headers: { accept: V4_FRAME_CONTENT_TYPE },
+      })
+      .reply(
+        200,
+        (opts: { body?: unknown }) => {
+          capturedMeta = decodePostedMeta(opts.body);
+          return hookReplayStreamResponse();
+        },
+        {
+          headers: {
+            'content-type': V4_FRAME_CONTENT_TYPE,
+            'x-wf-event-id': 'evnt_4',
+            'x-wf-run-id': 'wrun_1',
+            'x-wf-created-at': '2026-06-10T00:00:03.000Z',
+            'x-wf-max-events': '10000',
+          },
+        }
+      );
+
+    const result = await createWorkflowRunEvent(
+      'wrun_1',
+      hookReceivedRequest(),
+      preloadParams,
+      { token: 'test-token', dispatcher: agent }
+    );
+
+    // The idempotency key + digest rode the frame meta. The request keeps
+    // hook_received's lazy default: a supporting server owns frame-body
+    // resolution regardless, and an older server then answers the CBOR
+    // fallback without resolving a payload the runtime would discard.
+    expect(capturedMeta?.resumeId).toBe(RESUME_ID);
+    expect(capturedMeta?.resumePayloadDigest).toBe(DIGEST);
+    expect(capturedMeta?.remoteRefBehavior).toBe('lazy');
+
+    // The canonical event is the one the x-wf-event-id header names.
+    expect(result.event?.eventId).toBe('evnt_4');
+    expect(result.event?.eventType).toBe('hook_received');
+    expect(result.event?.resumeId).toBe(RESUME_ID);
+    expect(result.event?.eventData?.payload).toEqual(PAYLOAD);
+
+    // The run is reconstructed from the streamed lifecycle events.
+    expect(result.run).toMatchObject({
+      runId: 'wrun_1',
+      status: 'running',
+      deploymentId: 'dpl_1',
+      workflowName: 'wf',
+      executionContext: { region: 'iad1' },
+    });
+    expect(result.run?.startedAt?.getTime()).toBe(
+      new Date('2026-06-10T00:00:01.000Z').getTime()
+    );
+
+    expect(result.events?.map((event) => event.eventType)).toEqual([
+      'run_created',
+      'run_started',
+      'hook_created',
+      'hook_received',
+    ]);
+    expect(result.cursor).toBe('eid:evnt_4');
+    expect(result.hasMore).toBe(false);
+    expect(result.maxEvents).toBe(10000);
+    agent.assertNoPendingInterceptors();
+  });
+
+  it('returns the page without a run when the stream lacks the lifecycle events', async () => {
+    // A hook_received preload missing run_created / run_started is not
+    // fatal: the write converged, so return the page without a run and let
+    // the runtime take its safe fallback.
+    const agent = mockAgent();
+    agent
+      .get(ORIGIN)
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events/hook_received',
+        method: 'POST',
+        headers: { accept: V4_FRAME_CONTENT_TYPE },
+      })
+      .reply(
+        200,
+        concatFrames([
+          encodeFrame(
+            {
+              eventId: 'evnt_4',
+              runId: 'wrun_1',
+              eventType: 'hook_received',
+              correlationId: 'hook_1',
+              createdAt: new Date('2026-06-10T00:00:03.000Z'),
+              specVersion: 2,
+              resumeId: RESUME_ID,
+              eventData: { token: 'tok-preload' },
+            },
+            PAYLOAD
+          ),
+          encodeFrame(
+            { _end: 1, next: 'eid:evnt_4', hasMore: false },
+            new Uint8Array()
+          ),
+        ]),
+        {
+          headers: {
+            'content-type': V4_FRAME_CONTENT_TYPE,
+            'x-wf-event-id': 'evnt_4',
+            'x-wf-run-id': 'wrun_1',
+            'x-wf-created-at': '2026-06-10T00:00:03.000Z',
+            'x-wf-max-events': '10000',
+          },
+        }
+      );
+
+    const result = await createWorkflowRunEvent(
+      'wrun_1',
+      hookReceivedRequest(),
+      preloadParams,
+      { token: 'test-token', dispatcher: agent }
+    );
+
+    expect(result.event?.eventId).toBe('evnt_4');
+    expect(result.run).toBeUndefined();
+    expect(result.events).toHaveLength(1);
+    expect(result.cursor).toBe('eid:evnt_4');
+    agent.assertNoPendingInterceptors();
+  });
+
+  it('retries the atomic preload write past a transient transport failure', async () => {
+    // The (runId, resumeId) claim makes the write idempotent-on-retry, so
+    // createWorkflowRunEvent opts this shape into withEventPostRetry — an
+    // ECONNRESET on the first attempt rides out in-process instead of
+    // failing the delivery back to the queue.
+    const agent = mockAgent();
+    const reset = Object.assign(new Error('socket hang up'), {
+      code: 'ECONNRESET',
+    });
+    agent
+      .get(ORIGIN)
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events/hook_received',
+        method: 'POST',
+        headers: { accept: V4_FRAME_CONTENT_TYPE },
+      })
+      .replyWithError(reset);
+    agent
+      .get(ORIGIN)
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events/hook_received',
+        method: 'POST',
+        headers: { accept: V4_FRAME_CONTENT_TYPE },
+      })
+      .reply(200, hookReplayStreamResponse(), {
+        headers: {
+          'content-type': V4_FRAME_CONTENT_TYPE,
+          'x-wf-event-id': 'evnt_4',
+          'x-wf-run-id': 'wrun_1',
+          'x-wf-created-at': '2026-06-10T00:00:03.000Z',
+          'x-wf-max-events': '10000',
+        },
+      });
+
+    const result = await createWorkflowRunEvent(
+      'wrun_1',
+      hookReceivedRequest(),
+      preloadParams,
+      { token: 'test-token', dispatcher: agent }
+    );
+
+    expect(result.event?.eventId).toBe('evnt_4');
+    expect(result.events).toHaveLength(4);
+    agent.assertNoPendingInterceptors();
+  });
+
+  it('keeps the CBOR result when the server does not stream (older server)', async () => {
+    const agent = mockAgent();
+    agent
+      .get(ORIGIN)
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events/hook_received',
+        method: 'POST',
+        headers: { accept: V4_FRAME_CONTENT_TYPE },
+      })
+      .reply(
+        200,
+        encode({
+          event: {
+            eventId: 'evnt_4',
+            runId: 'wrun_1',
+            eventType: 'hook_received',
+            correlationId: 'hook_1',
+            createdAt: new Date('2026-06-10T00:00:03.000Z'),
+            specVersion: 2,
+            eventData: { token: 'tok-preload' },
+          },
+        }),
+        {
+          headers: {
+            'content-type': 'application/cbor',
+            'x-wf-event-id': 'evnt_4',
+            'x-wf-run-id': 'wrun_1',
+            'x-wf-created-at': '2026-06-10T00:00:03.000Z',
+          },
+        }
+      );
+
+    const result = await createWorkflowRunEvent(
+      'wrun_1',
+      hookReceivedRequest(),
+      preloadParams,
+      { token: 'test-token', dispatcher: agent }
+    );
+
+    // A successful write with no replay preload — the runtime falls back to
+    // the run_started setup without posting the hook again.
+    expect(result.event?.eventType).toBe('hook_received');
+    expect(result.events).toBeUndefined();
+    expect(result.run).toBeUndefined();
+    agent.assertNoPendingInterceptors();
+  });
+
+  it('rejects a truncated preload stream (no end sentinel)', async () => {
+    const agent = mockAgent();
+    agent
+      .get(ORIGIN)
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events/hook_received',
+        method: 'POST',
+        headers: { accept: V4_FRAME_CONTENT_TYPE },
+      })
+      .reply(
+        200,
+        encodeFrame(
+          {
+            eventId: 'evnt_4',
+            runId: 'wrun_1',
+            eventType: 'hook_received',
+            correlationId: 'hook_1',
+            createdAt: new Date('2026-06-10T00:00:03.000Z'),
+            specVersion: 2,
+            resumeId: RESUME_ID,
+            eventData: { token: 'tok-preload' },
+          },
+          PAYLOAD
+        ),
+        { headers: { 'content-type': V4_FRAME_CONTENT_TYPE } }
+      );
+
+    await expect(
+      createWorkflowRunEvent('wrun_1', hookReceivedRequest(), preloadParams, {
+        token: 'test-token',
+        dispatcher: agent,
+      })
+    ).rejects.toThrow(/end-of-stream sentinel/);
+    agent.assertNoPendingInterceptors();
+  });
+
+  it('does not request the frame response without preloadEvents (producer write)', async () => {
+    const agent = mockAgent();
+    let capturedAccept: string | undefined;
+    agent
+      .get(ORIGIN)
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events/hook_received',
+        method: 'POST',
+      })
+      .reply(
+        200,
+        (opts: { headers?: unknown }) => {
+          const headers = opts.headers as
+            | Record<string, string | undefined>
+            | undefined;
+          capturedAccept = headers?.accept ?? headers?.Accept;
+          return encode({
+            event: {
+              eventId: 'evnt_4',
+              runId: 'wrun_1',
+              eventType: 'hook_received',
+              correlationId: 'hook_1',
+              createdAt: new Date('2026-06-10T00:00:03.000Z'),
+              specVersion: 2,
+              eventData: { token: 'tok-preload' },
+            },
+          });
+        },
+        {
+          headers: {
+            'content-type': 'application/cbor',
+            'x-wf-event-id': 'evnt_4',
+            'x-wf-run-id': 'wrun_1',
+            'x-wf-created-at': '2026-06-10T00:00:03.000Z',
+          },
+        }
+      );
+
+    const result = await createWorkflowRunEvent(
+      'wrun_1',
+      hookReceivedRequest(),
+      { resumeId: RESUME_ID, resumePayloadDigest: DIGEST },
+      { token: 'test-token', dispatcher: agent }
+    );
+
+    // fetch fills a default `accept: */*`; what matters is the producer
+    // never opts into the frame response.
+    expect(capturedAccept ?? '').not.toContain(V4_FRAME_CONTENT_TYPE);
+    expect(result.event?.eventType).toBe('hook_received');
+    agent.assertNoPendingInterceptors();
+  });
+});

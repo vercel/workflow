@@ -560,12 +560,21 @@ export async function runWorkflowWithQuickJS(params: {
   workflowName: string;
   workflowRun: WorkflowRun;
   /**
-   * Events returned inline by `events.create('run_started', ...)`. When
-   * they indicate a first invocation, they are used as the event log
-   * instead of fetching via `events.list`, matching the node:vm engine's
-   * fast path.
+   * Events returned inline by `events.create('run_started', ...)` or by
+   * the lazy hook fast path's `hook_received` preload. When they indicate
+   * a first invocation — or when `preloadedEventsComplete` attests they
+   * are the complete log — they are used as the event log instead of
+   * fetching via `events.list`, matching the node:vm engine's fast path.
    */
   preloadedEvents?: Event[];
+  /**
+   * True when the caller has validated that `preloadedEvents` is the run's
+   * COMPLETE event log (e.g. the lazy hook fast path's hasMore-false
+   * replay preload). The first-invocation heuristic below only recognizes
+   * run_created/run_started-only preloads, so without this attestation a
+   * hook-resume preload would be discarded and refetched.
+   */
+  preloadedEventsComplete?: boolean;
   /**
    * Run input carried through the queue message on first delivery. Used
    * as a last-resort fallback for `run_created.eventData.input` when
@@ -622,6 +631,7 @@ export async function runWorkflowWithQuickJS(params: {
     workflowName,
     workflowRun,
     preloadedEvents,
+    preloadedEventsComplete,
     runInput,
     parentSpan,
     maxEventsLimit,
@@ -693,10 +703,15 @@ export async function runWorkflowWithQuickJS(params: {
 
   // Load the FULL event log for the run. On first invocation the
   // preloaded events from the run_started response are the complete log
-  // and save the events.list round-trips.
+  // and save the events.list round-trips; a caller-attested complete
+  // preload (lazy hook fast path) is trusted the same way.
   let events: Event[];
   let eventsFetchedPages = 0;
-  const usePreloaded = isFirstInvocation(preloadedEvents);
+  const usePreloaded =
+    (preloadedEventsComplete === true &&
+      Array.isArray(preloadedEvents) &&
+      preloadedEvents.length > 0) ||
+    isFirstInvocation(preloadedEvents);
   if (usePreloaded && preloadedEvents) {
     events = preloadedEvents;
   } else {
