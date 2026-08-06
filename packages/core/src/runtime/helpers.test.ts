@@ -6,6 +6,7 @@ import {
 } from '@workflow/errors';
 import {
   type Event,
+  type EventResult,
   SPEC_VERSION_SLOT_IDENTITY,
   slotEventId,
   type World,
@@ -33,6 +34,7 @@ import {
   loadWorkflowRunEvents,
   memoizeEncryptionKey,
   mergeLoadedEvents,
+  orderedCreateFor,
   preconditionEventDelta,
   preconditionSnapshotParams,
   reserveSlot,
@@ -965,6 +967,102 @@ describe('claimFenceFor', () => {
       expect.objectContaining({ stateUpdatedAt: time })
     );
     expect(eventsListMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('orderedCreateFor', () => {
+  const slotEvent = (slot: number) => makeEvent(slotEventId(slot));
+  const result = (slot: number) =>
+    ({ event: slotEvent(slot) }) as unknown as EventResult;
+
+  beforeEach(() => {
+    eventsListMock.mockReset();
+  });
+
+  it('keeps an unfenced write off the slot a claim in the same batch holds', async () => {
+    // The collision this exists to remove: a lazy start reserves the
+    // `step_created` it defers below its claim, so the tail a backend-allocated
+    // write lands on is a slot that start has already promised. Both drawing
+    // from the log leaves them disjoint.
+    const log = toMutableEventLog([slotEvent(1), slotEvent(2)], 'c0');
+    const claim = claimFenceFor(log, SPEC_VERSION_SLOT_IDENTITY, {
+      extraEvents: 1,
+    });
+    const ordered = orderedCreateFor(
+      log,
+      'wrun_mockidnumber0001',
+      SPEC_VERSION_SLOT_IDENTITY
+    );
+
+    const claimed = await claim(async (fence) => fence?.eventId);
+    const numbered = await ordered?.(async (fence) => {
+      expect(fence?.eventId).toBe(slotEventId(5));
+      return result(5);
+    });
+
+    // Slots 3 and 4 belong to the claim: 3 to the deferred create, 4 to the
+    // claim itself.
+    expect(claimed).toBe(slotEventId(4));
+    expect(numbered?.event?.eventId).toBe(slotEventId(5));
+  });
+
+  it('re-issues a lost write unnumbered instead of failing the replay', async () => {
+    // A terminal event is identified by its correlation id, fixed already by the
+    // start that landed, so its position carries no meaning to lose — and the
+    // work it records must not be dropped over one.
+    const log = toMutableEventLog([slotEvent(1)], 'c0');
+    const ordered = orderedCreateFor(
+      log,
+      'wrun_mockidnumber0001',
+      SPEC_VERSION_SLOT_IDENTITY
+    );
+    const seen: (string | undefined)[] = [];
+    const op = vi.fn(async (fence?: { eventId?: string }) => {
+      seen.push(fence?.eventId);
+      if (fence) {
+        throw new SlotConflictError('taken', {
+          eventId: fence.eventId as string,
+          events: [slotEvent(2)],
+          cursor: 'c1',
+        });
+      }
+      return result(3);
+    });
+
+    const written = await ordered?.(op);
+    expect(written?.event?.eventId).toBe(slotEventId(3));
+    expect(seen).toEqual([slotEventId(2), undefined]);
+    // The conflict's delta and the slot the backend chose both fold into the
+    // log, so the next write numbers itself above them.
+    expect(log.maxSlot).toBe(3);
+    expect(log.nextSlot).toBe(4);
+  });
+
+  it('propagates an error that is not a lost slot', async () => {
+    const log = toMutableEventLog([slotEvent(1)], 'c0');
+    const ordered = orderedCreateFor(
+      log,
+      'wrun_mockidnumber0001',
+      SPEC_VERSION_SLOT_IDENTITY
+    );
+    const op = vi.fn(async () => {
+      throw new EntityConflictError('step already completed');
+    });
+
+    await expect(ordered?.(op)).rejects.toBeInstanceOf(EntityConflictError);
+    expect(op).toHaveBeenCalledTimes(1);
+    // The write never took its slot, so the next one names it again.
+    expect(log.nextSlot).toBe(2);
+  });
+
+  it('does not fence a write of a ULID-numbered run', () => {
+    expect(
+      orderedCreateFor(
+        toMutableEventLog([], null),
+        'wrun_mockidnumber0001',
+        SPEC_VERSION_SLOT_IDENTITY - 1
+      )
+    ).toBeUndefined();
   });
 });
 

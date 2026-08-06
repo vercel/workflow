@@ -24,6 +24,7 @@ import {
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_LEGACY,
   slotEventId,
+  slotFromId,
   ulidToDate,
   usesSlotIdentity,
 } from '@workflow/world';
@@ -815,6 +816,29 @@ export function mergeLoadedEvents(
 }
 
 /**
+ * Folds a slot the backend has just published into `log`'s tail.
+ *
+ * Not every event a replay writes is numbered by the client. A `step_completed`
+ * carries no claim, and a lazy `step_started` publishes the `step_created` it
+ * deferred, so the backend allocates slots the log has no other way to learn
+ * about. Left unobserved, the next claim off the same log names one of them and
+ * loses a fence it should have won — costing the replay a restart per write,
+ * and abandoning any sibling in the batch whose body had already run.
+ *
+ * Monotonic, and safe to call with any event id: a ULID-numbered run has no
+ * slot to fold.
+ */
+export function observeEventSlot(
+  log: MutableEventLog,
+  eventId: string | undefined
+): void {
+  const slot = eventId === undefined ? undefined : slotFromId(eventId);
+  if (slot === undefined) return;
+  log.maxSlot = Math.max(log.maxSlot, slot);
+  log.nextSlot = Math.max(log.nextSlot, log.maxSlot + 1);
+}
+
+/**
  * Claims the next free slot in `log`.
  *
  * Only call this while holding the log's write chain: the claim is the fence,
@@ -1091,6 +1115,34 @@ function reserveSlotFence(
 }
 
 /**
+ * Runs `body` in its turn on `log`'s write chain, so a write numbered off the
+ * log takes its position only once every write ahead of it has settled. Every
+ * write a replay numbers shares the one chain, claims and unfenced creates
+ * alike, which is what keeps the two from drawing the same slot.
+ *
+ * Not reentrant: a `body` that enters the chain again deadlocks waiting on
+ * itself.
+ */
+async function onWriteChain<T>(
+  log: MutableEventLog,
+  body: () => Promise<T>
+): Promise<T> {
+  const ahead = log.writeChain;
+  let done!: () => void;
+  log.writeChain = new Promise<void>((resolve) => {
+    done = resolve;
+  });
+  if (ahead) {
+    await ahead;
+  }
+  try {
+    return await body();
+  } finally {
+    done();
+  }
+}
+
+/**
  * Runs one create with the log's claim to itself, taking its slot only once
  * every create ahead of it on the log has settled.
  *
@@ -1108,41 +1160,33 @@ function reserveSlotFence(
  * behind it without a round-trip, since their fences all name the tail it just
  * proved wrong.
  */
-async function withSerializedClaim<T>(
+function withSerializedClaim<T>(
   log: MutableEventLog,
   extraEvents: number,
   op: (fence: EventCreateFence) => Promise<T>
 ): Promise<T> {
-  const ahead = log.writeChain;
-  let done!: () => void;
-  log.writeChain = new Promise<void>((resolve) => {
-    done = resolve;
+  return onWriteChain(log, async () => {
+    try {
+      if (log.claimRejection !== undefined) {
+        throw log.claimRejection;
+      }
+      const { fence, slot } = reserveSlotFence(log, extraEvents);
+      const result = await op(fence);
+      log.maxSlot = Math.max(log.maxSlot, slot);
+      log.nextSlot = Math.max(log.nextSlot, log.maxSlot + 1);
+      return result;
+    } catch (error) {
+      // The slots this attempt drew are not the writer's, and the tail is no
+      // lower than the claim that lost. Rewinding leaves the next claim naming
+      // the same slot, which is correct for a write that failed without taking
+      // it (an entity conflict, say) and is retried on its own.
+      log.nextSlot = log.maxSlot + 1;
+      if (isStaleWriteRejection(error)) {
+        log.claimRejection = error;
+      }
+      throw error;
+    }
   });
-  if (ahead) {
-    await ahead;
-  }
-  try {
-    if (log.claimRejection !== undefined) {
-      throw log.claimRejection;
-    }
-    const { fence, slot } = reserveSlotFence(log, extraEvents);
-    const result = await op(fence);
-    log.maxSlot = Math.max(log.maxSlot, slot);
-    log.nextSlot = Math.max(log.nextSlot, log.maxSlot + 1);
-    return result;
-  } catch (error) {
-    // The slots this attempt drew are not the writer's, and the tail is no
-    // lower than the claim that lost. Rewinding leaves the next claim naming
-    // the same slot, which is correct for a write that failed without taking it
-    // (an entity conflict, say) and is retried on its own.
-    log.nextSlot = log.maxSlot + 1;
-    if (isStaleWriteRejection(error)) {
-      log.claimRejection = error;
-    }
-    throw error;
-  } finally {
-    done();
-  }
 }
 
 /**
@@ -1179,6 +1223,64 @@ export function claimFenceFor(
   }
   const fence = eventCreateFenceFor(log, specVersion, options);
   return (op) => op(fence);
+}
+
+/**
+ * Runs one create the caller carries no fence for, taking its position off the
+ * log all the same.
+ */
+export type OrderedCreate = (
+  op: (fence: EventCreateFence | undefined) => Promise<EventResult>
+) => Promise<EventResult>;
+
+/**
+ * Numbers a write the caller does not fence, off the same chain every claim on
+ * this log draws from. Undefined for a run whose events are not slotted, which
+ * leaves those writes exactly as they were.
+ *
+ * A slot left for the backend to assign lands at the tail, and the tail is a
+ * position a sibling in the same batch may already hold: a lazy start reserves
+ * the `step_created` it defers *below* its claim, so a `step_completed` landing
+ * between the two claims takes the slot the next start had promised its own
+ * `step_created`. That start then loses a claim no other writer contended,
+ * which costs the replay a restart — and abandons the siblings whose bodies
+ * already ran. Numbering both off one chain removes the collision by
+ * construction.
+ *
+ * The claim here is allocation, not a guard. A conflict means a genuinely
+ * foreign writer holds the position, and the write is re-issued unnumbered for
+ * the backend to place at the tail: a step's terminal event is identified by its
+ * correlation id, fixed already by the start that landed, so its position
+ * carries no meaning to lose — and the work it records must not be dropped over
+ * one. Contrast {@link claimFenceFor}, whose rejection is the signal that the
+ * replay decided from an incomplete log.
+ */
+export function orderedCreateFor(
+  log: MutableEventLog,
+  runId: string,
+  specVersion: number | undefined
+): OrderedCreate | undefined {
+  if (!usesSlotIdentity(specVersion)) return undefined;
+  return (op) =>
+    onWriteChain(log, async () => {
+      const { fence, slot } = reserveSlotFence(log, 0);
+      try {
+        const result = await op(fence);
+        log.maxSlot = Math.max(log.maxSlot, slot);
+        log.nextSlot = Math.max(log.nextSlot, log.maxSlot + 1);
+        return result;
+      } catch (error) {
+        // Whatever the failure, the slot went unused: rewind so the next write
+        // names it again.
+        log.nextSlot = log.maxSlot + 1;
+        if (!SlotConflictError.is(error)) throw error;
+        const delta = preconditionEventDelta(error, runId);
+        if (delta) mergeLoadedEvents(log, delta.events);
+        const result = await op(undefined);
+        observeEventSlot(log, result?.event?.eventId);
+        return result;
+      }
+    });
 }
 
 /**

@@ -78,6 +78,8 @@ import {
   isStaleWriteRejection,
   loadWorkflowRunEvents,
   memoizeEncryptionKey,
+  type OrderedCreate,
+  orderedCreateFor,
   parseHealthCheckPayload,
   preconditionEventDelta,
   queueMessage,
@@ -805,10 +807,30 @@ export function workflowEntrypoint(
                   const replayRecoveryReporter = replayDivergence
                     ? new ReplayRecoveryReporter(replayDivergence.count)
                     : ReplayRecoveryReporter.inert();
-                  const createEvent: EventCreator = (data, params) =>
-                    replayRecoveryReporter.withEventCreate(params, (p) =>
-                      world.events.create(runId, data, p)
+                  // Highest slot known to be published, seeding the logs each
+                  // loop iteration builds. Two things put a slot beyond what a
+                  // snapshot shows: turbo backgrounds `run_started` and replays
+                  // against an empty log, and the backend numbers every event
+                  // the client did not claim itself. A log built without them
+                  // renumbers from a tail that has already moved, and its first
+                  // claim loses a fence it should have won.
+                  // 0 for a run whose ids carry no position to compare.
+                  let knownSlotFloor = 0;
+                  const observeSlotFloor = (eventId: string | undefined) => {
+                    const slot = eventId ? slotFromId(eventId) : undefined;
+                    if (slot !== undefined && slot > knownSlotFloor) {
+                      knownSlotFloor = slot;
+                    }
+                  };
+
+                  const createEvent: EventCreator = async (data, params) => {
+                    const result = await replayRecoveryReporter.withEventCreate(
+                      params,
+                      (p) => world.events.create(runId, data, p)
                     );
+                    observeSlotFloor(result?.event?.eventId);
+                    return result;
+                  };
 
                   // Event cache: keep loaded events in memory across loop iterations.
                   // On the first iteration we do a full load; on subsequent iterations
@@ -848,19 +870,6 @@ export function workflowEntrypoint(
                   let workflowStartedAt = -1;
                   let preloadedEvents: Event[] | undefined;
                   let preloadedEventsCursor: string | null | undefined;
-                  // Highest slot known to be published, for the writes whose
-                  // snapshot cannot show it: turbo backgrounds `run_started` and
-                  // replays against an empty log, so a claim numbered from that
-                  // log alone would propose a slot `run_started` already holds.
-                  // 0 for a run whose ids carry no position to compare.
-                  let knownSlotFloor = 0;
-                  const observeSlotFloor = (eventId: string | undefined) => {
-                    const slot = eventId ? slotFromId(eventId) : undefined;
-                    if (slot !== undefined && slot > knownSlotFloor) {
-                      knownSlotFloor = slot;
-                    }
-                  };
-
                   // Latency telemetry (TTFS) state — see runtime/step-latency.ts.
                   // Whether this invocation's FIRST event snapshot contained
                   // nothing beyond run_created/run_started: anything else was
@@ -1708,10 +1717,6 @@ export function workflowEntrypoint(
                         (r) => {
                           const limit = clampMaxEvents(r?.maxEvents);
                           if (limit !== undefined) maxEventsLimit = limit;
-                          // Every write of this invocation is ordered after this
-                          // promise by `runReadyBarrier`, so the slot it reports
-                          // is in hand before the first claim is numbered.
-                          observeSlotFloor(r?.event?.eventId);
                         },
                         () => {}
                       );
@@ -1790,7 +1795,6 @@ export function workflowEntrypoint(
                         }
                         workflowRun = result.run;
                         maxEventsLimit = clampMaxEvents(result.maxEvents);
-                        observeSlotFloor(result.event?.eventId);
                         // Anchors RSFS — see the declaration above.
                         runStartedReceivedAtMs = Date.now();
 
@@ -3364,6 +3368,24 @@ export function workflowEntrypoint(
                         // claims from the same base and hand the batch's first
                         // step a slot the suspension already holds.
                         const inlineClaimLog = suspensionLog;
+                        // A step also writes events it carries no claim for —
+                        // its terminal event above all. Numbering those off the
+                        // same log keeps them out of the slots the batch's
+                        // claims hold; left to the backend they land at the
+                        // tail, which is where the next start has already
+                        // promised its deferred `step_created`.
+                        const orderedInlineCreate = orderedCreateFor(
+                          inlineClaimLog,
+                          runId,
+                          workflowRun.specVersion
+                        );
+                        const orderedInlineWrite: OrderedCreate | undefined =
+                          orderedInlineCreate &&
+                          (async (op) => {
+                            const result = await orderedInlineCreate(op);
+                            observeSlotFloor(result?.event?.eventId);
+                            return result;
+                          });
 
                         replayBudget.pause();
                         let stepResults: Awaited<
@@ -3463,6 +3485,7 @@ export function workflowEntrypoint(
                                 suppressOptimisticStart,
                                 runReadyBarrier,
                                 claimFence,
+                                orderedCreate: orderedInlineWrite,
                                 ...(stepIndex === 0 &&
                                 s.lazyStepInput !== undefined &&
                                 latencyTracking

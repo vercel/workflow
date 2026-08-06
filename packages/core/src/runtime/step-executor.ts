@@ -56,6 +56,7 @@ import {
   type EventCreator,
   type FencedCreate,
   memoizeEncryptionKey,
+  type OrderedCreate,
 } from './helpers.js';
 import { ReplayRecoveryReporter } from './replay-recovery-reporter.js';
 import {
@@ -230,6 +231,16 @@ export interface StepExecutorParams {
    */
   claimFence?: FencedCreate;
   /**
+   * Numbers this step's other writes — its terminal event, an eager
+   * `step_started` on a path that carries no claim — off the caller's log,
+   * rather than leaving them for the backend to place at the tail. That tail is
+   * a position a sibling's claim may already hold, and a collision there costs
+   * the whole batch a replay. See `orderedCreateFor`.
+   *
+   * Undefined when the caller has no log, which leaves the writes unnumbered.
+   */
+  orderedCreate?: OrderedCreate;
+  /**
    * Suppress optimistic inline start for this step regardless of
    * `WORKFLOW_OPTIMISTIC_INLINE_START` / `forceOptimisticStart`: take the
    * await-then-run path so the body only runs after the `step_started` claim
@@ -351,10 +362,23 @@ export async function executeStep(
     (params.runSpecVersion ?? 0) >= SPEC_VERSION_SUPPORTS_COMPRESSION;
   const replayRecoveryReporter =
     params.replayRecoveryReporter ?? ReplayRecoveryReporter.inert();
-  const createEvent: EventCreator = (data, eventParams) =>
+  const rawCreateEvent: EventCreator = (data, eventParams) =>
     replayRecoveryReporter.withEventCreate(eventParams, (p) =>
       world.events.create(workflowRunId, data, p)
     );
+  const orderedCreate = params.orderedCreate;
+  // Every write except the fenced `step_started` claim, which carries its own
+  // position and runs under `runClaim` on the same chain — nesting the two would
+  // deadlock on it.
+  const createEvent: EventCreator = (data, eventParams) =>
+    orderedCreate
+      ? orderedCreate((fence) =>
+          rawCreateEvent(
+            data,
+            fence ? { ...eventParams, ...fence } : eventParams
+          )
+        )
+      : rawCreateEvent(data, eventParams);
 
   const spanName = `step.execute ${stepDisplayName(stepName)}`;
   return trace(spanName, {}, async (span) => {
@@ -692,7 +716,7 @@ export async function executeStep(
           // another writer already started this same step (a benign
           // duplicate, skipped) it propagates to the caller.
           return runClaim((fence) =>
-            createEvent(
+            rawCreateEvent(
               {
                 eventType: 'step_started',
                 specVersion: SPEC_VERSION_CURRENT,
@@ -754,7 +778,7 @@ export async function executeStep(
         // except where startErrorToResult below can read the rejection's delta
         // as "another writer already started this exact step" and skip.
         const startResult = await runClaim((fence) =>
-          createEvent(
+          rawCreateEvent(
             {
               eventType: 'step_started',
               specVersion: SPEC_VERSION_CURRENT,

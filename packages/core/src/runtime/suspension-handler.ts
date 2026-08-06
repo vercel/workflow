@@ -34,6 +34,7 @@ import {
   claimFenceFor,
   type EventCreator,
   type MutableEventLog,
+  observeEventSlot,
 } from './helpers.js';
 import { ReplayRecoveryReporter } from './replay-recovery-reporter.js';
 
@@ -272,10 +273,16 @@ export async function handleSuspension({
   // that commits after replay recovered. All suspension events are
   // non-run_created events on this run's `runId`.
   const reporter = replayRecoveryReporter ?? ReplayRecoveryReporter.inert();
-  const createEvent: EventCreator = (data, params) =>
-    reporter.withEventCreate(params, (p) =>
+  const createEvent: EventCreator = async (data, params) => {
+    const result = await reporter.withEventCreate(params, (p) =>
       world.events.create(runId, data, p)
     );
+    // The backend numbers events this log did not claim (a lazy step's deferred
+    // `step_created`, anything written unfenced), and the next claim off the
+    // same log has to name a slot above them. See `observeEventSlot`.
+    if (eventLog) observeEventSlot(eventLog, result?.event?.eventId);
+    return result;
+  };
   // Fences the create against the run's event log when the caller supplied a
   // loaded one; without it the create goes out unfenced (callers with no replay
   // snapshot, e.g. tests). A rejection propagates to the caller, which restarts
