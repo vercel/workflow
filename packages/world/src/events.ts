@@ -735,16 +735,16 @@ export interface CreateEventParams {
    * parallelized with the queue publish and may have failed. Only meaningful
    * for `step_created`.
    *
-   * Backend contract (for Worlds that enforce the precondition guard — see
-   * {@link WorldCapabilities.resilientStepDispatch}): when the producer's
-   * guarded `step_created` was rejected with 412, a re-ensure marked with this
-   * flag must be refused (world-vercel surfaces the backend's 410 as
-   * `RunExpiredError`, which the consumer treats as "nothing left to execute"
-   * and acks the message) unless the step entity has been legitimately
-   * re-created since — in which case the re-ensure resolves as an ordinary
-   * duplicate (`EntityConflictError`). Worlds without the guard may ignore
-   * this flag: their `step_created` writes are never guard-rejected, so there
-   * is no rejected schedule to fence.
+   * Advisory. The runtime never parallelizes a *guarded* `step_created` with
+   * its publish (see the eligibility gate in the suspension handler), so in
+   * correct operation a re-ensure can only correspond to an unguarded create
+   * — there is no guard verdict for it to bypass. A guard-enforcing backend
+   * MAY nevertheless use this flag as defense-in-depth: refuse the re-ensure
+   * (world-vercel surfaces the backend's 410 as `RunExpiredError`, which the
+   * consumer treats as "nothing left to execute" and acks the message) when
+   * it has recorded a 412 rejection for this correlation id and no step
+   * entity exists — hardening against a misbehaving or future client. Worlds
+   * may ignore this flag entirely.
    */
   viaStepDispatch?: boolean;
   /** Request ID (x-vercel-id when on Vercel) for correlating request logs with workflow events. */

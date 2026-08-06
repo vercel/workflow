@@ -355,21 +355,6 @@ export interface WorldCapabilities {
   preconditionGuard?: boolean;
 
   /**
-   * The World's backend cooperates with resilient step dispatch under an
-   * enforced precondition guard: a guarded `step_created` rejected with 412
-   * revokes any in-flight `stepInput`-carrying step message for that
-   * correlation id, and a consumer re-ensure marked
-   * {@link import('./events.js').CreateEventParams.viaStepDispatch} is refused
-   * for a revoked, never-created step. Without this, the runtime falls back
-   * to the sequential create-then-publish dispatch whenever the guard is in
-   * effect (a queue message carrying the payload of a guard-rejected create
-   * could otherwise materialize a step the guard fenced off). Only meaningful
-   * together with {@link preconditionGuard}; Worlds without the guard don't
-   * need it — their creates are never guard-rejected.
-   */
-  resilientStepDispatch?: boolean;
-
-  /**
    * The World's queue supports `maxConcurrency`-limited consumption — in
    * particular the per-run flow topics consumed with `maxConcurrency: 1`
    * that `WORKFLOW_SEQUENTIAL_REPLAYS=1` uses to serialize a run's

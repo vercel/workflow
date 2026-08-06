@@ -662,7 +662,7 @@ describe('resilient step dispatch', () => {
     ).rejects.toThrow('bad request');
   });
 
-  it('falls back to create-only when the world enforces the precondition guard without backend cooperation', async () => {
+  it('falls back to create-only when the world enforces the precondition guard', async () => {
     const { world, eventsCreate, queue } = createQueueWorld({
       capabilities: { preconditionGuard: true },
     });
@@ -690,12 +690,17 @@ describe('resilient step dispatch', () => {
     expect(result.createdStepCorrelationIds).toContain('s4');
   });
 
-  it('stays parallel under an enforced guard when the world declares resilientStepDispatch', async () => {
-    // The backend revokes a 412-rejected step's in-flight dispatch message
-    // (see CreateEventParams.viaStepDispatch), so the payload-carrying
-    // publish is safe even though the create is guarded.
+  it('stays sequential under an enforced guard regardless of other capabilities', async () => {
+    // The guard gate is deliberately not liftable by backend-side revocation
+    // bookkeeping: nothing orders a slow guarded create's eventual 412 before
+    // the consumer's redelivery re-ensure, so no capability may re-enable the
+    // payload-carrying publish while creates are guarded.
     const { world, queue } = createQueueWorld({
-      capabilities: { preconditionGuard: true, resilientStepDispatch: true },
+      capabilities: {
+        preconditionGuard: true,
+        // Unknown/extra capability flags must not lift the gate.
+        ...({ resilientStepDispatch: true } as Record<string, boolean>),
+      } as World['capabilities'],
     });
 
     const result = await handleSuspension({
@@ -705,8 +710,8 @@ describe('resilient step dispatch', () => {
       stepDispatch: stepDispatch(),
     });
 
-    expect(queue).toHaveBeenCalledTimes(1);
-    expect([...result.queuedStepCorrelationIds]).toEqual(['s4']);
+    expect(queue).not.toHaveBeenCalled();
+    expect(result.queuedStepCorrelationIds.size).toBe(0);
   });
 
   it('falls back to create-only when the run predates the CBOR queue transport', async () => {

@@ -39,12 +39,6 @@ export function createWorld(config?: APIConfig): World {
       // (PreconditionFailedError) when the run's outside-event marker is
       // newer. See vercel/workflow-server#484.
       preconditionGuard: true,
-      // workflow-server cooperates with resilient step dispatch under the
-      // guard: a 412-rejected `step_created` records a dispatch-revocation
-      // marker, and a consumer re-ensure marked `viaStepDispatch` is refused
-      // with 410 for a revoked, never-created step. Lets the runtime keep the
-      // parallel create+publish dispatch even where the guard is enforced.
-      resilientStepDispatch: true,
       // Vercel Queues supports maxConcurrency-limited consumers, which
       // WORKFLOW_SEQUENTIAL_REPLAYS=1 uses for per-run `maxConcurrency: 1`
       // flow topics (see queue.ts and @workflow/builders).

@@ -239,11 +239,11 @@ export interface CreateEventV4Input {
    *  is not content-stable server-side). Older servers ignore it. */
   resumePayloadDigest?: string;
   /** Marks a `step_created` as the queue consumer's re-ensure of a resilient
-   *  step dispatch (`stepInput`-carrying step message). The server refuses it
-   *  with 410 (`step-dispatch-revoked` → RunExpiredError) when the producer's
-   *  guarded write was 412-rejected and the step was never legitimately
-   *  created — see CreateEventParams.viaStepDispatch in @workflow/world.
-   *  Older servers ignore it. */
+   *  step dispatch (`stepInput`-carrying step message). Advisory — see
+   *  CreateEventParams.viaStepDispatch in @workflow/world: the server MAY
+   *  refuse it with 410 (`step-dispatch-revoked` → RunExpiredError) as
+   *  defense-in-depth when it recorded a 412 rejection for this correlation
+   *  id and no step entity exists. Older servers ignore it. */
   viaStepDispatch?: boolean;
 }
 
