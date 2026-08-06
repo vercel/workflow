@@ -102,6 +102,10 @@ describe('resumeHook (parallel fast path)', () => {
     const digest = optsArg.resumePayloadDigest as string;
     expect(resumeId).toEqual(expect.any(String));
     expect(digest).toMatch(/^[0-9a-f]{64}$/);
+    // The replay-log preload is the consumer re-ensure's opt-in only: the
+    // producer never reads the log, so it must not ask the World (and, on
+    // world-vercel, the server) to assemble one.
+    expect(optsArg.preloadEvents).toBeUndefined();
 
     expect(queue).toHaveBeenCalledTimes(1);
     const [, payloadArg] = queue.mock.calls[0];
