@@ -328,6 +328,19 @@ export const getHeaders = (
   if (workflowServerUrlOverride && options.usingProxy) {
     headers.set('x-vercel-workflow-api-url', workflowServerUrlOverride);
   }
+  // A workflow-server preview deployment sits behind Vercel Deployment
+  // Protection, which rejects at the edge — before any of the auth above is
+  // read — so pointing this client at one (via VERCEL_WORKFLOW_SERVER_URL) 302s
+  // to the SSO wall no matter how the request is authenticated. The escape
+  // hatch Vercel provides is a Protection Bypass for Automation secret sent as
+  // this header; every other caller in this repo that talks to a protected
+  // deployment already does exactly this (see scripts/trusted-sources-headers.mjs,
+  // which serves the e2e/bench harness's own fetches). Unset in normal
+  // operation, and ignored by the edge when the target isn't protected.
+  const protectionBypass = process.env.VERCEL_PROTECTION_BYPASS;
+  if (protectionBypass) {
+    headers.set('x-vercel-protection-bypass', protectionBypass);
+  }
   return headers;
 };
 
