@@ -1,17 +1,22 @@
 import { createSecureServer, type Http2SecureServer } from 'node:http2';
-import type { AddressInfo } from 'node:net';
+import { type AddressInfo, connect, createServer, type Server } from 'node:net';
 import type { TLSSocket } from 'node:tls';
-import { Agent } from 'undici';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { Agent, type RetryAgent } from 'undici';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import {
+  createDispatcherRecycler,
   createEventsDispatcher,
   createStreamDispatcher,
   DEFAULT_AGENT_OPTIONS,
+  type DispatcherRecycler,
   EVENTS_AGENT_OPTIONS,
+  EVENTS_AGENT_OPTIONS_NO_H2,
+  EVENTS_RECYCLE_AFTER_CONSECUTIVE_FAILURES,
   getDispatcher,
   getEventsDispatcher,
   getStreamCloseDispatcher,
   getStreamDispatcher,
+  isRecyclableTransportError,
   STREAM_AGENT_OPTIONS,
   STREAM_CLOSE_RETRY_OPTIONS,
   STREAM_RETRY_OPTIONS,
@@ -99,6 +104,15 @@ describe('agent transport', () => {
     expect(EVENTS_AGENT_OPTIONS.allowH2).toBe(true);
     expect(STREAM_AGENT_OPTIONS.allowH2).toBe(true);
     expect(DEFAULT_AGENT_OPTIONS.allowH2).toBe(false);
+  });
+
+  // WORKFLOW_H2_MULTIPLEX=0 is the operational escape hatch for an H2 transport
+  // fault, so it has to leave nothing of H2 behind: `allowH2: true` with the
+  // interceptor skipped still keeps a wedged session (see
+  // EVENTS_AGENT_OPTIONS_NO_H2).
+  it('gives the kill switch an events agent with no HTTP/2 at all', () => {
+    expect(EVENTS_AGENT_OPTIONS_NO_H2.allowH2).toBe(false);
+    expect(EVENTS_AGENT_OPTIONS_NO_H2.pipelining).toBe(1);
   });
 
   // `allowH2` alone buys nothing: undici gates in-flight requests per
@@ -425,16 +439,198 @@ describe('HTTP/2 multiplexing (events vs stream-write agents)', () => {
       await agent.close();
     }
   });
+});
 
-  it('WORKFLOW_H2_MULTIPLEX=0 falls back to one request per connection', async () => {
+// The transport fault this whole mechanism exists for: an HTTP/2 session whose
+// TCP connection stays established while no bytes cross it. undici keeps such a
+// session in service — on a stream timeout it deliberately does not destroy the
+// socket, and `keepAliveTimeout` is never read on the H2 path — so every request
+// the pool routes onto it times out, indefinitely.
+//
+// The origin here is a real h2 server behind a TCP proxy that stops forwarding
+// bytes for one chosen flow, which is the closest reproduction of the production
+// shape (a middlebox dropping an established mapping) that a test can be.
+describe('wedged HTTP/2 session', () => {
+  // Any value above the pool's connection count, so the loop cannot pass merely
+  // by exhausting the poisoned connection.
+  const REQUESTS_AFTER_BLACKHOLE = 12;
+  // Long enough that a healthy loopback request never hits it, short enough that
+  // a wedged one gives up quickly. This is the timeout that turns a black hole
+  // into the UND_ERR_INFO stream timeout seen in production.
+  const STREAM_TIMEOUT_MS = 300;
+
+  let server: Http2SecureServer;
+  let proxy: Server;
+  let origin: string;
+  let flows: number;
+  let holed: Set<number>;
+  let httpVersions: string[];
+
+  /** Options that point an events agent at the loopback proxy. */
+  const AGENT_OVERRIDES = {
+    connect: { rejectUnauthorized: false },
+    bodyTimeout: STREAM_TIMEOUT_MS,
+    headersTimeout: STREAM_TIMEOUT_MS,
+  };
+
+  beforeAll(async () => {
+    // allowHTTP1 so the same origin can serve the kill-switch case, which takes
+    // the agent off h2 entirely.
+    server = createSecureServer({
+      key: TEST_KEY,
+      cert: TEST_CERT,
+      allowHTTP1: true,
+    });
+    server.on('sessionError', () => undefined);
+    server.on('clientError', () => undefined);
+    server.on('request', (req, res) => {
+      httpVersions.push(req.httpVersion);
+      res.writeHead(200);
+      res.end('ok');
+    });
+    await new Promise<void>((resolve) => {
+      server.listen(0, '127.0.0.1', resolve);
+    });
+    const originPort = (server.address() as AddressInfo).port;
+
+    // Byte-forwarding proxy. A flow in `holed` keeps both sockets open and
+    // simply drops everything in both directions.
+    proxy = createServer((client) => {
+      const id = ++flows;
+      const upstream = connect(originPort, '127.0.0.1');
+      client.on('data', (b) => {
+        if (!holed.has(id)) upstream.write(b);
+      });
+      upstream.on('data', (b) => {
+        if (!holed.has(id)) client.write(b);
+      });
+      const kill = () => {
+        client.destroy();
+        upstream.destroy();
+      };
+      for (const socket of [client, upstream]) {
+        socket.on('error', kill);
+        socket.on('close', kill);
+      }
+    });
+    await new Promise<void>((resolve) => {
+      proxy.listen(0, '127.0.0.1', resolve);
+    });
+    origin = `https://127.0.0.1:${(proxy.address() as AddressInfo).port}`;
+  });
+
+  afterAll(async () => {
+    await new Promise<void>((resolve) => {
+      proxy.close(() => resolve());
+    });
+    await new Promise<void>((resolve) => {
+      server.close(() => resolve());
+    });
+  });
+
+  beforeEach(() => {
+    flows = 0;
+    holed = new Set();
+    httpVersions = [];
+  });
+
+  /** One request through `dispatcher`; resolves to the error, or undefined. */
+  async function attempt(dispatcher: unknown): Promise<unknown> {
+    try {
+      const response = await fetch(`${origin}/`, {
+        method: 'POST',
+        body: 'x',
+        dispatcher,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici dispatcher type doesn't match @types/node's RequestInit
+      } as any);
+      await response.text();
+      return undefined;
+    } catch (error) {
+      return error;
+    }
+  }
+
+  // Establishes the premise. Without the failure accounting, an events agent
+  // whose session has been black-holed never recovers on its own — which is why
+  // one bad flow produced a 25-minute outage rather than a blip.
+  it('never recovers on its own (the failure this fixes)', async () => {
+    const agent = createEventsDispatcher(AGENT_OVERRIDES);
+    try {
+      expect(await attempt(agent)).toBeUndefined();
+      holed.add(1);
+
+      const errors: unknown[] = [];
+      for (let i = 0; i < REQUESTS_AFTER_BLACKHOLE; i++) {
+        const error = await attempt(agent);
+        if (error) errors.push(error);
+      }
+      // Every single one, and every one for the reason we key the rebuild off.
+      expect(errors).toHaveLength(REQUESTS_AFTER_BLACKHOLE);
+      expect(errors.every(isRecyclableTransportError)).toBe(true);
+      // The pool never opened a replacement connection.
+      expect(flows).toBe(1);
+    } finally {
+      await agent.close();
+    }
+  });
+
+  it('recovers after the failure threshold, and stays recovered', async () => {
+    const recycler = createDispatcherRecycler(
+      () => createEventsDispatcher(AGENT_OVERRIDES),
+      'test transport'
+    );
+    const first = recycler.get();
+    try {
+      recycler.note(first, await attempt(first));
+      holed.add(1);
+
+      const failures: number[] = [];
+      const successes: number[] = [];
+      for (let i = 0; i < REQUESTS_AFTER_BLACKHOLE; i++) {
+        // Re-resolved per request, exactly as fetchV4 does — caching the
+        // dispatcher across requests would pin the caller to the retired pool.
+        const dispatcher = recycler.get();
+        const error = await attempt(dispatcher);
+        recycler.note(dispatcher, error);
+        (error ? failures : successes).push(i);
+      }
+
+      // Bounded, not merely eventually-fine: the threshold is the entire cost of
+      // the fault, and everything after it succeeds on the rebuilt pool.
+      expect(failures).toHaveLength(EVENTS_RECYCLE_AFTER_CONSECUTIVE_FAILURES);
+      expect(successes[0]).toBe(EVENTS_RECYCLE_AFTER_CONSECUTIVE_FAILURES);
+      expect(recycler.get()).not.toBe(first);
+      expect(flows).toBeGreaterThan(1);
+    } finally {
+      await recycler.get().close();
+      await first.close();
+    }
+  });
+
+  // The kill switch has to reach `allowH2`, not just the multiplexing
+  // interceptor: with H2 still enabled the pool keeps the wedged session and the
+  // switch mitigates nothing. On H1, undici destroys the socket when the request
+  // times out, so the next request opens a fresh connection by itself.
+  it('WORKFLOW_H2_MULTIPLEX=0 takes the events agent off h2, restoring self-healing', async () => {
     const previous = process.env.WORKFLOW_H2_MULTIPLEX;
     process.env.WORKFLOW_H2_MULTIPLEX = '0';
-    // Read when the dispatcher is built, so the kill switch only takes effect
-    // for agents created after it is set.
-    const agent = createEventsDispatcher(LOOPBACK);
+    // Read when the dispatcher is built, so the switch only affects agents
+    // created after it is set.
+    const agent = createEventsDispatcher(AGENT_OVERRIDES);
     try {
-      await burst(agent);
-      expect(maxConcurrentStreams).toBeLessThan(CONCURRENCY);
+      expect(await attempt(agent)).toBeUndefined();
+      expect(httpVersions).toEqual(['1.1']);
+      holed.add(1);
+
+      const errors: unknown[] = [];
+      for (let i = 0; i < REQUESTS_AFTER_BLACKHOLE; i++) {
+        const error = await attempt(agent);
+        if (error) errors.push(error);
+      }
+      // A handful of connections are lost to the black hole; the point is that
+      // the agent keeps making progress instead of wedging forever.
+      expect(errors.length).toBeLessThan(REQUESTS_AFTER_BLACKHOLE);
+      expect(flows).toBeGreaterThan(1);
     } finally {
       await agent.close();
       if (previous === undefined) {
@@ -443,5 +639,104 @@ describe('HTTP/2 multiplexing (events vs stream-write agents)', () => {
         process.env.WORKFLOW_H2_MULTIPLEX = previous;
       }
     }
+  });
+});
+
+describe('dispatcher recycling accounting', () => {
+  const stub = () =>
+    ({ close: async () => undefined }) as unknown as RetryAgent;
+  const h2StreamTimeout = () =>
+    // The shape production sees: `fetch` rejects with its own TypeError and the
+    // undici error is only reachable through `cause`.
+    new TypeError('fetch failed', {
+      cause: Object.assign(new Error('HTTP/2: "stream timeout after 300"'), {
+        code: 'UND_ERR_INFO',
+      }),
+    });
+
+  function fail(recycler: DispatcherRecycler, times: number): void {
+    for (let i = 0; i < times; i++) {
+      recycler.note(recycler.get(), h2StreamTimeout());
+    }
+  }
+
+  it('rebuilds only once the failures are consecutive', () => {
+    const recycler = createDispatcherRecycler(stub, 'test');
+    const first = recycler.get();
+
+    fail(recycler, EVENTS_RECYCLE_AFTER_CONSECUTIVE_FAILURES - 1);
+    expect(recycler.get()).toBe(first);
+    // A delivered response means the pool works; the count starts over.
+    recycler.note(recycler.get());
+    fail(recycler, EVENTS_RECYCLE_AFTER_CONSECUTIVE_FAILURES - 1);
+    expect(recycler.get()).toBe(first);
+
+    recycler.note(recycler.get(), h2StreamTimeout());
+    expect(recycler.get()).not.toBe(first);
+  });
+
+  // The tail of the batch that provoked a rebuild reports its failures late, on
+  // the already-retired dispatcher. Counting those would recycle the replacement
+  // immediately and, under sustained concurrency, every pool after it.
+  it('ignores outcomes from a dispatcher it no longer owns', () => {
+    const recycler = createDispatcherRecycler(stub, 'test');
+    const first = recycler.get();
+    fail(recycler, EVENTS_RECYCLE_AFTER_CONSECUTIVE_FAILURES);
+    const second = recycler.get();
+    expect(second).not.toBe(first);
+
+    for (let i = 0; i < EVENTS_RECYCLE_AFTER_CONSECUTIVE_FAILURES; i++) {
+      recycler.note(first, h2StreamTimeout());
+    }
+    expect(recycler.get()).toBe(second);
+
+    // Same guard covers a caller-supplied dispatcher (APIConfig.dispatcher):
+    // its failures say nothing about the shared pool.
+    for (let i = 0; i < EVENTS_RECYCLE_AFTER_CONSECUTIVE_FAILURES; i++) {
+      recycler.note({}, h2StreamTimeout());
+    }
+    expect(recycler.get()).toBe(second);
+  });
+
+  // A rebuild only helps for failures that happened on an established
+  // connection. Connect/DNS/TLS errors would hit the same wall from a new pool,
+  // and an abort is the caller's own doing.
+  it('counts only transport failures a rebuild can fix', () => {
+    expect(isRecyclableTransportError(h2StreamTimeout())).toBe(true);
+    for (const code of ['UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_BODY_TIMEOUT']) {
+      expect(
+        isRecyclableTransportError(Object.assign(new Error(code), { code }))
+      ).toBe(true);
+    }
+    for (const code of [
+      'UND_ERR_CONNECT_TIMEOUT',
+      'UND_ERR_ABORTED',
+      'ENOTFOUND',
+      'ECONNREFUSED',
+      'CERT_HAS_EXPIRED',
+    ]) {
+      expect(
+        isRecyclableTransportError(Object.assign(new Error(code), { code }))
+      ).toBe(false);
+    }
+    expect(isRecyclableTransportError(new Error('nope'))).toBe(false);
+    expect(isRecyclableTransportError(undefined)).toBe(false);
+
+    const recycler = createDispatcherRecycler(stub, 'test');
+    const first = recycler.get();
+    for (let i = 0; i < EVENTS_RECYCLE_AFTER_CONSECUTIVE_FAILURES * 2; i++) {
+      recycler.note(
+        recycler.get(),
+        Object.assign(new Error('aborted'), { code: 'UND_ERR_ABORTED' })
+      );
+    }
+    expect(recycler.get()).toBe(first);
+  });
+
+  // Cycles are self-limiting: a `cause` chain that loops must not hang the walk.
+  it('survives a self-referential cause chain', () => {
+    const error = new Error('loop') as Error & { cause?: unknown };
+    error.cause = error;
+    expect(isRecyclableTransportError(error)).toBe(false);
   });
 });

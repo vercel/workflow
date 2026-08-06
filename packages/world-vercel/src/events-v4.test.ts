@@ -18,6 +18,10 @@ import {
   throwForErrorResponse,
 } from './events-v4.js';
 import { encodeFrame, V4_FRAME_CONTENT_TYPE } from './frames.js';
+import {
+  EVENTS_RECYCLE_AFTER_CONSECUTIVE_FAILURES,
+  getEventsDispatcher,
+} from './http-client.js';
 import { WORKFLOW_SERVER_URL_OVERRIDE } from './utils.js';
 
 /**
@@ -1149,5 +1153,47 @@ describe('v4 POST frame meta forwards every field the splitter produces', () => 
     // vacuous, so require it to have produced a meaningful set.
     expect(metaKeys.length).toBeGreaterThan(3);
     expect(Object.keys(wireMeta)).toEqual(expect.arrayContaining(metaKeys));
+  });
+});
+
+/**
+ * The recycler in http-client only sees transport failures the v4 client
+ * reports to it. This covers that wiring end to end: a `fetch()` that rejects
+ * the way a wedged HTTP/2 session does must retire the shared events pool once
+ * the failures reach the threshold. Without the `onTransportOutcome` hook in
+ * `fetchV4` the recycler is never told anything and the pool lives forever.
+ */
+describe('v4 transport reports failures to the events recycler', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  // Shape of a wedged-session rejection: `fetch` wraps undici's
+  // InformationalError, so the code the recycler matches on is one `cause` down.
+  const wedgedSessionError = () =>
+    new TypeError('fetch failed', {
+      cause: Object.assign(new Error('HTTP/2: "stream timeout after 300"'), {
+        code: 'UND_ERR_INFO',
+      }),
+    });
+
+  it('rebuilds the shared pool after repeated stream timeouts', async () => {
+    vi.spyOn(globalThis, 'fetch').mockRejectedValue(wedgedSessionError());
+
+    // No `dispatcher` in the config: the request must resolve the shared one,
+    // which is what the recycler owns.
+    const before = getEventsDispatcher({ token: 'test-token' });
+
+    for (let i = 0; i < EVENTS_RECYCLE_AFTER_CONSECUTIVE_FAILURES; i++) {
+      await expect(
+        getWorkflowRunEventsV4('wrun_1', {}, { token: 'test-token' })
+      ).rejects.toThrow();
+      // Still the same pool until the threshold is reached.
+      if (i < EVENTS_RECYCLE_AFTER_CONSECUTIVE_FAILURES - 1) {
+        expect(getEventsDispatcher({ token: 'test-token' })).toBe(before);
+      }
+    }
+
+    expect(getEventsDispatcher({ token: 'test-token' })).not.toBe(before);
   });
 });
