@@ -1226,17 +1226,17 @@ export function claimFenceFor(
 }
 
 /**
- * Runs one create the caller carries no fence for, taking its position off the
- * log all the same.
+ * Runs one create the caller carries no fence for, ordering it against the
+ * claims drawn off the same log.
  */
 export type OrderedCreate = (
   op: (fence: EventCreateFence | undefined) => Promise<EventResult>
 ) => Promise<EventResult>;
 
 /**
- * Numbers a write the caller does not fence, off the same chain every claim on
- * this log draws from. Undefined for a run whose events are not slotted, which
- * leaves those writes exactly as they were.
+ * Orders a write the caller does not fence against every claim on this log,
+ * without naming a position for it. Undefined for a run whose events are not
+ * slotted, which leaves those writes exactly as they were.
  *
  * A slot left for the backend to assign lands at the tail, and the tail is a
  * position a sibling in the same batch may already hold: a lazy start reserves
@@ -1244,42 +1244,34 @@ export type OrderedCreate = (
  * between the two claims takes the slot the next start had promised its own
  * `step_created`. That start then loses a claim no other writer contended,
  * which costs the replay a restart — and abandons the siblings whose bodies
- * already ran. Numbering both off one chain removes the collision by
- * construction.
+ * already ran.
  *
- * The claim here is allocation, not a guard. A conflict means a genuinely
- * foreign writer holds the position, and the write is re-issued unnumbered for
- * the backend to place at the tail: a step's terminal event is identified by its
- * correlation id, fixed already by the start that landed, so its position
- * carries no meaning to lose — and the work it records must not be dropped over
- * one. Contrast {@link claimFenceFor}, whose rejection is the signal that the
- * replay decided from an incomplete log.
+ * Running both off one chain removes the collision without either write naming
+ * a slot. A claim reserves and publishes inside its own turn, so no reservation
+ * is ever outstanding while another body on the chain runs: when the unfenced
+ * write takes its turn, `maxSlot` already covers every slot drawn so far and
+ * none are drawn ahead of it. Folding the backend's answer back in before the
+ * turn ends leaves the next claim drawing above it.
+ *
+ * Naming a slot here instead would be a guard, and one this write cannot
+ * survive. Losing it yields a conflict the caller has to re-issue around, and a
+ * backend that materializes an entity before it publishes has already applied
+ * the transition the lost event described — so the re-issue is refused as a
+ * duplicate and the event is lost for good, leaving a step whose entity is
+ * terminal and whose log has no terminal event. Contrast {@link claimFenceFor},
+ * where a rejection is the point: it says the replay decided from an incomplete
+ * log, and the run recovers by replaying again rather than by re-issuing.
  */
 export function orderedCreateFor(
   log: MutableEventLog,
-  runId: string,
   specVersion: number | undefined
 ): OrderedCreate | undefined {
   if (!usesSlotIdentity(specVersion)) return undefined;
   return (op) =>
     onWriteChain(log, async () => {
-      const { fence, slot } = reserveSlotFence(log, 0);
-      try {
-        const result = await op(fence);
-        log.maxSlot = Math.max(log.maxSlot, slot);
-        log.nextSlot = Math.max(log.nextSlot, log.maxSlot + 1);
-        return result;
-      } catch (error) {
-        // Whatever the failure, the slot went unused: rewind so the next write
-        // names it again.
-        log.nextSlot = log.maxSlot + 1;
-        if (!SlotConflictError.is(error)) throw error;
-        const delta = preconditionEventDelta(error, runId);
-        if (delta) mergeLoadedEvents(log, delta.events);
-        const result = await op(undefined);
-        observeEventSlot(log, result?.event?.eventId);
-        return result;
-      }
+      const result = await op(undefined);
+      observeEventSlot(log, result?.event?.eventId);
+      return result;
     });
 }
 

@@ -3369,14 +3369,13 @@ export function workflowEntrypoint(
                         // step a slot the suspension already holds.
                         const inlineClaimLog = suspensionLog;
                         // A step also writes events it carries no claim for —
-                        // its terminal event above all. Numbering those off the
-                        // same log keeps them out of the slots the batch's
-                        // claims hold; left to the backend they land at the
-                        // tail, which is where the next start has already
-                        // promised its deferred `step_created`.
+                        // its terminal event above all. Ordering those against
+                        // the batch's claims keeps the backend from landing one
+                        // at the tail while a claim still holds that position,
+                        // which is where the next start has already promised its
+                        // deferred `step_created`.
                         const orderedInlineCreate = orderedCreateFor(
                           inlineClaimLog,
-                          runId,
                           workflowRun.specVersion
                         );
                         const orderedInlineWrite: OrderedCreate | undefined =
