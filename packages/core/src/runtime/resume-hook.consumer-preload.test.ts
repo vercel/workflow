@@ -138,6 +138,13 @@ async function runResumeConsumerScenario(options: {
    * classification (consume the message vs rethrow for redelivery).
    */
   reEnsureRejection?: Error;
+  /**
+   * When set, the queue message's hookInput carries the producer-stamped
+   * pinned deployment id, activating the consumer's cheap pre-write
+   * affinity check. Omitted by default so most scenarios double as
+   * older-message fixtures (no deploymentId still parses and runs).
+   */
+  hookDeploymentId?: string;
 }) {
   const hookPreload = options.hookPreload ?? 'event-only';
   const runId = 'wrun_resume_consumer_preload';
@@ -325,14 +332,20 @@ async function runResumeConsumerScenario(options: {
     | ((message: unknown, metadata: unknown) => Promise<unknown>)
     | undefined;
   const queue = vi.fn().mockResolvedValue({ messageId: 'msg_resume' });
+  const runsGet = vi.fn(async () => workflowRun);
   setWorld({
     specVersion: SPEC_VERSION_CURRENT,
+    // Atomic, immutable deployments (as world-vercel declares), with the
+    // ambient id matching the run's pin — so the affinity pre-check and the
+    // authoritative guard both see a correctly routed delivery.
+    capabilities: { deploymentAffinity: true },
+    getDeploymentId: vi.fn(async () => deploymentId),
     createQueueHandler: vi.fn((_prefix, handler) => {
       capturedHandler = handler;
       return vi.fn();
     }),
     events: { list: listEvents, create: createEvent },
-    runs: { get: vi.fn(async () => workflowRun) },
+    runs: { get: runsGet },
     queue,
     getEncryptionKeyForRun: vi.fn().mockResolvedValue(undefined),
   } as unknown as World);
@@ -356,6 +369,9 @@ async function runResumeConsumerScenario(options: {
           token: hookToken,
           payload: payloadBytes,
           payloadDigest,
+          ...(options.hookDeploymentId !== undefined
+            ? { deploymentId: options.hookDeploymentId }
+            : {}),
         },
       },
       {
@@ -388,6 +404,7 @@ async function runResumeConsumerScenario(options: {
     runCompletedCreates,
     listEvents,
     createEvent,
+    runsGet,
     handlerError,
   };
 }
@@ -425,6 +442,33 @@ describe('lazy hook resume consumer preload', () => {
     expect(runStartedCreates).toHaveLength(0);
     expect(listEvents).not.toHaveBeenCalled();
     // Replay completed off the preloaded log.
+    expect(runCompletedCreates).toHaveLength(1);
+  });
+
+  it('adds no run fetch for a correctly routed modern message (matching hookInput.deploymentId)', async () => {
+    // The pre-write affinity check is a pure ambient-id comparison on the
+    // matching path: the run is never fetched, and the streamed replay path
+    // is selected exactly as without the field.
+    const {
+      hookReceivedCreates,
+      runStartedCreates,
+      runCompletedCreates,
+      listEvents,
+      runsGet,
+      handlerError,
+    } = await runResumeConsumerScenario({
+      preloadHasHookReceived: false,
+      hookPreload: 'complete',
+      hookDeploymentId: 'dpl_resume_consumer_preload',
+    });
+
+    expect(handlerError).toBeUndefined();
+    expect(runsGet).not.toHaveBeenCalled();
+    // The streamed replay path remains selected: one setup request, no
+    // run_started, no events.list.
+    expect(hookReceivedCreates).toHaveLength(1);
+    expect(runStartedCreates).toHaveLength(0);
+    expect(listEvents).not.toHaveBeenCalled();
     expect(runCompletedCreates).toHaveLength(1);
   });
 
