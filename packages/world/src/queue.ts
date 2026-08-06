@@ -169,6 +169,16 @@ export const HookResumeInputSchema = z.object({
    * content-stable server-side.
    */
   payloadDigest: z.string(),
+  /**
+   * The deployment the run is pinned to, from the producer's resume context.
+   * Lets the consumer detect a misrouted delivery with a cheap ambient
+   * deployment-id comparison BEFORE its hoisted `hook_received` replay-preload
+   * write — only a detected mismatch pays for the authoritative run fetch and
+   * the deployment-affinity guard. Optional for queued-message compatibility:
+   * messages from older producers omit it and simply skip the pre-write
+   * check (the authoritative guard before replay still protects them).
+   */
+  deploymentId: z.string().optional(),
 });
 export type HookResumeInput = z.infer<typeof HookResumeInputSchema>;
 

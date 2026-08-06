@@ -116,6 +116,9 @@ describe('resumeHook (parallel fast path)', () => {
       token: hook.token,
       payload: PAYLOAD_BYTES,
       payloadDigest: digest,
+      // The run's pinned deployment from the resume context, for the
+      // consumer's cheap pre-write affinity check.
+      deploymentId: 'deployment_par',
     });
   });
 
