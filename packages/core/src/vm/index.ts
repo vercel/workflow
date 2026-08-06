@@ -61,21 +61,25 @@ export function createContext(options: CreateContextOptions) {
   g.Math.random = rng;
 
   // Override `Date` constructor to return fixed time when called without
-  // arguments. A `class` (rather than a plain function) keeps `new.target`
-  // intact so user code can still subclass `Date` (e.g. `TZDate` from
-  // `@date-fns/tz`), and `extends` preserves the prototype chain and statics.
+  // arguments. Constructing through `Reflect.construct` with `new.target`
+  // keeps subclassing intact (e.g. `TZDate` from `@date-fns/tz`), while a
+  // plain function (rather than a `class`) keeps `Date()` callable without
+  // `new`, which per spec ignores its arguments and returns the time string.
   const Date_ = g.Date;
   // biome-ignore lint/suspicious/noShadowRestrictedNames: We're shadowing the global `Date` property to make it deterministic.
-  (g as any).Date = class Date extends Date_ {
-    constructor(...args: any[]) {
-      if (args.length === 0) {
-        super(fixedTimestamp);
-      } else {
-        // @ts-expect-error - Args is `Date` constructor arguments
-        super(...args);
-      }
+  (g as any).Date = function Date(...args: any[]) {
+    if (new.target === undefined) {
+      return new Date_(fixedTimestamp).toString();
     }
+    return Reflect.construct(
+      Date_,
+      args.length === 0 ? [fixedTimestamp] : args,
+      new.target
+    );
   };
+  (g as any).Date.prototype = Date_.prototype;
+  // Preserve static methods
+  Object.setPrototypeOf(g.Date, Date_);
   g.Date.now = () => fixedTimestamp;
 
   // Deterministic `crypto` using Proxy to avoid mutating global objects
