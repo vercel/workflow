@@ -217,13 +217,18 @@ export function getMaxInlineSteps(): number {
 
 /**
  * Upper bound on the serialized step input that resilient step dispatch will
- * inline into the queue message's `stepInput`. Vercel Queues caps a single
- * message at ~256 KiB, and the message also carries the runId, stepId,
- * stepName, and trace carrier alongside CBOR framing overhead. Staying well
- * under that ceiling keeps the queue publish from rejecting an oversized
- * message. Above this size the dispatch falls back to the sequential path
- * (`step_created` write, then a payload-less queue message). Mirrors
- * `MAX_INLINE_RESUME_PAYLOAD_BYTES` on the resilient hook resume path.
+ * inline into the queue message's `stepInput`.
+ *
+ * Vercel Queues has no hard message-size cap (bodies above its ~256 KB
+ * inline threshold transparently spill to S3-backed storage), so this bound
+ * is a cost/latency choice, not a rejection guard: the message also carries
+ * the runId, stepId, stepName, and trace carrier alongside CBOR framing
+ * overhead, and staying under the queue's inline threshold keeps step
+ * messages on its fast inline path instead of paying an S3 store+fetch
+ * double-hop for bytes that already live in the event log. Above this size
+ * the dispatch falls back to the sequential path (`step_created` write, then
+ * a payload-less queue message). Matches `MAX_INLINE_RESUME_PAYLOAD_BYTES`
+ * on the resilient hook resume path.
  */
 export const MAX_RESILIENT_STEP_INPUT_BYTES = 128 * 1024;
 
