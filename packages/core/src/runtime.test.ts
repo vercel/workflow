@@ -297,10 +297,12 @@ describe('workflowEntrypoint replay guards', () => {
 
   it('re-routes a misrouted lazy hook resume with its payload intact', async () => {
     // The lazy-resume producer parallelizes the `hook_received` write with this
-    // queue publish, so `hookInput` may be the only copy of the payload. The
-    // guard runs ahead of the re-ensure, so nothing is written here — which
-    // means the re-routed message has to carry `hookInput` or the resume is
-    // lost when the producer's direct write had not landed.
+    // queue publish, so `hookInput` may be the only copy of the payload. A
+    // modern message carries `hookInput.deploymentId`, so the cheap pre-check
+    // detects the mismatch BEFORE the fast path's hook_received write —
+    // zero event writes before re-routing — and the re-routed message has to
+    // carry the complete `hookInput` or the resume is lost when the
+    // producer's direct write had not landed.
     const workflowRun = await misroutedRun();
     const queueCalls: QueueCall[] = [];
     const hookInput = {
@@ -309,6 +311,7 @@ describe('workflowEntrypoint replay guards', () => {
       token: 'tok_1',
       payload: { serialized: true },
       payloadDigest: 'sha256:abc',
+      deploymentId: 'dpl_origin',
     };
 
     const createdEvents = await runWorkflowHandlerWithEvents(
@@ -320,12 +323,18 @@ describe('workflowEntrypoint replay guards', () => {
 
     expect(queueCalls).toHaveLength(1);
     expect(queueCalls[0].opts).toMatchObject({ deploymentId: 'dpl_origin' });
+    // The complete hookInput — payload included — survives re-routing.
     expect(queueCalls[0].message).toMatchObject({
       deploymentMismatchRetryCount: 1,
       hookInput,
     });
+    // Zero event writes before re-routing: neither the fast path's
+    // hook_received nor the generic setup's run_started ran.
     expect(createdEvents).not.toContainEqual(
       expect.objectContaining({ eventType: 'hook_received' })
+    );
+    expect(createdEvents).not.toContainEqual(
+      expect.objectContaining({ eventType: 'run_started' })
     );
   });
 

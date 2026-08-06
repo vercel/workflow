@@ -1553,6 +1553,63 @@ export function workflowEntrypoint(
                     }
                   }
 
+                  // Deployment-affinity pre-check for the lazy hook fast
+                  // path below. New lazy-resume messages carry the run's
+                  // pinned deployment (`hookInput.deploymentId`), so a
+                  // misrouted delivery is detectable with a cheap ambient
+                  // deployment-id comparison BEFORE the fast path's
+                  // hook_received write — the correctly-routed common case
+                  // pays no run fetch and no latency. Only a detected
+                  // mismatch fetches the authoritative run and hands it to
+                  // the existing guard (which owns re-route/fail policy);
+                  // the re-routed message keeps the complete `hookInput`,
+                  // since it may hold the only copy of the resume payload.
+                  // When the pinned or ambient id is unavailable (older
+                  // producer message, a world without deployment affinity,
+                  // or a getDeploymentId failure), behavior is unchanged:
+                  // the authoritative guard after run setup — which remains
+                  // the protection before replay and step execution — still
+                  // covers the delivery; the fast path's write is idempotent
+                  // per (runId, resumeId), so a pre-guard write from an
+                  // older message stays convergent.
+                  if (
+                    !workflowRun &&
+                    hookInput?.deploymentId !== undefined &&
+                    // Same eligibility as guardDeploymentAffinity: without
+                    // atomic, immutable deployments the ids legitimately
+                    // differ (e.g. dpl_local@<version>) and comparing them
+                    // would trigger spurious run fetches.
+                    world.capabilities?.deploymentAffinity === true
+                  ) {
+                    const pinnedDeploymentId = hookInput.deploymentId;
+                    let currentDeploymentId: string | undefined;
+                    try {
+                      currentDeploymentId = await world.getDeploymentId();
+                    } catch {
+                      currentDeploymentId = undefined;
+                    }
+                    if (
+                      currentDeploymentId !== undefined &&
+                      currentDeploymentId !== pinnedDeploymentId
+                    ) {
+                      const run = await world.runs.get(runId, {
+                        resolveData: 'none',
+                      });
+                      if (
+                        (await guardDeployment(
+                          run,
+                          async () => ({
+                            ...(await replayMessage()),
+                            hookInput,
+                          }),
+                          awaitRunReady
+                        )) !== 'continue'
+                      ) {
+                        return;
+                      }
+                    }
+                  }
+
                   // --- Lazy hook resume fast path ---
                   // A lazy hook delivery (resumeId + digest on the queue
                   // message) hoists the consumer's idempotent hook_received
@@ -1980,17 +2037,24 @@ export function workflowEntrypoint(
 
                   // Covers every flow replay — initial start, step completions,
                   // hook resumptions, wait completions — and stops before any
-                  // workflow code, inline step, or event write happens when the
-                  // run is not pinned here (see `guardDeploymentAffinity`).
-                  // `awaitRunReady` orders turbo's `run_started` before either
-                  // stopping action.
+                  // workflow code or inline step executes when the run is not
+                  // pinned here (see `guardDeploymentAffinity`). This remains
+                  // the AUTHORITATIVE protection before replay and step
+                  // execution. `awaitRunReady` orders turbo's `run_started`
+                  // before either stopping action.
                   //
-                  // Runs ahead of the lazy-hook re-ensure below, so a misrouted
-                  // resume writes nothing here — which means the re-routed
-                  // message must carry `hookInput`, or a resume whose producer
-                  // write had not yet landed would be lost (that re-ensure is
-                  // idempotent per `resumeId`, so the pinned deployment still
-                  // converges on one event).
+                  // Lazy hook resumes are additionally pre-checked above the
+                  // fast path: a new message's `hookInput.deploymentId` is
+                  // compared against the ambient deployment id for free, and
+                  // only a detected mismatch fetches the authoritative run —
+                  // so a misrouted modern resume re-routes with zero event
+                  // writes. Older messages (no `hookInput.deploymentId`) reach
+                  // the fast path's idempotent hook_received write before this
+                  // guard; that write converges per (runId, resumeId) on the
+                  // pinned deployment, so it is safe, just not free. Either
+                  // way the re-routed message must carry `hookInput`, or a
+                  // resume whose producer write had not yet landed would be
+                  // lost.
                   if (
                     (await guardDeployment(
                       workflowRun,
