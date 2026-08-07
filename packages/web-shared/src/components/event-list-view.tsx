@@ -2,7 +2,7 @@
 
 import { parseStepName, parseWorkflowName } from '@workflow/utils/parse-name';
 import type { Event, WorkflowRun } from '@workflow/world';
-import { Check, ChevronRight, Copy, Search } from 'lucide-react';
+import { ArrowUpRight, Check, ChevronRight, Copy, Search } from 'lucide-react';
 import type {
   KeyboardEvent as ReactKeyboardEvent,
   MouseEvent as ReactMouseEvent,
@@ -19,8 +19,9 @@ import {
 } from '../lib/exact-event-search-id';
 import { isEncryptedMarker } from '../lib/hydration';
 import { useToast } from '../lib/toast';
-import { formatDuration } from '../lib/utils';
+import { formatDuration, formatDurationPrecise } from '../lib/utils';
 import { AttrSetEventBlock } from './sidebar/attributes-block';
+import { MiddleTruncate } from './trace-viewer/components/middle-truncate/middle-truncate';
 import { ContextCardProvider } from './ui/context-card';
 import { DataInspector, DecryptClickContext } from './ui/data-inspector';
 import { DecryptButton } from './ui/decrypt-button';
@@ -95,6 +96,28 @@ function getEffectiveEventTime(
 function formatEventType(eventType: Event['eventType']): string {
   const label = eventType.replace(/_/g, ' ');
   return label.charAt(0).toUpperCase() + label.slice(1);
+}
+
+/**
+ * Case-insensitive substring match over the fields visible in the events
+ * table: raw + formatted event type, resolved name, correlation ID, and
+ * event ID. Used for instant client-side filtering of loaded events.
+ * Exported for tests.
+ */
+export function eventMatchesTextFilter(
+  event: Pick<Event, 'eventType' | 'correlationId' | 'eventId'>,
+  query: string,
+  eventName?: string | null
+): boolean {
+  const q = query.trim().toLowerCase();
+  if (!q) return true;
+  return [
+    event.eventType,
+    formatEventType(event.eventType),
+    eventName ?? '',
+    event.correlationId ?? '',
+    event.eventId,
+  ].some((field) => field.toLowerCase().includes(q));
 }
 
 /**
@@ -435,9 +458,11 @@ function CopyableCell({
       className={`group/copy flex items-center gap-1 min-w-0 px-4 ${className ?? ''}`}
       style={styleProp}
     >
-      <span className="overflow-hidden text-ellipsis whitespace-nowrap">
-        {value || '-'}
-      </span>
+      {value ? (
+        <MiddleTruncate value={value} className="min-w-0" />
+      ) : (
+        <span>-</span>
+      )}
       {value ? (
         <button
           type="button"
@@ -603,7 +628,7 @@ function PayloadBlock({
   return (
     <div className="relative group/payload">
       <div
-        className="overflow-x-auto p-2 text-label-12"
+        className="max-h-80 overflow-auto p-2 text-label-12"
         style={{ color: 'var(--ds-gray-1000)' }}
       >
         <DataInspector data={cleaned} expandLevel={2} />
@@ -760,6 +785,8 @@ interface EventsListProps {
   ) => Promise<ExactIdSearchResult>;
   /** Show occurredAt separately instead of folding it into the Created timestamp. */
   showSeparateEventOccurrenceTimestamps?: boolean;
+  /** Open the trace tab with the given span (step/hook/wait/run ID) selected. */
+  onViewInTrace?: (spanId: string) => void;
 }
 
 export function EventRow({
@@ -784,6 +811,8 @@ export function EventRow({
   onEncryptedDataDetected,
   suppressGroupDimming = false,
   showSeparateEventOccurrenceTimestamps = false,
+  deltaMs,
+  onViewInTrace,
 }: {
   event: Event;
   index: number;
@@ -808,6 +837,10 @@ export function EventRow({
   suppressGroupDimming?: boolean;
   /** Show occurredAt separately instead of folding it into the Created timestamp. */
   showSeparateEventOccurrenceTimestamps?: boolean;
+  /** Time since the chronologically previous event in the run (ms). */
+  deltaMs?: number;
+  /** Open the trace tab with the event's entity (step/hook/wait/run) selected. */
+  onViewInTrace?: (spanId: string) => void;
 }) {
   const [isLoading, setIsLoading] = useState(false);
   const [loadedEventData, setLoadedEventData] = useState<unknown | null>(
@@ -850,6 +883,10 @@ export function EventRow({
 
   const durationKey = event.correlationId ?? (isRun ? '__run__' : '');
   const durationInfo = durationKey ? durationMap.get(durationKey) : undefined;
+
+  // Trace spans are keyed by entity ID: run ID for run-level events,
+  // correlation ID (step/hook/wait ID) for child entities.
+  const traceSpanId = isRun ? event.runId : event.correlationId;
 
   const hasActive = activeGroupKey !== undefined;
   const isRelated = rowGroupKey !== undefined && rowGroupKey === activeGroupKey;
@@ -1022,27 +1059,41 @@ export function EventRow({
 
           {showSeparateEventOccurrenceTimestamps && (
             <div
-              className="font-mono min-w-0 px-4"
+              className="font-mono min-w-0 px-4 overflow-hidden whitespace-nowrap"
               style={{ color: 'var(--ds-gray-900)', flex: '2 1 0%' }}
             >
               {occurredAt ? (
-                <TimestampTooltip date={occurredAt}>
-                  <span>{formatEventTime(occurredAt)}</span>
-                </TimestampTooltip>
+                <>
+                  <TimestampTooltip date={occurredAt}>
+                    <span>{formatEventTime(occurredAt)}</span>
+                  </TimestampTooltip>
+                  {deltaMs !== undefined && deltaMs >= 1 && (
+                    <span className="ml-1.5 text-gray-700">
+                      +{formatDurationPrecise(deltaMs)}
+                    </span>
+                  )}
+                </>
               ) : (
                 '-'
               )}
             </div>
           )}
 
-          {/* Created */}
+          {/* Time (occurred, falling back to created) */}
           <div
-            className="font-mono min-w-0 px-4"
+            className="font-mono min-w-0 px-4 overflow-hidden whitespace-nowrap"
             style={{ color: 'var(--ds-gray-900)', flex: '2 1 0%' }}
           >
             <TimestampTooltip date={displayedCreatedAt}>
               <span>{formatEventTime(displayedCreatedAt)}</span>
             </TimestampTooltip>
+            {!showSeparateEventOccurrenceTimestamps &&
+              deltaMs !== undefined &&
+              deltaMs >= 1 && (
+                <span className="ml-1.5 text-gray-700">
+                  +{formatDurationPrecise(deltaMs)}
+                </span>
+              )}
           </div>
 
           {/* Event Type */}
@@ -1114,14 +1165,15 @@ export function EventRow({
               transition: 'opacity 150ms',
             }}
           >
-            {/* Duration info */}
+            {/* Durations + trace link */}
             {(durationInfo?.queued !== undefined ||
-              durationInfo?.ran !== undefined) && (
+              durationInfo?.ran !== undefined ||
+              (onViewInTrace && traceSpanId)) && (
               <div
-                className="px-2 pb-1.5 text-label-12 flex gap-3"
+                className="px-2 pb-1.5 text-label-12 flex items-center gap-3"
                 style={{ color: 'var(--ds-gray-900)' }}
               >
-                {durationInfo.queued !== undefined &&
+                {durationInfo?.queued !== undefined &&
                   durationInfo.queued > 0 && (
                     <span>
                       Queued for{' '}
@@ -1130,13 +1182,27 @@ export function EventRow({
                       </span>
                     </span>
                   )}
-                {durationInfo.ran !== undefined && (
+                {durationInfo?.ran !== undefined && (
                   <span>
                     Ran for{' '}
                     <span className="tabular-nums">
                       {formatDuration(durationInfo.ran)}
                     </span>
                   </span>
+                )}
+                {onViewInTrace && traceSpanId && (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onViewInTrace(traceSpanId);
+                    }}
+                    className={`ml-auto inline-flex shrink-0 items-center gap-0.5 rounded text-label-12 text-gray-900 hover:text-gray-1000 hover:underline cursor-pointer ${FOCUS_RING_STYLE}`}
+                    style={BUTTON_RESET_STYLE}
+                  >
+                    View in trace
+                    <ArrowUpRight aria-hidden className="h-3 w-3" />
+                  </button>
                 )}
               </div>
             )}
@@ -1199,6 +1265,7 @@ function EventListViewInner({
   hasEncryptedData: hasEncryptedDataProp = false,
   onExactIdSearch,
   showSeparateEventOccurrenceTimestamps = false,
+  onViewInTrace,
 }: EventsListProps) {
   const toast = useToast();
   const [internalSortOrder, setInternalSortOrder] = useState<'asc' | 'desc'>(
@@ -1240,6 +1307,23 @@ function EventListViewInner({
     );
   }, [events, effectiveSortOrder, isExactSearchActive, searchResults]);
 
+  // Time gap between each event and the chronologically previous one,
+  // independent of display sort order or filtering.
+  const deltaByEventId = useMemo(() => {
+    const chronological = [...sortedEvents].sort(
+      (a, b) => getEffectiveEventTime(a) - getEffectiveEventTime(b)
+    );
+    const map = new Map<string, number>();
+    for (let i = 1; i < chronological.length; i++) {
+      map.set(
+        chronological[i].eventId,
+        getEffectiveEventTime(chronological[i]) -
+          getEffectiveEventTime(chronological[i - 1])
+      );
+    }
+    return map;
+  }, [sortedEvents]);
+
   // Detect encrypted fields across all loaded events (inline eventData).
   const hasEncryptedInlineData = useMemo(() => {
     const sourceEvents = isExactSearchActive ? searchResults : events;
@@ -1275,6 +1359,32 @@ function EventListViewInner({
     () => buildDurationMap(sortedEvents),
     [sortedEvents]
   );
+
+  // Instant client-side filtering of loaded events. Inputs that parse as a
+  // full workflow ID go through the server-backed exact search instead
+  // (when available; otherwise they filter loaded events like any text).
+  const textFilterQuery =
+    !isExactSearchActive && (!parsedSearchId || !onExactIdSearch)
+      ? searchQuery.trim()
+      : '';
+  const isTextFilterActive = textFilterQuery.length > 0;
+  const visibleEvents = useMemo(() => {
+    if (!isTextFilterActive) return sortedEvents;
+    return sortedEvents.filter((ev) => {
+      const name = isRunLevel(ev.eventType)
+        ? workflowName
+        : ev.correlationId
+          ? (correlationNameMap.get(ev.correlationId) ?? null)
+          : null;
+      return eventMatchesTextFilter(ev, textFilterQuery, name);
+    });
+  }, [
+    sortedEvents,
+    isTextFilterActive,
+    textFilterQuery,
+    workflowName,
+    correlationNameMap,
+  ]);
 
   const [selectedGroupKey, setSelectedGroupKey] = useState<string | undefined>(
     undefined
@@ -1344,19 +1454,20 @@ function EventListViewInner({
   }, [selectedGroupKey, eventGroupKeyMap]);
 
   // Compute the row-index range for the active group's connecting lane line.
+  // Indexes are relative to the rendered (filtered) rows.
   // Only applies to non-run groups (step/hook/wait correlations).
   const selectedGroupRange = useMemo(() => {
     if (!activeGroupKey || activeGroupKey === '__run__') return null;
     let first = -1;
     let last = -1;
-    for (let i = 0; i < sortedEvents.length; i++) {
-      if (sortedEvents[i].correlationId === activeGroupKey) {
+    for (let i = 0; i < visibleEvents.length; i++) {
+      if (visibleEvents[i].correlationId === activeGroupKey) {
         if (first === -1) first = i;
         last = i;
       }
     }
     return first >= 0 ? { first, last } : null;
-  }, [activeGroupKey, sortedEvents]);
+  }, [activeGroupKey, visibleEvents]);
 
   useEffect(() => {
     const trimmed = searchQuery.trim();
@@ -1563,18 +1674,12 @@ function EventListViewInner({
               id="event-list-search"
               name="event-list-search"
               type="text"
-              placeholder="Search by step ID, wait ID, hook ID, or event ID…"
-              aria-label="Search events by exact ID"
+              placeholder="Filter events, or paste a step, hook, wait, or event ID…"
+              aria-label="Filter events, or search by exact ID"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               onKeyDown={handleSearchKeyDown}
-              disabled={!onExactIdSearch}
-              title={
-                onExactIdSearch
-                  ? undefined
-                  : 'Exact ID search is unavailable in this view.'
-              }
-              className="flex-1 min-w-0 bg-transparent text-label-14 text-gray-1000 placeholder:text-gray-800 outline-none disabled:cursor-not-allowed disabled:opacity-50"
+              className="flex-1 min-w-0 bg-transparent text-label-14 text-gray-1000 placeholder:text-gray-800 outline-none"
             />
             {searchQuery && (
               <button
@@ -1626,7 +1731,7 @@ function EventListViewInner({
             </div>
           )}
           <div className="min-w-0 px-4" style={{ flex: '2 1 0%' }}>
-            Created
+            {showSeparateEventOccurrenceTimestamps ? 'Created' : 'Time'}
           </div>
           <div className="min-w-0 px-4" style={{ flex: '2 1 0%' }}>
             Event type
@@ -1649,7 +1754,7 @@ function EventListViewInner({
               showSeparateEventOccurrenceTimestamps
             }
           />
-        ) : sortedEvents.length === 0 ? (
+        ) : visibleEvents.length === 0 ? (
           <div
             className="flex flex-1 items-center justify-center px-6 text-center text-copy-14"
             style={{ color: 'var(--ds-gray-700)' }}
@@ -1658,14 +1763,14 @@ function EventListViewInner({
               ? `No events found for ${searchQuery.trim()}`
               : searchError
                 ? searchError
-                : parsedSearchId && searchQuery.trim() && !onExactIdSearch
-                  ? 'Exact ID search is unavailable in this view.'
+                : isTextFilterActive && sortedEvents.length > 0
+                  ? `No loaded events match "${textFilterQuery}"`
                   : 'No events found'}
           </div>
         ) : (
           <Virtuoso
             ref={virtuosoRef}
-            totalCount={sortedEvents.length}
+            totalCount={visibleEvents.length}
             overscan={20}
             defaultItemHeight={40}
             endReached={() => {
@@ -1679,13 +1784,13 @@ function EventListViewInner({
               void onLoadMoreEvents?.();
             }}
             itemContent={(index: number) => {
-              const ev = sortedEvents[index];
+              const ev = visibleEvents[index];
               return (
                 <EventRow
                   event={ev}
                   index={index}
                   isFirst={index === 0}
-                  isLast={index === sortedEvents.length - 1}
+                  isLast={index === visibleEvents.length - 1}
                   isExpanded={expandedEventIds.has(ev.eventId)}
                   onToggleExpand={toggleEventExpanded}
                   activeGroupKey={activeGroupKey}
@@ -1707,6 +1812,8 @@ function EventListViewInner({
                   showSeparateEventOccurrenceTimestamps={
                     showSeparateEventOccurrenceTimestamps
                   }
+                  deltaMs={deltaByEventId.get(ev.eventId)}
+                  onViewInTrace={onViewInTrace}
                 />
               );
             }}
@@ -1730,7 +1837,9 @@ function EventListViewInner({
                 : searchNotFound
                   ? `No events found for ${searchQuery.trim()}`
                   : `${sortedEvents.length} event${sortedEvents.length !== 1 ? 's' : ''} for ${searchQuery.trim()}${searchResultsTruncated ? ' (results may be truncated)' : ''}`
-              : `${sortedEvents.length} event${sortedEvents.length !== 1 ? 's' : ''} loaded`}
+              : isTextFilterActive
+                ? `Showing ${visibleEvents.length} of ${sortedEvents.length} loaded event${sortedEvents.length !== 1 ? 's' : ''}`
+                : `${sortedEvents.length} event${sortedEvents.length !== 1 ? 's' : ''} loaded`}
           </span>
           {!isExactSearchActive && hasMoreEvents && (
             <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
