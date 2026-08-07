@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { WorkflowWorldError } from '@workflow/errors';
+import { eventIdToSlot } from '@workflow/world';
 import { lock } from 'proper-lockfile';
 import { decodeTime, monotonicFactory } from 'ulid';
 import { z } from 'zod';
@@ -234,27 +235,83 @@ export async function reapPendingHookEvents(
  * >= every visible event's `createdAt`, which was stamped at that event's
  * `createImpl()` entry — before its publish, and thus before this call.
  * Equal-`createdAt` ties fall to the strictly-dominant eventId.
+ *
+ * ULID-numbered runs only. A slot-numbered run needs no temporal argument:
+ * the next slot dominates every allocated one by construction, so its
+ * terminal transition just draws from the run's slot allocator after the
+ * reap. Callers pick the branch (see `mintDominantEventKey` in
+ * events-storage.ts).
  */
 export async function mintRunDominantEventKey(
   basedir: string,
   runId: string,
   tag?: string
 ): Promise<{ eventId: string; createdAt: Date }> {
+  const scan = await scanRunEventIds(basedir, runId, tag);
+
+  let ts = Date.now();
+  if (scan.maxId) {
+    try {
+      const maxTs = decodeTime(scan.maxId.replace(/^evnt_/, ''));
+      if (ts <= maxTs) {
+        ts = maxTs + 1;
+      }
+    } catch {
+      // Malformed eventId in the log — fall back to the wall clock.
+    }
+  }
+  return { eventId: `evnt_${monotonicUlid(ts)}`, createdAt: new Date(ts) };
+}
+
+/**
+ * What a run's already-published event ids say about its identity scheme.
+ *
+ * A run keeps the scheme it was created under for its whole life (a log may
+ * not mix ULID and slot ids — `events.list` sorts on the id, and the two
+ * schemes do not interleave), so the ids on disk are the authoritative pin.
+ * `usesSlots` is false for a run with no events yet; the caller decides what a
+ * brand-new run gets.
+ */
+export interface RunEventIdScan {
+  /** Highest reader-visible event id, or null when the run has no events. */
+  maxId: string | null;
+  /** Whether the run's ids are slot-numbered. */
+  usesSlots: boolean;
+  /** Highest allocated slot, or 0 when the run has none. */
+  maxSlot: number;
+  /** Number of reader-visible events found for the run. */
+  count: number;
+}
+
+/**
+ * Scans the events directory for one run's ids, honoring tag visibility.
+ *
+ * O(all event files), like every other directory-walking read in this
+ * backend. Callers that run it per write memoize the result and use the
+ * publish itself to detect when the memo has fallen behind.
+ */
+export async function scanRunEventIds(
+  basedir: string,
+  runId: string,
+  tag?: string
+): Promise<RunEventIdScan> {
   let files: string[] = [];
   try {
     files = await fs.readdir(path.join(basedir, 'events'));
   } catch (error) {
     // Only ENOENT ("no events directory yet") means there is provably
-    // nothing visible to dominate. Any other failure would silently mint a
-    // wall-clock key with no dominance guarantee over an already-accepted
-    // hook — abort the terminal transition instead; its retry re-runs this
-    // scan.
+    // nothing visible. Any other failure would silently report an empty run,
+    // which would mint a colliding slot / a non-dominant ULID — let the
+    // caller's retry re-run the scan instead.
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
       throw error;
     }
   }
   const prefix = `${runId}-`;
-  let maxUlid: string | null = null;
+  let maxId: string | null = null;
+  let maxSlot = 0;
+  let usesSlots = false;
+  let count = 0;
   for (const file of files) {
     if (!file.startsWith(prefix) || !file.endsWith('.json')) {
       continue;
@@ -266,22 +323,17 @@ export async function mintRunDominantEventKey(
       continue;
     }
     const candidate = stripTag(fileId).slice(prefix.length);
-    if (!maxUlid || candidate > maxUlid) {
-      maxUlid = candidate;
+    count += 1;
+    if (!maxId || candidate > maxId) {
+      maxId = candidate;
+    }
+    const slot = eventIdToSlot(candidate);
+    if (slot !== null) {
+      usesSlots = true;
+      if (slot > maxSlot) maxSlot = slot;
     }
   }
-  let ts = Date.now();
-  if (maxUlid) {
-    try {
-      const maxTs = decodeTime(maxUlid.replace(/^evnt_/, ''));
-      if (ts <= maxTs) {
-        ts = maxTs + 1;
-      }
-    } catch {
-      // Malformed eventId in the log — fall back to the wall clock.
-    }
-  }
-  return { eventId: `evnt_${monotonicUlid(ts)}`, createdAt: new Date(ts) };
+  return { maxId, usesSlots, maxSlot, count };
 }
 
 /**

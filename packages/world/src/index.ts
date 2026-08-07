@@ -110,6 +110,16 @@ export {
   PaginatedResponseSchema,
   StructuredErrorSchema,
 } from './shared.js';
+export {
+  EVENT_ID_BODY_LENGTH,
+  EVENT_ID_PREFIX,
+  eventIdToSlot,
+  FIRST_EVENT_SLOT,
+  isSlotBody,
+  isSlotEventId,
+  MAX_EVENT_SLOT,
+  slotToEventId,
+} from './slot-identity.js';
 export type { SpecVersion } from './spec-version.js';
 export {
   isLegacySpecVersion,

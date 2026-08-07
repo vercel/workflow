@@ -580,24 +580,60 @@ interface PaginatedFileSystemQueryConfig<T> {
   cursor?: string;
   getCreatedAt(filename: string): Date | null;
   getId?(item: T): string;
+  /**
+   * Opt an item out of `createdAt` ordering in favor of a total order carried
+   * by the item itself.
+   *
+   * Slot-numbered events are the case this exists for: the slot is assigned
+   * at the publish, which is the linearization point, while `createdAt` is
+   * stamped when the request arrives. A writer that loses a slot race and
+   * bumps therefore lands at a higher slot with an older `createdAt`, and
+   * ordering by time would hand back a log whose order contradicts the
+   * positions the World assigned. Return null to keep the `createdAt`
+   * ordering (ULID-numbered events, and every other entity).
+   */
+  getSortKey?(item: T): string | null;
 }
-// Cursor format: "timestamp|id" for tie-breaking
+
+// Cursor formats:
+//   "timestamp|id"  — createdAt order, id for tie-breaking
+//   "key:<sortKey>" — sort-key order (see getSortKey)
+// A run never mixes the two, so a cursor never has to cross formats mid-scan.
+const SORT_KEY_CURSOR_PREFIX = 'key:';
+
 interface ParsedCursor {
   timestamp: Date;
   id: string | null;
+  sortKey: string | null;
 }
 
 function parseCursor(cursor: string | undefined): ParsedCursor | null {
   if (!cursor) return null;
 
+  if (cursor.startsWith(SORT_KEY_CURSOR_PREFIX)) {
+    return {
+      timestamp: new Date(0),
+      id: null,
+      sortKey: cursor.slice(SORT_KEY_CURSOR_PREFIX.length),
+    };
+  }
+
   const parts = cursor.split('|');
   return {
     timestamp: new Date(parts[0]),
     id: parts[1] || null,
+    sortKey: null,
   };
 }
 
-function createCursor(timestamp: Date, id: string | undefined): string {
+function createCursor(
+  timestamp: Date,
+  id: string | undefined,
+  sortKey?: string | null
+): string {
+  if (sortKey) {
+    return `${SORT_KEY_CURSOR_PREFIX}${sortKey}`;
+  }
   return id ? `${timestamp.toISOString()}|${id}` : timestamp.toISOString();
 }
 
@@ -616,6 +652,7 @@ export async function paginatedFileSystemQuery<T extends { createdAt: Date }>(
     cursor,
     getCreatedAt,
     getId,
+    getSortKey,
   } = config;
 
   // Validate filePrefix (typically `${runId}-`) so request-derived prefixes
@@ -644,7 +681,7 @@ export async function paginatedFileSystemQuery<T extends { createdAt: Date }>(
   const parsedCursor = parseCursor(cursor);
   let candidateFileIds = filteredFileIds;
 
-  if (parsedCursor) {
+  if (parsedCursor && !parsedCursor.sortKey) {
     candidateFileIds = filteredFileIds.filter((fileId) => {
       const filenameDate = getCreatedAt(`${fileId}.json`);
       if (filenameDate) {
@@ -717,6 +754,23 @@ export async function paginatedFileSystemQuery<T extends { createdAt: Date }>(
     for (const item of loadedBatch) {
       if (!item) continue;
 
+      const itemSortKey = getSortKey?.(item) ?? null;
+
+      if (parsedCursor?.sortKey) {
+        // Sort-key cursor: the key alone is the total order, so there is no
+        // tie to break. An item without a key cannot be placed relative to
+        // the cursor at all — that would mean a run mixed the two schemes —
+        // so keep it and let the comparator below order it.
+        if (itemSortKey) {
+          const comparison = itemSortKey.localeCompare(parsedCursor.sortKey);
+          if (sortOrder === 'desc' ? comparison >= 0 : comparison <= 0) {
+            continue;
+          }
+        }
+        validItems.push(item);
+        continue;
+      }
+
       // Double-check cursor filtering with actual createdAt from JSON
       // (in case ULID timestamp differs from stored createdAt)
       if (parsedCursor) {
@@ -746,8 +800,18 @@ export async function paginatedFileSystemQuery<T extends { createdAt: Date }>(
     }
   }
 
-  // 5. Sort by createdAt (and by ID for tie-breaking if getId is provided)
+  // 5. Sort by sortKey when the items carry one, else by createdAt (and by ID
+  // for tie-breaking if getId is provided)
   validItems.sort((a, b) => {
+    if (getSortKey) {
+      const aKey = getSortKey(a);
+      const bKey = getSortKey(b);
+      if (aKey !== null && bKey !== null) {
+        return sortOrder === 'asc'
+          ? aKey.localeCompare(bKey)
+          : bKey.localeCompare(aKey);
+      }
+    }
     const aTime = a.createdAt.getTime();
     const bTime = b.createdAt.getTime();
     const timeComparison = sortOrder === 'asc' ? aTime - bTime : bTime - aTime;
@@ -771,7 +835,8 @@ export async function paginatedFileSystemQuery<T extends { createdAt: Date }>(
     items.length > 0
       ? createCursor(
           items[items.length - 1].createdAt,
-          getId?.(items[items.length - 1])
+          getId?.(items[items.length - 1]),
+          getSortKey?.(items[items.length - 1])
         )
       : null;
 

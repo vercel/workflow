@@ -133,7 +133,7 @@ export const runs = schema.table(
 export const events = schema.table(
   'workflow_events',
   {
-    eventId: varchar('id').primaryKey(),
+    eventId: varchar('id').notNull(),
     eventType: varchar('type').$type<Event['eventType']>().notNull(),
     correlationId: varchar('correlation_id'),
     createdAt: timestamp('created_at').defaultNow().notNull(),
@@ -153,6 +153,11 @@ export const events = schema.table(
     >
   >,
   (tb) => [
+    // Event ids are per-run slot positions, so `evnt_…0001` exists once per
+    // run and is only unique together with the run it belongs to. Runs
+    // created before slots keep globally-unique ULIDs, which this key also
+    // admits.
+    primaryKey({ columns: [tb.runId, tb.eventId] }),
     index().on(tb.runId),
     index().on(tb.correlationId),
     // Runtime-correlated one-shot events must be unique per (run, correlation)
@@ -169,6 +174,22 @@ export const events = schema.table(
       ),
   ]
 );
+
+/**
+ * Per-run event slot counter. A row exists iff the run is slot-numbered, so
+ * its absence is exactly the "this run predates slots, keep minting ULIDs"
+ * signal — no scan of the event log is needed to tell the two schemes apart.
+ *
+ * The counter is advanced by `UPDATE … SET next = next + 1 RETURNING next`,
+ * which takes the row lock for the length of the enclosing transaction. That
+ * is what makes slots dense: concurrent writers on one run queue rather than
+ * collide. A writer that allocates and then fails to insert leaves a hole,
+ * which costs nothing but a gap in the numbering.
+ */
+export const eventSlots = schema.table('workflow_event_slots', {
+  runId: varchar('run_id').primaryKey(),
+  next: integer('next').notNull(),
+});
 
 export const steps = schema.table(
   'workflow_steps',

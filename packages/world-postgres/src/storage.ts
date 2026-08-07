@@ -30,6 +30,7 @@ import {
   ATTRIBUTE_MAX_PER_RUN,
   AttributeValidationError,
   EventSchema,
+  FIRST_EVENT_SLOT,
   HookSchema,
   isChildEntityCreationEvent,
   isChildEntityCreationEventType,
@@ -41,6 +42,7 @@ import {
   requiresNewerWorld,
   SPEC_VERSION_CURRENT,
   StepSchema,
+  slotToEventId,
   stripEventDataRefs,
   TERMINAL_STEP_STATUSES,
   TERMINAL_WORKFLOW_RUN_STATUSES,
@@ -70,6 +72,58 @@ import type { SerializedContent } from './drizzle/schema.js';
 import { compact } from './util.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * A drizzle handle, either the pool or a transaction. Slot allocation runs on
+ * whichever one the caller is already inside, so the counter advance commits
+ * or rolls back with the event insert it is allocating for.
+ */
+type DrizzleLike = Pick<Drizzle, 'insert' | 'update'>;
+
+/** Only for legacy (pre-slot) runs; see `allocateEventId`. */
+const legacyEventUlid = monotonicFactory();
+
+/**
+ * Allocates the next event id for `runId`.
+ *
+ * A slot-numbered run owns a row in `workflow_event_slots`, and the UPDATE
+ * below reads and advances the counter in one statement — concurrent writers
+ * on a single run therefore queue on that row and come away with distinct,
+ * dense positions, with no retry loop and no scan of the event log.
+ *
+ * A run with no row predates slots. It keeps minting ULIDs under the original
+ * `wevt_` prefix rather than moving to `evnt_`: a mid-life prefix change would
+ * sort every new event before every old one, since `evnt_` < `wevt_`.
+ *
+ * Callers allocate as late as they can, after whatever entity row lock orders
+ * the write, so a writer that blocks on that lock cannot carry an earlier
+ * position into a later insert.
+ */
+async function allocateEventId(
+  db: DrizzleLike,
+  runId: string
+): Promise<string> {
+  const [row] = await db
+    .update(Schema.eventSlots)
+    .set({ next: sql`${Schema.eventSlots.next} + 1` })
+    .where(eq(Schema.eventSlots.runId, runId))
+    .returning({ next: Schema.eventSlots.next });
+  return row ? slotToEventId(row.next - 1) : `wevt_${legacyEventUlid()}`;
+}
+
+/**
+ * Opens the slot counter for a run being created and returns its first event
+ * id. `DO NOTHING` on conflict because the arbitration that matters is the
+ * event insert: two writers racing one run_created both take the first slot,
+ * and the composite events primary key rejects the loser.
+ */
+async function openEventSlots(db: DrizzleLike, runId: string): Promise<string> {
+  await db
+    .insert(Schema.eventSlots)
+    .values({ runId, next: FIRST_EVENT_SLOT + 1 })
+    .onConflictDoNothing();
+  return slotToEventId(FIRST_EVENT_SLOT);
+}
 
 function getHookRetentionLimitMs(): number {
   const days = Number(
@@ -521,7 +575,11 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
       }
 
       let eventId: string | undefined;
-      const getEventId = () => (eventId ??= `wevt_${ulid()}`);
+      // Memoized and lazy: an id is a position in the log, so it is drawn at
+      // the point the write is actually ordered, not on entry. Every caller
+      // below awaits it immediately before its insert.
+      const getEventId = async (db: DrizzleLike = drizzle) =>
+        (eventId ??= await allocateEventId(db, effectiveRunId));
 
       // For run_created events, use client-provided runId or generate one server-side
       let effectiveRunId: string;
@@ -639,7 +697,12 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
               .returning();
 
             if (inserted) {
-              const runCreatedEventId = `wevt_${ulid()}`;
+              // This synthetic run_created is the run's first event, so it
+              // opens the slot counter the rest of the run allocates from.
+              const runCreatedEventId = await openEventSlots(
+                drizzle,
+                effectiveRunId
+              );
               await drizzle.insert(events).values({
                 runId: effectiveRunId,
                 eventId: runCreatedEventId,
@@ -694,7 +757,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
           return handleLegacyEventPostgres(
             drizzle,
             effectiveRunId,
-            getEventId(),
+            await getEventId(),
             data,
             currentRun,
             params
@@ -734,7 +797,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
             .insert(Schema.events)
             .values({
               runId: effectiveRunId,
-              eventId: getEventId(),
+              eventId: await getEventId(),
               correlationId: data.correlationId,
               eventType: data.eventType,
               eventData: 'eventData' in data ? data.eventData : undefined,
@@ -746,7 +809,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
             ...data,
             ...value,
             runId: effectiveRunId,
-            eventId: getEventId(),
+            eventId: await getEventId(),
           };
           const parsed = EventSchema.parse(result);
           const resolveData = params?.resolveData ?? 'all';
@@ -920,6 +983,10 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
             `Workflow run "${effectiveRunId}" already exists`
           );
         }
+        // Open the run's slot counter. Doing it here, rather than lazily on
+        // first allocation, is what makes "no row" mean "created before slots
+        // existed" for the rest of the run's life.
+        eventId = await openEventSlots(drizzle, effectiveRunId);
         run = deserializeRunError(compact(runValue));
       }
 
@@ -1259,7 +1326,10 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
             // step_started. Because this synthetic event is in the same
             // transaction as the lazy step row and step_started event, we
             // cannot leave behind only one side of that materialization.
-            const stepCreatedEventId = `wevt_${ulid()}`;
+            const stepCreatedEventId = await allocateEventId(
+              tx,
+              effectiveRunId
+            );
             await tx
               .insert(events)
               .values({
@@ -1340,11 +1410,11 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
             }
           }
 
-          // Allocate the step_started ULID only after the guarded step UPDATE
-          // has acquired and passed the row lock. Without a sequence, this is
-          // the local ordering guarantee we can provide: a writer blocked on
-          // the step row will not carry an older event id into a later insert.
-          const stepStartedEventId = `wevt_${ulid()}`;
+          // Allocate the step_started position only after the guarded step
+          // UPDATE has acquired and passed the row lock, so a writer blocked
+          // on the step row cannot carry an earlier position into a later
+          // insert.
+          const stepStartedEventId = await allocateEventId(tx, effectiveRunId);
           eventId = stepStartedEventId;
           const [eventValue] = await tx
             .insert(events)
@@ -1562,7 +1632,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
               token: eventData.token,
               conflictingRunId: existingHook.runId,
             };
-            const conflictEventId = getEventId();
+            const conflictEventId = await getEventId();
 
             const [conflictValue] = await drizzle
               .insert(events)
@@ -1680,11 +1750,11 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
             );
           }
 
-          // Allocate the ULID only after the row lock is acquired,
+          // Allocate the position only after the row lock is acquired,
           // matching step_started's ordering guarantee: a writer blocked
-          // on the run row must not carry an older event id into a later
+          // on the run row must not carry an earlier position into a later
           // insert.
-          const hookReceivedEventId = `wevt_${ulid()}`;
+          const hookReceivedEventId = await allocateEventId(tx, effectiveRunId);
           eventId = hookReceivedEventId;
           const [eventValue] = await tx
             .insert(events)
@@ -1794,7 +1864,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
             .insert(events)
             .values({
               runId: effectiveRunId,
-              eventId: getEventId(),
+              eventId: await getEventId(),
               correlationId: data.correlationId,
               eventType: data.eventType,
               eventData: storedEventData,
@@ -1838,14 +1908,14 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
       }
       if (!value) {
         throw new EntityConflictError(
-          `Event ${getEventId()} could not be created`
+          `Event ${await getEventId()} could not be created`
         );
       }
       const result = {
         ...data,
         ...value,
         runId: effectiveRunId,
-        eventId: getEventId(),
+        eventId: await getEventId(),
         ...(storedEventData !== undefined
           ? { eventData: storedEventData }
           : {}),

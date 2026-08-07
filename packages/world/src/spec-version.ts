@@ -34,6 +34,15 @@ export const SPEC_VERSION_SUPPORTS_COMPRESSION = 5 as SpecVersion;
 /**
  * Current spec version (event-sourced architecture with native attributes
  * and compressed payloads).
+ *
+ * Deliberately NOT bumped for slot-numbered event ids and per-kind
+ * correlation ids. Both are properties of a run's whole log rather than of an
+ * individual event, and both are already self-describing: a run's scheme is
+ * readable from the shape of its own first event id (see `isSlotEventId`), so
+ * pinning it needs no version negotiation. Bumping this constant would also
+ * stamp the new version on every World including ones that have not adopted
+ * slots yet, which is exactly the cross-version breakage the pin exists to
+ * avoid.
  */
 export const SPEC_VERSION_CURRENT =
   SPEC_VERSION_SUPPORTS_COMPRESSION as SpecVersion;

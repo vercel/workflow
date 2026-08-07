@@ -24,11 +24,14 @@ import type {
 import {
   applyAttributeChanges,
   EventSchema,
+  eventIdToSlot,
+  FIRST_EVENT_SLOT,
   HookSchema,
   isChildEntityCreationEvent,
   isHookEventRequiringExistence,
   isHookLifecycleEventType,
   isLegacySpecVersion,
+  isSlotEventId,
   isStepEventType,
   isTerminalRunEventType,
   isTerminalStepEventType,
@@ -37,6 +40,7 @@ import {
   requiresNewerWorld,
   SPEC_VERSION_CURRENT,
   StepSchema,
+  slotToEventId,
   ulidToDate,
   validateAttributeChanges,
   validateUlidTimestamp,
@@ -74,10 +78,12 @@ import {
   mintRunDominantEventKey,
   monotonicUlid,
   pendingHookEventPath,
+  type RunEventIdScan,
   readHookTokenClaim,
   reapPendingHookEvents,
   releaseHookTokenClaimIfOwnedBy,
   runTerminalMarkerPath,
+  scanRunEventIds,
   withHookTokenClaimLock,
 } from './helpers.js';
 import {
@@ -248,6 +254,21 @@ async function readHookRecoveryMarker(
  * already exists at that exact path — which is the correct
  * "already-published" semantic.
  */
+/**
+ * Log order for a slot-numbered run is slot order, not `createdAt` order. A
+ * writer stamps `createdAt` when it enters `create()` but only claims its slot
+ * at publish time, so a writer that loses a slot race and bumps ends up with a
+ * higher slot and an older timestamp than the writer that beat it. Slot order
+ * is the one both writers agree on, and it is what makes the log dense and
+ * position-addressable, so it wins.
+ *
+ * Returns `null` for a ULID-numbered run, which falls back to
+ * `(createdAt, eventId)` — the two never mix within one run.
+ */
+function eventSortKey(event: Event): string | null {
+  return isSlotEventId(event.eventId) ? event.eventId : null;
+}
+
 async function findExistingHookCreatedEventId(
   basedir: string,
   runId: string,
@@ -515,6 +536,119 @@ export function createEventsStorage(
     cachedEventBytes.clear();
     cachedPathsByRunId.clear();
     totalCachedEventBytes = 0;
+    runSlotState.clear();
+  }
+
+  // ------------------------------------------------------------------
+  // Slot allocation
+  // ------------------------------------------------------------------
+  //
+  // Event ids are per-run positions (`evnt_` + a 26-char zero-padded
+  // decimal), dense and 1-based, so the count of a run's events and the
+  // highest id are the same number. That equivalence is what lets a writer
+  // state its position with a single integer, and it only holds if the World
+  // never leaves a hole: a slot is claimed by the publish that occupies it,
+  // never reserved ahead of a write that might still be rejected.
+  //
+  // Runs created before slot ids keep their ULIDs for life. A log may not mix
+  // the two schemes (`events.list` sorts on the id, and they do not
+  // interleave), so the ids already on disk are the authoritative pin — no
+  // spec-version negotiation is involved. `null` state below means "this run
+  // is ULID-numbered".
+  //
+  // The cache is per storage instance. Two instances sharing one directory
+  // (a test-only configuration this backend supports) can both believe they
+  // own the same slot; the exclusive publish arbitrates, and the loser
+  // rescans and bumps.
+  const runSlotState = new Map<string, { next: number } | null>();
+
+  function slotStateKey(runId: string): string {
+    return tag ? `${runId}.${tag}` : runId;
+  }
+
+  /**
+   * Draws the next candidate slot for `runId`, or null when the run is
+   * ULID-numbered and should keep minting ULIDs.
+   *
+   * `atLeast` re-floors the counter after a lost publish. `held` names a slot
+   * the caller already drew and is still holding: when the rescan shows it is
+   * unclaimed and undominated, it is handed back instead of a fresh one, so a
+   * redraw does not leave a hole. The directory scan runs once per run per
+   * instance (and again on a `rescan`), not once per write.
+   */
+  async function drawEventSlot(
+    runId: string,
+    opts?: { rescan?: boolean; atLeast?: number; held?: number }
+  ): Promise<number | null> {
+    const key = slotStateKey(runId);
+    let state = runSlotState.get(key);
+    let scan: RunEventIdScan | null = null;
+    if (state === undefined || opts?.rescan) {
+      scan = await scanRunEventIds(basedir, runId, tag);
+      if (state === undefined) {
+        // A run with no events yet is brand new: it starts on slots. A run
+        // whose visible events are ULIDs stays on ULIDs for life.
+        state =
+          scan.count > 0 && !scan.usesSlots
+            ? null
+            : { next: Math.max(scan.maxSlot + 1, FIRST_EVENT_SLOT) };
+        runSlotState.set(key, state);
+      } else if (state !== null) {
+        // A rescan only ever moves the counter forward. Slots drawn but not
+        // yet published are invisible to the scan, and handing one out twice
+        // would make two in-flight writers of this instance collide.
+        state.next = Math.max(state.next, scan.maxSlot + 1);
+      }
+    }
+    if (state === null) {
+      return null;
+    }
+    if (
+      opts?.held !== undefined &&
+      state.next === opts.held + 1 &&
+      (scan?.maxSlot ?? 0) < opts.held
+    ) {
+      // No other draw from this instance and no publish from any other has
+      // reached the held slot, so it still dominates the log.
+      return opts.held;
+    }
+    if (opts?.atLeast !== undefined && state.next < opts.atLeast) {
+      state.next = opts.atLeast;
+    }
+    const slot = state.next;
+    state.next = slot + 1;
+    return slot;
+  }
+
+  /** Mints the next event id for `runId` under whichever scheme it uses. */
+  async function mintEventId(runId: string): Promise<string> {
+    const slot = await drawEventSlot(runId);
+    return slot === null ? `evnt_${monotonicUlid()}` : slotToEventId(slot);
+  }
+
+  /**
+   * Mints the key a terminal transition appends under, re-derived at its
+   * linearization point (after the marker + reap) so it sorts after any
+   * `hook_received` that legitimately won the promote arbitration.
+   *
+   * For slot runs the rescan is the whole mechanism: it floors the counter
+   * past anything another instance promoted while this invocation was
+   * stalled, and the drawn slot dominates by construction. `heldEventId` is
+   * the id already drawn for this write, kept when the rescan shows nothing
+   * overtook it so the uncontended case leaves no hole.
+   */
+  async function mintDominantEventKey(
+    runId: string,
+    heldEventId: string
+  ): Promise<{ eventId: string; createdAt: Date }> {
+    const slot = await drawEventSlot(runId, {
+      rescan: true,
+      held: eventIdToSlot(heldEventId) ?? undefined,
+    });
+    if (slot !== null) {
+      return { eventId: slotToEventId(slot), createdAt: new Date() };
+    }
+    return mintRunDominantEventKey(basedir, runId, tag);
   }
 
   function cacheEvent(
@@ -681,12 +815,20 @@ export function createEventsStorage(
       return createImpl();
 
       async function createImpl(): Promise<EventResult> {
-        // Most paths use the freshly-generated candidate eventId. The
+        // Most paths use the freshly-drawn candidate eventId. The
         // hook_created dedup-recovery path below may reassign it to
         // the canonical eventId persisted in the durable token claim
         // so concurrent / cross-process workers converge on a single
-        // event in the log.
-        let eventId = `evnt_${monotonicUlid()}`;
+        // event in the log; `eventIdPinned` records that, because a pinned
+        // id must never be bumped past a slot collision (bumping would
+        // defeat the convergence and duplicate the event).
+        //
+        // Drawn below rather than here: slots are positions, so they must be
+        // drawn in publish order. The resilient-start path writes a synthetic
+        // `run_created` that has to precede this event in the log, and a slot
+        // drawn at function entry would sort after it.
+        let eventId = '';
+        let eventIdPinned = false;
         const now = new Date();
 
         // For run_created events, use client-provided runId or generate one server-side
@@ -795,7 +937,9 @@ export function createEventsStorage(
 
               if (created) {
                 // We created the run — also write the run_created event.
-                const runCreatedEventId = `evnt_${monotonicUlid()}`;
+                // Drawn before this invocation's own id so it takes the
+                // earlier slot: it must replay first.
+                const runCreatedEventId = await mintEventId(effectiveRunId);
                 const runCreatedEvent: Event = {
                   eventType: 'run_created',
                   runId: effectiveRunId,
@@ -829,6 +973,11 @@ export function createEventsStorage(
             }
           }
         }
+
+        // Draw this event's id now that any synthetic `run_created` above has
+        // taken the earlier slot. Every path below either publishes at this
+        // id or replaces it with one pinned by a durable claim.
+        eventId = await mintEventId(effectiveRunId);
 
         // run_failed on a non-existent run is rejected to match the
         // postgres and vercel worlds, which both surface this as a
@@ -1123,6 +1272,7 @@ export function createEventsStorage(
               // the claim write and the append). Adopt the pinned eventId and
               // fall through to (re)write the event idempotently at that path.
               eventId = claim.eventId;
+              eventIdPinned = true;
               return null;
             };
 
@@ -1139,6 +1289,13 @@ export function createEventsStorage(
               // Reserve the claim (pinning this candidate eventId) before the
               // append. If a concurrent/cross-process writer reserved it first,
               // converge on their pinned event instead.
+              //
+              // Pinned either way: on a win the durable claim now names this
+              // id, and a converging writer that finds no event at it will
+              // write one there. Bumping past a slot collision would leave
+              // that writer to publish the event we walked away from — two
+              // events for one resume.
+              eventIdPinned = true;
               const won = await writeExclusive(
                 claimPath,
                 JSON.stringify({
@@ -1265,10 +1422,9 @@ export function createEventsStorage(
           // strictly dominates all visible events of the run guarantees the
           // terminal event replays last. See mintRunDominantEventKey for
           // the dominance argument.
-          const dominantKey = await mintRunDominantEventKey(
-            basedir,
+          const dominantKey = await mintDominantEventKey(
             effectiveRunId,
-            tag
+            eventId
           );
           eventId = dominantKey.eventId;
           event = { ...event, eventId, createdAt: dominantKey.createdAt };
@@ -1964,8 +2120,12 @@ export function createEventsStorage(
               canonicalEventId = pinned;
             }
 
-            // The canonical ULID also makes converging writes byte-identical.
+            // Pinned: this id is the convergence point for every writer of
+            // this hook, so it must not be bumped past a slot collision. A
+            // collision here means the canonical event is already published,
+            // which is exactly the duplicate the handler below repairs from.
             eventId = canonicalEventId;
+            eventIdPinned = true;
             const canonicalCreatedAt =
               ulidToDate(eventId.replace(/^evnt_/, '')) ?? now;
             event = {
@@ -2234,12 +2394,64 @@ export function createEventsStorage(
           throw new HookNotFoundError(data.correlationId);
         }
 
-        const compositeKey = `${effectiveRunId}-${eventId}`;
-        const eventPath = taggedPath(basedir, 'events', compositeKey, tag);
+        let eventPath = taggedPath(
+          basedir,
+          'events',
+          `${effectiveRunId}-${eventId}`,
+          tag
+        );
         // Capture the serialized payload before the write's `await` so the
         // cached snapshot can't observe a later mutation (see
         // rememberStoredEvent).
-        const serializedEvent = JSON.stringify(event, jsonReplacer, 2);
+        let serializedEvent = JSON.stringify(event, jsonReplacer, 2);
+
+        /**
+         * Moves this event to the next free slot after a lost publish, and
+         * reports whether it could.
+         *
+         * A slot id is a position in the run's log, not a globally unique
+         * token, so losing the publish means another writer took the
+         * position — an ordinary concurrent write. The World's contract is to
+         * bump and commit rather than reject: `create` must not fail for a
+         * reason its caller could not have avoided. Bumping is refused for:
+         *
+         * - ULID-numbered runs, where ids ARE globally unique and a collision
+         *   really is a duplicate publish that must surface;
+         * - ids pinned by a durable claim (`hook_created`'s canonical id,
+         *   `hook_received`'s resume claim), which exist precisely so two
+         *   writers converge on ONE event — bumping would publish a second.
+         *
+         * The pinned case can only collide across storage instances sharing a
+         * directory: within one instance every slot comes from the same
+         * monotonic counter, so no two writers ever draw the same one.
+         */
+        const bumpEventSlot = async (attempt: number): Promise<boolean> => {
+          const current = eventIdToSlot(eventId);
+          if (eventIdPinned || current === null) {
+            return false;
+          }
+          // Every failure advances the counter by at least one, so this
+          // terminates even under heavy contention. Rescan periodically so a
+          // batch committed by another instance is skipped in one step rather
+          // than one slot at a time.
+          const slot = await drawEventSlot(effectiveRunId, {
+            rescan: attempt > 0 && attempt % 8 === 0,
+            atLeast: current + 1,
+          });
+          if (slot === null) {
+            return false;
+          }
+          eventId = slotToEventId(slot);
+          event = { ...event, eventId };
+          eventPath = taggedPath(
+            basedir,
+            'events',
+            `${effectiveRunId}-${eventId}`,
+            tag
+          );
+          serializedEvent = JSON.stringify(event, jsonReplacer, 2);
+          return true;
+        };
 
         // Cross-process terminal-run guard for `hook_received`. A terminal
         // transition (run_completed / run_failed / run_cancelled) in ANY
@@ -2273,73 +2485,84 @@ export function createEventsStorage(
         // reap has passed necessarily stages after the marker was
         // committed, so step 3 rejects it. Rejections before step 4 unlink
         // a file no reader can see.
-        let eventPublished: boolean;
-        if (data.eventType === 'hook_received') {
-          // Step 1: fast path. The marker is the authoritative durable
-          // signal; the run-state read additionally rejects runs whose
-          // terminal state was written without a marker (e.g. runs that
-          // terminated on an older storage version).
-          const terminalByMarker = await isRunTerminalCommitted(
-            basedir,
-            effectiveRunId,
-            tag
-          );
-          const runNow = terminalByMarker
-            ? null
-            : await readJSONWithFallback(
-                basedir,
-                'runs',
-                effectiveRunId,
-                WorkflowRunSchema,
-                tag
-              );
-          if (
-            terminalByMarker ||
-            (runNow && isTerminalWorkflowRunStatus(runNow.status))
-          ) {
-            throw new RunExpiredError(
-              `Workflow run "${effectiveRunId}" is already in a terminal state`
+        let eventPublished = false;
+        for (let attempt = 0; ; attempt++) {
+          if (data.eventType === 'hook_received') {
+            // Step 1: fast path. The marker is the authoritative durable
+            // signal; the run-state read additionally rejects runs whose
+            // terminal state was written without a marker (e.g. runs that
+            // terminated on an older storage version).
+            const terminalByMarker = await isRunTerminalCommitted(
+              basedir,
+              effectiveRunId,
+              tag
             );
+            const runNow = terminalByMarker
+              ? null
+              : await readJSONWithFallback(
+                  basedir,
+                  'runs',
+                  effectiveRunId,
+                  WorkflowRunSchema,
+                  tag
+                );
+            if (
+              terminalByMarker ||
+              (runNow && isTerminalWorkflowRunStatus(runNow.status))
+            ) {
+              throw new RunExpiredError(
+                `Workflow run "${effectiveRunId}" is already in a terminal state`
+              );
+            }
+
+            const stagedPath = pendingHookEventPath(
+              basedir,
+              effectiveRunId,
+              eventId,
+              tag
+            );
+            const staged = await writeExclusive(stagedPath, serializedEvent);
+            if (!staged) {
+              // The staging path can be occupied by a previous crashed
+              // attempt of this very event (which never promoted), or, under
+              // slot ids, by a concurrent writer holding the same position.
+              // Both are handled the same way: fall through to the bump
+              // below, which moves off the position when it can and surfaces
+              // the conflict when it cannot.
+              if (await bumpEventSlot(attempt)) {
+                continue;
+              }
+              throw new EntityConflictError(
+                `Event "${eventId}" already exists for run "${effectiveRunId}"`
+              );
+            }
+            try {
+              if (await isRunTerminalCommitted(basedir, effectiveRunId, tag)) {
+                throw new RunExpiredError(
+                  `Workflow run "${effectiveRunId}" is already in a terminal state`
+                );
+              }
+              const promoted = await promoteExclusive(stagedPath, eventPath);
+              if (promoted === 'missing') {
+                // A terminal transition reaped the staged file between the
+                // check and the link — the atomic loss of the arbitration.
+                throw new RunExpiredError(
+                  `Workflow run "${effectiveRunId}" is already in a terminal state`
+                );
+              }
+              eventPublished = promoted === 'linked';
+            } finally {
+              // The staged path is not reader-visible; removing it is pure
+              // cleanup on every outcome (already gone when reaped).
+              await deleteJSON(stagedPath).catch(() => {});
+            }
+          } else {
+            eventPublished = await writeExclusive(eventPath, serializedEvent);
           }
 
-          const stagedPath = pendingHookEventPath(
-            basedir,
-            effectiveRunId,
-            eventId,
-            tag
-          );
-          const staged = await writeExclusive(stagedPath, serializedEvent);
-          if (!staged) {
-            // eventId is a freshly generated ULID; its staging path can
-            // only be occupied by a previous crashed attempt of this very
-            // event, which never promoted. Surface the same conflict shape
-            // as a visible-path collision.
-            throw new EntityConflictError(
-              `Event "${eventId}" already exists for run "${effectiveRunId}"`
-            );
+          if (eventPublished || !(await bumpEventSlot(attempt))) {
+            break;
           }
-          try {
-            if (await isRunTerminalCommitted(basedir, effectiveRunId, tag)) {
-              throw new RunExpiredError(
-                `Workflow run "${effectiveRunId}" is already in a terminal state`
-              );
-            }
-            const promoted = await promoteExclusive(stagedPath, eventPath);
-            if (promoted === 'missing') {
-              // A terminal transition reaped the staged file between the
-              // check and the link — the atomic loss of the arbitration.
-              throw new RunExpiredError(
-                `Workflow run "${effectiveRunId}" is already in a terminal state`
-              );
-            }
-            eventPublished = promoted === 'linked';
-          } finally {
-            // The staged path is not reader-visible; removing it is pure
-            // cleanup on every outcome (already gone when reaped).
-            await deleteJSON(stagedPath).catch(() => {});
-          }
-        } else {
-          eventPublished = await writeExclusive(eventPath, serializedEvent);
         }
 
         if (!eventPublished) {
@@ -2409,6 +2632,7 @@ export function createEventsStorage(
             limit: 1000,
             getCreatedAt: getObjectCreatedAt('evnt'),
             getId: (e) => e.eventId,
+            getSortKey: eventSortKey,
           });
           events = allEvents.data;
           cursor = allEvents.cursor;
@@ -2457,6 +2681,7 @@ export function createEventsStorage(
             cursor: params.sinceCursor,
             getCreatedAt: getObjectCreatedAt('evnt'),
             getId: (e) => e.eventId,
+            getSortKey: eventSortKey,
           });
           events =
             resolveData === 'none'
@@ -2517,6 +2742,7 @@ export function createEventsStorage(
         cursor: params.pagination?.cursor,
         getCreatedAt: getObjectCreatedAt('evnt'),
         getId: (event) => event.eventId,
+        getSortKey: eventSortKey,
       });
 
       // If resolveData is "none", remove eventData from events
@@ -2554,6 +2780,7 @@ export function createEventsStorage(
         cursor: params.pagination?.cursor,
         getCreatedAt: getObjectCreatedAt('evnt'),
         getId: (event) => event.eventId,
+        getSortKey: eventSortKey,
       });
 
       // If resolveData is "none", remove eventData from events
