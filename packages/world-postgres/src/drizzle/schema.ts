@@ -176,19 +176,18 @@ export const events = schema.table(
 );
 
 /**
- * Per-run event slot counter. A row exists iff the run is slot-numbered, so
- * its absence is exactly the "this run predates slots, keep minting ULIDs"
- * signal — no scan of the event log is needed to tell the two schemes apart.
+ * Which runs are slot-numbered. A row exists iff the run is, so its absence is
+ * exactly the "this run predates slots, keep minting ULIDs" signal — no scan of
+ * the event log is needed to tell the two schemes apart.
  *
- * The counter is advanced by `UPDATE … SET next = next + 1 RETURNING next`,
- * which takes the row lock for the length of the enclosing transaction. That
- * is what makes slots dense: concurrent writers on one run queue rather than
- * collide. A writer that allocates and then fails to insert leaves a hole,
- * which costs nothing but a gap in the numbering.
+ * A marker, not a counter. Positions are allocated by the insert that occupies
+ * them (`MAX(slot) + 1` read from the log inside the INSERT), so nothing is
+ * handed out ahead of the write that uses it and a write that fails leaves the
+ * position free for the next one. A counter here would instead burn a position
+ * per failed write, and every such hole is permanent.
  */
 export const eventSlots = schema.table('workflow_event_slots', {
   runId: varchar('run_id').primaryKey(),
-  next: integer('next').notNull(),
 });
 
 export const steps = schema.table(

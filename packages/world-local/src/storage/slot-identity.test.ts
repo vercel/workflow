@@ -106,6 +106,48 @@ describe('slot event ids', () => {
     );
   });
 
+  it('leaves no hole behind writes that are rejected', async () => {
+    const runId = await startRun();
+    const width = 20;
+    // Every writer claims the same correlation id, so exactly one
+    // step_created survives the entity-creation dedup and the rest are
+    // rejected. A slot
+    // drawn before the publish and never handed back would be burned by each
+    // rejection, and allocation only moves forward, so every such hole is
+    // permanent.
+    const results = await Promise.allSettled(
+      Array.from({ length: width }, () =>
+        storage.events.create(runId, {
+          eventType: 'step_created',
+          correlationId: 'step_contended',
+          specVersion: SPEC_VERSION_CURRENT,
+          eventData: { stepName: 'contended', input: serialized([]) },
+        } as any)
+      )
+    );
+    expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+
+    // The next write is what exposes a burned slot: it lands right behind the
+    // winner if every rejection gave its slot back, and `width - 1` positions
+    // past it if none of them did.
+    await storage.events.create(runId, {
+      eventType: 'step_created',
+      correlationId: 'step_after',
+      specVersion: SPEC_VERSION_CURRENT,
+      eventData: { stepName: 'after', input: serialized([]) },
+    } as any);
+
+    const slots = slotsOf(await listEventIds(runId));
+    // run_created, run_started, the one step_created that won, and the write
+    // that followed it.
+    expect(slots).toEqual([
+      FIRST_EVENT_SLOT,
+      FIRST_EVENT_SLOT + 1,
+      FIRST_EVENT_SLOT + 2,
+      FIRST_EVENT_SLOT + 3,
+    ]);
+  });
+
   it('orders a terminal event after every event it raced', async () => {
     const runId = await startRun();
     await storage.events.create(runId, {

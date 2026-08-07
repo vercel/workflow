@@ -1790,7 +1790,7 @@ describe('Storage (Postgres integration)', () => {
       const writers = 8;
       // The suite's own pool is `max: 1`, which would serialize these writes
       // and defeat the point. Give each writer a connection so they actually
-      // contend for the run's slot counter.
+      // contend for the same slot.
       const racePool = new Pool({
         connectionString: container.getConnectionUri(),
         max: writers,
@@ -1823,12 +1823,64 @@ describe('Storage (Postgres integration)', () => {
         .sort((a, b) => (a ?? 0) - (b ?? 0));
 
       // run_created holds slot 1 and the racing writers take the rest: no
-      // duplicate (the counter is advanced under a row lock) and no hole
-      // (nothing reserves a slot it does not then use), whatever order they
-      // happen to land in.
+      // duplicate (the composite primary key rejects the loser, which retries)
+      // and no hole (nothing reserves a slot it does not then use), whatever
+      // order they happen to land in.
       expect(slots).toEqual(
         Array.from({ length: writers + 1 }, (_, i) => i + 1)
       );
+    });
+
+    it('leaves no hole behind writes that are rejected', async () => {
+      const writers = 8;
+      const racePool = new Pool({
+        connectionString: container.getConnectionUri(),
+        max: writers,
+      });
+      const raceEvents = createEventsStorage(createClient(racePool));
+
+      // Every writer claims the same correlation id, so exactly one
+      // step_created survives the entity-creation unique index and the rest
+      // are rejected with EntityConflictError. A slot handed out before the
+      // insert lands would be burned by each of those rejections, and a burned
+      // slot is a permanent hole: allocation only moves forward.
+      try {
+        const results = await Promise.allSettled(
+          Array.from({ length: writers }, () =>
+            raceEvents.create(testRunId, {
+              eventType: 'step_created',
+              correlationId: 'slot-contended-step',
+              eventData: {
+                stepName: 'test-step',
+                input: new Uint8Array([1]),
+              },
+            })
+          )
+        );
+        expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+      } finally {
+        await racePool.end();
+      }
+
+      // The next write is what exposes a burned slot: it lands right behind
+      // the winner if no rejection consumed a position, and `writers - 1`
+      // past it if every rejection did.
+      await events.create(testRunId, {
+        eventType: 'step_created',
+        correlationId: 'slot-after-contention',
+        eventData: { stepName: 'test-step', input: new Uint8Array([1]) },
+      });
+
+      const result = await events.list({
+        runId: testRunId,
+        pagination: { sortOrder: 'asc' },
+      });
+      const slots = result.data
+        .map((e) => eventIdToSlot(e.eventId))
+        .sort((a, b) => (a ?? 0) - (b ?? 0));
+
+      // run_created, the one step_created that won, and the write after it.
+      expect(slots).toEqual([1, 2, 3]);
     });
 
     it('hands back the events occupying the slots a write skipped', async () => {

@@ -27,6 +27,8 @@ import {
   mergeReportedEvents,
   preconditionEventDelta,
   preconditionSnapshotParams,
+  settleEventSlotGap,
+  SLOT_GAP_RECHECK_ATTEMPTS,
 } from './helpers.js';
 
 // Mock the logger to suppress output during tests
@@ -944,6 +946,73 @@ describe('findEventSlotGap', () => {
         ...slotLog(9),
       ])
     ).toBeUndefined();
+  });
+});
+
+/**
+ * The re-read that stands between a hole and a failed run. A hole can be one
+ * commit wide: the World allocates a slot inside the insert that occupies it,
+ * so a writer can commit a higher slot while a lower one is still in flight.
+ * Only a hole that survives the re-reads is a position no write will ever take.
+ */
+describe('settleEventSlotGap', () => {
+  beforeEach(() => {
+    eventsListMock.mockReset();
+  });
+
+  const slotLog = (...slots: number[]) =>
+    slots.map((slot) => makeEvent(slotToEventId(slot)));
+
+  it('reports no gap for a log that is already dense', async () => {
+    const settled = await settleEventSlotGap('wrun_test', {
+      events: slotLog(1, 2, 3),
+      cursor: 'eid:c',
+    });
+
+    expect(settled.gap).toBeUndefined();
+    // Nothing to settle, so nothing is re-read.
+    expect(eventsListMock).not.toHaveBeenCalled();
+  });
+
+  it('adopts the log it re-read once the hole has filled in', async () => {
+    eventsListMock.mockResolvedValueOnce({
+      data: slotLog(1, 2, 3),
+      cursor: 'eid:filled',
+      hasMore: false,
+    });
+
+    const settled = await settleEventSlotGap('wrun_test', {
+      events: slotLog(1, 3),
+      cursor: 'eid:stale',
+    });
+
+    expect(settled.gap).toBeUndefined();
+    // The caller replays what settled, not the snapshot that looked holey.
+    expect(settled.log.events.map((e) => e.eventId)).toEqual(
+      slotLog(1, 2, 3).map((e) => e.eventId)
+    );
+    expect(settled.log.cursor).toBe('eid:filled');
+    expect(eventsListMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports a hole that survives every re-read', async () => {
+    eventsListMock.mockResolvedValue({
+      data: slotLog(1, 4),
+      cursor: 'eid:stuck',
+      hasMore: false,
+    });
+
+    const settled = await settleEventSlotGap('wrun_test', {
+      events: slotLog(1, 4),
+      cursor: 'eid:stuck',
+    });
+
+    expect(settled.gap).toEqual({
+      firstMissingSlot: 2,
+      missingCount: 2,
+      maxSlot: 4,
+    });
+    expect(eventsListMock).toHaveBeenCalledTimes(SLOT_GAP_RECHECK_ATTEMPTS);
   });
 });
 

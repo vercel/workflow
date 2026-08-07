@@ -966,6 +966,53 @@ export function findEventSlotGap(
 }
 
 /**
+ * How many times a detected hole is re-read before the log is taken at its
+ * word, and the backoff before each re-read (doubling per attempt).
+ *
+ * A hole can be transient. The World allocates a slot inside the insert that
+ * occupies it, so two concurrent writers can collide, one retry past the other,
+ * and the higher slot commit first — leaving a window in which the lower one is
+ * genuinely absent from a strongly-consistent read and fills in a moment later.
+ * The window is one commit wide, so a short backoff clears it; anything that
+ * survives all three re-reads is a position no write will ever occupy.
+ */
+export const SLOT_GAP_RECHECK_ATTEMPTS = 3;
+const SLOT_GAP_RECHECK_BASE_DELAY_MS = 25;
+
+/**
+ * Re-read a log that looks holey until the hole fills in or the re-reads run
+ * out, and return the settled log alongside the hole that survived.
+ *
+ * Reads are strongly consistent, so a hole is not an artifact of *when* the log
+ * was read — but it can be an artifact of a write that had not committed yet
+ * (see {@link SLOT_GAP_RECHECK_ATTEMPTS}). Distinguishing the two costs a
+ * re-read, which is only ever paid by a replay that already found a hole.
+ *
+ * The reload is full rather than incremental: the missing position is below the
+ * log's maximum, so a cursor-anchored read starts past it and can never see it
+ * arrive.
+ */
+export async function settleEventSlotGap(
+  runId: string,
+  loaded: LoadedEventLog
+): Promise<{ log: LoadedEventLog; gap: EventSlotGap | undefined }> {
+  let log = loaded;
+  let gap = findEventSlotGap(log.events);
+  for (
+    let attempt = 0;
+    gap !== undefined && attempt < SLOT_GAP_RECHECK_ATTEMPTS;
+    attempt++
+  ) {
+    await new Promise((resolve) =>
+      setTimeout(resolve, SLOT_GAP_RECHECK_BASE_DELAY_MS * 2 ** attempt)
+    );
+    log = await loadWorkflowRunEvents(runId);
+    gap = findEventSlotGap(log.events);
+  }
+  return { log, gap };
+}
+
+/**
  * The precondition snapshot a replay-context event creation sends, describing
  * the event log the replay derived the event from.
  *

@@ -69,7 +69,6 @@ import {
   appendUniqueEvents,
   awaitedResolutionIds,
   type EventCreator,
-  findEventSlotGap,
   getQueueOverhead,
   getWorkflowQueueName,
   handleHealthCheckMessage,
@@ -85,6 +84,7 @@ import {
   preconditionEventDelta,
   preconditionSnapshotParams,
   queueMessage,
+  settleEventSlotGap,
   withHealthCheck,
 } from './runtime/helpers.js';
 import {
@@ -2709,6 +2709,31 @@ export function workflowEntrypoint(
                         }
                       }
 
+                      // A replay reads the log as the complete record of what
+                      // has happened, so a position nothing occupies is
+                      // indistinguishable from an event that never occurred and
+                      // the branch it would have decided gets decided the other
+                      // way. Failing here is the difference between a run that
+                      // reports its own corruption and one that silently
+                      // returns the wrong answer.
+                      //
+                      // A hole that is merely a write mid-commit fills in on
+                      // its own, so settleEventSlotGap re-reads before
+                      // concluding, and adopts whichever log it settled on.
+                      if (isSlotGapCheckEnabled()) {
+                        const settled = await settleEventSlotGap(runId, {
+                          events,
+                          cursor: eventsCursor,
+                        });
+                        events = settled.log.events;
+                        eventsCursor = settled.log.cursor;
+                        if (settled.gap !== undefined) {
+                          throw new CorruptedEventLogError(
+                            `Event log for run ${runId} has a hole at slot ${settled.gap.firstMissingSlot}: ${settled.gap.missingCount} of the ${settled.gap.maxSlot} slots up to the log's maximum hold no event.`
+                          );
+                        }
+                      }
+
                       // Completing elapsed waits refreshes the event snapshot.
                       // A concurrent handler may have written the terminal run
                       // event after the initial snapshot but before this
@@ -2760,25 +2785,6 @@ export function workflowEntrypoint(
                       // events.list. Captured here because nothing between this
                       // point and the inline executeStep mutates eventsCursor.
                       preInlineWriteCursor = eventsCursor;
-
-                      // A replay reads the log as the complete record of what
-                      // has happened, so a position nothing occupies is
-                      // indistinguishable from an event that never occurred and
-                      // the branch it would have decided gets decided the other
-                      // way. The reads this log is assembled from are strongly
-                      // consistent, so a hole is a property of the log rather
-                      // than of when it was read, and there is nothing to wait
-                      // for: failing here is the difference between a run that
-                      // reports its own corruption and one that silently
-                      // returns the wrong answer.
-                      if (isSlotGapCheckEnabled()) {
-                        const gap = findEventSlotGap(events);
-                        if (gap !== undefined) {
-                          throw new CorruptedEventLogError(
-                            `Event log for run ${runId} has a hole at slot ${gap.firstMissingSlot}: ${gap.missingCount} of the ${gap.maxSlot} slots up to the log's maximum hold no event.`
-                          );
-                        }
-                      }
 
                       runtimeLogger.debug('Starting workflow execution', {
                         workflowRunId: runId,
