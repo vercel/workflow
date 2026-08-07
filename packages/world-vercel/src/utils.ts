@@ -36,11 +36,12 @@ import { version } from './version.js';
  * Points at the backend branch deployment that serves spec v6 (slot event
  * ids, the skipped-slot report, and the awaited-resolution fence) so the
  * Vercel e2e lanes exercise this adapter against a backend that understands
- * it. Re-point it if that deployment is superseded. The "No Test Overrides"
- * check fails while this is set, by design.
+ * it. This is the backend branch's alias rather than a single deployment, so
+ * it follows that branch as it moves. The "No Test Overrides" check fails
+ * while this is set, by design.
  */
 export const WORKFLOW_SERVER_URL_OVERRIDE =
-  'https://workflow-server-zhi7o41s9.vercel.sh';
+  'https://workflow-server-git-peter-slot-event-count-fence.vercel.sh';
 
 /**
  * HTTP methods that are safe to transparently re-issue inside the adapter.
