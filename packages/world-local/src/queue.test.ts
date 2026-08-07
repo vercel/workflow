@@ -161,6 +161,24 @@ describe('queue timeout re-enqueue', () => {
     });
   });
 
+  it('queue retries when the handler rejects', async () => {
+    let callCount = 0;
+    const handler = localQueue.createQueueHandler(
+      '__wkf_workflow_',
+      async () => {
+        callCount++;
+        if (callCount < 3) throw new Error('retry delivery');
+      }
+    );
+
+    localQueue.registerHandler('__wkf_workflow_', handler);
+    await localQueue.queue('__wkf_workflow_test' as any, workflowPayload);
+
+    await vi.waitFor(() => {
+      expect(callCount).toBe(3);
+    });
+  });
+
   it('routes namespaced queues to namespaced direct handlers', async () => {
     const handlerImpl = vi.fn(
       async (_message: unknown, metadata: { queueName: string }) => {
