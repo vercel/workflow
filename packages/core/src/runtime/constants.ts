@@ -305,6 +305,25 @@ export function isTurboEnabled(): boolean {
 }
 
 /**
+ * Whether the QuickJS engine's baseline-snapshot startup optimization is
+ * enabled (default ON). When on, the engine hydrates a VM with the
+ * workflow bundle once per function instance, snapshots it, and starts
+ * every invocation by restoring the snapshot instead of re-evaluating
+ * the bundle — skipping the dominant share of VM startup (measured
+ * ~77ms → ~3ms to first suspension for a 1.3MB bundle). Bundles whose
+ * module scope consumes randomness, reads the clock, or replaces a
+ * serialization intrinsic are detected at hydrate time and
+ * automatically fall back to per-invocation fresh evaluation (see
+ * prepareBaselineSnapshot). Set WORKFLOW_QUICKJS_BASELINE_SNAPSHOT=0 to
+ * disable.
+ */
+export function isQuickJSBaselineSnapshotEnabled(): boolean {
+  const raw = process.env.WORKFLOW_QUICKJS_BASELINE_SNAPSHOT;
+  if (raw === undefined || raw === '') return true;
+  return !(raw === '0' || raw.toLowerCase() === 'false');
+}
+
+/**
  * Whether the inline loop retains a suspended workflow VM across inline steps
  * within one invocation (default ON). When on, a step-only suspension keeps
  * the live VM, event consumer, and hydrated state alive, and the next loop
