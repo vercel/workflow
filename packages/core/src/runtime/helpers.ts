@@ -15,6 +15,7 @@ import type {
 } from '@workflow/world';
 import {
   eventIdToSlot,
+  FIRST_EVENT_SLOT,
   getQueueTopicPrefix,
   HealthCheckPayloadSchema,
   HOOK_RESUME_INPUT_VERSION,
@@ -737,6 +738,23 @@ export function isAwaitedResolutionFenceEnabled(): boolean {
 }
 
 /**
+ * Whether a replay refuses to run over a log with a hole in it (see
+ * {@link findEventSlotGap}). **On by default**; set
+ * `WORKFLOW_SLOT_GAP_CHECK=0` to replay across holes instead.
+ *
+ * The switch exists because the check trades one failure for another. A hole is
+ * a position claimed by a write that then failed, so most of them stand for an
+ * event that never happened and replaying past one is correct. But a hole
+ * standing for an event that *did* happen is indistinguishable from that, and
+ * replaying past that one produces a run whose result is wrong with nothing to
+ * show for it. Failing loudly is the recoverable side of the trade, and this is
+ * the way back out if a fleet turns out to carry benign holes.
+ */
+export function isSlotGapCheckEnabled(): boolean {
+  return process.env.WORKFLOW_SLOT_GAP_CHECK !== '0';
+}
+
+/**
  * The correlation ids a suspension is blocked on: queue entries whose creation
  * event is already in the log, so a resolution for them could have been
  * committed without this replay seeing it.
@@ -870,6 +888,81 @@ export function maxEventSlot(events: Event[]): number | undefined {
     }
   }
   return max;
+}
+
+/** A position the log skips over, described well enough to name in an error. */
+export interface EventSlotGap {
+  /** The lowest slot below the log's maximum that no event occupies. */
+  firstMissingSlot: number;
+  /** How many slots below the maximum no event occupies. */
+  missingCount: number;
+  /** The highest slot the log occupies. */
+  maxSlot: number;
+}
+
+/**
+ * The hole in a loaded log, or `undefined` when there is none to find.
+ *
+ * On a slot-numbered run the World allocates every position, so a log that
+ * holds `n` events below slot `n` is missing one. That matters before a replay
+ * and nowhere else: the replay reads the log as the complete record of what has
+ * happened, and an absent position is indistinguishable from an event that
+ * never occurred. The branch it would have decided gets decided the other way,
+ * and the run diverges quietly rather than failing.
+ *
+ * Order-independent, unlike the equivalent audit the World runs over a page it
+ * just read. A loaded log is assembled from listed pages plus whatever a
+ * bump-and-report write handed back, and while {@link mergeReportedEvents}
+ * restores id order, a check that can fail a healthy run should not depend on
+ * that having happened.
+ *
+ * The first slot is never counted. It belongs to `run_created`, which `start()`
+ * posts concurrently with the queue send, so a log read in that window
+ * legitimately begins at the second slot and fills in on its own. Every replay
+ * that races a run's own start would otherwise report a hole.
+ *
+ * Returns `undefined` for a log this cannot read as slots at all: an empty one,
+ * or a run numbered by ULID, where positions carry no density to check.
+ */
+export function findEventSlotGap(
+  events: readonly Event[]
+): EventSlotGap | undefined {
+  const occupied = new Set<number>();
+  let maxSlot = 0;
+  for (const event of events) {
+    const slot = eventIdToSlot(event.eventId);
+    if (slot === null) {
+      return undefined;
+    }
+    occupied.add(slot);
+    if (slot > maxSlot) {
+      maxSlot = slot;
+    }
+  }
+  if (maxSlot === 0) {
+    return undefined;
+  }
+  const floor = occupied.has(FIRST_EVENT_SLOT)
+    ? FIRST_EVENT_SLOT
+    : FIRST_EVENT_SLOT + 1;
+  // Every slot is at or above `floor` by construction, so the log is dense
+  // exactly when it holds one event per position in `[floor, maxSlot]`. The
+  // scan below only runs once that has already answered no.
+  if (occupied.size === maxSlot - floor + 1) {
+    return undefined;
+  }
+  let firstMissingSlot: number | undefined;
+  let missingCount = 0;
+  for (let slot = floor; slot <= maxSlot; slot++) {
+    if (!occupied.has(slot)) {
+      firstMissingSlot ??= slot;
+      missingCount++;
+    }
+  }
+  if (firstMissingSlot === undefined) {
+    return undefined;
+  }
+  return { firstMissingSlot, missingCount, maxSlot };
 }
 
 /**

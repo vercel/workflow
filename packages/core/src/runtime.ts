@@ -69,12 +69,14 @@ import {
   appendUniqueEvents,
   awaitedResolutionIds,
   type EventCreator,
+  findEventSlotGap,
   getQueueOverhead,
   getWorkflowQueueName,
   handleHealthCheckMessage,
   insertEventByEventId,
   isAwaitedResolutionFenceEnabled,
   isPreconditionGuardEnabled,
+  isSlotGapCheckEnabled,
   type LoadedEventLog,
   loadWorkflowRunEvents,
   memoizeEncryptionKey,
@@ -2758,6 +2760,25 @@ export function workflowEntrypoint(
                       // events.list. Captured here because nothing between this
                       // point and the inline executeStep mutates eventsCursor.
                       preInlineWriteCursor = eventsCursor;
+
+                      // A replay reads the log as the complete record of what
+                      // has happened, so a position nothing occupies is
+                      // indistinguishable from an event that never occurred and
+                      // the branch it would have decided gets decided the other
+                      // way. The reads this log is assembled from are strongly
+                      // consistent, so a hole is a property of the log rather
+                      // than of when it was read, and there is nothing to wait
+                      // for: failing here is the difference between a run that
+                      // reports its own corruption and one that silently
+                      // returns the wrong answer.
+                      if (isSlotGapCheckEnabled()) {
+                        const gap = findEventSlotGap(events);
+                        if (gap !== undefined) {
+                          throw new CorruptedEventLogError(
+                            `Event log for run ${runId} has a hole at slot ${gap.firstMissingSlot}: ${gap.missingCount} of the ${gap.maxSlot} slots up to the log's maximum hold no event.`
+                          );
+                        }
+                      }
 
                       runtimeLogger.debug('Starting workflow execution', {
                         workflowRunId: runId,

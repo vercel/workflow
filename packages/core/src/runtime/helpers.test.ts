@@ -15,6 +15,7 @@ import {
 import {
   appendUniqueEvents,
   awaitedResolutionIds,
+  findEventSlotGap,
   getWorkflowQueueName,
   handleHealthCheckMessage,
   healthCheck,
@@ -874,6 +875,75 @@ describe('maxEventSlot', () => {
   it('is undefined for a log with no slot ids', () => {
     expect(maxEventSlot([])).toBeUndefined();
     expect(maxEventSlot([makeUlidEvent(1_700_000_000_000)])).toBeUndefined();
+  });
+});
+
+/**
+ * The hole check a replay runs over its loaded log. It gates whether the run
+ * executes at all, so it is one-sided in the opposite direction from the
+ * World's density counter: it reports a hole only where the log proves one, and
+ * says nothing about a log it cannot read as slots.
+ */
+describe('findEventSlotGap', () => {
+  const slotLog = (...slots: number[]) =>
+    slots.map((slot) => makeEvent(slotToEventId(slot)));
+
+  it('finds no hole in a dense log', () => {
+    expect(findEventSlotGap(slotLog(1, 2, 3))).toBeUndefined();
+  });
+
+  it('names the hole and how much of the log is missing', () => {
+    expect(findEventSlotGap(slotLog(1, 2, 5))).toEqual({
+      firstMissingSlot: 3,
+      missingCount: 2,
+      maxSlot: 5,
+    });
+  });
+
+  it('reports the lowest hole when there is more than one', () => {
+    expect(findEventSlotGap(slotLog(1, 3, 5))).toEqual({
+      firstMissingSlot: 2,
+      missingCount: 2,
+      maxSlot: 5,
+    });
+  });
+
+  it('does not depend on the log being in slot order', () => {
+    // The loaded log is listed pages plus whatever a bump-and-report write
+    // handed back. mergeReportedEvents restores order, but a check that fails
+    // a run outright must not be the thing that notices when it did not.
+    expect(findEventSlotGap(slotLog(3, 1, 2))).toBeUndefined();
+    expect(findEventSlotGap(slotLog(4, 1, 2))?.firstMissingSlot).toBe(3);
+  });
+
+  it('excuses a log missing only its reserved first slot', () => {
+    // `start()` posts run_created concurrently with the queue send, so a log
+    // read in that window legitimately begins at the second slot.
+    expect(findEventSlotGap(slotLog(2, 3))).toBeUndefined();
+  });
+
+  it('still reports a hole above an absent first slot', () => {
+    expect(findEventSlotGap(slotLog(2, 4))).toEqual({
+      firstMissingSlot: 3,
+      missingCount: 1,
+      maxSlot: 4,
+    });
+  });
+
+  it('says nothing about a log it cannot read as slots', () => {
+    expect(findEventSlotGap([])).toBeUndefined();
+    expect(
+      findEventSlotGap([makeUlidEvent(1_700_000_000_000)])
+    ).toBeUndefined();
+    // A ULID anywhere disarms it: the run is not slot-numbered, and a mixed
+    // log has no density to measure.
+    expect(
+      findEventSlotGap([
+        ...slotLog(1, 2),
+        makeUlidEvent(1_700_000_000_000),
+        ...slotLog(9),
+      ])
+    ).toBeUndefined();
   });
 });
 
