@@ -123,6 +123,73 @@ describe('slot event ids', () => {
     expect(eventIds.at(-1)).toBe(slotId(eventIds.length));
   });
 
+  it('numbers a lazily created step_created from the same allocator', async () => {
+    const runId = await startRun();
+    // A step_started carrying the creation payload with no step_created ahead
+    // of it makes the World synthesize one. That synthetic event is the only
+    // event the World writes without a caller asking for it by name, so it is
+    // the one place a second id scheme can leak into a slot-numbered log.
+    await storage.events.create(runId, {
+      eventType: 'step_started',
+      correlationId: 'step_lazy',
+      specVersion: SPEC_VERSION_CURRENT,
+      eventData: { stepName: 'lazy', input: serialized([]) },
+    } as any);
+
+    const eventIds = await listEventIds(runId);
+    expect(slotsOf(eventIds)).toEqual(
+      Array.from({ length: eventIds.length }, (_, i) => FIRST_EVENT_SLOT + i)
+    );
+    // A ULID id here has no sort key, so `events.list` would return it on
+    // every page and the cursor would eventually repeat.
+    const events = await storage.events.list({
+      runId,
+      pagination: { limit: 1000 },
+    });
+    expect(events.data.map((event) => event.eventType)).toEqual([
+      'run_created',
+      'run_started',
+      'step_started',
+      'step_created',
+    ]);
+  });
+
+  it('paginates a run whose step_created events were created lazily', async () => {
+    const runId = await startRun();
+    for (let i = 0; i < 6; i++) {
+      await storage.events.create(runId, {
+        eventType: 'step_started',
+        correlationId: `step_lazy_${i}`,
+        specVersion: SPEC_VERSION_CURRENT,
+        eventData: { stepName: `lazy${i}`, input: serialized([]) },
+      } as any);
+    }
+
+    // Walk the log the way the runtime does: one page at a time, asserting the
+    // cursor always advances. A mixed-scheme log stalls here rather than at
+    // the id assertion above.
+    const seenCursors = new Set<string>();
+    const walked: string[] = [];
+    let cursor: string | undefined;
+    for (let page = 0; page < 20; page++) {
+      const result = await storage.events.list({
+        runId,
+        pagination: { limit: 3, sortOrder: 'asc', cursor },
+      });
+      walked.push(...result.data.map((event) => event.eventId));
+      if (!result.hasMore) break;
+      expect(result.cursor).toBeTruthy();
+      expect(seenCursors.has(result.cursor as string)).toBe(false);
+      seenCursors.add(result.cursor as string);
+      cursor = result.cursor as string;
+    }
+
+    expect(walked).toEqual(await listEventIds(runId));
+    expect(slotsOf(walked)).toEqual(
+      Array.from({ length: walked.length }, (_, i) => FIRST_EVENT_SLOT + i)
+    );
+  });
+
   it('keeps a ULID-numbered run on ULIDs', async () => {
     const runId = await startRun();
     // Rewrite the run's log the way it would look had it been created before

@@ -281,6 +281,8 @@ export interface RunEventIdScan {
   maxSlot: number;
   /** Number of reader-visible events found for the run. */
   count: number;
+  /** Reader-visible event ids, tag stripped, in directory order. */
+  ids: string[];
 }
 
 /**
@@ -308,6 +310,7 @@ export async function scanRunEventIds(
     }
   }
   const prefix = `${runId}-`;
+  const ids: string[] = [];
   let maxId: string | null = null;
   let maxSlot = 0;
   let usesSlots = false;
@@ -324,6 +327,7 @@ export async function scanRunEventIds(
     }
     const candidate = stripTag(fileId).slice(prefix.length);
     count += 1;
+    ids.push(candidate);
     if (!maxId || candidate > maxId) {
       maxId = candidate;
     }
@@ -333,7 +337,7 @@ export async function scanRunEventIds(
       if (slot > maxSlot) maxSlot = slot;
     }
   }
-  return { maxId, usesSlots, maxSlot, count };
+  return { maxId, usesSlots, maxSlot, count, ids };
 }
 
 /**

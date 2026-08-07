@@ -195,6 +195,67 @@ const HookResumeClaimSchema = z.object({
   eventId: z.string(),
   payloadDigest: z.string().optional(),
 });
+
+/**
+ * Whether `event` is the `hook_received` a resume claim stands for.
+ *
+ * The claim names the id its writer INTENDED to publish at, drawn from that
+ * writer's slot allocator before the append. Under slot ids that intent is not
+ * a reservation: the allocator is per storage instance, so an instance sharing
+ * the directory can publish an unrelated event at the same position first, and
+ * the resume then lands somewhere else. An event read back at the claimed id
+ * therefore has to be identified, not assumed — returning whatever occupies the
+ * position reports a `run_started` as the resume's own event and silently drops
+ * the payload.
+ */
+function isResumeEvent(
+  event: Event,
+  claim: z.infer<typeof HookResumeClaimSchema>
+): boolean {
+  return (
+    event.eventType === 'hook_received' &&
+    event.correlationId === claim.hookId &&
+    // `resumeId` is persisted on every hook_received written through the
+    // resume path; an event without one predates that and can only be matched
+    // by position.
+    (event.resumeId === undefined || event.resumeId === claim.resumeId)
+  );
+}
+
+/**
+ * Finds the event a resume already committed, by the `resumeId` persisted on
+ * the event itself rather than by the position the claim guessed.
+ *
+ * This is the authority the claim's `eventId` only approximates. Reached when
+ * the claimed position holds nothing (a crash between claim and append) or
+ * holds an unrelated event (a cross-instance slot collision), so it pays its
+ * O(run's events) reads on rare paths only.
+ */
+async function findCommittedResumeEvent(
+  basedir: string,
+  runId: string,
+  claim: z.infer<typeof HookResumeClaimSchema>,
+  tag?: string
+): Promise<Event | null> {
+  const scan = await scanRunEventIds(basedir, runId, tag);
+  for (const eventId of scan.ids) {
+    const event = await readJSONWithFallback(
+      basedir,
+      'events',
+      `${runId}-${eventId}`,
+      EventSchema,
+      tag
+    );
+    if (
+      event &&
+      event.resumeId === claim.resumeId &&
+      isResumeEvent(event, claim)
+    ) {
+      return event;
+    }
+  }
+  return null;
+}
 /**
  * Whether a token claim held by another `(runId, hookId)` can never become
  * live again and may therefore be released by a new claimant:
@@ -843,6 +904,11 @@ export function createEventsStorage(
         // drawn at function entry would sort after it.
         let eventId = '';
         let eventIdPinned = false;
+        // The eventId currently recorded in this resume's `(runId, resumeId)`
+        // claim, when one was written or read below. An unpinned publish is
+        // free to land somewhere else, and the claim is the fast path other
+        // writers read first, so it is corrected once the append commits.
+        let resumeClaimRecordedId: string | null = null;
         const now = new Date();
 
         // For run_created events, use client-provided runId or generate one server-side
@@ -1190,13 +1256,22 @@ export function createEventsStorage(
                 !committedClaim.payloadDigest ||
                 committedClaim.payloadDigest === params.resumePayloadDigest)
             ) {
-              const committedEvent = await readJSONWithFallback(
+              const atClaimedId = await readJSONWithFallback(
                 basedir,
                 'events',
                 `${effectiveRunId}-${committedClaim.eventId}`,
                 EventSchema,
                 tag
               );
+              const committedEvent =
+                atClaimedId && isResumeEvent(atClaimedId, committedClaim)
+                  ? atClaimedId
+                  : await findCommittedResumeEvent(
+                      basedir,
+                      effectiveRunId,
+                      committedClaim,
+                      tag
+                    );
               if (committedEvent) {
                 return { event: committedEvent };
               }
@@ -1272,21 +1347,42 @@ export function createEventsStorage(
                   `hook_received resumeId "${params.resumeId}" already recorded with a different payload`
                 );
               }
-              const existing = await readJSONWithFallback(
+              const atClaimedId = await readJSONWithFallback(
                 basedir,
                 'events',
                 `${effectiveRunId}-${claim.eventId}`,
                 EventSchema,
                 tag
               );
-              if (existing) {
-                return { event: existing };
+              if (atClaimedId && isResumeEvent(atClaimedId, claim)) {
+                return { event: atClaimedId };
               }
-              // Claim exists but its event is not yet visible (a crash between
-              // the claim write and the append). Adopt the pinned eventId and
-              // fall through to (re)write the event idempotently at that path.
-              eventId = claim.eventId;
-              eventIdPinned = true;
+              // Either nothing is at the claimed position, or something that
+              // is not this resume is. The claim's `eventId` is only where its
+              // writer meant to append, so before concluding the resume is
+              // uncommitted, look for it by the `resumeId` persisted on the
+              // event.
+              const committed = await findCommittedResumeEvent(
+                basedir,
+                effectiveRunId,
+                claim,
+                tag
+              );
+              if (committed) {
+                return { event: committed };
+              }
+              // The resume really is uncommitted: a crash between the claim
+              // write and the append. Take over the append. Adopt the claimed
+              // position when it is still free — under ULIDs it always is, and
+              // adopting keeps two takers writing the same path so one loses
+              // the exclusive create instead of publishing a second event.
+              // When an unrelated event holds it, there is nothing to converge
+              // on: keep this writer's own id and let the publish bump.
+              resumeClaimRecordedId = claim.eventId;
+              if (!atClaimedId) {
+                eventId = claim.eventId;
+                eventIdPinned = true;
+              }
               return null;
             };
 
@@ -1300,16 +1396,23 @@ export function createEventsStorage(
                 return converged;
               }
             } else {
-              // Reserve the claim (pinning this candidate eventId) before the
+              // Reserve the claim (naming this candidate eventId) before the
               // append. If a concurrent/cross-process writer reserved it first,
-              // converge on their pinned event instead.
+              // converge on their event instead.
               //
-              // Pinned either way: on a win the durable claim now names this
-              // id, and a converging writer that finds no event at it will
-              // write one there. Bumping past a slot collision would leave
-              // that writer to publish the event we walked away from — two
-              // events for one resume.
-              eventIdPinned = true;
+              // Under ULIDs the candidate is pinned: the id is globally unique,
+              // so the only writer that can collide with it is the other writer
+              // of this same resume, and both must land on the one event.
+              //
+              // Under slot ids it cannot be. A slot is a position, not a name:
+              // another instance's allocator hands out the same number for a
+              // different event, and refusing to bump would fail this resume's
+              // append outright. So the claimed id is a hint, the publish is
+              // free to move, and `converge` identifies the resume's event by
+              // its persisted `resumeId`. The claim is rewritten with the id
+              // actually published once the append commits.
+              eventIdPinned = !isSlotEventId(eventId);
+              resumeClaimRecordedId = eventId;
               const won = await writeExclusive(
                 claimPath,
                 JSON.stringify({
@@ -1323,6 +1426,9 @@ export function createEventsStorage(
                 } satisfies z.infer<typeof HookResumeClaimSchema>)
               );
               if (!won) {
+                // Someone else's claim is the durable one now; this writer's
+                // candidate is not what the claim records.
+                resumeClaimRecordedId = null;
                 const winner = await readJSON(claimPath, HookResumeClaimSchema);
                 if (winner) {
                   const converged = await converge(winner);
@@ -1813,13 +1919,19 @@ export function createEventsStorage(
               );
               // Write the synthetic step_created event so replay observes it
               // (the client step consumer sets hasCreatedEvent only on a
-              // step_created event). Its eventId is a fresh monotonic ULID.
-              // Ordering vs. the step_started event row does not affect
-              // correctness: the step_started consumer is a no-op and only
-              // step_created flips hasCreatedEvent, so the end state is the
-              // same whichever sorts first — this matches the resilient
-              // run_started → run_created precedent in this file.
-              const stepCreatedEventId = `evnt_${monotonicUlid()}`;
+              // step_created event). Its id comes from the run's own
+              // allocator: minting a ULID here would put a second identity
+              // scheme in a slot-numbered log, and `events.list` cannot
+              // paginate a mixed log (a ULID id has no sort key, so it lands
+              // on every page and the cursor eventually repeats).
+              //
+              // This slot is above the one already drawn for the step_started
+              // event at the top of `create`, so the synthetic step_created
+              // sorts after its own step_started. That is fine: step_started
+              // is a parkable delivery, so a replay parks it until the
+              // ordered step_created behind it registers the consumer, then
+              // drains it.
+              const stepCreatedEventId = await mintEventId(effectiveRunId);
               const stepCreatedEvent: Event = {
                 eventType: 'step_created',
                 runId: effectiveRunId,
@@ -1832,15 +1944,7 @@ export function createEventsStorage(
                   input: lazyData.input,
                 },
               };
-              await writeJSON(
-                taggedPath(
-                  basedir,
-                  'events',
-                  `${effectiveRunId}-${stepCreatedEventId}`,
-                  tag
-                ),
-                stepCreatedEvent
-              );
+              await storeEvent(stepCreatedEvent);
               validatedStep = createdStep;
               stepCreatedLazily = true;
             }
@@ -2608,6 +2712,34 @@ export function createEventsStorage(
         // The event is now committed; cache it so an immediate sequential
         // replay can serve it without rereading from disk.
         rememberStoredEvent(event, eventPath, serializedEvent);
+
+        // Point the resume claim at where the event actually landed. An
+        // unpinned publish bumps past occupied slots, so the id the claim
+        // recorded before the append can be stale; leaving it stale would
+        // send every later reader of this resume down the `resumeId` scan
+        // instead of the single read the claim exists to provide. Plain
+        // overwrite, not exclusive-create: the claim is already this
+        // writer's, and only the eventId changes.
+        if (
+          data.eventType === 'hook_received' &&
+          params?.resumeId &&
+          resumeClaimRecordedId !== null &&
+          resumeClaimRecordedId !== eventId
+        ) {
+          await write(
+            hookResumeClaimPath(basedir, effectiveRunId, params.resumeId),
+            JSON.stringify({
+              runId: effectiveRunId,
+              resumeId: params.resumeId,
+              hookId: data.correlationId,
+              eventId,
+              ...(params.resumePayloadDigest
+                ? { payloadDigest: params.resumePayloadDigest }
+                : {}),
+            } satisfies z.infer<typeof HookResumeClaimSchema>),
+            { overwrite: true }
+          );
+        }
 
         // Write the hook entity ONLY now that the event publish has
         // committed. Doing this earlier (in the `hook_created`
