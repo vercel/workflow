@@ -31,7 +31,6 @@ import {
   EventTypeSchema,
   getEventDataPayloadField,
   HookSchema,
-  type ListEventsParams,
   type PaginationOptions,
   StructuredErrorSchema,
   WaitSchema,
@@ -845,9 +844,6 @@ export interface ListEventsV4Params extends PaginationOptions {
   remoteRefBehavior?: 'resolve' | 'lazy';
 }
 
-type ListWorkflowRunEventsV4Params = ListEventsV4Params &
-  Pick<ListEventsParams, 'returnAll'>;
-
 export interface ListEventsV4Result {
   events: Event[];
   /** Trailing event-log cursor, or null when the stream contained no events. */
@@ -926,10 +922,10 @@ function appendListParams(sp: URLSearchParams, params: ListEventsV4Params) {
   }
 }
 
-function paginationToQuery(params: ListWorkflowRunEventsV4Params): string {
+function paginationToQuery(params: ListEventsV4Params): string {
   const sp = new URLSearchParams();
   appendListParams(sp, params);
-  if (params.returnAll) sp.set('returnAll', 'true');
+  if (params.limit === undefined) sp.set('returnAll', 'true');
   const qs = sp.toString();
   return qs ? `?${qs}` : '';
 }
@@ -941,12 +937,12 @@ function paginationToQuery(params: ListWorkflowRunEventsV4Params): string {
  * cursor from the sentinel frame.
  *
  * Eagerly drains the stream into memory to match the existing
- * `getWorkflowRunEvents` contract. A truncated `returnAll` response resumes
+ * `getWorkflowRunEvents` contract. A truncated full response resumes
  * after its last validated event instead of downloading accepted frames again.
  */
 export async function getWorkflowRunEventsV4(
   runId: string,
-  params: ListWorkflowRunEventsV4Params = {},
+  params: ListEventsV4Params = {},
   config?: APIConfig
 ): Promise<ListEventsV4Result> {
   const { baseUrl, headers } = await getHttpConfig(config);
@@ -969,7 +965,7 @@ export async function getWorkflowRunEventsV4(
     } catch (error) {
       const lastEvent = events.at(-1);
       if (
-        !params.returnAll ||
+        params.limit !== undefined ||
         !lastEvent ||
         `eid:${lastEvent.eventId}` === cursor
       ) {

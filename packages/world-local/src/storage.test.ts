@@ -1343,7 +1343,6 @@ describe('Storage', () => {
 
         const remaining = await storage.events.list({
           runId: testRunId,
-          returnAll: true,
           pagination: { sortOrder: 'asc', cursor: preloaded.cursor },
         });
         const all = await storage.events.list({
@@ -1546,7 +1545,7 @@ describe('Storage', () => {
         // that more remains — byte-identical to events.list(sinceCursor).
         const firstPage = await storage.events.list({
           runId: testRunId,
-          pagination: { sortOrder: 'asc', cursor: sinceCursor },
+          pagination: { limit: 20, sortOrder: 'asc', cursor: sinceCursor },
         });
 
         expect(result.hasMore).toBe(true);
@@ -1715,15 +1714,14 @@ describe('Storage', () => {
         expect(page2.data[0].eventId).not.toBe(page1.data[0].eventId);
       });
 
-      it('returns all remaining events when requested', async () => {
+      it('returns all remaining events when no limit is set', async () => {
         await storage.events.create(testRunId, {
           eventType: 'run_started',
         });
 
         const result = await storage.events.list({
           runId: testRunId,
-          returnAll: true,
-          pagination: { limit: 1, sortOrder: 'asc' },
+          pagination: { sortOrder: 'asc' },
         });
 
         expect(result.data).toHaveLength(2);

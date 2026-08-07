@@ -182,7 +182,10 @@ describe('getWorkflowRunEventsV4 over HTTP', () => {
 
     agent
       .get(origin)
-      .intercept({ path: '/api/v4/runs/wrun_1/events', method: 'GET' })
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events?returnAll=true',
+        method: 'GET',
+      })
       .reply(200, frames, {
         headers: { 'content-type': V4_FRAME_CONTENT_TYPE },
       });
@@ -213,7 +216,10 @@ describe('getWorkflowRunEventsV4 over HTTP', () => {
 
     agent
       .get(origin)
-      .intercept({ path: '/api/v4/runs/wrun_1/events', method: 'GET' })
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events?returnAll=true',
+        method: 'GET',
+      })
       .reply(
         200,
         Buffer.concat([
@@ -264,7 +270,10 @@ describe('getWorkflowRunEventsV4 over HTTP', () => {
 
     agent
       .get(origin)
-      .intercept({ path: '/api/v4/runs/wrun_1/events', method: 'GET' })
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events?returnAll=true',
+        method: 'GET',
+      })
       .reply(200, frames, {
         headers: { 'content-type': V4_FRAME_CONTENT_TYPE },
       });
@@ -292,7 +301,10 @@ describe('getWorkflowRunEventsV4 over HTTP', () => {
 
     agent
       .get(origin)
-      .intercept({ path: '/api/v4/runs/wrun_1/events', method: 'GET' })
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events?returnAll=true',
+        method: 'GET',
+      })
       .reply(200, frames, {
         headers: { 'content-type': V4_FRAME_CONTENT_TYPE },
       });
@@ -332,7 +344,10 @@ describe('getWorkflowRunEventsV4 over HTTP', () => {
 
     agent
       .get(origin)
-      .intercept({ path: '/api/v4/runs/wrun_1/events', method: 'GET' })
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events?limit=500',
+        method: 'GET',
+      })
       .reply(200, frames, {
         headers: { 'content-type': V4_FRAME_CONTENT_TYPE },
       });
@@ -340,13 +355,13 @@ describe('getWorkflowRunEventsV4 over HTTP', () => {
     await expect(
       getWorkflowRunEventsV4(
         'wrun_1',
-        {},
+        { limit: 500 },
         { token: 'test-token', dispatcher: agent }
       )
     ).rejects.toThrow(/end-of-stream sentinel/);
   });
 
-  it('resumes a truncated returnAll stream after its last accepted event', async () => {
+  it('resumes a truncated full stream after its last accepted event', async () => {
     const origin =
       WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
     const agent = new MockAgent();
@@ -404,7 +419,7 @@ describe('getWorkflowRunEventsV4 over HTTP', () => {
 
     const result = await getWorkflowRunEventsV4(
       'wrun_1',
-      { returnAll: true },
+      {},
       { token: 'test-token', dispatcher: agent }
     );
 
@@ -559,7 +574,10 @@ describe('v4 transport uses global fetch (observability)', () => {
     agent.disableNetConnect();
     agent
       .get(origin)
-      .intercept({ path: '/api/v4/runs/wrun_1/events', method: 'GET' })
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events?returnAll=true',
+        method: 'GET',
+      })
       .reply(200, encodeFrame({ _end: 1, hasMore: false }, new Uint8Array(0)), {
         headers: { 'content-type': V4_FRAME_CONTENT_TYPE },
       });

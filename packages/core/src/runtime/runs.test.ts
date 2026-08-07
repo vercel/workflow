@@ -106,7 +106,6 @@ describe('wakeUpRun', () => {
       runId: 'wrun_123',
       pagination: { sortOrder: 'asc' },
       resolveData: 'none',
-      returnAll: true,
     });
     expect(world.queue).toHaveBeenCalled();
   });

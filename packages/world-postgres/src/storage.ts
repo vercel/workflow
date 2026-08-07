@@ -1929,9 +1929,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
       return stripEventDataRefs(parsed, resolveData);
     },
     async list(params: ListEventsParams): Promise<PaginatedResponse<Event>> {
-      const limit = params.returnAll
-        ? getMaxEventsPerRun()
-        : (params.pagination?.limit ?? 100);
+      const limit = params.pagination?.limit ?? getMaxEventsPerRun();
       const sortOrder = params.pagination?.sortOrder ?? 'asc';
       const order =
         sortOrder === 'desc'
@@ -1943,9 +1941,10 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
       let hasMore = false;
 
       do {
-        const pageLimit = params.returnAll
-          ? Math.min(500, limit - data.length)
-          : limit;
+        const pageLimit =
+          params.pagination?.limit === undefined
+            ? Math.min(500, limit - data.length)
+            : limit;
         const rows = await drizzle
           .select()
           .from(events)
@@ -1967,7 +1966,11 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
 
         cursor = page.at(-1)?.eventId;
         hasMore = rows.length > pageLimit;
-      } while (params.returnAll && hasMore && data.length < limit);
+      } while (
+        params.pagination?.limit === undefined &&
+        hasMore &&
+        data.length < limit
+      );
 
       return {
         data,

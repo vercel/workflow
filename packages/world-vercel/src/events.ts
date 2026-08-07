@@ -450,11 +450,7 @@ export async function getWorkflowRunEvents(
         listParams,
         config
       )
-    : getWorkflowRunEventsV4(
-        params.runId,
-        { ...listParams, returnAll: params.returnAll },
-        config
-      ));
+    : getWorkflowRunEventsV4(params.runId, listParams, config));
 
   // A correlation id is unique per run, not globally — a slot-numbered run
   // numbers its own steps, so `step_…001` names the first step of every such

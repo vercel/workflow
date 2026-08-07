@@ -308,7 +308,6 @@ export async function wakeUpRun(
         runId,
         pagination: { sortOrder: 'asc', ...(cursor ? { cursor } : {}) },
         resolveData: 'none',
-        returnAll: true,
       });
       allEvents.push(...eventsResult.data);
       cursor = eventsResult.hasMore ? eventsResult.cursor : null;

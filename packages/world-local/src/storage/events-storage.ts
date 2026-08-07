@@ -2518,7 +2518,7 @@ export function createEventsStorage(
       const resolveData = params.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
       const result = await queryRunEvents(runId, {
         ...params.pagination,
-        ...(params.returnAll ? { limit: getMaxEventsPerRun() } : {}),
+        limit: params.pagination?.limit ?? getMaxEventsPerRun(),
       });
 
       // If resolveData is "none", remove eventData from events

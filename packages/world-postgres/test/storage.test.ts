@@ -1286,15 +1286,14 @@ describe('Storage (Postgres integration)', () => {
         expect(page2.data[0].eventId).not.toBe(page1.data[0].eventId);
       });
 
-      it('returns all remaining events when requested', async () => {
+      it('returns all remaining events when no limit is set', async () => {
         await events.create(testRunId, {
           eventType: 'run_started',
         });
 
         const result = await events.list({
           runId: testRunId,
-          returnAll: true,
-          pagination: { limit: 1, sortOrder: 'asc' },
+          pagination: { sortOrder: 'asc' },
         });
 
         expect(result.data).toHaveLength(2);
@@ -1312,7 +1311,6 @@ describe('Storage (Postgres integration)', () => {
 
         const result = await events.list({
           runId: testRunId,
-          returnAll: true,
           pagination: { sortOrder: 'asc' },
         });
 
@@ -1328,14 +1326,12 @@ describe('Storage (Postgres integration)', () => {
 
         const first = await events.list({
           runId: testRunId,
-          returnAll: true,
         });
         expect(first.data).toHaveLength(1);
         expect(first.hasMore).toBe(true);
 
         const second = await events.list({
           runId: testRunId,
-          returnAll: true,
           pagination: { cursor: first.cursor ?? undefined },
         });
         expect(second.data).toHaveLength(1);
