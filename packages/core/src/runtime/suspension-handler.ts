@@ -31,7 +31,9 @@ import * as Attribute from '../telemetry/semantic-conventions.js';
 import { getAbortStreamIdFromToken } from '../util.js';
 import { getMaxInlineSteps } from './constants.js';
 import {
+  awaitedResolutionIds,
   type EventCreator,
+  isAwaitedResolutionFenceEnabled,
   type LoadedEventLog,
   mergeReportedEvents,
   preconditionSnapshotParams,
@@ -291,6 +293,14 @@ export async function handleSuspension({
   // because the event's correlation id was minted by *this* replay's seeded
   // sequence, so re-committing it against a corrected log would persist an
   // event no correct replay produces.
+  //
+  // The awaited set is computed once, here, rather than per write. Every write
+  // of this suspension must carry the same one: the fence is all-or-nothing for
+  // a batch only if each write asks the same question, and `hasCreatedEvent`
+  // flips to true on the items this phase creates as it goes.
+  const awaiting = isAwaitedResolutionFenceEnabled()
+    ? awaitedResolutionIds(suspension.steps)
+    : undefined;
   let reportedEvents = 0;
   const createGuarded: EventCreator = async (data, params) => {
     if (!eventLog) {
@@ -299,7 +309,7 @@ export async function handleSuspension({
     const log = eventLog;
     const result = await createEvent(data, {
       ...params,
-      ...preconditionSnapshotParams(log.events, log.cursor),
+      ...preconditionSnapshotParams(log.events, log.cursor, awaiting),
     });
     // Bump-and-report: the write landed above the slot it asked for, so these
     // are the events it was decided without. Merging them here rather than at

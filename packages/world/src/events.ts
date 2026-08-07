@@ -839,6 +839,40 @@ export interface CreateEventParams {
    */
   eventCount?: number;
   /**
+   * The correlation ids the writer is blocked on: entities that already exist
+   * in its loaded log and whose resolution it has not seen. Sent alongside
+   * {@link eventCount}, and only by a writer that has a loaded log.
+   *
+   * This is the one part of bump-and-report that is a fence rather than a
+   * report. A World MUST reject the write with 412 — **before committing it** —
+   * when a slot it is about to skip over holds a `step_completed`,
+   * `step_failed`, `wait_completed`, `hook_received` or `run_cancelled` for one
+   * of these ids. Reporting after the fact does not help here: that resolution
+   * is what decides the branch the writer just took, so the event about to be
+   * committed is one no correct replay produces, and a rejection is the only
+   * outcome that keeps it out of the log.
+   *
+   * Everything else stays bump-and-report. A skipped `hook_received` for a hook
+   * nobody is reading, a skipped `attr_set`, a skipped `step_created` from a
+   * sibling: all of those commit and come back on
+   * {@link EventResult.events}.
+   *
+   * Every write of one suspension carries the same `eventCount` and the same
+   * awaited set, and the events the writer missed occupy the slots directly
+   * above that count, so every write in the batch skips over all of them. That
+   * is what makes the fence all-or-nothing for a batch: a rejection that took
+   * only some of the writes would leave the log holding the rest.
+   *
+   * Ids for entities the same batch is creating are deliberately absent: a
+   * correlation id this replay just minted cannot have a resolution the replay
+   * failed to see, so including it would let a sibling's inline
+   * `step_completed` fence its own batch.
+   *
+   * A World that ignores this field keeps pure bump-and-report semantics, which
+   * is the pre-fence behaviour.
+   */
+  awaitingCorrelationIds?: string[];
+  /**
    * Timestamp for when the event occurred on the client side. Worlds that
    * support this can persist it separately from `createdAt`, which represents
    * when the backing service accepted or stored the event.

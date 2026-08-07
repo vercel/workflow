@@ -4,6 +4,7 @@ import path from 'node:path';
 import {
   EntityConflictError,
   HookNotFoundError,
+  PreconditionFailedError,
   RunExpiredError,
   RunNotSupportedError,
   TooEarlyError,
@@ -26,9 +27,11 @@ import type {
 } from '@workflow/world';
 import {
   applyAttributeChanges,
+  awaitedResolutionMessage,
   EventSchema,
   eventIdToSlot,
   FIRST_EVENT_SLOT,
+  findAwaitedResolution,
   HookSchema,
   isChildEntityCreationEvent,
   isHookEventRequiringExistence,
@@ -108,6 +111,13 @@ import { withRunFileLock } from './runs-storage.js';
  * Vercel World). Overridable via `WORKFLOW_MAX_EVENTS`; defaults to 25,000.
  */
 const DEFAULT_MAX_EVENTS_PER_RUN = 25_000;
+
+/**
+ * How far above a writer's snapshot the awaited-resolution fence reads. A
+ * suspension that missed more events than this has bigger problems than the
+ * fence, and the read is on the hot path of every guarded write.
+ */
+const AWAITED_RESOLUTION_SCAN_LIMIT = 200;
 function getMaxEventsPerRun(): number {
   const raw = process.env.WORKFLOW_MAX_EVENTS;
   const parsed = raw !== undefined ? Number(raw) : Number.NaN;
@@ -2856,20 +2866,70 @@ export function createEventsStorage(
     };
   }
 
+  /**
+   * The fence half: refuse a write whose writer is blocked on something the log
+   * has already settled above the slot it asked for.
+   *
+   * Runs before `storage.create` rather than alongside the report, because a
+   * rejection after the commit is worthless — the event it would have kept out
+   * is already durable. The cost of being early is a window between this read
+   * and the insert in which a resolution can still land unseen; that misses the
+   * fence and degrades to plain bump-and-report, which is the behaviour without
+   * it. Never the other way around: an event read here is committed, so a
+   * rejection is never spurious.
+   */
+  async function fenceAwaitedResolutions(
+    runId: string,
+    askedFor: number,
+    awaiting: readonly string[],
+    resolveData: ResolveData
+  ): Promise<void> {
+    if (awaiting.length === 0 || askedFor < FIRST_EVENT_SLOT) {
+      return;
+    }
+    const page = await storage.list({
+      runId,
+      pagination: {
+        cursor: `${SORT_KEY_CURSOR_PREFIX}${slotToEventId(askedFor)}`,
+        // One page, not a walk. A writer this far behind is not a case worth
+        // paging for, and truncation loses a fence rather than inventing one.
+        limit: AWAITED_RESOLUTION_SCAN_LIMIT,
+        sortOrder: 'asc',
+      },
+      resolveData,
+    });
+    const blocking = findAwaitedResolution(page.data, awaiting);
+    if (!blocking) {
+      return;
+    }
+    // The whole unseen tail rides along, not just the offending event: the
+    // client merges it into its log and restarts the replay, and a replay that
+    // resumed knowing only about the resolution would immediately be stale
+    // again on everything beside it.
+    throw new PreconditionFailedError(awaitedResolutionMessage(blocking), {
+      details: { events: page.data },
+    });
+  }
+
   const create = (async (
     runId: string,
     data: CreateEventRequest,
     params?: CreateEventParams
   ): Promise<EventResult> => {
-    const result = await storage.create(runId, data, params);
     if (params?.eventCount === undefined) {
-      return result;
+      return storage.create(runId, data, params);
     }
-    return reportSkippedSlots(
-      result,
-      params.eventCount,
-      params.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION
-    );
+    const resolveData = params.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
+    if (params.awaitingCorrelationIds?.length) {
+      await fenceAwaitedResolutions(
+        runId,
+        params.eventCount,
+        params.awaitingCorrelationIds,
+        resolveData
+      );
+    }
+    const result = await storage.create(runId, data, params);
+    return reportSkippedSlots(result, params.eventCount, resolveData);
   }) as LocalEventsStorage['create'];
 
   return { ...storage, create };

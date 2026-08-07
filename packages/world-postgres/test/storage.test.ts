@@ -1949,6 +1949,137 @@ describe('Storage (Postgres integration)', () => {
     });
   });
 
+  describe('awaited-resolution fence', () => {
+    let testRunId: string;
+    /** The slot the log stood at before `settled-step` completed. */
+    let stale: number;
+
+    beforeEach(async () => {
+      const run = await createRun(events, {
+        deploymentId: 'deployment-123',
+        workflowName: 'test-workflow',
+        input: new Uint8Array(),
+      });
+      testRunId = run.runId;
+      await updateRun(events, testRunId, 'run_started');
+      await events.create(testRunId, {
+        eventType: 'step_created',
+        correlationId: 'settled-step',
+        eventData: { stepName: 'test-step', input: new Uint8Array() },
+      });
+      const started = await events.create(testRunId, {
+        eventType: 'step_started',
+        correlationId: 'settled-step',
+        eventData: {},
+      });
+      stale = eventIdToSlot(started.event.eventId) as number;
+      await events.create(testRunId, {
+        eventType: 'step_completed',
+        correlationId: 'settled-step',
+        eventData: { result: new Uint8Array([1]) },
+      });
+    });
+
+    const branchWrite = (correlationId: string) =>
+      ({
+        eventType: 'step_created' as const,
+        correlationId,
+        eventData: { stepName: 'recover', input: new Uint8Array() },
+      }) as Parameters<typeof events.create>[1];
+
+    async function slotsInLog(): Promise<(number | null)[]> {
+      const result = await events.list({
+        runId: testRunId,
+        pagination: { sortOrder: 'asc' },
+      });
+      return result.data.map((e) => eventIdToSlot(e.eventId));
+    }
+
+    it('refuses a write whose branch was decided without a resolution it awaits', async () => {
+      const before = await slotsInLog();
+
+      // The corrupting shape: the writer raced `settled-step` against a
+      // watchdog, never saw it complete, and is committing the other branch.
+      await expect(
+        events.create(testRunId, branchWrite('recover-step'), {
+          eventCount: stale,
+          awaitingCorrelationIds: ['settled-step'],
+        })
+      ).rejects.toMatchObject({ status: 412 });
+
+      // Refused before the insert, and before the slot was drawn: a rejection
+      // after the fact leaves the divergent event durable, and one that drew
+      // first would leave a hole every later writer has to be bumped past.
+      expect(await slotsInLog()).toEqual(before);
+    });
+
+    it('attaches the events the writer had not seen to the rejection', async () => {
+      const rejection = await events
+        .create(testRunId, branchWrite('recover-step'), {
+          eventCount: stale,
+          awaitingCorrelationIds: ['settled-step'],
+        })
+        .catch((error: any) => error);
+
+      expect(
+        rejection.details.events.map((e: any) => eventIdToSlot(e.eventId))
+      ).toEqual([stale + 1]);
+      expect(rejection.details.events[0].eventType).toBe('step_completed');
+    });
+
+    it('lets a resolution nobody awaits through, and reports it instead', async () => {
+      const result = await events.create(testRunId, branchWrite('other-step'), {
+        eventCount: stale,
+        awaitingCorrelationIds: ['unrelated-step'],
+      });
+
+      expect(eventIdToSlot(result.event.eventId)).toBe(stale + 2);
+      expect(result.events?.map((e) => eventIdToSlot(e.eventId))).toEqual([
+        stale + 1,
+      ]);
+    });
+
+    it('fences every write of one suspension, not part of it', async () => {
+      // Each write of a batch carries the same count and the same awaited set,
+      // and the events it missed sit directly above that count, so all of them
+      // skip the same resolution. A batch that fenced partway would leave the
+      // log holding the siblings that landed.
+      const writers = 4;
+      const racePool = new Pool({
+        connectionString: container.getConnectionUri(),
+        max: writers,
+      });
+      const raceEvents = createEventsStorage(createClient(racePool));
+
+      let outcomes: PromiseSettledResult<unknown>[];
+      try {
+        outcomes = await Promise.allSettled(
+          Array.from({ length: writers }, (_, i) =>
+            raceEvents.create(testRunId, branchWrite(`recover-step-${i}`), {
+              eventCount: stale,
+              awaitingCorrelationIds: ['settled-step'],
+            })
+          )
+        );
+      } finally {
+        await racePool.end();
+      }
+
+      expect(outcomes.every((o) => o.status === 'rejected')).toBe(true);
+      expect(await slotsInLog()).toHaveLength(stale + 1);
+    });
+
+    it('ignores the awaited set when the writer sends no count', async () => {
+      // No count means no claimed position, so there is no span of skipped
+      // slots to fence on. Writers outside a replay take this path.
+      await expect(
+        events.create(testRunId, branchWrite('recover-step'), {
+          awaitingCorrelationIds: ['settled-step'],
+        })
+      ).resolves.toBeDefined();
+    });
+  });
+
   describe('concurrent entity-creation races', () => {
     let testRunId: string;
     beforeEach(async () => {

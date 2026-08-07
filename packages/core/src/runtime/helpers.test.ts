@@ -3,6 +3,7 @@ import type { Event, World } from '@workflow/world';
 import { slotToEventId } from '@workflow/world';
 import { ulid } from 'ulid';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { QueueItem } from '../global.js';
 import { bytesToBase64, deriveRunKeyPair, seal } from '../sealed-box.js';
 import {
   decrypt,
@@ -13,6 +14,7 @@ import {
 } from '../serialization.js';
 import {
   appendUniqueEvents,
+  awaitedResolutionIds,
   getWorkflowQueueName,
   handleHealthCheckMessage,
   healthCheck,
@@ -761,6 +763,110 @@ describe('preconditionSnapshotParams on a slot-numbered run', () => {
       stateUpdatedAt: time,
       stateEventCount: 2,
     });
+  });
+
+  it('carries the awaited set alongside eventCount', () => {
+    const events = [1, 2].map((slot) => makeEvent(slotToEventId(slot)));
+
+    expect(
+      preconditionSnapshotParams(events, null, ['step_a', 'hook_b'])
+    ).toEqual({
+      eventCount: 2,
+      awaitingCorrelationIds: ['step_a', 'hook_b'],
+    });
+  });
+
+  it('omits an empty awaited set rather than sending one', () => {
+    const events = [makeEvent(slotToEventId(1))];
+
+    expect(preconditionSnapshotParams(events, null, [])).toEqual({
+      eventCount: 1,
+    });
+  });
+
+  it('does not send the awaited set on a ULID-numbered run', () => {
+    // The fence is expressed in terms of the slots a write skips over, which a
+    // ULID-numbered run does not have.
+    const time = 1_700_000_000_000;
+
+    expect(
+      preconditionSnapshotParams([makeUlidEvent(time)], null, ['step_a'])
+    ).toEqual({ stateUpdatedAt: time, stateEventCount: 1 });
+  });
+});
+
+describe('awaitedResolutionIds', () => {
+  const stepItem = (
+    correlationId: string,
+    hasCreatedEvent: boolean
+  ): QueueItem =>
+    ({ type: 'step', correlationId, hasCreatedEvent }) as unknown as QueueItem;
+
+  it('names the entities whose creation this replay already loaded', () => {
+    expect(
+      awaitedResolutionIds([
+        stepItem('step_settle', true),
+        stepItem('step_recover', false),
+      ])
+    ).toEqual(['step_settle']);
+  });
+
+  it('omits entities this suspension is about to create', () => {
+    // A correlation id this replay just minted cannot have a resolution the
+    // replay failed to see, and including it would let one write of a batch
+    // fence on a sibling's inline step_completed.
+    expect(
+      awaitedResolutionIds([
+        stepItem('step_a', false),
+        stepItem('step_b', false),
+      ])
+    ).toEqual([]);
+  });
+
+  it('omits attribute writes, which nothing resolves', () => {
+    const attribute = {
+      type: 'attribute',
+      correlationId: 'attr_1',
+    } as unknown as QueueItem;
+
+    expect(awaitedResolutionIds([attribute, stepItem('step_a', true)])).toEqual(
+      ['step_a']
+    );
+  });
+
+  it('omits a disposed hook, which the workflow has stopped reading', () => {
+    const disposed = {
+      type: 'hook',
+      correlationId: 'hook_gone',
+      hasCreatedEvent: true,
+      disposed: true,
+    } as unknown as QueueItem;
+    const live = {
+      type: 'hook',
+      correlationId: 'hook_live',
+      hasCreatedEvent: true,
+    } as unknown as QueueItem;
+
+    expect(awaitedResolutionIds([disposed, live])).toEqual(['hook_live']);
+  });
+
+  it('omits a hook the suspension is about to abort', () => {
+    // handleSuspension writes the abort's own hook_received ahead of the
+    // creates, under the same eventCount, so naming it here would make every
+    // abort fence its own suspension.
+    const aborting = {
+      type: 'hook',
+      correlationId: 'hook_aborting',
+      hasCreatedEvent: true,
+      abortRequested: true,
+    } as unknown as QueueItem;
+    const live = {
+      type: 'hook',
+      correlationId: 'hook_live',
+      hasCreatedEvent: true,
+    } as unknown as QueueItem;
+
+    expect(awaitedResolutionIds([aborting, live])).toEqual(['hook_live']);
   });
 });
 

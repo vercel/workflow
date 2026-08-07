@@ -24,6 +24,7 @@ import {
   ulidToDate,
 } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
+import type { QueueItem } from '../global.js';
 import { runtimeLogger } from '../logger.js';
 import { bytesToBase64, deriveRunKeyPair } from '../sealed-box.js';
 import {
@@ -722,6 +723,52 @@ export function isPreconditionGuardEnabled(): boolean {
 }
 
 /**
+ * Whether replay-context creates declare what they are waiting on, so a
+ * slot-allocating World can refuse a write whose branch was decided without a
+ * resolution the writer had not seen. **On by default**; set
+ * `WORKFLOW_AWAITED_RESOLUTION_FENCE=0` to fall back to pure bump-and-report.
+ *
+ * A kill switch rather than an opt-in because the failure it prevents
+ * (`CORRUPTED_EVENT_LOG` on a branch decided off a stale log) is unrecoverable
+ * while its cost — a restarted replay — is not.
+ */
+export function isAwaitedResolutionFenceEnabled(): boolean {
+  return process.env.WORKFLOW_AWAITED_RESOLUTION_FENCE !== '0';
+}
+
+/**
+ * The correlation ids a suspension is blocked on: queue entries whose creation
+ * event is already in the log, so a resolution for them could have been
+ * committed without this replay seeing it.
+ *
+ * Entries this suspension is about to create are excluded. Their correlation
+ * ids were minted by this replay, so no resolution for them can predate it, and
+ * including them would let one write of a batch fence on a sibling's inline
+ * `step_completed`.
+ *
+ * A disposed hook is excluded too: the workflow has stopped reading it, so a
+ * delivery that raced the disposal decides nothing.
+ *
+ * So is a hook the workflow has asked to abort. The suspension resolves those
+ * itself, by writing their `hook_received` ahead of the creates in the same
+ * batch and under the same `eventCount`, so leaving them in would make every
+ * abort fence its own suspension.
+ */
+export function awaitedResolutionIds(items: readonly QueueItem[]): string[] {
+  const ids: string[] = [];
+  for (const item of items) {
+    if (item.type === 'attribute' || !item.hasCreatedEvent) {
+      continue;
+    }
+    if (item.type === 'hook' && (item.disposed || item.abortRequested)) {
+      continue;
+    }
+    ids.push(item.correlationId);
+  }
+  return ids;
+}
+
+/**
  * The `stateUpdatedAt` value to send with a replay-context event creation: the
  * *maximum* ULID time (epoch ms) over the events the runtime has loaded. Returns
  * `undefined` when there are no events or that id is not a decodable ULID.
@@ -829,18 +876,20 @@ export function maxEventSlot(events: Event[]): number | undefined {
  * The precondition snapshot a replay-context event creation sends, describing
  * the event log the replay derived the event from.
  *
- * On a slot-numbered run this is `eventCount` alone. On a ULID-numbered run it
- * is the `stateUpdatedAt` / `stateEventCount` / `stateCursor` triple, whose
- * three fields are one indivisible unit: the backend reads the count only
- * relative to the watermark, and returns its inline delta only relative to the
- * cursor. Passing them as a single object is what keeps them from drifting
- * apart at a call site.
+ * On a slot-numbered run this is `eventCount`, optionally with the set of
+ * correlation ids the writer is blocked on. On a ULID-numbered run it is the
+ * `stateUpdatedAt` / `stateEventCount` / `stateCursor` triple, whose three
+ * fields are one indivisible unit: the backend reads the count only relative to
+ * the watermark, and returns its inline delta only relative to the cursor.
+ * Passing them as a single object is what keeps them from drifting apart at a
+ * call site.
  */
 export interface PreconditionSnapshotParams {
   stateUpdatedAt?: number;
   stateEventCount?: number;
   stateCursor?: string;
   eventCount?: number;
+  awaitingCorrelationIds?: string[];
 }
 
 /**
@@ -863,7 +912,8 @@ export interface PreconditionSnapshotParams {
  */
 export function preconditionSnapshotParams(
   events: Event[],
-  cursor?: string | null
+  cursor?: string | null,
+  awaiting?: readonly string[]
 ): PreconditionSnapshotParams {
   if (!isPreconditionGuardEnabled()) {
     return {};
@@ -874,7 +924,13 @@ export function preconditionSnapshotParams(
   // `latestEventStateUpdatedAt` would fail open on every single write.
   const eventCount = maxEventSlot(events);
   if (eventCount !== undefined) {
-    return { eventCount };
+    // The fence rides on the slot branch only: it is expressed in terms of the
+    // slots a write skips over, which a ULID-numbered run does not have. An
+    // empty set is omitted rather than sent, so a World never has to
+    // distinguish "waiting on nothing" from "did not ask".
+    return awaiting?.length
+      ? { eventCount, awaitingCorrelationIds: [...awaiting] }
+      : { eventCount };
   }
   const stateUpdatedAt = latestEventStateUpdatedAt(events);
   if (stateUpdatedAt === undefined) {

@@ -24,6 +24,13 @@ export {
   validateAttributeValue,
 } from './attributes.js';
 export {
+  awaitedResolutionMessage,
+  findAwaitedResolution,
+  RESOLUTION_EVENT_TYPES,
+  type ResolutionCandidate,
+  resolvesAwaited,
+} from './awaited-resolution.js';
+export {
   _resetEnvWarnCacheForTests,
   type EnvNumberOptions,
   envNumber,
