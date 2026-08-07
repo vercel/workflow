@@ -1,5 +1,11 @@
 # @workflow/world-vercel
 
+## 4.6.2
+
+### Patch Changes
+
+- [#3370](https://github.com/vercel/workflow/pull/3370) [`30da024`](https://github.com/vercel/workflow/commit/30da02423f9b4eb9916c7ede93d5928bb5d4bc04) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Recover from HTTP/2 connections that stop delivering event requests, and make `WORKFLOW_H2_MULTIPLEX=0` disable HTTP/2 on the events path entirely
+
 ## 4.6.1
 
 ### Patch Changes
