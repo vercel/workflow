@@ -1477,7 +1477,7 @@ describe('Storage', () => {
         expect(result.cursor).toBeUndefined();
       });
 
-      it('does not return a delta for non-terminal step events', async () => {
+      it('returns a delta for non-terminal event types too', async () => {
         await updateRun(storage, testRunId, 'run_started');
         const sinceCursor = await currentCursor();
         await createStep(storage, testRunId, {
@@ -1485,8 +1485,9 @@ describe('Storage', () => {
           stepName: 'seq-step',
           input: new Uint8Array(),
         });
-        // step_started carries sinceCursor but is not a loop boundary, so the
-        // World should not compute a delta for it.
+        // Whether the delta is worth asking for is the caller's decision, not
+        // the World's: outside turbo the runtime sends `sinceCursor` on every
+        // write so each response carries its log forward.
         const result = await storage.events.create(
           testRunId,
           {
@@ -1496,7 +1497,46 @@ describe('Storage', () => {
           },
           { sinceCursor }
         );
-        expect(result.events).toBeUndefined();
+        const expected = await storage.events.list({
+          runId: testRunId,
+          pagination: { sortOrder: 'asc', cursor: sinceCursor },
+        });
+        expect(result.events?.map((e) => e.eventId)).toEqual(
+          expected.data.map((e) => e.eventId)
+        );
+        expect(result.events?.at(-1)?.eventType).toBe('step_started');
+        expect(result.cursor).toBe(expected.cursor);
+        expect(result.hasMore).toBe(expected.hasMore);
+      });
+
+      it('returns a delta for a wait_completed write', async () => {
+        await updateRun(storage, testRunId, 'run_started');
+        await storage.events.create(testRunId, {
+          eventType: 'wait_created' as const,
+          correlationId: 'corr_wait1',
+          eventData: { resumeAt: new Date(Date.now() - 1000) },
+        });
+        const sinceCursor = await currentCursor();
+        // The runtime's elapsed-wait pass relies on this delta instead of a
+        // follow-up events.list, so the response must carry the completion it
+        // just wrote.
+        const result = await storage.events.create(
+          testRunId,
+          {
+            eventType: 'wait_completed' as const,
+            correlationId: 'corr_wait1',
+            eventData: { resumeAt: new Date(Date.now() - 1000) },
+          },
+          { sinceCursor }
+        );
+        expect(
+          result.events?.some(
+            (e) =>
+              e.eventType === 'wait_completed' &&
+              e.correlationId === 'corr_wait1'
+          )
+        ).toBe(true);
+        expect(result.hasMore).toBe(false);
       });
     });
 

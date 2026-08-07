@@ -18,9 +18,13 @@ import {
   workflowDisplayName,
 } from '@workflow/utils/parse-name';
 import {
+  type CreateEventParams,
+  type CreateEventRequest,
   type Event,
+  type EventResult,
   getQueueTopicPrefix,
   isLegacySpecVersion,
+  isTerminalRunEventType,
   ROOT_RUN_ID_ATTRIBUTE,
   type RunInput,
   resolveQueueNamespace,
@@ -799,10 +803,95 @@ export function workflowEntrypoint(
                   const replayRecoveryReporter = replayDivergence
                     ? new ReplayRecoveryReporter(replayDivergence.count)
                     : ReplayRecoveryReporter.inert();
-                  const createEvent: EventCreator = (data, params) =>
-                    replayRecoveryReporter.withEventCreate(params, (p) =>
-                      world.events.create(runId, data, p)
+                  // Every write this loop makes carries the cursor of the log
+                  // it was computed against, and folds whatever the World
+                  // hands back into that log. See `absorbCreateDelta` for the
+                  // guards; `sinceCursor` in @workflow/world for the contract.
+                  const createEvent: EventCreator = async (data, params) => {
+                    const sinceCursor = deltaRequestCursor(data, params);
+                    const result = await replayRecoveryReporter.withEventCreate(
+                      sinceCursor === undefined
+                        ? params
+                        : { ...params, sinceCursor },
+                      (p) => world.events.create(runId, data, p)
                     );
+                    if (sinceCursor !== undefined) {
+                      absorbCreateDelta(sinceCursor, result);
+                    }
+                    return result;
+                  };
+
+                  /**
+                   * The cursor to ask for an inline delta against, or
+                   * undefined to not ask.
+                   *
+                   * Turbo is excluded on purpose: it exists to make the first
+                   * invocation's writes as cheap as possible, and it has no
+                   * loaded log to extend. Run-terminal writes are excluded
+                   * because nothing reads the log afterwards, so the delta
+                   * would be work the World does for no one. A caller that
+                   * set its own `sinceCursor` (or asked for the `run_started`
+                   * / `hook_received` preload, which owns the same response
+                   * fields) keeps what it asked for.
+                   */
+                  const deltaRequestCursor = (
+                    data: CreateEventRequest,
+                    params: CreateEventParams | undefined
+                  ): string | undefined => {
+                    const skip =
+                      turbo ||
+                      eventsCursor === null ||
+                      params?.sinceCursor !== undefined ||
+                      params?.preloadEvents === true ||
+                      isTerminalRunEventType(data.eventType);
+                    return skip ? undefined : (eventsCursor ?? undefined);
+                  };
+
+                  /**
+                   * Fold an inline delta returned by `events.create` into the
+                   * in-memory event log.
+                   *
+                   * The delta is what `events.list({ cursor: sentCursor })`
+                   * would have returned right after the write, so it carries
+                   * back both our own event and anything another writer
+                   * appended in band. Absorbing it here means the next reader
+                   * already has the log and the loop's incremental
+                   * `events.list` finds nothing left to fetch.
+                   *
+                   * Declining is always safe — an unabsorbed delta is a delta
+                   * the next `events.list` returns — so the guards are free to
+                   * be strict:
+                   *
+                   * - `hasMore` means the World truncated the page. Taking it
+                   *   while advancing the cursor to the page end would be
+                   *   fine, but taking it and NOT advancing would duplicate,
+                   *   and the truncated case is rare enough not to special-case.
+                   * - The cursor must be exactly where it was when the request
+                   *   went out. Concurrent writes each diff against the cursor
+                   *   they saw, and `appendUniqueEvents` deliberately does not
+                   *   re-sort, so absorbing a second delta computed from an
+                   *   older cursor could append events behind ones already
+                   *   taken. First response back wins; the rest are dropped.
+                   * - A pending inline delta is an unconsumed cursor move of
+                   *   its own. Rather than reason about which of the two is
+                   *   further ahead, leave the log alone until it is consumed.
+                   */
+                  const absorbCreateDelta = (
+                    sentCursor: string,
+                    result: EventResult
+                  ): void => {
+                    if (
+                      cachedEvents === null ||
+                      pendingInlineDelta !== null ||
+                      eventsCursor !== sentCursor ||
+                      result.events === undefined ||
+                      result.hasMore === true
+                    ) {
+                      return;
+                    }
+                    appendUniqueEvents(cachedEvents, result.events);
+                    eventsCursor = result.cursor ?? eventsCursor;
+                  };
 
                   // Event cache: keep loaded events in memory across loop iterations.
                   // On the first iteration we do a full load; on subsequent iterations
@@ -2537,15 +2626,34 @@ export function workflowEntrypoint(
                         }
                       }
 
-                      if (waitsToComplete.length > 0) {
-                        // The event list above may be stale by the time an
-                        // elapsed wait is committed. Load only events after
-                        // the original snapshot cursor so concurrent durable
-                        // events, such as hook_received, keep their ordering
-                        // relative to wait_completed. Fall back to a full
-                        // reload for older worlds that cannot give us a stable
-                        // cursor, or if the cursor delta does not include the
-                        // wait completion this handler just attempted.
+                      // The event list above may be stale by the time an
+                      // elapsed wait is committed, and this replay has to see
+                      // its own wait_completed before it can advance past the
+                      // sleep. Each write asked the World for the delta since
+                      // our cursor and folded it in (see createEvent), so a
+                      // supporting World has already handed those events back
+                      // and there is nothing left to do. Only fetch for the
+                      // completions still missing locally: a World that
+                      // ignores `sinceCursor`, a truncated delta, a concurrent
+                      // absorb that lost the cursor race, or an
+                      // EntityConflictError, whose rejection carries no delta.
+                      const missingWaitCompletions = waitsToComplete.filter(
+                        (waitEvent) =>
+                          !events.some(
+                            (e) =>
+                              e.eventType === 'wait_completed' &&
+                              e.correlationId === waitEvent.correlationId
+                          )
+                      );
+
+                      if (missingWaitCompletions.length > 0) {
+                        // Load only events after the original snapshot cursor
+                        // so concurrent durable events, such as hook_received,
+                        // keep their ordering relative to wait_completed. Fall
+                        // back to a full reload for older worlds that cannot
+                        // give us a stable cursor, or if the cursor delta does
+                        // not include the wait completion this handler just
+                        // attempted.
                         if (eventsCursor) {
                           const loaded = await loadWorkflowRunEvents(
                             runId,
@@ -2556,12 +2664,12 @@ export function workflowEntrypoint(
                               .filter((e) => e.eventType === 'wait_completed')
                               .map((e) => e.correlationId)
                           );
-                          const sawAllWaitCompletions = waitsToComplete.every(
-                            (waitEvent) =>
+                          const sawAllWaitCompletions =
+                            missingWaitCompletions.every((waitEvent) =>
                               completedWaitIdsAfterCursor.has(
                                 waitEvent.correlationId
                               )
-                          );
+                            );
 
                           if (sawAllWaitCompletions) {
                             appendUniqueEvents(events, loaded.events);
