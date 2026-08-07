@@ -115,7 +115,7 @@ Custom base URL for the Vercel workflow API. Automatically detected.
 
 ### `WORKFLOW_H2_MULTIPLEX`
 
-Enabled by default. Lets concurrent event-log requests share one HTTP/2 connection instead of opening one connection per in-flight request. Set to `0` to send one event request per connection.
+Enabled by default. Lets concurrent event-log requests share one HTTP/2 connection instead of opening one connection per in-flight request. Set to `0` to take the event-log requests off HTTP/2 entirely, back to one request per HTTP/1.1 connection. Use this as the kill switch if HTTP/2 turns out to be at fault for event delivery problems.
 
 ### Programmatic configuration
 
