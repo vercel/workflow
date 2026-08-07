@@ -1830,6 +1830,123 @@ describe('Storage (Postgres integration)', () => {
         Array.from({ length: writers + 1 }, (_, i) => i + 1)
       );
     });
+
+    it('hands back the events occupying the slots a write skipped', async () => {
+      await updateRun(events, testRunId, 'run_started');
+      // What a writer that loaded the log right after run_started would report.
+      const stale = 2;
+
+      for (let i = 0; i < 3; i++) {
+        await events.create(testRunId, {
+          eventType: 'step_created',
+          correlationId: `skipped-step-${i}`,
+          eventData: { stepName: 'test-step', input: new Uint8Array([i]) },
+        });
+      }
+
+      const result = await events.create(
+        testRunId,
+        {
+          eventType: 'wait_created',
+          correlationId: 'skipped-wait',
+          eventData: { resumeAt: new Date('2099-01-01') },
+        },
+        { eventCount: stale }
+      );
+
+      expect(eventIdToSlot(result.event.eventId)).toBe(6);
+      expect(result.events?.map((e) => eventIdToSlot(e.eventId))).toEqual([
+        3, 4, 5,
+      ]);
+      expect(result.events?.map((e) => e.correlationId)).toEqual([
+        'skipped-step-0',
+        'skipped-step-1',
+        'skipped-step-2',
+      ]);
+      expect(result.hasMore).toBe(false);
+    });
+
+    it('reports nothing when the write lands on the slot it asked for', async () => {
+      const result = await events.create(
+        testRunId,
+        {
+          eventType: 'step_created',
+          correlationId: 'unskipped-step',
+          eventData: { stepName: 'test-step', input: new Uint8Array() },
+        },
+        { eventCount: 1 }
+      );
+
+      expect(eventIdToSlot(result.event.eventId)).toBe(2);
+      expect(result.events).toBeUndefined();
+    });
+
+    it('reports nothing when the writer sends no count', async () => {
+      await updateRun(events, testRunId, 'run_started');
+      await events.create(testRunId, {
+        eventType: 'step_created',
+        correlationId: 'uncounted-step',
+        eventData: { stepName: 'test-step', input: new Uint8Array() },
+      });
+
+      const result = await events.create(testRunId, {
+        eventType: 'wait_created',
+        correlationId: 'uncounted-wait',
+        eventData: { resumeAt: new Date('2099-01-01') },
+      });
+
+      expect(result.events).toBeUndefined();
+    });
+
+    it('gives every racing writer the events it was decided without', async () => {
+      await updateRun(events, testRunId, 'run_started');
+      const stale = 2;
+      const writers = 8;
+      const racePool = new Pool({
+        connectionString: container.getConnectionUri(),
+        max: writers,
+      });
+      const raceEvents = createEventsStorage(createClient(racePool));
+
+      let results: Awaited<ReturnType<typeof raceEvents.create>>[];
+      try {
+        results = await Promise.all(
+          Array.from({ length: writers }, (_, i) =>
+            raceEvents.create(
+              testRunId,
+              {
+                eventType: 'step_created',
+                correlationId: `race-report-${i}`,
+                eventData: {
+                  stepName: 'test-step',
+                  input: new Uint8Array([i]),
+                },
+              },
+              { eventCount: stale }
+            )
+          )
+        );
+      } finally {
+        await racePool.end();
+      }
+
+      // Each writer's report covers only the slots between the one it asked
+      // for and the one it landed on. It can be short of that span: a writer
+      // holding a lower slot may not have committed its insert yet, which is
+      // what `hasMore` says.
+      for (const result of results) {
+        const landed = eventIdToSlot(result.event.eventId) as number;
+        const reported = result.events ?? [];
+        const span = landed - stale - 1;
+        expect(reported.length).toBeLessThanOrEqual(span);
+        expect(result.hasMore ?? false).toBe(reported.length < span);
+        for (const event of reported) {
+          const slot = eventIdToSlot(event.eventId) as number;
+          expect(slot).toBeGreaterThan(stale);
+          expect(slot).toBeLessThan(landed);
+        }
+      }
+    });
   });
 
   describe('concurrent entity-creation races', () => {

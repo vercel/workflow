@@ -599,7 +599,7 @@ interface PaginatedFileSystemQueryConfig<T> {
 //   "timestamp|id"  — createdAt order, id for tie-breaking
 //   "key:<sortKey>" — sort-key order (see getSortKey)
 // A run never mixes the two, so a cursor never has to cross formats mid-scan.
-const SORT_KEY_CURSOR_PREFIX = 'key:';
+export const SORT_KEY_CURSOR_PREFIX = 'key:';
 
 interface ParsedCursor {
   timestamp: Date;

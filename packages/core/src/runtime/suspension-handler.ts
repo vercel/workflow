@@ -33,6 +33,7 @@ import { getMaxInlineSteps } from './constants.js';
 import {
   type EventCreator,
   type LoadedEventLog,
+  mergeReportedEvents,
   preconditionSnapshotParams,
 } from './helpers.js';
 import { ReplayRecoveryReporter } from './replay-recovery-reporter.js';
@@ -83,6 +84,13 @@ export interface SuspensionHandlerResult {
    * into the same batch boundary.
    */
   createdStepCorrelationIds: Set<string>;
+  /**
+   * How many events this phase's writes reported back as occupying slots they
+   * skipped over, already merged into the caller's `eventLog.events`. Nonzero
+   * means the array was reordered to restore slot order, so any index the
+   * caller cached into it (payload prewarm scan position) is stale.
+   */
+  reportedEventCount: number;
   /**
    * The steps whose `step_created` writes were intentionally deferred so the
    * caller can run them inline via lazy `step_started` events (which create
@@ -283,13 +291,36 @@ export async function handleSuspension({
   // because the event's correlation id was minted by *this* replay's seeded
   // sequence, so re-committing it against a corrected log would persist an
   // event no correct replay produces.
-  const createGuarded: EventCreator = (data, params) =>
-    eventLog
-      ? createEvent(data, {
-          ...params,
-          ...preconditionSnapshotParams(eventLog.events, eventLog.cursor),
-        })
-      : createEvent(data, params);
+  let reportedEvents = 0;
+  const createGuarded: EventCreator = async (data, params) => {
+    if (!eventLog) {
+      return createEvent(data, params);
+    }
+    const log = eventLog;
+    const result = await createEvent(data, {
+      ...params,
+      ...preconditionSnapshotParams(log.events, log.cursor),
+    });
+    // Bump-and-report: the write landed above the slot it asked for, so these
+    // are the events it was decided without. Merging them here rather than at
+    // each call site means the rest of this phase's writes — which read the
+    // same array to build their own snapshot — ask for a slot above them, and
+    // the replay that resumes from this log sees them without a reload.
+    if (result.events?.length) {
+      const added = mergeReportedEvents(log.events, result.events);
+      reportedEvents += added;
+      if (added > 0) {
+        runtimeLogger.debug('Suspension write skipped occupied slots', {
+          workflowRunId: runId,
+          eventType: data.eventType,
+          eventId: result.event?.eventId,
+          reported: added,
+          partial: result.hasMore === true,
+        });
+      }
+    }
+    return result;
+  };
   // Separate queue items by type
   const stepItems = suspension.steps.filter(
     (item): item is StepInvocationQueueItem => item.type === 'step'
@@ -802,6 +833,7 @@ export async function handleSuspension({
     hasHookEvents: hooksNeedingCreation.length > 0,
     hookCreationMs,
     retainedStepInputsSafe,
+    reportedEventCount: reportedEvents,
   };
 }
 

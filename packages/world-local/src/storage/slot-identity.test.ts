@@ -160,3 +160,113 @@ describe('slot event ids', () => {
     expect(slotsOf(eventIds)).toEqual([null, null, null]);
   });
 });
+
+describe('skipped-slot report', () => {
+  /** Writes `count` step_created events, returning the slots they landed on. */
+  async function fill(runId: string, count: number): Promise<number[]> {
+    const slots: number[] = [];
+    for (let i = 0; i < count; i++) {
+      const result = await storage.events.create(runId, {
+        eventType: 'step_created',
+        correlationId: `filler_${i}`,
+        specVersion: SPEC_VERSION_CURRENT,
+        eventData: { stepName: `filler${i}`, input: serialized([]) },
+      } as any);
+      slots.push(eventIdToSlot(result.event.eventId) as number);
+    }
+    return slots;
+  }
+
+  it('hands back the events occupying the slots the write skipped', async () => {
+    const runId = await startRun();
+    const stale = FIRST_EVENT_SLOT + 1; // what the run had after run_started
+    const filled = await fill(runId, 3);
+
+    // A writer whose loaded log stopped at run_started asks for the slot right
+    // above it and is bumped past everything written since.
+    const result = await storage.events.create(
+      runId,
+      {
+        eventType: 'wait_created',
+        correlationId: 'wait_a',
+        specVersion: SPEC_VERSION_CURRENT,
+        eventData: { waitUntil: new Date(0).toISOString() },
+      } as any,
+      { eventCount: stale }
+    );
+
+    expect(eventIdToSlot(result.event.eventId)).toBe(stale + filled.length + 1);
+    expect(result.events?.map((event) => event.eventId)).toEqual(
+      filled.map(slotId)
+    );
+    expect(result.hasMore).toBe(false);
+  });
+
+  it('reports nothing when the write lands on the slot it asked for', async () => {
+    const runId = await startRun();
+    const result = await storage.events.create(
+      runId,
+      {
+        eventType: 'wait_created',
+        correlationId: 'wait_a',
+        specVersion: SPEC_VERSION_CURRENT,
+        eventData: { waitUntil: new Date(0).toISOString() },
+      } as any,
+      { eventCount: FIRST_EVENT_SLOT + 1 }
+    );
+
+    expect(eventIdToSlot(result.event.eventId)).toBe(FIRST_EVENT_SLOT + 2);
+    expect(result.events).toBeUndefined();
+  });
+
+  it('reports nothing when the writer sends no count', async () => {
+    const runId = await startRun();
+    await fill(runId, 2);
+    const result = await storage.events.create(runId, {
+      eventType: 'wait_created',
+      correlationId: 'wait_a',
+      specVersion: SPEC_VERSION_CURRENT,
+      eventData: { waitUntil: new Date(0).toISOString() },
+    } as any);
+
+    expect(result.events).toBeUndefined();
+  });
+
+  it('gives every racing writer the events it was decided without', async () => {
+    const runId = await startRun();
+    const stale = FIRST_EVENT_SLOT + 1;
+    const width = 8;
+
+    // All eight start from the same view, so seven of them are bumped and each
+    // one's report covers exactly the slots between `stale` and where it
+    // landed. Under contention the report can be a lower bound: a writer
+    // holding a lower slot may not have published yet, which `hasMore` says.
+    const results = await Promise.all(
+      Array.from({ length: width }, (_, i) =>
+        storage.events.create(
+          runId,
+          {
+            eventType: 'step_created',
+            correlationId: `racer_${i}`,
+            specVersion: SPEC_VERSION_CURRENT,
+            eventData: { stepName: `racer${i}`, input: serialized([]) },
+          } as any,
+          { eventCount: stale }
+        )
+      )
+    );
+
+    for (const result of results) {
+      const landed = eventIdToSlot(result.event.eventId) as number;
+      const reported = result.events ?? [];
+      const span = landed - stale - 1;
+      expect(reported.length).toBeLessThanOrEqual(span);
+      expect(result.hasMore ?? false).toBe(reported.length < span);
+      for (const event of reported) {
+        const slot = eventIdToSlot(event.eventId) as number;
+        expect(slot).toBeGreaterThan(stale);
+        expect(slot).toBeLessThan(landed);
+      }
+    }
+  });
+});

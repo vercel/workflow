@@ -14,6 +14,7 @@ import type {
   World,
 } from '@workflow/world';
 import {
+  eventIdToSlot,
   getQueueTopicPrefix,
   HealthCheckPayloadSchema,
   HOOK_RESUME_INPUT_VERSION,
@@ -773,10 +774,64 @@ export function latestEventStateUpdatedAt(events: Event[]): number | undefined {
 }
 
 /**
+ * Merge the events a bump-and-report write handed back into the log it was
+ * derived from, and answer how many of them were new.
+ *
+ * Unlike {@link appendUniqueEvents}, this re-sorts. The reported events occupy
+ * slots *below* the write that reported them, so appending them would put them
+ * after events they precede — and on a slot-numbered run the id order is the
+ * World's canonical order, so restoring it is well defined rather than a guess.
+ * A run that is not slot-numbered cannot produce this report in the first
+ * place; the sort is skipped rather than applied to ids it cannot order.
+ */
+export function mergeReportedEvents(
+  target: Event[],
+  events: readonly Event[]
+): number {
+  const before = target.length;
+  appendUniqueEvents(target, events);
+  const added = target.length - before;
+  if (added > 0 && maxEventSlot(target) !== undefined) {
+    target.sort((a, b) =>
+      a.eventId < b.eventId ? -1 : a.eventId > b.eventId ? 1 : 0
+    );
+  }
+  return added;
+}
+
+/**
+ * The highest slot the loaded log occupies, or `undefined` when the run is not
+ * slot-numbered. A run keeps the id scheme it was created under, so one event
+ * settles it for the whole log.
+ *
+ * The maximum, not the count. Slots are allocated by the write that occupies
+ * them, and an allocation whose insert then fails (a losing entity-creation
+ * claim, a rejected guarded update) leaves the slot permanently empty. Reading
+ * the count would make every later write in such a run under-report what it has
+ * seen, so the World would bump it past a hole it can never fill and hand back
+ * the same events forever.
+ */
+export function maxEventSlot(events: Event[]): number | undefined {
+  let max: number | undefined;
+  for (const event of events) {
+    const slot = eventIdToSlot(event.eventId);
+    if (slot === null) {
+      return undefined;
+    }
+    if (max === undefined || slot > max) {
+      max = slot;
+    }
+  }
+  return max;
+}
+
+/**
  * The precondition snapshot a replay-context event creation sends, describing
  * the event log the replay derived the event from.
  *
- * The three fields are one indivisible unit: the backend reads the count only
+ * On a slot-numbered run this is `eventCount` alone. On a ULID-numbered run it
+ * is the `stateUpdatedAt` / `stateEventCount` / `stateCursor` triple, whose
+ * three fields are one indivisible unit: the backend reads the count only
  * relative to the watermark, and returns its inline delta only relative to the
  * cursor. Passing them as a single object is what keeps them from drifting
  * apart at a call site.
@@ -785,6 +840,7 @@ export interface PreconditionSnapshotParams {
   stateUpdatedAt?: number;
   stateEventCount?: number;
   stateCursor?: string;
+  eventCount?: number;
 }
 
 /**
@@ -811,6 +867,14 @@ export function preconditionSnapshotParams(
 ): PreconditionSnapshotParams {
   if (!isPreconditionGuardEnabled()) {
     return {};
+  }
+  // A slot-numbered run says with one integer everything the triple was
+  // approximating, so the two are alternatives rather than a pair. Sending the
+  // triple here would also be futile: a slot id carries no time, so
+  // `latestEventStateUpdatedAt` would fail open on every single write.
+  const eventCount = maxEventSlot(events);
+  if (eventCount !== undefined) {
+    return { eventCount };
   }
   const stateUpdatedAt = latestEventStateUpdatedAt(events);
   if (stateUpdatedAt === undefined) {

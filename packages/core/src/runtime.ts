@@ -72,6 +72,7 @@ import {
   type LoadedEventLog,
   loadWorkflowRunEvents,
   memoizeEncryptionKey,
+  mergeReportedEvents,
   parseHealthCheckPayload,
   preconditionEventDelta,
   preconditionSnapshotParams,
@@ -2518,10 +2519,16 @@ export function workflowEntrypoint(
 
                       for (const waitEvent of waitsToComplete) {
                         try {
-                          await createEvent(waitEvent, {
+                          const created = await createEvent(waitEvent, {
                             requestId,
                             ...preconditionSnapshotParams(events, eventsCursor),
                           });
+                          // Bump-and-report: fold what this write skipped over
+                          // into the snapshot the remaining waits are guarded
+                          // against, so each asks for a slot above it.
+                          if (created.events?.length) {
+                            mergeReportedEvents(events, created.events);
+                          }
                         } catch (err) {
                           if (EntityConflictError.is(err)) {
                             runtimeLogger.info(
@@ -2913,6 +2920,15 @@ export function workflowEntrypoint(
                           return;
                         }
                         eventsCursor = suspensionLog.cursor;
+                        if (suspensionResult.reportedEventCount > 0) {
+                          // Bump-and-report merged events BELOW the tail and
+                          // re-sorted the array to slot order, shifting every
+                          // position the prewarm scan had already recorded.
+                          // The cursor is deliberately left alone: the report
+                          // is a lower bound on what was skipped, so the next
+                          // incremental read still has to cover the same range.
+                          replayPayloadCache.resetScan();
+                        }
 
                         // Open hooks/waits in the log as loaded for this
                         // replay. This suspension's own hook/wait writes are

@@ -30,6 +30,7 @@ import {
   ATTRIBUTE_MAX_PER_RUN,
   AttributeValidationError,
   EventSchema,
+  eventIdToSlot,
   FIRST_EVENT_SLOT,
   HookSchema,
   isChildEntityCreationEvent,
@@ -123,6 +124,56 @@ async function openEventSlots(db: DrizzleLike, runId: string): Promise<string> {
     .values({ runId, next: FIRST_EVENT_SLOT + 1 })
     .onConflictDoNothing();
   return slotToEventId(FIRST_EVENT_SLOT);
+}
+
+/**
+ * The report half of bump-and-report: the events sitting on the slots between
+ * the one the writer asked for and the one its write actually landed on.
+ *
+ * Returns `undefined` when there is nothing to report — the write took the slot
+ * it asked for, the run is not slot-numbered, or the caller sent a count from a
+ * log that is already ahead of this write.
+ *
+ * The set can be short of the slot span it covers. A slot is claimed by an
+ * `UPDATE … RETURNING` that commits on its own outside a transaction, so a
+ * writer holding a lower slot may not have inserted yet, and a writer whose
+ * insert was rejected never will. `hasMore` says the report is a lower bound;
+ * it is advisory, because the caller's ordinary incremental read still runs.
+ */
+async function reportSkippedSlots(
+  db: Drizzle,
+  runId: string,
+  committedEventId: string,
+  askedFor: number,
+  resolveData: ResolveData
+): Promise<{ events: Event[]; hasMore: boolean } | undefined> {
+  const committedSlot = eventIdToSlot(committedEventId);
+  if (
+    committedSlot === null ||
+    askedFor < FIRST_EVENT_SLOT ||
+    committedSlot <= askedFor + 1
+  ) {
+    return undefined;
+  }
+  const rows = await db
+    .select()
+    .from(Schema.events)
+    .where(
+      and(
+        eq(Schema.events.runId, runId),
+        gt(Schema.events.eventId, slotToEventId(askedFor)),
+        lt(Schema.events.eventId, committedEventId)
+      )
+    )
+    .orderBy(Schema.events.eventId);
+  const events = rows.map((row) => {
+    row.eventData ||= row.eventDataJson;
+    return stripEventDataRefs(EventSchema.parse(compact(row)), resolveData);
+  });
+  return {
+    events,
+    hasMore: events.length < committedSlot - askedFor - 1,
+  };
 }
 
 function getHookRetentionLimitMs(): number {
@@ -1934,6 +1985,19 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
       let allEvents: Event[] | undefined;
       let cursor: string | null | undefined;
       let hasMore: boolean | undefined;
+      if (params?.eventCount !== undefined) {
+        const report = await reportSkippedSlots(
+          drizzle,
+          effectiveRunId,
+          parsed.eventId,
+          params.eventCount,
+          resolveData
+        );
+        if (report) {
+          allEvents = report.events;
+          hasMore = report.hasMore;
+        }
+      }
       if (data.eventType === 'run_started' && run) {
         const eventRows = await drizzle
           .select()

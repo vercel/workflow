@@ -11,10 +11,13 @@ import {
   WorkflowWorldError,
 } from '@workflow/errors';
 import type {
+  CreateEventParams,
+  CreateEventRequest,
   Event,
   EventResult,
   Hook,
   HookCreatedEventRequest,
+  ResolveData,
   SerializedData,
   Step,
   Storage,
@@ -60,6 +63,7 @@ import {
   readJSON,
   readJSONWithFallback,
   resolveWithinBase,
+  SORT_KEY_CURSOR_PREFIX,
   taggedPath,
   write,
   writeExclusive,
@@ -740,7 +744,7 @@ export function createEventsStorage(
   const stepLocks = new Map<string, Promise<unknown>>();
   const hookLocks = new Map<string, Promise<unknown>>();
 
-  return {
+  const storage: LocalEventsStorage = {
     clearCache,
     async create(runId, data, params): Promise<EventResult> {
       if (
@@ -2796,4 +2800,77 @@ export function createEventsStorage(
       return result;
     },
   };
+
+  /**
+   * The report half of bump-and-report: the events sitting on the slots
+   * between the one the writer asked for and the one its write landed on.
+   *
+   * Wrapped around `create` rather than folded into it because `create` has a
+   * dozen commit points (dedup recovery, hook conflict, lazy step creation)
+   * and the report is the same at every one of them: read the committed id,
+   * read back what is below it.
+   *
+   * The read is a directory scan, so it only runs when the write actually
+   * skipped a slot. `hasMore` says the set is a lower bound: another instance
+   * may hold a lower slot it has not published yet, and a draw whose publish
+   * was lost leaves one permanently empty.
+   */
+  async function reportSkippedSlots(
+    result: EventResult,
+    askedFor: number,
+    resolveData: ResolveData
+  ): Promise<EventResult> {
+    if (!result.event) {
+      return result;
+    }
+    const committedSlot = eventIdToSlot(result.event.eventId);
+    if (
+      committedSlot === null ||
+      askedFor < FIRST_EVENT_SLOT ||
+      committedSlot <= askedFor + 1
+    ) {
+      return result;
+    }
+    const span = committedSlot - askedFor - 1;
+    const page = await storage.list({
+      runId: result.event.runId,
+      pagination: {
+        cursor: `${SORT_KEY_CURSOR_PREFIX}${slotToEventId(askedFor)}`,
+        limit: span,
+        sortOrder: 'asc',
+      },
+      resolveData,
+    });
+    // The cursor is exclusive and the page is in slot order, so a dense log
+    // yields exactly the skipped slots. A hole lets the page reach past the
+    // committed slot, which is this writer's own event and anything a later
+    // writer already published: neither is something it skipped over.
+    const committedEventId = result.event.eventId;
+    const events = page.data.filter(
+      (event) => event.eventId < committedEventId
+    );
+    return {
+      ...result,
+      events,
+      hasMore: events.length < committedSlot - askedFor - 1,
+    };
+  }
+
+  const create = (async (
+    runId: string,
+    data: CreateEventRequest,
+    params?: CreateEventParams
+  ): Promise<EventResult> => {
+    const result = await storage.create(runId, data, params);
+    if (params?.eventCount === undefined) {
+      return result;
+    }
+    return reportSkippedSlots(
+      result,
+      params.eventCount,
+      params.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION
+    );
+  }) as LocalEventsStorage['create'];
+
+  return { ...storage, create };
 }
