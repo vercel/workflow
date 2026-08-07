@@ -922,12 +922,6 @@ export function workflowEntrypoint(
                   // response. Undefined ⇒ no enforcement (older servers, turbo).
                   let maxEventsLimit: number | undefined;
                   let workflowStartedAt = -1;
-                  // True only when `eventLog` is known to be the COMPLETE
-                  // event log (the lazy hook fast path's validated
-                  // hasMore-false preload). Lets QuickJS trust it as-is —
-                  // its own heuristic only recognizes first-invocation
-                  // (run_created/run_started-only) preloads.
-                  let preloadedEventsComplete = false;
 
                   // Latency telemetry (TTFS) state — see runtime/step-latency.ts.
                   // Whether this invocation's FIRST event snapshot contained
@@ -1242,7 +1236,6 @@ export function workflowEntrypoint(
                       // An incremental load therefore heals the hole only by
                       // luck.
                       eventLog = { type: 'loadAll' };
-                      preloadedEventsComplete = false;
                       // The corrected log inserts the missing events BELOW the
                       // length already scanned for payload prewarming, shifting
                       // every later position. Only a full rescan sees them.
@@ -1844,11 +1837,6 @@ export function workflowEntrypoint(
                           events: result.events,
                           cursor: result.cursor,
                         };
-                        // The validated preload is the COMPLETE log (hasMore
-                        // false), so QuickJS may trust it as-is instead of
-                        // refetching — its own first-invocation heuristic
-                        // only recognizes run_created/run_started preloads.
-                        preloadedEventsComplete = true;
                         workflowStartedAt = +result.run.startedAt;
                         span?.setAttributes({
                           ...Attribute.WorkflowRunStatus(result.run.status),
@@ -2285,7 +2273,6 @@ export function workflowEntrypoint(
                         insertEventByEventId(eventLog.events, ensuredEvent);
                       } else {
                         eventLog = { type: 'loadAll' };
-                        preloadedEventsComplete = false;
                       }
                     } // end else (re-ensure needed)
                   }
@@ -2401,6 +2388,13 @@ export function workflowEntrypoint(
                         // turbo runReadyBarrier the way handleSuspension
                         // does.
                         await awaitRunReady();
+                        if (eventLog.type === 'loadAfter') {
+                          appendEventLog(
+                            eventLog,
+                            await loadWorkflowRunEvents(runId, eventLog.cursor)
+                          );
+                          eventLog = { ...eventLog, type: 'ready' };
+                        }
                         // Lazy import: the QuickJS entrypoint's import chain
                         // embeds the base64 WASM binary + extensions
                         // (~1.3 MB decoded at module scope). Loading it here
@@ -2414,10 +2408,10 @@ export function workflowEntrypoint(
                           workflowName,
                           workflowRun,
                           preloadedEvents:
-                            eventLog.type === 'loadAll'
-                              ? undefined
-                              : eventLog.events,
-                          preloadedEventsComplete,
+                            eventLog.type === 'ready'
+                              ? eventLog.events
+                              : undefined,
+                          preloadedEventsComplete: eventLog.type === 'ready',
                           runInput,
                           parentSpan: span,
                           maxEventsLimit,

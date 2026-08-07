@@ -2099,7 +2099,7 @@ describe('e2e', () => {
     }
   );
 
-  test.skipIf(!isLocalDeployment())(
+  test(
     'hookMinRetentionWorkflow - terminal Hook cannot resume and its token stays unavailable',
     { timeout: 60_000 },
     async () => {
