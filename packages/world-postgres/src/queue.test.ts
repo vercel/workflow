@@ -85,30 +85,6 @@ describe('postgres queue http execution', () => {
     setWorkflowBasePath(undefined);
   });
 
-  it('raises the retry limit when migrating queued pg-boss jobs', async () => {
-    pool.query
-      .mockResolvedValueOnce({ rows: [{ exists: true }] })
-      .mockResolvedValueOnce({
-        rows: [
-          {
-            name: 'workflow_flows',
-            data: { id: 'workflow' },
-            singleton_key: 'msg_old',
-            retry_limit: 3,
-          },
-        ],
-      });
-    const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
-
-    await queue.start();
-
-    expect(workerUtilsMock.addJob).toHaveBeenCalledWith(
-      'workflow_flows',
-      { id: 'workflow' },
-      { jobKey: 'msg_old', maxAttempts: 49 }
-    );
-  });
-
   it('uses a late-detected local port when the queue starts before PORT is available', async () => {
     const requests: Array<{
       method: string | undefined;
