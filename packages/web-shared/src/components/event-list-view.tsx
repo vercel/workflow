@@ -10,6 +10,7 @@ import type {
 } from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso';
+import { getEventStatusDotColor } from '../lib/event-status';
 import {
   type ExactIdSearchResult,
   type ExactWorkflowSearchIdKind,
@@ -49,8 +50,9 @@ const BUTTON_RESET_STYLE: React.CSSProperties = {
   border: 'none',
   background: 'transparent',
 };
-const DOT_PULSE_ANIMATION =
-  'workflow-dot-pulse 1.25s cubic-bezier(0, 0, 0.2, 1) infinite';
+
+const FOCUS_RING_STYLE =
+  'focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--ds-focus-color)]';
 
 // ──────────────────────────────────────────────────────────────────────────
 // Helpers
@@ -88,65 +90,16 @@ function getEffectiveEventTime(
   return getEffectiveEventDate(event).getTime();
 }
 
+/** Formats an event type as a sentence-case label (e.g. "Step completed"). */
 function formatEventType(eventType: Event['eventType']): string {
-  return eventType
-    .split('_')
-    .map((word: string) => word.charAt(0).toUpperCase() + word.slice(1))
-    .join(' ');
-}
-
-// ──────────────────────────────────────────────────────────────────────────
-// Event type → status color (small dot only)
-// ──────────────────────────────────────────────────────────────────────────
-
-/** Returns a CSS color using Geist design tokens for the status dot. */
-function getStatusDotColor(eventType: string): string {
-  // Failed → red
-  if (
-    eventType === 'step_failed' ||
-    eventType === 'run_failed' ||
-    eventType === 'workflow_failed'
-  ) {
-    return 'var(--ds-red-700)';
-  }
-  // Cancelled → amber
-  if (eventType === 'run_cancelled') {
-    return 'var(--ds-amber-700)';
-  }
-  // Retrying → amber
-  if (eventType === 'step_retrying') {
-    return 'var(--ds-amber-700)';
-  }
-  // Attribute changes → teal
-  if (eventType === 'attr_set') {
-    return 'var(--ds-teal-900)';
-  }
-  // Completed/succeeded → green
-  if (
-    eventType === 'step_completed' ||
-    eventType === 'run_completed' ||
-    eventType === 'workflow_completed' ||
-    eventType === 'hook_disposed' ||
-    eventType === 'wait_completed'
-  ) {
-    return 'var(--ds-green-700)';
-  }
-  // Started/running → blue
-  if (
-    eventType === 'step_started' ||
-    eventType === 'run_started' ||
-    eventType === 'workflow_started' ||
-    eventType === 'hook_received'
-  ) {
-    return 'var(--ds-blue-700)';
-  }
-  // Created/pending → gray
-  return 'var(--ds-gray-600)';
+  const label = eventType.replace(/_/g, ' ');
+  return label.charAt(0).toUpperCase() + label.slice(1);
 }
 
 /**
- * Build a map from correlationId (stepId) → display name using step_created
- * events, and parse the workflow name from the run.
+ * Build a map from correlationId → display name using creation events
+ * (step name, hook token, or "sleep" — mirroring the trace viewer's
+ * naming), and parse the workflow name from the run.
  */
 function buildNameMaps(
   events: Event[] | null,
@@ -157,16 +110,25 @@ function buildNameMaps(
 } {
   const correlationNameMap = new Map<string, string>();
 
-  // Map step correlationId (= stepId) → parsed step name from step_created events
   if (events) {
     for (const event of events) {
-      if (event.eventType === 'step_created' && event.correlationId) {
+      if (!event.correlationId) continue;
+      // Map step correlationId (= stepId) → parsed step name
+      if (event.eventType === 'step_created') {
         const stepName = event.eventData?.stepName ?? '';
         const parsed = parseStepName(String(stepName));
         correlationNameMap.set(
           event.correlationId,
           parsed?.shortName ?? stepName
         );
+      } else if (event.eventType === 'hook_created') {
+        // Hooks are named by their token, like in the trace viewer
+        correlationNameMap.set(
+          event.correlationId,
+          event.eventData?.token ?? event.correlationId
+        );
+      } else if (event.eventType === 'wait_created') {
+        correlationNameMap.set(event.correlationId, 'sleep');
       }
     }
   }
@@ -305,7 +267,6 @@ function TreeGutter({
   isLast,
   isRunLevel: isRun,
   statusDotColor,
-  pulse = false,
   hasSelection,
   showBranch,
   showLaneLine,
@@ -317,7 +278,6 @@ function TreeGutter({
   isLast: boolean;
   isRunLevel: boolean;
   statusDotColor?: string;
-  pulse?: boolean;
   /** Whether any group is currently active (selected or hovered) */
   hasSelection: boolean;
   /** Whether to show a horizontal branch line for this row (event belongs to active group) */
@@ -379,19 +339,6 @@ function TreeGutter({
                 zIndex: 0,
               }}
             />
-            {pulse && (
-              <div
-                style={{
-                  position: 'absolute',
-                  inset: 0,
-                  borderRadius: '50%',
-                  backgroundColor: statusDotColor,
-                  opacity: 0.75 * dotOpacity,
-                  animation: DOT_PULSE_ANIMATION,
-                  zIndex: 1,
-                }}
-              />
-            )}
             <div
               style={{
                 position: 'relative',
@@ -494,7 +441,7 @@ function CopyableCell({
         <button
           type="button"
           onClick={handleCopy}
-          className="flex-shrink-0 opacity-0 group-hover/copy:opacity-100 transition-opacity p-0.5 rounded hover:bg-[var(--ds-gray-alpha-200)]"
+          className={`flex-shrink-0 opacity-0 group-hover/copy:opacity-100 focus-visible:opacity-100 transition-opacity p-0.5 rounded hover:bg-[var(--ds-gray-alpha-200)] ${FOCUS_RING_STYLE}`}
           style={BUTTON_RESET_STYLE}
           aria-label={`Copy ${value}`}
         >
@@ -655,7 +602,7 @@ function PayloadBlock({
   return (
     <div className="relative group/payload">
       <div
-        className="overflow-x-auto p-2 text-[11px]"
+        className="overflow-x-auto p-2 text-label-12"
         style={{ color: 'var(--ds-gray-1000)' }}
       >
         <DataInspector data={cleaned} expandLevel={2} />
@@ -663,7 +610,7 @@ function PayloadBlock({
       <button
         type="button"
         onClick={handleCopy}
-        className="absolute bottom-2 right-2 opacity-0 group-hover/payload:opacity-100 transition-opacity flex items-center gap-1 px-2 py-1 rounded-md text-button-12 hover:bg-[var(--ds-gray-alpha-200)]"
+        className={`absolute bottom-2 right-2 opacity-0 group-hover/payload:opacity-100 focus-visible:opacity-100 transition-opacity flex items-center gap-1 px-2 py-1 rounded-md text-button-12 hover:bg-[var(--ds-gray-alpha-200)] ${FOCUS_RING_STYLE}`}
         style={{ ...BUTTON_RESET_STYLE, color: 'var(--ds-gray-700)' }}
         aria-label="Copy payload"
       >
@@ -734,7 +681,7 @@ function RowsSkeleton({
           </div>
           {/* Chevron placeholder */}
           <div className="w-5 flex-shrink-0 flex items-center justify-center">
-            <Skeleton className="w-5 h-5" style={{ borderRadius: 4 }} />
+            <Skeleton className="w-3.5 h-3.5" style={{ borderRadius: 4 }} />
           </div>
           {showSeparateEventOccurrenceTimestamps && (
             <div className="min-w-0 px-4" style={{ flex: '2 1 0%' }}>
@@ -882,7 +829,7 @@ export function EventRow({
     ? '__run__'
     : (event.correlationId ?? undefined);
 
-  const statusDotColor = getStatusDotColor(event.eventType);
+  const statusDotColor = getEventStatusDotColor(event.eventType);
   const createdAt = new Date(event.createdAt);
   const occurredAt = parseEventDate(event.occurredAt);
   const displayedCreatedAt = showSeparateEventOccurrenceTimestamps
@@ -902,7 +849,6 @@ export function EventRow({
   const hasActive = activeGroupKey !== undefined;
   const isRelated = rowGroupKey !== undefined && rowGroupKey === activeGroupKey;
   const isDimmed = hasActive && !isRelated && !suppressGroupDimming;
-  const isPulsing = hasActive && isRelated;
 
   // Gutter state derived from selectedGroupRange
   const showBranch = hasActive && isRelated && !isRun;
@@ -1027,11 +973,12 @@ export function EventRow({
       <div
         role="button"
         tabIndex={0}
+        aria-expanded={isExpanded}
         onClick={handleRowClick}
         onKeyDown={(e) => {
           if (e.key === 'Enter' || e.key === ' ') handleRowClick();
         }}
-        className="w-full text-left flex items-center gap-0 text-label-13 hover:bg-[var(--ds-gray-alpha-100)] transition-colors cursor-pointer"
+        className={`w-full text-left flex items-center gap-0 text-label-13 hover:bg-[var(--ds-gray-alpha-100)] transition-colors cursor-pointer ${FOCUS_RING_STYLE} focus-visible:-outline-offset-2`}
         style={{ minHeight: 40 }}
       >
         <TreeGutter
@@ -1039,7 +986,6 @@ export function EventRow({
           isLast={isLast && !isExpanded}
           isRunLevel={isRun}
           statusDotColor={statusDotColor}
-          pulse={isPulsing}
           hasSelection={hasActive}
           showBranch={showBranch}
           showLaneLine={showLaneLine}
@@ -1054,15 +1000,13 @@ export function EventRow({
         >
           {/* Expand chevron indicator */}
           <div
-            className="flex items-center justify-center w-5 h-5 flex-shrink-0 rounded"
-            style={{
-              border: '1px solid var(--ds-gray-400)',
-            }}
+            aria-hidden="true"
+            className="flex items-center justify-center w-5 h-5 flex-shrink-0"
           >
             <ChevronRight
-              className="h-3 w-3 transition-transform"
+              className="h-3.5 w-3.5 transition-transform motion-reduce:transition-none"
               style={{
-                color: 'var(--ds-gray-900)',
+                color: 'var(--ds-gray-700)',
                 transform: isExpanded ? 'rotate(90deg)' : 'rotate(0deg)',
               }}
             />
@@ -1070,7 +1014,7 @@ export function EventRow({
 
           {showSeparateEventOccurrenceTimestamps && (
             <div
-              className="tabular-nums min-w-0 px-4"
+              className="font-mono min-w-0 px-4"
               style={{ color: 'var(--ds-gray-900)', flex: '2 1 0%' }}
             >
               {occurredAt ? (
@@ -1085,7 +1029,7 @@ export function EventRow({
 
           {/* Created */}
           <div
-            className="tabular-nums min-w-0 px-4"
+            className="font-mono min-w-0 px-4"
             style={{ color: 'var(--ds-gray-900)', flex: '2 1 0%' }}
           >
             <TimestampTooltip date={displayedCreatedAt}>
@@ -1101,35 +1045,14 @@ export function EventRow({
             >
               <span
                 style={{
-                  position: 'relative',
                   display: 'inline-flex',
                   width: 6,
                   height: 6,
                   flexShrink: 0,
+                  borderRadius: '50%',
+                  backgroundColor: statusDotColor,
                 }}
-              >
-                {isPulsing && (
-                  <span
-                    style={{
-                      position: 'absolute',
-                      inset: 0,
-                      borderRadius: '50%',
-                      backgroundColor: statusDotColor,
-                      opacity: 0.75,
-                      animation: DOT_PULSE_ANIMATION,
-                    }}
-                  />
-                )}
-                <span
-                  style={{
-                    position: 'relative',
-                    width: 6,
-                    height: 6,
-                    borderRadius: '50%',
-                    backgroundColor: statusDotColor,
-                  }}
-                />
-              </span>
+              />
               {formatEventType(event.eventType)}
             </span>
           </div>
@@ -1179,7 +1102,7 @@ export function EventRow({
           <div
             className="flex-1 my-1.5 mr-3 ml-2 py-2 rounded-md border overflow-hidden"
             style={{
-              borderColor: 'var(--ds-gray-alpha-200)',
+              borderColor: 'var(--ds-gray-alpha-400)',
               opacity: contentOpacity,
               transition: 'opacity 150ms',
             }}
@@ -1195,7 +1118,7 @@ export function EventRow({
                   durationInfo.queued > 0 && (
                     <span>
                       Queued for{' '}
-                      <span className="font-mono tabular-nums">
+                      <span className="tabular-nums">
                         {formatDuration(durationInfo.queued)}
                       </span>
                     </span>
@@ -1203,7 +1126,7 @@ export function EventRow({
                 {durationInfo.ran !== undefined && (
                   <span>
                     Ran for{' '}
-                    <span className="font-mono tabular-nums">
+                    <span className="tabular-nums">
                       {formatDuration(durationInfo.ran)}
                     </span>
                   </span>
@@ -1507,10 +1430,13 @@ function EventListViewInner({
                 })()
               : parsed.id
           );
+          const prefersReducedMotion =
+            typeof window !== 'undefined' &&
+            window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
           virtuosoRef.current?.scrollToIndex({
             index: 0,
             align: 'start',
-            behavior: 'smooth',
+            behavior: prefersReducedMotion ? 'auto' : 'smooth',
           });
         } catch {
           if (
@@ -1581,7 +1507,7 @@ function EventListViewInner({
         {/* Skeleton header */}
         <div
           className="flex items-center gap-0 h-10 border-b flex-shrink-0"
-          style={{ borderColor: 'var(--ds-gray-alpha-200)' }}
+          style={{ borderColor: 'var(--ds-gray-alpha-400)' }}
         >
           <div className="flex-shrink-0" style={{ width: GUTTER_WIDTH }} />
           <div className="w-5 flex-shrink-0" />
@@ -1611,7 +1537,6 @@ function EventListViewInner({
       value={onDecrypt ? { onDecrypt, isDecrypting } : undefined}
     >
       <div className="h-full flex flex-col overflow-hidden">
-        <style>{`@keyframes workflow-dot-pulse{0%{transform:scale(1);opacity:.7}70%,100%{transform:scale(2.2);opacity:0}}`}</style>
         {/* Search bar + sort */}
         <div
           style={{
@@ -1621,19 +1546,7 @@ function EventListViewInner({
             gap: 6,
           }}
         >
-          <label
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              borderRadius: 6,
-              boxShadow: '0 0 0 1px var(--ds-gray-alpha-400)',
-              background: 'var(--ds-background-100)',
-              height: 40,
-              flex: 1,
-              minWidth: 0,
-            }}
-          >
+          <label className="flex h-10 min-w-0 flex-1 items-center justify-center rounded-md bg-background-100 shadow-[0_0_0_1px_var(--ds-gray-alpha-400)] transition-shadow focus-within:shadow-[0_0_0_2px_var(--ds-focus-color)]">
             <div
               style={{
                 width: 40,
@@ -1713,7 +1626,7 @@ function EventListViewInner({
         <div
           className="flex items-center gap-0 text-label-13 font-medium h-10 border-b flex-shrink-0"
           style={{
-            borderColor: 'var(--ds-gray-alpha-200)',
+            borderColor: 'var(--ds-gray-alpha-400)',
             color: 'var(--ds-gray-900)',
             backgroundColor: 'var(--ds-background-100)',
           }}
@@ -1729,7 +1642,7 @@ function EventListViewInner({
             Created
           </div>
           <div className="min-w-0 px-4" style={{ flex: '2 1 0%' }}>
-            Event Type
+            Event type
           </div>
           <div className="min-w-0 px-4" style={{ flex: '2 1 0%' }}>
             Name
@@ -1818,7 +1731,7 @@ function EventListViewInner({
         <div
           className="relative flex-shrink-0 flex items-center h-10 border-t px-4 text-label-12"
           style={{
-            borderColor: 'var(--ds-gray-alpha-200)',
+            borderColor: 'var(--ds-gray-alpha-400)',
             color: 'var(--ds-gray-900)',
             backgroundColor: 'var(--ds-background-100)',
           }}
