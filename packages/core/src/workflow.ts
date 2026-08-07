@@ -16,8 +16,9 @@ import { SPEC_VERSION_SUPPORTS_COMPRESSION } from '@workflow/world';
 import * as nanoid from 'nanoid';
 import { monotonicFactory } from 'ulid';
 import {
+  correlationIdSchemeOverride,
   createCorrelationIdGenerator,
-  isPerKindCorrelationIdsEnabled,
+  detectPerKindCorrelationIds,
 } from './correlation-id.js';
 import { EventConsumerResult, EventsConsumer } from './events-consumer.js';
 import type { QueueItem } from './global.js';
@@ -376,7 +377,12 @@ async function createWorkflowSession({
     // Correlation IDs must be replay-stable. `startedAt` differs between a
     // turbo delivery and a later server-backed replay, so use fixedTimestamp.
     positional: () => ulid(fixedTimestamp),
-    perKind: isPerKindCorrelationIdsEnabled(),
+    perKind:
+      correlationIdSchemeOverride() ??
+      detectPerKindCorrelationIds(
+        seed,
+        events.map((event) => event.correlationId)
+      ),
   });
   const generateNanoid = nanoid.customRandom(nanoid.urlAlphabet, 21, (size) =>
     new Uint8Array(size).map(() => 256 * vmGlobalThis.Math.random())

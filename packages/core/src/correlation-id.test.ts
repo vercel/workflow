@@ -3,8 +3,9 @@ import { describe, expect, it } from 'vitest';
 import {
   CORRELATION_ID_LENGTH,
   type CorrelationIdKind,
+  correlationIdSchemeOverride,
   createCorrelationIdGenerator,
-  isPerKindCorrelationIdsEnabled,
+  detectPerKindCorrelationIds,
 } from './correlation-id.js';
 
 const SEED = 'wrun_abc:myWorkflow:dpl_123';
@@ -133,16 +134,16 @@ describe('createCorrelationIdGenerator', () => {
   });
 });
 
-describe('isPerKindCorrelationIdsEnabled', () => {
-  it('reads WORKFLOW_PER_KIND_CORRELATION_IDS, defaulting to disabled', () => {
+describe('correlationIdSchemeOverride', () => {
+  it('reads WORKFLOW_PER_KIND_CORRELATION_IDS, defaulting to undecided', () => {
     const original = process.env.WORKFLOW_PER_KIND_CORRELATION_IDS;
     try {
       delete process.env.WORKFLOW_PER_KIND_CORRELATION_IDS;
-      expect(isPerKindCorrelationIdsEnabled()).toBe(false);
+      expect(correlationIdSchemeOverride()).toBeUndefined();
       process.env.WORKFLOW_PER_KIND_CORRELATION_IDS = '1';
-      expect(isPerKindCorrelationIdsEnabled()).toBe(true);
+      expect(correlationIdSchemeOverride()).toBe(true);
       process.env.WORKFLOW_PER_KIND_CORRELATION_IDS = '0';
-      expect(isPerKindCorrelationIdsEnabled()).toBe(false);
+      expect(correlationIdSchemeOverride()).toBe(false);
     } finally {
       if (original === undefined) {
         delete process.env.WORKFLOW_PER_KIND_CORRELATION_IDS;
@@ -150,5 +151,41 @@ describe('isPerKindCorrelationIdsEnabled', () => {
         process.env.WORKFLOW_PER_KIND_CORRELATION_IDS = original;
       }
     }
+  });
+});
+
+describe('detectPerKindCorrelationIds', () => {
+  it('takes the current default for a log that minted nothing yet', () => {
+    expect(detectPerKindCorrelationIds(SEED, [])).toBe(true);
+    expect(detectPerKindCorrelationIds(SEED, [undefined, undefined])).toBe(
+      true
+    );
+  });
+
+  it('recognises ids this seed minted per-kind, whichever kind drew first', () => {
+    for (const kind of KINDS) {
+      const generate = makeGenerator({ perKind: true });
+      // Ids past a kind's first draw are increments of it, so the log has to be
+      // matched on the first one; drawing twice checks a later id does not have
+      // to match for the run to be recognised.
+      const ids = [`x_${generate(kind)}`, `x_${generate(kind)}`];
+      expect(detectPerKindCorrelationIds(SEED, ids)).toBe(true);
+      expect(detectPerKindCorrelationIds(SEED, ids.slice(1))).toBe(false);
+    }
+  });
+
+  it('does not recognise a shared sequence, or another run per-kind ids', () => {
+    const positional = makeGenerator({ perKind: false });
+    expect(
+      detectPerKindCorrelationIds(SEED, [
+        `step_${positional('step')}`,
+        `wait_${positional('wait')}`,
+      ])
+    ).toBe(false);
+
+    const otherRun = makeGenerator({ seed: 'wrun_other:w:dpl_1' });
+    expect(
+      detectPerKindCorrelationIds(SEED, [`step_${otherRun('step')}`])
+    ).toBe(false);
   });
 });

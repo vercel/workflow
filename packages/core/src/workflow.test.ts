@@ -13,14 +13,11 @@ import {
   dehydrateWorkflowArguments,
   hydrateWorkflowReturnValue,
 } from './serialization.js';
-import { pinSharedCorrelationIds } from './test-support/correlation-id-scheme.js';
 import { createContext } from './vm/index.js';
 import { replayWorkflow, resumeWorkflow, runWorkflow } from './workflow.js';
 
 // No encryption key = encryption disabled
 const noEncryptionKey = undefined;
-
-pinSharedCorrelationIds();
 
 describe('runWorkflow', () => {
   const getWorkflowTransformCode = (workflowName?: string) =>
@@ -1032,6 +1029,78 @@ describe('runWorkflow', () => {
     expect(date1).toEqual(date2);
   });
 
+  describe('correlation-id scheme', () => {
+    it('keeps replaying a run whose ids predate per-kind sequences', async () => {
+      const ops: Promise<any>[] = [];
+      const workflowRunId = 'test-run-123';
+      const workflowRun: WorkflowRun = {
+        runId: workflowRunId,
+        workflowName: 'workflow',
+        status: 'running',
+        input: await dehydrateWorkflowArguments(
+          [],
+          'wrun_123',
+          noEncryptionKey,
+          ops
+        ),
+        createdAt: new Date('2024-01-01T00:00:00.000Z'),
+        updatedAt: new Date('2024-01-01T00:00:00.000Z'),
+        startedAt: new Date('2024-01-01T00:00:00.000Z'),
+        deploymentId: 'test-deployment',
+      };
+
+      // Minted by the run-wide shared sequence, which is what this run is on:
+      // a replay that drew from the per-kind `step` sequence instead would mint
+      // an id this log does not carry, consume nothing, and suspend.
+      const legacyStepId = 'step_01HK153X00VFKAJV9XFN9JXXRS';
+      const events: Event[] = [
+        {
+          eventId: 'event-0',
+          runId: workflowRunId,
+          eventType: 'step_started',
+          correlationId: legacyStepId,
+          eventData: { stepName: 'add' },
+          createdAt: new Date('2024-01-01T00:00:01.000Z'),
+        },
+        {
+          eventId: 'event-1',
+          runId: workflowRunId,
+          eventType: 'step_completed',
+          correlationId: legacyStepId,
+          eventData: {
+            stepName: 'add',
+            result: await dehydrateStepReturnValue(
+              3,
+              'wrun_123',
+              noEncryptionKey,
+              ops
+            ),
+          },
+          createdAt: new Date('2024-01-01T00:00:02.000Z'),
+        },
+      ];
+
+      const result = await runWorkflow(
+        `const add = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("add");
+          async function workflow() {
+            return await add(1, 2);
+          }${getWorkflowTransformCode('workflow')}`,
+        workflowRun,
+        events,
+        noEncryptionKey
+      );
+
+      expect(
+        await hydrateWorkflowReturnValue(
+          result as any,
+          'wrun_123',
+          noEncryptionKey,
+          ops
+        )
+      ).toEqual(3);
+    });
+  });
+
   describe('concurrency', () => {
     it('should resolve `Promise.all()` steps that have `step_completed` events', async () => {
       const ops: Promise<any>[] = [];
@@ -1703,11 +1772,13 @@ describe('runWorkflow', () => {
       assert(error);
       expect(error.name).toEqual('WorkflowSuspension');
       expect(error.message).toEqual('1 step has not been run yet');
+      // The log is empty, so the run mints ids under the current default: the
+      // `step` sequence's first draw for this run's seed.
       expect((error as WorkflowSuspension).steps).toEqual([
         {
           type: 'step',
           stepName: 'add',
-          correlationId: 'step_01HK153X00VFKAJV9XFN9JXXRS',
+          correlationId: 'step_01HK153X00943RQ1WYMJ0P1D6G',
           args: [1, 2],
         },
       ]);
@@ -1805,17 +1876,19 @@ describe('runWorkflow', () => {
       assert(error);
       expect(error.name).toEqual('WorkflowSuspension');
       expect(error.message).toEqual('2 steps have not been run yet');
+      // Consecutive draws from the `step` sequence, which is this run's only
+      // sequence in play: the empty log puts it on the current default.
       expect((error as WorkflowSuspension).steps).toEqual([
         {
           type: 'step',
           stepName: 'add',
-          correlationId: 'step_01HK153X00VFKAJV9XFN9JXXRS',
+          correlationId: 'step_01HK153X00943RQ1WYMJ0P1D6G',
           args: [1, 2],
         },
         {
           type: 'step',
           stepName: 'add',
-          correlationId: 'step_01HK153X00VFKAJV9XFN9JXXRT',
+          correlationId: 'step_01HK153X00943RQ1WYMJ0P1D6H',
           args: [3, 4],
         },
       ]);

@@ -71,6 +71,17 @@ export type CorrelationIdKind =
 /** Mints the ULID body of a correlation id for one entity family. */
 export type CorrelationIdGenerator = (kind: CorrelationIdKind) => string;
 
+/** Every family, so a run's scheme can be recognised from any one of them. */
+const CORRELATION_ID_KINDS: readonly CorrelationIdKind[] = [
+  'step',
+  'wait',
+  'hook',
+  'attr',
+  'abort',
+  'abortHook',
+  'stream',
+];
+
 const CROCKFORD = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
 
 /** Number of Crockford characters in a ULID's random component. */
@@ -211,24 +222,56 @@ export function createCorrelationIdGenerator(options: {
 export const CORRELATION_ID_LENGTH = TIME_CHARS + BODY_CHARS;
 
 /**
- * Whether each entity family draws correlation ids from its own sequence rather
- * than from one sequence shared by the whole run. Off unless opted in, so an SDK
- * upgrade alone never moves a run between schemes.
+ * Whether a run's own event log was minted by the per-kind scheme.
  *
- * The invariant either way: a run must replay under the scheme that minted its
- * ids. A replay under the other scheme mints ids its own earlier events do not
- * carry, so it can consume none of them and fails the run. Two things can break
- * it, and both are about turning the flag on rather than about upgrading:
+ * The invariant either scheme has to keep: a run replays under the scheme that
+ * minted its ids. A replay under the other scheme mints ids its own earlier
+ * events do not carry, consumes none of them, and fails the run. Rather than
+ * pin that with a version or a deploy-wide flag, a run says which scheme it is
+ * on: the first id a kind draws is exactly `deriveBody(seed, kind)`, a value no
+ * shared-sequence ULID has any reason to land on, so one exact match anywhere in
+ * the log identifies the scheme. Runs started before per-kind ids became the
+ * default keep replaying on the shared sequence for as long as they live, with
+ * no window during which a fleet is split.
  *
- * - Enabling it while runs are in flight. On Vercel, skew protection keeps a run
- *   on the deployment that started it, so a run only ever sees the value baked
- *   into its own deployment. Elsewhere (world-postgres, world-local, a
- *   self-hosted process) nothing pins a run to the code that started it, so
- *   enable it during a quiet window.
- * - A rolling deploy that leaves both values live, which puts two schemes on one
- *   run concurrently — the side-by-side append this whole mechanism exists to
- *   avoid. Roll the value out to the whole fleet at once.
+ * A log with no correlation ids yet has minted nothing to stay compatible with,
+ * so it takes the current default.
  */
-export function isPerKindCorrelationIdsEnabled(): boolean {
-  return process.env.WORKFLOW_PER_KIND_CORRELATION_IDS === '1';
+export function detectPerKindCorrelationIds(
+  seed: string,
+  correlationIds: Iterable<string | undefined>
+): boolean {
+  const firstDraws = new Set(
+    CORRELATION_ID_KINDS.map((kind) => deriveBody(seed, kind))
+  );
+  let sawCorrelationId = false;
+  for (const correlationId of correlationIds) {
+    if (!correlationId) {
+      continue;
+    }
+    sawCorrelationId = true;
+    if (firstDraws.has(correlationId.slice(-BODY_CHARS))) {
+      return true;
+    }
+  }
+  return !sawCorrelationId;
+}
+
+/**
+ * A deployment-wide override of the scheme, for tests and for an operator who
+ * has to hold a fleet on one scheme. `1` forces per-kind, `0` forces the shared
+ * sequence, anything else leaves the choice to the run's own log.
+ *
+ * Forcing `0` on a fleet whose runs already minted per-kind ids breaks those
+ * runs, which is why the unset default detects rather than assumes.
+ */
+export function correlationIdSchemeOverride(): boolean | undefined {
+  switch (process.env.WORKFLOW_PER_KIND_CORRELATION_IDS) {
+    case '1':
+      return true;
+    case '0':
+      return false;
+    default:
+      return undefined;
+  }
 }

@@ -27,10 +27,7 @@ import type { Event } from '@workflow/world';
 import * as nanoid from 'nanoid';
 import { monotonicFactory } from 'ulid';
 import { describe, expect, it, vi } from 'vitest';
-import {
-  createCorrelationIdGenerator,
-  isPerKindCorrelationIdsEnabled,
-} from './correlation-id.js';
+import { createCorrelationIdGenerator } from './correlation-id.js';
 import { EventsConsumer } from './events-consumer.js';
 import {
   scheduleWhenIdle,
@@ -85,7 +82,7 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
       seed: 'test',
       fixedTimestamp: workflowStartedAt,
       positional: () => ulid(workflowStartedAt),
-      perKind: isPerKindCorrelationIdsEnabled(),
+      perKind: true,
     }),
     generateNanoid: nanoid.customRandom(nanoid.urlAlphabet, 21, (size) =>
       new Uint8Array(size).map(() => 256 * context.globalThis.Math.random())
