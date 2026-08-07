@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { AnalyticsRunSchema } from './analytics.js';
+import { AnalyticsEventSchema, AnalyticsRunSchema } from './analytics.js';
 
 const base = {
   runId: 'wrun_01KX2M5N3RBNC12RYWYYH4WWQJ',
@@ -8,6 +8,27 @@ const base = {
   workflowName: 'workflow//./src/w//myWorkflow',
   updatedAt: '2026-07-13 17:09:11.593',
 };
+
+describe('AnalyticsEventSchema', () => {
+  it('preserves vercelId and computeInstanceId as distinct provenance fields', () => {
+    const event = AnalyticsEventSchema.parse({
+      runId: 'wrun_01KX2M5N3RBNC12RYWYYH4WWQJ',
+      eventId: 'evnt_01KX2M5N3RBNC12RYWYYH4WWQJ',
+      eventType: 'run_started',
+      workflowName: 'test-workflow',
+      deploymentId: 'dpl_1',
+      runCreatedAt: '2026-07-13 17:09:11.000',
+      createdAt: '2026-07-13 17:09:11.593',
+      vercelId: 'request-grain-id',
+      requestId: 'sibling-request-column',
+      computeInstanceId: 'compute-instance-id',
+    });
+
+    expect(event.vercelId).toBe('request-grain-id');
+    expect(event.requestId).toBe('sibling-request-column');
+    expect(event.computeInstanceId).toBe('compute-instance-id');
+  });
+});
 
 describe('analytics date coercion', () => {
   it('parses timezone-naive datetime strings as UTC regardless of process TZ', () => {
