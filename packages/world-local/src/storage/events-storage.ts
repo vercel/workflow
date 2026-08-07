@@ -3056,6 +3056,16 @@ export function createEventsStorage(
       );
     }
     const result = await storage.create(runId, data, params);
+    // `sinceCursor` and the skipped-slot report share `events`/`cursor`/
+    // `hasMore`, and the runtime sends both on the same write. The delta wins:
+    // the skipped slots all sit above the cursor, so it is a strict superset,
+    // and it is the only one of the two that advances `cursor`. Narrowing
+    // `events` to the report while leaving the delta's cursor would tell the
+    // caller it has read a range it was only handed part of, and the rest
+    // would never be fetched again.
+    if (typeof params.sinceCursor === 'string') {
+      return result;
+    }
     return reportSkippedSlots(result, params.eventCount, resolveData);
   }) as LocalEventsStorage['create'];
 

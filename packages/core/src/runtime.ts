@@ -2617,7 +2617,19 @@ export function workflowEntrypoint(
                           // Bump-and-report: fold what this write skipped over
                           // into the snapshot the remaining waits are guarded
                           // against, so each asks for a slot above it.
-                          if (created.events?.length) {
+                          //
+                          // Only a complete answer. `hasMore` means the World
+                          // returned part of what it was asked for, and the
+                          // missing-completion check below is what decides
+                          // whether this handler still has to fetch. Folding in
+                          // a partial page would make the log look like it
+                          // holds the completion when the rest of the page is
+                          // still unread, so the fetch would be skipped on a
+                          // snapshot that is short of the World's.
+                          if (
+                            created.events?.length &&
+                            created.hasMore !== true
+                          ) {
                             mergeReportedEvents(events, created.events);
                           }
                         } catch (err) {

@@ -2078,7 +2078,16 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
       let allEvents: Event[] | undefined;
       let cursor: string | null | undefined;
       let hasMore: boolean | undefined;
-      if (params?.eventCount !== undefined) {
+      // The skipped-slot report and the inline delta below share
+      // `events`/`cursor`/`hasMore`, and the runtime sends both on the same
+      // write. The delta wins: the skipped slots all sit above the cursor, so
+      // it is a strict superset, and it is the only one of the two that
+      // advances `cursor`. Running the report anyway would cost a query whose
+      // result the delta overwrites.
+      if (
+        params?.eventCount !== undefined &&
+        typeof params.sinceCursor !== 'string'
+      ) {
         const report = await reportSkippedSlots(
           drizzle,
           effectiveRunId,

@@ -9,6 +9,7 @@ import {
   SPEC_VERSION_CURRENT,
 } from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { SORT_KEY_CURSOR_PREFIX } from '../fs.js';
 import { createStorage } from '../storage.js';
 import { monotonicUlid } from './helpers.js';
 
@@ -257,7 +258,7 @@ describe('skipped-slot report', () => {
         eventType: 'wait_created',
         correlationId: 'wait_a',
         specVersion: SPEC_VERSION_CURRENT,
-        eventData: { waitUntil: new Date(0).toISOString() },
+        eventData: { resumeAt: new Date(0).toISOString() },
       } as any,
       { eventCount: stale }
     );
@@ -277,7 +278,7 @@ describe('skipped-slot report', () => {
         eventType: 'wait_created',
         correlationId: 'wait_a',
         specVersion: SPEC_VERSION_CURRENT,
-        eventData: { waitUntil: new Date(0).toISOString() },
+        eventData: { resumeAt: new Date(0).toISOString() },
       } as any,
       { eventCount: FIRST_EVENT_SLOT + 1 }
     );
@@ -293,10 +294,48 @@ describe('skipped-slot report', () => {
       eventType: 'wait_created',
       correlationId: 'wait_a',
       specVersion: SPEC_VERSION_CURRENT,
-      eventData: { waitUntil: new Date(0).toISOString() },
+      eventData: { resumeAt: new Date(0).toISOString() },
     } as any);
 
     expect(result.events).toBeUndefined();
+  });
+
+  it('lets the sinceCursor delta answer when the writer asks for both', async () => {
+    // `sinceCursor` and `eventCount` both report through
+    // `events`/`cursor`/`hasMore`, and the runtime sends both on the same
+    // write. The delta is a strict superset of the skipped span (the skipped
+    // slots are all above the cursor) and, unlike the report, it advances
+    // `cursor`. Returning the narrower set alongside the delta's cursor would
+    // tell the caller it has read up to the delta end while handing it only
+    // part of that range, and the events in between would never be fetched
+    // again.
+    const runId = await startRun();
+    const stale = FIRST_EVENT_SLOT + 1;
+    const filled = await fill(runId, 3);
+
+    const result = await storage.events.create(
+      runId,
+      {
+        eventType: 'wait_created',
+        correlationId: 'wait_a',
+        specVersion: SPEC_VERSION_CURRENT,
+        eventData: { resumeAt: new Date(0).toISOString() },
+      } as any,
+      {
+        eventCount: stale,
+        sinceCursor: `${SORT_KEY_CURSOR_PREFIX}${slotId(stale)}`,
+      }
+    );
+
+    const committed = result.event.eventId;
+    expect(eventIdToSlot(committed)).toBe(stale + filled.length + 1);
+    // Everything after the cursor, this write's own event included.
+    expect(result.events?.map((event) => event.eventId)).toEqual([
+      ...filled.map(slotId),
+      committed,
+    ]);
+    expect(result.cursor).toBe(`${SORT_KEY_CURSOR_PREFIX}${committed}`);
+    expect(result.hasMore).toBe(false);
   });
 
   it('gives every racing writer the events it was decided without', async () => {
