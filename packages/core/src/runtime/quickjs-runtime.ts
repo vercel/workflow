@@ -40,6 +40,7 @@ import {
   type ExtensionDescriptor,
   JSException,
   QuickJS,
+  type Snapshot,
   type WasiOptions,
 } from 'quickjs-wasi';
 import seedrandom from 'seedrandom';
@@ -48,9 +49,18 @@ import { runtimeLogger } from '../logger.js';
 import { decompress } from '../serialization/compression.js';
 import type { DecryptionKey } from '../serialization/encryption.js';
 import { decrypt } from '../serialization/encryption.js';
-import { getReplayTimeoutMs } from './constants.js';
+import {
+  getReplayTimeoutMs,
+  isQuickJSBaselineSnapshotEnabled,
+} from './constants.js';
 import { quickjsExtensions, quickjsWasm } from './quickjs-assets.generated.js';
-import { createQuickJSSerde, type QuickJSSerde } from './quickjs-serde.js';
+import {
+  adoptSerdeRoot,
+  captureSerdeRoot,
+  createQuickJSSerde,
+  exportSerdeRoot,
+  type QuickJSSerde,
+} from './quickjs-serde.js';
 import { runIdCreatedAt } from './run-id-time.js';
 
 // ---- Host -> VM payload preparation ----
@@ -1053,36 +1063,249 @@ function getCompiledAssets() {
   return compiledAssetsPromise;
 }
 
-async function initWorkflowVM(
-  getNowMs: () => number,
-  interruptBudget: InterruptBudget
-): Promise<QuickJS> {
-  // Deterministic replay clock: Date.now() / new Date() inside the VM
-  // read the host-controlled clock instead of wall time. Replay
-  // re-executes the workflow from the top on every invocation, so the
-  // clock must be derived from the event log (not real time) for the
-  // workflow to observe stable timestamps across invocations.
-  const wasi: WasiOptions = (memory) => ({
+/**
+ * WASI clock override reading the given accessor — shared between fresh
+ * boots (initWorkflowVM) and baseline-snapshot restores, so the two
+ * paths cannot drift on rounding/encoding.
+ *
+ * Deterministic replay clock: Date.now() / new Date() inside the VM
+ * read the host-controlled clock instead of wall time. Replay
+ * re-executes the workflow from the top on every invocation, so the
+ * clock must be derived from the event log (not real time) for the
+ * workflow to observe stable timestamps across invocations.
+ */
+function makeDeterministicClockWasi(getNowMs: () => number): WasiOptions {
+  return (memory) => ({
     clock_time_get(_clockId: number, _precision: bigint, resultPtr: number) {
       const timeNs = BigInt(Math.round(getNowMs())) * 1_000_000n;
       new DataView(memory.buffer).setBigUint64(resultPtr, timeNs, true);
       return 0;
     },
   });
+}
 
+async function initWorkflowVM(
+  getNowMs: () => number,
+  interruptBudget: InterruptBudget
+): Promise<QuickJS> {
   const assets = await getCompiledAssets();
   const vm = await QuickJS.create({
     wasm: assets.wasm as never,
     memoryLimit: 256 * 1024 * 1024,
     interruptHandler: createInterruptHandler(interruptBudget),
     extensions: assets.extensions,
-    wasi,
+    wasi: makeDeterministicClockWasi(getNowMs),
   });
 
   // Bootstrap workflow primitives
   vm.evalCode(VM_BOOTSTRAP, 'bootstrap.js').dispose();
 
   return vm;
+}
+
+// ---- Baseline snapshot (startup optimization) --------------------------
+//
+// Evaluating the workflow bundle dominates VM startup (~74ms of a ~77ms
+// boot for a 1.3MB bundle), and full event replay pays it on EVERY
+// invocation. The bundle is identical across all runs of a deployment, so
+// the engine hydrates one VM per function instance (bootstrap + bundle
+// eval), snapshots its memory, and starts every invocation by restoring
+// the snapshot (~3ms) instead of re-evaluating.
+//
+// Determinism: replay requires module-scope user code to observe the
+// run-seeded PRNG and the run's deterministic clock. A restored heap
+// carries whatever module scope computed at HYDRATE time, so the
+// optimization is only sound when module scope consumed neither
+// randomness nor time. Both are detected during hydrate — the placeholder
+// host fns count draws, the hydrate clock counts reads — and a bundle
+// that used either is marked ineligible: every invocation falls back to
+// fresh evaluation, preserving exact node:vm-parity semantics. When the
+// gate passes, restore is byte-equivalent to fresh eval (verified by the
+// parity tests): the per-run host fns are re-registered by name on the
+// restored VM (quickjs-wasi restore semantics) before the workflow body
+// runs, so the seeded draw sequence — and every correlationId — is
+// identical.
+//
+// The cache is per function instance and keyed on the bundle string
+// (reference-stable: the generated flow route holds it in a module-level
+// const). Capped at a few entries so tests with many distinct bundles
+// don't accumulate 16MB snapshots.
+
+/**
+ * Eval filename used when hydrating the baseline VM. The baseline is
+ * shared by EVERY workflow in the bundle, so the filename baked into
+ * its compiled code (and therefore into snapshot-path stack frames)
+ * must be workflow-independent — hydrating under the first caller's
+ * workflowId would break `remapErrorStack`'s filename matching for
+ * every other workflow in the bundle. Remap call sites match this
+ * constant IN ADDITION to the run's module specifier (which covers
+ * fresh-path frames).
+ */
+export const BASELINE_BUNDLE_FILENAME = 'workflow-bundle.js';
+
+type BaselineEntry =
+  | {
+      state: 'ready';
+      snapshot: Snapshot;
+      /**
+       * Raw box pointer of the serde capture root created BEFORE the
+       * bundle evaluated (see captureSerdeRoot). The box lives in the
+       * snapshot's memory image at this offset; every restored VM
+       * re-adopts it so serde initialization executes no guest code
+       * after user code has run — capture-before-user-code semantics,
+       * identical to the fresh path.
+       */
+      serdeRootPtr: number;
+    }
+  | { state: 'ineligible'; reason: string };
+
+const baselineCache = new Map<string, Promise<BaselineEntry>>();
+const BASELINE_CACHE_MAX_ENTRIES = 4;
+
+/** Test-only: reset the baseline cache between test cases. */
+export function __clearBaselineSnapshotCacheForTests(): void {
+  baselineCache.clear();
+}
+
+/** Test-only: observe how a bundle was classified. */
+export async function __peekBaselineEntryForTests(
+  workflowCode: string
+): Promise<BaselineEntry | undefined> {
+  return baselineCache.get(workflowCode);
+}
+
+/**
+ * Hydrate a VM with the workflow bundle and snapshot it, gating on
+ * module-scope nondeterminism (see the section comment above). Returns an
+ * `ineligible` entry instead of throwing on eval failure — the fresh path
+ * re-evaluates and produces the real, source-mapped error.
+ */
+async function prepareBaselineSnapshot(
+  workflowCode: string,
+  workflowId: string
+): Promise<BaselineEntry> {
+  const hydrateStart = Date.now();
+  let clockReads = 0;
+  const budget: InterruptBudget = { start: Date.now() };
+  const assets = await getCompiledAssets();
+  const vm = await QuickJS.create({
+    wasm: assets.wasm as never,
+    memoryLimit: 256 * 1024 * 1024,
+    interruptHandler: createInterruptHandler(budget),
+    extensions: assets.extensions,
+    wasi: ((memory) => ({
+      clock_time_get(_clockId: number, _precision: bigint, resultPtr: number) {
+        clockReads++;
+        const timeNs = BigInt(hydrateStart) * 1_000_000n;
+        new DataView(memory.buffer).setBigUint64(resultPtr, timeNs, true);
+        return 0;
+      },
+    })) satisfies WasiOptions,
+  });
+  try {
+    vm.evalCode(VM_BOOTSTRAP, 'bootstrap.js').dispose();
+
+    // Placeholder host fns under the SAME NAMES the per-run phase uses.
+    // They exist so module-scope code can execute at hydrate time, and to
+    // detect that it did: any draw means the heap would bake
+    // hydrate-seeded values that per-run fresh eval would compute
+    // differently. runWorkflowInVM re-registers all three names with the
+    // run-seeded closures after restore.
+    let draws = 0;
+    {
+      using randomFn = vm.newFunction('random', () => {
+        draws++;
+        return vm.newNumber(Math.random());
+      });
+      using math = vm.global.getProp('Math');
+      math.setProp('random', randomFn);
+      using nanoidFn = vm.newFunction('__generateNanoid', () => {
+        draws++;
+        return vm.newString('baseline-placeholder');
+      });
+      vm.setProp(vm.global, '__generateNanoid', nanoidFn);
+      using ulidFn = vm.newFunction('__generateUlid', () => {
+        draws++;
+        return vm.newString('00000000000000000000000000');
+      });
+      vm.setProp(vm.global, '__generateUlid', ulidFn);
+    }
+
+    // Serde capture root — created BEFORE the bundle evaluates, exactly
+    // like the fresh path's capture. Its box pointer rides the
+    // BaselineEntry and each restored VM re-adopts it, so serde
+    // initialization never executes guest code after user code has run.
+    // This is what makes module-scope intrinsic patching (polyfills,
+    // stateful wrappers around Object.getOwnPropertyDescriptor, …)
+    // HARMLESS on the snapshot path rather than merely detectable: the
+    // serde uses the pristine pre-eval captures on both paths, and no
+    // post-eval probe exists whose side effects could bake into the
+    // snapshot. The handle is deliberately NOT disposed before the
+    // snapshot — the box must stay live in the memory image (the
+    // baseline VM's dispose below tears down the whole instance without
+    // freeing individual boxes).
+    const serdeRoot = captureSerdeRoot(vm);
+
+    clockReads = 0; // only count reads made by the bundle itself
+    try {
+      // Workflow-independent filename — see BASELINE_BUNDLE_FILENAME.
+      vm.evalCode(workflowCode, BASELINE_BUNDLE_FILENAME).dispose();
+    } catch {
+      // Let the fresh path re-evaluate and surface the real error with
+      // proper filename / source-map handling.
+      return {
+        state: 'ineligible',
+        reason: 'module scope threw during hydrate',
+      };
+    }
+
+    if (draws > 0 || clockReads > 0) {
+      runtimeLogger.info(
+        'QuickJS baseline snapshot disabled for this bundle: module scope consumed nondeterministic inputs; every invocation will evaluate the bundle fresh',
+        { workflowId, draws, clockReads }
+      );
+      return {
+        state: 'ineligible',
+        reason: `module scope consumed ${draws} PRNG draw(s) and ${clockReads} clock read(s)`,
+      };
+    }
+
+    const snapshot = vm.snapshot();
+    runtimeLogger.debug('QuickJS baseline snapshot prepared', {
+      workflowId,
+      hydrateMs: Date.now() - hydrateStart,
+    });
+    return {
+      state: 'ready',
+      snapshot,
+      serdeRootPtr: exportSerdeRoot(vm, serdeRoot),
+    };
+  } finally {
+    vm.dispose();
+  }
+}
+
+/**
+ * Cached baseline entry for a bundle, preparing it on first access.
+ * Concurrent first invocations share one hydrate via the cached promise;
+ * a hydrate that REJECTS (infrastructure failure, not bundle eval — that
+ * returns `ineligible`) is evicted so a later invocation can retry.
+ */
+function getBaselineEntry(
+  workflowCode: string,
+  workflowId: string
+): Promise<BaselineEntry> {
+  let entry = baselineCache.get(workflowCode);
+  if (!entry) {
+    if (baselineCache.size >= BASELINE_CACHE_MAX_ENTRIES) {
+      const oldest = baselineCache.keys().next().value;
+      if (oldest !== undefined) baselineCache.delete(oldest);
+    }
+    entry = prepareBaselineSnapshot(workflowCode, workflowId);
+    baselineCache.set(workflowCode, entry);
+    entry.catch(() => baselineCache.delete(workflowCode));
+  }
+  return entry;
 }
 
 /**
@@ -1169,13 +1392,63 @@ export async function startQuickJSWorkflow(
   };
 
   // ---- Phase 1: static initialization ----
+  //
+  // Baseline-snapshot fast path (default ON; see the section comment at
+  // prepareBaselineSnapshot): restore a bundle-hydrated VM instead of
+  // booting fresh and re-evaluating the bundle. `ineligible` bundles
+  // (module-scope nondeterminism, eval failure) take the fresh path with
+  // identical semantics.
   const interruptBudget: InterruptBudget = { start: Date.now() };
-  const vm = await initWorkflowVM(() => vmNowMs, interruptBudget);
+  let baselineSnapshot: Snapshot | undefined;
+  let baselineSerdeRootPtr: number | undefined;
+  if (isQuickJSBaselineSnapshotEnabled()) {
+    try {
+      const entry = await getBaselineEntry(workflowCode, workflowId);
+      if (entry.state === 'ready') {
+        baselineSnapshot = entry.snapshot;
+        baselineSerdeRootPtr = entry.serdeRootPtr;
+      }
+    } catch (err) {
+      // A rejection here is an infrastructure failure during hydrate
+      // (e.g. vm.snapshot() under memory pressure, QuickJS.create or
+      // getCompiledAssets() failing) — NOT bundle eval, which returns
+      // an ineligible entry. getBaselineEntry has already evicted the
+      // cached promise so a later invocation can retry. This invocation
+      // must fall back to fresh evaluation (which would have succeeded)
+      // rather than fail the whole run for a snapshot-only failure mode.
+      runtimeLogger.warn(
+        'QuickJS baseline snapshot hydrate failed; falling back to fresh evaluation for this invocation',
+        { workflowId, error: err }
+      );
+    }
+  }
+  let vm: QuickJS;
+  if (baselineSnapshot) {
+    const assets = await getCompiledAssets();
+    vm = await QuickJS.restore(baselineSnapshot, {
+      wasm: assets.wasm as never,
+      memoryLimit: 256 * 1024 * 1024,
+      interruptHandler: createInterruptHandler(interruptBudget),
+      extensions: assets.extensions,
+      wasi: makeDeterministicClockWasi(() => vmNowMs),
+    });
+  } else {
+    vm = await initWorkflowVM(() => vmNowMs, interruptBudget);
+  }
 
   // Host-side serde: captures the VM's intrinsics (bootstrap included)
   // before any user code runs. All serialization now happens on the host
   // through handles — no serializer code is evaluated inside the VM.
-  const serde = createQuickJSSerde(vm);
+  // Fresh path: capture now (no user code has run — the bundle evaluates
+  // later in the per-run phase). Snapshot path: re-adopt the capture root
+  // the baseline hydrate created BEFORE the bundle evaluated — the box
+  // lives in the restored memory image at the recorded offset. Both give
+  // the serde pristine capture-before-user-code intrinsics; neither
+  // executes guest code here.
+  const serde =
+    baselineSnapshot && baselineSerdeRootPtr !== undefined
+      ? createQuickJSSerde(vm, adoptSerdeRoot(vm, baselineSerdeRootPtr))
+      : createQuickJSSerde(vm);
 
   // Any throw between here and the terminal paths (which dispose the VM
   // inside checkWorkflowState / extractError before RETURNING) would leak
@@ -1238,29 +1511,34 @@ export async function startQuickJSWorkflow(
 
     // `process.env` — parity with the node:vm engine, which exposes a frozen
     // copy of the host env (vm/index.ts). Injected per run so the snapshot of
-    // the env is taken at invocation time, same as node.
-    {
-      const envHandle = vm.newString(JSON.stringify(process.env));
-      vm.setProp(vm.global, '__wdk_env', envHandle);
-      envHandle.dispose();
-      vm.evalCode(
-        'globalThis.process = { env: Object.freeze(JSON.parse(globalThis.__wdk_env)) };' +
-          'delete globalThis.__wdk_env;'
-      ).dispose();
-    }
+    // the env is taken at invocation time, same as node. Handle-based (no
+    // guest source evaluated): on the baseline-snapshot path this runs
+    // after user code, and a guest-source injection would execute through
+    // potentially patched globals (JSON.parse, Object.freeze) — visible
+    // to module-scope wrappers only on the restore path, diverging
+    // replays.
+    serde.installProcessEnv(process.env);
 
     // Execute the workflow bundle — use the workflowId as the eval filename
     // so QuickJS stack traces reference the workflow name, enabling source map
     // remapping by remapErrorStack (which matches frames by filename).
     // Evaluated in the per-run phase (after Math.random seeding) so that
     // module-scope user code draws from the seeded PRNG, matching the
-    // node:vm engine's replay determinism.
-    try {
-      vm.evalCode(workflowCode, workflowId || 'workflow.js').dispose();
-    } catch (err) {
-      return makeSettledSession(
-        extractError(vm, err, 'Workflow evaluation failed')
-      );
+    // node:vm engine's replay determinism. Skipped on the
+    // baseline-snapshot path: the restored heap already carries the
+    // evaluated bundle, and the baseline gate guarantees module scope
+    // consumed no PRNG draws or clock reads — so skipping the eval is
+    // observationally identical to re-running it (the run-seeded host
+    // fns registered above rebind the SAME names the restored heap's
+    // function objects dispatch through).
+    if (!baselineSnapshot) {
+      try {
+        vm.evalCode(workflowCode, workflowId || 'workflow.js').dispose();
+      } catch (err) {
+        return makeSettledSession(
+          extractError(vm, err, 'Workflow evaluation failed')
+        );
+      }
     }
 
     // Extract workflow arguments. Prefer the run_created event; fall back
