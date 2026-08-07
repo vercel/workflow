@@ -27,8 +27,8 @@ import {
   mergeReportedEvents,
   preconditionEventDelta,
   preconditionSnapshotParams,
-  settleEventSlotGap,
   SLOT_GAP_RECHECK_ATTEMPTS,
+  settleEventSlotGap,
 } from './helpers.js';
 
 // Mock the logger to suppress output during tests
