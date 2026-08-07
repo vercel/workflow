@@ -55,12 +55,6 @@ export function createWorld(config?: APIConfig): World {
       // rollback or kill switch drop new resumes to the sequential path
       // immediately, without a redeploy of this adapter.
     },
-    // On Vercel the platform fails the function invocation when the
-    // process exits non-zero, and VQS redelivers the queue message via a
-    // fresh invocation. The core runtime uses this to decide whether
-    // `process.exit(1)` is an acceptable response to an exhausted replay
-    // budget.
-    processExitTriggersQueueRedelivery: true,
     getRuntimeDeadline: getDeadline,
     ...createQueue(config),
     ...createStorage(config),
