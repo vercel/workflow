@@ -31,8 +31,16 @@ import { version } from './version.js';
  * Inline workflow-server URL override. Must remain an empty string on
  * `main` — rewritten by external CI for branch-deployment testing.
  * Prefer `VERCEL_WORKFLOW_SERVER_URL` for deployment-time configuration.
+ *
+ * TEMPORARY — REVERT TO '' BEFORE MERGE.
+ * Points at the backend branch deployment that serves spec v6 (slot event
+ * ids, the skipped-slot report, and the awaited-resolution fence) so the
+ * Vercel e2e lanes exercise this adapter against a backend that understands
+ * it. Re-point it if that deployment is superseded. The "No Test Overrides"
+ * check fails while this is set, by design.
  */
-export const WORKFLOW_SERVER_URL_OVERRIDE = '';
+export const WORKFLOW_SERVER_URL_OVERRIDE =
+  'https://workflow-server-g6f8w2ry2.vercel.sh';
 
 /**
  * HTTP methods that are safe to transparently re-issue inside the adapter.

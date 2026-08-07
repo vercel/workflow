@@ -724,6 +724,14 @@ async function createWorkflowRunEventInner(
       ? { stateEventCount: params.stateEventCount }
       : {}),
     ...(params?.stateCursor ? { stateCursor: params.stateCursor } : {}),
+    // Slot-identity snapshot. The runtime sends `eventCount` instead of the
+    // watermark triple once the run's own ids are slot-shaped; it rides as
+    // `maxSlot` because the v4 meta already has an unrelated telemetry
+    // `eventCount`.
+    ...(params?.eventCount !== undefined ? { maxSlot: params.eventCount } : {}),
+    ...(params?.awaitingCorrelationIds?.length
+      ? { awaitingCorrelationIds: params.awaitingCorrelationIds }
+      : {}),
     ...(params?.replayDivergenceCount !== undefined
       ? { replayDivergenceCount: params.replayDivergenceCount }
       : {}),
