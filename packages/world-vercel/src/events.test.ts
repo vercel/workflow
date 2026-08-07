@@ -1280,7 +1280,7 @@ describe('getWorkflowRunEvents remoteRefBehavior mapping', () => {
       .intercept({
         path: '/api/v4/runs/wrun_1/events',
         method: 'GET',
-        query: { remoteRefBehavior: 'lazy', returnAll: 'true' },
+        query: { remoteRefBehavior: 'lazy' },
       })
       .reply(200, listResponse(new Uint8Array()), {
         headers: { 'content-type': V4_FRAME_CONTENT_TYPE },
@@ -1314,7 +1314,7 @@ describe('getWorkflowRunEvents remoteRefBehavior mapping', () => {
       .intercept({
         path: '/api/v4/runs/wrun_1/events',
         method: 'GET',
-        query: { remoteRefBehavior: 'resolve', returnAll: 'true' },
+        query: { remoteRefBehavior: 'resolve' },
       })
       .reply(200, listResponse(body), {
         headers: { 'content-type': V4_FRAME_CONTENT_TYPE },
@@ -1340,7 +1340,7 @@ describe('getWorkflowRunEvents remoteRefBehavior mapping', () => {
       .intercept({
         path: '/api/v4/runs/wrun_1/events',
         method: 'GET',
-        query: { remoteRefBehavior: 'resolve', returnAll: 'true' },
+        query: { remoteRefBehavior: 'resolve' },
       })
       .reply(200, listResponse(new Uint8Array()), {
         headers: { 'content-type': V4_FRAME_CONTENT_TYPE },
@@ -1375,7 +1375,7 @@ describe('getWorkflowRunEvents remoteRefBehavior mapping', () => {
       .intercept({
         path: '/api/v4/runs/wrun_1/events',
         method: 'GET',
-        query: { remoteRefBehavior: 'resolve', returnAll: 'true' },
+        query: { remoteRefBehavior: 'resolve' },
       })
       .reply(200, frames, {
         headers: { 'content-type': V4_FRAME_CONTENT_TYPE },
@@ -1428,7 +1428,7 @@ describe('getWorkflowRunEvents legacy structured-error compatibility', () => {
       .intercept({
         path: '/api/v4/runs/wrun_1/events',
         method: 'GET',
-        query: { remoteRefBehavior: 'resolve', returnAll: 'true' },
+        query: { remoteRefBehavior: 'resolve' },
       })
       .reply(200, listResponse(eventType, body), {
         headers: { 'content-type': V4_FRAME_CONTENT_TYPE },
@@ -1499,7 +1499,7 @@ describe('getWorkflowRunEvents hasMore mapping', () => {
         method: 'GET',
         // These tests use the default resolveData ('all' → resolve), which
         // the adapter forwards as a query param; match it so the mock fires.
-        query: { remoteRefBehavior: 'resolve', returnAll: 'true' },
+        query: { remoteRefBehavior: 'resolve' },
       })
       .reply(200, frames, {
         headers: { 'content-type': V4_FRAME_CONTENT_TYPE },

@@ -183,7 +183,7 @@ describe('getWorkflowRunEventsV4 over HTTP', () => {
     agent
       .get(origin)
       .intercept({
-        path: '/api/v4/runs/wrun_1/events?returnAll=true',
+        path: '/api/v4/runs/wrun_1/events',
         method: 'GET',
       })
       .reply(200, frames, {
@@ -217,7 +217,7 @@ describe('getWorkflowRunEventsV4 over HTTP', () => {
     agent
       .get(origin)
       .intercept({
-        path: '/api/v4/runs/wrun_1/events?returnAll=true',
+        path: '/api/v4/runs/wrun_1/events',
         method: 'GET',
       })
       .reply(
@@ -271,7 +271,7 @@ describe('getWorkflowRunEventsV4 over HTTP', () => {
     agent
       .get(origin)
       .intercept({
-        path: '/api/v4/runs/wrun_1/events?returnAll=true',
+        path: '/api/v4/runs/wrun_1/events',
         method: 'GET',
       })
       .reply(200, frames, {
@@ -302,7 +302,7 @@ describe('getWorkflowRunEventsV4 over HTTP', () => {
     agent
       .get(origin)
       .intercept({
-        path: '/api/v4/runs/wrun_1/events?returnAll=true',
+        path: '/api/v4/runs/wrun_1/events',
         method: 'GET',
       })
       .reply(200, frames, {
@@ -370,7 +370,7 @@ describe('getWorkflowRunEventsV4 over HTTP', () => {
     agent
       .get(origin)
       .intercept({
-        path: '/api/v4/runs/wrun_1/events?returnAll=true',
+        path: '/api/v4/runs/wrun_1/events',
         method: 'GET',
       })
       .reply(
@@ -394,7 +394,7 @@ describe('getWorkflowRunEventsV4 over HTTP', () => {
     agent
       .get(origin)
       .intercept({
-        path: '/api/v4/runs/wrun_1/events?cursor=eid%3Aevnt_1&returnAll=true',
+        path: '/api/v4/runs/wrun_1/events?cursor=eid%3Aevnt_1',
         method: 'GET',
       })
       .reply(
@@ -575,7 +575,7 @@ describe('v4 transport uses global fetch (observability)', () => {
     agent
       .get(origin)
       .intercept({
-        path: '/api/v4/runs/wrun_1/events?returnAll=true',
+        path: '/api/v4/runs/wrun_1/events',
         method: 'GET',
       })
       .reply(200, encodeFrame({ _end: 1, hasMore: false }, new Uint8Array(0)), {

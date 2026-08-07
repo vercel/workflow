@@ -925,7 +925,6 @@ function appendListParams(sp: URLSearchParams, params: ListEventsV4Params) {
 function paginationToQuery(params: ListEventsV4Params): string {
   const sp = new URLSearchParams();
   appendListParams(sp, params);
-  if (params.limit === undefined) sp.set('returnAll', 'true');
   const qs = sp.toString();
   return qs ? `?${qs}` : '';
 }
