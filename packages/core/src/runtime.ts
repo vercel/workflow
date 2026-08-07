@@ -2271,10 +2271,8 @@ export function workflowEntrypoint(
                         attempt: metadata.attempt,
                         limitMs: replayBudget.configuredLimitMs,
                       });
-                      // On Vercel, handleReplayBudgetExhausted always
-                      // exits the process. On local dev it returns; we
-                      // fall through and the request ends normally
-                      // (run_failed has been written best-effort).
+                      // Only the terminal attempt returns, after run_failed is
+                      // durable. Earlier attempts reject for queue redelivery.
                       return;
                     }
 

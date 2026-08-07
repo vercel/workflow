@@ -85,6 +85,43 @@ describe('postgres queue http execution', () => {
     setWorkflowBasePath(undefined);
   });
 
+  it('raises the retry limit for queued and active Graphile jobs before starting the runner', async () => {
+    const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
+
+    await queue.start();
+
+    expect(pool.query).toHaveBeenCalledWith(
+      expect.stringMatching(
+        /UPDATE graphile_worker\._private_jobs[\s\S]*jobs\.locked_at IS NOT NULL/
+      ),
+      ['workflow_flows', 49]
+    );
+  });
+
+  it('raises the retry limit when migrating queued pg-boss jobs', async () => {
+    pool.query
+      .mockResolvedValueOnce({ rows: [{ exists: true }] })
+      .mockResolvedValueOnce({
+        rows: [
+          {
+            name: 'workflow_flows',
+            data: { id: 'workflow' },
+            singleton_key: 'msg_old',
+            retry_limit: 3,
+          },
+        ],
+      });
+    const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
+
+    await queue.start();
+
+    expect(workerUtilsMock.addJob).toHaveBeenCalledWith(
+      'workflow_flows',
+      { id: 'workflow' },
+      { jobKey: 'msg_old', maxAttempts: 49 }
+    );
+  });
+
   it('uses a late-detected local port when the queue starts before PORT is available', async () => {
     const requests: Array<{
       method: string | undefined;
@@ -488,7 +525,7 @@ describe('postgres queue http execution', () => {
         }),
         expect.objectContaining({
           jobKey: 'step_01ABC',
-          maxAttempts: 3,
+          maxAttempts: 49,
           runAt: new Date('2024-01-01T00:00:05.000Z'),
         })
       );
@@ -525,7 +562,7 @@ describe('postgres queue http execution', () => {
       }),
       expect.objectContaining({
         jobKey: 'step_01ABC',
-        maxAttempts: 3,
+        maxAttempts: 49,
       })
     );
   });

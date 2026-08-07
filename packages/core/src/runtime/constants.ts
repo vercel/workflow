@@ -46,7 +46,7 @@ export function getMaxQueueDeliveries(): number {
  * `maxDuration` (e.g. 800s on Vercel Pro Fluid) and `NO_INLINE_REPLAY_AFTER_MS`.
  *
  * If the non-step ("replay") time within a single invocation exceeds this
- * budget, the handler exits so the queue can retry. After
+ * budget, the handler rejects so the queue can retry. After
  * `REPLAY_TIMEOUT_MAX_RETRIES` exhausted attempts the run is failed with
  * `RUN_ERROR_CODES.REPLAY_TIMEOUT`.
  *
@@ -137,7 +137,7 @@ export function _resetReplayTimeoutWarnCacheForTests(): void {
 
 // Number of queue delivery attempts to allow before permanently failing a run
 // due to a replay timeout. On attempts 1 through this value, the timeout
-// handler exits without writing run_failed so the queue retries the message.
+// handler rejects without writing run_failed so the queue retries the message.
 // On the next attempt the run is marked as failed.
 export const REPLAY_TIMEOUT_MAX_RETRIES = 3;
 
