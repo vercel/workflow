@@ -72,6 +72,14 @@ async function runStaleWaitReplayScenario(options: {
   preloadedHasMore?: boolean;
   omitWaitCompletionFromDelta?: boolean;
   terminalFailureAfterWaitCompletion?: boolean;
+  /**
+   * Model a World that honors `sinceCursor` on `events.create`: the write
+   * response carries the same page `events.list` would have returned, so the
+   * handler should absorb it and skip the follow-up fetch entirely.
+   */
+  returnInlineDelta?: boolean;
+  /** Truncate that inline delta (hasMore: true), which must not be absorbed. */
+  inlineDeltaHasMore?: boolean;
 }) {
   vi.spyOn(Date, 'now').mockReturnValue(+fixedNow);
 
@@ -206,6 +214,22 @@ async function runStaleWaitReplayScenario(options: {
       ) => Promise<unknown>)
     | undefined;
 
+  /**
+   * `events.list` semantics for this fake log: everything strictly after
+   * `cursor`. `staleEventsCursor` is the opaque cursor the run_started
+   * preload hands out; every other cursor is an event id.
+   */
+  const eventsAfterCursor = (cursor?: string): Event[] => {
+    if (!cursor) {
+      return [...durableEvents];
+    }
+    if (cursor === staleEventsCursor) {
+      return durableEvents.slice(staleEvents.length);
+    }
+    const index = durableEvents.findIndex((e) => e.eventId === cursor);
+    return index === -1 ? [...durableEvents] : durableEvents.slice(index + 1);
+  };
+
   const listEvents = vi.fn(
     async (params: {
       runId: string;
@@ -213,10 +237,7 @@ async function runStaleWaitReplayScenario(options: {
     }) => {
       // Cursor reads simulate the optimized delta fetch. Without a cursor, the
       // runtime has fallen back to a full reload from the beginning.
-      let data =
-        params.pagination?.cursor === staleEventsCursor
-          ? durableEvents.slice(staleEvents.length)
-          : [...durableEvents];
+      let data = eventsAfterCursor(params.pagination?.cursor);
       if (
         params.pagination?.cursor === staleEventsCursor &&
         options.omitWaitCompletionFromDelta
@@ -251,7 +272,11 @@ async function runStaleWaitReplayScenario(options: {
   };
 
   const createEvent = vi.fn(
-    async (_runId: string, request: CreateEventRequest) => {
+    async (
+      _runId: string,
+      request: CreateEventRequest,
+      params?: { sinceCursor?: string }
+    ) => {
       if (request.eventType === 'run_started') {
         return runStartedResponse;
       }
@@ -298,6 +323,20 @@ async function runStaleWaitReplayScenario(options: {
       const created = event(effectiveRequest);
       durableEvents.push(created);
       createdEvents.push(created);
+      // A World that honors sinceCursor answers the write with the delta the
+      // caller would otherwise fetch. Computed after the write is durable, so
+      // it includes the event just created.
+      const inlineDelta = (() => {
+        if (!(options.returnInlineDelta && params?.sinceCursor)) {
+          return {};
+        }
+        const data = eventsAfterCursor(params.sinceCursor);
+        return {
+          events: data,
+          cursor: data.at(-1)?.eventId ?? null,
+          hasMore: options.inlineDeltaHasMore ?? false,
+        };
+      })();
       if (effectiveRequest.eventType === 'step_started') {
         return {
           event: created,
@@ -307,6 +346,7 @@ async function runStaleWaitReplayScenario(options: {
             effectiveRequest.correlationId
           ),
           ...(lazyStepStart ? { stepCreated: true } : {}),
+          ...inlineDelta,
         };
       }
       if (
@@ -323,7 +363,7 @@ async function runStaleWaitReplayScenario(options: {
           })
         );
       }
-      return { event: created };
+      return { event: created, ...inlineDelta };
     }
   );
 
@@ -397,6 +437,7 @@ async function runStaleWaitReplayScenario(options: {
   );
 
   return {
+    createEvent,
     createdEvents,
     listEvents,
     listedPages,
@@ -574,6 +615,58 @@ describe('workflow handler wait completion replay', () => {
       'step_started',
       'step_completed',
       'wait_created',
+      'hook_received',
+      'wait_completed',
+    ]);
+    expectHookBranchQueued(result);
+  });
+
+  it('skips the follow-up fetch when the wait_completed write returns the delta', async () => {
+    // The write carries the cursor the handler's snapshot was taken at, so a
+    // supporting World answers it with exactly the page the follow-up
+    // events.list would have returned. Absorbing that page leaves nothing to
+    // fetch: the hook_received that raced the completion is already in the
+    // local log.
+    const result = await runStaleWaitReplayScenario({
+      includePreloadedCursor: true,
+      returnInlineDelta: true,
+    });
+
+    const waitWrite = result.createEvent.mock.calls.find(
+      (call) => (call[1] as CreateEventRequest).eventType === 'wait_completed'
+    );
+    expect(waitWrite?.[2]).toEqual(
+      expect.objectContaining({ sinceCursor: result.staleEventsCursor })
+    );
+
+    // Only the next loop iteration's incremental fetch remains, and it reads
+    // from the cursor the absorbed delta advanced to — never from the
+    // pre-write cursor, which is what the deleted follow-up fetch used.
+    expect(result.listEvents).toHaveBeenCalledTimes(1);
+    expect(result.listEvents.mock.calls[0]?.[0].pagination?.cursor).not.toBe(
+      result.staleEventsCursor
+    );
+    expectHookBranchQueued(result);
+  });
+
+  it('falls back to the follow-up fetch when the returned delta is truncated', async () => {
+    // hasMore means the page is not the whole delta. Absorbing it would leave
+    // a hole between the events taken and the cursor reported, so the handler
+    // must decline it and fetch as before.
+    const result = await runStaleWaitReplayScenario({
+      includePreloadedCursor: true,
+      returnInlineDelta: true,
+      inlineDeltaHasMore: true,
+    });
+
+    expect(result.listEvents).toHaveBeenCalledTimes(2);
+    expect(result.listEvents.mock.calls[0]?.[0].pagination).toEqual(
+      expect.objectContaining({
+        sortOrder: 'asc',
+        cursor: result.staleEventsCursor,
+      })
+    );
+    expect(result.listedPages[0]?.map((event) => event.eventType)).toEqual([
       'hook_received',
       'wait_completed',
     ]);
