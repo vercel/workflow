@@ -17,6 +17,7 @@ const TraceViewer = ({
   hasMore,
   isLoadingMore,
   loading = false,
+  initialSelectedSpanId,
 }: {
   run: WorkflowRun;
   events: Event[];
@@ -25,6 +26,8 @@ const TraceViewer = ({
   hasMore?: boolean;
   isLoadingMore?: boolean;
   loading?: boolean;
+  /** Span (step/hook/wait/run ID) to preselect on mount, e.g. from a deep link. */
+  initialSelectedSpanId?: string | null;
 }) => {
   const trace: TraceWithMeta | undefined = useMemo(() => {
     if (!run?.runId) {
@@ -46,6 +49,7 @@ const TraceViewer = ({
           onLoadMore={onLoadMore}
           hasMore={hasMore}
           isLoadingMore={isLoadingMore}
+          initialActiveSpanId={initialSelectedSpanId}
         />
       </div>
     </SidebarDataProvider>

@@ -204,10 +204,7 @@ interface RunDetailViewProps {
 
 type Tab = 'trace' | 'graph' | 'streams' | 'events';
 
-export function RunDetailView({
-  runId,
-  selectedId: _selectedId,
-}: RunDetailViewProps) {
+export function RunDetailView({ runId, selectedId }: RunDetailViewProps) {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const { serverConfig } = useServerConfig();
@@ -274,6 +271,20 @@ export function RunDetailView({
       navigate(`/run/${encodeURIComponent(targetRunId)}`);
     },
     [navigate]
+  );
+
+  // From the Events tab: open the trace tab with the event's entity selected
+  const handleViewInTrace = useCallback(
+    (spanId: string) => {
+      updateSearchParams({
+        tab: 'trace',
+        stepId: spanId,
+        eventId: null,
+        hookId: null,
+        streamId: null,
+      });
+    },
+    [updateSearchParams]
   );
 
   const handleWakeUpSleep = useCallback(
@@ -752,6 +763,7 @@ export function RunDetailView({
                     onLoadMore={loadMoreTraceData}
                     hasMore={hasMoreTraceData}
                     isLoadingMore={isLoadingMoreTraceData}
+                    initialSelectedSpanId={selectedId}
                   />
                 </div>
               </ErrorBoundary>
@@ -775,6 +787,7 @@ export function RunDetailView({
                     isDecrypting={isDecrypting}
                     hasEncryptedData={hasEncryptedData}
                     onExactIdSearch={searchByExactId}
+                    onViewInTrace={handleViewInTrace}
                   />
                 </div>
               </ErrorBoundary>

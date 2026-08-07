@@ -25,17 +25,28 @@ ActiveSpanContext.displayName = 'ActiveSpanContext';
 
 export function ActiveSpanProvider({
   spans,
+  initialActiveSpanId,
   children,
 }: {
   spans: Span[];
+  /** Span to preselect on mount (e.g. from a deep link). */
+  initialActiveSpanId?: string | null;
   children: ReactNode;
 }) {
-  const [activeSpanId, setActiveSpanId] = useState<string | null>(null);
+  const [activeSpanId, setActiveSpanId] = useState<string | null>(
+    initialActiveSpanId ?? null
+  );
 
   useEffect(() => {
     setActiveSpanId((currentSpanId) => {
       if (!currentSpanId) {
         return null;
+      }
+
+      // While spans are still loading, keep a pending (deep-linked)
+      // selection alive so it can resolve once the data arrives.
+      if (spans.length === 0) {
+        return currentSpanId;
       }
 
       const hasCurrentSpan = spans.some(
