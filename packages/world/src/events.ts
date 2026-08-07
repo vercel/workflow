@@ -833,11 +833,15 @@ export interface CreateEventParams {
    * on the resulting {@link EventResult}, the first page of events written
    * strictly after this cursor (via `events`/`cursor`/`hasMore`) — the
    * same page an `events.list({ cursor: sinceCursor, sortOrder: 'asc' })`
-   * call would return immediately after this write. The inline runtime
-   * loop uses this to skip a redundant `events.list` round-trip between
-   * sequential steps: instead of re-reading its own just-written events
-   * (and any events interleaved in-band, such as `hook_received`), it
-   * consumes the authoritative delta the write already had to compute.
+   * call would return immediately after this write. Outside turbo mode the
+   * runtime sets this on every write it makes from the orchestrator loop
+   * and folds any returned delta into its in-memory log, so each write
+   * carries the log forward and the loop reads it back for free: instead of
+   * re-reading its own just-written events (and any events interleaved
+   * in-band, such as `hook_received`), it consumes the authoritative delta
+   * the write already had to compute. Turbo mode does not set it — the
+   * point there is to keep the first invocation's writes as cheap as
+   * possible, and it has no loaded log to extend.
    *
    * The cursor MUST share `events.list` semantics: the returned `events`
    * are everything sorted strictly after `sinceCursor`, `cursor` is the

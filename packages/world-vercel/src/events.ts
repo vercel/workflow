@@ -610,10 +610,11 @@ async function createWorkflowRunEventInner(
     occurredAt: params?.occurredAt ?? new Date(),
     // Opt-in inline-delta: forward the cursor the runtime held before
     // this write so the server can return the authoritative event-log
-    // delta on the response (events/cursor/hasMore), letting the inline
-    // loop skip a follow-up events.list. The server only acts on it for
-    // step_completed/step_failed; older servers ignore it and the runtime
-    // falls back to events.list.
+    // delta on the response (events/cursor/hasMore), letting the caller
+    // skip a follow-up events.list. Outside turbo the runtime sends this on
+    // every write, but a server may act on only some event types (or none);
+    // a response without a delta just means the runtime keeps its cursor
+    // and fetches when it next needs to.
     ...(params?.sinceCursor ? { sinceCursor: params.sinceCursor } : {}),
     ...(params?.resumeId ? { resumeId: params.resumeId } : {}),
     ...(params?.resumePayloadDigest

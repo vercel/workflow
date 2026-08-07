@@ -1890,6 +1890,38 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
         };
       }
 
+      // Inline delta: the caller told us the cursor of the log it holds, so
+      // return the page `events.list({ cursor: sinceCursor, sortOrder: 'asc' })`
+      // would return right now and save it the round-trip. Same query, same
+      // page size, same cursor semantics as `list` below — deliberately not
+      // paginated to exhaustion, since the contract is
+      // single-page-or-fall-back and the caller ignores a delta with
+      // `hasMore: true`.
+      if (typeof params?.sinceCursor === 'string') {
+        const limit = 100;
+        const deltaRows = await drizzle
+          .select()
+          .from(Schema.events)
+          .where(
+            and(
+              eq(Schema.events.runId, effectiveRunId),
+              gt(Schema.events.eventId, params.sinceCursor)
+            )
+          )
+          .orderBy(Schema.events.eventId)
+          .limit(limit + 1);
+        const page = deltaRows.slice(0, limit);
+        const data = page.map((e) => {
+          e.eventData ||= e.eventDataJson;
+          return stripEventDataRefs(EventSchema.parse(compact(e)), resolveData);
+        });
+        eventPage = {
+          data,
+          cursor: data.at(-1)?.eventId ?? null,
+          hasMore: deltaRows.length > limit,
+        };
+      }
+
       const eventResult: EventResult = {
         event: stripEventDataRefs(parsed, resolveData),
         run,
