@@ -433,20 +433,6 @@ export function createQueue(
     }
   }
 
-  async function raiseQueuedJobAttempts(): Promise<void> {
-    // Graphile's public rescheduler skips locked jobs, including a final attempt already in flight.
-    await pool.query(
-      `UPDATE graphile_worker._private_jobs AS jobs
-      SET max_attempts = $2
-      FROM graphile_worker._private_tasks AS tasks
-      WHERE jobs.task_id = tasks.id
-      AND tasks.identifier = $1
-      AND jobs.max_attempts < $2
-      AND (jobs.attempts < jobs.max_attempts OR jobs.locked_at IS NOT NULL)`,
-      [getJobQueueName(), MAX_GRAPHILE_JOB_ATTEMPTS]
-    );
-  }
-
   async function startRunnerWhenExecutorIsReady(): Promise<void> {
     if (closing || runner || runnerStart) {
       return;
@@ -493,7 +479,6 @@ export function createQueue(
           });
           await workerUtils.migrate();
           await migratePgBossJobs(workerUtils);
-          await raiseQueuedJobAttempts();
           await startRunnerWhenExecutorIsReady();
         } catch (err) {
           startPromise = null;

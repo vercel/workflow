@@ -85,19 +85,6 @@ describe('postgres queue http execution', () => {
     setWorkflowBasePath(undefined);
   });
 
-  it('raises the retry limit for queued and active Graphile jobs before starting the runner', async () => {
-    const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
-
-    await queue.start();
-
-    expect(pool.query).toHaveBeenCalledWith(
-      expect.stringMatching(
-        /UPDATE graphile_worker\._private_jobs[\s\S]*jobs\.locked_at IS NOT NULL/
-      ),
-      ['workflow_flows', 49]
-    );
-  });
-
   it('raises the retry limit when migrating queued pg-boss jobs', async () => {
     pool.query
       .mockResolvedValueOnce({ rows: [{ exists: true }] })
