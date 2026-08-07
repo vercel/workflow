@@ -34,6 +34,7 @@ export function createWorld(config?: APIConfig): World {
     // those payloads opaquely, and v5 remains a superset of v4 attributes.
     specVersion: SPEC_VERSION_SUPPORTS_COMPRESSION,
     capabilities: {
+      hookRetention: { active: true },
       // workflow-server enforces the `stateUpdatedAt` optimistic-concurrency
       // guard: creations carrying a stale snapshot are rejected with 412
       // (PreconditionFailedError) when the run's outside-event marker is
