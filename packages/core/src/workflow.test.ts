@@ -382,13 +382,16 @@ describe('runWorkflow', () => {
       assert(suspended.type === 'suspended');
 
       // A strict extension whose appended suffix the VM cannot consume: the
-      // resume starts, then diverges mid-execution.
+      // resume starts, then diverges mid-execution. It has to be a
+      // replay-origin type: the consumer walks past an unclaimed delivery and
+      // holds it for a later consumer, so only an event whose position is a
+      // replay's own decision record diverges on the spot.
       const alien = {
         eventId: 'event-alien',
         runId: run.runId,
-        eventType: 'hook_received',
-        correlationId: 'hook_unknown',
-        eventData: {},
+        eventType: 'step_created',
+        correlationId: 'step_unknown',
+        eventData: { stepName: 'unknown' },
         createdAt: new Date('2024-01-01T00:00:01.000Z'),
       } as Event;
       await expect(resumeWorkflow(suspended.session, [alien])).rejects.toThrow(

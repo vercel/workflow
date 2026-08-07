@@ -387,9 +387,19 @@ async function createWorkflowSession({
   // by step/hook/sleep callbacks as events are processed.
   const promiseQueueHolder = { current: Promise.resolve() };
 
+  // The VM clock only ever moves forward. Consumption order is log order for
+  // everything whose order the replay decides, but an event the consumer
+  // parked is delivered after the walk has already passed events written after
+  // it, and letting its `createdAt` set the clock would make `Date.now()` go
+  // backwards inside a single replay.
+  let clock = fixedTimestamp;
   const eventsConsumer = new EventsConsumer(events, {
     onConsumedEvent: (event) => {
-      updateTimestamp(+event.createdAt);
+      const at = +event.createdAt;
+      if (at > clock) {
+        clock = at;
+        updateTimestamp(at);
+      }
     },
     onUnconsumedEvent: (event) => {
       onWorkflowError(
@@ -1063,6 +1073,20 @@ async function createWorkflowSession({
     }
 
     state = { type: 'completed' };
+    // The consumer walks past events whose type carries no ordering claim and
+    // holds them for a consumer it expects a later `subscribe()` to register.
+    // The workflow function returning is the point where that expectation is
+    // settled: nothing more will subscribe, so anything still held was never
+    // anyone's, and completing here would drop it silently.
+    const stranded = eventsConsumer.strandedEvent;
+    if (stranded) {
+      return failWorkflow(
+        new ReplayDivergenceError(
+          `Replay finished without consuming event: eventType=${stranded.eventType}, correlationId=${stranded.correlationId}, eventId=${stranded.eventId}.`,
+          { eventId: stranded.eventId }
+        )
+      );
+    }
     try {
       const output = await dehydrateWorkflowReturnValue(
         result,

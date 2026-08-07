@@ -476,4 +476,132 @@ describe('EventsConsumer', () => {
       expect(onUnconsumedEvent).not.toHaveBeenCalled();
     });
   });
+
+  describe('parking events that carry no ordering claim', () => {
+    /**
+     * A log event of a real type. The rest of this file uses a mock shape with
+     * no `eventType` at all, which is deliberately unparkable, so parking
+     * tests need events the consumer recognizes.
+     */
+    function logEvent(eventType: Event['eventType'], id: string): Event {
+      return createMockEvent({ id, eventType } as Partial<Event>);
+    }
+
+    /** Consumes exactly the events whose id is in `ids`, once each. */
+    function consumerFor(ids: string[]) {
+      const seen: string[] = [];
+      const callback = (event: Event | null) => {
+        if (event && ids.includes(event.id) && !seen.includes(event.id)) {
+          seen.push(event.id);
+          return EventConsumerResult.Consumed;
+        }
+        return EventConsumerResult.NotConsumed;
+      };
+      return { seen, callback };
+    }
+
+    it('walks past an unclaimed hook_received instead of declaring divergence', async () => {
+      const hook = logEvent('hook_received', 'hook-1');
+      const wait = logEvent('wait_created', 'wait-1');
+      const onUnconsumedEvent = vi.fn();
+      const consumer = new EventsConsumer([hook, wait], {
+        onUnconsumedEvent,
+        getPromiseQueue: () => Promise.resolve(),
+      });
+      const waits = consumerFor(['wait-1']);
+
+      consumer.subscribe(waits.callback);
+
+      // The hook belongs to a consumer this replay has not registered. The
+      // wait behind it is this replay's own decision and must still land.
+      await vi.waitFor(() => {
+        expect(waits.seen).toEqual(['wait-1']);
+      });
+      expect(consumer.eventIndex).toBe(2);
+      expect(onUnconsumedEvent).not.toHaveBeenCalled();
+    });
+
+    it('delivers a parked event to a consumer that subscribes later', async () => {
+      const hook = logEvent('hook_received', 'hook-1');
+      const wait = logEvent('wait_created', 'wait-1');
+      const onUnconsumedEvent = vi.fn();
+      const consumer = new EventsConsumer([hook, wait], {
+        onUnconsumedEvent,
+        getPromiseQueue: () => Promise.resolve(),
+      });
+      const waits = consumerFor(['wait-1']);
+      consumer.subscribe(waits.callback);
+      await vi.waitFor(() => {
+        expect(waits.seen).toEqual(['wait-1']);
+      });
+
+      const hooks = consumerFor(['hook-1']);
+      consumer.subscribe(hooks.callback);
+
+      await vi.waitFor(() => {
+        expect(hooks.seen).toEqual(['hook-1']);
+      });
+      expect(onUnconsumedEvent).not.toHaveBeenCalled();
+    });
+
+    it('replays a parked event under the index it held in the log', async () => {
+      const hook = logEvent('hook_received', 'hook-1');
+      const wait = logEvent('wait_created', 'wait-1');
+      const consumer = new EventsConsumer([hook, wait], {
+        onUnconsumedEvent: vi.fn(),
+        getPromiseQueue: () => Promise.resolve(),
+      });
+      consumer.subscribe(consumerFor(['wait-1']).callback);
+      await vi.waitFor(() => {
+        expect(consumer.eventIndex).toBe(2);
+      });
+
+      // Delivery barriers are registered under whatever `eventIndex` reads at
+      // consumption time, so a late delivery must still make the ordering
+      // claim its log position gave it — index 0, not the walk's 2.
+      let indexAtDelivery: number | undefined;
+      consumer.subscribe((event) => {
+        if (event?.id !== 'hook-1') {
+          return EventConsumerResult.NotConsumed;
+        }
+        indexAtDelivery = consumer.eventIndex;
+        return EventConsumerResult.Finished;
+      });
+
+      await vi.waitFor(() => {
+        expect(indexAtDelivery).toBe(0);
+      });
+      // The walk pointer is restored, not left behind at the parked index.
+      expect(consumer.eventIndex).toBe(2);
+    });
+
+    it('still declares divergence for an unclaimed replay-origin event', async () => {
+      const step = logEvent('step_created', 'step-1');
+      const unconsumedReceived = withResolvers<Event>();
+      const consumer = new EventsConsumer([step], {
+        onUnconsumedEvent: unconsumedReceived.resolve,
+        getPromiseQueue: () => Promise.resolve(),
+      });
+
+      consumer.subscribe(() => EventConsumerResult.NotConsumed);
+
+      expect(await unconsumedReceived.promise).toEqual(step);
+    });
+
+    it('declares divergence for an event still parked once the run has ended', async () => {
+      const hook = logEvent('hook_received', 'hook-1');
+      const completed = logEvent('run_completed', 'done-1');
+      const unconsumedReceived = withResolvers<Event>();
+      const consumer = new EventsConsumer([hook, completed], {
+        onUnconsumedEvent: unconsumedReceived.resolve,
+        getPromiseQueue: () => Promise.resolve(),
+      });
+
+      // Nothing can subscribe for the hook after the run has finished, so
+      // parking it would silently drop it.
+      consumer.subscribe(consumerFor(['done-1']).callback);
+
+      expect(await unconsumedReceived.promise).toEqual(hook);
+    });
+  });
 });
