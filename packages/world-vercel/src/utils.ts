@@ -40,7 +40,7 @@ import { version } from './version.js';
  * check fails while this is set, by design.
  */
 export const WORKFLOW_SERVER_URL_OVERRIDE =
-  'https://workflow-server-g6f8w2ry2.vercel.sh';
+  'https://workflow-server-zhi7o41s9.vercel.sh';
 
 /**
  * HTTP methods that are safe to transparently re-issue inside the adapter.
