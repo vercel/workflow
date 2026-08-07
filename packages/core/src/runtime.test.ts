@@ -2067,6 +2067,36 @@ describe('workflowEntrypoint turbo mode', () => {
     expect((redeliverRunStarted?.[2] as any)?.skipPreload).toBeUndefined();
   });
 
+  it('never asks for an inline delta on a run-terminal write, or anywhere under turbo', async () => {
+    const turbo = await driveTurbo({
+      runId: 'wrun_turbo_no_delta',
+      attempt: 1,
+      source: oneStepWorkflow,
+    });
+    expect((await turbo.handlerPromise).status).toBe(204);
+    // Turbo exists to keep the first invocation's writes as cheap as
+    // possible and starts with no loaded log to extend, so nothing it writes
+    // asks the World to compute a delta.
+    expect(
+      turbo.eventsCreate.mock.calls.map((c) => (c[2] as any)?.sinceCursor)
+    ).toEqual(turbo.eventsCreate.mock.calls.map(() => undefined));
+
+    // A redelivery is not turbo and has a cursor by the time the run
+    // finishes, but nothing reads the log after a run-terminal write, so the
+    // delta would be work the World does for no one.
+    const redeliver = await driveTurbo({
+      runId: 'wrun_turbo_no_delta_redeliver',
+      attempt: 2,
+      source: oneStepWorkflow,
+    });
+    expect((await redeliver.handlerPromise).status).toBe(204);
+    const runCompleted = redeliver.eventsCreate.mock.calls.find(
+      (c) => (c[1] as any).eventType === 'run_completed'
+    );
+    expect(runCompleted).toBeDefined();
+    expect((runCompleted?.[2] as any)?.sinceCursor).toBeUndefined();
+  });
+
   it('exits turbo (no forced optimistic) when the suspension creates a wait', async () => {
     const { handlerPromise, order } = await driveTurbo({
       runId: 'wrun_turbo_wait',
