@@ -1,5 +1,8 @@
 ---
 '@workflow/core': patch
+'@workflow/world': patch
+'@workflow/world-vercel': patch
+'@workflow/world-postgres': patch
 ---
 
-Retry replay timeouts by rejecting the current queue delivery instead of exiting the process.
+Retry replay timeouts through normal queue redelivery instead of exiting the process, and keep Postgres jobs retryable through Core's terminal delivery limit.
