@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 
-const STYLES = `.wf-menu-btn{appearance:none;-webkit-appearance:none;border:none;display:inline-flex;align-items:center;justify-content:center;height:40px;padding:0 12px;border-radius:6px;font-size:14px;font-weight:500;line-height:20px;color:var(--ds-gray-1000);background:var(--ds-background-100);box-shadow:0 0 0 1px var(--ds-gray-400);cursor:pointer;white-space:nowrap;transition:background 150ms}.wf-menu-btn:hover{background:var(--ds-gray-alpha-200)}.wf-menu-item{appearance:none;-webkit-appearance:none;border:none;display:flex;align-items:center;width:100%;height:40px;padding:0 8px;border-radius:6px;font-size:14px;color:var(--ds-gray-1000);background:transparent;cursor:pointer;transition:background 150ms}.wf-menu-item:hover{background:var(--ds-gray-alpha-100)}`;
+const STYLES = `.wf-menu-btn{appearance:none;-webkit-appearance:none;border:none;display:inline-flex;align-items:center;justify-content:center;height:40px;padding:0 12px;border-radius:6px;font-size:14px;font-weight:500;line-height:20px;color:var(--ds-gray-1000);background:var(--ds-background-100);box-shadow:0 0 0 1px var(--ds-gray-400);cursor:pointer;white-space:nowrap;transition:background 150ms}.wf-menu-btn:hover{background:var(--ds-gray-alpha-200)}.wf-menu-btn-inline{appearance:none;-webkit-appearance:none;border:none;display:inline-flex;align-items:center;justify-content:center;height:100%;padding:0 12px;border-radius:0;font-size:13px;font-weight:400;line-height:16px;color:var(--ds-gray-900);background:transparent;cursor:pointer;white-space:nowrap;transition:background 150ms,color 150ms}.wf-menu-btn-inline:hover{color:var(--ds-gray-1000);background:var(--ds-gray-alpha-100)}.wf-menu-btn-inline:focus-visible{outline:2px solid var(--ds-focus-color);outline-offset:-2px}.wf-menu-item{appearance:none;-webkit-appearance:none;border:none;display:flex;align-items:center;width:100%;height:40px;padding:0 8px;border-radius:6px;font-size:14px;color:var(--ds-gray-1000);background:transparent;cursor:pointer;transition:background 150ms}.wf-menu-item:hover{background:var(--ds-gray-alpha-100)}`;
 
 export interface MenuDropdownOption<T extends string = string> {
   value: T;
@@ -13,6 +13,12 @@ interface MenuDropdownProps<T extends string = string> {
   options: MenuDropdownOption<T>[];
   value: T;
   onChange: (value: T) => void;
+  /**
+   * Visual style of the trigger button:
+   * - `default`: standalone Geist secondary button (40px, bordered)
+   * - `inline`: borderless full-height cell for slim header rows
+   */
+  variant?: 'default' | 'inline';
 }
 
 /**
@@ -23,6 +29,7 @@ export function MenuDropdown<T extends string = string>({
   options,
   value,
   onChange,
+  variant = 'default',
 }: MenuDropdownProps<T>) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -41,12 +48,19 @@ export function MenuDropdown<T extends string = string>({
   }, [open]);
 
   return (
-    <div ref={ref} style={{ position: 'relative', flexShrink: 0 }}>
+    <div
+      ref={ref}
+      style={{
+        position: 'relative',
+        flexShrink: 0,
+        height: variant === 'inline' ? '100%' : undefined,
+      }}
+    >
       <style dangerouslySetInnerHTML={{ __html: STYLES }} />
 
       <button
         type="button"
-        className="wf-menu-btn"
+        className={variant === 'inline' ? 'wf-menu-btn-inline' : 'wf-menu-btn'}
         onClick={() => setOpen(!open)}
       >
         <span>{label}</span>
@@ -56,7 +70,7 @@ export function MenuDropdown<T extends string = string>({
           viewBox="0 0 16 16"
           fill="none"
           style={{
-            marginLeft: 16,
+            marginLeft: variant === 'inline' ? 6 : 16,
             marginRight: -4,
             color: 'var(--ds-gray-900)',
           }}
@@ -75,9 +89,9 @@ export function MenuDropdown<T extends string = string>({
         <div
           style={{
             position: 'absolute',
-            right: 0,
-            top: '100%',
-            marginTop: 4,
+            right: variant === 'inline' ? 4 : 0,
+            top: variant === 'inline' ? 'calc(100% + 2px)' : '100%',
+            marginTop: variant === 'inline' ? 0 : 4,
             minWidth: 140,
             padding: 4,
             borderRadius: 12,

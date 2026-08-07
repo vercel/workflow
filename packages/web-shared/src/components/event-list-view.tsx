@@ -2,7 +2,7 @@
 
 import { parseStepName, parseWorkflowName } from '@workflow/utils/parse-name';
 import type { Event, WorkflowRun } from '@workflow/world';
-import { Check, ChevronRight, Copy } from 'lucide-react';
+import { Check, ChevronRight, Copy, Search } from 'lucide-react';
 import type {
   KeyboardEvent as ReactKeyboardEvent,
   MouseEvent as ReactMouseEvent,
@@ -29,6 +29,7 @@ import {
   isStructuredError,
   type StructuredErrorRecord,
 } from './ui/error-stack-block';
+import { Kbd } from './ui/kbd';
 import { LoadMoreButton } from './ui/load-more-button';
 import { MenuDropdown } from './ui/menu-dropdown';
 import { Skeleton } from './ui/skeleton';
@@ -650,7 +651,11 @@ function RowsSkeleton({
   return (
     <div className="flex-1 overflow-hidden">
       {Array.from({ length: 16 }, (_, i) => (
-        <div key={i} className="flex items-center gap-0" style={{ height: 40 }}>
+        <div
+          key={i}
+          className="flex items-center gap-0 border-b border-gray-alpha-400"
+          style={{ height: 40 }}
+        >
           {/* Gutter area */}
           <div
             className="relative flex-shrink-0 self-stretch flex items-center"
@@ -966,6 +971,7 @@ export function EventRow({
   return (
     <div
       data-event-id={event.eventId}
+      className={isLast ? undefined : 'border-b border-gray-alpha-400'}
       onMouseEnter={() => onHoverGroup(rowGroupKey)}
       onMouseLeave={() => onHoverGroup(undefined)}
     >
@@ -978,7 +984,9 @@ export function EventRow({
         onKeyDown={(e) => {
           if (e.key === 'Enter' || e.key === ' ') handleRowClick();
         }}
-        className={`w-full text-left flex items-center gap-0 text-label-13 hover:bg-[var(--ds-gray-alpha-100)] transition-colors cursor-pointer ${FOCUS_RING_STYLE} focus-visible:-outline-offset-2`}
+        className={`w-full text-left flex items-center gap-0 text-label-13 transition-colors cursor-pointer ${
+          isExpanded ? 'bg-gray-100 hover:bg-gray-200' : 'hover:bg-gray-100'
+        } ${FOCUS_RING_STYLE} focus-visible:-outline-offset-2`}
         style={{ minHeight: 40 }}
       >
         <TreeGutter
@@ -1084,7 +1092,7 @@ export function EventRow({
 
       {/* Expanded details — tree lines continue through this area */}
       {isExpanded && (
-        <div className="flex">
+        <div className="flex border-t border-gray-alpha-400 bg-background-200">
           {/* Continuation gutter — lane line continues if not at lane end */}
           <TreeGutter
             isFirst={false}
@@ -1100,9 +1108,8 @@ export function EventRow({
           {/* Spacer for chevron column */}
           <div className="w-5 flex-shrink-0" />
           <div
-            className="flex-1 my-1.5 mr-3 ml-2 py-2 rounded-md border overflow-hidden"
+            className="flex-1 min-w-0 py-2 pr-4"
             style={{
-              borderColor: 'var(--ds-gray-alpha-400)',
               opacity: contentOpacity,
               transition: 'opacity 150ms',
             }}
@@ -1469,6 +1476,13 @@ function EventListViewInner({
 
   const handleSearchKeyDown = useCallback(
     (event: ReactKeyboardEvent<HTMLInputElement>) => {
+      if (event.key === 'Escape' && searchQuery) {
+        event.preventDefault();
+        event.stopPropagation();
+        setSearchQuery('');
+        return;
+      }
+
       if (event.key !== 'Enter') {
         return;
       }
@@ -1499,10 +1513,14 @@ function EventListViewInner({
 
   if (isInitialLoad) {
     return (
-      <div className="h-full flex flex-col overflow-hidden">
-        {/* Skeleton search bar */}
-        <div style={{ padding: 6 }}>
-          <Skeleton style={{ height: 40, borderRadius: 6 }} />
+      <div className="h-full flex flex-col overflow-hidden bg-background-100">
+        {/* Skeleton search header */}
+        <div className="flex h-10 min-h-10 items-center gap-1.5 border-b border-gray-alpha-400 pl-4 pr-2">
+          <Skeleton
+            className="w-3.5 h-3.5 shrink-0"
+            style={{ borderRadius: '50%' }}
+          />
+          <Skeleton className="h-3" style={{ width: 220 }} />
         </div>
         {/* Skeleton header */}
         <div
@@ -1536,54 +1554,17 @@ function EventListViewInner({
     <DecryptClickContext.Provider
       value={onDecrypt ? { onDecrypt, isDecrypting } : undefined}
     >
-      <div className="h-full flex flex-col overflow-hidden">
-        {/* Search bar + sort */}
-        <div
-          style={{
-            padding: 6,
-            backgroundColor: 'var(--ds-background-100)',
-            display: 'flex',
-            gap: 6,
-          }}
-        >
-          <label className="flex h-10 min-w-0 flex-1 items-center justify-center rounded-md bg-background-100 shadow-[0_0_0_1px_var(--ds-gray-alpha-400)] transition-shadow focus-within:shadow-[0_0_0_2px_var(--ds-focus-color)]">
-            <div
-              style={{
-                width: 40,
-                height: 40,
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                color: 'var(--ds-gray-800)',
-                flexShrink: 0,
-              }}
-            >
-              <svg
-                width={16}
-                height={16}
-                viewBox="0 0 16 16"
-                fill="none"
-                aria-hidden="true"
-                focusable="false"
-              >
-                <circle
-                  cx="7"
-                  cy="7"
-                  r="4.5"
-                  stroke="currentColor"
-                  strokeWidth="1.5"
-                />
-                <path
-                  d="M11.5 11.5L14 14"
-                  stroke="currentColor"
-                  strokeWidth="1.5"
-                  strokeLinecap="round"
-                />
-              </svg>
-            </div>
+      <div className="h-full flex flex-col overflow-hidden bg-background-100">
+        {/* Search + controls header */}
+        <div className="flex h-10 min-h-10 items-center border-b border-gray-alpha-400 bg-background-100">
+          <div className="flex h-full min-w-0 flex-1 items-center gap-1.5 pl-4 pr-2">
+            <Search className="w-3.5 h-3.5 shrink-0 text-gray-800" />
             <input
-              type="search"
+              id="event-list-search"
+              name="event-list-search"
+              type="text"
               placeholder="Search by step ID, wait ID, hook ID, or event ID…"
+              aria-label="Search events by exact ID"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               onKeyDown={handleSearchKeyDown}
@@ -1593,33 +1574,39 @@ function EventListViewInner({
                   ? undefined
                   : 'Exact ID search is unavailable in this view.'
               }
-              style={{
-                marginLeft: -16,
-                paddingInline: 12,
-                fontFamily: 'inherit',
-                fontSize: 14,
-                background: 'transparent',
-                border: 'none',
-                outline: 'none',
-                height: 40,
-                width: '100%',
-                opacity: onExactIdSearch ? 1 : 0.5,
-                cursor: onExactIdSearch ? 'text' : 'not-allowed',
-              }}
+              className="flex-1 min-w-0 bg-transparent text-label-14 text-gray-1000 placeholder:text-gray-800 outline-none disabled:cursor-not-allowed disabled:opacity-50"
             />
-          </label>
-          <MenuDropdown
-            options={SORT_OPTIONS}
-            value={effectiveSortOrder}
-            onChange={handleSortOrderChange}
-          />
+            {searchQuery && (
+              <button
+                type="button"
+                aria-label="Clear search"
+                onClick={() => setSearchQuery('')}
+                className="-mr-2 hidden h-full max-w-full shrink-0 cursor-pointer items-center rounded-r-md border-0 bg-transparent px-2.5 font-inherit text-label-16 text-gray-900 no-underline transition-colors duration-150 ease-in hover:text-gray-1000 focus-visible:-outline-offset-1 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--ds-focus-color)] min-[961px]:flex"
+              >
+                <Kbd variant="outline" size="search">
+                  Esc
+                </Kbd>
+              </button>
+            )}
+          </div>
           {(hasEncryptedData || encryptionKey) && onDecrypt && (
-            <DecryptButton
-              decrypted={!!encryptionKey}
-              loading={isDecrypting}
-              onClick={onDecrypt}
-            />
+            <div className="h-full shrink-0 border-l border-gray-alpha-400">
+              <DecryptButton
+                variant="inline"
+                decrypted={!!encryptionKey}
+                loading={isDecrypting}
+                onClick={onDecrypt}
+              />
+            </div>
           )}
+          <div className="h-full shrink-0 border-l border-gray-alpha-400">
+            <MenuDropdown
+              variant="inline"
+              options={SORT_OPTIONS}
+              value={effectiveSortOrder}
+              onChange={handleSortOrderChange}
+            />
+          </div>
         </div>
 
         {/* Header */}
