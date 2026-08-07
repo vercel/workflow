@@ -2,6 +2,7 @@
 
 import { type Event, getEventDataRefFields } from '@workflow/world';
 import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { getEventStatusDotColor } from '../../lib/event-status';
 import { hasEncryptedFields, isExpiredMarker } from '../../lib/hydration';
 import {
   Collapsible,
@@ -14,7 +15,7 @@ import { ErrorCard } from '../ui/error-card';
 import { ErrorStackBlock, isStructuredError } from '../ui/error-stack-block';
 import { Skeleton } from '../ui/skeleton';
 import { TimestampTooltip } from '../ui/timestamp-tooltip';
-import { AttrSetEventBlock } from './attributes-block';
+import { AttrSetEventBlock, DetailMonoKeyValueRow } from './attributes-block';
 import { CopyableDataBlock, EncryptedDataBlock } from './copyable-data-block';
 
 const parseDateValue = (value: unknown): Date | null => {
@@ -117,6 +118,7 @@ function EventItem({
       hour: 'numeric',
       minute: 'numeric',
       second: 'numeric',
+      fractionalSecondDigits: 3,
     }
   );
 
@@ -134,43 +136,50 @@ function EventItem({
       }
     >
       <CollapsibleTrigger className="px-3 py-2">
-        <div className="flex w-full items-center justify-between gap-3">
-          <span className="text-gray-1000 text-label-12 font-mono">
-            {event.eventType}
+        <div className="flex w-full min-w-0 items-center justify-between gap-3">
+          <span className="flex min-w-0 items-center gap-1.5">
+            <span
+              aria-hidden="true"
+              className="inline-flex h-1.5 w-1.5 shrink-0 rounded-full"
+              style={{
+                backgroundColor: getEventStatusDotColor(event.eventType),
+              }}
+            />
+            <span className="truncate text-gray-1000 text-label-12 font-mono">
+              {event.eventType}
+            </span>
           </span>
-          <span className="shrink-0 text-label-13 text-gray-900">
-            {displayedCreatedAtTime}
-          </span>
+          <TimestampTooltip date={displayedCreatedAt}>
+            <span className="shrink-0 text-label-12-mono text-gray-900">
+              {displayedCreatedAtTime}
+            </span>
+          </TimestampTooltip>
         </div>
       </CollapsibleTrigger>
       <CollapsibleContent>
         {/* Event attributes */}
-        <div className="flex flex-col bg-background-200 [&:has(+_*)]:border-b [&:has(+_*)]:border-gray-alpha-400">
+        <div className="flex flex-col bg-background-200 px-3 py-1.5 [&:has(+_*)]:border-b [&:has(+_*)]:border-gray-alpha-400">
           {showSeparateEventOccurrenceTimestamps && occurredAt && (
-            <div className="flex items-center justify-between gap-2 py-2 px-3">
-              <span className="text-label-12 text-gray-900">Occurred</span>
-              <TimestampTooltip date={occurredAt}>
-                <span className="max-w-[70%] truncate text-right text-label-12 font-mono">
-                  {formatEventTimestamp(occurredAt)}
-                </span>
-              </TimestampTooltip>
-            </div>
+            <DetailMonoKeyValueRow
+              label="Occurred"
+              value={
+                <TimestampTooltip date={occurredAt}>
+                  <span>{formatEventTimestamp(occurredAt)}</span>
+                </TimestampTooltip>
+              }
+            />
           )}
-          <div className="flex items-center justify-between gap-2 py-2 px-3">
-            <span className="text-label-12 text-gray-900">Event ID</span>
-            <span className="max-w-[70%] truncate text-right text-label-12 font-mono">
-              {event.eventId}
-            </span>
-          </div>
+          <DetailMonoKeyValueRow
+            label="Event ID"
+            value={event.eventId}
+            copyText={event.eventId}
+          />
           {event.correlationId && (
-            <div className="flex items-center justify-between gap-2 py-2 px-3">
-              <span className="text-label-12 text-gray-900">
-                Correlation ID
-              </span>
-              <span className="max-w-[70%] truncate text-right text-label-12 font-mono">
-                {event.correlationId}
-              </span>
-            </div>
+            <DetailMonoKeyValueRow
+              label="Correlation ID"
+              value={event.correlationId}
+              copyText={event.correlationId}
+            />
           )}
         </div>
 
