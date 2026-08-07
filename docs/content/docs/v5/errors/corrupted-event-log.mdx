@@ -30,6 +30,7 @@ Common scenarios that produce this error:
 1. **Duplicate completion events** — Two `wait_completed` events for a single `wait_created`, or two `step_completed` events for the same step. The first is consumed normally, but the second has no consumer.
 2. **Orphaned events** — A `step_completed` or `wait_completed` event whose `correlationId` doesn't match any step or sleep in the workflow code.
 3. **Events after terminal state** — An event that arrives after its corresponding step or wait has already reached a terminal state (e.g., `step_retrying` after `step_completed`).
+4. **A hole in the log** — On backends that number events by position, a position below the log's highest that holds no event. The runtime cannot tell a position no write ever occupied from one whose event it failed to read, so it refuses to replay rather than produce a result that may be silently wrong. See [`WORKFLOW_SLOT_GAP_CHECK`](/docs/configuration/runtime-tuning#workflow_slot_gap_check).
 
 ## What To Do
 
