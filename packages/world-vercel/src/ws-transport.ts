@@ -90,11 +90,6 @@ class WsEventsTransport {
   }
 
   private connect(): Promise<WebSocket> {
-    // POC diagnostics: the `ws` library's "Unexpected server response: 404"
-    // error doesn't include the URL it was connecting to, which makes a
-    // wrong-path bug indistinguishable from a platform/entitlement issue in
-    // the logs. Log the exact URL on every attempt and on every failure.
-    console.error(`[workflow] ws-transport: connecting to ${this.wsUrl}`);
     return new Promise((resolve, reject) => {
       const ws = new WebSocket(this.wsUrl, { headers: this.headers });
       ws.binaryType = 'nodebuffer';
@@ -109,23 +104,9 @@ class WsEventsTransport {
         void this.handleMessage(new Uint8Array(raw));
       });
 
-      ws.on('unexpected-response', (_req, res) => {
-        console.error(
-          `[workflow] ws-transport: unexpected-response connecting to ${this.wsUrl}: ` +
-            `HTTP ${res.statusCode} ${res.statusMessage}`
-        );
-      });
-
       ws.on('error', (err) => {
         this.connecting = null;
-        const wrapped =
-          err instanceof Error
-            ? new Error(`${err.message} (connecting to ${this.wsUrl})`, {
-                cause: err,
-              })
-            : err;
-        console.error('[workflow] ws-transport: connect failed', wrapped);
-        reject(wrapped);
+        reject(err);
       });
 
       ws.on('close', () => {

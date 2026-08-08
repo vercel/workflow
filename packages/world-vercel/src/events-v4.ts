@@ -537,36 +537,16 @@ export async function createWorkflowRunEventV4(
   const eventId = response.headers.get(V4_RESPONSE_HEADERS.eventId);
   const runId = response.headers.get(V4_RESPONSE_HEADERS.runId);
   const createdAt = response.headers.get(V4_RESPONSE_HEADERS.createdAt);
-
-  // Read the body once up front (a real fetch Response only allows one
-  // read) so it's available both for the diagnostic dump below and for the
-  // normal CBOR decode path.
-  const bodyBytes = new Uint8Array(await response.arrayBuffer());
-
   if (
     typeof eventId !== 'string' ||
     typeof runId !== 'string' ||
     typeof createdAt !== 'string'
   ) {
-    // POC diagnostics: a 2xx response with none of the x-wf-* headers is the
-    // signature of Deployment Protection serving a 200 challenge/interstitial
-    // page instead of forwarding to the real handler (see
-    // ~/notes/websocket-workflow-server.md). Dump enough of the response to
-    // tell that apart from a genuine server-side bug — the digest-only error
-    // Next.js shows client-side in production hides this otherwise.
-    const bodyPreview = new TextDecoder().decode(bodyBytes).slice(0, 500);
-    const status = response.status ?? 'unknown';
-    const contentType = response.headers.get('content-type');
-    console.error(
-      '[workflow] v4 createEvent: response missing x-wf-* headers',
-      { status, contentType, bodyPreview }
-    );
-    throw new Error(
-      `v4 createEvent: response missing required x-wf-* headers (status=${status}, content-type=${contentType}): ${bodyPreview}`
-    );
+    throw new Error('v4 createEvent: response missing required x-wf-* headers');
   }
 
   // Decode the materialized-entity bag from the CBOR response body.
+  const bodyBytes = new Uint8Array(await response.arrayBuffer());
   const body =
     bodyBytes.byteLength > 0
       ? (decode(bodyBytes) as CreateEventV4Result['body'])
@@ -585,10 +565,6 @@ export async function createWorkflowRunEventV4(
 interface FrameResponseLike {
   headers: { get(name: string): string | null };
   arrayBuffer(): Promise<ArrayBuffer>;
-  /** Present on the real HTTP `Response`; undefined on the WS branch's
-   *  synthetic object (which never reaches this far on a non-2xx reply —
-   *  see postEventFrameOverWs's own status check). */
-  status?: number;
 }
 
 /**

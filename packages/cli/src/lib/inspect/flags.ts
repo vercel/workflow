@@ -74,14 +74,14 @@ export const cliFlags = {
   env: Flags.string({
     description: 'If backend is vercel, the vercel environment to use',
     required: false,
-    options: ['production', 'preview', 'development'],
+    options: ['production', 'preview'],
     default: 'production',
     char: 'e',
     dependsOn: ['backend'],
     env: 'WORKFLOW_VERCEL_ENV',
     helpGroup: 'Target',
     helpLabel: '-e, --env',
-    helpValue: ['production', 'preview', 'development'],
+    helpValue: ['production', 'preview'],
     defaultHelp: 'production',
   }),
   web: Flags.boolean({
