@@ -33,6 +33,10 @@ export { createNodeModuleErrorPlugin } from './node-module-esbuild-plugin.js';
 export { WORKFLOW_OPTIONAL_OTEL_API_MODULE } from './optional-otel-api.js';
 export { WORKFLOW_OPTIONAL_TYPESCRIPT_ALIAS } from './optional-typescript-alias.js';
 export {
+  isOptionalWsNativeModule,
+  WORKFLOW_OPTIONAL_WS_NATIVE_MODULES,
+} from './optional-ws-native.js';
+export {
   createPseudoPackagePlugin,
   PSEUDO_PACKAGES,
 } from './pseudo-package-esbuild-plugin.js';

@@ -4,6 +4,7 @@ import { dirname, isAbsolute, join } from 'node:path';
 import {
   resolveConfiguredProjectRoot,
   resolveProjectRoot,
+  WORKFLOW_OPTIONAL_WS_NATIVE_MODULES,
 } from '@workflow/builders';
 import type { NextConfig } from 'next';
 import semver from 'semver';
@@ -322,19 +323,19 @@ function registerWorkflowDiagnosticsManifestCopy(metadata: {
 }
 
 /**
- * `ws` (used by world-vercel's events WS transport) has optional native
- * accelerator deps (`bufferutil`, `utf-8-validate`). Webpack bundles their JS
- * wrapper but can't bundle the native `.node` binding, leaving a broken
- * partial import that throws "bufferUtil.mask is not a function" at runtime
- * on the server build (Turbopack doesn't hit this — it externalizes Node
- * packages differently). Mark them external so `ws` resolves them via a real
- * `require()` from node_modules at runtime instead, where it falls back to
- * its pure-JS implementation if they're absent.
+ * Mark `ws`'s optional native accelerators external on the webpack server
+ * build. Webpack bundles their JS wrapper but can't bundle the native `.node`
+ * binding, leaving a broken partial import that throws
+ * "bufferUtil.mask is not a function" at runtime (Turbopack doesn't hit this —
+ * it externalizes Node packages differently). See
+ * `WORKFLOW_OPTIONAL_WS_NATIVE_MODULES` for the full rationale; the Rollup /
+ * Vite / Nitro side of the same problem is handled in
+ * `@workflow/rollup`'s `workflowTransformPlugin`.
  */
 function externalizeWsNativeAccelerators(webpackConfig: {
   externals?: unknown;
 }): void {
-  const names = ['bufferutil', 'utf-8-validate'];
+  const names = [...WORKFLOW_OPTIONAL_WS_NATIVE_MODULES];
   if (Array.isArray(webpackConfig.externals)) {
     webpackConfig.externals.push(...names);
   } else if (webpackConfig.externals) {

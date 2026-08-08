@@ -3,6 +3,7 @@ import { transform } from '@swc/core';
 import {
   detectWorkflowPatterns,
   isGeneratedWorkflowFile,
+  isOptionalWsNativeModule,
   resolveModuleSpecifier,
   shouldTransformFile,
   WORKFLOW_OPTIONAL_OTEL_API_MODULE,
@@ -47,6 +48,19 @@ export function workflowTransformPlugin(
             skipSelf: true,
           });
           return resolved ?? { id: source, external: true };
+        }
+
+        // `ws`'s optional native accelerators (`bufferutil`,
+        // `utf-8-validate`). Unlike the OTEL peer above, these are
+        // externalized UNCONDITIONALLY rather than only-when-unresolvable:
+        // `ws` requires them in a try/catch and falls back to pure JS, so a
+        // failed runtime require is the designed path, whereas a *partially*
+        // bundled native module is not. Without this, Rollup fails the build
+        // with `Could not resolve "bufferutil" imported by "ws"` whenever the
+        // accelerators aren't installed — which is the default. See
+        // WORKFLOW_OPTIONAL_WS_NATIVE_MODULES for the full rationale.
+        if (isOptionalWsNativeModule(source)) {
+          return { id: source, external: true };
         }
 
         return null;

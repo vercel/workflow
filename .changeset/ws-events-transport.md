@@ -1,5 +1,7 @@
 ---
 '@workflow/world-vercel': minor
+'@workflow/builders': patch
+'@workflow/rollup': patch
 '@workflow/next': patch
 ---
 
@@ -11,4 +13,4 @@ The transport resolves the auth token once per socket rather than once per event
 
 Known gap: unlike the HTTP path, WS event writes do not go through `instrumentedFetch`, so they open no OTEL client span, propagate no trace context, and do not appear in Vercel's outgoing-requests view. Instrumenting the transport is a prerequisite for making `ws` the default.
 
-Also externalizes `ws`'s optional native accelerators (`bufferutil`, `utf-8-validate`) in webpack builds so `ws` still bundles and falls back to its pure-JS implementation when those packages aren't installed.
+Also marks `ws`'s optional native accelerators (`bufferutil`, `utf-8-validate`) external across the supported bundlers, so `ws` falls back to its pure-JS implementation instead of breaking the build. Neither package is installed by default, and each bundler fails differently: Rollup/Vite/Nitro fail the build outright on the unresolvable `require`, while webpack bundles the JS wrapper without its native binding and throws at runtime. The webpack side is handled in `@workflow/next`; the Rollup side is handled in `@workflow/rollup`'s `workflowTransformPlugin`, which `@workflow/nitro`, `@workflow/nuxt`, `@workflow/sveltekit` and `@workflow/astro` all already install — so this no longer requires per-app bundler config.
