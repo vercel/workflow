@@ -673,18 +673,18 @@ async function postEventFrameOverWs(
       `world-vercel: using ws events transport (baseUrl: ${baseUrl}).`
     );
   }
-  const wsUrl = toEventsWsUrl(baseUrl);
+  const wsUrl = toEventsWsUrl(baseUrl, runId);
   const transport = getWsEventsTransport(wsUrl, headersToRecord(headers));
 
-  // `runId` travels in-band under `event` here — over HTTP it comes from
-  // the URL path instead, since there's no per-message URL on a shared WS
-  // connection. The server's WsRequestFrameSchema (frames.ts) is a
-  // discriminated union on `type`, with the type's payload nested under a
-  // field named after it — `event: { runId, ...meta }` for `type: 'event'`
-  // — so a future request type is a new variant, not a reshape of what's
-  // already on the wire. See the server's docs/ws-protocol.md.
+  // `runId` is NOT repeated here — it's already in `wsUrl` (the connection
+  // is scoped to this one run). The server's WsRequestFrameSchema
+  // (frames.ts) is a discriminated union on `type`, with the type's
+  // payload nested under a field named after it — `event: meta` for
+  // `type: 'event'` — so a future request type is a new variant, not a
+  // reshape of what's already on the wire. See the server's
+  // docs/ws-protocol.md.
   const reply = await transport.request((reqId) =>
-    encodeFrame({ reqId, type: 'event', event: { ...meta, runId } }, payload)
+    encodeFrame({ reqId, type: 'event', event: meta }, payload)
   );
 
   const status =

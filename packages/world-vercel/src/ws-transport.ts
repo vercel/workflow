@@ -186,16 +186,23 @@ export function getWsEventsTransport(
 }
 
 /**
- * Derive the WS protocol endpoint URL from the (http/https) base URL used
- * for v4 REST calls. Path is `/websockets/v1` — a general-purpose entry
- * point versioned independently of the `v4` REST API version this
- * transport happens to forward `event` frames into (was `/v4/events/ws`;
- * see the server's `docs/ws-protocol.md` for why the two version axes are
- * kept separate).
+ * Derive the WS protocol endpoint URL for one run, from the (http/https)
+ * base URL used for v4 REST calls. Path is `/websockets/v1/runs/:runId` —
+ * a general-purpose entry point versioned independently of the `v4` REST
+ * API version this transport happens to forward `event` frames into (was
+ * `/v4/events/ws`, then `/websockets/v1` with no `runId`; see the server's
+ * `docs/ws-protocol.md` for why the two version axes are kept separate).
+ *
+ * Scoped to one run rather than shared across runs: a single SDK client
+ * instance only ever drives one run, never several concurrently, so
+ * there's no multi-run multiplexing to support — `runId` belongs on the
+ * connection, not repeated on every frame. `getWsEventsTransport` caches
+ * one physical socket per `wsUrl`, so this naturally yields one socket
+ * per run.
  */
-export function toEventsWsUrl(baseUrl: string): string {
+export function toEventsWsUrl(baseUrl: string, runId: string): string {
   const url = new URL(baseUrl);
   url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
-  url.pathname = `${url.pathname.replace(/\/$/, '')}/websockets/v1`;
+  url.pathname = `${url.pathname.replace(/\/$/, '')}/websockets/v1/runs/${encodeURIComponent(runId)}`;
   return url.toString();
 }
