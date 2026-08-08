@@ -168,35 +168,3 @@ export function toEventsWsUrl(baseUrl: string): string {
   url.pathname = `${url.pathname.replace(/\/$/, '')}/v4/events/ws`;
   return url.toString();
 }
-
-/**
- * TEMP test-only helper: open a bare `ws` connection with custom headers
- * (needed for the OIDC/trusted-sources handshake, same reason as
- * `WsEventsTransport` above) and collect every text message it receives
- * until the socket closes. No framing, no multiplexing — just enough to
- * smoke-test that a raw WebSocket upgrade against a deployment works.
- * Exists to debug the http->ws exploration; remove once that's settled.
- */
-export function collectWsMessages(
-  url: string,
-  headers: Record<string, string>,
-  timeoutMs = 15_000
-): Promise<string[]> {
-  return new Promise((resolve, reject) => {
-    const messages: string[] = [];
-    const ws = new WebSocket(url, { headers });
-    const timer = setTimeout(() => {
-      ws.terminate();
-      reject(new Error(`collectWsMessages: timed out after ${timeoutMs}ms`));
-    }, timeoutMs);
-    ws.on('message', (data) => messages.push(data.toString()));
-    ws.on('close', () => {
-      clearTimeout(timer);
-      resolve(messages);
-    });
-    ws.on('error', (err) => {
-      clearTimeout(timer);
-      reject(err);
-    });
-  });
-}
