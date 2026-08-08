@@ -1,82 +1,21 @@
 /**
- * WebSocket transport for v4 event POSTs (POC — see workflow-architecture.md
- * notes on the http→ws exploration, and the server's `docs/ws-protocol.md`
- * for the full normative wire-format/lifecycle spec this file implements
- * the client half of).
+ * Client half of the events WebSocket protocol. The normative wire-format and
+ * lifecycle spec is the server's `docs/ws-protocol.md`.
  *
- * One physical socket per (wsUrl) is kept open and shared across concurrent
- * `createWorkflowRunEventV4` calls. Every frame's meta is `{ reqId, type,
- * ... }`, with the type-specific payload nested under a field named after
- * `type` (only `event` is sent by this file today). Each logical request
- * gets a `reqId` assigned here and embedded in the outgoing frame (by the
- * caller, before `encodeFrame`); replies are matched back to their caller
- * via the same `reqId` echoed in the reply frame's meta. This mirrors the
- * multiplexing pattern already proven in the echo-bench `WsProxy`
- * (nextjs-app-1/app/echobench/ws-proxy.ts): lazy/shared connect, one socket,
- * many in-flight requests keyed by id.
+ * One socket per `wsUrl` — which embeds the runId — is shared across concurrent
+ * `createWorkflowRunEventV4` calls and multiplexed by `reqId`. Frame meta is
+ * `{ reqId, type, ... }`, with the type-specific payload nested under a field
+ * named after `type` (only `event` is sent today). The caller builds the meta;
+ * this file owns the socket and the reqId<->promise bookkeeping.
  *
- * `reqId` and the pending-reply map are **per connection**, not per
- * transport: the protocol defines `reqId` as a per-connection counter, so
- * a reconnected socket restarts at 1 and would otherwise collide with the
- * previous socket's still-registered waiters. Binding both to the
- * connection object makes that structurally impossible rather than
- * something the close/reconnect paths have to remember to clean up.
+ * Every failure mode has to reach the caller waiting on it — a swallowed error
+ * here is a hung invocation, not a lost log line. Whether a failed write is
+ * re-sent is `event-retry.ts`'s decision, not this file's: `WsTransportError`
+ * is mapped to the same `code: 'TRANSPORT'` shape a failed `fetch` produces.
  *
- * Failure handling, in short — every failure mode has to reach the caller
- * that is waiting on it, because a swallowed error here means a hung
- * invocation, not a lost log line. Reaching the caller is where this file's
- * responsibility ends: whether a failed write is re-sent is decided by
- * `event-retry.ts`, the one layer that knows which event types are safe to
- * replay (see `WsTransportError`):
- *
- * - **Socket errors** (broken pipe, oversize-payload 1009, protocol
- *   faults) are logged and tear the connection down. Previously the only
- *   `'error'` listener closed over the connect promise's `reject`, which
- *   is already settled once `'open'` has fired, so every post-open error
- *   was swallowed whole.
- * - **Send failures** reject the specific request. `ws.send()` on a
- *   non-OPEN socket does not throw — it reports through its callback (or,
- *   with no callback, emits `'error'`), so without the callback the
- *   request just sat in `pending` forever.
- * - **Uncorrelatable replies** — undecodable frames, the server's reserved
- *   malformed-frame sentinel (`reqId: -1`), a non-numeric `reqId` — are
- *   logged loudly *and* fail the connection (`failConnection`). None can be
- *   matched to a caller by construction, so logging alone left the
- *   originating write pending with nothing able to answer it. The lone
- *   exception is a reply for an id nobody is waiting on, which means that
- *   request already settled and nothing is orphaned.
- * - **A reply that never comes** is bounded by a per-request deadline set
- *   from the same `WORKFLOW_REQUEST_TIMEOUT_MS` the HTTP path uses.
- * - **Unexpected closes** eagerly reconnect (bounded backoff, see
- *   `scheduleReconnect`), on the reasoning that a socket breaking
- *   mid-run means more writes are coming. This also covers the server's
- *   graceful `drain` → `1001` sequence: the drain frame itself is
- *   informational, and the close it precedes is what triggers the
- *   reconnect. In-flight requests at close time still fail and are the
- *   caller's to retry — the server makes those retries safe via
- *   conditional writes on the entity (see the spec's idempotency notes).
- *   A drain carrying `reason: 'auth_expiry'` is the exception: the token,
- *   not the socket, is what ran out, so the reconnect forces a fresh one
- *   and gives up rather than looping if it can't get one.
- *
- * **Lifecycle.** A transport releases its socket after `IDLE_TIMEOUT_MS`
- * with no writes and evicts itself from the module-level cache. Eager
- * reconnect means a connection otherwise renews itself indefinitely, and
- * the server pins one invocation per connection — so without an idle
- * release, a warm container would hold a live socket (and a live server
- * invocation) for every run it had ever served, long after those runs
- * finished. `request()` revives an idle-closed transport, so the eviction
- * is invisible to callers beyond one extra handshake. `warm()` opens the
- * socket at the *start* of an invocation rather than on its first write, so
- * the handshake isn't billed to whichever event happens to be written first.
- *
- * Deliberately uses the `ws` package (not the WHATWG global `WebSocket`):
- * the global constructor has no way to send custom headers on the upgrade
- * request, and `Authorization`/tenant headers need to ride the handshake
- * (auth happens once per connection, not per message — see the notes on
- * what moves from HTTP headers into frame meta vs. the handshake). It is
- * loaded lazily — see `loadWebSocketCtor` — so the default HTTP path never
- * pays for it.
+ * Uses the `ws` package rather than the WHATWG global `WebSocket`, which cannot
+ * set headers on the upgrade request — auth rides the handshake, once per
+ * connection instead of once per message.
  */
 
 import type { WebSocket } from 'ws';
@@ -84,25 +23,15 @@ import { type DecodedFrame, decodeFrames } from './frames.js';
 import { getRequestTimeoutMs } from './http-core.js';
 
 /**
- * `ws` is loaded on demand, not at module scope.
+ * `ws` is loaded on first connect, not at module scope. `events-v4.ts` imports
+ * this module unconditionally (the transport gate is a runtime branch), so a
+ * static import would put `ws` on the module-init path of every deployment,
+ * including the majority that never enable the transport. Memoized as a promise
+ * so concurrent first connects share one import.
  *
- * `events-v4.ts` imports this module unconditionally (the transport gate is
- * a runtime branch, not a build-time one), so a top-level `import { WebSocket }
- * from 'ws'` put `ws` on the module-init path of every deployment — including
- * the overwhelming majority that never set `WORKFLOW_EVENTS_TRANSPORT=ws` and
- * never open a socket. Deferring it to the first connect keeps `ws` and its
- * optional native accelerators entirely off the default path's cold start.
- *
- * This does NOT remove the need for the bundler config this PR also adds:
- * webpack and Rollup both still statically follow a dynamic `import()`, so
- * `bufferutil`/`utf-8-validate` must still be externalized for the build to
- * succeed (Rollup) and for `ws` to fall back to its pure-JS implementation at
- * runtime (webpack). What it does buy is that a deployment which never enables
- * the transport never *evaluates* `ws`, so a mis-bundled accelerator can't
- * break it.
- *
- * Memoized as a promise rather than an awaited value so concurrent first
- * connects share one import.
+ * This does not replace the bundler config that externalizes
+ * `bufferutil`/`utf-8-validate`: both webpack and Rollup still statically
+ * follow a dynamic `import()`.
  */
 type WebSocketCtor = typeof import('ws').WebSocket;
 let wsCtorPromise: Promise<WebSocketCtor> | null = null;
@@ -111,8 +40,8 @@ function loadWebSocketCtor(): Promise<WebSocketCtor> {
   return wsCtorPromise;
 }
 
-/** `WebSocket.OPEN`, inlined so the readyState check doesn't force the
- *  module to be loaded just to read a constant off the constructor. */
+/** `WebSocket.OPEN`, inlined so a readyState check doesn't force the module to
+ *  load just to read a constant off the constructor. */
 const WS_READY_STATE_OPEN = 1;
 
 export interface WsFrameReply {
@@ -124,17 +53,12 @@ export interface WsFrameReply {
  * A transport-level failure: the socket closed, the frame could not be handed
  * to it, or a reply arrived that cannot be correlated to a caller. Distinct
  * from an application-level error (a reply frame carrying a non-2xx status),
- * which is raised by the events adapter as a typed `@workflow/errors` error
- * instead.
+ * which the events adapter raises as a typed `@workflow/errors` error.
  *
- * Deliberately carries no retry policy of its own. `postEventFrameOverWs`
- * maps it to a `WorkflowWorldError` with `code: 'TRANSPORT'` — the same
- * classification the HTTP path produces in `utils.ts` — so the one shared
- * event-write retry policy (`event-retry.ts`, which alone knows which event
- * types are idempotent-on-retry) and the runtime's queue redelivery
- * (`isRetryableWorldError`) both apply to WS writes without a WS-specific
- * branch. Every failure this class represents happens before the frame is
- * acked, so re-sending is safe wherever that policy allows it.
+ * Carries no retry policy of its own — `postEventFrameOverWs` maps it to a
+ * `WorkflowWorldError` with `code: 'TRANSPORT'` so the shared event-write retry
+ * policy covers both transports with no WS-specific branch. Every failure this
+ * represents happens before the frame is acked.
  */
 export class WsTransportError extends Error {
   constructor(message: string, opts?: { cause?: unknown }) {
@@ -149,9 +73,10 @@ interface PendingRequest {
 }
 
 /**
- * Everything scoped to one socket. `nextReqId` and `pending` live here
- * rather than on the transport so a reconnect starts from a clean slate —
- * see the note on per-connection ids in the file header.
+ * Everything scoped to one socket. `nextReqId` and `pending` live here rather
+ * than on the transport because the protocol defines `reqId` as a
+ * per-connection counter: a reconnected socket restarts at 1 and would
+ * otherwise collide with the previous socket's still-registered waiters.
  */
 interface Connection {
   ws: WebSocket;
@@ -159,50 +84,38 @@ interface Connection {
   pending: Map<number, PendingRequest>;
 }
 
-/**
- * Reserved reqId the server replies under when a frame was too malformed
- * to recover a real reqId from (`MALFORMED_FRAME_REQ_ID` in the server's
- * websockets route). Never collides with a client-issued id — those start
- * at 1 and only increase.
- */
+/** Reserved reqId the server replies under when a frame was too malformed to
+ *  recover a real one from. Client-issued ids start at 1 and only increase. */
 const MALFORMED_FRAME_REQ_ID = -1;
 
-// Eager reconnect after an unexpected close, bounded so a server that is
-// down (or an upgrade that is being rejected outright) can't turn into a
-// hot reconnect loop. Once the attempts are exhausted the transport goes
-// quiet and the next `request()` reconnects lazily instead.
+// Bounded so a server that is down, or an upgrade being rejected outright,
+// can't become a hot reconnect loop. Once exhausted the transport goes quiet
+// and the next `request()` reconnects lazily instead.
 const RECONNECT_MAX_ATTEMPTS = 5;
 const RECONNECT_BASE_DELAY_MS = 100;
 const RECONNECT_MAX_DELAY_MS = 5_000;
 
 /**
- * How long a transport may sit with no in-flight and no new writes before it
- * drops its socket and evicts itself from the process-wide cache.
+ * How long a transport may sit with nothing in flight before dropping its
+ * socket and evicting itself from the cache.
  *
- * Without this, a warm container accumulates one permanently self-renewing
- * socket per `runId` it has ever served: the server drains at its own
- * `maxDuration` and closes, the eager reconnect immediately reopens, and the
- * server pins a fresh invocation for a run that finished long ago. The
- * transport has no "run complete" signal to hang teardown off — the events
- * adapter is a stateless per-write call — so idleness is the available proxy.
+ * The server pins one invocation per connection, and eager reconnect means a
+ * connection renews itself indefinitely — so without this a warm container
+ * holds a live socket, and a live server invocation, for every run it has ever
+ * served. There is no "run complete" signal to hang teardown off (the events
+ * adapter is a stateless per-write call), so idleness is the available proxy.
  *
- * Chosen well below the server's own drain deadline (~680s) so the common
- * case is the client releasing the connection, not the server reclaiming it,
- * and well above the gap between steps of an active run so a live run doesn't
- * pay a handshake per step.
+ * Below the server's own drain deadline (~680s) so the client is normally the
+ * one releasing, and well above the gap between steps of an active run.
  */
 const IDLE_TIMEOUT_MS = 60_000;
 
-/**
- * Server-sent reason on a `drain` frame. Absent on servers predating the
- * field, in which case the drain is treated as `max_duration` — the only
- * thing the original protocol drained for.
- */
+/** Absent on servers predating the field, which only ever drained for
+ *  maxDuration — so absent reads as `max_duration`. */
 type DrainReason = 'max_duration' | 'auth_expiry';
 
-/** Case-insensitive read of the Authorization header out of a header record.
- *  `Headers.forEach` lowercases keys, but `getHeaders` is a caller-supplied
- *  thunk and shouldn't have to guarantee that. */
+/** `getHeaders` is a caller-supplied thunk and shouldn't have to guarantee
+ *  lowercased keys the way `Headers.forEach` does. */
 function readAuthorization(headers: Record<string, string>): string | null {
   for (const [key, value] of Object.entries(headers)) {
     if (key.toLowerCase() === 'authorization') return value;
@@ -220,8 +133,8 @@ async function decodeOneFrame(raw: Uint8Array): Promise<DecodedFrame> {
   throw new Error('ws-transport: received an empty/unframed message');
 }
 
-/** Pull the `{ "message": string }` JSON an `error` frame carries as its
- *  body, falling back to the raw text if it isn't shaped that way. */
+/** Pull the `{ "message": string }` JSON an `error` frame carries as its body,
+ *  falling back to the raw text if it isn't shaped that way. */
 function errorFrameMessage(body: Uint8Array): string {
   if (body.byteLength === 0) return '(no message)';
   const text = new TextDecoder().decode(body);
@@ -238,11 +151,8 @@ function describeError(err: unknown): string {
 }
 
 /**
- * One multiplexed connection to the events WS endpoint. Not exported —
- * callers go through `getWsEventsTransport`, which caches one instance per
- * `wsUrl` for the lifetime of the process. Since `wsUrl` carries the
- * `runId` and an SDK client instance only ever drives one run, that
- * naturally yields one socket per run.
+ * One multiplexed connection to the events WS endpoint. Not exported — callers
+ * go through `getWsEventsTransport`, which caches one instance per `wsUrl`.
  */
 class WsEventsTransport {
   private connection: Connection | null = null;
@@ -251,17 +161,16 @@ class WsEventsTransport {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private idleTimer: ReturnType<typeof setTimeout> | null = null;
   private inFlight = 0;
-  /** Set by `close()`. Suppresses reconnects so an intentional teardown
-   *  can't be immediately undone by the close handler it triggers. */
+  /** Set by `close()`. Suppresses reconnects so an intentional teardown can't
+   *  be undone by the close handler it triggers. */
   private closed = false;
-  /** Reason carried by the most recent `drain` frame, consumed by the
-   *  `close` that follows it. */
+  /** Reason from the most recent `drain`, consumed by the close that follows. */
   private lastDrainReason: DrainReason | null = null;
-  /** Set when a drain told us the *token* expired rather than the socket
-   *  ageing out — the next connect must not reuse the same bearer. */
+  /** A drain said the *token* expired, not that the socket aged out — the next
+   *  connect must not reuse the same bearer. */
   private needsFreshToken = false;
-  /** Authorization header the current/most recent socket was opened with,
-   *  so a forced refresh can tell whether it actually produced a new one. */
+  /** Authorization the current socket was opened with, so a forced refresh can
+   *  tell whether it actually produced a new one. */
   private lastAuthorization: string | null = null;
 
   constructor(
@@ -271,20 +180,16 @@ class WsEventsTransport {
     }) => Promise<Record<string, string>>
   ) {}
 
-  /**
-   * Send one request frame and wait for its matching reply frame.
-   * `buildFrame` receives the reqId to embed in the meta before framing —
-   * the caller owns meta construction (buildPostFrameMeta), this class only
-   * owns the socket and the reqId<->promise bookkeeping.
-   */
+  /** Send one request frame and wait for its matching reply. `buildFrame`
+   *  receives the reqId to embed in the meta before framing. */
   async request(
     buildFrame: (reqId: number) => Uint8Array
   ): Promise<WsFrameReply> {
     this.cancelIdleTimer();
     if (this.closed) {
       // A caller holding a reference to an idle-closed transport. Revive it
-      // rather than failing the write, and re-register only if nothing else
-      // has claimed the slot in the meantime (a newer instance must win).
+      // rather than failing the write, re-registering only if nothing else has
+      // claimed the slot meanwhile (a newer instance must win).
       this.closed = false;
       if (!transports.has(this.wsUrl)) transports.set(this.wsUrl, this);
     }
@@ -299,15 +204,11 @@ class WsEventsTransport {
       try {
         return await new Promise<WsFrameReply>((resolve, reject) => {
           conn.pending.set(reqId, { resolve, reject });
-          // Backstop deadline, deliberately the same knob the HTTP path uses
-          // (`WORKFLOW_REQUEST_TIMEOUT_MS`, 60s): without it, a reply that
-          // never arrives for a reason not covered by the socket's own error
-          // and close handling blocks the caller until the platform's
-          // `maxDuration` SIGTERM — the exact pathology `REQUEST_TIMEOUT_MS`
-          // exists to prevent for `fetch`. The known uncorrelatable cases
-          // fail their connection eagerly (see `failConnection`); this
-          // catches whatever is left, including a server that accepts a frame
-          // and simply never answers it.
+          // Deliberately the same knob the HTTP path uses. Without it, a reply
+          // that never arrives for a reason the error/close handling doesn't
+          // cover blocks the caller until the platform's `maxDuration`
+          // SIGTERM — including a server that accepts a frame and never
+          // answers it.
           deadline = setTimeout(() => {
             if (!conn.pending.delete(reqId)) return;
             reject(
@@ -316,26 +217,21 @@ class WsEventsTransport {
                   `timed out after ${timeoutMs}ms with no reply`
               )
             );
-            // Same reasoning as an uncorrelatable reply: a socket that
-            // accepted a frame and never answered it is not one the next
-            // write should be handed. Fail the rest and reconnect.
+            // A socket that accepted a frame and never answered it is not one
+            // the next write should be handed.
             this.failConnection(
               conn,
               `workflow-server events WS connection to ${this.wsUrl} ` +
                 `abandoned after request ${reqId} timed out`
             );
           }, timeoutMs);
-          // A pending write should not hold a finished handler's event loop
-          // open, exactly as with the idle and reconnect timers.
           deadline.unref?.();
           conn.ws.send(frame, (err) => {
             if (!err) return;
             // `ws.send()` does not throw when the socket isn't OPEN — it
-            // reports here instead. Without this callback the failure would be
-            // emitted as a bare `'error'` event and this request would wait
-            // for a reply that is never coming. `delete` doubles as the
-            // already-settled guard: if a reply somehow landed first, the
-            // entry is gone and we must not reject on top of it.
+            // reports here instead, so without this callback the request would
+            // wait for a reply that is never coming. `delete` doubles as the
+            // already-settled guard.
             if (conn.pending.delete(reqId)) {
               reject(
                 new WsTransportError(
@@ -356,44 +252,36 @@ class WsEventsTransport {
   }
 
   /**
-   * Open the socket now, ahead of the first `request()`.
+   * Open the socket at the start of an invocation, ahead of the first write.
    *
-   * Called once when an invocation for this run begins (see
-   * `createQueueHandler`), where writes are certain to follow. Lazily
-   * connecting instead bills the whole handshake — an upgrade round-trip plus
-   * the OIDC token mint that rides it — to whichever event is written first.
-   * When that first write is a `step_started` issued as the step body already
-   * starts running, the event's server-recorded timestamp lands later than the
-   * work it describes, which is visible as a step that appears to have taken
-   * less time than it did.
+   * Connecting lazily bills the whole handshake — an upgrade round-trip plus
+   * the OIDC token mint riding it — to whichever event is written first. When
+   * that is a `step_started` issued as the step body already runs, the event's
+   * server-recorded timestamp lands later than the work it describes, and the
+   * step appears to have taken less time than it did.
    *
-   * Deliberately fire-and-forget: warming must neither delay the handler nor
-   * be able to fail it. Nothing here is load-bearing — a warm that fails logs
-   * (in `connect`) and stops, without scheduling a reconnect, because a
-   * never-opened first connect is exactly the case `connect`'s close handler
-   * declines to retry. The first real write then goes through
-   * `ensureConnected` as it would have anyway, carrying the shared retry
-   * policy. Calling it repeatedly, or on a live socket, is a no-op.
+   * Fire-and-forget: warming must neither delay the handler nor be able to fail
+   * it. A failed warm logs (in `connect`) and stops without scheduling a
+   * reconnect; the first real write then goes through `ensureConnected` as it
+   * would have anyway. Idempotent.
    *
-   * The idle timer is armed as if a request had just settled: a warmed socket
-   * whose invocation never writes (a health probe carrying the run id it is
-   * about to create, say) is then released on the same `IDLE_TIMEOUT_MS` as
-   * any other, rather than held open — the socket is not `unref`'d, so a
-   * leaked one keeps both this process and a server invocation alive.
+   * Arms the idle timer as if a request had settled, so a warmed socket whose
+   * invocation never writes is still released — the socket isn't `unref`'d, so
+   * a leaked one keeps this process and a server invocation alive.
    */
   warm(): void {
     if (this.closed) return;
     if (this.connection !== null || this.connecting !== null) return;
-    // Errors are logged by `connect`; swallow the rejection so a warm nobody
-    // awaits can't surface as an unhandled rejection.
+    // Errors are logged by `connect`; swallow so an unawaited warm can't
+    // surface as an unhandled rejection.
     void this.ensureConnected().catch(() => {});
     this.armIdleTimer();
   }
 
   /**
-   * Drop the socket and evict this transport from the process-wide cache.
-   * Idempotent. Safe to call with work in flight — those requests fail
-   * through the socket's own `close` handler, same as any other close.
+   * Drop the socket and evict this transport from the cache. Idempotent. Safe
+   * with work in flight — those requests fail through the socket's own `close`
+   * handler, same as any other close.
    */
   close(reason: string): void {
     if (this.closed) return;
@@ -406,13 +294,10 @@ class WsEventsTransport {
     if (transports.get(this.wsUrl) === this) transports.delete(this.wsUrl);
     const conn = this.connection;
     this.connection = null;
-    // 1000 (normal closure): this is a clean client-side release, not a
-    // fault — the server should not treat it as an aborted run.
+    // Normal closure: a clean client-side release, not an aborted run.
     conn?.ws.close(1000, reason);
   }
 
-  /** Arm the idle countdown, unless work is in flight or a timer is already
-   *  running. Called after every request settles. */
   private armIdleTimer(): void {
     if (this.closed || this.inFlight > 0 || this.idleTimer !== null) return;
     const timer = setTimeout(() => {
@@ -420,8 +305,8 @@ class WsEventsTransport {
       if (this.inFlight > 0) return;
       this.close('idle');
     }, IDLE_TIMEOUT_MS);
-    // Same reasoning as the reconnect backoff: never hold the event loop
-    // open just to wait out an idle window.
+    // Never hold the event loop open just to wait out a timer — as with the
+    // reconnect backoff and the request deadline.
     timer.unref?.();
     this.idleTimer = timer;
   }
@@ -437,10 +322,9 @@ class WsEventsTransport {
     if (conn && conn.ws.readyState === WS_READY_STATE_OPEN) {
       return Promise.resolve(conn);
     }
-    // Clearing the slot in `finally` (rather than from the socket event
-    // handlers) keeps the bookkeeping in one place and makes it impossible
-    // for a stale socket's late `close` to null out a *newer* connect
-    // attempt that has since taken the slot.
+    // Clearing the slot here rather than from the socket handlers keeps the
+    // bookkeeping in one place, and stops a stale socket's late `close` from
+    // nulling out a newer connect that has since taken the slot.
     this.connecting ??= this.connect().finally(() => {
       this.connecting = null;
     });
@@ -448,16 +332,9 @@ class WsEventsTransport {
   }
 
   /**
-   * Resolve the headers for one upgrade request.
-   *
-   * Called once per socket, not once per event: the bearer only rides the
-   * upgrade, so minting a token per write was pure waste — and re-resolving
-   * here is what lets a reconnect pick up a *fresh* token instead of
-   * replaying the possibly-expired one the previous socket used.
-   *
-   * `forceRefresh` is set when the previous socket drained with
-   * `reason: 'auth_expiry'`, telling the thunk to bypass any token cache
-   * rather than hand back the bearer that just expired.
+   * Resolve the headers for one upgrade request — once per socket, since the
+   * bearer only rides the upgrade. Re-resolving per socket is what lets a
+   * reconnect pick up a fresh token rather than replaying an expired one.
    */
   private async resolveUpgradeHeaders(): Promise<Record<string, string>> {
     const forceRefresh = this.needsFreshToken;
@@ -465,24 +342,12 @@ class WsEventsTransport {
     const authorization = readAuthorization(headers);
 
     if (forceRefresh && authorization === this.lastAuthorization) {
-      // The server told us the token is expiring and we could not produce a
-      // different one. Inside a Vercel function the bearer comes from the
-      // invocation's own `x-vercel-oidc-token` and is fixed for that
-      // invocation, so there is genuinely nothing fresher to offer —
-      // reconnecting now just earns a 401 and burns the attempt budget.
-      // Give up on the *eager* reconnect and let the next write try again:
-      // by then the process is likely serving a new invocation with a new
-      // token.
-      //
-      // This is the one failure here that a retry cannot fix: the bearer is
-      // fixed for the invocation (see `refreshOidcTokenBestEffort`), so the
-      // shared policy's two in-process attempts will each re-resolve the same
-      // token and fail the same way, costing ~300ms before the write falls
-      // through to queue redelivery — which is what actually recovers it, by
-      // landing in a new invocation. Accepted deliberately rather than
-      // reintroducing a WS-specific non-retryable flag: the flag existed only
-      // for this one site, `event-retry.ts` is where retry decisions belong,
-      // and 300ms on an already-failing write buys less than one policy does.
+      // The server says the token is expiring and we can't produce a different
+      // one. Inside a Vercel function the bearer comes from the invocation's own
+      // `x-vercel-oidc-token` and is fixed for that invocation, so reconnecting
+      // now just earns a 401 and burns the attempt budget. Give up on the eager
+      // reconnect; queue redelivery recovers this by landing in a new
+      // invocation with a new token.
       throw new WsTransportError(
         `workflow-server events WS connection to ${this.wsUrl} drained for ` +
           `auth expiry, but re-resolving the bearer produced the same token. ` +
@@ -496,9 +361,6 @@ class WsEventsTransport {
     return headers;
   }
 
-  /** Consume the reason recorded by the `drain` frame that preceded a close.
-   *  `auth_expiry` means the bearer — not the socket — is what ran out, so
-   *  the next connect has to source a new one. */
   private consumeDrainReason(): void {
     const reason = this.lastDrainReason;
     this.lastDrainReason = null;
@@ -520,10 +382,8 @@ class WsEventsTransport {
             `world-vercel: ws events transport could not open a connection ` +
               `to ${this.wsUrl}: ${describeError(err)}`
           );
-          // A DNS failure, a refused connection, `ws` failing to load:
-          // nothing was sent, so re-sending is safe wherever the shared
-          // policy allows it. Already-typed errors (the stale-token case
-          // from `resolveUpgradeHeaders`) pass through untouched.
+          // Nothing was sent, so re-sending is safe wherever the shared policy
+          // allows it. Already-typed errors pass through untouched.
           reject(
             err instanceof WsTransportError
               ? err
@@ -542,11 +402,9 @@ class WsEventsTransport {
         ws.on('open', () => {
           opened = true;
           if (this.closed) {
-            // Released while this handshake was still in flight — `close()`
-            // could only null out the connection it could see, and this one
-            // did not exist yet. Adopting it now would leave a live socket
-            // (holding a server invocation open) on a transport that is no
-            // longer in the cache and that nothing will ever close again.
+            // Released while this handshake was in flight — `close()` could
+            // only null out the connection it could see. Adopting this one now
+            // would leave a live socket on a transport nothing will ever close.
             ws.close(1000, 'released while connecting');
             reject(
               new WsTransportError(
@@ -574,9 +432,8 @@ class WsEventsTransport {
             reject(err);
             return;
           }
-          // `ws` normally follows `'error'` with `'close'`, which does the
-          // teardown and schedules the reconnect. Close explicitly so that
-          // still happens if it doesn't.
+          // `ws` normally follows `'error'` with `'close'`, which tears down and
+          // schedules the reconnect. Close explicitly in case it doesn't.
           ws.close();
         });
 
@@ -587,10 +444,8 @@ class WsEventsTransport {
           this.consumeDrainReason();
 
           if (!opened) {
-            // A close with no preceding `'error'` would otherwise leave
-            // `ensureConnected` waiting forever. Rejecting an
-            // already-settled promise is a no-op, so this is safe when
-            // `'error'` did fire first.
+            // A close with no preceding `'error'` would leave `ensureConnected`
+            // waiting forever. Rejecting an already-settled promise is a no-op.
             reject(
               new WsTransportError(
                 `workflow-server events WS connection to ${this.wsUrl} ` +
@@ -599,13 +454,11 @@ class WsEventsTransport {
             );
           }
 
-          // Always fail this connection's own waiters — they can never be
-          // answered now. `pending` being per-connection is what makes
-          // this unconditional: a superseded socket's late close can only
-          // ever reach its own map, never a newer socket's in-flight work.
-          // The frame was in flight when the socket died, so the server
-          // either never saw it or never acked it. Re-sending is safe:
-          // createEvent writes are conditional on the entity server-side.
+          // Unconditional because `pending` is per-connection: a superseded
+          // socket's late close can only reach its own waiters. The frame was
+          // in flight when the socket died, so the server either never saw it
+          // or never acked it — re-sending is safe, createEvent writes are
+          // conditional on the entity server-side.
           this.failAllPending(
             conn,
             new WsTransportError(
@@ -622,28 +475,20 @@ class WsEventsTransport {
   }
 
   /**
-   * Reconnect eagerly rather than waiting for the next write: an
-   * unexpected close mid-run (broken pipe, or the server's drain → 1001)
-   * almost always means more event writes are on their way, and paying the
-   * handshake now keeps it off the next write's critical path.
-   *
-   * Bounded on three axes so it can't degenerate into a hot loop against a
-   * server that is down or rejecting the upgrade: exponential backoff, a
-   * hard attempt cap after which the transport falls back to reconnecting
-   * lazily on the next `request()`, and a bail-out if a newer connection
-   * has already taken the slot.
+   * Reconnect eagerly rather than waiting for the next write: an unexpected
+   * close mid-run (broken pipe, or the server's drain → 1001) almost always
+   * means more writes are coming, and paying the handshake now keeps it off the
+   * next write's critical path.
    */
   private scheduleReconnect(closeCode: number): void {
-    // An intentional teardown. `close()` closes the socket, which lands
-    // here via the socket's own `close` event — without this guard the
-    // transport would immediately reconnect the connection it just released.
+    // An intentional teardown lands here via the socket's own `close` event;
+    // without this guard the transport would reconnect what it just released.
     if (this.closed) return;
-    // A newer socket is already live — nothing to do. Deliberately not also
-    // checking `this.connecting`: `ws` can emit `'error'` and `'close'` in
-    // the same tick, so the connect promise's `finally` may not have
-    // cleared that slot yet, and bailing here would silently break the
-    // retry chain. `ensureConnected` already dedups, so at worst the timer
-    // joins a connect that is already in flight.
+    // A newer socket is already live. Deliberately not also checking
+    // `this.connecting`: `ws` can emit `'error'` and `'close'` in one tick, so
+    // that slot may not be cleared yet and bailing would break the retry
+    // chain. `ensureConnected` dedups, so at worst the timer joins a connect
+    // already in flight.
     if (this.connection !== null) return;
     if (this.reconnectTimer !== null) return;
 
@@ -664,12 +509,8 @@ class WsEventsTransport {
 
     const timer = setTimeout(() => {
       this.reconnectTimer = null;
-      // Errors are already logged by `connect`; swallow the rejection so
-      // an unawaited reconnect can't surface as an unhandled rejection.
       void this.ensureConnected().catch(() => {});
     }, delayMs);
-    // Never hold the event loop open for a backoff window: a handler
-    // that's finished with this run should be free to exit.
     timer.unref?.();
     this.reconnectTimer = timer;
   }
@@ -682,9 +523,9 @@ class WsEventsTransport {
     try {
       decoded = await decodeOneFrame(raw);
     } catch (err) {
-      // An undecodable reply cannot be correlated to a caller, and it says
-      // the framing on this socket is no longer trustworthy — so the
-      // connection goes rather than leaving its waiters unanswerable.
+      // Uncorrelatable, and it says the framing on this socket is no longer
+      // trustworthy — so the connection goes rather than leaving its waiters
+      // unanswerable.
       const detail =
         `could not decode a ${raw.byteLength}-byte reply frame from ` +
         `${this.wsUrl}: ${describeError(err)}`;
@@ -697,14 +538,9 @@ class WsEventsTransport {
     }
 
     if (decoded.meta.type === 'drain') {
-      // Unsolicited server push, no reqId — the connection is closing soon,
-      // either because the socket is nearing its maxDuration or because the
-      // bearer it was opened with is about to expire. Informational on its
-      // own; the `close` that follows is what triggers the eager reconnect,
-      // and what consumes the reason recorded here.
-      //
-      // `reason` is absent on servers predating the field, which only ever
-      // drained for maxDuration — so absent reads as `max_duration`.
+      // Unsolicited server push, no reqId. Informational on its own — the
+      // `close` that follows is what triggers the reconnect and consumes the
+      // reason recorded here.
       const reason: DrainReason =
         decoded.meta.reason === 'auth_expiry' ? 'auth_expiry' : 'max_duration';
       this.lastDrainReason = reason;
@@ -719,11 +555,9 @@ class WsEventsTransport {
     const reqId = decoded.meta.reqId;
 
     if (reqId === MALFORMED_FRAME_REQ_ID) {
-      // The server couldn't parse one of our frames at all, so it replied
-      // under the reserved sentinel instead of a real reqId. By construction
-      // there is nothing to correlate this to. Loud, because it means this
-      // client put a frame on the wire that the server's schema rejected: a
-      // protocol bug on our side, not a transient failure.
+      // Loud: the server's schema rejected a frame this client sent, which is a
+      // protocol bug on our side, not a transient failure. Nothing to correlate
+      // it to by construction.
       const detail =
         `received a malformed-frame error from ${this.wsUrl} (reserved reqId ` +
         `${MALFORMED_FRAME_REQ_ID}, status ` +
@@ -752,14 +586,10 @@ class WsEventsTransport {
 
     const pending = conn.pending.get(reqId);
     if (!pending) {
-      // The one uncorrelatable case that does NOT tear the connection down.
-      // A reply for an id nobody is waiting on means that request has already
-      // been settled — by a send error, or by its own deadline in `request()`
-      // with the reply arriving late. Nothing is orphaned:
-      // every other waiter is still waiting on its own id, and the frame
-      // decoded and carried a real reqId, so the stream itself is intact.
-      // Failing the socket here would punish healthy in-flight writes for a
-      // race that resolved correctly.
+      // The one uncorrelatable case that does NOT tear the connection down: an
+      // id nobody is waiting on means that request already settled (send error,
+      // or its own deadline with the reply arriving late). Nothing is orphaned,
+      // and the frame decoded with a real reqId, so the stream is intact.
       console.error(
         `world-vercel: ws events transport received a reply for unknown ` +
           `reqId ${reqId} from ${this.wsUrl} (already settled, or the request ` +
@@ -779,30 +609,19 @@ class WsEventsTransport {
   }
 
   /**
-   * Fail every waiter on `conn` and drop the socket.
+   * Fail every waiter on `conn` and drop the socket — for a reply this client
+   * cannot correlate to a caller, and for a request that outlived its deadline.
    *
-   * The escape hatch for a reply this client cannot correlate to a caller —
-   * an undecodable frame, the server's malformed-frame sentinel, a
-   * non-numeric `reqId` — and for a request that outlived its deadline.
-   * (A reply for an id nobody is waiting on is the deliberate exception; see
-   * `handleMessage`.) Logging and moving on — what this used to do for the
-   * uncorrelatable cases — leaves the originating request in `pending`
-   * with nothing left that could ever answer it, and the only thing that
-   * eventually frees it is the server's own drain (~680s from connect), well
-   * past the `maxDuration` of the invocation waiting on it. A caller hanging
-   * to SIGTERM is a worse outcome than a failed write the shared retry policy
-   * can re-send on a fresh socket.
+   * The whole connection goes, not just one request, because each of those
+   * cases says something about the *stream*: if a reply can't be parsed or
+   * matched, this client's model of what is on the wire is already wrong.
+   * Logging and moving on would leave the originating request in `pending` with
+   * nothing able to answer it until the server's own drain (~680s), well past
+   * the `maxDuration` of the invocation waiting on it.
    *
-   * The whole connection goes, not just the one request, because every one of
-   * those cases says something about the *stream* rather than one frame: if a
-   * reply can't be parsed or matched, this client's model of what is on the
-   * wire is already wrong, and the requests still riding that socket have no
-   * better prospects than the one that just failed.
-   *
-   * `ws.close()`'s own `'close'` handler does the teardown and schedules the
-   * reconnect; `failAllPending` here (rather than leaving it to that handler)
-   * is what makes the callers fail with *this* diagnosis instead of a bare
-   * close code.
+   * `ws.close()`'s own handler does the teardown and schedules the reconnect;
+   * failing the waiters here is what makes callers see *this* diagnosis rather
+   * than a bare close code.
    */
   private failConnection(conn: Connection, message: string): void {
     this.failAllPending(conn, new WsTransportError(message));
@@ -816,21 +635,14 @@ const transports = new Map<string, WsEventsTransport>();
 /**
  * Get (or lazily create) the shared WS transport for `wsUrl`.
  *
- * `getHeaders` is invoked once per socket — at connect time, not per
- * request — since the `Authorization` header only rides the upgrade.
- * A reconnect calls it again, so each new socket is opened with a freshly
- * resolved token rather than replaying the previous socket's. It receives
- * `forceRefresh: true` when the previous socket drained specifically because
- * its token was expiring, so a caching token source knows to go get a new
- * one rather than serve the expired entry.
+ * `getHeaders` is invoked once per socket, at connect time, and receives
+ * `forceRefresh: true` when the previous socket drained because its token was
+ * expiring, so a caching token source knows not to serve the expired entry.
  *
- * Only the first caller's `getHeaders` for a given `wsUrl` is retained.
- * That's fine in practice because `wsUrl` embeds the `runId` and one run
- * is always driven by one client instance.
- *
- * Entries evict themselves after `IDLE_TIMEOUT_MS` without a write (see
- * `WsEventsTransport.close`), so this map tracks *active* runs rather than
- * every run the process has ever served.
+ * Only the first caller's `getHeaders` for a given `wsUrl` is retained — fine
+ * because `wsUrl` embeds the `runId` and one run is driven by one client
+ * instance. Entries evict themselves after `IDLE_TIMEOUT_MS`, so this map
+ * tracks active runs rather than every run the process has served.
  */
 export function getWsEventsTransport(
   wsUrl: string,
@@ -855,19 +667,14 @@ export function resetWsEventsTransportsForTest(): void {
 }
 
 /**
- * Derive the WS protocol endpoint URL for one run, from the (http/https)
- * base URL used for v4 REST calls. Path is `/websockets/v1/runs/:runId` —
- * a general-purpose entry point versioned independently of the `v4` REST
- * API version this transport happens to forward `event` frames into (was
- * `/v4/events/ws`, then `/websockets/v1` with no `runId`; see the server's
- * `docs/ws-protocol.md` for why the two version axes are kept separate).
+ * Derive the WS endpoint URL for one run from the http(s) base URL used for v4
+ * REST calls. `/websockets/v1/runs/:runId` is versioned independently of the
+ * `v4` REST API this transport forwards `event` frames into; see the server's
+ * `docs/ws-protocol.md` for why the two version axes are kept separate.
  *
- * Scoped to one run rather than shared across runs: a single SDK client
- * instance only ever drives one run, never several concurrently, so
- * there's no multi-run multiplexing to support — `runId` belongs on the
- * connection, not repeated on every frame. `getWsEventsTransport` caches
- * one physical socket per `wsUrl`, so this naturally yields one socket
- * per run.
+ * Scoped to one run rather than shared: a single SDK client instance only ever
+ * drives one run, so there's no multi-run multiplexing to support and `runId`
+ * belongs on the connection instead of on every frame.
  */
 export function toEventsWsUrl(baseUrl: string, runId: string): string {
   const url = new URL(baseUrl);
