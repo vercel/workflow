@@ -21,9 +21,19 @@
  * bytes — this module stays at the wire-bytes layer.
  */
 
-import { type Event, getEventDataPayloadField } from '@workflow/world';
+import { WorkflowWorldError } from '@workflow/errors';
+import {
+  type Event,
+  type EventResult,
+  EventSchema,
+  type EventType,
+  getEventDataPayloadField,
+  HookSchema,
+  WaitSchema,
+  WorkflowRunSchema,
+} from '@workflow/world';
 import { decode } from 'cbor-x';
-import { coerceEventDates } from './event-coerce.js';
+import { z } from 'zod';
 import { decodeFrames, encodeFrame, V4_FRAME_CONTENT_TYPE } from './frames.js';
 import {
   getEventsDispatcher,
@@ -34,6 +44,7 @@ import {
   instrumentedFetch,
   parseRetryAfter,
 } from './http-core.js';
+import { deserializeStep, StepWireSchema } from './steps.js';
 import { type APIConfig, getHttpConfig } from './utils.js';
 
 /**
@@ -115,11 +126,10 @@ export const V4_RESPONSE_HEADERS = {
    */
   maxEvents: 'x-wf-max-events',
 } as const;
-
 export interface CreateEventV4Input {
   // runId is required even for run_created, because the payload is keyed under the runId
   runId: string;
-  eventType: string;
+  eventType: EventType;
   /** Opaque payload bytes. Pass undefined for events that don't carry
    *  user data (e.g. step_started). */
   payload?: Uint8Array;
@@ -223,7 +233,7 @@ export interface CreateEventV4Input {
    *  barrier only and never reads the preloaded log, so it asks the server to
    *  skip the list+resolve. Acted on by the server only for run_started;
    *  older servers ignore it and preload as before. */
-  skipPreload?: boolean;
+  skipPreload?: true;
   /**
    * Epoch ms (the ULID time of the latest event the runtime has loaded
    * during replay). Sent by replay-context creates so the backend can
@@ -269,39 +279,65 @@ export interface PreconditionFailureDetails {
   cursor?: string;
 }
 
-export interface CreateEventV4Result {
-  eventId: string;
-  runId: string;
-  createdAt: string;
-  /**
-   * Materialized-entity bag — CBOR-decoded from the response body. The
-   * server hands back the same shape v2/v3 use for EventResult so the
-   * adapter layer can drop these fields into its return value unchanged.
-   * Keys are unset when the event type doesn't materialize that entity
-   * kind.
-   */
-  body: {
-    event?: unknown;
-    run?: unknown;
-    step?: unknown;
-    hook?: unknown;
-    wait?: unknown;
-    events?: unknown[];
-    cursor?: string | null;
-    hasMore?: boolean;
-    /**
-     * Lazy step start: true when the server's step_started created the step
-     * on this call. Absent from older servers (safe default: not the lazy
-     * creator). Threaded into EventResult.stepCreated by the events adapter.
-     */
-    stepCreated?: boolean;
-    /**
-     * Server-owned per-run event ceiling, returned on run-lifecycle responses.
-     * Absent from older servers. Threaded into EventResult.maxEvents.
-     */
-    maxEvents?: number;
-  };
-}
+const CreateEventV4BodyBaseSchema = z.object({
+  event: EventSchema,
+  run: WorkflowRunSchema.optional(),
+  step: StepWireSchema.transform(deserializeStep).optional(),
+  hook: HookSchema.optional(),
+  wait: WaitSchema.optional(),
+  stepCreated: z.literal(true).optional(),
+  maxEvents: z.number().int().positive().optional(),
+});
+
+const CreateEventV4PageSchema = z.union([
+  z.object({
+    events: z.array(EventSchema),
+    cursor: z.string().nullable(),
+    hasMore: z.boolean(),
+  }),
+  z.object({
+    events: z.undefined(),
+    cursor: z.undefined(),
+    hasMore: z.undefined(),
+  }),
+]);
+
+const CreateEventV4BodySchema = CreateEventV4BodyBaseSchema.and(
+  CreateEventV4PageSchema
+);
+
+const CreateEventV4BodySchemas: {
+  [T in EventType]: z.ZodType<EventResult<T> & { event: Event }>;
+} = {
+  run_created: CreateEventV4BodyBaseSchema.extend({
+    run: WorkflowRunSchema,
+  }).and(CreateEventV4PageSchema),
+  run_started: CreateEventV4BodyBaseSchema.extend({
+    run: WorkflowRunSchema.and(z.object({ startedAt: z.coerce.date() })),
+  }).and(CreateEventV4PageSchema),
+  step_started: CreateEventV4BodyBaseSchema.extend({
+    step: StepWireSchema.extend({
+      startedAt: z.coerce.date(),
+    }).transform((step) => ({
+      ...deserializeStep(step),
+      startedAt: step.startedAt,
+    })),
+  }).and(CreateEventV4PageSchema),
+  run_completed: CreateEventV4BodySchema,
+  run_failed: CreateEventV4BodySchema,
+  run_cancelled: CreateEventV4BodySchema,
+  attr_set: CreateEventV4BodySchema,
+  step_created: CreateEventV4BodySchema,
+  step_completed: CreateEventV4BodySchema,
+  step_failed: CreateEventV4BodySchema,
+  step_retrying: CreateEventV4BodySchema,
+  hook_created: CreateEventV4BodySchema,
+  hook_received: CreateEventV4BodySchema,
+  hook_disposed: CreateEventV4BodySchema,
+  hook_conflict: CreateEventV4BodySchema,
+  wait_created: CreateEventV4BodySchema,
+  wait_completed: CreateEventV4BodySchema,
+};
 
 /** Build the CBOR meta map for a v4 POST frame. Drops undefined entries
  *  so the wire shape matches what the server expects to see. */
@@ -455,9 +491,9 @@ function decodePreconditionDetails(json: {
     const candidate = raw as Record<string, unknown>;
     if (typeof candidate.eventId !== 'string') return undefined;
     if (hasUnusablePayload(candidate)) return undefined;
-    // Same decoder the success-path delta uses: the JSON body carries nested
-    // eventData dates as ISO strings and the runtime calls .getTime() on them.
-    events.push(coerceEventDates(candidate));
+    const event = EventSchema.safeParse(candidate);
+    if (!event.success) return undefined;
+    events.push(event.data);
   }
   return {
     events,
@@ -531,10 +567,10 @@ export function throwForErrorResponse(
  * The frame meta's `eventType` remains authoritative — the backend
  * cross-checks the two and logs (but does not reject) a mismatch.
  */
-export async function createWorkflowRunEventV4(
-  input: CreateEventV4Input,
+export async function createWorkflowRunEventV4<T extends EventType>(
+  input: CreateEventV4Input & { eventType: T },
   config?: APIConfig
-): Promise<CreateEventV4Result> {
+): Promise<EventResult<T> & { event: Event }> {
   // getHttpConfig sets the Authorization header (explicit config.token or
   // per-request OIDC fallback) — same contract as the v3 makeRequest path.
   const { baseUrl, headers: baseHeaders } = await getHttpConfig(config);
@@ -554,32 +590,32 @@ export async function createWorkflowRunEventV4(
     'createEvent'
   );
 
-  return decodeMaterializedCreateEventResponse(response);
+  return decodeCreateEventResponse(response, input.eventType);
 }
 
-/** Decode the ids + materialized-entity bag of a v4 POST CBOR response. */
-async function decodeMaterializedCreateEventResponse(
-  response: Response
-): Promise<CreateEventV4Result> {
-  const eventId = response.headers.get(V4_RESPONSE_HEADERS.eventId);
-  const runId = response.headers.get(V4_RESPONSE_HEADERS.runId);
-  const createdAt = response.headers.get(V4_RESPONSE_HEADERS.createdAt);
-  if (
-    typeof eventId !== 'string' ||
-    typeof runId !== 'string' ||
-    typeof createdAt !== 'string'
-  ) {
-    throw new Error('v4 createEvent: response missing required x-wf-* headers');
-  }
-
-  // Decode the materialized-entity bag from the CBOR response body.
+async function decodeCreateEventResponse<T extends EventType>(
+  response: Response,
+  eventType: T
+): Promise<EventResult<T> & { event: Event }> {
   const bodyBytes = new Uint8Array(await response.arrayBuffer());
-  const body =
-    bodyBytes.byteLength > 0
-      ? (decode(bodyBytes) as CreateEventV4Result['body'])
-      : {};
-
-  return { eventId, runId, createdAt, body };
+  if (bodyBytes.byteLength === 0) {
+    throw new Error('v4 createEvent: empty response body');
+  }
+  const schema: z.ZodType<EventResult<T> & { event: Event }> =
+    CreateEventV4BodySchemas[eventType].refine(
+      ({ event }) =>
+        event.eventType === eventType ||
+        (eventType === 'hook_created' && event.eventType === 'hook_conflict'),
+      { path: ['event', 'eventType'] }
+    );
+  const parsedBody = schema.safeParse(decode(bodyBytes));
+  if (!parsedBody.success) {
+    throw new WorkflowWorldError('v4 createEvent: invalid response body', {
+      code: 'SCHEMA_VALIDATION',
+      cause: parsedBody.error,
+    });
+  }
+  return parsedBody.data;
 }
 
 /**
@@ -606,7 +642,10 @@ export type HookReceivedPreloadV4Result =
    * hook_received write itself has still succeeded; callers must not
    * re-post it.
    */
-  | { kind: 'materialized'; result: CreateEventV4Result };
+  | {
+      kind: 'materialized';
+      result: EventResult<'hook_received'> & { event: Event };
+    };
 
 /**
  * POST /api/v4/runs/:runId/events/hook_received with the v4-frame `Accept`,
@@ -620,7 +659,7 @@ export type HookReceivedPreloadV4Result =
  * the whole request is safe and converges on the same canonical event.
  */
 export async function createHookReceivedPreloadEventV4(
-  input: CreateEventV4Input,
+  input: CreateEventV4Input & { eventType: 'hook_received' },
   config?: APIConfig
 ): Promise<HookReceivedPreloadV4Result> {
   const { baseUrl, headers: baseHeaders } = await getHttpConfig(config);
@@ -645,7 +684,7 @@ export async function createHookReceivedPreloadEventV4(
   if (!contentType?.startsWith(V4_FRAME_CONTENT_TYPE)) {
     return {
       kind: 'materialized',
-      result: await decodeMaterializedCreateEventResponse(response),
+      result: await decodeCreateEventResponse(response, input.eventType),
     };
   }
 
@@ -663,31 +702,6 @@ export async function createHookReceivedPreloadEventV4(
         ? maxEventsParsed
         : undefined,
   };
-}
-
-/**
- * Decoded event entity returned by GET /api/v4/runs/:runId/events/:eventId.
- * The server CBOR-encodes the full entity with refs resolved server-side,
- * so the payload field (input/output/result/error/payload/metadata
- * depending on eventType) already contains the resolved bytes — the
- * adapter layer doesn't need to splice them in.
- */
-export interface DecodedV4Event {
-  eventId: string;
-  runId: string;
-  eventType: string;
-  correlationId?: string;
-  createdAt: Date | string;
-  occurredAt?: Date | string;
-  specVersion?: number;
-  eventData?: Record<string, unknown>;
-  /**
-   * Lazy hook resume idempotency key, persisted on `hook_received` events
-   * created through the `(runId, resumeId)` claim and emitted back in the
-   * frame meta. The runtime matches it against the queue message's
-   * `hookInput.resumeId` to recognize its own resume in a preloaded log.
-   */
-  resumeId?: string;
 }
 
 function readHeader(
@@ -715,7 +729,7 @@ export async function getEventV4(
   runId: string,
   eventId: string,
   config?: APIConfig
-): Promise<{ event: DecodedV4Event; body: Uint8Array }> {
+): Promise<DecodedEventFrame> {
   const { baseUrl, headers } = await getHttpConfig(config);
 
   const url = `${baseUrl}/v4/runs/${encodeURIComponent(runId)}/events/${encodeURIComponent(eventId)}`;
@@ -743,7 +757,7 @@ export async function getEventV4(
   // GET emits a single frame (no sentinel); decodeFrames returns at EOF
   // after yielding it.
   for await (const frame of decodeFrames(chunks)) {
-    return { event: frame.meta as unknown as DecodedV4Event, body: frame.body };
+    return { event: EventSchema.parse(frame.meta), body: frame.body };
   }
   throw new Error(`v4 getEvent: empty frame stream for ${eventId}`);
 }
@@ -764,20 +778,17 @@ export interface ListEventsV4Params {
 }
 
 /**
- * A single event extracted from a v4 LIST frame. Mirrors `DecodedV4Event`
- * but also carries the raw payload bytes — for payload-bearing events the
- * server emits the resolved bytes in the frame body (so it never has to
- * decode them) and the SDK is expected to splice them back into the
- * appropriate `eventData` field.
+ * One decoded v4 frame. GET, LIST, and streamed POST responses all use this
+ * exact shape.
  */
-export interface ListedEventV4 {
-  event: DecodedV4Event;
+export interface DecodedEventFrame {
+  event: Event;
   /** Resolved payload bytes. Empty for events without a payload. */
   body: Uint8Array;
 }
 
 export interface ListEventsV4Result {
-  events: ListedEventV4[];
+  events: DecodedEventFrame[];
   /**
    * Trailing cursor. Present even on the final page — it doubles as the
    * resume point for incremental loads — so it is NOT a reliable "more
@@ -836,7 +847,7 @@ async function decodeListFrameResponse(
   // cast only works around TS's lib type omitting the async iterator.
   const chunks = response.body as unknown as AsyncIterable<Uint8Array>;
 
-  const events: ListedEventV4[] = [];
+  const events: DecodedEventFrame[] = [];
   let next: string | undefined;
   let hasMore: boolean | undefined;
   let sawEndSentinel = false;
@@ -848,7 +859,7 @@ async function decodeListFrameResponse(
       break;
     }
     events.push({
-      event: frame.meta as unknown as DecodedV4Event,
+      event: EventSchema.parse(frame.meta),
       body: frame.body,
     });
   }

@@ -9,7 +9,9 @@ import {
 } from '@workflow/errors';
 import {
   AttributeValidationError,
+  type CreateEventParams,
   type CreateEventRequest,
+  type EventResult,
   type SerializedData,
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_SUPPORTS_COMPRESSION,
@@ -30,11 +32,7 @@ import { dehydrateStepArguments } from '../serialization.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { getAbortStreamIdFromToken } from '../util.js';
 import { getMaxInlineSteps } from './constants.js';
-import {
-  type EventCreator,
-  type LoadedEventLog,
-  preconditionSnapshotParams,
-} from './helpers.js';
+import { type LoadedEventLog, preconditionSnapshotParams } from './helpers.js';
 import { ReplayRecoveryReporter } from './replay-recovery-reporter.js';
 
 export interface SuspensionHandlerParams {
@@ -150,7 +148,10 @@ async function createHookEvent({
   hookEvent: CreateEventRequest;
   queueItem: HookInvocationQueueItem;
   requestId?: string;
-  createEvent: EventCreator;
+  createEvent: (
+    data: CreateEventRequest,
+    params?: CreateEventParams
+  ) => Promise<EventResult>;
 }): Promise<{
   hasHookConflict: boolean;
   hasAwaitedHookCreation: boolean;
@@ -282,7 +283,7 @@ export async function handleSuspension({
   // that commits after replay recovered. All suspension events are
   // non-run_created events on this run's `runId`.
   const reporter = replayRecoveryReporter ?? ReplayRecoveryReporter.inert();
-  const createEvent: EventCreator = (data, params) =>
+  const createEvent = (data: CreateEventRequest, params?: CreateEventParams) =>
     reporter.withEventCreate(params, (p) =>
       world.events.create(runId, data, p)
     );
@@ -293,7 +294,10 @@ export async function handleSuspension({
   // because the event's correlation id was minted by *this* replay's seeded
   // sequence, so re-committing it against a corrected log would persist an
   // event no correct replay produces.
-  const createGuarded: EventCreator = (data, params) =>
+  const createGuarded = (
+    data: CreateEventRequest,
+    params?: CreateEventParams
+  ) =>
     eventLog
       ? createEvent(data, {
           ...params,

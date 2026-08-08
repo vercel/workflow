@@ -375,6 +375,14 @@ describe('Storage (Postgres integration)', () => {
         expect(updated.startedAt).toBeInstanceOf(Date);
       });
 
+      it('should reject run_started on a non-existent run', async () => {
+        await expect(
+          events.create('wrun_nonexistent', {
+            eventType: 'run_started',
+          })
+        ).rejects.toMatchObject({ name: 'WorkflowRunNotFoundError' });
+      });
+
       it('should update run status to completed via run_completed event', async () => {
         const created = await createRun(events, {
           deploymentId: 'deployment-123',
@@ -1156,6 +1164,16 @@ describe('Storage (Postgres integration)', () => {
 
         expect(result.event.eventType).toBe('run_completed');
         expect(result.event.correlationId).toBeUndefined();
+      });
+
+      it('skips the run_started preload when requested', async () => {
+        const result = await events.create(
+          testRunId,
+          { eventType: 'run_started' },
+          { skipPreload: true }
+        );
+
+        expect(result.events).toBeUndefined();
       });
     });
 

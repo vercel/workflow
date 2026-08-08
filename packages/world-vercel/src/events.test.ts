@@ -1,3 +1,4 @@
+import { gzipSync } from 'node:zlib';
 import type { AnyEventRequest, CreateEventParams } from '@workflow/world';
 import { decode, encode } from 'cbor-x';
 import { ulid } from 'ulid';
@@ -13,6 +14,32 @@ import { encode as encodeRunId, REGION_IDS } from './run-id/index.js';
 import { WORKFLOW_SERVER_URL_OVERRIDE } from './utils.js';
 
 const ORIGIN = WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
+const STARTED_AT = new Date('2026-06-10T00:00:00.000Z');
+
+function createEventBody(
+  event: AnyEventRequest,
+  entities: Record<string, unknown> = {}
+) {
+  return encode({
+    event: {
+      ...event,
+      eventId: 'evnt_1',
+      runId: 'wrun_1',
+      createdAt: STARTED_AT,
+    },
+    ...entities,
+  });
+}
+
+const runningRun = {
+  runId: 'wrun_1',
+  status: 'running',
+  deploymentId: 'dpl_1',
+  workflowName: 'workflow',
+  startedAt: STARTED_AT,
+  createdAt: STARTED_AT,
+  updatedAt: STARTED_AT,
+};
 
 function mockAgent() {
   const agent = new MockAgent();
@@ -138,7 +165,10 @@ describe('createWorkflowRunEvent precondition snapshot wire fields', () => {
         200,
         (opts: { body?: unknown }) => {
           capturedMeta = decodePostedMeta(opts.body);
-          return encode({ run: { runId: 'wrun_1', status: 'running' } });
+          return createEventBody(
+            { eventType: 'run_started', specVersion: 2 },
+            { run: runningRun }
+          );
         },
         {
           headers: {
@@ -174,7 +204,10 @@ describe('createWorkflowRunEvent precondition snapshot wire fields', () => {
         200,
         (opts: { body?: unknown }) => {
           capturedMeta = decodePostedMeta(opts.body);
-          return encode({ run: { runId: 'wrun_1', status: 'running' } });
+          return createEventBody(
+            { eventType: 'run_started', specVersion: 2 },
+            { run: runningRun }
+          );
         },
         {
           headers: {
@@ -210,7 +243,10 @@ describe('createWorkflowRunEvent precondition snapshot wire fields', () => {
         200,
         (opts: { body?: unknown }) => {
           capturedMeta = decodePostedMeta(opts.body);
-          return encode({ run: { runId: 'wrun_1', status: 'running' } });
+          return createEventBody(
+            { eventType: 'run_started', specVersion: 2 },
+            { run: runningRun }
+          );
         },
         {
           headers: {
@@ -251,7 +287,10 @@ describe('createWorkflowRunEvent precondition snapshot wire fields', () => {
         200,
         (opts: { body?: unknown }) => {
           capturedMeta = decodePostedMeta(opts.body);
-          return encode({ run: { runId: 'wrun_1', status: 'running' } });
+          return createEventBody(
+            { eventType: 'run_started', specVersion: 2 },
+            { run: runningRun }
+          );
         },
         {
           headers: {
@@ -328,6 +367,79 @@ describe('createWorkflowRunEvent precondition snapshot wire fields', () => {
   });
 });
 
+describe('createWorkflowRunEvent result contract', () => {
+  it.each([
+    {
+      case: 'run_started without its run',
+      eventType: 'run_started',
+      data: { eventType: 'run_started', specVersion: 2 },
+      response: {},
+    },
+    {
+      case: 'step_started without its step',
+      eventType: 'step_started',
+      data: {
+        eventType: 'step_started',
+        correlationId: 'step_1',
+        specVersion: 2,
+      },
+      response: {},
+    },
+    {
+      case: 'run_started without startedAt',
+      eventType: 'run_started',
+      data: { eventType: 'run_started', specVersion: 2 },
+      response: { run: { ...runningRun, startedAt: undefined } },
+    },
+    {
+      case: 'step_started without startedAt',
+      eventType: 'step_started',
+      data: {
+        eventType: 'step_started',
+        correlationId: 'step_1',
+        specVersion: 2,
+      },
+      response: {
+        step: {
+          runId: 'wrun_1',
+          stepId: 'step_1',
+          stepName: 'step',
+          status: 'running',
+          attempt: 1,
+          createdAt: STARTED_AT,
+          updatedAt: STARTED_AT,
+        },
+      },
+    },
+  ])('rejects $case', async ({ eventType, data, response }) => {
+    const agent = mockAgent();
+    agent
+      .get(ORIGIN)
+      .intercept({
+        path: `/api/v4/runs/wrun_1/events/${eventType}`,
+        method: 'POST',
+      })
+      .reply(200, createEventBody(data as AnyEventRequest, response), {
+        headers: {
+          'x-wf-event-id': 'evnt_1',
+          'x-wf-run-id': 'wrun_1',
+          'x-wf-created-at': '2026-06-10T00:00:00.000Z',
+        },
+      });
+
+    await expect(
+      createWorkflowRunEvent('wrun_1', data as AnyEventRequest, undefined, {
+        token: 'test-token',
+        dispatcher: agent,
+      })
+    ).rejects.toMatchObject({
+      name: 'WorkflowWorldError',
+      code: 'SCHEMA_VALIDATION',
+    });
+    agent.assertNoPendingInterceptors();
+  });
+});
+
 /** POSTs a v4 step_started with `params` and returns the decoded frame meta. */
 async function postStepStartedMeta(
   params: CreateEventParams | undefined
@@ -345,7 +457,25 @@ async function postStepStartedMeta(
       200,
       (opts: { body?: unknown }) => {
         capturedMeta = decodePostedMeta(opts.body);
-        return encode({ step: { stepId: 'step_1', status: 'running' } });
+        return createEventBody(
+          {
+            eventType: 'step_started',
+            specVersion: 2,
+            correlationId: 'step_1',
+          },
+          {
+            step: {
+              runId: 'wrun_1',
+              stepId: 'step_1',
+              stepName: 'step',
+              status: 'running',
+              attempt: 1,
+              startedAt: STARTED_AT,
+              createdAt: STARTED_AT,
+              updatedAt: STARTED_AT,
+            },
+          }
+        );
       },
       {
         headers: {
@@ -411,7 +541,21 @@ describe('createWorkflowRunEvent replayDivergenceCount wire field', () => {
         200,
         (opts: { body?: unknown }) => {
           capturedMeta = decodePostedMeta(opts.body);
-          return encode({ run: { runId: 'wrun_1', status: 'completed' } });
+          return createEventBody(
+            {
+              eventType: 'run_completed',
+              specVersion: 2,
+              eventData: { output: new Uint8Array() },
+            },
+            {
+              run: {
+                ...runningRun,
+                status: 'completed',
+                output: new Uint8Array(),
+                completedAt: STARTED_AT,
+              },
+            }
+          );
         },
         {
           headers: {
@@ -714,14 +858,22 @@ describe('createWorkflowRunEvent response coercion', () => {
           run: {
             runId: taggedRunId,
             status: 'running',
+            deploymentId: 'dpl_1',
+            workflowName: 'wf',
             startedAt: new Date('2026-06-10T00:00:01.000Z'),
+            createdAt: new Date('2026-06-10T00:00:01.000Z'),
+            updatedAt: new Date('2026-06-10T00:00:01.000Z'),
           },
           event: {
             eventId: 'evnt_1',
             runId: taggedRunId,
             eventType: 'run_created',
             createdAt: '2026-06-10T00:00:01.000Z',
-            eventData: {},
+            eventData: {
+              deploymentId: 'dpl_1',
+              workflowName: 'wf',
+              input: new TextEncoder().encode('[]'),
+            },
           },
         }),
         {
@@ -767,13 +919,19 @@ describe('createWorkflowRunEvent response coercion', () => {
         200,
         (opts: { body?: unknown }) => {
           capturedMeta = decodePostedMeta(opts.body);
-          return encode({
-            run: {
-              runId: 'wrun_1',
-              status: 'running',
-              startedAt: new Date('2026-06-10T00:00:04.000Z'),
+          return createEventBody(
+            {
+              eventType: 'run_started',
+              specVersion: 2,
+              occurredAt,
             },
-          });
+            {
+              run: {
+                ...runningRun,
+                startedAt: new Date('2026-06-10T00:00:04.000Z'),
+              },
+            }
+          );
         },
         {
           headers: {
@@ -818,7 +976,11 @@ describe('createWorkflowRunEvent response coercion', () => {
           run: {
             runId: 'wrun_1',
             status: 'running',
+            deploymentId: 'dpl_1',
+            workflowName: 'workflow',
             startedAt: new Date('2026-06-10T00:00:01.000Z'),
+            createdAt: new Date('2026-06-10T00:00:00.000Z'),
+            updatedAt: new Date('2026-06-10T00:00:01.000Z'),
           },
           event: {
             eventId: 'evnt_2',
@@ -897,7 +1059,9 @@ describe('createWorkflowRunEvent response coercion', () => {
           wait: {
             waitId: 'wait_1',
             runId: 'wrun_1',
-            status: 'pending',
+            status: 'waiting',
+            createdAt: STARTED_AT,
+            updatedAt: STARTED_AT,
           },
         }),
         {
@@ -999,6 +1163,7 @@ describe('getWorkflowRunEvents remoteRefBehavior mapping', () => {
           createdAt: '2026-06-10T00:00:00.000Z',
           eventData: {
             input: { _type: 'RemoteRef', _ref: 's3rf:wrun_1/input' },
+            deploymentId: 'dpl_1',
             workflowName: 'wf',
           },
         },
@@ -1038,9 +1203,13 @@ describe('getWorkflowRunEvents remoteRefBehavior mapping', () => {
     agent.assertNoPendingInterceptors();
   });
 
-  it('sends remoteRefBehavior=resolve by default and splices the body bytes', async () => {
+  it('sends remoteRefBehavior=resolve and preserves opaque body bytes', async () => {
     const agent = mockAgent();
-    const body = new TextEncoder().encode('"payload"');
+    const serialized = new TextEncoder().encode('devl["payload"]');
+    const compressed = gzipSync(serialized);
+    const body = new Uint8Array(4 + compressed.byteLength);
+    body.set(new TextEncoder().encode('gzip'));
+    body.set(compressed, 4);
     agent
       .get(ORIGIN)
       .intercept({
@@ -1062,6 +1231,42 @@ describe('getWorkflowRunEvents remoteRefBehavior mapping', () => {
       result.data[0] as { eventData?: Record<string, unknown> }
     ).eventData;
     expect(eventData?.input).toEqual(body);
+    agent.assertNoPendingInterceptors();
+  });
+
+  it('rejects a malformed event frame', async () => {
+    const agent = mockAgent();
+    const frames = Buffer.concat([
+      encodeFrame(
+        {
+          eventId: 'evnt_1',
+          runId: 'wrun_1',
+          eventType: 'wait_created',
+          correlationId: 'wait_1',
+          createdAt: '2026-06-10T00:00:00.000Z',
+          eventData: { resumeAt: 'not-a-date' },
+        },
+        new Uint8Array()
+      ),
+      encodeFrame({ _end: 1 }, new Uint8Array()),
+    ]);
+    agent
+      .get(ORIGIN)
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events',
+        method: 'GET',
+        query: { remoteRefBehavior: 'resolve' },
+      })
+      .reply(200, frames, {
+        headers: { 'content-type': V4_FRAME_CONTENT_TYPE },
+      });
+
+    await expect(
+      getWorkflowRunEvents(
+        { runId: 'wrun_1' },
+        { token: 'test-token', dispatcher: agent }
+      )
+    ).rejects.toThrow();
     agent.assertNoPendingInterceptors();
   });
 });
@@ -1159,7 +1364,7 @@ describe('getWorkflowRunEvents hasMore mapping', () => {
         {
           eventId: 'evnt_1',
           runId: 'wrun_1',
-          eventType: 'run_created',
+          eventType: 'run_cancelled',
           createdAt: '2026-06-10T00:00:00.000Z',
           eventData: {},
         },
@@ -1242,7 +1447,7 @@ describe('getWorkflowRunEvents by correlation id is scoped to the run', () => {
           eventType: 'step_created',
           correlationId: 'step_001',
           createdAt: '2026-06-10T00:00:00.000Z',
-          eventData: {},
+          eventData: { stepName: 'testStep' },
         },
         new Uint8Array(0)
       );

@@ -8,7 +8,9 @@ import {
   WorkflowWorldError,
 } from '@workflow/errors';
 import type {
+  AnyEventRequest,
   AttributeChange,
+  CreateEventParams,
   Event,
   EventResult,
   ExperimentalSetAttributesResult,
@@ -507,7 +509,11 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
     .prepare('events_get_wait_for_validation');
 
   return {
-    async create(runId, data, params): Promise<EventResult> {
+    async create(
+      runId: string | null,
+      data: AnyEventRequest,
+      params?: CreateEventParams
+    ): Promise<EventResult> {
       if (
         data.eventType === 'hook_created' &&
         data.eventData.tokenRetentionUntil !== undefined &&
@@ -701,7 +707,10 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
           );
         }
       }
-      if (data.eventType === 'attr_set' && !currentRun) {
+      if (
+        !currentRun &&
+        (data.eventType === 'attr_set' || data.eventType === 'run_started')
+      ) {
         throw new WorkflowRunNotFoundError(effectiveRunId);
       }
 
@@ -1861,22 +1870,23 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
 
       // For run_started: include all events so the runtime can skip
       // the initial events.list call and reduce TTFB.
-      let allEvents: Event[] | undefined;
-      let cursor: string | null | undefined;
-      let hasMore: boolean | undefined;
-      if (data.eventType === 'run_started' && run) {
+      let eventPage: PaginatedResponse<Event> | undefined;
+      if (data.eventType === 'run_started' && run && !params?.skipPreload) {
         const eventRows = await drizzle
           .select()
           .from(Schema.events)
           .where(eq(Schema.events.runId, effectiveRunId))
           .orderBy(Schema.events.eventId);
-        allEvents = eventRows.map((e) => {
+        const data = eventRows.map((e) => {
           e.eventData ||= e.eventDataJson;
           const parsed = EventSchema.parse(compact(e));
           return stripEventDataRefs(parsed, resolveData);
         });
-        cursor = allEvents.at(-1)?.eventId ?? null;
-        hasMore = false;
+        eventPage = {
+          data,
+          cursor: data.at(-1)?.eventId ?? null,
+          hasMore: false,
+        };
       }
 
       // Inline delta: the caller told us the cursor of the log it holds, so
@@ -1900,24 +1910,33 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
           .orderBy(Schema.events.eventId)
           .limit(limit + 1);
         const page = deltaRows.slice(0, limit);
-        allEvents = page.map((e) => {
+        const data = page.map((e) => {
           e.eventData ||= e.eventDataJson;
           return stripEventDataRefs(EventSchema.parse(compact(e)), resolveData);
         });
-        cursor = allEvents.at(-1)?.eventId ?? null;
-        hasMore = deltaRows.length > limit;
+        eventPage = {
+          data,
+          cursor: data.at(-1)?.eventId ?? null,
+          hasMore: deltaRows.length > limit,
+        };
       }
 
-      return {
+      const eventResult: EventResult = {
         event: stripEventDataRefs(parsed, resolveData),
         run,
         step,
         hook,
         wait,
-        events: allEvents,
-        cursor,
-        hasMore,
         ...(stepCreatedLazily ? { stepCreated: true } : {}),
+      };
+
+      if (!eventPage) return eventResult;
+
+      return {
+        ...eventResult,
+        events: eventPage.data,
+        cursor: eventPage.cursor,
+        hasMore: eventPage.hasMore,
       };
     },
     async get(

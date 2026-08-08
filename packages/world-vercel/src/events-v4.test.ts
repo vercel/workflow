@@ -6,6 +6,7 @@ import {
   TooEarlyError,
   WorkflowWorldError,
 } from '@workflow/errors';
+import type { AnyEventRequest } from '@workflow/world';
 import { decode, encode } from 'cbor-x';
 import { MockAgent } from 'undici';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -23,6 +24,33 @@ import {
   getEventsDispatcher,
 } from './http-client.js';
 import { WORKFLOW_SERVER_URL_OVERRIDE } from './utils.js';
+
+const CREATED_AT = '2026-06-10T00:00:00.000Z';
+
+function createEventBody(
+  event: AnyEventRequest,
+  entities: Record<string, unknown> = {}
+) {
+  return encode({
+    event: {
+      ...event,
+      eventId: 'evnt_1',
+      runId: 'wrun_1',
+      createdAt: CREATED_AT,
+    },
+    ...entities,
+  });
+}
+
+const runningRun = {
+  runId: 'wrun_1',
+  status: 'running',
+  deploymentId: 'dpl_1',
+  workflowName: 'workflow',
+  startedAt: CREATED_AT,
+  createdAt: CREATED_AT,
+  updatedAt: CREATED_AT,
+};
 
 /**
  * The v4 client must preserve the typed-error contract of the v3
@@ -136,7 +164,11 @@ describe('getWorkflowRunEventsV4 over HTTP', () => {
           runId: 'wrun_1',
           eventType: 'run_created',
           createdAt: '2026-06-10T00:00:00.000Z',
-          eventData: {},
+          eventData: {
+            deploymentId: 'dpl_1',
+            workflowName: 'workflow',
+            input: null,
+          },
         },
         body
       ),
@@ -163,6 +195,37 @@ describe('getWorkflowRunEventsV4 over HTTP', () => {
     agent.assertNoPendingInterceptors();
   });
 
+  it('rejects an unknown event type', async () => {
+    const origin =
+      WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
+    const agent = new MockAgent();
+    agent.disableNetConnect();
+
+    agent
+      .get(origin)
+      .intercept({ path: '/api/v4/runs/wrun_1/events', method: 'GET' })
+      .reply(
+        200,
+        Buffer.concat([
+          encodeFrame(
+            { eventType: 'future_event', eventData: {} },
+            new Uint8Array()
+          ),
+          encodeFrame({ _end: 1 }, new Uint8Array()),
+        ]),
+        { headers: { 'content-type': V4_FRAME_CONTENT_TYPE } }
+      );
+
+    await expect(
+      getWorkflowRunEventsV4(
+        'wrun_1',
+        {},
+        { token: 'test-token', dispatcher: agent }
+      )
+    ).rejects.toThrow();
+    agent.assertNoPendingInterceptors();
+  });
+
   it('captures an explicit hasMore from the sentinel, independent of next', async () => {
     const origin =
       WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
@@ -178,7 +241,11 @@ describe('getWorkflowRunEventsV4 over HTTP', () => {
           runId: 'wrun_1',
           eventType: 'run_created',
           createdAt: '2026-06-10T00:00:00.000Z',
-          eventData: {},
+          eventData: {
+            deploymentId: 'dpl_1',
+            workflowName: 'workflow',
+            input: null,
+          },
         },
         new Uint8Array(0)
       ),
@@ -248,7 +315,11 @@ describe('getWorkflowRunEventsV4 over HTTP', () => {
         runId: 'wrun_1',
         eventType: 'run_created',
         createdAt: '2026-06-10T00:00:00.000Z',
-        eventData: {},
+        eventData: {
+          deploymentId: 'dpl_1',
+          workflowName: 'workflow',
+          input: null,
+        },
       },
       new Uint8Array(0)
     );
@@ -290,7 +361,7 @@ describe('getEventsByCorrelationIdV4 over HTTP', () => {
           eventType: 'step_created',
           correlationId: 'step_001',
           createdAt: '2026-06-10T00:00:00.000Z',
-          eventData: {},
+          eventData: { stepName: 'testStep' },
         },
         new Uint8Array(0)
       ),
@@ -355,7 +426,11 @@ describe('getEventV4 over HTTP', () => {
           runId: 'wrun_1',
           eventType: 'run_created',
           createdAt: '2026-06-10T00:00:00.000Z',
-          eventData: {},
+          eventData: {
+            deploymentId: 'dpl_1',
+            workflowName: 'workflow',
+            input: null,
+          },
         },
         body
       ),
@@ -445,13 +520,35 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
         path: '/api/v4/runs/wrun_1/events/step_completed',
         method: 'POST',
       })
-      .reply(200, encode({ step: { stepId: 'step_1', status: 'completed' } }), {
-        headers: {
-          'x-wf-event-id': 'evnt_1',
-          'x-wf-run-id': 'wrun_1',
-          'x-wf-created-at': '2026-06-10T00:00:00.000Z',
-        },
-      });
+      .reply(
+        200,
+        createEventBody(
+          {
+            eventType: 'step_completed',
+            specVersion: 2,
+            correlationId: 'step_1',
+            eventData: { result: new Uint8Array() },
+          },
+          {
+            step: {
+              runId: 'wrun_1',
+              stepId: 'step_1',
+              stepName: 'step',
+              status: 'completed',
+              attempt: 1,
+              createdAt: CREATED_AT,
+              updatedAt: CREATED_AT,
+            },
+          }
+        ),
+        {
+          headers: {
+            'x-wf-event-id': 'evnt_1',
+            'x-wf-run-id': 'wrun_1',
+            'x-wf-created-at': CREATED_AT,
+          },
+        }
+      );
 
     const result = await createWorkflowRunEventV4(
       {
@@ -464,10 +561,50 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
       { token: 'test-token', dispatcher: agent }
     );
 
-    expect(result.eventId).toBe('evnt_1');
-    expect(result.runId).toBe('wrun_1');
-    expect(result.createdAt).toBe('2026-06-10T00:00:00.000Z');
-    expect(result.body.step).toMatchObject({ stepId: 'step_1' });
+    expect(result.step).toMatchObject({ stepId: 'step_1' });
+    agent.assertNoPendingInterceptors();
+  });
+
+  it('accepts hook_conflict from a hook_created request', async () => {
+    const origin =
+      WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
+    const agent = new MockAgent();
+    agent.disableNetConnect();
+
+    agent
+      .get(origin)
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events/hook_created',
+        method: 'POST',
+      })
+      .reply(
+        200,
+        createEventBody({
+          eventType: 'hook_conflict',
+          specVersion: 5,
+          correlationId: 'hook_1',
+          eventData: { token: 'token', conflictingRunId: 'wrun_2' },
+        }),
+        {
+          headers: {
+            'x-wf-event-id': 'evnt_1',
+            'x-wf-run-id': 'wrun_1',
+            'x-wf-created-at': CREATED_AT,
+          },
+        }
+      );
+
+    const result = await createWorkflowRunEventV4(
+      {
+        runId: 'wrun_1',
+        eventType: 'hook_created',
+        specVersion: 5,
+        correlationId: 'hook_1',
+      },
+      { token: 'test-token', dispatcher: agent }
+    );
+
+    expect(result.event.eventType).toBe('hook_conflict');
     agent.assertNoPendingInterceptors();
   });
 
@@ -506,7 +643,10 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
         200,
         (opts: { body?: unknown }) => {
           captureMeta(opts.body);
-          return encode({ run: { runId: 'wrun_1', status: 'running' } });
+          return createEventBody(
+            { eventType: 'run_started', specVersion: 5 },
+            { run: runningRun }
+          );
         },
         {
           headers: {
@@ -558,7 +698,10 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
             string,
             unknown
           >;
-          return encode({ run: { runId: 'wrun_1', status: 'running' } });
+          return createEventBody(
+            { eventType: 'run_started', specVersion: 5 },
+            { run: runningRun }
+          );
         },
         {
           headers: {
@@ -646,7 +789,7 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
     agent.assertNoPendingInterceptors();
   });
 
-  it('ignores a 412 payload whose events do not narrow to events', async () => {
+  it('ignores a 412 payload containing an unknown event type', async () => {
     const origin =
       WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
     const agent = new MockAgent();
@@ -664,7 +807,14 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
           success: false,
           code: 'precondition-failed',
           message: 'Run state is stale',
-          events: [{ noEventId: true }],
+          events: [
+            {
+              eventId: 'evnt_future',
+              runId: 'wrun_1',
+              eventType: 'future_event',
+              createdAt: '2026-06-10T00:00:00.000Z',
+            },
+          ],
         }),
         { headers: { 'content-type': 'application/json' } }
       );
@@ -838,7 +988,12 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
             string,
             unknown
           >;
-          return encode({ wait: { waitId: 'wait_1' } });
+          return createEventBody({
+            eventType: 'wait_created',
+            specVersion: 5,
+            correlationId: 'wait_1',
+            eventData: { resumeAt: CREATED_AT },
+          });
         },
         {
           headers: {
@@ -891,7 +1046,12 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
             string,
             unknown
           >;
-          return encode({ wait: { waitId: 'wait_1' } });
+          return createEventBody({
+            eventType: 'wait_created',
+            specVersion: 5,
+            correlationId: 'wait_1',
+            eventData: { resumeAt: CREATED_AT },
+          });
         },
         {
           headers: {
@@ -946,7 +1106,12 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
             string,
             unknown
           >;
-          return encode({ wait: { waitId: 'wait_1' } });
+          return createEventBody({
+            eventType: 'wait_created',
+            specVersion: 5,
+            correlationId: 'wait_1',
+            eventData: { resumeAt: CREATED_AT },
+          });
         },
         {
           headers: {
@@ -999,7 +1164,12 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
             string,
             unknown
           >;
-          return encode({ wait: { waitId: 'wait_1' } });
+          return createEventBody({
+            eventType: 'wait_created',
+            specVersion: 5,
+            correlationId: 'wait_1',
+            eventData: { resumeAt: CREATED_AT },
+          });
         },
         {
           headers: {
@@ -1071,7 +1241,7 @@ describe('v4 POST frame meta forwards every field the splitter produces', () => 
         200,
         (opts: { body?: unknown }) => {
           captured = decodeFrameMeta(opts.body);
-          return encode({});
+          return createEventBody(data, { run: runningRun });
         },
         {
           headers: {
