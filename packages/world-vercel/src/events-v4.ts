@@ -525,7 +525,13 @@ export async function createWorkflowRunEventV4(
   const payload = input.payload ?? new Uint8Array(0);
 
   const response = isWsEventsTransportEnabled()
-    ? await postEventFrameOverWs(input.runId, meta, payload, config)
+    ? await postEventFrameOverWs(
+        input.runId,
+        input.eventType,
+        meta,
+        payload,
+        config
+      )
     : await postEventFrameOverHttp(
         input.runId,
         input.eventType,
@@ -627,8 +633,14 @@ function replyMetaToHeaderRecord(
   return out;
 }
 
+// Each logged at most once per process — both branches below are expected
+// to repeat (every event), and a per-request log would just be noise.
+let loggedWsProxyFallback = false;
+let loggedWsInUse = false;
+
 async function postEventFrameOverWs(
   runId: string,
+  eventType: string,
   meta: Record<string, unknown>,
   payload: Uint8Array,
   config: APIConfig | undefined
@@ -644,12 +656,21 @@ async function postEventFrameOverWs(
     // request that never went through Vercel's platform-level WS-upgrade
     // path, which is exactly what produces workflow-server's
     // "experimental_upgradeWebSocket is not available in the current
-    // runtime environment" error. Fail loudly here instead of silently
-    // misrouting the WS connection at a proxy that can't serve it.
-    throw new Error(
-      `world-vercel: ws events transport does not support the api-workflow proxy path (resolved baseUrl: ${baseUrl}). ` +
-        'This indicates config.projectConfig has projectId/teamId set while WORKFLOW_EVENTS_TRANSPORT=ws — ' +
-        'either unset the ws transport or call createWorld() without projectConfig.'
+    // runtime environment" error. Fall back to HTTP instead of attempting
+    // (and failing) a WS connection the proxy can't serve.
+    if (!loggedWsProxyFallback) {
+      loggedWsProxyFallback = true;
+      console.warn(
+        `world-vercel: ws events transport requested but a World with projectConfig ` +
+          `(api-workflow proxy, resolved baseUrl: ${baseUrl}) is active — falling back.`
+      );
+    }
+    return postEventFrameOverHttp(runId, eventType, meta, payload, config);
+  }
+  if (!loggedWsInUse) {
+    loggedWsInUse = true;
+    console.log(
+      `world-vercel: using ws events transport (baseUrl: ${baseUrl}).`
     );
   }
   const wsUrl = toEventsWsUrl(baseUrl);
