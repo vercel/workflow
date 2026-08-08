@@ -198,13 +198,7 @@ Maximum stream chunks written in one Vercel World request. Larger batches are sp
 
 ### `WORKFLOW_EVENTS_TRANSPORT`
 
-Transport used to write workflow run events to workflow-server. Set `WORKFLOW_EVENTS_TRANSPORT=ws` to send event writes over a persistent WebSocket instead of one HTTP request each. Default: `http`. Any other value is treated as `http`.
-
-<Callout type="warn">
-  Experimental. The event payloads and results are identical on either transport, but the WebSocket path is not yet covered by the same instrumentation as HTTP: individual writes open no client span and do not appear in a deployment's outgoing-requests view (the upgrade itself does carry W3C trace context, so server-side spans still join your trace). Leave it unset in production.
-</Callout>
-
-One socket is opened per workflow run, on the first event write of an invocation, and event writes are multiplexed over it. Reads (`GET`/`LIST`) always use HTTP. The variable is read at runtime only, and it is ignored when the World is configured with `projectConfig` — that routes through the `api.vercel.com` workflow proxy, which does not forward a raw upgrade, so those deployments stay on HTTP.
+Experimental. Set `WORKFLOW_EVENTS_TRANSPORT=ws` to ship workflow run events to the Vercel World over a WebSocket instead of one HTTP request each. Default: `http`.
 
 ### Programmatic configuration
 

@@ -279,5 +279,4 @@ Platform-provided values such as `VERCEL_DEPLOYMENT_ID`, `VERCEL_PROJECT_ID`, an
 - Factory option: none
 - CLI flag: none
 - Default: `http`
-- **Experimental.** Set to `ws` to write run events over one persistent WebSocket per run instead of an HTTP request each. Event reads stay on HTTP, and the setting is ignored when the World uses `projectConfig` (the `api.vercel.com` proxy does not forward the upgrade).
-- WebSocket writes are not instrumented like the HTTP path: no client span per write, and no entry in a deployment's outgoing-requests view. See [Vercel World](/worlds/vercel#workflow_events_transport).
+- Experimental. Set to `ws` to ship workflow run events to the Vercel World over a WebSocket instead of one HTTP request each.
