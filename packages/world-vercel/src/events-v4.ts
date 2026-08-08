@@ -31,7 +31,7 @@ import {
   instrumentedFetch,
   parseRetryAfter,
 } from './http-core.js';
-import { type APIConfig, getHttpConfig } from './utils.js';
+import { type APIConfig, getHttpConfig, getHttpUrl } from './utils.js';
 import { getWsEventsTransport, toEventsWsUrl } from './ws-transport.js';
 
 /**
@@ -648,7 +648,14 @@ async function postEventFrameOverWs(
   payload: Uint8Array,
   config: APIConfig | undefined
 ): Promise<FrameResponseLike> {
-  const { baseUrl, headers, usingProxy } = await getHttpConfig(config);
+  // `getHttpUrl` is the cheap, synchronous half of `getHttpConfig` — it
+  // resolves the route (baseUrl / usingProxy) without minting a token.
+  // The bearer only rides the WS upgrade request, so resolving it here,
+  // per event, meant awaiting `getVercelOidcToken()` on every single write
+  // and then throwing the result away for all but the first. The token is
+  // now resolved by the transport, once per socket (and again on each
+  // reconnect, so a new socket gets a fresh one).
+  const { baseUrl, usingProxy } = getHttpUrl(config);
   if (usingProxy) {
     // The ws transport was only ever designed for the direct
     // workflow-server path. `getHttpConfig`'s `usingProxy` branch resolves
@@ -677,7 +684,10 @@ async function postEventFrameOverWs(
     );
   }
   const wsUrl = toEventsWsUrl(baseUrl, runId);
-  const transport = getWsEventsTransport(wsUrl, headersToRecord(headers));
+  const transport = getWsEventsTransport(wsUrl, async () => {
+    const { headers } = await getHttpConfig(config);
+    return headersToRecord(headers);
+  });
 
   // `runId` is NOT repeated here — it's already in `wsUrl` (the connection
   // is scoped to this one run). The server's WsRequestFrameSchema
@@ -690,8 +700,20 @@ async function postEventFrameOverWs(
     encodeFrame({ reqId, type: 'event', event: meta }, payload)
   );
 
-  const status =
-    typeof reply.meta.status === 'number' ? reply.meta.status : 200;
+  // Fail closed. Defaulting a status-less reply to 200 would silently
+  // report success for any frame this client doesn't understand — and the
+  // protocol is explicitly designed to grow new response variants (see the
+  // server's docs/ws-protocol.md "Extending the protocol"), so an older
+  // client meeting a newer server is a case that will actually happen.
+  const { status } = reply.meta;
+  if (typeof status !== 'number') {
+    throw new Error(
+      `v4 createEvent (ws): reply frame carried no numeric status ` +
+        `(type: ${String(reply.meta.type ?? 'absent')}). Refusing to treat an ` +
+        `unrecognized reply as success — the write may or may not have been ` +
+        `applied; retry it (createEvent retries are idempotent server-side).`
+    );
+  }
   if (status < 200 || status >= 300) {
     throw errorFromV4Response(
       status,
