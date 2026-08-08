@@ -660,13 +660,19 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
-      - name: Setup environment
+      # build-packages: 'true' (not 'false' + a scoped `Build CLI` step,
+      # like e2e-vercel-prod uses) because `vercel build --prebuilt` below
+      # runs locally on this runner, unlike the GitHub-App-triggered
+      # deployments other jobs wait on — those build fresh on Vercel's own
+      # infra from a clean install, so a local partial build doesn't matter
+      # to them. This job's local `vercel build` needs every workspace
+      # package `workbench/express` imports (e.g. the local `workflow`
+      # package's `dist/nitro.js`, imported as `workflow/nitro`) already
+      # built on disk, or it fails with "Cannot resolve module".
+      - name: Setup environment and build packages
         uses: ./.github/actions/setup-workflow-dev
         with:
-          build-packages: 'false'
-
-      - name: Build CLI
-        run: pnpm turbo run build --filter='@workflow/cli'
+          build-packages: 'true'
 
       # Pinned and installed once rather than `npx vercel@<version>` per
       # command — repeated `npx` resolution showed inconsistent behavior
