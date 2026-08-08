@@ -832,10 +832,14 @@ export interface CreateEventParams {
    * fence fires. A dense position has no such blind spot. Worlds without slots
    * ignore this field and keep using the triple.
    *
-   * A batch of writes issued from one snapshot all send the same
+   * A batch of writes issued from one snapshot starts from the same
    * `eventCount`; they land on consecutive slots in whatever order the World
    * serializes them, which is why they can stay a parallel fan-out instead of
-   * a chain of round-trips.
+   * a chain of round-trips. The count a given write sends is the writer's
+   * position *at that moment*, so it advances mid-batch as reported events are
+   * folded back into the loaded log: a write issued after a sibling's
+   * bump-and-report already holds the slots that report named, and asks for a
+   * slot above them.
    */
   eventCount?: number;
   /**
@@ -857,11 +861,14 @@ export interface CreateEventParams {
    * sibling: all of those commit and come back on
    * {@link EventResult.events}.
    *
-   * Every write of one suspension carries the same `eventCount` and the same
-   * awaited set, and the events the writer missed occupy the slots directly
-   * above that count, so every write in the batch skips over all of them. That
-   * is what makes the fence all-or-nothing for a batch: a rejection that took
-   * only some of the writes would leave the log holding the rest.
+   * Every write of one suspension carries the same awaited set, computed once
+   * when the phase starts. That is what makes the fence all-or-nothing for a
+   * batch: each write asks the same question, so a resolution that fences one
+   * of them fences the phase, rather than rejecting some writes and leaving
+   * the log holding the rest. The `eventCount` those writes carry does move
+   * within the batch, but only forward and only across events the writer has
+   * since been handed, so a later write's narrower scan window has already
+   * been accounted for by the merge that widened its count.
    *
    * Ids for entities the same batch is creating are deliberately absent: a
    * correlation id this replay just minted cannot have a resolution the replay
