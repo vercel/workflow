@@ -649,6 +649,14 @@ jobs:
           - name: "express"
             project-id: "prj_cCZjpBy92VRbKHHbarDMhOHtkuIr"
             project-slug: "workbench-express-workflow"
+          # Vite resolves `ws`'s absent optional accelerators to a stub
+          # instead of failing the require, so a build check can't see the
+          # breakage and only a masked frame at or above 48 bytes trips it
+          # (see WORKFLOW_OPTIONAL_WS_NATIVE_MODULES). Every CBOR event
+          # frame clears that, so this lane is the coverage for it.
+          - name: "vite"
+            project-id: "prj_uLIcNZNDmETulAvj5h0IcDHi5432"
+            project-slug: "workbench-vite-workflow"
     env:
       TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
       TURBO_TEAM: ${{ vars.TURBO_TEAM }}
