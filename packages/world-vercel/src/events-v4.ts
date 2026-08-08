@@ -587,7 +587,13 @@ async function postEventFrameOverHttp(
 
 /** Flatten a reply frame's meta into the header record `errorFromV4Response`
  *  already reads (retry-after, x-vercel-mitigated), so the WS path reuses the
- *  HTTP error mapping rather than growing its own. */
+ *  HTTP error mapping rather than growing its own.
+ *
+ *  Left unmapped, deliberately: `meta.deprecated`, which the server copies from
+ *  `X-API-Deprecated`. Inert while the v4 route's middleware chain has no
+ *  deprecation middleware to set it — but this record is the only header source
+ *  a WS reply has, so an unmapped key is gone rather than merely unread, which
+ *  is not true of the real `Response` the HTTP path returns. */
 function replyMetaToHeaderRecord(
   meta: Record<string, unknown>
 ): Record<string, string> {
