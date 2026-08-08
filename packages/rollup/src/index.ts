@@ -3,10 +3,10 @@ import { transform } from '@swc/core';
 import {
   detectWorkflowPatterns,
   isGeneratedWorkflowFile,
-  isOptionalWsNativeModule,
   resolveModuleSpecifier,
   shouldTransformFile,
   WORKFLOW_OPTIONAL_OTEL_API_MODULE,
+  WORKFLOW_OPTIONAL_WS_NATIVE_MODULES,
 } from '@workflow/builders';
 import { resolveModulePath } from 'exsolve';
 import type { Plugin } from 'rollup';
@@ -59,7 +59,11 @@ export function workflowTransformPlugin(
         // with `Could not resolve "bufferutil" imported by "ws"` whenever the
         // accelerators aren't installed — which is the default. See
         // WORKFLOW_OPTIONAL_WS_NATIVE_MODULES for the full rationale.
-        if (isOptionalWsNativeModule(source)) {
+        if (
+          WORKFLOW_OPTIONAL_WS_NATIVE_MODULES.some(
+            (name) => source === name || source.startsWith(`${name}/`)
+          )
+        ) {
           return { id: source, external: true };
         }
 

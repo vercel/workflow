@@ -33,11 +33,3 @@ export const WORKFLOW_OPTIONAL_WS_NATIVE_MODULES = [
   'bufferutil',
   'utf-8-validate',
 ] as const;
-
-/** True when `source` is one of the `ws` optional native accelerators (or a
- *  deep import into one). */
-export function isOptionalWsNativeModule(source: string): boolean {
-  return WORKFLOW_OPTIONAL_WS_NATIVE_MODULES.some(
-    (name) => source === name || source.startsWith(`${name}/`)
-  );
-}
