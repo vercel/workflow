@@ -1,15 +1,27 @@
 /**
  * WebSocket transport for v4 event POSTs (POC — see workflow-architecture.md
- * notes on the http→ws exploration).
+ * notes on the http→ws exploration, and the server's `docs/ws-protocol.md`
+ * for the full normative wire-format/lifecycle spec this file implements
+ * the client half of).
  *
  * One physical socket per (wsUrl) is kept open and shared across concurrent
- * `createWorkflowRunEventV4` calls. Each logical request gets a `reqId`
- * embedded in the outgoing frame's CBOR meta (by the caller, before
- * `encodeFrame`); replies are matched back to their caller via the same
- * `reqId` echoed in the reply frame's meta. This mirrors the multiplexing
- * pattern already proven in the echo-bench `WsProxy`
+ * `createWorkflowRunEventV4` calls. Every frame's meta is `{ reqId, type,
+ * ... }`, with the type-specific payload nested under a field named after
+ * `type` (only `event` is sent by this file today). Each logical request
+ * gets a `reqId` assigned here and embedded in the outgoing frame (by the
+ * caller, before `encodeFrame`); replies are matched back to their caller
+ * via the same `reqId` echoed in the reply frame's meta. This mirrors the
+ * multiplexing pattern already proven in the echo-bench `WsProxy`
  * (nextjs-app-1/app/echobench/ws-proxy.ts): lazy/shared connect, one socket,
  * many in-flight requests keyed by id.
+ *
+ * The server can also push an unsolicited `type: 'drain'` frame (no
+ * `reqId`, since it isn't a reply to anything) announcing the connection
+ * is closing soon ahead of its `maxDuration`. This file currently only
+ * logs it — there's no reconnect-before-close handling yet, so in-flight
+ * requests at drain time still fail the same way they would on an
+ * unannounced close. See the server spec's "known limitations" for the
+ * client-side reconnect work this is waiting on.
  *
  * Deliberately uses the `ws` package (not the WHATWG global `WebSocket`):
  * the global constructor has no way to send custom headers on the upgrade
@@ -126,6 +138,18 @@ class WsEventsTransport {
     } catch {
       return;
     }
+    if (decoded.meta.type === 'drain') {
+      // Unsolicited server push, no reqId — the connection is closing soon
+      // ahead of its maxDuration. No reconnect-before-close handling yet
+      // (see the class doc), so this is purely informational for now: any
+      // request still in flight when the close actually happens fails the
+      // same way it would on an unannounced close.
+      console.log(
+        `world-vercel: ws events transport received a drain notice ` +
+          `(graceMs: ${decoded.meta.graceMs ?? 'unspecified'}); connection will close soon.`
+      );
+      return;
+    }
     const reqId = decoded.meta.reqId;
     if (typeof reqId !== 'number') return;
     const pending = this.pending.get(reqId);
@@ -161,10 +185,17 @@ export function getWsEventsTransport(
   return transport;
 }
 
-/** Derive the events WS URL from the (http/https) base URL used for v4 REST calls. */
+/**
+ * Derive the WS protocol endpoint URL from the (http/https) base URL used
+ * for v4 REST calls. Path is `/websockets/v1` — a general-purpose entry
+ * point versioned independently of the `v4` REST API version this
+ * transport happens to forward `event` frames into (was `/v4/events/ws`;
+ * see the server's `docs/ws-protocol.md` for why the two version axes are
+ * kept separate).
+ */
 export function toEventsWsUrl(baseUrl: string): string {
   const url = new URL(baseUrl);
   url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
-  url.pathname = `${url.pathname.replace(/\/$/, '')}/v4/events/ws`;
+  url.pathname = `${url.pathname.replace(/\/$/, '')}/websockets/v1`;
   return url.toString();
 }

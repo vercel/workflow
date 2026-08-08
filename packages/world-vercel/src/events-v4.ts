@@ -676,12 +676,15 @@ async function postEventFrameOverWs(
   const wsUrl = toEventsWsUrl(baseUrl);
   const transport = getWsEventsTransport(wsUrl, headersToRecord(headers));
 
-  // runId travels in-band in the meta here — over HTTP it comes from the URL
-  // path instead, since there's no per-message URL on a shared WS
-  // connection. parseV4EventMeta ignores unknown fields, so this is a no-op
-  // on the HTTP branch (which never sets it).
+  // `runId` travels in-band under `event` here — over HTTP it comes from
+  // the URL path instead, since there's no per-message URL on a shared WS
+  // connection. The server's WsRequestFrameSchema (frames.ts) is a
+  // discriminated union on `type`, with the type's payload nested under a
+  // field named after it — `event: { runId, ...meta }` for `type: 'event'`
+  // — so a future request type is a new variant, not a reshape of what's
+  // already on the wire. See the server's docs/ws-protocol.md.
   const reply = await transport.request((reqId) =>
-    encodeFrame({ ...meta, runId, reqId }, payload)
+    encodeFrame({ reqId, type: 'event', event: { ...meta, runId } }, payload)
   );
 
   const status =
