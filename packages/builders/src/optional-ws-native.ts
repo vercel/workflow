@@ -4,12 +4,19 @@
  * transport. Neither is installed by default: `ws` requires each one inside a
  * try/catch and falls back to a pure-JS implementation when the require throws.
  *
- * Marking them external lets that fallback happen. Two bundlers break without
- * it, differently: **Rollup/Vite/Nitro** fail the build on the unresolvable
- * `require` (`Could not resolve "bufferutil" imported by "ws"`), and **webpack**
- * builds but bundles the JS wrapper without its native `.node` binding, throwing
- * `bufferUtil.mask is not a function` at runtime. (Turbopack externalizes Node
- * packages differently and doesn't hit either.)
+ * Marking them external keeps that fallback reachable. Two bundlers take it away
+ * without changing the build's outcome, so the damage only shows up at runtime,
+ * on the first frame big enough to reach the native masker (`ws` uses pure JS
+ * below 48 bytes — small-payload smoke tests pass; CBOR event frames don't):
+ *
+ * - **webpack** bundles the JS wrapper without its native `.node` binding.
+ * - **Vite** resolves the absent peer to its own `optional-peer-dep` stub, so
+ *   `ws`'s require *succeeds* and the try/catch never fires.
+ *
+ * Both end at `bufferUtil.mask is not a function`. Plain Rollup is safe by
+ * accident — it leaves the bare `require` in ESM output, where calling it throws
+ * and the fallback engages — so externalizing there buys determinism, not a fix
+ * for a build error. (Turbopack already externalizes Node packages.)
  *
  * Externalized unconditionally, unlike `WORKFLOW_OPTIONAL_OTEL_API_MODULE`,
  * which is only externalized when it can't be resolved. The OTEL API has to

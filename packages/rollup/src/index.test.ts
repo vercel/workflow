@@ -78,9 +78,11 @@ describe('workflowTransformPlugin resolveId — @opentelemetry/api optional peer
 /**
  * `ws` (world-vercel's WebSocket events transport) requires `bufferutil` and
  * `utf-8-validate` inside a try/catch and falls back to pure JS when they're
- * absent — which is the default, since neither is installed. Rollup treats
- * that unresolvable require as fatal (`Could not resolve "bufferutil"
- * imported by "ws"`), so this plugin has to mark them external.
+ * absent — which is the default, since neither is installed. The require has to
+ * actually fail for that fallback to engage, and under Vite it doesn't: an
+ * absent optional peer resolves to a stub, leaving `bufferUtil.mask` undefined
+ * until a frame is masked. Externalizing makes the failure the designed one on
+ * every bundler this plugin runs under.
  *
  * This is the shipped fix for what the workbench Vite/TanStack apps used to
  * work around locally via `nitro.rollupConfig.external`: because every
@@ -90,7 +92,7 @@ describe('workflowTransformPlugin resolveId — @opentelemetry/api optional peer
 describe('workflowTransformPlugin resolveId — ws optional native accelerators', () => {
   it.each([
     ...WORKFLOW_OPTIONAL_WS_NATIVE_MODULES,
-  ])('marks %s external so Rollup does not fail to resolve it', async (name) => {
+  ])('marks %s external so nothing substitutes for it', async (name) => {
     const { resolveId } = getResolveId(() => null);
     await expect(resolveId(name)).resolves.toEqual({
       id: name,
