@@ -280,3 +280,4 @@ Platform-provided values such as `VERCEL_DEPLOYMENT_ID`, `VERCEL_PROJECT_ID`, an
 - CLI flag: none
 - Default: `http`
 - Experimental. Set to `ws` to ship workflow run events to the Vercel World over a WebSocket instead of one HTTP request each.
+- Ignored when the World is configured with `projectConfig` and routes through the `api-workflow` proxy — that endpoint is an HTTP-only REST gateway and does not forward a WebSocket upgrade, so events stay on HTTP.
