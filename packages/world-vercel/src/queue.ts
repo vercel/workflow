@@ -18,11 +18,11 @@ import {
 import { decode as cborDecode, encode as cborEncode } from 'cbor-x';
 import { z } from 'zod/v4';
 import { missingDeploymentIdMessage } from './deployment-id.js';
-import { warmWsEventsTransport } from './events-v4.js';
 import { getDispatcher } from './http-client.js';
 import { decode as decodeTaggedRunId } from './run-id/index.js';
 import { isKnownRegionCode, REGION_IDS } from './run-id/regions.js';
 import { type APIConfig, getHeaders, getHttpUrl } from './utils.js';
+import { warmWsEventsTransport } from './ws-transport.js';
 
 /**
  * CBOR-based queue transport. Encodes values with cbor-x on send and

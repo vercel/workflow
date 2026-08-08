@@ -18,27 +18,32 @@ import {
   MAX_EVENT_POST_RETRIES,
   withEventPostRetry,
 } from './event-retry.js';
-import {
-  createWorkflowRunEventV4,
-  isWsEventsTransportEnabled,
-  warmWsEventsTransport,
-} from './events-v4.js';
+import { createWorkflowRunEventV4 } from './events-v4.js';
 import { WORKFLOW_SERVER_URL_OVERRIDE } from './utils.js';
 import { type WsFrameReply, WsTransportError } from './ws-transport.js';
 
+const WS_URL = 'wss://vercel-workflow.com/api/websockets/v1/runs/wrun_1';
+
 const requestMock = vi.fn<() => Promise<WsFrameReply>>();
-const warmMock = vi.fn<() => void>();
-const getWsEventsTransportMock = vi.fn(() => ({
-  request: requestMock,
-  warm: warmMock,
+/**
+ * `resolveWsTransport` is the seam this file mocks, not `getWsEventsTransport`
+ * — the URL resolution, proxy fallback and per-socket header thunk all live
+ * inside `ws-transport.js` now, so a mock one level deeper would be called
+ * from within that module and never reached from here (ESM mocks replace a
+ * module's *exports*, not its intra-module call sites). Those selection
+ * concerns are covered directly in `ws-transport.test.ts`.
+ */
+const resolveWsTransportMock = vi.fn(() => ({
+  transport: { request: requestMock },
+  wsUrl: WS_URL,
 }));
 
 vi.mock('./ws-transport.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./ws-transport.js')>();
   return {
     ...actual,
-    getWsEventsTransport: (...args: unknown[]) =>
-      getWsEventsTransportMock(...(args as [])),
+    resolveWsTransport: (...args: unknown[]) =>
+      resolveWsTransportMock(...(args as [])),
   };
 });
 
@@ -85,21 +90,6 @@ afterEach(() => {
  * two transports are built to be indistinguishable at the result layer.
  */
 describe('transport gate', () => {
-  it.each([
-    ['ws', true],
-    ['http', false],
-    ['', false],
-    ['WS', false],
-  ])('%o resolves to ws=%o', (value, expected) => {
-    process.env.WORKFLOW_EVENTS_TRANSPORT = value;
-    expect(isWsEventsTransportEnabled()).toBe(expected);
-  });
-
-  it('defaults to HTTP when unset', () => {
-    delete process.env.WORKFLOW_EVENTS_TRANSPORT;
-    expect(isWsEventsTransportEnabled()).toBe(false);
-  });
-
   it('goes over HTTP, never touching the WS transport, when the gate is off', async () => {
     delete process.env.WORKFLOW_EVENTS_TRANSPORT;
     const origin =
@@ -126,44 +116,8 @@ describe('transport gate', () => {
     });
 
     expect(result.eventId).toBe('evnt_1');
-    expect(getWsEventsTransportMock).not.toHaveBeenCalled();
+    expect(resolveWsTransportMock).not.toHaveBeenCalled();
     agent.assertNoPendingInterceptors();
-  });
-});
-
-/**
- * The queue handler calls this on every message, for every World — including
- * the HTTP default and the proxy World that can't speak WS at all. So "does
- * nothing, quietly" is the contract being pinned here, as much as the warm
- * itself: a throw or an await here would land on the critical path of every
- * invocation, WS or not.
- */
-describe('warmWsEventsTransport', () => {
-  it('warms the run’s transport when the gate is on', () => {
-    warmWsEventsTransport('wrun_1', { token: 'test-token' });
-
-    expect(getWsEventsTransportMock).toHaveBeenCalledTimes(1);
-    expect(warmMock).toHaveBeenCalledTimes(1);
-  });
-
-  it('does not even resolve a transport when the gate is off', () => {
-    delete process.env.WORKFLOW_EVENTS_TRANSPORT;
-
-    warmWsEventsTransport('wrun_1', { token: 'test-token' });
-
-    expect(getWsEventsTransportMock).not.toHaveBeenCalled();
-    expect(warmMock).not.toHaveBeenCalled();
-  });
-
-  it('does nothing for a World whose baseUrl is the api-workflow proxy', () => {
-    // Same fallback `postEventFrameOverWs` takes: that gateway does not
-    // forward a raw upgrade, so there is no socket worth warming.
-    warmWsEventsTransport('wrun_1', {
-      projectConfig: { projectId: 'prj_1', teamId: 'team_1' },
-    });
-
-    expect(getWsEventsTransportMock).not.toHaveBeenCalled();
-    expect(warmMock).not.toHaveBeenCalled();
   });
 });
 
@@ -181,20 +135,43 @@ describe('createWorkflowRunEventV4 over ws', () => {
     expect(result.body.step).toMatchObject({ stepId: 'step_1' });
   });
 
-  it('resolves the auth headers lazily, once per socket rather than per event', async () => {
-    requestMock.mockResolvedValue(ack());
+  it('falls back to HTTP when this World has no usable WS transport', async () => {
+    // `resolveWsTransport` returns null for the api-workflow proxy World (see
+    // `ws-transport.test.ts`). The gate is still on here, so the write has to
+    // complete over HTTP rather than fail — that fallback is the reason the
+    // resolve step returns null instead of throwing.
+    resolveWsTransportMock.mockReturnValueOnce(
+      null as unknown as {
+        transport: { request: typeof requestMock };
+        wsUrl: string;
+      }
+    );
+    const origin =
+      WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
+    const agent = new MockAgent();
+    agent.disableNetConnect();
+    agent
+      .get(origin)
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events/step_completed',
+        method: 'POST',
+      })
+      .reply(200, encode({ step: { stepId: 'step_1' } }), {
+        headers: {
+          'x-wf-event-id': 'evnt_1',
+          'x-wf-run-id': 'wrun_1',
+          'x-wf-created-at': '2026-06-10T00:00:00.000Z',
+        },
+      });
 
-    await createWorkflowRunEventV4(input, { token: 'test-token' });
+    const result = await createWorkflowRunEventV4(input, {
+      token: 'test-token',
+      dispatcher: agent,
+    });
 
-    // The transport is handed a thunk it calls at connect time — passing a
-    // materialized header record here would mean minting a token on every
-    // write and discarding all but the first.
-    const [wsUrl, getHeaders] = getWsEventsTransportMock.mock.calls[0] as [
-      string,
-      unknown,
-    ];
-    expect(wsUrl).toContain('/websockets/v1/runs/wrun_1');
-    expect(typeof getHeaders).toBe('function');
+    expect(result.eventId).toBe('evnt_1');
+    expect(requestMock).not.toHaveBeenCalled();
+    agent.assertNoPendingInterceptors();
   });
 
   it('translates a non-2xx status into the same typed error HTTP raises', async () => {

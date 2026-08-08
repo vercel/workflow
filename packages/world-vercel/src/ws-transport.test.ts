@@ -19,8 +19,11 @@ import { encodeFrame } from './frames.js';
 import { REQUEST_TIMEOUT_MS } from './http-core.js';
 import {
   getWsEventsTransport,
+  isWsEventsTransportEnabled,
   resetWsEventsTransportsForTest,
+  resolveWsTransport,
   toEventsWsUrl,
+  warmWsEventsTransport,
 } from './ws-transport.js';
 
 type Listener = (...args: unknown[]) => void;
@@ -892,5 +895,135 @@ describe('drain reason', () => {
     // A later write, by which point the process is serving a new invocation.
     const { socket: revived } = await connectAndSend(transport);
     expect(revived.headers.authorization).toBe('Bearer token-2');
+  });
+});
+
+/**
+ * Which transport a write takes, and which socket it takes it on — the layer
+ * `createWorkflowRunEventV4` and the queue handler call into. Covered here
+ * rather than in `events-v4-ws.test.ts` because that file mocks
+ * `resolveWsTransport` wholesale (it has to: the URL resolution and the header
+ * thunk are intra-module calls that an export-level mock cannot intercept), so
+ * this is the only place the real selection code runs.
+ */
+describe('transport selection', () => {
+  afterEach(() => {
+    delete process.env.WORKFLOW_EVENTS_TRANSPORT;
+  });
+
+  /** A World that routes through the api-workflow proxy. */
+  const proxyConfig = {
+    token: 'test-token',
+    projectConfig: { projectId: 'prj_1', teamId: 'team_1' },
+  };
+  const directConfig = { token: 'test-token' };
+
+  /**
+   * The gate is the whole safety story for this feature: everything else is
+   * dead code for anyone who hasn't opted in. Nothing on the HTTP side pins
+   * the *choice* of path — a future edit that flipped the default (as an
+   * earlier revision of this branch did deliberately, for benchmarking) would
+   * sail through with every HTTP assertion still green, because the two
+   * transports are built to be indistinguishable at the result layer.
+   */
+  describe('isWsEventsTransportEnabled', () => {
+    it.each([
+      ['ws', true],
+      ['http', false],
+      ['', false],
+      ['WS', false],
+    ])('%o resolves to ws=%o', (value, expected) => {
+      process.env.WORKFLOW_EVENTS_TRANSPORT = value;
+      expect(isWsEventsTransportEnabled()).toBe(expected);
+    });
+
+    it('defaults to HTTP when unset', () => {
+      expect(isWsEventsTransportEnabled()).toBe(false);
+    });
+  });
+
+  describe('resolveWsTransport', () => {
+    it('scopes the transport to one run and memoizes it per URL', () => {
+      const first = resolveWsTransport('wrun_1', directConfig);
+      const second = resolveWsTransport('wrun_1', directConfig);
+
+      expect(first?.wsUrl).toContain('/websockets/v1/runs/wrun_1');
+      expect(second?.transport).toBe(first?.transport);
+      expect(resolveWsTransport('wrun_2', directConfig)?.transport).not.toBe(
+        first?.transport
+      );
+    });
+
+    it('mints no token and opens no socket until something writes', async () => {
+      // The transport is handed a thunk it calls at connect time. Resolving a
+      // header record here instead would mean minting a token on every write
+      // and discarding all but the first — this runs on the hot path.
+      const resolved = resolveWsTransport('wrun_1', directConfig);
+      await tick();
+      expect(sockets).toHaveLength(0);
+
+      resolved?.transport.warm();
+      await tick();
+
+      expect(sockets).toHaveLength(1);
+      expect(latest().headers.authorization).toBe('Bearer test-token');
+    });
+
+    it('returns null for a World behind the api-workflow proxy', () => {
+      // That gateway does not forward a raw upgrade, so the caller has to fall
+      // back to HTTP rather than attempt a connection it can't serve.
+      expect(resolveWsTransport('wrun_1', proxyConfig)).toBeNull();
+      expect(sockets).toHaveLength(0);
+    });
+
+    it('logs the proxy fallback and the ws-in-use notice once per process', () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      resolveWsTransport('wrun_1', proxyConfig);
+      resolveWsTransport('wrun_2', proxyConfig);
+      resolveWsTransport('wrun_1', directConfig);
+      resolveWsTransport('wrun_2', directConfig);
+
+      // Every event takes this path, so a per-request line would be noise.
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      expect(
+        logSpy.mock.calls.filter(([m]) => String(m).includes('using ws'))
+      ).toHaveLength(1);
+    });
+  });
+
+  /**
+   * The queue handler calls this on every message, for every World — including
+   * the HTTP default and the proxy World that can't speak WS at all. So "does
+   * nothing, quietly" is as much the contract here as the warm itself: a throw
+   * or an await would land on the critical path of every invocation, WS or not.
+   */
+  describe('warmWsEventsTransport', () => {
+    it('opens the run’s socket when the gate is on', async () => {
+      process.env.WORKFLOW_EVENTS_TRANSPORT = 'ws';
+
+      warmWsEventsTransport('wrun_1', directConfig);
+      await tick();
+
+      expect(sockets).toHaveLength(1);
+      expect(latest().url).toContain('/websockets/v1/runs/wrun_1');
+    });
+
+    it('does nothing when the gate is off', async () => {
+      warmWsEventsTransport('wrun_1', directConfig);
+      await tick();
+
+      expect(sockets).toHaveLength(0);
+    });
+
+    it('does nothing for a World behind the api-workflow proxy', async () => {
+      process.env.WORKFLOW_EVENTS_TRANSPORT = 'ws';
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      warmWsEventsTransport('wrun_1', proxyConfig);
+      await tick();
+
+      expect(sockets).toHaveLength(0);
+    });
   });
 });

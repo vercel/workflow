@@ -16,11 +16,20 @@
  * Uses the `ws` package rather than the WHATWG global `WebSocket`, which cannot
  * set headers on the upgrade request — auth rides the handshake, once per
  * connection instead of once per message.
+ *
+ * Transport *selection* lives here too, at the bottom of the file:
+ * `isWsEventsTransportEnabled` (the opt-in flag), `resolveWsTransport` (which
+ * Worlds can use a socket at all) and `warmWsEventsTransport` (the pre-warm
+ * entry point). Deciding whether a write goes over a socket is part of owning
+ * the socket, and keeping it here means `events-v4.ts` consumes one seam
+ * rather than assembling the transport itself.
  */
 
+import { getVercelOidcToken } from '@vercel/oidc';
 import type { WebSocket } from 'ws';
 import { type DecodedFrame, decodeFrames } from './frames.js';
-import { getRequestTimeoutMs } from './http-core.js';
+import { getRequestTimeoutMs, headersToRecord } from './http-core.js';
+import { type APIConfig, getHttpConfig, getHttpUrl } from './utils.js';
 
 /**
  * `ws` is loaded on first connect, not at module scope. `events-v4.ts` imports
@@ -658,12 +667,18 @@ export function getWsEventsTransport(
   return transport;
 }
 
-/** Test seam: close and drop every cached transport. */
+/**
+ * Test seam: close and drop every cached transport, and re-arm the
+ * once-per-process log latches below so a test asserting on either message
+ * isn't silenced by an earlier one having already logged it.
+ */
 export function resetWsEventsTransportsForTest(): void {
   for (const transport of [...transports.values()]) {
     transport.close('test reset');
   }
   transports.clear();
+  loggedWsProxyFallback = false;
+  loggedWsInUse = false;
 }
 
 /**
@@ -681,4 +696,174 @@ export function toEventsWsUrl(baseUrl: string, runId: string): string {
   url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
   url.pathname = `${url.pathname.replace(/\/$/, '')}/websockets/v1/runs/${encodeURIComponent(runId)}`;
   return url.toString();
+}
+
+// =============================================================================
+// Transport selection
+// =============================================================================
+
+/**
+ * WS events transport gate — POC flag (see workflow-architecture.md notes).
+ * Only `createWorkflowRunEventV4` (POST) is wired to it; GET/LIST stay on
+ * HTTP, since they're not on the hot per-step path and the wire protocol
+ * for LIST (a streamed, sentinel-terminated multi-frame response) doesn't
+ * map onto a single WS message.
+ *
+ * **Known gap — event writes lose their client-side instrumentation on this
+ * path.** The HTTP branch goes through `fetchV4` → `instrumentedFetch`, which
+ * is not merely a `fetch` wrapper: it opens the OTEL CLIENT span, injects
+ * trace context into the outgoing request, sets the cache-bust header, emits
+ * the `DEBUG` logs, and — the reason it exists at all — routes through the
+ * global `fetch` that Vercel's observability "outgoing requests" view
+ * instruments. See the note on `fetchV4`: bypassing it via `undici.request()`
+ * is exactly what once made v4 event traffic disappear from the log viewer.
+ *
+ * The WS branch bypasses all of it. With the flag on, per-event writes have no
+ * client span, propagate no trace context to workflow-server, and do not
+ * appear in the outgoing-requests view; the server's own request metrics
+ * (which #660 tags with `transport`) are the only remaining signal. That is
+ * acceptable for an opt-in POC behind a flag and unacceptable as a default —
+ * instrumenting the transport (a span per `request()`, trace context carried
+ * in the frame meta rather than HTTP headers) is a prerequisite for making
+ * `ws` the default, not a follow-up nicety.
+ *
+ * Opt-in: defaults to HTTP unless `WORKFLOW_EVENTS_TRANSPORT=ws` is set.
+ * Was previously defaulted ON for this branch so the existing e2e/benchmark
+ * suite would exercise the WS path without any dedicated wiring — that's no
+ * longer needed now that a dedicated Vercel preview deployment sets this
+ * env var explicitly for its own deployment only (see
+ * `.github/workflows/tests.yml`'s `e2e-vercel-ws-transport` job), so every
+ * other deployment/test now genuinely reflects the HTTP-only default a real
+ * user would get.
+ */
+export function isWsEventsTransportEnabled(): boolean {
+  return process.env.WORKFLOW_EVENTS_TRANSPORT === 'ws';
+}
+
+/**
+ * Start opening this run's WS socket, if the WS transport is in use at all.
+ *
+ * Call this as early in an invocation as the run id is known — the queue
+ * handler does, before dispatching to the runtime. By the time the first event
+ * is written the handshake is either done or already in flight, instead of
+ * being serialized ahead of that write. See `WsEventsTransport.warm` for why
+ * that matters and why nothing here is load-bearing.
+ *
+ * Silent and synchronous by contract: a no-op on the HTTP default and on a
+ * World that can't use WS at all (the api-workflow proxy), and it neither
+ * awaits nor reports the connect. A caller must be able to treat this as free.
+ */
+export function warmWsEventsTransport(runId: string, config?: APIConfig): void {
+  if (!isWsEventsTransportEnabled()) return;
+  // `resolveWsTransport` is sync and only resolves a URL + memoized transport
+  // — no token mint, no I/O — so this stays cheap on the invocation's
+  // critical path. The socket work happens inside `warm`, unawaited.
+  resolveWsTransport(runId, config)?.transport.warm();
+}
+
+/**
+ * A buffer wider than any OIDC token's lifetime, so `isExpired()` reports
+ * true and `@vercel/oidc` takes its refresh path instead of handing back the
+ * cached entry. 24h comfortably exceeds the 60min TTL.
+ */
+const OIDC_FORCE_REFRESH_BUFFER_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Ask `@vercel/oidc` to mint a new token before the next `getHttpConfig()`
+ * reads one, in response to the server draining a connection with
+ * `reason: 'auth_expiry'`.
+ *
+ * Best-effort by design, and it is worth being precise about when it can
+ * actually do anything. `getVercelOidcToken()` resolves
+ * `getContext().headers['x-vercel-oidc-token'] ?? process.env.VERCEL_OIDC_TOKEN`
+ * — the request-context header wins. `refreshToken()` only writes
+ * `process.env.VERCEL_OIDC_TOKEN`. So:
+ *
+ *  - **Inside a deployed Vercel function**, the invocation's own header token
+ *    always shadows anything refreshed into the environment. There is
+ *    genuinely no fresher token to obtain mid-invocation, so this is a no-op
+ *    and the transport's stale-token guard is what handles it: it declines to
+ *    reconnect with a bearer the server has already rejected, and waits for
+ *    the next write, which will usually come from a new invocation carrying a
+ *    new token.
+ *  - **Outside one** (CLI, local dev, a long-lived server using
+ *    `VERCEL_OIDC_TOKEN`), there is no context header, the refresh writes a
+ *    genuinely new token to the environment, and the reconnect picks it up.
+ *
+ * Swallows its own failures: an unavailable refresh must not turn into a
+ * failed event write when `getHttpConfig()` can still produce a usable —
+ * if soon-to-expire — bearer.
+ */
+async function refreshOidcTokenBestEffort(): Promise<void> {
+  try {
+    await getVercelOidcToken({
+      expirationBufferMs: OIDC_FORCE_REFRESH_BUFFER_MS,
+    });
+  } catch {
+    // No refresh path available here. getHttpConfig() below still resolves
+    // whatever token it can, and the transport decides whether reconnecting
+    // with it is worth attempting.
+  }
+}
+
+// Each logged at most once per process — both branches below are expected
+// to repeat (every event), and a per-request log would just be noise.
+let loggedWsProxyFallback = false;
+let loggedWsInUse = false;
+
+/**
+ * Resolve the WS transport for a run, or `null` when this World can't use
+ * one and the caller should fall back to HTTP.
+ */
+export function resolveWsTransport(
+  runId: string,
+  config: APIConfig | undefined
+): {
+  transport: WsEventsTransport;
+  wsUrl: string;
+} | null {
+  // `getHttpUrl` is the cheap, synchronous half of `getHttpConfig` — it
+  // resolves the route (baseUrl / usingProxy) without minting a token.
+  // The bearer only rides the WS upgrade request, so resolving it here,
+  // per event, meant awaiting `getVercelOidcToken()` on every single write
+  // and then throwing the result away for all but the first. The token is
+  // now resolved by the transport, once per socket (and again on each
+  // reconnect, so a new socket gets a fresh one).
+  const { baseUrl, usingProxy } = getHttpUrl(config);
+  if (usingProxy) {
+    // The ws transport was only ever designed for the direct
+    // workflow-server path. `getHttpConfig`'s `usingProxy` branch resolves
+    // `baseUrl` to `api.vercel.com/v1/workflow`, an HTTP-only REST gateway
+    // that (as far as we know) does not forward a raw WebSocket upgrade
+    // through to the actual workflow-server target — it would either
+    // reject the upgrade outright or hand the route a plain forwarded HTTP
+    // request that never went through Vercel's platform-level WS-upgrade
+    // path, which is exactly what produces workflow-server's
+    // "experimental_upgradeWebSocket is not available in the current
+    // runtime environment" error. Fall back to HTTP instead of attempting
+    // (and failing) a WS connection the proxy can't serve.
+    if (!loggedWsProxyFallback) {
+      loggedWsProxyFallback = true;
+      console.warn(
+        `world-vercel: ws events transport requested but a World with projectConfig ` +
+          `(api-workflow proxy, resolved baseUrl: ${baseUrl}) is active — falling back.`
+      );
+    }
+    return null;
+  }
+  if (!loggedWsInUse) {
+    loggedWsInUse = true;
+    console.log(
+      `world-vercel: using ws events transport (baseUrl: ${baseUrl}).`
+    );
+  }
+  const wsUrl = toEventsWsUrl(baseUrl, runId);
+  const transport = getWsEventsTransport(wsUrl, async ({ forceRefresh }) => {
+    // `forceRefresh` means the previous socket was drained by the server
+    // because its *bearer* was expiring, not because the socket aged out.
+    if (forceRefresh) await refreshOidcTokenBestEffort();
+    const { headers } = await getHttpConfig(config);
+    return headersToRecord(headers);
+  });
+  return { transport, wsUrl };
 }
