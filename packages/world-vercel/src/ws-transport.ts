@@ -26,32 +26,10 @@
  */
 
 import { getVercelOidcToken } from '@vercel/oidc';
-import type { WebSocket } from 'ws';
+import { WebSocket } from 'ws';
 import { type DecodedFrame, decodeFrames } from './frames.js';
 import { getRequestTimeoutMs, headersToRecord } from './http-core.js';
 import { type APIConfig, getHttpConfig, getHttpUrl } from './utils.js';
-
-/**
- * `ws` is loaded on first connect, not at module scope. `events-v4.ts` imports
- * this module unconditionally (the transport gate is a runtime branch), so a
- * static import would put `ws` on the module-init path of every deployment,
- * including the majority that never enable the transport. Memoized as a promise
- * so concurrent first connects share one import.
- *
- * This does not replace the bundler config that externalizes
- * `bufferutil`/`utf-8-validate`: both webpack and Rollup still statically
- * follow a dynamic `import()`.
- */
-type WebSocketCtor = typeof import('ws').WebSocket;
-let wsCtorPromise: Promise<WebSocketCtor> | null = null;
-function loadWebSocketCtor(): Promise<WebSocketCtor> {
-  wsCtorPromise ??= import('ws').then((mod) => mod.WebSocket);
-  return wsCtorPromise;
-}
-
-/** `WebSocket.OPEN`, inlined so a readyState check doesn't force the module to
- *  load just to read a constant off the constructor. */
-const WS_READY_STATE_OPEN = 1;
 
 export interface WsFrameReply {
   meta: Record<string, unknown>;
@@ -328,7 +306,7 @@ class WsEventsTransport {
 
   private ensureConnected(): Promise<Connection> {
     const conn = this.connection;
-    if (conn && conn.ws.readyState === WS_READY_STATE_OPEN) {
+    if (conn && conn.ws.readyState === WebSocket.OPEN) {
       return Promise.resolve(conn);
     }
     // Clearing the slot here rather than from the socket handlers keeps the
@@ -382,8 +360,7 @@ class WsEventsTransport {
         let conn: Connection;
         try {
           const headers = await this.resolveUpgradeHeaders();
-          const WebSocketCtor = await loadWebSocketCtor();
-          const ws = new WebSocketCtor(this.wsUrl, { headers });
+          const ws = new WebSocket(this.wsUrl, { headers });
           ws.binaryType = 'nodebuffer';
           conn = { ws, nextReqId: 1, pending: new Map() };
         } catch (err) {
