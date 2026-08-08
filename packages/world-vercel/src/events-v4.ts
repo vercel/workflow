@@ -581,7 +581,7 @@ interface FrameResponseLike {
  * Must not ship this default past the POC — revert to opt-in before merge.
  */
 export function isWsEventsTransportEnabled(): boolean {
-  return process.env.WORKFLOW_EVENTS_TRANSPORT == 'ws';
+  return process.env.WORKFLOW_EVENTS_TRANSPORT != 'http';
 }
 
 async function postEventFrameOverHttp(
