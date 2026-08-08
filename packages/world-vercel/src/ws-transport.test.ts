@@ -476,3 +476,85 @@ describe('eager reconnect', () => {
     expect(sockets).toHaveLength(2);
   });
 });
+
+/**
+ * Without an idle release the transport is immortal by construction: eager
+ * reconnect renews the socket forever, and the server pins an invocation per
+ * connection, so a warm container would hold a live socket and a live server
+ * invocation for every run it had ever served. These pin the release and the
+ * revive, since getting either wrong is invisible in a passing e2e run.
+ */
+describe('idle teardown', () => {
+  /** Comfortably past IDLE_TIMEOUT_MS (60s). */
+  const PAST_IDLE_MS = 61_000;
+
+  /** Run one request all the way to its ack, so the idle timer can arm. */
+  async function completeRequest(
+    transport: ReturnType<typeof getWsEventsTransport>
+  ) {
+    const { promise, socket } = await connectAndSend(transport);
+    socket.deliver(ackFrame(sentReqIds(socket)[0] as number));
+    await promise;
+    return socket;
+  }
+
+  it('closes the socket after an idle window with no writes', async () => {
+    const transport = getWsEventsTransport(WS_URL, headers);
+    const socket = await completeRequest(transport);
+    expect(socket.readyState).toBe(1);
+
+    await vi.advanceTimersByTimeAsync(PAST_IDLE_MS);
+
+    expect(socket.readyState).toBe(3);
+  });
+
+  it('does not reconnect the socket it just released', async () => {
+    // The teardown closes the socket, which fires the same `close` handler
+    // an unexpected drop would — without the `closed` guard the eager
+    // reconnect would immediately undo the release.
+    const transport = getWsEventsTransport(WS_URL, headers);
+    await completeRequest(transport);
+
+    await vi.advanceTimersByTimeAsync(PAST_IDLE_MS);
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    expect(sockets).toHaveLength(1);
+  });
+
+  it('evicts itself from the process-wide cache', async () => {
+    const transport = getWsEventsTransport(WS_URL, headers);
+    await completeRequest(transport);
+    expect(getWsEventsTransport(WS_URL, headers)).toBe(transport);
+
+    await vi.advanceTimersByTimeAsync(PAST_IDLE_MS);
+
+    expect(getWsEventsTransport(WS_URL, headers)).not.toBe(transport);
+  });
+
+  it('stays open while a request is still in flight', async () => {
+    const transport = getWsEventsTransport(WS_URL, headers);
+    const { promise, socket } = await connectAndSend(transport);
+
+    await vi.advanceTimersByTimeAsync(PAST_IDLE_MS);
+    expect(socket.readyState).toBe(1);
+
+    socket.deliver(ackFrame(sentReqIds(socket)[0] as number));
+    await expect(promise).resolves.toBeDefined();
+  });
+
+  it('revives on the next write rather than failing it', async () => {
+    // A caller can hold a reference across the idle window; that write must
+    // still land, just paying one handshake.
+    const transport = getWsEventsTransport(WS_URL, headers);
+    await completeRequest(transport);
+    await vi.advanceTimersByTimeAsync(PAST_IDLE_MS);
+
+    const second = await completeRequest(transport);
+
+    expect(sockets).toHaveLength(2);
+    expect(second.readyState).toBe(1);
+    // ...and it re-registers itself, so the cache doesn't hand out a
+    // second live transport for the same run.
+    expect(getWsEventsTransport(WS_URL, headers)).toBe(transport);
+  });
+});

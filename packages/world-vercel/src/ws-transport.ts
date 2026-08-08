@@ -47,6 +47,15 @@
  *   caller's to retry — the server makes those retries safe via
  *   conditional writes on the entity (see the spec's idempotency notes).
  *
+ * **Lifecycle.** A transport releases its socket after `IDLE_TIMEOUT_MS`
+ * with no writes and evicts itself from the module-level cache. Eager
+ * reconnect means a connection otherwise renews itself indefinitely, and
+ * the server pins one invocation per connection — so without an idle
+ * release, a warm container would hold a live socket (and a live server
+ * invocation) for every run it had ever served, long after those runs
+ * finished. `request()` revives an idle-closed transport, so the eviction
+ * is invisible to callers beyond one extra handshake.
+ *
  * Deliberately uses the `ws` package (not the WHATWG global `WebSocket`):
  * the global constructor has no way to send custom headers on the upgrade
  * request, and `Authorization`/tenant headers need to ride the handshake
@@ -146,6 +155,24 @@ const RECONNECT_MAX_ATTEMPTS = 5;
 const RECONNECT_BASE_DELAY_MS = 100;
 const RECONNECT_MAX_DELAY_MS = 5_000;
 
+/**
+ * How long a transport may sit with no in-flight and no new writes before it
+ * drops its socket and evicts itself from the process-wide cache.
+ *
+ * Without this, a warm container accumulates one permanently self-renewing
+ * socket per `runId` it has ever served: the server drains at its own
+ * `maxDuration` and closes, the eager reconnect immediately reopens, and the
+ * server pins a fresh invocation for a run that finished long ago. The
+ * transport has no "run complete" signal to hang teardown off — the events
+ * adapter is a stateless per-write call — so idleness is the available proxy.
+ *
+ * Chosen well below the server's own drain deadline (~680s) so the common
+ * case is the client releasing the connection, not the server reclaiming it,
+ * and well above the gap between steps of an active run so a live run doesn't
+ * pay a handshake per step.
+ */
+const IDLE_TIMEOUT_MS = 60_000;
+
 async function decodeOneFrame(raw: Uint8Array): Promise<DecodedFrame> {
   const source = (async function* () {
     yield raw;
@@ -185,6 +212,11 @@ class WsEventsTransport {
   private connecting: Promise<Connection> | null = null;
   private reconnectAttempts = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private idleTimer: ReturnType<typeof setTimeout> | null = null;
+  private inFlight = 0;
+  /** Set by `close()`. Suppresses reconnects so an intentional teardown
+   *  can't be immediately undone by the close handler it triggers. */
+  private closed = false;
 
   constructor(
     private readonly wsUrl: string,
@@ -200,30 +232,86 @@ class WsEventsTransport {
   async request(
     buildFrame: (reqId: number) => Uint8Array
   ): Promise<WsFrameReply> {
-    const conn = await this.ensureConnected();
+    this.cancelIdleTimer();
+    if (this.closed) {
+      // A caller holding a reference to an idle-closed transport. Revive it
+      // rather than failing the write, and re-register only if nothing else
+      // has claimed the slot in the meantime (a newer instance must win).
+      this.closed = false;
+      if (!transports.has(this.wsUrl)) transports.set(this.wsUrl, this);
+    }
+    this.inFlight++;
+    try {
+      const conn = await this.ensureConnected();
 
-    const reqId = conn.nextReqId++;
-    const frame = buildFrame(reqId);
-    return new Promise<WsFrameReply>((resolve, reject) => {
-      conn.pending.set(reqId, { resolve, reject });
-      conn.ws.send(frame, (err) => {
-        if (!err) return;
-        // `ws.send()` does not throw when the socket isn't OPEN — it
-        // reports here instead. Without this callback the failure would be
-        // emitted as a bare `'error'` event and this request would wait
-        // for a reply that is never coming. `delete` doubles as the
-        // already-settled guard: if a reply somehow landed first, the
-        // entry is gone and we must not reject on top of it.
-        if (conn.pending.delete(reqId)) {
-          reject(
-            new WsTransportError(
-              `workflow-server events WS send failed: ${describeError(err)}`,
-              { retryable: true, cause: err }
-            )
-          );
-        }
+      const reqId = conn.nextReqId++;
+      const frame = buildFrame(reqId);
+      return await new Promise<WsFrameReply>((resolve, reject) => {
+        conn.pending.set(reqId, { resolve, reject });
+        conn.ws.send(frame, (err) => {
+          if (!err) return;
+          // `ws.send()` does not throw when the socket isn't OPEN — it
+          // reports here instead. Without this callback the failure would be
+          // emitted as a bare `'error'` event and this request would wait
+          // for a reply that is never coming. `delete` doubles as the
+          // already-settled guard: if a reply somehow landed first, the
+          // entry is gone and we must not reject on top of it.
+          if (conn.pending.delete(reqId)) {
+            reject(
+              new WsTransportError(
+                `workflow-server events WS send failed: ${describeError(err)}`,
+                { retryable: true, cause: err }
+              )
+            );
+          }
+        });
       });
-    });
+    } finally {
+      this.inFlight--;
+      this.armIdleTimer();
+    }
+  }
+
+  /**
+   * Drop the socket and evict this transport from the process-wide cache.
+   * Idempotent. Safe to call with work in flight — those requests fail
+   * through the socket's own `close` handler, same as any other close.
+   */
+  close(reason: string): void {
+    if (this.closed) return;
+    this.closed = true;
+    this.cancelIdleTimer();
+    if (this.reconnectTimer !== null) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    if (transports.get(this.wsUrl) === this) transports.delete(this.wsUrl);
+    const conn = this.connection;
+    this.connection = null;
+    // 1000 (normal closure): this is a clean client-side release, not a
+    // fault — the server should not treat it as an aborted run.
+    conn?.ws.close(1000, reason);
+  }
+
+  /** Arm the idle countdown, unless work is in flight or a timer is already
+   *  running. Called after every request settles. */
+  private armIdleTimer(): void {
+    if (this.closed || this.inFlight > 0 || this.idleTimer !== null) return;
+    const timer = setTimeout(() => {
+      this.idleTimer = null;
+      if (this.inFlight > 0) return;
+      this.close('idle');
+    }, IDLE_TIMEOUT_MS);
+    // Same reasoning as the reconnect backoff: never hold the event loop
+    // open just to wait out an idle window.
+    timer.unref?.();
+    this.idleTimer = timer;
+  }
+
+  private cancelIdleTimer(): void {
+    if (this.idleTimer === null) return;
+    clearTimeout(this.idleTimer);
+    this.idleTimer = null;
   }
 
   private ensureConnected(): Promise<Connection> {
@@ -359,6 +447,10 @@ class WsEventsTransport {
    * has already taken the slot.
    */
   private scheduleReconnect(closeCode: number): void {
+    // An intentional teardown. `close()` closes the socket, which lands
+    // here via the socket's own `close` event — without this guard the
+    // transport would immediately reconnect the connection it just released.
+    if (this.closed) return;
     // A newer socket is already live — nothing to do. Deliberately not also
     // checking `this.connecting`: `ws` can emit `'error'` and `'close'` in
     // the same tick, so the connect promise's `finally` may not have
@@ -488,6 +580,10 @@ const transports = new Map<string, WsEventsTransport>();
  * Only the first caller's `getHeaders` for a given `wsUrl` is retained.
  * That's fine in practice because `wsUrl` embeds the `runId` and one run
  * is always driven by one client instance.
+ *
+ * Entries evict themselves after `IDLE_TIMEOUT_MS` without a write (see
+ * `WsEventsTransport.close`), so this map tracks *active* runs rather than
+ * every run the process has ever served.
  */
 export function getWsEventsTransport(
   wsUrl: string,
@@ -501,8 +597,11 @@ export function getWsEventsTransport(
   return transport;
 }
 
-/** Test seam: drop the process-wide transport cache. */
+/** Test seam: close and drop every cached transport. */
 export function resetWsEventsTransportsForTest(): void {
+  for (const transport of [...transports.values()]) {
+    transport.close('test reset');
+  }
   transports.clear();
 }
 
