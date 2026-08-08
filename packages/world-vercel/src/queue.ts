@@ -196,6 +196,46 @@ function getRunIdFromPayload(payload: QueuePayload): string | undefined {
 }
 
 /**
+ * Bind this run's events channel to one invocation of the flow route. This is
+ * the only pair of calls that opens one: nothing else in the SDK does, so every
+ * other writer — `start()` writing `run_created` from an arbitrary request
+ * handler, where a lone write would not repay a handshake — stays on HTTP.
+ *
+ * Both halves are no-ops on the HTTP default, and the gate is checked before the
+ * import so a deployment on the default never loads `ws`.
+ */
+const wsEventsChannelForInvocation = (
+  runId: string | undefined,
+  config: APIConfig | undefined
+) => ({
+  /**
+   * Unawaited and failure-proof: callers treat the handshake as free. The
+   * refcount therefore rises a microtask late, so a write racing the import
+   * finds no channel and goes over HTTP — one frame, not the invocation, since
+   * `close` continues off the same module promise and continuations run in
+   * registration order, putting this increment ahead of that decrement.
+   */
+  open(): void {
+    if (!runId || !isWsEventsTransportEnabled()) return;
+    void import('./ws-transport.js')
+      .then(({ openWsChannel }) => openWsChannel(runId, config))
+      .catch(() => {});
+  },
+  /**
+   * Awaited, unlike the open: the module is already resolved by here, and work
+   * scheduled after the handler returns is not guaranteed to run. An open socket
+   * is not `unref`'d, so skipping this stops the process exiting and keeps a
+   * server invocation pinned.
+   */
+  async close(): Promise<void> {
+    if (!runId || !isWsEventsTransportEnabled()) return;
+    await import('./ws-transport.js')
+      .then(({ closeWsChannel }) => closeWsChannel(runId, config))
+      .catch(() => {});
+  },
+});
+
+/**
  * Workflow run IDs are prefixed with `wrun_` before the underlying ULID.
  * Strip that prefix so the payload can be fed to the tagged-ULID decoder.
  */
@@ -485,38 +525,40 @@ export function createQueue(config?: APIConfig): Queue {
         // Earliest point in an invocation where the run id is known, so the WS
         // handshake happens here instead of on the runtime's first event write
         // (which would record a `step_started` later than the work it
-        // timestamps). Unawaited, failure-proof, and a no-op on HTTP: the gate
-        // is checked before the import so a deployment on the default never
-        // loads `ws`, and this path absorbs that module init for one that did.
-        const runIdToWarm = getRunIdFromPayload(payload);
-        if (runIdToWarm && isWsEventsTransportEnabled()) {
-          void import('./ws-transport.js')
-            .then(({ warmWsEventsTransport }) =>
-              warmWsEventsTransport(runIdToWarm, config)
-            )
-            .catch(() => {});
-        }
+        // timestamps). This path also absorbs `ws`'s module init.
+        const wsEvents = wsEventsChannelForInvocation(
+          getRunIdFromPayload(payload),
+          config
+        );
+        wsEvents.open();
 
-        const result = await handler(payload, {
-          queueName,
-          messageId: MessageId.parse(metadata.messageId),
-          attempt: metadata.deliveryCount,
-          requestId,
-        });
+        try {
+          const result = await handler(payload, {
+            queueName,
+            messageId: MessageId.parse(metadata.messageId),
+            attempt: metadata.deliveryCount,
+            requestId,
+          });
 
-        if (typeof result?.timeoutSeconds === 'number') {
-          // When timeoutSeconds is 0, skip delaySeconds entirely for immediate re-enqueue.
-          // Otherwise, clamp to one continuation hop (23h by default). Longer
-          // sleeps chain delayed messages until the full duration has elapsed.
-          const delaySeconds =
-            result.timeoutSeconds > 0
-              ? Math.min(result.timeoutSeconds, MAX_DELAY_SECONDS)
-              : undefined;
+          if (typeof result?.timeoutSeconds === 'number') {
+            // When timeoutSeconds is 0, skip delaySeconds entirely for immediate re-enqueue.
+            // Otherwise, clamp to one continuation hop (23h by default). Longer
+            // sleeps chain delayed messages until the full duration has elapsed.
+            const delaySeconds =
+              result.timeoutSeconds > 0
+                ? Math.min(result.timeoutSeconds, MAX_DELAY_SECONDS)
+                : undefined;
 
-          // Send new message BEFORE acknowledging current message.
-          // This ensures crash safety: if process dies after send but before ack,
-          // we may get a duplicate invocation but won't lose the scheduled wakeup.
-          await queue(queueName, payload, { deploymentId, delaySeconds });
+            // Send new message BEFORE acknowledging current message.
+            // This ensures crash safety: if process dies after send but before ack,
+            // we may get a duplicate invocation but won't lose the scheduled wakeup.
+            await queue(queueName, payload, { deploymentId, delaySeconds });
+          }
+        } finally {
+          // The only point in the SDK that knows an invocation has no writes
+          // left. In a `finally` so a failed handler closes too — the retry
+          // arrives as a new invocation and opens its own channel.
+          await wsEvents.close();
         }
       },
       {

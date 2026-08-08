@@ -27,12 +27,13 @@ import { encodeFrame } from './frames.js';
 import { REQUEST_TIMEOUT_MS } from './http-core.js';
 import { injectTraceContextIntoHeaders } from './telemetry.js';
 import {
+  closeWsChannel,
   getWsEventsTransport,
   isWsEventsTransportEnabled,
+  openWsChannel,
   resetWsEventsTransportsForTest,
   resolveWsTransport,
   toEventsWsUrl,
-  warmWsEventsTransport,
 } from './ws-transport.js';
 
 type Listener = (...args: unknown[]) => void;
@@ -625,17 +626,14 @@ describe('eager reconnect', () => {
 });
 
 /**
- * Without an idle release the transport is immortal by construction: eager
- * reconnect renews the socket forever, and the server pins an invocation per
- * connection, so a warm container would hold a live socket and a live server
- * invocation for every run it had ever served. These pin the release and the
- * revive, since getting either wrong is invisible in a passing e2e run.
+ * Nothing else in this module creates or drops a socket — the explicit
+ * `open`/`release` pair is the whole lifetime. Eager reconnect renews a
+ * connection forever and the server pins an invocation per connection, so a
+ * channel nobody releases is a socket, and a server invocation, held until the
+ * platform kills the process.
  */
-describe('idle teardown', () => {
-  /** Comfortably past IDLE_TIMEOUT_MS (60s). */
-  const PAST_IDLE_MS = 61_000;
-
-  /** Run one request all the way to its ack, so the idle timer can arm. */
+describe('open/close lifecycle', () => {
+  /** Run one request through to its ack, as a writing invocation would. */
   async function completeRequest(
     transport: ReturnType<typeof getWsEventsTransport>
   ) {
@@ -645,81 +643,130 @@ describe('idle teardown', () => {
     return socket;
   }
 
-  it('closes the socket after an idle window with no writes', async () => {
+  it('drops the socket on release', async () => {
     const transport = getWsEventsTransport(WS_URL, headers);
+    transport.open();
     const socket = await completeRequest(transport);
     expect(socket.readyState).toBe(1);
 
-    await vi.advanceTimersByTimeAsync(PAST_IDLE_MS);
+    transport.release('invocation complete');
+    await tick();
+
+    expect(socket.readyState).toBe(3);
+  });
+
+  it('drops a socket that never got a write', async () => {
+    // An invocation can open a channel and write nothing — a delivery whose
+    // replay finds the run already finished. The socket is not `unref`'d, so
+    // stranding it holds this process and a server invocation open.
+    const transport = getWsEventsTransport(WS_URL, headers);
+    transport.open();
+    await tick();
+    const socket = latest();
+    socket.open();
+    await tick();
+    expect(socket.readyState).toBe(1);
+
+    transport.release('invocation complete');
+    await tick();
 
     expect(socket.readyState).toBe(3);
   });
 
   it('does not reconnect the socket it just released', async () => {
-    // The teardown closes the socket, which fires the same `close` handler
-    // an unexpected drop would — without the `closed` guard the eager
-    // reconnect would immediately undo the release.
+    // The release closes the socket, which fires the same `close` handler an
+    // unexpected drop would — without the `closed` guard the eager reconnect
+    // would immediately undo it.
     const transport = getWsEventsTransport(WS_URL, headers);
+    transport.open();
     await completeRequest(transport);
 
-    await vi.advanceTimersByTimeAsync(PAST_IDLE_MS);
+    transport.release('invocation complete');
     await vi.advanceTimersByTimeAsync(60_000);
 
     expect(sockets).toHaveLength(1);
   });
 
   it('evicts itself from the process-wide cache', async () => {
+    // Membership of that cache is what `resolveWsTransport` reads as "this run
+    // has a channel", so eviction is what sends later writes down the HTTP path.
     const transport = getWsEventsTransport(WS_URL, headers);
+    transport.open();
     await completeRequest(transport);
     expect(getWsEventsTransport(WS_URL, headers)).toBe(transport);
 
-    await vi.advanceTimersByTimeAsync(PAST_IDLE_MS);
+    transport.release('invocation complete');
 
     expect(getWsEventsTransport(WS_URL, headers)).not.toBe(transport);
   });
 
-  it('stays open while a request is still in flight', async () => {
-    // The idle window and the default request deadline are both 60s, so a
-    // request cannot outlive the idle window without also outliving its own
-    // deadline (which fails it and drops the socket — see 'fails a request
-    // that never gets a reply'). Raise the deadline to isolate what this test
-    // is actually about: that `inFlight > 0` suppresses the idle teardown.
-    process.env.WORKFLOW_REQUEST_TIMEOUT_MS = String(PAST_IDLE_MS * 10);
+  it('holds the socket until the last holder releases', async () => {
+    // Fluid runs invocations concurrently in one instance and inline step
+    // executions ride the flow topic, so two invocations for one run share this
+    // transport. The first to finish must not cut the other's writes short.
     const transport = getWsEventsTransport(WS_URL, headers);
-    const { promise, socket } = await connectAndSend(transport);
+    transport.open();
+    transport.open();
+    const socket = await completeRequest(transport);
 
-    await vi.advanceTimersByTimeAsync(PAST_IDLE_MS);
+    transport.release('first invocation complete');
+    await tick();
     expect(socket.readyState).toBe(1);
 
-    socket.deliver(ackFrame(sentReqIds(socket)[0] as number));
-    await expect(promise).resolves.toBeDefined();
+    transport.release('second invocation complete');
+    await tick();
+    expect(socket.readyState).toBe(3);
   });
 
-  it('revives on the next write rather than failing it', async () => {
-    // A caller can hold a reference across the idle window; that write must
-    // still land, just paying one handshake.
+  it('ignores a release with nothing open', async () => {
+    // The count floors at zero instead of going negative, which would leave the
+    // next holder's release one short and pin its socket for good.
     const transport = getWsEventsTransport(WS_URL, headers);
+    transport.release('unbalanced');
+
+    transport.open();
+    const socket = await completeRequest(transport);
+    transport.release('invocation complete');
+    await tick();
+
+    expect(socket.readyState).toBe(3);
+  });
+
+  it('fails a write issued after the release rather than reviving the socket', async () => {
+    // Unreachable through `resolveWsTransport`, which only hands back a
+    // registered channel. Reviving here would resurrect exactly the socket
+    // nobody owns that the explicit pair exists to rule out.
+    const transport = getWsEventsTransport(WS_URL, headers);
+    transport.open();
     await completeRequest(transport);
-    await vi.advanceTimersByTimeAsync(PAST_IDLE_MS);
+    transport.release('invocation complete');
 
-    const second = await completeRequest(transport);
+    await expect(transport.request(eventFrame)).rejects.toThrow('is closed');
+    expect(sockets).toHaveLength(1);
+  });
 
-    expect(sockets).toHaveLength(2);
-    expect(second.readyState).toBe(1);
-    // ...and it re-registers itself, so the cache doesn't hand out a
-    // second live transport for the same run.
-    expect(getWsEventsTransport(WS_URL, headers)).toBe(transport);
+  it('does not adopt a socket that opens after the release', async () => {
+    // `close()` can only drop the connection it can see, and a handshake still
+    // in flight isn't one yet — so the release lands while this socket is still
+    // CONNECTING, and it must not install itself on the way in.
+    const transport = getWsEventsTransport(WS_URL, headers);
+    transport.open();
+    await tick();
+    const socket = latest();
+
+    transport.release('invocation complete');
+    socket.open();
+    await tick();
+
+    expect(socket.readyState).toBe(3);
   });
 });
 
-describe('eager warm', () => {
-  /** Comfortably past IDLE_TIMEOUT_MS (60s). */
-  const PAST_IDLE_MS = 61_000;
-
+describe('open', () => {
   it('opens the socket with no write to trigger it', async () => {
     const transport = getWsEventsTransport(WS_URL, headers);
 
-    transport.warm();
+    transport.open();
     await tick();
 
     expect(sockets).toHaveLength(1);
@@ -727,10 +774,10 @@ describe('eager warm', () => {
   });
 
   it('leaves the first write with no handshake left to pay for', async () => {
-    // The point of the whole exercise: the write reuses the warmed socket
-    // rather than opening a second one.
+    // The point of the whole exercise: the write reuses the socket the open
+    // started rather than opening a second one.
     const transport = getWsEventsTransport(WS_URL, headers);
-    transport.warm();
+    transport.open();
     await tick();
     latest().open();
     await tick();
@@ -746,8 +793,8 @@ describe('eager warm', () => {
   it('joins an in-flight handshake instead of racing a second one', async () => {
     const transport = getWsEventsTransport(WS_URL, headers);
 
-    transport.warm();
-    transport.warm();
+    transport.open();
+    transport.open();
     await tick();
     // A write arriving mid-handshake joins the same connect.
     void transport.request(eventFrame).catch(() => {});
@@ -756,74 +803,34 @@ describe('eager warm', () => {
     expect(sockets).toHaveLength(1);
   });
 
-  it('is a no-op once the socket is live', async () => {
+  it('starts no second socket once one is live', async () => {
     const transport = getWsEventsTransport(WS_URL, headers);
     const { socket } = await connectAndSend(transport);
 
-    transport.warm();
+    transport.open();
     await tick();
 
     expect(sockets).toHaveLength(1);
     expect(socket.readyState).toBe(1);
   });
 
-  it('releases a warmed socket that never gets a write', async () => {
-    // Warming arms the idle timer as if a request had settled. Without that,
-    // an invocation that warms but never writes — a health probe carrying the
-    // run id it is about to create — would strand a socket, and the socket is
-    // not `unref`'d, so it holds this process and a server invocation open.
+  it('closes the channel when the handshake fails, so writes take HTTP', async () => {
+    // A never-opened first connect is the one case `connect` declines to retry.
+    // Leaving the channel registered would hand every write of the invocation
+    // its own doomed handshake; de-registering sends them down the pooled HTTP
+    // path instead, which is the floor this transport must not fall below.
     const transport = getWsEventsTransport(WS_URL, headers);
-    transport.warm();
-    await tick();
-    const socket = latest();
-    socket.open();
-    await tick();
-    expect(socket.readyState).toBe(1);
-
-    await vi.advanceTimersByTimeAsync(PAST_IDLE_MS);
-
-    expect(socket.readyState).toBe(3);
-  });
-
-  it('does not adopt a socket that opens after the release', async () => {
-    // `close()` can only drop the connection it can see, and a handshake still
-    // in flight isn't one yet — so the release lands while this socket is
-    // still CONNECTING, and it must not install itself on the way in.
-    const transport = getWsEventsTransport(WS_URL, headers);
-    transport.warm();
-    await tick();
-    const socket = latest();
-
-    await vi.advanceTimersByTimeAsync(PAST_IDLE_MS);
-    socket.open();
-    await tick();
-
-    expect(socket.readyState).toBe(3);
-    // Nothing adopted it, so the next write opens its own socket.
-    void transport.request(eventFrame).catch(() => {});
-    await tick();
-    expect(sockets).toHaveLength(2);
-  });
-
-  it('leaves a failed warm to the next write, with no reconnect loop', async () => {
-    // A never-opened first connect is the one case `connect` declines to
-    // retry, and warming must not change that: no backoff loop for a run that
-    // may never write, and the write itself still gets its own attempt.
-    const transport = getWsEventsTransport(WS_URL, headers);
-    transport.warm();
+    transport.open();
     await tick();
     latest().failHandshake();
     await tick();
-    // Loud either way — a warm nobody awaits is exactly the case where the
-    // log is the only signal the socket failed to come up.
+    // Loud either way — an unawaited open is exactly the case where the log is
+    // the only signal the socket failed to come up.
     expect(loggedErrors()).toContain('socket error');
 
     await vi.advanceTimersByTimeAsync(30_000);
     expect(sockets).toHaveLength(1);
-
-    const { socket } = await connectAndSend(transport);
-    expect(sockets).toHaveLength(2);
-    expect(socket.readyState).toBe(1);
+    expect(getWsEventsTransport(WS_URL, headers)).not.toBe(transport);
   });
 });
 
@@ -974,8 +981,24 @@ describe('transport selection', () => {
     });
   });
 
+  /**
+   * The write path's availability check. A lookup, never a create: it answers
+   * "did this invocation open a channel", and every `null` means write over HTTP.
+   */
   describe('resolveWsTransport', () => {
-    it('scopes the transport to one run and memoizes it per URL', () => {
+    it('returns null for a run with no open channel', () => {
+      // The default for every writer that isn't the flow route — `start()`
+      // writing `run_created` most of all, where one write would not repay a
+      // handshake.
+      expect(resolveWsTransport('wrun_1', directConfig)).toBeNull();
+      expect(sockets).toHaveLength(0);
+    });
+
+    it('scopes the channel to one run and memoizes it per URL', () => {
+      process.env.WORKFLOW_EVENTS_TRANSPORT = 'ws';
+      openWsChannel('wrun_1', directConfig);
+      openWsChannel('wrun_2', directConfig);
+
       const first = resolveWsTransport('wrun_1', directConfig);
       const second = resolveWsTransport('wrun_1', directConfig);
 
@@ -986,37 +1009,39 @@ describe('transport selection', () => {
       );
     });
 
-    it('mints no token and opens no socket until something writes', async () => {
-      // The transport is handed a thunk it calls at connect time. Resolving a
-      // header record here instead would mean minting a token on every write
-      // and discarding all but the first — this runs on the hot path.
-      const resolved = resolveWsTransport('wrun_1', directConfig);
-      await tick();
-      expect(sockets).toHaveLength(0);
+    it('returns null once the channel is closed', () => {
+      // What makes a late write — one the runtime issues after the invocation
+      // that opened the channel has returned — fall back instead of failing.
+      process.env.WORKFLOW_EVENTS_TRANSPORT = 'ws';
+      openWsChannel('wrun_1', directConfig);
+      expect(resolveWsTransport('wrun_1', directConfig)).not.toBeNull();
 
-      resolved?.transport.warm();
-      await tick();
+      closeWsChannel('wrun_1', directConfig);
 
-      expect(sockets).toHaveLength(1);
-      expect(latest().headers.authorization).toBe('Bearer test-token');
+      expect(resolveWsTransport('wrun_1', directConfig)).toBeNull();
     });
 
     it('returns null for a World behind the api-workflow proxy', () => {
       // That gateway does not forward a raw upgrade, so the caller has to fall
       // back to HTTP rather than attempt a connection it can't serve.
+      process.env.WORKFLOW_EVENTS_TRANSPORT = 'ws';
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+      openWsChannel('wrun_1', proxyConfig);
+
       expect(resolveWsTransport('wrun_1', proxyConfig)).toBeNull();
       expect(sockets).toHaveLength(0);
     });
 
     it('logs the proxy fallback and the ws-in-use notice once per process', () => {
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      process.env.WORKFLOW_EVENTS_TRANSPORT = 'ws';
 
-      resolveWsTransport('wrun_1', proxyConfig);
-      resolveWsTransport('wrun_2', proxyConfig);
-      resolveWsTransport('wrun_1', directConfig);
-      resolveWsTransport('wrun_2', directConfig);
+      openWsChannel('wrun_1', proxyConfig);
+      openWsChannel('wrun_2', proxyConfig);
+      openWsChannel('wrun_1', directConfig);
+      openWsChannel('wrun_2', directConfig);
 
-      // Every event takes this path, so a per-request line would be noise.
+      // Every event takes the resolve path, so a per-request line would be noise.
       expect(warnSpy).toHaveBeenCalledTimes(1);
       expect(
         logSpy.mock.calls.filter(([m]) => String(m).includes('using ws'))
@@ -1025,37 +1050,131 @@ describe('transport selection', () => {
   });
 
   /**
-   * The queue handler calls this on every message, for every World — including
-   * the HTTP default and the proxy World that can't speak WS at all. So "does
-   * nothing, quietly" is as much the contract here as the warm itself: a throw
-   * or an await would land on the critical path of every invocation, WS or not.
+   * The flow route calls these on every message, for every World — including the
+   * HTTP default and the proxy World that can't speak WS at all. So "does
+   * nothing, quietly" is as much the contract as the open itself: a throw or an
+   * await would land on the critical path of every invocation, WS or not.
    */
-  describe('warmWsEventsTransport', () => {
+  describe('openWsChannel', () => {
     it('opens the run’s socket when the gate is on', async () => {
       process.env.WORKFLOW_EVENTS_TRANSPORT = 'ws';
 
-      warmWsEventsTransport('wrun_1', directConfig);
+      openWsChannel('wrun_1', directConfig);
       await tick();
 
       expect(sockets).toHaveLength(1);
       expect(latest().url).toContain('/websockets/v1/runs/wrun_1');
+      expect(latest().headers.authorization).toBe('Bearer test-token');
     });
 
     it('does nothing when the gate is off', async () => {
-      warmWsEventsTransport('wrun_1', directConfig);
+      openWsChannel('wrun_1', directConfig);
       await tick();
 
       expect(sockets).toHaveLength(0);
+      // And nothing registered, so writes resolve no channel either.
+      process.env.WORKFLOW_EVENTS_TRANSPORT = 'ws';
+      expect(resolveWsTransport('wrun_1', directConfig)).toBeNull();
     });
 
     it('does nothing for a World behind the api-workflow proxy', async () => {
       process.env.WORKFLOW_EVENTS_TRANSPORT = 'ws';
       vi.spyOn(console, 'warn').mockImplementation(() => {});
 
-      warmWsEventsTransport('wrun_1', proxyConfig);
+      openWsChannel('wrun_1', proxyConfig);
       await tick();
 
       expect(sockets).toHaveLength(0);
+    });
+  });
+
+  describe('closeWsChannel', () => {
+    it('closes the run’s socket', async () => {
+      process.env.WORKFLOW_EVENTS_TRANSPORT = 'ws';
+      openWsChannel('wrun_1', directConfig);
+      await tick();
+      latest().open();
+      await tick();
+      expect(latest().readyState).toBe(1);
+
+      closeWsChannel('wrun_1', directConfig);
+      await tick();
+
+      expect(latest().readyState).toBe(3);
+    });
+
+    it('leaves another run’s socket alone', async () => {
+      process.env.WORKFLOW_EVENTS_TRANSPORT = 'ws';
+      openWsChannel('wrun_1', directConfig);
+      await tick();
+      latest().open();
+      await tick();
+
+      closeWsChannel('wrun_2', directConfig);
+      await tick();
+
+      expect(latest().readyState).toBe(1);
+    });
+
+    it('holds the socket until every concurrent opener has closed', async () => {
+      // Two invocations for one run in one instance: the first to finish must
+      // not close the channel the second is still writing over.
+      process.env.WORKFLOW_EVENTS_TRANSPORT = 'ws';
+      openWsChannel('wrun_1', directConfig);
+      openWsChannel('wrun_1', directConfig);
+      await tick();
+      latest().open();
+      await tick();
+
+      closeWsChannel('wrun_1', directConfig);
+      await tick();
+      expect(latest().readyState).toBe(1);
+
+      closeWsChannel('wrun_1', directConfig);
+      await tick();
+      expect(latest().readyState).toBe(3);
+    });
+
+    it('hands the next invocation a fresh channel when its open lands after the close', async () => {
+      // The other interleaving at refcount 1. Both halves run start to finish
+      // with no await, so a close either sees the next opener's increment or it
+      // doesn't — and when it doesn't, that opener must end up with a live
+      // channel of its own rather than the instance just de-registered.
+      process.env.WORKFLOW_EVENTS_TRANSPORT = 'ws';
+      openWsChannel('wrun_1', directConfig);
+      await tick();
+      latest().open();
+      await tick();
+      const first = latest();
+
+      closeWsChannel('wrun_1', directConfig);
+      openWsChannel('wrun_1', directConfig);
+      await tick();
+      latest().open();
+      await tick();
+
+      expect(first.readyState).toBe(3);
+      expect(latest()).not.toBe(first);
+      expect(latest().readyState).toBe(1);
+      // Registered, so this invocation's writes take the socket rather than
+      // silently spending the whole invocation on the HTTP fallback.
+      expect(resolveWsTransport('wrun_1', directConfig)).not.toBeNull();
+    });
+
+    it('creates nothing for a run that never opened a channel', async () => {
+      // Resolving through the create path would construct the transport it is
+      // about to close, and trip the once-per-process notice doing it.
+      process.env.WORKFLOW_EVENTS_TRANSPORT = 'ws';
+
+      closeWsChannel('wrun_1', directConfig);
+      await tick();
+
+      expect(sockets).toHaveLength(0);
+      expect(logSpy).not.toHaveBeenCalled();
+    });
+
+    it('does nothing when the gate is off', () => {
+      expect(() => closeWsChannel('wrun_1', directConfig)).not.toThrow();
     });
   });
 });

@@ -78,19 +78,6 @@ const RECONNECT_MAX_ATTEMPTS = 5;
 const RECONNECT_BASE_DELAY_MS = 100;
 const RECONNECT_MAX_DELAY_MS = 5_000;
 
-/**
- * How long a transport may sit with nothing in flight before dropping its
- * socket and evicting itself from the cache. The server pins one invocation per
- * connection and eager reconnect renews a connection indefinitely, so without
- * this a warm container holds a socket — and a live server invocation — for
- * every run it has served. Idleness is the only available trigger: the events
- * adapter is a stateless per-write call with no "run complete" signal.
- *
- * Below the server's drain deadline (~680s) so the client normally releases
- * first, and well above the gap between steps of an active run.
- */
-const IDLE_TIMEOUT_MS = 60_000;
-
 /** Absent on servers predating the field, which only ever drained for
  *  maxDuration — so absent reads as `max_duration`. */
 type DrainReason = 'max_duration' | 'auth_expiry';
@@ -140,8 +127,10 @@ class WsEventsTransport {
   private connecting: Promise<Connection> | null = null;
   private reconnectAttempts = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-  private idleTimer: ReturnType<typeof setTimeout> | null = null;
-  private inFlight = 0;
+  /** Number of `open()` calls not yet matched by a `release()`. The socket goes
+   *  away at zero. A refcount rather than a flag because concurrent invocations
+   *  for one run share this instance — see `open`. */
+  private openCount = 0;
   /** Set by `close()`. Suppresses reconnects so an intentional teardown can't
    *  be undone by the close handler it triggers. */
   private closed = false;
@@ -166,103 +155,122 @@ class WsEventsTransport {
   async request(
     buildFrame: (reqId: number) => Uint8Array
   ): Promise<WsFrameReply> {
-    this.cancelIdleTimer();
     if (this.closed) {
-      // A caller holding a reference to an idle-closed transport. Revive it
-      // rather than failing the write, re-registering only if nothing else has
-      // claimed the slot meanwhile (a newer instance must win).
-      this.closed = false;
-      if (!transports.has(this.wsUrl)) transports.set(this.wsUrl, this);
+      // Unreachable through `resolveWsTransport`, which only hands back a
+      // registered channel and `close()` de-registers synchronously. Reviving
+      // here instead would recreate the socket nobody owns that the explicit
+      // open/close pair exists to rule out.
+      throw new WsTransportError(
+        `workflow-server events WS channel for ${this.wsUrl} is closed`
+      );
     }
-    this.inFlight++;
-    try {
-      const conn = await this.ensureConnected();
+    const conn = await this.ensureConnected();
 
-      const reqId = conn.nextReqId++;
-      const frame = buildFrame(reqId);
-      const timeoutMs = getRequestTimeoutMs();
-      let deadline: ReturnType<typeof setTimeout> | undefined;
-      try {
-        return await new Promise<WsFrameReply>((resolve, reject) => {
-          conn.pending.set(reqId, { resolve, reject });
-          // Deliberately the same knob the HTTP path uses. Without it, a reply
-          // that never arrives for a reason the error/close handling doesn't
-          // cover blocks the caller until the platform's `maxDuration`
-          // SIGTERM — including a server that accepts a frame and never
-          // answers it.
-          deadline = setTimeout(() => {
-            if (!conn.pending.delete(reqId)) return;
+    const reqId = conn.nextReqId++;
+    const frame = buildFrame(reqId);
+    const timeoutMs = getRequestTimeoutMs();
+    let deadline: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await new Promise<WsFrameReply>((resolve, reject) => {
+        conn.pending.set(reqId, { resolve, reject });
+        // Deliberately the same knob the HTTP path uses. Without it, a reply
+        // that never arrives for a reason the error/close handling doesn't
+        // cover blocks the caller until the platform's `maxDuration`
+        // SIGTERM — including a server that accepts a frame and never
+        // answers it.
+        deadline = setTimeout(() => {
+          if (!conn.pending.delete(reqId)) return;
+          reject(
+            new WsTransportError(
+              `workflow-server events WS request ${reqId} to ${this.wsUrl} ` +
+                `timed out after ${timeoutMs}ms with no reply`
+            )
+          );
+          // A socket that accepted a frame and never answered it is not one
+          // the next write should be handed.
+          this.failConnection(
+            conn,
+            `workflow-server events WS connection to ${this.wsUrl} ` +
+              `abandoned after request ${reqId} timed out`
+          );
+        }, timeoutMs);
+        deadline.unref?.();
+        conn.ws.send(frame, (err) => {
+          if (!err) return;
+          // `ws.send()` does not throw when the socket isn't OPEN — it
+          // reports here instead, so without this callback the request would
+          // wait for a reply that is never coming. `delete` doubles as the
+          // already-settled guard.
+          if (conn.pending.delete(reqId)) {
             reject(
               new WsTransportError(
-                `workflow-server events WS request ${reqId} to ${this.wsUrl} ` +
-                  `timed out after ${timeoutMs}ms with no reply`
+                `workflow-server events WS send failed: ${describeError(err)}`,
+                { cause: err }
               )
             );
-            // A socket that accepted a frame and never answered it is not one
-            // the next write should be handed.
-            this.failConnection(
-              conn,
-              `workflow-server events WS connection to ${this.wsUrl} ` +
-                `abandoned after request ${reqId} timed out`
-            );
-          }, timeoutMs);
-          deadline.unref?.();
-          conn.ws.send(frame, (err) => {
-            if (!err) return;
-            // `ws.send()` does not throw when the socket isn't OPEN — it
-            // reports here instead, so without this callback the request would
-            // wait for a reply that is never coming. `delete` doubles as the
-            // already-settled guard.
-            if (conn.pending.delete(reqId)) {
-              reject(
-                new WsTransportError(
-                  `workflow-server events WS send failed: ${describeError(err)}`,
-                  { cause: err }
-                )
-              );
-            }
-          });
+          }
         });
-      } finally {
-        if (deadline !== undefined) clearTimeout(deadline);
-      }
+      });
     } finally {
-      this.inFlight--;
-      this.armIdleTimer();
+      if (deadline !== undefined) clearTimeout(deadline);
     }
   }
 
   /**
-   * Open the socket ahead of the first write. Connecting lazily instead bills
-   * the handshake (plus the OIDC mint riding it) to whichever event is written
-   * first; when that's a `step_started` issued as the step body already runs,
-   * its server-recorded timestamp lands after the work it timestamps and the
-   * step reads as shorter than it was.
+   * Claim the channel and start connecting. Called once per invocation that
+   * intends to write, at the point the run id is known — connecting lazily on
+   * the first write instead bills the handshake (plus the OIDC mint riding it)
+   * to whichever event happens to be written first; when that's a `step_started`
+   * issued as the step body already runs, its server-recorded timestamp lands
+   * after the work it timestamps and the step reads as shorter than it was.
    *
-   * Fire-and-forget and idempotent: a failed warm logs in `connect` and
-   * schedules no reconnect, leaving the first write to connect as it would
-   * have. Arms the idle timer as if a request had settled, so a warmed socket
-   * whose invocation never writes is still released — it isn't `unref`'d, and a
-   * leaked one keeps both this process and a server invocation alive.
+   * Fire-and-forget: the connect is unawaited, and `request` awaits the same
+   * promise, so a write issued while the handshake is still in flight joins it
+   * rather than racing it.
+   *
+   * A failed connect closes the channel rather than leaving it registered for
+   * `request` to retry, which is what keeps this path from being *worse* than
+   * HTTP: writes resolve no channel and take the pooled HTTP route instead of
+   * paying another handshake attempt each.
    */
-  warm(): void {
+  open(): void {
     if (this.closed) return;
+    this.openCount++;
     if (this.connection !== null || this.connecting !== null) return;
-    // Errors are logged by `connect`; swallow so an unawaited warm can't
-    // surface as an unhandled rejection.
-    void this.ensureConnected().catch(() => {});
-    this.armIdleTimer();
+    void this.ensureConnected().catch(() => {
+      // Already logged by `connect`.
+      this.close('connect failed');
+    });
   }
 
   /**
-   * Drop the socket and evict this transport from the cache. Idempotent. Safe
-   * with work in flight — those requests fail through the socket's own `close`
-   * handler, same as any other close.
+   * Give up this invocation's claim, dropping the socket once the last holder
+   * does. Concurrent invocations for one run share this instance (inline step
+   * executions ride the flow topic on per-step topics, so a run's steps can be
+   * separate invocations of the same container), and the first to finish must
+   * not tear the socket out from under the others.
+   *
+   * Unbalanced calls are inert: without a matching `open` there is nothing to
+   * release, and the count floors at zero rather than going negative and
+   * pinning the socket for the life of the process.
+   */
+  release(reason: string): void {
+    if (this.openCount === 0) return;
+    this.openCount--;
+    if (this.openCount === 0) this.close(reason);
+  }
+
+  /**
+   * Drop the socket and evict this transport from the cache. Terminal, not a
+   * pause: the instance stays closed and a later `openWsChannel` for the same
+   * run constructs a fresh one. Idempotent. Safe with work in flight — those
+   * requests fail through the socket's own `close` handler, same as any other
+   * close.
    */
   close(reason: string): void {
     if (this.closed) return;
     this.closed = true;
-    this.cancelIdleTimer();
+    this.openCount = 0;
     if (this.reconnectTimer !== null) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
@@ -272,25 +280,6 @@ class WsEventsTransport {
     this.connection = null;
     // Normal closure: a clean client-side release, not an aborted run.
     conn?.ws.close(1000, reason);
-  }
-
-  private armIdleTimer(): void {
-    if (this.closed || this.inFlight > 0 || this.idleTimer !== null) return;
-    const timer = setTimeout(() => {
-      this.idleTimer = null;
-      if (this.inFlight > 0) return;
-      this.close('idle');
-    }, IDLE_TIMEOUT_MS);
-    // Never hold the event loop open just to wait out a timer — as with the
-    // reconnect backoff and the request deadline.
-    timer.unref?.();
-    this.idleTimer = timer;
-  }
-
-  private cancelIdleTimer(): void {
-    if (this.idleTimer === null) return;
-    clearTimeout(this.idleTimer);
-    this.idleTimer = null;
   }
 
   private ensureConnected(): Promise<Connection> {
@@ -623,8 +612,10 @@ const transports = new Map<string, WsEventsTransport>();
  * once per socket, at connect time, with `forceRefresh: true` when the previous
  * socket drained on an expiring token, so a caching token source knows not to
  * serve the stale entry. Only the first caller's thunk for a `wsUrl` is kept —
- * fine, since `wsUrl` embeds the runId and one run has one client. Entries
- * evict themselves after `IDLE_TIMEOUT_MS`, so this map tracks active runs.
+ * fine, since `wsUrl` embeds the runId and one run has one client. An entry
+ * exists only between `openWsChannel` and the matching `closeWsChannel`, so
+ * membership *is* the answer to "does this run have a channel" — which is what
+ * the write path asks, via `resolveWsTransport`.
  */
 export function getWsEventsTransport(
   wsUrl: string,
@@ -680,20 +671,63 @@ export function toEventsWsUrl(baseUrl: string, runId: string): string {
 export { isWsEventsTransportEnabled };
 
 /**
- * Start opening this run's socket. Call it as early in an invocation as the run
- * id is known — the queue handler does, before dispatching to the runtime — so
- * the handshake is done or in flight by the first write rather than serialized
- * ahead of it (see `WsEventsTransport.warm`).
+ * Open this run's events channel for the duration of one invocation, and start
+ * connecting. Paired with `closeWsChannel`; nothing else creates a channel, so
+ * a code path that doesn't call this writes its events over HTTP even with the
+ * transport enabled.
+ *
+ * Call it as early in an invocation as the run id is known — the flow route does,
+ * before dispatching to the runtime. Only worth it for a caller that will write
+ * several events: a single write does not repay a handshake, which is why
+ * `start()` deliberately doesn't open one for `run_created`.
  *
  * Silent and synchronous by contract: a no-op on the HTTP default and on a
  * World that can't hold a socket, and it neither awaits nor reports the
  * connect. Callers must be able to treat it as free.
+ *
+ * Synchronous matters beyond cost. Two invocations for one run share a channel,
+ * so an open races a close whenever the refcount stands at 1 — and because
+ * neither function yields between its map lookup and its refcount write, the
+ * close either observes the open's increment, and the socket survives for the
+ * new holder, or lands first, and the opener misses the de-registered instance
+ * and builds a fresh channel. Adding an await ahead of the refcount write —
+ * minting a token to derive the URL, say — reopens that window, and an open
+ * landing inside it hits an already-closed instance, returns early, and leaves
+ * that invocation on HTTP for its whole duration with nothing to signal it.
  */
-export function warmWsEventsTransport(runId: string, config?: APIConfig): void {
+export function openWsChannel(runId: string, config?: APIConfig): void {
   if (!isWsEventsTransportEnabled()) return;
-  // Cheap: resolving is a URL plus a memoized lookup, no token mint and no
-  // I/O. The socket work happens inside `warm`, unawaited.
-  resolveWsTransport(runId, config)?.transport.warm();
+  const resolved = resolveChannelUrl(runId, config);
+  if (!resolved) return;
+  if (!loggedWsInUse) {
+    loggedWsInUse = true;
+    console.log(`world-vercel: using ws events transport (${resolved}).`);
+  }
+  // Cheap: a URL plus a map lookup, no token mint and no I/O. The socket work
+  // happens inside `open`, unawaited.
+  getWsEventsTransport(resolved, async ({ forceRefresh }) => {
+    // `forceRefresh` means the previous socket was drained by the server
+    // because its *bearer* was expiring, not because the socket aged out.
+    if (forceRefresh) await refreshOidcTokenBestEffort();
+    const { headers } = await getHttpConfig(config);
+    return headersToRecord(headers);
+  }).open();
+}
+
+/**
+ * Close this run's channel at the end of an invocation. An open socket is not
+ * `unref`'d, so leaving one behind stops the process exiting — and keeps a
+ * server invocation pinned, one per connection — until the platform kills it.
+ *
+ * Drops the socket only once every concurrent holder has released; see
+ * `WsEventsTransport.release`. Nothing to close is a normal outcome, not an
+ * error: a run whose invocation never opened a channel has none.
+ */
+export function closeWsChannel(runId: string, config?: APIConfig): void {
+  if (!isWsEventsTransportEnabled()) return;
+  const resolved = resolveChannelUrl(runId, config);
+  if (!resolved) return;
+  transports.get(resolved)?.release('invocation complete');
 }
 
 /**
@@ -736,16 +770,14 @@ let loggedWsProxyFallback = false;
 let loggedWsInUse = false;
 
 /**
- * Resolve the WS transport for a run, or `null` when this World can't use
- * one and the caller should fall back to HTTP.
+ * Resolve this run's channel URL, or `null` when this World can't hold a socket
+ * at all and every caller must use HTTP. Says nothing about whether a channel is
+ * *open* — that's `resolveWsTransport`.
  */
-export function resolveWsTransport(
+function resolveChannelUrl(
   runId: string,
   config: APIConfig | undefined
-): {
-  transport: WsEventsTransport;
-  wsUrl: string;
-} | null {
+): string | null {
   // `getHttpUrl` is the cheap, synchronous half of `getHttpConfig`: it resolves
   // the route without minting a token. The bearer only rides the upgrade, so
   // the transport resolves it once per socket instead of once per write.
@@ -767,19 +799,27 @@ export function resolveWsTransport(
     }
     return null;
   }
-  if (!loggedWsInUse) {
-    loggedWsInUse = true;
-    console.log(
-      `world-vercel: using ws events transport (baseUrl: ${baseUrl}).`
-    );
-  }
-  const wsUrl = toEventsWsUrl(baseUrl, runId);
-  const transport = getWsEventsTransport(wsUrl, async ({ forceRefresh }) => {
-    // `forceRefresh` means the previous socket was drained by the server
-    // because its *bearer* was expiring, not because the socket aged out.
-    if (forceRefresh) await refreshOidcTokenBestEffort();
-    const { headers } = await getHttpConfig(config);
-    return headersToRecord(headers);
-  });
-  return { transport, wsUrl };
+  return toEventsWsUrl(baseUrl, runId);
+}
+
+/**
+ * The write path's question: is there an open channel for this run? `null` means
+ * write over HTTP — because the transport is disabled, because this World can't
+ * hold a socket, or because nothing opened a channel for this invocation.
+ *
+ * A lookup, never a create. Lazily connecting here is what made the socket's
+ * lifetime a property of the *last write* rather than of the caller, and left a
+ * timer as the only thing able to end it.
+ */
+export function resolveWsTransport(
+  runId: string,
+  config: APIConfig | undefined
+): {
+  transport: WsEventsTransport;
+  wsUrl: string;
+} | null {
+  const wsUrl = resolveChannelUrl(runId, config);
+  if (!wsUrl) return null;
+  const transport = transports.get(wsUrl);
+  return transport ? { transport, wsUrl } : null;
 }

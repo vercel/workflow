@@ -102,7 +102,9 @@ const { FakeWebSocket, sockets } = vi.hoisted(() => {
 
 vi.mock('ws', () => ({ WebSocket: FakeWebSocket }));
 
-const { resetWsEventsTransportsForTest } = await import('./ws-transport.js');
+const { openWsChannel, resetWsEventsTransportsForTest } = await import(
+  './ws-transport.js'
+);
 
 /** Decode exactly one frame, the way the server's `decodeFrame` does. */
 async function decodeOne(raw: Uint8Array): Promise<DecodedFrame> {
@@ -244,6 +246,9 @@ async function callThroughFixture(
     body: Uint8Array
   ) => RouteResponse
 ) {
+  // Stand in for the flow route: without an open channel the write resolves
+  // none and goes over HTTP, which is the whole point of the explicit pair.
+  openWsChannel(input.runId, { token: 'test-token' });
   const pending = createWorkflowRunEventV4(input, { token: 'test-token' });
   void pending.catch(() => {});
   // Let the transport construct its socket (it awaits the header thunk).

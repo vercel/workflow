@@ -12,6 +12,7 @@ import {
   afterAll,
   afterEach,
   beforeAll,
+  beforeEach,
   describe,
   expect,
   it,
@@ -314,7 +315,14 @@ describe('streamer write trace propagation', () => {
 });
 
 describe('ws events transport upgrade trace propagation', () => {
+  // `openWsChannel` is gated, unlike the `resolveWsTransport` lookup it
+  // replaced: nothing opens a channel on the HTTP default.
+  beforeEach(() => {
+    vi.stubEnv('WORKFLOW_EVENTS_TRANSPORT', 'ws');
+  });
+
   afterEach(async () => {
+    vi.unstubAllEnvs();
     wsUpgrades.length = 0;
     const { resetWsEventsTransportsForTest } = await import(
       './ws-transport.js'
@@ -323,9 +331,7 @@ describe('ws events transport upgrade trace propagation', () => {
   });
 
   it('injects traceparent on the upgrade, parented to the invocation span', async () => {
-    const { resolveWsTransport } = await import('./ws-transport.js');
-    const resolved = resolveWsTransport('wrun_1', { token: 'test-token' });
-    expect(resolved).not.toBeNull();
+    const { openWsChannel } = await import('./ws-transport.js');
 
     const tracer = otelTrace.getTracer('test');
     let traceId = '';
@@ -333,7 +339,7 @@ describe('ws events transport upgrade trace propagation', () => {
     await tracer.startActiveSpan('flow-invocation', async (span) => {
       traceId = span.spanContext().traceId;
       spanId = span.spanContext().spanId;
-      resolved?.transport.warm();
+      openWsChannel('wrun_1', { token: 'test-token' });
       await vi.waitFor(() => expect(wsUpgrades).toHaveLength(1));
       span.end();
     });
@@ -346,8 +352,8 @@ describe('ws events transport upgrade trace propagation', () => {
   });
 
   it('opens the upgrade without traceparent when no span is active', async () => {
-    const { resolveWsTransport } = await import('./ws-transport.js');
-    resolveWsTransport('wrun_2', { token: 'test-token' })?.transport.warm();
+    const { openWsChannel } = await import('./ws-transport.js');
+    openWsChannel('wrun_2', { token: 'test-token' });
     await vi.waitFor(() => expect(wsUpgrades).toHaveLength(1));
 
     expect(wsUpgrades[0]?.headers.traceparent).toBeUndefined();
