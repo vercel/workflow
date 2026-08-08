@@ -13,10 +13,12 @@
  * - **Vite** resolves the absent peer to its own `optional-peer-dep` stub, so
  *   `ws`'s require *succeeds* and the try/catch never fires.
  *
- * Both end at `bufferUtil.mask is not a function`. Plain Rollup is safe by
- * accident — it leaves the bare `require` in ESM output, where calling it throws
- * and the fallback engages — so externalizing there buys determinism, not a fix
- * for a build error. (Turbopack already externalizes Node packages.)
+ * Both end at `bufferUtil.mask is not a function`. Rollup-family setups are not
+ * known to break: nothing substitutes a stub, and nitro traces and externalizes
+ * `ws` in a production build, so the require stays a real one that fails and the
+ * fallback engages. Externalizing there buys determinism against a change in
+ * externals policy, not a fix for a known break. (Turbopack already externalizes
+ * Node packages.)
  *
  * Externalized unconditionally, unlike `WORKFLOW_OPTIONAL_OTEL_API_MODULE`,
  * which is only externalized when it can't be resolved. The OTEL API has to
