@@ -27,7 +27,6 @@ import { encodeFrame } from './frames.js';
 import { REQUEST_TIMEOUT_MS } from './http-core.js';
 import { injectTraceContextIntoHeaders } from './telemetry.js';
 import {
-  closeWsChannel,
   getWsEventsTransport,
   isWsEventsTransportEnabled,
   openWsChannel,
@@ -1013,10 +1012,10 @@ describe('transport selection', () => {
       // What makes a late write — one the runtime issues after the invocation
       // that opened the channel has returned — fall back instead of failing.
       process.env.WORKFLOW_EVENTS_TRANSPORT = 'ws';
-      openWsChannel('wrun_1', directConfig);
+      const release = openWsChannel('wrun_1', directConfig);
       expect(resolveWsTransport('wrun_1', directConfig)).not.toBeNull();
 
-      closeWsChannel('wrun_1', directConfig);
+      release?.();
 
       expect(resolveWsTransport('wrun_1', directConfig)).toBeNull();
     });
@@ -1088,16 +1087,20 @@ describe('transport selection', () => {
     });
   });
 
-  describe('closeWsChannel', () => {
+  /**
+   * The release `openWsChannel` hands back. Bound to the instance it claimed,
+   * so it can only ever give up that claim — see the note on `openWsChannel`.
+   */
+  describe('the channel release', () => {
     it('closes the run’s socket', async () => {
       process.env.WORKFLOW_EVENTS_TRANSPORT = 'ws';
-      openWsChannel('wrun_1', directConfig);
+      const release = openWsChannel('wrun_1', directConfig);
       await tick();
       latest().open();
       await tick();
       expect(latest().readyState).toBe(1);
 
-      closeWsChannel('wrun_1', directConfig);
+      release?.();
       await tick();
 
       expect(latest().readyState).toBe(3);
@@ -1107,47 +1110,93 @@ describe('transport selection', () => {
       process.env.WORKFLOW_EVENTS_TRANSPORT = 'ws';
       openWsChannel('wrun_1', directConfig);
       await tick();
+      const first = latest();
+      first.open();
+      const release2 = openWsChannel('wrun_2', directConfig);
+      await tick();
       latest().open();
       await tick();
 
-      closeWsChannel('wrun_2', directConfig);
+      release2?.();
       await tick();
 
-      expect(latest().readyState).toBe(1);
+      expect(first.readyState).toBe(1);
     });
 
-    it('holds the socket until every concurrent opener has closed', async () => {
+    it('holds the socket until every concurrent opener has released', async () => {
       // Two invocations for one run in one instance: the first to finish must
       // not close the channel the second is still writing over.
       process.env.WORKFLOW_EVENTS_TRANSPORT = 'ws';
-      openWsChannel('wrun_1', directConfig);
-      openWsChannel('wrun_1', directConfig);
+      const releaseA = openWsChannel('wrun_1', directConfig);
+      const releaseB = openWsChannel('wrun_1', directConfig);
       await tick();
       latest().open();
       await tick();
 
-      closeWsChannel('wrun_1', directConfig);
+      releaseA?.();
       await tick();
       expect(latest().readyState).toBe(1);
 
-      closeWsChannel('wrun_1', directConfig);
+      releaseB?.();
       await tick();
       expect(latest().readyState).toBe(3);
     });
 
-    it('hands the next invocation a fresh channel when its open lands after the close', async () => {
+    it('does not release a channel a later invocation opened', async () => {
+      // A refused upgrade evicts the instance, so the next opener for the same
+      // run is registered under the same URL as a *different* channel. A
+      // release resolved from the URL would find that one and drop a socket
+      // still in use; this one holds the instance it incremented.
+      process.env.WORKFLOW_EVENTS_TRANSPORT = 'ws';
+      const releaseA = openWsChannel('wrun_1', directConfig);
+      await tick();
+      sockets[0].failHandshake();
+      await tick();
+      expect(resolveWsTransport('wrun_1', directConfig)).toBeNull();
+
+      openWsChannel('wrun_1', directConfig);
+      await tick();
+      sockets[1].open();
+      await tick();
+      expect(sockets[1].readyState).toBe(1);
+
+      releaseA?.();
+      await tick();
+
+      expect(sockets[1].readyState).toBe(1);
+      expect(resolveWsTransport('wrun_1', directConfig)).not.toBeNull();
+    });
+
+    it('is inert when called twice', async () => {
+      // Double-releasing must not consume the other holder's claim, which is
+      // the same over-decrement by another route.
+      process.env.WORKFLOW_EVENTS_TRANSPORT = 'ws';
+      const releaseA = openWsChannel('wrun_1', directConfig);
+      openWsChannel('wrun_1', directConfig);
+      await tick();
+      latest().open();
+      await tick();
+
+      releaseA?.();
+      releaseA?.();
+      await tick();
+
+      expect(latest().readyState).toBe(1);
+    });
+
+    it('hands the next invocation a fresh channel when its open lands after the release', async () => {
       // The other interleaving at refcount 1. Both halves run start to finish
-      // with no await, so a close either sees the next opener's increment or it
-      // doesn't — and when it doesn't, that opener must end up with a live
+      // with no await, so a release either sees the next opener's increment or
+      // it doesn't — and when it doesn't, that opener must end up with a live
       // channel of its own rather than the instance just de-registered.
       process.env.WORKFLOW_EVENTS_TRANSPORT = 'ws';
-      openWsChannel('wrun_1', directConfig);
+      const release = openWsChannel('wrun_1', directConfig);
       await tick();
       latest().open();
       await tick();
       const first = latest();
 
-      closeWsChannel('wrun_1', directConfig);
+      release?.();
       openWsChannel('wrun_1', directConfig);
       await tick();
       latest().open();
@@ -1161,20 +1210,10 @@ describe('transport selection', () => {
       expect(resolveWsTransport('wrun_1', directConfig)).not.toBeNull();
     });
 
-    it('creates nothing for a run that never opened a channel', async () => {
-      // Resolving through the create path would construct the transport it is
-      // about to close, and trip the once-per-process notice doing it.
-      process.env.WORKFLOW_EVENTS_TRANSPORT = 'ws';
-
-      closeWsChannel('wrun_1', directConfig);
-      await tick();
-
+    it('is undefined when the gate is off', () => {
+      // Nothing was claimed, so there is nothing for the flow route to release.
+      expect(openWsChannel('wrun_1', directConfig)).toBeUndefined();
       expect(sockets).toHaveLength(0);
-      expect(logSpy).not.toHaveBeenCalled();
-    });
-
-    it('does nothing when the gate is off', () => {
-      expect(() => closeWsChannel('wrun_1', directConfig)).not.toThrow();
     });
   });
 });

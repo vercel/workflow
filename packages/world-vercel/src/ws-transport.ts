@@ -232,6 +232,11 @@ class WsEventsTransport {
    * `request` to retry, which is what keeps this path from being *worse* than
    * HTTP: writes resolve no channel and take the pooled HTTP route instead of
    * paying another handshake attempt each.
+   *
+   * That de-opt covers the handshake only. A channel that connects and then
+   * fails every write stays registered and keeps taking the WS path, so the
+   * fallback is per-invocation rather than a circuit breaker. Tolerable while
+   * the transport is opt-in; defaulting it on needs a write-failure de-opt too.
    */
   open(): void {
     if (this.closed) return;
@@ -671,63 +676,73 @@ export function toEventsWsUrl(baseUrl: string, runId: string): string {
 export { isWsEventsTransportEnabled };
 
 /**
- * Open this run's events channel for the duration of one invocation, and start
- * connecting. Paired with `closeWsChannel`; nothing else creates a channel, so
- * a code path that doesn't call this writes its events over HTTP even with the
- * transport enabled.
+ * Open this run's events channel for the duration of one invocation, start
+ * connecting, and return the release for that claim. Nothing else creates a
+ * channel, so a code path that doesn't call this writes its events over HTTP
+ * even with the transport enabled.
  *
  * Call it as early in an invocation as the run id is known — the flow route does,
  * before dispatching to the runtime. Only worth it for a caller that will write
  * several events: a single write does not repay a handshake, which is why
  * `start()` deliberately doesn't open one for `run_created`.
  *
- * Silent and synchronous by contract: a no-op on the HTTP default and on a
+ * Silent and synchronous by contract: `undefined` on the HTTP default and on a
  * World that can't hold a socket, and it neither awaits nor reports the
  * connect. Callers must be able to treat it as free.
  *
+ * An open socket is not `unref`'d, so a caller that drops the release stops the
+ * process exiting — and keeps a server invocation pinned, one per connection —
+ * until the platform kills it. The socket drops once every concurrent holder
+ * has released; see `WsEventsTransport.release`.
+ *
+ * **The release closes over the instance, never the URL.** A channel is evicted
+ * from `transports` the moment it closes, and a refused upgrade does that on
+ * the connect path, so the next opener for the same run gets a *different*
+ * instance under the same URL. A release that re-resolved the URL would
+ * decrement whichever instance is registered by then rather than the one it
+ * claimed, dropping a socket a live invocation is still writing over — and for
+ * the event types `EVENT_RETRY_ELIGIBILITY` marks non-retryable there is no
+ * second attempt to carry that write over HTTP. Idempotent for the same reason:
+ * a doubled release must not consume another holder's claim.
+ *
  * Synchronous matters beyond cost. Two invocations for one run share a channel,
- * so an open races a close whenever the refcount stands at 1 — and because
- * neither function yields between its map lookup and its refcount write, the
- * close either observes the open's increment, and the socket survives for the
- * new holder, or lands first, and the opener misses the de-registered instance
- * and builds a fresh channel. Adding an await ahead of the refcount write —
- * minting a token to derive the URL, say — reopens that window, and an open
- * landing inside it hits an already-closed instance, returns early, and leaves
- * that invocation on HTTP for its whole duration with nothing to signal it.
+ * so an open races a release whenever the refcount stands at 1 — and because
+ * neither yields between its map lookup and its refcount write, the release
+ * either observes the open's increment, and the socket survives for the new
+ * holder, or lands first, and the opener misses the de-registered instance and
+ * builds a fresh channel. Adding an await ahead of the refcount write — minting
+ * a token to derive the URL, say — reopens that window, and an open landing
+ * inside it hits an already-closed instance, returns early, and leaves that
+ * invocation on HTTP for its whole duration with nothing to signal it.
  */
-export function openWsChannel(runId: string, config?: APIConfig): void {
-  if (!isWsEventsTransportEnabled()) return;
+export function openWsChannel(
+  runId: string,
+  config?: APIConfig
+): (() => void) | undefined {
+  if (!isWsEventsTransportEnabled()) return undefined;
   const resolved = resolveChannelUrl(runId, config);
-  if (!resolved) return;
+  if (!resolved) return undefined;
   if (!loggedWsInUse) {
     loggedWsInUse = true;
     console.log(`world-vercel: using ws events transport (${resolved}).`);
   }
   // Cheap: a URL plus a map lookup, no token mint and no I/O. The socket work
   // happens inside `open`, unawaited.
-  getWsEventsTransport(resolved, async ({ forceRefresh }) => {
+  const transport = getWsEventsTransport(resolved, async ({ forceRefresh }) => {
     // `forceRefresh` means the previous socket was drained by the server
     // because its *bearer* was expiring, not because the socket aged out.
     if (forceRefresh) await refreshOidcTokenBestEffort();
     const { headers } = await getHttpConfig(config);
     return headersToRecord(headers);
-  }).open();
-}
+  });
+  transport.open();
 
-/**
- * Close this run's channel at the end of an invocation. An open socket is not
- * `unref`'d, so leaving one behind stops the process exiting — and keeps a
- * server invocation pinned, one per connection — until the platform kills it.
- *
- * Drops the socket only once every concurrent holder has released; see
- * `WsEventsTransport.release`. Nothing to close is a normal outcome, not an
- * error: a run whose invocation never opened a channel has none.
- */
-export function closeWsChannel(runId: string, config?: APIConfig): void {
-  if (!isWsEventsTransportEnabled()) return;
-  const resolved = resolveChannelUrl(runId, config);
-  if (!resolved) return;
-  transports.get(resolved)?.release('invocation complete');
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    transport.release('invocation complete');
+  };
 }
 
 /**

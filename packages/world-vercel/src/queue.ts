@@ -207,33 +207,40 @@ function getRunIdFromPayload(payload: QueuePayload): string | undefined {
 const wsEventsChannelForInvocation = (
   runId: string | undefined,
   config: APIConfig | undefined
-) => ({
-  /**
-   * Unawaited and failure-proof: callers treat the handshake as free. The
-   * refcount therefore rises a microtask late, so a write racing the import
-   * finds no channel and goes over HTTP — one frame, not the invocation, since
-   * `close` continues off the same module promise and continuations run in
-   * registration order, putting this increment ahead of that decrement.
-   */
-  open(): void {
-    if (!runId || !isWsEventsTransportEnabled()) return;
-    void import('./ws-transport.js')
-      .then(({ openWsChannel }) => openWsChannel(runId, config))
-      .catch(() => {});
-  },
-  /**
-   * Awaited, unlike the open: the module is already resolved by here, and work
-   * scheduled after the handler returns is not guaranteed to run. An open socket
-   * is not `unref`'d, so skipping this stops the process exiting and keeps a
-   * server invocation pinned.
-   */
-  async close(): Promise<void> {
-    if (!runId || !isWsEventsTransportEnabled()) return;
-    await import('./ws-transport.js')
-      .then(({ closeWsChannel }) => closeWsChannel(runId, config))
-      .catch(() => {});
-  },
-});
+) => {
+  /** This invocation's release, once the open has resolved one. */
+  let claim: Promise<(() => void) | undefined> | undefined;
+
+  return {
+    /**
+     * Unawaited and failure-proof: callers treat the handshake as free. The
+     * refcount therefore rises a microtask late, so a write racing the import
+     * finds no channel and goes over HTTP — one frame, not the invocation,
+     * since `close` awaits this same promise and so cannot release ahead of
+     * the claim it is releasing.
+     */
+    open(): void {
+      if (!runId || !isWsEventsTransportEnabled()) return;
+      claim = import('./ws-transport.js')
+        .then(({ openWsChannel }) => openWsChannel(runId, config))
+        .catch(() => undefined);
+    },
+    /**
+     * Awaited, unlike the open: work scheduled after the handler returns is not
+     * guaranteed to run, and an open socket is not `unref`'d, so skipping this
+     * stops the process exiting and keeps a server invocation pinned.
+     *
+     * Releases the claim the open returned rather than re-resolving the run,
+     * which is what keeps a channel this invocation never opened — a later
+     * invocation's, registered under the same URL after ours was evicted — out
+     * of reach of our release.
+     */
+    async close(): Promise<void> {
+      const release = await claim;
+      release?.();
+    },
+  };
+};
 
 /**
  * Workflow run IDs are prefixed with `wrun_` before the underlying ULID.
