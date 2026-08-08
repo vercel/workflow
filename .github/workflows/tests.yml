@@ -685,6 +685,15 @@ jobs:
         id: wsDeploy
         env:
           WS_VERCEL_TOKEN: ${{ secrets.VERCEL_LABS_TOKEN }}
+          # nitro's own preset auto-detection (does this look like a Vercel
+          # build?) picked "node-server" instead of "vercel" in CI, even
+          # though the exact same `vercel pull`+`build` sequence correctly
+          # auto-detected "vercel" when run locally — force it explicitly
+          # rather than depend on that auto-detection at all. Without this,
+          # `vercel build` fails post-build validation with "No Output
+          # Directory named public found" because nitro wrote its generic
+          # `.output/` layout instead of `.vercel/output/`.
+          NITRO_PRESET: vercel
         run: |
           set -euo pipefail
           # `vercel deploy` (source-upload mode, no --prebuilt) re-applies
