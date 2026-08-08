@@ -209,11 +209,39 @@ function attachFixtureServer(
   return seen;
 }
 
+const CREATED_AT = '2026-06-10T00:00:00.000Z';
+
 const okHeaders = {
   'x-wf-event-id': 'evnt_1',
   'x-wf-run-id': 'wrun_1',
-  'x-wf-created-at': '2026-06-10T00:00:00.000Z',
+  'x-wf-created-at': CREATED_AT,
 };
+
+/** The materialized CBOR body a `step_completed` write answers with. The ids
+ *  the caller sees come out of this body, not the reply meta. */
+const materializedBody = (eventId = 'evnt_1') =>
+  new Uint8Array(
+    encode({
+      event: {
+        eventId,
+        runId: 'wrun_1',
+        createdAt: CREATED_AT,
+        eventType: 'step_completed',
+        specVersion: 2,
+        correlationId: 'step_1',
+        eventData: { result: new Uint8Array() },
+      },
+      step: {
+        runId: 'wrun_1',
+        stepId: 'step_1',
+        stepName: 'step',
+        status: 'completed',
+        attempt: 1,
+        createdAt: CREATED_AT,
+        updatedAt: CREATED_AT,
+      },
+    })
+  );
 
 const input = {
   runId: 'wrun_1',
@@ -221,7 +249,7 @@ const input = {
   specVersion: 2,
   correlationId: 'step_1',
   payload: new TextEncoder().encode('"result"'),
-};
+} as const;
 
 beforeEach(() => {
   sockets.length = 0;
@@ -264,15 +292,15 @@ describe('client → server frame shape', () => {
     const { pending, seen } = await callThroughFixture(() => ({
       status: 201,
       headers: okHeaders,
-      body: new Uint8Array(encode({ step: { stepId: 'step_1' } })),
+      body: materializedBody(),
     }));
 
     const result = await pending;
 
     // Round-trip succeeded, which already means the schema validated —
     // a flat frame would have come back as a 400 error frame instead.
-    expect(result.eventId).toBe('evnt_1');
-    expect(result.body.step).toMatchObject({ stepId: 'step_1' });
+    expect(result.event.eventId).toBe('evnt_1');
+    expect(result.step).toMatchObject({ stepId: 'step_1' });
 
     // And the meta the server unpacked is the event meta, not the envelope.
     expect(seen).toHaveLength(1);
@@ -291,6 +319,7 @@ describe('client → server frame shape', () => {
     const { pending, seen } = await callThroughFixture(() => ({
       status: 201,
       headers: okHeaders,
+      body: materializedBody(),
     }));
     await pending;
 
@@ -303,6 +332,7 @@ describe('client → server frame shape', () => {
     const { pending, socket } = await callThroughFixture(() => ({
       status: 201,
       headers: okHeaders,
+      body: materializedBody(),
     }));
     await pending;
 
@@ -362,7 +392,7 @@ describe('server → client reply handling', () => {
       return {
         status: 201,
         headers: { ...okHeaders, 'x-wf-event-id': `evnt_${n}` },
-        body: new Uint8Array(encode({ n })),
+        body: materializedBody(`evnt_${n}`),
       };
     });
     const second = createWorkflowRunEventV4(
@@ -371,7 +401,7 @@ describe('server → client reply handling', () => {
     );
 
     const [a, b] = await Promise.all([pending, second]);
-    expect(new Set([a.eventId, b.eventId])).toEqual(
+    expect(new Set([a.event.eventId, b.event.eventId])).toEqual(
       new Set(['evnt_1', 'evnt_2'])
     );
     expect(socket.sent).toHaveLength(2);

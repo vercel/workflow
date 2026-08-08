@@ -45,17 +45,49 @@ vi.mock('./ws-transport.js', async (importOriginal) => {
   };
 });
 
+const CREATED_AT = '2026-06-10T00:00:00.000Z';
+
 const input = {
   runId: 'wrun_1',
   eventType: 'step_completed',
   specVersion: 2,
   correlationId: 'step_1',
-};
+} as const;
+
+/**
+ * The materialized CBOR body a `step_completed` write answers with. Shared by
+ * the WS reply frames and the HTTP interceptors below so the two transports are
+ * asserted against one shape — the point of the adapter is that the caller
+ * cannot tell them apart.
+ */
+const materializedBody = () =>
+  new Uint8Array(
+    encode({
+      event: {
+        eventId: 'evnt_1',
+        runId: 'wrun_1',
+        createdAt: CREATED_AT,
+        eventType: 'step_completed',
+        specVersion: 2,
+        correlationId: 'step_1',
+        eventData: { result: new Uint8Array() },
+      },
+      step: {
+        runId: 'wrun_1',
+        stepId: 'step_1',
+        stepName: 'step',
+        status: 'completed',
+        attempt: 1,
+        createdAt: CREATED_AT,
+        updatedAt: CREATED_AT,
+      },
+    })
+  );
 
 /** A well-formed `event_ack` reply frame. */
 const ack = (
   meta: Record<string, unknown> = {},
-  body: Uint8Array = new Uint8Array(encode({ step: { stepId: 'step_1' } }))
+  body: Uint8Array = materializedBody()
 ): WsFrameReply => ({
   meta: {
     reqId: 1,
@@ -63,7 +95,7 @@ const ack = (
     status: 201,
     eventId: 'evnt_1',
     runId: 'wrun_1',
-    createdAt: '2026-06-10T00:00:00.000Z',
+    createdAt: CREATED_AT,
     ...meta,
   },
   body,
@@ -100,11 +132,11 @@ describe('transport gate', () => {
         path: '/api/v4/runs/wrun_1/events/step_completed',
         method: 'POST',
       })
-      .reply(200, encode({ step: { stepId: 'step_1' } }), {
+      .reply(200, materializedBody(), {
         headers: {
           'x-wf-event-id': 'evnt_1',
           'x-wf-run-id': 'wrun_1',
-          'x-wf-created-at': '2026-06-10T00:00:00.000Z',
+          'x-wf-created-at': CREATED_AT,
         },
       });
 
@@ -113,7 +145,7 @@ describe('transport gate', () => {
       dispatcher: agent,
     });
 
-    expect(result.eventId).toBe('evnt_1');
+    expect(result.event.eventId).toBe('evnt_1');
     expect(resolveWsTransportMock).not.toHaveBeenCalled();
     agent.assertNoPendingInterceptors();
   });
@@ -127,10 +159,10 @@ describe('createWorkflowRunEventV4 over ws', () => {
       token: 'test-token',
     });
 
-    expect(result.eventId).toBe('evnt_1');
-    expect(result.runId).toBe('wrun_1');
-    expect(result.createdAt).toBe('2026-06-10T00:00:00.000Z');
-    expect(result.body.step).toMatchObject({ stepId: 'step_1' });
+    expect(result.event.eventId).toBe('evnt_1');
+    expect(result.event.runId).toBe('wrun_1');
+    expect(result.event.eventType).toBe('step_completed');
+    expect(result.step).toMatchObject({ stepId: 'step_1' });
   });
 
   it('falls back to HTTP when this World has no usable WS transport', async () => {
@@ -154,11 +186,11 @@ describe('createWorkflowRunEventV4 over ws', () => {
         path: '/api/v4/runs/wrun_1/events/step_completed',
         method: 'POST',
       })
-      .reply(200, encode({ step: { stepId: 'step_1' } }), {
+      .reply(200, materializedBody(), {
         headers: {
           'x-wf-event-id': 'evnt_1',
           'x-wf-run-id': 'wrun_1',
-          'x-wf-created-at': '2026-06-10T00:00:00.000Z',
+          'x-wf-created-at': CREATED_AT,
         },
       });
 
@@ -167,7 +199,7 @@ describe('createWorkflowRunEventV4 over ws', () => {
       dispatcher: agent,
     });
 
-    expect(result.eventId).toBe('evnt_1');
+    expect(result.event.eventId).toBe('evnt_1');
     expect(requestMock).not.toHaveBeenCalled();
     agent.assertNoPendingInterceptors();
   });
@@ -348,7 +380,7 @@ describe('withEventPostRetry over ws', () => {
       )
     );
 
-    expect(result.eventId).toBe('evnt_1');
+    expect(result.event.eventId).toBe('evnt_1');
     expect(requestMock).toHaveBeenCalledTimes(2);
   });
 
