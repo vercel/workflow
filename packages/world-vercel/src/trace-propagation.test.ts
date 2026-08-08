@@ -128,7 +128,10 @@ describe('v4 event requests (fetchV4) trace propagation', () => {
     agent.disableNetConnect();
     agent
       .get(origin)
-      .intercept({ path: '/api/v4/runs/wrun_1/events', method: 'GET' })
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events?returnAll=true',
+        method: 'GET',
+      })
       .reply(200, encodeFrame({ _end: 1, hasMore: false }, new Uint8Array(0)), {
         headers: { 'content-type': V4_FRAME_CONTENT_TYPE },
       });

@@ -924,9 +924,10 @@ function appendListParams(sp: URLSearchParams, params: ListEventsV4Params) {
 
 function paginationToQuery(params: ListEventsV4Params): string {
   const sp = new URLSearchParams();
+  // The World API uses an omitted limit for a complete event log.
+  if (params.limit === undefined) sp.set('returnAll', 'true');
   appendListParams(sp, params);
-  const qs = sp.toString();
-  return qs ? `?${qs}` : '';
+  return `?${sp.toString()}`;
 }
 
 /**
