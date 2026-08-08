@@ -573,9 +573,15 @@ interface FrameResponseLike {
  * HTTP, since they're not on the hot per-step path and the wire protocol
  * for LIST (a streamed, sentinel-terminated multi-frame response) doesn't
  * map onto a single WS message.
+ *
+ * Defaults to ON for this branch (no CI/workbench env wiring exists yet to
+ * toggle it per-scenario in the deployed e2e/benchmark apps) so the existing
+ * e2e + benchmark suite exercises the WS path end-to-end. Explicitly set
+ * `WORKFLOW_EVENTS_TRANSPORT=http` to opt back out for local comparison.
+ * Must not ship this default past the POC — revert to opt-in before merge.
  */
 export function isWsEventsTransportEnabled(): boolean {
-  return process.env.WORKFLOW_EVENTS_TRANSPORT === 'ws';
+  return process.env.WORKFLOW_EVENTS_TRANSPORT !== 'http';
 }
 
 async function postEventFrameOverHttp(
