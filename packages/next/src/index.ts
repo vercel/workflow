@@ -324,13 +324,10 @@ function registerWorkflowDiagnosticsManifestCopy(metadata: {
 
 /**
  * Mark `ws`'s optional native accelerators external on the webpack server
- * build. Webpack bundles their JS wrapper but can't bundle the native `.node`
- * binding, leaving a broken partial import that throws
- * "bufferUtil.mask is not a function" at runtime (Turbopack doesn't hit this —
- * it externalizes Node packages differently). See
- * `WORKFLOW_OPTIONAL_WS_NATIVE_MODULES` for the full rationale; the Rollup /
- * Vite / Nitro side of the same problem is handled in
- * `@workflow/rollup`'s `workflowTransformPlugin`.
+ * build, which otherwise bundles their JS wrapper without the native `.node`
+ * binding and throws "bufferUtil.mask is not a function" at runtime. See
+ * `WORKFLOW_OPTIONAL_WS_NATIVE_MODULES`; `@workflow/rollup` handles the
+ * Rollup/Vite/Nitro side.
  */
 function externalizeWsNativeAccelerators(webpackConfig: {
   externals?: unknown;

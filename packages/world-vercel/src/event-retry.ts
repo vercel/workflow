@@ -43,10 +43,9 @@
  * (409/410/425/429 and any other 4xx) surface immediately, exactly as before.
  *
  * This is the *only* retry loop on the event-write path, for both transports.
- * The WebSocket transport raises its failures as a `WorkflowWorldError` with
- * `code: 'TRANSPORT'` — the same shape `utils.ts` produces for a failed
- * `fetch` — precisely so it lands here instead of carrying a second policy that
- * would not know about `EVENT_RETRY_ELIGIBILITY`.
+ * The WebSocket transport raises `code: 'TRANSPORT'` — the shape `utils.ts`
+ * produces for a failed `fetch` — so it lands here rather than carrying a
+ * second policy blind to `EVENT_RETRY_ELIGIBILITY`.
  */
 
 import {
@@ -231,24 +230,21 @@ export function isRetryableEventPostError(err: unknown): boolean {
     // Body parsed past the response but the write may have landed — safe to
     // retry for eligible events (a landed original re-surfaces as 409).
     if (err.code === 'PARSE_ERROR') return true;
-    // A transport failure the world layer has already classified as transient:
-    // `utils.ts` sets this code when `fetch` fails with one of
-    // `TRANSIENT_TRANSPORT_ERROR_CODES`, and `events-v4.ts` sets it when a WS
-    // socket dies, refuses a send, produces no correlatable reply, or misses
-    // its deadline. In every one of those cases the frame was never acked.
+    // A transport failure the world layer already classified as transient:
+    // `utils.ts` sets this for a `fetch` failing with a
+    // `TRANSIENT_TRANSPORT_ERROR_CODES` code, `events-v4.ts` for a WS socket
+    // that died, refused a send, produced no correlatable reply or missed its
+    // deadline. The frame was never acked in any of them. Keying on the code
+    // rather than re-deriving transience from the cause chain is what lets one
+    // policy serve both transports; it also collapses a drift, since
+    // `UND_ERR_CONNECT`, `UND_ERR_CLOSED` and `EAI_AGAIN` are in utils.ts's set
+    // but not in TRANSIENT_CODES below, so they counted as retryable for queue
+    // redelivery yet were skipped in-process.
     //
-    // Keying on the code rather than re-deriving transience from the cause
-    // chain is what lets this one policy serve both transports with no
-    // WS-specific branch — and it collapses two hand-maintained lists that had
-    // already drifted: `UND_ERR_CONNECT`, `UND_ERR_CLOSED` and `EAI_AGAIN` are
-    // in utils.ts's set but absent from TRANSIENT_CODES below, so those HTTP
-    // failures counted as retryable for queue redelivery yet were skipped by
-    // the in-process retry.
-    //
-    // `TIMEOUT` is deliberately NOT included here: utils.ts maps both a missed
-    // deadline and a caller-supplied `AbortError` onto that single code, so it
-    // must keep falling through to the marker walk, which retries
-    // `TimeoutError` and refuses `AbortError` (see TRANSIENT_CODES).
+    // `TIMEOUT` is deliberately excluded: utils.ts maps both a missed deadline
+    // and a caller's `AbortError` onto that one code, so it must keep falling
+    // through to the marker walk, which retries the former and refuses the
+    // latter.
     if (err.code === 'TRANSPORT') return true;
     if (typeof err.status === 'number') {
       // Transient server errors; 4xx are definitive and not retried.

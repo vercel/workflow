@@ -4,30 +4,18 @@
  * transport. Neither is installed by default: `ws` requires each one inside a
  * try/catch and falls back to a pure-JS implementation when the require throws.
  *
- * Every bundler needs to be told to leave them alone, for two different
- * reasons:
+ * Marking them external lets that fallback happen. Two bundlers break without
+ * it, differently: **Rollup/Vite/Nitro** fail the build on the unresolvable
+ * `require` (`Could not resolve "bufferutil" imported by "ws"`), and **webpack**
+ * builds but bundles the JS wrapper without its native `.node` binding, throwing
+ * `bufferUtil.mask is not a function` at runtime. (Turbopack externalizes Node
+ * packages differently and doesn't hit either.)
  *
- * - **Rollup/Vite/Nitro** fail the *build* outright — `Could not resolve
- *   "bufferutil" imported by "ws"` — because they treat an unresolvable
- *   `require()` as fatal.
- * - **Webpack** succeeds at build time but bundles the JS wrapper without the
- *   native `.node` binding it needs, producing a broken partial module that
- *   throws `bufferUtil.mask is not a function` at *runtime* on the server
- *   build. (Turbopack externalizes Node packages differently and doesn't hit
- *   this.)
- *
- * Both are fixed by marking these two specifiers external, so `ws` performs a
- * real `require()` at runtime and takes its documented fallback when they
- * aren't there.
- *
- * Note this is the OPPOSITE treatment from
- * `WORKFLOW_OPTIONAL_OTEL_API_MODULE`, which is only externalized when it
- * *can't* be resolved. The difference is what the runtime needs: the OTEL API
- * must actually load for tracing to work, so a self-contained output has to
- * bundle it when present. These accelerators must specifically NOT load —
- * they're a performance nicety with a correct fallback — so externalizing them
- * unconditionally is both simpler and safer than resolving them and risking a
- * half-bundled native module.
+ * Externalized unconditionally, unlike `WORKFLOW_OPTIONAL_OTEL_API_MODULE`,
+ * which is only externalized when it can't be resolved. The OTEL API has to
+ * load for tracing to work, so a self-contained output must bundle it when
+ * present; these accelerators must specifically *not* load, so a failed runtime
+ * require is the designed path and a half-bundled native module is not.
  */
 export const WORKFLOW_OPTIONAL_WS_NATIVE_MODULES = [
   'bufferutil',

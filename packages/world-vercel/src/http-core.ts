@@ -153,14 +153,11 @@ export function parseRetryAfter(
 }
 
 /**
- * Flatten a fetch `Headers` into the plain record shape that both
- * `throwForErrorResponse` (mirroring the v3 `makeRequest` error contract) and
- * the WS transport's `getHeaders` seam expect.
- *
- * Lives here rather than in either caller because `events-v4.ts` and
- * `ws-transport.ts` both need it and neither may import the other:
- * `events-v4` already depends on the transport, so the reverse edge would be
- * a cycle.
+ * Flatten a fetch `Headers` into the plain record both `throwForErrorResponse`
+ * (mirroring the v3 `makeRequest` error contract) and the WS transport's
+ * `getHeaders` seam expect. Lives here because both `events-v4.ts` and
+ * `ws-transport.ts` need it and `events-v4` already imports the transport, so
+ * the reverse edge would be a cycle.
  */
 export function headersToRecord(headers: Headers): Record<string, string> {
   const out: Record<string, string> = {};

@@ -17,12 +17,9 @@
  * set headers on the upgrade request — auth rides the handshake, once per
  * connection instead of once per message.
  *
- * Transport *selection* lives here too, at the bottom of the file:
- * `isWsEventsTransportEnabled` (the opt-in flag), `resolveWsTransport` (which
- * Worlds can use a socket at all) and `warmWsEventsTransport` (the pre-warm
- * entry point). Deciding whether a write goes over a socket is part of owning
- * the socket, and keeping it here means `events-v4.ts` consumes one seam
- * rather than assembling the transport itself.
+ * Transport *selection* lives at the bottom of the file — the opt-in flag,
+ * which Worlds can hold a socket at all, and the pre-warm entry point — so
+ * `events-v4.ts` consumes one seam instead of assembling the transport.
  */
 
 import { getVercelOidcToken } from '@vercel/oidc';
@@ -38,14 +35,11 @@ export interface WsFrameReply {
 
 /**
  * A transport-level failure: the socket closed, the frame could not be handed
- * to it, or a reply arrived that cannot be correlated to a caller. Distinct
- * from an application-level error (a reply frame carrying a non-2xx status),
- * which the events adapter raises as a typed `@workflow/errors` error.
- *
- * Carries no retry policy of its own — `postEventFrameOverWs` maps it to a
- * `WorkflowWorldError` with `code: 'TRANSPORT'` so the shared event-write retry
- * policy covers both transports with no WS-specific branch. Every failure this
- * represents happens before the frame is acked.
+ * to it, or a reply arrived that cannot be correlated to a caller — always
+ * before the frame was acked. Distinct from an application-level error (a reply
+ * carrying a non-2xx status), which the events adapter raises as a typed
+ * `@workflow/errors` error. Carries no retry policy of its own;
+ * `postEventFrameOverWs` maps it to `code: 'TRANSPORT'`.
  */
 export class WsTransportError extends Error {
   constructor(message: string, opts?: { cause?: unknown }) {
@@ -84,16 +78,14 @@ const RECONNECT_MAX_DELAY_MS = 5_000;
 
 /**
  * How long a transport may sit with nothing in flight before dropping its
- * socket and evicting itself from the cache.
+ * socket and evicting itself from the cache. The server pins one invocation per
+ * connection and eager reconnect renews a connection indefinitely, so without
+ * this a warm container holds a socket — and a live server invocation — for
+ * every run it has served. Idleness is the only available trigger: the events
+ * adapter is a stateless per-write call with no "run complete" signal.
  *
- * The server pins one invocation per connection, and eager reconnect means a
- * connection renews itself indefinitely — so without this a warm container
- * holds a live socket, and a live server invocation, for every run it has ever
- * served. There is no "run complete" signal to hang teardown off (the events
- * adapter is a stateless per-write call), so idleness is the available proxy.
- *
- * Below the server's own drain deadline (~680s) so the client is normally the
- * one releasing, and well above the gap between steps of an active run.
+ * Below the server's drain deadline (~680s) so the client normally releases
+ * first, and well above the gap between steps of an active run.
  */
 const IDLE_TIMEOUT_MS = 60_000;
 
@@ -239,22 +231,17 @@ class WsEventsTransport {
   }
 
   /**
-   * Open the socket at the start of an invocation, ahead of the first write.
+   * Open the socket ahead of the first write. Connecting lazily instead bills
+   * the handshake (plus the OIDC mint riding it) to whichever event is written
+   * first; when that's a `step_started` issued as the step body already runs,
+   * its server-recorded timestamp lands after the work it timestamps and the
+   * step reads as shorter than it was.
    *
-   * Connecting lazily bills the whole handshake — an upgrade round-trip plus
-   * the OIDC token mint riding it — to whichever event is written first. When
-   * that is a `step_started` issued as the step body already runs, the event's
-   * server-recorded timestamp lands later than the work it describes, and the
-   * step appears to have taken less time than it did.
-   *
-   * Fire-and-forget: warming must neither delay the handler nor be able to fail
-   * it. A failed warm logs (in `connect`) and stops without scheduling a
-   * reconnect; the first real write then goes through `ensureConnected` as it
-   * would have anyway. Idempotent.
-   *
-   * Arms the idle timer as if a request had settled, so a warmed socket whose
-   * invocation never writes is still released — the socket isn't `unref`'d, so
-   * a leaked one keeps this process and a server invocation alive.
+   * Fire-and-forget and idempotent: a failed warm logs in `connect` and
+   * schedules no reconnect, leaving the first write to connect as it would
+   * have. Arms the idle timer as if a request had settled, so a warmed socket
+   * whose invocation never writes is still released — it isn't `unref`'d, and a
+   * leaked one keeps both this process and a server invocation alive.
    */
   warm(): void {
     if (this.closed) return;
@@ -595,19 +582,14 @@ class WsEventsTransport {
   }
 
   /**
-   * Fail every waiter on `conn` and drop the socket — for a reply this client
-   * cannot correlate to a caller, and for a request that outlived its deadline.
-   *
-   * The whole connection goes, not just one request, because each of those
-   * cases says something about the *stream*: if a reply can't be parsed or
-   * matched, this client's model of what is on the wire is already wrong.
-   * Logging and moving on would leave the originating request in `pending` with
-   * nothing able to answer it until the server's own drain (~680s), well past
-   * the `maxDuration` of the invocation waiting on it.
-   *
-   * `ws.close()`'s own handler does the teardown and schedules the reconnect;
-   * failing the waiters here is what makes callers see *this* diagnosis rather
-   * than a bare close code.
+   * Fail every waiter on `conn` and drop the socket — for a reply that can't be
+   * correlated to a caller, and for a request that outlived its deadline. The
+   * whole connection goes because each case says the stream itself is no longer
+   * understood; logging and moving on would leave the originating request in
+   * `pending` with nothing able to answer it until the server drains (~680s),
+   * well past the waiting invocation's `maxDuration`. The socket's own `close`
+   * handler does the teardown and schedules the reconnect — failing the waiters
+   * here is what makes callers see this diagnosis, not a bare close code.
    */
   private failConnection(conn: Connection, message: string): void {
     this.failAllPending(conn, new WsTransportError(message));
@@ -619,16 +601,12 @@ class WsEventsTransport {
 const transports = new Map<string, WsEventsTransport>();
 
 /**
- * Get (or lazily create) the shared WS transport for `wsUrl`.
- *
- * `getHeaders` is invoked once per socket, at connect time, and receives
- * `forceRefresh: true` when the previous socket drained because its token was
- * expiring, so a caching token source knows not to serve the expired entry.
- *
- * Only the first caller's `getHeaders` for a given `wsUrl` is retained — fine
- * because `wsUrl` embeds the `runId` and one run is driven by one client
- * instance. Entries evict themselves after `IDLE_TIMEOUT_MS`, so this map
- * tracks active runs rather than every run the process has served.
+ * Get (or lazily create) the shared WS transport for `wsUrl`. `getHeaders` runs
+ * once per socket, at connect time, with `forceRefresh: true` when the previous
+ * socket drained on an expiring token, so a caching token source knows not to
+ * serve the stale entry. Only the first caller's thunk for a `wsUrl` is kept —
+ * fine, since `wsUrl` embeds the runId and one run has one client. Entries
+ * evict themselves after `IDLE_TIMEOUT_MS`, so this map tracks active runs.
  */
 export function getWsEventsTransport(
   wsUrl: string,
@@ -661,12 +639,9 @@ export function resetWsEventsTransportsForTest(): void {
 /**
  * Derive the WS endpoint URL for one run from the http(s) base URL used for v4
  * REST calls. `/websockets/v1/runs/:runId` is versioned independently of the
- * `v4` REST API this transport forwards `event` frames into; see the server's
- * `docs/ws-protocol.md` for why the two version axes are kept separate.
- *
- * Scoped to one run rather than shared: a single SDK client instance only ever
- * drives one run, so there's no multi-run multiplexing to support and `runId`
- * belongs on the connection instead of on every frame.
+ * `v4` REST API these frames are forwarded into (server `docs/ws-protocol.md`).
+ * Scoped to one run because one client instance only ever drives one run, so
+ * `runId` belongs on the connection rather than on every frame.
  */
 export function toEventsWsUrl(baseUrl: string, runId: string): string {
   const url = new URL(baseUrl);
@@ -680,61 +655,37 @@ export function toEventsWsUrl(baseUrl: string, runId: string): string {
 // =============================================================================
 
 /**
- * WS events transport gate — POC flag (see workflow-architecture.md notes).
- * Only `createWorkflowRunEventV4` (POST) is wired to it; GET/LIST stay on
- * HTTP, since they're not on the hot per-step path and the wire protocol
- * for LIST (a streamed, sentinel-terminated multi-frame response) doesn't
- * map onto a single WS message.
+ * The opt-in gate: HTTP unless `WORKFLOW_EVENTS_TRANSPORT=ws`. Only
+ * `createWorkflowRunEventV4` (POST) is wired to it — GET/LIST aren't on the hot
+ * per-step path, and LIST's streamed, sentinel-terminated multi-frame response
+ * doesn't map onto a single WS message.
  *
- * **Known gap — event writes lose their client-side instrumentation on this
- * path.** The HTTP branch goes through `fetchV4` → `instrumentedFetch`, which
- * is not merely a `fetch` wrapper: it opens the OTEL CLIENT span, injects
- * trace context into the outgoing request, sets the cache-bust header, emits
- * the `DEBUG` logs, and — the reason it exists at all — routes through the
- * global `fetch` that Vercel's observability "outgoing requests" view
- * instruments. See the note on `fetchV4`: bypassing it via `undici.request()`
- * is exactly what once made v4 event traffic disappear from the log viewer.
- *
- * The WS branch bypasses all of it. With the flag on, per-event writes have no
- * client span, propagate no trace context to workflow-server, and do not
- * appear in the outgoing-requests view; the server's own request metrics
- * (which #660 tags with `transport`) are the only remaining signal. That is
- * acceptable for an opt-in POC behind a flag and unacceptable as a default —
- * instrumenting the transport (a span per `request()`, trace context carried
- * in the frame meta rather than HTTP headers) is a prerequisite for making
- * `ws` the default, not a follow-up nicety.
- *
- * Opt-in: defaults to HTTP unless `WORKFLOW_EVENTS_TRANSPORT=ws` is set.
- * Was previously defaulted ON for this branch so the existing e2e/benchmark
- * suite would exercise the WS path without any dedicated wiring — that's no
- * longer needed now that a dedicated Vercel preview deployment sets this
- * env var explicitly for its own deployment only (see
- * `.github/workflows/tests.yml`'s `e2e-vercel-ws-transport` job), so every
- * other deployment/test now genuinely reflects the HTTP-only default a real
- * user would get.
+ * **Known gap: WS writes carry no client-side instrumentation.** The HTTP
+ * branch's `instrumentedFetch` opens the OTEL CLIENT span, injects trace
+ * context, and routes through the global `fetch` that Vercel's
+ * outgoing-requests view instruments (see the note on `fetchV4`); the WS branch
+ * bypasses all of it, leaving the server's own transport-tagged request metrics
+ * as the only signal. Acceptable behind a flag — instrumenting the transport is
+ * a prerequisite for defaulting to it, not a follow-up.
  */
 export function isWsEventsTransportEnabled(): boolean {
   return process.env.WORKFLOW_EVENTS_TRANSPORT === 'ws';
 }
 
 /**
- * Start opening this run's WS socket, if the WS transport is in use at all.
- *
- * Call this as early in an invocation as the run id is known — the queue
- * handler does, before dispatching to the runtime. By the time the first event
- * is written the handshake is either done or already in flight, instead of
- * being serialized ahead of that write. See `WsEventsTransport.warm` for why
- * that matters and why nothing here is load-bearing.
+ * Start opening this run's socket. Call it as early in an invocation as the run
+ * id is known — the queue handler does, before dispatching to the runtime — so
+ * the handshake is done or in flight by the first write rather than serialized
+ * ahead of it (see `WsEventsTransport.warm`).
  *
  * Silent and synchronous by contract: a no-op on the HTTP default and on a
- * World that can't use WS at all (the api-workflow proxy), and it neither
- * awaits nor reports the connect. A caller must be able to treat this as free.
+ * World that can't hold a socket, and it neither awaits nor reports the
+ * connect. Callers must be able to treat it as free.
  */
 export function warmWsEventsTransport(runId: string, config?: APIConfig): void {
   if (!isWsEventsTransportEnabled()) return;
-  // `resolveWsTransport` is sync and only resolves a URL + memoized transport
-  // — no token mint, no I/O — so this stays cheap on the invocation's
-  // critical path. The socket work happens inside `warm`, unawaited.
+  // Cheap: resolving is a URL plus a memoized lookup, no token mint and no
+  // I/O. The socket work happens inside `warm`, unawaited.
   resolveWsTransport(runId, config)?.transport.warm();
 }
 
@@ -746,30 +697,19 @@ export function warmWsEventsTransport(runId: string, config?: APIConfig): void {
 const OIDC_FORCE_REFRESH_BUFFER_MS = 24 * 60 * 60 * 1000;
 
 /**
- * Ask `@vercel/oidc` to mint a new token before the next `getHttpConfig()`
- * reads one, in response to the server draining a connection with
- * `reason: 'auth_expiry'`.
+ * Ask `@vercel/oidc` for a new token before the next `getHttpConfig()` reads
+ * one, in response to a drain with `reason: 'auth_expiry'`. Swallows failures:
+ * an unavailable refresh must not fail a write that `getHttpConfig()` can still
+ * produce a usable — if soon-to-expire — bearer for.
  *
- * Best-effort by design, and it is worth being precise about when it can
- * actually do anything. `getVercelOidcToken()` resolves
- * `getContext().headers['x-vercel-oidc-token'] ?? process.env.VERCEL_OIDC_TOKEN`
- * — the request-context header wins. `refreshToken()` only writes
- * `process.env.VERCEL_OIDC_TOKEN`. So:
- *
- *  - **Inside a deployed Vercel function**, the invocation's own header token
- *    always shadows anything refreshed into the environment. There is
- *    genuinely no fresher token to obtain mid-invocation, so this is a no-op
- *    and the transport's stale-token guard is what handles it: it declines to
- *    reconnect with a bearer the server has already rejected, and waits for
- *    the next write, which will usually come from a new invocation carrying a
- *    new token.
- *  - **Outside one** (CLI, local dev, a long-lived server using
- *    `VERCEL_OIDC_TOKEN`), there is no context header, the refresh writes a
- *    genuinely new token to the environment, and the reconnect picks it up.
- *
- * Swallows its own failures: an unavailable refresh must not turn into a
- * failed event write when `getHttpConfig()` can still produce a usable —
- * if soon-to-expire — bearer.
+ * Only effective outside a Vercel function. `getVercelOidcToken()` prefers
+ * `getContext().headers['x-vercel-oidc-token']` over
+ * `process.env.VERCEL_OIDC_TOKEN`, and the refresh only writes the env var, so
+ * inside a function the invocation's own header token shadows anything minted
+ * here and there is genuinely no fresher bearer mid-invocation. The transport's
+ * stale-token guard covers that case instead. In a CLI, local dev or a
+ * long-lived server there is no context header and the reconnect picks up the
+ * new token.
  */
 async function refreshOidcTokenBestEffort(): Promise<void> {
   try {
@@ -799,26 +739,18 @@ export function resolveWsTransport(
   transport: WsEventsTransport;
   wsUrl: string;
 } | null {
-  // `getHttpUrl` is the cheap, synchronous half of `getHttpConfig` — it
-  // resolves the route (baseUrl / usingProxy) without minting a token.
-  // The bearer only rides the WS upgrade request, so resolving it here,
-  // per event, meant awaiting `getVercelOidcToken()` on every single write
-  // and then throwing the result away for all but the first. The token is
-  // now resolved by the transport, once per socket (and again on each
-  // reconnect, so a new socket gets a fresh one).
+  // `getHttpUrl` is the cheap, synchronous half of `getHttpConfig`: it resolves
+  // the route without minting a token. The bearer only rides the upgrade, so
+  // the transport resolves it once per socket instead of once per write.
   const { baseUrl, usingProxy } = getHttpUrl(config);
   if (usingProxy) {
-    // The ws transport was only ever designed for the direct
-    // workflow-server path. `getHttpConfig`'s `usingProxy` branch resolves
-    // `baseUrl` to `api.vercel.com/v1/workflow`, an HTTP-only REST gateway
-    // that (as far as we know) does not forward a raw WebSocket upgrade
-    // through to the actual workflow-server target — it would either
-    // reject the upgrade outright or hand the route a plain forwarded HTTP
-    // request that never went through Vercel's platform-level WS-upgrade
-    // path, which is exactly what produces workflow-server's
-    // "experimental_upgradeWebSocket is not available in the current
-    // runtime environment" error. Fall back to HTTP instead of attempting
-    // (and failing) a WS connection the proxy can't serve.
+    // `usingProxy` resolves `baseUrl` to `api.vercel.com/v1/workflow`, an
+    // HTTP-only REST gateway that does not forward a raw WebSocket upgrade to
+    // the workflow-server target — it either rejects the upgrade or hands the
+    // route a plain forwarded request that never went through Vercel's
+    // platform-level upgrade path, which is what surfaces as
+    // "experimental_upgradeWebSocket is not available in the current runtime
+    // environment". Fall back rather than fail a connection it can't serve.
     if (!loggedWsProxyFallback) {
       loggedWsProxyFallback = true;
       console.warn(

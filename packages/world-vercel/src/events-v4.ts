@@ -557,13 +557,9 @@ export async function createWorkflowRunEventV4(
   return { eventId, runId, createdAt, body };
 }
 
-/**
- * A `Response`-like contract: the only two members `createWorkflowRunEventV4`
- * reads off the transport result. `fetch`'s `Response` satisfies this
- * structurally, so the HTTP branch returns a real `Response` unchanged; the
- * WS branch builds a minimal object with the same shape instead of forcing
- * WS replies to imitate HTTP status/headers any further than this.
- */
+/** The only two members `createWorkflowRunEventV4` reads off a transport
+ *  result. `fetch`'s `Response` satisfies it structurally, so the HTTP branch
+ *  returns one unchanged and the WS branch synthesizes the same shape. */
 interface FrameResponseLike {
   headers: { get(name: string): string | null };
   arrayBuffer(): Promise<ArrayBuffer>;
@@ -592,10 +588,9 @@ async function postEventFrameOverHttp(
   );
 }
 
-/** Flatten the reply frame's meta into the small header record
- *  `errorFromV4Response` already knows how to read (retry-after,
- *  x-vercel-mitigated) — reuses that function unchanged instead of growing
- *  a WS-specific error path. */
+/** Flatten a reply frame's meta into the header record `errorFromV4Response`
+ *  already reads (retry-after, x-vercel-mitigated), so the WS path reuses the
+ *  HTTP error mapping rather than growing its own. */
 function replyMetaToHeaderRecord(
   meta: Record<string, unknown>
 ): Record<string, string> {
@@ -613,57 +608,25 @@ function replyMetaToHeaderRecord(
 }
 
 /**
- * Retry for the WS path is owned by `withEventPostRetry` (event-retry.ts),
- * the same policy the HTTP path goes through. There is deliberately no
- * WS-specific retry loop here, and an earlier revision of this file was wrong
- * to add one.
- *
- * That loop was justified as mirroring undici's `RetryAgent`
- * (`RETRY_AGENT_OPTIONS`, http-client.ts) so the WS path wouldn't be the only
- * transport without transient-failure handling. It isn't: undici's
- * `RetryHandler` defaults `methods` to `['GET','HEAD','OPTIONS','PUT',
- * 'DELETE','TRACE']` and nothing overrides it, so the `RetryAgent` never
- * retries an event POST on *either* transport. `event-retry.ts` opens by
- * saying exactly that — it exists because of it.
- *
- * Two things went wrong as a result. `withEventPostRetry` gates on
- * `EVENT_RETRY_ELIGIBILITY`, which marks `step_started`, `step_retrying` and
- * `hook_received` non-retryable because their server-side handlers have no
- * duplicate guard (a replayed `step_started` double-increments `attempt`). A
- * loop *inside* that gate re-sent those frames up to five times before the
- * gate ever saw the failure, so the gate protected nothing on the WS path.
- * And for the types that *are* eligible, the two loops multiplied: 3 outer
- * attempts × 6 inner, with an inner backoff reaching 30s against an outer
- * policy whose base is deliberately 100ms because it is meant to ride out a
- * blip, not wait out an outage.
- *
- * So `postEventFrameOverWs` makes exactly one attempt and translates failures
- * into the vocabulary that policy already speaks: a non-2xx reply becomes the
- * typed error `errorFromV4Response` builds (so a 429 is still a
- * `ThrottleError` the queue backs off on, never retried in-process), and a
- * transport failure becomes a `WorkflowWorldError` with `code: 'TRANSPORT'`,
- * exactly as `utils.ts` does for `fetch`. A retry from the outer policy
- * re-enters `transport.request()` and so reconnects on the way through,
- * which is what the inner loop was really buying.
+ * Retry is owned by `withEventPostRetry` (event-retry.ts) for both transports,
+ * so there is deliberately no retry loop here: one would sit *inside*
+ * `EVENT_RETRY_ELIGIBILITY` and replay the event types whose handlers have no
+ * duplicate guard (a second `step_started` double-increments `attempt`), and
+ * would multiply that policy's backoff. Note undici's `RetryAgent`
+ * (http-client.ts) retries POSTs on neither transport — `RetryHandler`
+ * defaults `methods` to GET/HEAD/OPTIONS/PUT/DELETE/TRACE — which is why
+ * event-retry.ts exists at all. So `postEventFrameOverWs` makes exactly one
+ * attempt and reports in that policy's vocabulary; a retry from it re-enters
+ * `transport.request()`, which reconnects on the way through.
  */
 
 /**
- * Read the status off a reply frame, failing closed when there isn't one.
- *
- * Defaulting a status-less reply to 200 would silently report success for any
- * frame this client doesn't understand — and the protocol is explicitly
- * designed to grow new response variants (see the server's
- * docs/ws-protocol.md "Extending the protocol"), so an older client meeting a
- * newer server is a case that will actually happen.
- *
- * Raised as `code: 'PARSE_ERROR'` — the same code `utils.ts` uses for an HTTP
- * response body it could not read — because that is precisely the situation:
- * the write may or may not have landed, and this client cannot tell from what
- * came back. That code is already classified as a world-contract error rather
- * than a user error, and the shared retry policy already treats it as
- * retryable for the event types that can absorb a replay. A bare `Error` here
- * would fail `WorkflowWorldError.is()` and surface as a USER_ERROR — blaming
- * the workflow's own code for a protocol version skew.
+ * Read the status off a reply frame, failing closed when there isn't one:
+ * defaulting to 200 would report success for any frame this client doesn't
+ * understand, and the protocol is designed to grow new response variants (see
+ * the server's docs/ws-protocol.md). `PARSE_ERROR` is the code `utils.ts` uses
+ * for an unreadable HTTP body — the same situation — and unlike a bare `Error`
+ * it satisfies `WorkflowWorldError.is()` instead of surfacing as a USER_ERROR.
  */
 function wsReplyStatus(reply: WsFrameReply, endpoint: string): number {
   const { status } = reply.meta;
@@ -696,28 +659,20 @@ async function postEventFrameOverWs(
 
   let reply: WsFrameReply;
   try {
-    // `runId` is NOT repeated here — it's already in `wsUrl` (the
-    // connection is scoped to this one run). The server's
-    // WsRequestFrameSchema (frames.ts) is a discriminated union on
-    // `type`, with the type's payload nested under a field named after
-    // it — `event: meta` for `type: 'event'` — so a future request type
-    // is a new variant, not a reshape of what's already on the wire.
-    // See the server's docs/ws-protocol.md.
+    // `runId` isn't repeated here — it's already in `wsUrl`, one connection
+    // per run. The server's request-frame schema is a discriminated union on
+    // `type` with each type's payload nested under its own name, so a future
+    // request type is a new variant rather than a reshape of this one.
     reply = await transport.request((reqId) =>
       encodeFrame({ reqId, type: 'event', event: meta }, payload)
     );
   } catch (err) {
-    // Everything `transport.request()` can throw is a transport failure —
-    // the socket died, the send was refused, no reply could be correlated,
-    // the deadline passed. In every case the frame was never acked. Give it
-    // the same shape `utils.ts` gives a failed `fetch` so one classification
-    // covers both transports: `code: 'TRANSPORT'` is what
-    // `isRetryableEventPostError` reads to decide an in-process retry (gated
-    // by event type) and what `isRetryableWorldError` reads to redeliver via
-    // the queue. An unwrapped `WsTransportError` would fail
-    // `WorkflowWorldError.is()`, escape both, and classify as a USER_ERROR.
-    // Application-level errors are raised below, outside this try, so they
-    // are never reshaped by it.
+    // Anything `transport.request()` throws means the frame was never acked.
+    // `code: 'TRANSPORT'` is the shape `utils.ts` gives a failed `fetch`, so
+    // one classification drives both transports — in-process retry gated by
+    // event type, then queue redelivery. An unwrapped `WsTransportError`
+    // would fail `WorkflowWorldError.is()` and classify as a USER_ERROR.
+    // Application errors are raised below, outside this try.
     throw new WorkflowWorldError(
       `POST ${endpoint} transport failure: ${
         err instanceof Error ? err.message : String(err)

@@ -482,12 +482,10 @@ export function createQueue(config?: APIConfig): Queue {
         const { payload, queueName, deploymentId } =
           MessageWrapper.parse(message);
 
-        // Earliest point in an invocation where the run id is known. On the
-        // WS transport, start the handshake here rather than letting the
-        // runtime's first event write pay for it — a `step_started` written as
-        // its step body already begins would otherwise be recorded later than
-        // the work it timestamps. Unawaited and failure-proof by contract; the
-        // HTTP default makes it a no-op.
+        // Earliest point in an invocation where the run id is known, so the WS
+        // handshake happens here instead of on the runtime's first event write
+        // (which would record a `step_started` later than the work it
+        // timestamps). Unawaited, failure-proof, and a no-op on HTTP.
         const runIdToWarm = getRunIdFromPayload(payload);
         if (runIdToWarm) warmWsEventsTransport(runIdToWarm, config);
 

@@ -1,30 +1,22 @@
 /**
  * Wire-contract conformance for the WS events protocol.
  *
- * `ws-transport.test.ts` drives the client against a socket that replies
- * with whatever the test hands it — which proves the transport's own
- * lifecycle but says nothing about whether the bytes it emits are the
- * bytes workflow-server actually accepts. That's the drift the protocol
- * spec was written to prevent, and it has already bitten once: an earlier
- * revision put the event meta *flat* on the frame while the server expected
- * it nested under `event`, and both sides' own tests passed.
+ * `ws-transport.test.ts` drives the client against a socket that replies with
+ * whatever the test hands it, which proves the transport's lifecycle but not
+ * that the bytes it emits are the bytes workflow-server accepts — a client and
+ * server can each pass their own suites while disagreeing on the envelope.
  *
- * So this file pairs the real client with a fixture that mirrors what
- * workflow-server's `src/app/api/websockets/v1/runs/[runId]/route.ts`
- * does per message: decode one frame, validate the meta against a local
- * copy of `WsRequestFrameSchema`, dispatch, and encode the reply the same
- * way the route's `replyMeta` builder does. `experimental_upgradeWebSocket`
- * needs a real Vercel runtime (it wants `ctx.upgradeWebSocket`, which only
- * the platform provides), so the socket underneath is faked — but
- * everything above it is the genuine client stack, including
- * `createWorkflowRunEventV4`.
+ * So this file pairs the real client stack (including
+ * `createWorkflowRunEventV4`) with a fixture mirroring what the server route
+ * does per message: decode one frame, validate the meta against a local copy of
+ * `WsRequestFrameSchema`, dispatch, and encode the reply the way the route's
+ * `replyMeta` builder does. Only the socket is faked, since
+ * `experimental_upgradeWebSocket` needs a real Vercel runtime.
  *
- * The schema copy below is the one thing here that can silently drift from
- * the server. The golden-byte fixtures are the backstop: they pin the
- * actual encoding, so if either side changes the envelope without the
- * other, `encodes a known request frame to stable bytes` fails loudly.
- * This is the "golden-frame interop test" the server spec lists as an open
- * gap; the matching half still needs to land in workflow-server.
+ * That schema copy is the one thing here that can drift from the server. The
+ * golden-byte fixtures are the backstop: they pin the encoding, so a one-sided
+ * envelope change fails `encodes a known request frame to stable bytes`. The
+ * matching half of this interop test still needs to land in workflow-server.
  */
 
 import { EntityConflictError } from '@workflow/errors';

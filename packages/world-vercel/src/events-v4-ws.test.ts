@@ -26,12 +26,10 @@ const WS_URL = 'wss://vercel-workflow.com/api/websockets/v1/runs/wrun_1';
 
 const requestMock = vi.fn<() => Promise<WsFrameReply>>();
 /**
- * `resolveWsTransport` is the seam this file mocks, not `getWsEventsTransport`
- * — the URL resolution, proxy fallback and per-socket header thunk all live
- * inside `ws-transport.js` now, so a mock one level deeper would be called
- * from within that module and never reached from here (ESM mocks replace a
- * module's *exports*, not its intra-module call sites). Those selection
- * concerns are covered directly in `ws-transport.test.ts`.
+ * `resolveWsTransport` is the seam to mock, not `getWsEventsTransport`: URL
+ * resolution, proxy fallback and the header thunk all call each other *inside*
+ * `ws-transport.js`, and an ESM mock replaces a module's exports, not its own
+ * call sites. Those selection cases live in `ws-transport.test.ts`.
  */
 const resolveWsTransportMock = vi.fn(() => ({
   transport: { request: requestMock },
