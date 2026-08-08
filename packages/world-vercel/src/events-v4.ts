@@ -11,7 +11,7 @@
  *   the server stores without ever decoding it.
  * - **GET single event**: response body is one frame.
  * - **LIST events**: response body is a stream of frames terminated by a
- *   sentinel frame (meta = `{_end: 1, next?: cursor, hasMore?: boolean}`).
+ *   sentinel frame (meta = `{_end: 1, next?: cursor, hasMore: boolean}`).
  *
  * Requests carry special HTTP response headers (eventId / runId / createdAt)
  * for client convenience, to allow metadata access without decoding the body.
@@ -21,20 +21,29 @@
  * bytes — this module stays at the wire-bytes layer.
  */
 
+import assert from 'node:assert/strict';
 import { WorkflowWorldError } from '@workflow/errors';
 import {
   type Event,
   type EventResult,
   EventSchema,
   type EventType,
+  EventTypeSchema,
   getEventDataPayloadField,
   HookSchema,
+  type PaginationOptions,
+  StructuredErrorSchema,
   WaitSchema,
   WorkflowRunSchema,
 } from '@workflow/world';
 import { decode } from 'cbor-x';
 import { z } from 'zod';
-import { decodeFrames, encodeFrame, V4_FRAME_CONTENT_TYPE } from './frames.js';
+import {
+  type DecodedFrame,
+  decodeFrames,
+  encodeFrame,
+  V4_FRAME_CONTENT_TYPE,
+} from './frames.js';
 import {
   getEventsDispatcher,
   noteEventsTransportOutcome,
@@ -44,6 +53,7 @@ import {
   instrumentedFetch,
   parseRetryAfter,
 } from './http-core.js';
+import { hasSerializedDataFormatPrefix } from './serialized-data.js';
 import { deserializeStep, StepWireSchema } from './steps.js';
 import { type APIConfig, getHttpConfig } from './utils.js';
 
@@ -112,24 +122,12 @@ function headersToRecord(headers: Headers): Record<string, string> {
   return out;
 }
 
-/**
- * POST surfaces these so callers can read the created eventId without
- * decoding the CBOR response body
- */
-export const V4_RESPONSE_HEADERS = {
-  eventId: 'x-wf-event-id',
-  runId: 'x-wf-run-id',
-  createdAt: 'x-wf-created-at',
-  /**
-   * Server-owned per-run event ceiling. Set on streamed replay-log
-   * responses, where there is no CBOR body to carry `maxEvents`.
-   */
-  maxEvents: 'x-wf-max-events',
-} as const;
-export interface CreateEventV4Input {
+const EVENT_ID_HEADER = 'x-wf-event-id';
+const MAX_EVENTS_HEADER = 'x-wf-max-events';
+
+interface CreateEventV4InputBase {
   // runId is required even for run_created, because the payload is keyed under the runId
   runId: string;
-  eventType: EventType;
   /** Opaque payload bytes. Pass undefined for events that don't carry
    *  user data (e.g. step_started). */
   payload?: Uint8Array;
@@ -229,11 +227,6 @@ export interface CreateEventV4Input {
    *  other event types; older servers ignore it entirely (the runtime then
    *  falls back to events.list). */
   sinceCursor?: string;
-  /** Run-started preload opt-out. Turbo backgrounds run_started as a write
-   *  barrier only and never reads the preloaded log, so it asks the server to
-   *  skip the list+resolve. Acted on by the server only for run_started;
-   *  older servers ignore it and preload as before. */
-  skipPreload?: true;
   /**
    * Epoch ms (the ULID time of the latest event the runtime has loaded
    * during replay). Sent by replay-context creates so the backend can
@@ -264,6 +257,12 @@ export interface CreateEventV4Input {
    *  is not content-stable server-side). Older servers ignore it. */
   resumePayloadDigest?: string;
 }
+
+export type CreateEventV4Input = CreateEventV4InputBase &
+  (
+    | { eventType: Exclude<EventType, 'run_started'> }
+    | { eventType: 'run_started'; skipPreload: true }
+  );
 
 /**
  * Shape the v4 client attaches to `PreconditionFailedError.details` when a
@@ -339,10 +338,58 @@ const CreateEventV4BodySchemas: {
   wait_completed: CreateEventV4BodySchema,
 };
 
+const MaxEventsHeaderSchema = z.coerce.number().int().positive();
+const EventStreamEndSchema = z.object({
+  _end: z.literal(1),
+  next: z.string().optional(),
+  hasMore: z.boolean(),
+});
+
+// Stable runtimes stored these errors as CBOR StructuredError objects rather
+// than the format-prefixed serialized bytes emitted by current runtimes.
+const legacyStructuredErrorEventTypes = new Set<EventType>([
+  'run_failed',
+  'step_failed',
+  'step_retrying',
+]);
+
+function decodeLegacyStructuredError(payload: Uint8Array): unknown {
+  if (hasSerializedDataFormatPrefix(payload)) return payload;
+
+  try {
+    const parsed = StructuredErrorSchema.safeParse(decode(payload.slice()));
+    return parsed.success ? parsed.data : payload;
+  } catch {
+    return payload;
+  }
+}
+
+function decodeEventFrame({ meta, body }: DecodedFrame): Event {
+  const eventType = EventTypeSchema.parse(meta.eventType);
+  if (body.byteLength === 0) return EventSchema.parse(meta);
+
+  const payloadField = getEventDataPayloadField(eventType);
+  assert(payloadField, `Event type ${eventType} cannot carry a payload body`);
+  assert(meta.eventData && typeof meta.eventData === 'object');
+
+  return EventSchema.parse({
+    ...meta,
+    eventData: {
+      ...meta.eventData,
+      [payloadField]: legacyStructuredErrorEventTypes.has(eventType)
+        ? decodeLegacyStructuredError(body)
+        : body,
+    },
+  });
+}
+
 /** Build the CBOR meta map for a v4 POST frame. Drops undefined entries
  *  so the wire shape matches what the server expects to see. */
 function buildPostFrameMeta(
-  input: CreateEventV4Input
+  input: CreateEventV4InputBase & {
+    eventType: EventType;
+    skipPreload?: true;
+  }
 ): Record<string, unknown> {
   const meta: Record<string, unknown> = {
     eventType: input.eventType,
@@ -400,7 +447,7 @@ function buildPostFrameMeta(
     meta.optimizations = input.optimizations;
   }
   if (input.sinceCursor !== undefined) meta.sinceCursor = input.sinceCursor;
-  if (input.skipPreload !== undefined) meta.skipPreload = input.skipPreload;
+  if (input.skipPreload) meta.skipPreload = true;
   if (input.stateUpdatedAt !== undefined) {
     meta.stateUpdatedAt = input.stateUpdatedAt;
   }
@@ -557,9 +604,8 @@ export function throwForErrorResponse(
 /**
  * POST /api/v4/runs/:runId/events/:eventType
  *
- * Sends the full request as a single v4 frame and returns the event ids
- * + materialized-entity bag from the CBOR response body. Throws on
- * non-2xx.
+ * Sends the full request as a single v4 frame and validates the materialized
+ * CBOR response.
  *
  * The trailing `:eventType` path segment is an alias of the canonical
  * `/events` route: it exists purely so the event type is visible in
@@ -567,15 +613,20 @@ export function throwForErrorResponse(
  * The frame meta's `eventType` remains authoritative — the backend
  * cross-checks the two and logs (but does not reject) a mismatch.
  */
-export async function createWorkflowRunEventV4<T extends EventType>(
-  input: CreateEventV4Input & { eventType: T },
+async function postWorkflowRunEventV4(
+  input: CreateEventV4InputBase & {
+    eventType: EventType;
+    skipPreload?: true;
+  },
+  responseType: 'materialized' | 'event-stream',
   config?: APIConfig
-): Promise<EventResult<T> & { event: Event }> {
-  // getHttpConfig sets the Authorization header (explicit config.token or
-  // per-request OIDC fallback) — same contract as the v3 makeRequest path.
+) {
   const { baseUrl, headers: baseHeaders } = await getHttpConfig(config);
   const headers = new Headers(baseHeaders);
   headers.set('Content-Type', 'application/octet-stream');
+  if (responseType === 'event-stream') {
+    headers.set('Accept', V4_FRAME_CONTENT_TYPE);
+  }
 
   const frame = encodeFrame(
     buildPostFrameMeta(input),
@@ -583,12 +634,24 @@ export async function createWorkflowRunEventV4<T extends EventType>(
   );
 
   const url = `${baseUrl}/v4/runs/${encodeURIComponent(input.runId)}/events/${encodeURIComponent(input.eventType)}`;
-  const response = await fetchV4(
+  return fetchV4(
     url,
     { method: 'POST', headers, body: frame },
     config,
     'createEvent'
   );
+}
+
+export async function createWorkflowRunEventV4<T extends EventType>(
+  input: CreateEventV4Input & { eventType: T },
+  config?: APIConfig
+): Promise<EventResult<T> & { event: Event }> {
+  const response = await postWorkflowRunEventV4(input, 'materialized', config);
+
+  const contentType = response.headers.get('content-type');
+  if (contentType?.startsWith(V4_FRAME_CONTENT_TYPE)) {
+    throw new Error('v4 createEvent: unexpected event page');
+  }
 
   return decodeCreateEventResponse(response, input.eventType);
 }
@@ -618,6 +681,30 @@ async function decodeCreateEventResponse<T extends EventType>(
   return parsedBody.data;
 }
 
+export async function createWorkflowRunStartedEventV4(
+  input: CreateEventV4InputBase,
+  config?: APIConfig
+) {
+  const response = await postWorkflowRunEventV4(
+    { ...input, eventType: 'run_started' },
+    'event-stream',
+    config
+  );
+  const page = await consumeEventFrameStream(response, 'createEvent');
+  assert(page.cursor, 'v4 createEvent: event stream missing cursor');
+  const maxEvents = MaxEventsHeaderSchema.safeParse(
+    response.headers.get(MAX_EVENTS_HEADER)
+  );
+  if (!maxEvents.success) {
+    throw new WorkflowWorldError('v4 createEvent: invalid max-events header', {
+      code: 'SCHEMA_VALIDATION',
+      cause: maxEvents.error,
+    });
+  }
+
+  return { ...page, maxEvents: maxEvents.data };
+}
+
 /**
  * Result of a `hook_received` POST that opted into the replay-log preload,
  * discriminated on `kind` (keyed on the response content type).
@@ -629,8 +716,7 @@ export type HookReceivedPreloadV4Result =
       /**
        * The canonical event this write created or converged on (the resume
        * claim winner's — ours or the producer's), named by the
-       * {@link V4_RESPONSE_HEADERS.eventId} response header. Undefined when
-       * the server did not send the header.
+       * event-id response header. Undefined when the server did not send it.
        */
       canonicalEventId: string | undefined;
       /** Per-run event ceiling from the response header, when present. */
@@ -659,48 +745,32 @@ export type HookReceivedPreloadV4Result =
  * the whole request is safe and converges on the same canonical event.
  */
 export async function createHookReceivedPreloadEventV4(
-  input: CreateEventV4Input & { eventType: 'hook_received' },
+  input: CreateEventV4InputBase,
   config?: APIConfig
 ): Promise<HookReceivedPreloadV4Result> {
-  const { baseUrl, headers: baseHeaders } = await getHttpConfig(config);
-  const headers = new Headers(baseHeaders);
-  headers.set('Content-Type', 'application/octet-stream');
-  headers.set('Accept', V4_FRAME_CONTENT_TYPE);
-
-  const frame = encodeFrame(
-    buildPostFrameMeta(input),
-    input.payload ?? new Uint8Array(0)
-  );
-
-  const url = `${baseUrl}/v4/runs/${encodeURIComponent(input.runId)}/events/${encodeURIComponent(input.eventType)}`;
-  const response = await fetchV4(
-    url,
-    { method: 'POST', headers, body: frame },
-    config,
-    'createEvent'
+  const response = await postWorkflowRunEventV4(
+    { ...input, eventType: 'hook_received' },
+    'event-stream',
+    config
   );
 
   const contentType = response.headers.get('content-type');
   if (!contentType?.startsWith(V4_FRAME_CONTENT_TYPE)) {
     return {
       kind: 'materialized',
-      result: await decodeCreateEventResponse(response, input.eventType),
+      result: await decodeCreateEventResponse(response, 'hook_received'),
     };
   }
 
-  const page = await decodeListFrameResponse(response, 'createEvent');
-  const maxEventsRaw = response.headers.get(V4_RESPONSE_HEADERS.maxEvents);
-  const maxEventsParsed =
-    maxEventsRaw === null ? Number.NaN : Number(maxEventsRaw);
+  const page = await consumeEventFrameStream(response, 'createEvent');
+  const maxEvents = MaxEventsHeaderSchema.safeParse(
+    response.headers.get(MAX_EVENTS_HEADER)
+  );
   return {
     kind: 'stream',
     ...page,
-    canonicalEventId:
-      response.headers.get(V4_RESPONSE_HEADERS.eventId) ?? undefined,
-    maxEvents:
-      Number.isInteger(maxEventsParsed) && maxEventsParsed > 0
-        ? maxEventsParsed
-        : undefined,
+    canonicalEventId: response.headers.get(EVENT_ID_HEADER) ?? undefined,
+    maxEvents: maxEvents.success ? maxEvents.data : undefined,
   };
 }
 
@@ -717,22 +787,20 @@ function readHeader(
 /**
  * GET /api/v4/runs/:runId/events/:eventId
  *
- * Returns one v4 frame: the full event entity (CBOR-decoded from the
- * frame meta) plus the resolved payload bytes (frame body, possibly
- * empty). The wire format is identical to a single LIST frame so the
- * server can stream the payload back without buffering — callers
- * are responsible for splicing `body` into `event.eventData[payloadField]`
- * when they need the resolved value. The world-vercel adapter does this
- * in events.ts.
+ * Returns one validated event. The wire format is identical to a single LIST
+ * frame so the server can stream the payload back without buffering.
  */
 export async function getEventV4(
   runId: string,
   eventId: string,
+  remoteRefBehavior: 'resolve' | 'lazy',
   config?: APIConfig
-): Promise<DecodedEventFrame> {
+): Promise<Event> {
   const { baseUrl, headers } = await getHttpConfig(config);
 
-  const url = `${baseUrl}/v4/runs/${encodeURIComponent(runId)}/events/${encodeURIComponent(eventId)}`;
+  const url =
+    `${baseUrl}/v4/runs/${encodeURIComponent(runId)}/events/${encodeURIComponent(eventId)}` +
+    `?remoteRefBehavior=${remoteRefBehavior}`;
   const response = await fetchV4(
     url,
     { method: 'GET', headers },
@@ -757,50 +825,59 @@ export async function getEventV4(
   // GET emits a single frame (no sentinel); decodeFrames returns at EOF
   // after yielding it.
   for await (const frame of decodeFrames(chunks)) {
-    return { event: EventSchema.parse(frame.meta), body: frame.body };
+    return decodeEventFrame(frame);
   }
   throw new Error(`v4 getEvent: empty frame stream for ${eventId}`);
 }
 
-export interface ListEventsV4Params {
-  cursor?: string;
-  limit?: number;
-  sortOrder?: 'asc' | 'desc';
+export interface ListEventsV4Params extends PaginationOptions {
   /**
    * Whether the backend resolves payload bytes into each frame body.
    * `resolve` (default) streams the bytes; `lazy` emits empty-body frames
    * (the ref descriptor stays in the frame meta) — for metadata-only
    * listings that would otherwise download every payload just to discard
-   * it. A backend that predates this flag ignores it and streams full
-   * bodies, so callers must still tolerate bodies being present.
+   * it.
    */
   remoteRefBehavior?: 'resolve' | 'lazy';
 }
 
-/**
- * One decoded v4 frame. GET, LIST, and streamed POST responses all use this
- * exact shape.
- */
-export interface DecodedEventFrame {
-  event: Event;
-  /** Resolved payload bytes. Empty for events without a payload. */
-  body: Uint8Array;
+export interface ListEventsV4Result {
+  events: Event[];
+  /** Trailing event-log cursor, or null when the stream contained no events. */
+  cursor: string | null;
+  /** Explicit "another page of results exists" flag from the sentinel. */
+  hasMore: boolean;
 }
 
-export interface ListEventsV4Result {
-  events: DecodedEventFrame[];
-  /**
-   * Trailing cursor. Present even on the final page — it doubles as the
-   * resume point for incremental loads — so it is NOT a reliable "more
-   * pages" signal on its own. Use `hasMore` for that.
-   */
-  next?: string;
-  /**
-   * Explicit "another page of results exists" flag from the sentinel.
-   * `undefined` against older servers that don't emit it, in which case
-   * the caller falls back to `Boolean(next)`.
-   */
-  hasMore?: boolean;
+async function consumeEventFrameStream(
+  response: Response,
+  opName: string
+): Promise<ListEventsV4Result> {
+  const contentType = response.headers.get('content-type');
+  if (!contentType?.startsWith(V4_FRAME_CONTENT_TYPE)) {
+    throw new Error(
+      `v4 ${opName}: expected ${V4_FRAME_CONTENT_TYPE}, got ${contentType ?? '(none)'}`
+    );
+  }
+
+  const chunks = response.body as unknown as AsyncIterable<Uint8Array>;
+  const events: Event[] = [];
+
+  for await (const frame of decodeFrames(chunks)) {
+    if (frame.meta._end === 1) {
+      const end = EventStreamEndSchema.parse(frame.meta);
+      return { events, cursor: end.next ?? null, hasMore: end.hasMore };
+    }
+    if (Object.keys(frame.meta).some((key) => key.startsWith('_'))) {
+      throw new Error(`v4 ${opName}: unexpected control frame`);
+    }
+    events.push(decodeEventFrame(frame));
+  }
+
+  throw new Error(
+    `v4 ${opName}: frame stream ended without the end-of-stream sentinel ` +
+      `(${events.length} events read) — truncated response?`
+  );
 }
 
 /**
@@ -824,64 +901,7 @@ async function consumeListFrameStream(
     config,
     opName
   );
-  return decodeListFrameResponse(response, opName);
-}
-
-/**
- * Decode a v4 event-frame response body into an in-memory page. Shared by
- * the GET LIST paths and the streamed `hook_received` replay preload —
- * the wire shape is identical regardless of the verb that produced it.
- */
-async function decodeListFrameResponse(
-  response: Response,
-  opName: string
-): Promise<ListEventsV4Result> {
-  const contentType = response.headers.get('content-type');
-  if (!contentType?.startsWith(V4_FRAME_CONTENT_TYPE)) {
-    throw new Error(
-      `v4 ${opName}: expected ${V4_FRAME_CONTENT_TYPE}, got ${contentType ?? '(none)'}`
-    );
-  }
-
-  // See getEventV4: fetch's web ReadableStream is async-iterable on Node; the
-  // cast only works around TS's lib type omitting the async iterator.
-  const chunks = response.body as unknown as AsyncIterable<Uint8Array>;
-
-  const events: DecodedEventFrame[] = [];
-  let next: string | undefined;
-  let hasMore: boolean | undefined;
-  let sawEndSentinel = false;
-  for await (const frame of decodeFrames(chunks)) {
-    if (frame.meta._end === 1) {
-      if (typeof frame.meta.next === 'string') next = frame.meta.next;
-      if (typeof frame.meta.hasMore === 'boolean') hasMore = frame.meta.hasMore;
-      sawEndSentinel = true;
-      break;
-    }
-    events.push({
-      event: EventSchema.parse(frame.meta),
-      body: frame.body,
-    });
-  }
-
-  // A LIST response always ends with the `{_end: 1}` sentinel frame. EOF
-  // without it means the response was truncated — and if the cut landed
-  // between two complete frames, decodeFrames alone can't tell. Returning
-  // the partial page here would surface as `hasMore: false` and silently
-  // drop events (replay correctness!), so fail loudly instead; the read
-  // is idempotent and safe for the caller to retry.
-  if (!sawEndSentinel) {
-    throw new Error(
-      `v4 ${opName}: frame stream ended without the end-of-stream sentinel ` +
-        `(${events.length} events read) — truncated response?`
-    );
-  }
-
-  return {
-    events,
-    ...(next ? { next } : {}),
-    ...(hasMore !== undefined ? { hasMore } : {}),
-  };
+  return consumeEventFrameStream(response, opName);
 }
 
 /**
@@ -908,11 +928,8 @@ function paginationToQuery(params: ListEventsV4Params): string {
 /**
  * GET /api/v4/runs/:runId/events
  *
- * Parses the binary-frame stream into a list of events plus the
- * pagination cursor (from the sentinel frame). Each frame's CBOR meta
- * IS the full event entity, with the payload field still in `eventData`
- * as a `RefDescriptor` (lazy); the resolved payload bytes ride in the
- * frame body. The adapter layer splices them back into eventData.
+ * Parses the binary-frame stream into validated events plus the pagination
+ * cursor from the sentinel frame.
  *
  * Eagerly drains the stream into memory to match the existing
  * `getWorkflowRunEvents` page-at-a-time contract. A streaming variant
