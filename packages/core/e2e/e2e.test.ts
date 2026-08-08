@@ -307,52 +307,47 @@ describe('e2e', () => {
     writeDiagnosticsSidecar();
   });
 
-  // TEMP: isolated to a single workflow/transport combo to debug the
-  // WORKFLOW_EVENTS_TRANSPORT=ws 500s against the workflow-server preview
-  // deployment. Remove this describe.each + test.only wrapper afterward.
-  describe.each(['http', 'ws'])('transport=%s', (transport) => {
-    beforeAll(() => {
-      process.env.WORKFLOW_EVENTS_TRANSPORT = transport;
-    });
-
-    const workflow = {
+  test.each([
+    {
       workflowFile: 'workflows/99_e2e.ts',
       workflowFn: 'addTenWorkflow',
-    };
+    },
+    {
+      workflowFile: 'workflows/98_duplicate_case.ts',
+      workflowFn: 'addTenWorkflow',
+    },
+  ])('addTenWorkflow', { timeout: 60_000 }, async (workflow) => {
+    const run = await start(
+      await getWorkflowMetadata(
+        deploymentUrl,
+        workflow.workflowFile,
+        workflow.workflowFn
+      ),
+      [123]
+    );
 
-    test.only('addTenWorkflow', { timeout: 60_000 }, async () => {
-      const run = await start(
-        await getWorkflowMetadata(
-          deploymentUrl,
-          workflow.workflowFile,
-          workflow.workflowFn
-        ),
-        [123]
-      );
+    const returnValue = await run.returnValue;
+    expect(returnValue).toBe(133);
 
-      const returnValue = await run.returnValue;
-      expect(returnValue).toBe(133);
-
-      const { json } = await cliInspectJson(`runs ${run.runId} --withData`);
-      expect(json).toMatchObject({
-        runId: run.runId,
-        workflowName: expect.any(String),
-        status: 'completed',
-        input: [123],
-        output: 133,
-      });
-      // Workflow ID format: workflow//./{path-without-extension}//{functionName}
-      // Different workbenches have different directory structures:
-      // - workflows/ (standard)
-      // - src/workflows/ (some frameworks)
-      // - example/workflows/ (example app)
-      const fileWithoutExt = workflow.workflowFile.replace(/\.tsx?$/, '');
-      expect(json.workflowName).toMatch(
-        new RegExp(
-          `^workflow//\\./(?:src/|example/)?${fileWithoutExt}//${workflow.workflowFn}$`
-        )
-      );
+    const { json } = await cliInspectJson(`runs ${run.runId} --withData`);
+    expect(json).toMatchObject({
+      runId: run.runId,
+      workflowName: expect.any(String),
+      status: 'completed',
+      input: [123],
+      output: 133,
     });
+    // Workflow ID format: workflow//./{path-without-extension}//{functionName}
+    // Different workbenches have different directory structures:
+    // - workflows/ (standard)
+    // - src/workflows/ (some frameworks)
+    // - example/workflows/ (example app)
+    const fileWithoutExt = workflow.workflowFile.replace(/\.tsx?$/, '');
+    expect(json.workflowName).toMatch(
+      new RegExp(
+        `^workflow//\\./(?:src/|example/)?${fileWithoutExt}//${workflow.workflowFn}$`
+      )
+    );
   });
 
   // `deploymentId: 'latest'` only resolves to a different deployment in
