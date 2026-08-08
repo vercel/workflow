@@ -34,11 +34,8 @@ import {
   parseRetryAfter,
 } from './http-core.js';
 import { type APIConfig, getHttpConfig } from './utils.js';
-import {
-  isWsEventsTransportEnabled,
-  resolveWsTransport,
-  type WsFrameReply,
-} from './ws-transport.js';
+import type { WsFrameReply } from './ws-transport.js';
+import { isWsEventsTransportEnabled } from './ws-transport-enabled.js';
 
 /**
  * Issue an instrumented v4 request through the global `fetch` — NOT undici's
@@ -650,6 +647,11 @@ async function postEventFrameOverWs(
   payload: Uint8Array,
   config: APIConfig | undefined
 ): Promise<FrameResponseLike> {
+  // Dynamic so `ws` initializes only on a deployment that opted in — the gate
+  // above lives in its own import-free module for exactly this reason. The
+  // module is cached after the first write, and on the queue path the pre-warm
+  // has already paid for it.
+  const { resolveWsTransport } = await import('./ws-transport.js');
   const resolved = resolveWsTransport(runId, config);
   if (!resolved) {
     return postEventFrameOverHttp(runId, eventType, meta, payload, config);

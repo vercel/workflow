@@ -22,7 +22,7 @@ import { getDispatcher } from './http-client.js';
 import { decode as decodeTaggedRunId } from './run-id/index.js';
 import { isKnownRegionCode, REGION_IDS } from './run-id/regions.js';
 import { type APIConfig, getHeaders, getHttpUrl } from './utils.js';
-import { warmWsEventsTransport } from './ws-transport.js';
+import { isWsEventsTransportEnabled } from './ws-transport-enabled.js';
 
 /**
  * CBOR-based queue transport. Encodes values with cbor-x on send and
@@ -485,9 +485,17 @@ export function createQueue(config?: APIConfig): Queue {
         // Earliest point in an invocation where the run id is known, so the WS
         // handshake happens here instead of on the runtime's first event write
         // (which would record a `step_started` later than the work it
-        // timestamps). Unawaited, failure-proof, and a no-op on HTTP.
+        // timestamps). Unawaited, failure-proof, and a no-op on HTTP: the gate
+        // is checked before the import so a deployment on the default never
+        // loads `ws`, and this path absorbs that module init for one that did.
         const runIdToWarm = getRunIdFromPayload(payload);
-        if (runIdToWarm) warmWsEventsTransport(runIdToWarm, config);
+        if (runIdToWarm && isWsEventsTransportEnabled()) {
+          void import('./ws-transport.js')
+            .then(({ warmWsEventsTransport }) =>
+              warmWsEventsTransport(runIdToWarm, config)
+            )
+            .catch(() => {});
+        }
 
         const result = await handler(payload, {
           queueName,
