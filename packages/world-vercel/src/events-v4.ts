@@ -580,14 +580,17 @@ interface FrameResponseLike {
  * for LIST (a streamed, sentinel-terminated multi-frame response) doesn't
  * map onto a single WS message.
  *
- * Defaults to ON for this branch (no CI/workbench env wiring exists yet to
- * toggle it per-scenario in the deployed e2e/benchmark apps) so the existing
- * e2e + benchmark suite exercises the WS path end-to-end. Explicitly set
- * `WORKFLOW_EVENTS_TRANSPORT=http` to opt back out for local comparison.
- * Must not ship this default past the POC — revert to opt-in before merge.
+ * Opt-in: defaults to HTTP unless `WORKFLOW_EVENTS_TRANSPORT=ws` is set.
+ * Was previously defaulted ON for this branch so the existing e2e/benchmark
+ * suite would exercise the WS path without any dedicated wiring — that's no
+ * longer needed now that a dedicated Vercel preview deployment sets this
+ * env var explicitly for its own deployment only (see
+ * `.github/workflows/tests.yml`'s `e2e-vercel-ws-transport` job), so every
+ * other deployment/test now genuinely reflects the HTTP-only default a real
+ * user would get.
  */
 export function isWsEventsTransportEnabled(): boolean {
-  return process.env.WORKFLOW_EVENTS_TRANSPORT != 'http';
+  return process.env.WORKFLOW_EVENTS_TRANSPORT === 'ws';
 }
 
 async function postEventFrameOverHttp(
