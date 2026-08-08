@@ -51,11 +51,45 @@
  * the global constructor has no way to send custom headers on the upgrade
  * request, and `Authorization`/tenant headers need to ride the handshake
  * (auth happens once per connection, not per message — see the notes on
- * what moves from HTTP headers into frame meta vs. the handshake).
+ * what moves from HTTP headers into frame meta vs. the handshake). It is
+ * loaded lazily — see `loadWebSocketCtor` — so the default HTTP path never
+ * pays for it.
  */
 
-import { WebSocket } from 'ws';
+import type { WebSocket } from 'ws';
 import { type DecodedFrame, decodeFrames } from './frames.js';
+
+/**
+ * `ws` is loaded on demand, not at module scope.
+ *
+ * `events-v4.ts` imports this module unconditionally (the transport gate is
+ * a runtime branch, not a build-time one), so a top-level `import { WebSocket }
+ * from 'ws'` put `ws` on the module-init path of every deployment — including
+ * the overwhelming majority that never set `WORKFLOW_EVENTS_TRANSPORT=ws` and
+ * never open a socket. Deferring it to the first connect keeps `ws` and its
+ * optional native accelerators entirely off the default path's cold start.
+ *
+ * This does NOT remove the need for the bundler config this PR also adds:
+ * webpack and Rollup both still statically follow a dynamic `import()`, so
+ * `bufferutil`/`utf-8-validate` must still be externalized for the build to
+ * succeed (Rollup) and for `ws` to fall back to its pure-JS implementation at
+ * runtime (webpack). What it does buy is that a deployment which never enables
+ * the transport never *evaluates* `ws`, so a mis-bundled accelerator can't
+ * break it.
+ *
+ * Memoized as a promise rather than an awaited value so concurrent first
+ * connects share one import.
+ */
+type WebSocketCtor = typeof import('ws').WebSocket;
+let wsCtorPromise: Promise<WebSocketCtor> | null = null;
+function loadWebSocketCtor(): Promise<WebSocketCtor> {
+  wsCtorPromise ??= import('ws').then((mod) => mod.WebSocket);
+  return wsCtorPromise;
+}
+
+/** `WebSocket.OPEN`, inlined so the readyState check doesn't force the
+ *  module to be loaded just to read a constant off the constructor. */
+const WS_READY_STATE_OPEN = 1;
 
 export interface WsFrameReply {
   meta: Record<string, unknown>;
@@ -194,7 +228,7 @@ class WsEventsTransport {
 
   private ensureConnected(): Promise<Connection> {
     const conn = this.connection;
-    if (conn && conn.ws.readyState === WebSocket.OPEN) {
+    if (conn && conn.ws.readyState === WS_READY_STATE_OPEN) {
       return Promise.resolve(conn);
     }
     // Clearing the slot in `finally` (rather than from the socket event
@@ -218,7 +252,8 @@ class WsEventsTransport {
           // reconnect pick up a *fresh* token instead of replaying the
           // possibly-expired one the previous socket was opened with.
           const headers = await this.getHeaders();
-          const ws = new WebSocket(this.wsUrl, { headers });
+          const WebSocketCtor = await loadWebSocketCtor();
+          const ws = new WebSocketCtor(this.wsUrl, { headers });
           ws.binaryType = 'nodebuffer';
           conn = { ws, nextReqId: 1, pending: new Map() };
         } catch (err) {
