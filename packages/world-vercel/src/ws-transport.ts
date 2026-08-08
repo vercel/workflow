@@ -46,6 +46,9 @@
  *   reconnect. In-flight requests at close time still fail and are the
  *   caller's to retry — the server makes those retries safe via
  *   conditional writes on the entity (see the spec's idempotency notes).
+ *   A drain carrying `reason: 'auth_expiry'` is the exception: the token,
+ *   not the socket, is what ran out, so the reconnect forces a fresh one
+ *   and gives up rather than looping if it can't get one.
  *
  * **Lifecycle.** A transport releases its socket after `IDLE_TIMEOUT_MS`
  * with no writes and evicts itself from the module-level cache. Eager
@@ -113,6 +116,9 @@ export interface WsFrameReply {
  *
  * `retryable` mirrors the HTTP path's undici `errorCodes` policy: a broken
  * connection means the frame was never accepted, so re-sending it is safe.
+ * The one non-retryable case is a connect refused for a stale auth token —
+ * see `staleAuthToken` in `connect()`; re-sending with the same token just
+ * reproduces the failure, and only a new invocation can supply a new one.
  */
 export class WsTransportError extends Error {
   readonly retryable: boolean;
@@ -173,6 +179,23 @@ const RECONNECT_MAX_DELAY_MS = 5_000;
  */
 const IDLE_TIMEOUT_MS = 60_000;
 
+/**
+ * Server-sent reason on a `drain` frame. Absent on servers predating the
+ * field, in which case the drain is treated as `max_duration` — the only
+ * thing the original protocol drained for.
+ */
+type DrainReason = 'max_duration' | 'auth_expiry';
+
+/** Case-insensitive read of the Authorization header out of a header record.
+ *  `Headers.forEach` lowercases keys, but `getHeaders` is a caller-supplied
+ *  thunk and shouldn't have to guarantee that. */
+function readAuthorization(headers: Record<string, string>): string | null {
+  for (const [key, value] of Object.entries(headers)) {
+    if (key.toLowerCase() === 'authorization') return value;
+  }
+  return null;
+}
+
 async function decodeOneFrame(raw: Uint8Array): Promise<DecodedFrame> {
   const source = (async function* () {
     yield raw;
@@ -217,10 +240,21 @@ class WsEventsTransport {
   /** Set by `close()`. Suppresses reconnects so an intentional teardown
    *  can't be immediately undone by the close handler it triggers. */
   private closed = false;
+  /** Reason carried by the most recent `drain` frame, consumed by the
+   *  `close` that follows it. */
+  private lastDrainReason: DrainReason | null = null;
+  /** Set when a drain told us the *token* expired rather than the socket
+   *  ageing out — the next connect must not reuse the same bearer. */
+  private needsFreshToken = false;
+  /** Authorization header the current/most recent socket was opened with,
+   *  so a forced refresh can tell whether it actually produced a new one. */
+  private lastAuthorization: string | null = null;
 
   constructor(
     private readonly wsUrl: string,
-    private readonly getHeaders: () => Promise<Record<string, string>>
+    private readonly getHeaders: (opts: {
+      forceRefresh: boolean;
+    }) => Promise<Record<string, string>>
   ) {}
 
   /**
@@ -329,17 +363,61 @@ class WsEventsTransport {
     return this.connecting;
   }
 
+  /**
+   * Resolve the headers for one upgrade request.
+   *
+   * Called once per socket, not once per event: the bearer only rides the
+   * upgrade, so minting a token per write was pure waste — and re-resolving
+   * here is what lets a reconnect pick up a *fresh* token instead of
+   * replaying the possibly-expired one the previous socket used.
+   *
+   * `forceRefresh` is set when the previous socket drained with
+   * `reason: 'auth_expiry'`, telling the thunk to bypass any token cache
+   * rather than hand back the bearer that just expired.
+   */
+  private async resolveUpgradeHeaders(): Promise<Record<string, string>> {
+    const forceRefresh = this.needsFreshToken;
+    const headers = await this.getHeaders({ forceRefresh });
+    const authorization = readAuthorization(headers);
+
+    if (forceRefresh && authorization === this.lastAuthorization) {
+      // The server told us the token is expiring and we could not produce a
+      // different one. Inside a Vercel function the bearer comes from the
+      // invocation's own `x-vercel-oidc-token` and is fixed for that
+      // invocation, so there is genuinely nothing fresher to offer —
+      // reconnecting now just earns a 401 and burns the attempt budget.
+      // Give up on the *eager* reconnect and let the next write try again:
+      // by then the process is likely serving a new invocation with a new
+      // token.
+      throw new WsTransportError(
+        `workflow-server events WS connection to ${this.wsUrl} drained for ` +
+          `auth expiry, but re-resolving the bearer produced the same token. ` +
+          `Not reconnecting with a token the server has already rejected; ` +
+          `the next event write will retry.`,
+        { retryable: false }
+      );
+    }
+
+    this.lastAuthorization = authorization;
+    this.needsFreshToken = false;
+    return headers;
+  }
+
+  /** Consume the reason recorded by the `drain` frame that preceded a close.
+   *  `auth_expiry` means the bearer — not the socket — is what ran out, so
+   *  the next connect has to source a new one. */
+  private consumeDrainReason(): void {
+    const reason = this.lastDrainReason;
+    this.lastDrainReason = null;
+    if (reason === 'auth_expiry') this.needsFreshToken = true;
+  }
+
   private connect(): Promise<Connection> {
     return new Promise<Connection>((resolve, reject) => {
       void (async () => {
         let conn: Connection;
         try {
-          // Resolved once per socket, not once per event. The bearer only
-          // rides the upgrade request, so minting a token for every write
-          // was pure waste — and re-resolving it here is what lets a
-          // reconnect pick up a *fresh* token instead of replaying the
-          // possibly-expired one the previous socket was opened with.
-          const headers = await this.getHeaders();
+          const headers = await this.resolveUpgradeHeaders();
           const WebSocketCtor = await loadWebSocketCtor();
           const ws = new WebSocketCtor(this.wsUrl, { headers });
           ws.binaryType = 'nodebuffer';
@@ -396,6 +474,8 @@ class WsEventsTransport {
         ws.on('close', (code: number) => {
           const wasActive = this.connection === conn;
           if (wasActive) this.connection = null;
+
+          this.consumeDrainReason();
 
           if (!opened) {
             // A close with no preceding `'error'` would otherwise leave
@@ -506,12 +586,21 @@ class WsEventsTransport {
     }
 
     if (decoded.meta.type === 'drain') {
-      // Unsolicited server push, no reqId — the connection is closing soon
-      // ahead of its maxDuration. Informational on its own; the `close`
-      // that follows is what triggers the eager reconnect.
+      // Unsolicited server push, no reqId — the connection is closing soon,
+      // either because the socket is nearing its maxDuration or because the
+      // bearer it was opened with is about to expire. Informational on its
+      // own; the `close` that follows is what triggers the eager reconnect,
+      // and what consumes the reason recorded here.
+      //
+      // `reason` is absent on servers predating the field, which only ever
+      // drained for maxDuration — so absent reads as `max_duration`.
+      const reason: DrainReason =
+        decoded.meta.reason === 'auth_expiry' ? 'auth_expiry' : 'max_duration';
+      this.lastDrainReason = reason;
       console.log(
         `world-vercel: ws events transport received a drain notice ` +
-          `(graceMs: ${decoded.meta.graceMs ?? 'unspecified'}); connection will close soon.`
+          `(reason: ${reason}, graceMs: ${decoded.meta.graceMs ?? 'unspecified'}); ` +
+          `connection will close soon.`
       );
       return;
     }
@@ -575,7 +664,10 @@ const transports = new Map<string, WsEventsTransport>();
  * `getHeaders` is invoked once per socket — at connect time, not per
  * request — since the `Authorization` header only rides the upgrade.
  * A reconnect calls it again, so each new socket is opened with a freshly
- * resolved token rather than replaying the previous socket's.
+ * resolved token rather than replaying the previous socket's. It receives
+ * `forceRefresh: true` when the previous socket drained specifically because
+ * its token was expiring, so a caching token source knows to go get a new
+ * one rather than serve the expired entry.
  *
  * Only the first caller's `getHeaders` for a given `wsUrl` is retained.
  * That's fine in practice because `wsUrl` embeds the `runId` and one run
@@ -587,7 +679,9 @@ const transports = new Map<string, WsEventsTransport>();
  */
 export function getWsEventsTransport(
   wsUrl: string,
-  getHeaders: () => Promise<Record<string, string>>
+  getHeaders: (opts: {
+    forceRefresh: boolean;
+  }) => Promise<Record<string, string>>
 ): WsEventsTransport {
   let transport = transports.get(wsUrl);
   if (!transport) {

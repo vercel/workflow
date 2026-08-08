@@ -558,3 +558,106 @@ describe('idle teardown', () => {
     expect(getWsEventsTransport(WS_URL, headers)).toBe(transport);
   });
 });
+
+/**
+ * workflow-server tags a `drain` with why it is closing. `max_duration` means
+ * the socket aged out and a plain reconnect is right; `auth_expiry` means the
+ * *bearer* ran out, and reconnecting with the same one just earns a 401.
+ */
+describe('drain reason', () => {
+  const drainFrame = (reason?: string) =>
+    encodeFrame(
+      { type: 'drain', graceMs: 5_000, ...(reason ? { reason } : {}) },
+      EMPTY
+    );
+
+  /** Headers thunk that records the `forceRefresh` flag it was called with
+   *  and hands out a different bearer each time when asked to rotate. */
+  const trackingHeaders = (tokens: string[]) => {
+    const calls: boolean[] = [];
+    let i = 0;
+    const fn = async ({ forceRefresh }: { forceRefresh: boolean }) => {
+      calls.push(forceRefresh);
+      const token = tokens[Math.min(i, tokens.length - 1)];
+      i++;
+      return { authorization: `Bearer ${token}` };
+    };
+    return { fn, calls };
+  };
+
+  it('asks for a refreshed token after an auth_expiry drain', async () => {
+    const { fn, calls } = trackingHeaders(['token-1', 'token-2']);
+    const transport = getWsEventsTransport(WS_URL, fn);
+    const { socket } = await connectAndSend(transport);
+
+    socket.deliver(drainFrame('auth_expiry'));
+    await tick();
+    socket.close(1001);
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(calls).toEqual([false, true]);
+    expect(latest().headers.authorization).toBe('Bearer token-2');
+  });
+
+  it('does not ask for a refresh on an ordinary max_duration drain', async () => {
+    const { fn, calls } = trackingHeaders(['token-1']);
+    const transport = getWsEventsTransport(WS_URL, fn);
+    const { socket } = await connectAndSend(transport);
+
+    socket.deliver(drainFrame('max_duration'));
+    await tick();
+    socket.close(1001);
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(calls).toEqual([false, false]);
+  });
+
+  it('treats a drain with no reason as max_duration', async () => {
+    // Servers predating the field only ever drained for maxDuration.
+    const { fn, calls } = trackingHeaders(['token-1']);
+    const transport = getWsEventsTransport(WS_URL, fn);
+    const { socket } = await connectAndSend(transport);
+
+    socket.deliver(drainFrame());
+    await tick();
+    socket.close(1001);
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(calls).toEqual([false, false]);
+  });
+
+  it('stops reconnecting when the refresh yields the same token', async () => {
+    // Inside a Vercel function the bearer is the invocation's own and can't
+    // be refreshed mid-invocation. Reconnecting would 401 five times and
+    // burn the attempt budget; the next write (likely a new invocation with
+    // a new token) is the thing worth waiting for.
+    const { fn } = trackingHeaders(['token-1']);
+    const transport = getWsEventsTransport(WS_URL, fn);
+    const { socket } = await connectAndSend(transport);
+
+    socket.deliver(drainFrame('auth_expiry'));
+    await tick();
+    socket.close(1001);
+    await vi.advanceTimersByTimeAsync(30_000);
+
+    expect(sockets).toHaveLength(1);
+    expect(loggedErrors()).toContain('same token');
+  });
+
+  it('still reconnects lazily once a new token is available', async () => {
+    const tokens = ['token-1', 'token-1', 'token-2'];
+    const { fn } = trackingHeaders(tokens);
+    const transport = getWsEventsTransport(WS_URL, fn);
+    const { socket } = await connectAndSend(transport);
+
+    socket.deliver(drainFrame('auth_expiry'));
+    await tick();
+    socket.close(1001);
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(sockets).toHaveLength(1);
+
+    // A later write, by which point the process is serving a new invocation.
+    const { socket: revived } = await connectAndSend(transport);
+    expect(revived.headers.authorization).toBe('Bearer token-2');
+  });
+});

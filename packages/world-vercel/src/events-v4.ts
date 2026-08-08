@@ -21,6 +21,8 @@
  * bytes — this module stays at the wire-bytes layer.
  */
 
+import { getVercelOidcToken } from '@vercel/oidc';
+import { WorkflowWorldError } from '@workflow/errors';
 import { type Event, getEventDataPayloadField } from '@workflow/world';
 import { decode } from 'cbor-x';
 import { coerceEventDates } from './event-coerce.js';
@@ -36,7 +38,6 @@ import {
   getWsEventsTransport,
   toEventsWsUrl,
   type WsFrameReply,
-  WsTransportError,
 } from './ws-transport.js';
 
 /**
@@ -585,6 +586,24 @@ interface FrameResponseLike {
  * for LIST (a streamed, sentinel-terminated multi-frame response) doesn't
  * map onto a single WS message.
  *
+ * **Known gap — event writes lose their client-side instrumentation on this
+ * path.** The HTTP branch goes through `fetchV4` → `instrumentedFetch`, which
+ * is not merely a `fetch` wrapper: it opens the OTEL CLIENT span, injects
+ * trace context into the outgoing request, sets the cache-bust header, emits
+ * the `DEBUG` logs, and — the reason it exists at all — routes through the
+ * global `fetch` that Vercel's observability "outgoing requests" view
+ * instruments. See the note on `fetchV4`: bypassing it via `undici.request()`
+ * is exactly what once made v4 event traffic disappear from the log viewer.
+ *
+ * The WS branch bypasses all of it. With the flag on, per-event writes have no
+ * client span, propagate no trace context to workflow-server, and do not
+ * appear in the outgoing-requests view; the server's own request metrics
+ * (which #660 tags with `transport`) are the only remaining signal. That is
+ * acceptable for an opt-in POC behind a flag and unacceptable as a default —
+ * instrumenting the transport (a span per `request()`, trace context carried
+ * in the frame meta rather than HTTP headers) is a prerequisite for making
+ * `ws` the default, not a follow-up nicety.
+ *
  * Opt-in: defaults to HTTP unless `WORKFLOW_EVENTS_TRANSPORT=ws` is set.
  * Was previously defaulted ON for this branch so the existing e2e/benchmark
  * suite would exercise the WS path without any dedicated wiring — that's no
@@ -647,54 +666,83 @@ let loggedWsProxyFallback = false;
 let loggedWsInUse = false;
 
 /**
- * In-process retry policy for the WS path, deliberately mirroring what the
- * HTTP path already gets for free.
+ * Retry for the WS path is owned by `withEventPostRetry` (event-retry.ts),
+ * the same policy the HTTP path goes through. There is deliberately no
+ * WS-specific retry loop here, and an earlier revision of this file was wrong
+ * to add one.
  *
- * HTTP event writes go through `getEventsDispatcher()` — an undici
- * `RetryAgent` configured with `RETRY_AGENT_OPTIONS` (http-client.ts). The WS
- * path never touches undici, so without this it would be the only transport
- * in the package with no transient-failure handling at all: a single 503 or a
- * mid-write connection reset would surface straight to the step runtime and
- * cost a whole step retry, where the HTTP path would have absorbed it in
- * milliseconds. That's a silent behavior regression for anyone who flips the
- * flag, not a deliberate trade, so the policy is copied rather than reinvented:
+ * That loop was justified as mirroring undici's `RetryAgent`
+ * (`RETRY_AGENT_OPTIONS`, http-client.ts) so the WS path wouldn't be the only
+ * transport without transient-failure handling. It isn't: undici's
+ * `RetryHandler` defaults `methods` to `['GET','HEAD','OPTIONS','PUT',
+ * 'DELETE','TRACE']` and nothing overrides it, so the `RetryAgent` never
+ * retries an event POST on *either* transport. `event-retry.ts` opens by
+ * saying exactly that — it exists because of it.
  *
- *  - **Statuses**: `[500, 502, 503, 504]`, matching `RETRY_AGENT_OPTIONS`.
- *    429 is deliberately excluded for the same reason it is there — a Vercel
- *    firewall challenge arrives as a 429, a server-to-server client cannot
- *    solve one, and retrying in-process just amplifies load against an
- *    already-struggling firewall. It passes through to `ThrottleError` and the
- *    queue backs off instead.
- *  - **Transport failures**: a closed socket or a failed `send` (see
- *    `WsTransportError.retryable`), the WS analogue of undici's default
- *    `errorCodes` — in both cases the frame provably never got an ack, and
- *    createEvent writes are conditional on the entity server-side, so
- *    re-sending is safe.
- *  - **Backoff**: undici `RetryHandler` defaults (5 retries, 500ms, ×2,
- *    capped at 30s), with `Retry-After` honored when the reply carries one —
- *    `retryAfter: true` in `RETRY_AGENT_OPTIONS`.
+ * Two things went wrong as a result. `withEventPostRetry` gates on
+ * `EVENT_RETRY_ELIGIBILITY`, which marks `step_started`, `step_retrying` and
+ * `hook_received` non-retryable because their server-side handlers have no
+ * duplicate guard (a replayed `step_started` double-increments `attempt`). A
+ * loop *inside* that gate re-sent those frames up to five times before the
+ * gate ever saw the failure, so the gate protected nothing on the WS path.
+ * And for the types that *are* eligible, the two loops multiplied: 3 outer
+ * attempts × 6 inner, with an inner backoff reaching 30s against an outer
+ * policy whose base is deliberately 100ms because it is meant to ride out a
+ * blip, not wait out an outage.
  *
- * A retry re-enters `transport.request()`, so a dead socket is reconnected on
- * the way through rather than retried onto the same broken connection.
+ * So `postEventFrameOverWs` makes exactly one attempt and translates failures
+ * into the vocabulary that policy already speaks: a non-2xx reply becomes the
+ * typed error `errorFromV4Response` builds (so a 429 is still a
+ * `ThrottleError` the queue backs off on, never retried in-process), and a
+ * transport failure becomes a `WorkflowWorldError` with `code: 'TRANSPORT'`,
+ * exactly as `utils.ts` does for `fetch`. A retry from the outer policy
+ * re-enters `transport.request()` and so reconnects on the way through,
+ * which is what the inner loop was really buying.
  */
-const WS_RETRY_STATUS_CODES = new Set([500, 502, 503, 504]);
-const WS_MAX_RETRIES = 5;
-const WS_RETRY_MIN_TIMEOUT_MS = 500;
-const WS_RETRY_MAX_TIMEOUT_MS = 30_000;
-const WS_RETRY_TIMEOUT_FACTOR = 2;
 
-function wsRetryDelayMs(attempt: number, retryAfterSeconds?: number): number {
-  if (retryAfterSeconds !== undefined) {
-    return Math.min(retryAfterSeconds * 1000, WS_RETRY_MAX_TIMEOUT_MS);
+/**
+ * A buffer wider than any OIDC token's lifetime, so `isExpired()` reports
+ * true and `@vercel/oidc` takes its refresh path instead of handing back the
+ * cached entry. 24h comfortably exceeds the 60min TTL.
+ */
+const OIDC_FORCE_REFRESH_BUFFER_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Ask `@vercel/oidc` to mint a new token before the next `getHttpConfig()`
+ * reads one, in response to the server draining a connection with
+ * `reason: 'auth_expiry'`.
+ *
+ * Best-effort by design, and it is worth being precise about when it can
+ * actually do anything. `getVercelOidcToken()` resolves
+ * `getContext().headers['x-vercel-oidc-token'] ?? process.env.VERCEL_OIDC_TOKEN`
+ * — the request-context header wins. `refreshToken()` only writes
+ * `process.env.VERCEL_OIDC_TOKEN`. So:
+ *
+ *  - **Inside a deployed Vercel function**, the invocation's own header token
+ *    always shadows anything refreshed into the environment. There is
+ *    genuinely no fresher token to obtain mid-invocation, so this is a no-op
+ *    and the transport's stale-token guard is what handles it: it declines to
+ *    reconnect with a bearer the server has already rejected, and waits for
+ *    the next write, which will usually come from a new invocation carrying a
+ *    new token.
+ *  - **Outside one** (CLI, local dev, a long-lived server using
+ *    `VERCEL_OIDC_TOKEN`), there is no context header, the refresh writes a
+ *    genuinely new token to the environment, and the reconnect picks it up.
+ *
+ * Swallows its own failures: an unavailable refresh must not turn into a
+ * failed event write when `getHttpConfig()` can still produce a usable —
+ * if soon-to-expire — bearer.
+ */
+async function refreshOidcTokenBestEffort(): Promise<void> {
+  try {
+    await getVercelOidcToken({
+      expirationBufferMs: OIDC_FORCE_REFRESH_BUFFER_MS,
+    });
+  } catch {
+    // No refresh path available here. getHttpConfig() below still resolves
+    // whatever token it can, and the transport decides whether reconnecting
+    // with it is worth attempting.
   }
-  return Math.min(
-    WS_RETRY_MIN_TIMEOUT_MS * WS_RETRY_TIMEOUT_FACTOR ** attempt,
-    WS_RETRY_MAX_TIMEOUT_MS
-  );
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /**
@@ -744,7 +792,10 @@ function resolveWsTransport(
     );
   }
   const wsUrl = toEventsWsUrl(baseUrl, runId);
-  const transport = getWsEventsTransport(wsUrl, async () => {
+  const transport = getWsEventsTransport(wsUrl, async ({ forceRefresh }) => {
+    // `forceRefresh` means the previous socket was drained by the server
+    // because its *bearer* was expiring, not because the socket aged out.
+    if (forceRefresh) await refreshOidcTokenBestEffort();
     const { headers } = await getHttpConfig(config);
     return headersToRecord(headers);
   });
@@ -758,17 +809,27 @@ function resolveWsTransport(
  * frame this client doesn't understand — and the protocol is explicitly
  * designed to grow new response variants (see the server's
  * docs/ws-protocol.md "Extending the protocol"), so an older client meeting a
- * newer server is a case that will actually happen. Deliberately not retried:
- * a version mismatch is not something re-sending can resolve.
+ * newer server is a case that will actually happen.
+ *
+ * Raised as `code: 'PARSE_ERROR'` — the same code `utils.ts` uses for an HTTP
+ * response body it could not read — because that is precisely the situation:
+ * the write may or may not have landed, and this client cannot tell from what
+ * came back. That code is already classified as a world-contract error rather
+ * than a user error, and the shared retry policy already treats it as
+ * retryable for the event types that can absorb a replay. A bare `Error` here
+ * would fail `WorkflowWorldError.is()` and surface as a USER_ERROR — blaming
+ * the workflow's own code for a protocol version skew.
  */
-function wsReplyStatus(reply: WsFrameReply): number {
+function wsReplyStatus(reply: WsFrameReply, endpoint: string): number {
   const { status } = reply.meta;
   if (typeof status !== 'number') {
-    throw new Error(
-      `v4 createEvent (ws): reply frame carried no numeric status ` +
-        `(type: ${String(reply.meta.type ?? 'absent')}). Refusing to treat an ` +
+    throw new WorkflowWorldError(
+      `Failed to parse response body for POST ${endpoint}: reply frame ` +
+        `carried no numeric status (type: ` +
+        `${String(reply.meta.type ?? 'absent')}). Refusing to treat an ` +
         `unrecognized reply as success — the write may or may not have been ` +
-        `applied; retry it (createEvent retries are idempotent server-side).`
+        `applied.`,
+      { url: endpoint, code: 'PARSE_ERROR' }
     );
   }
   return status;
@@ -786,55 +847,57 @@ async function postEventFrameOverWs(
     return postEventFrameOverHttp(runId, eventType, meta, payload, config);
   }
   const { transport, wsUrl } = resolved;
+  const endpoint = `${wsUrl}#runs/${encodeURIComponent(runId)}/events`;
 
-  for (let attempt = 0; ; attempt++) {
-    let reply: WsFrameReply;
-    try {
-      // `runId` is NOT repeated here — it's already in `wsUrl` (the
-      // connection is scoped to this one run). The server's
-      // WsRequestFrameSchema (frames.ts) is a discriminated union on
-      // `type`, with the type's payload nested under a field named after
-      // it — `event: meta` for `type: 'event'` — so a future request type
-      // is a new variant, not a reshape of what's already on the wire.
-      // See the server's docs/ws-protocol.md.
-      reply = await transport.request((reqId) =>
-        encodeFrame({ reqId, type: 'event', event: meta }, payload)
-      );
-    } catch (err) {
-      const retryable =
-        err instanceof WsTransportError &&
-        err.retryable &&
-        attempt < WS_MAX_RETRIES;
-      if (!retryable) throw err;
-      await sleep(wsRetryDelayMs(attempt));
-      continue;
-    }
-
-    const status = wsReplyStatus(reply);
-    const headerRecord = replyMetaToHeaderRecord(reply.meta);
-
-    if (WS_RETRY_STATUS_CODES.has(status) && attempt < WS_MAX_RETRIES) {
-      await sleep(
-        wsRetryDelayMs(attempt, parseRetryAfter(headerRecord['retry-after']))
-      );
-      continue;
-    }
-
-    if (status < 200 || status >= 300) {
-      throw errorFromV4Response(
-        status,
-        headerRecord,
-        new TextDecoder().decode(reply.body),
-        'createEvent',
-        `${wsUrl}#runs/${encodeURIComponent(runId)}/events`
-      );
-    }
-
-    return {
-      headers: { get: (name) => headerRecord[name.toLowerCase()] ?? null },
-      arrayBuffer: async () => reply.body.slice().buffer as ArrayBuffer,
-    };
+  let reply: WsFrameReply;
+  try {
+    // `runId` is NOT repeated here — it's already in `wsUrl` (the
+    // connection is scoped to this one run). The server's
+    // WsRequestFrameSchema (frames.ts) is a discriminated union on
+    // `type`, with the type's payload nested under a field named after
+    // it — `event: meta` for `type: 'event'` — so a future request type
+    // is a new variant, not a reshape of what's already on the wire.
+    // See the server's docs/ws-protocol.md.
+    reply = await transport.request((reqId) =>
+      encodeFrame({ reqId, type: 'event', event: meta }, payload)
+    );
+  } catch (err) {
+    // Everything `transport.request()` can throw is a transport failure —
+    // the socket died, the send was refused, no reply could be correlated,
+    // the deadline passed. In every case the frame was never acked. Give it
+    // the same shape `utils.ts` gives a failed `fetch` so one classification
+    // covers both transports: `code: 'TRANSPORT'` is what
+    // `isRetryableEventPostError` reads to decide an in-process retry (gated
+    // by event type) and what `isRetryableWorldError` reads to redeliver via
+    // the queue. An unwrapped `WsTransportError` would fail
+    // `WorkflowWorldError.is()`, escape both, and classify as a USER_ERROR.
+    // Application-level errors are raised below, outside this try, so they
+    // are never reshaped by it.
+    throw new WorkflowWorldError(
+      `POST ${endpoint} transport failure: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+      { url: wsUrl, code: 'TRANSPORT', cause: err }
+    );
   }
+
+  const status = wsReplyStatus(reply, endpoint);
+  const headerRecord = replyMetaToHeaderRecord(reply.meta);
+
+  if (status < 200 || status >= 300) {
+    throw errorFromV4Response(
+      status,
+      headerRecord,
+      new TextDecoder().decode(reply.body),
+      'createEvent',
+      endpoint
+    );
+  }
+
+  return {
+    headers: { get: (name) => headerRecord[name.toLowerCase()] ?? null },
+    arrayBuffer: async () => reply.body.slice().buffer as ArrayBuffer,
+  };
 }
 
 /**
