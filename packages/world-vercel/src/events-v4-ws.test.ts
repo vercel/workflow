@@ -11,8 +11,13 @@
 
 import { EntityConflictError } from '@workflow/errors';
 import { encode } from 'cbor-x';
+import { MockAgent } from 'undici';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createWorkflowRunEventV4 } from './events-v4.js';
+import {
+  createWorkflowRunEventV4,
+  isWsEventsTransportEnabled,
+} from './events-v4.js';
+import { WORKFLOW_SERVER_URL_OVERRIDE } from './utils.js';
 import type { WsFrameReply } from './ws-transport.js';
 
 const requestMock = vi.fn<() => Promise<WsFrameReply>>();
@@ -58,6 +63,62 @@ beforeEach(() => {
 
 afterEach(() => {
   delete process.env.WORKFLOW_EVENTS_TRANSPORT;
+});
+
+/**
+ * The gate is the whole safety story for this feature: everything else in
+ * the PR is dead code for anyone who hasn't opted in. `events-v4.test.ts`
+ * covers the HTTP path itself in depth, but nothing there pins the
+ * *choice* of path — so a future edit that flipped the default (as an
+ * earlier revision of this branch did deliberately, for benchmarking)
+ * would sail through with every HTTP assertion still green, because the
+ * two transports are built to be indistinguishable at the result layer.
+ */
+describe('transport gate', () => {
+  it.each([
+    ['ws', true],
+    ['http', false],
+    ['', false],
+    ['WS', false],
+  ])('%o resolves to ws=%o', (value, expected) => {
+    process.env.WORKFLOW_EVENTS_TRANSPORT = value;
+    expect(isWsEventsTransportEnabled()).toBe(expected);
+  });
+
+  it('defaults to HTTP when unset', () => {
+    delete process.env.WORKFLOW_EVENTS_TRANSPORT;
+    expect(isWsEventsTransportEnabled()).toBe(false);
+  });
+
+  it('goes over HTTP, never touching the WS transport, when the gate is off', async () => {
+    delete process.env.WORKFLOW_EVENTS_TRANSPORT;
+    const origin =
+      WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
+    const agent = new MockAgent();
+    agent.disableNetConnect();
+    agent
+      .get(origin)
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events/step_completed',
+        method: 'POST',
+      })
+      .reply(200, encode({ step: { stepId: 'step_1' } }), {
+        headers: {
+          'x-wf-event-id': 'evnt_1',
+          'x-wf-run-id': 'wrun_1',
+          'x-wf-created-at': '2026-06-10T00:00:00.000Z',
+        },
+      });
+
+    const result = await createWorkflowRunEventV4(input, {
+      token: 'test-token',
+      dispatcher: agent,
+    });
+
+    expect(result.eventId).toBe('evnt_1');
+    expect(getWsEventsTransportMock).not.toHaveBeenCalled();
+    agent.assertNoPendingInterceptors();
+  });
 });
 
 describe('createWorkflowRunEventV4 over ws', () => {
