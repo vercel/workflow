@@ -633,7 +633,25 @@ async function postEventFrameOverWs(
   payload: Uint8Array,
   config: APIConfig | undefined
 ): Promise<FrameResponseLike> {
-  const { baseUrl, headers } = await getHttpConfig(config);
+  const { baseUrl, headers, usingProxy } = await getHttpConfig(config);
+  if (usingProxy) {
+    // The ws transport was only ever designed for the direct
+    // workflow-server path. `getHttpConfig`'s `usingProxy` branch resolves
+    // `baseUrl` to `api.vercel.com/v1/workflow`, an HTTP-only REST gateway
+    // that (as far as we know) does not forward a raw WebSocket upgrade
+    // through to the actual workflow-server target — it would either
+    // reject the upgrade outright or hand the route a plain forwarded HTTP
+    // request that never went through Vercel's platform-level WS-upgrade
+    // path, which is exactly what produces workflow-server's
+    // "experimental_upgradeWebSocket is not available in the current
+    // runtime environment" error. Fail loudly here instead of silently
+    // misrouting the WS connection at a proxy that can't serve it.
+    throw new Error(
+      `world-vercel: ws events transport does not support the api-workflow proxy path (resolved baseUrl: ${baseUrl}). ` +
+        'This indicates config.projectConfig has projectId/teamId set while WORKFLOW_EVENTS_TRANSPORT=ws — ' +
+        'either unset the ws transport or call createWorld() without projectConfig.'
+    );
+  }
   const wsUrl = toEventsWsUrl(baseUrl);
   const transport = getWsEventsTransport(wsUrl, headersToRecord(headers));
 

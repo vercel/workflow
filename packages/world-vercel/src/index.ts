@@ -22,6 +22,7 @@ export { createQueue } from './queue.js';
 export { createStorage } from './storage.js';
 export { createStreamer } from './streamer.js';
 export type { APIConfig } from './utils.js';
+export { collectWsMessages } from './ws-transport.js';
 
 export function createWorld(config?: APIConfig): World {
   // Project ID for HKDF key derivation context.

@@ -12,6 +12,7 @@ import {
 } from '@workflow/errors';
 import { createWorkflowUrl } from '@workflow/utils';
 import { SPEC_VERSION_CURRENT, type World } from '@workflow/world';
+import { collectWsMessages } from '@workflow/world-vercel';
 import {
   afterAll,
   assert,
@@ -349,6 +350,37 @@ describe('e2e', () => {
       )
     );
   });
+
+  // TEMP: bare connectivity smoke test for the http->ws exploration —
+  // upgrades against workflow-server's `/api/internal-test/ws-hello`
+  // (5 plain-text "hello N" messages, no framing) to check that a raw
+  // WebSocket connection survives independent of the real event-posting
+  // protocol/transport. Only meaningful when targeting a workflow-server
+  // deployment directly (VERCEL_WORKFLOW_SERVER_URL set, e.g. via
+  // WORKFLOW_SERVER_URL_OVERRIDE in CI); skipped otherwise. Remove once
+  // the ws transport work is settled.
+  test.skipIf(!process.env.VERCEL_WORKFLOW_SERVER_URL)(
+    'hello-ws-test',
+    { timeout: 20_000 },
+    async () => {
+      const wsUrl = process.env.VERCEL_WORKFLOW_SERVER_URL!.replace(
+        /^http/,
+        'ws'
+      );
+      const headers = await getTrustedSourcesHeaders();
+      const messages = await collectWsMessages(
+        `${wsUrl}/api/internal-test/ws-hello`,
+        headers
+      );
+      expect(messages).toEqual([
+        'hello 1',
+        'hello 2',
+        'hello 3',
+        'hello 4',
+        'hello 5',
+      ]);
+    }
+  );
 
   // `deploymentId: 'latest'` only resolves to a different deployment in
   // worlds with atomic, immutable deployments (Vercel). In local dev and
