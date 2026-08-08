@@ -427,9 +427,12 @@ class WsEventsTransport {
             `world-vercel: ws events transport could not open a connection ` +
               `to ${this.wsUrl}: ${describeError(err)}`
           );
-          // A DNS failure, a refused connection, `ws` failing to load: the
-          // WS analogue of undici's default retryable `errorCodes` —
-          // nothing was sent, so re-sending is safe.
+          // Anything that isn't already classified — a DNS failure, a
+          // refused connection, `ws` failing to load — is the WS analogue
+          // of undici's default retryable `errorCodes`: nothing was sent,
+          // so re-sending is safe. `resolveUpgradeHeaders`'s stale-token
+          // error is the one deliberate non-retryable case, and it arrives
+          // already typed, so it passes through untouched.
           reject(
             err instanceof WsTransportError
               ? err
