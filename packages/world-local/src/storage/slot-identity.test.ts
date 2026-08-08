@@ -148,6 +148,51 @@ describe('slot event ids', () => {
     ]);
   });
 
+  it('leaves no hole when a rejected write is overtaken by another', async () => {
+    const runId = await startRun();
+    const width = 8;
+    for (let i = 0; i < width; i++) {
+      await storage.events.create(runId, {
+        eventType: 'step_started',
+        correlationId: `step_${i}`,
+        specVersion: SPEC_VERSION_CURRENT,
+        eventData: { stepName: `step${i}`, input: serialized([]) },
+      } as any);
+    }
+
+    // Each duplicate names a different step, so they take different per-step
+    // locks and their draws interleave. This is the shape a step storm
+    // produces: several replays of one run each re-issuing a step_started the
+    // winner already published. A slot reserved at the draw and handed back
+    // only when it is still the highest one drawn cannot survive this — by the
+    // time a rejection lands, the next writer has drawn past it.
+    const results = await Promise.allSettled(
+      Array.from({ length: width }, (_, i) =>
+        storage.events.create(runId, {
+          eventType: 'step_started',
+          correlationId: `step_${i}`,
+          specVersion: SPEC_VERSION_CURRENT,
+          eventData: { stepName: `step${i}`, input: serialized([]) },
+        } as any)
+      )
+    );
+    expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(0);
+
+    await storage.events.create(runId, {
+      eventType: 'step_created',
+      correlationId: 'step_after',
+      specVersion: SPEC_VERSION_CURRENT,
+      eventData: { stepName: 'after', input: serialized([]) },
+    } as any);
+
+    // run_created, run_started, a step_created + step_started per step, and
+    // the write that followed the rejections.
+    const slots = slotsOf(await listEventIds(runId));
+    expect(slots).toEqual(
+      Array.from({ length: width * 2 + 3 }, (_, i) => FIRST_EVENT_SLOT + i)
+    );
+  });
+
   it('orders a terminal event after every event it raced', async () => {
     const runId = await startRun();
     await storage.events.create(runId, {
@@ -189,11 +234,15 @@ describe('slot event ids', () => {
       runId,
       pagination: { limit: 1000 },
     });
+    // The synthetic step_created takes the lower slot: the step_started that
+    // triggered it holds a candidate, not a reservation, so publishing the
+    // step_created first pushes the step_started up one. Replay reads them in
+    // the order they happened.
     expect(events.data.map((event) => event.eventType)).toEqual([
       'run_created',
       'run_started',
-      'step_started',
       'step_created',
+      'step_started',
     ]);
   });
 

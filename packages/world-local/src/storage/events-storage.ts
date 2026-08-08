@@ -84,7 +84,6 @@ import {
   mintRunDominantEventKey,
   monotonicUlid,
   pendingHookEventPath,
-  type RunEventIdScan,
   readHookTokenClaim,
   reapPendingHookEvents,
   releaseHookTokenClaimIfOwnedBy,
@@ -630,104 +629,113 @@ export function createEventsStorage(
   // spec-version negotiation is involved. `null` state below means "this run
   // is ULID-numbered".
   //
-  // The cache is per storage instance. Two instances sharing one directory
-  // (a test-only configuration this backend supports) can both believe they
-  // own the same slot; the exclusive publish arbitrates, and the loser
-  // rescans and bumps.
-  const runSlotState = new Map<
-    string,
-    { next: number; verify?: boolean } | null
-  >();
+  // The map holds the highest slot this instance has seen PUBLISHED for a
+  // run, never a reservation. A draw reports `published + 1` and leaves the
+  // entry alone, so a write rejected anywhere between its draw and its
+  // publish costs nothing: the next writer draws the same position. That is
+  // what keeps the log dense, and it is not a rare path — a duplicate
+  // `step_started` from a concurrent replay is rejected on every storm.
+  //
+  // The cost is that two in-flight writers hold the same candidate. The
+  // exclusive publish arbitrates and the loser bumps, which is the same
+  // mechanism two instances sharing one directory (a test-only configuration
+  // this backend supports) already rely on.
+  const runSlotState = new Map<string, { published: number } | null>();
 
   function slotStateKey(runId: string): string {
     return tag ? `${runId}.${tag}` : runId;
   }
 
+  /** Whether a slot is occupied by a reader-visible event file. */
+  async function slotOccupied(runId: string, slot: number): Promise<boolean> {
+    const fileId = `${runId}-${slotToEventId(slot)}`;
+    for (const candidate of tag
+      ? [
+          taggedPath(basedir, 'events', fileId, tag),
+          taggedPath(basedir, 'events', fileId),
+        ]
+      : [taggedPath(basedir, 'events', fileId)]) {
+      try {
+        await fs.stat(candidate);
+        return true;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+          throw error;
+        }
+      }
+    }
+    return false;
+  }
+
   /**
-   * Draws the next candidate slot for `runId`, or null when the run is
+   * Draws the candidate slot for `runId`, or null when the run is
    * ULID-numbered and should keep minting ULIDs.
    *
-   * `atLeast` re-floors the counter after a lost publish. `held` names a slot
-   * the caller already drew and is still holding: when the rescan shows it is
-   * unclaimed and undominated, it is handed back instead of a fresh one, so a
-   * redraw does not leave a hole. The directory scan runs once per run per
-   * instance (and again on a `rescan`, or once after a slot was handed back by
-   * {@link releaseEventSlot}), not once per write.
+   * `atLeast` re-floors the candidate after a lost publish. The directory scan
+   * runs once per run per instance (and again on a `rescan`), not once per
+   * write.
+   *
+   * The watermark alone is a lower bound: it only counts publishes this
+   * instance made or last scanned for, so another instance sharing the
+   * directory can be ahead of it. The candidate is therefore probed upward
+   * until it lands on a free position — one `stat` that returns ENOENT in the
+   * uncontended case. Skipping the probe would be tolerable for an ordinary
+   * write (the exclusive publish bumps it), but not for the writes that
+   * record their candidate in a durable claim for other writers to converge
+   * on: a claim naming an occupied slot never converges.
    */
   async function drawEventSlot(
     runId: string,
-    opts?: { rescan?: boolean; atLeast?: number; held?: number }
+    opts?: { rescan?: boolean; atLeast?: number }
   ): Promise<number | null> {
     const key = slotStateKey(runId);
     let state = runSlotState.get(key);
-    let scan: RunEventIdScan | null = null;
-    if (state === undefined || opts?.rescan || state?.verify) {
-      scan = await scanRunEventIds(basedir, runId, tag);
+    if (state === undefined || opts?.rescan) {
+      const scan = await scanRunEventIds(basedir, runId, tag);
       if (state === undefined) {
         // A run with no events yet is brand new: it starts on slots. A run
         // whose visible events are ULIDs stays on ULIDs for life.
         state =
           scan.count > 0 && !scan.usesSlots
             ? null
-            : { next: Math.max(scan.maxSlot + 1, FIRST_EVENT_SLOT) };
+            : { published: scan.maxSlot };
         runSlotState.set(key, state);
       } else if (state !== null) {
-        // A rescan only ever moves the counter forward. Slots drawn but not
-        // yet published are invisible to the scan, and handing one out twice
-        // would make two in-flight writers of this instance collide.
-        state.next = Math.max(state.next, scan.maxSlot + 1);
-        state.verify = false;
+        state.published = Math.max(state.published, scan.maxSlot);
       }
     }
     if (state === null) {
       return null;
     }
-    if (
-      opts?.held !== undefined &&
-      state.next === opts.held + 1 &&
-      (scan?.maxSlot ?? 0) < opts.held
-    ) {
-      // No other draw from this instance and no publish from any other has
-      // reached the held slot, so it still dominates the log.
-      return opts.held;
+    let slot = Math.max(
+      state.published + 1,
+      FIRST_EVENT_SLOT,
+      opts?.atLeast ?? FIRST_EVENT_SLOT
+    );
+    while (await slotOccupied(runId, slot)) {
+      state.published = Math.max(state.published, slot);
+      slot += 1;
     }
-    if (opts?.atLeast !== undefined && state.next < opts.atLeast) {
-      state.next = opts.atLeast;
-    }
-    const slot = state.next;
-    state.next = slot + 1;
     return slot;
   }
 
   /**
-   * Hands a drawn slot back when the write that drew it did not publish there
-   * — it threw, or it published under an id pinned by a durable claim.
+   * Records that `eventId` is now on disk, so the next draw starts above it.
    *
-   * Only the top of the counter can be handed back. Slots are drawn in
-   * publish order, so a lower one has already been overtaken by a draw this
-   * instance made afterwards, and rolling the counter back to it would hand
-   * that position out a second time. Refusing in that case costs a hole, which
-   * is the same thing a counter that never rolls back costs every time.
+   * Only a committed publish moves the watermark. A draw that never published
+   * leaves no trace, which is the whole reason the log has no holes.
    *
-   * The counter alone cannot say whether the position is free: another storage
-   * instance sharing the directory may have published there, which is one of
-   * the reasons this write failed in the first place. So the release also
-   * marks the run for a rescan, and the next draw floors the counter past
-   * whatever the log actually holds. Handing back a taken slot would otherwise
-   * be worse than the hole: an id pinned by a durable claim cannot be bumped
-   * past a collision, so the next write on it would fail rather than move.
-   *
-   * A no-op for ULID-numbered runs, where ids are not positions.
+   * A no-op for ULID-numbered runs, where ids are not positions, and for runs
+   * this instance has never drawn for — the first draw scans the directory.
    */
-  function releaseEventSlot(runId: string, eventId: string): void {
+  function notePublishedSlot(runId: string, eventId: string): void {
     const slot = eventIdToSlot(eventId);
     if (slot === null) {
       return;
     }
     const state = runSlotState.get(slotStateKey(runId));
-    if (state && state.next === slot + 1) {
-      state.next = slot;
-      state.verify = true;
+    if (state) {
+      state.published = Math.max(state.published, slot);
     }
   }
 
@@ -742,20 +750,14 @@ export function createEventsStorage(
    * linearization point (after the marker + reap) so it sorts after any
    * `hook_received` that legitimately won the promote arbitration.
    *
-   * For slot runs the rescan is the whole mechanism: it floors the counter
+   * For slot runs the rescan is the whole mechanism: it floors the candidate
    * past anything another instance promoted while this invocation was
-   * stalled, and the drawn slot dominates by construction. `heldEventId` is
-   * the id already drawn for this write, kept when the rescan shows nothing
-   * overtook it so the uncontended case leaves no hole.
+   * stalled, and the drawn slot dominates by construction.
    */
   async function mintDominantEventKey(
-    runId: string,
-    heldEventId: string
+    runId: string
   ): Promise<{ eventId: string; createdAt: Date }> {
-    const slot = await drawEventSlot(runId, {
-      rescan: true,
-      held: eventIdToSlot(heldEventId) ?? undefined,
-    });
+    const slot = await drawEventSlot(runId, { rescan: true });
     if (slot !== null) {
       return { eventId: slotToEventId(slot), createdAt: new Date() };
     }
@@ -820,16 +822,47 @@ export function createEventsStorage(
     }
   }
 
-  async function storeEvent(event: Event): Promise<void> {
-    const eventPath = taggedPath(
-      basedir,
-      'events',
-      `${event.runId}-${event.eventId}`,
-      tag
-    );
-    const serializedEvent = JSON.stringify(event, jsonReplacer, 2);
-    await write(eventPath, serializedEvent);
-    rememberStoredEvent(event, eventPath, serializedEvent);
+  /**
+   * Publishes a synthetic event (one this call writes in addition to the
+   * event it was asked for) and returns it under the id it actually landed
+   * on.
+   *
+   * A slot is a position, so the candidate this event was drawn at may have
+   * been taken by a concurrent writer between the draw and here; the
+   * exclusive create detects that and the next position is tried. ULID ids
+   * are globally unique, so a collision there can only be a retry of this
+   * same event and the write stays an overwrite.
+   */
+  async function storeEvent(event: Event): Promise<Event> {
+    let current = event;
+    for (let attempt = 0; ; attempt++) {
+      const eventPath = taggedPath(
+        basedir,
+        'events',
+        `${current.runId}-${current.eventId}`,
+        tag
+      );
+      const serializedEvent = JSON.stringify(current, jsonReplacer, 2);
+      const slot = eventIdToSlot(current.eventId);
+      if (slot === null) {
+        await write(eventPath, serializedEvent);
+        rememberStoredEvent(current, eventPath, serializedEvent);
+        return current;
+      }
+      if (await writeExclusive(eventPath, serializedEvent)) {
+        notePublishedSlot(current.runId, current.eventId);
+        rememberStoredEvent(current, eventPath, serializedEvent);
+        return current;
+      }
+      const next = await drawEventSlot(current.runId, {
+        rescan: attempt > 0 && attempt % 8 === 0,
+        atLeast: slot + 1,
+      });
+      // `next` is null only for a ULID-numbered run, which the branch above
+      // already returned for.
+      assert(next !== null);
+      current = { ...current, eventId: slotToEventId(next) };
+    }
   }
 
   // Per-instance in-process mutexes. Two storage instances sharing
@@ -889,40 +922,11 @@ export function createEventsStorage(
       // step_completed / step_failed / step_retrying is atomic. step_created
       // is also serialized so duplicate-create races don't leave extra
       // step_created events in the log.
-      // The slot this call is currently holding, and the run it belongs to.
-      // Recorded at every draw so `runCreate` can hand the last one back if
-      // this call ends up publishing somewhere else, or not publishing at all.
-      let heldSlot: { runId: string; eventId: string } | null = null;
-
-      /**
-       * Runs the create and hands back a slot it drew but did not use.
-       *
-       * A drawn slot that no event occupies is a permanent hole: allocation
-       * only ever moves forward, so once a higher slot is published nothing can
-       * fill it, and a replay that reads the log as the complete record of what
-       * happened cannot tell that hole from an event it failed to read. Every
-       * way out of this function that is not "published at the slot I drew" is
-       * therefore a release: a throw, and a publish under an id pinned by a
-       * durable claim.
-       */
-      const runCreate = async (): Promise<EventResult> => {
-        let published: string | undefined;
-        try {
-          const result = await createImpl();
-          published = result.event?.eventId;
-          return result;
-        } finally {
-          if (heldSlot && published !== heldSlot.eventId) {
-            releaseEventSlot(heldSlot.runId, heldSlot.eventId);
-          }
-        }
-      };
-
       if (isStepEventType(data.eventType) && runId && data.correlationId) {
         const lockKey = tag
           ? `${runId}-${data.correlationId}.${tag}`
           : `${runId}-${data.correlationId}`;
-        return withInProcessLock(stepLocks, lockKey, () => runCreate());
+        return withInProcessLock(stepLocks, lockKey, () => createImpl());
       }
       // `hook_created` is serialized per-(runId, hookId) so the
       // "claim token, write hook entity, write event" sequence runs to
@@ -950,9 +954,9 @@ export function createEventsStorage(
         const lockKey = tag
           ? `${runId}-${data.correlationId}.hook.${tag}`
           : `${runId}-${data.correlationId}.hook`;
-        return withInProcessLock(hookLocks, lockKey, runCreate);
+        return withInProcessLock(hookLocks, lockKey, createImpl);
       }
-      return runCreate();
+      return createImpl();
 
       async function createImpl(): Promise<EventResult> {
         // Most paths use the freshly-drawn candidate eventId. The
@@ -1120,10 +1124,12 @@ export function createEventsStorage(
         }
 
         // Draw this event's id now that any synthetic `run_created` above has
-        // taken the earlier slot. Every path below either publishes at this
-        // id or replaces it with one pinned by a durable claim.
+        // taken the earlier slot. A slot draw is a candidate, not a
+        // reservation: the many rejections below (a duplicate step_started
+        // from a concurrent replay, a terminal run, a step already in a
+        // terminal state) return without publishing, and the position stays
+        // available to the next writer.
         eventId = await mintEventId(effectiveRunId);
-        heldSlot = { runId: effectiveRunId, eventId };
 
         // run_failed on a non-existent run is rejected to match the
         // postgres and vercel worlds, which both surface this as a
@@ -1184,18 +1190,17 @@ export function createEventsStorage(
             currentRun.status === 'cancelled'
           ) {
             // Return existing state (idempotent)
-            const event: Event = {
+            const stored = await storeEvent({
               ...data,
               runId: effectiveRunId,
               eventId,
               createdAt: now,
               specVersion: effectiveSpecVersion,
-            };
-            await storeEvent(event);
+            });
             const resolveData =
               params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
             return {
-              event: stripEventDataRefs(event, resolveData),
+              event: stripEventDataRefs(stored, resolveData),
               run: currentRun,
               ...(currentRun ? { maxEvents: getMaxEventsPerRun() } : {}),
             };
@@ -1608,12 +1613,8 @@ export function createEventsStorage(
           // strictly dominates all visible events of the run guarantees the
           // terminal event replays last. See mintRunDominantEventKey for
           // the dominance argument.
-          const dominantKey = await mintDominantEventKey(
-            effectiveRunId,
-            eventId
-          );
+          const dominantKey = await mintDominantEventKey(effectiveRunId);
           eventId = dominantKey.eventId;
-          heldSlot = { runId: effectiveRunId, eventId };
           event = { ...event, eventId, createdAt: dominantKey.createdAt };
         }
 
@@ -1992,12 +1993,10 @@ export function createEventsStorage(
               // paginate a mixed log (a ULID id has no sort key, so it lands
               // on every page and the cursor eventually repeats).
               //
-              // This slot is above the one already drawn for the step_started
-              // event at the top of `create`, so the synthetic step_created
-              // sorts after its own step_started. That is fine: step_started
-              // is a parkable delivery, so a replay parks it until the
-              // ordered step_created behind it registers the consumer, then
-              // drains it.
+              // This publishes into the position the step_started event is
+              // still only a candidate for, so the synthetic step_created
+              // sorts ahead of the step_started that triggered it and the
+              // step_started bumps up one.
               const stepCreatedEventId = await mintEventId(effectiveRunId);
               const stepCreatedEvent: Event = {
                 eventType: 'step_created',
@@ -2343,11 +2342,11 @@ export function createEventsStorage(
               specVersion: effectiveSpecVersion,
             };
 
-            await storeEvent(conflictEvent);
+            const storedConflict = await storeEvent(conflictEvent);
             const resolveData =
               params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
             return {
-              event: stripEventDataRefs(conflictEvent, resolveData),
+              event: stripEventDataRefs(storedConflict, resolveData),
               run,
               step,
               hook: undefined,
@@ -2606,19 +2605,22 @@ export function createEventsStorage(
          *   `hook_received`'s resume claim), which exist precisely so two
          *   writers converge on ONE event — bumping would publish a second.
          *
-         * The pinned case can only collide across storage instances sharing a
-         * directory: within one instance every slot comes from the same
-         * monotonic counter, so no two writers ever draw the same one.
+         * A pinned id is only ever read back from a claim its own writer
+         * recorded before publishing, and that writer bumps only when the
+         * position it recorded is already occupied. So an adopter that finds
+         * the claim stale finds the slot taken too: it collides, and the
+         * collision is the benign-duplicate path this dedup already has. It
+         * never publishes a second `hook_created` into a free slot.
          */
         const bumpEventSlot = async (attempt: number): Promise<boolean> => {
           const current = eventIdToSlot(eventId);
           if (eventIdPinned || current === null) {
             return false;
           }
-          // Every failure advances the counter by at least one, so this
-          // terminates even under heavy contention. Rescan periodically so a
-          // batch committed by another instance is skipped in one step rather
-          // than one slot at a time.
+          // Every failure moves this write up by at least one position, so
+          // this terminates even under heavy contention. Rescan periodically
+          // so a batch committed by another instance is skipped in one step
+          // rather than one slot at a time.
           const slot = await drawEventSlot(effectiveRunId, {
             rescan: attempt > 0 && attempt % 8 === 0,
             atLeast: current + 1,
@@ -2627,7 +2629,6 @@ export function createEventsStorage(
             return false;
           }
           eventId = slotToEventId(slot);
-          heldSlot = { runId: effectiveRunId, eventId };
           event = { ...event, eventId };
           eventPath = taggedPath(
             basedir,
@@ -2746,7 +2747,13 @@ export function createEventsStorage(
             eventPublished = await writeExclusive(eventPath, serializedEvent);
           }
 
-          if (eventPublished || !(await bumpEventSlot(attempt))) {
+          if (eventPublished) {
+            // The position is occupied now, so the next draw for this run
+            // starts above it. Only a committed publish moves the watermark.
+            notePublishedSlot(effectiveRunId, eventId);
+            break;
+          }
+          if (!(await bumpEventSlot(attempt))) {
             break;
           }
         }
