@@ -660,19 +660,13 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
-      # build-packages: 'true' (not 'false' + a scoped `Build CLI` step,
-      # like e2e-vercel-prod uses) because `vercel build --prebuilt` below
-      # runs locally on this runner, unlike the GitHub-App-triggered
-      # deployments other jobs wait on — those build fresh on Vercel's own
-      # infra from a clean install, so a local partial build doesn't matter
-      # to them. This job's local `vercel build` needs every workspace
-      # package `workbench/express` imports (e.g. the local `workflow`
-      # package's `dist/nitro.js`, imported as `workflow/nitro`) already
-      # built on disk, or it fails with "Cannot resolve module".
-      - name: Setup environment and build packages
+      - name: Setup environment
         uses: ./.github/actions/setup-workflow-dev
         with:
-          build-packages: 'true'
+          build-packages: 'false'
+
+      - name: Build CLI
+        run: pnpm turbo run build --filter='@workflow/cli'
 
       # Pinned and installed once rather than `npx vercel@<version>` per
       # command — repeated `npx` resolution showed inconsistent behavior
@@ -685,15 +679,6 @@ jobs:
         id: wsDeploy
         env:
           WS_VERCEL_TOKEN: ${{ secrets.VERCEL_LABS_TOKEN }}
-          # nitro's own preset auto-detection (does this look like a Vercel
-          # build?) picked "node-server" instead of "vercel" in CI, even
-          # though the exact same `vercel pull`+`build` sequence correctly
-          # auto-detected "vercel" when run locally — force it explicitly
-          # rather than depend on that auto-detection at all. Without this,
-          # `vercel build` fails post-build validation with "No Output
-          # Directory named public found" because nitro wrote its generic
-          # `.output/` layout instead of `.vercel/output/`.
-          NITRO_PRESET: vercel
         run: |
           set -euo pipefail
           # `vercel deploy` (source-upload mode, no --prebuilt) re-applies
