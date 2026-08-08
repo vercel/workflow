@@ -9,10 +9,15 @@
  * what happens when it isn't one this client understands.
  */
 
-import { EntityConflictError } from '@workflow/errors';
+import { EntityConflictError, WorkflowWorldError } from '@workflow/errors';
 import { encode } from 'cbor-x';
 import { MockAgent } from 'undici';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  isRetryableEventPostError,
+  MAX_EVENT_POST_RETRIES,
+  withEventPostRetry,
+} from './event-retry.js';
 import {
   createWorkflowRunEventV4,
   isWsEventsTransportEnabled,
@@ -194,13 +199,108 @@ describe('createWorkflowRunEventV4 over ws', () => {
 });
 
 /**
- * The HTTP path gets transient-failure handling for free from undici's
- * `RetryAgent` (`RETRY_AGENT_OPTIONS`). The WS path never touches undici, so
- * the same policy is implemented in the adapter — and these tests exist
- * because the failure mode of losing it is invisible: writes still succeed,
- * they just cost a whole step retry instead of a 500ms backoff.
+ * Retry is owned by `withEventPostRetry` (`event-retry.ts`) for both transports
+ * — it is the only layer that knows which event types are idempotent-on-retry,
+ * and an earlier revision of this branch had a *second* loop inside the WS
+ * adapter that sat underneath it and therefore defeated that gate entirely
+ * (`step_started` got retried 6 times, double-incrementing the attempt counter,
+ * while an eligible type got 3 × 6 attempts with the inner backoff reaching 30s
+ * against an outer base deliberately set to 100ms).
+ *
+ * What keeps the shared loop working for WS without a WS-specific branch is the
+ * error *shape*: every transport failure leaves this adapter as a
+ * `WorkflowWorldError` with `code: 'TRANSPORT'`, the same thing `utils.ts`
+ * produces for a failed `fetch`. These tests pin both halves — that the adapter
+ * itself attempts exactly once, and that what it throws is classified the way
+ * the shared policy needs.
  */
-describe('retry parity with the HTTP transport', () => {
+describe('retry is owned by the shared policy, not the adapter', () => {
+  it.each([
+    500, 502, 503, 504,
+  ])('attempts a %i reply exactly once — the retry lives one layer up', async (status) => {
+    requestMock.mockResolvedValue({
+      meta: { reqId: 1, type: 'error', status },
+      body: new TextEncoder().encode('{"message":"transient"}'),
+    });
+
+    await expect(
+      createWorkflowRunEventV4(input, { token: 'test-token' })
+    ).rejects.toThrow();
+    expect(requestMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not retry a 4xx the server will reject identically', async () => {
+    requestMock.mockResolvedValue({
+      meta: { reqId: 1, type: 'error', status: 409 },
+      body: new TextEncoder().encode('{"message":"already applied"}'),
+    });
+
+    await expect(
+      createWorkflowRunEventV4(input, { token: 'test-token' })
+    ).rejects.toThrow(EntityConflictError);
+    expect(requestMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('wraps a transport failure as a TRANSPORT WorkflowWorldError', async () => {
+    // A bare `WsTransportError` fails `WorkflowWorldError.is()` (the `@workflow/errors`
+    // checks are name-based), which would let it escape both the in-process
+    // retry and the queue's redelivery classification and surface as a
+    // USER_ERROR — blaming the workflow's own code for a dead socket.
+    const cause = new WsTransportError('connection closed (code 1006)');
+    requestMock.mockRejectedValue(cause);
+
+    const err = await createWorkflowRunEventV4(input, {
+      token: 'test-token',
+    }).catch((e: unknown) => e);
+
+    expect(WorkflowWorldError.is(err)).toBe(true);
+    expect((err as WorkflowWorldError).code).toBe('TRANSPORT');
+    expect((err as WorkflowWorldError).cause).toBe(cause);
+    expect((err as Error).message).toMatch(/connection closed \(code 1006\)/);
+    // And the shared policy recognizes it, which is the whole point of the shape.
+    expect(isRetryableEventPostError(err)).toBe(true);
+    expect(requestMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('raises an unrecognized reply variant as a PARSE_ERROR', async () => {
+    // A version skew, not a transient fault — but the write may or may not have
+    // landed, so it is retryable for the types that can absorb a replay (a
+    // landed original comes back as a 409 the SDK already handles).
+    requestMock.mockResolvedValue({
+      meta: { reqId: 1, type: 'some_future_reply' },
+      body: new Uint8Array(0),
+    });
+
+    const err = await createWorkflowRunEventV4(input, {
+      token: 'test-token',
+    }).catch((e: unknown) => e);
+
+    expect((err as WorkflowWorldError).code).toBe('PARSE_ERROR');
+    expect(requestMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaves a 429 to the runtime rather than absorbing it in-process', async () => {
+    requestMock.mockResolvedValue({
+      meta: { reqId: 1, type: 'error', status: 429, retryAfter: '2' },
+      body: new TextEncoder().encode('{"message":"slow down"}'),
+    });
+
+    const err = await createWorkflowRunEventV4(input, {
+      token: 'test-token',
+    }).catch((e: unknown) => e);
+
+    expect(isRetryableEventPostError(err)).toBe(false);
+    expect(requestMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * The composition, end to end: the same loop the HTTP path already runs under,
+ * driving WS writes. These would have passed before too — but only because the
+ * adapter's own loop was doing the work; they pin that the *outer* loop is what
+ * retries now, and in particular that its per-event-type gate is back in force.
+ */
+describe('withEventPostRetry over ws', () => {
   beforeEach(() => {
     vi.useFakeTimers();
   });
@@ -220,90 +320,72 @@ describe('retry parity with the HTTP transport', () => {
     return result.value;
   };
 
-  it.each([
-    500, 502, 503, 504,
-  ])('retries a %i reply and succeeds, as the HTTP RetryAgent would', async (status) => {
+  it('retries a dead socket for an idempotent-on-retry event type', async () => {
     requestMock
-      .mockResolvedValueOnce({
-        meta: { reqId: 1, type: 'error', status },
-        body: new TextEncoder().encode('{"message":"transient"}'),
-      })
+      .mockRejectedValueOnce(new WsTransportError('connection closed (1006)'))
       .mockResolvedValueOnce(ack());
 
     const result = await runWithTimers(
-      createWorkflowRunEventV4(input, { token: 'test-token' })
+      withEventPostRetry(
+        () => createWorkflowRunEventV4(input, { token: 'test-token' }),
+        'step_completed'
+      )
     );
 
     expect(result.eventId).toBe('evnt_1');
     expect(requestMock).toHaveBeenCalledTimes(2);
   });
 
-  it('does NOT retry a 429 — a firewall challenge must reach the queue', async () => {
-    // Mirrors RETRY_AGENT_OPTIONS excluding 429 from `statusCodes`: this
-    // client cannot solve a challenge, so retrying in-process only amplifies
-    // load against an already-struggling firewall.
-    requestMock.mockResolvedValue({
-      meta: { reqId: 1, type: 'error', status: 429, retryAfter: '2' },
-      body: new TextEncoder().encode('{"message":"slow down"}'),
-    });
+  it('surfaces it for queue redelivery once the shared cap is reached', async () => {
+    requestMock.mockRejectedValue(new WsTransportError('connection closed'));
 
     await expect(
-      runWithTimers(createWorkflowRunEventV4(input, { token: 'test-token' }))
-    ).rejects.toThrow();
+      runWithTimers(
+        withEventPostRetry(
+          () => createWorkflowRunEventV4(input, { token: 'test-token' }),
+          'step_completed'
+        )
+      )
+    ).rejects.toThrow(/connection closed/);
+    // MAX_EVENT_POST_RETRIES + the initial attempt — not the 6 the removed
+    // adapter-level loop produced, and not 3 × 6 in composition with it.
+    expect(requestMock).toHaveBeenCalledTimes(MAX_EVENT_POST_RETRIES + 1);
+  });
+
+  it('does NOT retry step_started, whose handler double-counts attempts', async () => {
+    // This is the case the adapter-level loop silently defeated: the gate lives
+    // in EVENT_RETRY_ELIGIBILITY, one layer above where that loop sat.
+    requestMock.mockRejectedValue(new WsTransportError('connection closed'));
+
+    await expect(
+      runWithTimers(
+        withEventPostRetry(
+          () =>
+            createWorkflowRunEventV4(
+              { ...input, eventType: 'step_started' },
+              { token: 'test-token' }
+            ),
+          'step_started'
+        )
+      )
+    ).rejects.toThrow(/connection closed/);
     expect(requestMock).toHaveBeenCalledTimes(1);
   });
 
-  it('does not retry a 4xx the server will reject identically', async () => {
+  it('does not retry a definitive 4xx reply', async () => {
     requestMock.mockResolvedValue({
       meta: { reqId: 1, type: 'error', status: 409 },
       body: new TextEncoder().encode('{"message":"already applied"}'),
     });
 
     await expect(
-      runWithTimers(createWorkflowRunEventV4(input, { token: 'test-token' }))
+      runWithTimers(
+        withEventPostRetry(
+          () => createWorkflowRunEventV4(input, { token: 'test-token' }),
+          'step_completed'
+        )
+      )
     ).rejects.toThrow(EntityConflictError);
-    expect(requestMock).toHaveBeenCalledTimes(1);
-  });
-
-  it('retries a retryable transport failure, then surfaces it at the cap', async () => {
-    requestMock.mockRejectedValue(
-      new WsTransportError('connection closed (code 1006)', {
-        retryable: true,
-      })
-    );
-
-    await expect(
-      runWithTimers(createWorkflowRunEventV4(input, { token: 'test-token' }))
-    ).rejects.toThrow(/connection closed/);
-    // 1 initial attempt + WS_MAX_RETRIES.
-    expect(requestMock).toHaveBeenCalledTimes(6);
-  });
-
-  it('does not retry a transport failure marked non-retryable', async () => {
-    // The stale-auth-token case: the bearer the server rejected is the only
-    // one this invocation has, so re-sending is guaranteed to fail again.
-    requestMock.mockRejectedValue(
-      new WsTransportError('drained for auth expiry, same token', {
-        retryable: false,
-      })
-    );
-
-    await expect(
-      runWithTimers(createWorkflowRunEventV4(input, { token: 'test-token' }))
-    ).rejects.toThrow(/auth expiry/);
-    expect(requestMock).toHaveBeenCalledTimes(1);
-  });
-
-  it('does not retry an unrecognized reply variant', async () => {
-    // A version mismatch, not a transient fault — re-sending can't fix it.
-    requestMock.mockResolvedValue({
-      meta: { reqId: 1, type: 'some_future_reply' },
-      body: new Uint8Array(0),
-    });
-
-    await expect(
-      runWithTimers(createWorkflowRunEventV4(input, { token: 'test-token' }))
-    ).rejects.toThrow(/no numeric status/);
     expect(requestMock).toHaveBeenCalledTimes(1);
   });
 });

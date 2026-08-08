@@ -16,6 +16,7 @@
 import { decode } from 'cbor-x';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { encodeFrame } from './frames.js';
+import { REQUEST_TIMEOUT_MS } from './http-core.js';
 import {
   getWsEventsTransport,
   resetWsEventsTransportsForTest,
@@ -175,6 +176,7 @@ beforeEach(() => {
 afterEach(() => {
   vi.restoreAllMocks();
   vi.useRealTimers();
+  delete process.env.WORKFLOW_REQUEST_TIMEOUT_MS;
 });
 
 const headers = async () => ({ authorization: 'Bearer token-1' });
@@ -306,17 +308,72 @@ describe('failures are never silent', () => {
     await expect(promise).rejects.toThrow(/connection closed/);
   });
 
-  it('logs an undecodable reply frame', async () => {
-    const transport = getWsEventsTransport(WS_URL, headers);
-    const { socket } = await connectAndSend(transport);
+  /**
+   * The three ways a reply can arrive that no caller can be matched to. Each
+   * one used to log and return — which left the request that provoked it in
+   * `pending` with nothing in existence that could ever settle it, so the
+   * caller hung until the server's own drain (~680s from connect), typically
+   * past the invocation's `maxDuration`. The frame is unanswerable either way;
+   * the only choice is whether the waiter finds out.
+   */
+  describe.each([
+    [
+      'an undecodable frame',
+      () => new Uint8Array([0, 0, 0]),
+      'could not decode',
+    ],
+    [
+      'the reserved malformed-frame sentinel',
+      () =>
+        encodeFrame(
+          { reqId: -1, type: 'error', status: 400 },
+          new TextEncoder().encode(JSON.stringify({ message: 'bad frame' }))
+        ),
+      'malformed-frame error',
+    ],
+    [
+      'a reply with a non-numeric reqId',
+      () =>
+        encodeFrame({ reqId: 'one', type: 'event_ack', status: 201 }, EMPTY),
+      'no numeric reqId',
+    ],
+  ])('%s', (_name, frame, logged) => {
+    it('is logged loudly', async () => {
+      const transport = getWsEventsTransport(WS_URL, headers);
+      const { socket } = await connectAndSend(transport);
 
-    socket.deliver(new Uint8Array([0, 0, 0]));
-    await tick();
+      socket.deliver(frame());
+      await tick();
 
-    expect(loggedErrors()).toContain('could not decode');
+      expect(loggedErrors()).toContain(logged);
+    });
+
+    it('fails the in-flight request instead of leaving it to hang', async () => {
+      const transport = getWsEventsTransport(WS_URL, headers);
+      const { promise, socket } = await connectAndSend(transport);
+
+      socket.deliver(frame());
+      await tick();
+
+      await expect(promise).rejects.toThrow(/events WS transport/);
+    });
+
+    it('drops the connection so the next write gets a fresh socket', async () => {
+      const transport = getWsEventsTransport(WS_URL, headers);
+      const { socket } = await connectAndSend(transport);
+      const before = sockets.length;
+
+      socket.deliver(frame());
+      await tick();
+      // The `close` handler's eager reconnect fires on the backoff timer.
+      await vi.advanceTimersByTimeAsync(1000);
+
+      expect(sockets.length).toBeGreaterThan(before);
+      expect(latest()).not.toBe(socket);
+    });
   });
 
-  it('loudly logs the reserved malformed-frame reqId instead of dropping it', async () => {
+  it("surfaces the server's message on a malformed-frame error", async () => {
     const transport = getWsEventsTransport(WS_URL, headers);
     const { socket } = await connectAndSend(transport);
 
@@ -328,19 +385,74 @@ describe('failures are never silent', () => {
     );
     await tick();
 
-    expect(loggedErrors()).toContain('malformed-frame error');
-    // The server's message is surfaced, not just the sentinel id.
+    // Not just the sentinel id: why the server rejected our frame is the only
+    // thing that makes this actionable, since it is a bug on this side.
     expect(loggedErrors()).toContain('bad frame');
   });
 
-  it('logs a reply that matches no in-flight request', async () => {
+  it('logs but tolerates a reply that matches no in-flight request', async () => {
     const transport = getWsEventsTransport(WS_URL, headers);
-    const { socket } = await connectAndSend(transport);
+    const { promise, socket } = await connectAndSend(transport);
+    let settled = false;
+    void promise.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      }
+    );
 
     socket.deliver(ackFrame(999));
     await tick();
 
     expect(loggedErrors()).toContain('unknown reqId 999');
+    // The deliberate exception to the three cases above: an id nobody is
+    // waiting on means that request already settled (a send error, or its own
+    // deadline with the reply arriving late), so nothing is orphaned — while
+    // the request still in flight has done nothing wrong. Failing its socket
+    // would punish it for a race that resolved correctly.
+    expect(settled).toBe(false);
+    expect(sockets).toHaveLength(1);
+  });
+
+  it('fails a request that never gets a reply, rather than waiting for the drain', async () => {
+    const transport = getWsEventsTransport(WS_URL, headers);
+    const { promise, socket } = await connectAndSend(transport);
+    expect(socket.sent).toHaveLength(1);
+
+    // A server that acks nothing and never closes: no error, no drain, no
+    // frame. Before the deadline the only thing that ended this wait was the
+    // invocation's own SIGTERM.
+    await vi.advanceTimersByTimeAsync(REQUEST_TIMEOUT_MS + 1);
+
+    await expect(promise).rejects.toThrow(/timed out after/);
+  });
+
+  it('takes the silent connection down with the timed-out request', async () => {
+    const transport = getWsEventsTransport(WS_URL, headers);
+    const { promise, socket } = await connectAndSend(transport);
+    void promise.catch(() => {});
+
+    await vi.advanceTimersByTimeAsync(REQUEST_TIMEOUT_MS + 1);
+    await vi.advanceTimersByTimeAsync(1000);
+
+    // A socket that swallowed a request is not the one to send the retry on.
+    expect(latest()).not.toBe(socket);
+  });
+
+  it('disarms the deadline once a reply lands', async () => {
+    const transport = getWsEventsTransport(WS_URL, headers);
+    const { promise, socket } = await connectAndSend(transport);
+
+    socket.deliver(ackFrame(1));
+    await tick();
+    await expect(promise).resolves.toMatchObject({ meta: { reqId: 1 } });
+
+    // A deadline left armed would later fail a connection the caller is long
+    // done with — and on a reused socket, the unrelated writes riding it.
+    await vi.advanceTimersByTimeAsync(REQUEST_TIMEOUT_MS + 1000);
+    expect(loggedErrors()).not.toContain('timed out');
   });
 
   it('logs a drain notice without settling in-flight work', async () => {
@@ -532,6 +644,12 @@ describe('idle teardown', () => {
   });
 
   it('stays open while a request is still in flight', async () => {
+    // The idle window and the default request deadline are both 60s, so a
+    // request cannot outlive the idle window without also outliving its own
+    // deadline (which fails it and drops the socket — see 'fails a request
+    // that never gets a reply'). Raise the deadline to isolate what this test
+    // is actually about: that `inFlight > 0` suppresses the idle teardown.
+    process.env.WORKFLOW_REQUEST_TIMEOUT_MS = String(PAST_IDLE_MS * 10);
     const transport = getWsEventsTransport(WS_URL, headers);
     const { promise, socket } = await connectAndSend(transport);
 

@@ -22,9 +22,12 @@
  * connection object makes that structurally impossible rather than
  * something the close/reconnect paths have to remember to clean up.
  *
- * Failure handling, in short — no failure mode here is allowed to be
- * silent, because this transport has no per-request timeout and a
- * swallowed error means a caller that hangs until the socket closes:
+ * Failure handling, in short — every failure mode has to reach the caller
+ * that is waiting on it, because a swallowed error here means a hung
+ * invocation, not a lost log line. Reaching the caller is where this file's
+ * responsibility ends: whether a failed write is re-sent is decided by
+ * `event-retry.ts`, the one layer that knows which event types are safe to
+ * replay (see `WsTransportError`):
  *
  * - **Socket errors** (broken pipe, oversize-payload 1009, protocol
  *   faults) are logged and tear the connection down. Previously the only
@@ -35,9 +38,15 @@
  *   non-OPEN socket does not throw — it reports through its callback (or,
  *   with no callback, emits `'error'`), so without the callback the
  *   request just sat in `pending` forever.
- * - **Undecodable replies** and **replies under the server's reserved
- *   malformed-frame sentinel** (`reqId: -1`) are logged loudly; neither
- *   can be correlated to a caller by construction.
+ * - **Uncorrelatable replies** — undecodable frames, the server's reserved
+ *   malformed-frame sentinel (`reqId: -1`), a non-numeric `reqId` — are
+ *   logged loudly *and* fail the connection (`failConnection`). None can be
+ *   matched to a caller by construction, so logging alone left the
+ *   originating write pending with nothing able to answer it. The lone
+ *   exception is a reply for an id nobody is waiting on, which means that
+ *   request already settled and nothing is orphaned.
+ * - **A reply that never comes** is bounded by a per-request deadline set
+ *   from the same `WORKFLOW_REQUEST_TIMEOUT_MS` the HTTP path uses.
  * - **Unexpected closes** eagerly reconnect (bounded backoff, see
  *   `scheduleReconnect`), on the reasoning that a socket breaking
  *   mid-run means more writes are coming. This also covers the server's
@@ -70,6 +79,7 @@
 
 import type { WebSocket } from 'ws';
 import { type DecodedFrame, decodeFrames } from './frames.js';
+import { getRequestTimeoutMs } from './http-core.js';
 
 /**
  * `ws` is loaded on demand, not at module scope.
@@ -109,23 +119,25 @@ export interface WsFrameReply {
 }
 
 /**
- * A transport-level failure: the socket closed, or the frame could not be
- * handed to it. Distinct from an application-level error (a reply frame
- * carrying a non-2xx status), which is raised by the events adapter as a
- * typed `@workflow/errors` error instead.
+ * A transport-level failure: the socket closed, the frame could not be handed
+ * to it, or a reply arrived that cannot be correlated to a caller. Distinct
+ * from an application-level error (a reply frame carrying a non-2xx status),
+ * which is raised by the events adapter as a typed `@workflow/errors` error
+ * instead.
  *
- * `retryable` mirrors the HTTP path's undici `errorCodes` policy: a broken
- * connection means the frame was never accepted, so re-sending it is safe.
- * The one non-retryable case is a connect refused for a stale auth token —
- * see `staleAuthToken` in `connect()`; re-sending with the same token just
- * reproduces the failure, and only a new invocation can supply a new one.
+ * Deliberately carries no retry policy of its own. `postEventFrameOverWs`
+ * maps it to a `WorkflowWorldError` with `code: 'TRANSPORT'` — the same
+ * classification the HTTP path produces in `utils.ts` — so the one shared
+ * event-write retry policy (`event-retry.ts`, which alone knows which event
+ * types are idempotent-on-retry) and the runtime's queue redelivery
+ * (`isRetryableWorldError`) both apply to WS writes without a WS-specific
+ * branch. Every failure this class represents happens before the frame is
+ * acked, so re-sending is safe wherever that policy allows it.
  */
 export class WsTransportError extends Error {
-  readonly retryable: boolean;
-  constructor(message: string, opts: { retryable: boolean; cause?: unknown }) {
-    super(message, { cause: opts.cause });
+  constructor(message: string, opts?: { cause?: unknown }) {
+    super(message, { cause: opts?.cause });
     this.name = 'WsTransportError';
-    this.retryable = opts.retryable;
   }
 }
 
@@ -280,26 +292,61 @@ class WsEventsTransport {
 
       const reqId = conn.nextReqId++;
       const frame = buildFrame(reqId);
-      return await new Promise<WsFrameReply>((resolve, reject) => {
-        conn.pending.set(reqId, { resolve, reject });
-        conn.ws.send(frame, (err) => {
-          if (!err) return;
-          // `ws.send()` does not throw when the socket isn't OPEN — it
-          // reports here instead. Without this callback the failure would be
-          // emitted as a bare `'error'` event and this request would wait
-          // for a reply that is never coming. `delete` doubles as the
-          // already-settled guard: if a reply somehow landed first, the
-          // entry is gone and we must not reject on top of it.
-          if (conn.pending.delete(reqId)) {
+      const timeoutMs = getRequestTimeoutMs();
+      let deadline: ReturnType<typeof setTimeout> | undefined;
+      try {
+        return await new Promise<WsFrameReply>((resolve, reject) => {
+          conn.pending.set(reqId, { resolve, reject });
+          // Backstop deadline, deliberately the same knob the HTTP path uses
+          // (`WORKFLOW_REQUEST_TIMEOUT_MS`, 60s): without it, a reply that
+          // never arrives for a reason not covered by the socket's own error
+          // and close handling blocks the caller until the platform's
+          // `maxDuration` SIGTERM — the exact pathology `REQUEST_TIMEOUT_MS`
+          // exists to prevent for `fetch`. The known uncorrelatable cases
+          // fail their connection eagerly (see `failConnection`); this
+          // catches whatever is left, including a server that accepts a frame
+          // and simply never answers it.
+          deadline = setTimeout(() => {
+            if (!conn.pending.delete(reqId)) return;
             reject(
               new WsTransportError(
-                `workflow-server events WS send failed: ${describeError(err)}`,
-                { retryable: true, cause: err }
+                `workflow-server events WS request ${reqId} to ${this.wsUrl} ` +
+                  `timed out after ${timeoutMs}ms with no reply`
               )
             );
-          }
+            // Same reasoning as an uncorrelatable reply: a socket that
+            // accepted a frame and never answered it is not one the next
+            // write should be handed. Fail the rest and reconnect.
+            this.failConnection(
+              conn,
+              `workflow-server events WS connection to ${this.wsUrl} ` +
+                `abandoned after request ${reqId} timed out`
+            );
+          }, timeoutMs);
+          // A pending write should not hold a finished handler's event loop
+          // open, exactly as with the idle and reconnect timers.
+          deadline.unref?.();
+          conn.ws.send(frame, (err) => {
+            if (!err) return;
+            // `ws.send()` does not throw when the socket isn't OPEN — it
+            // reports here instead. Without this callback the failure would be
+            // emitted as a bare `'error'` event and this request would wait
+            // for a reply that is never coming. `delete` doubles as the
+            // already-settled guard: if a reply somehow landed first, the
+            // entry is gone and we must not reject on top of it.
+            if (conn.pending.delete(reqId)) {
+              reject(
+                new WsTransportError(
+                  `workflow-server events WS send failed: ${describeError(err)}`,
+                  { cause: err }
+                )
+              );
+            }
+          });
         });
-      });
+      } finally {
+        if (deadline !== undefined) clearTimeout(deadline);
+      }
     } finally {
       this.inFlight--;
       this.armIdleTimer();
@@ -389,12 +436,21 @@ class WsEventsTransport {
       // Give up on the *eager* reconnect and let the next write try again:
       // by then the process is likely serving a new invocation with a new
       // token.
+      //
+      // This is the one failure here that a retry cannot fix: the bearer is
+      // fixed for the invocation (see `refreshOidcTokenBestEffort`), so the
+      // shared policy's two in-process attempts will each re-resolve the same
+      // token and fail the same way, costing ~300ms before the write falls
+      // through to queue redelivery — which is what actually recovers it, by
+      // landing in a new invocation. Accepted deliberately rather than
+      // reintroducing a WS-specific non-retryable flag: the flag existed only
+      // for this one site, `event-retry.ts` is where retry decisions belong,
+      // and 300ms on an already-failing write buys less than one policy does.
       throw new WsTransportError(
         `workflow-server events WS connection to ${this.wsUrl} drained for ` +
           `auth expiry, but re-resolving the bearer produced the same token. ` +
           `Not reconnecting with a token the server has already rejected; ` +
-          `the next event write will retry.`,
-        { retryable: false }
+          `the next event write will retry.`
       );
     }
 
@@ -427,19 +483,17 @@ class WsEventsTransport {
             `world-vercel: ws events transport could not open a connection ` +
               `to ${this.wsUrl}: ${describeError(err)}`
           );
-          // Anything that isn't already classified — a DNS failure, a
-          // refused connection, `ws` failing to load — is the WS analogue
-          // of undici's default retryable `errorCodes`: nothing was sent,
-          // so re-sending is safe. `resolveUpgradeHeaders`'s stale-token
-          // error is the one deliberate non-retryable case, and it arrives
-          // already typed, so it passes through untouched.
+          // A DNS failure, a refused connection, `ws` failing to load:
+          // nothing was sent, so re-sending is safe wherever the shared
+          // policy allows it. Already-typed errors (the stale-token case
+          // from `resolveUpgradeHeaders`) pass through untouched.
           reject(
             err instanceof WsTransportError
               ? err
               : new WsTransportError(
                   `workflow-server events WS connection to ${this.wsUrl} ` +
                     `could not be opened: ${describeError(err)}`,
-                  { retryable: true, cause: err }
+                  { cause: err }
                 )
           );
           return;
@@ -488,8 +542,7 @@ class WsEventsTransport {
             reject(
               new WsTransportError(
                 `workflow-server events WS connection to ${this.wsUrl} ` +
-                  `closed before opening (code ${code})`,
-                { retryable: true }
+                  `closed before opening (code ${code})`
               )
             );
           }
@@ -498,14 +551,13 @@ class WsEventsTransport {
           // answered now. `pending` being per-connection is what makes
           // this unconditional: a superseded socket's late close can only
           // ever reach its own map, never a newer socket's in-flight work.
+          // The frame was in flight when the socket died, so the server
+          // either never saw it or never acked it. Re-sending is safe:
+          // createEvent writes are conditional on the entity server-side.
           this.failAllPending(
             conn,
             new WsTransportError(
-              `workflow-server events WS connection closed (code ${code})`,
-              // The frame was in flight when the socket died, so the server
-              // either never saw it or never acked it. Re-sending is safe:
-              // createEvent writes are conditional on the entity server-side.
-              { retryable: true }
+              `workflow-server events WS connection closed (code ${code})`
             )
           );
 
@@ -578,12 +630,16 @@ class WsEventsTransport {
     try {
       decoded = await decodeOneFrame(raw);
     } catch (err) {
-      // Not silent: an undecodable reply means whichever request it
-      // belonged to can no longer be correlated, so it will sit in
-      // `pending` until the socket closes with no other trace of why.
-      console.error(
-        `world-vercel: ws events transport could not decode a ${raw.byteLength}-byte ` +
-          `reply frame from ${this.wsUrl}: ${describeError(err)}`
+      // An undecodable reply cannot be correlated to a caller, and it says
+      // the framing on this socket is no longer trustworthy — so the
+      // connection goes rather than leaving its waiters unanswerable.
+      const detail =
+        `could not decode a ${raw.byteLength}-byte reply frame from ` +
+        `${this.wsUrl}: ${describeError(err)}`;
+      console.error(`world-vercel: ws events transport ${detail}`);
+      this.failConnection(
+        conn,
+        `workflow-server events WS transport ${detail}`
       );
       return;
     }
@@ -612,38 +668,50 @@ class WsEventsTransport {
 
     if (reqId === MALFORMED_FRAME_REQ_ID) {
       // The server couldn't parse one of our frames at all, so it replied
-      // under the reserved sentinel instead of a real reqId. By
-      // construction there is nothing to correlate this to — the
-      // originating request stays pending until the socket closes. Loud,
-      // because it means this client put a frame on the wire that the
-      // server's schema rejected: a protocol bug on our side, not a
-      // transient failure.
-      console.error(
-        `world-vercel: ws events transport received a malformed-frame error ` +
-          `from ${this.wsUrl} (reserved reqId ${MALFORMED_FRAME_REQ_ID}, status ` +
-          `${String(decoded.meta.status ?? 'unknown')}): ` +
-          `${errorFrameMessage(decoded.body)}. The server could not parse a frame ` +
-          `this client sent, so the originating write cannot be identified and ` +
-          `will fail when the connection closes.`
+      // under the reserved sentinel instead of a real reqId. By construction
+      // there is nothing to correlate this to. Loud, because it means this
+      // client put a frame on the wire that the server's schema rejected: a
+      // protocol bug on our side, not a transient failure.
+      const detail =
+        `received a malformed-frame error from ${this.wsUrl} (reserved reqId ` +
+        `${MALFORMED_FRAME_REQ_ID}, status ` +
+        `${String(decoded.meta.status ?? 'unknown')}): ` +
+        `${errorFrameMessage(decoded.body)}. The server could not parse a ` +
+        `frame this client sent, so the originating write cannot be identified`;
+      console.error(`world-vercel: ws events transport ${detail}.`);
+      this.failConnection(
+        conn,
+        `workflow-server events WS transport ${detail}`
       );
       return;
     }
 
     if (typeof reqId !== 'number') {
-      console.error(
-        `world-vercel: ws events transport received a reply frame with no ` +
-          `numeric reqId from ${this.wsUrl} (type: ` +
-          `${String(decoded.meta.type ?? 'absent')}); dropping it.`
+      const detail =
+        `received a reply frame with no numeric reqId from ${this.wsUrl} ` +
+        `(type: ${String(decoded.meta.type ?? 'absent')})`;
+      console.error(`world-vercel: ws events transport ${detail}.`);
+      this.failConnection(
+        conn,
+        `workflow-server events WS transport ${detail}`
       );
       return;
     }
 
     const pending = conn.pending.get(reqId);
     if (!pending) {
+      // The one uncorrelatable case that does NOT tear the connection down.
+      // A reply for an id nobody is waiting on means that request has already
+      // been settled — by a send error, or by its own deadline in `request()`
+      // with the reply arriving late. Nothing is orphaned:
+      // every other waiter is still waiting on its own id, and the frame
+      // decoded and carried a real reqId, so the stream itself is intact.
+      // Failing the socket here would punish healthy in-flight writes for a
+      // race that resolved correctly.
       console.error(
         `world-vercel: ws events transport received a reply for unknown ` +
           `reqId ${reqId} from ${this.wsUrl} (already settled, or the request ` +
-          `was failed by a send error); dropping it.`
+          `was failed by a send error or its deadline); dropping it.`
       );
       return;
     }
@@ -656,6 +724,38 @@ class WsEventsTransport {
       pending.reject(err);
     }
     conn.pending.clear();
+  }
+
+  /**
+   * Fail every waiter on `conn` and drop the socket.
+   *
+   * The escape hatch for a reply this client cannot correlate to a caller —
+   * an undecodable frame, the server's malformed-frame sentinel, a
+   * non-numeric `reqId` — and for a request that outlived its deadline.
+   * (A reply for an id nobody is waiting on is the deliberate exception; see
+   * `handleMessage`.) Logging and moving on — what this used to do for the
+   * uncorrelatable cases — leaves the originating request in `pending`
+   * with nothing left that could ever answer it, and the only thing that
+   * eventually frees it is the server's own drain (~680s from connect), well
+   * past the `maxDuration` of the invocation waiting on it. A caller hanging
+   * to SIGTERM is a worse outcome than a failed write the shared retry policy
+   * can re-send on a fresh socket.
+   *
+   * The whole connection goes, not just the one request, because every one of
+   * those cases says something about the *stream* rather than one frame: if a
+   * reply can't be parsed or matched, this client's model of what is on the
+   * wire is already wrong, and the requests still riding that socket have no
+   * better prospects than the one that just failed.
+   *
+   * `ws.close()`'s own `'close'` handler does the teardown and schedules the
+   * reconnect; `failAllPending` here (rather than leaving it to that handler)
+   * is what makes the callers fail with *this* diagnosis instead of a bare
+   * close code.
+   */
+  private failConnection(conn: Connection, message: string): void {
+    this.failAllPending(conn, new WsTransportError(message));
+    if (this.connection === conn) this.connection = null;
+    conn.ws.close();
   }
 }
 
