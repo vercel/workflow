@@ -677,6 +677,121 @@ describe('idle teardown', () => {
   });
 });
 
+describe('eager warm', () => {
+  /** Comfortably past IDLE_TIMEOUT_MS (60s). */
+  const PAST_IDLE_MS = 61_000;
+
+  it('opens the socket with no write to trigger it', async () => {
+    const transport = getWsEventsTransport(WS_URL, headers);
+
+    transport.warm();
+    await tick();
+
+    expect(sockets).toHaveLength(1);
+    expect(latest().headers.authorization).toBe('Bearer token-1');
+  });
+
+  it('leaves the first write with no handshake left to pay for', async () => {
+    // The point of the whole exercise: the write reuses the warmed socket
+    // rather than opening a second one.
+    const transport = getWsEventsTransport(WS_URL, headers);
+    transport.warm();
+    await tick();
+    latest().open();
+    await tick();
+
+    const promise = transport.request(eventFrame);
+    await tick();
+
+    expect(sockets).toHaveLength(1);
+    latest().deliver(ackFrame(sentReqIds(latest())[0] as number));
+    await expect(promise).resolves.toBeDefined();
+  });
+
+  it('joins an in-flight handshake instead of racing a second one', async () => {
+    const transport = getWsEventsTransport(WS_URL, headers);
+
+    transport.warm();
+    transport.warm();
+    await tick();
+    // A write arriving mid-handshake joins the same connect.
+    void transport.request(eventFrame).catch(() => {});
+    await tick();
+
+    expect(sockets).toHaveLength(1);
+  });
+
+  it('is a no-op once the socket is live', async () => {
+    const transport = getWsEventsTransport(WS_URL, headers);
+    const { socket } = await connectAndSend(transport);
+
+    transport.warm();
+    await tick();
+
+    expect(sockets).toHaveLength(1);
+    expect(socket.readyState).toBe(1);
+  });
+
+  it('releases a warmed socket that never gets a write', async () => {
+    // Warming arms the idle timer as if a request had settled. Without that,
+    // an invocation that warms but never writes — a health probe carrying the
+    // run id it is about to create — would strand a socket, and the socket is
+    // not `unref`'d, so it holds this process and a server invocation open.
+    const transport = getWsEventsTransport(WS_URL, headers);
+    transport.warm();
+    await tick();
+    const socket = latest();
+    socket.open();
+    await tick();
+    expect(socket.readyState).toBe(1);
+
+    await vi.advanceTimersByTimeAsync(PAST_IDLE_MS);
+
+    expect(socket.readyState).toBe(3);
+  });
+
+  it('does not adopt a socket that opens after the release', async () => {
+    // `close()` can only drop the connection it can see, and a handshake still
+    // in flight isn't one yet — so the release lands while this socket is
+    // still CONNECTING, and it must not install itself on the way in.
+    const transport = getWsEventsTransport(WS_URL, headers);
+    transport.warm();
+    await tick();
+    const socket = latest();
+
+    await vi.advanceTimersByTimeAsync(PAST_IDLE_MS);
+    socket.open();
+    await tick();
+
+    expect(socket.readyState).toBe(3);
+    // Nothing adopted it, so the next write opens its own socket.
+    void transport.request(eventFrame).catch(() => {});
+    await tick();
+    expect(sockets).toHaveLength(2);
+  });
+
+  it('leaves a failed warm to the next write, with no reconnect loop', async () => {
+    // A never-opened first connect is the one case `connect` declines to
+    // retry, and warming must not change that: no backoff loop for a run that
+    // may never write, and the write itself still gets its own attempt.
+    const transport = getWsEventsTransport(WS_URL, headers);
+    transport.warm();
+    await tick();
+    latest().failHandshake();
+    await tick();
+    // Loud either way — a warm nobody awaits is exactly the case where the
+    // log is the only signal the socket failed to come up.
+    expect(loggedErrors()).toContain('socket error');
+
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(sockets).toHaveLength(1);
+
+    const { socket } = await connectAndSend(transport);
+    expect(sockets).toHaveLength(2);
+    expect(socket.readyState).toBe(1);
+  });
+});
+
 /**
  * workflow-server tags a `drain` with why it is closing. `max_duration` means
  * the socket aged out and a plain reconnect is right; `auth_expiry` means the

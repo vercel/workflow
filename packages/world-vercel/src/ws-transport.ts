@@ -66,7 +66,9 @@
  * release, a warm container would hold a live socket (and a live server
  * invocation) for every run it had ever served, long after those runs
  * finished. `request()` revives an idle-closed transport, so the eviction
- * is invisible to callers beyond one extra handshake.
+ * is invisible to callers beyond one extra handshake. `warm()` opens the
+ * socket at the *start* of an invocation rather than on its first write, so
+ * the handshake isn't billed to whichever event happens to be written first.
  *
  * Deliberately uses the `ws` package (not the WHATWG global `WebSocket`):
  * the global constructor has no way to send custom headers on the upgrade
@@ -354,6 +356,41 @@ class WsEventsTransport {
   }
 
   /**
+   * Open the socket now, ahead of the first `request()`.
+   *
+   * Called once when an invocation for this run begins (see
+   * `createQueueHandler`), where writes are certain to follow. Lazily
+   * connecting instead bills the whole handshake — an upgrade round-trip plus
+   * the OIDC token mint that rides it — to whichever event is written first.
+   * When that first write is a `step_started` issued as the step body already
+   * starts running, the event's server-recorded timestamp lands later than the
+   * work it describes, which is visible as a step that appears to have taken
+   * less time than it did.
+   *
+   * Deliberately fire-and-forget: warming must neither delay the handler nor
+   * be able to fail it. Nothing here is load-bearing — a warm that fails logs
+   * (in `connect`) and stops, without scheduling a reconnect, because a
+   * never-opened first connect is exactly the case `connect`'s close handler
+   * declines to retry. The first real write then goes through
+   * `ensureConnected` as it would have anyway, carrying the shared retry
+   * policy. Calling it repeatedly, or on a live socket, is a no-op.
+   *
+   * The idle timer is armed as if a request had just settled: a warmed socket
+   * whose invocation never writes (a health probe carrying the run id it is
+   * about to create, say) is then released on the same `IDLE_TIMEOUT_MS` as
+   * any other, rather than held open — the socket is not `unref`'d, so a
+   * leaked one keeps both this process and a server invocation alive.
+   */
+  warm(): void {
+    if (this.closed) return;
+    if (this.connection !== null || this.connecting !== null) return;
+    // Errors are logged by `connect`; swallow the rejection so a warm nobody
+    // awaits can't surface as an unhandled rejection.
+    void this.ensureConnected().catch(() => {});
+    this.armIdleTimer();
+  }
+
+  /**
    * Drop the socket and evict this transport from the process-wide cache.
    * Idempotent. Safe to call with work in flight — those requests fail
    * through the socket's own `close` handler, same as any other close.
@@ -504,6 +541,21 @@ class WsEventsTransport {
 
         ws.on('open', () => {
           opened = true;
+          if (this.closed) {
+            // Released while this handshake was still in flight — `close()`
+            // could only null out the connection it could see, and this one
+            // did not exist yet. Adopting it now would leave a live socket
+            // (holding a server invocation open) on a transport that is no
+            // longer in the cache and that nothing will ever close again.
+            ws.close(1000, 'released while connecting');
+            reject(
+              new WsTransportError(
+                `workflow-server events WS connection to ${this.wsUrl} was ` +
+                  `released while connecting`
+              )
+            );
+            return;
+          }
           this.connection = conn;
           this.reconnectAttempts = 0;
           resolve(conn);

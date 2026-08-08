@@ -617,6 +617,27 @@ export function isWsEventsTransportEnabled(): boolean {
   return process.env.WORKFLOW_EVENTS_TRANSPORT === 'ws';
 }
 
+/**
+ * Start opening this run's WS socket, if the WS transport is in use at all.
+ *
+ * Call this as early in an invocation as the run id is known — the queue
+ * handler does, before dispatching to the runtime. By the time the first event
+ * is written the handshake is either done or already in flight, instead of
+ * being serialized ahead of that write. See `WsEventsTransport.warm` for why
+ * that matters and why nothing here is load-bearing.
+ *
+ * Silent and synchronous by contract: a no-op on the HTTP default and on a
+ * World that can't use WS at all (the api-workflow proxy), and it neither
+ * awaits nor reports the connect. A caller must be able to treat this as free.
+ */
+export function warmWsEventsTransport(runId: string, config?: APIConfig): void {
+  if (!isWsEventsTransportEnabled()) return;
+  // `resolveWsTransport` is sync and only resolves a URL + memoized transport
+  // — no token mint, no I/O — so this stays cheap on the invocation's
+  // critical path. The socket work happens inside `warm`, unawaited.
+  resolveWsTransport(runId, config)?.transport.warm();
+}
+
 async function postEventFrameOverHttp(
   runId: string,
   eventType: string,

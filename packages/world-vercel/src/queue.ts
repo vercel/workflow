@@ -18,6 +18,7 @@ import {
 import { decode as cborDecode, encode as cborEncode } from 'cbor-x';
 import { z } from 'zod/v4';
 import { missingDeploymentIdMessage } from './deployment-id.js';
+import { warmWsEventsTransport } from './events-v4.js';
 import { getDispatcher } from './http-client.js';
 import { decode as decodeTaggedRunId } from './run-id/index.js';
 import { isKnownRegionCode, REGION_IDS } from './run-id/regions.js';
@@ -480,6 +481,15 @@ export function createQueue(config?: APIConfig): Queue {
         // so message is already a plain object with Uint8Array values intact.
         const { payload, queueName, deploymentId } =
           MessageWrapper.parse(message);
+
+        // Earliest point in an invocation where the run id is known. On the
+        // WS transport, start the handshake here rather than letting the
+        // runtime's first event write pay for it — a `step_started` written as
+        // its step body already begins would otherwise be recorded later than
+        // the work it timestamps. Unawaited and failure-proof by contract; the
+        // HTTP default makes it a no-op.
+        const runIdToWarm = getRunIdFromPayload(payload);
+        if (runIdToWarm) warmWsEventsTransport(runIdToWarm, config);
 
         const result = await handler(payload, {
           queueName,

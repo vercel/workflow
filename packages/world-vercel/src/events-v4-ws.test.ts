@@ -21,12 +21,17 @@ import {
 import {
   createWorkflowRunEventV4,
   isWsEventsTransportEnabled,
+  warmWsEventsTransport,
 } from './events-v4.js';
 import { WORKFLOW_SERVER_URL_OVERRIDE } from './utils.js';
 import { type WsFrameReply, WsTransportError } from './ws-transport.js';
 
 const requestMock = vi.fn<() => Promise<WsFrameReply>>();
-const getWsEventsTransportMock = vi.fn(() => ({ request: requestMock }));
+const warmMock = vi.fn<() => void>();
+const getWsEventsTransportMock = vi.fn(() => ({
+  request: requestMock,
+  warm: warmMock,
+}));
 
 vi.mock('./ws-transport.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./ws-transport.js')>();
@@ -123,6 +128,42 @@ describe('transport gate', () => {
     expect(result.eventId).toBe('evnt_1');
     expect(getWsEventsTransportMock).not.toHaveBeenCalled();
     agent.assertNoPendingInterceptors();
+  });
+});
+
+/**
+ * The queue handler calls this on every message, for every World — including
+ * the HTTP default and the proxy World that can't speak WS at all. So "does
+ * nothing, quietly" is the contract being pinned here, as much as the warm
+ * itself: a throw or an await here would land on the critical path of every
+ * invocation, WS or not.
+ */
+describe('warmWsEventsTransport', () => {
+  it('warms the run’s transport when the gate is on', () => {
+    warmWsEventsTransport('wrun_1', { token: 'test-token' });
+
+    expect(getWsEventsTransportMock).toHaveBeenCalledTimes(1);
+    expect(warmMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not even resolve a transport when the gate is off', () => {
+    delete process.env.WORKFLOW_EVENTS_TRANSPORT;
+
+    warmWsEventsTransport('wrun_1', { token: 'test-token' });
+
+    expect(getWsEventsTransportMock).not.toHaveBeenCalled();
+    expect(warmMock).not.toHaveBeenCalled();
+  });
+
+  it('does nothing for a World whose baseUrl is the api-workflow proxy', () => {
+    // Same fallback `postEventFrameOverWs` takes: that gateway does not
+    // forward a raw upgrade, so there is no socket worth warming.
+    warmWsEventsTransport('wrun_1', {
+      projectConfig: { projectId: 'prj_1', teamId: 'team_1' },
+    });
+
+    expect(getWsEventsTransportMock).not.toHaveBeenCalled();
+    expect(warmMock).not.toHaveBeenCalled();
   });
 });
 
