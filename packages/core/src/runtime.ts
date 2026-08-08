@@ -1,3 +1,4 @@
+// NO-OP
 import { types } from 'node:util';
 import {
   CorruptedEventLogError,
