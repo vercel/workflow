@@ -232,24 +232,10 @@ function parseVitestResults(file) {
   }
 }
 
-// e2e-vercel-prod's matrix has a `transport` dimension (WORKFLOW_EVENTS_TRANSPORT
-// http/ws) baked into result filenames as a trailing `-http`/`-ws` suffix
-// (e.g. e2e-vercel-prod-nextjs-turbopack-ws.json). Strip it before app-name
-// matching so it doesn't get swallowed into the app name, and surface it
-// separately so the aggregate view can report http/ws as distinct rows
-// instead of silently summing them into one "vercel-prod" total.
-function stripTransportSuffix(base) {
-  const match = base.match(/^(.+)-(http|ws)$/);
-  return match
-    ? { base: match[1], transport: match[2] }
-    : { base, transport: null };
-}
-
 // Parse job info from filename (e.g., e2e-local-dev-nextjs-turbopack.json)
 function parseJobInfo(filename) {
   // Pattern: e2e-{category}-{app}.json or e2e-{category}-{subcategory}-{app}.json
-  const rawBase = path.basename(filename, '.json');
-  const { base, transport } = stripTransportSuffix(rawBase);
+  const base = path.basename(filename, '.json');
   const parts = base.split('-');
 
   if (parts.length >= 3) {
@@ -280,22 +266,15 @@ function parseJobInfo(filename) {
     );
 
     if (categoryEndIndex > 1) {
-      const category = parts.slice(1, categoryEndIndex).join('-');
       return {
-        // Give http/ws vercel-prod runs their own category key so they
-        // render as separate rows/sections rather than being summed
-        // together under plain "vercel-prod".
-        category:
-          category === 'vercel-prod' && transport
-            ? `vercel-prod-${transport}`
-            : category,
+        category: parts.slice(1, categoryEndIndex).join('-'),
         app: parts.slice(categoryEndIndex).join('-'),
       };
     }
   }
 
   return {
-    category: transport ? `other-${transport}` : 'other',
+    category: 'other',
     app: base,
   };
 }
@@ -437,11 +416,6 @@ function renderSingleJobSummary(summary) {
 // Category display names
 const categoryNames = {
   'vercel-prod': '▲ Vercel Production',
-  // TEMP: split out while comparing WORKFLOW_EVENTS_TRANSPORT=http vs ws in
-  // the e2e-vercel-prod matrix. Remove once the ws transport is settled and
-  // the matrix goes back to a single leg.
-  'vercel-prod-http': '▲ Vercel Production (WORKFLOW_EVENTS_TRANSPORT=http)',
-  'vercel-prod-ws': '▲ Vercel Production (WORKFLOW_EVENTS_TRANSPORT=ws)',
   'local-dev': '💻 Local Development',
   'local-prod': '📦 Local Production',
   'local-postgres': '🐘 Local Postgres',
@@ -453,8 +427,6 @@ const categoryNames = {
 // Category order for display
 const categoryOrder = [
   'vercel-prod',
-  'vercel-prod-http',
-  'vercel-prod-ws',
   'local-dev',
   'local-prod',
   'local-postgres',
@@ -508,7 +480,7 @@ function renderAggregatedSummary(
         // Only show observability links for vercel-prod tests — other
         // categories (local, community) don't run on Vercel's world
         // backend so there's no dashboard to link to.
-        const isVercelProd = catName.startsWith('vercel-prod');
+        const isVercelProd = catName === 'vercel-prod';
         const diag = diagnostics.get(test.name) || diagnostics.get(testName);
         const failureInfo = failures.get(testName) || failures.get(test.name);
         const obsUrl = isVercelProd
