@@ -122,11 +122,18 @@ class WsEventsTransport {
       });
 
       ws.on('close', () => {
-        if (this.ws === ws) this.ws = null;
+        // Guard against a superseded socket's late `close` firing after a
+        // newer socket has already taken over `this.ws` — only the still-
+        // active socket's close should fail pending requests, otherwise
+        // in-flight requests riding the new socket get spuriously rejected.
+        const wasActive = this.ws === ws;
+        if (wasActive) this.ws = null;
         this.connecting = null;
-        this.failAllPending(
-          new Error('workflow-server events WS connection closed')
-        );
+        if (wasActive) {
+          this.failAllPending(
+            new Error('workflow-server events WS connection closed')
+          );
+        }
       });
     });
   }
