@@ -30,6 +30,31 @@ vi.mock('@vercel/oidc', () => ({
   getVercelOidcToken: vi.fn().mockRejectedValue(new Error('no OIDC')),
 }));
 
+/**
+ * The WS transport can only carry trace context on the upgrade — frames have no
+ * headers — so the assertion is on what reaches the `ws` constructor. This fake
+ * records that and stays in CONNECTING; no test here needs a handshake.
+ */
+const { wsUpgrades } = vi.hoisted(() => ({
+  wsUpgrades: [] as { url: string; headers: Record<string, string> }[],
+}));
+
+vi.mock('ws', () => ({
+  WebSocket: class {
+    static OPEN = 1;
+    readyState = 0;
+    constructor(url: string, options?: { headers?: Record<string, string> }) {
+      wsUpgrades.push({ url, headers: options?.headers ?? {} });
+    }
+    on() {
+      return this;
+    }
+    send() {}
+    close() {}
+    terminate() {}
+  },
+}));
+
 const exporter = new InMemorySpanExporter();
 const provider = new BasicTracerProvider();
 const contextManager = new AsyncLocalStorageContextManager();
@@ -285,5 +310,48 @@ describe('streamer write trace propagation', () => {
     expect(traceparent).toBe(
       `00-${traceId}-${clientSpan?.spanContext().spanId}-01`
     );
+  });
+});
+
+describe('ws events transport upgrade trace propagation', () => {
+  afterEach(async () => {
+    wsUpgrades.length = 0;
+    const { resetWsEventsTransportsForTest } = await import(
+      './ws-transport.js'
+    );
+    resetWsEventsTransportsForTest();
+  });
+
+  it('injects traceparent on the upgrade, parented to the invocation span', async () => {
+    const { resolveWsTransport } = await import('./ws-transport.js');
+    const resolved = resolveWsTransport('wrun_1', { token: 'test-token' });
+    expect(resolved).not.toBeNull();
+
+    const tracer = otelTrace.getTracer('test');
+    let traceId = '';
+    let spanId = '';
+    await tracer.startActiveSpan('flow-invocation', async (span) => {
+      traceId = span.spanContext().traceId;
+      spanId = span.spanContext().spanId;
+      resolved?.transport.warm();
+      await vi.waitFor(() => expect(wsUpgrades).toHaveLength(1));
+      span.end();
+    });
+
+    // Every event written over this socket is parented to whoever opened it —
+    // there is no per-frame traceparent to fall back on, so an uninjected
+    // upgrade orphans the server's spans for the whole run.
+    const traceparent = wsUpgrades[0]?.headers.traceparent;
+    expect(traceparent).toBe(`00-${traceId}-${spanId}-01`);
+  });
+
+  it('opens the upgrade without traceparent when no span is active', async () => {
+    const { resolveWsTransport } = await import('./ws-transport.js');
+    resolveWsTransport('wrun_2', { token: 'test-token' })?.transport.warm();
+    await vi.waitFor(() => expect(wsUpgrades).toHaveLength(1));
+
+    expect(wsUpgrades[0]?.headers.traceparent).toBeUndefined();
+    // The rest of the upgrade must survive an absent propagator unchanged.
+    expect(wsUpgrades[0]?.headers.authorization).toBe('Bearer test-token');
   });
 });

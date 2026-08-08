@@ -14,9 +14,18 @@
  */
 
 import { decode } from 'cbor-x';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vitest';
 import { encodeFrame } from './frames.js';
 import { REQUEST_TIMEOUT_MS } from './http-core.js';
+import { injectTraceContextIntoHeaders } from './telemetry.js';
 import {
   getWsEventsTransport,
   isWsEventsTransportEnabled,
@@ -149,6 +158,22 @@ const sentReqIds = (socket: { sent: Uint8Array[] }): unknown[] =>
 const latest = () => sockets[sockets.length - 1];
 
 /**
+ * Wait for the transport to construct its next socket. Header resolution is
+ * async (token thunk, trace-context injection, and a one-time
+ * `@opentelemetry/api` import on the first upgrade of the process), so the
+ * number of microtask turns before `new WebSocket()` is not fixed — poll rather
+ * than encode a count that shifts whenever the upgrade grows an await.
+ */
+async function nextSocket(): Promise<ReturnType<typeof latest>> {
+  const before = sockets.length;
+  for (let i = 0; i < 50; i++) {
+    await tick();
+    if (sockets.length > before) return latest();
+  }
+  throw new Error('transport never constructed a socket');
+}
+
+/**
  * Start a request and let its socket finish the handshake. The returned
  * promise already has a no-op rejection handler attached so tests that
  * don't assert on it can't trip an unhandled-rejection warning.
@@ -158,8 +183,7 @@ async function connectAndSend(
 ) {
   const promise = transport.request(eventFrame);
   void promise.catch(() => {});
-  await tick();
-  const socket = latest();
+  const socket = await nextSocket();
   socket.open();
   await tick();
   return { promise, socket };
@@ -167,6 +191,14 @@ async function connectAndSend(
 
 let errorSpy: ReturnType<typeof vi.spyOn>;
 let logSpy: ReturnType<typeof vi.spyOn>;
+
+beforeAll(async () => {
+  // The upgrade injects trace context, whose first call imports the optional
+  // `@opentelemetry/api` peer. Module loading needs the real event loop, which
+  // fake timers can't drive — settle the memoized import here so every upgrade
+  // under test is microtasks only.
+  await injectTraceContextIntoHeaders(new Headers());
+});
 
 beforeEach(() => {
   vi.useFakeTimers();

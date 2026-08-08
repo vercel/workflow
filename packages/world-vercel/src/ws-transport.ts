@@ -26,7 +26,9 @@ import { getVercelOidcToken } from '@vercel/oidc';
 import { WebSocket } from 'ws';
 import { type DecodedFrame, decodeFrames } from './frames.js';
 import { getRequestTimeoutMs, headersToRecord } from './http-core.js';
+import { injectTraceContextIntoHeaders } from './telemetry.js';
 import { type APIConfig, getHttpConfig, getHttpUrl } from './utils.js';
+import { isWsEventsTransportEnabled } from './ws-transport-enabled.js';
 
 export interface WsFrameReply {
   meta: Record<string, unknown>;
@@ -309,6 +311,12 @@ class WsEventsTransport {
    * Resolve the headers for one upgrade request — once per socket, since the
    * bearer only rides the upgrade. Re-resolving per socket is what lets a
    * reconnect pick up a fresh token rather than replaying an expired one.
+   *
+   * Also the only place this transport can carry W3C trace context, which
+   * `CLAUDE.md` requires of every outgoing world-vercel request: frames are not
+   * HTTP requests and carry no headers of their own, so the server parents its
+   * event spans to whichever invocation opened the socket rather than to the
+   * individual write.
    */
   private async resolveUpgradeHeaders(): Promise<Record<string, string>> {
     const forceRefresh = this.needsFreshToken;
@@ -332,6 +340,16 @@ class WsEventsTransport {
 
     this.lastAuthorization = authorization;
     this.needsFreshToken = false;
+
+    // `injectTraceContextIntoHeaders` writes into a `Headers`; the upgrade takes
+    // a plain record, so carry the propagator's output across. No-op when no
+    // OTEL SDK is registered.
+    const carrier = new Headers();
+    await injectTraceContextIntoHeaders(carrier);
+    carrier.forEach((value, key) => {
+      headers[key] = value;
+    });
+
     return headers;
   }
 
@@ -655,22 +673,11 @@ export function toEventsWsUrl(baseUrl: string, runId: string): string {
 // =============================================================================
 
 /**
- * The opt-in gate: HTTP unless `WORKFLOW_EVENTS_TRANSPORT=ws`. Only
- * `createWorkflowRunEventV4` (POST) is wired to it — GET/LIST aren't on the hot
- * per-step path, and LIST's streamed, sentinel-terminated multi-frame response
- * doesn't map onto a single WS message.
- *
- * **Known gap: WS writes carry no client-side instrumentation.** The HTTP
- * branch's `instrumentedFetch` opens the OTEL CLIENT span, injects trace
- * context, and routes through the global `fetch` that Vercel's
- * outgoing-requests view instruments (see the note on `fetchV4`); the WS branch
- * bypasses all of it, leaving the server's own transport-tagged request metrics
- * as the only signal. Acceptable behind a flag — instrumenting the transport is
- * a prerequisite for defaulting to it, not a follow-up.
+ * Re-exported so this module stays the single seam for everything socket-shaped.
+ * Import it from `./ws-transport-enabled.js` instead when the point is to *not*
+ * load this module.
  */
-export function isWsEventsTransportEnabled(): boolean {
-  return process.env.WORKFLOW_EVENTS_TRANSPORT === 'ws';
-}
+export { isWsEventsTransportEnabled };
 
 /**
  * Start opening this run's socket. Call it as early in an invocation as the run
