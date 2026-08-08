@@ -72,6 +72,17 @@ export function envNumber(
   return parsed;
 }
 
+const DEFAULT_MAX_EVENTS_PER_RUN = 25_000;
+
+export function getMaxEventsPerRun(): number {
+  const maxEvents = envNumber(
+    'WORKFLOW_MAX_EVENTS',
+    DEFAULT_MAX_EVENTS_PER_RUN,
+    { integer: true }
+  );
+  return maxEvents > 0 ? maxEvents : DEFAULT_MAX_EVENTS_PER_RUN;
+}
+
 /**
  * Reset the warn-once cache. Test-only — exported so unit tests can exercise
  * the warning path repeatedly without sharing state across cases.

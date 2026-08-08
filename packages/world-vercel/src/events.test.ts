@@ -1280,7 +1280,7 @@ describe('getWorkflowRunEvents remoteRefBehavior mapping', () => {
       .intercept({
         path: '/api/v4/runs/wrun_1/events',
         method: 'GET',
-        query: { remoteRefBehavior: 'lazy' },
+        query: { returnAll: 'true', remoteRefBehavior: 'lazy' },
       })
       .reply(200, listResponse(new Uint8Array()), {
         headers: { 'content-type': V4_FRAME_CONTENT_TYPE },
@@ -1314,7 +1314,7 @@ describe('getWorkflowRunEvents remoteRefBehavior mapping', () => {
       .intercept({
         path: '/api/v4/runs/wrun_1/events',
         method: 'GET',
-        query: { remoteRefBehavior: 'resolve' },
+        query: { returnAll: 'true', remoteRefBehavior: 'resolve' },
       })
       .reply(200, listResponse(body), {
         headers: { 'content-type': V4_FRAME_CONTENT_TYPE },
@@ -1330,6 +1330,27 @@ describe('getWorkflowRunEvents remoteRefBehavior mapping', () => {
       result.data[0] as { eventData?: Record<string, unknown> }
     ).eventData;
     expect(eventData?.input).toEqual(body);
+    agent.assertNoPendingInterceptors();
+  });
+
+  it('requests one server-paginated stream for runtime replay', async () => {
+    const agent = mockAgent();
+    agent
+      .get(ORIGIN)
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events',
+        method: 'GET',
+        query: { returnAll: 'true', remoteRefBehavior: 'resolve' },
+      })
+      .reply(200, listResponse(new Uint8Array()), {
+        headers: { 'content-type': V4_FRAME_CONTENT_TYPE },
+      });
+
+    await getWorkflowRunEvents(
+      { runId: 'wrun_1' },
+      { token: 'test-token', dispatcher: agent }
+    );
+
     agent.assertNoPendingInterceptors();
   });
 
@@ -1354,7 +1375,7 @@ describe('getWorkflowRunEvents remoteRefBehavior mapping', () => {
       .intercept({
         path: '/api/v4/runs/wrun_1/events',
         method: 'GET',
-        query: { remoteRefBehavior: 'resolve' },
+        query: { returnAll: 'true', remoteRefBehavior: 'resolve' },
       })
       .reply(200, frames, {
         headers: { 'content-type': V4_FRAME_CONTENT_TYPE },
@@ -1407,7 +1428,7 @@ describe('getWorkflowRunEvents legacy structured-error compatibility', () => {
       .intercept({
         path: '/api/v4/runs/wrun_1/events',
         method: 'GET',
-        query: { remoteRefBehavior: 'resolve' },
+        query: { returnAll: 'true', remoteRefBehavior: 'resolve' },
       })
       .reply(200, listResponse(eventType, body), {
         headers: { 'content-type': V4_FRAME_CONTENT_TYPE },
@@ -1476,9 +1497,9 @@ describe('getWorkflowRunEvents hasMore mapping', () => {
       .intercept({
         path: '/api/v4/runs/wrun_1/events',
         method: 'GET',
-        // These tests use the default resolveData ('all' → resolve), which
-        // the adapter forwards as a query param; match it so the mock fires.
-        query: { remoteRefBehavior: 'resolve' },
+        // These tests omit the limit and use the default resolveData
+        // ('all' → resolve); match both translated query params.
+        query: { returnAll: 'true', remoteRefBehavior: 'resolve' },
       })
       .reply(200, frames, {
         headers: { 'content-type': V4_FRAME_CONTENT_TYPE },

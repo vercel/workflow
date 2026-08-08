@@ -690,7 +690,8 @@ export async function createWorkflowRunStartedEventV4(
     'event-stream',
     config
   );
-  const page = await consumeEventFrameStream(response, 'createEvent');
+  const events: Event[] = [];
+  const page = await consumeEventFrameStream(response, 'createEvent', events);
   assert(page.cursor, 'v4 createEvent: event stream missing cursor');
   const maxEvents = MaxEventsHeaderSchema.safeParse(
     response.headers.get(MAX_EVENTS_HEADER)
@@ -702,7 +703,7 @@ export async function createWorkflowRunStartedEventV4(
     });
   }
 
-  return { ...page, maxEvents: maxEvents.data };
+  return { events, ...page, maxEvents: maxEvents.data };
 }
 
 /**
@@ -762,12 +763,14 @@ export async function createHookReceivedPreloadEventV4(
     };
   }
 
-  const page = await consumeEventFrameStream(response, 'createEvent');
+  const events: Event[] = [];
+  const page = await consumeEventFrameStream(response, 'createEvent', events);
   const maxEvents = MaxEventsHeaderSchema.safeParse(
     response.headers.get(MAX_EVENTS_HEADER)
   );
   return {
     kind: 'stream',
+    events,
     ...page,
     canonicalEventId: response.headers.get(EVENT_ID_HEADER) ?? undefined,
     maxEvents: maxEvents.success ? maxEvents.data : undefined,
@@ -851,8 +854,9 @@ export interface ListEventsV4Result {
 
 async function consumeEventFrameStream(
   response: Response,
-  opName: string
-): Promise<ListEventsV4Result> {
+  opName: string,
+  events: Event[]
+): Promise<Pick<ListEventsV4Result, 'cursor' | 'hasMore'>> {
   const contentType = response.headers.get('content-type');
   if (!contentType?.startsWith(V4_FRAME_CONTENT_TYPE)) {
     throw new Error(
@@ -861,12 +865,11 @@ async function consumeEventFrameStream(
   }
 
   const chunks = response.body as unknown as AsyncIterable<Uint8Array>;
-  const events: Event[] = [];
 
   for await (const frame of decodeFrames(chunks)) {
     if (frame.meta._end === 1) {
       const end = EventStreamEndSchema.parse(frame.meta);
-      return { events, cursor: end.next ?? null, hasMore: end.hasMore };
+      return { cursor: end.next ?? null, hasMore: end.hasMore };
     }
     if (Object.keys(frame.meta).some((key) => key.startsWith('_'))) {
       throw new Error(`v4 ${opName}: unexpected control frame`);
@@ -893,15 +896,16 @@ async function consumeListFrameStream(
   url: string,
   headers: Headers,
   config: APIConfig | undefined,
-  opName: string
-): Promise<ListEventsV4Result> {
+  opName: string,
+  events: Event[]
+): Promise<Pick<ListEventsV4Result, 'cursor' | 'hasMore'>> {
   const response = await fetchV4(
     url,
     { method: 'GET', headers },
     config,
     opName
   );
-  return consumeEventFrameStream(response, opName);
+  return consumeEventFrameStream(response, opName, events);
 }
 
 /**
@@ -920,9 +924,10 @@ function appendListParams(sp: URLSearchParams, params: ListEventsV4Params) {
 
 function paginationToQuery(params: ListEventsV4Params): string {
   const sp = new URLSearchParams();
+  // The World API uses an omitted limit for a complete event log.
+  if (params.limit === undefined) sp.set('returnAll', 'true');
   appendListParams(sp, params);
-  const qs = sp.toString();
-  return qs ? `?${qs}` : '';
+  return `?${sp.toString()}`;
 }
 
 /**
@@ -932,9 +937,8 @@ function paginationToQuery(params: ListEventsV4Params): string {
  * cursor from the sentinel frame.
  *
  * Eagerly drains the stream into memory to match the existing
- * `getWorkflowRunEvents` page-at-a-time contract. A streaming variant
- * that yields events one at a time without buffering the page would be
- * a small refactor (decodeFrames is already async-iterable).
+ * `getWorkflowRunEvents` contract. A truncated full response resumes
+ * after its last validated event instead of downloading accepted frames again.
  */
 export async function getWorkflowRunEventsV4(
   runId: string,
@@ -942,10 +946,34 @@ export async function getWorkflowRunEventsV4(
   config?: APIConfig
 ): Promise<ListEventsV4Result> {
   const { baseUrl, headers } = await getHttpConfig(config);
-  const url =
-    `${baseUrl}/v4/runs/${encodeURIComponent(runId)}/events` +
-    paginationToQuery(params);
-  return consumeListFrameStream(url, headers, config, 'listEvents');
+  const events: Event[] = [];
+  let cursor = params.cursor;
+
+  while (true) {
+    const url =
+      `${baseUrl}/v4/runs/${encodeURIComponent(runId)}/events` +
+      paginationToQuery({ ...params, cursor });
+    try {
+      const page = await consumeListFrameStream(
+        url,
+        headers,
+        config,
+        'listEvents',
+        events
+      );
+      return { events, ...page };
+    } catch (error) {
+      const lastEvent = events.at(-1);
+      if (
+        params.limit !== undefined ||
+        !lastEvent ||
+        `eid:${lastEvent.eventId}` === cursor
+      ) {
+        throw error;
+      }
+      cursor = `eid:${lastEvent.eventId}`;
+    }
+  }
 }
 
 /**
@@ -974,10 +1002,13 @@ export async function getEventsByCorrelationIdV4(
   sp.set('runId', runId);
   appendListParams(sp, params);
   const url = `${baseUrl}/v4/events?${sp.toString()}`;
-  return consumeListFrameStream(
+  const events: Event[] = [];
+  const page = await consumeListFrameStream(
     url,
     headers,
     config,
-    'listEventsByCorrelationId'
+    'listEventsByCorrelationId',
+    events
   );
+  return { events, ...page };
 }

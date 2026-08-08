@@ -985,6 +985,7 @@ export interface GetEventParams {
 
 export interface ListEventsParams {
   runId: string;
+  /** Omit `limit` to return every remaining event. */
   pagination?: PaginationOptions;
   resolveData?: ResolveData;
 }

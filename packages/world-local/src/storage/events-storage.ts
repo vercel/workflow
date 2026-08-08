@@ -28,6 +28,7 @@ import type {
 import {
   applyAttributeChanges,
   EventSchema,
+  getMaxEventsPerRun,
   HookSchema,
   isChildEntityCreationEvent,
   isHookEventRequiringExistence,
@@ -95,19 +96,6 @@ import {
 } from './hooks-storage.js';
 import { handleLegacyEvent } from './legacy.js';
 import { withRunFileLock } from './runs-storage.js';
-
-/**
- * Per-run event ceiling the Local World reports on run responses (mirrors the
- * Vercel World). Overridable via `WORKFLOW_MAX_EVENTS`; defaults to 25,000.
- */
-const DEFAULT_MAX_EVENTS_PER_RUN = 25_000;
-function getMaxEventsPerRun(): number {
-  const raw = process.env.WORKFLOW_MAX_EVENTS;
-  const parsed = raw !== undefined ? Number(raw) : Number.NaN;
-  return Number.isInteger(parsed) && parsed > 0
-    ? parsed
-    : DEFAULT_MAX_EVENTS_PER_RUN;
-}
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -1359,7 +1347,7 @@ export function createEventsStorage(
                 };
               }
               const preloaded = await queryRunEvents(effectiveRunId, {
-                limit: 1000,
+                limit: getMaxEventsPerRun(),
               });
               return {
                 run: currentRun,
@@ -2425,12 +2413,12 @@ export function createEventsStorage(
         const resolveData = params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
         const filteredEvent = stripEventDataRefs(event, resolveData);
 
-        // For run_started: preload one page of events so the runtime can skip
-        // the initial events.list call when hasMore is false.
+        // For run_started: preload the event log so the runtime can skip
+        // the initial events.list call.
         let eventPage: PaginatedResponse<Event> | undefined;
         if (data.eventType === 'run_started' && run && !params?.skipPreload) {
           eventPage = await queryRunEvents(effectiveRunId, {
-            limit: 1000,
+            limit: getMaxEventsPerRun(),
           });
         }
 
@@ -2523,7 +2511,10 @@ export function createEventsStorage(
       const { runId } = params;
       assertSafeEntityId('runId', runId);
       const resolveData = params.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
-      const result = await queryRunEvents(runId, params.pagination ?? {});
+      const result = await queryRunEvents(runId, {
+        ...params.pagination,
+        limit: params.pagination?.limit ?? getMaxEventsPerRun(),
+      });
 
       // If resolveData is "none", remove eventData from events
       if (resolveData === 'none') {
