@@ -32,7 +32,12 @@ import {
   parseRetryAfter,
 } from './http-core.js';
 import { type APIConfig, getHttpConfig, getHttpUrl } from './utils.js';
-import { getWsEventsTransport, toEventsWsUrl } from './ws-transport.js';
+import {
+  getWsEventsTransport,
+  toEventsWsUrl,
+  type WsFrameReply,
+  WsTransportError,
+} from './ws-transport.js';
 
 /**
  * Issue an instrumented v4 request through the global `fetch` — NOT undici's
@@ -641,13 +646,68 @@ function replyMetaToHeaderRecord(
 let loggedWsProxyFallback = false;
 let loggedWsInUse = false;
 
-async function postEventFrameOverWs(
+/**
+ * In-process retry policy for the WS path, deliberately mirroring what the
+ * HTTP path already gets for free.
+ *
+ * HTTP event writes go through `getEventsDispatcher()` — an undici
+ * `RetryAgent` configured with `RETRY_AGENT_OPTIONS` (http-client.ts). The WS
+ * path never touches undici, so without this it would be the only transport
+ * in the package with no transient-failure handling at all: a single 503 or a
+ * mid-write connection reset would surface straight to the step runtime and
+ * cost a whole step retry, where the HTTP path would have absorbed it in
+ * milliseconds. That's a silent behavior regression for anyone who flips the
+ * flag, not a deliberate trade, so the policy is copied rather than reinvented:
+ *
+ *  - **Statuses**: `[500, 502, 503, 504]`, matching `RETRY_AGENT_OPTIONS`.
+ *    429 is deliberately excluded for the same reason it is there — a Vercel
+ *    firewall challenge arrives as a 429, a server-to-server client cannot
+ *    solve one, and retrying in-process just amplifies load against an
+ *    already-struggling firewall. It passes through to `ThrottleError` and the
+ *    queue backs off instead.
+ *  - **Transport failures**: a closed socket or a failed `send` (see
+ *    `WsTransportError.retryable`), the WS analogue of undici's default
+ *    `errorCodes` — in both cases the frame provably never got an ack, and
+ *    createEvent writes are conditional on the entity server-side, so
+ *    re-sending is safe.
+ *  - **Backoff**: undici `RetryHandler` defaults (5 retries, 500ms, ×2,
+ *    capped at 30s), with `Retry-After` honored when the reply carries one —
+ *    `retryAfter: true` in `RETRY_AGENT_OPTIONS`.
+ *
+ * A retry re-enters `transport.request()`, so a dead socket is reconnected on
+ * the way through rather than retried onto the same broken connection.
+ */
+const WS_RETRY_STATUS_CODES = new Set([500, 502, 503, 504]);
+const WS_MAX_RETRIES = 5;
+const WS_RETRY_MIN_TIMEOUT_MS = 500;
+const WS_RETRY_MAX_TIMEOUT_MS = 30_000;
+const WS_RETRY_TIMEOUT_FACTOR = 2;
+
+function wsRetryDelayMs(attempt: number, retryAfterSeconds?: number): number {
+  if (retryAfterSeconds !== undefined) {
+    return Math.min(retryAfterSeconds * 1000, WS_RETRY_MAX_TIMEOUT_MS);
+  }
+  return Math.min(
+    WS_RETRY_MIN_TIMEOUT_MS * WS_RETRY_TIMEOUT_FACTOR ** attempt,
+    WS_RETRY_MAX_TIMEOUT_MS
+  );
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Resolve the WS transport for a run, or `null` when this World can't use
+ * one and the caller should fall back to HTTP.
+ */
+function resolveWsTransport(
   runId: string,
-  eventType: string,
-  meta: Record<string, unknown>,
-  payload: Uint8Array,
   config: APIConfig | undefined
-): Promise<FrameResponseLike> {
+): {
+  transport: ReturnType<typeof getWsEventsTransport>;
+  wsUrl: string;
+} | null {
   // `getHttpUrl` is the cheap, synchronous half of `getHttpConfig` — it
   // resolves the route (baseUrl / usingProxy) without minting a token.
   // The bearer only rides the WS upgrade request, so resolving it here,
@@ -675,7 +735,7 @@ async function postEventFrameOverWs(
           `(api-workflow proxy, resolved baseUrl: ${baseUrl}) is active — falling back.`
       );
     }
-    return postEventFrameOverHttp(runId, eventType, meta, payload, config);
+    return null;
   }
   if (!loggedWsInUse) {
     loggedWsInUse = true;
@@ -688,23 +748,20 @@ async function postEventFrameOverWs(
     const { headers } = await getHttpConfig(config);
     return headersToRecord(headers);
   });
+  return { transport, wsUrl };
+}
 
-  // `runId` is NOT repeated here — it's already in `wsUrl` (the connection
-  // is scoped to this one run). The server's WsRequestFrameSchema
-  // (frames.ts) is a discriminated union on `type`, with the type's
-  // payload nested under a field named after it — `event: meta` for
-  // `type: 'event'` — so a future request type is a new variant, not a
-  // reshape of what's already on the wire. See the server's
-  // docs/ws-protocol.md.
-  const reply = await transport.request((reqId) =>
-    encodeFrame({ reqId, type: 'event', event: meta }, payload)
-  );
-
-  // Fail closed. Defaulting a status-less reply to 200 would silently
-  // report success for any frame this client doesn't understand — and the
-  // protocol is explicitly designed to grow new response variants (see the
-  // server's docs/ws-protocol.md "Extending the protocol"), so an older
-  // client meeting a newer server is a case that will actually happen.
+/**
+ * Read the status off a reply frame, failing closed when there isn't one.
+ *
+ * Defaulting a status-less reply to 200 would silently report success for any
+ * frame this client doesn't understand — and the protocol is explicitly
+ * designed to grow new response variants (see the server's
+ * docs/ws-protocol.md "Extending the protocol"), so an older client meeting a
+ * newer server is a case that will actually happen. Deliberately not retried:
+ * a version mismatch is not something re-sending can resolve.
+ */
+function wsReplyStatus(reply: WsFrameReply): number {
   const { status } = reply.meta;
   if (typeof status !== 'number') {
     throw new Error(
@@ -714,21 +771,70 @@ async function postEventFrameOverWs(
         `applied; retry it (createEvent retries are idempotent server-side).`
     );
   }
-  if (status < 200 || status >= 300) {
-    throw errorFromV4Response(
-      status,
-      replyMetaToHeaderRecord(reply.meta),
-      new TextDecoder().decode(reply.body),
-      'createEvent',
-      `${wsUrl}#runs/${encodeURIComponent(runId)}/events`
-    );
-  }
+  return status;
+}
 
-  const headerRecord = replyMetaToHeaderRecord(reply.meta);
-  return {
-    headers: { get: (name) => headerRecord[name.toLowerCase()] ?? null },
-    arrayBuffer: async () => reply.body.slice().buffer as ArrayBuffer,
-  };
+async function postEventFrameOverWs(
+  runId: string,
+  eventType: string,
+  meta: Record<string, unknown>,
+  payload: Uint8Array,
+  config: APIConfig | undefined
+): Promise<FrameResponseLike> {
+  const resolved = resolveWsTransport(runId, config);
+  if (!resolved) {
+    return postEventFrameOverHttp(runId, eventType, meta, payload, config);
+  }
+  const { transport, wsUrl } = resolved;
+
+  for (let attempt = 0; ; attempt++) {
+    let reply: WsFrameReply;
+    try {
+      // `runId` is NOT repeated here — it's already in `wsUrl` (the
+      // connection is scoped to this one run). The server's
+      // WsRequestFrameSchema (frames.ts) is a discriminated union on
+      // `type`, with the type's payload nested under a field named after
+      // it — `event: meta` for `type: 'event'` — so a future request type
+      // is a new variant, not a reshape of what's already on the wire.
+      // See the server's docs/ws-protocol.md.
+      reply = await transport.request((reqId) =>
+        encodeFrame({ reqId, type: 'event', event: meta }, payload)
+      );
+    } catch (err) {
+      const retryable =
+        err instanceof WsTransportError &&
+        err.retryable &&
+        attempt < WS_MAX_RETRIES;
+      if (!retryable) throw err;
+      await sleep(wsRetryDelayMs(attempt));
+      continue;
+    }
+
+    const status = wsReplyStatus(reply);
+    const headerRecord = replyMetaToHeaderRecord(reply.meta);
+
+    if (WS_RETRY_STATUS_CODES.has(status) && attempt < WS_MAX_RETRIES) {
+      await sleep(
+        wsRetryDelayMs(attempt, parseRetryAfter(headerRecord['retry-after']))
+      );
+      continue;
+    }
+
+    if (status < 200 || status >= 300) {
+      throw errorFromV4Response(
+        status,
+        headerRecord,
+        new TextDecoder().decode(reply.body),
+        'createEvent',
+        `${wsUrl}#runs/${encodeURIComponent(runId)}/events`
+      );
+    }
+
+    return {
+      headers: { get: (name) => headerRecord[name.toLowerCase()] ?? null },
+      arrayBuffer: async () => reply.body.slice().buffer as ArrayBuffer,
+    };
+  }
 }
 
 /**

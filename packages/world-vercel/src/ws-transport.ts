@@ -62,6 +62,24 @@ export interface WsFrameReply {
   body: Uint8Array;
 }
 
+/**
+ * A transport-level failure: the socket closed, or the frame could not be
+ * handed to it. Distinct from an application-level error (a reply frame
+ * carrying a non-2xx status), which is raised by the events adapter as a
+ * typed `@workflow/errors` error instead.
+ *
+ * `retryable` mirrors the HTTP path's undici `errorCodes` policy: a broken
+ * connection means the frame was never accepted, so re-sending it is safe.
+ */
+export class WsTransportError extends Error {
+  readonly retryable: boolean;
+  constructor(message: string, opts: { retryable: boolean; cause?: unknown }) {
+    super(message, { cause: opts.cause });
+    this.name = 'WsTransportError';
+    this.retryable = opts.retryable;
+  }
+}
+
 interface PendingRequest {
   resolve: (reply: WsFrameReply) => void;
   reject: (err: unknown) => void;
@@ -162,7 +180,14 @@ class WsEventsTransport {
         // for a reply that is never coming. `delete` doubles as the
         // already-settled guard: if a reply somehow landed first, the
         // entry is gone and we must not reject on top of it.
-        if (conn.pending.delete(reqId)) reject(err);
+        if (conn.pending.delete(reqId)) {
+          reject(
+            new WsTransportError(
+              `workflow-server events WS send failed: ${describeError(err)}`,
+              { retryable: true, cause: err }
+            )
+          );
+        }
       });
     });
   }
@@ -201,7 +226,18 @@ class WsEventsTransport {
             `world-vercel: ws events transport could not open a connection ` +
               `to ${this.wsUrl}: ${describeError(err)}`
           );
-          reject(err);
+          // A DNS failure, a refused connection, `ws` failing to load: the
+          // WS analogue of undici's default retryable `errorCodes` —
+          // nothing was sent, so re-sending is safe.
+          reject(
+            err instanceof WsTransportError
+              ? err
+              : new WsTransportError(
+                  `workflow-server events WS connection to ${this.wsUrl} ` +
+                    `could not be opened: ${describeError(err)}`,
+                  { retryable: true, cause: err }
+                )
+          );
           return;
         }
 
@@ -244,9 +280,10 @@ class WsEventsTransport {
             // already-settled promise is a no-op, so this is safe when
             // `'error'` did fire first.
             reject(
-              new Error(
+              new WsTransportError(
                 `workflow-server events WS connection to ${this.wsUrl} ` +
-                  `closed before opening (code ${code})`
+                  `closed before opening (code ${code})`,
+                { retryable: true }
               )
             );
           }
@@ -257,8 +294,12 @@ class WsEventsTransport {
           // ever reach its own map, never a newer socket's in-flight work.
           this.failAllPending(
             conn,
-            new Error(
-              `workflow-server events WS connection closed (code ${code})`
+            new WsTransportError(
+              `workflow-server events WS connection closed (code ${code})`,
+              // The frame was in flight when the socket died, so the server
+              // either never saw it or never acked it. Re-sending is safe:
+              // createEvent writes are conditional on the entity server-side.
+              { retryable: true }
             )
           );
 
