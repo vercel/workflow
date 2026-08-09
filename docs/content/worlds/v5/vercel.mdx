@@ -91,6 +91,7 @@ const run = await start(myWorkflow, [input], { region: "sfo1" });
 ## Limitations
 
 - **No run migration** - A run's region is fixed at creation. Existing runs cannot be moved to a different region.
+- **Hook minimum retention** - [`experimental_minRetention`](/docs/api-reference/workflow/create-hook#keep-a-token-unavailable-after-the-run-ends) cannot exceed 30 days.
 
 ## Observability
 

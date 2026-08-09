@@ -273,11 +273,11 @@ export interface Storage {
      * @param params - Optional parameters for event creation
      * @returns Promise resolving to the created event and run entity
      */
-    create(
+    create<T extends RunCreatedEventRequest>(
       runId: string | null,
-      data: RunCreatedEventRequest,
+      data: T,
       params?: CreateEventParams
-    ): Promise<EventResult>;
+    ): Promise<EventResult<T['eventType']>>;
 
     /**
      * Create an event for an existing workflow run and atomically update the entity.
@@ -288,11 +288,11 @@ export interface Storage {
      * @param params - Optional parameters for event creation
      * @returns Promise resolving to the created event and affected entity
      */
-    create(
+    create<T extends CreateEventRequest>(
       runId: string,
-      data: CreateEventRequest,
+      data: T,
       params?: CreateEventParams
-    ): Promise<EventResult>;
+    ): Promise<EventResult<T['eventType']>>;
 
     get(
       runId: string,
@@ -453,28 +453,6 @@ export interface World extends Queue, Streamer, Storage {
    * "unsupported": runtime optimizations gated on a capability fail closed.
    */
   capabilities?: WorldCapabilities;
-
-  /**
-   * Whether calling `process.exit(1)` from a queue handler is observed by
-   * the World as a delivery failure that will be retried.
-   *
-   * Set to `true` for worlds running inside a managed serverless platform
-   * (e.g. `world-vercel`) where the platform fails the invocation when the
-   * function process exits non-zero, and the queue redelivers the message
-   * via a separate fresh invocation.
-   *
-   * Set to `false` (the default) for in-process worlds (e.g. `world-local`,
-   * dev servers) where calling `process.exit()` would terminate the host
-   * process — including the user's `pnpm dev` — without producing a
-   * redelivery. Such worlds should instead surface failures via the event
-   * log and return normally.
-   *
-   * The core runtime reads this when deciding how to handle an exhausted
-   * replay budget: when `true` it exits so the queue redelivers; when
-   * `false` it writes `run_failed` best-effort and returns. See
-   * `packages/core/src/runtime/replay-budget.ts`.
-   */
-  processExitTriggersQueueRedelivery?: boolean;
 
   /**
    * Absolute wall-clock time when the current function invocation will be

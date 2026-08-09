@@ -11,10 +11,14 @@ import {
   WorkflowWorldError,
 } from '@workflow/errors';
 import type {
+  AnyEventRequest,
+  CreateEventParams,
   Event,
   EventResult,
   Hook,
   HookCreatedEventRequest,
+  PaginatedResponse,
+  PaginationOptions,
   SerializedData,
   Step,
   Storage,
@@ -24,6 +28,7 @@ import type {
 import {
   applyAttributeChanges,
   EventSchema,
+  getMaxEventsPerRun,
   HookSchema,
   isChildEntityCreationEvent,
   isHookEventRequiringExistence,
@@ -91,19 +96,6 @@ import {
 } from './hooks-storage.js';
 import { handleLegacyEvent } from './legacy.js';
 import { withRunFileLock } from './runs-storage.js';
-
-/**
- * Per-run event ceiling the Local World reports on run responses (mirrors the
- * Vercel World). Overridable via `WORKFLOW_MAX_EVENTS`; defaults to 25,000.
- */
-const DEFAULT_MAX_EVENTS_PER_RUN = 25_000;
-function getMaxEventsPerRun(): number {
-  const raw = process.env.WORKFLOW_MAX_EVENTS;
-  const parsed = raw !== undefined ? Number(raw) : Number.NaN;
-  return Number.isInteger(parsed) && parsed > 0
-    ? parsed
-    : DEFAULT_MAX_EVENTS_PER_RUN;
-}
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -586,6 +578,19 @@ export function createEventsStorage(
     rememberStoredEvent(event, eventPath, serializedEvent);
   }
 
+  const queryRunEvents = (runId: string, pagination: PaginationOptions) =>
+    paginatedFileSystemQuery({
+      directory: path.join(basedir, 'events'),
+      schema: EventSchema,
+      cachedItems: eventCache,
+      filePrefix: `${runId}-`,
+      sortOrder: pagination.sortOrder ?? 'asc',
+      limit: pagination.limit,
+      cursor: pagination.cursor,
+      getCreatedAt: getObjectCreatedAt('evnt'),
+      getId: (event) => event.eventId,
+    });
+
   // Per-instance in-process mutexes. Two storage instances sharing
   // one data directory get independent lock maps, which makes them
   // behave like two separate OS processes from the locking
@@ -607,7 +612,11 @@ export function createEventsStorage(
 
   return {
     clearCache,
-    async create(runId, data, params): Promise<EventResult> {
+    async create(
+      runId: string | null,
+      data: AnyEventRequest,
+      params?: CreateEventParams
+    ): Promise<EventResult> {
       if (
         data.eventType === 'hook_created' &&
         data.eventData.tokenRetentionUntil !== undefined &&
@@ -647,7 +656,7 @@ export function createEventsStorage(
         const lockKey = tag
           ? `${runId}-${data.correlationId}.${tag}`
           : `${runId}-${data.correlationId}`;
-        return withInProcessLock(stepLocks, lockKey, () => createImpl());
+        return withInProcessLock(stepLocks, lockKey, createImpl);
       }
       // `hook_created` is serialized per-(runId, hookId) so the
       // "claim token, write hook entity, write event" sequence runs to
@@ -829,14 +838,12 @@ export function createEventsStorage(
           }
         }
 
-        // run_failed on a non-existent run is rejected to match the
-        // postgres and vercel worlds, which both surface this as a
-        // WorkflowRunNotFoundError rather than silently persisting an
-        // event for a run that was never created.
-        if (data.eventType === 'run_failed' && !currentRun) {
-          throw new WorkflowRunNotFoundError(effectiveRunId);
-        }
-        if (data.eventType === 'attr_set' && !currentRun) {
+        if (
+          !currentRun &&
+          (data.eventType === 'run_failed' ||
+            data.eventType === 'attr_set' ||
+            data.eventType === 'run_started')
+        ) {
           throw new WorkflowRunNotFoundError(effectiveRunId);
         }
 
@@ -1330,12 +1337,25 @@ export function createEventsStorage(
           // Reuse currentRun from validation (already read above)
           if (currentRun) {
             // If already running, return the run without inserting a
-            // duplicate event.  This makes run_started idempotent for
-            // concurrent invocations.  We omit preloaded events here
-            // because this is a rare race-condition path — the runtime
-            // falls back to loadWorkflowRunEvents().
+            // duplicate event. This makes run_started idempotent for
+            // concurrent invocations.
             if (currentRun.status === 'running') {
-              return { run: currentRun, maxEvents: getMaxEventsPerRun() };
+              if (params?.skipPreload) {
+                return {
+                  run: currentRun,
+                  maxEvents: getMaxEventsPerRun(),
+                };
+              }
+              const preloaded = await queryRunEvents(effectiveRunId, {
+                limit: getMaxEventsPerRun(),
+              });
+              return {
+                run: currentRun,
+                events: preloaded.data,
+                cursor: preloaded.cursor,
+                hasMore: preloaded.hasMore,
+                maxEvents: getMaxEventsPerRun(),
+              };
             }
 
             run = await writeRunUnderLifecycleLock(
@@ -2393,25 +2413,13 @@ export function createEventsStorage(
         const resolveData = params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
         const filteredEvent = stripEventDataRefs(event, resolveData);
 
-        // For run_started: preload one page of events so the runtime can skip
-        // the initial events.list call when hasMore is false.
-        let events: Event[] | undefined;
-        let cursor: string | null | undefined;
-        let hasMore: boolean | undefined;
-        if (data.eventType === 'run_started' && run) {
-          const allEvents = await paginatedFileSystemQuery({
-            directory: path.join(basedir, 'events'),
-            schema: EventSchema,
-            cachedItems: eventCache,
-            filePrefix: `${effectiveRunId}-`,
-            sortOrder: 'asc',
-            limit: 1000,
-            getCreatedAt: getObjectCreatedAt('evnt'),
-            getId: (e) => e.eventId,
+        // For run_started: preload the event log so the runtime can skip
+        // the initial events.list call.
+        let eventPage: PaginatedResponse<Event> | undefined;
+        if (data.eventType === 'run_started' && run && !params?.skipPreload) {
+          eventPage = await queryRunEvents(effectiveRunId, {
+            limit: getMaxEventsPerRun(),
           });
-          events = allEvents.data;
-          cursor = allEvents.cursor;
-          hasMore = allEvents.hasMore;
         }
 
         // Inline-delta optimization: a writer can pass `sinceCursor` (the
@@ -2444,36 +2452,39 @@ export function createEventsStorage(
           // consume side (runtime.ts) only stashes the delta when `!hasMore`
           // and otherwise falls back to the exhaustive `events.list` loop, so a
           // truncated page is never consumed as if it were the full delta.
-          const delta = await paginatedFileSystemQuery({
-            directory: path.join(basedir, 'events'),
-            schema: EventSchema,
-            filePrefix: `${effectiveRunId}-`,
+          const delta = await queryRunEvents(effectiveRunId, {
             sortOrder: 'asc',
             cursor: params.sinceCursor,
-            getCreatedAt: getObjectCreatedAt('evnt'),
-            getId: (e) => e.eventId,
           });
-          events =
+          eventPage =
             resolveData === 'none'
-              ? delta.data.map((e) => stripEventDataRefs(e, resolveData))
-              : delta.data;
-          cursor = delta.cursor;
-          hasMore = delta.hasMore;
+              ? {
+                  ...delta,
+                  data: delta.data.map((event) =>
+                    stripEventDataRefs(event, resolveData)
+                  ),
+                }
+              : delta;
         }
 
-        // Return EventResult with event and any created/updated entity
-        return {
+        const result: EventResult = {
           event: filteredEvent,
           run,
           step,
           hook,
           wait,
-          events,
-          cursor,
-          hasMore,
           ...(stepCreatedLazily ? { stepCreated: true } : {}),
           // Per-run event ceiling (mirrors the Vercel World).
           ...(run ? { maxEvents: getMaxEventsPerRun() } : {}),
+        };
+
+        if (!eventPage) return result;
+
+        return {
+          ...result,
+          events: eventPage.data,
+          cursor: eventPage.cursor,
+          hasMore: eventPage.hasMore,
         };
       } // end createImpl
     },
@@ -2500,18 +2511,9 @@ export function createEventsStorage(
       const { runId } = params;
       assertSafeEntityId('runId', runId);
       const resolveData = params.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
-      const result = await paginatedFileSystemQuery({
-        directory: path.join(basedir, 'events'),
-        schema: EventSchema,
-        cachedItems: eventCache,
-        filePrefix: `${runId}-`,
-        // Events in chronological order (oldest first) by default,
-        // different from the default for other list calls.
-        sortOrder: params.pagination?.sortOrder ?? 'asc',
-        limit: params.pagination?.limit,
-        cursor: params.pagination?.cursor,
-        getCreatedAt: getObjectCreatedAt('evnt'),
-        getId: (event) => event.eventId,
+      const result = await queryRunEvents(runId, {
+        ...params.pagination,
+        limit: params.pagination?.limit ?? getMaxEventsPerRun(),
       });
 
       // If resolveData is "none", remove eventData from events

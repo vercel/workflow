@@ -34,6 +34,7 @@ export function createWorld(config?: APIConfig): World {
     // those payloads opaquely, and v5 remains a superset of v4 attributes.
     specVersion: SPEC_VERSION_SUPPORTS_COMPRESSION,
     capabilities: {
+      hookRetention: { active: true },
       // workflow-server enforces the `stateUpdatedAt` optimistic-concurrency
       // guard: creations carrying a stale snapshot are rejected with 412
       // (PreconditionFailedError) when the run's outside-event marker is
@@ -54,12 +55,6 @@ export function createWorld(config?: APIConfig): World {
       // rollback or kill switch drop new resumes to the sequential path
       // immediately, without a redeploy of this adapter.
     },
-    // On Vercel the platform fails the function invocation when the
-    // process exits non-zero, and VQS redelivers the queue message via a
-    // fresh invocation. The core runtime uses this to decide whether
-    // `process.exit(1)` is an acceptable response to an exhausted replay
-    // budget.
-    processExitTriggersQueueRedelivery: true,
     getRuntimeDeadline: getDeadline,
     ...createQueue(config),
     ...createStorage(config),
