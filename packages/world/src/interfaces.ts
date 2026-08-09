@@ -173,6 +173,14 @@ export interface Storage {
       ): Promise<(WorkflowRun | WorkflowRunWithoutData | null)[]>;
     };
 
+    /**
+     * Lists canonical workflow storage records.
+     *
+     * @remarks Observability and inspection usage of this method is
+     * deprecated. Use `world.analytics?.runs.list()` for plan-aware
+     * observability queries. This storage API remains available for
+     * operational and payload-bearing callers.
+     */
     list(
       params: ListWorkflowRunsParams & { resolveData: 'none' }
     ): Promise<PaginatedResponse<WorkflowRunWithoutData>>;
