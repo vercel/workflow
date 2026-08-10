@@ -143,6 +143,18 @@ function getReviversForMode(mode: SerializationMode): Partial<Revivers> {
   }
 }
 
+/**
+ * The workflow-mode reducer/reviver key sets — exported for the QuickJS
+ * host serde's exhaustiveness test (quickjs-serde.test.ts), which pins
+ * that the handle-space codec implements exactly these.
+ */
+export function getWorkflowModeReducerKeys(): string[] {
+  return Object.keys(getReducersForMode('workflow'));
+}
+export function getWorkflowModeReviverKeys(): string[] {
+  return Object.keys(getReviversForMode('workflow'));
+}
+
 export const devalueVmCodec: Codec = {
   formatPrefix: SerializationFormat.DEVALUE_V1,
 

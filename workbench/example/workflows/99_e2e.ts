@@ -789,6 +789,32 @@ export async function hookGetConflictThenStepParallelWorkflow(
 //////////////////////////////////////////////////////////
 
 /**
+ * Keeps its token reserved after this run ends. The Hook is intentionally left
+ * undisposed so duplicates continue to receive a conflict during retention.
+ */
+export async function hookMinRetentionWorkflow(
+  token: string,
+  minRetentionMs: number
+) {
+  'use workflow';
+
+  const hook = createHook({
+    token,
+    experimental_minRetention: minRetentionMs,
+  });
+  const conflict = await hook.getConflict();
+  if (conflict) {
+    return {
+      role: 'duplicate' as const,
+      conflictRunId: conflict.runId,
+      conflictStatus: await conflict.status,
+    };
+  }
+
+  return { role: 'owner' as const };
+}
+
+/**
  * Claim-only run mutex: the hook is used purely for run idempotency —
  * the workflow claims the token, holds it while doing unrelated work,
  * and never awaits hook payload data. Duplicates started while the

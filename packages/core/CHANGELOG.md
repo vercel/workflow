@@ -1,5 +1,43 @@
 # @workflow/core
 
+## 5.0.0-beta.40
+
+### Minor Changes
+
+- [#3347](https://github.com/vercel/workflow/pull/3347) [`8d47928`](https://github.com/vercel/workflow/commit/8d479283cabd9de84fa2542c4ff16f2697d16399) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Add a bulk run cancellation primitive. `@workflow/world` defines the `BulkCancelWorkflowRuns*` contract and an optional `runs.cancelMany`; `@workflow/world-vercel` implements it via a single `POST /v4/runs/cancel`; `@workflow/core` adds a `cancelRuns` helper that uses `cancelMany` when available and falls back to bounded-concurrency single-run cancellation.
+
+- [#3048](https://github.com/vercel/workflow/pull/3048) [`f8f6e17`](https://github.com/vercel/workflow/commit/f8f6e17aebbd138e9c6c4a03814a5bfc65e63c23) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Add an experimental QuickJS WASM VM engine for workflow execution, opt-in via `WORKFLOW_VM=quickjs` (or per-run `executionContext.workflowVm`). The engine performs the same full event replay as the default `node:vm` engine but runs workflow code in a QuickJS VM compiled to WebAssembly, enabling platforms without `node:vm` support and laying the groundwork for VM-memory snapshotting.
+
+- [#3046](https://github.com/vercel/workflow/pull/3046) [`5d591d2`](https://github.com/vercel/workflow/commit/5d591d28863b539d8ff5b5af56f99b43d1db9842) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Retain workflow execution across inline steps within one invocation; `WORKFLOW_RETAINED_VM=0` disables retention. Boundaries whose step arguments are not primitive values fall back to ordinary replay.
+
+- [#3047](https://github.com/vercel/workflow/pull/3047) [`89ede82`](https://github.com/vercel/workflow/commit/89ede82faa25143a150edcd088cd48b6d34daf3d) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Retained workflow VMs now keep the fast path when step arguments are plain data or standard built-ins (`Map`, `Set`, `Date`, typed arrays, `URL`, `Headers`, …), not just primitives. A boundary falls back to a normal replay only when serializing its arguments ran code the workflow controls — a getter, a proxy, a custom serializer — or computed an `Error`'s stack trace.
+
+### Patch Changes
+
+- [#2960](https://github.com/vercel/workflow/pull/2960) [`79e4c04`](https://github.com/vercel/workflow/commit/79e4c044091185e68bbdcc254a86133e54956ad3) Thanks [@alangenfeld](https://github.com/alangenfeld)! - Re-route a queue delivery that reaches a deployment other than the one its run is pinned to, retry transient publishing failures through normal queue redelivery, and fail the run with the new `DEPLOYMENT_MISMATCH` error code once the recovery budget is spent.
+
+- [#3316](https://github.com/vercel/workflow/pull/3316) [`e084e08`](https://github.com/vercel/workflow/commit/e084e08ac0b4f1830659cb316df50d50962aada4) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Allow configuring the polling interval used by `Run.returnValue` with `WORKFLOW_RETURN_VALUE_POLL_INTERVAL_MS`.
+
+- [#3345](https://github.com/vercel/workflow/pull/3345) [`9c1b3c8`](https://github.com/vercel/workflow/commit/9c1b3c86384181b673d41123d2eec0b987afc75a) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Initialize lazy hook resume replay from the `hook_received` write via the new advisory `preloadEvents` param, skipping `run_started` and the initial `events.list`; safe fallback otherwise.
+
+- [#3301](https://github.com/vercel/workflow/pull/3301) [`cb77725`](https://github.com/vercel/workflow/commit/cb77725960a8c280bd96fda0068fca0ba83d52f2) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Add env option to split correlation ID derivation into per-entity-type sequential ULIDs, instead of sharing one derivation source
+
+- [#3332](https://github.com/vercel/workflow/pull/3332) [`939ffb4`](https://github.com/vercel/workflow/commit/939ffb4f512a35d3fd041af16f3fa518552ba730) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Reject unsupported Hook retention synchronously inside QuickJS workflows.
+
+- [#3319](https://github.com/vercel/workflow/pull/3319) [`27a3f15`](https://github.com/vercel/workflow/commit/27a3f15a7b08659f2b0e69e12e0c4ad923d7f4e5) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Preserve Hook minimum-retention deadlines in QuickJS workflows.
+
+- [#3048](https://github.com/vercel/workflow/pull/3048) [`f8f6e17`](https://github.com/vercel/workflow/commit/f8f6e17aebbd138e9c6c4a03814a5bfc65e63c23) Thanks [@TooTallNate](https://github.com/TooTallNate)! - QuickJS engine performance: cache compiled WebAssembly modules process-wide, and execute steps inline in a live-VM continuation loop (no queue round-trip per step, cheap events fed before step bodies, delayed wait-continuation dispatch for racing timers).
+
+- [#3301](https://github.com/vercel/workflow/pull/3301) [`cb77725`](https://github.com/vercel/workflow/commit/cb77725960a8c280bd96fda0068fca0ba83d52f2) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix stream IDs minted while serializing a step's arguments latching the host wall clock into a run's ID sequence, which gave every entity created afterwards a different correlation ID on each replay
+
+- [#3360](https://github.com/vercel/workflow/pull/3360) [`72efc90`](https://github.com/vercel/workflow/commit/72efc90f286956e6cde25b814f9375a8ecbbff36) Thanks [@elliotdauber](https://github.com/elliotdauber)! - Derive inline-execution duration limits from `World.getRuntimeDeadline()` (implemented on Vercel World via `@vercel/functions`).
+
+- Updated dependencies [[`8d47928`](https://github.com/vercel/workflow/commit/8d479283cabd9de84fa2542c4ff16f2697d16399), [`1222aab`](https://github.com/vercel/workflow/commit/1222aab74da39b4a7ae93e6c5ecc2dc4707b68d0), [`2eddf74`](https://github.com/vercel/workflow/commit/2eddf74cb620dcb292ffe8f300699fff89a97100), [`de1905f`](https://github.com/vercel/workflow/commit/de1905f15c0a31f272966ac518ebf272864ea5c6), [`79e4c04`](https://github.com/vercel/workflow/commit/79e4c044091185e68bbdcc254a86133e54956ad3), [`9c1b3c8`](https://github.com/vercel/workflow/commit/9c1b3c86384181b673d41123d2eec0b987afc75a), [`e6f1b6f`](https://github.com/vercel/workflow/commit/e6f1b6f5489da19f736fcd86a06a03d8247e5b78), [`72efc90`](https://github.com/vercel/workflow/commit/72efc90f286956e6cde25b814f9375a8ecbbff36)]:
+  - @workflow/world@5.0.0-beta.25
+  - @workflow/world-vercel@5.0.0-beta.36
+  - @workflow/world-local@5.0.0-beta.34
+  - @workflow/errors@5.0.0-beta.16
+
 ## 5.0.0-beta.39
 
 ### Minor Changes

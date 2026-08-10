@@ -1,6 +1,10 @@
 import { WorkflowRunNotFoundError, WorkflowWorldError } from '@workflow/errors';
 import {
   type AttributeChange,
+  type BulkCancelWorkflowRunsRequest,
+  BulkCancelWorkflowRunsRequestSchema,
+  type BulkCancelWorkflowRunsResult,
+  BulkCancelWorkflowRunsResultSchema,
   type CancelWorkflowRunParams,
   type CreateWorkflowRunRequest,
   type ExperimentalSetAttributesResult,
@@ -306,6 +310,55 @@ export async function cancelWorkflowRunV1(
     }
     throw error;
   }
+}
+
+/**
+ * Cancel many runs in a single backend request.
+ *
+ * The request is validated client-side (1–500 unique IDs) before hitting
+ * `POST /v4/runs/cancel`, and the structured response is parsed with the
+ * shared world schema. Results are reordered to match the requested
+ * `runIds` so callers get a stable, request-aligned array regardless of
+ * the order the backend returns.
+ */
+export async function cancelWorkflowRuns(
+  request: BulkCancelWorkflowRunsRequest,
+  config?: APIConfig
+): Promise<BulkCancelWorkflowRunsResult> {
+  const { runIds, cancelReason } =
+    BulkCancelWorkflowRunsRequestSchema.parse(request);
+
+  const response = await makeRequest({
+    endpoint: '/v4/runs/cancel',
+    options: { method: 'POST' },
+    data: cancelReason !== undefined ? { runIds, cancelReason } : { runIds },
+    config,
+    schema: BulkCancelWorkflowRunsResultSchema,
+  });
+
+  // The backend must return exactly one result per requested ID. A missing
+  // ID, a duplicate, or an unexpected extra ID is a protocol violation:
+  // reject it rather than papering over it by synthesizing a `not_found`
+  // outcome, which would silently disagree with the backend's own summary.
+  const resultByRunId = new Map(
+    response.results.map((result) => [result.runId, result])
+  );
+  const isBijection =
+    resultByRunId.size === response.results.length &&
+    response.results.length === runIds.length &&
+    runIds.every((runId) => resultByRunId.has(runId));
+  if (!isBijection) {
+    throw new WorkflowWorldError(
+      `Bulk cancel response did not contain exactly one result per requested run ID ` +
+        `(requested ${runIds.length}, received ${response.results.length}).`
+    );
+  }
+
+  const orderedResults = runIds.map(
+    (runId) => resultByRunId.get(runId) as (typeof response.results)[number]
+  );
+
+  return { summary: response.summary, results: orderedResults };
 }
 
 /**

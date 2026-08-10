@@ -10,6 +10,16 @@ related:
 
 Runtime variables are read where workflows execute. Set them on the deployment or dev server.
 
+## Client polling
+
+### `WORKFLOW_RETURN_VALUE_POLL_INTERVAL_MS`
+
+- Default: `1000`
+- Minimum: `1`
+- Delay between status requests made by [`Run.returnValue`](/docs/api-reference/workflow-api/get-run) while a workflow run is not yet complete.
+- Increase it to reduce polling traffic at the cost of noticing completion later.
+- This variable is read by the process awaiting `Run.returnValue`, such as an E2E test runner, rather than by the workflow deployment.
+
 ## Replay and queue delivery
 
 ### `WORKFLOW_REPLAY_TIMEOUT_MS`
@@ -33,6 +43,14 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 - Delivery attempts before a run or step is failed gracefully.
 - Can only be lowered. The default is calibrated so Workflow can record failure before the queue expires the message.
 
+### `WORKFLOW_MAX_EVENTS`
+
+- Default: `25000`
+- Positive-integer event limit reported by the Local World and enforced by the runtime as `MAX_EVENTS_EXCEEDED`.
+- The Local and Postgres Worlds also use it as the maximum number of events returned when `events.list()` is called without a limit. If more events exist, the response includes `hasMore: true` and a continuation cursor.
+- The Vercel World receives its event limit from the service; this environment variable does not override that service-owned value.
+- Invalid or non-positive values fall back to the default.
+
 ### `WORKFLOW_REPLAY_DIVERGENCE_MAX_RETRIES`
 
 - Default: `3`
@@ -44,6 +62,14 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 - Resuming a hook persists the `hook_received` event and publishes the workflow invocation concurrently, cutting a round trip off resume latency. On this parallel path the queue message also carries the payload, so a transient event-write failure still resumes the run — the queue consumer re-ensures the `hook_received` event before replay. A backend `(runId, resumeId)` constraint keeps the two writers converging on exactly one event.
 - The runtime falls back to the sequential path automatically when the consumer or backend does not attest dedup support (or the payload is too large to inline on the queue message). On the sequential path the event is written *before* dispatch and its failure fails the resume — the fallback trades that resilience away to stay safe when dedup is not enforced, it does not preserve it.
 - Set `1` to force the sequential path as a kill switch. The chosen strategy is reported on the resume span as `workflow.hook.resume_strategy`.
+
+### `WORKFLOW_DEPLOYMENT_MISMATCH_MAX_RETRIES`
+
+- Default: `3`
+- Times a delivery that reached a deployment other than the one its run is pinned to is re-routed to that deployment before the run is failed with [`DEPLOYMENT_MISMATCH`](/docs/errors/deployment-mismatch).
+- Re-routed deliveries back off exponentially (1s, 2s, 4s). Set to `0` to fail the run on the first misrouted delivery.
+- Only applies to Worlds with atomic, immutable deployments (the Vercel World). A run whose pinned deployment cannot be reached at all fails immediately regardless of this value.
+- Transient or unknown queue publishing failures use normal queue redelivery and do not consume this budget.
 
 ### `WORKFLOW_PRECONDITION_GUARD`
 
@@ -74,6 +100,17 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 - Default: `2`
 - Delay before a re-invocation caused by a rejected event creation.
 - Unlike an in-process restart, which re-reads immediately, a re-invocation only happens once the in-process budget failed to catch up — so the delay gives the other writers a moment to quiesce.
+
+### `WORKFLOW_PER_KIND_CORRELATION_IDS`
+
+- Default: disabled
+- Experimental. Gives each kind of entity a workflow creates — steps, waits, hooks, attribute writes, abort controllers, stream IDs — its own sequence of correlation IDs.
+- With one sequence shared by every kind, an ID is an ordinal over the whole run, so a single extra draw of any kind shifts every ID after it. Two concurrent replays of the same run that disagree about one `sleep()` then assign different IDs to every step that follows, and each writes events the other can neither match nor consume, which fails the run with `CORRUPTED_EVENT_LOG`. Per-kind sequences confine that to the kind that actually differs.
+- IDs remain ordered within a kind, so hooks created by your workflow are still listed in creation order. A hook the runtime creates for you, such as the one backing an abort controller, draws from its own kind and so is listed at an arbitrary position relative to your hooks rather than at its creation position.
+- A run must replay under the scheme that minted its IDs. A replay that switches schemes mid-run assigns IDs its own earlier events do not carry, so it can consume none of them and the run fails.
+  - On Vercel, a run keeps replaying on the deployment it started on, so it only ever sees the value baked into that deployment. Changing the setting affects new runs only.
+  - Elsewhere — `@workflow/world-postgres`, `@workflow/world-local`, any self-hosted process — nothing pins a run to the code that started it. Turn the setting on during a quiet window with no runs in flight, and roll the new value out to your whole fleet at once: a rolling deploy that leaves both values live replays one run under two schemes concurrently, which is the failure the setting exists to reduce.
+- Set `1` to enable.
 
 ## Inline execution
 
@@ -185,7 +222,7 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 
 - Default: enabled
 - On the Vercel World, lets concurrent event-log requests share one HTTP/2 connection instead of one connection per in-flight request.
-- Set `0` to send one event request per connection.
+- Set `0` to take the event-log requests off HTTP/2 entirely, back to one request per HTTP/1.1 connection. Use this as the kill switch if HTTP/2 turns out to be at fault for event delivery problems.
 
 ## Queue namespace
 

@@ -16,6 +16,8 @@ import type {
 import type { GetHookParams, Hook, ListHooksParams } from './hooks.js';
 import type { Queue } from './queue.js';
 import type {
+  BulkCancelWorkflowRunsRequest,
+  BulkCancelWorkflowRunsResult,
   GetWorkflowRunParams,
   ListWorkflowRunsParams,
   WorkflowRun,
@@ -213,6 +215,17 @@ export interface Storage {
       changes: AttributeChange[],
       options?: { allowReservedAttributes?: boolean }
     ): Promise<ExperimentalSetAttributesResult>;
+
+    /**
+     * Cancel many runs in a single operation, returning a per-run outcome
+     * for each requested ID (order preserved) plus an aggregate summary.
+     *
+     * OPTIONAL. The SDK helper `cancelRuns` in `@workflow/core` falls back to
+     * bounded-concurrency single-run cancellation when unavailable.
+     */
+    cancelMany?(
+      request: BulkCancelWorkflowRunsRequest
+    ): Promise<BulkCancelWorkflowRunsResult>;
   };
 
   steps: {
@@ -253,11 +266,11 @@ export interface Storage {
      * @param params - Optional parameters for event creation
      * @returns Promise resolving to the created event and run entity
      */
-    create(
+    create<T extends RunCreatedEventRequest>(
       runId: string | null,
-      data: RunCreatedEventRequest,
+      data: T,
       params?: CreateEventParams
-    ): Promise<EventResult>;
+    ): Promise<EventResult<T['eventType']>>;
 
     /**
      * Create an event for an existing workflow run and atomically update the entity.
@@ -268,11 +281,11 @@ export interface Storage {
      * @param params - Optional parameters for event creation
      * @returns Promise resolving to the created event and affected entity
      */
-    create(
+    create<T extends CreateEventRequest>(
       runId: string,
-      data: CreateEventRequest,
+      data: T,
       params?: CreateEventParams
-    ): Promise<EventResult>;
+    ): Promise<EventResult<T['eventType']>>;
 
     get(
       runId: string,
@@ -435,6 +448,21 @@ export interface WorldCapabilities {
    * `resumeCapabilities.hookResumeDedupVersion` on the by-token hook.
    */
   hookResumeDedup?: boolean;
+
+  /**
+   * Deployments are atomic and immutable: a deployment id names one fixed
+   * build for its whole lifetime, so a run pinned to one may only execute
+   * there. Worlds that declare this get the runtime's deployment-affinity
+   * guard, which re-routes a misrouted delivery to the run's own deployment
+   * and ultimately fails the run with `DEPLOYMENT_MISMATCH`.
+   *
+   * Worlds whose deployment id is synthetic or version-tagged (e.g.
+   * `dpl_local@<sdk-version>`, which legitimately differs across SDK versions
+   * within one logical environment) must leave this unset: there a
+   * "mismatch" is not a real cross-deployment delivery, and guarding would
+   * fail ordinary runs after a version bump.
+   */
+  deploymentAffinity?: boolean;
 }
 
 /**
@@ -467,26 +495,10 @@ export interface World extends Queue, Streamer, Storage {
   capabilities?: WorldCapabilities;
 
   /**
-   * Whether calling `process.exit(1)` from a queue handler is observed by
-   * the World as a delivery failure that will be retried.
-   *
-   * Set to `true` for worlds running inside a managed serverless platform
-   * (e.g. `world-vercel`) where the platform fails the invocation when the
-   * function process exits non-zero, and the queue redelivers the message
-   * via a separate fresh invocation.
-   *
-   * Set to `false` (the default) for in-process worlds (e.g. `world-local`,
-   * dev servers) where calling `process.exit()` would terminate the host
-   * process — including the user's `pnpm dev` — without producing a
-   * redelivery. Such worlds should instead surface failures via the event
-   * log and return normally.
-   *
-   * The core runtime reads this when deciding how to handle an exhausted
-   * replay budget: when `true` it exits so the queue redelivers; when
-   * `false` it writes `run_failed` best-effort and returns. See
-   * `packages/core/src/runtime/replay-budget.ts`.
+   * Absolute wall-clock time when the current function invocation will be
+   * terminated by the hosting platform, if known. Used to optimize runtime behavior.
    */
-  processExitTriggersQueueRedelivery?: boolean;
+  getRuntimeDeadline?(): Promise<Date | undefined>;
 
   /**
    * A function that will be called to start any background tasks needed by the World implementation.

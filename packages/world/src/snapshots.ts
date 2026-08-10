@@ -30,6 +30,25 @@ export const SnapshotMetadataSchema = z.object({
    */
   rngDraws: z.number().int().nonnegative().optional(),
   /**
+   * Snapshot-portable token of the engine's host-serde capture root: the
+   * container of pristine intrinsics/samples/symbols captured before any
+   * user code ran, whose box lives inside the snapshot's memory image. A
+   * restore re-adopts it by this token so serde initialization executes
+   * no guest code after user code has run. Required to restore (format
+   * version >= 2); snapshots without it are treated as a miss.
+   */
+  serdeRootPtr: z.number().int().optional(),
+  /**
+   * The monotonic correlation-id ULID factory's last output when the
+   * snapshot was taken (undefined if the run had drawn none). The
+   * factory's state lives host-side and does not survive into the memory
+   * image; on restore the runtime continues the sequence from this value
+   * (same-timestamp base32 increment), so a restored invocation emits
+   * the exact ids a full replay would — keeping concurrent invocations
+   * of the same run dedupable via per-(runId, correlationId) uniqueness.
+   */
+  lastUlid: z.string().optional(),
+  /**
    * Snapshot format tag. A reader that doesn't recognize the version
    * treats the snapshot as a clean miss (full replay) instead of handing
    * an incompatible heap to the WASM engine.
@@ -40,7 +59,12 @@ export const SnapshotMetadataSchema = z.object({
 /**
  * Current snapshot format version, bumped when the heap layout or the
  * metadata contract changes incompatibly.
+ *
+ * v2: host-side serde + host-side ULID factory (post-#3263 engine) —
+ * adds required `serdeRootPtr` and `lastUlid` continuation state. v1
+ * snapshots (in-VM serde era) cannot be restored by this engine and are
+ * treated as a miss.
  */
-export const SNAPSHOT_FORMAT_VERSION = 1;
+export const SNAPSHOT_FORMAT_VERSION = 2;
 
 export type SnapshotMetadata = z.infer<typeof SnapshotMetadataSchema>;

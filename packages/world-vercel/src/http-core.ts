@@ -153,6 +153,21 @@ export function parseRetryAfter(
 }
 
 /**
+ * Flatten a fetch `Headers` into the plain record both `throwForErrorResponse`
+ * (mirroring the v3 `makeRequest` error contract) and the WS transport's
+ * `getHeaders` seam expect. Lives here because both `events-v4.ts` and
+ * `ws-transport.ts` need it and `events-v4` already imports the transport, so
+ * the reverse edge would be a cycle.
+ */
+export function headersToRecord(headers: Headers): Record<string, string> {
+  const out: Record<string, string> = {};
+  headers.forEach((value, key) => {
+    out[key] = value;
+  });
+  return out;
+}
+
+/**
  * Build the typed error for a non-2xx response. This is the single source of
  * truth for the status → error-type contract the runtime branches on:
  *
@@ -348,6 +363,14 @@ export interface InstrumentedFetchOptions {
    * `errorForResponse`.
    */
   buildError?: (response: Response) => Error | Promise<Error>;
+  /**
+   * Notified about the transport-level outcome of the `fetch()` call: the thrown
+   * error when no response arrived, `undefined` when one did. An HTTP error
+   * status is *not* reported as a failure — the origin answered, so the transport
+   * worked. Lets a caller that owns a shared dispatcher retire it when its
+   * connections stop delivering (see noteEventsTransportOutcome).
+   */
+  onTransportOutcome?: (error?: unknown) => void;
 }
 
 /**
@@ -380,6 +403,7 @@ export async function instrumentedFetch(
     spanName,
     attributes,
     durationAttribute,
+    onTransportOutcome,
   } = opts;
   const label = logLabel ?? url;
 
@@ -437,6 +461,9 @@ export async function instrumentedFetch(
         } as any);
       } catch (error) {
         const elapsed = Date.now() - start;
+        // Report the raw error, before the timeout mapping below rewraps it: the
+        // undici error code the caller matches on lives in this chain.
+        onTransportOutcome?.(error);
         // AbortSignal.timeout() surfaces as a DOMException named 'TimeoutError'.
         // Map to WorkflowWorldError so existing catch sites treat it like any
         // other world transport failure.
@@ -455,6 +482,7 @@ export async function instrumentedFetch(
         throw error;
       }
       const ms = Date.now() - start;
+      onTransportOutcome?.();
 
       httpLog(method, label, response, ms);
       span?.setAttributes({ ...HttpResponseStatusCode(response.status) });
