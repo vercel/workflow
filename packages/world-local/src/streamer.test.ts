@@ -1,3 +1,4 @@
+import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -984,6 +985,7 @@ describe('streamer', () => {
         expect(page2.data).toHaveLength(1);
         expect(page2.data[0].index).toBe(2);
         expect(page2.hasMore).toBe(false);
+        expect(page2.cursor).not.toBeNull();
         expect(page2.done).toBe(true);
       });
 
@@ -1035,6 +1037,18 @@ describe('streamer', () => {
         );
         expect(result.data).toHaveLength(1);
         expect(result.done).toBe(false);
+        expect(result.hasMore).toBe(false);
+        assert(result.cursor);
+
+        await streamer.streams.write(TEST_RUN_ID, streamName, 'more');
+        const resumed = await streamer.streams.getChunks(
+          TEST_RUN_ID,
+          streamName,
+          { cursor: result.cursor }
+        );
+        expect(
+          resumed.data.map((chunk) => Buffer.from(chunk.data).toString())
+        ).toEqual(['more']);
       });
 
       it('should return empty data for nonexistent stream', async () => {
@@ -1045,6 +1059,7 @@ describe('streamer', () => {
           'nonexistent'
         );
         expect(result.data).toEqual([]);
+        expect(result.cursor).toBeNull();
         expect(result.hasMore).toBe(false);
       });
 

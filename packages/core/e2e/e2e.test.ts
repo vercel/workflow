@@ -1056,7 +1056,7 @@ describe('e2e', () => {
         const streamName = `${run.runId.replace('wrun_', 'strm_')}_user`;
         const paginatedChunks: Uint8Array[] = [];
         let cursor: string | null = null;
-        do {
+        for (;;) {
           const page = await world.streams.getChunks(run.runId, streamName, {
             limit: 1, // small page size to exercise pagination
             ...(cursor ? { cursor } : {}),
@@ -1067,8 +1067,9 @@ describe('e2e', () => {
           cursor = page.cursor;
           if (!page.hasMore) {
             expect(page.done).toBe(true);
+            break;
           }
-        } while (cursor);
+        }
 
         // Both methods should return the same number of chunks
         expect(paginatedChunks).toHaveLength(streamChunks.length);

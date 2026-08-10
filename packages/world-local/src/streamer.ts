@@ -406,7 +406,7 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
         const hasMore =
           !streamDone && dataIndex > startIndex + resultChunks.length;
         const nextIndex = startIndex + resultChunks.length;
-        const nextCursor = hasMore
+        const nextCursor = resultChunks.length
           ? Buffer.from(JSON.stringify({ i: nextIndex })).toString('base64')
           : null;
 
