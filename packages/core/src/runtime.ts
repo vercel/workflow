@@ -1,3 +1,4 @@
+import assert from 'node:assert/strict';
 import { types } from 'node:util';
 import {
   CorruptedEventLogError,
@@ -18,9 +19,13 @@ import {
   workflowDisplayName,
 } from '@workflow/utils/parse-name';
 import {
+  type CreateEventParams,
+  type CreateEventRequest,
   type Event,
+  type EventResult,
   getQueueTopicPrefix,
   isLegacySpecVersion,
+  isTerminalRunEventType,
   ROOT_RUN_ID_ATTRIBUTE,
   type RunInput,
   resolveQueueNamespace,
@@ -63,7 +68,6 @@ import {
 } from './runtime/deployment-guard.js';
 import {
   appendUniqueEvents,
-  type EventCreator,
   getQueueOverhead,
   getWorkflowQueueName,
   handleHealthCheckMessage,
@@ -465,31 +469,46 @@ function openHookAndWaitState(events: Event[]): {
   openHook: boolean;
   openWait: boolean;
 } {
-  const disposedHookIds = new Set<string | undefined>();
-  const completedWaitIds = new Set<string | undefined>();
-  for (const e of events) {
-    if (e.eventType === 'hook_disposed') disposedHookIds.add(e.correlationId);
-    else if (e.eventType === 'wait_completed') {
-      completedWaitIds.add(e.correlationId);
+  const hooks = new Set<string>();
+  const waits = new Set<string>();
+  for (const event of events) {
+    switch (event.eventType) {
+      case 'hook_created':
+        hooks.add(event.correlationId);
+        break;
+      case 'hook_disposed':
+        hooks.delete(event.correlationId);
+        break;
+      case 'wait_created':
+        waits.add(event.correlationId);
+        break;
+      case 'wait_completed':
+        waits.delete(event.correlationId);
+        break;
     }
   }
-  let openHook = false;
-  let openWait = false;
-  for (const e of events) {
-    if (
-      e.eventType === 'hook_created' &&
-      !disposedHookIds.has(e.correlationId)
-    ) {
-      openHook = true;
-    } else if (
-      e.eventType === 'wait_created' &&
-      !completedWaitIds.has(e.correlationId)
-    ) {
-      openWait = true;
-    }
-    if (openHook && openWait) break;
+  return { openHook: hooks.size > 0, openWait: waits.size > 0 };
+}
+
+type ReplayEventLog =
+  | { type: 'loadAll' }
+  | ({ type: 'ready' } & LoadedEventLog)
+  | ({ type: 'loadAfter'; cursor: string } & LoadedEventLog);
+
+function nextEventLogLoad(log: LoadedEventLog): ReplayEventLog {
+  if (log.cursor === null) {
+    return { type: 'loadAll' };
   }
-  return { openHook, openWait };
+  return {
+    type: 'loadAfter',
+    events: log.events,
+    cursor: log.cursor,
+  };
+}
+
+function appendEventLog(log: LoadedEventLog, appended: LoadedEventLog): void {
+  appendUniqueEvents(log.events, appended.events);
+  log.cursor = appended.cursor ?? log.cursor;
 }
 
 /**
@@ -801,31 +820,102 @@ export function workflowEntrypoint(
                   const replayRecoveryReporter = replayDivergence
                     ? new ReplayRecoveryReporter(replayDivergence.count)
                     : ReplayRecoveryReporter.inert();
-                  const createEvent: EventCreator = (data, params) =>
-                    replayRecoveryReporter.withEventCreate(params, (p) =>
-                      world.events.create(runId, data, p)
+                  // Every write this loop makes carries the cursor of the log
+                  // it was computed against, and folds a complete returned
+                  // delta into that log.
+                  const createEvent = async <T extends CreateEventRequest>(
+                    data: T,
+                    params?: CreateEventParams
+                  ) => {
+                    const sinceCursor = deltaRequestCursor(data, params);
+                    const result = await replayRecoveryReporter.withEventCreate(
+                      sinceCursor === undefined
+                        ? params
+                        : { ...params, sinceCursor },
+                      (p) => world.events.create(runId, data, p)
                     );
+                    if (sinceCursor !== undefined) {
+                      absorbCreateDelta(sinceCursor, result);
+                    }
+                    return result;
+                  };
 
-                  // Event cache: keep loaded events in memory across loop iterations.
-                  // On the first iteration we do a full load; on subsequent iterations
-                  // we fetch only events created after the last known cursor.
-                  let cachedEvents: Event[] | null = null;
-                  let eventsCursor: string | null = null;
+                  /**
+                   * The cursor to ask for an inline delta against, or
+                   * undefined to not ask.
+                   *
+                   * Turbo is excluded on purpose: it exists to make the first
+                   * invocation's writes as cheap as possible, and it has no
+                   * loaded log to extend. Run-terminal writes are excluded
+                   * because nothing reads the log afterwards, so the delta
+                   * would be work the World does for no one. A caller that
+                   * set its own `sinceCursor` (or asked for the `run_started`
+                   * / `hook_received` preload, which owns the same response
+                   * fields) keeps what it asked for.
+                   */
+                  const deltaRequestCursor = (
+                    data: CreateEventRequest,
+                    params: CreateEventParams | undefined
+                  ): string | undefined => {
+                    if (
+                      turbo ||
+                      eventLog.type !== 'ready' ||
+                      params?.sinceCursor !== undefined ||
+                      params?.preloadEvents === true ||
+                      isTerminalRunEventType(data.eventType)
+                    ) {
+                      return undefined;
+                    }
+                    return eventLog.cursor ?? undefined;
+                  };
 
-                  // Inline-delta optimization: when an inline step's terminal
-                  // write returns the event-log delta since the pre-write
-                  // cursor (a supporting World only), we stash it here so the
-                  // next loop iteration consumes it in place of the incremental
-                  // events.list round-trip. Each value is consumed exactly once
-                  // and then cleared. Null means "no delta pending — fetch
-                  // normally". See the consume site at the top of the loop and
-                  // the produce sites: after inline executeStep, and in
-                  // restartReplayInProcess when a stale-snapshot rejection
-                  // carried the missing events with it.
-                  let pendingInlineDelta: {
-                    events: Event[];
-                    cursor: string | null;
-                  } | null = null;
+                  /**
+                   * Fold an inline delta returned by `events.create` into the
+                   * in-memory event log.
+                   *
+                   * The delta is what `events.list({ cursor: sentCursor })`
+                   * would have returned right after the write, so it carries
+                   * back both our own event and anything another writer
+                   * appended in band. Absorbing it here means the next reader
+                   * already has the log and the loop's incremental
+                   * `events.list` finds nothing left to fetch.
+                   *
+                   * Declining is always safe — an unabsorbed delta is a delta
+                   * the next `events.list` returns — so the guards are free to
+                   * be strict:
+                   *
+                   * - `hasMore` means the World truncated the page. Taking it
+                   *   while advancing the cursor to the page end would be
+                   *   fine, but taking it and NOT advancing would duplicate,
+                   *   and the truncated case is rare enough not to special-case.
+                   * - The cursor must be exactly where it was when the request
+                   *   went out. Concurrent writes each diff against the cursor
+                   *   they saw, and `appendUniqueEvents` deliberately does not
+                   *   re-sort, so absorbing a second delta computed from an
+                   *   older cursor could append events behind ones already
+                   *   taken. First response back wins; the rest are dropped.
+                   */
+                  const absorbCreateDelta = (
+                    sentCursor: string,
+                    result: EventResult
+                  ): void => {
+                    if (
+                      eventLog.type !== 'ready' ||
+                      eventLog.cursor !== sentCursor ||
+                      result.events === undefined ||
+                      result.hasMore === true
+                    ) {
+                      return;
+                    }
+                    appendEventLog(eventLog, {
+                      events: result.events,
+                      cursor: result.cursor,
+                    });
+                  };
+
+                  // `ready` can replay once without a read. The other states
+                  // describe the next load exactly.
+                  let eventLog: ReplayEventLog = { type: 'loadAll' };
 
                   // Shared state: set by either the background step path
                   // or the run_started setup below.
@@ -834,8 +924,6 @@ export function workflowEntrypoint(
                   // response. Undefined ⇒ no enforcement (older servers, turbo).
                   let maxEventsLimit: number | undefined;
                   let workflowStartedAt = -1;
-                  let preloadedEvents: Event[] | undefined;
-                  let preloadedEventsCursor: string | null | undefined;
 
                   // Latency telemetry (TTFS) state — see runtime/step-latency.ts.
                   // Whether this invocation's FIRST event snapshot contained
@@ -1120,27 +1208,26 @@ export function workflowEntrypoint(
                       allowDelta && preconditionRestarts === 1
                         ? preconditionEventDelta(error, runId)
                         : null;
-                    // A delta is only usable as a delta if there is a cached log
-                    // to merge it into; with no base log the restart has to load
-                    // the whole thing anyway.
-                    const usedDelta = Boolean(delta && cachedEvents);
+                    // A delta is only usable if there is a loaded log to merge
+                    // it into; without one the restart must load everything.
+                    const usedDelta =
+                      delta !== null && eventLog.type !== 'loadAll';
                     // Snapshot the set being discarded while it is still in
                     // hand; the comparison happens once the next load resolves.
-                    preconditionRestartBaseline = cachedEvents
-                      ? {
-                          ids: new Set(
-                            cachedEvents.map((event) => event.eventId)
-                          ),
-                          restart: preconditionRestarts,
-                          reason,
-                          source: usedDelta ? 'inline-delta' : 'full-reload',
-                        }
-                      : null;
-                    if (usedDelta) {
-                      // Consumed by the loop's first branch
-                      // (`pendingInlineDelta && cachedEvents`) with no
-                      // events.list round trip at all.
-                      pendingInlineDelta = delta;
+                    preconditionRestartBaseline =
+                      eventLog.type !== 'loadAll'
+                        ? {
+                            ids: new Set(
+                              eventLog.events.map((event) => event.eventId)
+                            ),
+                            restart: preconditionRestarts,
+                            reason,
+                            source: usedDelta ? 'inline-delta' : 'full-reload',
+                          }
+                        : null;
+                    if (delta && eventLog.type !== 'loadAll') {
+                      appendEventLog(eventLog, delta);
+                      eventLog = { ...eventLog, type: 'ready' };
                     } else {
                       // MUST be a full, cursor-less reload. The cursor filters
                       // by lexicographic event id while a hole is defined by
@@ -1150,11 +1237,7 @@ export function workflowEntrypoint(
                       // millisecond but committed later always sorts below it.
                       // An incremental load therefore heals the hole only by
                       // luck.
-                      cachedEvents = null;
-                      eventsCursor = null;
-                      preloadedEvents = undefined;
-                      preloadedEventsCursor = undefined;
-                      pendingInlineDelta = null;
+                      eventLog = { type: 'loadAll' };
                       // The corrected log inserts the missing events BELOW the
                       // length already scanned for payload prewarming, shifting
                       // every later position. Only a full rescan sees them.
@@ -1430,22 +1513,19 @@ export function workflowEntrypoint(
                       // owned recovery and then transitions to queued/bare
                       // retries trips the combined ceiling. This still bounds
                       // timeouts, which write no error for the post-body guard
-                      // to catch. The load also primes the replay's
-                      // `cachedEvents`/`eventsCursor` (the post-step
-                      // continuation below refreshes them once the step's
-                      // terminal event lands).
+                      // to catch.
                       let bgAuthoritativeAttempt = metadata.attempt;
                       const bgMaxRetries =
                         getStepFunction(incomingStepName)?.maxRetries ??
                         DEFAULT_STEP_MAX_RETRIES;
                       if (metadata.attempt > bgMaxRetries + 1) {
                         const loaded = await loadWorkflowRunEvents(runId);
-                        cachedEvents = loaded.events;
-                        eventsCursor = loaded.cursor;
                         bgAuthoritativeAttempt =
-                          countStepStartedEvents(cachedEvents, incomingStepId, {
-                            type: 'totalAttempts',
-                          }) + 1;
+                          countStepStartedEvents(
+                            loaded.events,
+                            incomingStepId,
+                            { type: 'totalAttempts' }
+                          ) + 1;
                       }
 
                       // Pause the replay budget while the step body runs —
@@ -1522,14 +1602,13 @@ export function workflowEntrypoint(
                         // Use cursor-based loading so the main loop can continue
                         // incrementally from here.
                         const loaded = await loadWorkflowRunEvents(runId);
-                        cachedEvents = loaded.events;
-                        eventsCursor = loaded.cursor;
+                        eventLog = nextEventLogLoad(loaded);
 
                         // Check for pending steps: any step_created without
                         // a matching step_completed or step_failed.
                         const stepCreatedIds = new Set<string | undefined>();
                         const stepTerminalIds = new Set<string | undefined>();
-                        for (const e of cachedEvents) {
+                        for (const e of loaded.events) {
                           if (e.eventType === 'step_created') {
                             stepCreatedIds.add(e.correlationId);
                           } else if (
@@ -1558,7 +1637,7 @@ export function workflowEntrypoint(
                           if (
                             isInlineOwnershipEnabled() &&
                             hasPendingStepOwnedByMessage(
-                              cachedEvents,
+                              loaded.events,
                               pendingStepIds,
                               metadata.messageId
                             )
@@ -1585,7 +1664,7 @@ export function workflowEntrypoint(
                           'All parallel steps done, replaying inline after background step',
                           { workflowRunId: runId }
                         );
-                        const runCreatedEvent = cachedEvents.find(
+                        const runCreatedEvent = loaded.events.find(
                           (event) => event.eventType === 'run_created'
                         );
                         let replayInput: unknown;
@@ -1616,7 +1695,6 @@ export function workflowEntrypoint(
                           completedAt: undefined,
                         };
                         workflowStartedAt = bgStartedAt;
-                        // cachedEvents and eventsCursor already set from load above
                       } else {
                         return;
                       }
@@ -1639,9 +1717,268 @@ export function workflowEntrypoint(
                     }
                   }
 
+                  // Deployment-affinity pre-check for the lazy hook fast
+                  // path below. New lazy-resume messages carry the run's
+                  // pinned deployment (`hookInput.deploymentId`), so a
+                  // misrouted delivery is detectable with a cheap ambient
+                  // deployment-id comparison BEFORE the fast path's
+                  // hook_received write — the correctly-routed common case
+                  // pays no run fetch and no latency. Only a detected
+                  // mismatch fetches the authoritative run and hands it to
+                  // the existing guard (which owns re-route/fail policy);
+                  // the re-routed message keeps the complete `hookInput`,
+                  // since it may hold the only copy of the resume payload.
+                  // When the pinned or ambient id is unavailable (older
+                  // producer message, a world without deployment affinity,
+                  // or a getDeploymentId failure), behavior is unchanged:
+                  // the authoritative guard after run setup — which remains
+                  // the protection before replay and step execution — still
+                  // covers the delivery; the fast path's write is idempotent
+                  // per (runId, resumeId), so a pre-guard write from an
+                  // older message stays convergent.
+                  if (
+                    !workflowRun &&
+                    hookInput?.deploymentId !== undefined &&
+                    // Same eligibility as guardDeploymentAffinity: without
+                    // atomic, immutable deployments the ids legitimately
+                    // differ (e.g. dpl_local@<version>) and comparing them
+                    // would trigger spurious run fetches.
+                    world.capabilities?.deploymentAffinity === true
+                  ) {
+                    const pinnedDeploymentId = hookInput.deploymentId;
+                    let currentDeploymentId: string | undefined;
+                    try {
+                      currentDeploymentId = await world.getDeploymentId();
+                    } catch {
+                      currentDeploymentId = undefined;
+                    }
+                    if (
+                      currentDeploymentId !== undefined &&
+                      currentDeploymentId !== pinnedDeploymentId
+                    ) {
+                      const run = await world.runs.get(runId, {
+                        resolveData: 'none',
+                      });
+                      if (
+                        (await guardDeployment(
+                          run,
+                          async () => ({
+                            ...(await replayMessage()),
+                            hookInput,
+                          }),
+                          awaitRunReady
+                        )) !== 'continue'
+                      ) {
+                        return;
+                      }
+                    }
+                  }
+
+                  // --- Lazy hook resume fast path ---
+                  // A lazy hook delivery (resumeId + digest on the queue
+                  // message) hoists the consumer's idempotent hook_received
+                  // re-ensure above run_started and asks the World to return
+                  // the current replay log with the write (preloadEvents). A
+                  // supporting World answers with the reconstructed run, the
+                  // complete replay log, and the run's event ceiling —
+                  // everything the generic setup below would spend a
+                  // run_started POST and an events.list on. Any other result
+                  // (older server, a World that ignores the param, or a
+                  // preload that fails validation, including a bounded
+                  // hasMore page) falls back to that generic setup; the
+                  // hook_received write itself has still succeeded either
+                  // way, so the re-ensure block below is skipped via
+                  // `hookEnsured`. Never taken on turbo (turbo deliveries
+                  // carry runInput, not hookInput) or after the background
+                  // step path already loaded the run.
+                  let hookEnsured = false;
+                  if (
+                    !workflowRun &&
+                    hookInput &&
+                    hookInput.resumeId !== undefined &&
+                    hookInput.payloadDigest !== undefined
+                  ) {
+                    const hookResumeInput = hookInput;
+                    // Date the materialized event to when the resume actually
+                    // occurred — same derivation as the re-ensure below (the
+                    // resumeId is a ULID minted by resumeHook() at resume
+                    // time).
+                    let occurredAt: Date | undefined;
+                    try {
+                      occurredAt = new Date(
+                        decodeTime(hookResumeInput.resumeId)
+                      );
+                    } catch {
+                      occurredAt = undefined;
+                    }
+                    try {
+                      span?.addEvent('workflow.hook_received.create.start', {
+                        'workflow.hook_received.preload_events': true,
+                      });
+                      const result = await createEvent(
+                        {
+                          eventType: 'hook_received',
+                          specVersion: SPEC_VERSION_CURRENT,
+                          correlationId: hookResumeInput.hookId,
+                          eventData: {
+                            token: hookResumeInput.token,
+                            payload: hookResumeInput.payload,
+                          },
+                        },
+                        {
+                          requestId,
+                          occurredAt,
+                          resumeId: hookResumeInput.resumeId,
+                          resumePayloadDigest: hookResumeInput.payloadDigest,
+                          preloadEvents: true,
+                        }
+                      );
+                      hookEnsured = true;
+                      // Note: unlike the re-ensure below, this hoisted write
+                      // does NOT set HookResilientResumeMaterialized — it
+                      // runs on every fast-path resume, including the common
+                      // case where the producer's direct write already landed
+                      // and this call merely converged on it, so it carries
+                      // no recovery signal. workflow.resume_setup_source
+                      // (below) describes this path instead.
+
+                      // The preload is usable as replay input only when it is
+                      // demonstrably the complete picture: a reconstructed
+                      // run with a start time, a non-empty COMPLETE log
+                      // (hasMore false — this path has no cursor-continuation
+                      // machinery, so a bounded page must not be trusted),
+                      // the server's event ceiling (this response plays
+                      // run_started's role, so a missing ceiling would leave
+                      // event-limit enforcement disabled for the run),
+                      // both run lifecycle events, the canonical event this
+                      // write converged on, and the hook_received matching
+                      // THIS resume (so we never replay against a log that is
+                      // missing the very event that triggered this delivery).
+                      const usableReplayPreload =
+                        result.run !== undefined &&
+                        result.run.startedAt !== undefined &&
+                        result.event !== undefined &&
+                        result.events !== undefined &&
+                        result.events.length > 0 &&
+                        result.cursor != null &&
+                        result.hasMore === false &&
+                        typeof result.maxEvents === 'number' &&
+                        result.events.some(
+                          (e) => e.eventType === 'run_created'
+                        ) &&
+                        result.events.some(
+                          (e) => e.eventType === 'run_started'
+                        ) &&
+                        result.events.some(
+                          (e) =>
+                            e.eventType === 'hook_received' &&
+                            e.resumeId === hookResumeInput.resumeId
+                        );
+
+                      if (
+                        usableReplayPreload &&
+                        result.run?.startedAt &&
+                        result.events
+                      ) {
+                        // The reconstructed run always reads 'running', but a
+                        // terminal event committed concurrently rides in the
+                        // log itself. The node replay loop would catch it, but
+                        // QuickJS dispatches before that check — so consume
+                        // the delivery here, before any engine runs. Same
+                        // outcome as the run_started path's non-running
+                        // status check.
+                        const terminalEvent = result.events.find(
+                          (e) =>
+                            e.runId === runId &&
+                            (e.eventType === 'run_completed' ||
+                              e.eventType === 'run_failed' ||
+                              e.eventType === 'run_cancelled')
+                        );
+                        if (terminalEvent) {
+                          // The preload still initialized this delivery (it
+                          // is how the terminal state was observed), so the
+                          // setup-source and the run's actual terminal
+                          // status are recorded before consuming.
+                          span?.setAttributes({
+                            ...Attribute.WorkflowRunStatus(
+                              terminalEvent.eventType === 'run_completed'
+                                ? 'completed'
+                                : terminalEvent.eventType === 'run_failed'
+                                  ? 'failed'
+                                  : 'cancelled'
+                            ),
+                            ...Attribute.HookResumeSetupSource(
+                              'hook_received_stream'
+                            ),
+                          });
+                          runtimeLogger.info(
+                            'Run already finished during lazy hook setup, skipping',
+                            {
+                              workflowRunId: runId,
+                              eventType: terminalEvent.eventType,
+                            }
+                          );
+                          return;
+                        }
+                        workflowRun = result.run;
+                        maxEventsLimit = clampMaxEvents(result.maxEvents);
+                        // Anchors RSFS — see the declaration above. This
+                        // response plays run_started's role on this path.
+                        runStartedReceivedAtMs = Date.now();
+                        eventLog = {
+                          type: 'ready',
+                          events: result.events,
+                          cursor: result.cursor,
+                        };
+                        workflowStartedAt = +result.run.startedAt;
+                        span?.setAttributes({
+                          ...Attribute.WorkflowRunStatus(result.run.status),
+                          ...Attribute.WorkflowStartedAt(workflowStartedAt),
+                          ...Attribute.HookResumeSetupSource(
+                            'hook_received_stream'
+                          ),
+                        });
+                      } else {
+                        // Successful write, no usable preload (CBOR response
+                        // from an older server, a World that ignored the
+                        // opt-in, a bounded hasMore page, or a preload that
+                        // failed validation): take the generic run_started
+                        // setup below. Its preload is loaded after this write
+                        // committed, so the canonical hook_received is part
+                        // of whatever log that setup reads — no splice
+                        // needed.
+                        span?.setAttributes(
+                          Attribute.HookResumeSetupSource(
+                            'hook_received_fallback'
+                          )
+                        );
+                      }
+                    } catch (err) {
+                      // Same classification as the re-ensure below:
+                      // - HookNotFound / RunExpired: the run went terminal;
+                      //   nothing left to resume, consume the message.
+                      // - anything else (EntityConflict, a truncated preload
+                      //   stream, transport failures): transient — rethrow so
+                      //   the queue redelivers and the idempotent
+                      //   (runId, resumeId) claim converges on retry.
+                      if (
+                        HookNotFoundError.is(err) ||
+                        RunExpiredError.is(err)
+                      ) {
+                        runtimeLogger.info(
+                          'Run already finished during lazy hook setup, skipping',
+                          { workflowRunId: runId, message: err.message }
+                        );
+                        return;
+                      }
+                      throw err;
+                    }
+                  }
+
                   // --- Infrastructure: prepare the run state ---
                   // Skip if workflowRun was already set by the background
-                  // step path (inline replay after all parallel steps done).
+                  // step path (inline replay after all parallel steps done)
+                  // or by the lazy hook fast path above.
                   if (!workflowRun) {
                     // Always call run_started directly — this both transitions
                     // the run to 'running' AND returns the run entity, saving
@@ -1674,14 +2011,6 @@ export function workflowEntrypoint(
                           }
                         : {}),
                     };
-                    const recordRunStartedCreateStart = (
-                      skipPreload: boolean
-                    ) => {
-                      span?.addEvent('workflow.run_started.create.start', {
-                        'workflow.run_started.skip_preload': skipPreload,
-                      });
-                    };
-
                     if (turbo && runInput) {
                       // Turbo: background `run_started` and synthesize the run
                       // entity locally so replay can begin without waiting for
@@ -1691,12 +2020,13 @@ export function workflowEntrypoint(
                       // barrier is consumed by every downstream write (suspension
                       // handler, optimistic step_started, terminal run writes) so
                       // nothing is written before the run exists.
-                      recordRunStartedCreateStart(true);
+                      span?.addEvent('workflow.run_started.create.start', {
+                        'workflow.run_started.skip_preload': true,
+                      });
                       const startedPromise = createEvent(
                         runStartedEvent,
                         // We background this purely as a write barrier and
-                        // never read its preloaded events (preloadedEvents is
-                        // forced to [] below), so tell the World to skip the
+                        // never read its preloaded events, so skip the
                         // run_started event-log preload. That trims the
                         // run_started request the chained first step_started
                         // waits on — shortening time-to-second-step — and the
@@ -1710,26 +2040,25 @@ export function workflowEntrypoint(
                       // maxEventsLimit every loop iteration, so a value that lands
                       // shortly after start still enforces well before a runaway
                       // log approaches the ceiling.
-                      startedPromise.then(
-                        (r) => {
-                          const limit = clampMaxEvents(r?.maxEvents);
+                      void startedPromise
+                        .then((r) => {
+                          const limit = clampMaxEvents(r.maxEvents);
                           if (limit !== undefined) maxEventsLimit = limit;
-                        },
-                        () => {}
-                      );
-                      // Attach a no-op rejection handler so an early failure
-                      // never surfaces as an unhandledRejection before a consumer
-                      // (await/then) is attached; consumers still observe it.
-                      startedPromise.catch(() => {});
+                        })
+                        // Prevent an early failure from surfacing as an
+                        // unhandledRejection; runReadyBarrier still observes it.
+                        .catch(() => {});
                       // Skip the initial events.list: nothing has been written to
                       // the log yet on a first delivery (run_started is still in
-                      // flight). An empty preloaded set routes iteration 1 through
+                      // flight). An empty preload routes iteration 1 through
                       // the no-load preloaded branch; iteration 2 then takes the
                       // existing post-preloaded full reload to pick up a cursor
-                      // (no spurious "cursor missing" warning). `[]` is
-                      // intentionally truthy here — do not change the load
-                      // branches' `if (preloadedEvents)` checks to test length.
-                      preloadedEvents = [];
+                      // without a spurious "cursor missing" warning.
+                      eventLog = {
+                        type: 'ready',
+                        events: [],
+                        cursor: null,
+                      };
                       const now = new Date();
                       workflowRun = {
                         runId,
@@ -1768,35 +2097,48 @@ export function workflowEntrypoint(
                       });
                     } else {
                       try {
-                        recordRunStartedCreateStart(false);
+                        span?.addEvent('workflow.run_started.create.start', {
+                          'workflow.run_started.skip_preload': false,
+                        });
                         const result = await createEvent(runStartedEvent, {
                           requestId,
                         });
-                        if (!result.run) {
-                          throw new WorkflowRuntimeError(
-                            `Event creation for 'run_started' did not return the run entity for run "${runId}"`
-                          );
-                        }
                         workflowRun = result.run;
                         maxEventsLimit = clampMaxEvents(result.maxEvents);
                         // Anchors RSFS — see the declaration above.
                         runStartedReceivedAtMs = Date.now();
 
-                        // If the response includes events, use them to skip
-                        // the initial events.list call and reduce TTFB.
-                        if (
-                          result.events &&
-                          result.events.length > 0 &&
-                          result.hasMore !== true
-                        ) {
-                          preloadedEvents = result.events;
-                          preloadedEventsCursor = result.cursor;
+                        if (result.events?.length) {
+                          const loaded = {
+                            events: [...result.events],
+                            cursor: result.cursor ?? null,
+                          };
+                          eventLog = result.hasMore
+                            ? nextEventLogLoad(loaded)
+                            : { ...loaded, type: 'ready' };
                         }
+                        workflowStartedAt = +result.run.startedAt;
+                        span?.setAttributes({
+                          ...Attribute.WorkflowRunStatus(result.run.status),
+                          ...Attribute.WorkflowStartedAt(workflowStartedAt),
+                        });
 
-                        if (!workflowRun.startedAt) {
-                          throw new WorkflowRuntimeError(
-                            `Workflow run "${runId}" has no "startedAt" timestamp`
+                        if (result.run.status !== 'running') {
+                          runtimeLogger.info(
+                            'Workflow already completed or failed, skipping',
+                            {
+                              workflowRunId: runId,
+                              status: result.run.status,
+                            }
                           );
+
+                          // TODO: for `cancel`, we actually want to propagate a WorkflowCancelled event
+                          // inside the workflow context so the user can gracefully exit. this is SIGTERM
+                          // TODO: furthermore, there should be a timeout or a way to force cancel SIGKILL
+                          // so that we actually exit here without replaying the workflow at all, in the case
+                          // the replaying the workflow is itself failing.
+
+                          return;
                         }
                       } catch (err) {
                         // Run was concurrently completed/failed/cancelled
@@ -1831,48 +2173,33 @@ export function workflowEntrypoint(
                           return;
                         }
                       }
-
-                      workflowStartedAt = +workflowRun.startedAt;
-
-                      span?.setAttributes({
-                        ...Attribute.WorkflowRunStatus(workflowRun.status),
-                        ...Attribute.WorkflowStartedAt(workflowStartedAt),
-                      });
-
-                      if (workflowRun.status !== 'running') {
-                        // Workflow has already completed or failed, so we can skip it
-                        runtimeLogger.info(
-                          'Workflow already completed or failed, skipping',
-                          {
-                            workflowRunId: runId,
-                            status: workflowRun.status,
-                          }
-                        );
-
-                        // TODO: for `cancel`, we actually want to propagate a WorkflowCancelled event
-                        // inside the workflow context so the user can gracefully exit. this is SIGTERM
-                        // TODO: furthermore, there should be a timeout or a way to force cancel SIGKILL
-                        // so that we actually exit here without replaying the workflow at all, in the case
-                        // the replaying the workflow is itself failing.
-
-                        return;
-                      }
                     } // end else (non-turbo run_started)
                   } // end if (!workflowRun)
+                  assert(
+                    workflowRun,
+                    'Workflow run must be loaded before replay'
+                  );
 
                   // Covers every flow replay — initial start, step completions,
                   // hook resumptions, wait completions — and stops before any
-                  // workflow code, inline step, or event write happens when the
-                  // run is not pinned here (see `guardDeploymentAffinity`).
-                  // `awaitRunReady` orders turbo's `run_started` before either
-                  // stopping action.
+                  // workflow code or inline step executes when the run is not
+                  // pinned here (see `guardDeploymentAffinity`). This remains
+                  // the AUTHORITATIVE protection before replay and step
+                  // execution. `awaitRunReady` orders turbo's `run_started`
+                  // before either stopping action.
                   //
-                  // Runs ahead of the lazy-hook re-ensure below, so a misrouted
-                  // resume writes nothing here — which means the re-routed
-                  // message must carry `hookInput`, or a resume whose producer
-                  // write had not yet landed would be lost (that re-ensure is
-                  // idempotent per `resumeId`, so the pinned deployment still
-                  // converges on one event).
+                  // Lazy hook resumes are additionally pre-checked above the
+                  // fast path: a new message's `hookInput.deploymentId` is
+                  // compared against the ambient deployment id for free, and
+                  // only a detected mismatch fetches the authoritative run —
+                  // so a misrouted modern resume re-routes with zero event
+                  // writes. Older messages (no `hookInput.deploymentId`) reach
+                  // the fast path's idempotent hook_received write before this
+                  // guard; that write converges per (runId, resumeId) on the
+                  // pinned deployment, so it is safe, just not free. Either
+                  // way the re-routed message must carry `hookInput`, or a
+                  // resume whose producer write had not yet landed would be
+                  // lost.
                   if (
                     (await guardDeployment(
                       workflowRun,
@@ -1894,8 +2221,12 @@ export function workflowEntrypoint(
                   // (the server resolves a matching claim as success, not an
                   // error). `hookInput` never rides a turbo first-delivery
                   // (that path carries `runInput`, not `hookInput`), so this
-                  // only runs on the normal load-and-replay path.
-                  if (hookInput) {
+                  // only runs on the normal load-and-replay path. Skipped
+                  // entirely when the fast path above already ensured the
+                  // event (`hookEnsured`) — successfully or via its fallback,
+                  // whose run_started preload was loaded after the write and
+                  // therefore already contains the canonical event.
+                  if (hookInput && !hookEnsured) {
                     // Perf (Option A): if the producer's concurrent direct
                     // write already landed in the run_started preload, the
                     // canonical event is in the log and the re-ensure round trip
@@ -1905,9 +2236,17 @@ export function workflowEntrypoint(
                     // hook_received). Best-effort: the win lands only when the
                     // producer's write beat this consumer's load; otherwise we
                     // fall through to the idempotent re-ensure below.
+                    //
+                    // Intentionally unreachable for atomic lazy resumes
+                    // (resumeId + digest): those set `hookEnsured` in the
+                    // hoisted fast path above — on success AND on its
+                    // fallback — so this block (and the skip check) now only
+                    // serves hookInput shapes without the full idempotency
+                    // pair.
                     const alreadyPreloaded =
                       hookInput.resumeId !== undefined &&
-                      preloadedEvents?.some(
+                      eventLog.type !== 'loadAll' &&
+                      eventLog.events.some(
                         (e) =>
                           e.eventType === 'hook_received' &&
                           e.resumeId === hookInput.resumeId
@@ -2020,16 +2359,13 @@ export function workflowEntrypoint(
                       // events.list round trip on the first replay iteration),
                       // splice in the canonical event reconstructed above. It
                       // carries a stable eventId, so `insertEventByEventId` keeps
-                      // it in ascending eventId order (preloadedEvents load
-                      // `sortOrder: 'asc'` and are not re-sorted client-side) and
-                      // is idempotent even if a later list re-observes it. Only
-                      // when the World returns no event (older backend) do we fall
-                      // back to dropping the preload so a fresh list observes it.
-                      if (preloadedEvents && ensuredEvent) {
-                        insertEventByEventId(preloadedEvents, ensuredEvent);
+                      // it in ascending eventId order and is idempotent if a later
+                      // list re-observes it. Only when the World returns no event
+                      // do we fall back to reloading the complete log.
+                      if (eventLog.type !== 'loadAll' && ensuredEvent) {
+                        insertEventByEventId(eventLog.events, ensuredEvent);
                       } else {
-                        preloadedEvents = undefined;
-                        preloadedEventsCursor = undefined;
+                        eventLog = { type: 'loadAll' };
                       }
                     } // end else (re-ensure needed)
                   }
@@ -2077,10 +2413,8 @@ export function workflowEntrypoint(
                         attempt: metadata.attempt,
                         limitMs: replayBudget.configuredLimitMs,
                       });
-                      // On Vercel, handleReplayBudgetExhausted always
-                      // exits the process. On local dev it returns; we
-                      // fall through and the request ends normally
-                      // (run_failed has been written best-effort).
+                      // Only the terminal attempt returns, after run_failed is
+                      // durable. Earlier attempts reject for queue redelivery.
                       return;
                     }
 
@@ -2110,11 +2444,6 @@ export function workflowEntrypoint(
                     }
 
                     let replayStart = 0;
-                    // Cursor of this iteration's event log before any inline
-                    // writes advance it — declared at try scope so the
-                    // suspension catch (which runs the inline step) can read it
-                    // as the `sinceCursor` for the inline-delta optimization.
-                    let preInlineWriteCursor: string | null = null;
                     try {
                       // --- QuickJS VM engine dispatch ---
                       // The QuickJS engine (opt-in via WORKFLOW_VM=quickjs
@@ -2150,6 +2479,13 @@ export function workflowEntrypoint(
                         // turbo runReadyBarrier the way handleSuspension
                         // does.
                         await awaitRunReady();
+                        if (eventLog.type === 'loadAfter') {
+                          appendEventLog(
+                            eventLog,
+                            await loadWorkflowRunEvents(runId, eventLog.cursor)
+                          );
+                          eventLog = { ...eventLog, type: 'ready' };
+                        }
                         // Lazy import: the QuickJS entrypoint's import chain
                         // embeds the base64 WASM binary + extensions
                         // (~1.3 MB decoded at module scope). Loading it here
@@ -2162,7 +2498,11 @@ export function workflowEntrypoint(
                           workflowCode,
                           workflowName,
                           workflowRun,
-                          preloadedEvents,
+                          preloadedEvents:
+                            eventLog.type === 'ready'
+                              ? eventLog.events
+                              : undefined,
+                          preloadedEventsComplete: eventLog.type === 'ready',
                           runInput,
                           parentSpan: span,
                           maxEventsLimit,
@@ -2193,94 +2533,23 @@ export function workflowEntrypoint(
                         return;
                       }
 
-                      // Load events — use cached events with incremental fetch on subsequent iterations.
-                      // The server always returns a cursor when there are events (even on the
-                      // final page), so we can reliably use it for incremental loading.
-                      let events: Event[];
-                      if (pendingInlineDelta && cachedEvents) {
-                        // Fast path: the previous iteration's inline step
-                        // terminal write returned the authoritative event-log
-                        // delta since the pre-write cursor, so we consume it
-                        // here instead of issuing an incremental events.list.
-                        // The delta is byte-for-byte what events.list(cursor)
-                        // would have returned at write time — it includes this
-                        // handler's own step events, any attr_set the step body
-                        // wrote, and any in-band events (e.g. hook_received,
-                        // wait_completed) another writer appended since the
-                        // cursor — so skipping the fetch cannot drop events or
-                        // skew the prefix from the server's log.
-                        const delta = pendingInlineDelta;
-                        pendingInlineDelta = null;
-                        appendUniqueEvents(cachedEvents, delta.events);
-                        eventsCursor = delta.cursor ?? eventsCursor;
-                        events = cachedEvents;
-                      } else if (cachedEvents === null) {
-                        // First iteration: use preloaded events if available,
-                        // otherwise do a full load with cursor.
-                        if (preloadedEvents) {
-                          events = preloadedEvents;
-                          eventsCursor = preloadedEventsCursor ?? null;
-                        } else {
-                          const loaded = await loadWorkflowRunEvents(runId);
-                          events = loaded.events;
-                          eventsCursor = loaded.cursor;
-                        }
-                      } else if (eventsCursor) {
-                        // Subsequent iteration: fetch only new events since last cursor
-                        const loaded = await loadWorkflowRunEvents(
+                      if (eventLog.type !== 'ready') {
+                        const page = await loadWorkflowRunEvents(
                           runId,
-                          eventsCursor
+                          eventLog.type === 'loadAfter'
+                            ? eventLog.cursor
+                            : undefined
                         );
-                        // Dedupe by eventId: a previous iteration may have
-                        // appended a refreshed wait-completion delta before
-                        // the next loop observes the advanced cursor, so an
-                        // incremental fetch can return events we already have
-                        // locally.
-                        appendUniqueEvents(cachedEvents, loaded.events);
-                        eventsCursor = loaded.cursor ?? eventsCursor;
-                        events = cachedEvents;
-                      } else if (preloadedEvents) {
-                        // Iteration 2 after iteration 1 used preloaded events
-                        // (which don't carry a cursor). Do a full load now to
-                        // pick up any events written since the preloaded set
-                        // and obtain a cursor for subsequent incremental
-                        // loads. This is the expected path, not a bug.
-                        runtimeLogger.debug(
-                          'No cursor after preloaded-events first iteration; doing full reload to pick up cursor.',
-                          { workflowRunId: runId }
-                        );
-                        const loaded = await loadWorkflowRunEvents(runId);
-                        cachedEvents = loaded.events;
-                        eventsCursor = loaded.cursor;
-                        events = cachedEvents;
-                      } else {
-                        // No cursor available despite having cached events
-                        // and no preloaded-events explanation. All World
-                        // implementations are required to return a cursor
-                        // when there are events, so this signals a bug in
-                        // the World. Fall back to a full reload to avoid
-                        // stale data.
-                        runtimeLogger.warn(
-                          'Event cursor missing after initial load — falling back to full reload. ' +
-                            'This indicates a bug in the World implementation.',
-                          { workflowRunId: runId }
-                        );
-                        const loaded = await loadWorkflowRunEvents(runId);
-                        cachedEvents = loaded.events;
-                        eventsCursor = loaded.cursor;
-                        events = cachedEvents;
+                        if (eventLog.type === 'loadAfter') {
+                          appendEventLog(eventLog, page);
+                          eventLog = { ...eventLog, type: 'ready' };
+                        } else {
+                          eventLog = { ...page, type: 'ready' };
+                        }
                       }
+                      assert(eventLog.type === 'ready');
 
-                      // Publish the snapshot to the loop-scoped cache as soon
-                      // as it is loaded, not just at the end of the iteration:
-                      // a stale-snapshot rejection thrown by the wait-completion
-                      // writes below restarts the replay, and that restart can
-                      // only consume a World-attached event delta when there is
-                      // a cached array to merge it into. Reassigned again after
-                      // the wait pass, which may swap in a freshly loaded array.
-                      cachedEvents = events;
-
-                      reportPreconditionRestartReload(events);
+                      reportPreconditionRestartReload(eventLog.events);
 
                       // Detect concurrent completion via the event log: if
                       // any other handler wrote a terminal run event, exit
@@ -2288,18 +2557,18 @@ export function workflowEntrypoint(
                       // derived from these events, so checking the log here
                       // gives us the same signal as a runs.get() round-trip
                       // without the extra request per loop iteration.
-                      if (hasRecordedTerminalRunEvent(events, runId)) {
+                      if (hasRecordedTerminalRunEvent(eventLog.events, runId)) {
                         return;
                       }
 
                       // Complete elapsed waits
                       const now = Date.now();
                       const completedWaitIds = new Set(
-                        events
+                        eventLog.events
                           .filter((e) => e.eventType === 'wait_completed')
                           .map((e) => e.correlationId)
                       );
-                      const waitsToComplete = events
+                      const waitsToComplete = eventLog.events
                         .filter(
                           (
                             e
@@ -2325,7 +2594,10 @@ export function workflowEntrypoint(
                         try {
                           await createEvent(waitEvent, {
                             requestId,
-                            ...preconditionSnapshotParams(events, eventsCursor),
+                            ...preconditionSnapshotParams(
+                              eventLog.events,
+                              eventLog.cursor
+                            ),
                           });
                         } catch (err) {
                           if (EntityConflictError.is(err)) {
@@ -2341,45 +2613,69 @@ export function workflowEntrypoint(
                           throw err;
                         }
                       }
+                      assert(eventLog.type === 'ready');
 
-                      if (waitsToComplete.length > 0) {
-                        // The event list above may be stale by the time an
-                        // elapsed wait is committed. Load only events after
-                        // the original snapshot cursor so concurrent durable
-                        // events, such as hook_received, keep their ordering
-                        // relative to wait_completed. Fall back to a full
-                        // reload for older worlds that cannot give us a stable
-                        // cursor, or if the cursor delta does not include the
-                        // wait completion this handler just attempted.
-                        if (eventsCursor) {
-                          const loaded = await loadWorkflowRunEvents(
+                      // The event list above may be stale by the time an
+                      // elapsed wait is committed, and this replay has to see
+                      // its own wait_completed before it can advance past the
+                      // sleep. Each write asked the World for the delta since
+                      // our cursor and folded it in (see createEvent), so a
+                      // supporting World has already handed those events back
+                      // and there is nothing left to do. Only fetch for the
+                      // completions still missing locally: a World that
+                      // ignores `sinceCursor`, a truncated delta, a concurrent
+                      // absorb that lost the cursor race, or an
+                      // EntityConflictError, whose rejection carries no delta.
+                      const completedWaitIdsAfterWrites = new Set(
+                        eventLog.events
+                          .filter((e) => e.eventType === 'wait_completed')
+                          .map((e) => e.correlationId)
+                      );
+                      const missingWaitCompletions = waitsToComplete.filter(
+                        (waitEvent) =>
+                          !completedWaitIdsAfterWrites.has(
+                            waitEvent.correlationId
+                          )
+                      );
+
+                      if (missingWaitCompletions.length > 0) {
+                        // Load only events after the original snapshot cursor
+                        // so concurrent durable events, such as hook_received,
+                        // keep their ordering relative to wait_completed. Fall
+                        // back to a full reload for older worlds that cannot
+                        // give us a stable cursor, or if the cursor delta does
+                        // not include the wait completion this handler just
+                        // attempted.
+                        if (eventLog.cursor) {
+                          const page = await loadWorkflowRunEvents(
                             runId,
-                            eventsCursor
+                            eventLog.cursor
                           );
                           const completedWaitIdsAfterCursor = new Set(
-                            loaded.events
+                            page.events
                               .filter((e) => e.eventType === 'wait_completed')
                               .map((e) => e.correlationId)
                           );
-                          const sawAllWaitCompletions = waitsToComplete.every(
-                            (waitEvent) =>
+                          const sawAllWaitCompletions =
+                            missingWaitCompletions.every((waitEvent) =>
                               completedWaitIdsAfterCursor.has(
                                 waitEvent.correlationId
                               )
-                          );
+                            );
 
                           if (sawAllWaitCompletions) {
-                            appendUniqueEvents(events, loaded.events);
-                            eventsCursor = loaded.cursor ?? eventsCursor;
+                            appendEventLog(eventLog, page);
                           } else {
-                            const loaded = await loadWorkflowRunEvents(runId);
-                            events = loaded.events;
-                            eventsCursor = loaded.cursor;
+                            eventLog = {
+                              ...(await loadWorkflowRunEvents(runId)),
+                              type: 'ready',
+                            };
                           }
                         } else {
-                          const loaded = await loadWorkflowRunEvents(runId);
-                          events = loaded.events;
-                          eventsCursor = loaded.cursor;
+                          eventLog = {
+                            ...(await loadWorkflowRunEvents(runId)),
+                            type: 'ready',
+                          };
                         }
                       }
 
@@ -2388,7 +2684,7 @@ export function workflowEntrypoint(
                       // event after the initial snapshot but before this
                       // replay. Once the event log records that outcome, this
                       // delivery is done.
-                      if (hasRecordedTerminalRunEvent(events, runId)) {
+                      if (hasRecordedTerminalRunEvent(eventLog.events, runId)) {
                         return;
                       }
 
@@ -2398,16 +2694,13 @@ export function workflowEntrypoint(
                       // run_failed / MAX_EVENTS_EXCEEDED.
                       if (
                         maxEventsLimit !== undefined &&
-                        events.length >= maxEventsLimit
+                        eventLog.events.length >= maxEventsLimit
                       ) {
                         throw new MaxEventsExceededError(
-                          events.length,
+                          eventLog.events.length,
                           maxEventsLimit
                         );
                       }
-
-                      // Update cache reference (may have been set for first time)
-                      cachedEvents = events;
 
                       // Latency telemetry: judge TTFS eligibility against the
                       // invocation's first snapshot. Waits completed above
@@ -2417,28 +2710,17 @@ export function workflowEntrypoint(
                       // committed pre-step attr_set, and the detour it marks
                       // is subtracted via preStepAttrStartMs regardless of
                       // which invocation wrote it (see runtime/step-latency.ts).
-                      invocationStartedClean ??= events.every(
+                      invocationStartedClean ??= eventLog.events.every(
                         (e) =>
                           e.eventType === 'run_created' ||
                           e.eventType === 'run_started' ||
                           e.eventType === 'attr_set'
                       );
 
-                      // Snapshot the cursor as it stands for this iteration's
-                      // event log, before any inline writes (step_created via
-                      // handleSuspension, step_started/step_completed via
-                      // executeStep) advance it. This is the `sinceCursor`
-                      // handed to a supporting World on the inline step's
-                      // terminal write so it can return the event-log delta —
-                      // letting the next iteration skip the incremental
-                      // events.list. Captured here because nothing between this
-                      // point and the inline executeStep mutates eventsCursor.
-                      preInlineWriteCursor = eventsCursor;
-
                       runtimeLogger.debug('Starting workflow execution', {
                         workflowRunId: runId,
                         loopIteration,
-                        eventCount: events.length,
+                        eventCount: eventLog.events.length,
                         executionMode: retainedSession ? 'retained' : 'replay',
                       });
                       replayStart = Date.now();
@@ -2449,10 +2731,10 @@ export function workflowEntrypoint(
                       // consumers still deserialize and resolve in event order.
                       const payloadPrewarm = replayPayloadCache.prewarm(
                         workflowRun,
-                        events
+                        eventLog.events
                       );
                       let workflowResult: WorkflowResumeResult = retainedSession
-                        ? await resumeWorkflow(retainedSession, events)
+                        ? await resumeWorkflow(retainedSession, eventLog.events)
                         : { type: 'replay' };
 
                       if (workflowResult.type === 'replay') {
@@ -2460,7 +2742,7 @@ export function workflowEntrypoint(
                         workflowResult = await replayWorkflow({
                           workflowCode,
                           workflowRun,
-                          events,
+                          events: eventLog.events,
                           encryptionKey,
                           replayPayloadCache,
                           // Turbo: the end-of-run drain inside workflow
@@ -2508,7 +2790,10 @@ export function workflowEntrypoint(
                           },
                           {
                             requestId,
-                            ...preconditionSnapshotParams(events, eventsCursor),
+                            ...preconditionSnapshotParams(
+                              eventLog.events,
+                              eventLog.cursor
+                            ),
                           }
                         );
                       } catch (err) {
@@ -2587,21 +2872,10 @@ export function workflowEntrypoint(
                         // The rejection is handled here, by restarting the
                         // replay — never by re-posting the same event.
                         const suspensionStart = Date.now();
-                        // The snapshot refresh above always sets cachedEvents
-                        // before the replay can suspend. Re-narrow it for this
-                        // catch scope instead of defaulting to an empty array:
-                        // that fallback would silently disarm the precondition
-                        // guard (no snapshot sent) and let a mid-suspension
-                        // reload merge into a throwaway array.
-                        if (!cachedEvents) {
-                          throw new Error(
-                            'Invariant violation: workflow suspended before its event log was loaded'
-                          );
-                        }
-                        const suspensionLog: LoadedEventLog = {
-                          events: cachedEvents,
-                          cursor: eventsCursor,
-                        };
+                        assert(
+                          eventLog.type === 'ready',
+                          'Workflow suspended before its event log was loaded'
+                        );
                         let suspensionResult: Awaited<
                           ReturnType<typeof handleSuspension>
                         >;
@@ -2612,7 +2886,7 @@ export function workflowEntrypoint(
                             run: workflowRun,
                             span,
                             requestId,
-                            eventLog: suspensionLog,
+                            eventLog,
                             runReadyBarrier,
                             replayRecoveryReporter,
                             // Resilient step dispatch: lets eligible newly
@@ -2730,8 +3004,6 @@ export function workflowEntrypoint(
                           });
                           return;
                         }
-                        eventsCursor = suspensionLog.cursor;
-
                         // Open hooks/waits in the log as loaded for this
                         // replay. This suspension's own hook/wait writes are
                         // NOT in it — they never reach retention anyway,
@@ -2743,13 +3015,10 @@ export function workflowEntrypoint(
                         // below — the attr-detour and hook-conflict paths
                         // return/continue before the gates and usually
                         // short-circuit before ever scanning the log.
-                        // Narrowed alias: the closure below would otherwise
-                        // lose `cachedEvents`'s non-null narrowing. Nothing in
-                        // this catch scope reassigns the array.
-                        const suspensionEvents = cachedEvents;
-                        const openHookWait = once(() =>
-                          openHookAndWaitState(suspensionEvents)
-                        );
+                        const openHookWait = once(() => {
+                          assert(eventLog.type === 'ready');
+                          return openHookAndWaitState(eventLog.events);
+                        });
 
                         // The single retention decision: keep the parked
                         // session only across a pure step boundary with no
@@ -2765,7 +3034,6 @@ export function workflowEntrypoint(
                         ) {
                           retainedSession = null;
                         }
-
                         preStepBlockingMs += suspensionResult.hookCreationMs;
                         if (
                           suspensionResult.hasAttributeEvents &&
@@ -2805,6 +3073,7 @@ export function workflowEntrypoint(
                         // paying a delivery round-trip here would only add
                         // latency before the workflow's next step.
                         if (suspensionResult.hasAttributeEvents) {
+                          eventLog = nextEventLogLoad(eventLog);
                           continue;
                         }
 
@@ -3115,9 +3384,8 @@ export function workflowEntrypoint(
                         // and on the next iteration consume it in place of the
                         // events.list — only when ALL hold:
                         //
-                        //  - We have a real prior cursor to diff against
-                        //    (`preInlineWriteCursor`; a World may return none on
-                        //    the initial load).
+                        //  - We have a real prior cursor to diff against (a
+                        //    World may return none on the initial load).
                         //  - This is the clean single-step sequential case:
                         //    this suspension produced exactly one step and no
                         //    waits (`err.{step,wait}Count`), that one step is
@@ -3181,7 +3449,7 @@ export function workflowEntrypoint(
                           world.capabilities?.preconditionGuard === true;
 
                         const requestInlineDelta =
-                          typeof preInlineWriteCursor === 'string' &&
+                          typeof eventLog.cursor === 'string' &&
                           err.stepCount === 1 &&
                           err.waitCount === 0 &&
                           pendingSteps.length === 1 &&
@@ -3238,7 +3506,7 @@ export function workflowEntrypoint(
                         // cumulative log, resume/parallel invocations are possible
                         // for the rest of the run, so turbo must latch off
                         // permanently — checked here via `openHookAndWaitState`
-                        // over the cumulative `cachedEvents`.
+                        // over the cumulative event log.
                         //
                         // NOTE: `WORKFLOW_SEQUENTIAL_REPLAYS=1` (per-run flow
                         // topics consumed with `maxConcurrency: 1`) would in
@@ -3276,7 +3544,7 @@ export function workflowEntrypoint(
                         // snapshot has a local-clock createdAt, so under
                         // turbo only the run-id ULID timestamp is trusted.
                         const latencyTracking = computeStepLatencyTracking({
-                          events: cachedEvents,
+                          events: eventLog.events,
                           invocationStartedClean:
                             invocationStartedClean === true,
                           runCreatedAtMs:
@@ -3287,7 +3555,7 @@ export function workflowEntrypoint(
                           preStepBlockingMs,
                           preStepBlockingBeforeAttrMs,
                           // This suspension's own hook/wait writes are not in
-                          // cachedEvents yet, so report them explicitly.
+                          // the loaded event log yet, so report them explicitly.
                           suspensionHasWaits:
                             err.waitCount > 0 ||
                             suspensionResult.waitTimeout !== undefined,
@@ -3308,8 +3576,8 @@ export function workflowEntrypoint(
                         // outside guarded deployments; Worlds that don't
                         // enforce the guard ignore it.
                         const inlineClaimSnapshot = preconditionSnapshotParams(
-                          cachedEvents,
-                          preInlineWriteCursor
+                          eventLog.events,
+                          eventLog.cursor
                         );
 
                         replayBudget.pause();
@@ -3318,8 +3586,9 @@ export function workflowEntrypoint(
                         >[];
                         const stepExecutionPromises = inlineExecutions.map(
                           (s, stepIndex) => {
-                            const run = () =>
-                              executeStep({
+                            const run = () => {
+                              assert(eventLog.type === 'ready');
+                              return executeStep({
                                 world,
                                 workflowRunId: runId,
                                 workflowDeploymentId: workflowRun.deploymentId,
@@ -3358,7 +3627,7 @@ export function workflowEntrypoint(
                                   s.lazyStepInput !== undefined
                                     ? 1
                                     : countStepStartedEvents(
-                                        cachedEvents,
+                                        eventLog.events,
                                         s.correlationId,
                                         {
                                           type: 'ownedBy',
@@ -3395,14 +3664,14 @@ export function workflowEntrypoint(
                                 latencyTracking
                                   ? { latencyTracking }
                                   : {}),
-                                ...(requestInlineDelta && preInlineWriteCursor
+                                ...(requestInlineDelta && eventLog.cursor
                                   ? {
-                                      inlineDeltaSinceCursor:
-                                        preInlineWriteCursor,
+                                      inlineDeltaSinceCursor: eventLog.cursor,
                                     }
                                   : {}),
                                 replayRecoveryReporter,
                               });
+                            };
                             // Invariant bookkeeping: this invocation owns
                             // these bodies until they settle — see
                             // assertNoInFlightOwnedSteps.
@@ -3645,25 +3914,19 @@ export function workflowEntrypoint(
                         // (completed/failed/skipped/gone) — loop back to replay
                         // (the workflow observes the terminal events on replay).
                         //
-                        // If the single inline step's terminal write returned an
-                        // inline delta (supporting World + the single-step gate
-                        // above), stash it so the next iteration's load consumes
-                        // it instead of issuing an incremental events.list. Only
-                        // the completed path carries a delta; multi-step batches
-                        // never request one.
+                        // Reuse any inline delta. If it is partial, continue
+                        // from its cursor instead of reading the page again.
                         if (inlineExecutions.length === 1) {
                           const only = stepResults[0];
-                          if (
-                            only.type === 'completed' &&
-                            only.inlineDelta &&
-                            !only.inlineDelta.hasMore
-                          ) {
-                            pendingInlineDelta = {
-                              events: only.inlineDelta.events,
-                              cursor: only.inlineDelta.cursor,
-                            };
+                          if (only.type === 'completed' && only.inlineDelta) {
+                            appendEventLog(eventLog, only.inlineDelta);
+                            eventLog = only.inlineDelta.hasMore
+                              ? nextEventLogLoad(eventLog)
+                              : { ...eventLog, type: 'ready' };
+                            continue;
                           }
                         }
+                        eventLog = nextEventLogLoad(eventLog);
                       } else {
                         // Stale-snapshot rejection of a guarded write made
                         // directly by the replay loop — the result-bearing

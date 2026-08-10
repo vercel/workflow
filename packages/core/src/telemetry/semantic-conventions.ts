@@ -405,9 +405,44 @@ export const HookResilientResume = SemanticConvention<boolean>(
  * materialized the `hook_received` event from the queue message's `hookInput`
  * because the producer's direct write had not landed — the completion of the
  * recovery path {@link HookResilientResume} began.
+ *
+ * Legacy / non-atomic re-ensure signal only. Atomic lazy resumes
+ * (resumeId + digest) go through the hoisted preload write instead, whose
+ * response cannot tell whether the producer or the consumer won the
+ * `(runId, resumeId)` claim — so this attribute is deliberately NOT emitted
+ * for them (emitting `true` unconditionally would count every producer-won
+ * resume as a recovery). The producer-begin ({@link HookResilientResume}) /
+ * consumer-materialized pairing is therefore no longer complete for atomic
+ * lazy resumptions; use {@link HookResumeSetupSource} to observe that path.
  */
 export const HookResilientResumeMaterialized = SemanticConvention<boolean>(
   'workflow.hook.resilient_resume_materialized'
+);
+
+/**
+ * Consumer-side signal (on the workflow execution span) of how a lazy hook
+ * resume initialized its replay state:
+ *
+ * - `hook_received_stream` — the hoisted `hook_received` write returned a
+ *   usable replay preload (run + complete event log), so the invocation
+ *   skipped both the `run_started` write and the initial `events.list`.
+ * - `hook_received_fallback` — the hoisted write succeeded but returned no
+ *   usable preload (a CBOR response from an older server, a World that
+ *   ignored the opt-in, a bounded `hasMore` page, or a preload that failed
+ *   validation); the invocation fell back to the `run_started` setup without
+ *   re-posting the hook.
+ *
+ * Absent on legacy hook deliveries (no resumeId/digest) and on every other
+ * delivery kind, which take the `run_started` setup unconditionally.
+ *
+ * This is a latency/setup-path signal: it says which requests initialized
+ * the invocation, NOT that this consumer created the `hook_received` event
+ * (the hoisted write may equally have converged on the producer's — claim
+ * ownership is not observable client-side; cf.
+ * {@link HookResilientResumeMaterialized}).
+ */
+export const HookResumeSetupSource = SemanticConvention<string>(
+  'workflow.resume_setup_source'
 );
 
 /**

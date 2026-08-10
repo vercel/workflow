@@ -81,7 +81,8 @@ const event = await world.events.get(runId, eventId); // [!code highlight]
 
 ### events.list()
 
-List events for a run with cursor pagination.
+List events for a run. Omit `pagination.limit` to return every remaining event,
+or set it to return one bounded page.
 
 ```typescript lineNumbers
 const result = await world.events.list({ runId, pagination: { cursor } }); // [!code highlight]
@@ -91,8 +92,11 @@ const result = await world.events.list({ runId, pagination: { cursor } }); // [!
 |-----------|------|-------------|
 | `params.runId` | `string` | Filter events by run ID |
 | `params.pagination.cursor` | `string` | Cursor for the next page |
+| `params.pagination.limit` | `number` | Maximum events to return. When omitted, returns every remaining event up to the World's event ceiling. |
+| `params.pagination.sortOrder` | `"asc" \| "desc"` | Event order |
+| `params.resolveData` | `"all" \| "none"` | Include or omit event payload data |
 
-**Returns:** `{ data: Event[], cursor?: string }`
+**Returns:** `{ data: Event[], cursor: string | null, hasMore: boolean }`
 
 ### events.listByCorrelationId()
 

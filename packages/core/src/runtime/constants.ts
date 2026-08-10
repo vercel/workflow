@@ -46,7 +46,7 @@ export function getMaxQueueDeliveries(): number {
  * `maxDuration` (e.g. 800s on Vercel Pro Fluid) and `NO_INLINE_REPLAY_AFTER_MS`.
  *
  * If the non-step ("replay") time within a single invocation exceeds this
- * budget, the handler exits so the queue can retry. After
+ * budget, the handler rejects so the queue can retry. After
  * `REPLAY_TIMEOUT_MAX_RETRIES` exhausted attempts the run is failed with
  * `RUN_ERROR_CODES.REPLAY_TIMEOUT`.
  *
@@ -137,7 +137,7 @@ export function _resetReplayTimeoutWarnCacheForTests(): void {
 
 // Number of queue delivery attempts to allow before permanently failing a run
 // due to a replay timeout. On attempts 1 through this value, the timeout
-// handler exits without writing run_failed so the queue retries the message.
+// handler rejects without writing run_failed so the queue retries the message.
 // On the next attempt the run is marked as failed.
 export const REPLAY_TIMEOUT_MAX_RETRIES = 3;
 
@@ -332,6 +332,25 @@ export function isOptimisticInlineStartExplicitlyDisabled(): boolean {
  */
 export function isTurboEnabled(): boolean {
   const raw = process.env.WORKFLOW_TURBO;
+  if (raw === undefined || raw === '') return true;
+  return !(raw === '0' || raw.toLowerCase() === 'false');
+}
+
+/**
+ * Whether the QuickJS engine's baseline-snapshot startup optimization is
+ * enabled (default ON). When on, the engine hydrates a VM with the
+ * workflow bundle once per function instance, snapshots it, and starts
+ * every invocation by restoring the snapshot instead of re-evaluating
+ * the bundle — skipping the dominant share of VM startup (measured
+ * ~77ms → ~3ms to first suspension for a 1.3MB bundle). Bundles whose
+ * module scope consumes randomness, reads the clock, or replaces a
+ * serialization intrinsic are detected at hydrate time and
+ * automatically fall back to per-invocation fresh evaluation (see
+ * prepareBaselineSnapshot). Set WORKFLOW_QUICKJS_BASELINE_SNAPSHOT=0 to
+ * disable.
+ */
+export function isQuickJSBaselineSnapshotEnabled(): boolean {
+  const raw = process.env.WORKFLOW_QUICKJS_BASELINE_SNAPSHOT;
   if (raw === undefined || raw === '') return true;
   return !(raw === '0' || raw.toLowerCase() === 'false');
 }

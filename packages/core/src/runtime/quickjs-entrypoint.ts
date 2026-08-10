@@ -58,6 +58,7 @@ import {
   stepDispatchIdempotencyKey,
 } from './helpers.js';
 import {
+  BASELINE_BUNDLE_FILENAME,
   type PendingAttribute,
   type PendingHook,
   type PendingHookDispose,
@@ -690,12 +691,21 @@ export async function runWorkflowWithQuickJS(params: {
   workflowName: string;
   workflowRun: WorkflowRun;
   /**
-   * Events returned inline by `events.create('run_started', ...)`. When
-   * they indicate a first invocation, they are used as the event log
-   * instead of fetching via `events.list`, matching the node:vm engine's
-   * fast path.
+   * Events returned inline by `events.create('run_started', ...)` or by
+   * the lazy hook fast path's `hook_received` preload. When they indicate
+   * a first invocation — or when `preloadedEventsComplete` attests they
+   * are the complete log — they are used as the event log instead of
+   * fetching via `events.list`, matching the node:vm engine's fast path.
    */
   preloadedEvents?: Event[];
+  /**
+   * True when the caller has validated that `preloadedEvents` is the run's
+   * COMPLETE event log (e.g. the lazy hook fast path's hasMore-false
+   * replay preload). The first-invocation heuristic below only recognizes
+   * run_created/run_started-only preloads, so without this attestation a
+   * hook-resume preload would be discarded and refetched.
+   */
+  preloadedEventsComplete?: boolean;
   /**
    * Run input carried through the queue message on first delivery. Used
    * as a last-resort fallback for `run_created.eventData.input` when
@@ -752,6 +762,7 @@ export async function runWorkflowWithQuickJS(params: {
     workflowName,
     workflowRun,
     preloadedEvents,
+    preloadedEventsComplete,
     runInput,
     parentSpan,
     maxEventsLimit,
@@ -823,10 +834,15 @@ export async function runWorkflowWithQuickJS(params: {
 
   // Load the FULL event log for the run. On first invocation the
   // preloaded events from the run_started response are the complete log
-  // and save the events.list round-trips.
+  // and save the events.list round-trips; a caller-attested complete
+  // preload (lazy hook fast path) is trusted the same way.
   let events: Event[];
   let eventsFetchedPages = 0;
-  const usePreloaded = isFirstInvocation(preloadedEvents);
+  const usePreloaded =
+    (preloadedEventsComplete === true &&
+      Array.isArray(preloadedEvents) &&
+      preloadedEvents.length > 0) ||
+    isFirstInvocation(preloadedEvents);
   if (usePreloaded && preloadedEvents) {
     events = preloadedEvents;
   } else {
@@ -1733,12 +1749,22 @@ export async function runWorkflowWithQuickJS(params: {
       pendingOpsCount: pendingOperations.length,
     });
   } else if (result.failed) {
-    // Workflow failed — remap stack trace using inline source maps
+    // Workflow failed — remap stack trace using inline source maps.
+    // Frames carry the run's workflowId as their filename on the fresh
+    // path, but the workflow-independent BASELINE_BUNDLE_FILENAME on the
+    // snapshot path (the name is baked into the shared baseline's
+    // compiled code at hydrate) — remap against both. remapErrorStack
+    // early-exits on a cheap includes() when a filename has no frames.
     let errorStack = result.failed.stack;
     if (errorStack) {
       const parsedName = parseWorkflowName(workflowName);
       const filename = parsedName?.moduleSpecifier || workflowName;
       errorStack = remapErrorStack(errorStack, filename, workflowCode);
+      errorStack = remapErrorStack(
+        errorStack,
+        BASELINE_BUNDLE_FILENAME,
+        workflowCode
+      );
     }
 
     // Classify the error so consumers (`run.returnValue`, observability)
@@ -1828,9 +1854,14 @@ export async function runWorkflowWithQuickJS(params: {
         ) {
           const parsedName = parseWorkflowName(workflowName);
           const filename = parsedName?.moduleSpecifier || workflowName;
+          // Both filename spaces — see the failed-branch comment above.
           (hydrated as { stack?: string }).stack = remapErrorStack(
-            (hydrated as { stack: string }).stack,
-            filename,
+            remapErrorStack(
+              (hydrated as { stack: string }).stack,
+              filename,
+              workflowCode
+            ),
+            BASELINE_BUNDLE_FILENAME,
             workflowCode
           );
         }
@@ -1843,9 +1874,10 @@ export async function runWorkflowWithQuickJS(params: {
           if (typeof nodeStack === 'string') {
             const parsedName = parseWorkflowName(workflowName);
             const filename = parsedName?.moduleSpecifier || workflowName;
+            // Both filename spaces — see the failed-branch comment above.
             (node as { stack?: string }).stack = remapErrorStack(
-              nodeStack,
-              filename,
+              remapErrorStack(nodeStack, filename, workflowCode),
+              BASELINE_BUNDLE_FILENAME,
               workflowCode
             );
           }

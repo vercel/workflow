@@ -12,19 +12,48 @@ import {
   afterAll,
   afterEach,
   beforeAll,
+  beforeEach,
   describe,
   expect,
   it,
   vi,
 } from 'vitest';
 import { z } from 'zod';
-import { getWorkflowRunEventsV4 } from './events-v4.js';
+import {
+  createHookReceivedPreloadEventV4,
+  getWorkflowRunEventsV4,
+} from './events-v4.js';
 import { encodeFrame, V4_FRAME_CONTENT_TYPE } from './frames.js';
 import { injectTraceContextIntoHeaders } from './telemetry.js';
 import { makeRequest, WORKFLOW_SERVER_URL_OVERRIDE } from './utils.js';
 
 vi.mock('@vercel/oidc', () => ({
   getVercelOidcToken: vi.fn().mockRejectedValue(new Error('no OIDC')),
+}));
+
+/**
+ * The WS transport can only carry trace context on the upgrade — frames have no
+ * headers — so the assertion is on what reaches the `ws` constructor. This fake
+ * records that and stays in CONNECTING; no test here needs a handshake.
+ */
+const { wsUpgrades } = vi.hoisted(() => ({
+  wsUpgrades: [] as { url: string; headers: Record<string, string> }[],
+}));
+
+vi.mock('ws', () => ({
+  WebSocket: class {
+    static OPEN = 1;
+    readyState = 0;
+    constructor(url: string, options?: { headers?: Record<string, string> }) {
+      wsUpgrades.push({ url, headers: options?.headers ?? {} });
+    }
+    on() {
+      return this;
+    }
+    send() {}
+    close() {}
+    terminate() {}
+  },
 }));
 
 const exporter = new InMemorySpanExporter();
@@ -125,8 +154,11 @@ describe('v4 event requests (fetchV4) trace propagation', () => {
     agent.disableNetConnect();
     agent
       .get(origin)
-      .intercept({ path: '/api/v4/runs/wrun_1/events', method: 'GET' })
-      .reply(200, encodeFrame({ _end: 1 }, new Uint8Array(0)), {
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events?returnAll=true',
+        method: 'GET',
+      })
+      .reply(200, encodeFrame({ _end: 1, hasMore: false }, new Uint8Array(0)), {
         headers: { 'content-type': V4_FRAME_CONTENT_TYPE },
       });
 
@@ -169,6 +201,69 @@ describe('v4 event requests (fetchV4) trace propagation', () => {
     expect(traceparent).toBe(
       `00-${traceId}-${clientSpan?.spanContext().spanId}-01`
     );
+    agent.assertNoPendingInterceptors();
+    fetchSpy.mockRestore();
+  });
+
+  it('sends traceparent and the frame Accept on the hook_received preload POST', async () => {
+    const origin =
+      WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
+    const agent = new MockAgent();
+    agent.disableNetConnect();
+    agent
+      .get(origin)
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events/hook_received',
+        method: 'POST',
+      })
+      .reply(200, encodeFrame({ _end: 1, hasMore: false }, new Uint8Array(0)), {
+        headers: {
+          'content-type': V4_FRAME_CONTENT_TYPE,
+          'x-wf-event-id': 'evnt_1',
+          'x-wf-run-id': 'wrun_1',
+          'x-wf-created-at': '2026-06-10T00:00:00.000Z',
+          'x-wf-max-events': '10000',
+        },
+      });
+
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+
+    const tracer = otelTrace.getTracer('test');
+    let traceId = '';
+    await tracer.startActiveSpan('flow-invocation', async (span) => {
+      traceId = span.spanContext().traceId;
+      await createHookReceivedPreloadEventV4(
+        {
+          runId: 'wrun_1',
+          eventType: 'hook_received',
+          specVersion: 2,
+          correlationId: 'hook_1',
+          resumeId: 'resume-trace-1',
+          resumePayloadDigest: 'e'.repeat(64),
+          hookToken: 'tok-trace',
+        },
+        { token: 'test-token', dispatcher: agent }
+      );
+      span.end();
+    });
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    const calledInit = fetchSpy.mock.calls[0][1];
+    const sent = new Headers(calledInit?.headers as HeadersInit);
+    // The preload POST rides the same fetchV4 envelope as every other v4
+    // event request: trace context injected inside the client span...
+    const traceparent = sent.get('traceparent');
+    expect(traceparent).toMatch(/^00-[0-9a-f]{32}-[0-9a-f]{16}-0[01]$/);
+    const clientSpan = exporter
+      .getFinishedSpans()
+      .find((s) => s.name === 'http POST');
+    expect(clientSpan).toBeDefined();
+    expect(clientSpan?.spanContext().traceId).toBe(traceId);
+    expect(traceparent).toBe(
+      `00-${traceId}-${clientSpan?.spanContext().spanId}-01`
+    );
+    // ...while still negotiating the streamed replay-log response.
+    expect(sent.get('accept')).toBe(V4_FRAME_CONTENT_TYPE);
     agent.assertNoPendingInterceptors();
     fetchSpy.mockRestore();
   });
@@ -216,5 +311,53 @@ describe('streamer write trace propagation', () => {
     expect(traceparent).toBe(
       `00-${traceId}-${clientSpan?.spanContext().spanId}-01`
     );
+  });
+});
+
+describe('ws events transport upgrade trace propagation', () => {
+  // `openWsChannel` is gated, unlike the `resolveWsTransport` lookup it
+  // replaced: nothing opens a channel on the HTTP default.
+  beforeEach(() => {
+    vi.stubEnv('WORKFLOW_EVENTS_TRANSPORT', 'ws');
+  });
+
+  afterEach(async () => {
+    vi.unstubAllEnvs();
+    wsUpgrades.length = 0;
+    const { resetWsEventsTransportsForTest } = await import(
+      './ws-transport.js'
+    );
+    resetWsEventsTransportsForTest();
+  });
+
+  it('injects traceparent on the upgrade, parented to the invocation span', async () => {
+    const { openWsChannel } = await import('./ws-transport.js');
+
+    const tracer = otelTrace.getTracer('test');
+    let traceId = '';
+    let spanId = '';
+    await tracer.startActiveSpan('flow-invocation', async (span) => {
+      traceId = span.spanContext().traceId;
+      spanId = span.spanContext().spanId;
+      openWsChannel('wrun_1', { token: 'test-token' });
+      await vi.waitFor(() => expect(wsUpgrades).toHaveLength(1));
+      span.end();
+    });
+
+    // Every event written over this socket is parented to whoever opened it —
+    // there is no per-frame traceparent to fall back on, so an uninjected
+    // upgrade orphans the server's spans for the whole run.
+    const traceparent = wsUpgrades[0]?.headers.traceparent;
+    expect(traceparent).toBe(`00-${traceId}-${spanId}-01`);
+  });
+
+  it('opens the upgrade without traceparent when no span is active', async () => {
+    const { openWsChannel } = await import('./ws-transport.js');
+    openWsChannel('wrun_2', { token: 'test-token' });
+    await vi.waitFor(() => expect(wsUpgrades).toHaveLength(1));
+
+    expect(wsUpgrades[0]?.headers.traceparent).toBeUndefined();
+    // The rest of the upgrade must survive an absent propagator unchanged.
+    expect(wsUpgrades[0]?.headers.authorization).toBe('Bearer test-token');
   });
 });

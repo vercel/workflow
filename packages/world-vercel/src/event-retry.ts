@@ -30,11 +30,22 @@
  *   - `step_retrying` — re-applies `pending` (idempotent state) but its handler
  *                       does NOT throw on a duplicate, so a retry appends a
  *                       second event-log row.
- *   - `hook_received` — has no server-side guard at all; a retry appends a
- *                       duplicate row and can re-deliver the payload.
+ *   - `hook_received` — an ORDINARY hook write has no server-side guard, so a
+ *                       retry appends a duplicate row and can re-deliver the
+ *                       payload. The atomic lazy-resume shape (resumeId +
+ *                       resumePayloadDigest) IS guarded — the server's
+ *                       (runId, resumeId) claim converges a retry on the same
+ *                       canonical event — so those writes opt back into the
+ *                       standard policy via
+ *                       {@link EventPostRetryOptions.idempotentHookResume}.
  *
  * Only transient/ambiguous transport failures are retried; definitive responses
  * (409/410/425/429 and any other 4xx) surface immediately, exactly as before.
+ *
+ * This is the *only* retry loop on the event-write path, for both transports.
+ * The WebSocket transport raises `code: 'TRANSPORT'` — the shape `utils.ts`
+ * produces for a failed `fetch` — so it lands here rather than carrying a
+ * second policy blind to `EVENT_RETRY_ELIGIBILITY`.
  */
 
 import {
@@ -137,7 +148,10 @@ export const EVENT_RETRY_ELIGIBILITY = {
   hook_received: {
     retryable: false,
     reason:
-      'no server guard → a retry duplicates the row / re-delivers payload',
+      'no server guard → a retry duplicates the row / re-delivers payload. ' +
+      'EXCEPTION: the atomic lazy-resume shape (resumeId + digest) is ' +
+      'deduplicated server-side by the (runId, resumeId) claim, so those ' +
+      'writes opt in via withEventPostRetry({ idempotentHookResume })',
   },
   // Server-originated; the SDK never POSTs it.
   hook_conflict: {
@@ -216,6 +230,22 @@ export function isRetryableEventPostError(err: unknown): boolean {
     // Body parsed past the response but the write may have landed — safe to
     // retry for eligible events (a landed original re-surfaces as 409).
     if (err.code === 'PARSE_ERROR') return true;
+    // A transport failure the world layer already classified as transient:
+    // `utils.ts` sets this for a `fetch` failing with a
+    // `TRANSIENT_TRANSPORT_ERROR_CODES` code, `events-v4.ts` for a WS socket
+    // that died, refused a send, produced no correlatable reply or missed its
+    // deadline. The frame was never acked in any of them. Keying on the code
+    // rather than re-deriving transience from the cause chain is what lets one
+    // policy serve both transports; it also collapses a drift, since
+    // `UND_ERR_CONNECT`, `UND_ERR_CLOSED` and `EAI_AGAIN` are in utils.ts's set
+    // but not in TRANSIENT_CODES below, so they counted as retryable for queue
+    // redelivery yet were skipped in-process.
+    //
+    // `TIMEOUT` is deliberately excluded: utils.ts maps both a missed deadline
+    // and a caller's `AbortError` onto that one code, so it must keep falling
+    // through to the marker walk, which retries the former and refuses the
+    // latter.
+    if (err.code === 'TRANSPORT') return true;
     if (typeof err.status === 'number') {
       // Transient server errors; 4xx are definitive and not retried.
       return err.status >= 500 && err.status <= 599;
@@ -257,6 +287,20 @@ function errorMarker(err: unknown): string {
   );
 }
 
+export interface EventPostRetryOptions {
+  /**
+   * Narrow opt-in for `hook_received` writes carrying the atomic lazy-resume
+   * idempotency pair (`resumeId` + `resumePayloadDigest`). Those writes are
+   * deduplicated server-side by the `(runId, resumeId)` claim — a retry whose
+   * original landed converges on the same canonical event instead of
+   * appending a duplicate row — so they get the standard transient retry
+   * policy. Legacy `hook_received` (no pair, or an incomplete one) stays
+   * single-attempt per {@link EVENT_RETRY_ELIGIBILITY}; definitive 4xx
+   * responses stay non-retryable regardless.
+   */
+  idempotentHookResume?: boolean;
+}
+
 /**
  * Run an event POST, retrying transient transport failures in-process when the
  * event type is idempotent-on-retry. Non-retryable event types and definitive
@@ -264,9 +308,12 @@ function errorMarker(err: unknown): string {
  */
 export async function withEventPostRetry<T>(
   fn: () => Promise<T>,
-  eventType: WorkflowEventType
+  eventType: WorkflowEventType,
+  options?: EventPostRetryOptions
 ): Promise<T> {
-  const retryable = EVENT_RETRY_ELIGIBILITY[eventType]?.retryable ?? false;
+  const retryable =
+    (eventType === 'hook_received' && options?.idempotentHookResume === true) ||
+    (EVENT_RETRY_ELIGIBILITY[eventType]?.retryable ?? false);
   for (let attempt = 0; ; attempt++) {
     try {
       return await fn();

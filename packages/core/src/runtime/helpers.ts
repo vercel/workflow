@@ -4,10 +4,7 @@ import {
   WorkflowWorldError,
 } from '@workflow/errors';
 import type {
-  CreateEventParams,
-  CreateEventRequest,
   Event,
-  EventResult,
   HealthCheckPayload,
   ValidQueueName,
   WorkflowRun,
@@ -592,7 +589,7 @@ function shouldRetryWithoutEventCursor(
 export async function loadWorkflowRunEvents(
   runId: string,
   afterCursor?: string
-): Promise<{ events: Event[]; cursor: string | null }> {
+): Promise<LoadedEventLog> {
   const incremental = afterCursor !== undefined;
   return trace(
     incremental ? 'workflow.loadNewEvents' : 'workflow.loadEvents',
@@ -867,12 +864,6 @@ export function preconditionEventDelta(
     cursor: typeof cursor === 'string' ? cursor : null,
   };
 }
-
-/** Creates one event on a bound run, carrying replay-recovery telemetry. */
-export type EventCreator = (
-  data: CreateEventRequest,
-  params?: CreateEventParams
-) => Promise<EventResult>;
 
 /**
  * CORS headers for health check responses.

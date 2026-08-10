@@ -6,6 +6,7 @@ import {
   resolveModuleSpecifier,
   shouldTransformFile,
   WORKFLOW_OPTIONAL_OTEL_API_MODULE,
+  WORKFLOW_OPTIONAL_WS_NATIVE_MODULES,
 } from '@workflow/builders';
 import { resolveModulePath } from 'exsolve';
 import type { Plugin } from 'rollup';
@@ -47,6 +48,21 @@ export function workflowTransformPlugin(
             skipSelf: true,
           });
           return resolved ?? { id: source, external: true };
+        }
+
+        // `ws`'s optional native accelerators. Unlike the OTEL peer above these
+        // are externalized unconditionally, not only when unresolvable — `ws`
+        // requires them in a try/catch, so a failed runtime require is the
+        // designed path while a partially bundled native module is not. This
+        // plugin also runs under Vite, which substitutes a stub for an absent
+        // optional peer and would let that require succeed with no working
+        // masker. See WORKFLOW_OPTIONAL_WS_NATIVE_MODULES.
+        if (
+          WORKFLOW_OPTIONAL_WS_NATIVE_MODULES.some(
+            (name) => source === name || source.startsWith(`${name}/`)
+          )
+        ) {
+          return { id: source, external: true };
         }
 
         return null;

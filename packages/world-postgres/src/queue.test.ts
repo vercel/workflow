@@ -488,7 +488,7 @@ describe('postgres queue http execution', () => {
         }),
         expect.objectContaining({
           jobKey: 'step_01ABC',
-          maxAttempts: 3,
+          maxAttempts: 49,
           runAt: new Date('2024-01-01T00:00:05.000Z'),
         })
       );
@@ -525,7 +525,7 @@ describe('postgres queue http execution', () => {
       }),
       expect.objectContaining({
         jobKey: 'step_01ABC',
-        maxAttempts: 3,
+        maxAttempts: 49,
       })
     );
   });

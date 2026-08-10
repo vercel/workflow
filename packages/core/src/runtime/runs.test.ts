@@ -102,6 +102,11 @@ describe('wakeUpRun', () => {
     const result = await wakeUpRun(world, 'wrun_123');
 
     expect(result.stoppedCount).toBe(1);
+    expect(world.events.list).toHaveBeenCalledWith({
+      runId: 'wrun_123',
+      pagination: { sortOrder: 'asc' },
+      resolveData: 'none',
+    });
     expect(world.queue).toHaveBeenCalled();
   });
 
