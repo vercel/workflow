@@ -43,6 +43,20 @@ const getDeferredCheckDelayMs = (): number =>
  *
  * `hook_disposed` is deliberately absent despite being about a hook: it is
  * written when the workflow's own `using` scope exits, so it is replay-origin.
+ *
+ * Two entries are listed by type even though a given instance of them may be
+ * replay-origin: `attr_set` is replay-origin when its writer is the workflow,
+ * and an inline step's `step_completed` is written by the replay that ran the
+ * step. Splitting those out per event was considered and rejected. A replay
+ * that reaches one of its own writes out of position has diverged, but a replay
+ * that reaches an event it did NOT write, sitting where its own write would go,
+ * has not: the writer field says who wrote the event, and not whether this
+ * replay is the same one. Guessing wrong in that direction fails healthy runs,
+ * which is the failure this file exists to stop, so the whole type is tolerated
+ * and the {@link ONE_SHOT_EVENT_TYPES} check catches the case that is decidable
+ * (a second resolution for something already resolved). The cost is that a
+ * divergence involving these two types surfaces at the end of the replay,
+ * through `strandedEvent`, rather than at the offending event.
  */
 const PARKABLE_EVENT_TYPES: ReadonlySet<Event['eventType']> = new Set([
   'hook_received',
@@ -175,6 +189,31 @@ export class EventsConsumer {
     return this.parked[0]?.event;
   }
 
+  /**
+   * What the walk is still holding, or `undefined` when it holds nothing.
+   *
+   * Read at every point a replay stops, including the suspensions that are not
+   * settling points, so the held state reaches telemetry. A replay cannot tell
+   * a delivery awaiting a later consumer from one no consumer will ever
+   * register, so it reports rather than decides: the same `eventId` reported on
+   * suspension after suspension of one run is the shape that says the bet
+   * parking made is not going to pay off, and that shape is only visible across
+   * replays.
+   */
+  get parkedSummary():
+    | { count: number; eventId: string; eventType: Event['eventType'] }
+    | undefined {
+    const oldest = this.parked[0]?.event;
+    if (!oldest) {
+      return undefined;
+    }
+    return {
+      count: this.parked.length,
+      eventId: oldest.eventId,
+      eventType: oldest.eventType,
+    };
+  }
+
   append(events: Event[]): void {
     for (const event of events) this.events.push(event);
     process.nextTick(this.consume);
@@ -245,9 +284,12 @@ export class EventsConsumer {
         this.eventIndex++;
       }
       if (currentEvent === null) {
-        // End of log. Real consumers return NotConsumed for the `null`
-        // sentinel and the one that consumes it triggers the suspension, so
-        // either way the drain stops here rather than spinning past the end.
+        // End of log. Consumers return NotConsumed for the `null` sentinel
+        // (the one that recognizes it as its own boundary schedules the
+        // suspension as a side effect and still declines it), so the drain
+        // stops here rather than spinning past the end. `consumed` is only
+        // true for a callback that claims the sentinel outright, which no
+        // production consumer does.
         if (!consumed) {
           this.handleEndOfLog();
         }
@@ -371,6 +413,18 @@ export class EventsConsumer {
     }
     const last = this.events.at(-1);
     if (!last || !TERMINAL_EVENT_TYPES.has(last.eventType)) {
+      // A later replay is still expected, so nothing here is decidable and
+      // escalating would fail the healthy runs parking exists to keep alive.
+      // Reaching the end of the log holding something is not by itself a fault,
+      // so this stays at `debug`; {@link parkedSummary} is what carries the
+      // state to the span, where a run that keeps stopping on the same held
+      // event is visible and a single replay's view is not.
+      eventsLogger.debug('Reached the end of the log still holding events', {
+        eventId: this.parked[0].event.eventId,
+        eventType: this.parked[0].event.eventType,
+        correlationId: this.parked[0].event.correlationId,
+        parked: this.parked.length,
+      });
       return;
     }
     this.scheduleUnconsumedCheck(this.parked[0].event, false);

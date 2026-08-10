@@ -240,11 +240,13 @@ async function openEventSlots(db: DrizzleLike, runId: string): Promise<string> {
  * it asked for, the run is not slot-numbered, or the caller sent a count from a
  * log that is already ahead of this write.
  *
- * The set can be short of the slot span it covers. A slot is claimed by an
- * `UPDATE … RETURNING` that commits on its own outside a transaction, so a
- * writer holding a lower slot may not have inserted yet, and a writer whose
- * insert was rejected never will. `hasMore` says the report is a lower bound;
- * it is advisory, because the caller's ordinary incremental read still runs.
+ * The set can be short of the slot span it covers. A position is taken by the
+ * INSERT that computes it, and that INSERT commits on its own, so at the moment
+ * this reads the span a concurrent writer holding a lower position may not have
+ * committed yet. Its row appears shortly after and no position is left behind,
+ * because a write that fails never took one. `hasMore` says the report is a
+ * lower bound for now rather than a permanent one, and it is advisory either
+ * way: the caller's ordinary incremental read still runs.
  */
 async function reportSkippedSlots(
   db: Drizzle,

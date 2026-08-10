@@ -484,7 +484,9 @@ describe('EventsConsumer', () => {
      * tests need events the consumer recognizes.
      */
     function logEvent(eventType: Event['eventType'], id: string): Event {
-      return createMockEvent({ id, eventType } as Partial<Event>);
+      // `eventId` as well as the mock shape's `id`: the consumer reports the
+      // former, the matcher below keys on the latter.
+      return createMockEvent({ id, eventId: id, eventType } as Partial<Event>);
     }
 
     /** Consumes exactly the events whose id is in `ids`, once each. */
@@ -586,6 +588,38 @@ describe('EventsConsumer', () => {
       consumer.subscribe(() => EventConsumerResult.NotConsumed);
 
       expect(await unconsumedReceived.promise).toEqual(step);
+    });
+
+    it('reports what it is still holding when the walk stops', async () => {
+      const hook = logEvent('hook_received', 'hook-1');
+      const late = logEvent('hook_received', 'hook-2');
+      const wait = logEvent('wait_created', 'wait-1');
+      const consumer = new EventsConsumer([hook, late, wait], {
+        onUnconsumedEvent: vi.fn(),
+        getPromiseQueue: () => Promise.resolve(),
+      });
+      expect(consumer.parkedSummary).toBeUndefined();
+
+      consumer.subscribe(consumerFor(['wait-1']).callback);
+      await vi.waitFor(() => {
+        expect(consumer.eventIndex).toBe(3);
+      });
+
+      // Both hooks were walked past. A suspension is not a settling point, so
+      // the state goes on the span instead of failing the run: the oldest one
+      // held is what a query across a run's spans keys on.
+      expect(consumer.parkedSummary).toEqual({
+        count: 2,
+        eventId: 'hook-1',
+        eventType: 'hook_received',
+      });
+
+      // Once a consumer claims them the run is holding nothing, and the
+      // attribute stops appearing on later spans.
+      consumer.subscribe(consumerFor(['hook-1', 'hook-2']).callback);
+      await vi.waitFor(() => {
+        expect(consumer.parkedSummary).toBeUndefined();
+      });
     });
 
     it('declares divergence for an event still parked once the run has ended', async () => {

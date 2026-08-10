@@ -155,6 +155,16 @@ export type WorkflowResult =
       readonly type: 'suspended';
       readonly suspension: WorkflowSuspension;
       readonly session: WorkflowSession;
+      /**
+       * Events the replay walked past unclaimed and is still holding, if any.
+       * Ordinary on a suspension, and only actionable across a run's
+       * suspensions, so it is reported for telemetry rather than acted on here.
+       */
+      readonly parked?: {
+        readonly count: number;
+        readonly eventId: string;
+        readonly eventType: string;
+      };
     };
 
 /**
@@ -238,6 +248,20 @@ function recordResult(
     });
   } else if (span) {
     applyWorkflowSuspensionToSpan(result.suspension, span);
+    // Events this pass walked past unclaimed and is still holding. Ordinary on
+    // a suspension: an out-of-band delivery that landed ahead of the code that
+    // reads it waits for the pass that reaches that code, and failing here
+    // would fail exactly the runs that tolerance exists for. The case that is
+    // not ordinary — the same event still held pass after pass — is a shape
+    // across these spans, which is why the eventId is on each one and no pass
+    // tries to rule on it alone.
+    if (result.parked) {
+      span.setAttributes({
+        ...Attribute.WorkflowParkedEventsCount(result.parked.count),
+        ...Attribute.WorkflowParkedEventId(result.parked.eventId),
+        ...Attribute.WorkflowParkedEventType(result.parked.eventType),
+      });
+    }
   }
   return result;
 }
@@ -1073,7 +1097,15 @@ async function createWorkflowSession({
       result = await Promise.race([workflowBody, interruption.promise]);
     } catch (error) {
       if (state.type === 'suspended' && error === state.suspension) {
-        return { type: 'suspended', suspension: state.suspension, session };
+        return {
+          type: 'suspended',
+          suspension: state.suspension,
+          session,
+          // A suspension is not a settling point: the consumer for something
+          // held may well be registered by the replay that follows this one.
+          // So it is carried out for the span instead of being judged here.
+          parked: eventsConsumer.parkedSummary,
+        };
       }
       return failWorkflow(error);
     }

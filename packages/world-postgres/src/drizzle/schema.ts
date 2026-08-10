@@ -158,7 +158,9 @@ export const events = schema.table(
     // created before slots keep globally-unique ULIDs, which this key also
     // admits.
     primaryKey({ columns: [tb.runId, tb.eventId] }),
-    index().on(tb.runId),
+    // No standalone index on `runId`: the primary key leads with it, so every
+    // by-run lookup and range scan is served by that index already. Keeping one
+    // would cost a second write per event on the table's hottest path.
     index().on(tb.correlationId),
     // Runtime-correlated one-shot events must be unique per (run, correlation)
     // — without

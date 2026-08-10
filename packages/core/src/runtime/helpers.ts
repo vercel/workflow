@@ -822,12 +822,17 @@ export function mergeReportedEvents(
  * slot-numbered. A run keeps the id scheme it was created under, so one event
  * settles it for the whole log.
  *
- * The maximum, not the count. Slots are allocated by the write that occupies
- * them, and an allocation whose insert then fails (a losing entity-creation
- * claim, a rejected guarded update) leaves the slot permanently empty. Reading
- * the count would make every later write in such a run under-report what it has
- * seen, so the World would bump it past a hole it can never fill and hand back
- * the same events forever.
+ * The maximum, not the count, and the two are not interchangeable even though
+ * a healthy log makes them equal. A World hands a position to the insert that
+ * occupies it, so a write that never lands leaves no hole behind and the log
+ * stays dense. What the count cannot survive is a *partial* read: a log
+ * assembled from a truncated report, or read while a concurrent write is
+ * committing, holds fewer events than its highest position. Counting those
+ * would make the next write claim to have seen less than it has, so the World
+ * would report the same events back to it on every attempt.
+ *
+ * A hole below the maximum is therefore a property of the read, not of the log,
+ * which is what lets {@link settleEventSlotGap} re-read instead of giving up.
  */
 export function maxEventSlot(events: Event[]): number | undefined {
   let max: number | undefined;
