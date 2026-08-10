@@ -51,10 +51,127 @@ describe('createSwcPlugin externalizeNonSteps', () => {
     rmSync(testRoot, { recursive: true, force: true });
   });
 
+  it('reports authoritative transform results to an optional observer', async () => {
+    const srcDir = join(testRoot, 'src');
+    const stepFile = join(srcDir, 'step.ts');
+    const source = 'export const value = 42;';
+    const workflowManifest = {
+      steps: {
+        'src/step.ts': {
+          value: {
+            stepId: 'step//src/step//value',
+          },
+        },
+      },
+    };
+    const onAfterTransform = vi.fn();
+
+    writeFile(stepFile, source);
+    applySwcTransformMock.mockResolvedValue({
+      code: `${source}\n/* transformed */`,
+      workflowManifest,
+    });
+
+    await esbuild.build({
+      entryPoints: [stepFile],
+      absWorkingDir: testRoot,
+      outdir: join(testRoot, 'out'),
+      bundle: true,
+      write: false,
+      plugins: [
+        createSwcPlugin({
+          mode: 'step',
+          entriesToBundle: [stepFile],
+          onAfterTransform,
+        }),
+      ],
+    });
+
+    expect(onAfterTransform).toHaveBeenCalledOnce();
+    expect(onAfterTransform).toHaveBeenCalledWith({
+      mode: 'step',
+      filename: 'src/step.ts',
+      absolutePath: stepFile,
+      source,
+      code: `${source}\n/* transformed */`,
+      workflowManifest,
+    });
+  });
+
+  it('awaits asynchronous transform observers', async () => {
+    const stepFile = join(testRoot, 'src', 'step.ts');
+    let markObserverStarted: () => void = () => {};
+    let releaseObserver: () => void = () => {};
+    const observerStarted = new Promise<void>((resolve) => {
+      markObserverStarted = resolve;
+    });
+    const observerBlocked = new Promise<void>((resolve) => {
+      releaseObserver = resolve;
+    });
+    let buildCompleted = false;
+
+    writeFile(stepFile, 'export const value = 42;');
+
+    const build = esbuild.build({
+      entryPoints: [stepFile],
+      absWorkingDir: testRoot,
+      outdir: join(testRoot, 'out'),
+      bundle: true,
+      write: false,
+      plugins: [
+        createSwcPlugin({
+          mode: 'step',
+          entriesToBundle: [stepFile],
+          onAfterTransform: async () => {
+            markObserverStarted();
+            await observerBlocked;
+          },
+        }),
+      ],
+    });
+    void build.then(() => {
+      buildCompleted = true;
+    });
+
+    await observerStarted;
+    await Promise.resolve();
+    expect(buildCompleted).toBe(false);
+
+    releaseObserver();
+    await build;
+    expect(buildCompleted).toBe(true);
+  });
+
+  it('fails the build when a transform observer throws', async () => {
+    const stepFile = join(testRoot, 'src', 'step.ts');
+
+    writeFile(stepFile, 'export const value = 42;');
+
+    await expect(
+      esbuild.build({
+        entryPoints: [stepFile],
+        absWorkingDir: testRoot,
+        outdir: join(testRoot, 'out'),
+        bundle: true,
+        write: false,
+        plugins: [
+          createSwcPlugin({
+            mode: 'step',
+            entriesToBundle: [stepFile],
+            onAfterTransform: () => {
+              throw new Error('transform observer failed');
+            },
+          }),
+        ],
+      })
+    ).rejects.toThrow(/transform observer failed/);
+  });
+
   it('fails the build when two files emit the same step id', async () => {
     const srcDir = join(testRoot, 'src');
     const firstStepFile = join(srcDir, 'confirmation.ts');
     const secondStepFile = join(srcDir, 'reschedule.ts');
+    const onAfterTransform = vi.fn();
 
     writeFile(firstStepFile, `export const first = true;`);
     writeFile(secondStepFile, `export const second = true;`);
@@ -86,10 +203,12 @@ describe('createSwcPlugin externalizeNonSteps', () => {
         plugins: [
           createSwcPlugin({
             mode: 'step',
+            onAfterTransform,
           }),
         ],
       })
     ).rejects.toThrow(/Duplicate workflow step ID/);
+    expect(onAfterTransform).toHaveBeenCalledOnce();
   });
 
   it('fails the build when two files emit the same workflow id', async () => {
