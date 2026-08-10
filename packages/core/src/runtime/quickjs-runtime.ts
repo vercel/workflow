@@ -46,6 +46,7 @@ import {
 import seedrandom from 'seedrandom';
 import { monotonicFactory } from 'ulid';
 import { runtimeLogger } from '../logger.js';
+import { advancesReplayClock } from '../replay-clock.js';
 import { decompress } from '../serialization/compression.js';
 import type { DecryptionKey } from '../serialization/encryption.js';
 import { decrypt } from '../serialization/encryption.js';
@@ -1804,8 +1805,10 @@ async function processEvents(
     // BEFORE resolving anything, so workflow code unblocked by this event
     // observes Date.now() at (or after — the clock is monotonic) the time
     // the event was recorded. Mirrors the node:vm engine's
-    // `onConsumedEvent → updateTimestamp(+event.createdAt)`.
-    advanceClock(+event.createdAt);
+    // `onConsumedEvent → updateTimestamp(+event.createdAt)`, including its
+    // exclusion of the run-lifecycle events, which are present on replay but
+    // not on the first pass and so are not replay-stable clock sources.
+    if (advancesReplayClock(event)) advanceClock(+event.createdAt);
 
     const cid = event.correlationId;
     if (!cid) continue;
