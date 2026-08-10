@@ -1160,14 +1160,14 @@ jobs:
           # (2) probe the server before the long e2e run to catch any other
           # silent breakage.
           #
-          # Get-DevServerStatus returns the HTTP status code of GET /api/chat,
-          # or 0 if the request never produced a response. /api/chat is a
-          # POST-only endpoint, so a healthy dev server responds with 405
-          # Method Not Allowed; we only treat 5xx (and no-response) as
-          # unhealthy.
-          function Get-DevServerStatus {
+          # Get-EndpointStatus returns the HTTP status code of a GET, or 0 if
+          # the request never produced a response. Both probed endpoints are
+          # POST-only, so a healthy dev server answers 405 Method Not Allowed;
+          # only 5xx (and no-response) mean unhealthy.
+          function Get-EndpointStatus {
+            param([string]$Path)
             try {
-              $resp = Invoke-WebRequest -Uri "http://localhost:3000/api/chat" -UseBasicParsing -TimeoutSec 15 -ErrorAction Stop
+              $resp = Invoke-WebRequest -Uri "http://localhost:3000$Path" -UseBasicParsing -TimeoutSec 15 -ErrorAction Stop
               return [int]$resp.StatusCode
             } catch {
               if ($_.Exception.Response) {
@@ -1192,10 +1192,21 @@ jobs:
           # returning 500 for every request. Without this check the e2e suite
           # would burn the full 30-minute job window polling stuck workflow
           # runs before getting cancelled.
-          $status = Get-DevServerStatus
-          Write-Host "[health-check:pre-e2e] GET /api/chat -> $status"
-          if ($status -eq 0 -or $status -ge 500) {
-            Write-Host "::error title=Next.js dev server unhealthy::Dev server returned $status before e2e tests. Aborting to avoid the 30-minute job timeout. See the 'Print Next.js server logs' step for the underlying Turbopack error."
+          #
+          # Both endpoints are probed because they fail independently. Turbopack
+          # compiles routes lazily, so the flow route can be wedged on a stale
+          # generated import while /api/chat still answers 405 — which is how a
+          # broken run once burned the full window behind a "healthy" pre-flight.
+          $unhealthy = $false
+          foreach ($endpoint in @("/api/chat", "/.well-known/workflow/v1/flow")) {
+            $status = Get-EndpointStatus $endpoint
+            Write-Host "[health-check:pre-e2e] GET $endpoint -> $status"
+            if ($status -eq 0 -or $status -ge 500) {
+              Write-Host "::error title=Next.js dev server unhealthy::GET $endpoint returned $status before e2e tests. Aborting to avoid the 30-minute job timeout. See the 'Print Next.js server logs' step for the underlying Turbopack error."
+              $unhealthy = $true
+            }
+          }
+          if ($unhealthy) {
             Stop-Job $job -ErrorAction SilentlyContinue
             exit 1
           }

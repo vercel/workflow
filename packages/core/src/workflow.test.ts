@@ -4,6 +4,7 @@ import type { Event, WorkflowRun } from '@workflow/world';
 import { SPEC_VERSION_CURRENT } from '@workflow/world';
 import { decodeTime, monotonicFactory } from 'ulid';
 import { afterEach, assert, describe, expect, it, vi } from 'vitest';
+import { importKey } from './encryption.js';
 import { DEFERRED_CHECK_DELAY_MS } from './events-consumer.js';
 import type { WorkflowSuspension } from './global.js';
 import { ReplayPayloadCache } from './replay-payload-cache.js';
@@ -479,6 +480,97 @@ describe('runWorkflow', () => {
         ops
       )
     ).toEqual(3);
+  });
+
+  it('keeps a pre-suspension Date.now() stable when run_started joins the log', async () => {
+    // Turbo backgrounds `run_started` and skips the initial event preload, so
+    // the first pass runs against a log holding no run-lifecycle events, while
+    // every later replay has both. Letting them move the pinned clock made a
+    // `Date.now()` read before the first suspension return the seed on pass 1
+    // and `run_started.createdAt` on replay — so a `sleep()` deadline computed
+    // from the former was then measured against the latter.
+    //
+    // The two passes below differ only in whether the log carries the
+    // run-lifecycle prefix. Encryption is on because it is what makes the
+    // difference observable: hydrating the run input through `crypto.subtle`
+    // yields to the event loop, which lets the consumer's queued drain reach
+    // those events *before* the workflow body's first statement. Without a
+    // real async hop, hydration settles in microtasks and the body wins the
+    // race — masking the bug rather than fixing it.
+    const workflowRunId = 'wrun_123';
+    const key = await importKey(new Uint8Array(32).fill(0x21));
+    const workflowCode = `const add = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("add");
+          async function workflow() {
+            const before = Date.now();
+            await add(1, 2);
+            return [before, Date.now()];
+          }${getWorkflowTransformCode('workflow')}`;
+
+    const run = async (withRunLifecycle: boolean) => {
+      const ops: Promise<any>[] = [];
+      const workflowRun: WorkflowRun = {
+        runId: workflowRunId,
+        workflowName: 'workflow',
+        status: 'running',
+        input: await dehydrateWorkflowArguments([], workflowRunId, key, ops),
+        createdAt: new Date('2024-01-01T00:00:00.000Z'),
+        updatedAt: new Date('2024-01-01T00:00:00.000Z'),
+        startedAt: new Date('2024-01-01T00:00:03.000Z'),
+        deploymentId: 'test-deployment',
+      };
+      const lifecycle = [
+        {
+          eventId: 'event-run-created',
+          runId: workflowRunId,
+          eventType: 'run_created',
+          eventData: {},
+          createdAt: new Date('2024-01-01T00:00:00.000Z'),
+        },
+        {
+          eventId: 'event-run-started',
+          runId: workflowRunId,
+          eventType: 'run_started',
+          eventData: {},
+          createdAt: new Date('2024-01-01T00:00:03.000Z'),
+        },
+      ] as unknown as Event[];
+      const steps: Event[] = [
+        {
+          eventId: 'event-step-started',
+          runId: workflowRunId,
+          eventType: 'step_started',
+          correlationId: 'step_01HK153X00SFW49DWMQP3J810S',
+          eventData: { stepName: 'add' },
+          createdAt: new Date('2024-01-01T00:00:04.000Z'),
+        },
+        {
+          eventId: 'event-step-completed',
+          runId: workflowRunId,
+          eventType: 'step_completed',
+          correlationId: 'step_01HK153X00SFW49DWMQP3J810S',
+          eventData: {
+            stepName: 'add',
+            result: await dehydrateStepReturnValue(3, workflowRunId, key, ops),
+          },
+          createdAt: new Date('2024-01-01T00:00:05.000Z'),
+        },
+      ];
+      const result = await runWorkflow(
+        workflowCode,
+        workflowRun,
+        [...(withRunLifecycle ? lifecycle : []), ...steps],
+        key
+      );
+      return hydrateWorkflowReturnValue(result as any, workflowRunId, key, ops);
+    };
+
+    // Both passes read the run's creation time (the clock seed), not
+    // `run_started` at +3s. The second element proves the clock still advances
+    // on the events the body itself consumes.
+    const firstPass = await run(false);
+    const replay = await run(true);
+    expect(firstPass).toEqual([1704067200000, 1704067205000]);
+    expect(replay).toEqual(firstPass);
   });
 
   it('keeps IDs minted through STABLE_ULID on the run clock', async () => {

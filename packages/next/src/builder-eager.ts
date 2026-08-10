@@ -251,9 +251,12 @@ export async function getNextBuilderEager(
         };
 
         const fullRebuild = async () => {
+          const rebuildStartedAt = Date.now();
           this.clearDiscoveredEntriesCache();
           const newInputFiles = await this.getInputFiles();
           options.inputFiles = newInputFiles;
+          const consumedSnapshots =
+            await captureConsumedSnapshots(newInputFiles);
 
           await stepsCtx?.dispose();
           await workflowsCtx.interimBundleCtx.dispose();
@@ -276,6 +279,90 @@ export async function getNextBuilderEager(
 
           await writeManifest(newCombined.manifest);
           await refreshSourceSnapshots();
+          await restoreSnapshotsWrittenDuringRebuild(
+            rebuildStartedAt,
+            consumedSnapshots
+          );
+        };
+
+        /**
+         * The baseline the rebuild is about to consume, read before the
+         * multi-second bundle rather than after it. See
+         * `restoreSnapshotsWrittenDuringRebuild`.
+         */
+        const captureConsumedSnapshots = async (inputFiles: string[]) => {
+          const consumed = new Map<string, SourceSnapshot>();
+          await Promise.all(
+            [
+              ...getRelevantFiles({
+                discoveredEntries,
+                inputFiles,
+                normalizePath,
+              }),
+            ].map(async (file) => {
+              try {
+                consumed.set(file, await readSourceSnapshot(file));
+              } catch {
+                // Unreadable now means "did not exist for this rebuild".
+              }
+            })
+          );
+          return consumed;
+        };
+
+        /**
+         * A rediscovery takes seconds, and `refreshSourceSnapshots()` re-reads
+         * the sources at the end of it rather than at the point discovery
+         * consumed them. A save landing in between is therefore baselined as
+         * already-seen without ever having been discovered: its own flush
+         * diffs the new content against itself, decides `none`, and the edit
+         * is silently dropped until something unrelated forces another
+         * rediscovery.
+         *
+         * Restore the baseline the rebuild actually consumed for those files,
+         * so the follow-up flush diffs against pre-edit content and can still
+         * tell a body-only change (hot) from an import-graph one (full).
+         * Dropping the baseline outright would be safe but would force a
+         * needless second rediscovery for every edit that lands mid-build.
+         *
+         * Keyed on mtime rather than on the pending set alone, because
+         * chokidar routinely re-reports the very edit that triggered this
+         * rebuild — that one *was* consumed, and its post-build snapshot is
+         * the correct baseline.
+         */
+        const restoreSnapshotsWrittenDuringRebuild = async (
+          rebuildStartedAt: number,
+          consumedSnapshots: Map<string, SourceSnapshot>
+        ) => {
+          const restored: string[] = [];
+          for (const file of [
+            ...pendingFileChanges.addedFiles,
+            ...pendingFileChanges.modifiedFiles,
+          ]) {
+            let writtenDuringRebuild = true;
+            try {
+              writtenDuringRebuild =
+                (await stat(file)).mtimeMs > rebuildStartedAt;
+            } catch {
+              // Gone: treat as written so the baseline is invalidated.
+            }
+            if (!writtenDuringRebuild) {
+              continue;
+            }
+            const consumed = consumedSnapshots.get(file);
+            if (consumed) {
+              sourceSnapshots.set(file, consumed);
+            } else {
+              sourceSnapshots.delete(file);
+            }
+            restored.push(file);
+          }
+          if (restored.length > 0) {
+            logDevHmrDebug({
+              event: 'snapshots-restored',
+              files: restored.map(relativeToWorkingDir),
+            });
+          }
         };
 
         const isWatchableFile = (path: string) =>
@@ -424,10 +511,33 @@ export async function getNextBuilderEager(
           rememberKnownFile = nextKnown.addKnownFile;
         };
 
+        // Diagnostic only. Must never contain a `logDevHmr` decision string —
+        // the e2e suite counts those by substring.
+        const logDevHmrDebug = (detail: Record<string, unknown>) => {
+          if (process.env.WORKFLOW_DEV_HMR_LOGS === '1') {
+            console.log(`workflow dev hmr debug: ${JSON.stringify(detail)}`);
+          }
+        };
+
+        const workingDirPrefix = `${normalizePath(this.config.workingDir)}/`;
+        const relativeToWorkingDir = (file: string) => {
+          const normalized = normalizePath(file);
+          return normalized.startsWith(workingDirPrefix)
+            ? normalized.slice(workingDirPrefix.length)
+            : normalized;
+        };
+
         const processFileChanges = async (fileChanges: FileChanges) => {
           if (!hasFileChanges(fileChanges)) {
             return;
           }
+
+          logDevHmrDebug({
+            event: 'flush',
+            added: fileChanges.addedFiles.map(relativeToWorkingDir),
+            modified: fileChanges.modifiedFiles.map(relativeToWorkingDir),
+            removed: fileChanges.removedFiles.map(relativeToWorkingDir),
+          });
 
           const decision = await classifyRebuild({
             discoveredEntries,
@@ -447,46 +557,96 @@ export async function getNextBuilderEager(
           }
           if (decision.kind === 'full') {
             logDevHmr('workflow dev hmr: full rediscovery');
+            const startedAt = Date.now();
             await fullRebuild();
             await refreshKnownFiles();
+            logDevHmrDebug({
+              event: 'rebuilt',
+              kind: 'full',
+              durationMs: Date.now() - startedAt,
+              // Anything that landed while the rebuild ran; these used to each
+              // become their own queued flush.
+              coalescedDuring: hasFileChanges(pendingFileChanges),
+            });
             return;
           }
 
           logDevHmr(
             `workflow dev hmr: hot rebuild${decision.refreshStepRegistrations ? ' with step registration refresh' : ''}`
           );
+          const startedAt = Date.now();
           await hotRebuild(decision.refreshStepRegistrations);
           for (const [file, snapshot] of decision.snapshots) {
             sourceSnapshots.set(file, snapshot);
           }
+          logDevHmrDebug({
+            event: 'rebuilt',
+            kind: 'hot',
+            durationMs: Date.now() - startedAt,
+            coalescedDuring: hasFileChanges(pendingFileChanges),
+          });
         };
 
-        let pendingFileChanges: FileChanges = {
+        const noFileChanges = (): FileChanges => ({
           addedFiles: [],
           modifiedFiles: [],
           removedFiles: [],
-        };
-        let flushTimer: ReturnType<typeof setTimeout> | undefined;
+        });
 
+        let pendingFileChanges: FileChanges = noFileChanges();
+        let flushTimer: ReturnType<typeof setTimeout> | undefined;
+        let flushInFlight = false;
+
+        /**
+         * Coalesce watcher events into one rebuild, both across the debounce
+         * window and across a rebuild that is already running.
+         *
+         * The second half matters more than the first. A full rediscovery takes
+         * seconds, and the watcher keeps firing throughout — so releasing the
+         * debounce at *enqueue* time lets one event per 10ms window pile onto
+         * `rebuildQueue`, and the whole backlog then drains back-to-back the
+         * moment the rebuild lands. Each entry re-runs `classifyRebuild` over
+         * state the previous entry already brought up to date, so the extra
+         * passes are pure waste, and how many there are is a function of runner
+         * load rather than of what the user edited.
+         *
+         * Holding the window open until the in-flight flush completes keeps one
+         * logical edit to one decision. Anything arriving mid-rebuild merges
+         * into `pendingFileChanges` and rides the follow-up flush that the tail
+         * arms.
+         */
         const scheduleFileChanges = (fileChanges: FileChanges) => {
           pendingFileChanges = mergeFileChanges(
             pendingFileChanges,
             fileChanges
           );
-          if (flushTimer) {
+          armFileChangeFlush();
+        };
+
+        function armFileChangeFlush() {
+          if (flushTimer || flushInFlight) {
             return;
           }
           flushTimer = setTimeout(() => {
-            const fileChanges = pendingFileChanges;
-            pendingFileChanges = {
-              addedFiles: [],
-              modifiedFiles: [],
-              removedFiles: [],
-            };
             flushTimer = undefined;
-            enqueue(() => processFileChanges(fileChanges));
+            if (!hasFileChanges(pendingFileChanges)) {
+              return;
+            }
+            const fileChanges = pendingFileChanges;
+            pendingFileChanges = noFileChanges();
+            flushInFlight = true;
+            enqueue(async () => {
+              try {
+                await processFileChanges(fileChanges);
+              } finally {
+                flushInFlight = false;
+                if (hasFileChanges(pendingFileChanges)) {
+                  armFileChangeFlush();
+                }
+              }
+            });
           }, 10);
-        };
+        }
 
         const resolveExistingEventPath = async (pathname: string) => {
           const normalizedPath = normalizePath(pathname);

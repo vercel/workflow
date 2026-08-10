@@ -17,6 +17,14 @@ export interface DevTestConfig {
   workflowsDir?: string;
 }
 
+/**
+ * A poll condition that can no longer become true. Rebuild-decision counts only
+ * grow, so once one overshoots its expectation the remaining timeout is dead
+ * time — and a 50s dead wait reads as "slow/flaky infra" when the real answer
+ * is "we rebuilt too many times", which is a different bug.
+ */
+class PollUnreachableError extends Error {}
+
 const SOURCE_MAP_WARNING = 'failed to read input source map';
 const SOURCE_MAP_FIXTURE_PACKAGE = 'workflow-sourcemap-warning-fixture';
 const SOURCE_MAP_COMMENT = '//# sourceMapping' + 'URL=index.js.map';
@@ -44,14 +52,20 @@ export function createDevTests(config?: DevTestConfig) {
     // Each prewarm/trigger fetch is hard-bounded by this so cleanup never hangs
     // on a wedged dev server.
     const PREWARM_FETCH_TIMEOUT_MS = 5_000;
-    // The afterEach cleanup can issue two *sequential* prewarms (before and
-    // after deleting an added file) while the dev server is mid-rebuild — the
-    // teardown of a test that added a workflow file and edited an import is
-    // exactly when both rebuild and respond slowly. Its budget must therefore
-    // exceed 2× PREWARM_FETCH_TIMEOUT_MS (plus file IO) with headroom, or it
-    // trips vitest's 10s default hook timeout. The bounded fetches mean this
-    // can't hang indefinitely, so a generous budget is safe.
-    const CLEANUP_HOOK_TIMEOUT_MS = PREWARM_FETCH_TIMEOUT_MS * 4;
+    // How long cleanup waits for the dev server to regenerate the step
+    // registrations after a workflow file is deleted, before repairing them
+    // itself.
+    const STALE_REGISTRATION_TIMEOUT_MS = 8_000;
+    // The afterEach cleanup can issue three *sequential* prewarms (before and
+    // after deleting an added file, and after repairing the registrations)
+    // while the dev server is mid-rebuild — the teardown of a test that added
+    // a workflow file and edited an import is exactly when both rebuild and
+    // respond slowly. Its budget must therefore exceed 3× the fetch bound plus
+    // the registration wait (plus file IO) with headroom, or it trips vitest's
+    // 10s default hook timeout. The bounded fetches mean this can't hang
+    // indefinitely, so a generous budget is safe.
+    const CLEANUP_HOOK_TIMEOUT_MS =
+      PREWARM_FETCH_TIMEOUT_MS * 4 + STALE_REGISTRATION_TIMEOUT_MS;
     const appPath = getWorkbenchAppPath();
     const deploymentUrl = process.env.DEPLOYMENT_URL;
     const generatedStepRegistration = path.join(
@@ -173,6 +187,75 @@ export function createDevTests(config?: DevTestConfig) {
         fetchWithTimeout('/api/chat').catch(() => {}),
       ]);
     };
+    /**
+     * Make the generated step registrations stop importing files this test
+     * just deleted.
+     *
+     * The registrations list every file in the workflows directory, so
+     * deleting one leaves a dangling import until the dev server's watcher
+     * regenerates. Nothing in the cleanup waits for that, and on Windows the
+     * regeneration can be missed entirely — the flow route then fails to
+     * compile with `Module not found` for the rest of the run, which reads as
+     * every later test timing out rather than as a cleanup bug.
+     *
+     * Wait for the regeneration, and rewrite the file ourselves if it does not
+     * come. The next real regeneration overwrites whatever we write, and the
+     * deleted file cannot come back into the list, so the repair is safe.
+     */
+    const dropStaleStepRegistrations = async (deletedPaths: string[]) => {
+      const deletedNames = deletedPaths
+        .filter((filePath) =>
+          filePath.startsWith(path.join(appPath, workflowsDir))
+        )
+        .map((filePath) => path.basename(filePath));
+      if (deletedNames.length === 0) {
+        return;
+      }
+
+      const readStale = async (): Promise<{
+        content: string;
+        staleLines: string[];
+      } | null> => {
+        const content = await fs
+          .readFile(generatedStepRegistration, 'utf8')
+          .catch(() => null);
+        if (content === null) {
+          return null;
+        }
+        const staleLines = content
+          .split('\n')
+          .filter((line) =>
+            deletedNames.some((name) => line.includes(`/${name}`))
+          );
+        return staleLines.length > 0 ? { content, staleLines } : null;
+      };
+
+      const deadline = Date.now() + STALE_REGISTRATION_TIMEOUT_MS;
+      let stale = await readStale();
+      while (stale !== null && Date.now() < deadline) {
+        await sleep(500);
+        stale = await readStale();
+      }
+      if (stale === null) {
+        return;
+      }
+
+      console.warn(
+        `[dev e2e cleanup] ${generatedStepRegistration} still imports deleted ` +
+          `workflow files after ${STALE_REGISTRATION_TIMEOUT_MS}ms; stripping ` +
+          `them so later tests are not wedged on a missing module:\n` +
+          stale.staleLines.map((line) => `  ${line}`).join('\n')
+      );
+      await fs.writeFile(
+        generatedStepRegistration,
+        stale.content
+          .split('\n')
+          .filter((line) => !stale.staleLines.includes(line))
+          .join('\n')
+      );
+      await prewarm();
+    };
+
     const decodeDevServerLog = (content: Buffer) => {
       if (content.length >= 2 && content[0] === 0xff && content[1] === 0xfe) {
         return content.toString('utf16le');
@@ -201,6 +284,7 @@ export function createDevTests(config?: DevTestConfig) {
       log.split(message).length - 1;
     type ExpectedHmrLogCount = number | { min?: number; max?: number };
     const expectLogCount = (
+      label: string,
       actual: number,
       expected: ExpectedHmrLogCount | undefined
     ) => {
@@ -211,11 +295,21 @@ export function createDevTests(config?: DevTestConfig) {
           expect(actual).toBeGreaterThanOrEqual(expected);
           return;
         }
+        if (actual > expected) {
+          throw new PollUnreachableError(
+            `saw ${actual} '${label}' rebuild decisions, expected exactly ${expected}`
+          );
+        }
         expect(actual).toBe(expected);
         return;
       }
       expect(actual).toBeGreaterThanOrEqual(expected?.min ?? 0);
       if (expected?.max !== undefined) {
+        if (actual > expected.max) {
+          throw new PollUnreachableError(
+            `saw ${actual} '${label}' rebuild decisions, expected at most ${expected.max}`
+          );
+        }
         expect(actual).toBeLessThanOrEqual(expected.max);
       }
     };
@@ -230,26 +324,39 @@ export function createDevTests(config?: DevTestConfig) {
       if (cursor === undefined) {
         return;
       }
-      await pollUntil({
-        description: 'dev server HMR logs to match expected rebuild counts',
-        timeoutMs: hmrRediscoveryTimeoutMs,
-        intervalMs: 250,
-        check: async () => {
-          const log = (await readDevServerLog()).slice(cursor);
-          expectLogCount(
-            countLogMessage(log, hmrLogMessages.skip),
-            expected.skip
-          );
-          expectLogCount(
-            countLogMessage(log, hmrLogMessages.hot),
-            expected.hot
-          );
-          expectLogCount(
-            countLogMessage(log, hmrLogMessages.full),
-            expected.full
-          );
-        },
-      });
+      try {
+        await pollUntil({
+          description: 'dev server HMR logs to match expected rebuild counts',
+          timeoutMs: hmrRediscoveryTimeoutMs,
+          intervalMs: 250,
+          check: async () => {
+            const log = (await readDevServerLog()).slice(cursor);
+            expectLogCount(
+              'skip',
+              countLogMessage(log, hmrLogMessages.skip),
+              expected.skip
+            );
+            expectLogCount(
+              'hot rebuild',
+              countLogMessage(log, hmrLogMessages.hot),
+              expected.hot
+            );
+            expectLogCount(
+              'full rediscovery',
+              countLogMessage(log, hmrLogMessages.full),
+              expected.full
+            );
+          },
+        });
+      } catch (error) {
+        // The counts alone never say *why*. The slice since the cursor holds
+        // the decisions with their `workflow dev hmr debug:` file lists, which
+        // is what distinguishes a real over-rebuild from a drained backlog.
+        console.error(
+          `HMR log expectation failed (expected ${JSON.stringify(expected)}). Dev server log since cursor:\n${(await readDevServerLog()).slice(cursor)}`
+        );
+        throw error;
+      }
     };
 
     const pollUntil = async ({
@@ -271,6 +378,11 @@ export function createDevTests(config?: DevTestConfig) {
           await check();
           return;
         } catch (error) {
+          // Some conditions can only get further from passing (see
+          // PollUnreachableError); retrying them just burns the timeout.
+          if (error instanceof PollUnreachableError) {
+            throw error;
+          }
           lastError = error;
           await new Promise((res) => setTimeout(res, intervalMs));
         }
@@ -353,6 +465,7 @@ export function createDevTests(config?: DevTestConfig) {
         )
       );
       await prewarm();
+      await dropStaleStepRegistrations(toDelete.map((item) => item.path));
       restoreFiles.length = 0;
       restoreDirectories.length = 0;
     }, CLEANUP_HOOK_TIMEOUT_MS);
@@ -1353,7 +1466,10 @@ ${apiFileContent}`
           },
           {
             description: 'workflow file removed from API import',
-            expectedLogCounts: { full: 1, skip: 1 },
+            // Two filesystem operations (unlink + API-file rewrite). Whether
+            // they land in one flush or two is a scheduling detail; what must
+            // hold is exactly one full rediscovery.
+            expectedLogCounts: { full: 1, skip: { max: 1 } },
             write: async () => {
               await fs.rm(files.addedWorkflow, { force: true });
               await fs.writeFile(

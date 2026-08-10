@@ -24,6 +24,7 @@ import type { QueueItem } from './global.js';
 import { ENOTSUP, WorkflowSuspension } from './global.js';
 import { runtimeLogger } from './logger.js';
 import type { WorkflowOrchestratorContext } from './private.js';
+import { advancesReplayClock } from './replay-clock.js';
 import { ReplayPayloadCache } from './replay-payload-cache.js';
 import { getPortLazy } from './runtime/get-port-lazy.js';
 import { runIdCreatedAt } from './runtime/run-id-time.js';
@@ -389,7 +390,7 @@ async function createWorkflowSession({
 
   const eventsConsumer = new EventsConsumer(events, {
     onConsumedEvent: (event) => {
-      updateTimestamp(+event.createdAt);
+      if (advancesReplayClock(event)) updateTimestamp(+event.createdAt);
     },
     onUnconsumedEvent: (event) => {
       onWorkflowError(
@@ -428,7 +429,8 @@ async function createWorkflowSession({
 
   // Consume run lifecycle events - these are structural events that don't
   // need special handling in the workflow, but must be consumed to advance
-  // past them in the event log
+  // past them in the event log. The run-lifecycle pair is also excluded from
+  // the replay clock (see `advancesReplayClock`) — keep the two lists aligned.
   workflowContext.eventsConsumer.subscribe((event) => {
     if (!event) {
       return EventConsumerResult.NotConsumed;

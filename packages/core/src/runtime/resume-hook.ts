@@ -18,6 +18,7 @@ import {
   SPEC_VERSION_SUPPORTS_COMPRESSION,
   type WorkflowInvokePayload,
   type WorkflowRun,
+  type World,
 } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
 import { getRunCapabilities } from '../capabilities.js';
@@ -71,6 +72,64 @@ async function computeResumePayloadDigest(bytes: Uint8Array): Promise<string> {
     hex += b.toString(16).padStart(2, '0');
   }
   return hex;
+}
+
+/**
+ * Whether this resume's `hook_received` is already committed, identified by its
+ * `resumeId` — the `(runId, resumeId)` key both writers of one lazy resume
+ * share, which the World persists on the event.
+ *
+ * Read by correlation id rather than over the whole log: the hook's own events
+ * are a handful regardless of how long the run is, so this stays a single
+ * bounded page. Only reached on the parallel path's error branch.
+ *
+ * Retried, because commit order is not read visibility. The event is committed
+ * before the disposal that rejected our write, but this reads another writer's
+ * commit back through an eventually-consistent index — "not visible yet" and
+ * "never written" are the same answer at a single point in time, and only the
+ * first resolves by waiting. One read reports a delivered resume as lost.
+ *
+ * Exhausting the budget answers "not committed". The caller's alternative is to
+ * report a resume as delivered on no evidence, and the sequential path's
+ * contract — hook gone means not delivered — is the safer default to fall back
+ * to. A run that genuinely ended pays the whole budget to reach it — bounded at
+ * ~2s, on an error path, against reporting a delivered resume as lost.
+ */
+const RESUME_EVENT_VISIBILITY_BACKOFF_MS = [0, 150, 300, 600, 1000];
+
+async function resumeEventCommitted({
+  world,
+  hook,
+  resumeId,
+}: {
+  world: World;
+  hook: Hook;
+  resumeId: string;
+}): Promise<boolean> {
+  for (const delayMs of RESUME_EVENT_VISIBILITY_BACKOFF_MS) {
+    if (delayMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+    try {
+      const { data } = await world.events.listByCorrelationId({
+        runId: hook.runId,
+        correlationId: hook.hookId,
+        resolveData: 'none',
+      });
+      if (
+        data.some(
+          (event) =>
+            event.eventType === 'hook_received' && event.resumeId === resumeId
+        )
+      ) {
+        return true;
+      }
+    } catch {
+      // A failed read and an empty one are the same answer here: retry, and
+      // fall through to "not committed" if the budget runs out.
+    }
+  }
+  return false;
 }
 
 /**
@@ -616,13 +675,48 @@ async function resumeHookImpl<T = any>(
         if (eventResult.status === 'rejected') {
           const err = eventResult.reason;
           if (HookNotFoundError.is(err) || RunExpiredError.is(err)) {
-            // The hook's run has genuinely ended: surface the same contract as
-            // the sequential path. The queue message already went out, but the
-            // consumer's re-ensure will also reject against the terminal run
-            // and no-op, so the workflow does not resume.
-            throw new HookNotFoundError(hook.token);
-          }
-          if (EntityConflictError.is(err) || isRetryableWorldError(err)) {
+            // "Hook gone" is ambiguous here in a way it is not on the
+            // sequential path, which only queues once its write has landed.
+            // Both writers are already in flight, so this means either:
+            //   - the run had genuinely ended before this resume — the
+            //     consumer's re-ensure rejects too and the workflow does not
+            //     resume; the caller must see HookNotFoundError; or
+            //   - the consumer won the race, the run consumed the payload,
+            //     completed, and disposed the hook — the hook is gone BECAUSE
+            //     this resume succeeded, and throwing fails a delivered resume.
+            //
+            // The committed event discriminates them. Disposal is ordered
+            // after the hook_received it follows, so a delivered resume has
+            // its event committed under this `resumeId` by the time the loser
+            // observes the disposal; a terminal run has no such event and
+            // never will. Committed is not the same as readable, though, so
+            // the check retries within a short budget rather than reading
+            // once.
+            if (!(await resumeEventCommitted({ world, hook, resumeId }))) {
+              throw new HookNotFoundError(hook.token);
+            }
+            resilientResume = true;
+            span?.setAttributes({
+              ...Attribute.HookResilientResume(true),
+              'workflow.hook.resume_event_write_recovered': true,
+              'workflow.hook.resume_event_write_error':
+                err instanceof Error ? err.name : 'unknown',
+            });
+            runtimeLogger.warn(
+              'Hook resume event write found the hook gone, but the queue ' +
+                'consumer had already committed this resume. Treating it as ' +
+                'delivered.',
+              {
+                workflowRunId: hook.runId,
+                hookId: hook.hookId,
+                resumeId,
+                error: err instanceof Error ? err.message : String(err),
+              }
+            );
+          } else if (
+            EntityConflictError.is(err) ||
+            isRetryableWorldError(err)
+          ) {
             // Resilient. Two shapes reach here, both non-terminal:
             //   - EntityConflict (409): this write raced its own re-ensuring
             //     consumer (or a redrive) on the shared `resumeId` — the run is
