@@ -20,6 +20,7 @@ import type { QueueItem } from './global.js';
 import { ENOTSUP, WorkflowSuspension } from './global.js';
 import { runtimeLogger } from './logger.js';
 import type { WorkflowOrchestratorContext } from './private.js';
+import { isDeliveryIdle } from './private.js';
 import { ReplayPayloadCache } from './replay-payload-cache.js';
 import { getPortLazy } from './runtime/get-port-lazy.js';
 import { runIdCreatedAt } from './runtime/run-id-time.js';
@@ -400,12 +401,18 @@ async function createWorkflowSession({
   // by step/hook/sleep callbacks as events are processed.
   const promiseQueueHolder = { current: Promise.resolve() };
 
+  // Same reason as the queue holder: the consumer is built before the context
+  // whose delivery state it has to read. Idle until the context exists, which
+  // is before any delivery can be registered against it.
+  const deliveryIdleHolder = { current: (): boolean => true };
+
   // The VM clock only ever moves forward. Consumption order is log order for
   // everything whose order the replay decides, but an event the consumer
   // parked is delivered after the walk has already passed events written after
   // it, and letting its `createdAt` set the clock would make `Date.now()` go
   // backwards inside a single replay.
   let clock = fixedTimestamp;
+
   const eventsConsumer = new EventsConsumer(events, {
     onConsumedEvent: (event) => {
       const at = +event.createdAt;
@@ -423,6 +430,7 @@ async function createWorkflowSession({
       );
     },
     getPromiseQueue: () => promiseQueueHolder.current,
+    isDeliveryIdle: () => deliveryIdleHolder.current(),
   });
 
   const workflowContext: WorkflowOrchestratorContext = {
@@ -448,6 +456,8 @@ async function createWorkflowSession({
     pendingDeliveryBarriers: new Map(),
     replayPayloadCache,
   };
+
+  deliveryIdleHolder.current = () => isDeliveryIdle(workflowContext);
 
   // Consume run lifecycle events - these are structural events that don't
   // need special handling in the workflow, but must be consumed to advance

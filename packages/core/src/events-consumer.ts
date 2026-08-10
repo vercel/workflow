@@ -138,6 +138,16 @@ export interface EventsConsumerOptions {
    * deserialization delays the resolve() that triggers the next subscribe().
    */
   getPromiseQueue: () => Promise<void>;
+  /**
+   * Whether no data delivery is in flight (`isDeliveryIdle` in private.ts).
+   * The unconsumed-event check waits for this before it fires: a delivery in
+   * flight means the workflow VM is mid-reaction, and an event it has not
+   * claimed yet is an event it has not reached yet.
+   *
+   * Defaults to always-idle so the tests that drive a consumer with no
+   * orchestrator context keep the pre-existing timing.
+   */
+  isDeliveryIdle?: () => boolean;
 }
 
 export class EventsConsumer {
@@ -164,6 +174,7 @@ export class EventsConsumer {
   private onConsumedEvent?: (event: Event) => void;
   private onUnconsumedEvent: (event: Event) => void;
   private getPromiseQueue: () => Promise<void>;
+  private isDeliveryIdle: () => boolean;
   private pendingUnconsumedCheck: Promise<void> | null = null;
   private pendingUnconsumedTimeout: ReturnType<typeof setTimeout> | null = null;
   private unconsumedCheckVersion = 0;
@@ -177,6 +188,7 @@ export class EventsConsumer {
     this.onConsumedEvent = options.onConsumedEvent;
     this.onUnconsumedEvent = options.onUnconsumedEvent;
     this.getPromiseQueue = options.getPromiseQueue;
+    this.isDeliveryIdle = options.isDeliveryIdle ?? (() => true);
   }
 
   /**
@@ -448,33 +460,82 @@ export class EventsConsumer {
       )
       .then(() => this.getPromiseQueue())
       .then(() => {
-        // Use a delayed setTimeout after the queue drains. The delay must be
-        // long enough for promise chains to propagate across the VM boundary
-        // (from resolve() in the host context through to the workflow code
-        // calling subscribe() in the VM context). Node.js does not guarantee
-        // that setTimeout(0) fires after all cross-context microtasks settle,
-        // so we use a small but non-zero delay. Any subscribe() call that
-        // arrives during this window will cancel the check via version
-        // invalidation + clearTimeout.
-        this.pendingUnconsumedTimeout = setTimeout(() => {
-          this.pendingUnconsumedTimeout = null;
-          if (this.unconsumedCheckVersion !== checkVersion) {
-            return;
-          }
-          this.pendingUnconsumedCheck = null;
-          if (mayPark) {
-            if (this.events[this.eventIndex] !== currentEvent) {
-              // An append() drain claimed it while the check was in flight.
-              // Only subscribe() cancels the check, so this is reachable.
+        // Wait out any delivery still in flight before starting the timer.
+        // The queue draining says the host has no hydration work left; it
+        // does not say the VM has finished reacting to what was hydrated.
+        this.whenDeliveryIdle(checkVersion, () => {
+          // Use a delayed setTimeout once deliveries are idle. The delay must
+          // be long enough for promise chains to propagate across the VM
+          // boundary (from resolve() in the host context through to the
+          // workflow code calling subscribe() in the VM context). Node.js does
+          // not guarantee that setTimeout(0) fires after all cross-context
+          // microtasks settle, so we use a small but non-zero delay. Any
+          // subscribe() call that arrives during this window will cancel the
+          // check via version invalidation + clearTimeout.
+          this.pendingUnconsumedTimeout = setTimeout(() => {
+            this.pendingUnconsumedTimeout = null;
+            if (this.unconsumedCheckVersion !== checkVersion) {
               return;
             }
-            if (this.park(currentEvent)) {
-              this.consume();
-              return;
+            this.pendingUnconsumedCheck = null;
+            if (mayPark) {
+              if (this.events[this.eventIndex] !== currentEvent) {
+                // An append() drain claimed it while the check was in flight.
+                // Only subscribe() cancels the check, so this is reachable.
+                return;
+              }
+              if (this.park(currentEvent)) {
+                this.consume();
+                return;
+              }
             }
-          }
-          this.onUnconsumedEvent(currentEvent);
-        }, getDeferredCheckDelayMs());
+            this.onUnconsumedEvent(currentEvent);
+          }, getDeferredCheckDelayMs());
+        });
       });
+  }
+
+  /**
+   * Run `fn` once no data delivery is in flight, polling the way
+   * `scheduleWhenIdle` does: let the promise queue drain, re-check a timer
+   * tick later, repeat.
+   *
+   * Without this the check is a bet that every delivery the walk is running
+   * ahead of lands inside a fixed window. Consumption is synchronous while the
+   * resolution it triggers is not: a step result hydrates in the host, resolves
+   * from a detached continuation behind `awaitEarlierDeliveries`, and only then
+   * does VM code run far enough to subscribe the next consumer. Replaying a
+   * batch of N parallel step results leaves N-1 of them on that detached path
+   * with the queue already drained, so the walk sits on the ordered event the
+   * VM is about to draw and the window is the only thing standing between a
+   * healthy run and `ReplayDivergenceError`. On a backend whose deliveries take
+   * longer than the window, that bet loses: the local race repro corrupts 34 of
+   * 42 runs at a 10ms window and 0 of 114 at 100ms, on the same event logs.
+   *
+   * Termination is `hasParkedCommittedDelivery`'s: it counts only deliveries
+   * that resolve on their own, so nothing here can gate its own retirement. A
+   * genuinely orphaned event has no delivery to wait on and reaches `fn` on the
+   * first poll.
+   */
+  private whenDeliveryIdle(checkVersion: number, fn: () => void): void {
+    const poll = () => {
+      this.pendingUnconsumedTimeout = null;
+      if (this.unconsumedCheckVersion !== checkVersion) {
+        return;
+      }
+      if (this.isDeliveryIdle()) {
+        fn();
+        return;
+      }
+      this.getPromiseQueue().then(() => {
+        if (this.unconsumedCheckVersion !== checkVersion) {
+          return;
+        }
+        // Held in the same field the fired check uses so subscribe() cancels a
+        // poll in progress exactly as it cancels the check itself.
+        this.pendingUnconsumedTimeout = setTimeout(poll, 0);
+      });
+    };
+    poll();
   }
 }
