@@ -216,6 +216,53 @@ export const HookResumeInputSchema = z.object({
 });
 export type HookResumeInput = z.infer<typeof HookResumeInputSchema>;
 
+/**
+ * Wall-clock boundaries of a hook-triggered resume, carried on the queue
+ * message so the SDK can report end-to-end time-to-resume (TTR) — entry into
+ * `resumeHook()` through to the first line of the next durable step — and its
+ * non-overlapping phase breakdown, as span attributes on that step's
+ * `step.execute` span. See `runtime/resume-latency.ts` in `@workflow/core`.
+ *
+ * Two groups of fields:
+ *
+ * - Producer fields (`resumeRequestedAtMs`, `queuePublishRequestedAtMs`,
+ *   `strategy`) are stamped by `resumeHook()` on the invocation message. They
+ *   ride along on a deployment-affinity re-route unchanged, so a misrouted
+ *   delivery's extra hop stays inside `queue_delivery`.
+ * - Consumer fields (`consumerStartedAtMs`, `replayStartedAtMs`,
+ *   `nextStepEncounteredAtMs`, `setupSource`) are filled in by the invocation
+ *   that replayed the resume, and ONLY when it dispatches the next durable
+ *   step to a separate queue invocation instead of running it inline. They let
+ *   that invocation report the same single TTR measurement.
+ *
+ * Every field is advisory and the whole object is optional, in all three
+ * directions that matter for a rolling deploy: a new producer's timing is
+ * ignored by an old consumer, a new consumer simply reports no TTR for an old
+ * message, and workflow-server never reads it at all.
+ *
+ * `strategy` and `setupSource` are deliberately typed as plain strings rather
+ * than enums: an unrecognized value from a newer producer must not fail the
+ * parse of the whole invocation payload (which would wedge the run) — it is
+ * only ever forwarded to a span attribute.
+ */
+export const HookResumeTimingSchema = z.object({
+  /** Epoch ms at entry into `resumeHook()` — the start of the TTR window. */
+  resumeRequestedAtMs: z.number(),
+  /** Epoch ms immediately before the queue publish was requested. */
+  queuePublishRequestedAtMs: z.number(),
+  /** Which `resumeHook()` dispatch path ran: `parallel` or `sequential`. */
+  strategy: z.string().optional(),
+  /** Epoch ms the final consumer's queue handler was entered. */
+  consumerStartedAtMs: z.number().optional(),
+  /** Epoch ms this invocation's first replay pass began. */
+  replayStartedAtMs: z.number().optional(),
+  /** Epoch ms replay first encountered a durable step after the resume. */
+  nextStepEncounteredAtMs: z.number().optional(),
+  /** How the consumer initialized replay state: see `ResumeSetupSource`. */
+  setupSource: z.string().optional(),
+});
+export type HookResumeTiming = z.infer<typeof HookResumeTimingSchema>;
+
 export const WorkflowInvokePayloadSchema = z.object({
   runId: z.string(),
   traceCarrier: TraceCarrierSchema.optional(),
@@ -259,6 +306,20 @@ export const WorkflowInvokePayloadSchema = z.object({
    * `step_created` event exists (keyed by `stepId`) before executing the step.
    */
   stepInput: StepDispatchInputSchema.optional(),
+  /**
+   * Hook-resume TTR timing. Present on both `resumeHook()` dispatch paths
+   * (unlike `hookInput`, which only rides the parallel fast path), and
+   * forwarded onto a dispatched step message when the resuming invocation
+   * hands the next durable step to another invocation. Purely observational —
+   * see {@link HookResumeTimingSchema}.
+   *
+   * `.catch(undefined)` because this field must never be able to fail the
+   * parse of the invocation payload: a malformed value (a NaN boundary, a
+   * shape change from a future producer) would otherwise throw on every
+   * delivery of that message and burn the run's delivery budget over a
+   * telemetry field. Anything unparseable degrades to "no measurement".
+   */
+  hookResumeTiming: HookResumeTimingSchema.optional().catch(undefined),
 });
 
 export type WorkflowInvokePayload = z.infer<typeof WorkflowInvokePayloadSchema>;

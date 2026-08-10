@@ -92,6 +92,10 @@ import {
   ReplayBudget,
 } from './runtime/replay-budget.js';
 import { ReplayRecoveryReporter } from './runtime/replay-recovery-reporter.js';
+import {
+  resumeTimingForMessage,
+  resumeTrackingFromMessage,
+} from './runtime/resume-latency.js';
 import { runIdCreatedAt } from './runtime/run-id-time.js';
 import {
   DEFAULT_STEP_MAX_RETRIES,
@@ -643,6 +647,11 @@ export function workflowEntrypoint(
     worldHandlers.createQueueHandler(
       workflowPrefix,
       async (message_, metadata) => {
+        // T2 of the hook-resume TTR window (see runtime/resume-latency.ts):
+        // the instant this consumer began, before message parsing. Only used
+        // when the message turns out to carry resume timing; taking it
+        // unconditionally keeps it honest for the deliveries that do.
+        const handlerEnteredAtMs = Date.now();
         // Check if this is a health check message
         // NOTE: Health check messages are intentionally unauthenticated for monitoring purposes.
         // They only write a simple status response to a stream and do not expose sensitive data.
@@ -668,7 +677,35 @@ export function workflowEntrypoint(
           runInput,
           hookInput,
           stepInput,
+          hookResumeTiming,
         } = WorkflowInvokePayloadSchema.parse(message_);
+
+        // --- Hook-resume TTR telemetry (runtime/resume-latency.ts) ---
+        // Threaded through this invocation and CONSUMED by the first durable
+        // step that follows the resumption — cleared at that point so a later
+        // step, a retry, or a redelivery never re-reports the same resume.
+        //
+        // Two delivery shapes carry timing:
+        //  - the resume's own invocation (no `stepId`): the producer's T0/T1
+        //    ride the message and this handler's entry is T2.
+        //  - a step this invocation handed to another invocation (`stepId`
+        //    present): the resuming invocation already stamped T2..T4 onto
+        //    the message, so they are read back verbatim.
+        let resumeTracking = resumeTrackingFromMessage(
+          hookResumeTiming,
+          incomingStepId !== undefined ? 'dispatched' : 'inline'
+        );
+        if (resumeTracking && incomingStepId === undefined) {
+          resumeTracking.consumerStartedAtMs = handlerEnteredAtMs;
+        }
+        if (
+          resumeTracking &&
+          !Number.isFinite(resumeTracking.consumerStartedAtMs)
+        ) {
+          // A step message from a producer that forwarded timing without the
+          // consumer boundaries. Nothing additive can be reported.
+          resumeTracking = undefined;
+        }
         // `start()` always attaches a trace carrier, but
         // serializeTraceCarrier() returns `{}` when no OTEL SDK is registered
         // or no span is active — treat an empty carrier the same as an
@@ -1524,6 +1561,10 @@ export function workflowEntrypoint(
                           ...(await replayMessage()),
                           stepId: incomingStepId,
                           stepName: incomingStepName,
+                          // Carry the resume timing verbatim so the re-routed
+                          // hop stays inside `step_dispatch` rather than
+                          // vanishing from the TTR decomposition.
+                          ...(hookResumeTiming ? { hookResumeTiming } : {}),
                         }))) !== 'continue'
                       ) {
                         return;
@@ -1569,6 +1610,13 @@ export function workflowEntrypoint(
                           ) + 1;
                       }
 
+                      // TTR: this delivery IS the dispatched next step of a
+                      // resumption. Consume the tracking here so the inline
+                      // replay this handler may fall through to cannot
+                      // report it again.
+                      const bgResumeTracking = resumeTracking;
+                      resumeTracking = undefined;
+
                       // Pause the replay budget while the step body runs —
                       // step duration is bounded by the platform's function
                       // maxDuration, not by the replay timeout. See the
@@ -1601,6 +1649,9 @@ export function workflowEntrypoint(
                             // gate, verified against the recorded step_started
                             // count once it crosses the ceiling (see above).
                             authoritativeAttempt: bgAuthoritativeAttempt,
+                            ...(bgResumeTracking
+                              ? { resumeTracking: bgResumeTracking }
+                              : {}),
                           });
                         stepResult = await runStepSingleFlight(
                           runId,
@@ -1828,6 +1879,11 @@ export function workflowEntrypoint(
                           async () => ({
                             ...(await replayMessage()),
                             hookInput,
+                            // Forwarded UNMODIFIED — in particular without
+                            // this delivery's entry time — so the misrouted
+                            // hop is attributed to `queue_delivery` and T2
+                            // ends up being the final consumer's entry.
+                            ...(hookResumeTiming ? { hookResumeTiming } : {}),
                           }),
                           awaitRunReady
                         )) !== 'continue'
@@ -1988,6 +2044,9 @@ export function workflowEntrypoint(
                         // Anchors RSFS — see the declaration above. This
                         // response plays run_started's role on this path.
                         runStartedReceivedAtMs = Date.now();
+                        if (resumeTracking) {
+                          resumeTracking.setupSource = 'hook_preload';
+                        }
                         eventLog = {
                           type: 'ready',
                           events: result.events,
@@ -2170,6 +2229,13 @@ export function workflowEntrypoint(
                         maxEventsLimit = clampMaxEvents(result.maxEvents);
                         // Anchors RSFS — see the declaration above.
                         runStartedReceivedAtMs = Date.now();
+                        // Covers both the plain sequential resume and the
+                        // lazy fast path's fallback (whose hoisted write
+                        // returned no usable preload and left workflowRun
+                        // unset, so it lands here).
+                        if (resumeTracking) {
+                          resumeTracking.setupSource = 'run_started';
+                        }
 
                         if (result.events?.length) {
                           const loaded = {
@@ -2242,6 +2308,18 @@ export function workflowEntrypoint(
                     workflowRun,
                     'Workflow run must be loaded before replay'
                   );
+                  // Neither setup branch ran, so the run arrived already
+                  // loaded and setup was a plain event load. Only the
+                  // background-step fall-through reaches here with a run
+                  // preloaded today, and it consumes the tracking before this
+                  // point — so this is the honest default rather than a live
+                  // path, and keeps the dimension total if one is ever added.
+                  if (
+                    resumeTracking &&
+                    resumeTracking.setupSource === undefined
+                  ) {
+                    resumeTracking.setupSource = 'event_load';
+                  }
 
                   // Covers every flow replay — initial start, step completions,
                   // hook resumptions, wait completions — and stops before any
@@ -2269,6 +2347,9 @@ export function workflowEntrypoint(
                       async () => ({
                         ...(await replayMessage()),
                         ...(hookInput ? { hookInput } : {}),
+                        // See the pre-check re-route above: forwarded as
+                        // received, so the extra hop is queue delivery.
+                        ...(hookResumeTiming ? { hookResumeTiming } : {}),
                       }),
                       awaitRunReady
                     )) !== 'continue'
@@ -2832,6 +2913,14 @@ export function workflowEntrypoint(
                         executionMode: retainedSession ? 'retained' : 'replay',
                       });
                       replayStart = Date.now();
+                      // TTR T3. `??=` so it marks the FIRST replay pass of
+                      // this invocation: a resume that needs more than one
+                      // pass to reach its step (e.g. a pre-step
+                      // `setAttributes` detour) reports the extra passes
+                      // inside `replay`, keeping the phases additive.
+                      if (resumeTracking) {
+                        resumeTracking.replayStartedAtMs ??= replayStart;
+                      }
                       // Start every missing decrypt/decompress operation up
                       // front (already-prepared payloads are skipped). Web
                       // Crypto work overlaps VM setup on the replay path and
@@ -2953,7 +3042,18 @@ export function workflowEntrypoint(
                         // resume this measures the resume (typically ~0ms),
                         // not a replay, so the field's distribution is
                         // bimodal once retention is active.
-                        const replayDurationMs = Date.now() - replayStart;
+                        const suspendedAtMs = Date.now();
+                        const replayDurationMs = suspendedAtMs - replayStart;
+                        // TTR T4 — the next durable step has been encountered.
+                        // Gated on the suspension actually scheduling steps:
+                        // a suspension that only creates hooks/waits has not
+                        // reached a step, and a later pass may. Taken from
+                        // the same instant as `replayDurationMs` so T4 can
+                        // never precede T3.
+                        if (resumeTracking && err.stepCount > 0) {
+                          resumeTracking.nextStepEncounteredAtMs ??=
+                            suspendedAtMs;
+                        }
                         runtimeLogger.debug('Workflow suspended', {
                           workflowRunId: runId,
                           loopIteration,
@@ -3305,6 +3405,47 @@ export function workflowEntrypoint(
                         const ownedRecoverySteps: StepInvocationQueueItem[] =
                           [];
                         let backstopWakesArmed = 0;
+                        // TTR hand-off. The measurement may only go to an
+                        // execution that will actually ATTEMPT the next
+                        // durable step, and the loop below is what decides
+                        // which those are — so the decision is made against
+                        // its classification, never ahead of it.
+                        //
+                        // This invocation keeps the tracking whenever it will
+                        // run something itself: a deferred lazy-inline step,
+                        // or an owned-recovery step (a redelivery of the
+                        // owning message re-executing the step it crashed
+                        // on). Both land in `inlineExecutions` below and
+                        // consume it there. Only when neither exists is it
+                        // handed to the FIRST step this invocation actually
+                        // enqueues as a step message.
+                        //
+                        // A step converted into a delayed backstop wake is
+                        // NOT an attempt — the wake is a plain run
+                        // continuation, and whichever invocation eventually
+                        // runs the step is a different delivery — so it must
+                        // not take the sample. If every pending step becomes
+                        // a backstop, nothing here attempts the step and the
+                        // resumption goes unreported, which is the honest
+                        // outcome rather than a total attributed to work this
+                        // delivery never did.
+                        //
+                        // Gated on there being a measurement to place at all:
+                        // `&&` short-circuits, so a delivery carrying no
+                        // tracking — every non-resume delivery, and every
+                        // resume past the step that consumed it — never pays
+                        // for the pending-step scan. That matters on wide
+                        // fan-outs, where `pendingSteps` runs to hundreds.
+                        let handOffResumeTiming =
+                          resumeTracking !== undefined &&
+                          lazyInlineSteps.length === 0 &&
+                          !pendingSteps.some(
+                            (step) =>
+                              !inlineCorrelationIds.has(step.correlationId) &&
+                              inlineOwnership &&
+                              isStepOwnershipActive(step) &&
+                              step.ownerMessageId === metadata.messageId
+                          );
                         for (const step of pendingSteps) {
                           if (inlineCorrelationIds.has(step.correlationId)) {
                             continue;
@@ -3372,6 +3513,16 @@ export function workflowEntrypoint(
                             );
                             continue;
                           }
+                          // This step IS being attempted, by the invocation
+                          // that picks the message up. Consume the tracking
+                          // here — the first such step and no other.
+                          const stepResumeTiming = handOffResumeTiming
+                            ? resumeTimingForMessage(resumeTracking)
+                            : undefined;
+                          if (stepResumeTiming) {
+                            handOffResumeTiming = false;
+                            resumeTracking = undefined;
+                          }
                           dispatches.push(
                             queueMessage(
                               world,
@@ -3382,6 +3533,9 @@ export function workflowEntrypoint(
                                 stepName: step.stepName,
                                 traceCarrier,
                                 requestedAt: new Date(),
+                                ...(stepResumeTiming
+                                  ? { hookResumeTiming: stepResumeTiming }
+                                  : {}),
                               },
                               {
                                 // Step-identity-scoped: dedupes against every
@@ -3698,6 +3852,19 @@ export function workflowEntrypoint(
                           eventLog.cursor
                         );
 
+                        // TTR: consumed by this batch. Every step is handed
+                        // the SAME tracking object and its one-shot
+                        // `reported` latch picks the single step that
+                        // actually reaches user code — so the sample
+                        // survives the batch's first step losing its atomic
+                        // create-claim to a concurrent invocation while a
+                        // sibling runs, without a parallel batch reporting
+                        // once per sibling. Cleared here so a later loop
+                        // iteration's steps — and any in-process replay
+                        // restart — cannot report the same resumption again.
+                        const batchResumeTracking = resumeTracking;
+                        resumeTracking = undefined;
+
                         replayBudget.pause();
                         let stepResults: Awaited<
                           ReturnType<typeof executeStep>
@@ -3781,6 +3948,9 @@ export function workflowEntrypoint(
                                 s.lazyStepInput !== undefined &&
                                 latencyTracking
                                   ? { latencyTracking }
+                                  : {}),
+                                ...(batchResumeTracking
+                                  ? { resumeTracking: batchResumeTracking }
                                   : {}),
                                 ...(requestInlineDelta && eventLog.cursor
                                   ? {
