@@ -23,8 +23,10 @@ import {
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_LEGACY,
   ulidToDate,
+  WorldCapabilitiesSchema,
 } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
+import { z } from 'zod';
 import { runtimeLogger } from '../logger.js';
 import { bytesToBase64, deriveRunKeyPair } from '../sealed-box.js';
 import {
@@ -76,47 +78,29 @@ function getHealthCheckStreamName(correlationId: string): string {
   return `__health_check__${correlationId}`;
 }
 
-/**
- * Result of a health check operation.
- */
-export interface HealthCheckResult {
-  healthy: boolean;
+export const HealthCheckResponseSchema = z.object({
+  healthy: z.boolean(),
+  /** Spec version of the responding deployment. */
+  specVersion: z.number().optional(),
+  /** `@workflow/core` version of the responding deployment. */
+  workflowCoreVersion: z.string().optional(),
+  /** The target run's X25519 public key, encoded as base64. */
+  encryptionPublicKey: z.string().optional(),
+  /** The responding deployment's hook-resume input protocol version. */
+  hookResumeInputVersion: z.number().optional(),
+  /** Optional features supported by the responding deployment's World. */
+  capabilities: WorldCapabilitiesSchema.optional(),
+});
+
+type HealthCheckResponse = z.infer<typeof HealthCheckResponseSchema>;
+
+/** Result of a health check operation. */
+export type HealthCheckResult = HealthCheckResponse & {
   /** Error message if health check failed */
   error?: string;
   /** Latency if the health check was successful */
   latencyMs?: number;
-  /** Spec version of the responding deployment */
-  specVersion?: number;
-  /**
-   * `@workflow/core` version of the responding deployment, used for
-   * capability detection (see `getRunCapabilities`). Omitted when the
-   * responding deployment did not provide the field as a string —
-   * for example, an older `@workflow/core` that predates this field,
-   * or a non-JSON plain-text health response.
-   */
-  workflowCoreVersion?: string;
-  /**
-   * The target run's X25519 public key (base64), returned only when the probe
-   * carried a `runId` and the responding deployment has encryption enabled.
-   *
-   * Lets a cross-deployment `start()` seal the workflow arguments using a
-   * response it was already waiting on, instead of making a separate
-   * key-lookup request.
-   */
-  encryptionPublicKey?: string;
-  /**
-   * The responding deployment's `HOOK_RESUME_INPUT_VERSION` — the protocol
-   * version at which the *consumer* (queue-message target) re-ensures the
-   * `hook_received` event from `hookInput` on replay. A cross-deployment
-   * `start()` stamps the *target's* value (not the caller's) into the new
-   * run's `executionContext.hookResumeInputVersion` so that `resumeHook()`
-   * only takes the parallel path when the deployment that will actually
-   * consume the queue message is known to honor `hookInput`. Omitted when the
-   * responding deployment predates this field (an older consumer that ignores
-   * `hookInput`), which fails the gate closed.
-   */
-  hookResumeInputVersion?: number;
-}
+};
 
 /**
  * Checks if the given message is a health check payload.
@@ -194,6 +178,7 @@ export async function handleHealthCheckMessage(
     // the *consumer's* hook-resume protocol version — exactly what a
     // cross-deployment caller needs to gate its parallel resume path on.
     hookResumeInputVersion: HOOK_RESUME_INPUT_VERSION,
+    capabilities: world.capabilities,
     ...(encryptionPublicKey ? { encryptionPublicKey } : {}),
     timestamp: Date.now(),
   });
@@ -301,12 +286,9 @@ async function readStreamWithTimeout(
  * Parse and validate a health check response from stream chunks.
  * Returns the parsed response or null if invalid.
  */
-function parseHealthCheckResponse(chunks: Uint8Array[]): {
-  healthy: boolean;
-  specVersion?: number;
-  workflowCoreVersion?: string;
-  encryptionPublicKey?: string;
-} | null {
+function parseHealthCheckResponse(
+  chunks: Uint8Array[]
+): HealthCheckResponse | null {
   if (chunks.length === 0) return null;
 
   const totalLength = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
@@ -331,38 +313,8 @@ function parseHealthCheckResponse(chunks: Uint8Array[]): {
     return null;
   }
 
-  if (
-    typeof response !== 'object' ||
-    response === null ||
-    !('healthy' in response) ||
-    typeof (response as { healthy: unknown }).healthy !== 'boolean'
-  ) {
-    return null;
-  }
-
-  const r = response as Record<string, unknown>;
-  const parsed: {
-    healthy: boolean;
-    specVersion?: number;
-    workflowCoreVersion?: string;
-    encryptionPublicKey?: string;
-    hookResumeInputVersion?: number;
-  } = {
-    healthy: r.healthy as boolean,
-  };
-  if (typeof r.specVersion === 'number') {
-    parsed.specVersion = r.specVersion;
-  }
-  if (typeof r.workflowCoreVersion === 'string') {
-    parsed.workflowCoreVersion = r.workflowCoreVersion;
-  }
-  if (typeof r.encryptionPublicKey === 'string') {
-    parsed.encryptionPublicKey = r.encryptionPublicKey;
-  }
-  if (typeof r.hookResumeInputVersion === 'number') {
-    parsed.hookResumeInputVersion = r.hookResumeInputVersion;
-  }
-  return parsed;
+  const result = HealthCheckResponseSchema.safeParse(response);
+  return result.success ? result.data : null;
 }
 
 export async function healthCheck(
