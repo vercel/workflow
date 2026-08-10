@@ -424,10 +424,33 @@ export async function getNextBuilderEager(
           rememberKnownFile = nextKnown.addKnownFile;
         };
 
+        // Diagnostic only. Must never contain a `logDevHmr` decision string —
+        // the e2e suite counts those by substring.
+        const logDevHmrDebug = (detail: Record<string, unknown>) => {
+          if (process.env.WORKFLOW_DEV_HMR_LOGS === '1') {
+            console.log(`workflow dev hmr debug: ${JSON.stringify(detail)}`);
+          }
+        };
+
+        const workingDirPrefix = `${normalizePath(this.config.workingDir)}/`;
+        const relativeToWorkingDir = (file: string) => {
+          const normalized = normalizePath(file);
+          return normalized.startsWith(workingDirPrefix)
+            ? normalized.slice(workingDirPrefix.length)
+            : normalized;
+        };
+
         const processFileChanges = async (fileChanges: FileChanges) => {
           if (!hasFileChanges(fileChanges)) {
             return;
           }
+
+          logDevHmrDebug({
+            event: 'flush',
+            added: fileChanges.addedFiles.map(relativeToWorkingDir),
+            modified: fileChanges.modifiedFiles.map(relativeToWorkingDir),
+            removed: fileChanges.removedFiles.map(relativeToWorkingDir),
+          });
 
           const decision = await classifyRebuild({
             discoveredEntries,
@@ -447,46 +470,96 @@ export async function getNextBuilderEager(
           }
           if (decision.kind === 'full') {
             logDevHmr('workflow dev hmr: full rediscovery');
+            const startedAt = Date.now();
             await fullRebuild();
             await refreshKnownFiles();
+            logDevHmrDebug({
+              event: 'rebuilt',
+              kind: 'full',
+              durationMs: Date.now() - startedAt,
+              // Anything that landed while the rebuild ran; these used to each
+              // become their own queued flush.
+              coalescedDuring: hasFileChanges(pendingFileChanges),
+            });
             return;
           }
 
           logDevHmr(
             `workflow dev hmr: hot rebuild${decision.refreshStepRegistrations ? ' with step registration refresh' : ''}`
           );
+          const startedAt = Date.now();
           await hotRebuild(decision.refreshStepRegistrations);
           for (const [file, snapshot] of decision.snapshots) {
             sourceSnapshots.set(file, snapshot);
           }
+          logDevHmrDebug({
+            event: 'rebuilt',
+            kind: 'hot',
+            durationMs: Date.now() - startedAt,
+            coalescedDuring: hasFileChanges(pendingFileChanges),
+          });
         };
 
-        let pendingFileChanges: FileChanges = {
+        const noFileChanges = (): FileChanges => ({
           addedFiles: [],
           modifiedFiles: [],
           removedFiles: [],
-        };
-        let flushTimer: ReturnType<typeof setTimeout> | undefined;
+        });
 
+        let pendingFileChanges: FileChanges = noFileChanges();
+        let flushTimer: ReturnType<typeof setTimeout> | undefined;
+        let flushInFlight = false;
+
+        /**
+         * Coalesce watcher events into one rebuild, both across the debounce
+         * window and across a rebuild that is already running.
+         *
+         * The second half matters more than the first. A full rediscovery takes
+         * seconds, and the watcher keeps firing throughout — so releasing the
+         * debounce at *enqueue* time lets one event per 10ms window pile onto
+         * `rebuildQueue`, and the whole backlog then drains back-to-back the
+         * moment the rebuild lands. Each entry re-runs `classifyRebuild` over
+         * state the previous entry already brought up to date, so the extra
+         * passes are pure waste, and how many there are is a function of runner
+         * load rather than of what the user edited.
+         *
+         * Holding the window open until the in-flight flush completes keeps one
+         * logical edit to one decision. Anything arriving mid-rebuild merges
+         * into `pendingFileChanges` and rides the follow-up flush that the tail
+         * arms.
+         */
         const scheduleFileChanges = (fileChanges: FileChanges) => {
           pendingFileChanges = mergeFileChanges(
             pendingFileChanges,
             fileChanges
           );
-          if (flushTimer) {
+          armFileChangeFlush();
+        };
+
+        function armFileChangeFlush() {
+          if (flushTimer || flushInFlight) {
             return;
           }
           flushTimer = setTimeout(() => {
-            const fileChanges = pendingFileChanges;
-            pendingFileChanges = {
-              addedFiles: [],
-              modifiedFiles: [],
-              removedFiles: [],
-            };
             flushTimer = undefined;
-            enqueue(() => processFileChanges(fileChanges));
+            if (!hasFileChanges(pendingFileChanges)) {
+              return;
+            }
+            const fileChanges = pendingFileChanges;
+            pendingFileChanges = noFileChanges();
+            flushInFlight = true;
+            enqueue(async () => {
+              try {
+                await processFileChanges(fileChanges);
+              } finally {
+                flushInFlight = false;
+                if (hasFileChanges(pendingFileChanges)) {
+                  armFileChangeFlush();
+                }
+              }
+            });
           }, 10);
-        };
+        }
 
         const resolveExistingEventPath = async (pathname: string) => {
           const normalizedPath = normalizePath(pathname);

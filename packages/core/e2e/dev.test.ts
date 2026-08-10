@@ -17,6 +17,14 @@ export interface DevTestConfig {
   workflowsDir?: string;
 }
 
+/**
+ * A poll condition that can no longer become true. Rebuild-decision counts only
+ * grow, so once one overshoots its expectation the remaining timeout is dead
+ * time — and a 50s dead wait reads as "slow/flaky infra" when the real answer
+ * is "we rebuilt too many times", which is a different bug.
+ */
+class PollUnreachableError extends Error {}
+
 const SOURCE_MAP_WARNING = 'failed to read input source map';
 const SOURCE_MAP_FIXTURE_PACKAGE = 'workflow-sourcemap-warning-fixture';
 const SOURCE_MAP_COMMENT = '//# sourceMapping' + 'URL=index.js.map';
@@ -201,6 +209,7 @@ export function createDevTests(config?: DevTestConfig) {
       log.split(message).length - 1;
     type ExpectedHmrLogCount = number | { min?: number; max?: number };
     const expectLogCount = (
+      label: string,
       actual: number,
       expected: ExpectedHmrLogCount | undefined
     ) => {
@@ -211,11 +220,21 @@ export function createDevTests(config?: DevTestConfig) {
           expect(actual).toBeGreaterThanOrEqual(expected);
           return;
         }
+        if (actual > expected) {
+          throw new PollUnreachableError(
+            `saw ${actual} '${label}' rebuild decisions, expected exactly ${expected}`
+          );
+        }
         expect(actual).toBe(expected);
         return;
       }
       expect(actual).toBeGreaterThanOrEqual(expected?.min ?? 0);
       if (expected?.max !== undefined) {
+        if (actual > expected.max) {
+          throw new PollUnreachableError(
+            `saw ${actual} '${label}' rebuild decisions, expected at most ${expected.max}`
+          );
+        }
         expect(actual).toBeLessThanOrEqual(expected.max);
       }
     };
@@ -230,26 +249,39 @@ export function createDevTests(config?: DevTestConfig) {
       if (cursor === undefined) {
         return;
       }
-      await pollUntil({
-        description: 'dev server HMR logs to match expected rebuild counts',
-        timeoutMs: hmrRediscoveryTimeoutMs,
-        intervalMs: 250,
-        check: async () => {
-          const log = (await readDevServerLog()).slice(cursor);
-          expectLogCount(
-            countLogMessage(log, hmrLogMessages.skip),
-            expected.skip
-          );
-          expectLogCount(
-            countLogMessage(log, hmrLogMessages.hot),
-            expected.hot
-          );
-          expectLogCount(
-            countLogMessage(log, hmrLogMessages.full),
-            expected.full
-          );
-        },
-      });
+      try {
+        await pollUntil({
+          description: 'dev server HMR logs to match expected rebuild counts',
+          timeoutMs: hmrRediscoveryTimeoutMs,
+          intervalMs: 250,
+          check: async () => {
+            const log = (await readDevServerLog()).slice(cursor);
+            expectLogCount(
+              'skip',
+              countLogMessage(log, hmrLogMessages.skip),
+              expected.skip
+            );
+            expectLogCount(
+              'hot rebuild',
+              countLogMessage(log, hmrLogMessages.hot),
+              expected.hot
+            );
+            expectLogCount(
+              'full rediscovery',
+              countLogMessage(log, hmrLogMessages.full),
+              expected.full
+            );
+          },
+        });
+      } catch (error) {
+        // The counts alone never say *why*. The slice since the cursor holds
+        // the decisions with their `workflow dev hmr debug:` file lists, which
+        // is what distinguishes a real over-rebuild from a drained backlog.
+        console.error(
+          `HMR log expectation failed (expected ${JSON.stringify(expected)}). Dev server log since cursor:\n${(await readDevServerLog()).slice(cursor)}`
+        );
+        throw error;
+      }
     };
 
     const pollUntil = async ({
@@ -271,6 +303,11 @@ export function createDevTests(config?: DevTestConfig) {
           await check();
           return;
         } catch (error) {
+          // Some conditions can only get further from passing (see
+          // PollUnreachableError); retrying them just burns the timeout.
+          if (error instanceof PollUnreachableError) {
+            throw error;
+          }
           lastError = error;
           await new Promise((res) => setTimeout(res, intervalMs));
         }
@@ -1353,7 +1390,10 @@ ${apiFileContent}`
           },
           {
             description: 'workflow file removed from API import',
-            expectedLogCounts: { full: 1, skip: 1 },
+            // Two filesystem operations (unlink + API-file rewrite). Whether
+            // they land in one flush or two is a scheduling detail; what must
+            // hold is exactly one full rediscovery.
+            expectedLogCounts: { full: 1, skip: { max: 1 } },
             write: async () => {
               await fs.rm(files.addedWorkflow, { force: true });
               await fs.writeFile(
