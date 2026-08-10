@@ -27,17 +27,22 @@ export function createContext(options: CreateContextOptions) {
   // Deterministic `Math.random()`
   g.Math.random = rng;
 
-  // Override `Date` constructor to return fixed time when called without arguments
+  // Override `Date` constructor to return fixed time when called without
+  // arguments. Constructing through `Reflect.construct` with `new.target`
+  // keeps subclassing intact (e.g. `TZDate` from `@date-fns/tz`), while a
+  // plain function (rather than a `class`) keeps `Date()` callable without
+  // `new`, which per spec ignores its arguments and returns the time string.
   const Date_ = g.Date;
   // biome-ignore lint/suspicious/noShadowRestrictedNames: We're shadowing the global `Date` property to make it deterministic.
-  (g as any).Date = function Date(
-    ...args: Parameters<(typeof globalThis)['Date']>[]
-  ) {
-    if (args.length === 0) {
-      return new Date_(fixedTimestamp);
+  (g as any).Date = function Date(...args: any[]) {
+    if (new.target === undefined) {
+      return new Date_(fixedTimestamp).toString();
     }
-    // @ts-expect-error - Args is `Date` constructor arguments
-    return new Date_(...args);
+    return Reflect.construct(
+      Date_,
+      args.length === 0 ? [fixedTimestamp] : args,
+      new.target
+    );
   };
   (g as any).Date.prototype = Date_.prototype;
   // Preserve static methods
