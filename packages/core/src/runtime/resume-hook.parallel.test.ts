@@ -70,16 +70,19 @@ describe('resumeHook (parallel fast path)', () => {
   ) => {
     const createEvent = overrides.createEvent ?? vi.fn();
     const queue = overrides.queue ?? vi.fn();
+    // Default to an empty hook log: a run that never received this resume.
+    const listByCorrelationId =
+      overrides.listByCorrelationId ?? vi.fn().mockResolvedValue({ data: [] });
     setWorld({
       specVersion: SPEC_VERSION_CURRENT,
       capabilities,
       hooks: { getByToken: vi.fn().mockResolvedValue(hook) },
       runs: { get: vi.fn() },
-      events: { create: createEvent },
+      events: { create: createEvent, listByCorrelationId },
       getEncryptionKeyForRun: vi.fn().mockResolvedValue(undefined),
       queue,
     } as unknown as World);
-    return { createEvent, queue };
+    return { createEvent, queue, listByCorrelationId };
   };
 
   it('dispatches the event write and queue publish concurrently with a shared resumeId + digest', async () => {
@@ -186,6 +189,91 @@ describe('resumeHook (parallel fast path)', () => {
       );
       setWorld(undefined);
     }
+  });
+
+  it('treats a "hook gone" rejection as delivered when the consumer already committed this resume', async () => {
+    // The race the parallel path opens: the queue consumer wins, the run
+    // consumes the payload, completes, and disposes the hook — so the direct
+    // write arrives at a hook that is gone precisely BECAUSE the resume
+    // succeeded. Throwing here fails a resume that was in fact delivered.
+    // The committed hook_received carries this call's resumeId, which is what
+    // separates this case from a genuinely terminal run.
+    for (const err of [
+      new HookNotFoundError(baseHook.hookId),
+      new RunExpiredError('run has expired'),
+    ]) {
+      const hook = {
+        ...baseHook,
+        resumeContext: parallelContext,
+      } satisfies Hook;
+      const createEvent = vi.fn().mockRejectedValue(err);
+      const queue = vi.fn().mockResolvedValue({ messageId: 'm_1' });
+      // Echo back whatever resumeId this call minted, as the consumer's
+      // re-ensure would have persisted it.
+      const listByCorrelationId = vi.fn(async () => ({
+        data: [
+          { eventType: 'hook_disposed', correlationId: hook.hookId },
+          {
+            eventType: 'hook_received',
+            correlationId: hook.hookId,
+            resumeId: createEvent.mock.calls[0][2].resumeId,
+          },
+        ],
+      }));
+      makeWorld(hook, { createEvent, queue, listByCorrelationId });
+
+      const result = await resumeHook(hook.token, { foo: 'bar' });
+      expect(result.resilientResume).toBe(true);
+      expect(listByCorrelationId).toHaveBeenCalledWith({
+        runId: hook.runId,
+        correlationId: hook.hookId,
+        resolveData: 'none',
+      });
+      setWorld(undefined);
+    }
+  });
+
+  it('still throws when the committed hook_received belongs to a different resume', async () => {
+    // A hook can receive more than once, so the presence of *a* hook_received
+    // proves nothing. Only this call's resumeId does.
+    const hook = { ...baseHook, resumeContext: parallelContext } satisfies Hook;
+    const createEvent = vi
+      .fn()
+      .mockRejectedValue(new HookNotFoundError(baseHook.hookId));
+    const listByCorrelationId = vi.fn().mockResolvedValue({
+      data: [
+        {
+          eventType: 'hook_received',
+          correlationId: hook.hookId,
+          resumeId: 'some_earlier_resume',
+        },
+      ],
+    });
+    makeWorld(hook, {
+      createEvent,
+      queue: vi.fn().mockResolvedValue({ messageId: 'm_1' }),
+      listByCorrelationId,
+    });
+
+    await expect(resumeHook(hook.token, { foo: 'bar' })).rejects.toSatisfy(
+      (e: unknown) =>
+        HookNotFoundError.is(e) && (e as HookNotFoundError).token === hook.token
+    );
+  });
+
+  it('throws when the confirming read itself fails — no evidence is not evidence of delivery', async () => {
+    const hook = { ...baseHook, resumeContext: parallelContext } satisfies Hook;
+    makeWorld(hook, {
+      createEvent: vi
+        .fn()
+        .mockRejectedValue(new HookNotFoundError(baseHook.hookId)),
+      queue: vi.fn().mockResolvedValue({ messageId: 'm_1' }),
+      listByCorrelationId: vi.fn().mockRejectedValue(new Error('backend down')),
+    });
+
+    await expect(resumeHook(hook.token, { foo: 'bar' })).rejects.toSatisfy(
+      (e: unknown) => HookNotFoundError.is(e)
+    );
   });
 
   it('rethrows a non-retryable, non-terminal event-write failure (e.g. a 400) even though the queue publish succeeded', async () => {
