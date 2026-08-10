@@ -660,13 +660,6 @@ export async function start<TArgs extends unknown[], TResult>(
         }
       } else {
         const result = runCreatedResult.value;
-        // Assert that the run was created
-        if (!result.run) {
-          throw new WorkflowRuntimeError(
-            "Missing 'run' in server response for 'run_created' event"
-          );
-        }
-
         // Verify server accepted our runId
         if (!v1Compat && result.run.runId !== runId) {
           throw new WorkflowRuntimeError(
@@ -692,8 +685,7 @@ export async function start<TArgs extends unknown[], TResult>(
       span?.setAttributes({
         ...Attribute.WorkflowRunId(runId),
         ...Attribute.DeploymentId(deploymentId),
-        ...(runCreatedResult.status === 'fulfilled' &&
-        runCreatedResult.value.run
+        ...(runCreatedResult.status === 'fulfilled'
           ? Attribute.WorkflowRunStatus(runCreatedResult.value.run.status)
           : {}),
       });

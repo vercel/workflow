@@ -54,6 +54,7 @@ import {
 import { getPortLazy } from './get-port-lazy.js';
 import { getWorkflowQueueName, queueMessage } from './helpers.js';
 import {
+  BASELINE_BUNDLE_FILENAME,
   type PendingAttribute,
   type PendingHook,
   type PendingHookDispose,
@@ -279,6 +280,10 @@ async function dispatchPendingOps(params: {
           correlationId: hook.correlationId,
           eventData: {
             token: hook.token,
+            tokenRetentionUntil:
+              hook.tokenRetentionUntil === undefined
+                ? undefined
+                : new Date(hook.tokenRetentionUntil),
             metadata: encryptedMetadata,
             // Always include isWebhook explicitly. Worlds default it to
             // `true` when absent, which would break the public webhook
@@ -548,12 +553,21 @@ export async function runWorkflowWithQuickJS(params: {
   workflowName: string;
   workflowRun: WorkflowRun;
   /**
-   * Events returned inline by `events.create('run_started', ...)`. When
-   * they indicate a first invocation, they are used as the event log
-   * instead of fetching via `events.list`, matching the node:vm engine's
-   * fast path.
+   * Events returned inline by `events.create('run_started', ...)` or by
+   * the lazy hook fast path's `hook_received` preload. When they indicate
+   * a first invocation — or when `preloadedEventsComplete` attests they
+   * are the complete log — they are used as the event log instead of
+   * fetching via `events.list`, matching the node:vm engine's fast path.
    */
   preloadedEvents?: Event[];
+  /**
+   * True when the caller has validated that `preloadedEvents` is the run's
+   * COMPLETE event log (e.g. the lazy hook fast path's hasMore-false
+   * replay preload). The first-invocation heuristic below only recognizes
+   * run_created/run_started-only preloads, so without this attestation a
+   * hook-resume preload would be discarded and refetched.
+   */
+  preloadedEventsComplete?: boolean;
   /**
    * Run input carried through the queue message on first delivery. Used
    * as a last-resort fallback for `run_created.eventData.input` when
@@ -610,6 +624,7 @@ export async function runWorkflowWithQuickJS(params: {
     workflowName,
     workflowRun,
     preloadedEvents,
+    preloadedEventsComplete,
     runInput,
     parentSpan,
     maxEventsLimit,
@@ -699,12 +714,17 @@ export async function runWorkflowWithQuickJS(params: {
       if (loaded) {
         const version = loaded.metadata.formatVersion;
         if (
-          (version !== undefined && version !== SNAPSHOT_FORMAT_VERSION) ||
-          loaded.metadata.rngDraws === undefined
+          version !== SNAPSHOT_FORMAT_VERSION ||
+          loaded.metadata.rngDraws === undefined ||
+          loaded.metadata.serdeRootPtr === undefined
         ) {
-          // Unknown format OR a snapshot without the PRNG draw count —
-          // restoring the latter would reset id generation to the base
-          // seed and collide with pre-snapshot correlation ids.
+          // Unknown/older format (v1 predates the host-side serde and
+          // ULID engine — its heaps are not restorable here), a snapshot
+          // without the PRNG draw count (restoring would reset id
+          // generation to the base seed and collide with pre-snapshot
+          // correlation ids), or one without the serde capture-root
+          // token (the host serde cannot be rebuilt without executing
+          // guest code after user code has run).
           runtimeLogger.warn(
             'QuickJS runtime: snapshot format version mismatch, falling back to full replay',
             {
@@ -750,21 +770,28 @@ export async function runWorkflowWithQuickJS(params: {
   });
 
   // Load the event log. With a restored snapshot only the delta after
-  // its cursor is needed. Otherwise load the FULL log — on first
-  // invocation the preloaded events from the run_started response are the
-  // complete log and save the events.list round-trips. Preload is used
-  // even with snapshotting enabled: it carries no cursor, so the FIRST
-  // qualifying suspension simply skips its snapshot save (the persist
-  // path requires a cursor) and the next one — whose feed loop has
-  // observed a cursor — snapshots normally. Short-lived runs keep the
-  // zero-overhead fast path either way.
+  // its cursor is needed — preloads (which are full logs without a
+  // cursor) are ignored on that path. Otherwise load the FULL log — on
+  // first invocation the preloaded events from the run_started response
+  // are the complete log and save the events.list round-trips; a
+  // caller-attested complete preload (lazy hook fast path) is trusted
+  // the same way. Preload is used even with snapshotting enabled: it
+  // carries no cursor, so the FIRST qualifying suspension simply skips
+  // its snapshot save (the persist path requires a cursor) and the next
+  // one — whose feed loop has observed a cursor — snapshots normally.
+  // Short-lived runs keep the zero-overhead fast path either way.
   let events: Event[];
   let eventsFetchedPages = 0;
   // Cursor after the last event the VM has processed — persisted as the
   // snapshot's eventsCursor so restores fetch only the delta.
   let lastEventsCursor: string | null =
     existingSnapshot?.metadata.eventsCursor ?? null;
-  const usePreloaded = isFirstInvocation(preloadedEvents);
+  const usePreloaded =
+    !existingSnapshot &&
+    ((preloadedEventsComplete === true &&
+      Array.isArray(preloadedEvents) &&
+      preloadedEvents.length > 0) ||
+      isFirstInvocation(preloadedEvents));
   if (usePreloaded && preloadedEvents) {
     events = preloadedEvents;
   } else {
@@ -888,6 +915,7 @@ export async function runWorkflowWithQuickJS(params: {
       workflowRun,
       events,
       existingSnapshot,
+      worldCapabilities: world.capabilities,
       encryptionKey,
       port,
       runInput,
@@ -930,6 +958,7 @@ export async function runWorkflowWithQuickJS(params: {
       workflowId,
       workflowRun,
       events,
+      worldCapabilities: world.capabilities,
       encryptionKey,
       port,
       runInput,
@@ -1070,7 +1099,14 @@ export async function runWorkflowWithQuickJS(params: {
   let pendingRequeueSignal = false;
   // Snapshot captured at suspension exit (threshold met), persisted
   // after the VM is disposed.
-  let capturedSnapshot: { data: Uint8Array; rngDraws: number } | undefined;
+  let capturedSnapshot:
+    | {
+        data: Uint8Array;
+        rngDraws: number;
+        lastUlid: string | undefined;
+        serdeRootPtr: number;
+      }
+    | undefined;
 
   /** Fetch all events not yet processed by the live VM (log order). */
   const fetchUnseenEvents = async (): Promise<Event[]> => {
@@ -1351,8 +1387,29 @@ export async function runWorkflowWithQuickJS(params: {
         if (op.type !== 'wait') continue;
         const wait = op as PendingWait;
         if (scheduledWaitContinuations.has(wait.correlationId)) continue;
+        // Waits whose wait_completed THIS invocation already wrote (the
+        // elapsed-wait pass above) are done — the event just hasn't fed
+        // back into the VM yet. No continuation needed.
+        if (completedWaitIds2.has(wait.correlationId)) continue;
         const resumeMs = new Date(wait.resumeAt).getTime() - Date.now();
-        if (resumeMs <= 0) continue;
+        // An already-elapsed wait MUST still get a continuation (clamped
+        // to the 1s minimum, exactly like the node engine's
+        // `Math.max(1000, resumeAtMs - now)`), not be skipped: a wait
+        // whose deadline falls between this iteration's elapsed-wait
+        // pass (which saw it as still pending and wrote nothing) and
+        // this sweep would otherwise get NEITHER a wait_completed NOR a
+        // continuation — and the inline batch below then blocks this
+        // invocation for the full step duration with no wake armed
+        // anywhere. For `Promise.race(step, sleep)` that silently hands
+        // the race to the step: the sleep's wait_completed is never
+        // written and the run completes with the wrong winner. The
+        // window between the two checks spans this iteration's dispatch
+        // + feed round-trips, so on network-backed worlds (world-vercel)
+        // a short sleep lands in it routinely — observed as a ~50%
+        // sleepWinsRaceWorkflow failure rate in the Vercel e2e legs,
+        // while world-local's sub-ms round-trips masked it locally. The
+        // continuation invocation's pre-VM elapsed check writes the
+        // wait_completed ~1s later.
         const seconds = Math.max(1, Math.ceil(resumeMs / 1000));
         if (!soonestWait || seconds < soonestWait.seconds) {
           soonestWait = { correlationId: wait.correlationId, seconds };
@@ -1562,6 +1619,8 @@ export async function runWorkflowWithQuickJS(params: {
           createdAt: new Date(),
           eventCount: totalEventCount,
           rngDraws: snapshot.rngDraws,
+          lastUlid: snapshot.lastUlid,
+          serdeRootPtr: snapshot.serdeRootPtr,
           formatVersion: SNAPSHOT_FORMAT_VERSION,
         });
         wfdiag('snapshot_saved', {
@@ -1815,12 +1874,22 @@ export async function runWorkflowWithQuickJS(params: {
       pendingOpsCount: pendingOperations.length,
     });
   } else if (result.failed) {
-    // Workflow failed — remap stack trace using inline source maps
+    // Workflow failed — remap stack trace using inline source maps.
+    // Frames carry the run's workflowId as their filename on the fresh
+    // path, but the workflow-independent BASELINE_BUNDLE_FILENAME on the
+    // snapshot path (the name is baked into the shared baseline's
+    // compiled code at hydrate) — remap against both. remapErrorStack
+    // early-exits on a cheap includes() when a filename has no frames.
     let errorStack = result.failed.stack;
     if (errorStack) {
       const parsedName = parseWorkflowName(workflowName);
       const filename = parsedName?.moduleSpecifier || workflowName;
       errorStack = remapErrorStack(errorStack, filename, workflowCode);
+      errorStack = remapErrorStack(
+        errorStack,
+        BASELINE_BUNDLE_FILENAME,
+        workflowCode
+      );
     }
 
     // Classify the error so consumers (`run.returnValue`, observability)
@@ -1911,9 +1980,14 @@ export async function runWorkflowWithQuickJS(params: {
         ) {
           const parsedName = parseWorkflowName(workflowName);
           const filename = parsedName?.moduleSpecifier || workflowName;
+          // Both filename spaces — see the failed-branch comment above.
           (hydrated as { stack?: string }).stack = remapErrorStack(
-            (hydrated as { stack: string }).stack,
-            filename,
+            remapErrorStack(
+              (hydrated as { stack: string }).stack,
+              filename,
+              workflowCode
+            ),
+            BASELINE_BUNDLE_FILENAME,
             workflowCode
           );
         }
@@ -1926,9 +2000,10 @@ export async function runWorkflowWithQuickJS(params: {
           if (typeof nodeStack === 'string') {
             const parsedName = parseWorkflowName(workflowName);
             const filename = parsedName?.moduleSpecifier || workflowName;
+            // Both filename spaces — see the failed-branch comment above.
             (node as { stack?: string }).stack = remapErrorStack(
-              nodeStack,
-              filename,
+              remapErrorStack(nodeStack, filename, workflowCode),
+              BASELINE_BUNDLE_FILENAME,
               workflowCode
             );
           }

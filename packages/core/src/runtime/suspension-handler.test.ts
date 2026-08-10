@@ -1,5 +1,9 @@
 import { runInNewContext } from 'node:vm';
-import { PreconditionFailedError } from '@workflow/errors';
+import {
+  FatalError,
+  PreconditionFailedError,
+  WorkflowWorldError,
+} from '@workflow/errors';
 import type { WorkflowRun, World } from '@workflow/world';
 import { describe, expect, it, vi } from 'vitest';
 import { WorkflowSuspension } from '../global.js';
@@ -103,6 +107,36 @@ describe('handleSuspension', () => {
       }),
       expect.anything()
     );
+  });
+
+  it('fails the run when the World rejects Hook retention', async () => {
+    const worldError = new WorkflowWorldError('Retention exceeds 30 days', {
+      status: 400,
+    });
+    const world = createWorld(vi.fn().mockRejectedValue(worldError));
+    const pending = new Map([
+      [
+        'hook_with_invalid_retention',
+        {
+          type: 'hook' as const,
+          correlationId: 'hook_with_invalid_retention',
+          token: 'order:123',
+          tokenRetentionUntil: new Date('2026-09-01T00:00:00.000Z'),
+        },
+      ],
+    ]);
+
+    await expect(
+      handleSuspension({
+        suspension: new WorkflowSuspension(pending, globalThis),
+        world,
+        run,
+      })
+    ).rejects.toMatchObject({
+      name: FatalError.name,
+      message: 'createHook failed World validation: Retention exceeds 30 days',
+      cause: worldError,
+    });
   });
 
   it('marks hook.getConflict()-awaited creations without converting them into wait timeouts', async () => {

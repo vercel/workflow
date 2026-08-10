@@ -130,6 +130,8 @@ There are multiple ways a workflow can suspend:
 - Using `sleep()` to pause for some fixed duration.
 - Awaiting on a promise returned by [`createWebhook()`](/docs/api-reference/workflow/create-webhook), which resumes the workflow when an external system passes data into the workflow.
 
+These suspension primitives, along with the rest of the core API, are documented in the [`workflow` package reference](/docs/api-reference/workflow).
+
 ```typescript lineNumbers
 import { sleep, createWebhook } from "workflow";
 

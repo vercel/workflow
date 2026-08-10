@@ -1,7 +1,16 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  afterEach,
+  assert,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vitest';
 
 const {
   mockSend,
+  MockConsumerDiscoveryError,
   MockDuplicateMessageError,
   MockQueueClient,
   mockHandleCallback,
@@ -12,6 +21,13 @@ const {
       super(message);
       this.name = 'DuplicateMessageError';
       this.idempotencyKey = idempotencyKey;
+    }
+  }
+
+  class MockConsumerDiscoveryError extends Error {
+    constructor(message: string) {
+      super(message);
+      this.name = 'ConsumerDiscoveryError';
     }
   }
 
@@ -29,6 +45,7 @@ const {
 
   return {
     mockSend,
+    MockConsumerDiscoveryError,
     MockDuplicateMessageError,
     MockQueueClient,
     mockHandleCallback,
@@ -37,6 +54,7 @@ const {
 
 vi.mock('@vercel/queue', () => ({
   QueueClient: MockQueueClient,
+  ConsumerDiscoveryError: MockConsumerDiscoveryError,
   DuplicateMessageError: MockDuplicateMessageError,
 }));
 
@@ -58,6 +76,19 @@ describe('createQueue', () => {
 
   afterEach(() => {
     vi.clearAllMocks();
+  });
+
+  it('classifies only consumer discovery failures as unavailable deployments', () => {
+    const queue = createQueue();
+
+    expect(
+      queue.isDeploymentUnavailableError?.(
+        new MockConsumerDiscoveryError('deployment not found')
+      )
+    ).toBe(true);
+    expect(
+      queue.isDeploymentUnavailableError?.(new Error('transient send failure'))
+    ).toBe(false);
   });
 
   describe('proxy region header', () => {
@@ -621,6 +652,34 @@ describe('createQueue', () => {
       expect(mockHandleCallback).toHaveBeenCalledWith(expect.any(Function), {
         retry: expect.any(Function),
       });
+    });
+
+    it('should pass handler rejections to QueueClient', async () => {
+      let capturedHandler: (
+        message: unknown,
+        metadata: unknown
+      ) => Promise<void>;
+      mockHandleCallback.mockImplementation((handler) => {
+        capturedHandler = handler;
+        return async () => new Response('ok');
+      });
+      const handlerError = new Error('retry delivery');
+
+      const queue = createQueue();
+      queue.createQueueHandler('__wkf_workflow_', async () => {
+        throw handlerError;
+      });
+
+      assert(capturedHandler);
+      await expect(
+        capturedHandler(
+          {
+            payload: { runId: 'run-123' },
+            queueName: '__wkf_workflow_test',
+          },
+          { messageId: 'msg-123', deliveryCount: 1 }
+        )
+      ).rejects.toBe(handlerError);
     });
 
     it('should ask VQS to retry handler errors with bounded backoff', () => {

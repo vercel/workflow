@@ -5,10 +5,11 @@
  *
  *   list-response := frame*  end-frame
  *   frame         := u32_be(meta_len) || cbor_meta || u32_be(body_len) || body_bytes
- *   end-frame     := u32_be(meta_len) || cbor_meta {_end: 1, next?: string, hasMore?: boolean} || u32_be(0)
+ *   end-frame     := u32_be(meta_len) || cbor_meta {_end: 1, next?: string, hasMore: boolean} || u32_be(0)
  */
 
 import { decode, encode } from 'cbor-x';
+import { z } from 'zod';
 
 export const V4_FRAME_CONTENT_TYPE = 'application/vnd.workflow.v4-frames';
 
@@ -16,6 +17,10 @@ export interface DecodedFrame {
   meta: Record<string, unknown>;
   body: Uint8Array;
 }
+
+// The protocol consumer validates the event or control-frame shape after the
+// body is available. The byte codec only requires a CBOR object here.
+const CborObjectSchema = z.record(z.string(), z.unknown());
 
 /** Test/utility: encode a complete frame. Production server uses prefix
  *  + streaming body. */
@@ -92,7 +97,7 @@ export async function* decodeFrames(
       if (!(await refill(metaLen))) {
         throw new Error('decodeFrames: truncated meta block');
       }
-      const meta = decode(take(metaLen)) as Record<string, unknown>;
+      const meta = CborObjectSchema.parse(decode(take(metaLen)));
 
       if (!(await refill(4))) {
         throw new Error('decodeFrames: truncated body length');

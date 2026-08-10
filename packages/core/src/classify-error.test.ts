@@ -7,6 +7,7 @@ import {
   RuntimeDecryptionError,
   ThrottleError,
   TooEarlyError,
+  WorkflowDeploymentMismatchError,
   WorkflowNotRegisteredError,
   WorkflowRuntimeError,
   WorkflowWorldError,
@@ -47,6 +48,18 @@ describe('classifyRunError', () => {
     expect(classifyRunError(new WorkflowNotRegisteredError('myWorkflow'))).toBe(
       RUN_ERROR_CODES.RUNTIME_ERROR
     );
+  });
+
+  it('classifies WorkflowDeploymentMismatchError as DEPLOYMENT_MISMATCH', () => {
+    expect(
+      classifyRunError(
+        new WorkflowDeploymentMismatchError(
+          'wrun_test',
+          'dpl_expected',
+          'dpl_actual'
+        )
+      )
+    ).toBe(RUN_ERROR_CODES.DEPLOYMENT_MISMATCH);
   });
 
   it('classifies plain Error as USER_ERROR', () => {

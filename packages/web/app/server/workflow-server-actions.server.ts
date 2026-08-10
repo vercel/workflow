@@ -20,6 +20,7 @@ import { WorkflowRunNotFoundError, WorkflowWorldError } from '@workflow/errors';
 import { findWorkflowDataDir } from '@workflow/utils/check-data-dir';
 import type {
   AnalyticsEvent,
+  BulkCancelWorkflowRunsResult,
   Event,
   Hook,
   Step,
@@ -896,9 +897,21 @@ export async function fetchEventsByCorrelationId(
     sortOrder?: 'asc' | 'desc';
     limit?: number;
     withData?: boolean;
+    /**
+     * The run the correlation id belongs to. A correlation id is unique per
+     * run, not globally — a slot-numbered run numbers its own steps — so the
+     * search is always made from a run's page and names it.
+     */
+    runId: string;
   }
 ): Promise<ServerActionResult<PaginatedResult<Event>>> {
-  const { cursor, sortOrder = 'asc', limit = 100, withData = false } = params;
+  const {
+    cursor,
+    sortOrder = 'asc',
+    limit = 100,
+    withData = false,
+    runId,
+  } = params;
   try {
     const world = await getWorldFromEnv(worldEnv);
     // Prefer the metadata-only analytics read path when the backend provides one
@@ -908,6 +921,7 @@ export async function fetchEventsByCorrelationId(
     if (world.analytics && !withData) {
       const result = await world.analytics.events.listByCorrelationId({
         correlationId,
+        runId,
         pagination: { cursor, limit, sortOrder },
       });
       return createResponse({
@@ -919,6 +933,7 @@ export async function fetchEventsByCorrelationId(
     }
     const result = await world.events.listByCorrelationId({
       correlationId,
+      runId,
       pagination: { cursor, limit, sortOrder },
       resolveData: withData ? 'all' : 'none',
     });
@@ -1056,6 +1071,31 @@ export async function cancelRun(
     return createServerActionError<void>(error, 'world.events.create', {
       runId,
     });
+  }
+}
+
+/**
+ * Bulk-cancel workflow runs in a single operation.
+ *
+ * Delegates to `cancelRuns`, which uses the world's native batch endpoint when
+ * available and otherwise falls back to bounded-concurrency single-run
+ * cancellation. Per-run outcomes are reported in the returned summary rather
+ * than thrown, so a partial failure still resolves.
+ */
+export async function bulkCancelRuns(
+  worldEnv: EnvMap,
+  runIds: string[]
+): Promise<ServerActionResult<BulkCancelWorkflowRunsResult>> {
+  try {
+    const world = await getWorldFromEnv(worldEnv);
+    const result = await workflowRunHelpers.cancelRuns(world, runIds);
+    return createResponse(result);
+  } catch (error) {
+    return createServerActionError<BulkCancelWorkflowRunsResult>(
+      error,
+      'world.runs.cancelMany',
+      { runIdCount: runIds.length }
+    );
   }
 }
 

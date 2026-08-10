@@ -45,6 +45,8 @@ export default Run;`}
 showSections={["returns"]}
 />
 
+`run.returnValue` polls until the run completes, handling [`WorkflowRunNotCompletedError`](/docs/api-reference/workflow-errors/workflow-run-not-completed-error) internally, and throws [`WorkflowRunCancelledError`](/docs/api-reference/workflow-errors/workflow-run-cancelled-error) if the run was cancelled.
+
 #### WorkflowReadableStream
 
 `run.getReadable()` returns a `WorkflowReadableStream` — a standard `ReadableStream` extended with a `getTailIndex()` helper:
@@ -85,7 +87,7 @@ export default StopSleepResult;`}
 
 ### Check if a Run Exists
 
-Use the `exists` getter to check whether a workflow run exists without throwing when the run is not found:
+Use the `exists` getter to check whether a workflow run exists without throwing a [`WorkflowRunNotFoundError`](/docs/api-reference/workflow-errors/workflow-run-not-found-error) when the run is not found:
 
 ```typescript lineNumbers
 import { getRun } from "workflow/api";
