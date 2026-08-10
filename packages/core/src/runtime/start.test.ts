@@ -138,7 +138,7 @@ describe('start', () => {
       } as any);
 
       await expect(start(validWorkflow, [])).rejects.toThrow(
-        'requires a World with matching spec version'
+        'supports Worlds with spec version'
       );
       expect(mockEventsCreate).not.toHaveBeenCalled();
       expect(mockQueue).not.toHaveBeenCalled();
@@ -176,7 +176,7 @@ describe('start', () => {
       } as any);
 
       await expect(start(validWorkflow, [])).rejects.toThrow(
-        'requires a World with matching spec version'
+        'supports Worlds with spec version'
       );
       expect(mockEventsCreate).not.toHaveBeenCalled();
       expect(mockQueue).not.toHaveBeenCalled();
@@ -195,7 +195,7 @@ describe('start', () => {
       } as any);
 
       await expect(start(validWorkflow, [])).rejects.toThrow(
-        'requires a World with matching spec version'
+        'supports Worlds with spec version'
       );
       expect(mockEventsCreate).not.toHaveBeenCalled();
       expect(mockQueue).not.toHaveBeenCalled();

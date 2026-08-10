@@ -37,7 +37,8 @@ export function assertWorldSupportsRuntimeProtocol(
 
   const supportedVersion = declared ?? 'none';
   throw new WorkflowRuntimeError(
-    `This Workflow runtime requires a World with matching spec version ${SPEC_VERSION_CURRENT}, ` +
+    `This Workflow runtime supports Worlds with spec version ${SPEC_VERSION_CURRENT} ` +
+      `through ${SPEC_VERSION_MAX_SUPPORTED}, ` +
       `but the configured World declares spec version ${supportedVersion}. ` +
       'Install a World package version compatible with the current Workflow runtime.'
   );
