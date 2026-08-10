@@ -49,6 +49,24 @@ export const SnapshotMetadataSchema = z.object({
    */
   lastUlid: z.string().optional(),
   /**
+   * Exact engine build (quickjs-wasi package version) that captured the
+   * heap image. The image's own QJSS header is identical across builds,
+   * so restoring under a different build would pass deserialization and
+   * execute as undefined behavior in the interpreter — a real hazard
+   * during a rolling deploy that bumps quickjs-wasi, when live snapshots
+   * from the old build meet instances running the new one. Readers MUST
+   * treat a mismatch (or absence) as a clean miss.
+   */
+  engineVersion: z.string().optional(),
+  /**
+   * The deterministic replay clock's high-water mark (ms since epoch) at
+   * capture. The clock lives host-side; without this a restored VM's
+   * `Date.now()` regresses to the run-creation time until the first
+   * delta event advances it, so restores initialize the clock to
+   * `max(derived, clockMs)`.
+   */
+  clockMs: z.number().optional(),
+  /**
    * Snapshot format tag. A reader that doesn't recognize the version
    * treats the snapshot as a clean miss (full replay) instead of handing
    * an incompatible heap to the WASM engine.

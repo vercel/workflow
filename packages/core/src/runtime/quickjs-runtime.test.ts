@@ -1157,6 +1157,14 @@ describe('VM snapshot/restore', () => {
     expect(captured.data).toBeInstanceOf(Uint8Array);
     expect(captured.data.byteLength).toBeGreaterThan(1000);
     expect(captured.rngDraws).toBeGreaterThan(0);
+    // The capture carries everything a restore needs to stay
+    // deterministic: the serde capture-root token, the ULID
+    // continuation state, the clock high-water mark, and the exact
+    // engine build the heap image came from.
+    expect(captured.serdeRootPtr).toEqual(expect.any(Number));
+    expect(captured.lastUlid).toMatch(/^[0-9A-Z]{26}$/);
+    expect(captured.clockMs).toBeGreaterThan(0);
+    expect(captured.engineVersion).toMatch(/^\d+\.\d+\.\d+/);
 
     // Restore in a "fresh process": only the delta events are supplied.
     const s2 = await startQuickJSWorkflow({
@@ -1172,6 +1180,8 @@ describe('VM snapshot/restore', () => {
           rngDraws: captured.rngDraws,
           lastUlid: captured.lastUlid,
           serdeRootPtr: captured.serdeRootPtr,
+          clockMs: captured.clockMs,
+          engineVersion: captured.engineVersion,
         },
       },
     });
@@ -1203,6 +1213,8 @@ describe('VM snapshot/restore', () => {
       rngDraws: captured.rngDraws,
       lastUlid: captured.lastUlid,
       serdeRootPtr: captured.serdeRootPtr,
+      clockMs: captured.clockMs,
+      engineVersion: captured.engineVersion,
     };
     const [ra, rb] = await Promise.all([
       startQuickJSWorkflow({
@@ -1267,6 +1279,8 @@ describe('VM snapshot/restore', () => {
           rngDraws: captured.rngDraws,
           lastUlid: captured.lastUlid,
           serdeRootPtr: captured.serdeRootPtr,
+          clockMs: captured.clockMs,
+          engineVersion: captured.engineVersion,
         },
       },
     });
@@ -1291,6 +1305,8 @@ describe('VM snapshot/restore', () => {
       rngDraws: captured.rngDraws,
       lastUlid: captured.lastUlid,
       serdeRootPtr: captured.serdeRootPtr,
+      clockMs: captured.clockMs,
+      engineVersion: captured.engineVersion,
     };
 
     // Simulate a later invocation that resumed from that snapshot WITHOUT
