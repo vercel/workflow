@@ -224,18 +224,22 @@ describe('executeStep — slot rejection carrying a duplicate start', () => {
     counter += 1;
   });
 
-  function startedEvent(opts: {
-    stepId: string;
-    stepName: string;
-    input?: unknown;
-  }) {
+  function startedEvent(opts: { stepId: string; stepName: string }) {
     return {
       eventType: 'step_started',
       correlationId: opts.stepId,
-      eventData: {
-        stepName: opts.stepName,
-        ...(opts.input !== undefined ? { input: opts.input } : {}),
-      },
+      eventData: { stepName: opts.stepName },
+    };
+  }
+
+  // The companion a lazy start publishes alongside its `step_started`. Both
+  // Worlds move the step input here and strip it from the start's own row, so
+  // this is the only event in a delta that can carry it.
+  function createdEvent(opts: { stepId: string; input: unknown }) {
+    return {
+      eventType: 'step_created',
+      correlationId: opts.stepId,
+      eventData: { input: opts.input },
     };
   }
 
@@ -299,17 +303,32 @@ describe('executeStep — slot rejection carrying a duplicate start', () => {
   });
 
   it('skips when the delta started this step with byte-identical input', async () => {
-    const input = new Uint8Array([1, 2, 3]);
     const { run, bodyRuns } = await runAgainstRejection({
-      lazyStepInput: input,
+      lazyStepInput: new Uint8Array([1, 2, 3]),
       events: [
-        (ids: { stepId: string; stepName: string }) =>
-          startedEvent({ ...ids, input: new Uint8Array([1, 2, 3]) }),
+        (ids: { stepId: string }) =>
+          createdEvent({ ...ids, input: new Uint8Array([1, 2, 3]) }),
+        (ids: { stepId: string; stepName: string }) => startedEvent(ids),
       ],
     });
 
     await expect(run()).resolves.toEqual({ type: 'skipped' });
     expect(bodyRuns()).toBe(0);
+  });
+
+  it('propagates when the delta start has no companion carrying the input', async () => {
+    // The start alone proves the correlation id and the step name, and neither
+    // distinguishes this call from a diverged replay's call at the same
+    // ordinal. Without the companion there is nothing to compare the input
+    // against, so the restart is the only correct answer.
+    const { run } = await runAgainstRejection({
+      lazyStepInput: new Uint8Array([1, 2, 3]),
+      events: [
+        (ids: { stepId: string; stepName: string }) => startedEvent(ids),
+      ],
+    });
+
+    await expect(run()).rejects.toThrow(SlotConflictError);
   });
 
   it('propagates when the delta started the same slot under a different step name', async () => {
@@ -327,8 +346,9 @@ describe('executeStep — slot rejection carrying a duplicate start', () => {
     const { run } = await runAgainstRejection({
       lazyStepInput: new Uint8Array([1, 2, 3]),
       events: [
-        (ids: { stepId: string; stepName: string }) =>
-          startedEvent({ ...ids, input: new Uint8Array([1, 2, 4]) }),
+        (ids: { stepId: string }) =>
+          createdEvent({ ...ids, input: new Uint8Array([1, 2, 4]) }),
+        (ids: { stepId: string; stepName: string }) => startedEvent(ids),
       ],
     });
 
@@ -341,8 +361,9 @@ describe('executeStep — slot rejection carrying a duplicate start', () => {
     const { run } = await runAgainstRejection({
       lazyStepInput: new Uint8Array([1, 2, 3]),
       events: [
-        (ids: { stepId: string; stepName: string }) =>
-          startedEvent({ ...ids, input: { ref: 'payload_abc' } }),
+        (ids: { stepId: string }) =>
+          createdEvent({ ...ids, input: { ref: 'payload_abc' } }),
+        (ids: { stepId: string; stepName: string }) => startedEvent(ids),
       ],
     });
 

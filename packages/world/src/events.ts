@@ -885,6 +885,17 @@ export interface CreateEventParams {
    * partly by one and partly by the other and no replay can read it in the order
    * it was written.
    *
+   * Uniqueness is the whole of the check, deliberately: do NOT additionally
+   * require the claim to be exactly one past the log's tail. The runtime
+   * reserves a contiguous block of positions synchronously and then issues the
+   * writes concurrently, so the claim for a position arrives in no particular
+   * order relative to the ones below it, and a tail+1 rule would reject most of
+   * every batch. Density is therefore a property the runtime maintains (it only
+   * ever reserves from a position it has observed, and rewinds a reservation
+   * that failed) rather than one a World can enforce write-by-write. What a
+   * World can do is notice: {@link maxSlot} makes a hole visible at the moment
+   * it is created, and it is worth a counter, because a hole never heals.
+   *
    * A World that ignores this field mints ids itself, which is correct only for
    * a run that was never stamped with slot identity.
    */

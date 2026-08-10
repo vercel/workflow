@@ -654,25 +654,39 @@ export function createEventsStorage(
    * arrived out of band) costs the caller no extra round-trip. `hasMore` is
    * forwarded verbatim: an overflowing delta is the caller's signal to page from
    * `cursor` instead of treating this as the whole story.
+   *
+   * The high-water mark is the cursor of the *query*, not a filter applied to
+   * whatever the query returned. Paging from the caller's cursor and discarding
+   * what it already holds looks equivalent and is not: a claim carries no
+   * `sinceCursor`, so that query starts at the head of the log and a run past
+   * one page long fills its whole page with events below the mark. The caller
+   * then gets an empty delta with `hasMore`, and the round-trip the inline
+   * delta exists to avoid happens on every conflict of every long run.
    */
   async function eventsAfterClaim(
     runId: string,
     params: CreateEventParams | undefined
   ): Promise<{ events: Event[]; cursor: string | null; hasMore: boolean }> {
+    const maxSlot = params?.maxSlot ?? 0;
+    // Dense slots make this exact rather than approximate: the caller cannot be
+    // missing an event at or below the highest position it can name.
+    const from =
+      maxSlot > 0
+        ? slotEventId(maxSlot)
+        : typeof params?.sinceCursor === 'string'
+          ? params.sinceCursor
+          : undefined;
     const page = await paginatedFileSystemQuery({
       directory: path.join(basedir, 'events'),
       schema: EventSchema,
       cachedItems: eventCache,
       filePrefix: `${runId}-`,
       sortOrder: 'asc',
-      ...(typeof params?.sinceCursor === 'string'
-        ? { cursor: params.sinceCursor }
-        : {}),
+      ...(from !== undefined ? { cursor: from } : {}),
       getCreatedAt: getObjectCreatedAt('evnt'),
       getOrderTime: eventOrderTime,
       getId: (event) => event.eventId,
     });
-    const maxSlot = params?.maxSlot ?? 0;
     const resolveData = params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
     const missing = page.data.filter(
       (event) => (slotFromId(event.eventId) ?? 0) > maxSlot
@@ -2094,7 +2108,13 @@ export function createEventsStorage(
               }
               // Readers can see this event from here on, so the step entity it
               // describes has to keep existing even if the start it rides with
-              // goes on to lose its own position.
+              // goes on to lose its own position. That leaves the pair split —
+              // a creation with no start — and the log still dense, because the
+              // event that landed is the one that tells the next replay this
+              // step is created: its re-proposal is an ordinary start reserving
+              // one position, not another lazy pair reserving two. A retry that
+              // reserved a companion it would no longer publish is what would
+              // leave a hole, and a hole below a published event never heals.
               eventCommitted = true;
               slots.observe(effectiveRunId, stepCreatedEventId);
               validatedStep = createdStep;

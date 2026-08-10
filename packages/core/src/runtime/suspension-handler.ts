@@ -3,7 +3,6 @@ import {
   EntityConflictError,
   FatalError,
   HookNotFoundError,
-  PreconditionFailedError,
   RunExpiredError,
   WorkflowWorldError,
 } from '@workflow/errors';
@@ -33,6 +32,7 @@ import { getMaxInlineSteps } from './constants.js';
 import {
   claimFenceFor,
   type EventCreator,
+  isStaleWriteRejection,
   type MutableEventLog,
   observeEventSlot,
 } from './helpers.js';
@@ -243,7 +243,7 @@ export async function handleSuspension({
 
   /**
    * Await every operation in a suspension phase before letting a failure
-   * escape, preferring a stale-snapshot (412) rejection when one occurred.
+   * escape, preferring a stale-write rejection when one occurred.
    *
    * `Promise.all` rejects as soon as one operation does and leaves its siblings
    * in flight. That matters for a 412: the caller reacts by reloading the event
@@ -255,18 +255,21 @@ export async function handleSuspension({
    * It mirrors the runtime's inline step claim, which settles the in-flight
    * step executions before escalating a 412.
    *
-   * A 412 is preferred over any other rejection in the same phase because it
-   * has a defined, cheap recovery (replay from a corrected log) while the
-   * others do not. A deterministic failure such as an attribute-validation
-   * `FatalError` recurs on the restart and fails the run then, at the cost of
-   * one extra replay.
+   * A stale-write rejection is preferred over any other rejection in the same
+   * phase because it has a defined, cheap recovery (replay from a corrected
+   * log) while the others do not. A deterministic failure such as an
+   * attribute-validation `FatalError` recurs on the restart and fails the run
+   * then, at the cost of one extra replay. Both fences qualify: a lost slot
+   * (409) says exactly what a stale watermark (412) says, and preferring only
+   * the latter would send a run whose phase produced both a slot conflict and a
+   * `FatalError` down the failure path instead of the restart.
    */
   const settlePhase = async (ops: Promise<unknown>[]): Promise<void> => {
     const reasons = (await Promise.allSettled(ops))
       .filter((r): r is PromiseRejectedResult => r.status === 'rejected')
       .map((r) => r.reason);
     if (reasons.length === 0) return;
-    throw reasons.find((r) => PreconditionFailedError.is(r)) ?? reasons[0];
+    throw reasons.find((r) => isStaleWriteRejection(r)) ?? reasons[0];
   };
 
   // Every suspension write carries replay-recovery telemetry on the first one

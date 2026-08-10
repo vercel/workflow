@@ -83,6 +83,7 @@ import {
   parseHealthCheckPayload,
   preconditionEventDelta,
   queueMessage,
+  staleWriteRejectionClass,
   toMutableEventLog,
   withHealthCheck,
 } from './runtime/helpers.js';
@@ -838,13 +839,25 @@ export function workflowEntrypoint(
                   let cachedEvents: Event[] | null = null;
                   let eventsCursor: string | null = null;
 
-                  // Set when a restarted replay is recovering by merging into
-                  // its cached log rather than reloading it whole, from either
-                  // an inline delta or one page above the cursor. The next load
-                  // verifies the result is dense before the replay trusts it,
-                  // and falls back to the authoritative load if it is not; see
-                  // the consume site below the load.
-                  let slotDensityCheckPending = false;
+                  // What the next load owes the density check, which is the
+                  // only thing that turns "my log looks complete" into a proof
+                  // (a log dense from slot 1 holds exactly `maxSlot` events).
+                  //
+                  //   'reload'  the log came from somewhere that could be
+                  //             short — a restart merging an inline delta or
+                  //             one page above its cursor, or a preload the
+                  //             World assembled alongside the run. A gap costs
+                  //             the authoritative load, which is the load the
+                  //             shortcut skipped.
+                  //   'report'  the log came from the paged load itself, so a
+                  //             gap is a hole rather than a missed page: a
+                  //             write that took a position and then failed.
+                  //             Loading again would only fetch it back, so this
+                  //             counts it instead.
+                  //   'none'    nothing to check.
+                  //
+                  // See the consume site below the load.
+                  let slotDensityCheck: 'none' | 'reload' | 'report' = 'none';
 
                   // Inline-delta optimization: when an inline step's terminal
                   // write returns the event-log delta since the pre-write
@@ -1216,7 +1229,7 @@ export function workflowEntrypoint(
                       // (`pendingInlineDelta && cachedEvents`) with no
                       // events.list round trip at all.
                       pendingInlineDelta = delta;
-                      slotDensityCheckPending = slotNumbered;
+                      slotDensityCheck = slotNumbered ? 'reload' : 'none';
                     } else if (topsUpFromCursor) {
                       // Keep the cached log and its cursor: the loop's
                       // incremental branch fetches the page above the cursor
@@ -1225,7 +1238,7 @@ export function workflowEntrypoint(
                       // close the gap. Appends land above everything already
                       // scanned for payload prewarming, so no rescan is needed
                       // unless that fallback fires.
-                      slotDensityCheckPending = true;
+                      slotDensityCheck = 'reload';
                       preloadedEvents = undefined;
                       preloadedEventsCursor = undefined;
                       pendingInlineDelta = null;
@@ -1244,27 +1257,37 @@ export function workflowEntrypoint(
                       preloadedEventsCursor = undefined;
                       preloadedEventsComplete = false;
                       pendingInlineDelta = null;
-                      slotDensityCheckPending = false;
+                      slotDensityCheck = 'none';
                       // The corrected log inserts the missing events BELOW the
                       // length already scanned for payload prewarming, shifting
                       // every later position. Only a full rescan sees them.
                       replayPayloadCache.resetScan();
                     }
+                    pendingRestartBackoffMs =
+                      preconditionRestartBackoffMs(preconditionRestarts);
+                    // Which fence rejected, and how long the restart waits.
+                    // Both fences are live at once and recover identically, so
+                    // without the class an operator watching a rollout cannot
+                    // tell slot churn from watermark churn — and a wide flush
+                    // can spend the restart budget with no writer being wrong,
+                    // where the failure message alone misreads the run.
+                    const rejectionClass = staleWriteRejectionClass(error);
                     runtimeLogger.warn(
                       'Event creation rejected as stale; restarting replay in-process',
                       {
                         workflowRunId: runId,
                         reason,
+                        rejectionClass,
                         loopIteration,
                         preconditionRestarts,
                         source: restartSource,
+                        backoffMs: pendingRestartBackoffMs,
                       }
                     );
                     span?.setAttributes({
                       'workflow.precondition_restarts': preconditionRestarts,
+                      'workflow.stale_write_rejection_class': rejectionClass,
                     });
-                    pendingRestartBackoffMs =
-                      preconditionRestartBackoffMs(preconditionRestarts);
                     return true;
                   };
 
@@ -2471,13 +2494,30 @@ export function workflowEntrypoint(
                       } else if (cachedEvents === null) {
                         // First iteration: use preloaded events if available,
                         // otherwise do a full load with cursor.
+                        //
+                        // Either way the log is checked for density once per
+                        // invocation, which is where a hole first becomes
+                        // visible to anyone: the restart paths only ever see
+                        // the logs they merged themselves. What the check does
+                        // about a gap differs by source, and only the preload
+                        // has a load left to fall back to.
                         if (preloadedEvents) {
                           events = preloadedEvents;
                           eventsCursor = preloadedEventsCursor ?? null;
+                          slotDensityCheck = usesSlotIdentity(
+                            workflowRun?.specVersion
+                          )
+                            ? 'reload'
+                            : 'none';
                         } else {
                           const loaded = await loadWorkflowRunEvents(runId);
                           events = loaded.events;
                           eventsCursor = loaded.cursor;
+                          slotDensityCheck = usesSlotIdentity(
+                            workflowRun?.specVersion
+                          )
+                            ? 'report'
+                            : 'none';
                         }
                       } else if (eventsCursor) {
                         // Subsequent iteration: fetch only new events since last cursor
@@ -2534,23 +2574,41 @@ export function workflowEntrypoint(
                       // the wait pass, which may swap in a freshly loaded array.
                       cachedEvents = events;
 
-                      if (slotDensityCheckPending) {
-                        slotDensityCheckPending = false;
+                      if (slotDensityCheck !== 'none') {
+                        const densityCheck = slotDensityCheck;
+                        slotDensityCheck = 'none';
                         // The log is dense from slot 1, so a complete one
-                        // holds exactly `maxSlot` events. A short
-                        // count means the merge did not bring in everything the
-                        // restart was missing — the only other reading, a
-                        // permanent hole from a write that took a slot and then
-                        // failed, is equally unrecoverable from here — so fall
-                        // back to the authoritative load.
+                        // holds exactly `maxSlot` events. A short count has two
+                        // readings: the load this one stood in for would have
+                        // brought in more, or a write took a position and then
+                        // failed and the position is empty for good.
                         if (maxSlotOf(events) !== events.length) {
-                          const loaded = await loadWorkflowRunEvents(runId);
-                          events = loaded.events;
-                          eventsCursor = loaded.cursor;
-                          cachedEvents = events;
-                          // The reload can insert events below the prefix
-                          // already scanned for payload prewarming.
-                          replayPayloadCache.resetScan();
+                          if (densityCheck === 'reload') {
+                            const loaded = await loadWorkflowRunEvents(runId);
+                            events = loaded.events;
+                            eventsCursor = loaded.cursor;
+                            cachedEvents = events;
+                            // The reload can insert events below the prefix
+                            // already scanned for payload prewarming.
+                            replayPayloadCache.resetScan();
+                          }
+                          if (maxSlotOf(events) !== events.length) {
+                            // The authoritative log is short, so this is the
+                            // second reading: a hole. Nothing here can heal it
+                            // and the replay proceeds over it, which is correct
+                            // — the events that exist are still every event
+                            // there is. What is lost is the proof, for the rest
+                            // of the run's life, so the one useful response is
+                            // to say so where it can be counted.
+                            runtimeLogger.warn(
+                              'Event log is missing a slot; it can no longer prove it is complete',
+                              {
+                                workflowRunId: runId,
+                                maxSlot: maxSlotOf(events),
+                                eventCount: events.length,
+                              }
+                            );
+                          }
                         }
                       }
 
@@ -3432,14 +3490,18 @@ export function workflowEntrypoint(
                         //    (threaded below via `claimFenceFor`; on rejection
                         //    the batch is abandoned and re-invoked for a fresh
                         //    replay, so a stale view can never commit a step).
-                        //    A slot claim gets there differently: it merges the
-                        //    missed events and retries in place, so the same
-                        //    events are observed without discarding the batch.
-                        //    See claimFenceFor.
-                        //    Hooks created
-                        //    by THIS suspension are inside the delta (their
-                        //    `hook_created` lands before the step-terminal
-                        //    write), so only their `hook_received` responses
+                        //    A slot claim reaches the same place by the same
+                        //    route: it rejects, and the batch is abandoned for
+                        //    a replay over the corrected log. Neither fence
+                        //    retries a rejected write in place — the missing
+                        //    event can be the one that sends the workflow down
+                        //    another branch, which moves every correlation id
+                        //    after it. See claimFenceFor.
+                        //
+                        //    Hooks created by THIS suspension are inside the
+                        //    delta (their `hook_created` lands before the
+                        //    step-terminal write), so only their
+                        //    `hook_received` responses
                         //    are subject to the same fenced window. Without an
                         //    enforced guard there is no fence, so keep the
                         //    conservative gate.

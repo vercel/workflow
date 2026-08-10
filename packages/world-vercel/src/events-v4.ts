@@ -516,10 +516,22 @@ function errorFromV4Response(
     message += ` ${errorBody}`;
   }
 
-  // A lost event slot is the one 409 that is not an entity conflict. The
-  // backend names its machine-readable code `error`; that field is read only
-  // here, so every other error keeps the status → type mapping below unchanged.
-  if (statusCode === 409 && decoded?.error === V4_SLOT_CONFLICT_CODE) {
+  // A lost event slot is the one 409 that is not an entity conflict, and
+  // misreading it is not symmetric: nearly every call site treats an entity
+  // conflict as "my write already landed" and skips, so a slot conflict wearing
+  // that type drops the write for good, while the reverse costs a replay
+  // restart that was always safe to take. Classification therefore leads with
+  // the header the slot-conflict response carries — `x-wf-event-id`, naming the
+  // slot that was taken — which survives a body that arrived truncated or
+  // re-encoded. The body's machine-readable code (the backend names the field
+  // `error`) is the fallback for a response that lost its headers instead. That
+  // field is read only here, so every other error keeps the status → type
+  // mapping below unchanged.
+  if (
+    statusCode === 409 &&
+    (readHeader(responseHeaders, V4_RESPONSE_HEADERS.eventId) !== undefined ||
+      decoded?.error === V4_SLOT_CONFLICT_CODE)
+  ) {
     return slotConflictFromBody(message, responseHeaders, decoded);
   }
 

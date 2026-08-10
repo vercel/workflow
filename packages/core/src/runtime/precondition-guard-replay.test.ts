@@ -391,9 +391,10 @@ async function runPreconditionScenario(options: {
         !!request.eventData &&
         (request.eventData as { input?: unknown }).input !== undefined;
       let effectiveRequest = request;
-      // A claim covers the whole write, so a lazy start's synthesized
-      // step_created takes the claimed position and the step_started the one
-      // after it — the two extra slots the caller reserved for exactly this.
+      // A claim covers the whole write and names the event being created, so a
+      // lazy start's synthesized step_created takes the position below the
+      // claim and the step_started the claim itself — the extra slot the caller
+      // reserved for exactly this.
       let claimedEventId = params?.eventId;
       const takeClaim = () => {
         const claim = claimedEventId;
@@ -405,6 +406,9 @@ async function runPreconditionScenario(options: {
           stepName?: string;
           input?: unknown;
         };
+        const claimedSlot = claimedEventId
+          ? slotFromId(claimedEventId)
+          : undefined;
         const syntheticStepCreated = event(
           {
             eventType: 'step_created',
@@ -413,7 +417,7 @@ async function runPreconditionScenario(options: {
             eventData: { stepName: lazyData.stepName, input: lazyData.input },
           } as CreateEventRequest,
           undefined,
-          takeClaim()
+          claimedSlot ? `evnt_${slotIdBody(claimedSlot - 1)}` : undefined
         );
         durableEvents.push(syntheticStepCreated);
         createdEvents.push(syntheticStepCreated);

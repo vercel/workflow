@@ -33,7 +33,6 @@ import {
   latestEventStateUpdatedAt,
   loadWorkflowRunEvents,
   memoizeEncryptionKey,
-  mergeLoadedEvents,
   orderedCreateFor,
   preconditionEventDelta,
   preconditionSnapshotParams,
@@ -677,80 +676,20 @@ describe('slot bookkeeping', () => {
     expect(log.maxSlot).toBe(5);
   });
 
-  it('keeps the floor across a merge', () => {
-    const log = toMutableEventLog([], null, 2);
-    mergeLoadedEvents(log, [slotEvent(1)]);
-    expect(log.maxSlot).toBe(2);
-  });
-
-  it('never lowers maxSlot when an older delta is merged in', () => {
-    const log = toMutableEventLog([slotEvent(1), slotEvent(3)], 'c0');
-    mergeLoadedEvents(log, [slotEvent(2)]);
-    expect(log.maxSlot).toBe(3);
-    expect(log.events).toHaveLength(3);
-  });
-
-  it('raises the reservation pointer past a newer delta', () => {
-    const log = toMutableEventLog([slotEvent(1)], 'c0');
-    reserveSlot(log);
-    reserveSlot(log);
-    expect(log.nextSlot).toBe(4);
-
-    mergeLoadedEvents(log, [slotEvent(2), slotEvent(5)]);
-
-    expect(log.maxSlot).toBe(5);
-    expect(reserveSlot(log)).toBe(6);
-  });
-
-  it('never rewinds the reservation pointer onto an outstanding slot', () => {
-    // A writer that loses its slot merges the delta and reserves again while
-    // its siblings are still in flight on theirs. Rewinding to `maxSlot + 1`
-    // would hand it slot 4, which a sibling already holds.
-    const log = toMutableEventLog([slotEvent(1)], 'c0');
-    expect(reserveSlot(log)).toBe(2);
-    expect(reserveSlot(log)).toBe(3);
-    expect(reserveSlot(log)).toBe(4);
-
-    mergeLoadedEvents(log, [slotEvent(2)]);
-
-    expect(log.maxSlot).toBe(2);
-    expect(reserveSlot(log)).toBe(5);
-  });
-
-  it('deduplicates merged events by id', () => {
-    const log = toMutableEventLog([slotEvent(1)], 'c0');
-    mergeLoadedEvents(log, [slotEvent(1), slotEvent(2)]);
-    expect(log.events.map((e) => e.eventId)).toEqual([
-      slotEventId(1),
-      slotEventId(2),
-    ]);
-  });
-
-  it('restores slot order when a merge brings in a lower slot', () => {
+  it('restores slot order when an append brings in a lower slot', () => {
     // Arrival order is not log order: a slot is reserved when its event is
     // issued and written when the issue resolves, so a lower slot can be
     // learned after a higher one. The replay consumes this array positionally,
     // so an event left sitting ahead of the one it followed decides races the
     // wrong way.
-    const log = toMutableEventLog([slotEvent(1), slotEvent(4)], 'c0');
-    mergeLoadedEvents(log, [slotEvent(3), slotEvent(2)]);
-    expect(log.events.map((e) => e.eventId)).toEqual([
+    const events = [slotEvent(1), slotEvent(4)];
+    appendUniqueEvents(events, [slotEvent(3), slotEvent(2)]);
+    expect(events.map((e) => e.eventId)).toEqual([
       slotEventId(1),
       slotEventId(2),
       slotEventId(3),
       slotEventId(4),
     ]);
-  });
-
-  it('leaves a ULID log in the order the World returned it', () => {
-    // ULID ids are minted at write time, so arrival order *is* log order and
-    // the World's ordering is the authority.
-    const events = [makeUlidEvent(1_700_000_000_000)];
-    const later = makeUlidEvent(1_700_000_001_000);
-    const earlier = makeUlidEvent(1_699_999_999_000);
-    const log = toMutableEventLog(events, 'c0');
-    mergeLoadedEvents(log, [later, earlier]);
-    expect(log.events).toEqual([events[0], later, earlier]);
   });
 
   it('hands out contiguous distinct slots for a synchronous burst', () => {

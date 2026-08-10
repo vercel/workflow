@@ -25,6 +25,7 @@ import type {
 import {
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_SUPPORTS_COMPRESSION,
+  usesSlotIdentity,
 } from '@workflow/world';
 import { runtimeLogger, stepLogger } from '../logger.js';
 import { getStepFunction } from '../private.js';
@@ -126,6 +127,14 @@ function sameSerializedInput(
  * the inputs must be byte-identical. Anything we cannot prove identical
  * returns false and takes the replay restart, which is always correct and
  * merely slower.
+ *
+ * The input is read off the companion `step_created`, never off the
+ * `step_started` itself. A lazy start publishes the pair, and both Worlds move
+ * the input onto the `step_created` and strip it from the row they write for
+ * the start — so comparing against the start's own `eventData.input` would be
+ * comparing against `undefined` on exactly the path that holds an input, and
+ * every lazy duplicate would pay a replay restart instead of the skip. The two
+ * events take adjacent slots, so a delta containing one contains the other.
  */
 function isBenignDuplicateStart(
   events: unknown[],
@@ -133,6 +142,8 @@ function isBenignDuplicateStart(
   stepName: string,
   lazyStepInput: SerializedData | undefined
 ): boolean {
+  let started = false;
+  let createdInput: SerializedData | undefined;
   for (const candidate of events) {
     if (!candidate || typeof candidate !== 'object') continue;
     const event = candidate as {
@@ -140,20 +151,18 @@ function isBenignDuplicateStart(
       correlationId?: unknown;
       eventData?: { stepName?: unknown; input?: unknown } | null;
     };
-    if (event.eventType !== 'step_started') continue;
     if (event.correlationId !== stepId) continue;
-    if (event.eventData?.stepName !== stepName) continue;
-    if (lazyStepInput === undefined) return true;
-    if (
-      sameSerializedInput(
-        lazyStepInput,
-        event.eventData?.input as SerializedData
-      )
-    ) {
-      return true;
+    if (event.eventType === 'step_created') {
+      createdInput = event.eventData?.input as SerializedData | undefined;
+      continue;
     }
+    if (event.eventType !== 'step_started') continue;
+    if (event.eventData?.stepName !== stepName) continue;
+    started = true;
   }
-  return false;
+  if (!started) return false;
+  if (lazyStepInput === undefined) return true;
+  return sameSerializedInput(lazyStepInput, createdInput);
 }
 
 export interface StepExecutorParams {
@@ -578,12 +587,28 @@ export async function executeStep(
         return { type: 'gone' };
       }
       if (EntityConflictError.is(err)) {
-        runtimeLogger.debug('Step in terminal state, skipping', {
-          stepName,
-          stepId,
-          workflowRunId,
-          error: err instanceof Error ? err.message : String(err),
-        });
+        // Reported at warn on a run that numbers its events, because there the
+        // conflict has a second, indistinguishable cause worth counting. A
+        // claim that loses its position is rejected as a slot conflict and
+        // nothing is written; a claim that wins but whose write is not atomic
+        // with the step row leaves the row behind with no event, and the
+        // re-proposal then trips its own leftover and reads it as "someone
+        // else owns this step". Both arrive here as the same error. There is no
+        // local test that separates them — the step row says nothing about
+        // which writer made it — so this logs rather than escalates: skipping
+        // is right in the common case, and failing the run on the suspicion
+        // would trade a rare wedge for a frequent false alarm.
+        const slotNumbered = usesSlotIdentity(params.runSpecVersion);
+        runtimeLogger[slotNumbered ? 'warn' : 'debug'](
+          'Step in terminal state, skipping',
+          {
+            stepName,
+            stepId,
+            workflowRunId,
+            slotNumbered,
+            error: err instanceof Error ? err.message : String(err),
+          }
+        );
         span?.setAttributes({
           ...Attribute.StepSkipped(true),
           ...Attribute.StepSkipReason('completed'),

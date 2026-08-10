@@ -530,25 +530,37 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
    * arrived out of band) costs the caller no extra round-trip. `hasMore` is
    * forwarded verbatim: an overflowing delta is the caller's signal to page from
    * `cursor` instead of treating this as the whole story.
+   *
+   * The high-water mark is the lower fence of the *query*, not a filter applied
+   * to whatever the query returned. Paging from the caller's cursor and
+   * discarding what it already holds looks equivalent and is not: a claim
+   * carries no `sinceCursor`, so that query starts at the head of the log and a
+   * run past one page long fills its whole page with events below the mark. The
+   * caller then gets an empty delta with `hasMore`, and the round-trip the
+   * inline delta exists to avoid happens on every conflict of every long run.
    */
   async function eventsAfterClaim(
     runId: string,
     params: CreateEventParams | undefined
   ): Promise<{ events: Event[]; cursor: string | null; hasMore: boolean }> {
     const limit = 100;
+    const maxSlot = params?.maxSlot ?? 0;
+    // Dense slots make this exact rather than approximate: the caller cannot be
+    // missing an event at or below the highest position it can name.
+    const floor =
+      maxSlot > 0 ? slotEventId(maxSlot) : (params?.sinceCursor ?? undefined);
     const all = await drizzle
       .select()
       .from(events)
       .where(
         and(
           eq(events.runId, runId),
-          map(params?.sinceCursor, (c) => gt(events.eventId, c))
+          map(floor, (c) => gt(events.eventId, c))
         )
       )
       .orderBy(events.eventId)
       .limit(limit + 1);
     const page = all.slice(0, limit);
-    const maxSlot = params?.maxSlot ?? 0;
     const resolveData = params?.resolveData ?? 'all';
     return {
       events: page

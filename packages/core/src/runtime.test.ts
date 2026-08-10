@@ -9,6 +9,7 @@ import {
   FIRST_SLOT,
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_SLOT_IDENTITY,
+  slotEventId,
   slotFromId,
   type WorkflowRun,
 } from '@workflow/world';
@@ -1810,10 +1811,10 @@ describe('workflowEntrypoint turbo mode', () => {
     const order = turboOrder;
     const durable: Event[] = [];
     let seq = 0;
-    const rec = (data: any): Event => {
+    const rec = (data: any, claimedEventId?: string): Event => {
       seq += 1;
       const e = {
-        eventId: `e-${seq}`,
+        eventId: claimedEventId ?? `e-${seq}`,
         runId,
         createdAt: new Date(),
         ...data,
@@ -1833,42 +1834,55 @@ describe('workflowEntrypoint turbo mode', () => {
       deploymentId: 'test-deployment',
     };
 
-    const eventsCreate = vi.fn(async (_runId: string, data: any) => {
-      if (data.eventType === 'run_started') {
-        if (opts.runStartedGate) await opts.runStartedGate;
-        order.push('run_started_resolved');
-        return { run: runEntity, events: [] as Event[] };
-      }
-      if (data.eventType === 'step_started') {
-        order.push('step_started_called');
-        const d = data.eventData as { stepName?: string; input?: unknown };
-        if (d?.input !== undefined) {
-          rec({
-            eventType: 'step_created',
-            specVersion: SPEC_VERSION_CURRENT,
-            correlationId: data.correlationId,
-            eventData: { stepName: d.stepName, input: d.input },
-          });
+    const eventsCreate = vi.fn(
+      async (_runId: string, data: any, params?: { eventId?: string }) => {
+        // A claim names the event being created, and a lazy start's companion
+        // `step_created` takes the position below it — the extra slot the
+        // runtime reserved for exactly that.
+        const claimedSlot = params?.eventId
+          ? slotFromId(params.eventId)
+          : undefined;
+        if (data.eventType === 'run_started') {
+          if (opts.runStartedGate) await opts.runStartedGate;
+          order.push('run_started_resolved');
+          return { run: runEntity, events: [] as Event[] };
         }
-        return {
-          event: rec(data),
-          step: {
-            runId,
-            stepId: data.correlationId,
-            stepName: d?.stepName,
-            status: 'running' as const,
-            attempt: 1,
-            input: d?.input,
-            startedAt: new Date(),
-            createdAt: new Date(),
-            updatedAt: new Date(),
-          },
-          ...(d?.input !== undefined ? { stepCreated: true } : {}),
-        };
+        if (data.eventType === 'step_started') {
+          order.push('step_started_called');
+          const d = data.eventData as { stepName?: string; input?: unknown };
+          if (d?.input !== undefined) {
+            rec(
+              {
+                eventType: 'step_created',
+                specVersion: SPEC_VERSION_CURRENT,
+                correlationId: data.correlationId,
+                eventData: { stepName: d.stepName, input: d.input },
+              },
+              claimedSlot === undefined
+                ? undefined
+                : slotEventId(claimedSlot - 1)
+            );
+          }
+          return {
+            event: rec(data, params?.eventId),
+            step: {
+              runId,
+              stepId: data.correlationId,
+              stepName: d?.stepName,
+              status: 'running' as const,
+              attempt: 1,
+              input: d?.input,
+              startedAt: new Date(),
+              createdAt: new Date(),
+              updatedAt: new Date(),
+            },
+            ...(d?.input !== undefined ? { stepCreated: true } : {}),
+          };
+        }
+        if (data.eventType === 'wait_created') order.push('wait_created');
+        return { event: rec(data, params?.eventId) };
       }
-      if (data.eventType === 'wait_created') order.push('wait_created');
-      return { event: rec(data) };
-    });
+    );
 
     setWorld({
       specVersion,

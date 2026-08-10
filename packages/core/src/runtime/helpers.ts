@@ -23,6 +23,7 @@ import {
   resolveQueueNamespace,
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_LEGACY,
+  SPEC_VERSION_SLOT_IDENTITY,
   slotEventId,
   slotFromId,
   ulidToDate,
@@ -743,9 +744,10 @@ export interface LoadedEventLog {
 export interface MutableEventLog extends LoadedEventLog {
   /**
    * Highest slot present in `events`, or 0 for a log that is empty or
-   * ULID-numbered. Maintained by `mergeLoadedEvents` from the events merged in,
-   * never from the array's last element: events are appended without sorting,
-   * so after a merge the last element need not be the newest.
+   * ULID-numbered. Read off the whole snapshot at construction and advanced
+   * only by {@link observeEventSlot} as writes publish, never from the array's
+   * last element: the array is built by appending, so its last element need not
+   * be the newest.
    */
   maxSlot: number;
   /**
@@ -778,6 +780,14 @@ export interface MutableEventLog extends LoadedEventLog {
 /**
  * A `MutableEventLog` over a freshly loaded snapshot.
  *
+ * The only way to get one. There is deliberately no "merge these events into
+ * the log I already have and carry on": a claim is rejected precisely when the
+ * replay decided from a log it had not fully seen, and the missing event can be
+ * the one that sends the workflow down another branch — which moves every
+ * correlation id after it. So a rejection restarts the replay and builds its
+ * log here, over the corrected snapshot, rather than patching the old one and
+ * re-issuing writes numbered under the old decisions.
+ *
  * `slotFloor` is a slot known to be published that the snapshot may not contain
  * — the run's own `run_started`, whose write turbo backgrounds while replaying
  * against an empty log. Numbering a claim from the snapshot alone would then
@@ -796,23 +806,6 @@ export function toMutableEventLog(
     maxSlot,
     nextSlot: maxSlot + 1,
   };
-}
-
-/**
- * Merges loaded events into `log` in place, keeping `maxSlot` current and
- * advancing the reservation pointer past the events merged in.
- *
- * The merged events are the ones a rejected claim was missing, so the log is
- * usable again and its recorded rejection is cleared.
- */
-export function mergeLoadedEvents(
-  log: MutableEventLog,
-  events: readonly Event[]
-): void {
-  appendUniqueEvents(log.events, events);
-  log.maxSlot = Math.max(log.maxSlot, maxSlotOf(events));
-  log.nextSlot = Math.max(log.nextSlot, log.maxSlot + 1);
-  log.claimRejection = undefined;
 }
 
 /**
@@ -967,12 +960,30 @@ export function preconditionSnapshotParams(
 }
 
 /**
+ * Which fence rejected a write, for telemetry.
+ *
+ * Both fences are live at once during the rollout and both recover the same
+ * way, so the runtime unions them ({@link isStaleWriteRejection}) and would
+ * otherwise report their churn as one number. Splitting them here is what makes
+ * a rollout legible: a slot run and a watermark run reaching the restart budget
+ * mean different things and have different fixes.
+ */
+export function staleWriteRejectionClass(
+  error: unknown
+): 'slot-conflict' | 'precondition-failed' | 'none' {
+  if (SlotConflictError.is(error)) return 'slot-conflict';
+  if (PreconditionFailedError.is(error)) return 'precondition-failed';
+  return 'none';
+}
+
+/**
  * Whether a World rejected an event creation because the replay that produced it
  * had not seen the whole event log.
  *
  * A lost slot claim rejects with 409 and a failed watermark comparison with 412,
- * so the two stay separately countable. They prove the same thing and are
- * recovered the same way, by restarting the replay over the corrected log.
+ * so the two stay separately countable ({@link staleWriteRejectionClass}). They
+ * prove the same thing and are recovered the same way, by restarting the replay
+ * over the corrected log.
  */
 export function isStaleWriteRejection(error: unknown): boolean {
   return PreconditionFailedError.is(error) || SlotConflictError.is(error);
@@ -1122,6 +1133,16 @@ function reserveSlotFence(
  *
  * Not reentrant: a `body` that enters the chain again deadlocks waiting on
  * itself.
+ *
+ * The cost is real and is the point: a suspension that used to post its whole
+ * batch at once now posts it one write at a time, so its flush costs a
+ * round-trip per event rather than one round-trip. That buys the numbering —
+ * concurrent writes off one log cannot agree on who holds which position
+ * without either serializing or a round-trip to ask, and a rejected claim
+ * costs a whole replay, which is far more than the writes it saved. A batch
+ * write (one request, N events, N consecutive positions) is what removes the
+ * per-event round-trip without giving the numbering back, and this chain is
+ * what makes that an optimization rather than a correctness fix.
  */
 async function onWriteChain<T>(
   log: MutableEventLog,
@@ -1140,6 +1161,56 @@ async function onWriteChain<T>(
   } finally {
     done();
   }
+}
+
+/** The event id a create came back with, when its result carries one. */
+function landedEventId(result: unknown): string | undefined {
+  const event = (result as { event?: { eventId?: unknown } } | null | undefined)
+    ?.event;
+  return typeof event?.eventId === 'string' ? event.eventId : undefined;
+}
+
+/**
+ * Fails a claim the backend answered at a position other than the one named.
+ *
+ * A slot claim fences a concurrent writer out only if the backend honors it:
+ * insert the event under the id the client named, conditionally, and reject the
+ * write when that id is already taken. A backend that does not know the field
+ * drops it, numbers the event itself and answers 200 — which reads to the
+ * runtime exactly like a claim that won. Every write of the run then goes out
+ * with no fence of either kind, silently, and the degradation compounds: the
+ * log comes back ULID-numbered, so the slot high-water mark stays at 0 and each
+ * replay renumbers from 1.
+ *
+ * There is no second fence to fall back on. The watermark scheme's snapshot is
+ * a ULID time, and a slotted log holds no ULIDs, so a run in this mode has
+ * nothing to send an older backend that it would enforce. Detecting the drop is
+ * the only defense, which makes reading the id back mandatory rather than
+ * diagnostic.
+ *
+ * It settles the other half too: the log's high-water mark advances from the
+ * position that landed rather than the one that was asked for. The two are the
+ * same number exactly when this passes.
+ *
+ * A result carrying no event is left alone. `EventResult.event` is optional for
+ * backwards compatibility, so its absence says nothing about what the backend
+ * did.
+ */
+function assertClaimLanded(claimed: string | undefined, result: unknown): void {
+  const landed = landedEventId(result);
+  if (claimed === undefined || landed === undefined || landed === claimed) {
+    return;
+  }
+  throw new WorkflowWorldError(
+    `The World created this event as ${landed} after the runtime claimed ` +
+      `${claimed}. A World that reports spec version ` +
+      `${SPEC_VERSION_SLOT_IDENTITY} must create the event under the id it is ` +
+      'given, or reject the write when that id is taken; numbering it itself ' +
+      'leaves the run with no concurrency fence. Upgrade the backend behind ' +
+      'this World, or pin the World package to one that reports spec version ' +
+      `${SPEC_VERSION_CURRENT}.`,
+    { code: RUN_ERROR_CODES.WORLD_CONTRACT_ERROR }
+  );
 }
 
 /**
@@ -1172,6 +1243,9 @@ function withSerializedClaim<T>(
       }
       const { fence, slot } = reserveSlotFence(log, extraEvents);
       const result = await op(fence);
+      // Proves the backend put the event where the claim said before the log's
+      // tail is advanced to match; see `assertClaimLanded`.
+      assertClaimLanded(fence.eventId, result);
       log.maxSlot = Math.max(log.maxSlot, slot);
       log.nextSlot = Math.max(log.nextSlot, log.maxSlot + 1);
       return result;

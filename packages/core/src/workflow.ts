@@ -25,7 +25,10 @@ import {
 } from './private.js';
 import { ReplayPayloadCache } from './replay-payload-cache.js';
 import { getPortLazy } from './runtime/get-port-lazy.js';
-import type { MutableEventLog } from './runtime/helpers.js';
+import {
+  type MutableEventLog,
+  staleWriteRejectionClass,
+} from './runtime/helpers.js';
 import { runIdCreatedAt } from './runtime/run-id-time.js';
 import { handleSuspension } from './runtime/suspension-handler.js';
 import { getWorld } from './runtime/world.js';
@@ -70,7 +73,14 @@ import { createSleep } from './workflow/sleep.js';
  * bodies: `step_started` is rejected after the run becomes terminal. A
  * fire-and-forget step therefore needs a later suspension to be scheduled.
  *
- * Drain failures do not change the workflow's terminal outcome.
+ * Drain failures do not change the workflow's terminal outcome. That is the
+ * point of the swallow, and it is why a lost slot cannot be rethrown from here:
+ * this runs after the workflow function settled, so a throw on the success path
+ * lands in the caller's `catch` and fails a run that completed. What a lost
+ * slot does instead is latch on the log, so the terminal write that follows
+ * fails without a round-trip and the run restarts over the corrected log —
+ * a defined recovery, one replay long. The rejection class is logged because
+ * that restart is otherwise indistinguishable from an unexplained one.
  */
 async function drainPendingQueueItems(
   runId: string,
@@ -125,6 +135,7 @@ async function drainPendingQueueItems(
       {
         workflowRunId: runId,
         message: err instanceof Error ? err.message : String(err),
+        rejectionClass: staleWriteRejectionClass(err),
       }
     );
   }

@@ -128,6 +128,20 @@ A rejection may optionally carry the events the caller was missing, as `{ events
 
 A World that enforces the guard should declare `capabilities.preconditionGuard`, which the runtime also reads to keep event-log delta optimizations enabled. A World that ignores these params must not declare it.
 
+### Optional: Client-Numbered Events
+
+A run started on spec version 6 or later numbers its events by position instead of by time. Every event id is `evnt_` followed by the event's slot, a decimal counting from 1, zero-padded to 26 characters so it still sorts and validates like any other id. The runtime derives each id from the log it replayed, so an id is a claim on a position rather than a label the World is free to reassign.
+
+The claim is what fences a stale replay, which makes honoring it the whole of the contract:
+
+- **Insert under a uniqueness constraint on `(runId, eventId)`.** When the position is taken, reject the write with a `SlotConflictError` (HTTP 409). Never mint a different id: losing a position means the caller replayed against a log missing at least one event, so its whole proposed event is suspect, not only its number.
+- **Reject a mode mismatch in either direction with a 400.** A slot id sent for a run numbered by time, or a time-based id for a run numbered by position, produces a log that sorts partly one way and partly the other, which no replay can read in the order it was written.
+- **Require `occurredAt`.** A slot carries no timestamp, and the runtime feeds the sandbox clock from `createdAt`, so a World that stamps its own wall clock instead rewinds replay time.
+- **Do not additionally require the claim to be one past the tail.** The runtime reserves a contiguous block of positions and issues the writes concurrently, so they arrive out of order relative to each other. Density is something the runtime maintains, not something a World can check write-by-write. `maxSlot` is sent alongside the claim so you can *notice* a gap and count it; a gap never heals.
+- **Number the writers who have no log.** A write that arrives with no id came from a caller that could not compute one — a queue consumer completing a step, a hook delivery, a cancellation. Allocate the next free position for it, and take positions only from a strongly consistent read of the log's tail. Do not persist a counter: a counter that hands out a position for a write that then fails leaves a permanent gap.
+
+A 409 may carry the events the caller is missing, as `{ events, cursor, hasMore }` on the error. Page them from the caller's `maxSlot`, not from the head of the log filtered afterwards — the caller sends no cursor with a claim, so a query that starts at the head fills its whole page with events the caller already has and the inline delta saves nothing on exactly the runs where it matters most.
+
 ## Queue Interface
 
 The Queue interface handles asynchronous workflow execution, including queued step work:

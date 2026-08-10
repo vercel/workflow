@@ -11,7 +11,7 @@ import {
   slotEventId,
   slotFromId,
 } from '@workflow/world';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createStorage } from './index.js';
 
 let testDir: string;
@@ -23,6 +23,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   await fs.rm(testDir, { recursive: true, force: true });
 });
 
@@ -443,6 +444,66 @@ describe('conflict', () => {
     const eventId = await startStepLazily(runId, 'step_a', slotEventId(5));
     expect(eventId).toBe(slotEventId(5));
     await expect(slotsOf(runId)).resolves.toEqual([1, 2, 3, 4, 5]);
+  });
+
+  it('keeps the log dense when a lazy start loses its own position', async () => {
+    // The pair is published in two writes, so the start can lose the second
+    // after the first is already reader-visible — the one case where a
+    // rejected claim leaves an entity behind on purpose. Density survives it
+    // because of what landed: the `step_created` is exactly the event that
+    // tells the next replay this step is created, so the re-proposal is an
+    // ordinary start reserving one position rather than another lazy pair
+    // reserving two. A retry that still reserved a companion would leave the
+    // position below it empty for a write that is no longer coming, and a
+    // position below a published event can never be filled.
+    //
+    // Only reachable across instances, and only inside the window between the
+    // pair's two writes: a claim is checked against the log's tail before
+    // anything is materialized, so an occupant that is already on disk is
+    // caught there instead.
+    const runId = await newSlotRun();
+    const other = createStorage(testDir);
+    const contested = slotEventId(3);
+    const link = fs.link;
+    let stolen = false;
+    vi.spyOn(fs, 'link').mockImplementation(async (existing, target) => {
+      if (!stolen && String(target).includes(`${runId}-${contested}`)) {
+        stolen = true;
+        await other.events.create(
+          runId,
+          {
+            eventType: 'step_created',
+            specVersion: SPEC_VERSION_SLOT_IDENTITY,
+            correlationId: 'step_out_of_band',
+            eventData: { stepName: 'b-step', input: new Uint8Array() },
+          },
+          { eventId: contested }
+        );
+      }
+      return link(existing, target);
+    });
+
+    await expect(startStepLazily(runId, 'step_a', contested)).rejects.toThrow(
+      SlotConflictError
+    );
+    expect(stolen).toBe(true);
+    vi.restoreAllMocks();
+    // The deferred `step_created` took the position below the claim and is in
+    // the log; the stranger holds the claim itself.
+    await expect(slotsOf(runId)).resolves.toEqual([1, 2, 3]);
+
+    const started = await storage.events.create(
+      runId,
+      {
+        eventType: 'step_started',
+        specVersion: SPEC_VERSION_SLOT_IDENTITY,
+        correlationId: 'step_a',
+        eventData: { stepName: 'a-step', attempt: 0 },
+      },
+      { eventId: slotEventId(4) }
+    );
+    expect(started.event?.eventId).toBe(slotEventId(4));
+    await expect(slotsOf(runId)).resolves.toEqual([1, 2, 3, 4]);
   });
 
   it('reallocates around another instance holding the slot it picked', async () => {
