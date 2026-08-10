@@ -115,9 +115,9 @@ describe('throwForErrorResponse', () => {
   });
 
   it('reads message and code out of a CBOR body', () => {
-    // The awaited-resolution fence answers in CBOR so its event delta can
-    // carry real bytes. Decoding it by content-type is what keeps the message
-    // and code from being lost to a failed JSON.parse.
+    // A 412 that carries an event delta answers in CBOR so the delta's
+    // payloads stay real bytes. Decoding it by content-type is what keeps the
+    // message and code from being lost to a failed JSON.parse.
     try {
       throwForErrorResponse(
         412,
@@ -1030,7 +1030,7 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
     agent.assertNoPendingInterceptors();
   });
 
-  it('forwards maxSlot and awaitingCorrelationIds in the frame meta', async () => {
+  it('forwards maxSlot in the frame meta', async () => {
     const origin =
       WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
     const agent = new MockAgent();
@@ -1074,17 +1074,15 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
         specVersion: 6,
         correlationId: 'wait_1',
         maxSlot: 12,
-        awaitingCorrelationIds: ['step_0', 'hook_0'],
       },
       { token: 'test-token', dispatcher: agent }
     );
 
     expect(capturedMeta?.maxSlot).toBe(12);
-    expect(capturedMeta?.awaitingCorrelationIds).toEqual(['step_0', 'hook_0']);
     agent.assertNoPendingInterceptors();
   });
 
-  it('omits maxSlot and awaitingCorrelationIds from the frame meta when not set', async () => {
+  it('omits maxSlot from the frame meta when not set', async () => {
     const origin =
       WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
     const agent = new MockAgent();
@@ -1132,7 +1130,6 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
     );
 
     expect('maxSlot' in (capturedMeta ?? {})).toBe(false);
-    expect('awaitingCorrelationIds' in (capturedMeta ?? {})).toBe(false);
     agent.assertNoPendingInterceptors();
   });
 

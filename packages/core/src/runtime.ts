@@ -67,13 +67,11 @@ import {
 } from './runtime/deployment-guard.js';
 import {
   appendUniqueEvents,
-  awaitedResolutionIds,
   type EventCreator,
   getQueueOverhead,
   getWorkflowQueueName,
   handleHealthCheckMessage,
   insertEventByEventId,
-  isAwaitedResolutionFenceEnabled,
   isPreconditionGuardEnabled,
   isSlotGapCheckEnabled,
   type LoadedEventLog,
@@ -3630,21 +3628,9 @@ export function workflowEntrypoint(
                         // when the guard env flag is off, so this is a no-op
                         // outside guarded deployments; Worlds that don't
                         // enforce the guard ignore it.
-                        // The awaited set goes with it for the same reason it
-                        // goes with the suspension writes: a deferred
-                        // step_created rides along on this claim, so a branch
-                        // decided without a resolution poisons the log through
-                        // `step_started` instead of through `step_created`.
-                        // The steps being claimed carry no `hasCreatedEvent`
-                        // yet, so the set names only the hooks and waits this
-                        // replay found already recorded — the claim cannot
-                        // fence on the step it is claiming.
                         const inlineClaimSnapshot = preconditionSnapshotParams(
                           cachedEvents,
-                          preInlineWriteCursor,
-                          isAwaitedResolutionFenceEnabled()
-                            ? awaitedResolutionIds(err.steps)
-                            : undefined
+                          preInlineWriteCursor
                         );
 
                         replayBudget.pause();

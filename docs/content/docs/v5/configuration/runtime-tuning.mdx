@@ -75,15 +75,6 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 - As a result, 412 volume describes a workload rather than the health of a deployment, and a run that never sees one is not evidence the guard is inactive.
 - Set `0` to disable.
 
-### `WORKFLOW_AWAITED_RESOLUTION_FENCE`
-
-- Default: enabled
-- A narrower rejection rule layered on the guard above, for backends that number events by position (`@workflow/world-postgres`, `@workflow/world-local`). A replay's writes describe how many events it had read, and the backend hands back the ones it had not — a hook delivered mid-replay, a step another invocation completed — which the replay folds into its log and carries on. That is the ordinary case and it is not an error.
-- It stops being ordinary when one of those unread events settles something the replay is still waiting on: the replay chose its next step believing a `sleep()` had won a race a `step_completed` had in fact already won, and writing that choice would commit a branch the log contradicts. So each write also names the steps, hooks and sleeps the replay is blocked on, and the backend rejects it with 412 ([`PreconditionFailedError`](/docs/api-reference/workflow-errors/precondition-failed-error)) when an unread event resolves one of them. Recovery is the guard's: restart in-process from the corrected log, then re-invoke.
-- The names cover only work the replay found already recorded, never work it is creating in the same batch, so a fan-out of parallel steps cannot fence itself on a sibling's completion. A cancelled run resolves everything at once and so fences any replay with anything outstanding.
-- The check reads events the write would otherwise be placed after, and only those, so it costs one indexed read per write and nothing on the rejection path that the recovery would not have read anyway. Like the guard, it fails open: a resolution recorded in the moment between the check and the write is missed, which returns that write to the ordinary case above.
-- Set `0` to disable. Backends that number events by ULID never see the names and are unaffected.
-
 ### `WORKFLOW_SLOT_GAP_CHECK`
 
 - Default: enabled

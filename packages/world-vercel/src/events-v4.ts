@@ -257,20 +257,10 @@ export interface CreateEventV4Input {
    * slot-identity runs: with dense positions one integer says everything the
    * watermark approximated. The server allocates from the tail regardless, and
    * uses this only to report which slots the write skipped over (returned on
-   * the success response as `events`/`cursor`/`hasMore`) and to evaluate the
-   * awaited-resolution fence. Older servers ignore it.
+   * the success response as `events`/`cursor`/`hasMore`). Older servers ignore
+   * it.
    */
   maxSlot?: number;
-  /**
-   * Correlation ids whose resolution this writer is currently blocked on.
-   *
-   * Sent with `maxSlot`. A server that finds a resolution for one of these on
-   * a slot the write would skip refuses the write with 412 instead of
-   * committing it: the writer's branch was decided against a world where that
-   * promise had not settled, and no later replay can un-take it. Every other
-   * skipped-slot shape still commits. Older servers ignore it.
-   */
-  awaitingCorrelationIds?: string[];
   /** Number of consecutive replay divergences resolved by this write. */
   replayDivergenceCount?: number;
   /** Content digest of the serialized resume payload. Forwarded alongside
@@ -398,9 +388,6 @@ function buildPostFrameMeta(
   }
   if (input.stateCursor !== undefined) meta.stateCursor = input.stateCursor;
   if (input.maxSlot !== undefined) meta.maxSlot = input.maxSlot;
-  if (input.awaitingCorrelationIds !== undefined) {
-    meta.awaitingCorrelationIds = input.awaitingCorrelationIds;
-  }
   if (input.replayDivergenceCount !== undefined) {
     meta.replayDivergenceCount = input.replayDivergenceCount;
   }
@@ -554,7 +541,8 @@ function decodePreconditionDetails(
  * unions that bottom out in `z.any()` — so nothing downstream would flag the
  * mangled value; the runtime would hydrate garbage from it instead. A CBOR
  * body round-trips the bytes intact and passes this check on its own merits,
- * which is why the awaited-resolution fence encodes its 412 that way.
+ * which is why a backend that attaches an event delta to a 412 encodes it that
+ * way.
  *
  * Refusing the delta is one-sided safe: the fallback full reload goes over a
  * frame-encoded path that returns real bytes. Deltas made only of

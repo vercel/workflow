@@ -729,9 +729,6 @@ async function createWorkflowRunEventInner(
     // `maxSlot` because the v4 meta already has an unrelated telemetry
     // `eventCount`.
     ...(params?.eventCount !== undefined ? { maxSlot: params.eventCount } : {}),
-    ...(params?.awaitingCorrelationIds?.length
-      ? { awaitingCorrelationIds: params.awaitingCorrelationIds }
-      : {}),
     ...(params?.replayDivergenceCount !== undefined
       ? { replayDivergenceCount: params.replayDivergenceCount }
       : {}),

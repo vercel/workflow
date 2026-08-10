@@ -34,7 +34,7 @@ import { version } from './version.js';
  *
  * TEMPORARY — REVERT TO '' BEFORE MERGE.
  * Points at the backend branch deployment that serves spec v6 (slot event
- * ids, the skipped-slot report, and the awaited-resolution fence) so the
+ * ids and the skipped-slot report) so the
  * Vercel e2e lanes exercise this adapter against a backend that understands
  * it. This is the backend branch's alias rather than a single deployment, so
  * it follows that branch as it moves. The "No Test Overrides" check fails

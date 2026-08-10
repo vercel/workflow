@@ -1,7 +1,6 @@
 import {
   EntityConflictError,
   HookNotFoundError,
-  PreconditionFailedError,
   RunExpiredError,
   RunNotSupportedError,
   TooEarlyError,
@@ -30,7 +29,6 @@ import type {
 import {
   ATTRIBUTE_MAX_PER_RUN,
   AttributeValidationError,
-  awaitedResolutionMessage,
   EVENT_ID_BODY_LENGTH,
   EVENT_ID_PREFIX,
   EventSchema,
@@ -44,7 +42,6 @@ import {
   isTerminalRunEventType,
   isTerminalStepStatus,
   isTerminalWorkflowRunStatus,
-  RESOLUTION_EVENT_TYPES,
   requiresNewerWorld,
   SPEC_VERSION_CURRENT,
   StepSchema,
@@ -280,83 +277,6 @@ async function reportSkippedSlots(
     events,
     hasMore: events.length < committedSlot - askedFor - 1,
   };
-}
-
-/**
- * How far above a writer's snapshot the awaited-resolution fence reads when it
- * builds the delta for a rejection. Only paid on the reject path.
- */
-const AWAITED_RESOLUTION_DELTA_LIMIT = 200;
-
-/**
- * The fence half of the protocol: refuse a write whose branch was decided
- * without a resolution that the log already holds above the slot the writer
- * asked for.
- *
- * Runs before the insert, and before the slot is even drawn. After the insert
- * is too late — the event it would keep out is durable — and drawing first
- * would burn a slot on every rejection, leaving a permanent hole that every
- * later writer has to be bumped past. The price of being this early is a window
- * between the probe and the insert in which a resolution can still land unseen.
- * That loses a fence and falls back to plain bump-and-report; it cannot invent
- * one, because anything the probe reads is already committed.
- *
- * Two queries, and the second only when the first says no: the hot path is one
- * indexed existence probe, and the full unseen tail is read only to attach to
- * the rejection.
- */
-async function fenceAwaitedResolutions(
-  db: Drizzle,
-  runId: string,
-  askedFor: number,
-  awaiting: readonly string[],
-  resolveData: ResolveData
-): Promise<void> {
-  if (awaiting.length === 0 || askedFor < FIRST_EVENT_SLOT) {
-    return;
-  }
-  const abovePosition = and(
-    eq(Schema.events.runId, runId),
-    gt(Schema.events.eventId, slotToEventId(askedFor))
-  );
-  const [blocking] = await db
-    .select({
-      eventType: Schema.events.eventType,
-      correlationId: Schema.events.correlationId,
-    })
-    .from(Schema.events)
-    .where(
-      and(
-        abovePosition,
-        inArray(Schema.events.eventType, [...RESOLUTION_EVENT_TYPES]),
-        // `run_cancelled` has no correlation id of its own: it settles every
-        // pending promise at once, so it resolves whatever the writer awaits.
-        or(
-          eq(Schema.events.eventType, 'run_cancelled'),
-          inArray(Schema.events.correlationId, [...awaiting])
-        )
-      )
-    )
-    .limit(1);
-  if (!blocking) {
-    return;
-  }
-  // The whole unseen tail rides along, not just the offending event: the client
-  // merges it into its log and restarts, and a replay that resumed knowing only
-  // about the resolution would be stale again on everything beside it.
-  const rows = await db
-    .select()
-    .from(Schema.events)
-    .where(abovePosition)
-    .orderBy(Schema.events.eventId)
-    .limit(AWAITED_RESOLUTION_DELTA_LIMIT);
-  const events = rows.map((row) => {
-    row.eventData ||= row.eventDataJson;
-    return stripEventDataRefs(EventSchema.parse(compact(row)), resolveData);
-  });
-  throw new PreconditionFailedError(awaitedResolutionMessage(blocking), {
-    details: { events },
-  });
 }
 
 function getHookRetentionLimitMs(): number {
@@ -837,19 +757,6 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
         if (validationError) {
           throw new WorkflowWorldError(validationError);
         }
-      }
-
-      if (
-        params?.eventCount !== undefined &&
-        params.awaitingCorrelationIds?.length
-      ) {
-        await fenceAwaitedResolutions(
-          drizzle,
-          effectiveRunId,
-          params.eventCount,
-          params.awaitingCorrelationIds,
-          params.resolveData ?? 'all'
-        );
       }
 
       // specVersion is always sent by the runtime, but we provide a fallback for safety

@@ -274,7 +274,7 @@ describe('createWorkflowRunEvent precondition snapshot wire fields', () => {
     agent.assertNoPendingInterceptors();
   });
 
-  it('renames eventCount to maxSlot and forwards awaitingCorrelationIds', async () => {
+  it('renames eventCount to maxSlot', async () => {
     // The runtime sends `eventCount` once a run's own ids are slot-shaped. It
     // cannot ride under that name: the v4 meta already has an unrelated
     // telemetry `eventCount`, so the backend would read a progress counter as
@@ -306,51 +306,11 @@ describe('createWorkflowRunEvent precondition snapshot wire fields', () => {
     await createWorkflowRunEvent(
       'wrun_1',
       { eventType: 'run_started', specVersion: 2 } as AnyEventRequest,
-      { eventCount: 9, awaitingCorrelationIds: ['step_2'] },
+      { eventCount: 9 },
       { token: 'test-token', dispatcher: agent }
     );
 
     expect(capturedMeta?.maxSlot).toBe(9);
-    expect(capturedMeta?.awaitingCorrelationIds).toEqual(['step_2']);
-    agent.assertNoPendingInterceptors();
-  });
-
-  it('omits awaitingCorrelationIds when the writer awaits nothing', async () => {
-    // An empty set carries no information and would cost frame bytes on every
-    // write that is not blocked on anything.
-    const agent = mockAgent();
-    let capturedMeta: Record<string, unknown> | undefined;
-
-    agent
-      .get(ORIGIN)
-      .intercept({
-        path: '/api/v4/runs/wrun_1/events/run_started',
-        method: 'POST',
-      })
-      .reply(
-        200,
-        (opts: { body?: unknown }) => {
-          capturedMeta = decodePostedMeta(opts.body);
-          return encode({ run: { runId: 'wrun_1', status: 'running' } });
-        },
-        {
-          headers: {
-            'x-wf-event-id': 'evnt_1',
-            'x-wf-run-id': 'wrun_1',
-            'x-wf-created-at': '2026-06-10T00:00:00.000Z',
-          },
-        }
-      );
-
-    await createWorkflowRunEvent(
-      'wrun_1',
-      { eventType: 'run_started', specVersion: 2 } as AnyEventRequest,
-      { eventCount: 9, awaitingCorrelationIds: [] },
-      { token: 'test-token', dispatcher: agent }
-    );
-
-    expect(capturedMeta?.maxSlot).toBe(9);
-    expect('awaitingCorrelationIds' in (capturedMeta ?? {})).toBe(false);
     agent.assertNoPendingInterceptors();
   });
 
