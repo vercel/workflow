@@ -790,6 +790,29 @@ export class RunExpiredError extends WorkflowWorldError {
 }
 
 /**
+ * Thrown when a stream is no longer readable because its owning run passed its
+ * storage-retention boundary. This is terminal: retrying cannot restore data.
+ *
+ * Unlike {@link RunExpiredError}, this identifies the failed stream read and
+ * exposes the server's authoritative expiry timestamp for user-facing errors.
+ */
+export class StreamExpiredError extends WorkflowWorldError {
+  constructor(
+    message: string,
+    readonly runId?: string,
+    readonly streamId?: string,
+    readonly expiredAt?: Date
+  ) {
+    super(message, { status: 410, code: 'stream-expired' });
+    this.name = 'StreamExpiredError';
+  }
+
+  static is(value: unknown): value is StreamExpiredError {
+    return isError(value) && value.name === 'StreamExpiredError';
+  }
+}
+
+/**
  * Thrown when an operation cannot proceed because a required timestamp
  * (e.g. retryAfter) has not been reached yet.
  *
