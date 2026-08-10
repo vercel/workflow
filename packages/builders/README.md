@@ -36,19 +36,19 @@ Builder configurations can provide an optional `onAfterTransform` observer for
 tooling that derives metadata from the exact SWC output used by a build:
 
 ```typescript
-const builder = new MyBuilder({
-  // Other builder configuration...
-  onAfterTransform: async ({
-    mode,
-    filename,
-    absolutePath,
-    source,
-    code,
-    workflowManifest,
-  }) => {
-    // Observe the accepted transform result.
-  },
-});
+import type { WorkflowAfterTransformHook } from '@workflow/builders';
+
+// Pass as `onAfterTransform` in the builder configuration.
+const onAfterTransform: WorkflowAfterTransformHook = async ({
+  mode,
+  filename,
+  absolutePath,
+  source,
+  code,
+  workflowManifest,
+}) => {
+  // Observe the accepted transform result.
+};
 ```
 
 The observer is awaited after the transform's manifest entries have been
