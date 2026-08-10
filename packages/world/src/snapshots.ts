@@ -68,3 +68,85 @@ export const SnapshotMetadataSchema = z.object({
 export const SNAPSHOT_FORMAT_VERSION = 2;
 
 export type SnapshotMetadata = z.infer<typeof SnapshotMetadataSchema>;
+
+// ---------------------------------------------------------------------------
+// Snapshot envelope
+//
+// Packs the metadata and the snapshot bytes into ONE self-describing blob so
+// that a World backed by a plain blob store can persist both with a single
+// atomic write. Two separate writes (bytes here, metadata there) can tear: a
+// crash between them — or a concurrent load interleaving them — pairs bytes
+// from one suspension with an eventsCursor from another, and the restore
+// replays from the wrong log position and silently diverges. The envelope
+// makes that structurally impossible, and it also means new metadata fields
+// round-trip through every envelope-based World without storage changes.
+//
+// Layout (little-endian):
+//   bytes 0..4   magic "WSNP"
+//   byte  4      envelope format version (1)
+//   bytes 5..9   u32 metadata JSON byte length
+//   bytes 9..9+N metadata JSON (UTF-8, SnapshotMetadataSchema-valid)
+//   bytes 9+N..  snapshot data (opaque)
+// ---------------------------------------------------------------------------
+
+const ENVELOPE_MAGIC = [0x57, 0x53, 0x4e, 0x50]; // "WSNP"
+const ENVELOPE_VERSION = 1;
+const ENVELOPE_HEADER_LEN = 9;
+
+/** Encode a snapshot's metadata and bytes into one atomic blob. */
+export function encodeSnapshotEnvelope(
+  metadata: SnapshotMetadata,
+  data: Uint8Array
+): Uint8Array {
+  const metaBytes = new TextEncoder().encode(JSON.stringify(metadata));
+  const out = new Uint8Array(
+    ENVELOPE_HEADER_LEN + metaBytes.length + data.length
+  );
+  out.set(ENVELOPE_MAGIC, 0);
+  out[4] = ENVELOPE_VERSION;
+  new DataView(out.buffer).setUint32(5, metaBytes.length, true);
+  out.set(metaBytes, ENVELOPE_HEADER_LEN);
+  out.set(data, ENVELOPE_HEADER_LEN + metaBytes.length);
+  return out;
+}
+
+/**
+ * Decode a snapshot envelope. Returns null for anything that is not a
+ * well-formed, schema-valid envelope (wrong magic, unknown version,
+ * truncated, invalid JSON, schema violation) — the caller treats that as
+ * a clean miss (full replay) rather than restoring from fabricated or
+ * torn state. Never invents metadata.
+ */
+export function decodeSnapshotEnvelope(
+  bytes: Uint8Array
+): { metadata: SnapshotMetadata; data: Uint8Array } | null {
+  if (bytes.length < ENVELOPE_HEADER_LEN) return null;
+  for (let i = 0; i < ENVELOPE_MAGIC.length; i++) {
+    if (bytes[i] !== ENVELOPE_MAGIC[i]) return null;
+  }
+  if (bytes[4] !== ENVELOPE_VERSION) return null;
+  const metaLen = new DataView(
+    bytes.buffer,
+    bytes.byteOffset,
+    bytes.byteLength
+  ).getUint32(5, true);
+  if (ENVELOPE_HEADER_LEN + metaLen > bytes.length) return null;
+  try {
+    const metaJson = new TextDecoder().decode(
+      bytes.subarray(ENVELOPE_HEADER_LEN, ENVELOPE_HEADER_LEN + metaLen)
+    );
+    // `.passthrough()`: metadata fields introduced by a newer schema
+    // survive a decode by this one (the whole point of enveloping the
+    // metadata is that new fields never require storage changes) —
+    // known fields are still validated.
+    const metadata = SnapshotMetadataSchema.passthrough().parse(
+      JSON.parse(metaJson)
+    ) as SnapshotMetadata;
+    return {
+      metadata,
+      data: bytes.subarray(ENVELOPE_HEADER_LEN + metaLen),
+    };
+  } catch {
+    return null;
+  }
+}

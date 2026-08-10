@@ -113,6 +113,8 @@ export {
 } from './shared.js';
 export type * from './snapshots.js';
 export {
+  decodeSnapshotEnvelope,
+  encodeSnapshotEnvelope,
   SNAPSHOT_FORMAT_VERSION,
   SnapshotMetadataSchema,
 } from './snapshots.js';

@@ -71,6 +71,27 @@ describe('snapshots storage (world-local)', () => {
     await snapshots.delete('wrun_c');
   });
 
+  it('stores metadata and bytes in ONE file (atomic pairing — no torn save)', async () => {
+    await snapshots.save('wrun_atomic', new Uint8Array([1, 2, 3]), {
+      eventsCursor: 'evnt_x',
+      createdAt: new Date(),
+    });
+    const files = await fs.readdir(path.join(testDir, 'snapshots'));
+    expect(files).toEqual(['wrun_atomic.snapshot']);
+  });
+
+  it('treats a corrupt envelope file as a miss instead of returning torn state', async () => {
+    await snapshots.save('wrun_corrupt', new Uint8Array([1, 2, 3]), {
+      eventsCursor: 'evnt_x',
+      createdAt: new Date(),
+    });
+    await fs.writeFile(
+      path.join(testDir, 'snapshots', 'wrun_corrupt.snapshot'),
+      Buffer.from([0xde, 0xad])
+    );
+    expect(await snapshots.load('wrun_corrupt')).toBeNull();
+  });
+
   it('rejects path-traversal runIds on every operation', async () => {
     const hostile = [
       '../escape',

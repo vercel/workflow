@@ -5,4 +5,4 @@
 '@workflow/world-vercel': minor
 ---
 
-Add a `snapshots` storage interface (`save`/`load`/`delete` + `SnapshotMetadata`) for VM-memory snapshotting, with implementations in world-local (filesystem sidecar files), world-postgres (`workflow_snapshots` table), and world-vercel (workflow-server `/v2/runs/:runId/snapshot` endpoints with W3C trace-context injection). Inert until the runtime opts in; community World implementations must add the new `snapshots` member.
+Add an OPTIONAL `snapshots` storage interface (`save`/`load`/`delete` + `SnapshotMetadata`, plus `encodeSnapshotEnvelope`/`decodeSnapshotEnvelope` helpers that pack metadata and bytes into one atomically-storable blob) for VM-memory snapshotting, with implementations in world-local (single envelope file per run), world-postgres (`workflow_snapshots` table storing the envelope), and world-vercel (workflow-server `/v2/runs/:runId/snapshot` endpoints with W3C trace-context injection; delete is 404-idempotent). Inert until the runtime opts in; community World implementations that don't provide `snapshots` are unaffected (the runtime feature-detects and falls back to full replay).
