@@ -255,6 +255,8 @@ export async function getNextBuilderEager(
           this.clearDiscoveredEntriesCache();
           const newInputFiles = await this.getInputFiles();
           options.inputFiles = newInputFiles;
+          const consumedSnapshots =
+            await captureConsumedSnapshots(newInputFiles);
 
           await stepsCtx?.dispose();
           await workflowsCtx.interimBundleCtx.dispose();
@@ -277,7 +279,35 @@ export async function getNextBuilderEager(
 
           await writeManifest(newCombined.manifest);
           await refreshSourceSnapshots();
-          await dropSnapshotsWrittenDuringRebuild(rebuildStartedAt);
+          await restoreSnapshotsWrittenDuringRebuild(
+            rebuildStartedAt,
+            consumedSnapshots
+          );
+        };
+
+        /**
+         * The baseline the rebuild is about to consume, read before the
+         * multi-second bundle rather than after it. See
+         * `restoreSnapshotsWrittenDuringRebuild`.
+         */
+        const captureConsumedSnapshots = async (inputFiles: string[]) => {
+          const consumed = new Map<string, SourceSnapshot>();
+          await Promise.all(
+            [
+              ...getRelevantFiles({
+                discoveredEntries,
+                inputFiles,
+                normalizePath,
+              }),
+            ].map(async (file) => {
+              try {
+                consumed.set(file, await readSourceSnapshot(file));
+              } catch {
+                // Unreadable now means "did not exist for this rebuild".
+              }
+            })
+          );
+          return consumed;
         };
 
         /**
@@ -289,35 +319,48 @@ export async function getNextBuilderEager(
          * is silently dropped until something unrelated forces another
          * rediscovery.
          *
-         * Forget the baseline for those files so the follow-up flush still
-         * classifies them as changed. Keyed on mtime rather than on the
-         * pending set alone, because chokidar routinely re-reports the very
-         * edit that triggered this rebuild — that one *was* discovered, and
-         * invalidating it would buy a redundant second rediscovery for every
-         * ordinary save.
+         * Restore the baseline the rebuild actually consumed for those files,
+         * so the follow-up flush diffs against pre-edit content and can still
+         * tell a body-only change (hot) from an import-graph one (full).
+         * Dropping the baseline outright would be safe but would force a
+         * needless second rediscovery for every edit that lands mid-build.
+         *
+         * Keyed on mtime rather than on the pending set alone, because
+         * chokidar routinely re-reports the very edit that triggered this
+         * rebuild — that one *was* consumed, and its post-build snapshot is
+         * the correct baseline.
          */
-        const dropSnapshotsWrittenDuringRebuild = async (
-          rebuildStartedAt: number
+        const restoreSnapshotsWrittenDuringRebuild = async (
+          rebuildStartedAt: number,
+          consumedSnapshots: Map<string, SourceSnapshot>
         ) => {
-          const dropped: string[] = [];
+          const restored: string[] = [];
           for (const file of [
             ...pendingFileChanges.addedFiles,
             ...pendingFileChanges.modifiedFiles,
           ]) {
+            let writtenDuringRebuild = true;
             try {
-              if ((await stat(file)).mtimeMs > rebuildStartedAt) {
-                sourceSnapshots.delete(file);
-                dropped.push(file);
-              }
+              writtenDuringRebuild =
+                (await stat(file)).mtimeMs > rebuildStartedAt;
             } catch {
-              sourceSnapshots.delete(file);
-              dropped.push(file);
+              // Gone: treat as written so the baseline is invalidated.
             }
+            if (!writtenDuringRebuild) {
+              continue;
+            }
+            const consumed = consumedSnapshots.get(file);
+            if (consumed) {
+              sourceSnapshots.set(file, consumed);
+            } else {
+              sourceSnapshots.delete(file);
+            }
+            restored.push(file);
           }
-          if (dropped.length > 0) {
+          if (restored.length > 0) {
             logDevHmrDebug({
-              event: 'snapshots-dropped',
-              files: dropped.map(relativeToWorkingDir),
+              event: 'snapshots-restored',
+              files: restored.map(relativeToWorkingDir),
             });
           }
         };
