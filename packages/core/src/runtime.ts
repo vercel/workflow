@@ -489,6 +489,85 @@ function openHookAndWaitState(events: Event[]): {
   return { openHook: hooks.size > 0, openWait: waits.size > 0 };
 }
 
+/**
+ * Describe a park that holds no unconsumed wake source.
+ *
+ * Parking with no inline work is the normal shape of a run awaiting a hook or
+ * a timer. It is only anomalous when nothing left in the log can ever write to
+ * this run again — every created hook already received or disposed, no open
+ * wait, no timer, no pending step. Such a run stays in `running` forever.
+ *
+ * Returns null when some wake source remains, and a summary of the log
+ * otherwise. The summary separates the two candidate causes: a `hook_received`
+ * count matching `hook_created` says the replay had the complete log and still
+ * failed to advance, a short count says the log this invocation replayed
+ * against was missing a committed event.
+ */
+function describeWakelessPark({
+  events,
+  pendingStepCount,
+  hasWaitTimeout,
+}: {
+  events: Event[];
+  pendingStepCount: number;
+  hasWaitTimeout: boolean;
+}): {
+  hooksCreated: number;
+  hooksReceived: number;
+  hooksDisposed: number;
+  stepsCreated: number;
+  stepsTerminal: number;
+} | null {
+  if (pendingStepCount > 0 || hasWaitTimeout) return null;
+
+  const created = new Set<string>();
+  const received = new Set<string>();
+  const disposed = new Set<string>();
+  let openWaits = 0;
+  let stepsCreated = 0;
+  let stepsTerminal = 0;
+  for (const event of events) {
+    switch (event.eventType) {
+      case 'hook_created':
+        created.add(event.correlationId);
+        break;
+      case 'hook_received':
+        received.add(event.correlationId);
+        break;
+      case 'hook_disposed':
+        disposed.add(event.correlationId);
+        break;
+      case 'wait_created':
+        openWaits++;
+        break;
+      case 'wait_completed':
+        openWaits--;
+        break;
+      case 'step_created':
+        stepsCreated++;
+        break;
+      case 'step_completed':
+      case 'step_failed':
+        stepsTerminal++;
+        break;
+    }
+  }
+  if (openWaits > 0) return null;
+  for (const correlationId of created) {
+    if (!received.has(correlationId) && !disposed.has(correlationId)) {
+      return null;
+    }
+  }
+
+  return {
+    hooksCreated: created.size,
+    hooksReceived: received.size,
+    hooksDisposed: disposed.size,
+    stepsCreated,
+    stepsTerminal,
+  };
+}
+
 type ReplayEventLog =
   | { type: 'loadAll' }
   | ({ type: 'ready' } & LoadedEventLog)
@@ -2302,6 +2381,12 @@ export function workflowEntrypoint(
                   // replays. Invocation-scoped: dies with this delivery.
                   let retainedSession: WorkflowSession | null = null;
 
+                  // Whether the pre-park log recheck has already been spent.
+                  // Re-armed by every inline step that runs, so each parking
+                  // decision that follows real progress gets its own recheck
+                  // and a run with nothing new to read cannot spin.
+                  let parkRecheckArmed = false;
+
                   // Main replay loop
                   // biome-ignore lint/correctness/noConstantCondition: intentional loop
                   while (true) {
@@ -3243,6 +3328,79 @@ export function workflowEntrypoint(
                           if (suspensionResult.hasAwaitedHookCreation) {
                             return await reinvoke(0);
                           }
+                          // Parking is safe while something other than this
+                          // invocation can still write to the run: a wait has
+                          // its timer and a pending step has its own message,
+                          // so both wake again on their own even if this
+                          // replay's view was stale. When the only wake source
+                          // left is a hook delivery, a park is terminal —
+                          // nothing retries a delivery — so it is only correct
+                          // if the log it decided on is the whole log.
+                          //
+                          // Every writer races the invocation that is about to
+                          // ack. A lazy hook resume commits its `hook_received`
+                          // from the producer while its own consumer delivery
+                          // is in flight, so the event can land after this
+                          // replay's last read and before this decision — and
+                          // the delivery that would have observed it is this
+                          // one. Re-read from the cursor and replay against the
+                          // result rather than wedging on a stale view; an
+                          // empty delta parks as before, one list call later.
+                          //
+                          // Once per park, not per iteration: re-armed only by
+                          // real progress (an inline step executing), so a run
+                          // with nothing new to read cannot spin here.
+                          if (
+                            !parkRecheckArmed &&
+                            eventLog.cursor !== null &&
+                            openHookWait.value.openHook &&
+                            pendingSteps.length === 0 &&
+                            suspensionResult.waitTimeout === undefined
+                          ) {
+                            parkRecheckArmed = true;
+                            const delta = await loadWorkflowRunEvents(
+                              runId,
+                              eventLog.cursor
+                            );
+                            if (delta.events.length > 0) {
+                              runtimeLogger.warn(
+                                'Events landed while this invocation was replaying; re-replaying instead of parking on a stale log',
+                                {
+                                  workflowRunId: runId,
+                                  loopIteration,
+                                  appended: delta.events.length,
+                                  appendedTypes: delta.events.map(
+                                    (event) => event.eventType
+                                  ),
+                                }
+                              );
+                              appendEventLog(eventLog, delta);
+                              eventLog = { ...eventLog, type: 'ready' };
+                              continue;
+                            }
+                          }
+
+                          const wakelessPark = describeWakelessPark({
+                            events: eventLog.events,
+                            pendingStepCount: pendingSteps.length,
+                            hasWaitTimeout:
+                              suspensionResult.waitTimeout !== undefined,
+                          });
+                          if (wakelessPark !== null) {
+                            runtimeLogger.warn(
+                              'Invocation parked with no pending work and no unconsumed wake source — the run cannot make further progress',
+                              {
+                                workflowRunId: runId,
+                                loopIteration,
+                                events: eventLog.events.length,
+                                cursor: eventLog.cursor,
+                                ...wakelessPark,
+                                lastEventTypes: eventLog.events
+                                  .slice(-6)
+                                  .map((event) => event.eventType),
+                              }
+                            );
+                          }
                           return;
                         }
 
@@ -3569,6 +3727,9 @@ export function workflowEntrypoint(
                           stepResults = await Promise.all(
                             stepExecutionPromises
                           );
+                          // Real progress: re-arm the pre-park log recheck so
+                          // the next parking decision gets its own.
+                          parkRecheckArmed = false;
                         } catch (stepErr) {
                           // A stale (412) rejection of an inline step_started
                           // claim: the loaded view this batch was scheduled
