@@ -251,6 +251,7 @@ export async function getNextBuilderEager(
         };
 
         const fullRebuild = async () => {
+          const rebuildStartedAt = Date.now();
           this.clearDiscoveredEntriesCache();
           const newInputFiles = await this.getInputFiles();
           options.inputFiles = newInputFiles;
@@ -276,6 +277,49 @@ export async function getNextBuilderEager(
 
           await writeManifest(newCombined.manifest);
           await refreshSourceSnapshots();
+          await dropSnapshotsWrittenDuringRebuild(rebuildStartedAt);
+        };
+
+        /**
+         * A rediscovery takes seconds, and `refreshSourceSnapshots()` re-reads
+         * the sources at the end of it rather than at the point discovery
+         * consumed them. A save landing in between is therefore baselined as
+         * already-seen without ever having been discovered: its own flush
+         * diffs the new content against itself, decides `none`, and the edit
+         * is silently dropped until something unrelated forces another
+         * rediscovery.
+         *
+         * Forget the baseline for those files so the follow-up flush still
+         * classifies them as changed. Keyed on mtime rather than on the
+         * pending set alone, because chokidar routinely re-reports the very
+         * edit that triggered this rebuild — that one *was* discovered, and
+         * invalidating it would buy a redundant second rediscovery for every
+         * ordinary save.
+         */
+        const dropSnapshotsWrittenDuringRebuild = async (
+          rebuildStartedAt: number
+        ) => {
+          const dropped: string[] = [];
+          for (const file of [
+            ...pendingFileChanges.addedFiles,
+            ...pendingFileChanges.modifiedFiles,
+          ]) {
+            try {
+              if ((await stat(file)).mtimeMs > rebuildStartedAt) {
+                sourceSnapshots.delete(file);
+                dropped.push(file);
+              }
+            } catch {
+              sourceSnapshots.delete(file);
+              dropped.push(file);
+            }
+          }
+          if (dropped.length > 0) {
+            logDevHmrDebug({
+              event: 'snapshots-dropped',
+              files: dropped.map(relativeToWorkingDir),
+            });
+          }
         };
 
         const isWatchableFile = (path: string) =>
