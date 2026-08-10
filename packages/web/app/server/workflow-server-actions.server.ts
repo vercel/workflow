@@ -1460,7 +1460,6 @@ export async function runHealthCheck(
     return createResponse({
       healthy: false,
       error: errorMessage,
-      latencyMs: undefined,
     });
   }
 }

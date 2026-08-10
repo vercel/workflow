@@ -384,8 +384,11 @@ export async function start<TArgs extends unknown[], TResult>(
           timeout: CROSS_DEPLOYMENT_CAPABILITY_PROBE_TIMEOUT_MS,
           namespace: opts.namespace,
         }).catch(() => undefined);
-        probedRunPublicKey = probe?.encryptionPublicKey;
-        const capabilities = getRunCapabilities(probe?.workflowCoreVersion);
+        const healthyProbe = probe?.healthy ? probe : undefined;
+        probedRunPublicKey = healthyProbe?.encryptionPublicKey;
+        const capabilities = getRunCapabilities(
+          healthyProbe?.workflowCoreVersion
+        );
         framedByteStreams = capabilities.framedByteStreams;
         targetSupportsCompression = capabilities.supportedFormats.has(
           SerializationFormat.GZIP
@@ -393,7 +396,7 @@ export async function start<TArgs extends unknown[], TResult>(
         // The responder runs inside the target deployment, so its
         // `hookResumeInputVersion` reflects the consumer. Undefined on an
         // older target or a probe timeout, leaving the marker off.
-        targetHookResumeInputVersion = probe?.hookResumeInputVersion;
+        targetHookResumeInputVersion = healthyProbe?.hookResumeInputVersion;
       }
 
       const ops: Promise<void>[] = [];
