@@ -276,30 +276,68 @@ const DEFER_BEHIND: Record<DeliveryKind, readonly DeliveryKind[]> = {
 };
 
 /**
- * Whether `entry` will resolve on its own — it is armed, and every earlier
- * delivery it actually gates on will likewise resolve on its own.
+ * Whether a delivery of `kind` at log index `index` gates on the earlier
+ * registry entry `other` (at `otherIndex`).
  *
- * "Actually gates on" must match {@link awaitEarlierDeliveries} exactly, which
- * is why the step case skips unarmed entries here too: a step does not wait on
- * an unclaimed buffered payload, so such a payload cannot keep it from
- * resolving. A step DOES wait on earlier armed waits and hooks, so one parked
- * behind an unclaimed payload makes the step non-self-resolving in turn. The
- * two functions disagreeing is not a cosmetic problem: this predicate is what
+ * Single source of truth for that question, called by both
+ * {@link awaitEarlierDeliveries} (which awaits what it gates on) and
+ * {@link computeResolvesOnItsOwn} (which recurses into what it gates on).
+ * Those two MUST agree exactly, and the doc block on
+ * {@link awaitEarlierDeliveries} stakes deadlock-freedom on it, so the
+ * condition lives here rather than being spelled out twice.
+ */
+function gatesOn(
+  kind: DeliveryKind,
+  index: number,
+  otherIndex: number,
+  other: DeliveryBarrierEntry
+): boolean {
+  if (otherIndex >= index || !DEFER_BEHIND[kind].includes(other.kind)) {
+    return false;
+  }
+  // A step skips an UNARMED earlier entry (an unclaimed buffered hook
+  // payload) — see the asymmetry described on `awaitEarlierDeliveries`. The
+  // skip is direct, never transitive: armed entries are still gated on, even
+  // when they are themselves parked behind such a payload.
+  return !(kind === 'step' && !other.armed);
+}
+
+/**
+ * Whether `entry` will resolve on its own — it is armed, and every earlier
+ * delivery it actually gates on ({@link gatesOn}) will likewise resolve on its
+ * own.
+ *
+ * A step does not gate on an unclaimed buffered payload, so such a payload
+ * cannot keep it from resolving. A step DOES gate on earlier armed waits and
+ * hooks, so one parked behind an unclaimed payload makes the step
+ * non-self-resolving in turn. Disagreeing with {@link awaitEarlierDeliveries}
+ * here would not be a cosmetic problem: this predicate is what
  * {@link hasParkedCommittedDelivery} uses to decide whether idle is reachable,
  * and an entry reported self-resolving while it is in fact parked behind a
  * payload that only the idle safety net can retire would gate its own
  * retirement.
  *
  * Recursion terminates because every edge points to a strictly smaller index.
- * `memo` is required rather than an optimization: without it the walk is
- * exponential in the number of live hook/wait barriers (each armed entry
- * re-walks every earlier entry of the opposite kind, T(n) = Σ T(j)), and the
- * registry is not small by construction — `EventsConsumer` drains
- * consecutively consumable events synchronously while barriers only retire on
- * microtask-driven deliveries, so a fan-out of `Promise.race([hook, sleep])`
- * branches accumulates one barrier per branch per kind. Memoized, the walk is
- * linear in registry size. The memo MUST be per-call: `armed` mutates between
+ * `memo` keeps the walk linear in registry size, and the registry is not small
+ * by construction — `EventsConsumer` drains consecutively consumable events
+ * synchronously while barriers only retire on microtask-driven deliveries, so
+ * a fan-out of `Promise.race([hook, sleep])` branches accumulates one barrier
+ * per branch per kind. The memo MUST be per-call: `armed` mutates between
  * calls as buffered payloads are claimed.
+ *
+ * The memo is an optimization, not a correctness requirement. It once was one:
+ * `awaitEarlierDeliveries` used to run this walk for every earlier entry of a
+ * step delivery, with no early exit, which unmemoized is T(n) = Σ T(j) —
+ * measured at 4.3e8 recursive calls (84s) for 40 alternating armed hook/wait
+ * barriers. That call site is gone; a step now tests `armed` directly. The one
+ * surviving caller, {@link hasParkedCommittedDelivery}, cannot reach that
+ * shape: it returns at the FIRST self-resolving entry, so it only ever
+ * advances past entries that are non-self-resolving, and those short-circuit
+ * on their first false child. Every entry it evaluates therefore has
+ * all-false predecessors and returns after one child, degenerating the walk to
+ * a chain (measured: 98 calls unmemoized for the worst 40-barrier shape, 1
+ * call for the registry above). Do not restore an exponential claim here
+ * without restoring a caller that can produce it.
  */
 function resolvesOnItsOwn(
   barriers: Map<number, DeliveryBarrierEntry>,
@@ -325,12 +363,8 @@ function computeResolvesOnItsOwn(
   if (!entry.armed) {
     return false;
   }
-  const deferBehind = DEFER_BEHIND[entry.kind];
   for (const [otherIndex, other] of barriers) {
-    if (otherIndex >= index || !deferBehind.includes(other.kind)) {
-      continue;
-    }
-    if (entry.kind === 'step' && !other.armed) {
+    if (!gatesOn(entry.kind, index, otherIndex, other)) {
       continue;
     }
     if (!resolvesOnItsOwn(barriers, otherIndex, other, memo)) {
@@ -352,6 +386,9 @@ function computeResolvesOnItsOwn(
  * afterwards so the earlier delivery's consumer can run to its own next
  * suspension point first; see the comment at that `await` for why ordering the
  * `resolve()` calls alone is not enough.
+ *
+ * What counts as "defers behind" is {@link gatesOn}, shared with
+ * {@link computeResolvesOnItsOwn} so the two cannot drift.
  *
  * One asymmetry: a STEP result skips any earlier delivery that is UNARMED,
  * i.e. a buffered hook payload no consumer has claimed. Such a payload is
@@ -375,6 +412,19 @@ function computeResolvesOnItsOwn(
  * payload's own idle safety net retires it and the whole chain then delivers
  * in log order; {@link hasParkedCommittedDelivery} deliberately reports such a
  * step as not self-resolving so that idle stays reachable.
+ *
+ * "The whole chain then delivers in log order" rests on the PAYLOAD's safety
+ * net observing idle before the net of the wait parked behind it. If the
+ * wait's net fired first, the step's gate would open while the wait was still
+ * parked on the payload barrier and the inversion above would reappear. Within
+ * one drain window that order is structural, and carried by FIFO of the
+ * safety-net polls: nets arm via `setTimeout` in log order during synchronous
+ * consumption, each polling round re-arms through `promiseQueue.then(...)` in
+ * the order the checks ran, and each net that fires flips
+ * {@link hasParkedCommittedDelivery} back to true, re-blocking the rest until
+ * the released delivery completes. Replay — where divergence manifests —
+ * always consumes the log in one window. Do not "optimize" the net scheduling
+ * in a way that breaks that per-window FIFO.
  */
 export async function awaitEarlierDeliveries(
   ctx: WorkflowOrchestratorContext,
@@ -390,13 +440,9 @@ export async function awaitEarlierDeliveries(
     return;
   }
   const barriers = ctx.pendingDeliveryBarriers;
-  const deferBehind = DEFER_BEHIND[kind];
   const earlier: Promise<void>[] = [];
   for (const [index, entry] of barriers) {
-    if (index >= eventIndex || !deferBehind.includes(entry.kind)) {
-      continue;
-    }
-    if (kind === 'step' && !entry.armed) {
+    if (!gatesOn(kind, eventIndex, index, entry)) {
       continue;
     }
     earlier.push(entry.delivered);
