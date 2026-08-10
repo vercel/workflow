@@ -83,10 +83,20 @@ async function computeResumePayloadDigest(bytes: Uint8Array): Promise<string> {
  * are a handful regardless of how long the run is, so this stays a single
  * bounded page. Only reached on the parallel path's error branch.
  *
- * A read failure answers "not committed". The caller's alternative is to report
- * a resume as delivered on no evidence, and the sequential path's contract —
- * hook gone means not delivered — is the safer default to fall back to.
+ * Retried, because commit order is not read visibility. The event is committed
+ * before the disposal that rejected our write, but this reads another writer's
+ * commit back through an eventually-consistent index — "not visible yet" and
+ * "never written" are the same answer at a single point in time, and only the
+ * first resolves by waiting. One read reports a delivered resume as lost.
+ *
+ * Exhausting the budget answers "not committed". The caller's alternative is to
+ * report a resume as delivered on no evidence, and the sequential path's
+ * contract — hook gone means not delivered — is the safer default to fall back
+ * to. A run that genuinely ended pays the whole budget to reach it — bounded at
+ * ~2s, on an error path, against reporting a delivered resume as lost.
  */
+const RESUME_EVENT_VISIBILITY_BACKOFF_MS = [0, 150, 300, 600, 1000];
+
 async function resumeEventCommitted({
   world,
   hook,
@@ -96,19 +106,30 @@ async function resumeEventCommitted({
   hook: Hook;
   resumeId: string;
 }): Promise<boolean> {
-  try {
-    const { data } = await world.events.listByCorrelationId({
-      runId: hook.runId,
-      correlationId: hook.hookId,
-      resolveData: 'none',
-    });
-    return data.some(
-      (event) =>
-        event.eventType === 'hook_received' && event.resumeId === resumeId
-    );
-  } catch {
-    return false;
+  for (const delayMs of RESUME_EVENT_VISIBILITY_BACKOFF_MS) {
+    if (delayMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+    try {
+      const { data } = await world.events.listByCorrelationId({
+        runId: hook.runId,
+        correlationId: hook.hookId,
+        resolveData: 'none',
+      });
+      if (
+        data.some(
+          (event) =>
+            event.eventType === 'hook_received' && event.resumeId === resumeId
+        )
+      ) {
+        return true;
+      }
+    } catch {
+      // A failed read and an empty one are the same answer here: retry, and
+      // fall through to "not committed" if the budget runs out.
+    }
   }
+  return false;
 }
 
 /**
@@ -664,11 +685,13 @@ async function resumeHookImpl<T = any>(
             //     completed, and disposed the hook — the hook is gone BECAUSE
             //     this resume succeeded, and throwing fails a delivered resume.
             //
-            // One read discriminates them. Disposal is ordered after the
-            // hook_received it follows, so a delivered resume has its event
-            // already committed under this `resumeId` by the time the loser
+            // The committed event discriminates them. Disposal is ordered
+            // after the hook_received it follows, so a delivered resume has
+            // its event committed under this `resumeId` by the time the loser
             // observes the disposal; a terminal run has no such event and
-            // never will, so no polling is needed.
+            // never will. Committed is not the same as readable, though, so
+            // the check retries within a short budget rather than reading
+            // once.
             if (!(await resumeEventCommitted({ world, hook, resumeId }))) {
               throw new HookNotFoundError(hook.token);
             }

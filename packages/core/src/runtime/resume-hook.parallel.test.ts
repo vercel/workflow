@@ -261,7 +261,66 @@ describe('resumeHook (parallel fast path)', () => {
     );
   });
 
-  it('throws when the confirming read itself fails — no evidence is not evidence of delivery', async () => {
+  it('retries the confirming read until the committed resume becomes visible', async () => {
+    // The consumer's commit is ordered before the disposal that rejected our
+    // write, but it is read back through an eventually-consistent index. A
+    // single read that misses it fails a delivered resume.
+    const hook = { ...baseHook, resumeContext: parallelContext } satisfies Hook;
+    const createEvent = vi
+      .fn()
+      .mockRejectedValue(new HookNotFoundError(baseHook.hookId));
+    const listByCorrelationId = vi
+      .fn()
+      .mockResolvedValueOnce({ data: [] })
+      .mockResolvedValueOnce({ data: [] })
+      .mockImplementation(async () => ({
+        data: [
+          {
+            eventType: 'hook_received',
+            correlationId: hook.hookId,
+            resumeId: createEvent.mock.calls[0][2].resumeId,
+          },
+        ],
+      }));
+    makeWorld(hook, {
+      createEvent,
+      queue: vi.fn().mockResolvedValue({ messageId: 'm_1' }),
+      listByCorrelationId,
+    });
+
+    const result = await resumeHook(hook.token, { foo: 'bar' });
+    expect(result.resilientResume).toBe(true);
+    expect(listByCorrelationId).toHaveBeenCalledTimes(3);
+  });
+
+  it('recovers from a transient failure of the confirming read', async () => {
+    const hook = { ...baseHook, resumeContext: parallelContext } satisfies Hook;
+    const createEvent = vi
+      .fn()
+      .mockRejectedValue(new HookNotFoundError(baseHook.hookId));
+    const listByCorrelationId = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('backend down'))
+      .mockImplementation(async () => ({
+        data: [
+          {
+            eventType: 'hook_received',
+            correlationId: hook.hookId,
+            resumeId: createEvent.mock.calls[0][2].resumeId,
+          },
+        ],
+      }));
+    makeWorld(hook, {
+      createEvent,
+      queue: vi.fn().mockResolvedValue({ messageId: 'm_1' }),
+      listByCorrelationId,
+    });
+
+    const result = await resumeHook(hook.token, { foo: 'bar' });
+    expect(result.resilientResume).toBe(true);
+  });
+
+  it('throws when the confirming read never succeeds — no evidence is not evidence of delivery', async () => {
     const hook = { ...baseHook, resumeContext: parallelContext } satisfies Hook;
     makeWorld(hook, {
       createEvent: vi
