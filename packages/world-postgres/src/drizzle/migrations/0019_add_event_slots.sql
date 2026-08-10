@@ -18,7 +18,9 @@
 -- `CONCURRENTLY` cannot appear in this file: Postgres rejects it inside a
 -- transaction block. Run it by hand, confirm the index came out valid, then
 -- migrate. The branch below picks it up, and the exclusive lock then covers
--- only a catalog update rather than a full build.
+-- only a catalog update rather than a full build. Adopting an index renames it
+-- to the constraint's name, so it ends up as `workflow_events_run_id_id_pk`
+-- either way and the two paths leave the same schema behind.
 ALTER TABLE "workflow"."workflow_events" DROP CONSTRAINT "workflow_events_pkey";--> statement-breakpoint
 DO $$
 BEGIN
