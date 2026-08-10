@@ -519,6 +519,10 @@ function describeWakelessPark({
   stepsTerminal: number;
 } | null {
   if (pendingStepCount > 0 || hasWaitTimeout) return null;
+  // A first invocation replays an empty log and parks on the hook it just
+  // created, whose `hook_created` is not in that log. Nothing can be concluded
+  // from a log the invocation's own writes are missing from.
+  if (events.length === 0) return null;
 
   const created = new Set<string>();
   const received = new Set<string>();
@@ -3343,39 +3347,54 @@ export function workflowEntrypoint(
                           // is in flight, so the event can land after this
                           // replay's last read and before this decision — and
                           // the delivery that would have observed it is this
-                          // one. Re-read from the cursor and replay against the
-                          // result rather than wedging on a stale view; an
-                          // empty delta parks as before, one list call later.
+                          // one. Re-read the log and replay against the result
+                          // rather than wedging on a stale view; an unchanged
+                          // log parks as before, one list call later.
+                          //
+                          // The re-read MUST be cursor-less. The cursor filters
+                          // by lexicographic event id while this hole is
+                          // defined by ULID *time*: a `hook_received` minted
+                          // before the last event this invocation wrote but
+                          // committed after it always sorts below the cursor,
+                          // so an incremental read never returns it — which is
+                          // precisely the interleaving that wedges the run.
+                          // Diff the reload by event id rather than trusting a
+                          // page to be new.
                           //
                           // Once per park, not per iteration: re-armed only by
                           // real progress (an inline step executing), so a run
                           // with nothing new to read cannot spin here.
                           if (
                             !parkRecheckArmed &&
-                            eventLog.cursor !== null &&
                             openHookWait.value.openHook &&
                             pendingSteps.length === 0 &&
                             suspensionResult.waitTimeout === undefined
                           ) {
                             parkRecheckArmed = true;
-                            const delta = await loadWorkflowRunEvents(
-                              runId,
-                              eventLog.cursor
+                            const reloaded = await loadWorkflowRunEvents(runId);
+                            const replayed = new Set(
+                              eventLog.events.map((event) => event.eventId)
                             );
-                            if (delta.events.length > 0) {
+                            const appended = reloaded.events.filter(
+                              (event) => !replayed.has(event.eventId)
+                            );
+                            if (appended.length > 0) {
                               runtimeLogger.warn(
                                 'Events landed while this invocation was replaying; re-replaying instead of parking on a stale log',
                                 {
                                   workflowRunId: runId,
                                   loopIteration,
-                                  appended: delta.events.length,
-                                  appendedTypes: delta.events.map(
+                                  appended: appended.length,
+                                  appendedTypes: appended.map(
                                     (event) => event.eventType
                                   ),
                                 }
                               );
-                              appendEventLog(eventLog, delta);
-                              eventLog = { ...eventLog, type: 'ready' };
+                              eventLog = { ...reloaded, type: 'ready' };
+                              // The corrected log inserts the missing events
+                              // below the length already scanned for payload
+                              // prewarming, shifting every later position.
+                              replayPayloadCache.resetScan();
                               continue;
                             }
                           }
