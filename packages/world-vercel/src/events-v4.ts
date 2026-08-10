@@ -50,12 +50,15 @@ import {
 } from './http-client.js';
 import {
   errorForResponse,
+  headersToRecord,
   instrumentedFetch,
   parseRetryAfter,
 } from './http-core.js';
 import { hasSerializedDataFormatPrefix } from './serialized-data.js';
 import { deserializeStep, StepWireSchema } from './steps.js';
 import { type APIConfig, getHttpConfig } from './utils.js';
+import type { WsFrameReply } from './ws-transport.js';
+import { isWsEventsTransportEnabled } from './ws-transport-enabled.js';
 
 /**
  * Issue an instrumented v4 request through the global `fetch` — NOT undici's
@@ -110,16 +113,6 @@ async function fetchV4(
         url
       ),
   });
-}
-
-/** Flatten a fetch `Headers` into the record shape throwForErrorResponse
- *  expects (it mirrors the v3 `makeRequest` error contract). */
-function headersToRecord(headers: Headers): Record<string, string> {
-  const out: Record<string, string> = {};
-  headers.forEach((value, key) => {
-    out[key] = value;
-  });
-  return out;
 }
 
 const EVENT_ID_HEADER = 'x-wf-event-id';
@@ -642,10 +635,23 @@ async function postWorkflowRunEventV4(
   );
 }
 
+/**
+ * The WS transport carries this materialized POST and only this one. The
+ * `event-stream` writes below answer with a sentinel-terminated sequence of
+ * frames, which has no representation in a protocol that pairs one reply frame
+ * with one request frame.
+ */
 export async function createWorkflowRunEventV4<T extends EventType>(
   input: CreateEventV4Input & { eventType: T },
   config?: APIConfig
 ): Promise<EventResult<T> & { event: Event }> {
+  if (isWsEventsTransportEnabled()) {
+    // Absent means no socket was resolvable for this run, not that the write
+    // failed — fall through to HTTP.
+    const reply = await postEventFrameOverWs(input, config);
+    if (reply) return decodeCreateEventResponse(reply, input.eventType);
+  }
+
   const response = await postWorkflowRunEventV4(input, 'materialized', config);
 
   const contentType = response.headers.get('content-type');
@@ -656,8 +662,11 @@ export async function createWorkflowRunEventV4<T extends EventType>(
   return decodeCreateEventResponse(response, input.eventType);
 }
 
+/** Takes `FrameResponseLike` rather than `Response` because the WS branch has
+ *  none to hand over — it synthesizes one. A real `Response` satisfies the
+ *  interface, so the HTTP callers are unaffected. */
 async function decodeCreateEventResponse<T extends EventType>(
-  response: Response,
+  response: FrameResponseLike,
   eventType: T
 ): Promise<EventResult<T> & { event: Event }> {
   const bodyBytes = new Uint8Array(await response.arrayBuffer());
@@ -704,6 +713,135 @@ export async function createWorkflowRunStartedEventV4(
   }
 
   return { events, ...page, maxEvents: maxEvents.data };
+}
+
+/** The only two members a decoded transport result is read for. `fetch`'s
+ *  `Response` satisfies it structurally, so the HTTP branch returns one
+ *  unchanged and the WS branch synthesizes the same shape. */
+interface FrameResponseLike {
+  headers: { get(name: string): string | null };
+  arrayBuffer(): Promise<ArrayBuffer>;
+}
+
+/** Flatten a reply frame's meta into the header record `errorFromV4Response`
+ *  already reads (retry-after, x-vercel-mitigated), so the WS path reuses the
+ *  HTTP error mapping rather than growing its own. The materialized ids come
+ *  out of the CBOR body, so no `x-wf-*` name is mapped here.
+ *
+ *  Left unmapped, deliberately: `meta.deprecated`, which the server copies from
+ *  `X-API-Deprecated`. Inert while the v4 route's middleware chain has no
+ *  deprecation middleware to set it — but this record is the only header source
+ *  a WS reply has, so an unmapped key is gone rather than merely unread, which
+ *  is not true of the real `Response` the HTTP path returns. */
+function replyMetaToHeaderRecord(
+  meta: Record<string, unknown>
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (typeof meta.eventId === 'string') out[EVENT_ID_HEADER] = meta.eventId;
+  if (typeof meta.retryAfter === 'string') out['retry-after'] = meta.retryAfter;
+  if (typeof meta.mitigated === 'string')
+    out['x-vercel-mitigated'] = meta.mitigated;
+  return out;
+}
+
+/**
+ * Retry is owned by `withEventPostRetry` (event-retry.ts) for both transports,
+ * so there is deliberately no retry loop here: one would sit *inside*
+ * `EVENT_RETRY_ELIGIBILITY` and replay the event types whose handlers have no
+ * duplicate guard (a second `step_started` double-increments `attempt`), and
+ * would multiply that policy's backoff. Note undici's `RetryAgent`
+ * (http-client.ts) retries POSTs on neither transport — `RetryHandler`
+ * defaults `methods` to GET/HEAD/OPTIONS/PUT/DELETE/TRACE — which is why
+ * event-retry.ts exists at all. So `postEventFrameOverWs` makes exactly one
+ * attempt and reports in that policy's vocabulary; a retry from it re-enters
+ * `transport.request()`, which reconnects on the way through.
+ */
+
+/**
+ * Read the status off a reply frame, failing closed when there isn't one:
+ * defaulting to 200 would report success for any frame this client doesn't
+ * understand, and the protocol is designed to grow new response variants (see
+ * the server's docs/ws-protocol.md). `PARSE_ERROR` is the code `utils.ts` uses
+ * for an unreadable HTTP body — the same situation — and unlike a bare `Error`
+ * it satisfies `WorkflowWorldError.is()` instead of surfacing as a USER_ERROR.
+ */
+function wsReplyStatus(reply: WsFrameReply, endpoint: string): number {
+  const { status } = reply.meta;
+  if (typeof status !== 'number') {
+    throw new WorkflowWorldError(
+      `Failed to parse response body for POST ${endpoint}: reply frame ` +
+        `carried no numeric status (type: ` +
+        `${String(reply.meta.type ?? 'absent')}). Refusing to treat an ` +
+        `unrecognized reply as success — the write may or may not have been ` +
+        `applied.`,
+      { url: endpoint, code: 'PARSE_ERROR' }
+    );
+  }
+  return status;
+}
+
+async function postEventFrameOverWs(
+  input: CreateEventV4InputBase & {
+    eventType: EventType;
+    skipPreload?: true;
+  },
+  config: APIConfig | undefined
+): Promise<FrameResponseLike | undefined> {
+  // Dynamic so `ws` initializes only on a deployment that opted in — the gate
+  // at the call site lives in its own import-free module for exactly this
+  // reason. The module is cached after the first write, and on the queue path
+  // the pre-warm has already paid for it.
+  const { resolveWsTransport } = await import('./ws-transport.js');
+  const { runId } = input;
+  const resolved = resolveWsTransport(runId, config);
+  if (!resolved) return undefined;
+  const { transport, wsUrl } = resolved;
+  const endpoint = `${wsUrl}#runs/${encodeURIComponent(runId)}/events`;
+
+  let reply: WsFrameReply;
+  try {
+    // `runId` isn't repeated here — it's already in `wsUrl`, one connection
+    // per run. The server's request-frame schema is a discriminated union on
+    // `type` with each type's payload nested under its own name, so a future
+    // request type is a new variant rather than a reshape of this one.
+    reply = await transport.request((reqId) =>
+      encodeFrame(
+        { reqId, type: 'event', event: buildPostFrameMeta(input) },
+        input.payload ?? new Uint8Array(0)
+      )
+    );
+  } catch (err) {
+    // Anything `transport.request()` throws means the frame was never acked.
+    // `code: 'TRANSPORT'` is the shape `utils.ts` gives a failed `fetch`, so
+    // one classification drives both transports — in-process retry gated by
+    // event type, then queue redelivery. An unwrapped `WsTransportError`
+    // would fail `WorkflowWorldError.is()` and classify as a USER_ERROR.
+    // Application errors are raised below, outside this try.
+    throw new WorkflowWorldError(
+      `POST ${endpoint} transport failure: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+      { url: wsUrl, code: 'TRANSPORT', cause: err }
+    );
+  }
+
+  const status = wsReplyStatus(reply, endpoint);
+  const headerRecord = replyMetaToHeaderRecord(reply.meta);
+
+  if (status < 200 || status >= 300) {
+    throw errorFromV4Response(
+      status,
+      headerRecord,
+      new TextDecoder().decode(reply.body),
+      'createEvent',
+      endpoint
+    );
+  }
+
+  return {
+    headers: { get: (name) => headerRecord[name.toLowerCase()] ?? null },
+    arrayBuffer: async () => reply.body.slice().buffer as ArrayBuffer,
+  };
 }
 
 /**

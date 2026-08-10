@@ -196,6 +196,12 @@ Per-request timeout, in milliseconds, for Vercel World HTTP calls to workflow-se
 
 Maximum stream chunks written in one Vercel World request. Larger batches are split across multiple requests. Default: `1000`. Minimum: `1`.
 
+### `WORKFLOW_EVENTS_TRANSPORT`
+
+Experimental. Set `WORKFLOW_EVENTS_TRANSPORT=ws` to ship workflow run events to the Vercel World over a WebSocket instead of one HTTP request each. Default: `http`.
+
+The setting is ignored when the World is configured with `projectConfig` and therefore routes through the `api-workflow` proxy: that endpoint is an HTTP-only REST gateway and does not forward a WebSocket upgrade, so events stay on HTTP and a warning is logged once per process.
+
 ### Programmatic configuration
 
 `createWorld()` accepts explicit API configuration. It does not read `WORKFLOW_VERCEL_*` automatically, so pass the environment values yourself when you want a configured World module:
