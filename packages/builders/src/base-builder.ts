@@ -266,11 +266,15 @@ export abstract class BaseBuilder {
   }
 
   private startWorkflowBuildTimer(): void {
-    this.workflowBuildStartTime = Date.now();
+    // Monotonic: `Date.now()` follows wall-clock corrections, and a backwards
+    // step mid-build renders the summary as "Compiled workflows in -1ms".
+    this.workflowBuildStartTime = performance.now();
   }
 
   private getWorkflowBuildDuration(): number {
-    return Date.now() - (this.workflowBuildStartTime ?? Date.now());
+    return Math.round(
+      performance.now() - (this.workflowBuildStartTime ?? performance.now())
+    );
   }
 
   private resetWorkflowBuildTimer(): void {
