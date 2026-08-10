@@ -421,6 +421,10 @@ describe('loadWorkflowRunEvents', () => {
     expect(result.events).toHaveLength(2);
     expect(result.cursor).toBe('eid:evnt_b');
     expect(eventsListMock).toHaveBeenCalledTimes(1);
+    expect(eventsListMock).toHaveBeenCalledWith({
+      runId: 'wrun_test',
+      pagination: { sortOrder: 'asc', cursor: undefined },
+    });
   });
 
   // Regression test for the "Event cursor missing after initial load" warning.

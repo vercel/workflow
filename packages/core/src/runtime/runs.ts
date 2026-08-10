@@ -300,14 +300,13 @@ export async function wakeUpRun(
     const run = await world.runs.get(runId, { resolveData: 'none' });
     const compatMode = isLegacySpecVersion(run.specVersion);
 
-    // Paginate through all events to ensure we don't miss any sleeps
-    // in long-running workflows with more than 1000 events.
+    // Paginate through all events to ensure we don't miss any sleeps.
     const allEvents: Event[] = [];
     let cursor: string | null = null;
     do {
       const eventsResult = await world.events.list({
         runId,
-        pagination: { limit: 1000, ...(cursor ? { cursor } : {}) },
+        pagination: { sortOrder: 'asc', ...(cursor ? { cursor } : {}) },
         resolveData: 'none',
       });
       allEvents.push(...eventsResult.data);

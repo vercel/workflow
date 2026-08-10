@@ -173,9 +173,7 @@ describe('Storage (Postgres integration)', () => {
     await truncateTables();
   });
 
-  afterEach(() => {
-    vi.unstubAllEnvs();
-  });
+  afterEach(() => vi.unstubAllEnvs());
 
   afterAll(async () => {
     await pool.end();
@@ -373,6 +371,14 @@ describe('Storage (Postgres integration)', () => {
         const updated = await updateRun(events, created.runId, 'run_started');
         expect(updated.status).toBe('running');
         expect(updated.startedAt).toBeInstanceOf(Date);
+      });
+
+      it('should reject run_started on a non-existent run', async () => {
+        await expect(
+          events.create('wrun_nonexistent', {
+            eventType: 'run_started',
+          })
+        ).rejects.toMatchObject({ name: 'WorkflowRunNotFoundError' });
       });
 
       it('should update run status to completed via run_completed event', async () => {
@@ -1177,6 +1183,16 @@ describe('Storage (Postgres integration)', () => {
         expect(result.event.eventType).toBe('run_completed');
         expect(result.event.correlationId).toBeUndefined();
       });
+
+      it('skips the run_started preload when requested', async () => {
+        const result = await events.create(
+          testRunId,
+          { eventType: 'run_started' },
+          { skipPreload: true }
+        );
+
+        expect(result.events).toBeUndefined();
+      });
     });
 
     describe('list', () => {
@@ -1288,6 +1304,58 @@ describe('Storage (Postgres integration)', () => {
 
         expect(page2.data).toHaveLength(2);
         expect(page2.data[0].eventId).not.toBe(page1.data[0].eventId);
+      });
+
+      it('returns all remaining events when no limit is set', async () => {
+        await events.create(testRunId, {
+          eventType: 'run_started',
+        });
+
+        const result = await events.list({
+          runId: testRunId,
+          pagination: { sortOrder: 'asc' },
+        });
+
+        expect(result.data).toHaveLength(2);
+        expect(result.hasMore).toBe(false);
+      });
+
+      it('returns all events across internal query pages', async () => {
+        await drizzle.insert(DrizzleSchema.events).values(
+          Array.from({ length: 500 }, () => ({
+            eventId: `wevt_${ulid()}`,
+            eventType: 'run_started' as const,
+            runId: testRunId,
+          }))
+        );
+
+        const result = await events.list({
+          runId: testRunId,
+          pagination: { sortOrder: 'asc' },
+        });
+
+        expect(result.data).toHaveLength(501);
+        expect(result.hasMore).toBe(false);
+      });
+
+      it('returns a continuation at the configured event ceiling', async () => {
+        await events.create(testRunId, {
+          eventType: 'run_started',
+        });
+        vi.stubEnv('WORKFLOW_MAX_EVENTS', '1');
+
+        const first = await events.list({
+          runId: testRunId,
+        });
+        expect(first.data).toHaveLength(1);
+        expect(first.hasMore).toBe(true);
+
+        const second = await events.list({
+          runId: testRunId,
+          pagination: { cursor: first.cursor ?? undefined },
+        });
+        expect(second.data).toHaveLength(1);
+        expect(second.hasMore).toBe(false);
       });
     });
 

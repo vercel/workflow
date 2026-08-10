@@ -277,11 +277,18 @@ const DEFER_BEHIND: Record<DeliveryKind, readonly DeliveryKind[]> = {
 
 /**
  * Whether `entry` will resolve on its own — it is armed, and every earlier
- * delivery it defers behind will likewise resolve on its own.
+ * delivery it actually gates on will likewise resolve on its own.
  *
- * A step delivery is always self-resolving: it skips uncommitted deliveries
- * (see {@link awaitEarlierDeliveries}), and the earlier steps it does defer
- * behind are self-resolving by the same argument, inducting down on index.
+ * "Actually gates on" must match {@link awaitEarlierDeliveries} exactly, which
+ * is why the step case skips unarmed entries here too: a step does not wait on
+ * an unclaimed buffered payload, so such a payload cannot keep it from
+ * resolving. A step DOES wait on earlier armed waits and hooks, so one parked
+ * behind an unclaimed payload makes the step non-self-resolving in turn. The
+ * two functions disagreeing is not a cosmetic problem: this predicate is what
+ * {@link hasParkedCommittedDelivery} uses to decide whether idle is reachable,
+ * and an entry reported self-resolving while it is in fact parked behind a
+ * payload that only the idle safety net can retire would gate its own
+ * retirement.
  *
  * Recursion terminates because every edge points to a strictly smaller index.
  * `memo` is required rather than an optimization: without it the walk is
@@ -318,16 +325,15 @@ function computeResolvesOnItsOwn(
   if (!entry.armed) {
     return false;
   }
-  if (entry.kind === 'step') {
-    return true;
-  }
   const deferBehind = DEFER_BEHIND[entry.kind];
   for (const [otherIndex, other] of barriers) {
-    if (
-      otherIndex < index &&
-      deferBehind.includes(other.kind) &&
-      !resolvesOnItsOwn(barriers, otherIndex, other, memo)
-    ) {
+    if (otherIndex >= index || !deferBehind.includes(other.kind)) {
+      continue;
+    }
+    if (entry.kind === 'step' && !other.armed) {
+      continue;
+    }
+    if (!resolvesOnItsOwn(barriers, otherIndex, other, memo)) {
       return false;
     }
   }
@@ -347,17 +353,28 @@ function computeResolvesOnItsOwn(
  * suspension point first; see the comment at that `await` for why ordering the
  * `resolve()` calls alone is not enough.
  *
- * One asymmetry: a STEP result additionally skips any earlier delivery that
- * will not resolve on its own, i.e. one blocked (directly or transitively) on
- * a buffered hook payload no consumer has claimed. Such a payload is delivered
- * only when the workflow next reads the hook, and reaching that read very
- * commonly requires the step result itself (`await stepX()` before the read).
- * Gating the step on it would stall the workflow until the barrier's idle
- * safety net fires, which then releases every delivery queued behind that
+ * One asymmetry: a STEP result skips any earlier delivery that is UNARMED,
+ * i.e. a buffered hook payload no consumer has claimed. Such a payload is
+ * delivered only when the workflow next reads the hook, and reaching that read
+ * very commonly requires the step result itself (`await stepX()` before the
+ * read). Gating the step on it would stall the workflow until the barrier's
+ * idle safety net fires, which then releases every delivery queued behind that
  * payload at once — losing exactly the race this ordering exists to protect.
  * Waits and hooks keep gating on unclaimed payloads: for them, waiting for the
  * claim IS the ordering guarantee (a `wait_completed` must not preempt a
  * payload the log ordered first).
+ *
+ * The skip is direct, never transitive. A step still gates on an earlier ARMED
+ * wait or hook, including one that is itself parked behind an unclaimed
+ * payload. Skipping those too would invert log order for the commonest shape
+ * there is: a workflow that creates a hook it does not read on this branch,
+ * races `step` against `sleep`, and has the log say the sleep won. The step
+ * would then overtake the wait, both branches would swap the correlation ids
+ * they draw next, and replay would diverge — see
+ * `step-delivery-ordering.test.ts`. Waiting instead is safe because the
+ * payload's own idle safety net retires it and the whole chain then delivers
+ * in log order; {@link hasParkedCommittedDelivery} deliberately reports such a
+ * step as not self-resolving so that idle stays reachable.
  */
 export async function awaitEarlierDeliveries(
   ctx: WorkflowOrchestratorContext,
@@ -375,16 +392,11 @@ export async function awaitEarlierDeliveries(
   const barriers = ctx.pendingDeliveryBarriers;
   const deferBehind = DEFER_BEHIND[kind];
   const earlier: Promise<void>[] = [];
-  // Shared across this call only — see `resolvesOnItsOwn`.
-  const selfResolving = new Map<number, boolean>();
   for (const [index, entry] of barriers) {
     if (index >= eventIndex || !deferBehind.includes(entry.kind)) {
       continue;
     }
-    if (
-      kind === 'step' &&
-      !resolvesOnItsOwn(barriers, index, entry, selfResolving)
-    ) {
+    if (kind === 'step' && !entry.armed) {
       continue;
     }
     earlier.push(entry.delivered);
@@ -517,7 +529,10 @@ export function registerDeliveryBarrier(
  * Deliveries that do NOT resolve on their own must be excluded, not for
  * accuracy but for termination: an unclaimed buffered hook payload is retired
  * BY the idle safety net in {@link registerDeliveryBarrier}, so counting it
- * here would gate its own retirement. Self-resolving deliveries always
+ * here would gate its own retirement. That reasoning extends to whatever is
+ * parked behind such a payload — a wait, and a step gating on that wait — for
+ * the same reason: the whole chain moves only once the net fires, and it
+ * cannot fire while the chain is counted. Self-resolving deliveries always
  * deliver from their own chains (see the INVARIANT on
  * {@link registerDeliveryBarrier}) and never need that net, so waiting on
  * them is deadlock-free.

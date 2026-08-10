@@ -4,6 +4,7 @@ import { dirname, isAbsolute, join } from 'node:path';
 import {
   resolveConfiguredProjectRoot,
   resolveProjectRoot,
+  WORKFLOW_OPTIONAL_WS_NATIVE_MODULES,
 } from '@workflow/builders';
 import type { NextConfig } from 'next';
 import semver from 'semver';
@@ -321,6 +322,26 @@ function registerWorkflowDiagnosticsManifestCopy(metadata: {
   globalWithMarker[marker].push(metadata);
 }
 
+/**
+ * Mark `ws`'s optional native accelerators external on the webpack server
+ * build, which otherwise bundles their JS wrapper without the native `.node`
+ * binding and throws "bufferUtil.mask is not a function" at runtime. See
+ * `WORKFLOW_OPTIONAL_WS_NATIVE_MODULES`; `@workflow/rollup` handles the
+ * Rollup/Vite/Nitro side.
+ */
+function externalizeWsNativeAccelerators(webpackConfig: {
+  externals?: unknown;
+}): void {
+  const names = [...WORKFLOW_OPTIONAL_WS_NATIVE_MODULES];
+  if (Array.isArray(webpackConfig.externals)) {
+    webpackConfig.externals.push(...names);
+  } else if (webpackConfig.externals) {
+    webpackConfig.externals = [webpackConfig.externals, ...names];
+  } else {
+    webpackConfig.externals = names;
+  }
+}
+
 export function withWorkflow(
   nextConfigOrFn:
     | NextConfig
@@ -570,6 +591,10 @@ export function withWorkflow(
         test: /.*\.(mjs|cjs|cts|ts|tsx|js|jsx)$/,
         loader: loaderPath,
       });
+
+      if (args[1]?.isServer) {
+        externalizeWsNativeAccelerators(webpackConfig);
+      }
 
       return existingWebpackModify
         ? (existingWebpackModify(...args) ?? webpackConfig)

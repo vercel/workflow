@@ -1,4 +1,12 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  afterEach,
+  assert,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vitest';
 
 const {
   mockSend,
@@ -644,6 +652,34 @@ describe('createQueue', () => {
       expect(mockHandleCallback).toHaveBeenCalledWith(expect.any(Function), {
         retry: expect.any(Function),
       });
+    });
+
+    it('should pass handler rejections to QueueClient', async () => {
+      let capturedHandler: (
+        message: unknown,
+        metadata: unknown
+      ) => Promise<void>;
+      mockHandleCallback.mockImplementation((handler) => {
+        capturedHandler = handler;
+        return async () => new Response('ok');
+      });
+      const handlerError = new Error('retry delivery');
+
+      const queue = createQueue();
+      queue.createQueueHandler('__wkf_workflow_', async () => {
+        throw handlerError;
+      });
+
+      assert(capturedHandler);
+      await expect(
+        capturedHandler(
+          {
+            payload: { runId: 'run-123' },
+            queueName: '__wkf_workflow_test',
+          },
+          { messageId: 'msg-123', deliveryCount: 1 }
+        )
+      ).rejects.toBe(handlerError);
     });
 
     it('should ask VQS to retry handler errors with bounded backoff', () => {

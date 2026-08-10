@@ -594,7 +594,7 @@ function shouldRetryWithoutEventCursor(
 export async function loadWorkflowRunEvents(
   runId: string,
   afterCursor?: string
-): Promise<{ events: Event[]; cursor: string | null }> {
+): Promise<LoadedEventLog> {
   const incremental = afterCursor !== undefined;
   return trace(
     incremental ? 'workflow.loadNewEvents' : 'workflow.loadEvents',

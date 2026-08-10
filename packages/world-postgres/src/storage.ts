@@ -8,7 +8,9 @@ import {
   WorkflowWorldError,
 } from '@workflow/errors';
 import type {
+  AnyEventRequest,
   AttributeChange,
+  CreateEventParams,
   Event,
   EventResult,
   ExperimentalSetAttributesResult,
@@ -34,6 +36,7 @@ import {
   EventSchema,
   eventIdToSlot,
   FIRST_EVENT_SLOT,
+  getMaxEventsPerRun,
   HookSchema,
   isChildEntityCreationEvent,
   isChildEntityCreationEventType,
@@ -715,7 +718,11 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
     .prepare('events_get_wait_for_validation');
 
   return {
-    async create(runId, data, params): Promise<EventResult> {
+    async create(
+      runId: string | null,
+      data: AnyEventRequest,
+      params?: CreateEventParams
+    ): Promise<EventResult> {
       if (
         data.eventType === 'hook_created' &&
         data.eventData.tokenRetentionUntil !== undefined &&
@@ -926,7 +933,10 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
           );
         }
       }
-      if (data.eventType === 'attr_set' && !currentRun) {
+      if (
+        !currentRun &&
+        (data.eventType === 'attr_set' || data.eventType === 'run_started')
+      ) {
         throw new WorkflowRunNotFoundError(effectiveRunId);
       }
 
@@ -2086,9 +2096,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
 
       // For run_started: include all events so the runtime can skip
       // the initial events.list call and reduce TTFB.
-      let allEvents: Event[] | undefined;
-      let cursor: string | null | undefined;
-      let hasMore: boolean | undefined;
+      let eventPage: PaginatedResponse<Event> | undefined;
       // The skipped-slot report and the inline delta below share
       // `events`/`cursor`/`hasMore`, and the runtime sends both on the same
       // write. The delta wins: the skipped slots all sit above the cursor, so
@@ -2107,23 +2115,32 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
           resolveData
         );
         if (report) {
-          allEvents = report.events;
-          hasMore = report.hasMore;
+          // Deliberately no cursor: the report is a lower bound on what this
+          // write skipped over, not a page the caller has now read to the end
+          // of, so it must not advance the caller's read position.
+          eventPage = {
+            data: report.events,
+            cursor: null,
+            hasMore: report.hasMore,
+          };
         }
       }
-      if (data.eventType === 'run_started' && run) {
+      if (data.eventType === 'run_started' && run && !params?.skipPreload) {
         const eventRows = await drizzle
           .select()
           .from(Schema.events)
           .where(eq(Schema.events.runId, effectiveRunId))
           .orderBy(Schema.events.eventId);
-        allEvents = eventRows.map((e) => {
+        const data = eventRows.map((e) => {
           e.eventData ||= e.eventDataJson;
           const parsed = EventSchema.parse(compact(e));
           return stripEventDataRefs(parsed, resolveData);
         });
-        cursor = allEvents.at(-1)?.eventId ?? null;
-        hasMore = false;
+        eventPage = {
+          data,
+          cursor: data.at(-1)?.eventId ?? null,
+          hasMore: false,
+        };
       }
 
       // Inline delta: the caller told us the cursor of the log it holds, so
@@ -2147,24 +2164,33 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
           .orderBy(Schema.events.eventId)
           .limit(limit + 1);
         const page = deltaRows.slice(0, limit);
-        allEvents = page.map((e) => {
+        const data = page.map((e) => {
           e.eventData ||= e.eventDataJson;
           return stripEventDataRefs(EventSchema.parse(compact(e)), resolveData);
         });
-        cursor = allEvents.at(-1)?.eventId ?? null;
-        hasMore = deltaRows.length > limit;
+        eventPage = {
+          data,
+          cursor: data.at(-1)?.eventId ?? null,
+          hasMore: deltaRows.length > limit,
+        };
       }
 
-      return {
+      const eventResult: EventResult = {
         event: stripEventDataRefs(parsed, resolveData),
         run,
         step,
         hook,
         wait,
-        events: allEvents,
-        cursor,
-        hasMore,
         ...(stepCreatedLazily ? { stepCreated: true } : {}),
+      };
+
+      if (!eventPage) return eventResult;
+
+      return {
+        ...eventResult,
+        events: eventPage.data,
+        cursor: eventPage.cursor,
+        hasMore: eventPage.hasMore,
       };
     },
     async get(
@@ -2188,37 +2214,53 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
       return stripEventDataRefs(parsed, resolveData);
     },
     async list(params: ListEventsParams): Promise<PaginatedResponse<Event>> {
-      const limit = params?.pagination?.limit ?? 100;
-      const sortOrder = params.pagination?.sortOrder || 'asc';
+      const limit = params.pagination?.limit ?? getMaxEventsPerRun();
+      const sortOrder = params.pagination?.sortOrder ?? 'asc';
       const order =
         sortOrder === 'desc'
           ? { by: desc(events.eventId), compare: lt }
           : { by: events.eventId, compare: gt };
-      const all = await drizzle
-        .select()
-        .from(events)
-        .where(
-          and(
-            eq(events.runId, params.runId),
-            map(params.pagination?.cursor, (c) =>
-              order.compare(events.eventId, c)
+      const resolveData = params.resolveData ?? 'all';
+      const data: Event[] = [];
+      let cursor = params.pagination?.cursor;
+      let hasMore = false;
+
+      do {
+        const pageLimit =
+          params.pagination?.limit === undefined
+            ? Math.min(500, limit - data.length)
+            : limit;
+        const rows = await drizzle
+          .select()
+          .from(events)
+          .where(
+            and(
+              eq(events.runId, params.runId),
+              map(cursor, (value) => order.compare(events.eventId, value))
             )
           )
-        )
-        .orderBy(order.by)
-        .limit(limit + 1);
+          .orderBy(order.by)
+          .limit(pageLimit + 1);
+        const page = rows.slice(0, pageLimit);
 
-      const values = all.slice(0, limit);
+        for (const row of page) {
+          row.eventData ||= row.eventDataJson;
+          const event = EventSchema.parse(compact(row));
+          data.push(stripEventDataRefs(event, resolveData));
+        }
 
-      const resolveData = params?.resolveData ?? 'all';
+        cursor = page.at(-1)?.eventId;
+        hasMore = rows.length > pageLimit;
+      } while (
+        params.pagination?.limit === undefined &&
+        hasMore &&
+        data.length < limit
+      );
+
       return {
-        data: values.map((v) => {
-          v.eventData ||= v.eventDataJson;
-          const parsed = EventSchema.parse(compact(v));
-          return stripEventDataRefs(parsed, resolveData);
-        }),
-        cursor: values.at(-1)?.eventId ?? null,
-        hasMore: all.length > limit,
+        data,
+        cursor: data.at(-1)?.eventId ?? null,
+        hasMore,
       };
     },
     async listByCorrelationId(params) {
