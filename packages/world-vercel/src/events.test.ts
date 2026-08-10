@@ -284,6 +284,226 @@ describe('splitEventDataForV4 structured errors', () => {
   });
 });
 
+/**
+ * The server's caps, mirrored so the assertions below state what they are
+ * protecting: an error past either one is not merely fat on the wire, the
+ * whole terminal event is refused and the run keeps no record of failing.
+ */
+const SERVER_MAX_META_BYTES = 64 * 1024;
+const SERVER_MAX_STRUCTURED_ERROR_BYTES = 32 * 1024;
+
+const byteLength = (value: string) =>
+  new TextEncoder().encode(value).byteLength;
+
+describe('splitEventDataForV4 oversized structured errors', () => {
+  it('bounds a multi-MiB step_failed error message and stack', () => {
+    const error = `boom: ${'x'.repeat(5 * 1024 * 1024)}`;
+    const stack = `Error: boom\n${'    at fn (/app/step.js:10:5)\n'.repeat(50_000)}`;
+
+    const { payload, meta } = splitEventDataForV4({
+      eventType: 'step_failed',
+      correlationId: 'step_1',
+      specVersion: 2,
+      eventData: { stepName: 'a-step', error, stack },
+    } as AnyEventRequest);
+
+    // Still the meta path (nothing to stream — the error is not dehydrated).
+    expect(payload).toBeUndefined();
+    expect(byteLength(meta.error as string)).toBeLessThan(
+      SERVER_MAX_STRUCTURED_ERROR_BYTES
+    );
+    expect(byteLength(meta.stack as string)).toBeLessThan(
+      SERVER_MAX_STRUCTURED_ERROR_BYTES
+    );
+    // The whole meta block, which is what the server actually rejected.
+    expect(encode(meta).byteLength).toBeLessThan(SERVER_MAX_META_BYTES);
+    // Diagnostic value survives: the head, plus a marker naming what was lost.
+    expect(meta.error as string).toMatch(/^boom: x+/);
+    expect(meta.error as string).toMatch(
+      new RegExp(`truncated: ${byteLength(error)} bytes`)
+    );
+    expect(meta.stack as string).toMatch(/^Error: boom\n {4}at fn/);
+    expect(meta.stack as string).toMatch(/truncated: \d+ bytes/);
+  });
+
+  it('bounds a multi-MiB step_retrying error while keeping retryAfter', () => {
+    const retryAfter = new Date('2026-06-10T12:00:00.000Z');
+    const { meta } = splitEventDataForV4({
+      eventType: 'step_retrying',
+      correlationId: 'step_1',
+      specVersion: 2,
+      eventData: {
+        stepName: 'a-step',
+        error: 'flake: '.repeat(1024 * 1024),
+        stack: 'Error: flake\n    at fn'.repeat(100_000),
+        retryAfter,
+      },
+    } as AnyEventRequest);
+
+    expect(encode(meta).byteLength).toBeLessThan(SERVER_MAX_META_BYTES);
+    expect(meta.retryAfter).toEqual(retryAfter);
+  });
+
+  it('bounds a multi-MiB run_failed error object, preserving its shape', () => {
+    const { meta } = splitEventDataForV4({
+      eventType: 'run_failed',
+      specVersion: 2,
+      eventData: {
+        error: {
+          message: 'kaboom: '.repeat(1024 * 1024),
+          stack: 'Error: kaboom\n    at main'.repeat(200_000),
+        },
+        errorCode: 'RUNTIME_ERROR',
+      },
+    } as AnyEventRequest);
+
+    // run_failed's consumers (deserializeError, the observability UI, the
+    // server's structuredError materialization) read `message` / `stack` off
+    // an object — truncation must not flatten it to a string.
+    const error = meta.error as { message: string; stack: string };
+    expect(error.message).toMatch(/^kaboom: /);
+    expect(error.stack).toMatch(/^Error: kaboom\n {4}at main/);
+    expect(encode(meta.error).byteLength).toBeLessThan(
+      SERVER_MAX_STRUCTURED_ERROR_BYTES
+    );
+    expect(encode(meta).byteLength).toBeLessThan(SERVER_MAX_META_BYTES);
+    expect(meta.errorCode).toBe('RUNTIME_ERROR');
+  });
+
+  it('keeps small sibling fields on a truncated run_failed error object', () => {
+    const { meta } = splitEventDataForV4({
+      eventType: 'run_failed',
+      specVersion: 2,
+      eventData: {
+        error: {
+          message: 'kaboom: '.repeat(1024 * 1024),
+          stack: 'Error: kaboom',
+          code: 'ERR_CUSTOM',
+        },
+      },
+    } as AnyEventRequest);
+
+    const error = meta.error as Record<string, unknown>;
+    expect(error.code).toBe('ERR_CUSTOM');
+    expect(error.stack).toBe('Error: kaboom');
+    expect(encode(meta.error).byteLength).toBeLessThan(
+      SERVER_MAX_STRUCTURED_ERROR_BYTES
+    );
+  });
+
+  it('drops an oversized sibling field rather than blowing the budget', () => {
+    // Truncating message/stack is not enough when the bulk is somewhere
+    // else on the object; the bound still has to hold.
+    const { meta } = splitEventDataForV4({
+      eventType: 'run_failed',
+      specVersion: 2,
+      eventData: {
+        error: {
+          message: 'kaboom',
+          stack: 'Error: kaboom',
+          responseBody: 'y'.repeat(3 * 1024 * 1024),
+        },
+      },
+    } as AnyEventRequest);
+
+    const error = meta.error as Record<string, unknown>;
+    expect(error).toEqual({ message: 'kaboom', stack: 'Error: kaboom' });
+    expect(encode(meta.error).byteLength).toBeLessThan(
+      SERVER_MAX_STRUCTURED_ERROR_BYTES
+    );
+  });
+
+  it('leaves an in-budget error byte-identical', () => {
+    // The overwhelmingly common case must be untouched: same value, same
+    // wire bytes as before the bound existed.
+    const error = 'x'.repeat(8 * 1024);
+    const stack = `Error: boom\n${'    at fn (/app/step.js:10:5)\n'.repeat(20)}`;
+    const { meta } = splitEventDataForV4({
+      eventType: 'step_failed',
+      correlationId: 'step_1',
+      specVersion: 2,
+      eventData: { stepName: 'a-step', error, stack },
+    } as AnyEventRequest);
+
+    expect(meta.error).toBe(error);
+    expect(meta.stack).toBe(stack);
+  });
+
+  it('truncates on a code-point boundary', () => {
+    // A byte-wise slice through a 4-byte emoji would leave a mojibake tail
+    // (or a lone surrogate) in the message the user reads.
+    const { meta } = splitEventDataForV4({
+      eventType: 'step_failed',
+      correlationId: 'step_1',
+      specVersion: 2,
+      eventData: { stepName: 'a-step', error: '😀'.repeat(1024 * 1024) },
+    } as AnyEventRequest);
+
+    const error = meta.error as string;
+    expect(error).not.toContain('�');
+    expect(error).toMatch(/^😀+/);
+    expect(byteLength(error)).toBeLessThan(SERVER_MAX_STRUCTURED_ERROR_BYTES);
+  });
+});
+
+describe('createWorkflowRunEvent oversized error frame', () => {
+  it('posts a step_failed frame whose meta block stays under the server cap', async () => {
+    const agent = mockAgent();
+    let capturedMeta: Record<string, unknown> | undefined;
+    let capturedMetaBytes = 0;
+
+    agent
+      .get(ORIGIN)
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events/step_failed',
+        method: 'POST',
+      })
+      .reply(
+        200,
+        (opts: { body?: unknown }) => {
+          capturedMeta = decodePostedMeta(opts.body);
+          capturedMetaBytes = encode(capturedMeta).byteLength;
+          return encode({});
+        },
+        {
+          headers: {
+            'x-wf-event-id': 'evnt_1',
+            'x-wf-run-id': 'wrun_1',
+            'x-wf-created-at': '2026-06-10T00:00:04.000Z',
+          },
+        }
+      );
+
+    await createWorkflowRunEvent(
+      'wrun_1',
+      {
+        eventType: 'step_failed',
+        correlationId: 'step_1',
+        specVersion: 2,
+        eventData: {
+          stepName: 'a-step',
+          error: 'boom: '.repeat(1024 * 1024),
+          stack: 'Error: boom\n    at fn'.repeat(200_000),
+          deploymentId: 'dpl_1',
+          workflowName: 'a-workflow',
+        },
+      } as AnyEventRequest,
+      undefined,
+      { token: 'test-token', dispatcher: agent }
+    );
+
+    expect(capturedMetaBytes).toBeGreaterThan(0);
+    expect(capturedMetaBytes).toBeLessThan(SERVER_MAX_META_BYTES);
+    expect(byteLength(capturedMeta?.error as string)).toBeLessThan(
+      SERVER_MAX_STRUCTURED_ERROR_BYTES
+    );
+    expect(byteLength(capturedMeta?.stack as string)).toBeLessThan(
+      SERVER_MAX_STRUCTURED_ERROR_BYTES
+    );
+    agent.assertNoPendingInterceptors();
+  });
+});
+
 describe('splitEventDataForV4 hook fields', () => {
   it('routes hook_created token + isWebhook into the frame meta', () => {
     // The runtime marks webhook hooks via eventData.isWebhook; the backend

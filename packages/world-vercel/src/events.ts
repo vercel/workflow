@@ -47,7 +47,7 @@ import {
   validateUlidTimestamp,
   type WorkflowRun,
 } from '@workflow/world';
-import { decode } from 'cbor-x';
+import { decode, encode } from 'cbor-x';
 import { withEventPostRetry } from './event-retry.js';
 import {
   createWorkflowRunEventV4,
@@ -164,6 +164,114 @@ const structuredErrorEventTypes = new Set<string>([
 ]);
 
 // =============================================================================
+// Inline structured-error bounds
+// =============================================================================
+
+/**
+ * Byte budgets for the inline structured error this line carries in the v4
+ * frame meta (`meta.error` / `meta.stack` — see `SplitEventData`).
+ *
+ * The meta block is the one part of a v4 frame with no streaming escape
+ * hatch, and the server caps it: 64 KiB for the whole block, 32 KiB each
+ * for `meta.error` (CBOR-encoded) and `meta.stack` (UTF-8). Past that the
+ * write is refused outright, so the terminal event never lands and the run
+ * is left in `running` with no failure recorded. These budgets sum to
+ * 24 KiB, leaving ~40 KiB for the rest of the block — every other meta
+ * field is itself server-capped, the largest (executionContext) at 2 KiB.
+ *
+ * Raising these is the wrong fix if they ever bind: data that big belongs
+ * in the frame body, where the server streams it into a ref.
+ */
+const META_ERROR_MAX_BYTES = 16 * 1024;
+const META_STACK_MAX_BYTES = 8 * 1024;
+
+/** Headroom for CBOR framing when a budget covers an encoded value rather
+ *  than a raw string: ≤5 bytes for a string head, a few dozen for a small
+ *  map's keys and headers. */
+const CBOR_OVERHEAD_RESERVE = 64;
+
+const utf8Encoder = new TextEncoder();
+
+/** Trailing U+FFFD left behind when a non-fatal decode hits a multi-byte
+ *  sequence the byte slice cut in half. */
+const TRAILING_REPLACEMENT_CHAR = /�$/;
+
+/**
+ * Truncate to `maxBytes` of UTF-8 on a code-point boundary, appending a
+ * marker that names the original size so the loss is visible rather than
+ * looking like a message that simply ended.
+ */
+function truncateUtf8(value: string, maxBytes: number): string {
+  const bytes = utf8Encoder.encode(value);
+  if (bytes.byteLength <= maxBytes) return value;
+  const marker = `… [truncated: ${bytes.byteLength} bytes exceeds the ${maxBytes}-byte v4 event metadata budget]`;
+  const markerBytes = utf8Encoder.encode(marker).byteLength;
+  const keep = Math.max(0, maxBytes - markerBytes);
+  const head = new TextDecoder()
+    .decode(bytes.subarray(0, keep))
+    .replace(TRAILING_REPLACEMENT_CHAR, '');
+  return head + marker;
+}
+
+/**
+ * Bound the inline `meta.error` value to `META_ERROR_MAX_BYTES` encoded.
+ *
+ * An in-budget error passes through untouched, so the common case stays
+ * byte-identical to what this line has always sent. A rewritten one keeps
+ * the shape its consumers read `message` / `stack` / `code` off of
+ * (`deserializeStep`, `deserializeError`, and the server's StructuredError
+ * materialization).
+ */
+function boundMetaError(value: unknown): unknown {
+  if (encode(value).byteLength <= META_ERROR_MAX_BYTES) return value;
+
+  // step_failed / step_retrying: a bare message string.
+  if (typeof value === 'string') {
+    return truncateUtf8(value, META_ERROR_MAX_BYTES - CBOR_OVERHEAD_RESERVE);
+  }
+
+  // run_failed: a `{ message, stack? }` object. Truncate both strings and
+  // keep the other fields, then fall back to message+stack alone if some
+  // unexpected sibling field is what blew the budget.
+  if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
+    const source = value as Record<string, unknown>;
+    const half = Math.floor((META_ERROR_MAX_BYTES - CBOR_OVERHEAD_RESERVE) / 2);
+    const message = truncateUtf8(stringifyErrorField(source.message), half);
+    const stack =
+      source.stack === undefined
+        ? undefined
+        : truncateUtf8(stringifyErrorField(source.stack), half);
+    const withSiblings = {
+      ...source,
+      message,
+      ...(stack === undefined ? {} : { stack }),
+    };
+    if (encode(withSiblings).byteLength <= META_ERROR_MAX_BYTES) {
+      return withSiblings;
+    }
+    return { message, ...(stack === undefined ? {} : { stack }) };
+  }
+
+  // Not a shape this runtime emits, and not one we can bound while
+  // preserving it. Keep the event writable rather than lose the failure.
+  return {
+    message: `[error omitted: ${encode(value).byteLength} encoded bytes exceeds the ${META_ERROR_MAX_BYTES}-byte v4 event metadata budget]`,
+  };
+}
+
+/** Coerce an error `message` / `stack` field to the string the wire wants,
+ *  tolerating the non-string values `eventData` is loosely typed to allow. */
+function stringifyErrorField(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (value === undefined || value === null) return 'Unknown error';
+  try {
+    return String(value);
+  } catch {
+    return 'Unknown error';
+  }
+}
+
+// =============================================================================
 // Helpers
 // =============================================================================
 
@@ -189,14 +297,14 @@ interface SplitEventData {
      * as an opaque body — the backend rebuilds the same StructuredError it
      * did on the pre-v4 wire from this meta. (A runtime that dehydrates
      * errors into a Uint8Array instead routes them through the frame body
-     * via `payload`.)
+     * via `payload`.) Bounded to `META_ERROR_MAX_BYTES`.
      */
     error?: unknown;
     /**
      * Companion stack string for step_failed / step_retrying, whose `error`
      * is a bare message. The backend folds it into the step's
      * structuredError. run_failed carries its stack inside the `error`
-     * object instead.
+     * object instead. Bounded to `META_STACK_MAX_BYTES`.
      */
     stack?: string;
     /** Structured executionContext, included verbatim in frame meta. */
@@ -323,7 +431,7 @@ export function splitEventDataForV4(data: AnyEventRequest): SplitEventData {
   // into the step's structuredError. run_failed keeps its stack inside the
   // error object, so there is no top-level `stack` to lift there.
   if (typeof eventData.stack === 'string') {
-    meta.stack = eventData.stack;
+    meta.stack = truncateUtf8(eventData.stack, META_STACK_MAX_BYTES);
   }
   if (
     eventData.executionContext !== undefined &&
@@ -365,7 +473,7 @@ export function splitEventDataForV4(data: AnyEventRequest): SplitEventData {
         // StructuredError the pre-v4 wire produced, instead of wrapping it
         // as an opaque body the backend would store verbatim. The matching
         // read path (buildEventFromV4) decodes it back.
-        meta.error = value;
+        meta.error = boundMetaError(value);
       } else {
         // Any other payload field arriving as a non-Uint8Array is a real
         // contract violation (those fields are always dehydrated bytes) —
