@@ -49,12 +49,12 @@ export const SPEC_VERSION_SUPPORTS_SLOT_IDENTITY = 6 as SpecVersion;
  * Current spec version (event-sourced architecture with native attributes
  * and compressed payloads).
  *
- * Deliberately NOT bumped for slot-numbered event ids and per-kind
- * correlation ids. Both are properties of a run's whole log rather than of an
- * individual event, and both are already self-describing: a run's scheme is
- * readable from the shape of its own first event id (see `isSlotEventId`), so
- * a World that owns its own id allocation needs no version negotiation to pin
- * one. Bumping this constant would stamp the new version on every World
+ * Deliberately NOT bumped for slot-numbered event ids. Slot numbering is a
+ * property of a run's whole log rather than of an individual event, and it is
+ * already self-describing: a run's scheme is readable from the shape of its
+ * own first event id (see `isSlotEventId`), so a World that owns its own id
+ * allocation needs no version negotiation to pin one. Bumping this constant
+ * would stamp the new version on every World
  * including ones that have not adopted slots yet, which is exactly the
  * cross-version breakage the pin exists to avoid. A World that does allocate
  * slots declares the higher version itself (see `world-vercel`), and

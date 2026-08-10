@@ -27,7 +27,6 @@ import type { Event } from '@workflow/world';
 import * as nanoid from 'nanoid';
 import { monotonicFactory } from 'ulid';
 import { describe, expect, it, vi } from 'vitest';
-import { createCorrelationIdGenerator } from './correlation-id.js';
 import { EventsConsumer } from './events-consumer.js';
 import {
   scheduleWhenIdle,
@@ -78,12 +77,7 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
       getPromiseQueue: () => ctx.promiseQueue,
     }),
     invocationsQueue: new Map(),
-    generateCorrelationId: createCorrelationIdGenerator({
-      seed: 'test',
-      fixedTimestamp: workflowStartedAt,
-      positional: () => ulid(workflowStartedAt),
-      perKind: true,
-    }),
+    generateUlid: () => ulid(workflowStartedAt),
     generateNanoid: nanoid.customRandom(nanoid.urlAlphabet, 21, (size) =>
       new Uint8Array(size).map(() => 256 * context.globalThis.Math.random())
     ),
