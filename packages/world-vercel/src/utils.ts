@@ -457,7 +457,7 @@ export async function makeRequest<T>({
         const fetchStart = Date.now();
         let response: Response;
         try {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici v7 dispatcher types don't match @types/node's RequestInit
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici dispatcher types don't match @types/node's RequestInit
           response = await fetch(request, {
             dispatcher: getDispatcher(config),
           } as any);

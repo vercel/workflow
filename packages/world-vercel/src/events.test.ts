@@ -48,11 +48,35 @@ function mockAgent() {
   return agent;
 }
 
-function decodePostedMeta(rawBody: unknown): Record<string, unknown> {
-  const bytes =
-    typeof rawBody === 'string'
-      ? new TextEncoder().encode(rawBody)
-      : new Uint8Array(rawBody as ArrayBufferLike);
+/**
+ * Reads a request body as the mock hands it to a reply callback.
+ *
+ * undici 8's MockAgent consumes the outgoing body to drive the handler's
+ * body-sent hooks, then substitutes a replayable async iterable for it; undici 7
+ * passed whatever `fetch` dispatched (a `Uint8Array`) straight through. Reply
+ * callbacks therefore have to drain it, which makes them async.
+ */
+async function mockBodyBytes(rawBody: unknown): Promise<Uint8Array> {
+  if (rawBody == null) return new Uint8Array();
+  if (typeof rawBody === 'string') return new TextEncoder().encode(rawBody);
+  if (rawBody instanceof Uint8Array) return rawBody;
+  if (
+    typeof (rawBody as AsyncIterable<Uint8Array>)[Symbol.asyncIterator] ===
+    'function'
+  ) {
+    const chunks: Buffer[] = [];
+    for await (const chunk of rawBody as AsyncIterable<Uint8Array>) {
+      chunks.push(Buffer.from(chunk));
+    }
+    return new Uint8Array(Buffer.concat(chunks));
+  }
+  return new Uint8Array(rawBody as ArrayBufferLike);
+}
+
+async function decodePostedMeta(
+  rawBody: unknown
+): Promise<Record<string, unknown>> {
+  const bytes = await mockBodyBytes(rawBody);
   const metaLen = new DataView(
     bytes.buffer,
     bytes.byteOffset,
@@ -200,8 +224,8 @@ describe('createWorkflowRunEvent precondition snapshot wire fields', () => {
       })
       .reply(
         200,
-        (opts: { body?: unknown }) => {
-          capturedMeta = decodePostedMeta(opts.body);
+        async (opts: { body?: unknown }) => {
+          capturedMeta = await decodePostedMeta(opts.body);
           return runStartedResponse();
         },
         {
@@ -238,8 +262,8 @@ describe('createWorkflowRunEvent precondition snapshot wire fields', () => {
       })
       .reply(
         200,
-        (opts: { body?: unknown }) => {
-          capturedMeta = decodePostedMeta(opts.body);
+        async (opts: { body?: unknown }) => {
+          capturedMeta = await decodePostedMeta(opts.body);
           return runStartedResponse();
         },
         {
@@ -276,8 +300,8 @@ describe('createWorkflowRunEvent precondition snapshot wire fields', () => {
       })
       .reply(
         200,
-        (opts: { body?: unknown }) => {
-          capturedMeta = decodePostedMeta(opts.body);
+        async (opts: { body?: unknown }) => {
+          capturedMeta = await decodePostedMeta(opts.body);
           return runStartedResponse();
         },
         {
@@ -319,8 +343,8 @@ describe('createWorkflowRunEvent precondition snapshot wire fields', () => {
       })
       .reply(
         200,
-        (opts: { body?: unknown }) => {
-          capturedMeta = decodePostedMeta(opts.body);
+        async (opts: { body?: unknown }) => {
+          capturedMeta = await decodePostedMeta(opts.body);
           return runStartedResponse();
         },
         {
@@ -357,11 +381,10 @@ describe('createWorkflowRunEvent precondition snapshot wire fields', () => {
       .intercept({ path: '/api/v1/runs/wrun_legacy/events', method: 'POST' })
       .reply(
         200,
-        (opts: { body?: unknown }) => {
-          capturedBody =
-            typeof opts.body === 'string'
-              ? opts.body
-              : new TextDecoder().decode(opts.body as ArrayBufferLike);
+        async (opts: { body?: unknown }) => {
+          capturedBody = new TextDecoder().decode(
+            await mockBodyBytes(opts.body)
+          );
           return {
             eventId: 'evnt_legacy',
             runId: 'wrun_legacy',
@@ -475,8 +498,8 @@ async function postStepStartedMeta(
     })
     .reply(
       200,
-      (opts: { body?: unknown }) => {
-        capturedMeta = decodePostedMeta(opts.body);
+      async (opts: { body?: unknown }) => {
+        capturedMeta = await decodePostedMeta(opts.body);
         return createEventBody(
           {
             eventType: 'step_started',
@@ -559,8 +582,8 @@ describe('createWorkflowRunEvent replayDivergenceCount wire field', () => {
       })
       .reply(
         200,
-        (opts: { body?: unknown }) => {
-          capturedMeta = decodePostedMeta(opts.body);
+        async (opts: { body?: unknown }) => {
+          capturedMeta = await decodePostedMeta(opts.body);
           return createEventBody(
             {
               eventType: 'run_completed',
@@ -937,8 +960,8 @@ describe('createWorkflowRunEvent response coercion', () => {
       })
       .reply(
         200,
-        (opts: { body?: unknown }) => {
-          capturedMeta = decodePostedMeta(opts.body);
+        async (opts: { body?: unknown }) => {
+          capturedMeta = await decodePostedMeta(opts.body);
           return runStartedResponse();
         },
         {
@@ -1716,8 +1739,8 @@ describe('createWorkflowRunEvent hook_received replay preload', () => {
       })
       .reply(
         200,
-        (opts: { body?: unknown }) => {
-          capturedMeta = decodePostedMeta(opts.body);
+        async (opts: { body?: unknown }) => {
+          capturedMeta = await decodePostedMeta(opts.body);
           return hookReplayStreamResponse();
         },
         {
