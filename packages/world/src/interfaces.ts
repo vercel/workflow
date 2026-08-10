@@ -318,7 +318,11 @@ export interface Storage {
   };
 
   /**
-   * VM snapshot storage for VM-memory snapshotting.
+   * VM snapshot storage for VM-memory snapshotting. OPTIONAL: a World
+   * that cannot (or chooses not to) store multi-MB blobs simply omits
+   * it, and the runtime falls back to full event replay — snapshots are
+   * an optimization, never a correctness requirement. Consumers must
+   * feature-detect (`world.snapshots?.…`).
    *
    * Snapshots capture the state of the QuickJS WASM VM at a suspension
    * point, allowing workflow execution to resume from the exact point of
@@ -326,9 +330,16 @@ export interface Storage {
    *
    * The metadata (including eventsCursor) is stored alongside the snapshot
    * data so that on restore, only events created after the snapshot need
-   * to be fetched.
+   * to be fetched. Implementations MUST round-trip the metadata object
+   * losslessly and atomically with the bytes it describes — a snapshot
+   * paired with another suspension's metadata replays from the wrong log
+   * position and silently diverges. The `encodeSnapshotEnvelope` /
+   * `decodeSnapshotEnvelope` helpers pack both into one self-describing
+   * blob so a plain blob store satisfies this with a single atomic
+   * write; worlds with transactional metadata storage may store the
+   * fields natively instead.
    */
-  snapshots: {
+  snapshots?: {
     /**
      * Save a VM snapshot for a workflow run.
      * Each save overwrites the previous snapshot for this run.
@@ -357,7 +368,10 @@ export interface Storage {
     /**
      * Delete the snapshot for a workflow run.
      * Called when the workflow reaches a terminal state (completed,
-     * failed, cancelled).
+     * failed, cancelled). MUST be idempotent: terminal-state cleanup is
+     * exactly the path most likely to retry or run for a run that never
+     * snapshotted, so deleting a nonexistent snapshot resolves
+     * successfully.
      *
      * @param runId - The workflow run ID
      */

@@ -1,6 +1,11 @@
 import { WorkflowWorldError } from '@workflow/errors';
 import type { SnapshotMetadata, Storage } from '@workflow/world';
+import {
+  decodeSnapshotEnvelope,
+  encodeSnapshotEnvelope,
+} from '@workflow/world';
 import { request as undiciRequest } from 'undici';
+import { HTTP_DEBUG_ENABLED } from './http-core.js';
 import { getDispatcher } from './http-client.js';
 import { injectTraceContextIntoHeaders } from './telemetry.js';
 import { type APIConfig, getHttpConfig } from './utils.js';
@@ -19,6 +24,17 @@ function headersToRecord(headers: Headers): Record<string, string> {
 }
 
 /**
+ * Per-operation diagnostic (wire bytes + HTTP cost, grep-able by runId
+ * alongside @workflow/core's QUICKJS_VM diagnostics). Runs on every
+ * suspension/resume, so it is gated behind the package's HTTP debug
+ * flag like every other request log in this package.
+ */
+function snapshotDiag(fields: Record<string, unknown>): void {
+  if (!HTTP_DEBUG_ENABLED) return;
+  console.debug('[workflow:world-vercel:http] WORLD_SNAPSHOT_DIAG', fields);
+}
+
+/**
  * Create snapshot storage backed by the workflow-server API.
  *
  * Compression and encryption are handled by `@workflow/core`'s
@@ -27,14 +43,24 @@ function headersToRecord(headers: Headers): Record<string, string> {
  * (encryption produces ciphertext that doesn't compress) and it does
  * not encrypt.
  *
+ * The request/response body is a snapshot ENVELOPE (metadata + bytes in
+ * one blob; see `encodeSnapshotEnvelope`): the workflow-server stores
+ * it opaquely, so the FULL metadata object round-trips losslessly
+ * without any server-side schema involvement, and the metadata/bytes
+ * pairing is atomic by construction. The `X-Snapshot-*` headers on save
+ * are denormalized copies for server-side observability only — loads
+ * decode the envelope and never trust headers (fabricating metadata
+ * from missing headers is exactly the silent-wrong-answer direction:
+ * an invented null cursor means "replay from the beginning").
+ *
  * Snapshot endpoints use raw binary transfer:
- *   - PUT  /v2/runs/:runId/snapshot — binary body, metadata in headers
- *   - GET  /v2/runs/:runId/snapshot — binary response, metadata in headers
- *   - DELETE /v2/runs/:runId/snapshot — no body
+ *   - PUT  /v2/runs/:runId/snapshot — envelope body
+ *   - GET  /v2/runs/:runId/snapshot — envelope response
+ *   - DELETE /v2/runs/:runId/snapshot — no body; 404 is success
  */
 export function createSnapshotsStorage(
   config?: APIConfig
-): Storage['snapshots'] {
+): NonNullable<Storage['snapshots']> {
   return {
     async save(
       runId: string,
@@ -45,9 +71,10 @@ export function createSnapshotsStorage(
       const { baseUrl, headers } = await getHttpConfig(config);
       const url = `${baseUrl}/v2/runs/${encodeURIComponent(runId)}/snapshot`;
 
-      // Bytes arrive opaquely from the core's
-      // `compress → encrypt` pipeline. Forward verbatim.
+      const envelope = encodeSnapshotEnvelope(metadata, data);
+
       headers.set('Content-Type', 'application/octet-stream');
+      // Observability-only denormalized copies (see module docstring).
       headers.set('X-Snapshot-Events-Cursor', metadata.eventsCursor ?? '');
       headers.set('X-Snapshot-Created-At', metadata.createdAt.toISOString());
       // Explicit W3C trace-context injection: this path routes around
@@ -81,7 +108,7 @@ export function createSnapshotsStorage(
       const putStart = performance.now();
       const response = await undiciRequest(url, {
         method: 'PUT',
-        body: data,
+        body: envelope,
         headers: headersToRecord(headers),
         dispatcher: getDispatcher(config) as never,
       });
@@ -98,15 +125,13 @@ export function createSnapshotsStorage(
       // Consume the response body to release the connection
       await response.body.text();
 
-      // Diagnostic: actual on-the-wire snapshot bytes and the HTTP-PUT
-      // cost, grep-able by runId alongside @workflow/core's QUICKJS_VM
-      // diagnostics.
-      console.debug('[Workflow] WORLD_SNAPSHOT_DIAG', {
+      snapshotDiag({
         op: 'save',
         runId,
         // Bytes received from the core — already compressed and
-        // encrypted upstream. The world transports them opaquely.
-        wireBytes: data.byteLength,
+        // encrypted upstream. The world transports them opaquely
+        // (envelope framing adds the metadata header).
+        wireBytes: envelope.byteLength,
         putDurationMs,
         totalDurationMs: Math.round(performance.now() - t0),
       });
@@ -134,9 +159,7 @@ export function createSnapshotsStorage(
       if (response.status === 404) {
         // Consume the response body to release the connection
         await response.text().catch(() => {});
-        // Diagnostic: emit the not-found case so we can correlate the
-        // skip-load fast-path in core with whatever the world saw.
-        console.debug('[Workflow] WORLD_SNAPSHOT_DIAG', {
+        snapshotDiag({
           op: 'load',
           runId,
           outcome: 'not_found',
@@ -155,36 +178,24 @@ export function createSnapshotsStorage(
       }
 
       const buffer = await response.arrayBuffer();
-      const data = new Uint8Array(buffer);
+      const envelope = new Uint8Array(buffer);
 
-      const eventsCursor =
-        response.headers.get('X-Snapshot-Events-Cursor') || null;
-      const createdAtStr = response.headers.get('X-Snapshot-Created-At');
-      const createdAt = createdAtStr ? new Date(createdAtStr) : new Date();
+      // Decode the envelope — the ONLY source of metadata. A body that
+      // does not decode (pre-envelope write, truncation, schema-invalid
+      // metadata) is a clean miss: the caller falls back to full
+      // replay. Never fabricate metadata from headers or wall time.
+      const decoded = decodeSnapshotEnvelope(envelope);
 
-      // CI-visible diagnostic: actual on-the-wire snapshot bytes and
-      // HTTP-GET cost. Same format/pairing as the save side above so
-      // the entire snapshot save/load lifecycle is grep-able from
-      // Vercel function logs by runId.
-      console.debug('[Workflow] WORLD_SNAPSHOT_DIAG', {
+      snapshotDiag({
         op: 'load',
         runId,
-        outcome: 'ok',
-        // Bytes returned by the workflow-server (already
-        // compressed+encrypted by core; this layer transports them
-        // opaquely).
-        wireBytes: data.byteLength,
+        outcome: decoded ? 'ok' : 'undecodable_envelope',
+        wireBytes: envelope.byteLength,
         getDurationMs,
         totalDurationMs: Math.round(performance.now() - t0),
       });
 
-      return {
-        data,
-        metadata: {
-          eventsCursor: eventsCursor || null,
-          createdAt,
-        },
-      };
+      return decoded;
     },
 
     async delete(runId: string): Promise<void> {
@@ -199,7 +210,11 @@ export function createSnapshotsStorage(
         dispatcher: getDispatcher(config),
       } as any);
 
-      if (!response.ok) {
+      // 404 is success: delete is idempotent by interface contract —
+      // terminal-state cleanup retries, runs twice, and runs for runs
+      // that never snapshotted (matching local's `force: true` and
+      // postgres's plain DELETE).
+      if (!response.ok && response.status !== 404) {
         const text = await response.text().catch(() => '');
         throw new WorkflowWorldError(
           `DELETE /v2/runs/${runId}/snapshot -> HTTP ${response.status}: ${text}`,

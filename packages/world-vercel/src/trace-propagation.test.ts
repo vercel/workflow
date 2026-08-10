@@ -316,13 +316,15 @@ describe('streamer write trace propagation', () => {
 
 describe('snapshot requests trace propagation', () => {
   it('injects traceparent on snapshots.load, propagating the active context to workflow-server', async () => {
+    const { encodeSnapshotEnvelope } = await import('@workflow/world');
+    const body = encodeSnapshotEnvelope(
+      { eventsCursor: 'evnt_1', createdAt: new Date() },
+      new Uint8Array([1, 2, 3])
+    );
     const fetchMock = vi.fn().mockResolvedValue(
-      new Response(new Uint8Array([1, 2, 3]), {
+      new Response(body, {
         status: 200,
-        headers: {
-          'X-Snapshot-Events-Cursor': 'evnt_1',
-          'X-Snapshot-Created-At': new Date().toISOString(),
-        },
+        headers: { 'Content-Type': 'application/octet-stream' },
       })
     );
     vi.stubGlobal('fetch', fetchMock);

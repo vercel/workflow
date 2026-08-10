@@ -54,7 +54,11 @@ import {
   getReplayTimeoutMs,
   isQuickJSBaselineSnapshotEnabled,
 } from './constants.js';
-import { quickjsExtensions, quickjsWasm } from './quickjs-assets.generated.js';
+import {
+  quickjsExtensions,
+  quickjsWasiVersion,
+  quickjsWasm,
+} from './quickjs-assets.generated.js';
 import {
   adoptSerdeRoot,
   captureSerdeRoot,
@@ -1420,6 +1424,10 @@ export interface QuickJSWorkflowSession {
     rngDraws: number;
     lastUlid: string | undefined;
     serdeRootPtr: number;
+    /** Deterministic clock high-water mark at capture (ms since epoch). */
+    clockMs: number;
+    /** Exact engine build (quickjs-wasi version) that captured the heap. */
+    engineVersion: string;
   };
   /** Dispose the VM if it is still alive. Safe to call multiple times. */
   dispose(): void;
@@ -1607,6 +1615,14 @@ export async function startQuickJSWorkflow(
         'QuickJS snapshot restore requires metadata.serdeRootPtr (snapshot predates host-side serde)'
       );
     }
+    // Restore the deterministic clock's high-water mark: the clock lives
+    // host-side, so without this the restored heap observes Date.now()
+    // regressed to the run-creation time until the first delta event
+    // advances it. advanceClock is monotonic (max), so a missing value
+    // (older metadata) degrades to the derived initial clock.
+    if (restoredMeta.clockMs !== undefined) {
+      advanceClock(restoredMeta.clockMs);
+    }
     const vm = await restoreWorkflowVM(
       options.existingSnapshot.data,
       () => vmNowMs,
@@ -1659,6 +1675,8 @@ export async function startQuickJSWorkflow(
           rngDraws,
           lastUlid,
           serdeRootPtr: exportSerdeRoot(vm, serdeRoot),
+          clockMs: vmNowMs,
+          engineVersion: quickjsWasiVersion,
         }),
         options.encryptionKey
       );
@@ -1967,6 +1985,8 @@ export async function startQuickJSWorkflow(
         rngDraws,
         lastUlid,
         serdeRootPtr: exportSerdeRoot(vm, serdeRoot),
+        clockMs: vmNowMs,
+        engineVersion: quickjsWasiVersion,
       }),
       options.encryptionKey
     );
@@ -2013,6 +2033,8 @@ function makeLiveSession(
     rngDraws: number;
     lastUlid: string | undefined;
     serdeRootPtr: number;
+    clockMs: number;
+    engineVersion: string;
   },
   encryptionKey?: DecryptionKey
 ): QuickJSWorkflowSession {
@@ -2062,6 +2084,8 @@ function makeLiveSession(
       rngDraws: number;
       lastUlid: string | undefined;
       serdeRootPtr: number;
+      clockMs: number;
+      engineVersion: string;
     } {
       if (!alive) {
         throw new Error(

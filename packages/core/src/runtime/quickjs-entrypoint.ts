@@ -53,6 +53,7 @@ import {
 } from './constants.js';
 import { getPortLazy } from './get-port-lazy.js';
 import { getWorkflowQueueName, queueMessage } from './helpers.js';
+import { quickjsWasiVersion } from './quickjs-assets.generated.js';
 import {
   BASELINE_BUNDLE_FILENAME,
   type PendingAttribute,
@@ -193,6 +194,27 @@ async function queueStepMessage(params: {
  * progress via full replay.
  */
 const MAX_SNAPSHOT_PLAINTEXT_BYTES = 32 * 1024 * 1024;
+
+/**
+ * Runs whose heap exceeded {@link MAX_SNAPSHOT_PLAINTEXT_BYTES} at some
+ * suspension. WASM linear memory never shrinks, so a run that crossed
+ * the ceiling once will exceed it at EVERY later suspension — without
+ * this latch each of those would re-pay `session.snapshot()` (two full
+ * copies of the heap) just to discard the result. Process-local by
+ * design: the warm instance replaying the same run repeatedly is where
+ * the repeated cost lives; a cold instance pays one probe and re-latches.
+ * Bounded defensively (a process rarely sees many distinct oversized
+ * runs).
+ */
+const oversizedSnapshotRuns = new Set<string>();
+const OVERSIZED_SNAPSHOT_RUNS_MAX = 1024;
+
+function latchOversizedSnapshotRun(runId: string): void {
+  if (oversizedSnapshotRuns.size >= OVERSIZED_SNAPSHOT_RUNS_MAX) {
+    oversizedSnapshotRuns.clear();
+  }
+  oversizedSnapshotRuns.add(runId);
+}
 
 async function dispatchPendingOps(params: {
   world: Awaited<ReturnType<typeof getWorld>>;
@@ -698,7 +720,16 @@ export async function runWorkflowWithQuickJS(params: {
   // replay). When enabled, suspensions persist a snapshot once at least
   // `snapshotThreshold` events have been processed since the last one,
   // and resumptions restore the VM and replay only the delta events.
-  const snapshotThreshold = getSnapshotThreshold(workflowRun);
+  //
+  // `world.snapshots` is an OPTIONAL World capability: a World that
+  // doesn't provide blob storage simply omits it, and the threshold is
+  // forced to 0 here — the run executes with pure full replay, which is
+  // always correct (snapshots are an optimization, never a
+  // requirement).
+  const snapshotThreshold = world.snapshots
+    ? getSnapshotThreshold(workflowRun)
+    : 0;
+  const snapshotsStorage = world.snapshots;
 
   // Try to load a persisted snapshot. Skipped on the first invocation
   // (nothing can have been saved yet) and on any load/decode failure —
@@ -708,29 +739,40 @@ export async function runWorkflowWithQuickJS(params: {
     data: Uint8Array;
     metadata: import('@workflow/world').SnapshotMetadata;
   } | null = null;
-  if (snapshotThreshold > 0 && !isFirstInvocation(preloadedEvents)) {
+  if (
+    snapshotsStorage &&
+    snapshotThreshold > 0 &&
+    !isFirstInvocation(preloadedEvents)
+  ) {
     try {
-      const loaded = await world.snapshots.load(runId);
+      const loaded = await snapshotsStorage.load(runId);
       if (loaded) {
         const version = loaded.metadata.formatVersion;
         if (
           version !== SNAPSHOT_FORMAT_VERSION ||
           loaded.metadata.rngDraws === undefined ||
-          loaded.metadata.serdeRootPtr === undefined
+          loaded.metadata.serdeRootPtr === undefined ||
+          loaded.metadata.engineVersion !== quickjsWasiVersion
         ) {
           // Unknown/older format (v1 predates the host-side serde and
           // ULID engine — its heaps are not restorable here), a snapshot
           // without the PRNG draw count (restoring would reset id
           // generation to the base seed and collide with pre-snapshot
-          // correlation ids), or one without the serde capture-root
-          // token (the host serde cannot be rebuilt without executing
-          // guest code after user code has run).
+          // correlation ids), one without the serde capture-root token
+          // (the host serde cannot be rebuilt without executing guest
+          // code after user code has run), or one captured by a
+          // DIFFERENT quickjs-wasi build (the QJSS heap-image header is
+          // identical across builds, so a cross-build restore would pass
+          // deserialization and execute as undefined behavior — a live
+          // hazard mid-rollout when a deploy bumps quickjs-wasi).
           runtimeLogger.warn(
-            'QuickJS runtime: snapshot format version mismatch, falling back to full replay',
+            'QuickJS runtime: snapshot format/engine mismatch, falling back to full replay',
             {
               workflowRunId: runId,
               snapshotVersion: version,
               expectedVersion: SNAPSHOT_FORMAT_VERSION,
+              snapshotEngine: loaded.metadata.engineVersion,
+              expectedEngine: quickjsWasiVersion,
             }
           );
         } else {
@@ -829,7 +871,14 @@ export async function runWorkflowWithQuickJS(params: {
   // (pre-snapshot count persisted in the metadata + delta) — otherwise a
   // run that keeps snapshotting would never accumulate enough delta to
   // trip the ceiling it exists to enforce.
-  const restoredEventCount = existingSnapshot?.metadata.eventCount ?? 0;
+  //
+  // `let`, not `const`: the restore-failure fallback below refetches the
+  // FULL log, and from that point `events`/`seenEventIds` cover the
+  // whole run — keeping the pre-snapshot count would double-count every
+  // pre-snapshot event against the ceiling (tripping
+  // MaxEventsExceededError below the real limit) and stamp the inflated
+  // total into the next save's `eventCount`, compounding.
+  let restoredEventCount = existingSnapshot?.metadata.eventCount ?? 0;
   if (
     maxEventsLimit !== undefined &&
     restoredEventCount + events.length >= maxEventsLimit
@@ -933,6 +982,9 @@ export async function runWorkflowWithQuickJS(params: {
     wfdiag('snapshot_restore_failed', { message: (err as Error)?.message });
     existingSnapshot = null;
     lastEventsCursor = null;
+    // The refetched log below is the WHOLE run — the pre-snapshot count
+    // no longer describes anything not already in events/seenEventIds.
+    restoredEventCount = 0;
     // Refetch the FULL log (the earlier fetch started at the snapshot's
     // cursor).
     const allEvents: Event[] = [];
@@ -1105,6 +1157,8 @@ export async function runWorkflowWithQuickJS(params: {
         rngDraws: number;
         lastUlid: string | undefined;
         serdeRootPtr: number;
+        clockMs: number;
+        engineVersion: string;
       }
     | undefined;
 
@@ -1565,16 +1619,21 @@ export async function runWorkflowWithQuickJS(params: {
       snapshotThreshold > 0 &&
       result.suspended &&
       !runGone &&
-      eventsProcessedSinceSnapshot >= snapshotThreshold
+      eventsProcessedSinceSnapshot >= snapshotThreshold &&
+      // Once oversized, always oversized (linear memory never shrinks):
+      // skip BEFORE the capture, which costs two full heap copies.
+      !oversizedSnapshotRuns.has(runId)
     ) {
       try {
         capturedSnapshot = session.snapshot();
         if (capturedSnapshot.data.byteLength > MAX_SNAPSHOT_PLAINTEXT_BYTES) {
           // A heap this large costs more to store/decompress than the
           // replay it saves — skip the save (full replay remains correct)
-          // and make the skip visible.
+          // and make the skip visible. Latch so later suspensions of
+          // this run skip the capture itself.
+          latchOversizedSnapshotRun(runId);
           runtimeLogger.warn(
-            'QuickJS runtime: snapshot exceeds the size ceiling, skipping persist',
+            'QuickJS runtime: snapshot exceeds the size ceiling, skipping persist for the rest of this run',
             {
               workflowRunId: runId,
               plaintextBytes: capturedSnapshot.data.byteLength,
@@ -1594,7 +1653,7 @@ export async function runWorkflowWithQuickJS(params: {
     session.dispose();
   }
 
-  if (capturedSnapshot && lastEventsCursor !== null) {
+  if (capturedSnapshot && snapshotsStorage && lastEventsCursor !== null) {
     // Persist: compress (QuickJS heaps compress ~4x) → encrypt → save.
     // Compression goes BEFORE encryption because ciphertext is ~random
     // and doesn't compress. Failures are non-fatal — the run still makes
@@ -1608,19 +1667,31 @@ export async function runWorkflowWithQuickJS(params: {
     const totalEventCount = restoredEventCount + seenEventIds.size;
     safeWaitUntil(
       (async () => {
+        // Yield PAST the current tick before touching the bytes: this
+        // IIFE runs synchronously up to its first real await, and the
+        // point of waitUntil here is to let the response flush first.
+        // (`preferAsync` below keeps the zstd work itself off the event
+        // loop — without it the default codec is zstdCompressSync, which
+        // would block the loop for a multi-MB heap no matter when it
+        // starts.)
+        await new Promise((resolve) => setImmediate(resolve));
         const t0 = tick();
-        const compressed = await compress(snapshot.data, true);
+        const compressed = await compress(snapshot.data, true, undefined, {
+          preferAsync: true,
+        });
         const toStore = (await encryptSerializedData(
           compressed as Uint8Array,
           encryptionKey
         )) as Uint8Array;
-        await world.snapshots.save(runId, toStore, {
+        await snapshotsStorage.save(runId, toStore, {
           eventsCursor: lastEventsCursor,
           createdAt: new Date(),
           eventCount: totalEventCount,
           rngDraws: snapshot.rngDraws,
           lastUlid: snapshot.lastUlid,
           serdeRootPtr: snapshot.serdeRootPtr,
+          clockMs: snapshot.clockMs,
+          engineVersion: snapshot.engineVersion,
           formatVersion: SNAPSHOT_FORMAT_VERSION,
         });
         wfdiag('snapshot_saved', {
@@ -1657,7 +1728,7 @@ export async function runWorkflowWithQuickJS(params: {
     if (snapshotThreshold <= 0) return;
     if (!existingSnapshot && !capturedSnapshot) return;
     try {
-      await world.snapshots.delete(runId);
+      await snapshotsStorage?.delete(runId);
     } catch (err) {
       runtimeLogger.debug('QuickJS runtime: snapshot delete failed', {
         workflowRunId: runId,

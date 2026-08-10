@@ -177,4 +177,71 @@ describe('snapshots storage', () => {
       ).rejects.toThrow(/HTTP 400/);
     });
   });
+
+  describe('load', () => {
+    it('round-trips the FULL metadata through the envelope body (no header fabrication)', async () => {
+      const { encodeSnapshotEnvelope } = await import('@workflow/world');
+      const stored = encodeSnapshotEnvelope(
+        {
+          eventsCursor: 'evnt_cursor_1',
+          createdAt: new Date('2025-06-01T12:00:00.000Z'),
+        },
+        new Uint8Array([1, 2, 3, 4])
+      );
+      server.handle = (_req, res) => {
+        // Deliberately NO X-Snapshot-* headers: metadata must come from
+        // the envelope, never be invented from headers/wall time.
+        res.writeHead(200, { 'Content-Type': 'application/octet-stream' });
+        res.end(Buffer.from(stored));
+      };
+      const storage = createSnapshotsStorage();
+      const loaded = await storage.load('wrun_env');
+      expect(loaded).not.toBeNull();
+      expect(loaded!.metadata.eventsCursor).toBe('evnt_cursor_1');
+      expect(loaded!.metadata.createdAt).toEqual(
+        new Date('2025-06-01T12:00:00.000Z')
+      );
+      expect(Array.from(loaded!.data)).toEqual([1, 2, 3, 4]);
+    });
+
+    it('treats an undecodable body as a miss instead of fabricating metadata', async () => {
+      server.handle = (_req, res) => {
+        // A body that predates the envelope format (or got truncated).
+        res.writeHead(200, {
+          'Content-Type': 'application/octet-stream',
+          // Even with plausible-looking headers present, the load must
+          // NOT synthesize metadata from them.
+          'X-Snapshot-Events-Cursor': 'evnt_header_only',
+          'X-Snapshot-Created-At': new Date().toISOString(),
+        });
+        res.end(Buffer.from([0xde, 0xad, 0xbe, 0xef]));
+      };
+      const storage = createSnapshotsStorage();
+      await expect(storage.load('wrun_legacy')).resolves.toBeNull();
+    });
+  });
+
+  describe('delete', () => {
+    it('treats 404 as success (idempotent terminal-state cleanup)', async () => {
+      server.handle = (_req, res) => {
+        res.writeHead(404);
+        res.end('not found');
+      };
+      const storage = createSnapshotsStorage();
+      await expect(storage.delete('wrun_never_snapshotted')).resolves.toBe(
+        undefined
+      );
+    });
+
+    it('still throws on non-retryable server errors', async () => {
+      // 403 rather than 500: the shared dispatcher's RetryAgent retries
+      // 5xx (with backoff), which is orthogonal to what this asserts.
+      server.handle = (_req, res) => {
+        res.writeHead(403);
+        res.end('forbidden');
+      };
+      const storage = createSnapshotsStorage();
+      await expect(storage.delete('wrun_err')).rejects.toThrow(/HTTP 403/);
+    });
+  });
 });
