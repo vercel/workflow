@@ -112,7 +112,11 @@ export {
   StructuredErrorSchema,
 } from './shared.js';
 export type * from './snapshots.js';
-export { SnapshotMetadataSchema } from './snapshots.js';
+export {
+  decodeSnapshotEnvelope,
+  encodeSnapshotEnvelope,
+  SnapshotMetadataSchema,
+} from './snapshots.js';
 export type { SpecVersion } from './spec-version.js';
 export {
   isLegacySpecVersion,

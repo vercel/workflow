@@ -1,23 +1,31 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import type { SnapshotMetadata } from '@workflow/world';
-import { SnapshotMetadataSchema } from '@workflow/world';
+import {
+  decodeSnapshotEnvelope,
+  encodeSnapshotEnvelope,
+} from '@workflow/world';
 import {
   assertSafeEntityId,
   ensureDir,
   readBuffer,
-  readJSON,
   resolveWithinBase,
   write,
-  writeJSON,
 } from '../fs.js';
 
 /**
  * Create the snapshots sub-storage for a local World implementation.
  *
- * Snapshots are stored as two files per run:
- *   {basedir}/snapshots/{runId}.bin    — opaque VM snapshot bytes
- *   {basedir}/snapshots/{runId}.json   — metadata (eventsCursor, createdAt)
+ * Snapshots are stored as ONE file per run:
+ *   {basedir}/snapshots/{runId}.snapshot — snapshot envelope (metadata +
+ *   opaque VM snapshot bytes; see `encodeSnapshotEnvelope`)
+ *
+ * A single file matters: `write()` is atomic per file (temp + rename),
+ * but two files (bytes + metadata) written separately can tear — a crash
+ * between the renames, or a concurrent `load` interleaving them, pairs a
+ * heap image from one suspension with an `eventsCursor` from another,
+ * and the restore silently replays from the wrong log position. The
+ * envelope makes the pairing structurally atomic.
  *
  * Compression and encryption are handled by `@workflow/core`'s snapshot
  * entrypoint (`compress → encrypt → save`); this world layer stores the
@@ -30,13 +38,9 @@ export function createSnapshotsStorage(basedir: string) {
   // filesystem path (primary defense — rejects `../`, `/`, `\`, NUL, `.`),
   // and contain the join under the snapshots dir (defense in depth), the
   // same two-layer scheme the other world-local storages use.
-  function dataPath(runId: string): string {
+  function envelopePath(runId: string): string {
     assertSafeEntityId('runId', runId);
-    return resolveWithinBase(snapshotsDir, `${runId}.bin`);
-  }
-  function metadataPath(runId: string): string {
-    assertSafeEntityId('runId', runId);
-    return resolveWithinBase(snapshotsDir, `${runId}.json`);
+    return resolveWithinBase(snapshotsDir, `${runId}.snapshot`);
   }
 
   return {
@@ -46,42 +50,41 @@ export function createSnapshotsStorage(basedir: string) {
       metadata: SnapshotMetadata
     ): Promise<void> {
       await ensureDir(snapshotsDir);
-      await Promise.all([
-        write(dataPath(runId), Buffer.from(data), { overwrite: true }),
-        writeJSON(metadataPath(runId), metadata, { overwrite: true }),
-      ]);
+      await write(
+        envelopePath(runId),
+        Buffer.from(encodeSnapshotEnvelope(metadata, data)),
+        { overwrite: true }
+      );
     },
 
     async load(
       runId: string
     ): Promise<{ data: Uint8Array; metadata: SnapshotMetadata } | null> {
-      const metadata = await readJSON(
-        metadataPath(runId),
-        SnapshotMetadataSchema
-      );
-      if (!metadata) return null;
-
+      let envelope: Buffer;
       try {
-        const dataBuf = await readBuffer(dataPath(runId));
-        const data = new Uint8Array(
-          dataBuf.buffer,
-          dataBuf.byteOffset,
-          dataBuf.byteLength
-        );
-        return { data, metadata };
+        envelope = await readBuffer(envelopePath(runId));
       } catch (error: any) {
         if (error.code === 'ENOENT') {
           return null;
         }
         throw error;
       }
+      // Anything that fails to decode (truncated, corrupt, unknown
+      // version, schema-invalid metadata) is a clean miss — the caller
+      // falls back to full replay, never to fabricated metadata.
+      return decodeSnapshotEnvelope(
+        new Uint8Array(
+          envelope.buffer,
+          envelope.byteOffset,
+          envelope.byteLength
+        )
+      );
     },
 
     async delete(runId: string): Promise<void> {
-      await Promise.all([
-        fs.rm(dataPath(runId), { force: true }),
-        fs.rm(metadataPath(runId), { force: true }),
-      ]);
+      // `force: true` — idempotent by contract (terminal-state cleanup
+      // retries, and runs that never snapshotted delete too).
+      await fs.rm(envelopePath(runId), { force: true });
     },
   };
 }
