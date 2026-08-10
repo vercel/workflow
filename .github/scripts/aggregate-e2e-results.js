@@ -260,6 +260,8 @@ function parseJobInfo(filename) {
           'mongodb',
           'redis',
           'starter',
+          'nest',
+          'tanstack',
         ].some((app) => p.startsWith(app))
     );
 

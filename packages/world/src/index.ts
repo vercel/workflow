@@ -27,6 +27,7 @@ export {
   _resetEnvWarnCacheForTests,
   type EnvNumberOptions,
   envNumber,
+  getMaxEventsPerRun,
 } from './env-config.js';
 export type * from './events.js';
 export {
@@ -83,6 +84,10 @@ export {
 export { reenqueueActiveRuns } from './recovery.js';
 export type * from './runs.js';
 export {
+  BULK_CANCEL_MAX_RUN_IDS,
+  BulkCancelWorkflowRunResultSchema,
+  BulkCancelWorkflowRunsRequestSchema,
+  BulkCancelWorkflowRunsResultSchema,
   isTerminalWorkflowRunStatus,
   TERMINAL_WORKFLOW_RUN_STATUSES,
   TerminalWorkflowRunStatusSchema,

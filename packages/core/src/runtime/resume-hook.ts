@@ -593,6 +593,10 @@ async function resumeHookImpl<T = any>(
                 token: hook.token,
                 payload: dehydratedPayload,
                 payloadDigest,
+                // Deployment affinity for the consumer's cheap pre-write
+                // check: lets a misrouted delivery re-route before its
+                // hoisted hook_received write instead of after.
+                deploymentId: resumeContext.deploymentId,
               },
             } satisfies WorkflowInvokePayload,
             queueOptions

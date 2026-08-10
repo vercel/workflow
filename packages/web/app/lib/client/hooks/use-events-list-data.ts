@@ -175,6 +175,7 @@ export function useEventsListData(
             sortOrder,
             limit: 100,
             withData: false,
+            runId,
           })
         );
         if (fetchError) {
