@@ -52,14 +52,20 @@ export function createDevTests(config?: DevTestConfig) {
     // Each prewarm/trigger fetch is hard-bounded by this so cleanup never hangs
     // on a wedged dev server.
     const PREWARM_FETCH_TIMEOUT_MS = 5_000;
-    // The afterEach cleanup can issue two *sequential* prewarms (before and
-    // after deleting an added file) while the dev server is mid-rebuild — the
-    // teardown of a test that added a workflow file and edited an import is
-    // exactly when both rebuild and respond slowly. Its budget must therefore
-    // exceed 2× PREWARM_FETCH_TIMEOUT_MS (plus file IO) with headroom, or it
-    // trips vitest's 10s default hook timeout. The bounded fetches mean this
-    // can't hang indefinitely, so a generous budget is safe.
-    const CLEANUP_HOOK_TIMEOUT_MS = PREWARM_FETCH_TIMEOUT_MS * 4;
+    // How long cleanup waits for the dev server to regenerate the step
+    // registrations after a workflow file is deleted, before repairing them
+    // itself.
+    const STALE_REGISTRATION_TIMEOUT_MS = 8_000;
+    // The afterEach cleanup can issue three *sequential* prewarms (before and
+    // after deleting an added file, and after repairing the registrations)
+    // while the dev server is mid-rebuild — the teardown of a test that added
+    // a workflow file and edited an import is exactly when both rebuild and
+    // respond slowly. Its budget must therefore exceed 3× the fetch bound plus
+    // the registration wait (plus file IO) with headroom, or it trips vitest's
+    // 10s default hook timeout. The bounded fetches mean this can't hang
+    // indefinitely, so a generous budget is safe.
+    const CLEANUP_HOOK_TIMEOUT_MS =
+      PREWARM_FETCH_TIMEOUT_MS * 4 + STALE_REGISTRATION_TIMEOUT_MS;
     const appPath = getWorkbenchAppPath();
     const deploymentUrl = process.env.DEPLOYMENT_URL;
     const generatedStepRegistration = path.join(
@@ -181,6 +187,75 @@ export function createDevTests(config?: DevTestConfig) {
         fetchWithTimeout('/api/chat').catch(() => {}),
       ]);
     };
+    /**
+     * Make the generated step registrations stop importing files this test
+     * just deleted.
+     *
+     * The registrations list every file in the workflows directory, so
+     * deleting one leaves a dangling import until the dev server's watcher
+     * regenerates. Nothing in the cleanup waits for that, and on Windows the
+     * regeneration can be missed entirely — the flow route then fails to
+     * compile with `Module not found` for the rest of the run, which reads as
+     * every later test timing out rather than as a cleanup bug.
+     *
+     * Wait for the regeneration, and rewrite the file ourselves if it does not
+     * come. The next real regeneration overwrites whatever we write, and the
+     * deleted file cannot come back into the list, so the repair is safe.
+     */
+    const dropStaleStepRegistrations = async (deletedPaths: string[]) => {
+      const deletedNames = deletedPaths
+        .filter((filePath) =>
+          filePath.startsWith(path.join(appPath, workflowsDir))
+        )
+        .map((filePath) => path.basename(filePath));
+      if (deletedNames.length === 0) {
+        return;
+      }
+
+      const readStale = async (): Promise<{
+        content: string;
+        staleLines: string[];
+      } | null> => {
+        const content = await fs
+          .readFile(generatedStepRegistration, 'utf8')
+          .catch(() => null);
+        if (content === null) {
+          return null;
+        }
+        const staleLines = content
+          .split('\n')
+          .filter((line) =>
+            deletedNames.some((name) => line.includes(`/${name}`))
+          );
+        return staleLines.length > 0 ? { content, staleLines } : null;
+      };
+
+      const deadline = Date.now() + STALE_REGISTRATION_TIMEOUT_MS;
+      let stale = await readStale();
+      while (stale !== null && Date.now() < deadline) {
+        await sleep(500);
+        stale = await readStale();
+      }
+      if (stale === null) {
+        return;
+      }
+
+      console.warn(
+        `[dev e2e cleanup] ${generatedStepRegistration} still imports deleted ` +
+          `workflow files after ${STALE_REGISTRATION_TIMEOUT_MS}ms; stripping ` +
+          `them so later tests are not wedged on a missing module:\n` +
+          stale.staleLines.map((line) => `  ${line}`).join('\n')
+      );
+      await fs.writeFile(
+        generatedStepRegistration,
+        stale.content
+          .split('\n')
+          .filter((line) => !stale.staleLines.includes(line))
+          .join('\n')
+      );
+      await prewarm();
+    };
+
     const decodeDevServerLog = (content: Buffer) => {
       if (content.length >= 2 && content[0] === 0xff && content[1] === 0xfe) {
         return content.toString('utf16le');
@@ -390,6 +465,7 @@ export function createDevTests(config?: DevTestConfig) {
         )
       );
       await prewarm();
+      await dropStaleStepRegistrations(toDelete.map((item) => item.path));
       restoreFiles.length = 0;
       restoreDirectories.length = 0;
     }, CLEANUP_HOOK_TIMEOUT_MS);
