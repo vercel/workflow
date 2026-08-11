@@ -683,7 +683,7 @@ run that settled is the run the log describes.
 **No expectation is restated per world, and there is no mechanism to.** The
 first cut of this had one — an `expectAppendOnly` field on three scenarios,
 naming a second correct output. It was the wrong instrument, for a reason worth
-keeping written down. A scenario is one sequence of movements. The only thing a
+keeping written down. A scenario is one sequence of advances. The only thing a
 world changes is what a read returns. The branch a run ends on is decided by
 what it read, so pinning the branch pins a consequence of the world rather than
 a property of the run, and any expectation that then has to be restated per

@@ -109,7 +109,7 @@ export interface ScenarioSpec {
    * Any violation fails the scenario that tripped it.
    *
    * There is also deliberately no per-world variant of this field. A scenario
-   * is one sequence of movements, and the only thing a world changes is what a
+   * is one sequence of advances, and the only thing a world changes is what a
    * read returns — so an expectation that has to be restated per world is
    * pinning a consequence of the reads rather than a property of the run. Pin
    * the part that holds in every world; where the branch a run takes is decided

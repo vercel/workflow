@@ -13,9 +13,12 @@ pnpm sim in-flight-after-decision    # one scenario, by id
 Exits non-zero if any scenario misses an expectation or trips a consistency
 check, so it doubles as the package's integration test.
 
-This README is about **adding a scenario**. How the simulator underneath works,
-and how to change it, is [`packages/world-sim/README.md`](../../packages/world-sim/README.md);
-the internals reference is [`DESIGN.md`](../../packages/world-sim/DESIGN.md).
+This README is about **adding a scenario**. The API a script is written in —
+writers, advances, withholdings — is the
+[API reference](../../packages/world-sim/README.md#api-reference); how the
+simulator works and how to change it is the rest of
+[`packages/world-sim/README.md`](../../packages/world-sim/README.md), and the
+internals are [`DESIGN.md`](../../packages/world-sim/DESIGN.md).
 
 ## Adding a scenario
 
@@ -62,10 +65,10 @@ file because a scenario is read together with the branch it steers. Prefer
 reusing one; a new workflow is only worth it when the shape you need to steer
 does not exist yet.
 
-### The three moves
+### The shape of a script
 
-Every script is the same shape: **hold a writer at a named point, act while it
-is held, let it go.**
+Every script is the same three steps: **hold a writer at a named point, act
+while it is held, let it go.**
 
 ```ts
 const wf = sim.writer.orchestrator();
@@ -74,57 +77,29 @@ await sim.deliverHook('approval:doc-1', { approved: true });
 await wf.release();
 ```
 
-Because the writer is held *inside* the world call, everything the middle move
-does lands in the log before that writer is resumed. That is the entire point
-of the writer API: the interleaving is stated, not raced for.
+Because the writer is held *inside* the world call, everything the script does
+in between lands in the log before that writer is resumed. That is the entire
+point of the writer API: the interleaving is stated, not raced for.
 
-### Which writer commits which event
+Every advance and everything a script can do while one is held is in the
+[API reference](../../packages/world-sim/README.md#api-reference). Four things
+from it come up on the first scenario you write:
 
-Naming the wrong writer is a wait that times out, not a silent mismatch — so
-the failure is loud, but knowing the rule saves the trip:
-
-| you want to stop at | writer |
-| --- | --- |
-| `step_started`, `wait_created`, `hook_created`, the run's own decisions | `sim.writer.orchestrator()` |
-| `step_completed` / `step_failed` for a step | `sim.writer.step('reserveInventory')` — the step body commits its own outcome |
-| whichever step body gets there first | `sim.writer.anyStep()` |
-
-Two steps sharing a function name share a writer id. The three `runTo*`
-movements differ in *where* in the call they stop, and the difference between
-the first two is the whole reason both exist:
-
-- `runToEventProduced` — the event has crossed the world boundary and has not
-  been assigned a position in the event log, so a write that commits during the
-  hold sorts *ahead* of it.
-- `runToPositionMinted` — it has a position and nothing can read it, so a write
-  that commits during the hold sorts *behind* it. That is the hole the guards
-  exist to catch.
-- `runToEventCommitted` — the event is committed to storage, the writer has not
-  resumed.
-
-[API reference](#api-reference) has the full list, including the movements that
-are not on a writer at all.
-
-### Two rules, both learned the hard way
-
+- **Name the right writer.** `step_started`, `wait_created`, `hook_created` and
+  the run's own decisions belong to `sim.writer.orchestrator()`. A step's
+  `step_completed` / `step_failed` belongs to that step body —
+  `sim.writer.step('reserveInventory')`, or `sim.writer.anyStep()` for whichever
+  gets there first. Naming the wrong one is a wait that times out, so the
+  failure is loud, but knowing the rule saves the trip.
+- **Pick the right advance.** `runToEventCommitted` is what most scenarios want.
+  Reach for `runToEventProduced` or `runToPositionMinted` when the point is
+  whether a write committed during the hold sorts ahead of the held event or
+  behind it.
 - **`runTo` is level-triggered.** A point that has already gone by is an error,
-  not a wait. When two writers must be stopped at once, start both waits before
+  not a wait. To hold two writers at the same point, start both waits before
   awaiting either.
 - **Arm B's wait before releasing A.** A released writer can reach the next
   point within the same turn, and a wait armed afterwards has missed it.
-
-### Acting while a writer is held
-
-| | |
-| --- | --- |
-| `sim.deliverHook(token, payload)` | an out-of-band `resumeHook()`: commit `hook_received`, enqueue the flow message |
-| `sim.beginHookDelivery(...)` | the same delivery, withheld between its two halves. See [Withholdings](#withholdings) |
-| `sim.cancelRun(reason?)` | cancel, as an operator would |
-| `sim.advanceTime(ms)` | jump virtual time forward |
-| `sim.withholdNextEvent(reads?)` | hide the next committed event from the next `reads` reads. See [Withholdings](#withholdings) |
-| `sim.world` | a read-only view of the world at this instant |
-| `sim.note(message)` | a free-text marker in the trace |
-| `sim.check(name, condition)` | a named assertion in the trace; false fails the scenario |
 
 ### What to assert, and what not to
 
@@ -137,7 +112,7 @@ Two different instruments, for two different things:
   output is the point.
 
 And one rule that matters more than either: **do not restate an expectation per
-world.** A scenario is one sequence of movements; the only thing a flag like
+world.** A scenario is one sequence of advances; the only thing a flag like
 `--append-only` changes is what a read returns. An expectation that has to be
 written twice is pinning a *consequence of the reads* rather than a property of
 the run, and a scenario that branches its tempo on `sim.appendOnlyLog` is two
@@ -159,78 +134,6 @@ outcome the run should have reached and stays red until the runtime gets there.
 this scenario plays in. The usual reason to set one is a **paired scenario**:
 the red one and the same tempo with a fix armed, one flag apart, so the diff is
 the argument. The command-line flags below override the spec for a whole run.
-
-## API reference
-
-### Writers
-
-A **writer** is one concurrent thread of execution against the world: the thing
-that crosses the world boundary, is assigned a position in the event log, and
-commits to storage. Several of them writing to one log is the simulation's
-entire subject.
-
-| handle | writer id | what it is |
-| --- | --- | --- |
-| `sim.writer.orchestrator()` | `orchestrator` | The workflow function and the machinery around it — the suspension handler committing `step_created` / `step_started` / `hook_created` / `wait_created`, the run lifecycle writes, and the reads that decide what to do next. One per queue delivery. |
-| `sim.writer.step(shortName)` | `step:<shortName>` | One step body, which commits its own `step_completed` / `step_failed`. Several are in flight inside a single delivery. Two steps sharing a function name share the id. |
-| `sim.writer.anyStep()` | `step:*` | Whichever step body reaches the movement first. |
-| `sim.writer.any()` | `*` | Whichever writer reaches the movement first. |
-| — | `external` | The scenario itself, standing in for what a deployment does out of band: a webhook receiver, an operator cancelling a run. It has no handle and takes no movements — see [Withholdings](#withholdings) for the one place inside it a scenario can reach. |
-
-A handle is a *name*, not a live object: `sim.writer.step('slow')` can be taken
-before that step exists and resolves against whichever writer turns up under the
-name. `sim.writer.seen()` is not a writer but the ids observed so far, in
-first-appearance order.
-
-### Movements
-
-A **movement** is an instruction given to a writer to move to a specific place
-and pause there — *held*, in the word the API and the trace use. Every other
-writer keeps running; the held one resumes on `release()`.
-
-| method | writer | description |
-| --- | --- | --- |
-| `wf.runToEventProduced(type, opts?)` | any | Hold once the event has crossed the world boundary — fully formed, attributed, in the trace — and before it is assigned a position in the event log. Anything committed to storage during the hold sorts *ahead* of it. |
-| `wf.runToPositionMinted(type, opts?)` | any | Hold once the event is assigned a position in the event log and before it is committed to storage. The position is fixed and no reader can see it, so anything committed during the hold sorts *behind* it. |
-| `wf.runToEventCommitted(type, opts?)` | any | Hold once the event is committed to storage, before the writer resumes. |
-| `wf.runToCall(call, opts?)` | any | The same three places, for a world call that is not `events.create` — `events.list`, `runs.update`, a queue send. `opts.phase` picks which; it defaults to after the call returns. |
-| `wf.release()` | the held one | Resume. Idempotent; awaiting it yields the event loop, so the writer has really moved by the time it resolves. |
-| `sim.park(match, label?)` | whichever matches | Hold the next call that matches, whoever makes it. Edge-triggered, unlike `runTo`: it waits for the next occurrence instead of erroring on one already gone by. |
-| `sim.until(match, label?)` | whichever matches | Wait for a matching call to cross the world boundary, without holding it. |
-| `sim.during(match, body)` | whichever matches | `park`, run `body` while it is held, then release. |
-
-`type` is one event type or an array of them. `opts` is a step name as a bare
-string, or `{stepName, token, correlationId, where, label, timeoutMs}`.
-
-Not every world assigns a position without also committing it. Under
-`--append-only` the position an event holds at `runToPositionMinted` is
-provisional — a write overtaken while paused is reassigned to the tail when it
-commits — so the gap that movement exists to open is closed by construction.
-That is a result the book is there to produce, not a reason to avoid the
-movement.
-
-### Withholdings
-
-A **withholding** keeps something out of what a reader can see without holding
-the writer that produced it. Where a movement stops one thread, a withholding
-lets every thread run and changes what storage answers.
-
-| method | writer | description |
-| --- | --- | --- |
-| `sim.withholdNextEvent(reads?)` | whichever commits next | Hide the next event committed to storage from the next `reads` event-log reads (default 1). Call it immediately before the write to hide. |
-| `sim.beginHookDelivery(token, payload)` | `external` | Deliver a hook, withheld between its two halves: assigned a position in the event log, not committed to storage. Returns `{eventId, commit()}`. |
-
-`beginHookDelivery` is the one place inside an `external` writer a scenario can
-reach, and it is a withholding rather than a movement because holding that
-writer would be the wrong model: an out-of-band receiver is a separate process
-from the run's invocation, so nothing of the run's is blocked while its write is
-in flight. Holding an inline write instead would stall the delivery that made
-it, and the reader with it.
-
-Both are world-sensitive the same way `runToPositionMinted` is. Under
-`--append-only` a withheld read is cut short at the withheld event rather than
-missing it from the middle — the log can be behind, never wrong — and a hook
-whose position was overtaken re-takes the tail on `commit()`.
 
 ## Flags
 

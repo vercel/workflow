@@ -35,7 +35,7 @@ The resulting event stream:
 
 The second column names the writer. The indented `hook_received` is written by
 the scenario (`ext`) from *inside* the `events.create` call that committed
-`step_started`, while the orchestrator is stopped in it. Advance a different
+`step_started`, while the orchestrator is held in it. Advance a different
 writer instead — `sim.writer.step('reserveInventory')` — and the same workflow,
 same input and same output produce a different log, which is the point.
 
@@ -243,30 +243,45 @@ Colour is applied only when stdout is a terminal, and is off under `NO_COLOR`
 or `--no-color`; pass `{ color: true }` to force it. With colour off the output
 is plain ASCII, stable enough to check in as a golden file.
 
-## Writers
+## API reference
 
-A run is not one program. Several **writers** append to one event log, and the
-log is the only thing that makes them agree:
+Three things a script works with. A **writer** is a thread of execution. An
+**advance** moves one writer to a named place and holds it there. A
+**withholding** hides something from readers without holding anyone.
 
-| Writer | What it is | What it writes |
-| --- | --- | --- |
-| `orchestrator` | The workflow function and the runtime around it, committing at a suspension point | the run lifecycle, `step_created` / `step_started`, `hook_created`, `wait_*` |
-| `step:<name>` | One step body, running inline with full Node access | its own `step_completed` / `step_failed` / `step_retrying`, and any `attr_set` it writes from step context |
-| `external` | The scenario, acting as an operator or a webhook receiver | `hook_received`, `run_cancelled` |
+### Writers
+
+A run is not one program. Several writers append to one event log, and the log
+is the only thing that makes them agree. Each one crosses the world boundary,
+is assigned a position in the event log, and commits to storage.
+
+| writer | handle | what it is | what it writes |
+| --- | --- | --- | --- |
+| `orchestrator` | `sim.writer.orchestrator()` | The workflow function and the runtime around it, committing at a suspension point. One per queue delivery. | the run lifecycle, `step_created` / `step_started`, `hook_created`, `wait_*` |
+| `step:<name>` | `sim.writer.step('<name>')` | One step body, running inline with full Node access. Two steps sharing a function name share the writer. | its own `step_completed` / `step_failed` / `step_retrying`, and any `attr_set` from step context |
+| `external` | none — see [Withholdings](#withholdings) | The scenario, acting as a webhook receiver or an operator | `hook_received`, `run_cancelled` |
 
 Two step bodies in a *single* delivery are already two writers racing to the
 same log: no second invocation and no real threads are required. That is why the
 vocabulary is per-writer rather than per-invocation.
 
-A script is a sequence of **advances**. Stop a writer at a named point, act
-while it is stopped, let it go:
+`sim.writer.anyStep()` and `sim.writer.any()` are handles that match more than
+one writer — whichever reaches the advance first. A handle is a *name*, not a
+live object, so `sim.writer.step('slow')` can be taken before that step exists.
+`sim.writer.seen()` lists the ids observed so far, in first-appearance order.
+
+### Advances
+
+An advance tells one writer to move to a named place and hold there until
+`release()`. Every other writer keeps running, so whatever the script does in
+between is guaranteed to land first.
 
 ```ts
 script: async (sim) => {
   const wf = sim.writer.orchestrator();
   const reserve = sim.writer.step('reserveInventory');
 
-  // Stop just after step_started is durable and before the orchestrator is
+  // Hold just after step_started is committed and before the orchestrator is
   // resumed — the window the whole instrument exists for.
   await wf.runToEventCommitted('step_started', 'reserveInventory');
   sim.check('no payload yet', !sim.world.events().some((e) => e.eventType === 'hook_received'));
@@ -281,69 +296,97 @@ script: async (sim) => {
 }
 ```
 
-| | |
-| --- | --- |
-| `runToEventProduced(type, stepName?)` | Stop where the event has been decided and submitted and nothing has been minted for it yet |
-| `runToPositionMinted(type, stepName?)` | Stop where the log position is taken and the event is not in the log |
-| `runToEventCommitted(type, stepName?)` | Stop where it is durable and the writer has not been resumed |
-| `runToCall(call, { phase })` | The same, for a world call that is not `events.create` |
-| `release()` / `isHeld()` / `history()` | Let the writer go (idempotent) / is it held / where it has been |
-| `sim.writer.step(name)`, `anyStep()`, `any()`, `orchestrator()`, `seen()` | Get a handle; `seen()` lists the writers observed so far |
+| method | writer | description |
+| --- | --- | --- |
+| `wf.runToEventProduced(type, opts?)` | any | Hold once the event has crossed the world boundary — formed, attributed, in the trace — and before it is assigned a position in the event log. Anything committed to storage during the hold sorts *ahead* of it. |
+| `wf.runToPositionMinted(type, opts?)` | any | Hold once the event is assigned a position in the event log and before it is committed to storage. The position is fixed and no reader can see it, so anything committed during the hold sorts *behind* it. |
+| `wf.runToEventCommitted(type, opts?)` | any | Hold once the event is committed to storage, before the writer resumes. |
+| `wf.runToCall(call, opts?)` | any | The same three places, for a world call that is not `events.create`. `opts.phase` picks which, and defaults to after the call returns. |
+| `wf.release()` | the held one | Let the writer go. Idempotent; awaiting it yields the event loop, so the writer has really moved by the time it resolves. |
+| `wf.isHeld()` / `wf.history()` | — | Is it held / where it has been. |
+| `sim.park(match, label?)` | whichever matches | Hold the next matching call, whoever makes it. |
+| `sim.until(match, label?)` | whichever matches | Wait for a matching call, without holding it. |
+| `sim.during(match, body)` | whichever matches | `park`, run `body` while it is held, then release. |
 
-`runTo` is **level-triggered**: it consults the recorded history, so a point
-this writer already sailed past is an `AlreadyPassedError` naming the point,
-not a wait that never ends. Asking for a point twice means "the next one".
-Each advance also carries its own watchdog (`limits.maxRunToWallMs`), and its
-timeout reports where *every* writer was standing — a diagnosis instead of the
-scenario's global budget running out.
+`type` is one event type or several. `opts` is a step name as a bare string, or
+`{stepName, token, correlationId, where, label, timeoutMs}`.
 
-The two mistakes worth knowing, both of which the errors name:
+**Not every world assigns a position without also committing it.** Under
+`appendOnlyLog` a write overtaken while held gives up its position and re-takes
+the tail when it commits, so what `runToPositionMinted` holds is provisional and
+the gap it opens is closed by construction. See [Two logs](#two-logs).
+
+`runTo` is **level-triggered**: it consults recorded history, so a point this
+writer already passed is an `AlreadyPassedError` naming the point rather than a
+wait that never ends. Asking twice means "the next one". Each advance carries a
+watchdog (`limits.maxRunToWallMs`) whose timeout reports where *every* writer
+was standing, which is a diagnosis rather than the scenario's global budget
+running out.
+
+Two mistakes are worth knowing, and the errors name both:
 
 - **Arming too late.** Releasing writer A before arming writer B's wait. B's
   step body may already be in flight and commit during the release.
-- **Waiting on the wrong writer.** `step_started` is the orchestrator's write;
-  `step_completed` is the step body's. Naming the wrong one is a timeout.
+- **Naming the wrong writer.** `step_started` is the orchestrator's write;
+  `step_completed` is the step body's. The wrong one is a timeout.
 
-Underneath, `park(match)` / `until(match)` / `during(match, body)` take a raw
-match object and are what the writer handles are built from. Fields are ANDed;
-`eventType` implies `events.create`, `stepName` accepts either the machine name
-or the plain function name, `where(ctx, world)` covers anything the declarative
-fields can't say, and `phase` defaults to `'after'`:
+`park` / `until` / `during` take a raw match object and are what the writer
+handles are built from. Fields are ANDed; `eventType` implies `events.create`,
+`stepName` accepts the machine name or the plain function name, `where` covers
+what the declarative fields cannot say, and `phase` defaults to `'after'`:
 
 ```ts
 { call: 'events.create' | 'queue' | 'runs.get' | … , phase: 'before' | 'after',
   eventType, stepName, correlationId, token, runId, writer, failed, where }
 ```
 
-Reach for them when the point is a *state* rather than a name — `where` is the
+Reach for them when the point is a *state* rather than a name. `where` is the
 one thing a level-triggered `runTo` cannot re-check against history, so a
 `where` wait is edge-triggered and leans on its timeout.
 
-The park/permit model — and the word *tempo* for the resulting order — is
-lifted from [`blanket`](https://bernat.tech/posts/blanket-deterministic-threading/),
+The park/permit model — and the word *tempo* for the resulting order — is lifted
+from [`blanket`](https://bernat.tech/posts/blanket-deterministic-threading/),
 which does this for Python's `threading` primitives. The mapping is direct: a
 world call is a transaction, the `after` phase is its parking state, and
 `release()` is the permit.
 
-A script is the only way to hang this simulator — a held call blocks its writer,
-and in the limit the scheduler, so a script waiting for something that never
-happens has no quiescence to fall back on. Three guards close that: the
-per-advance watchdog above, the runner reporting what a script was still waiting
-for instead of awaiting it forever, and a real wall-clock deadline that releases
-every held call and rejects every pending wait. A script that throws is reported
-as a scenario problem rather than turned into a World error, so a broken script
-never gets misread as a runtime bug.
+A script is the only way to hang this simulator, because a held call blocks its
+writer and in the limit the scheduler. Three guards close that: the per-advance
+watchdog above, the runner reporting what a script was still waiting for instead
+of awaiting it forever, and a wall-clock deadline that releases every held call
+and rejects every pending wait. A script that throws is reported as a scenario
+problem rather than a World error, so a broken script is never misread as a
+runtime bug.
 
-Scripts get a `ScenarioApi` alongside the writer handles:
+### Withholdings
+
+A withholding hides something from readers without holding the writer that
+produced it. An advance stops one thread; a withholding lets every thread run
+and changes what storage answers.
+
+| method | writer | description |
+| --- | --- | --- |
+| `sim.withholdNextEvent(reads?)` | whichever commits next | Hide the next event committed to storage from the next `reads` event-log reads (default 1). Call it immediately before the write to hide. |
+| `sim.beginHookDelivery(token, payload)` | `external` | Deliver a hook, withheld between its two halves: assigned a position in the event log, not committed to storage. Returns `{eventId, commit()}`. |
+
+`beginHookDelivery` is the one place inside an `external` writer a script can
+reach, and it is a withholding rather than an advance because holding that
+writer would be the wrong model: an out-of-band receiver is a separate process,
+so nothing of the run's is blocked while its write is in flight. Holding an
+inline write would stall the delivery that made it, and the reader with it.
+
+Both change shape with the log. Under `appendOnlyLog` a withheld read is cut
+short at the withheld event instead of missing it from the middle — the log can
+be behind, never wrong — and an overtaken hook re-takes the tail on `commit()`.
+
+### Everything else a script can do
 
 | | |
 | --- | --- |
-| `deliverHook(token, payload)` | Runs the real `resumeHook()` — same code an out-of-band webhook receiver would |
-| `beginHookDelivery(token, payload)` | The same delivery, stopped between its halves: position taken, event not landed. Returns `{ eventId, commit() }` |
+| `deliverHook(token, payload)` | Runs the real `resumeHook()` — the same code an out-of-band webhook receiver would |
 | `cancelRun(reason?)` | Cancel the run under test |
 | `advanceTime(ms)` | Jump the virtual clock |
-| `withholdNextEvent(reads?)` | Hide the next committed event from the following event-log reads — the read hole a concurrent writer causes |
-| `note(msg)` / `check(name, cond)` | Record a marker / an assertion in the trace |
+| `note(msg)` / `check(name, cond)` | Record a marker / an assertion in the trace; a false check fails the scenario |
 | `world` | Read-only snapshot: runs, events, steps, hooks, waits, pending messages, rejected calls |
 | `appendOnlyLog` | Which log this run is playing against — for *phrasing* a check, never for branching the tempo |
 
