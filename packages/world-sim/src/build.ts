@@ -8,11 +8,14 @@
  * does in its global setup, with one addition: the build's manifest is
  * returned, which is how a scenario can name a workflow by its plain function
  * name instead of importing a client-transformed reference.
+ *
+ * This module reaches SWC and esbuild through `@workflow/builders`, so it is
+ * deliberately *not* part of the package's main entry — see `load.ts`. Import
+ * it as `@workflow/world-sim/build`, and only from something that compiles.
  */
 
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
 import {
   BaseBuilder,
   createBaseBuilderConfig,
@@ -99,26 +102,4 @@ export async function buildSimBundle(
     manifest: builder.manifest,
     workflowIds,
   };
-}
-
-/**
- * Import a built bundle's `POST` handler.
- *
- * Deliberately eager (unlike `@workflow/vitest`, which defers the import so
- * `vi.mock` can still intercept step dependencies): a scenario wants the
- * module graph settled before the clock is patched and the first delivery
- * runs, so that import-time work never lands in the middle of a measured
- * sequence.
- */
-export async function loadFlowHandler(
-  flowBundlePath: string
-): Promise<(req: Request) => Promise<Response>> {
-  const mod = await import(pathToFileURL(flowBundlePath).href);
-  const handler = mod.POST;
-  if (typeof handler !== 'function') {
-    throw new Error(
-      `Bundle at ${flowBundlePath} does not export a POST handler. Did the build succeed?`
-    );
-  }
-  return handler as (req: Request) => Promise<Response>;
 }

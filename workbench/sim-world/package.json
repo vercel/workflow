@@ -6,8 +6,8 @@
   "license": "Apache-2.0",
   "scripts": {
     "sim": "node run.ts",
-    "test": "node run.ts",
-    "clean": "rm -rf .workflow-sim"
+    "test": "node run.ts --report-only --summary-file sim-summary.md",
+    "clean": "rm -rf .workflow-sim sim-summary.md"
   },
   "devDependencies": {
     "@types/node": "catalog:",

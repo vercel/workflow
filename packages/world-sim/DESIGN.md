@@ -29,7 +29,8 @@ Two workspaces:
 | `invariants.ts` | consistency checks re-derived from the event log alone |
 | `report.ts` | renders a scenario; log positions for every event reference, colour only when the destination is a terminal |
 | `streams.ts` | in-memory streamer |
-| `build.ts` | bundles a project's workflows so the runtime can be handed real compiled code |
+| `build.ts` | bundles a project's workflows so the runtime can be handed real compiled code. Its own entry (`@workflow/world-sim/build`), because it reaches a compiler and playing a scenario should not |
+| `load.ts` | loads a built bundle's flow handler — the half of the old `build.ts` that needs no compiler |
 | `types.ts` | the public vocabulary |
 
 ---
@@ -311,6 +312,20 @@ hole the watermark cannot see, but it requires the caller to send
 `stateEventCount`, which no client does today — so it is dark in production and
 armed here only where a scenario asks for it.
 
+**Overriding them for a whole run.** `RunScenarioOptions.preconditionGuard`
+(`pnpm sim --fence` / `--no-fence`) forces the fence on or off for every
+scenario, `undefined` leaving each spec to decide. Both halves move together:
+the count guard is evaluated inside the same predicate, so disarming the fence
+disarms it too.
+
+Forcing it *off* across the book asks whether anything relies on it. Violations
+go **6 → 8** mint-ordered, so it is load-bearing there; **0 → 0** against an
+append-only log, so it is dead weight once positions are assigned at commit.
+This is a diagnostic rather than a world, and the number to read is the
+violation count: a scenario whose subject is that the guard fired asserts that
+with `sim.check` and fails by design when it does not
+(`in-flight-before-decision-counted` today).
+
 ### Fault injection
 
 **`withholdNextEvent(reads = 1)`** hides the next committed event from the
@@ -340,6 +355,29 @@ receiver is a separate process from the run's invocation. Holding an *inline*
 write instead would stall the delivery that made it, and thus the reader too,
 which is why the out-of-band writer is the one that can express this shape.
 
+### Changing the world instead of the runtime
+
+**`appendOnlyLog`** is the one option that alters the store's contract rather
+than its strictness. With it on, an event takes its position in `append` instead
+of at the handler boundary: a write that is still the newest when it commits
+keeps the id it was already handed out under, and one that was overtaken while
+it was held re-mints and takes the tail.
+
+That single move collapses both faults above into the same, weaker one. A hold
+between mint and commit can no longer open a hole, because the held write is not
+claiming a position while it waits — it has none until it lands. And
+`withholdNextEvent` degrades from serving a read *around* the withheld event to
+stopping it *at* the event, because a hole is not expressible in a log whose
+order is its commit order. Both leave the reader short rather than wrong, and
+short is precisely what the fence's watermark was designed to catch.
+
+Off by default: the sim exists to model the world that exists, and production
+mints at the boundary because DynamoDB does not generate ids. The value of the
+switch is differential — play the book both ways and the diff separates "fails
+because of the mint-before-commit window" from "fails for some other reason".
+No scenario in the book sets it; it is meant to be driven from
+`RunScenarioOptions` or `pnpm sim --append-only`.
+
 ---
 
 ## 6. The scenario surface
@@ -360,8 +398,15 @@ interface ScenarioSpec {
   limits?: ScenarioLimits;
   preconditionGuard?: boolean;  // advertise + enforce the optimistic-concurrency fence
   countGuard?: boolean;         // also enforce its count half
+  appendOnlyLog?: boolean;      // position at commit, not at mint; see §5
 }
 ```
+
+`RunScenarioOptions.appendOnlyLog` overrides the last of those for every
+scenario in a run, which is how the whole book gets played both ways;
+`undefined` there leaves each spec to decide. The mode a result was produced
+under is recorded on `ScenarioResult.appendOnlyLog` rather than left to the
+reader's memory.
 
 `expect.status` accepts the non-run outcomes (`stalled`, `budget-exceeded`)
 because "this workflow deadlocks when the hook never arrives" is a property
@@ -551,13 +596,26 @@ finished — the log did not contain enough to rebuild the run.
 
 Measured on branch `sim-world`.
 
-**Unit tests** — 61 passing across 8 files (`pnpm --filter @workflow/world-sim test`).
+**Unit tests** — 67 passing across 8 files (`pnpm --filter @workflow/world-sim test`).
 
 **Scenarios** — `pnpm sim` in `workbench/sim-world`:
 
 ```
 39 scenario(s): 33 passed, 6 failed, 6 consistency violation(s)
 ```
+
+And the same book against an append-only log (`pnpm sim --append-only`):
+
+```
+39 scenario(s): 39 passed, 0 failed, 0 consistency violation(s)
+```
+
+Both numbers are the intended steady state; see "The six" below for which of
+the six that second line closes on the merits and which close because the
+correct answer itself changes.
+
+With the fence forced off (`pnpm sim --no-fence`), violations go to **8**
+mint-ordered and stay at **0** append-only — see §5.
 
 Replay verification across those 39: **31 `ok`, 6 `MISMATCH`, 2 `skipped`**
 (skipped where the run did not reach a terminal status).
@@ -569,10 +627,16 @@ there, so the failure line names both sides (`expected "afterSlow:doc-26", got
 "afterFast:doc-26"`).
 
 **The number is the thing to watch: six today.** A seventh is a regression;
-five means something got fixed and a scenario is ready to retire. This does
-make the suite unusable as a plain CI gate without pinning the six as a
-baseline — a deliberate tradeoff, since the point at this stage is to expose the
-bugs rather than to be green.
+five means something got fixed and a scenario is ready to retire.
+
+That makes the book a poor plain CI gate, which is what `--report-only` is for:
+it prints every failure and exits 0, so a job can *publish* the book's current
+state rather than block on it. `--summary-file` writes a markdown counts-plus-
+table for a PR comment or `$GITHUB_STEP_SUMMARY`, and `--detail-file` writes the
+full colour-free trace as an artifact to read when a number moves. The
+workbench's `pnpm test` is `--report-only --summary-file`, so a recursive
+`pnpm -r test` stays green and still says what happened; `pnpm sim` stays
+strict, so running it by hand fails loudly.
 
 ### The six
 
@@ -601,6 +665,61 @@ Note what the `fix` column does *not* mean. `countGuard` closing doc-29 is a
 statement about the World implementation, not about production: it requires the
 caller to send `stateEventCount`, which no client does today (§5). Four of the
 six therefore have no fix that is actually armed anywhere real.
+
+**The append-only log closes all six, in two different senses — and the split
+is four and two, not three and three.** Four (doc-23, doc-25, doc-26, doc-27)
+close on the merits, with the book asking them exactly what it asked before: the
+reordering was the fault, and once positions are assigned at commit the withheld
+read degrades from a hole to a truncation, which the fence can see. The
+remaining two (doc-29, doc-31) close because the branch the run ends on changes.
+A hook that commits after the timeout genuinely *is* after it when the tail is
+the only place a write can land, so the log records the timeout first and the
+run that settled is the run the log describes.
+
+**No expectation is restated per world, and there is no mechanism to.** The
+first cut of this had one — an `expectAppendOnly` field on three scenarios,
+naming a second correct output. It was the wrong instrument, for a reason worth
+keeping written down. A scenario is one sequence of movements. The only thing a
+world changes is what a read returns. The branch a run ends on is decided by
+what it read, so pinning the branch pins a consequence of the world rather than
+a property of the run, and any expectation that then has to be restated per
+world is evidence the pin was wrong — not evidence that a second answer is
+needed. The three now assert what holds in both worlds (the run completes) and
+report the branch in the trace.
+
+That costs nothing, because the expectations were never what caught the fault.
+The load-bearing assertion is the invariant: **the log a run wrote must be a log
+the runtime can replay back into that same run**. It is world-independent, on by
+default (`verifyReplay`), and it is what all six reds trip. Measured, not
+assumed: strip every `expect` in the book and the violation counts do not move
+— 6 mint-ordered, 0 append-only, the same six by name. (Pass/fail does move by
+one, and only for a bookkeeping reason: `hook-never-arrives` expects `stalled`,
+and a stall's reason is reported as a problem unless the scenario said it was
+expecting one.) That also removes
+the one place where the flag's scoreboard rested on a judgement about what the
+right answer *is* rather than on something the harness checks on its own.
+
+doc-30 is worth a line because it was the third `expectAppendOnly` and is *not*
+one of the six — mint-ordered it already passes, since `countGuard` catches
+there what the watermark half misses. Its branch moves under the flag for the
+same reason its uncounted twin's does, so the old pinned output would have
+turned a green scenario red. What made it distinct from doc-29 was never the
+branch anyway; it is that the count half of the fence fires at all. That is now
+asserted directly, matched on the guard's own message and true in both worlds —
+and it fails if `countGuard` is turned off, which is the check that a bare
+`rejections().length > 0` would have missed, since doc-29 rejects too.
+
+Two details worth keeping:
+
+- Hook delivery participates. `beginHookDelivery` still reserves a position at
+  the handler boundary; under the flag the reservation stops being binding and
+  the write re-mints at the tail if anything overtook it (`positionAtCommit`).
+- doc-30's 412 still fires, and now saves nothing. The count guard counts events
+  at or below the caller's watermark, the watermark is a millisecond, and a hook
+  committing after the timeout within the same virtual millisecond is still "at
+  or below" it. The reload finds nothing to correct and the run settles anyway.
+  That false positive is the standing cost of the count half of the fence once
+  the log is append-only, and doc-30's trace is where to see it.
 
 Four of the six are hook-driven and two deliberately are not — the pair proves
 the corruption needs no out-of-band event type. All the pure hook-timing

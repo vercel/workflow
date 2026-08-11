@@ -415,6 +415,21 @@ export interface ScenarioApi {
   check(name: string, condition: boolean): void;
   /** The run under test. */
   runId: string;
+  /**
+   * Which log this run is playing against, resolved from the spec and the run
+   * option. See `ScenarioSpec.appendOnlyLog`.
+   *
+   * A check's *name* is a sentence in the trace, and several of them are
+   * sentences about where a position came from — "the hook owns a log position
+   * but is nowhere in the log" is true of a reserved mint and false of an
+   * append-only commit. Read this to phrase the sentence for the world the run
+   * is actually in, rather than narrating one world while playing the other.
+   *
+   * It is not for branching the *tempo*. A scenario whose script takes a
+   * different path under the flag is two scenarios wearing one id, and the diff
+   * between the two runs stops meaning anything.
+   */
+  appendOnlyLog: boolean;
 }
 
 /** An out-of-band write that owns a log position and has not committed. */

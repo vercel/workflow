@@ -414,7 +414,10 @@ export function renderScenario(
       `      run=${result.runId || '(none)'} outcome=${result.outcome} ` +
         `events=${result.events.length} deliveries=${result.deliveries} ` +
         `worldCalls=${result.worldCalls} virtual=${formatDuration(result.virtualElapsedMs)} ` +
-        `wall=${result.wallMs.toFixed(0)}ms replay=${describeReplay(result)}`,
+        `wall=${result.wallMs.toFixed(0)}ms replay=${describeReplay(result)}` +
+        // Only when it is on. The default is production, and a line that
+        // repeats "this is the ordinary world" on every scenario says nothing.
+        (result.appendOnlyLog ? ' log=append-only' : ''),
       'dim'
     )
   );
@@ -482,6 +485,118 @@ export function renderSummary(
       `${paint(`${failed} failed`, failed > 0 ? 'red' : 'dim')}, ` +
       `${paint(`${violations} consistency violation(s)`, violations > 0 ? 'red' : 'dim')}`,
   ].join('\n');
+}
+
+export interface MarkdownSummaryOptions {
+  /** Heading text. Defaults to `world-sim`. */
+  title?: string;
+  /**
+   * Which world produced these results, as short `key=value` chips under the
+   * heading — `log=append-only`, `fence=off`. A summary that does not say
+   * which world it ran in is unreadable next to another one, and the whole
+   * point of this book is comparing two runs of it.
+   */
+  chips?: readonly string[];
+  /**
+   * Where the full trace was written, mentioned in a footer so a reader who
+   * needs more than the table knows an artifact exists.
+   */
+  detailPath?: string;
+}
+
+/**
+ * The same counts as `renderSummary`, as GitHub-flavoured markdown sized for a
+ * PR comment or `$GITHUB_STEP_SUMMARY`.
+ *
+ * Failures are listed above the fold with their problems spelled out, because
+ * that is the part someone acts on; the full 39-row table goes in a `<details>`
+ * so the comment stays a few lines tall until someone wants it. Never coloured
+ * — ANSI in a markdown file renders as garbage.
+ */
+export function renderMarkdownSummary(
+  results: readonly ScenarioResult[],
+  options: MarkdownSummaryOptions = {}
+): string {
+  const passed = results.filter((r) => r.ok).length;
+  const failed = results.length - passed;
+  const violations = results.reduce((n, r) => n + r.violations.length, 0);
+  const out: string[] = [];
+
+  out.push(`### ${options.title ?? 'world-sim'}`);
+  out.push('');
+  out.push(
+    `**${results.length} scenario(s):** ${passed} passed, ${failed} failed, ` +
+      `${violations} consistency violation(s)`
+  );
+  if (options.chips && options.chips.length > 0) {
+    out.push('');
+    out.push(options.chips.map((c) => `\`${c}\``).join(' · '));
+  }
+
+  const failures = results.filter((r) => !r.ok);
+  if (failures.length > 0) {
+    out.push('');
+    out.push('| scenario | why |');
+    out.push('| --- | --- |');
+    for (const r of failures) {
+      // Rule names, not violation messages. A replay divergence carries the
+      // runtime's whole error — two step consumers, a stack, two docs links —
+      // and the first 200 characters of it are the same boilerplate for every
+      // divergence, so six rows of it read as six identical rows. The rule
+      // says which invariant broke, the problems say what differed, and
+      // `detailPath` has the rest.
+      //
+      // Violations before problems: an unmet expectation is a statement about
+      // this scenario, a violation is a statement about the runtime.
+      const why = [
+        ...dedupe(r.violations.map((v) => `\`${v.rule}\``)),
+        ...r.problems.map((p) => clip(p)),
+      ];
+      out.push(`| \`${r.id}\` | ${mdCell(why.join(' · ') || 'failed')} |`);
+    }
+  }
+
+  out.push('');
+  out.push('<details>');
+  out.push(`<summary>All ${results.length} scenarios</summary>`);
+  out.push('');
+  out.push('| scenario | outcome | events | virt | replay | violations |');
+  out.push('| --- | --- | --- | --- | --- | --- |');
+  for (const r of results) {
+    out.push(
+      `| ${r.ok ? '✅' : '❌'} \`${r.id}\` | ${r.outcome} | ${r.events.length} | ` +
+        `${formatDuration(r.virtualElapsedMs)} | ${describeReplay(r)} | ` +
+        `${r.violations.length} |`
+    );
+  }
+  out.push('');
+  out.push('</details>');
+
+  if (options.detailPath) {
+    out.push('');
+    out.push(`Full trace: \`${options.detailPath}\``);
+  }
+  out.push('');
+  return out.join('\n');
+}
+
+/**
+ * Make a string safe inside a one-line markdown table cell. Pipes would end
+ * the cell and newlines would end the row; both appear in violation messages.
+ */
+function mdCell(text: string): string {
+  return text.replace(/\|/g, '\\|').replace(/\r?\n/g, ' ');
+}
+
+/** Flatten to one line and keep a comment-sized amount of it. */
+function clip(text: string, max = 200): string {
+  const flat = text.replace(/\s+/g, ' ').trim();
+  return flat.length <= max ? flat : `${flat.slice(0, max - 1)}…`;
+}
+
+/** One scenario can trip the same rule several times; say it once. */
+function dedupe(values: readonly string[]): string[] {
+  return [...new Set(values)];
 }
 
 /** Short form of the cold-replay check for the summary line. */

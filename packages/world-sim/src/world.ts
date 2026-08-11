@@ -92,6 +92,17 @@ export interface SimWorldOptions {
    * guard have caught this?" answerable here instead of hypothetical.
    */
   countGuard?: boolean;
+  /**
+   * Assign log positions at commit rather than at the handler boundary, so the
+   * log is append-only and no read can be contradicted by a later one. See
+   * `SimStoreOptions.appendOnlyLog` for what that buys and what it costs.
+   *
+   * The boundary mint still happens — `reservePosition`, the `positioned` call
+   * phase, and everything a scenario hangs off them work unchanged. It just
+   * stops being binding: a held write that nothing overtook keeps the position
+   * it reserved, and one that was overtaken re-mints when it lands.
+   */
+  appendOnlyLog?: boolean;
 }
 
 export interface SimWorld extends World {
@@ -187,14 +198,19 @@ export function createSimWorld(options: SimWorldOptions = {}): SimWorld {
     ids,
     preconditionGuard: options.preconditionGuard,
     countGuard: options.countGuard,
+    appendOnlyLog: options.appendOnlyLog,
     // Fires synchronously inside `events.create`, so `externalDepth` still
     // describes who is writing and the attribution is exact.
     onEvent: (event) =>
       pushTrace({ kind: 'event', event, writer: writerOfEvent(event) }),
-    onStaleRead: (eventId) =>
+    // Two different faults, and the trace should not blur them: one read
+    // around a committed event, the other stopped before it.
+    onStaleRead: ({ eventId, hidden, truncated }) =>
       pushTrace({
         kind: 'warn',
-        message: `stale read: committed event ${eventId} withheld from this event-log read`,
+        message: truncated
+          ? `lagging read: log cut short at ${eventId}; ${hidden} committed event(s) not yet visible`
+          : `stale read: committed event ${eventId} withheld from this event-log read`,
       }),
   });
 

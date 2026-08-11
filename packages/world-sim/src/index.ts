@@ -9,12 +9,6 @@
  */
 
 export {
-  buildSimBundle,
-  loadFlowHandler,
-  type SimBuildOptions,
-  type SimBundle,
-} from './build.js';
-export {
   createVirtualClock,
   DEFAULT_EPOCH_MS,
   type VirtualClock,
@@ -27,13 +21,20 @@ export {
   type SelectNext,
 } from './drive.js';
 export { checkInvariants, type InvariantInput } from './invariants.js';
+// `buildSimBundle` is deliberately absent from this entry: it reaches SWC and
+// esbuild through `@workflow/builders`, and a consumer that only wants to
+// *play* scenarios should not drag a compiler into its module graph. It is
+// exported from `@workflow/world-sim/build` instead.
+export { loadFlowHandler } from './load.js';
 export {
   type ReplayCheckInput,
   type ReplayCheckResult,
   verifyReplay,
 } from './replay.js';
 export {
+  type MarkdownSummaryOptions,
   type RenderOptions,
+  renderMarkdownSummary,
   renderScenario,
   renderSummary,
   renderTrace,
@@ -41,6 +42,7 @@ export {
 export {
   type RunScenarioOptions,
   runScenario,
+  type ScenarioExpectation,
   type ScenarioOutcome,
   type ScenarioResult,
   type ScenarioSpec,
@@ -49,6 +51,7 @@ export {
   createSimStore,
   type SimStore,
   type SimStoreOptions,
+  type StaleRead,
 } from './store.js';
 export { ScenarioAborted } from './tempo.js';
 export type {

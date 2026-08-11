@@ -120,15 +120,59 @@ locks, staged hook events, canonical event-id pinning) removed — a scenario is
 single-threaded, so those races cannot occur. Every *validation* is kept,
 because rejections are the observable contract the runtime is written against.
 
+## Two logs
+
+The simulation can play against either of two logs, and the difference is one
+question: **when does an event take its position?**
+
+**Mint-ordered (the default) is what production does.** DynamoDB does not
+generate ids, so workflow-server mints the event id at the handler boundary,
+before the storage write is attempted — and that id *is* the log's sort key. A
+write held between its mint and its commit therefore lands *behind* events that
+were minted later and committed sooner. The log gains a row in the past, and
+every read that happened in between saw a log the log itself went on to
+contradict. That one fact is what the six red scenarios are about.
+
+**Append-only (`appendOnlyLog: true`, `pnpm sim --append-only`) assigns the
+position at commit instead.** A write that was overtaken while it was held gives
+up its reserved position and re-mints at the tail. Two consequences follow, and
+they are the whole point:
+
+- Log order is commit order. Nothing is inserted behind a row a reader has
+  already seen, so no two reads can disagree about the past.
+- Every read is a *prefix* of the final log. A read can be short — it may miss
+  a write that has not committed yet — but never self-inconsistent. Staleness
+  collapses into lag, and lag is what an optimistic-concurrency fence can see;
+  a hole is what it cannot.
+
+Uncontended writes are untouched: a mint that is still the newest position when
+it commits keeps its id, so a scenario that never holds a write mid-flight
+produces a byte-identical log either way. `withholdNextEvent` follows the same
+rule — it punches a hole in the default log and truncates the tail under
+append-only, which is why `StaleRead` reports `{ eventId, hidden, truncated }`
+and the trace says "lagging read" rather than "stale read".
+
+The flag is a measurement, not a mode to develop in. The book scores **33 pass /
+6 violations** mint-ordered and **39 / 0** append-only, and that difference is
+the claim: all six reproduce a fault that only exists because position is
+assigned before visibility.
+
+The second measurement is the fence. `preconditionGuard` rejects a write whose
+snapshot predates an out-of-band event; forcing it off across the book
+(`--no-fence`) asks whether anything relies on it. Violations go **6 → 8**
+mint-ordered — so it is load-bearing there — and **0 → 0** append-only, so it is
+dead weight once positions are assigned at commit. Read the violation count and
+not the pass count: a scenario whose point is that the guard fired asserts
+exactly that, and fails by design when you disarm it.
+
 ## Usage
 
 ```ts
-import {
-  buildSimBundle,
-  loadFlowHandler,
-  renderScenario,
-  runScenario,
-} from '@workflow/world-sim';
+import { loadFlowHandler, renderScenario, runScenario } from '@workflow/world-sim';
+// Separate entry on purpose: this one reaches SWC and esbuild through
+// `@workflow/builders`, and playing a scenario should not drag a compiler into
+// the module graph.
+import { buildSimBundle } from '@workflow/world-sim/build';
 
 // The orchestrator runs from a code string inside a VM, so a scenario needs
 // the same compiled bundle a deployment would serve.
@@ -239,7 +283,8 @@ script: async (sim) => {
 
 | | |
 | --- | --- |
-| `runToEventProduced(type, stepName?)` | Stop where the event has been decided and submitted and the log does not have it yet |
+| `runToEventProduced(type, stepName?)` | Stop where the event has been decided and submitted and nothing has been minted for it yet |
+| `runToPositionMinted(type, stepName?)` | Stop where the log position is taken and the event is not in the log |
 | `runToEventCommitted(type, stepName?)` | Stop where it is durable and the writer has not been resumed |
 | `runToCall(call, { phase })` | The same, for a world call that is not `events.create` |
 | `release()` / `isHeld()` / `history()` | Let the writer go (idempotent) / is it held / where it has been |
@@ -294,14 +339,59 @@ Scripts get a `ScenarioApi` alongside the writer handles:
 | | |
 | --- | --- |
 | `deliverHook(token, payload)` | Runs the real `resumeHook()` — same code an out-of-band webhook receiver would |
+| `beginHookDelivery(token, payload)` | The same delivery, stopped between its halves: position taken, event not landed. Returns `{ eventId, commit() }` |
 | `cancelRun(reason?)` | Cancel the run under test |
 | `advanceTime(ms)` | Jump the virtual clock |
 | `withholdNextEvent(reads?)` | Hide the next committed event from the following event-log reads — the read hole a concurrent writer causes |
 | `note(msg)` / `check(name, cond)` | Record a marker / an assertion in the trace |
 | `world` | Read-only snapshot: runs, events, steps, hooks, waits, pending messages, rejected calls |
+| `appendOnlyLog` | Which log this run is playing against — for *phrasing* a check, never for branching the tempo |
 
 A scenario with no script at all is a control: the run plays out on the default
 schedule, and the only question is whether the log it leaves reproduces it.
+
+## Extending the simulator
+
+Adding a *scenario* needs none of this — see
+[`workbench/sim-world/README.md`](../../workbench/sim-world/README.md#adding-a-scenario).
+This section is for changing the instrument itself.
+
+The module map is [DESIGN.md §1](./DESIGN.md#1-module-map). Routed by what you
+are trying to do:
+
+| I want to… | Change | Read first |
+| --- | --- | --- |
+| let scripts stop at a point they can't name today | `world.ts` — the call-point wrapper, and `CallMatch` in `types.ts` | [§3 Interception](./DESIGN.md#3-interception) |
+| add a phase to an existing call | `CallPhase` in `types.ts`, where `world.ts` parks on it, plus the writer op that names it | [§3 Three phases](./DESIGN.md#three-phases-because-a-write-is-not-atomic) |
+| add a rule the log must satisfy | `invariants.ts`, plus the rule table above | [§8 Consistency checking](./DESIGN.md#8-consistency-checking) |
+| add or change a writer kind | `writers.ts` for the handles, `world.ts` for attribution | [§3 Writer attribution](./DESIGN.md#writer-attribution-is-derived-not-instrumented) |
+| add a fault injector | `store.ts` — next to `withholdNextEvent` and the guards | [§5 Fault injection](./DESIGN.md#fault-injection) |
+| change what a read returns | `store.ts` `applyWithhold` | [§5 The store](./DESIGN.md#5-the-store) |
+| change where an event lands | `store.ts` `positionAtCommit` / `mintEvent` | [Two logs](#two-logs) above |
+| add a spec field | `ScenarioSpec` in `scenario.ts`, `RunScenarioOptions` beside it, then `run.ts` for the CLI flag | [§6 Spec](./DESIGN.md#spec) |
+| change the replay check | `replay.ts` | [§8 Replay verification](./DESIGN.md#replay-verification) |
+| change the output | `report.ts` — `renderScenario`, `renderSummary`, `renderMarkdownSummary` | [Reading the output](#reading-the-output) above |
+
+Three things worth knowing before you start:
+
+**A new world flag is tri-state at the runner.** `ScenarioSpec` carries the
+scenario's own choice, `RunScenarioOptions` carries the run-wide override, and
+`undefined` means "leave it to the spec" — which is not the same as `false`,
+because a scenario that asked for the flag itself must keep it. `run.ts` maps
+`--x` / `--no-x` onto that, and the resolved value is what reaches
+`createSimWorld` and the summary's chips line.
+
+**Anything a scenario can observe has to survive replay.** `verifyReplay`
+re-plays the committed log in a fresh world built from the same options, so a
+new fault injector or store rule that is not applied on the replay path will
+turn every scenario that uses it red for the wrong reason.
+
+**Tests come in two shapes.** `src/*.test.ts` are vitest units against the
+pieces in isolation — `store.test.ts` is the one to copy for anything that
+changes what the log looks like, and the append-only block there is written as
+pairs asserting *opposite* outcomes in the two worlds, which is the cheapest way
+to prove a flag is actually doing something. The scenario book is the
+integration test; run it before and after and diff the counts.
 
 ## What this does *not* give you
 

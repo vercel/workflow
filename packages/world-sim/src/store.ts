@@ -164,10 +164,58 @@ export interface SimStoreOptions {
    * `SimWorldOptions.countGuard`.
    */
   countGuard?: boolean;
+  /**
+   * Make the log append-only in the strong sense: an event takes its position
+   * when it *commits*, not when its handler minted one.
+   *
+   * Production does the opposite, and for a reason — DynamoDB does not
+   * generate ids, so workflow-server mints the event id at the handler
+   * boundary and that id *is* the log's sort key. A write held between its
+   * mint and its commit therefore lands *behind* events that were minted later
+   * and committed sooner, and the log gains a row in the past. Every read that
+   * happened in between saw a log the log itself went on to contradict. That
+   * one fact is what the six red scenarios in the book are about.
+   *
+   * With this on, a write that was overtaken while it was held gives up its
+   * reserved position and re-mints at the tail. Two consequences follow, and
+   * they are the whole point:
+   *
+   * - Log order is commit order. Nothing is ever inserted behind a row a
+   *   reader has already seen, so no two reads can disagree about the past.
+   * - Every read is a prefix of the final log. A read can be *short* — it may
+   *   miss a write that has not committed yet, or one a lagging replica has
+   *   not caught up to (see `withholdNextEvent`) — but never self-inconsistent.
+   *   Staleness collapses into lag, and lag is what the optimistic-concurrency
+   *   fence can see; a hole is what it cannot.
+   *
+   * What it costs is the property the boundary mint was buying: a write no
+   * longer knows where it will land until it lands. Off by default, because
+   * the simulation's job is to model the world that exists. Turning it on
+   * answers the other question — which of these failures survive if it didn't?
+   *
+   * Uncontended writes are untouched. A mint that is still the newest position
+   * when it commits keeps its id, so a scenario that never holds a write
+   * mid-flight produces a byte-identical log either way.
+   */
+  appendOnlyLog?: boolean;
   /** Invoked after every successful append, before the create call returns. */
   onEvent?(event: Event): void;
-  /** Invoked when a read was served without the withheld event. */
-  onStaleRead?(eventId: string): void;
+  /** Invoked when a read was served an incomplete log. */
+  onStaleRead?(read: StaleRead): void;
+}
+
+/** One event-log read that did not see everything the log already held. */
+export interface StaleRead {
+  /** The oldest event the read did not see. */
+  eventId: string;
+  /** How many committed events the read did not see, that one included. */
+  hidden: number;
+  /**
+   * The read was cut short at `eventId` rather than served around it: a
+   * replica that is behind, not one that is wrong. Only `appendOnlyLog`
+   * produces this shape — see there.
+   */
+  truncated: boolean;
 }
 
 export interface SimStore extends Storage {
@@ -212,6 +260,11 @@ export interface SimStore extends Storage {
    * reader genuinely cannot see it, because it is not there yet — while its
    * position, already assigned, sits behind whatever the reader did see. Prefer
    * a hold when the scenario's point is production behaviour.
+   *
+   * Under `appendOnlyLog` the hole is not expressible, so this degrades to the
+   * honest version of the same lag: the read stops *at* the withheld event
+   * instead of stepping over it. The reader still misses the write; what it no
+   * longer does is miss it while holding proof that something newer exists.
    */
   withholdNextEvent(reads?: number): void;
   /** Every event ever appended, in log order. */
@@ -316,6 +369,7 @@ function paginate<T>(
 
 export function createSimStore(options: SimStoreOptions): SimStore {
   const { ids, now: nowMs } = options;
+  const appendOnlyLog = options.appendOnlyLog === true;
 
   const events: Event[] = [];
   const runs = new Map<string, WorkflowRun>();
@@ -348,15 +402,25 @@ export function createSimStore(options: SimStoreOptions): SimStore {
   /**
    * Serve a read, minus any event currently being withheld. Reads outside a
    * withhold window get the real log.
+   *
+   * Both modes hide the same event and differ only in what they do with the
+   * ones behind it. The default punches a hole — the withheld event vanishes
+   * and its successors stay — which is what an eventually-consistent replica
+   * does and what no watermark can detect. Under `appendOnlyLog` the read is
+   * cut short there instead, leaving a prefix: still short, but no longer
+   * carrying evidence that contradicts itself.
    */
   function applyWithhold(source: readonly Event[]): readonly Event[] {
     if (!withheld || withheld.remaining <= 0) return source;
     const { eventId } = withheld;
     withheld.remaining--;
     if (withheld.remaining <= 0) withheld = undefined;
-    const visible = source.filter((e) => e.eventId !== eventId);
-    if (visible.length !== source.length) {
-      options.onStaleRead?.(eventId);
+    const visible = appendOnlyLog
+      ? source.filter((e) => e.eventId < eventId)
+      : source.filter((e) => e.eventId !== eventId);
+    const hidden = source.length - visible.length;
+    if (hidden > 0) {
+      options.onStaleRead?.({ eventId, hidden, truncated: appendOnlyLog });
     }
     return visible;
   }
@@ -385,7 +449,28 @@ export function createSimStore(options: SimStoreOptions): SimStore {
     runEventIndex.set(event.runId, index);
   }
 
-  function append(event: Event): Event {
+  /**
+   * The position an event actually commits at.
+   *
+   * Only `appendOnlyLog` can move one. A write that is still the newest
+   * position when it arrives keeps the id it was already handed out under, so
+   * uncontended history is unchanged; one that was overtaken while it was held
+   * re-mints and takes the tail.
+   *
+   * Compared as plain strings: the ids are fixed-width ULIDs whose lexical
+   * order *is* `(createdAt, eventId)` order, because the time field is the
+   * `createdAt` millisecond and the suffix is a monotonic counter. See
+   * `createIdFactory`.
+   */
+  function positionAtCommit(event: Event): Event {
+    if (!appendOnlyLog) return event;
+    const tail = events[events.length - 1];
+    if (!tail || event.eventId > tail.eventId) return event;
+    return { ...event, ...mintEvent() };
+  }
+
+  function append(incoming: Event): Event {
+    const event = positionAtCommit(incoming);
     events.push(event);
     recordInIndex(event);
     if (armedWithhold !== undefined) {
@@ -1035,7 +1120,10 @@ export function createSimStore(options: SimStoreOptions): SimStore {
       }
     }
 
-    append(event);
+    // Reassigned, not just appended: under `appendOnlyLog` the commit is where
+    // the position is decided, and everything below — the fence's marker, the
+    // returned row — has to speak about the event as it actually landed.
+    event = append(event);
 
     // Track externally-originated writes for the precondition fence. A write
     // that carries no `stateUpdatedAt` did not come from a replay context, so
@@ -1488,6 +1576,9 @@ export function createSimStore(options: SimStoreOptions): SimStore {
     // The two differ exactly when a write was minted before another and
     // committed after it, which is the fault these scenarios are about. The
     // trace keeps commit order; this is what a reader sees.
+    //
+    // Under `appendOnlyLog` the two orders are the same by construction, and
+    // this sort is a no-op that stays for the invariant it documents.
     allEvents: (runId) =>
       (runId ? eventsForRun(runId) : events)
         .map(clone)

@@ -107,12 +107,20 @@ export interface ScenarioSpec {
    * and fails until the runtime delivers it: the failure is the open bug, and
    * it goes green when the bug is fixed, not when it is observed one more time.
    * Any violation fails the scenario that tripped it.
+   *
+   * There is also deliberately no per-world variant of this field. A scenario
+   * is one sequence of movements, and the only thing a world changes is what a
+   * read returns — so an expectation that has to be restated per world is
+   * pinning a consequence of the reads rather than a property of the run. Pin
+   * the part that holds in every world; where the branch a run takes is decided
+   * by what it read, do not pin the branch. What catches the fault there is the
+   * invariant, not the expectation: the log a run wrote must be a log the
+   * runtime can replay back into that same run, and that sentence is true in
+   * both worlds. `verifyReplay` is on by default for exactly this reason, and
+   * every red in the book is red on the invariant alone — the expectations
+   * could all be deleted without changing which scenarios fail.
    */
-  expect?: {
-    status?: ScenarioOutcome;
-    /** Compared against the hydrated run output with deep equality. */
-    output?: unknown;
-  };
+  expect?: ScenarioExpectation;
   limits?: ScenarioLimits;
   /** Enforce (and advertise) the optimistic-concurrency fence. */
   preconditionGuard?: boolean;
@@ -125,6 +133,23 @@ export interface ScenarioSpec {
    * what the fence would catch if the count were wired through.
    */
   countGuard?: boolean;
+  /**
+   * Run this scenario against an append-only log, where an event takes its
+   * position at commit and a read can therefore be behind but never
+   * self-contradictory. See `SimStoreOptions.appendOnlyLog`.
+   *
+   * Off by default, and no scenario in the book sets it: the interesting use is
+   * as a global override (`RunScenarioOptions.appendOnlyLog`), where the whole
+   * book runs twice and the diff is the answer to "which of these failures are
+   * about the mint-before-commit window, and which are about something else?".
+   */
+  appendOnlyLog?: boolean;
+}
+
+export interface ScenarioExpectation {
+  status?: ScenarioOutcome;
+  /** Compared against the hydrated run output with deep equality. */
+  output?: unknown;
 }
 
 export type ScenarioOutcome =
@@ -141,6 +166,12 @@ export interface ScenarioResult {
   runId: string;
   outcome: ScenarioOutcome;
   ok: boolean;
+  /**
+   * Which log the run played against — resolved from the spec and the run
+   * option, so a stored result says which world produced it rather than
+   * leaving the reader to remember.
+   */
+  appendOnlyLog: boolean;
   /** Scenario-level failures: unmet expectations, failed checks, script errors. */
   problems: string[];
   /** World-contract violations found by re-deriving state from the log. */
@@ -171,6 +202,32 @@ export interface RunScenarioOptions {
   handler: (req: Request) => Promise<Response>;
   /** Workflow function name → machine workflow id, from `buildSimBundle`. */
   workflowIds?: Record<string, string>;
+  /**
+   * Force `SimStoreOptions.appendOnlyLog` on or off for this run, overriding
+   * whatever the spec asked for.
+   *
+   * This is the knob a caller flips to play the same book under both worlds —
+   * the CLI's `--append-only`, the page's toggle. `undefined` leaves the
+   * decision to the spec, which is how a book of scenarios written against
+   * production keeps behaving like one.
+   */
+  appendOnlyLog?: boolean;
+  /**
+   * Force `SimStoreOptions.preconditionGuard` on or off for this run,
+   * overriding whatever the spec asked for.
+   *
+   * The fence exists to reject a write whose snapshot predates an out-of-band
+   * event — that is, a write an extended prefix invalidated. So turning it off
+   * across the whole book answers a question the book cannot otherwise ask: is
+   * any scenario relying on it? If none is, then no emitter here is
+   * prefix-sensitive and the fence guards against nothing; if one goes red that
+   * was not red before, that scenario names the exception.
+   *
+   * Disabling it takes the count half with it: `countGuard` is evaluated inside
+   * the same predicate, and the marker bookkeeping that both halves read is
+   * gated on the same flag.
+   */
+  preconditionGuard?: boolean;
 }
 
 export async function runScenario(
@@ -179,10 +236,15 @@ export async function runScenario(
 ): Promise<ScenarioResult> {
   const limits = { ...DEFAULT_LIMITS, ...spec.limits };
   const clock = createVirtualClock();
+  const appendOnlyLog = options.appendOnlyLog ?? spec.appendOnlyLog ?? false;
+  // One expectation, whichever world this is. Aliased rather than read inline
+  // so the outcome check and the output check below cannot drift apart.
+  const expected = spec.expect;
   const world = createSimWorld({
     clock,
-    preconditionGuard: spec.preconditionGuard,
+    preconditionGuard: options.preconditionGuard ?? spec.preconditionGuard,
     countGuard: spec.countGuard,
+    appendOnlyLog,
   });
 
   const workflowId =
@@ -198,7 +260,8 @@ export async function runScenario(
       )
         .filter((k) => !k.includes('#'))
         .sort()
-        .join(', ')}`
+        .join(', ')}`,
+      appendOnlyLog
     );
   }
 
@@ -225,6 +288,7 @@ export async function runScenario(
 
   const api: ScenarioApi = {
     world: world.snapshot,
+    appendOnlyLog,
     get runId() {
       return runId;
     },
@@ -384,6 +448,7 @@ export async function runScenario(
           events: world.store.allEvents(runId),
           handler: options.handler,
           limits,
+          appendOnlyLog,
         });
       } finally {
         uninstallClock = clock.install();
@@ -466,7 +531,7 @@ export async function runScenario(
     }
   }
 
-  if (spec.expect?.status !== outcome) problems.push(...outcomeProblems);
+  if (expected?.status !== outcome) problems.push(...outcomeProblems);
 
   const violations = runId
     ? checkInvariants({
@@ -485,15 +550,13 @@ export async function runScenario(
     output = await hydrateOutput(runEntity.output);
   }
 
-  if (spec.expect?.status && outcome !== spec.expect.status) {
-    problems.push(
-      `expected run to end "${spec.expect.status}", got "${outcome}"`
-    );
+  if (expected?.status && outcome !== expected.status) {
+    problems.push(`expected run to end "${expected.status}", got "${outcome}"`);
   }
-  if (spec.expect && 'output' in spec.expect) {
-    if (!deepEqual(output, spec.expect.output)) {
+  if (expected && 'output' in expected) {
+    if (!deepEqual(output, expected.output)) {
       problems.push(
-        `expected output ${JSON.stringify(spec.expect.output)}, got ${JSON.stringify(output)}`
+        `expected output ${JSON.stringify(expected.output)}, got ${JSON.stringify(output)}`
       );
     }
   }
@@ -505,6 +568,7 @@ export async function runScenario(
     runId,
     outcome,
     ok: problems.length === 0 && violations.length === 0 && outcome !== 'error',
+    appendOnlyLog,
     problems,
     violations,
     events,
@@ -587,7 +651,8 @@ function deepEqual(a: unknown, b: unknown): boolean {
 
 function failedBeforeStart(
   spec: ScenarioSpec,
-  problem: string
+  problem: string,
+  appendOnlyLog: boolean
 ): ScenarioResult {
   return {
     id: spec.id,
@@ -596,6 +661,7 @@ function failedBeforeStart(
     runId: '',
     outcome: 'error',
     ok: false,
+    appendOnlyLog,
     problems: [problem],
     violations: [],
     events: [],

@@ -6,11 +6,17 @@ import {
 import { SPEC_VERSION_CURRENT } from '@workflow/world';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { createIdFactory } from './ids.js';
-import { createSimStore, type SimStore } from './store.js';
+import {
+  createSimStore,
+  type MintedEvent,
+  type SimStore,
+  type SimStoreOptions,
+  type StaleRead,
+} from './store.js';
 
 const SPEC = SPEC_VERSION_CURRENT;
 
-function setup(options?: { preconditionGuard?: boolean }) {
+function setup(options?: Omit<SimStoreOptions, 'now' | 'ids'>) {
   let now = 1_704_067_200_000;
   const store = createSimStore({
     now: () => now,
@@ -34,6 +40,18 @@ async function createRun(store: SimStore, runId: string) {
     eventType: 'run_started',
     specVersion: SPEC,
   });
+}
+
+type CreateParams = Parameters<SimStore['events']['create']>[2];
+
+/**
+ * Commit at a position minted earlier — the hold the world facade opens
+ * between the handler boundary and the storage write. `minted` rides on the
+ * store's internal create params, which are deliberately not public, so a test
+ * driving the store directly has to say so out loud.
+ */
+function heldAt(minted: MintedEvent): CreateParams {
+  return { minted } as unknown as CreateParams;
 }
 
 const RUN = 'wrun_01HK153X00000000000105JM0S';
@@ -442,6 +460,143 @@ describe('sim store', () => {
           { stateUpdatedAt: guarded.nowMs() }
         )
       ).resolves.toBeTruthy();
+    });
+  });
+
+  describe('append-only log', () => {
+    const hook = {
+      eventType: 'hook_created',
+      specVersion: SPEC,
+      correlationId: 'hook_1',
+      eventData: { token: 'approval:1' },
+    } as const;
+    const step = {
+      eventType: 'step_created',
+      specVersion: SPEC,
+      correlationId: 'step_1',
+      eventData: { stepName: 'step//./w//s', input: new Uint8Array() },
+    } as const;
+
+    it('is off by default: a held write lands behind one committed sooner', async () => {
+      await createRun(store, RUN);
+      // The handler boundary takes a position; the write is then held.
+      const minted = store.mintEvent();
+      tick(10);
+      const overtook = await store.events.create(RUN, hook);
+      const held = await store.events.create(RUN, step, heldAt(minted));
+
+      expect(held.event?.eventId).toBe(minted.eventId);
+      // The log gained a row in the past: the later commit sorts first, so a
+      // reader that already saw `overtook` has been passed by something older.
+      const ids = store.allEvents(RUN).map((e) => e.eventId);
+      expect(ids.indexOf(minted.eventId)).toBeLessThan(
+        ids.indexOf(overtook.event?.eventId ?? '')
+      );
+    });
+
+    it('re-mints a write that was overtaken while it was held', async () => {
+      const world = setup({ appendOnlyLog: true });
+      await createRun(world.store, RUN);
+      const minted = world.store.mintEvent();
+      world.tick(10);
+      const overtook = await world.store.events.create(RUN, hook);
+      const held = await world.store.events.create(RUN, step, heldAt(minted));
+
+      // The reserved position is abandoned. Nothing is ever inserted behind a
+      // row a reader could already have seen, so log order is commit order.
+      const heldId = held.event?.eventId ?? '';
+      expect(heldId).not.toBe(minted.eventId);
+      expect(heldId > (overtook.event?.eventId ?? '')).toBe(true);
+      const ids = world.store.allEvents(RUN).map((e) => e.eventId);
+      expect(ids).toEqual([...ids].sort());
+      expect(ids.at(-1)).toBe(heldId);
+    });
+
+    it('leaves an uncontended write at the position it minted', async () => {
+      const world = setup({ appendOnlyLog: true });
+      await createRun(world.store, RUN);
+      const minted = world.store.mintEvent();
+      world.tick(10);
+      const uncontended = await world.store.events.create(
+        RUN,
+        step,
+        heldAt(minted)
+      );
+
+      // Still the newest position when it arrived, so it keeps both halves of
+      // the mint — including a `createdAt` from before the tick. A scenario
+      // that never holds a write mid-flight logs the same bytes either way.
+      expect(uncontended.event?.eventId).toBe(minted.eventId);
+      expect(uncontended.event?.createdAt).toEqual(minted.createdAt);
+    });
+
+    it('punches a hole in a withheld read by default', async () => {
+      const seen: StaleRead[] = [];
+      const world = setup({ onStaleRead: (read) => seen.push(read) });
+      await createRun(world.store, RUN);
+      world.store.withholdNextEvent(1);
+      const withheld = await world.store.events.create(RUN, hook);
+      world.tick(1);
+      const after = await world.store.events.create(RUN, step);
+
+      const page = await world.store.events.list({
+        runId: RUN,
+        pagination: { limit: 50, sortOrder: 'asc' },
+      });
+      const ids = page.data.map((e) => e.eventId);
+      // The withheld event vanishes and its successor stays: the reader holds
+      // proof that something newer exists, which is what no watermark can see.
+      expect(ids).not.toContain(withheld.event?.eventId);
+      expect(ids).toContain(after.event?.eventId);
+      expect(seen).toEqual([
+        { eventId: withheld.event?.eventId, hidden: 1, truncated: false },
+      ]);
+    });
+
+    it('truncates a withheld read rather than punching a hole', async () => {
+      const seen: StaleRead[] = [];
+      const world = setup({
+        appendOnlyLog: true,
+        onStaleRead: (read) => seen.push(read),
+      });
+      await createRun(world.store, RUN);
+      world.store.withholdNextEvent(1);
+      const withheld = await world.store.events.create(RUN, hook);
+      world.tick(1);
+      const after = await world.store.events.create(RUN, step);
+
+      const page = await world.store.events.list({
+        runId: RUN,
+        pagination: { limit: 50, sortOrder: 'asc' },
+      });
+      const ids = page.data.map((e) => e.eventId);
+      // Cut short at the withheld event: a prefix of the real log. Still short
+      // — both events are missing, `after` included — but not self-contradictory.
+      expect(ids).not.toContain(withheld.event?.eventId);
+      expect(ids).not.toContain(after.event?.eventId);
+      expect(ids).toEqual(
+        world.store
+          .allEvents(RUN)
+          .map((e) => e.eventId)
+          .filter((id) => id < (withheld.event?.eventId ?? ''))
+      );
+      expect(seen).toEqual([
+        { eventId: withheld.event?.eventId, hidden: 2, truncated: true },
+      ]);
+    });
+
+    it('serves the real log once the withhold window closes', async () => {
+      const world = setup({ appendOnlyLog: true });
+      await createRun(world.store, RUN);
+      world.store.withholdNextEvent(1);
+      await world.store.events.create(RUN, hook);
+
+      const read = () =>
+        world.store.events
+          .list({ runId: RUN, pagination: { limit: 50, sortOrder: 'asc' } })
+          .then((p) => p.data.length);
+      const short = await read();
+      expect(await read()).toBe(short + 1);
     });
   });
 });
