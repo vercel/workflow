@@ -137,6 +137,9 @@ const handler = await loadFlowHandler(bundle.flowBundlePath);
 
 const result = await runScenario(
   {
+    // The stable handle: what a bug report cites and `pnpm sim <id>` selects.
+    // The prose `name` next to it is free to be reworded.
+    id: 'hook-at-step-started',
     name: 'hook arrives inside the step_started commit',
     // Named from the build manifest — no client transform needed.
     workflow: 'approvalWorkflow',
@@ -166,6 +169,35 @@ stays red until the runtime delivers it. Six of the 39 are red for that reason.
 The alternative — letting a scenario pass because the bug it documents is still
 present — makes a suite that is green and a system that is broken, and gives no
 signal on the day someone fixes it.
+
+## Reading the output
+
+Events are referred to one way and one way only: **by log position**. `#12` is
+the twelfth event in the durable log — the log sorted the way `events.list`
+sorts it, `(createdAt, eventId)` — and `@7` is the resource created at position
+7, in the column where a raw correlation ULID used to be. Ids in violation
+messages are rewritten to positions on the way out, so a claim like "the hook is
+at 7 and `wait_completed` at 8" is one a reader can check against the output
+instead of translating first.
+
+The trace prints in **commit** order and is numbered in **log** order. Those are
+the same thing right up until they are not, so a run whose durable log
+disagrees with the order its writers actually committed in shows up as positions
+counting backwards:
+
+```
+# 8    +1.0m  wf   wait_completed   @6
+# 7    +1.0m  ext    hook_received  @2   token="count:doc-29"
+# 9    +1.0m  wf   step_created     @9   settle
+```
+
+That is the whole subject of the red scenarios, visible on one line: the hook
+owns position 7, the timeout at 8 was committed first, and the branch at 9 went
+with the timeout. Out-of-order positions are highlighted when colour is on.
+
+Colour is applied only when stdout is a terminal, and is off under `NO_COLOR`
+or `--no-color`; pass `{ color: true }` to force it. With colour off the output
+is plain ASCII, stable enough to check in as a golden file.
 
 ## Writers
 

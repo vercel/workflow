@@ -27,7 +27,7 @@ Two workspaces:
 | `scenario.ts` | runs one `ScenarioSpec` end to end and produces a `ScenarioResult` |
 | `replay.ts` | cold-start replay verification of a finished log |
 | `invariants.ts` | consistency checks re-derived from the event log alone |
-| `report.ts` | renders a scenario as stable ASCII |
+| `report.ts` | renders a scenario; log positions for every event reference, colour only when the destination is a terminal |
 | `streams.ts` | in-memory streamer |
 | `build.ts` | bundles a project's workflows so the runtime can be handed real compiled code |
 | `types.ts` | the public vocabulary |
@@ -348,7 +348,8 @@ which is why the out-of-band writer is the one that can express this shape.
 
 ```ts
 interface ScenarioSpec {
-  name: string;
+  id: string;                   // stable hyphenated handle; what `pnpm sim <id>` selects
+  name: string;                 // prose, expected to be reworded; the id is not
   description?: string;
   workflow: string | { workflowId: string };  // plain fn name, resolved via the build manifest
   input?: unknown[];
@@ -582,12 +583,15 @@ yet", the fix is identified by argument but nothing in the book proves it.
 
 | scenario | mechanism | fix | shown green by |
 |---|---|---|---|
-| `corrupt: stale event load + step-count fork` (doc-23) | `withholdNextEvent(1)` + `deliverHook`; hook at position 7, `wait_completed` at 8, no-hook branch at 9 | `preconditionGuard` — the withheld `hook_received` is the newest out-of-band write and the orchestrator's snapshot predates the sleep, so the watermark fires | `corrupt: same shape, with the optimistic-concurrency fence armed` (doc-24) |
-| `corrupt: stale event load with EQUAL step counts` (doc-25) | same fault on a fork whose branches emit one step each | `preconditionGuard`, for the same reason | none yet |
-| `corrupt: two racing STEPS, no hook anywhere` (doc-26) | two of the run's own `step_completed` events, one delivery | `countGuard`. **Not** `preconditionGuard`: the withheld completion is a hole in the middle of the log, which moves no high-water mark (§5) | none yet |
-| `corrupt: two racing STEPS, WITH the precondition fence on` (doc-27) | same, `preconditionGuard: true`, zero rejections | `countGuard`. This row *is* the proof that the watermark half does not fix doc-26 | none yet |
-| `in-flight: A commits BEFORE the decision — count guard off` (doc-29) | `beginHookDelivery`, committed before the decision is written | `countGuard` | `in-flight: same tempo, count guard ON — the write is fenced` (doc-30) |
-| `in-flight: A commits AFTER the decision — no guard can see it` (doc-31) | `beginHookDelivery`, committed after the decision | none in the SDK. Needs an append-tail fence — `assertSlotAboveTail`, `vercel/workflow-server#692` | — |
+| `stale-read-step-count-fork` (doc-23) | `withholdNextEvent(1)` + `deliverHook`; hook at `#7`, `wait_completed` at `#8`, no-hook branch at `#9` | `preconditionGuard` — the withheld `hook_received` is the newest out-of-band write and the orchestrator's snapshot predates the sleep, so the watermark fires | `stale-read-step-count-fork-fenced` (doc-24) |
+| `stale-read-equal-step-counts` (doc-25) | same fault on a fork whose branches emit one step each | `preconditionGuard`, for the same reason | none yet |
+| `step-vs-step-fork` (doc-26) | two of the run's own `step_completed` events, one delivery | `countGuard`. **Not** `preconditionGuard`: the withheld completion is a hole in the middle of the log, which moves no high-water mark (§5) | none yet |
+| `step-vs-step-fork-fenced` (doc-27) | same, `preconditionGuard: true`, zero rejections | `countGuard`. This row *is* the proof that the watermark half does not fix doc-26 | none yet |
+| `in-flight-before-decision` (doc-29) | `beginHookDelivery`, committed before the decision is written | `countGuard` | `in-flight-before-decision-counted` (doc-30) |
+| `in-flight-after-decision` (doc-31) | `beginHookDelivery`, committed after the decision | none in the SDK. Needs an append-tail fence — `assertSlotAboveTail`, `vercel/workflow-server#692` | — |
+
+Those handles are `ScenarioSpec.id`, and they select: `pnpm sim
+in-flight-after-decision` plays one row of this table.
 
 So: **two** of the six have their fix demonstrated by a paired green scenario,
 **three** have a fix identified but unproven here, and **one** has no fix at all.

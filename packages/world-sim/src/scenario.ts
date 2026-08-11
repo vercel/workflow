@@ -52,6 +52,14 @@ import { createSimWorld, type SimWorld } from './world.js';
 const SCRIPT_UNWIND_MS = 50;
 
 export interface ScenarioSpec {
+  /**
+   * Stable hyphenated handle for this scenario, e.g. `hook-at-step-started`.
+   *
+   * The `name` is prose and will be reworded; the id is what a commit message,
+   * a bug report or a `pnpm sim <id>` invocation refers to, so it is expected
+   * to outlive several rewordings of the sentence next to it.
+   */
+  id: string;
   name: string;
   description?: string;
   /**
@@ -126,6 +134,8 @@ export type ScenarioOutcome =
   | 'error';
 
 export interface ScenarioResult {
+  /** The spec's stable handle. See `ScenarioSpec.id`. */
+  id: string;
   name: string;
   description?: string;
   runId: string;
@@ -489,6 +499,7 @@ export async function runScenario(
   }
 
   return {
+    id: spec.id,
     name: spec.name,
     description: spec.description,
     runId,
@@ -579,6 +590,7 @@ function failedBeforeStart(
   problem: string
 ): ScenarioResult {
   return {
+    id: spec.id,
     name: spec.name,
     description: spec.description,
     runId: '',

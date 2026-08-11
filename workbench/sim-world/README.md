@@ -5,13 +5,25 @@ visible, and a book of scenarios that pin down exactly when external input
 arrives.
 
 ```bash
-pnpm sim                 # play every scenario, print every event stream
-pnpm sim hook            # only scenarios whose name contains "hook"
-pnpm sim --verbose       # include queue deliveries in the trace
+pnpm sim                             # play every scenario, print every event stream
+pnpm sim hook                        # only scenarios whose id or name contains "hook"
+pnpm sim in-flight-after-decision    # one scenario, by id
+pnpm sim --verbose                   # include queue deliveries in the trace
+pnpm sim --no-color                  # plain ASCII, e.g. for a golden file
 ```
+
+Every scenario has a stable hyphenated id next to its prose name. The id is
+what a commit message or a bug report should cite, and what the filter above
+matches first; the sentence beside it is free to be reworded.
 
 Exits non-zero if any scenario misses an expectation or trips a consistency
 check, so it doubles as the package's integration test.
+
+Events in the printed stream are referred to by **log position** — `#12` is the
+twelfth event in the durable log, `@7` the resource created at position 7 — and
+the trace prints in *commit* order, so the numbers count backwards exactly where
+the log and the execution disagree. See
+[`packages/world-sim/README.md`](../../packages/world-sim/README.md#reading-the-output).
 
 How the simulator underneath works is documented in
 [`packages/world-sim/DESIGN.md`](../../packages/world-sim/DESIGN.md).
@@ -80,5 +92,6 @@ and is dark everywhere real.
 
 `run.ts` and the scenario book are TypeScript executed directly by Node's type
 stripping, which needs Node >= 22.18 (the version pinned in `.node-version`).
-The workflows under `workflows/` are compiled by the normal SDK build pipeline,
-exactly as a deployment would compile them.
+Every workflow under test lives in `workflows/index.ts` — they are read
+together, so they sit together — and is compiled by the normal SDK build
+pipeline, exactly as a deployment would compile it.

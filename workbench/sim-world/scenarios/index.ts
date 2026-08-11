@@ -41,12 +41,14 @@ export const scenarios: ScenarioSpec[] = [
   // -------------------------------------------------------------------------
 
   {
+    id: 'smoke-no-steps',
     name: 'smoke: a workflow with no steps at all',
     workflow: 'emptyWorkflow',
     expect: { status: 'completed', output: 'done' },
   },
 
   {
+    id: 'smoke-one-step',
     name: 'smoke: a workflow with one null step',
     workflow: 'oneStepWorkflow',
     expect: { status: 'completed', output: null },
@@ -57,6 +59,7 @@ export const scenarios: ScenarioSpec[] = [
   // -------------------------------------------------------------------------
 
   {
+    id: 'hook-at-step-started',
     name: 'hook arrives inside the step_started commit',
     description:
       'The hook payload is written after step_started is durable and before ' +
@@ -79,6 +82,7 @@ export const scenarios: ScenarioSpec[] = [
   },
 
   {
+    id: 'hook-at-step-completed',
     name: 'hook arrives inside the step_completed commit',
     description:
       'Same workflow and same result, but hook_received now lands after ' +
@@ -103,6 +107,7 @@ export const scenarios: ScenarioSpec[] = [
   },
 
   {
+    id: 'hook-at-hook-created',
     name: 'hook arrives the instant it is registered',
     description:
       'Delivered inside the hook_created commit, before the workflow has even ' +
@@ -131,6 +136,7 @@ export const scenarios: ScenarioSpec[] = [
   // -------------------------------------------------------------------------
 
   {
+    id: 'deadline-hook-wins',
     name: 'hook beats its deadline',
     workflow: 'approvalWithDeadlineWorkflow',
     input: ['doc-2', '1h'],
@@ -145,6 +151,7 @@ export const scenarios: ScenarioSpec[] = [
   },
 
   {
+    id: 'deadline-expires',
     name: 'deadline expires with no hook',
     description:
       'Nothing delivers the hook, so the run finishes on the timer. One hour ' +
@@ -159,6 +166,7 @@ export const scenarios: ScenarioSpec[] = [
   // -------------------------------------------------------------------------
 
   {
+    id: 'long-sleep',
     name: 'a thirty-day sleep costs nothing',
     workflow: 'longSleepWorkflow',
     input: ['payload'],
@@ -166,6 +174,7 @@ export const scenarios: ScenarioSpec[] = [
   },
 
   {
+    id: 'hook-never-arrives',
     name: 'a hook that never arrives stalls instead of hanging',
     description:
       'The expected outcome is a stall: the queue drains, the run is still ' +
@@ -180,6 +189,7 @@ export const scenarios: ScenarioSpec[] = [
   // -------------------------------------------------------------------------
 
   {
+    id: 'step-retries-twice',
     name: 'a step retries twice and then succeeds',
     workflow: 'retryingWorkflow',
     input: ['charge'],
@@ -187,6 +197,7 @@ export const scenarios: ScenarioSpec[] = [
   },
 
   {
+    id: 'parallel-steps',
     name: 'two steps suspend together',
     workflow: 'parallelStepsWorkflow',
     input: ['x'],
@@ -194,6 +205,7 @@ export const scenarios: ScenarioSpec[] = [
   },
 
   {
+    id: 'hook-on-execution-state',
     name: 'hook is delivered once execution state says both steps are done',
     description:
       'The wait is on world state rather than on one named point: stop ' +
@@ -227,6 +239,7 @@ export const scenarios: ScenarioSpec[] = [
   // -------------------------------------------------------------------------
 
   {
+    id: 'peek-hook-before-branch',
     name: 'peek: hook lands just BEFORE the branch step commits',
     description:
       'The first execution peeks, sees nothing, and ships unapproved — then ' +
@@ -248,6 +261,7 @@ export const scenarios: ScenarioSpec[] = [
   },
 
   {
+    id: 'peek-hook-after-branch',
     name: 'peek: hook lands just AFTER the branch step commits',
     description:
       'The control. One world call later, so hook_received sits after the ' +
@@ -267,6 +281,7 @@ export const scenarios: ScenarioSpec[] = [
   },
 
   {
+    id: 'peek-hook-at-registration',
     name: 'peek: hook lands the instant it is registered',
     description:
       'The earliest a payload can possibly arrive. Whichever fork the first ' +
@@ -283,6 +298,7 @@ export const scenarios: ScenarioSpec[] = [
   },
 
   {
+    id: 'race-hook-before-probe',
     name: 'race: hook lands just BEFORE the probe step completes',
     description:
       'Both branches of the race are event-log deliveries now, so the winner ' +
@@ -301,6 +317,7 @@ export const scenarios: ScenarioSpec[] = [
   },
 
   {
+    id: 'race-hook-after-probe',
     name: 'race: hook lands just AFTER the probe step completes',
     workflow: 'hookRaceStepWorkflow',
     input: ['doc-12'],
@@ -314,6 +331,7 @@ export const scenarios: ScenarioSpec[] = [
   },
 
   {
+    id: 'race-duplicate-delivery',
     name: 'race: a webhook receiver delivers the same payload twice',
     description:
       'Two hook_received events for one hookId, straddling the step result. ' +
@@ -345,6 +363,7 @@ export const scenarios: ScenarioSpec[] = [
   // -------------------------------------------------------------------------
 
   {
+    id: 'attr-hook-before-step',
     name: 'attr: hook lands BEFORE the concurrent step completes',
     description:
       'The hook-gated branch writes its attr_set ahead of the other branch ' +
@@ -364,6 +383,7 @@ export const scenarios: ScenarioSpec[] = [
   },
 
   {
+    id: 'attr-hook-after-step',
     name: 'attr: hook lands AFTER the concurrent step completes',
     workflow: 'concurrentAttributeWorkflow',
     input: ['doc-15'],
@@ -380,6 +400,7 @@ export const scenarios: ScenarioSpec[] = [
   },
 
   {
+    id: 'attr-from-step-body',
     name: 'attr: a step writes run state while a hook lands mid-flight',
     description:
       'The attr_set comes from step context (writer type "step", committed ' +
@@ -406,6 +427,7 @@ export const scenarios: ScenarioSpec[] = [
   // -------------------------------------------------------------------------
 
   {
+    id: 'fork-hook-after-timeout',
     name: 'fork: hook arrives just AFTER the timeout, before the branch commits',
     description:
       'The timeout wins the race, so the first execution takes step 3 — but ' +
@@ -425,6 +447,7 @@ export const scenarios: ScenarioSpec[] = [
   },
 
   {
+    id: 'fork-hook-before-timeout',
     name: 'fork: hook arrives just BEFORE the timeout commits',
     description:
       'The mirror of the case above, one world call earlier: hook_received now ' +
@@ -442,6 +465,7 @@ export const scenarios: ScenarioSpec[] = [
   },
 
   {
+    id: 'count-hook-after-timeout',
     name: 'count: hook lands AFTER the timeout, branches differ by step count',
     description:
       'The shape PR #3147 identified as the amplifier: settle emits one step, ' +
@@ -459,6 +483,7 @@ export const scenarios: ScenarioSpec[] = [
   },
 
   {
+    id: 'count-hook-before-timeout',
     name: 'count: hook lands BEFORE the timeout, branches differ by step count',
     workflow: 'stepCountForkWorkflow',
     input: ['doc-22'],
@@ -472,6 +497,7 @@ export const scenarios: ScenarioSpec[] = [
   },
 
   {
+    id: 'stale-read-step-count-fork',
     name: 'corrupt: stale event load + step-count fork',
     description:
       'All three preconditions from PR #3147 at once. The hook is committed ' +
@@ -501,6 +527,7 @@ export const scenarios: ScenarioSpec[] = [
   },
 
   {
+    id: 'stale-read-equal-step-counts',
     name: 'corrupt: stale event load with EQUAL step counts (is the amplifier needed?)',
     description:
       'Identical fault to the scenario above, but on the fork whose branches ' +
@@ -524,6 +551,7 @@ export const scenarios: ScenarioSpec[] = [
   },
 
   {
+    id: 'step-vs-step-fork',
     name: 'corrupt: two racing STEPS, no hook anywhere',
     description:
       'Answers "does this need an out-of-band event type?" — no. The fork is ' +
@@ -566,6 +594,7 @@ export const scenarios: ScenarioSpec[] = [
   },
 
   {
+    id: 'step-vs-step-fork-fenced',
     name: 'corrupt: two racing STEPS, WITH the precondition fence on',
     description:
       "Tests the fence's predicate. WorldCapabilities.preconditionGuard is " +
@@ -611,6 +640,7 @@ export const scenarios: ScenarioSpec[] = [
   },
 
   {
+    id: 'fence-catches-benign-direction',
     name: 'fence: the guard catches the harmless direction, not the harmful one',
     description:
       'The control that shows the fence is not merely weak here — it is aimed ' +
@@ -677,6 +707,7 @@ export const scenarios: ScenarioSpec[] = [
   // -------------------------------------------------------------------------
 
   {
+    id: 'in-flight-before-decision',
     name: 'in-flight: A commits BEFORE the decision is written — count guard off',
     description:
       'Log order is (A=hook_received, B=wait_completed); visibility is ' +
@@ -737,6 +768,7 @@ export const scenarios: ScenarioSpec[] = [
   },
 
   {
+    id: 'in-flight-before-decision-counted',
     name: 'in-flight: same tempo, count guard ON — the write is fenced',
     description:
       'Identical to the scenario above with the count half of the fence armed: ' +
@@ -773,6 +805,7 @@ export const scenarios: ScenarioSpec[] = [
   },
 
   {
+    id: 'in-flight-after-decision',
     name: 'in-flight: A commits AFTER the decision — no guard can see it',
     description:
       'The residual, and the reason the append-tail fence noted in ' +
@@ -832,6 +865,7 @@ export const scenarios: ScenarioSpec[] = [
   },
 
   {
+    id: 'stale-read-step-count-fork-fenced',
     name: 'corrupt: same shape, with the optimistic-concurrency fence armed',
     description:
       'Identical to the count: fork scenario but with preconditionGuard on, so ' +
@@ -856,6 +890,7 @@ export const scenarios: ScenarioSpec[] = [
   },
 
   {
+    id: 'fork-hook-wins',
     name: 'fork: hook arrives before the timeout',
     workflow: 'hookTimeoutForkWorkflow',
     input: ['doc-18'],
@@ -869,6 +904,7 @@ export const scenarios: ScenarioSpec[] = [
   },
 
   {
+    id: 'fork-timeout-wins',
     name: 'fork: hook never arrives, timeout decides',
     workflow: 'hookTimeoutForkWorkflow',
     input: ['doc-19'],
@@ -880,6 +916,7 @@ export const scenarios: ScenarioSpec[] = [
   // -------------------------------------------------------------------------
 
   {
+    id: 'writers-independent-step-bodies',
     name: 'writers: two step bodies advance independently',
     description:
       'The claim the whole writer API rests on: two inline step bodies in one ' +
@@ -923,6 +960,7 @@ export const scenarios: ScenarioSpec[] = [
   },
 
   {
+    id: 'writers-scripted-tempo',
     name: 'writers: the script names the tempo top to bottom',
     description:
       'Every ordering in this scenario is a statement: hold the orchestrator ' +
@@ -963,6 +1001,7 @@ export const scenarios: ScenarioSpec[] = [
   },
 
   {
+    id: 'cancel-mid-step',
     name: 'cancellation lands mid-step',
     description:
       'The run is cancelled inside the step_started commit, so the step body ' +
