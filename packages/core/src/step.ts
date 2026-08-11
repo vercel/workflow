@@ -123,6 +123,10 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
             return EventConsumerResult.Finished;
           }
           queueItem.hasCreatedEvent = true;
+          // Anchors the re-dispatch watchdog: how long this step has existed
+          // without ever starting is what tells a replay its dispatch message
+          // is gone (runtime/step-dispatch.ts).
+          queueItem.createdEventAt = +event.createdAt;
           // Continue waiting for step_started/step_completed/step_failed events
           return EventConsumerResult.Consumed;
         }

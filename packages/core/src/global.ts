@@ -12,6 +12,14 @@ export interface StepInvocationQueueItem {
   thisVal?: Serializable;
   hasCreatedEvent?: boolean;
   /**
+   * `createdAt` (ms) of the step's durable `step_created`, when the replay
+   * observed one. Anchors the re-dispatch watchdog for a step that never
+   * started (runtime/step-dispatch.ts). Undefined for a step this suspension
+   * is creating right now, and on worlds whose events carry no usable
+   * timestamp — both keep the plain correlation-ID dispatch key.
+   */
+  createdEventAt?: number;
+  /**
    * Inline step ownership, derived from the step's LATEST `step_started`
    * during replay: the queue message ID stamped by the invocation running
    * the step inline, or undefined when the latest start was unstamped (a

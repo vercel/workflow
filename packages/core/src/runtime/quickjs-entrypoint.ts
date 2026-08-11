@@ -61,6 +61,11 @@ import {
   startQuickJSWorkflow,
 } from './quickjs-runtime.js';
 import { ReplayBudget } from './replay-budget.js';
+import {
+  getStepDispatchWake,
+  type StepDispatchState,
+  stepDispatchIdempotencyKey,
+} from './step-dispatch.js';
 import { executeStep, type StepExecutionResult } from './step-executor.js';
 import { runStepSingleFlight } from './step-single-flight.js';
 import { getWaitContinuationDispatch } from './wait-continuation.js';
@@ -122,7 +127,10 @@ async function queueStepMessage(params: {
    * publish — see wait-continuation.ts for the same hazard on wait
    * keys. `dispatch` is the plain background handoff (overflow / crash
    * recovery) and keeps the bare correlationId so it stays mutually
-   * exclusive with the node engine's dispatch of the same step;
+   * exclusive with the node engine's dispatch of the same step, except
+   * once the step has gone a full watchdog interval without ever
+   * starting, where both engines move to the same epoch-scoped key so a
+   * lost dispatch can be re-sent (see step-dispatch.ts);
    * `backstop:<epoch>` covers delayed crash backstops, scoped to the
    * ownership epoch so a refreshed lease re-arms a NEW backstop instead
    * of being absorbed by the in-flight one; `retry:<n>` covers delayed
@@ -130,6 +138,11 @@ async function queueStepMessage(params: {
    * hop is enqueueable.
    */
   purpose: 'dispatch' | `backstop:${string}` | `retry:${number}`;
+  /**
+   * Replay-derived watchdog state for a `dispatch` publish. Absent (or
+   * out of watchdog scope) keeps the bare correlationId.
+   */
+  dispatchState?: StepDispatchState;
   wfdiag: (checkpoint: string, fields: Record<string, unknown>) => void;
 }): Promise<void> {
   const {
@@ -141,6 +154,7 @@ async function queueStepMessage(params: {
     namespace,
     nextTraceCarrier,
     purpose,
+    dispatchState,
     wfdiag,
   } = params;
   const traceCarrier = await nextTraceCarrier();
@@ -157,7 +171,9 @@ async function queueStepMessage(params: {
     {
       idempotencyKey:
         purpose === 'dispatch'
-          ? step.correlationId
+          ? dispatchState
+            ? stepDispatchIdempotencyKey(dispatchState, Date.now())
+            : step.correlationId
           : `${step.correlationId}:${purpose}`,
       ...(delaySeconds && delaySeconds > 0 ? { delaySeconds } : {}),
     }
@@ -886,12 +902,29 @@ export async function runWorkflowWithQuickJS(params: {
   // stamp; a step_retrying lapses ownership permanently for the id.
   const stepOwnership = new Map<
     string,
-    { owner?: string; startedAtMs?: number; sawRetrying: boolean }
+    {
+      owner?: string;
+      startedAtMs?: number;
+      sawRetrying: boolean;
+      /**
+       * `createdAt` (ms) of the step's `step_created`. Anchors the
+       * re-dispatch watchdog for a step that never started
+       * (step-dispatch.ts).
+       */
+      createdAtMs?: number;
+    }
   >();
   const observeEventsForOwnership = (observed: Event[]): void => {
     for (const e of observed) {
       if (e.correlationId === undefined) continue;
-      if (e.eventType === 'step_started') {
+      if (e.eventType === 'step_created') {
+        const prior = stepOwnership.get(e.correlationId);
+        stepOwnership.set(e.correlationId, {
+          sawRetrying: false,
+          ...(prior ?? {}),
+          createdAtMs: e.createdAt ? +new Date(e.createdAt) : undefined,
+        });
+      } else if (e.eventType === 'step_started') {
         const owner =
           'eventData' in e &&
           e.eventData &&
@@ -904,6 +937,7 @@ export async function runWorkflowWithQuickJS(params: {
           owner,
           startedAtMs: e.createdAt ? +new Date(e.createdAt) : undefined,
           sawRetrying: prior?.sawRetrying ?? false,
+          createdAtMs: prior?.createdAtMs,
         });
       } else if (e.eventType === 'step_retrying') {
         const prior = stepOwnership.get(e.correlationId);
@@ -915,6 +949,22 @@ export async function runWorkflowWithQuickJS(params: {
     }
   };
   observeEventsForOwnership(events);
+  /**
+   * The re-dispatch watchdog's view of a pending step, assembled from the
+   * ownership map. A step this invocation is creating right now carries no
+   * observed `step_created` yet, so it is out of scope and keeps the bare
+   * dispatch key.
+   */
+  const dispatchStateOf = (step: PendingStep): StepDispatchState => {
+    const ownership = stepOwnership.get(step.correlationId);
+    return {
+      correlationId: step.correlationId,
+      hasCreatedEvent: step.hasCreatedEvent,
+      createdEventAt: ownership?.createdAtMs,
+      lastStartedAt: ownership?.startedAtMs,
+      sawRetrying: ownership?.sawRetrying,
+    };
+  };
   const scheduledWaitContinuations = new Set<string>();
   const maxInlineSteps = getMaxInlineSteps();
   const budget = new ReplayBudget();
@@ -1050,6 +1100,7 @@ export async function runWorkflowWithQuickJS(params: {
           namespace,
           nextTraceCarrier,
           purpose: 'dispatch',
+          dispatchState: dispatchStateOf(step),
           wfdiag,
         });
       }
@@ -1182,6 +1233,7 @@ export async function runWorkflowWithQuickJS(params: {
             namespace,
             nextTraceCarrier,
             purpose: 'dispatch',
+            dispatchState: dispatchStateOf(step),
             wfdiag,
           });
         }
@@ -1581,9 +1633,38 @@ export async function runWorkflowWithQuickJS(params: {
       return;
     }
 
+    // Nothing else will wake a run whose only outstanding work is a step
+    // dispatch the queue lost, so arm a timer on the soonest watchdog
+    // boundary among the steps still awaiting their first start. Same
+    // scheme as the node engine's suspension wake (step-dispatch.ts): the
+    // key is derived from the durable creation timestamp, so concurrent
+    // invocations arm one timer, not one each.
+    const dispatchWake = getStepDispatchWake(
+      pendingOperations
+        .filter((op): op is PendingStep => op.type === 'step')
+        .map(dispatchStateOf),
+      Date.now()
+    );
+    if (dispatchWake) {
+      await queueMessage(
+        world,
+        getWorkflowQueueName(workflowRun.workflowName, namespace),
+        {
+          runId,
+          traceCarrier: await nextTraceCarrier(),
+          requestedAt: new Date(),
+        },
+        {
+          delaySeconds: dispatchWake.delaySeconds,
+          idempotencyKey: dispatchWake.idempotencyKey,
+        }
+      );
+    }
+
     wfdiag('exit_suspended', {
       action: 'awaiting_external',
       pendingOpsCount: pendingOperations.length,
+      dispatchWakeSeconds: dispatchWake?.delaySeconds,
     });
   } else if (result.failed) {
     // Workflow failed — remap stack trace using inline source maps.

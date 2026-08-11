@@ -408,6 +408,57 @@ export function getInlineOwnershipLeaseSeconds(): number {
   );
 }
 
+/**
+ * Default re-dispatch watchdog for a step that was created but never started,
+ * in seconds. A pending step's queue message is keyed by its correlation ID,
+ * and queues dedupe that key for the message's lifetime, so a dispatch that
+ * never yields a `step_started` can never be re-sent under it. After this long
+ * without a start, replays assume the dispatch is gone and enqueue the step
+ * under a fresh, epoch-scoped key (see runtime/step-dispatch.ts).
+ *
+ * The trade is at-least-once execution for the affected step: a dispatch that
+ * was merely slow rather than lost still delivers, and both executions run the
+ * body. So the default sits far above normal dispatch-to-start latency, which
+ * is queue delivery plus a cold start — order of a second, and measured under
+ * a heavy concurrent-replay storm at under 2.5s for every step in the run.
+ * A minute of silence is not a slow queue.
+ *
+ * Override via `WORKFLOW_STEP_DISPATCH_WATCHDOG_SECONDS` (clamped to
+ * `MIN_STEP_DISPATCH_WATCHDOG_SECONDS`..`MAX_STEP_DISPATCH_WATCHDOG_SECONDS`):
+ * raise it on deployments where step messages routinely queue behind a
+ * concurrency limit for minutes, lower it to recover faster.
+ */
+export const STEP_DISPATCH_WATCHDOG_SECONDS = 60;
+
+/**
+ * Lower bound for the watchdog override. Below this the watchdog starts
+ * competing with ordinary dispatch latency and duplicates healthy steps.
+ */
+export const MIN_STEP_DISPATCH_WATCHDOG_SECONDS = 10;
+
+/**
+ * Upper bound for the watchdog override. 900s is the queue's maximum
+ * per-message delay (SQS cap), and the boundary wake is a delayed message of
+ * at most one interval.
+ */
+export const MAX_STEP_DISPATCH_WATCHDOG_SECONDS = 900;
+
+/**
+ * Effective re-dispatch watchdog for unstarted steps. Override via
+ * `WORKFLOW_STEP_DISPATCH_WATCHDOG_SECONDS`.
+ */
+export function getStepDispatchWatchdogSeconds(): number {
+  return envNumber(
+    'WORKFLOW_STEP_DISPATCH_WATCHDOG_SECONDS',
+    STEP_DISPATCH_WATCHDOG_SECONDS,
+    {
+      integer: true,
+      min: MIN_STEP_DISPATCH_WATCHDOG_SECONDS,
+      max: MAX_STEP_DISPATCH_WATCHDOG_SECONDS,
+    }
+  );
+}
+
 // A replay-consumer mismatch can be caused by a transient divergent replay
 // rather than an invalid persisted history. Queue bounded recovery replays
 // before recording terminal corruption for a run that cannot replay.

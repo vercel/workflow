@@ -158,6 +158,14 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 - How long after an inline step's latest `step_started` other invocations assume its owner may still be executing the body. Within the lease they defer the step's backstop message; past it they enqueue immediately.
 - Raise this on self-hosted multi-instance deployments whose inline steps run longer than the default (the default is sized for Vercel's function duration ceiling).
 
+### `WORKFLOW_STEP_DISPATCH_WATCHDOG_SECONDS`
+
+- Default: `60`
+- Clamp: `10` to `900`
+- How long a step may sit created but never started before the runtime re-dispatches it. A queued step message is deduplicated on its correlation ID, so if that message is lost the step would otherwise never be delivered again and the run would keep replaying with nothing to execute. Past this interval the re-dispatch uses a key the queue has not seen, and the runtime arms a timer on the boundary so the check happens even when nothing else wakes the run.
+- Re-dispatch is at-least-once: if the original message was only slow, both deliveries execute the step body and the loser's result is discarded. Raise this if your queue's dispatch-to-start latency approaches the default.
+- Only steps that have never started are covered. A step that has started is left to the inline ownership lease above.
+
 ## Workflow VM engine
 
 ### `WORKFLOW_VM`
