@@ -7,8 +7,8 @@ import {
 } from '@workflow/errors';
 import {
   type Event,
-  slotToEventId,
   SPEC_VERSION_CURRENT,
+  slotToEventId,
   type WorkflowRun,
 } from '@workflow/world';
 import { ulid } from 'ulid';
