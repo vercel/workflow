@@ -180,4 +180,22 @@ matrix.app = matrix.app.flatMap((app) =>
   }))
 );
 
+// QuickJS engine with VM-memory snapshotting at maximum churn
+// (WORKFLOW_SNAPSHOT_THRESHOLD=1 snapshots at every qualifying
+// suspension) — exercises the save/restore/delete lifecycle and the
+// restore + partial-replay determinism on every run.
+matrix.app.push(
+  createMatrixEntry(
+    'nextjs-turbopack',
+    'example-nextjs-workflow-turbopack',
+    DEV_TEST_CONFIGS['nextjs-turbopack'],
+    {
+      vm: 'quickjs',
+      snapshotThreshold: '1',
+      runLabel: 'quickjs-snapshot',
+      artifactSuffix: 'quickjs-snapshot',
+    }
+  )
+);
+
 console.log(JSON.stringify(matrix));
