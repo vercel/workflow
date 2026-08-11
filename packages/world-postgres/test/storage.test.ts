@@ -196,13 +196,17 @@ describe('Storage (Postgres integration)', () => {
         assert(first.cursor);
 
         await streamer.streams.write(runId, streamId, 'second');
+        await streamer.streams.close(runId, streamId);
         const resumed = await streamer.streams.getChunks(runId, streamId, {
           cursor: first.cursor,
+          limit: 1,
         });
 
         expect(
           resumed.data.map((chunk) => Buffer.from(chunk.data).toString())
         ).toEqual(['second']);
+        expect(resumed.cursor).toBeNull();
+        expect(resumed.done).toBe(true);
       } finally {
         await streamer.close();
       }

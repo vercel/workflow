@@ -113,7 +113,7 @@ export interface StreamInfoResponse {
 export interface StreamChunksResponse {
   /** Array of stream chunks in index order */
   data: StreamChunk[];
-  /** Position after the last returned chunk, or `null` when no chunks were returned */
+  /** Position after the returned chunks, or `null` when none were returned or the stream ended */
   cursor: string | null;
   /** Whether additional pages of already-written chunks exist */
   hasMore: boolean;

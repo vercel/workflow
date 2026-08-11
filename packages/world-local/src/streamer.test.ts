@@ -956,36 +956,34 @@ describe('streamer', () => {
         await new Promise((resolve) => setTimeout(resolve, 2));
         await streamer.streams.write(TEST_RUN_ID, streamName, 'b');
         await new Promise((resolve) => setTimeout(resolve, 2));
-        await streamer.streams.write(TEST_RUN_ID, streamName, 'c');
         await streamer.streams.close(TEST_RUN_ID, streamName);
 
-        // Page 1: limit=2
+        // Page 1: limit=1
         const page1 = await streamer.streams.getChunks(
           TEST_RUN_ID,
           streamName,
           {
-            limit: 2,
+            limit: 1,
           }
         );
-        expect(page1.data).toHaveLength(2);
+        expect(page1.data).toHaveLength(1);
         expect(page1.data[0].index).toBe(0);
-        expect(page1.data[1].index).toBe(1);
         expect(page1.hasMore).toBe(true);
-        expect(page1.cursor).not.toBeNull();
+        assert(page1.cursor);
 
-        // Page 2: remaining chunks
+        // Page 2: a full final page
         const page2 = await streamer.streams.getChunks(
           TEST_RUN_ID,
           streamName,
           {
-            limit: 2,
-            cursor: page1.cursor!,
+            limit: 1,
+            cursor: page1.cursor,
           }
         );
         expect(page2.data).toHaveLength(1);
-        expect(page2.data[0].index).toBe(2);
+        expect(page2.data[0].index).toBe(1);
         expect(page2.hasMore).toBe(false);
-        expect(page2.cursor).not.toBeNull();
+        expect(page2.cursor).toBeNull();
         expect(page2.done).toBe(true);
       });
 

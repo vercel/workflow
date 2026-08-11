@@ -1276,8 +1276,9 @@ export async function readStreamChunksServerAction(
     const allChunks: Uint8Array[] = [];
     let cursor: string | undefined = startCursor;
     let streamDone = false;
+    let hasMore: boolean;
 
-    for (;;) {
+    do {
       const result = await world.streams.getChunks(runId, streamId, {
         limit: CHUNKS_PAGE_SIZE,
         cursor,
@@ -1288,16 +1289,16 @@ export async function readStreamChunksServerAction(
       }
 
       streamDone = result.done;
-      if (result.hasMore && !result.cursor) {
+      hasMore = result.hasMore;
+      if (hasMore && !result.cursor) {
         throw new Error('Stream chunk page with more data is missing a cursor');
       }
       cursor = result.cursor ?? cursor;
-      if (!result.hasMore) break;
-    }
+    } while (hasMore);
 
     return {
       buffer: Buffer.concat(allChunks),
-      cursor: cursor ?? null,
+      cursor: streamDone ? null : (cursor ?? null),
       done: streamDone,
     };
   } catch (error) {

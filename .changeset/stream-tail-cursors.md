@@ -5,4 +5,4 @@
 '@workflow/world-postgres': patch
 ---
 
-Return a checkpoint cursor after every non-empty stream chunk page so open streams can resume from their current tail without reloading the final page.
+Return a checkpoint cursor after every non-empty open-stream chunk page so readers can resume from the current tail without reloading it.

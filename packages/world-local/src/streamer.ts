@@ -395,11 +395,12 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
 
         return {
           data: resultChunks,
-          cursor: resultChunks.length
-            ? Buffer.from(
-                JSON.stringify({ i: startIndex + resultChunks.length })
-              ).toString('base64')
-            : null,
+          cursor:
+            resultChunks.length > 0 && (hasMore || !streamDone)
+              ? Buffer.from(
+                  JSON.stringify({ i: startIndex + resultChunks.length })
+                ).toString('base64')
+              : null,
           hasMore,
           done: streamDone,
         };

@@ -291,14 +291,15 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
 
         return {
           data: chunks,
-          cursor: pageRows.length
-            ? Buffer.from(
-                JSON.stringify({
-                  c: pageRows[pageRows.length - 1].chunkId,
-                  i: baseIndex + pageRows.length,
-                })
-              ).toString('base64')
-            : null,
+          cursor:
+            pageRows.length > 0 && (hasMore || !streamDone)
+              ? Buffer.from(
+                  JSON.stringify({
+                    c: pageRows[pageRows.length - 1].chunkId,
+                    i: baseIndex + pageRows.length,
+                  })
+                ).toString('base64')
+              : null,
           hasMore,
           done: streamDone,
         };
