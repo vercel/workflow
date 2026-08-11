@@ -3,6 +3,7 @@ import { instrumentObject } from '../instrumentObject.js';
 import { createEventsStorage } from './events-storage.js';
 import { createHooksStorage } from './hooks-storage.js';
 import { createRunsStorage, type LocalRunsStorage } from './runs-storage.js';
+import { createSnapshotsStorage } from './snapshots-storage.js';
 import { createStepsStorage } from './steps-storage.js';
 
 /**
@@ -30,6 +31,7 @@ export function createStorage(basedir: string, tag?: string): LocalStorage {
   const steps = createStepsStorage(basedir, tag);
   const events = createEventsStorage(basedir, tag);
   const hooks = createHooksStorage(basedir, tag);
+  const snapshots = createSnapshotsStorage(basedir);
 
   // Instrument all storage methods with tracing
   // NOTE: Span names are lowercase per OTEL semantic conventions
@@ -38,6 +40,7 @@ export function createStorage(basedir: string, tag?: string): LocalStorage {
     steps: instrumentObject('world.steps', steps),
     events: instrumentObject('world.events', events),
     hooks: instrumentObject('world.hooks', hooks),
+    snapshots: instrumentObject('world.snapshots', snapshots),
     clearCache: () => events.clearCache(),
   };
 }

@@ -134,6 +134,13 @@
       "when": 1785619990000,
       "tag": "0018_add_hook_token_retention",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1785700000000,
+      "tag": "0019_add_snapshots_table",
+      "breakpoints": true
     }
   ]
 }
