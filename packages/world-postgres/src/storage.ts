@@ -95,9 +95,39 @@ const legacyEventUlid = monotonicFactory();
  * run is taking concurrent writes faster than any of them can commit.
  */
 const SLOT_INSERT_MAX_ATTEMPTS = 40;
+/**
+ * Collisions that retry the instant the conflicting writer settles.
+ *
+ * `ON CONFLICT DO NOTHING` does not skip an uncommitted conflicting row: the
+ * unique-index check waits on that writer's transaction and only then reports
+ * the conflict, so a lost race has already waited for exactly the thing the
+ * next position depends on. Sleeping on top of that adds latency to a
+ * suspension flush and buys nothing.
+ *
+ * The backoff below covers the shape blocking does not: writers that keep
+ * arriving while the loop spins, where jittering the herd is the only way the
+ * loop converges before it exhausts its attempts.
+ */
+const SLOT_INSERT_IMMEDIATE_ATTEMPTS = 8;
 /** Backoff between collisions, so a wide fan-out spreads rather than lockstep. */
 const SLOT_INSERT_BASE_DELAY_MS = 2;
 const SLOT_INSERT_MAX_DELAY_MS = 40;
+
+/**
+ * Isolation for every transaction an event insert can run inside.
+ *
+ * {@link insertEventRow} answers a collision by recomputing the next position
+ * and inserting again, which only terminates if the retry can see rows
+ * committed since the transaction began. Under REPEATABLE READ or SERIALIZABLE
+ * it cannot: every attempt reads the transaction's original snapshot, computes
+ * the same taken position, and the loop runs to its limit and 503s. READ
+ * COMMITTED is Postgres' default, so this is a statement of the requirement
+ * rather than a change, and it keeps a database whose
+ * `default_transaction_isolation` was raised from turning event writes into
+ * timeouts. Inserts outside a transaction need nothing: a lone statement takes
+ * a fresh snapshot at every isolation level.
+ */
+const SLOT_INSERT_TRANSACTION = { isolationLevel: 'read committed' } as const;
 
 /** The pg error behind a drizzle wrapper, or an empty shape if there is none. */
 function pgErrorOf(err: unknown): { code?: string; constraint?: string } {
@@ -209,11 +239,16 @@ async function insertEventRow(
         { status: 503 }
       );
     }
-    const delay = Math.min(
-      SLOT_INSERT_MAX_DELAY_MS,
-      SLOT_INSERT_BASE_DELAY_MS * 2 ** attempt
-    );
-    await new Promise((resolve) => setTimeout(resolve, Math.random() * delay));
+    if (attempt >= SLOT_INSERT_IMMEDIATE_ATTEMPTS) {
+      const delay = Math.min(
+        SLOT_INSERT_MAX_DELAY_MS,
+        SLOT_INSERT_BASE_DELAY_MS *
+          2 ** (attempt - SLOT_INSERT_IMMEDIATE_ATTEMPTS)
+      );
+      await new Promise((resolve) =>
+        setTimeout(resolve, Math.random() * delay)
+      );
+    }
   }
 }
 
@@ -612,7 +647,7 @@ async function handleLegacyEventPostgres(
                 );
               }
               return insertLegacyEvent(tx);
-            })
+            }, SLOT_INSERT_TRANSACTION)
           : await insertLegacyEvent(drizzle);
 
       const event = EventSchema.parse({
@@ -1610,7 +1645,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
           }
           eventId = eventValue.eventId;
           return { createdAt: eventValue.createdAt };
-        });
+        }, SLOT_INSERT_TRANSACTION);
       }
 
       // Handle step_completed event: update step status
@@ -1943,7 +1978,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
           }
           eventId = eventValue.eventId;
           return { createdAt: eventValue.createdAt };
-        });
+        }, SLOT_INSERT_TRANSACTION);
       }
 
       // Handle wait_created event: create wait entity

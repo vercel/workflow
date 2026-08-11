@@ -593,6 +593,16 @@ interface PaginatedFileSystemQueryConfig<T> {
    * ordering (ULID-numbered events, and every other entity).
    */
   getSortKey?(item: T): string | null;
+  /**
+   * The same key as {@link getSortKey}, read off the file id instead of the
+   * item, so a sort-key cursor can skip files without opening them.
+   *
+   * Without it a sort-key scan has no filename-level prefilter and every page
+   * loads and parses every file for the run, which makes walking a long event
+   * log quadratic. Return null when the file id does not carry the key; those
+   * files are kept and decided by the item-level filter.
+   */
+  getSortKeyFromFileId?(fileId: string): string | null;
 }
 
 // Cursor formats:
@@ -653,6 +663,7 @@ export async function paginatedFileSystemQuery<T extends { createdAt: Date }>(
     getCreatedAt,
     getId,
     getSortKey,
+    getSortKeyFromFileId,
   } = config;
 
   // Validate filePrefix (typically `${runId}-`) so request-derived prefixes
@@ -681,7 +692,20 @@ export async function paginatedFileSystemQuery<T extends { createdAt: Date }>(
   const parsedCursor = parseCursor(cursor);
   let candidateFileIds = filteredFileIds;
 
-  if (parsedCursor && !parsedCursor.sortKey) {
+  if (parsedCursor?.sortKey && getSortKeyFromFileId) {
+    // Sort-key cursor: the filename carries the key, so the same strict
+    // comparison the item-level filter below applies can run here, before any
+    // file is read.
+    const cursorSortKey = parsedCursor.sortKey;
+    candidateFileIds = filteredFileIds.filter((fileId) => {
+      const key = getSortKeyFromFileId(fileId);
+      if (key === null) {
+        return true;
+      }
+      const comparison = key.localeCompare(cursorSortKey);
+      return sortOrder === 'desc' ? comparison < 0 : comparison > 0;
+    });
+  } else if (parsedCursor && !parsedCursor.sortKey) {
     candidateFileIds = filteredFileIds.filter((fileId) => {
       const filenameDate = getCreatedAt(`${fileId}.json`);
       if (filenameDate) {

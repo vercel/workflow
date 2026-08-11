@@ -21,6 +21,17 @@
 -- only a catalog update rather than a full build. Adopting an index renames it
 -- to the constraint's name, so it ends up as `workflow_events_run_id_id_pk`
 -- either way and the two paths leave the same schema behind.
+-- Bound the wait for that lock. A pending ACCESS EXCLUSIVE queues ahead of
+-- every lock request that arrives after it, so waiting on one long-running
+-- reader stalls all traffic to the table for as long as the wait lasts. Ten
+-- seconds of that is a blip; an unbounded wait is an outage. Failing instead
+-- leaves the migration unapplied and retryable. Raise it by hand for a
+-- maintenance window.
+--
+-- `SET LOCAL` lasts for the transaction, and the migrator runs every pending
+-- migration in one, so a migration that follows this one in the same batch
+-- inherits the timeout.
+SET LOCAL lock_timeout = '10s';--> statement-breakpoint
 ALTER TABLE "workflow"."workflow_events" DROP CONSTRAINT "workflow_events_pkey";--> statement-breakpoint
 DO $$
 BEGIN
@@ -39,6 +50,13 @@ BEGIN
       ADD CONSTRAINT "workflow_events_run_id_id_pk"
       PRIMARY KEY USING INDEX "workflow_events_run_id_id_idx";
   ELSE
+    -- A `CREATE UNIQUE INDEX CONCURRENTLY` that failed leaves an index of this
+    -- name behind marked invalid. The branch above rejects it, and the key
+    -- built here is a different index under a different name, so without this
+    -- the invalid one would survive the migration: never used by a plan, still
+    -- maintained on every insert. Dropping it also makes a second attempt at
+    -- the concurrent build possible without a manual cleanup first.
+    DROP INDEX IF EXISTS "workflow"."workflow_events_run_id_id_idx";
     ALTER TABLE "workflow"."workflow_events"
       ADD CONSTRAINT "workflow_events_run_id_id_pk" PRIMARY KEY ("run_id","id");
   END IF;

@@ -67,6 +67,7 @@ import {
   readJSONWithFallback,
   resolveWithinBase,
   SORT_KEY_CURSOR_PREFIX,
+  stripTag,
   taggedPath,
   write,
   writeExclusive,
@@ -321,6 +322,22 @@ async function readHookRecoveryMarker(
  */
 function eventSortKey(event: Event): string | null {
   return isSlotEventId(event.eventId) ? event.eventId : null;
+}
+
+/**
+ * The same key as {@link eventSortKey}, recovered from an event file's name.
+ *
+ * Event files are named `${runId}-${eventId}` plus an optional tag suffix, so
+ * a run-scoped listing can read the slot without opening the file. That lets a
+ * sort-key cursor discard the pages it has already returned on the filename
+ * alone; without it every page of a long log loads and parses every event file
+ * for the run.
+ *
+ * Returns `null` for a ULID-numbered event, which has no slot to compare.
+ */
+function eventSortKeyFromFileId(runId: string, fileId: string): string | null {
+  const eventId = stripTag(fileId).slice(runId.length + 1);
+  return isSlotEventId(eventId) ? eventId : null;
 }
 
 async function findExistingHookCreatedEventId(
@@ -858,6 +875,7 @@ export function createEventsStorage(
       getCreatedAt: getObjectCreatedAt('evnt'),
       getId: (event) => event.eventId,
       getSortKey: eventSortKey,
+      getSortKeyFromFileId: (fileId) => eventSortKeyFromFileId(runId, fileId),
     });
 
   // Per-instance in-process mutexes. Two storage instances sharing
@@ -2991,6 +3009,8 @@ export function createEventsStorage(
         getCreatedAt: getObjectCreatedAt('evnt'),
         getId: (event) => event.eventId,
         getSortKey: eventSortKey,
+        getSortKeyFromFileId: (fileId) =>
+          eventSortKeyFromFileId(params.runId, fileId),
       });
 
       // If resolveData is "none", remove eventData from events
