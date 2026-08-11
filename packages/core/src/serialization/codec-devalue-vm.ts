@@ -7,10 +7,6 @@
 
 import { parse, stringify, unflatten } from 'devalue';
 import type { Codec, SerializationMode } from './codec.js';
-import {
-  boundedDevalueParseOptions,
-  boundedDevalueStringifyOptions,
-} from './devalue-limits.js';
 import { getClassReducers, getClassRevivers } from './reducers/class-vm.js';
 import { getCommonReducers, getCommonRevivers } from './reducers/common-vm.js';
 import {
@@ -166,8 +162,7 @@ export const devalueVmCodec: Codec = {
     const reducers = getReducersForMode(mode);
     const str = stringify(
       value,
-      reducers as Record<string, (value: any) => any>,
-      boundedDevalueStringifyOptions
+      reducers as Record<string, (value: any) => any>
     );
     return encoder.encode(str);
   },
@@ -175,19 +170,14 @@ export const devalueVmCodec: Codec = {
   deserialize(data: Uint8Array, mode: SerializationMode): unknown {
     const revivers = getReviversForMode(mode);
     const str = decoder.decode(data);
-    return parse(
-      str,
-      revivers as Record<string, (value: any) => any>,
-      boundedDevalueParseOptions
-    );
+    return parse(str, revivers as Record<string, (value: any) => any>);
   },
 
   deserializeLegacy(data: unknown, mode: SerializationMode): unknown {
     const revivers = getReviversForMode(mode);
     return unflatten(
       data as any[],
-      revivers as Record<string, (value: any) => any>,
-      boundedDevalueParseOptions
+      revivers as Record<string, (value: any) => any>
     );
   },
 };

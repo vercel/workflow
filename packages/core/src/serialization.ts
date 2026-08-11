@@ -39,10 +39,6 @@ import {
   decompress,
 } from './serialization/compression.js';
 import {
-  boundedDevalueParseOptions,
-  boundedDevalueStringifyOptions,
-} from './serialization/devalue-limits.js';
-import {
   aesKeyOf,
   decrypt,
   deriveRunPayloadKeys,
@@ -300,11 +296,7 @@ export function getSerializeStream(
             );
           }
         }
-        const serialized = stringify(
-          chunk,
-          reducers,
-          boundedDevalueStringifyOptions
-        );
+        const serialized = stringify(chunk, reducers);
         const payload = encoder.encode(serialized);
         let prefixed = encodeWithFormatPrefix(
           SerializationFormat.DEVALUE_V1,
@@ -472,7 +464,7 @@ export function getDeserializeStream(
 
       if (format === SerializationFormat.DEVALUE_V1) {
         const text = decoder.decode(payload);
-        controller.enqueue(parse(text, revivers, boundedDevalueParseOptions));
+        controller.enqueue(parse(text, revivers));
       }
     }
   }
@@ -508,7 +500,7 @@ export function getDeserializeStream(
       const lines = text.split('\n');
       for (const line of lines) {
         if (line.length > 0) {
-          controller.enqueue(parse(line, revivers, boundedDevalueParseOptions));
+          controller.enqueue(parse(line, revivers));
         }
       }
     },
@@ -3444,27 +3436,19 @@ export function deserializePreparedStepError(
 ): unknown {
   const { data } = prepared;
   if (!(data instanceof Uint8Array)) {
-    return unflatten(
-      data as any[],
-      {
-        ...getWorkflowRevivers(global),
-        ...extraRevivers,
-      },
-      boundedDevalueParseOptions
-    );
+    return unflatten(data as any[], {
+      ...getWorkflowRevivers(global),
+      ...extraRevivers,
+    });
   }
 
   const { format, payload } = decodeFormatPrefix(data);
   if (format === SerializationFormat.DEVALUE_V1) {
     const str = new TextDecoder().decode(payload);
-    return parse(
-      str,
-      {
-        ...getWorkflowRevivers(global),
-        ...extraRevivers,
-      },
-      boundedDevalueParseOptions
-    );
+    return parse(str, {
+      ...getWorkflowRevivers(global),
+      ...extraRevivers,
+    });
   }
 
   throw new Error(`Unsupported serialization format: ${format}`);
@@ -3507,8 +3491,7 @@ export async function dehydrateWorkflowArguments(
   if (v1Compat) {
     const str = stringify(
       value,
-      getExternalReducers(global, ops, runId, key, framedByteStreams),
-      boundedDevalueStringifyOptions
+      getExternalReducers(global, ops, runId, key, framedByteStreams)
     );
     return revive(str);
   }
@@ -3575,11 +3558,7 @@ export async function dehydrateWorkflowReturnValue(
   guestCodeStatsOut?: GuestCodeStats
 ): Promise<Uint8Array | unknown> {
   if (v1Compat) {
-    const str = stringify(
-      value,
-      getWorkflowReducers(global),
-      boundedDevalueStringifyOptions
-    );
+    const str = stringify(value, getWorkflowReducers(global));
     return revive(str);
   }
   try {
@@ -3649,11 +3628,7 @@ export async function dehydrateStepArguments(
   guestCodeStatsOut?: GuestCodeStats
 ): Promise<Uint8Array | unknown> {
   if (v1Compat) {
-    const str = stringify(
-      value,
-      getWorkflowReducers(global),
-      boundedDevalueStringifyOptions
-    );
+    const str = stringify(value, getWorkflowReducers(global));
     return revive(str);
   }
   try {
@@ -3747,8 +3722,7 @@ export async function dehydrateStepReturnValue(
         key,
         framedByteStreams,
         runReadyBarrier
-      ),
-      boundedDevalueStringifyOptions
+      )
     );
     return revive(str);
   }
@@ -3806,11 +3780,7 @@ export async function dehydrateStepError(
   compression = false
 ): Promise<Uint8Array> {
   try {
-    const str = stringify(
-      value,
-      getStepReducers(global, ops, runId, key),
-      boundedDevalueStringifyOptions
-    );
+    const str = stringify(value, getStepReducers(global, ops, runId, key));
     const payload = new TextEncoder().encode(str);
     const serialized = encodeWithFormatPrefix(
       SerializationFormat.DEVALUE_V1,
@@ -3883,11 +3853,7 @@ export async function dehydrateRunError(
   compression = false
 ): Promise<Uint8Array> {
   try {
-    const str = stringify(
-      value,
-      getWorkflowReducers(global),
-      boundedDevalueStringifyOptions
-    );
+    const str = stringify(value, getWorkflowReducers(global));
     const payload = new TextEncoder().encode(str);
     const serialized = encodeWithFormatPrefix(
       SerializationFormat.DEVALUE_V1,
@@ -3946,28 +3912,20 @@ export async function hydrateRunError(
     // always emit a Uint8Array, and a misshapen value here intentionally
     // throws via `unflatten` so the surrounding try/catch in o11y helpers
     // surfaces the issue rather than masking it.
-    return unflatten(
-      decrypted as any[],
-      {
-        ...getExternalRevivers(global, ops, runId, key),
-        ...extraRevivers,
-      },
-      boundedDevalueParseOptions
-    );
+    return unflatten(decrypted as any[], {
+      ...getExternalRevivers(global, ops, runId, key),
+      ...extraRevivers,
+    });
   }
 
   const { format, payload } = decodeFormatPrefix(decrypted);
 
   if (format === SerializationFormat.DEVALUE_V1) {
     const str = new TextDecoder().decode(payload);
-    return parse(
-      str,
-      {
-        ...getExternalRevivers(global, ops, runId, key),
-        ...extraRevivers,
-      },
-      boundedDevalueParseOptions
-    );
+    return parse(str, {
+      ...getExternalRevivers(global, ops, runId, key),
+      ...extraRevivers,
+    });
   }
 
   throw new Error(`Unsupported serialization format: ${format}`);

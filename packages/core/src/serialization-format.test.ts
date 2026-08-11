@@ -1,6 +1,5 @@
 import { stringify } from 'devalue';
 import { describe, expect, it } from 'vitest';
-import { MAX_SERIALIZED_SPARSE_ARRAY_LENGTH } from './serialization/devalue-limits.js';
 import {
   ClassInstanceRef,
   decodeFormatPrefix,
@@ -114,23 +113,6 @@ describe('decodeFormatPrefix', () => {
 // ---------------------------------------------------------------------------
 
 describe('hydrateData', () => {
-  it('should bound decoded sparse-array lengths', () => {
-    const flattened = new TextEncoder().encode(
-      `[[-7,${MAX_SERIALIZED_SPARSE_ARRAY_LENGTH + 1}]]`
-    );
-    const encoded = encodeWithFormatPrefix(
-      SerializationFormat.DEVALUE_V1,
-      flattened
-    ) as Uint8Array;
-
-    expect(() => hydrateData(encoded, testRevivers)).toThrow(
-      /exceeds the supported maximum/
-    );
-    expect(() =>
-      hydrateData([[-7, MAX_SERIALIZED_SPARSE_ARRAY_LENGTH + 1]], testRevivers)
-    ).toThrow(/exceeds the supported maximum/);
-  });
-
   it('should parse a devl-prefixed Uint8Array with devalue', () => {
     const original = { greeting: 'hello', count: 42 };
     const encoded = makeDevlPayload(original);
