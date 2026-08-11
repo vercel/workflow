@@ -96,7 +96,7 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
     }
 
     // Generate hook ID and token
-    const correlationId = `hook_${ctx.generateCorrelationId('hook')}`;
+    const correlationId = `hook_${ctx.generateUlid()}`;
     const token = options.token ?? ctx.generateNanoid();
     const tokenRetentionUntil =
       options.experimental_minRetention === undefined

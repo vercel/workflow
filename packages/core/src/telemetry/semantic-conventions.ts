@@ -82,6 +82,32 @@ export const WorkflowExecutionMode = SemanticConvention<'replay' | 'retained'>(
   'workflow.execution.mode'
 );
 
+/**
+ * Events the replay walked past that no consumer claimed, still held when the
+ * replay stopped.
+ *
+ * A non-zero count on a suspension is ordinary: an out-of-band delivery that
+ * landed ahead of the code that reads it waits for the replay that gets there.
+ * From inside one replay that is indistinguishable from an event no replay will
+ * ever claim, because the two differ only in what the next replay does. So the
+ * count goes on the span instead of failing the run, and the case worth acting
+ * on is a query across a run's spans: the same
+ * {@link WorkflowParkedEventId} held on suspension after suspension.
+ */
+export const WorkflowParkedEventsCount = SemanticConvention<number>(
+  'workflow.events.parked.count'
+);
+
+/** Oldest event still held unclaimed when the replay stopped. */
+export const WorkflowParkedEventId = SemanticConvention<string>(
+  'workflow.events.parked.event_id'
+);
+
+/** Type of the oldest event still held unclaimed when the replay stopped. */
+export const WorkflowParkedEventType = SemanticConvention<string>(
+  'workflow.events.parked.event_type'
+);
+
 /** Number of arguments passed to the workflow */
 export const WorkflowArgumentsCount = SemanticConvention<number>(
   'workflow.arguments.count'
@@ -443,6 +469,26 @@ export const HookResilientResumeMaterialized = SemanticConvention<boolean>(
  */
 export const HookResumeSetupSource = SemanticConvention<string>(
   'workflow.resume_setup_source'
+);
+
+/**
+ * Producer-side signal (on the suspension span) counting steps whose direct
+ * `step_created` write failed transiently while their `stepInput`-carrying
+ * queue publish succeeded, so step creation is recovered via the consumer's
+ * re-ensure. Mirrors {@link HookResilientResume}.
+ */
+export const StepResilientDispatchRecovered = SemanticConvention<number>(
+  'workflow.step.resilient_dispatch_recovered'
+);
+
+/**
+ * Consumer-side signal (on the workflow execution span) that this delivery
+ * materialized the `step_created` event from the queue message's `stepInput`
+ * because the producer's direct write had not landed — the completion of the
+ * recovery path {@link StepResilientDispatchRecovered} began.
+ */
+export const StepResilientDispatchMaterialized = SemanticConvention<boolean>(
+  'workflow.step.resilient_dispatch_materialized'
 );
 
 // Webhook attributes

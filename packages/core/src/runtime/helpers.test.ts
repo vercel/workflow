@@ -1,5 +1,6 @@
 import { PreconditionFailedError, WorkflowWorldError } from '@workflow/errors';
 import type { Event, World } from '@workflow/world';
+import { slotToEventId } from '@workflow/world';
 import { ulid } from 'ulid';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { bytesToBase64, deriveRunKeyPair, seal } from '../sealed-box.js';
@@ -12,15 +13,20 @@ import {
 } from '../serialization.js';
 import {
   appendUniqueEvents,
+  findEventSlotGap,
   getWorkflowQueueName,
   handleHealthCheckMessage,
   healthCheck,
   insertEventByEventId,
   latestEventStateUpdatedAt,
   loadWorkflowRunEvents,
+  maxEventSlot,
   memoizeEncryptionKey,
+  mergeReportedEvents,
   preconditionEventDelta,
   preconditionSnapshotParams,
+  SLOT_GAP_RECHECK_ATTEMPTS,
+  settleEventSlotGap,
 } from './helpers.js';
 
 // Mock the logger to suppress output during tests
@@ -697,6 +703,256 @@ describe('preconditionSnapshotParams', () => {
     expect(
       preconditionSnapshotParams([makeEvent('evnt_not-a-ulid')], 'eid:abc')
     ).toEqual({});
+  });
+});
+
+describe('preconditionSnapshotParams on a slot-numbered run', () => {
+  let originalGuard: string | undefined;
+
+  beforeEach(() => {
+    originalGuard = process.env.WORKFLOW_PRECONDITION_GUARD;
+    process.env.WORKFLOW_PRECONDITION_GUARD = '1';
+  });
+
+  afterEach(() => {
+    if (originalGuard !== undefined) {
+      process.env.WORKFLOW_PRECONDITION_GUARD = originalGuard;
+    } else {
+      delete process.env.WORKFLOW_PRECONDITION_GUARD;
+    }
+  });
+
+  it('sends eventCount instead of the ULID triple', () => {
+    const events = [1, 2, 3].map((slot) => makeEvent(slotToEventId(slot)));
+
+    expect(preconditionSnapshotParams(events, 'eid:abc')).toEqual({
+      eventCount: 3,
+    });
+  });
+
+  it('reports the highest slot, not the number of events', () => {
+    // A slot is claimed by the write that occupies it, and a write that then
+    // fails leaves it empty forever. Sending the count would make every later
+    // write in this run ask below the hole and be handed the same events back
+    // on every single create.
+    const events = [1, 2, 5].map((slot) => makeEvent(slotToEventId(slot)));
+
+    expect(preconditionSnapshotParams(events, 'eid:abc')).toEqual({
+      eventCount: 5,
+    });
+  });
+
+  it('is invariant under the order the World returned the log in', () => {
+    const forward = [1, 2, 3].map((slot) => makeEvent(slotToEventId(slot)));
+
+    expect(preconditionSnapshotParams([...forward].reverse(), null)).toEqual(
+      preconditionSnapshotParams(forward, null)
+    );
+  });
+
+  it('omits eventCount when the guard is disabled', () => {
+    process.env.WORKFLOW_PRECONDITION_GUARD = '0';
+
+    expect(
+      preconditionSnapshotParams([makeEvent(slotToEventId(1))], null)
+    ).toEqual({});
+  });
+
+  it('falls back to the ULID triple when one event is not a slot', () => {
+    // A log may not mix the two schemes. If it somehow does, the slot reading
+    // is meaningless, so the run is treated as ULID-numbered.
+    const time = 1_700_000_000_000;
+    const events = [makeEvent(slotToEventId(1)), makeUlidEvent(time)];
+
+    expect(preconditionSnapshotParams(events, null)).toEqual({
+      stateUpdatedAt: time,
+      stateEventCount: 2,
+    });
+  });
+});
+
+describe('maxEventSlot', () => {
+  it('is undefined for a log with no slot ids', () => {
+    expect(maxEventSlot([])).toBeUndefined();
+    expect(maxEventSlot([makeUlidEvent(1_700_000_000_000)])).toBeUndefined();
+  });
+});
+
+/**
+ * The hole check a replay runs over its loaded log. It gates whether the run
+ * executes at all, so it is one-sided in the opposite direction from the
+ * World's density counter: it reports a hole only where the log proves one, and
+ * says nothing about a log it cannot read as slots.
+ */
+describe('findEventSlotGap', () => {
+  const slotLog = (...slots: number[]) =>
+    slots.map((slot) => makeEvent(slotToEventId(slot)));
+
+  it('finds no hole in a dense log', () => {
+    expect(findEventSlotGap(slotLog(1, 2, 3))).toBeUndefined();
+  });
+
+  it('names the hole and how much of the log is missing', () => {
+    expect(findEventSlotGap(slotLog(1, 2, 5))).toEqual({
+      firstMissingSlot: 3,
+      missingCount: 2,
+      maxSlot: 5,
+    });
+  });
+
+  it('reports the lowest hole when there is more than one', () => {
+    expect(findEventSlotGap(slotLog(1, 3, 5))).toEqual({
+      firstMissingSlot: 2,
+      missingCount: 2,
+      maxSlot: 5,
+    });
+  });
+
+  it('does not depend on the log being in slot order', () => {
+    // The loaded log is listed pages plus whatever a bump-and-report write
+    // handed back. mergeReportedEvents restores order, but a check that fails
+    // a run outright must not be the thing that notices when it did not.
+    expect(findEventSlotGap(slotLog(3, 1, 2))).toBeUndefined();
+    expect(findEventSlotGap(slotLog(4, 1, 2))?.firstMissingSlot).toBe(3);
+  });
+
+  it('excuses a log missing only its reserved first slot', () => {
+    // `start()` posts run_created concurrently with the queue send, so a log
+    // read in that window legitimately begins at the second slot.
+    expect(findEventSlotGap(slotLog(2, 3))).toBeUndefined();
+  });
+
+  it('still reports a hole above an absent first slot', () => {
+    expect(findEventSlotGap(slotLog(2, 4))).toEqual({
+      firstMissingSlot: 3,
+      missingCount: 1,
+      maxSlot: 4,
+    });
+  });
+
+  it('says nothing about a log it cannot read as slots', () => {
+    expect(findEventSlotGap([])).toBeUndefined();
+    expect(
+      findEventSlotGap([makeUlidEvent(1_700_000_000_000)])
+    ).toBeUndefined();
+    // A ULID anywhere disarms it: the run is not slot-numbered, and a mixed
+    // log has no density to measure.
+    expect(
+      findEventSlotGap([
+        ...slotLog(1, 2),
+        makeUlidEvent(1_700_000_000_000),
+        ...slotLog(9),
+      ])
+    ).toBeUndefined();
+  });
+});
+
+/**
+ * The re-read that stands between a hole and a failed run. A hole can be one
+ * commit wide: the World allocates a slot inside the insert that occupies it,
+ * so a writer can commit a higher slot while a lower one is still in flight.
+ * Only a hole that survives the re-reads is a position no write will ever take.
+ */
+describe('settleEventSlotGap', () => {
+  beforeEach(() => {
+    eventsListMock.mockReset();
+  });
+
+  const slotLog = (...slots: number[]) =>
+    slots.map((slot) => makeEvent(slotToEventId(slot)));
+
+  it('reports no gap for a log that is already dense', async () => {
+    const settled = await settleEventSlotGap('wrun_test', {
+      events: slotLog(1, 2, 3),
+      cursor: 'eid:c',
+    });
+
+    expect(settled.gap).toBeUndefined();
+    // Nothing to settle, so nothing is re-read.
+    expect(eventsListMock).not.toHaveBeenCalled();
+  });
+
+  it('adopts the log it re-read once the hole has filled in', async () => {
+    eventsListMock.mockResolvedValueOnce({
+      data: slotLog(1, 2, 3),
+      cursor: 'eid:filled',
+      hasMore: false,
+    });
+
+    const settled = await settleEventSlotGap('wrun_test', {
+      events: slotLog(1, 3),
+      cursor: 'eid:stale',
+    });
+
+    expect(settled.gap).toBeUndefined();
+    // The caller replays what settled, not the snapshot that looked holey.
+    expect(settled.log.events.map((e) => e.eventId)).toEqual(
+      slotLog(1, 2, 3).map((e) => e.eventId)
+    );
+    expect(settled.log.cursor).toBe('eid:filled');
+    expect(eventsListMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports a hole that survives every re-read', async () => {
+    eventsListMock.mockResolvedValue({
+      data: slotLog(1, 4),
+      cursor: 'eid:stuck',
+      hasMore: false,
+    });
+
+    const settled = await settleEventSlotGap('wrun_test', {
+      events: slotLog(1, 4),
+      cursor: 'eid:stuck',
+    });
+
+    expect(settled.gap).toEqual({
+      firstMissingSlot: 2,
+      missingCount: 2,
+      maxSlot: 4,
+    });
+    expect(eventsListMock).toHaveBeenCalledTimes(SLOT_GAP_RECHECK_ATTEMPTS);
+  });
+});
+
+describe('mergeReportedEvents', () => {
+  it('restores slot order after folding in events below the tail', () => {
+    // Bump-and-report hands back events the writer had not seen, and they sit
+    // BELOW the write that reported them. Appending would leave the log in an
+    // order no replay can walk.
+    const target = [1, 4].map((slot) => makeEvent(slotToEventId(slot)));
+
+    const added = mergeReportedEvents(
+      target,
+      [3, 2].map((slot) => makeEvent(slotToEventId(slot)))
+    );
+
+    expect(added).toBe(2);
+    expect(target.map((e) => e.eventId)).toEqual(
+      [1, 2, 3, 4].map(slotToEventId)
+    );
+  });
+
+  it('is a no-op when every reported event is already present', () => {
+    const target = [1, 2].map((slot) => makeEvent(slotToEventId(slot)));
+
+    expect(mergeReportedEvents(target, [makeEvent(slotToEventId(2))])).toBe(0);
+    expect(target).toHaveLength(2);
+  });
+
+  it('leaves a ULID log in receipt order', () => {
+    // Only a slot log has an id order the runtime may impose. A World that
+    // orders by (createdAt, eventId) would be reordered into a log it never
+    // produced.
+    const first = makeUlidEvent(1_700_000_000_000);
+    const second = makeUlidEvent(1_600_000_000_000);
+    const target = [first];
+
+    mergeReportedEvents(target, [second]);
+
+    expect(target.map((e) => e.eventId)).toEqual([
+      first.eventId,
+      second.eventId,
+    ]);
   });
 });
 

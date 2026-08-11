@@ -4,9 +4,17 @@ import {
   PreconditionFailedError,
   WorkflowWorldError,
 } from '@workflow/errors';
-import type { WorkflowRun, World } from '@workflow/world';
+import type { Event } from '@workflow/world';
+import {
+  SPEC_VERSION_CURRENT,
+  slotToEventId,
+  type ValidQueueName,
+  type WorkflowRun,
+  type World,
+} from '@workflow/world';
 import { describe, expect, it, vi } from 'vitest';
 import { WorkflowSuspension } from '../global.js';
+import { maxEventSlot, stepDispatchIdempotencyKey } from './helpers.js';
 import { ReplayRecoveryReporter } from './replay-recovery-reporter.js';
 import { handleSuspension } from './suspension-handler.js';
 
@@ -541,6 +549,332 @@ describe('handleSuspension', () => {
         run,
       })
     ).rejects.toBeInstanceOf(PreconditionFailedError);
+  });
+
+  describe('skipped-slot reports', () => {
+    /** A slot-numbered log event, minimal beyond what a snapshot reads. */
+    function slotEvent(slot: number, eventType: Event['eventType']): Event {
+      return {
+        eventId: slotToEventId(slot),
+        eventType,
+        runId: run.runId,
+        createdAt: new Date(),
+      } as Event;
+    }
+
+    /** One wait, so exactly one guarded write carries the report back. */
+    function oneWait() {
+      return new Map([
+        [
+          'wait_reported',
+          {
+            type: 'wait' as const,
+            correlationId: 'wait_reported',
+            resumeAt: new Date(Date.now() + 60_000),
+          },
+        ],
+      ]);
+    }
+
+    it('merges a complete report into the caller event log', async () => {
+      const eventLog = { events: [slotEvent(1, 'run_started')], cursor: null };
+      const skipped = slotEvent(2, 'hook_received');
+      const eventsCreate = vi.fn(async (_runId, event) => ({
+        event: { ...event, eventId: slotToEventId(3) },
+        events: [skipped],
+      }));
+
+      const result = await handleSuspension({
+        suspension: new WorkflowSuspension(oneWait(), globalThis),
+        world: createWorld(eventsCreate),
+        run,
+        eventLog,
+      });
+
+      expect(result.reportedEventCount).toBe(1);
+      // The replay that resumes from this log sees the skipped event without
+      // reloading, and the log still says how far it reaches.
+      expect(eventLog.events.map((e) => e.eventId)).toEqual([
+        slotToEventId(1),
+        slotToEventId(2),
+      ]);
+      expect(maxEventSlot(eventLog.events)).toBe(2);
+    });
+
+    it('drops a truncated report instead of raising the log past a hole', async () => {
+      const eventLog = { events: [slotEvent(1, 'run_started')], cursor: null };
+      // Slot 2 is on the same skipped span but absent from the report, so
+      // merging slot 3 would put the log's maximum above a missing position.
+      // Later writes read that maximum to say what they have seen, and a World
+      // only reports the span a write skips, so slot 2 would never be sent.
+      const skipped = slotEvent(3, 'hook_received');
+      const eventsCreate = vi.fn(async (_runId, event) => ({
+        event: { ...event, eventId: slotToEventId(4) },
+        events: [skipped],
+        hasMore: true,
+      }));
+
+      const result = await handleSuspension({
+        suspension: new WorkflowSuspension(oneWait(), globalThis),
+        world: createWorld(eventsCreate),
+        run,
+        eventLog,
+      });
+
+      expect(result.reportedEventCount).toBe(0);
+      expect(eventLog.events.map((e) => e.eventId)).toEqual([slotToEventId(1)]);
+      expect(maxEventSlot(eventLog.events)).toBe(1);
+    });
+  });
+});
+
+describe('resilient step dispatch', () => {
+  const queueName = '__wkf_workflow_test-workflow' as ValidQueueName;
+
+  /** A run whose queue transport supports binary payloads (CBOR). */
+  const cborRun: WorkflowRun = { ...run, specVersion: SPEC_VERSION_CURRENT };
+
+  function createQueueWorld(overrides?: {
+    eventsCreate?: ReturnType<typeof vi.fn>;
+    queue?: ReturnType<typeof vi.fn>;
+    capabilities?: World['capabilities'];
+  }): {
+    world: World;
+    eventsCreate: ReturnType<typeof vi.fn>;
+    queue: ReturnType<typeof vi.fn>;
+  } {
+    const eventsCreate =
+      overrides?.eventsCreate ??
+      vi.fn().mockImplementation(async (_runId, event) => ({ event }));
+    const queue =
+      overrides?.queue ?? vi.fn().mockResolvedValue({ messageId: 'msg_1' });
+    const world = {
+      events: { create: eventsCreate },
+      queue,
+      getEncryptionKeyForRun: vi.fn().mockResolvedValue(undefined),
+      ...(overrides?.capabilities
+        ? { capabilities: overrides.capabilities }
+        : {}),
+    } as unknown as World;
+    return { world, eventsCreate, queue };
+  }
+
+  /** Four parallel steps: s1-s3 are lazy-inline (default cap 3), s4 overflows. */
+  function fourStepsPending() {
+    return new Map(
+      ['s1', 's2', 's3', 's4'].map((id) => [
+        id,
+        { type: 'step' as const, correlationId: id, stepName: id, args: [] },
+      ])
+    );
+  }
+
+  const stepDispatch = () => ({
+    queueName,
+    getTraceCarrier: vi.fn().mockResolvedValue({ traceparent: '00-abc' }),
+  });
+
+  it('publishes the overflow step alongside its step_created, carrying stepInput', async () => {
+    const { world, eventsCreate, queue } = createQueueWorld();
+
+    const result = await handleSuspension({
+      suspension: new WorkflowSuspension(fourStepsPending(), globalThis),
+      world,
+      run: cborRun,
+      stepDispatch: stepDispatch(),
+    });
+
+    // The overflow step is created AND queued by the suspension handler.
+    expect(eventsCreate).toHaveBeenCalledWith(
+      run.runId,
+      expect.objectContaining({
+        eventType: 'step_created',
+        correlationId: 's4',
+      }),
+      expect.anything()
+    );
+    expect(queue).toHaveBeenCalledTimes(1);
+    const [calledQueueName, payload, opts] = queue.mock.calls[0];
+    expect(calledQueueName).toBe(queueName);
+    expect(payload).toMatchObject({
+      runId: run.runId,
+      stepId: 's4',
+      stepName: 's4',
+      traceCarrier: { traceparent: '00-abc' },
+    });
+    // The message carries the same serialized input as the direct write.
+    expect(payload.stepInput.input).toBeInstanceOf(Uint8Array);
+    const createdInput = eventsCreate.mock.calls.find(
+      ([, event]) => event.correlationId === 's4'
+    )?.[1].eventData.input;
+    expect(payload.stepInput.input).toBe(createdInput);
+    // Step-identity-scoped key — matches the dispatch key runtime.ts uses for
+    // the same step, so redundant publishes dedupe.
+    expect(opts).toMatchObject({
+      idempotencyKey: stepDispatchIdempotencyKey('s4', 's4'),
+    });
+    // Reported so the caller skips its own dispatch for this step.
+    expect([...result.queuedStepCorrelationIds]).toEqual(['s4']);
+    expect(result.createdStepCorrelationIds).toContain('s4');
+  });
+
+  it('swallows a transient step_created failure once the message is out (resilient)', async () => {
+    const eventsCreate = vi.fn().mockImplementation(async (_runId, event) => {
+      if (event.eventType === 'step_created') {
+        throw new WorkflowWorldError('backend blip', { status: 503 });
+      }
+      return { event };
+    });
+    const { world, queue } = createQueueWorld({ eventsCreate });
+
+    const result = await handleSuspension({
+      suspension: new WorkflowSuspension(fourStepsPending(), globalThis),
+      world,
+      run: cborRun,
+      stepDispatch: stepDispatch(),
+    });
+
+    // The publish carried the payload, so the consumer re-ensures the event.
+    expect(queue).toHaveBeenCalledTimes(1);
+    expect([...result.queuedStepCorrelationIds]).toEqual(['s4']);
+    // The write did NOT land, so this handler does not claim creation.
+    expect(result.createdStepCorrelationIds.has('s4')).toBe(false);
+  });
+
+  it('propagates a queue publish failure (the message is the durability bar)', async () => {
+    const queue = vi.fn().mockRejectedValue(new Error('queue down'));
+    const { world } = createQueueWorld({ queue });
+
+    await expect(
+      handleSuspension({
+        suspension: new WorkflowSuspension(fourStepsPending(), globalThis),
+        world,
+        run: cborRun,
+        stepDispatch: stepDispatch(),
+      })
+    ).rejects.toThrow('queue down');
+  });
+
+  it('propagates a non-retryable step_created failure even when the publish succeeded', async () => {
+    const eventsCreate = vi.fn().mockImplementation(async (_runId, event) => {
+      if (event.eventType === 'step_created') {
+        throw new WorkflowWorldError('bad request', { status: 400 });
+      }
+      return { event };
+    });
+    const { world } = createQueueWorld({ eventsCreate });
+
+    await expect(
+      handleSuspension({
+        suspension: new WorkflowSuspension(fourStepsPending(), globalThis),
+        world,
+        run: cborRun,
+        stepDispatch: stepDispatch(),
+      })
+    ).rejects.toThrow('bad request');
+  });
+
+  it('falls back to create-only when the world enforces the precondition guard', async () => {
+    const { world, eventsCreate, queue } = createQueueWorld({
+      capabilities: { preconditionGuard: true },
+    });
+
+    const result = await handleSuspension({
+      suspension: new WorkflowSuspension(fourStepsPending(), globalThis),
+      world,
+      run: cborRun,
+      stepDispatch: stepDispatch(),
+    });
+
+    // The guarded create can be 412-rejected; a payload-carrying message
+    // would let the consumer materialize the rejected step. Sequential path:
+    // create here, caller dispatches.
+    expect(queue).not.toHaveBeenCalled();
+    expect(eventsCreate).toHaveBeenCalledWith(
+      run.runId,
+      expect.objectContaining({
+        eventType: 'step_created',
+        correlationId: 's4',
+      }),
+      expect.anything()
+    );
+    expect(result.queuedStepCorrelationIds.size).toBe(0);
+    expect(result.createdStepCorrelationIds).toContain('s4');
+  });
+
+  it('stays sequential under an enforced guard regardless of other capabilities', async () => {
+    // The guard gate is deliberately not liftable by backend-side revocation
+    // bookkeeping: nothing orders a slow guarded create's eventual 412 before
+    // the consumer's redelivery re-ensure, so no capability may re-enable the
+    // payload-carrying publish while creates are guarded.
+    const { world, queue } = createQueueWorld({
+      capabilities: {
+        preconditionGuard: true,
+        // Unknown/extra capability flags must not lift the gate.
+        ...({ resilientStepDispatch: true } as Record<string, boolean>),
+      } as World['capabilities'],
+    });
+
+    const result = await handleSuspension({
+      suspension: new WorkflowSuspension(fourStepsPending(), globalThis),
+      world,
+      run: cborRun,
+      stepDispatch: stepDispatch(),
+    });
+
+    expect(queue).not.toHaveBeenCalled();
+    expect(result.queuedStepCorrelationIds.size).toBe(0);
+  });
+
+  it('falls back to create-only when the run predates the CBOR queue transport', async () => {
+    const { world, queue } = createQueueWorld();
+
+    const result = await handleSuspension({
+      suspension: new WorkflowSuspension(fourStepsPending(), globalThis),
+      world,
+      run: { ...run, specVersion: 2 },
+      stepDispatch: stepDispatch(),
+    });
+
+    expect(queue).not.toHaveBeenCalled();
+    expect(result.queuedStepCorrelationIds.size).toBe(0);
+  });
+
+  it('falls back to create-only when WORKFLOW_RESILIENT_STEP_DISPATCH=0', async () => {
+    const prev = process.env.WORKFLOW_RESILIENT_STEP_DISPATCH;
+    process.env.WORKFLOW_RESILIENT_STEP_DISPATCH = '0';
+    try {
+      const { world, queue } = createQueueWorld();
+
+      const result = await handleSuspension({
+        suspension: new WorkflowSuspension(fourStepsPending(), globalThis),
+        world,
+        run: cborRun,
+        stepDispatch: stepDispatch(),
+      });
+
+      expect(queue).not.toHaveBeenCalled();
+      expect(result.queuedStepCorrelationIds.size).toBe(0);
+    } finally {
+      if (prev === undefined) {
+        delete process.env.WORKFLOW_RESILIENT_STEP_DISPATCH;
+      } else {
+        process.env.WORKFLOW_RESILIENT_STEP_DISPATCH = prev;
+      }
+    }
+  });
+
+  it('never queues from here when no stepDispatch is provided (terminal drain)', async () => {
+    const { world, queue } = createQueueWorld();
+
+    const result = await handleSuspension({
+      suspension: new WorkflowSuspension(fourStepsPending(), globalThis),
+      world,
+      run: cborRun,
+    });
+
+    expect(queue).not.toHaveBeenCalled();
+    expect(result.queuedStepCorrelationIds.size).toBe(0);
   });
 });
 

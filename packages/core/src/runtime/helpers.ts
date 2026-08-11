@@ -4,13 +4,18 @@ import {
   WorkflowWorldError,
 } from '@workflow/errors';
 import type {
+  CreateEventParams,
+  CreateEventRequest,
   Event,
+  EventResult,
   HealthCheckPayload,
   ValidQueueName,
   WorkflowRun,
   World,
 } from '@workflow/world';
 import {
+  eventIdToSlot,
+  FIRST_EVENT_SLOT,
   getQueueTopicPrefix,
   HealthCheckPayloadSchema,
   HOOK_RESUME_INPUT_VERSION,
@@ -718,6 +723,23 @@ export function isPreconditionGuardEnabled(): boolean {
 }
 
 /**
+ * Whether a replay refuses to run over a log with a hole in it (see
+ * {@link findEventSlotGap}). **On by default**; set
+ * `WORKFLOW_SLOT_GAP_CHECK=0` to replay across holes instead.
+ *
+ * The switch exists because the check trades one failure for another. A hole is
+ * a position claimed by a write that then failed, so most of them stand for an
+ * event that never happened and replaying past one is correct. But a hole
+ * standing for an event that *did* happen is indistinguishable from that, and
+ * replaying past that one produces a run whose result is wrong with nothing to
+ * show for it. Failing loudly is the recoverable side of the trade, and this is
+ * the way back out if a fleet turns out to carry benign holes.
+ */
+export function isSlotGapCheckEnabled(): boolean {
+  return process.env.WORKFLOW_SLOT_GAP_CHECK !== '0';
+}
+
+/**
  * The `stateUpdatedAt` value to send with a replay-context event creation: the
  * *maximum* ULID time (epoch ms) over the events the runtime has loaded. Returns
  * `undefined` when there are no events or that id is not a decodable ULID.
@@ -770,18 +792,201 @@ export function latestEventStateUpdatedAt(events: Event[]): number | undefined {
 }
 
 /**
+ * Merge the events a bump-and-report write handed back into the log it was
+ * derived from, and answer how many of them were new.
+ *
+ * Unlike {@link appendUniqueEvents}, this re-sorts. The reported events occupy
+ * slots *below* the write that reported them, so appending them would put them
+ * after events they precede — and on a slot-numbered run the id order is the
+ * World's canonical order, so restoring it is well defined rather than a guess.
+ * A run that is not slot-numbered cannot produce this report in the first
+ * place; the sort is skipped rather than applied to ids it cannot order.
+ */
+export function mergeReportedEvents(
+  target: Event[],
+  events: readonly Event[]
+): number {
+  const before = target.length;
+  appendUniqueEvents(target, events);
+  const added = target.length - before;
+  if (added > 0 && maxEventSlot(target) !== undefined) {
+    target.sort((a, b) =>
+      a.eventId < b.eventId ? -1 : a.eventId > b.eventId ? 1 : 0
+    );
+  }
+  return added;
+}
+
+/**
+ * The highest slot the loaded log occupies, or `undefined` when the run is not
+ * slot-numbered. A run keeps the id scheme it was created under, so one event
+ * settles it for the whole log.
+ *
+ * The maximum, not the count, and the two are not interchangeable even though
+ * a healthy log makes them equal. A World hands a position to the insert that
+ * occupies it, so a write that never lands leaves no hole behind and the log
+ * stays dense. What the count cannot survive is a *partial* read: a log
+ * assembled from a truncated report, or read while a concurrent write is
+ * committing, holds fewer events than its highest position. Counting those
+ * would make the next write claim to have seen less than it has, so the World
+ * would report the same events back to it on every attempt.
+ *
+ * A hole below the maximum is therefore a property of the read, not of the log,
+ * which is what lets {@link settleEventSlotGap} re-read instead of giving up.
+ */
+export function maxEventSlot(events: Event[]): number | undefined {
+  let max: number | undefined;
+  for (const event of events) {
+    const slot = eventIdToSlot(event.eventId);
+    if (slot === null) {
+      return undefined;
+    }
+    if (max === undefined || slot > max) {
+      max = slot;
+    }
+  }
+  return max;
+}
+
+/** A position the log skips over, described well enough to name in an error. */
+export interface EventSlotGap {
+  /** The lowest slot below the log's maximum that no event occupies. */
+  firstMissingSlot: number;
+  /** How many slots below the maximum no event occupies. */
+  missingCount: number;
+  /** The highest slot the log occupies. */
+  maxSlot: number;
+}
+
+/**
+ * The hole in a loaded log, or `undefined` when there is none to find.
+ *
+ * On a slot-numbered run the World allocates every position, so a log that
+ * holds `n` events below slot `n` is missing one. That matters before a replay
+ * and nowhere else: the replay reads the log as the complete record of what has
+ * happened, and an absent position is indistinguishable from an event that
+ * never occurred. The branch it would have decided gets decided the other way,
+ * and the run diverges quietly rather than failing.
+ *
+ * Order-independent, unlike the equivalent audit the World runs over a page it
+ * just read. A loaded log is assembled from listed pages plus whatever a
+ * bump-and-report write handed back, and while {@link mergeReportedEvents}
+ * restores id order, a check that can fail a healthy run should not depend on
+ * that having happened.
+ *
+ * The first slot is never counted. It belongs to `run_created`, which `start()`
+ * posts concurrently with the queue send, so a log read in that window
+ * legitimately begins at the second slot and fills in on its own. Every replay
+ * that races a run's own start would otherwise report a hole.
+ *
+ * Returns `undefined` for a log this cannot read as slots at all: an empty one,
+ * or a run numbered by ULID, where positions carry no density to check.
+ */
+export function findEventSlotGap(
+  events: readonly Event[]
+): EventSlotGap | undefined {
+  const occupied = new Set<number>();
+  let maxSlot = 0;
+  for (const event of events) {
+    const slot = eventIdToSlot(event.eventId);
+    if (slot === null) {
+      return undefined;
+    }
+    occupied.add(slot);
+    if (slot > maxSlot) {
+      maxSlot = slot;
+    }
+  }
+  if (maxSlot === 0) {
+    return undefined;
+  }
+  const floor = occupied.has(FIRST_EVENT_SLOT)
+    ? FIRST_EVENT_SLOT
+    : FIRST_EVENT_SLOT + 1;
+  // Every slot is at or above `floor` by construction, so the log is dense
+  // exactly when it holds one event per position in `[floor, maxSlot]`. The
+  // scan below only runs once that has already answered no.
+  if (occupied.size === maxSlot - floor + 1) {
+    return undefined;
+  }
+  let firstMissingSlot: number | undefined;
+  let missingCount = 0;
+  for (let slot = floor; slot <= maxSlot; slot++) {
+    if (!occupied.has(slot)) {
+      firstMissingSlot ??= slot;
+      missingCount++;
+    }
+  }
+  if (firstMissingSlot === undefined) {
+    return undefined;
+  }
+  return { firstMissingSlot, missingCount, maxSlot };
+}
+
+/**
+ * How many times a detected hole is re-read before the log is taken at its
+ * word, and the backoff before each re-read (doubling per attempt).
+ *
+ * A hole can be transient. The World allocates a slot inside the insert that
+ * occupies it, so two concurrent writers can collide, one retry past the other,
+ * and the higher slot commit first — leaving a window in which the lower one is
+ * genuinely absent from a strongly-consistent read and fills in a moment later.
+ * The window is one commit wide, so a short backoff clears it; anything that
+ * survives all three re-reads is a position no write will ever occupy.
+ */
+export const SLOT_GAP_RECHECK_ATTEMPTS = 3;
+const SLOT_GAP_RECHECK_BASE_DELAY_MS = 25;
+
+/**
+ * Re-read a log that looks holey until the hole fills in or the re-reads run
+ * out, and return the settled log alongside the hole that survived.
+ *
+ * Reads are strongly consistent, so a hole is not an artifact of *when* the log
+ * was read — but it can be an artifact of a write that had not committed yet
+ * (see {@link SLOT_GAP_RECHECK_ATTEMPTS}). Distinguishing the two costs a
+ * re-read, which is only ever paid by a replay that already found a hole.
+ *
+ * The reload is full rather than incremental: the missing position is below the
+ * log's maximum, so a cursor-anchored read starts past it and can never see it
+ * arrive.
+ */
+export async function settleEventSlotGap(
+  runId: string,
+  loaded: LoadedEventLog
+): Promise<{ log: LoadedEventLog; gap: EventSlotGap | undefined }> {
+  let log = loaded;
+  let gap = findEventSlotGap(log.events);
+  for (
+    let attempt = 0;
+    gap !== undefined && attempt < SLOT_GAP_RECHECK_ATTEMPTS;
+    attempt++
+  ) {
+    await new Promise((resolve) =>
+      setTimeout(resolve, SLOT_GAP_RECHECK_BASE_DELAY_MS * 2 ** attempt)
+    );
+    log = await loadWorkflowRunEvents(runId);
+    gap = findEventSlotGap(log.events);
+  }
+  return { log, gap };
+}
+
+/**
  * The precondition snapshot a replay-context event creation sends, describing
  * the event log the replay derived the event from.
  *
- * The three fields are one indivisible unit: the backend reads the count only
- * relative to the watermark, and returns its inline delta only relative to the
- * cursor. Passing them as a single object is what keeps them from drifting
- * apart at a call site.
+ * On a slot-numbered run this is `eventCount`, optionally with the set of
+ * correlation ids the writer is blocked on. On a ULID-numbered run it is the
+ * `stateUpdatedAt` / `stateEventCount` / `stateCursor` triple, whose three
+ * fields are one indivisible unit: the backend reads the count only relative to
+ * the watermark, and returns its inline delta only relative to the cursor.
+ * Passing them as a single object is what keeps them from drifting apart at a
+ * call site.
  */
 export interface PreconditionSnapshotParams {
   stateUpdatedAt?: number;
   stateEventCount?: number;
   stateCursor?: string;
+  eventCount?: number;
 }
 
 /**
@@ -808,6 +1013,14 @@ export function preconditionSnapshotParams(
 ): PreconditionSnapshotParams {
   if (!isPreconditionGuardEnabled()) {
     return {};
+  }
+  // A slot-numbered run says with one integer everything the triple was
+  // approximating, so the two are alternatives rather than a pair. Sending the
+  // triple here would also be futile: a slot id carries no time, so
+  // `latestEventStateUpdatedAt` would fail open on every single write.
+  const eventCount = maxEventSlot(events);
+  if (eventCount !== undefined) {
+    return { eventCount };
   }
   const stateUpdatedAt = latestEventStateUpdatedAt(events);
   if (stateUpdatedAt === undefined) {
@@ -865,6 +1078,12 @@ export function preconditionEventDelta(
   };
 }
 
+/** Creates one event on a bound run, carrying replay-recovery telemetry. */
+export type EventCreator = (
+  data: CreateEventRequest,
+  params?: CreateEventParams
+) => Promise<EventResult>;
+
 /**
  * CORS headers for health check responses.
  * Allows the observability UI to check endpoint health from a different origin.
@@ -912,6 +1131,45 @@ export function withHealthCheck(
     }
     return await handler(req);
   };
+}
+
+/** FNV-1a 32-bit hash of a string, as 8 hex chars. Tiny, deterministic, and
+ *  dependency-free — used only to scope idempotency keys, not for security. */
+function fnv1a32Hex(value: string): string {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < value.length; i++) {
+    hash ^= value.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16).padStart(8, '0');
+}
+
+/**
+ * Idempotency key for a step's background-dispatch queue message, scoped to
+ * the step's IDENTITY — correlation id plus (hashed) step name — rather than
+ * the bare correlation id.
+ *
+ * The scoping matters for resilient step dispatch under the precondition
+ * guard: a guard-rejected `step_created` leaves its (revoked) step message in
+ * flight, and the corrected replay may re-derive the same correlation id for
+ * a DIFFERENT step. Under a bare-correlationId key the corrected replay's
+ * dispatch would silently dedupe against the revoked in-flight message —
+ * which then resolves `skipped` against the re-created entity (the server's
+ * stepName fence rejects its bare start) — and the legitimate step would
+ * never be executed. Scoping by step name keeps every dedup property that
+ * matters (crash recovery re-dispatch, concurrent handlers, the delayed
+ * retry sharing the suspension re-dispatch's key — all name the same step)
+ * while letting the corrected schedule's dispatch through.
+ *
+ * Every producer of a step-dispatch (or step-retry) message must use this
+ * key. Cross-version mixing is not a concern: queue messages are pinned to
+ * the deployment that produced them, so one run never sees two key schemes.
+ */
+export function stepDispatchIdempotencyKey(
+  correlationId: string,
+  stepName: string
+): string {
+  return `${correlationId}:${fnv1a32Hex(stepName)}`;
 }
 
 /**

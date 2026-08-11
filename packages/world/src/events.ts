@@ -732,6 +732,25 @@ export interface CreateEventParams {
    * alongside {@link resumeId}.
    */
   resumePayloadDigest?: string;
+  /**
+   * Marks a `step_created` create as the queue consumer's re-ensure of a
+   * resilient step dispatch (a step message carrying `stepInput` — see
+   * `WorkflowInvokePayload.stepInput`): the producer's direct write was
+   * parallelized with the queue publish and may have failed. Only meaningful
+   * for `step_created`.
+   *
+   * Advisory. The runtime never parallelizes a *guarded* `step_created` with
+   * its publish (see the eligibility gate in the suspension handler), so in
+   * correct operation a re-ensure can only correspond to an unguarded create
+   * — there is no guard verdict for it to bypass. A guard-enforcing backend
+   * MAY nevertheless use this flag as defense-in-depth: refuse the re-ensure
+   * (world-vercel surfaces the backend's 410 as `RunExpiredError`, which the
+   * consumer treats as "nothing left to execute" and acks the message) when
+   * it has recorded a 412 rejection for this correlation id and no step
+   * entity exists — hardening against a misbehaving or future client. Worlds
+   * may ignore this flag entirely.
+   */
+  viaStepDispatch?: boolean;
   /** Request ID (x-vercel-id when on Vercel) for correlating request logs with workflow events. */
   requestId?: string;
   /**
@@ -814,6 +833,38 @@ export interface CreateEventParams {
    * authoritative full reload, which is always correct.
    */
   stateCursor?: string;
+  /**
+   * How many events the writer held in its loaded log when it decided to write
+   * this one — equivalently, the slot it expects to land on minus one.
+   *
+   * Only meaningful against a World that declares
+   * `WorldCapabilities.slotEventIds`, where slots are dense and 1-based so a
+   * count and a position are the same number. Such a World attempts
+   * `eventCount + 1`, and on contention **bumps** to the next free slot and
+   * commits there anyway — a stale count never rejects a write. What it does
+   * instead is report: when the committed slot is higher than the one asked
+   * for, the events occupying the skipped slots come back on the success
+   * response in {@link EventResult.events} / `cursor` / `hasMore`, so the
+   * writer learns exactly what it had not seen.
+   *
+   * This supersedes the {@link stateUpdatedAt} / {@link stateEventCount} /
+   * {@link stateCursor} triple for slot Worlds. That triple approximates a
+   * position with a ULID-time watermark plus a count of events at or below it,
+   * which is why a *complete but stale* prefix passes it: every event the
+   * writer holds is at or below its own watermark, so the count matches and no
+   * fence fires. A dense position has no such blind spot. Worlds without slots
+   * ignore this field and keep using the triple.
+   *
+   * A batch of writes issued from one snapshot starts from the same
+   * `eventCount`; they land on consecutive slots in whatever order the World
+   * serializes them, which is why they can stay a parallel fan-out instead of
+   * a chain of round-trips. The count a given write sends is the writer's
+   * position *at that moment*, so it advances mid-batch as reported events are
+   * folded back into the loaded log: a write issued after a sibling's
+   * bump-and-report already holds the slots that report named, and asks for a
+   * slot above them.
+   */
+  eventCount?: number;
   /**
    * Timestamp for when the event occurred on the client side. Worlds that
    * support this can persist it separately from `createdAt`, which represents
@@ -945,7 +996,7 @@ export type EventResult<T extends EventType = EventType> = {
 } & (
   | {
       /**
-       * Events with data resolved. Three producers populate this:
+       * Events with data resolved. Four producers populate this:
        *
        * - On a `run_started` response: all events up to this point, so the
        *   runtime can skip the initial `events.list` call and reduce TTFB.
@@ -958,6 +1009,13 @@ export type EventResult<T extends EventType = EventType> = {
        *   log through the canonical `hook_received`, so the lazy hook queue
        *   consumer can skip both the `run_started` write and the initial
        *   `events.list`.
+       * - On any response from a slot-allocating World (see
+       *   `WorldCapabilities.slotEventIds`) whose committed slot came out
+       *   higher than the one {@link CreateEventParams.eventCount} asked for:
+       *   the events occupying the slots that were skipped over, in slot
+       *   order. This is the "report" half of bump-and-report — the write
+       *   succeeded, and these are the events the writer had not seen when it
+       *   decided to make it.
        */
       events: Event[];
       /** Pagination cursor for `events`, matching events.list semantics. */

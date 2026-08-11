@@ -21,6 +21,7 @@ import {
   EntityConflictError,
   PreconditionFailedError,
   RunExpiredError,
+  StreamExpiredError,
   ThrottleError,
   TooEarlyError,
   WorkflowWorldError,
@@ -172,7 +173,8 @@ export function headersToRecord(headers: Headers): Record<string, string> {
  * truth for the status → error-type contract the runtime branches on:
  *
  *   - 409 → EntityConflictError (start() dedupe, terminal-state transitions)
- *   - 410 → RunExpiredError (runtime exits without retrying)
+ *   - 410 → StreamExpiredError when the response code is `stream-expired`,
+ *     otherwise RunExpiredError (both terminal)
  *   - 412 → PreconditionFailedError + retryAfter + details (stale precondition
  *     snapshot — the optimistic-concurrency guard on event creation; `details`
  *     carries the events the backend returned inline, when it did)
@@ -195,15 +197,41 @@ export function errorForResponse(
     code?: string;
     url?: string;
     mitigated?: string | null;
-    /** Rejection detail for a 412 — the events the backend says the client's
-     *  snapshot was missing, when it returned them inline. Ignored for every
-     *  other status. */
+    /** Rejection detail returned by the backend. A stream-expired 410 carries
+     * its run, stream, and authoritative retention timestamp here; 412 carries
+     * events the backend says the client's snapshot was missing. */
     details?: unknown;
   } = {}
 ): Error {
   const { retryAfter, code, url, mitigated, details } = opts;
   if (status === 409) return new EntityConflictError(message);
-  if (status === 410) return new RunExpiredError(message);
+  if (status === 410) {
+    if (code === 'stream-expired') {
+      const streamDetails =
+        details && typeof details === 'object'
+          ? (details as {
+              runId?: unknown;
+              streamId?: unknown;
+              expiredAt?: unknown;
+            })
+          : undefined;
+      const expiredAt =
+        typeof streamDetails?.expiredAt === 'string'
+          ? new Date(streamDetails.expiredAt)
+          : undefined;
+      return new StreamExpiredError(
+        message,
+        typeof streamDetails?.runId === 'string'
+          ? streamDetails.runId
+          : undefined,
+        typeof streamDetails?.streamId === 'string'
+          ? streamDetails.streamId
+          : undefined,
+        expiredAt && !Number.isNaN(expiredAt.getTime()) ? expiredAt : undefined
+      );
+    }
+    return new RunExpiredError(message);
+  }
   if (status === 412)
     return new PreconditionFailedError(message, { retryAfter, details });
   if (status === 425) return new TooEarlyError(message, { retryAfter });

@@ -7,7 +7,7 @@
   "main": "index.js",
   "scripts": {
     "generate:workflows": "node ../scripts/generate-workflows-registry.js",
-    "predev": "pnpm generate:workflows",
+    "predev": "pnpm generate:workflows && pnpm copy:index",
     "copy:index": "mkdir -p public && cp index.html public/index.html",
     "prebuild": "pnpm generate:workflows && pnpm copy:index",
     "postbuild": "rm -f public/index.html",
