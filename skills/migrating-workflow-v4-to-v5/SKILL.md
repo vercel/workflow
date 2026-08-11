@@ -3,7 +3,7 @@ name: migrating-workflow-v4-to-v5
 description: Upgrades an app from Workflow SDK 4.x to 5.0. Use when bumping the `workflow` / `@workflow/*` dependencies to v5, or when hitting removed v4 APIs — `runStep`, `stepEntrypoint`, `workflow/internal/private`, `@workflow/core/private`, `writeToStream` / `closeStream` / `readFromStream` on a World, `world.steps.get` without a runId, `hook.getConflict()` returning `{ runId }`, `experimental_setAttributes`, `createLocalWorld` / `createVercelWorld`, `NestLocalBuilder` imported from `@workflow/nest`, or an SWC transform invoked with `mode: 'client'`.
 metadata:
   author: Vercel Inc.
-  version: '0.2.6'
+  version: '0.2.7'
 ---
 
 # Migrating Workflow SDK 4.x to 5.0
@@ -198,6 +198,7 @@ These are not code edits. Report each one that applies, and do not "fix" them si
 - **Event creation is guarded by default.** Replay-context writes carry a `stateUpdatedAt` snapshot and a supporting backend can reject stale writes with `PreconditionFailedError`. Backends without guard support ignore the snapshot. `WORKFLOW_PRECONDITION_GUARD=0` opts out.
 - **Turbo mode is on by default.** The first invocation of a run backgrounds `run_started` and skips the initial event-log load. `WORKFLOW_TURBO=0` disables it.
 - **Errors keep their type.** `WorkflowRunFailedError.cause` now preserves the original class identity and cause chain. Code that pattern-matched on `error.message` because the class was flattened in 4.x can use `instanceof` — but flag it rather than rewriting error handling unprompted.
+- **Event IDs are slot numbers, not ULIDs.** An event ID is now its 1-based position in the run's log (`evnt_00000000000000000000000042`), unique only within a run and carrying no timestamp. Report any app code that uses an event ID as a global key (pair it with the `runId`) or decodes a time out of one (read `createdAt` off the event). Other entity IDs are unchanged.
 - **A per-run event limit is enforced.** The World supplies the ceiling (25,000 events on the Local and Vercel Worlds) and a run that reaches it fails with `MAX_EVENTS_EXCEEDED`. Flag any workflow with an unbounded loop; the fix is a child run per batch, which is a design change, not a migration edit.
 - **Stream writes flush the leading chunk immediately.** The flush window default went from 10ms to 0. An app that relied on the window to coalesce a burst of tiny chunks can set `streamFlushIntervalMs` or `WORKFLOW_STREAM_FLUSH_INTERVAL_MS`.
 - **Generated step, workflow and webhook bundles are ESM** (the VM-executed workflow bundle stays CJS). Only matters for a host that post-processes build output.

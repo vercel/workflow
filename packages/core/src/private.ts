@@ -4,7 +4,6 @@
 
 import { withResolvers } from '@workflow/utils';
 import type { WorldCapabilities } from '@workflow/world';
-import type { CorrelationIdGenerator } from './correlation-id.js';
 import type { EventsConsumer } from './events-consumer.js';
 import type { QueueItem } from './global.js';
 import type { ReplayPayloadCache } from './replay-payload-cache.js';
@@ -154,11 +153,11 @@ export interface WorkflowOrchestratorContext {
   invocationsQueue: Map<string, QueueItem>;
   onWorkflowError: (error: Error) => void;
   /**
-   * Mints a correlation id body for one entity family. Every entity a replay
-   * creates draws from here, and the family is what keeps a disagreement about
-   * one family's count from renumbering another's.
+   * Mints the ULID body of a correlation id. Every entity a replay creates
+   * draws from this one monotonic sequence, so an id is an ordinal over the
+   * whole run and both replays of a run must draw in the same order.
    */
-  generateCorrelationId: CorrelationIdGenerator;
+  generateUlid: () => string;
   generateNanoid: () => string;
   /**
    * Sequential promise queue that ensures all event-driven promise resolutions
@@ -583,7 +582,9 @@ export function registerDeliveryBarrier(
  * {@link registerDeliveryBarrier}) and never need that net, so waiting on
  * them is deadlock-free.
  */
-function hasParkedCommittedDelivery(ctx: WorkflowOrchestratorContext): boolean {
+export function hasParkedCommittedDelivery(
+  ctx: WorkflowOrchestratorContext
+): boolean {
   const barriers = ctx.pendingDeliveryBarriers;
   if (!barriers || barriers.size === 0) {
     return false;
@@ -599,18 +600,32 @@ function hasParkedCommittedDelivery(ctx: WorkflowOrchestratorContext): boolean {
 }
 
 /**
- * Schedule a callback to fire only after all pending data deliveries
- * (step results, hook payloads) and async deserialization have completed.
- * Uses a polling loop: setTimeout(0) → check pendingDeliveries and the
- * barrier registry → if anything is still in flight, wait for promiseQueue →
- * repeat. This handles the multi-round delivery pattern where each hook
- * payload delivery cycle appends new async work to the promiseQueue.
+ * Whether no data delivery (step result, hook payload) is in flight right now.
  *
  * "In flight" is two distinct windows, each with its own guard:
  * `pendingDeliveries > 0` covers hydration inside the serial queue slots, and
  * {@link hasParkedCommittedDelivery} covers the detached gap between a slot
  * releasing that counter and the delivery's `resolve()` actually running —
  * deliberately outside `pendingDeliveries` (see step.ts), and invisible to it.
+ *
+ * Anything that decides a replay is over, or that a replay went wrong, has to
+ * consult this first: while it is false the workflow VM is mid-reaction, so
+ * what it has and has not done yet says nothing about the run. Two callers
+ * read it, for the two such decisions: {@link scheduleWhenIdle} for the
+ * suspension, and the events consumer's unconsumed-event check for divergence.
+ */
+export function isDeliveryIdle(ctx: WorkflowOrchestratorContext): boolean {
+  return ctx.pendingDeliveries === 0 && !hasParkedCommittedDelivery(ctx);
+}
+
+/**
+ * Schedule a callback to fire only after all pending data deliveries
+ * (step results, hook payloads) and async deserialization have completed.
+ * Uses a polling loop: setTimeout(0) → check pendingDeliveries and the
+ * barrier registry → if anything is still in flight, wait for promiseQueue →
+ * repeat. This handles the multi-round delivery pattern where each hook
+ * payload delivery cycle appends new async work to the promiseQueue. What
+ * counts as in flight is {@link isDeliveryIdle}.
  *
  * The initial `setTimeout(0)` macrotask is load-bearing and must NOT be
  * downgraded to a microtask (`queueMicrotask`/`Promise.resolve().then`).
@@ -629,7 +644,7 @@ export function scheduleWhenIdle(
   fn: () => void
 ): void {
   const check = () => {
-    if (ctx.pendingDeliveries > 0 || hasParkedCommittedDelivery(ctx)) {
+    if (!isDeliveryIdle(ctx)) {
       // A delivery is still hydrating, or is committed but parked behind its
       // deferral (whose resolve runs on a detached timer, not this queue).
       // Either way: let the queue drain, then re-check a timer tick later.

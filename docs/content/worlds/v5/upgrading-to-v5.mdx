@@ -66,18 +66,15 @@ This is the largest change for a World implementation, and it is required.
 
 In v4 an event ID was a ULID your World minted however it liked. In v5 an event ID is its **slot**: `evnt_` followed by the event's 1-based position in that run's log, zero-padded to 26 characters, so a run's first event is `evnt_00000000000000000000000001`. Format one with `slotToEventId()` from `@workflow/world`, and declare `capabilities.slotEventIds`.
 
-The scheme exists for what a reader can conclude from a log it just fetched. Positions are dense, so the number of events a reader holds *is* the position of the last one, and a truncated log is distinguishable from a complete one by its length alone. The runtime relies on that, which is why the two invariants below are not negotiable:
+The scheme exists for what a reader can conclude from a log it just fetched: positions are dense, so a truncated log is distinguishable from a complete one by its length alone. The runtime relies on that, and it fails a run with [`CORRUPTED_EVENT_LOG`](/docs/errors/corrupted-event-log) rather than replay across a hole, so three rules bind an implementation:
 
-- **Uniqueness.** Two writers racing to append must not both take a position. Settle it where the store settles it, with a unique constraint on `(runId, eventId)` or a conditional write, not by reading the maximum in your own process and adding one.
-- **Density.** Positions run from 1 with no holes. A writer that loses a race re-derives its position from the store and takes the next free one. Incrementing a local number after a loss leaves a permanent hole, and the runtime treats a hole as a log it cannot replay across.
+- **Uniqueness.** Settle a race for a position where the store settles it, with a unique constraint on `(runId, eventId)` or a conditional write, not by reading the maximum in your own process and adding one.
+- **Density.** Positions run from 1 with no holes. A writer that loses a race re-derives its position from the store instead of incrementing a local number, which would leave a permanent hole.
+- **Bump and report.** `events.create()` params carry `eventCount`, so the expected position is `eventCount + 1`. When it is taken, do not reject the write: commit at the next free position and return the events you skipped on the success response. A stale count is the normal case for a parallel fan-out, and rejecting it would serialize writes the runtime deliberately issues concurrently.
 
-Callers help you place the write: `events.create()` params carry `eventCount`, the number of events the writer held in the log it replayed from, so the position it expects is `eventCount + 1`. When that position is already taken, **do not reject the write**. Advance to the next free position, commit there, and return the events occupying the positions you skipped on the success response. The writer learns its snapshot was stale, merges the events, and replays once. A stale count is the normal case for a parallel fan-out, so rejecting it would serialize writes the runtime deliberately issues concurrently.
+[Event ID Allocation](/worlds/building-a-world#event-id-allocation) carries the full rules, and [Event IDs](/docs/how-it-works/event-sourcing#event-ids) covers what the format means for anything that reads an ID back.
 
-`eventCount` supersedes the `stateUpdatedAt` / `stateEventCount` / `stateCursor` triple used by the [precondition guard](/worlds/building-a-world#optional-the-event-creation-precondition-guard). The triple approximates a position with a timestamp watermark plus a count of events at or below it, which a complete-but-stale snapshot passes: every event the writer holds is at or below its own watermark, so the count matches and no fence fires. A dense position has no such blind spot.
-
-Runs already in your store are unaffected. A run's scheme is pinned by the run rather than by the capability flag, and it is readable off the shape of its own first event ID, so a World that switches slots on keeps replaying its existing ULID-numbered runs unchanged. `capabilities.slotEventIds` states what *new* runs get.
-
-See [Building a World](/worlds/building-a-world) for the allocation rules alongside the rest of the storage contract.
+Two consequences are specific to an upgrade. `eventCount` supersedes the `stateUpdatedAt` / `stateEventCount` / `stateCursor` triple used by the [precondition guard](/worlds/building-a-world#optional-the-event-creation-precondition-guard), which a complete-but-stale snapshot passes and a dense position does not. And runs already in your store are unaffected: a run's scheme is pinned by the run rather than by the capability flag, and it is readable off the shape of its own first event ID, so a World that switches slots on keeps replaying its existing ULID-numbered runs unchanged. `capabilities.slotEventIds` states what *new* runs get.
 
 ## New optional surface
 

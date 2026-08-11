@@ -415,6 +415,30 @@ export interface WorldCapabilities {
    * fail ordinary runs after a version bump.
    */
   deploymentAffinity?: boolean;
+
+  /**
+   * The World allocates **slot-numbered** event ids: `evnt_` plus the event's
+   * dense, 1-based position in its run's log, zero-padded to 26 characters
+   * (see `slot-identity.ts`). Two guarantees come with it, and the runtime
+   * relies on both:
+   *
+   * - **Density.** A run's slots are contiguous from 1, so the number of
+   *   events a reader holds *is* the position of the last one. That is what
+   *   makes {@link CreateEventParams.eventCount} a complete statement of the
+   *   writer's snapshot, where the `stateUpdatedAt` / `stateEventCount`
+   *   watermark pair could only approximate it.
+   * - **Bump and report.** A create never fails because its requested slot is
+   *   taken. The World advances to the next free slot, commits there, and
+   *   returns the events occupying the slots it skipped over on the success
+   *   response (see {@link EventResult.events}). The writer learns its
+   *   snapshot was stale without the write being rejected.
+   *
+   * A run's scheme is pinned by the run, not by this flag: it is readable off
+   * the shape of the run's own first event id, so a World that turns slots on
+   * keeps replaying its existing ULID-numbered runs unchanged. The capability
+   * only says what *new* runs get.
+   */
+  slotEventIds?: boolean;
 }
 
 /**

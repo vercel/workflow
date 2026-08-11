@@ -41,6 +41,7 @@ interface WorldCapabilities {
   hookRetention?: {
     active: boolean;
   };
+  slotEventIds?: boolean;
   preconditionGuard?: boolean;
   maxConcurrency?: boolean;
 }
@@ -59,9 +60,9 @@ interface World extends Storage, Queue, Streamer {
 }
 ```
 
-The required `specVersion` declares which Workflow protocol spec version the World implements — the runtime requires an exact match with its own current spec version before it will create or replay runs, so bump it together with SDK upgrades.
+The required `specVersion` declares which Workflow protocol spec version the World implements. The runtime accepts the range from its own `SPEC_VERSION_CURRENT` up to `SPEC_VERSION_MAX_SUPPORTED` and refuses to create or replay runs outside it, so import the constant from `@workflow/world` rather than hardcoding a number, and re-check it on SDK upgrades.
 
-The optional `capabilities` object advertises additional behavior, and every capability **fails closed**: a missing member means "unsupported", and the runtime keeps its conservative behavior. Set `hookRetention.active` to `true` only when the World implements Hook token retention. Set `preconditionGuard` only when the World actually rejects event creations carrying a stale `stateUpdatedAt` snapshot with a `PreconditionFailedError` — advertising it without the fence enables runtime optimizations with nothing behind them. Set `maxConcurrency` only when the World's queue supports `maxConcurrency`-limited consumption (used by `WORKFLOW_SEQUENTIAL_REPLAYS=1`).
+The optional `capabilities` object advertises additional behavior, and every capability **fails closed**: a missing member means "unsupported", and the runtime keeps its conservative behavior. Set `hookRetention.active` to `true` only when the World implements Hook token retention. Set `slotEventIds` when the World allocates [slot-numbered event IDs](#event-id-allocation), which a v5 World is required to do. Set `preconditionGuard` only when the World actually rejects event creations carrying a stale `stateUpdatedAt` snapshot with a `PreconditionFailedError` — advertising it without the fence enables runtime optimizations with nothing behind them. Set `maxConcurrency` only when the World's queue supports `maxConcurrency`-limited consumption (used by `WORKFLOW_SEQUENTIAL_REPLAYS=1`).
 
 The remaining optional members:
 
@@ -131,6 +132,19 @@ interface Storage {
 Keep the owning Run available for at least as long as its token remains unavailable, because conflicts return that Run.
 
 **Automatic Hook Cleanup:** When a run ends, remove its live Hooks. Make each token available unless its `tokenRetentionUntil` is still in the future. A `hook_disposed` event always makes the token available immediately.
+
+### Event ID Allocation
+
+Your World assigns every event ID. An ID is `evnt_` followed by the event's 1-based position in that run's log, zero-padded to 26 characters, so the run's first event is `evnt_00000000000000000000000001`. Use `slotToEventId()` from `@workflow/world` to format one, and declare `capabilities.slotEventIds`.
+
+Two properties have to hold, and both are about what a reader can conclude from the log:
+
+- **Uniqueness.** Two writers racing to append must not both take a position. Settle it where the store settles it, with a unique constraint on `(runId, eventId)` or a conditional write, rather than reading the maximum and adding one in your own process.
+- **Density.** Positions run from 1 with no holes, which is what lets a reader tell a complete log from a truncated one by its length alone. A writer that loses a race must re-derive its position from the store and take the next free one. Incrementing a local number after a loss leaves a permanent hole, and the runtime treats a hole as a log it cannot safely replay across.
+
+`events.create()` params carry `eventCount`: how many events the writer held in the log it replayed from, which is the position it expects to land on minus one. Attempt `eventCount + 1`. When that position is taken, **do not reject the write**. Advance to the next free position, commit there, and return the events occupying the positions you skipped over on the success response, in `events` with a matching `cursor` and `hasMore`. The writer merges them into its own log and replays once, rather than paying a second round trip to discover it was behind. A caller with a stale count is the normal case for a fan-out, and rejecting it would serialize writes the runtime issues in parallel.
+
+`eventCount` supersedes the `stateUpdatedAt` / `stateEventCount` / `stateCursor` triple below for a World that allocates positions. The triple approximates a position with a timestamp watermark plus a count of events at or below it, which a complete-but-stale snapshot passes: every event the writer holds is at or below its own watermark, so the count matches and no fence fires. A dense position has no such blind spot.
 
 ### Optional: The Event Creation Precondition Guard
 

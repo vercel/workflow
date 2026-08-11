@@ -6,11 +6,11 @@ import type {
   Step,
   WorkflowRun,
 } from '@workflow/world';
-import { SPEC_VERSION_CURRENT } from '@workflow/world';
+import { eventIdToSlot, SPEC_VERSION_CURRENT } from '@workflow/world';
 import { encode } from 'cbor-x';
 import { eq } from 'drizzle-orm';
 import { Pool } from 'pg';
-import { decodeTime, ulid } from 'ulid';
+import { ulid } from 'ulid';
 import {
   afterAll,
   afterEach,
@@ -142,7 +142,7 @@ describe('Storage (Postgres integration)', () => {
 
   async function truncateTables() {
     await pool.query(
-      'TRUNCATE TABLE workflow.workflow_events, workflow.workflow_steps, workflow.workflow_hooks, workflow.workflow_runs RESTART IDENTITY CASCADE'
+      'TRUNCATE TABLE workflow.workflow_events, workflow.workflow_event_slots, workflow.workflow_steps, workflow.workflow_hooks, workflow.workflow_runs RESTART IDENTITY CASCADE'
     );
   }
 
@@ -814,7 +814,7 @@ describe('Storage (Postgres integration)', () => {
         expect(updated.attempt).toBe(1); // Incremented by step_started
       });
 
-      it('allocates the step_started event id after the guarded step update', async () => {
+      it('allocates the step_started slot after the guarded step update', async () => {
         const stepId = 'step-start-lock';
         await createStep(events, testRunId, {
           stepId,
@@ -827,6 +827,14 @@ describe('Storage (Postgres integration)', () => {
           max: 1,
         });
         const client = await lockPool.connect();
+        // The suite's own pool is `max: 1`, so the parked step_started holds
+        // it for the duration. The overtaking writer needs a connection of
+        // its own, which is also the shape being tested: two processes.
+        const otherPool = new Pool({
+          connectionString: container.getConnectionUri(),
+          max: 1,
+        });
+        const otherEvents = createEventsStorage(createClient(otherPool));
 
         try {
           await client.query('BEGIN');
@@ -841,19 +849,31 @@ describe('Storage (Postgres integration)', () => {
           });
 
           await new Promise((resolve) => setTimeout(resolve, 50));
-          const releasedAt = Date.now();
+          // Written while step_started is still parked on the step row lock.
+          // A writer that drew its slot on entry would already hold a lower
+          // one than this; drawing after the lock puts it above.
+          const overtaking = await otherEvents.create(testRunId, {
+            eventType: 'step_created',
+            correlationId: 'step-start-lock-overtaker',
+            eventData: { stepName: 'test-step', input: new Uint8Array([1]) },
+          });
           await client.query('COMMIT');
 
           const result = await started;
-          if (!result.event) {
-            throw new Error('Expected step_started event');
+          if (!result.event || !overtaking.event) {
+            throw new Error('Expected both events');
           }
-          expect(
-            decodeTime(result.event.eventId.slice('wevt_'.length))
-          ).toBeGreaterThanOrEqual(releasedAt);
+          const startedSlot = eventIdToSlot(result.event.eventId);
+          const overtakingSlot = eventIdToSlot(overtaking.event.eventId);
+          expect(startedSlot).not.toBeNull();
+          expect(overtakingSlot).not.toBeNull();
+          expect(startedSlot as number).toBeGreaterThan(
+            overtakingSlot as number
+          );
         } finally {
           client.release();
           await lockPool.end();
+          await otherPool.end();
         }
       });
 
@@ -1121,7 +1141,7 @@ describe('Storage (Postgres integration)', () => {
         const result = await events.create(testRunId, eventData);
 
         expect(result.event.runId).toBe(testRunId);
-        expect(result.event.eventId).toMatch(/^wevt_/);
+        expect(result.event.eventId).toMatch(/^evnt_0{10}/);
         expect(result.event.eventType).toBe('step_started');
         expect(result.event.correlationId).toBe('corr_123');
         expect(result.event.createdAt).toBeInstanceOf(Date);
@@ -1146,7 +1166,7 @@ describe('Storage (Postgres integration)', () => {
         });
 
         expect(result.event.runId).toBe(testRunId);
-        expect(result.event.eventId).toMatch(/^wevt_/);
+        expect(result.event.eventId).toMatch(/^evnt_0{10}/);
         expect(result.event.eventType).toBe('step_failed');
         expect(result.event.correlationId).toBe('corr_123_null');
         expect(result.event.createdAt).toBeInstanceOf(Date);
@@ -1809,6 +1829,243 @@ describe('Storage (Postgres integration)', () => {
         expect(result.hook).toBeDefined();
         expect(result.hook!.token).toBe(token);
       });
+    });
+  });
+
+  describe('slot event ids', () => {
+    let testRunId: string;
+    beforeEach(async () => {
+      const run = await createRun(events, {
+        deploymentId: 'deployment-123',
+        workflowName: 'test-workflow',
+        input: new Uint8Array(),
+      });
+      testRunId = run.runId;
+    });
+
+    it('numbers a run densely from the first slot', async () => {
+      await updateRun(events, testRunId, 'run_started');
+
+      const result = await events.list({
+        runId: testRunId,
+        pagination: { sortOrder: 'asc' },
+      });
+
+      expect(result.data.map((e) => eventIdToSlot(e.eventId))).toEqual([1, 2]);
+    });
+
+    it('gives concurrent writers distinct, dense slots', async () => {
+      const writers = 8;
+      // The suite's own pool is `max: 1`, which would serialize these writes
+      // and defeat the point. Give each writer a connection so they actually
+      // contend for the same slot.
+      const racePool = new Pool({
+        connectionString: container.getConnectionUri(),
+        max: writers,
+      });
+      const raceEvents = createEventsStorage(createClient(racePool));
+
+      try {
+        await Promise.all(
+          Array.from({ length: writers }, (_, i) =>
+            raceEvents.create(testRunId, {
+              eventType: 'step_created',
+              correlationId: `slot-step-${i}`,
+              eventData: {
+                stepName: 'test-step',
+                input: new Uint8Array([i]),
+              },
+            })
+          )
+        );
+      } finally {
+        await racePool.end();
+      }
+
+      const result = await events.list({
+        runId: testRunId,
+        pagination: { sortOrder: 'asc' },
+      });
+      const slots = result.data
+        .map((e) => eventIdToSlot(e.eventId))
+        .sort((a, b) => (a ?? 0) - (b ?? 0));
+
+      // run_created holds slot 1 and the racing writers take the rest: no
+      // duplicate (the composite primary key rejects the loser, which retries)
+      // and no hole (nothing reserves a slot it does not then use), whatever
+      // order they happen to land in.
+      expect(slots).toEqual(
+        Array.from({ length: writers + 1 }, (_, i) => i + 1)
+      );
+    });
+
+    it('leaves no hole behind writes that are rejected', async () => {
+      const writers = 8;
+      const racePool = new Pool({
+        connectionString: container.getConnectionUri(),
+        max: writers,
+      });
+      const raceEvents = createEventsStorage(createClient(racePool));
+
+      // Every writer claims the same correlation id, so exactly one
+      // step_created survives the entity-creation unique index and the rest
+      // are rejected with EntityConflictError. A slot handed out before the
+      // insert lands would be burned by each of those rejections, and a burned
+      // slot is a permanent hole: allocation only moves forward.
+      try {
+        const results = await Promise.allSettled(
+          Array.from({ length: writers }, () =>
+            raceEvents.create(testRunId, {
+              eventType: 'step_created',
+              correlationId: 'slot-contended-step',
+              eventData: {
+                stepName: 'test-step',
+                input: new Uint8Array([1]),
+              },
+            })
+          )
+        );
+        expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+      } finally {
+        await racePool.end();
+      }
+
+      // The next write is what exposes a burned slot: it lands right behind
+      // the winner if no rejection consumed a position, and `writers - 1`
+      // past it if every rejection did.
+      await events.create(testRunId, {
+        eventType: 'step_created',
+        correlationId: 'slot-after-contention',
+        eventData: { stepName: 'test-step', input: new Uint8Array([1]) },
+      });
+
+      const result = await events.list({
+        runId: testRunId,
+        pagination: { sortOrder: 'asc' },
+      });
+      const slots = result.data
+        .map((e) => eventIdToSlot(e.eventId))
+        .sort((a, b) => (a ?? 0) - (b ?? 0));
+
+      // run_created, the one step_created that won, and the write after it.
+      expect(slots).toEqual([1, 2, 3]);
+    });
+
+    it('hands back the events occupying the slots a write skipped', async () => {
+      await updateRun(events, testRunId, 'run_started');
+      // What a writer that loaded the log right after run_started would report.
+      const stale = 2;
+
+      for (let i = 0; i < 3; i++) {
+        await events.create(testRunId, {
+          eventType: 'step_created',
+          correlationId: `skipped-step-${i}`,
+          eventData: { stepName: 'test-step', input: new Uint8Array([i]) },
+        });
+      }
+
+      const result = await events.create(
+        testRunId,
+        {
+          eventType: 'wait_created',
+          correlationId: 'skipped-wait',
+          eventData: { resumeAt: new Date('2099-01-01') },
+        },
+        { eventCount: stale }
+      );
+
+      expect(eventIdToSlot(result.event.eventId)).toBe(6);
+      expect(result.events?.map((e) => eventIdToSlot(e.eventId))).toEqual([
+        3, 4, 5,
+      ]);
+      expect(result.events?.map((e) => e.correlationId)).toEqual([
+        'skipped-step-0',
+        'skipped-step-1',
+        'skipped-step-2',
+      ]);
+      expect(result.hasMore).toBe(false);
+    });
+
+    it('reports nothing when the write lands on the slot it asked for', async () => {
+      const result = await events.create(
+        testRunId,
+        {
+          eventType: 'step_created',
+          correlationId: 'unskipped-step',
+          eventData: { stepName: 'test-step', input: new Uint8Array() },
+        },
+        { eventCount: 1 }
+      );
+
+      expect(eventIdToSlot(result.event.eventId)).toBe(2);
+      expect(result.events).toBeUndefined();
+    });
+
+    it('reports nothing when the writer sends no count', async () => {
+      await updateRun(events, testRunId, 'run_started');
+      await events.create(testRunId, {
+        eventType: 'step_created',
+        correlationId: 'uncounted-step',
+        eventData: { stepName: 'test-step', input: new Uint8Array() },
+      });
+
+      const result = await events.create(testRunId, {
+        eventType: 'wait_created',
+        correlationId: 'uncounted-wait',
+        eventData: { resumeAt: new Date('2099-01-01') },
+      });
+
+      expect(result.events).toBeUndefined();
+    });
+
+    it('gives every racing writer the events it was decided without', async () => {
+      await updateRun(events, testRunId, 'run_started');
+      const stale = 2;
+      const writers = 8;
+      const racePool = new Pool({
+        connectionString: container.getConnectionUri(),
+        max: writers,
+      });
+      const raceEvents = createEventsStorage(createClient(racePool));
+
+      let results: Awaited<ReturnType<typeof raceEvents.create>>[];
+      try {
+        results = await Promise.all(
+          Array.from({ length: writers }, (_, i) =>
+            raceEvents.create(
+              testRunId,
+              {
+                eventType: 'step_created',
+                correlationId: `race-report-${i}`,
+                eventData: {
+                  stepName: 'test-step',
+                  input: new Uint8Array([i]),
+                },
+              },
+              { eventCount: stale }
+            )
+          )
+        );
+      } finally {
+        await racePool.end();
+      }
+
+      // Each writer's report covers only the slots between the one it asked
+      // for and the one it landed on. It can be short of that span: a writer
+      // holding a lower slot may not have committed its insert yet, which is
+      // what `hasMore` says.
+      for (const result of results) {
+        const landed = eventIdToSlot(result.event.eventId) as number;
+        const reported = result.events ?? [];
+        const span = landed - stale - 1;
+        expect(reported.length).toBeLessThanOrEqual(span);
+        expect(result.hasMore ?? false).toBe(reported.length < span);
+        for (const event of reported) {
+          const slot = eventIdToSlot(event.eventId) as number;
+          expect(slot).toBeGreaterThan(stale);
+          expect(slot).toBeLessThan(landed);
+        }
+      }
     });
   });
 

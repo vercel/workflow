@@ -32,6 +32,8 @@
     "workflow-sdk-compiler-playground",
     "@workflow/docs-typecheck",
     "@workflow/example-*",
-    "@workflow/vitest-workbench"
+    "@workflow/vitest-workbench",
+    "@workflow/world-sim",
+    "@workflow/sim-world-workbench"
   ]
 }

@@ -73,13 +73,16 @@ import {
   handleHealthCheckMessage,
   insertEventByEventId,
   isPreconditionGuardEnabled,
+  isSlotGapCheckEnabled,
   type LoadedEventLog,
   loadWorkflowRunEvents,
   memoizeEncryptionKey,
+  mergeReportedEvents,
   parseHealthCheckPayload,
   preconditionEventDelta,
   preconditionSnapshotParams,
   queueMessage,
+  settleEventSlotGap,
   withHealthCheck,
 } from './runtime/helpers.js';
 import {
@@ -2499,13 +2502,34 @@ export function workflowEntrypoint(
 
                       for (const waitEvent of waitsToComplete) {
                         try {
-                          await createEvent(waitEvent, {
+                          const created = await createEvent(waitEvent, {
                             requestId,
                             ...preconditionSnapshotParams(
                               eventLog.events,
                               eventLog.cursor
                             ),
                           });
+                          // Bump-and-report: fold what this write skipped over
+                          // into the snapshot the remaining waits are guarded
+                          // against, so each asks for a slot above it.
+                          //
+                          // Only a complete answer. `hasMore` means the World
+                          // returned part of what it was asked for, and the
+                          // missing-completion check below is what decides
+                          // whether this handler still has to fetch. Folding in
+                          // a partial page would make the log look like it
+                          // holds the completion when the rest of the page is
+                          // still unread, so the fetch would be skipped on a
+                          // snapshot that is short of the World's.
+                          if (
+                            created.events?.length &&
+                            created.hasMore !== true
+                          ) {
+                            mergeReportedEvents(
+                              eventLog.events,
+                              created.events
+                            );
+                          }
                         } catch (err) {
                           if (EntityConflictError.is(err)) {
                             runtimeLogger.info(
@@ -2583,6 +2607,30 @@ export function workflowEntrypoint(
                             ...(await loadWorkflowRunEvents(runId)),
                             type: 'ready',
                           };
+                        }
+                      }
+
+                      // A replay reads the log as the complete record of what
+                      // has happened, so a position nothing occupies is
+                      // indistinguishable from an event that never occurred and
+                      // the branch it would have decided gets decided the other
+                      // way. Failing here is the difference between a run that
+                      // reports its own corruption and one that silently
+                      // returns the wrong answer.
+                      //
+                      // A hole that is merely a write mid-commit fills in on
+                      // its own, so settleEventSlotGap re-reads before
+                      // concluding, and adopts whichever log it settled on.
+                      if (isSlotGapCheckEnabled()) {
+                        const settled = await settleEventSlotGap(runId, {
+                          events: eventLog.events,
+                          cursor: eventLog.cursor,
+                        });
+                        eventLog = { ...settled.log, type: 'ready' };
+                        if (settled.gap !== undefined) {
+                          throw new CorruptedEventLogError(
+                            `Event log for run ${runId} has a hole at slot ${settled.gap.firstMissingSlot}: ${settled.gap.missingCount} of the ${settled.gap.maxSlot} slots up to the log's maximum hold no event.`
+                          );
                         }
                       }
 
@@ -2898,6 +2946,16 @@ export function workflowEntrypoint(
                           });
                           return;
                         }
+                        if (suspensionResult.reportedEventCount > 0) {
+                          // Bump-and-report merged events BELOW the tail and
+                          // re-sorted the array to slot order, shifting every
+                          // position the prewarm scan had already recorded.
+                          // The cursor is deliberately left alone: the report
+                          // is a lower bound on what was skipped, so the next
+                          // incremental read still has to cover the same range.
+                          replayPayloadCache.resetScan();
+                        }
+
                         // Open hooks/waits in the log as loaded for this
                         // replay. This suspension's own hook/wait writes are
                         // NOT in it — they never reach retention anyway,

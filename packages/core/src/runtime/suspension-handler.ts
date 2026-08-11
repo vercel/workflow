@@ -32,7 +32,12 @@ import { dehydrateStepArguments } from '../serialization.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { getAbortStreamIdFromToken } from '../util.js';
 import { getMaxInlineSteps } from './constants.js';
-import { type LoadedEventLog, preconditionSnapshotParams } from './helpers.js';
+import {
+  type EventCreator,
+  type LoadedEventLog,
+  mergeReportedEvents,
+  preconditionSnapshotParams,
+} from './helpers.js';
 import { ReplayRecoveryReporter } from './replay-recovery-reporter.js';
 
 export interface SuspensionHandlerParams {
@@ -81,6 +86,13 @@ export interface SuspensionHandlerResult {
    * into the same batch boundary.
    */
   createdStepCorrelationIds: Set<string>;
+  /**
+   * How many events this phase's writes reported back as occupying slots they
+   * skipped over, already merged into the caller's `eventLog.events`. Nonzero
+   * means the array was reordered to restore slot order, so any index the
+   * caller cached into it (payload prewarm scan position) is stale.
+   */
+  reportedEventCount: number;
   /**
    * The steps whose `step_created` writes were intentionally deferred so the
    * caller can run them inline via lazy `step_started` events (which create
@@ -294,16 +306,52 @@ export async function handleSuspension({
   // because the event's correlation id was minted by *this* replay's seeded
   // sequence, so re-committing it against a corrected log would persist an
   // event no correct replay produces.
-  const createGuarded = (
-    data: CreateEventRequest,
-    params?: CreateEventParams
-  ) =>
-    eventLog
-      ? createEvent(data, {
-          ...params,
-          ...preconditionSnapshotParams(eventLog.events, eventLog.cursor),
-        })
-      : createEvent(data, params);
+  let reportedEvents = 0;
+  const createGuarded: EventCreator = async (data, params) => {
+    if (!eventLog) {
+      return createEvent(data, params);
+    }
+    const log = eventLog;
+    const result = await createEvent(data, {
+      ...params,
+      ...preconditionSnapshotParams(log.events, log.cursor),
+    });
+    // Bump-and-report: the write landed above the slot it asked for, so these
+    // are the events it was decided without. Merging them here rather than at
+    // each call site means the rest of this phase's writes — which read the
+    // same array to build their own snapshot — ask for a slot above them, and
+    // the replay that resumes from this log sees them without a reload.
+    //
+    // A truncated report (`hasMore`) is dropped whole rather than merged, the
+    // same way the wait loop treats one. It covers a span of positions but
+    // carries only some of the events on them, so merging it would raise the
+    // log's highest position past a position whose event is missing. Every
+    // later write of this phase reads that maximum to say what it has seen, so
+    // each would claim a position it never saw and the World, which only
+    // reports the span a write skips, would never send it. Dropping the report
+    // costs one more round of the same events on the next write and keeps the
+    // log a prefix of the truth.
+    if (result.events?.length && result.hasMore !== true) {
+      const added = mergeReportedEvents(log.events, result.events);
+      reportedEvents += added;
+      if (added > 0) {
+        runtimeLogger.debug('Suspension write skipped occupied slots', {
+          workflowRunId: runId,
+          eventType: data.eventType,
+          eventId: result.event?.eventId,
+          reported: added,
+        });
+      }
+    } else if (result.events?.length) {
+      runtimeLogger.debug('Dropped a truncated skipped-slot report', {
+        workflowRunId: runId,
+        eventType: data.eventType,
+        eventId: result.event?.eventId,
+        offered: result.events.length,
+      });
+    }
+    return result;
+  };
   // Separate queue items by type
   const stepItems = suspension.steps.filter(
     (item): item is StepInvocationQueueItem => item.type === 'step'
@@ -816,6 +864,7 @@ export async function handleSuspension({
     hasHookEvents: hooksNeedingCreation.length > 0,
     hookCreationMs,
     retainedStepInputsSafe,
+    reportedEventCount: reportedEvents,
   };
 }
 
