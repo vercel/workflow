@@ -21,16 +21,18 @@ Workflow replay diverged <divergenceCount> times after <maxRecoveryReplays> reco
 
 ## Why This Happens
 
-Workflows persist their progress as an ordered event log. During replay, the runtime processes each event in sequence — every event must be consumed by a matching callback (e.g., a step or sleep waiting for its result). When an event has no matching consumer, the runtime cannot advance past it, which would block all subsequent events and hang the workflow indefinitely.
+Workflows persist their progress as an ordered event log. During replay, the runtime processes each event in sequence — every event must be consumed by a matching callback (e.g., a step or sleep waiting for its result). An event no callback ever claims is one the runtime would have to drop to finish the run, so it fails the run instead of returning a result that silently ignored it.
 
-Instead of silently hanging, the runtime retries a divergent replay before failing the workflow and surfacing this terminal error.
+A delivery written from outside the replay, such as a hook firing or a step completing on another invocation, can land ahead of the events the replay is writing itself. That is ordinary concurrency rather than corruption, so the runtime holds such an event and offers it to each consumer the replay registers afterwards. The failure comes only when the workflow function returns while an event is still held, at which point no consumer can ever appear. A replay that suspends still holding one reports it on the span (`workflow.events.parked.count`, `.event_id`, `.event_type`) and leaves the decision to the replay that follows.
+
+Before failing, the runtime retries a divergent replay and surfaces this terminal error only if replay still cannot recover.
 
 Common scenarios that produce this error:
 
-1. **Duplicate completion events** — Two `wait_completed` events for a single `wait_created`, or two `step_completed` events for the same step. The first is consumed normally, but the second has no consumer.
-2. **Orphaned events** — A `step_completed` or `wait_completed` event whose `correlationId` doesn't match any step or sleep in the workflow code.
+1. **Duplicate completion events** — Two `wait_completed` events for a single `wait_created`, or two `step_completed` events for the same step. The first is consumed normally, and the second resolves something already resolved, so no later consumer can claim it.
+2. **Orphaned events** — A `step_completed` or `wait_completed` event whose `correlationId` doesn't match any step or sleep in the workflow code, so the replay reaches its end still holding it.
 3. **Events after terminal state** — An event that arrives after its corresponding step or wait has already reached a terminal state (e.g., `step_retrying` after `step_completed`).
-4. **A hole in the log** — On backends that number events by position, a position below the log's highest that holds no event. The runtime cannot tell a position no write ever occupied from one whose event it failed to read, so it refuses to replay rather than produce a result that may be silently wrong. See [`WORKFLOW_SLOT_GAP_CHECK`](/docs/configuration/runtime-tuning#workflow_slot_gap_check).
+4. **A hole in the log** — Events are numbered by their position in the run's log, and those positions are dense, so a position below the log's highest that holds no event means the log the replay loaded is incomplete. The runtime cannot tell a position no write ever occupied from one whose event it failed to read, so it refuses to replay rather than produce a result that may be silently wrong. See [`WORKFLOW_SLOT_GAP_CHECK`](/docs/configuration/runtime-tuning#workflow_slot_gap_check).
 
 ## What To Do
 
