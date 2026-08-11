@@ -1,5 +1,41 @@
 # @workflow/core
 
+## 5.0.0-beta.41
+
+### Patch Changes
+
+- [#3385](https://github.com/vercel/workflow/pull/3385) [`74dbf81`](https://github.com/vercel/workflow/commit/74dbf81d327b8574cca429b56757c7322a26b4ef) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Retry replay timeouts through normal queue redelivery instead of exiting the process, and keep Postgres jobs retryable through Core's terminal delivery limit.
+
+- [#3124](https://github.com/vercel/workflow/pull/3124) [`65139ac`](https://github.com/vercel/workflow/commit/65139acfd7118d3b73672435a6e1c47115f6e23f) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Continue partial `run_started` event preloads from their cursor instead of reloading the event log from the beginning.
+
+- [#3372](https://github.com/vercel/workflow/pull/3372) [`1a64f68`](https://github.com/vercel/workflow/commit/1a64f684723757c5a839abb94189b953dd3ac536) Thanks [@ar-tama](https://github.com/ar-tama)! - Fix `Date` subclassing inside workflow functions. The deterministic `Date` override in the workflow VM now forwards `new.target` via `Reflect.construct`, so subclasses like `TZDate` from `@date-fns/tz` keep their identity, methods, and fields. Calling `Date()` without `new` now returns the (fixed) time string per spec, instead of a `Date` object.
+
+- [#3382](https://github.com/vercel/workflow/pull/3382) [`a8db185`](https://github.com/vercel/workflow/commit/a8db185c3b19b3dab971f51aa076aead81ed26ea) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fold new events returned by `events.create` into the replay log so a completed wait no longer needs a follow-up `events.list` round trip
+
+- [#3286](https://github.com/vercel/workflow/pull/3286) [`4bb86d3`](https://github.com/vercel/workflow/commit/4bb86d305423a2da813cbef8b7d6fe4421288bba) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Fail a workflow when its World deterministically rejects Hook creation.
+
+- [#3374](https://github.com/vercel/workflow/pull/3374) [`439a495`](https://github.com/vercel/workflow/commit/439a495a715b9426ef4dbcf8d928a8fc50ffb040) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Carry the run's pinned deployment on lazy resume messages so misrouted deliveries re-route before the `hook_received` write.
+
+- [#3342](https://github.com/vercel/workflow/pull/3342) [`eb9e13f`](https://github.com/vercel/workflow/commit/eb9e13fd23eb12e353cd8f53ed4357da06f8e5ac) Thanks [@TooTallNate](https://github.com/TooTallNate)! - QuickJS engine: start invocations by restoring a bundle-hydrated VM-memory snapshot instead of re-evaluating the workflow bundle (~25× faster VM startup; bundles with module-scope randomness or clock reads automatically fall back to fresh evaluation). Disable with `WORKFLOW_QUICKJS_BASELINE_SNAPSHOT=0`.
+
+- [#3263](https://github.com/vercel/workflow/pull/3263) [`19b5b85`](https://github.com/vercel/workflow/commit/19b5b85c8b78cfd6c8ebbdf62ae7b8241a109595) Thanks [@TooTallNate](https://github.com/TooTallNate)! - QuickJS engine: move serialization out of the VM onto the host, replacing the in-VM serde bundle with side-effect-free handle introspection (same wire format, 2–100× faster).
+
+- [#3406](https://github.com/vercel/workflow/pull/3406) [`fbebf71`](https://github.com/vercel/workflow/commit/fbebf7104d97219b73b6a51b0e77e42c45cdd99c) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix replay divergence when a step result overtook an earlier sleep or hook delivery that was parked behind an unread hook's payload
+
+- [#3389](https://github.com/vercel/workflow/pull/3389) [`6786db9`](https://github.com/vercel/workflow/commit/6786db99538ef57c872d861ecfb28d99ae857d6d) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - **Breaking**: SpecVersion 6: Event IDs are now a dense per-run slot number, allocated by the world at publish time so a rejected write leaves no gap in the event log. A replay tells the world how many events it had read and gets back the ones it did not see, so an event that arrives from outside the replay and lands ahead of an event the replay wrote no longer fails the run with `CORRUPTED_EVENT_LOG`: it is held for whichever part of the workflow awaits it. A gap in the numbering fails the run instead of being replayed over.
+
+- [#3205](https://github.com/vercel/workflow/pull/3205) [`22349e9`](https://github.com/vercel/workflow/commit/22349e95fd85a112cbec3f425900b74bf5ccc77f) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Load replay-event suffixes through one World request.
+
+- [#3439](https://github.com/vercel/workflow/pull/3439) [`69c30ff`](https://github.com/vercel/workflow/commit/69c30ff49eb89c0c4c4b2642c37985fdf64fa9fd) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Stop reporting replay divergence for an event the workflow is still on its way to consuming, by waiting for in-flight step and hook deliveries instead of a fixed delay
+
+- [#3124](https://github.com/vercel/workflow/pull/3124) [`65139ac`](https://github.com/vercel/workflow/commit/65139acfd7118d3b73672435a6e1c47115f6e23f) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Infer required run and step entities, including their start times, from
+  `events.create` request types.
+- Updated dependencies [[`74dbf81`](https://github.com/vercel/workflow/commit/74dbf81d327b8574cca429b56757c7322a26b4ef), [`a8db185`](https://github.com/vercel/workflow/commit/a8db185c3b19b3dab971f51aa076aead81ed26ea), [`439a495`](https://github.com/vercel/workflow/commit/439a495a715b9426ef4dbcf8d928a8fc50ffb040), [`bf4dda6`](https://github.com/vercel/workflow/commit/bf4dda64780f5f8e13840871960cf2a647cdd329), [`6786db9`](https://github.com/vercel/workflow/commit/6786db99538ef57c872d861ecfb28d99ae857d6d), [`22349e9`](https://github.com/vercel/workflow/commit/22349e95fd85a112cbec3f425900b74bf5ccc77f), [`665110b`](https://github.com/vercel/workflow/commit/665110b3a255c920a3612dec521234efcf34d4f8), [`65139ac`](https://github.com/vercel/workflow/commit/65139acfd7118d3b73672435a6e1c47115f6e23f), [`4bb86d3`](https://github.com/vercel/workflow/commit/4bb86d305423a2da813cbef8b7d6fe4421288bba), [`264ddff`](https://github.com/vercel/workflow/commit/264ddff67b3cfceea24235ee6d865c48e7982727)]:
+  - @workflow/world@5.0.0-beta.26
+  - @workflow/world-vercel@5.0.0-beta.37
+  - @workflow/world-local@5.0.0-beta.35
+  - @workflow/errors@5.0.0-beta.16
+
 ## 5.0.0-beta.40
 
 ### Minor Changes
