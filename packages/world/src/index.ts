@@ -26,6 +26,7 @@ export {
 export {
   _resetEnvWarnCacheForTests,
   type EnvNumberOptions,
+  envFlag,
   envNumber,
   getMaxEventsPerRun,
 } from './env-config.js';
@@ -68,6 +69,11 @@ export {
   HookSchema,
 } from './hooks.js';
 export type * from './interfaces.js';
+export {
+  isNativeFetchEnabled,
+  NATIVE_FETCH_DEFAULT,
+  NATIVE_FETCH_ENV_VAR,
+} from './native-fetch.js';
 export type * from './queue.js';
 export {
   getQueueTopicPrefix,

@@ -1,3 +1,4 @@
+import { isNativeFetchEnabled } from '@workflow/world';
 import { Agent, type Dispatcher, RetryAgent, type RetryHandler } from 'undici';
 import type { APIConfig } from './utils.js';
 
@@ -519,11 +520,33 @@ export function noteEventsTransportOutcome(
 }
 
 /**
+ * Resolution order shared by every `get*Dispatcher` below:
+ *
+ *  1. `config.dispatcher` — an explicit caller override always wins, including
+ *     under native-fetch mode. The flag chooses which *default* this adapter
+ *     builds; it does not take the override away.
+ *  2. `undefined` when `WORKFLOW_NATIVE_FETCH` is on — `fetch()` then dispatches
+ *     through the runtime's own global agent, with none of the pooling, HTTP/2,
+ *     receive-window or retry configuration below. See `isNativeFetchEnabled`
+ *     for what that costs.
+ *  3. the shared per-call-site undici agent.
+ *
+ * Read per call (not memoized) so the flag can be toggled within a process.
+ */
+function resolveDispatcher(
+  config: APIConfig | undefined,
+  buildDefault: () => RetryAgent
+): unknown {
+  if (config?.dispatcher) return config.dispatcher;
+  return isNativeFetchEnabled() ? undefined : buildDefault();
+}
+
+/**
  * Resolves the undici dispatcher for a request: the caller's override, or the
- * shared default agent (HTTP/1.1).
+ * shared default agent (HTTP/1.1). Returns `undefined` under native-fetch mode.
  */
 export function getDispatcher(config?: APIConfig): unknown {
-  return config?.dispatcher ?? getDefaultDispatcher();
+  return resolveDispatcher(config, getDefaultDispatcher);
 }
 
 /**
@@ -535,9 +558,14 @@ export function getDispatcher(config?: APIConfig): unknown {
  * transport failures retire it and the next call here builds a replacement (see
  * noteEventsTransportOutcome). Resolve it per request rather than caching the
  * returned value.
+ *
+ * Under native-fetch mode there is no pool to recycle: `undefined` is returned,
+ * the recycler is never asked for an agent, and `noteEventsTransportOutcome`
+ * no-ops (its `!current` guard). A wedged connection is then the runtime's
+ * problem, not ours.
  */
 export function getEventsDispatcher(config?: APIConfig): unknown {
-  return config?.dispatcher ?? eventsRecycler.get();
+  return resolveDispatcher(config, () => eventsRecycler.get());
 }
 
 /**
@@ -548,7 +576,7 @@ export function getEventsDispatcher(config?: APIConfig): unknown {
  * 5xx — chosen because stream appends are not idempotent.
  */
 export function getStreamDispatcher(config?: APIConfig): unknown {
-  return config?.dispatcher ?? getDefaultStreamDispatcher();
+  return resolveDispatcher(config, getDefaultStreamDispatcher);
 }
 
 /**
@@ -557,7 +585,7 @@ export function getStreamDispatcher(config?: APIConfig): unknown {
  * (see STREAM_CLOSE_RETRY_OPTIONS), unlike chunk appends.
  */
 export function getStreamCloseDispatcher(config?: APIConfig): unknown {
-  return config?.dispatcher ?? getDefaultStreamCloseDispatcher();
+  return resolveDispatcher(config, getDefaultStreamCloseDispatcher);
 }
 
 /** Build a shared undici RetryAgent wrapping an Agent with the given options. */

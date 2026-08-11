@@ -211,6 +211,23 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 - Default: enabled
 - On the Vercel World, lets concurrent event-log requests share one HTTP/2 connection instead of one connection per in-flight request.
 - Set `0` to take the event-log requests off HTTP/2 entirely, back to one request per HTTP/1.1 connection. Use this as the kill switch if HTTP/2 turns out to be at fault for event delivery problems.
+- Has no effect when `WORKFLOW_NATIVE_FETCH` is enabled, which takes the whole HTTP/2 path away.
+
+### `WORKFLOW_NATIVE_FETCH`
+
+- Default: enabled
+- Makes the Vercel and Local Worlds issue their HTTP requests on whatever connection pool the runtime's own `fetch()` uses, instead of the connection pools those Worlds normally build for themselves.
+- Set `0` to keep the Worlds' own pools. Reach for this if the runtime's `fetch()` is slower or less reliable for your deployment, and see the trade-offs below before leaving it on.
+- Use it when the Worlds' own pools are not an option: a bundler that mangles their transport dependency, or a runtime that does not ship a working copy of it.
+
+Enabling it drops the per-call-site tuning those pools carry:
+
+- Event-log requests lose HTTP/2, so concurrent reads and writes no longer share one connection, and the enlarged HTTP/2 receive windows no longer apply. This is the largest difference, and it slows down replays that read a big event log.
+- Requests lose their transport-level retry. Failures still surface to the layers above, which retry event writes and redeliver queue messages, so nothing is silently dropped, but a failure that a same-connection retry would have hidden now costs a full redelivery.
+- Stream close loses its retry of retriable server errors. A transient failure at close can leave a stream marked closing until the run expires, where it would previously have resolved on the retry.
+- Connection pooling, keep-alive, and per-request timeouts follow the runtime's defaults rather than the Worlds' settings. On the Local World this makes `WORKFLOW_LOCAL_HEADERS_TIMEOUT_MS` and `WORKFLOW_LOCAL_BODY_TIMEOUT_MS` inert, so a queue handler that accepts a request and never responds is no longer redelivered on those bounds.
+
+A `dispatcher` passed to `createVercelWorld()` still wins over this variable. The variable chooses which transport the World builds when you have not supplied one.
 
 ## Queue namespace
 

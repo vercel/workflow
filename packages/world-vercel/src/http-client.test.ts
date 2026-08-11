@@ -1,8 +1,18 @@
 import { createSecureServer, type Http2SecureServer } from 'node:http2';
 import { type AddressInfo, connect, createServer, type Server } from 'node:net';
 import type { TLSSocket } from 'node:tls';
+import { NATIVE_FETCH_ENV_VAR } from '@workflow/world';
 import { Agent, type RetryAgent } from 'undici';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vitest';
 import {
   createDispatcherRecycler,
   createEventsDispatcher,
@@ -17,10 +27,24 @@ import {
   getStreamCloseDispatcher,
   getStreamDispatcher,
   isRecyclableTransportError,
+  noteEventsTransportOutcome,
   STREAM_AGENT_OPTIONS,
   STREAM_CLOSE_RETRY_OPTIONS,
   STREAM_RETRY_OPTIONS,
 } from './http-client.js';
+
+// Everything below this line asserts the undici wiring, which is what the
+// adapter builds when it owns the transport. `WORKFLOW_NATIVE_FETCH` hands the
+// transport to the runtime instead and makes every getter return `undefined`,
+// so pin it off here rather than depending on whichever way its default
+// currently points. Native mode has its own describe at the bottom of the file.
+beforeEach(() => {
+  vi.stubEnv(NATIVE_FETCH_ENV_VAR, '0');
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
 
 describe('getDispatcher', () => {
   it('returns the shared default dispatcher when none is provided', () => {
@@ -738,5 +762,62 @@ describe('dispatcher recycling accounting', () => {
     const error = new Error('loop') as Error & { cause?: unknown };
     error.cause = error;
     expect(isRecyclableTransportError(error)).toBe(false);
+  });
+});
+
+describe('native fetch mode', () => {
+  beforeEach(() => {
+    vi.stubEnv(NATIVE_FETCH_ENV_VAR, '1');
+  });
+
+  // `undefined` is the contract, not a placeholder: `fetch(url, { dispatcher:
+  // undefined })` is identical to omitting the option, so the request goes out
+  // on whatever global agent the runtime installed. Every call site in this
+  // package sources its dispatcher from one of these four getters, so covering
+  // them covers the transport switch.
+  it('hands every call site an undefined dispatcher', () => {
+    expect(getDispatcher()).toBeUndefined();
+    expect(getEventsDispatcher()).toBeUndefined();
+    expect(getStreamDispatcher()).toBeUndefined();
+    expect(getStreamCloseDispatcher()).toBeUndefined();
+  });
+
+  // The flag picks which *default* this package builds. It is not a veto on
+  // `createVercelWorld({ dispatcher })`, which stays a supported override.
+  it('still yields to a caller-supplied dispatcher', () => {
+    const custom = {};
+    expect(getDispatcher({ dispatcher: custom })).toBe(custom);
+    expect(getEventsDispatcher({ dispatcher: custom })).toBe(custom);
+    expect(getStreamDispatcher({ dispatcher: custom })).toBe(custom);
+    expect(getStreamCloseDispatcher({ dispatcher: custom })).toBe(custom);
+  });
+
+  // No pool means nothing to rebuild. The events path calls
+  // noteEventsTransportOutcome on every failure regardless of transport, so it
+  // has to tolerate the dispatcher it is handed being undefined.
+  it('leaves the events recycler untouched', () => {
+    const h2Timeout = Object.assign(new Error('timeout'), {
+      code: 'UND_ERR_H2_STREAM_TIMEOUT',
+    });
+    for (let i = 0; i < EVENTS_RECYCLE_AFTER_CONSECUTIVE_FAILURES * 2; i++) {
+      expect(() =>
+        noteEventsTransportOutcome(getEventsDispatcher(), h2Timeout)
+      ).not.toThrow();
+    }
+    expect(getEventsDispatcher()).toBeUndefined();
+
+    // The pool the recycler owns is still intact for a process that flips back.
+    vi.stubEnv(NATIVE_FETCH_ENV_VAR, '0');
+    expect(getEventsDispatcher()).toBe(getEventsDispatcher());
+  });
+
+  // Read per call, not memoized at module load, so one process (or one test
+  // file) can exercise both transports.
+  it('is re-read on every call', () => {
+    expect(getDispatcher()).toBeUndefined();
+    vi.stubEnv(NATIVE_FETCH_ENV_VAR, '0');
+    expect(getDispatcher()).toBeDefined();
+    vi.stubEnv(NATIVE_FETCH_ENV_VAR, 'true');
+    expect(getDispatcher()).toBeUndefined();
   });
 });

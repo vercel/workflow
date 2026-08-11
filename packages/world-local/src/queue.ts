@@ -2,6 +2,7 @@ import { setTimeout } from 'node:timers/promises';
 import type { Transport } from '@vercel/queue';
 import { createWorkflowUrl } from '@workflow/utils';
 import {
+  isNativeFetchEnabled,
   MessageId,
   parseQueueName,
   type Queue,
@@ -78,6 +79,11 @@ function envTimeoutMs(name: string, fallback: number): number {
  * Bounds a stalled delivery below the queue handler's retry horizon. A
  * transport timeout is retried by the delivery loop with the same durable
  * message; `0` remains available for applications that need unbounded calls.
+ *
+ * Only consulted when the queue owns its dispatcher. Under
+ * `WORKFLOW_NATIVE_FETCH` there is no agent to configure, so these bounds —
+ * and the two env vars that tune them — do not apply; a delivery is then
+ * bounded only by the runtime's own `fetch` defaults.
  */
 export function getQueueAgentOptions() {
   return {
@@ -128,7 +134,13 @@ function isDetachedArrayBufferQueueError(error: unknown): boolean {
 }
 
 export function createQueue(config: Partial<Config>): LocalQueue {
-  const httpAgent = new Agent(getQueueAgentOptions());
+  // `undefined` under WORKFLOW_NATIVE_FETCH: deliveries then go out on the
+  // runtime's global fetch agent, and close() has no pool of its own to shut
+  // down. Resolved once per queue rather than per delivery so a single queue
+  // never mixes transports mid-flight.
+  const httpAgent = isNativeFetchEnabled()
+    ? undefined
+    : new Agent(getQueueAgentOptions());
   const transport = new TypedJsonTransport();
   const generateId = monotonicFactory();
   const semaphore = new Sema(WORKFLOW_LOCAL_QUEUE_CONCURRENCY);
@@ -231,6 +243,8 @@ export function createQueue(config: Partial<Config>): LocalQueue {
               response = await directHandler(req);
             } else {
               const baseUrl = await resolveBaseUrl(config);
+              // `dispatcher: undefined` (native-fetch mode) is the same thing
+              // as omitting it — fetch falls back to the global dispatcher.
               // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici v7 dispatcher types don't match @types/node's RequestInit
               response = await fetch(
                 createWorkflowUrl(baseUrl, { type: 'flow' }),
@@ -433,7 +447,7 @@ export function createQueue(config: Partial<Config>): LocalQueue {
       // may close the queue more than once.
       if (closeSignal.aborted) return;
       closeController.abort();
-      await httpAgent.close();
+      await httpAgent?.close();
     },
   };
 }

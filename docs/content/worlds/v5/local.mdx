@@ -70,6 +70,10 @@ Maximum time in milliseconds to wait for a local queue handler to begin respondi
 
 Maximum gap in milliseconds between response body chunks from a local queue handler before redelivering the durable message. Default: `30000`. Set to `0` to disable.
 
+### `WORKFLOW_NATIVE_FETCH`
+
+Whether queue deliveries go out on the runtime's own `fetch()` connection pool instead of the one this World builds. Default: enabled. Set to `0` to keep this World's own pool. While enabled, `WORKFLOW_LOCAL_HEADERS_TIMEOUT_MS` and `WORKFLOW_LOCAL_BODY_TIMEOUT_MS` are inert, since the bounds they set live on the pool this World no longer owns.
+
 ### `WORKFLOW_LOCAL_RECOVER_ACTIVE_RUNS`
 
 Whether pending and running runs found in the data directory are re-enqueued when the world starts. Set to `0` or `false` to skip recovery and leave stale runs untouched. Default: `true`

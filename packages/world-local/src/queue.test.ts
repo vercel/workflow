@@ -2,7 +2,11 @@ import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { setWorkflowBasePath } from '@workflow/utils';
 import type { WorkflowInvokePayload } from '@workflow/world';
-import { MessageId, ValidQueueName } from '@workflow/world';
+import {
+  MessageId,
+  NATIVE_FETCH_ENV_VAR,
+  ValidQueueName,
+} from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod/v4';
 import {
@@ -22,6 +26,19 @@ const workflowPayload: WorkflowInvokePayload = {
   stepId: 'step_01ABC',
   stepName: 'test-step',
 };
+
+// The suite below covers the queue while it owns its undici agent, which is
+// where the headers/body timeouts it configures actually apply.
+// `WORKFLOW_NATIVE_FETCH` hands delivery to the runtime's global agent and
+// takes those bounds away, so pin the flag off rather than tracking whichever
+// way its default points. Native mode has its own describe at the end.
+beforeEach(() => {
+  vi.stubEnv(NATIVE_FETCH_ENV_VAR, '0');
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
 
 describe('zod v3/v4 schema compatibility (regression #1587)', () => {
   it('ValidQueueName and MessageId from @workflow/world parse correctly in z.object()', () => {
@@ -613,5 +630,81 @@ describe('queue transport timeouts', () => {
     } finally {
       await localQueue.close();
     }
+  });
+});
+
+describe('native fetch mode', () => {
+  let server: Server | undefined;
+
+  beforeEach(() => {
+    vi.stubEnv(NATIVE_FETCH_ENV_VAR, '1');
+  });
+
+  afterEach(async () => {
+    if (server !== undefined) {
+      const toClose = server;
+      server = undefined;
+      toClose.closeAllConnections();
+      await new Promise((resolve) => toClose.close(resolve));
+    }
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  // The equivalence claim the flag makes: a delivery still goes out, still
+  // carries the VQS headers the handler reads, and still lands on the handler.
+  // Only the dispatcher underneath changes.
+  it('delivers over the runtime global agent', async () => {
+    const attempts: (string | undefined)[] = [];
+    server = createServer((request, response) => {
+      attempts.push(request.headers['x-vqs-message-attempt'] as string);
+      response.setHeader('content-type', 'application/json');
+      response.end(JSON.stringify({ ok: true }));
+    });
+    await new Promise<void>((resolve) => {
+      server?.listen(0, '127.0.0.1', resolve);
+    });
+    const { port } = server.address() as AddressInfo;
+
+    const localQueue = createQueue({ baseUrl: `http://127.0.0.1:${port}` });
+    try {
+      await localQueue.queue('__wkf_workflow_test' as any, workflowPayload);
+      await vi.waitFor(() => expect(attempts.length).toBe(1), {
+        timeout: 5_000,
+      });
+      expect(attempts[0]).toBe('1');
+    } finally {
+      await localQueue.close();
+    }
+  });
+
+  // Losing the agent must not lose the retry loop: redelivery on a transport
+  // throw is the queue's own logic, not undici's, so it survives the switch.
+  it('still retries a transport throw', async () => {
+    let calls = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        calls++;
+        if (calls < 3) throw fetchFailedTimeout();
+        return Response.json({ ok: true }, { status: 200 });
+      })
+    );
+
+    const localQueue = createQueue({ baseUrl: 'http://localhost:3000' });
+    try {
+      await localQueue.queue('__wkf_workflow_test' as any, workflowPayload);
+      await vi.waitFor(() => expect(calls).toBe(3));
+    } finally {
+      await localQueue.close();
+    }
+  });
+
+  // close() owns no pool in this mode. It still has to settle, and still has to
+  // stop in-flight deliveries via the abort controller it does own.
+  it('closes cleanly with no agent to shut down', async () => {
+    const localQueue = createQueue({ baseUrl: 'http://localhost:3000' });
+    await expect(localQueue.close()).resolves.toBeUndefined();
+    await expect(localQueue.close()).resolves.toBeUndefined();
   });
 });
