@@ -12,6 +12,10 @@
 
 import { parse, stringify, unflatten } from 'devalue';
 import type { Codec, CodecOptions, SerializationMode } from './codec.js';
+import {
+  boundedDevalueParseOptions,
+  withBoundedSparseArrayStringifyOperations,
+} from './devalue-limits.js';
 import { hardenedStringifyOperations, withGuestCodeStats } from './hardened.js';
 import { getClassReducers, getClassRevivers } from './reducers/class.js';
 import { getCommonReducers, getCommonRevivers } from './reducers/common.js';
@@ -120,7 +124,11 @@ export const devalueCodec: Codec = {
     // Where workflow code must run (getters, proxies, custom serializers),
     // the execution is recorded into `options.guestCodeStats`.
     const str = withGuestCodeStats(options?.guestCodeStats, () =>
-      stringify(value, reducers, { operations: hardenedStringifyOperations })
+      stringify(value, reducers, {
+        operations: withBoundedSparseArrayStringifyOperations(
+          hardenedStringifyOperations
+        ),
+      })
     );
     return encoder.encode(str);
   },
@@ -136,7 +144,7 @@ export const devalueCodec: Codec = {
       options?.extraRevivers
     );
     const str = decoder.decode(data);
-    return parse(str, revivers);
+    return parse(str, revivers, boundedDevalueParseOptions);
   },
 
   deserializeLegacy(
@@ -149,6 +157,6 @@ export const devalueCodec: Codec = {
       options?.global,
       options?.extraRevivers
     );
-    return unflatten(data as any[], revivers);
+    return unflatten(data as any[], revivers, boundedDevalueParseOptions);
   },
 };

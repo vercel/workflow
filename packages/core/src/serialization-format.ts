@@ -8,6 +8,7 @@
 
 import { getEventDataRefFields } from '@workflow/world';
 import { parse, unflatten } from 'devalue';
+import { boundedDevalueParseOptions } from './serialization/devalue-limits.js';
 
 // ---------------------------------------------------------------------------
 // Key material (browser-safe re-exports)
@@ -379,7 +380,7 @@ export function hydrateData(value: unknown, revivers: Revivers): unknown {
     const { format, payload } = decodeFormatPrefix(value);
     if (format === SerializationFormat.DEVALUE_V1) {
       const str = new TextDecoder().decode(payload);
-      return parse(str, revivers);
+      return parse(str, revivers, boundedDevalueParseOptions);
     }
     if (
       format === SerializationFormat.GZIP ||
@@ -401,7 +402,7 @@ export function hydrateData(value: unknown, revivers: Revivers): unknown {
   }
 
   if (Array.isArray(value)) {
-    return unflatten(value, revivers);
+    return unflatten(value, revivers, boundedDevalueParseOptions);
   }
 
   // Already a plain JS value (e.g., number, string, null)

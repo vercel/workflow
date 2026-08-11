@@ -21,6 +21,7 @@ import fs from 'node:fs';
 import { createRequire } from 'node:module';
 import { QuickJS } from 'quickjs-wasi';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { MAX_SERIALIZED_SPARSE_ARRAY_LENGTH } from '../serialization/devalue-limits.js';
 import {
   deserialize as referenceDeserialize,
   serialize as referenceSerialize,
@@ -222,6 +223,24 @@ describe('wire parity: guest serialize matches the reference codec', () => {
 });
 
 describe('wire parity: reference-codec bytes revive correctly in the VM', () => {
+  it('rejects oversized sparse arrays during serialization', () => {
+    expect(() =>
+      serializeGuest(
+        `(() => { const sparse = []; sparse[${MAX_SERIALIZED_SPARSE_ARRAY_LENGTH}] = 'value'; return sparse; })()`
+      )
+    ).toThrow(/exceeds the supported maximum/);
+  });
+
+  it('bounds decoded sparse-array lengths', () => {
+    const bytes = new TextEncoder().encode(
+      `devl[[-7,${MAX_SERIALIZED_SPARSE_ARRAY_LENGTH + 1}]]`
+    );
+
+    expect(() => serde.deserialize(bytes)).toThrow(
+      /exceeds the supported maximum/
+    );
+  });
+
   it('revives built-ins with working prototypes', () => {
     const bytes = referenceSerialize({
       when: new Date(1700000000000),

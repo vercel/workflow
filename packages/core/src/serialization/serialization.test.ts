@@ -6,6 +6,7 @@ import { importKey } from '../encryption.js';
 import { deriveRunKeyPair, runAad } from '../sealed-box.js';
 import * as client from './client.js';
 import { devalueCodec } from './codec-devalue.js';
+import { MAX_SERIALIZED_SPARSE_ARRAY_LENGTH } from './devalue-limits.js';
 import {
   aesKeyOf,
   decrypt,
@@ -1149,6 +1150,85 @@ describe('devalue codec', () => {
 
     const result = devalueCodec.deserializeLegacy!(legacyArray, 'workflow');
     expect(result).toEqual(value);
+  });
+
+  it('should bound decoded sparse-array lengths', () => {
+    const supported = new TextEncoder().encode(
+      `[[-7,${MAX_SERIALIZED_SPARSE_ARRAY_LENGTH}]]`
+    );
+    const oversized = new TextEncoder().encode(
+      `[[-7,${MAX_SERIALIZED_SPARSE_ARRAY_LENGTH + 1}]]`
+    );
+
+    const sparse = devalueCodec.deserialize(supported, 'workflow') as unknown[];
+    expect(sparse.length).toBe(MAX_SERIALIZED_SPARSE_ARRAY_LENGTH);
+    expect(Object.keys(sparse)).toHaveLength(0);
+
+    expect(() => devalueCodec.deserialize(oversized, 'workflow')).toThrow(
+      /exceeds the supported maximum/
+    );
+    expect(() =>
+      devalueCodec.deserializeLegacy!(
+        [[-7, MAX_SERIALIZED_SPARSE_ARRAY_LENGTH + 1]],
+        'workflow'
+      )
+    ).toThrow(/exceeds the supported maximum/);
+  });
+
+  it('should reject oversized sparse arrays during serialization', () => {
+    const supported: unknown[] = [];
+    supported[MAX_SERIALIZED_SPARSE_ARRAY_LENGTH - 1] = 'value';
+    const sparse: unknown[] = [];
+    sparse[MAX_SERIALIZED_SPARSE_ARRAY_LENGTH] = 'value';
+
+    expect(() => devalueCodec.serialize(supported, 'workflow')).not.toThrow();
+    expect(() => devalueCodec.serialize(sparse, 'workflow')).toThrow(
+      /exceeds the supported maximum/
+    );
+  });
+
+  it('should match devalue at the sparse-encoding boundary', () => {
+    const sparseEncoded = new Array(MAX_SERIALIZED_SPARSE_ARRAY_LENGTH + 1);
+    const denseEncoded = new Array(MAX_SERIALIZED_SPARSE_ARRAY_LENGTH + 1);
+    for (let index = 0; index < 30_000; index++) {
+      if (index < 29_999) sparseEncoded[index] = index;
+      denseEncoded[index] = index;
+    }
+
+    expect(() => devalueCodec.serialize(sparseEncoded, 'workflow')).toThrow(
+      /exceeds the supported maximum/
+    );
+    const roundTripped = devalueCodec.deserialize(
+      devalueCodec.serialize(denseEncoded, 'workflow'),
+      'workflow'
+    ) as unknown[];
+    expect(roundTripped.length).toBe(MAX_SERIALIZED_SPARSE_ARRAY_LENGTH + 1);
+
+    const tiedEncodingCost = new Array(MAX_SERIALIZED_SPARSE_ARRAY_LENGTH + 10);
+    for (let index = 0; index < 30_002; index++) {
+      tiedEncodingCost[index] = index;
+    }
+    const tiedRoundTrip = devalueCodec.deserialize(
+      devalueCodec.serialize(tiedEncodingCost, 'workflow'),
+      'workflow'
+    ) as unknown[];
+    expect(tiedRoundTrip.length).toBe(MAX_SERIALIZED_SPARSE_ARRAY_LENGTH + 10);
+  });
+
+  it('should validate the array length captured before element access', () => {
+    const sparse = new Array(MAX_SERIALIZED_SPARSE_ARRAY_LENGTH + 1);
+    Object.defineProperty(sparse, 0, {
+      configurable: true,
+      enumerable: true,
+      get() {
+        sparse.length = 0;
+        return 'value';
+      },
+    });
+
+    expect(() => devalueCodec.serialize(sparse, 'workflow')).toThrow(
+      /exceeds the supported maximum/
+    );
   });
 
   it('should produce Uint8Array output from serialize', () => {

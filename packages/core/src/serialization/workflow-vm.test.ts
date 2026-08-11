@@ -7,7 +7,9 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { peekFormatPrefix } from './format.js';
+import { MAX_SERIALIZED_SPARSE_ARRAY_LENGTH } from './devalue-limits.js';
+import { encodeWithFormatPrefix, peekFormatPrefix } from './format.js';
+import { SerializationFormat } from './types.js';
 import {
   deserialize as nodeDeserialize,
   serialize as nodeSerialize,
@@ -61,6 +63,27 @@ describe('VM workflow serializer', () => {
     expect(result.b[0]).toBe(2);
     expect(result.b[1]).toBeInstanceOf(Date);
     expect(result.c.d).toBe('e');
+  });
+
+  it('should bound decoded sparse-array lengths', () => {
+    const payload = new TextEncoder().encode(
+      `[[-7,${MAX_SERIALIZED_SPARSE_ARRAY_LENGTH + 1}]]`
+    );
+    const serialized = encodeWithFormatPrefix(
+      SerializationFormat.DEVALUE_V1,
+      payload
+    ) as Uint8Array;
+
+    expect(() => vmDeserialize(serialized)).toThrow(
+      /exceeds the supported maximum/
+    );
+  });
+
+  it('should reject oversized sparse arrays during serialization', () => {
+    const sparse: unknown[] = [];
+    sparse[MAX_SERIALIZED_SPARSE_ARRAY_LENGTH] = 'value';
+
+    expect(() => vmSerialize(sparse)).toThrow(/exceeds the supported maximum/);
   });
 
   it('should round-trip WorkflowFunction reference', () => {

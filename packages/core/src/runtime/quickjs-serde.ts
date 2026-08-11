@@ -46,6 +46,10 @@ import {
   stringify,
 } from 'devalue';
 import { JSValueHandle, type QuickJS } from 'quickjs-wasi';
+import {
+  assertSupportedSparseArrayLength,
+  withBoundedSparseArrayStringifyOperations,
+} from '../serialization/devalue-limits.js';
 import { SerializationFormat } from '../serialization/types.js';
 
 const encoder = new TextEncoder();
@@ -737,7 +741,7 @@ export function createQuickJSSerde(
 
   const d = defaultStringifyOperations;
 
-  const stringifyOperations: StringifyOperations = {
+  const stringifyOperations = withBoundedSparseArrayStringifyOperations({
     identify: (value) => {
       if (!isHandle(value)) return d.identify(value);
       const pointer = value.identity;
@@ -883,7 +887,7 @@ export function createQuickJSSerde(
       descriptor.set?.dispose();
       return descriptor.value;
     },
-  };
+  } satisfies StringifyOperations);
 
   // --- workflow reducers (handle space) ---
 
@@ -1453,6 +1457,7 @@ export function createQuickJSSerde(
       }
     },
     createSparseArray: (length) => {
+      assertSupportedSparseArrayLength(length);
       const lengthHandle = vm.newNumber(length);
       try {
         return invoke(i.makeSparseArray, lengthHandle);
