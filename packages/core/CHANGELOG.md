@@ -1,5 +1,15 @@
 # @workflow/core
 
+## 4.8.2
+
+### Patch Changes
+
+- [#3372](https://github.com/vercel/workflow/pull/3372) [`e822a6a`](https://github.com/vercel/workflow/commit/e822a6a173707183325cf76b58f6522df4c5d08e) Thanks [@ar-tama](https://github.com/ar-tama)! - Fix `Date` subclassing inside workflow functions. The deterministic `Date` override in the workflow VM now forwards `new.target` via `Reflect.construct`, so subclasses like `TZDate` from `@date-fns/tz` keep their identity, methods, and fields. Calling `Date()` without `new` now returns the (fixed) time string per spec, instead of a `Date` object.
+
+- [#3139](https://github.com/vercel/workflow/pull/3139) [`6f301ba`](https://github.com/vercel/workflow/commit/6f301ba396f92181f2982bc901d2f90216450787) Thanks [@pranaygp](https://github.com/pranaygp)! - Deliver step results, wait completions and hook payloads in strict event-log order relative to one another, preventing replay divergence (`CORRUPTED_EVENT_LOG`) when a step completion is adjacent in the log to a `wait_completed` or `hook_received` that a concurrent branch is awaiting.
+
+- [#3439](https://github.com/vercel/workflow/pull/3439) [`86bc000`](https://github.com/vercel/workflow/commit/86bc00050fc6ac93e372f753260046b8f64c52ba) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Stop reporting replay divergence for an event the workflow is still on its way to consuming, by waiting for in-flight step and hook deliveries instead of a fixed delay
+
 ## 4.8.1
 
 ### Patch Changes
