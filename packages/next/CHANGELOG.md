@@ -1,5 +1,13 @@
 # @workflow/next
 
+## 4.1.6
+
+### Patch Changes
+
+- Updated dependencies [[`e822a6a`](https://github.com/vercel/workflow/commit/e822a6a173707183325cf76b58f6522df4c5d08e), [`6f301ba`](https://github.com/vercel/workflow/commit/6f301ba396f92181f2982bc901d2f90216450787), [`86bc000`](https://github.com/vercel/workflow/commit/86bc00050fc6ac93e372f753260046b8f64c52ba)]:
+  - @workflow/core@4.8.2
+  - @workflow/builders@4.1.7
+
 ## 4.1.5
 
 ### Patch Changes
