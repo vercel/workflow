@@ -113,6 +113,15 @@ describe('dispatchLostAtMs', () => {
       undefined
     );
   });
+
+  it('covers a started step created lazily by its own inline start', () => {
+    // A lazily-created inline step has no separate step_created to date, so
+    // the start it wrote is the only timestamp there is — and it is the one
+    // the lease is measured from anyway.
+    expect(dispatchLostAtMs(startedStep({ createdEventAt: undefined }))).toBe(
+      atLeaseOffset(0)
+    );
+  });
 });
 
 describe('stepDispatchIdempotencyKey', () => {
