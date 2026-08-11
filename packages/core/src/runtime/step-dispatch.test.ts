@@ -103,7 +103,9 @@ describe('dispatchLostAtMs', () => {
   });
 
   it('is undefined for a step whose retry is already queued', () => {
-    expect(dispatchLostAtMs(startedStep({ sawRetrying: true }))).toBeUndefined();
+    expect(
+      dispatchLostAtMs(startedStep({ sawRetrying: true }))
+    ).toBeUndefined();
   });
 
   it('is undefined when the world reports no creation timestamp', () => {
