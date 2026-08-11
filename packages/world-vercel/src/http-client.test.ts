@@ -77,6 +77,75 @@ describe('getDispatcher', () => {
     );
   });
 
+  // Headers and trailers reach a v1 handler by two different routes: the H1
+  // parser puts the raw `Buffer[]` on the controller, H2 has only the parsed
+  // object passed to the callback. The controller carries a separate list for
+  // each, and the response headers are still on it once the body ends, so
+  // reading the wrong one delivers headers where trailers belong.
+  it('keeps headers and trailers distinct in both dispatcher shapes', () => {
+    const drive = (
+      controller: Record<string, unknown>,
+      parsedHeaders: unknown,
+      parsedTrailers: unknown
+    ) => {
+      const seen: Record<string, unknown> = {};
+      const inner = {
+        dispatch(_opts: unknown, handler: Record<string, unknown>) {
+          (handler.onResponseStart as (...a: unknown[]) => void)(
+            controller,
+            200,
+            parsedHeaders,
+            'OK'
+          );
+          (handler.onResponseEnd as (...a: unknown[]) => void)(
+            controller,
+            parsedTrailers
+          );
+          return true;
+        },
+        close: async () => undefined,
+        destroy: async () => undefined,
+      };
+      const bridged = getDispatcher({ dispatcher: inner }) as {
+        dispatch: (o: unknown, h: unknown) => void;
+      };
+      bridged.dispatch(
+        { origin: 'https://example.test', path: '/', method: 'GET' },
+        {
+          onConnect() {},
+          onHeaders: (_s: number, raw: Buffer[]) => {
+            seen.headers = raw.map(String);
+          },
+          onData() {},
+          onComplete: (raw: Buffer[]) => {
+            seen.trailers = raw.map(String);
+          },
+          onError() {},
+        }
+      );
+      return seen;
+    };
+
+    // H1: both lists arrive on the controller.
+    expect(
+      drive(
+        {
+          rawHeaders: [Buffer.from('x-h'), Buffer.from('1')],
+          rawTrailers: [Buffer.from('x-t'), Buffer.from('2')],
+        },
+        undefined,
+        undefined
+      )
+    ).toEqual({ headers: ['x-h', '1'], trailers: ['x-t', '2'] });
+
+    // H2: neither list is on the controller, so both come from the parsed
+    // objects and have to be converted to the pair list a v1 handler reads.
+    expect(drive({}, { 'x-h': '1' }, { 'x-t': '2' })).toEqual({
+      headers: ['x-h', '1'],
+      trailers: ['x-t', '2'],
+    });
+  });
+
   // `APIConfig.dispatcher` takes an instance from any undici version, and undici
   // 6 speaks the v1 handler ABI only: it validates the handler on dispatch and
   // rejects a pure v2 one with `invalid onError method`. So the bridge emits a

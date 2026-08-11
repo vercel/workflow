@@ -679,11 +679,19 @@ function toRawHeaders(headers: Record<string, string | string[]>): Buffer[] {
 
 /**
  * Header list for a v1 handler, whichever shape the dispatcher produced: the H1
- * parser hands the raw `Buffer[]` through the controller, H2 hands a parsed
- * object as the `onResponseStart` argument.
+ * parser exposes the raw `Buffer[]` on the controller, while H2 has only the
+ * parsed object passed as the callback argument. `field` selects which of the
+ * controller's two lists applies, since headers and trailers each have their own
+ * and the response headers stay on the controller after the body ends.
  */
-function rawHeadersFor(controller: unknown, parsed: unknown): unknown {
-  const fromController = (controller as { rawHeaders?: unknown })?.rawHeaders;
+function rawHeadersFor(
+  controller: unknown,
+  parsed: unknown,
+  field: 'rawHeaders' | 'rawTrailers' = 'rawHeaders'
+): unknown {
+  const fromController = (controller as Record<string, unknown> | undefined)?.[
+    field
+  ];
   if (Array.isArray(fromController)) return fromController;
   return toRawHeaders((parsed ?? {}) as Record<string, string | string[]>);
 }
@@ -749,7 +757,7 @@ function wrapV1Handler(handler: V1Handler): Dispatcher.DispatchHandler {
       if (handler.onData?.(chunk) === false) controller.pause();
     },
     onResponseEnd(controller, trailers) {
-      handler.onComplete?.(rawHeadersFor(controller, trailers));
+      handler.onComplete?.(rawHeadersFor(controller, trailers, 'rawTrailers'));
     },
     onResponseError(_controller, error) {
       if (!handler.onError) throw error;
