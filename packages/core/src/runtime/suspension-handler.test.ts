@@ -1,6 +1,13 @@
+import { runInNewContext } from 'node:vm';
+import {
+  FatalError,
+  PreconditionFailedError,
+  WorkflowWorldError,
+} from '@workflow/errors';
 import type { WorkflowRun, World } from '@workflow/world';
 import { describe, expect, it, vi } from 'vitest';
 import { WorkflowSuspension } from '../global.js';
+import { ReplayRecoveryReporter } from './replay-recovery-reporter.js';
 import { handleSuspension } from './suspension-handler.js';
 
 vi.mock('../version.js', () => ({ version: '0.0.0-test' }));
@@ -30,6 +37,41 @@ function createWorld(eventsCreate: ReturnType<typeof vi.fn>): World {
 }
 
 describe('handleSuspension', () => {
+  it('stamps recovery telemetry on a suspension write', async () => {
+    // Covers the wiring, not the claim mechanics (see
+    // replay-recovery-reporter.test.ts): an activated reporter reaching
+    // handleSuspension must actually reach its event writes.
+    const eventsCreate = vi.fn().mockImplementation(async (_runId, event) => ({
+      event,
+    }));
+    const world = createWorld(eventsCreate);
+    const reporter = new ReplayRecoveryReporter(2);
+    reporter.activate();
+    const pending = new Map([
+      [
+        'hook_recovered',
+        {
+          type: 'hook' as const,
+          correlationId: 'hook_recovered',
+          token: 'order:123',
+        },
+      ],
+    ]);
+
+    await handleSuspension({
+      suspension: new WorkflowSuspension(pending, globalThis),
+      world,
+      run,
+      replayRecoveryReporter: reporter,
+    });
+
+    expect(eventsCreate).toHaveBeenCalledWith(
+      run.runId,
+      expect.objectContaining({ eventType: 'hook_created' }),
+      expect.objectContaining({ replayDivergenceCount: 2 })
+    );
+  });
+
   it('persists the token retention deadline on hook_created', async () => {
     const eventsCreate = vi.fn().mockImplementation(async (_runId, event) => ({
       event,
@@ -65,6 +107,36 @@ describe('handleSuspension', () => {
       }),
       expect.anything()
     );
+  });
+
+  it('fails the run when the World rejects Hook retention', async () => {
+    const worldError = new WorkflowWorldError('Retention exceeds 30 days', {
+      status: 400,
+    });
+    const world = createWorld(vi.fn().mockRejectedValue(worldError));
+    const pending = new Map([
+      [
+        'hook_with_invalid_retention',
+        {
+          type: 'hook' as const,
+          correlationId: 'hook_with_invalid_retention',
+          token: 'order:123',
+          tokenRetentionUntil: new Date('2026-09-01T00:00:00.000Z'),
+        },
+      ],
+    ]);
+
+    await expect(
+      handleSuspension({
+        suspension: new WorkflowSuspension(pending, globalThis),
+        world,
+        run,
+      })
+    ).rejects.toMatchObject({
+      name: FatalError.name,
+      message: 'createHook failed World validation: Retention exceeds 30 days',
+      cause: worldError,
+    });
   });
 
   it('marks hook.getConflict()-awaited creations without converting them into wait timeouts', async () => {
@@ -395,5 +467,160 @@ describe('handleSuspension', () => {
         ([, event]) => event.eventType === 'hook_disposed'
       )
     ).toBe(false);
+  });
+
+  // A stale-snapshot rejection sends the caller into a replay restart. Any
+  // sibling create still in flight at that moment would commit an event minted
+  // from the abandoned replay's correlation-id sequence, and would race the
+  // restart's reload of the log — so the phase has to settle first.
+  it('settles every write in a phase before a stale-snapshot rejection escapes', async () => {
+    let slowCreateSettled = false;
+    let rejectedAt: boolean | undefined;
+    const eventsCreate = vi.fn(async (_runId, event) => {
+      if (event.correlationId === 'wait_fenced') {
+        throw new PreconditionFailedError('Run state is stale');
+      }
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      slowCreateSettled = true;
+      return { event };
+    });
+    const world = createWorld(eventsCreate);
+    const resumeAt = new Date(Date.now() + 60_000);
+    const pending = new Map([
+      [
+        'wait_fenced',
+        { type: 'wait' as const, correlationId: 'wait_fenced', resumeAt },
+      ],
+      [
+        'wait_slow',
+        { type: 'wait' as const, correlationId: 'wait_slow', resumeAt },
+      ],
+    ]);
+
+    await expect(
+      handleSuspension({
+        suspension: new WorkflowSuspension(pending, globalThis),
+        world,
+        run,
+      }).catch((err) => {
+        rejectedAt = slowCreateSettled;
+        throw err;
+      })
+    ).rejects.toBeInstanceOf(PreconditionFailedError);
+
+    expect(rejectedAt).toBe(true);
+  });
+
+  // The 412 wins over the sibling failure because it has a defined, cheap
+  // recovery (replay from a corrected log). A deterministic sibling failure
+  // recurs on the restart and fails the run then.
+  it('prefers the stale-snapshot rejection over a sibling failure in the same phase', async () => {
+    const eventsCreate = vi.fn(async (_runId, event) => {
+      if (event.correlationId === 'wait_broken') {
+        throw new Error('some other world failure');
+      }
+      throw new PreconditionFailedError('Run state is stale');
+    });
+    const world = createWorld(eventsCreate);
+    const resumeAt = new Date(Date.now() + 60_000);
+    const pending = new Map([
+      [
+        'wait_broken',
+        { type: 'wait' as const, correlationId: 'wait_broken', resumeAt },
+      ],
+      [
+        'wait_fenced',
+        { type: 'wait' as const, correlationId: 'wait_fenced', resumeAt },
+      ],
+    ]);
+
+    await expect(
+      handleSuspension({
+        suspension: new WorkflowSuspension(pending, globalThis),
+        world,
+        run,
+      })
+    ).rejects.toBeInstanceOf(PreconditionFailedError);
+  });
+});
+
+describe('retainedStepInputsSafe (serialization passivity gate)', () => {
+  function stepPending(args: unknown[]) {
+    return new Map([
+      [
+        'step_1',
+        {
+          type: 'step' as const,
+          correlationId: 'step_1',
+          stepName: 'someStep',
+          args,
+        },
+      ],
+    ]);
+  }
+
+  /** An object with a VM-realm getter — exactly what the sink records. */
+  function vmGetterObject() {
+    return runInNewContext(
+      `const o = {};
+       Object.defineProperty(o, 'lazy', {
+         enumerable: true,
+         get: () => 'computed',
+       });
+       o`
+    );
+  }
+
+  async function runSuspension(args: unknown[]) {
+    const eventsCreate = vi
+      .fn()
+      .mockImplementation(async (_runId, event) => ({ event }));
+    const world = createWorld(eventsCreate);
+    return handleSuspension({
+      suspension: new WorkflowSuspension(stepPending(args), globalThis),
+      world,
+      run,
+    });
+  }
+
+  it('reports safe for plain data and supported built-ins', async () => {
+    const result = await runSuspension([
+      { nested: [{ ok: true }, 'text', 42n], flag: false },
+      new Map([['k', new Set([1])]]),
+      new Date(1700000000000),
+      new Uint8Array([1, 2, 3]),
+      /pattern/gi,
+      new URL('https://example.com/'),
+    ]);
+    expect(result.retainedStepInputsSafe).toBe(true);
+  });
+
+  it('reports unsafe for an Error argument (stack materialization)', async () => {
+    // Serializing an error reads `stack`, an own engine accessor whose first
+    // invocation formats-and-caches the trace and runs any
+    // `Error.prepareStackTrace` — neither is repeated by a cold replay, so
+    // the boundary must demote.
+    const result = await runSuspension([new Error('lazy stack')]);
+    expect(result.retainedStepInputsSafe).toBe(false);
+  });
+
+  it('reports unsafe when serializing an argument executes a getter', async () => {
+    const value = vmGetterObject();
+    const result = await runSuspension([{ deep: [value] }]);
+    expect(result.retainedStepInputsSafe).toBe(false);
+  });
+
+  it('reports unsafe when an argument is a proxy', async () => {
+    const result = await runSuspension([new Proxy({ a: 1 }, {})]);
+    expect(result.retainedStepInputsSafe).toBe(false);
+  });
+
+  it('still serializes recorded inputs successfully (bytes are unaffected)', async () => {
+    const value = vmGetterObject();
+    const result = await runSuspension([value]);
+    expect(result.retainedStepInputsSafe).toBe(false);
+    // The step is still prepared for execution as usual (a single uncreated
+    // step always lands in the lazy inline slice).
+    expect(result.lazyInlineSteps).toHaveLength(1);
   });
 });

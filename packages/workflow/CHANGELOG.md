@@ -1,5 +1,111 @@
 # workflow
 
+## 5.0.0-beta.40
+
+### Minor Changes
+
+- [#3048](https://github.com/vercel/workflow/pull/3048) [`f8f6e17`](https://github.com/vercel/workflow/commit/f8f6e17aebbd138e9c6c4a03814a5bfc65e63c23) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Add an experimental QuickJS WASM VM engine for workflow execution, opt-in via `WORKFLOW_VM=quickjs` (or per-run `executionContext.workflowVm`). The engine performs the same full event replay as the default `node:vm` engine but runs workflow code in a QuickJS VM compiled to WebAssembly, enabling platforms without `node:vm` support and laying the groundwork for VM-memory snapshotting.
+
+- [#3046](https://github.com/vercel/workflow/pull/3046) [`5d591d2`](https://github.com/vercel/workflow/commit/5d591d28863b539d8ff5b5af56f99b43d1db9842) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Retain workflow execution across inline steps within one invocation; `WORKFLOW_RETAINED_VM=0` disables retention. Boundaries whose step arguments are not primitive values fall back to ordinary replay.
+
+- [#3047](https://github.com/vercel/workflow/pull/3047) [`89ede82`](https://github.com/vercel/workflow/commit/89ede82faa25143a150edcd088cd48b6d34daf3d) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Retained workflow VMs now keep the fast path when step arguments are plain data or standard built-ins (`Map`, `Set`, `Date`, typed arrays, `URL`, `Headers`, …), not just primitives. A boundary falls back to a normal replay only when serializing its arguments ran code the workflow controls — a getter, a proxy, a custom serializer — or computed an `Error`'s stack trace.
+
+### Patch Changes
+
+- [#3301](https://github.com/vercel/workflow/pull/3301) [`cb77725`](https://github.com/vercel/workflow/commit/cb77725960a8c280bd96fda0068fca0ba83d52f2) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Add env option to split correlation ID derivation into per-entity-type sequential ULIDs, instead of sharing one derivation source
+
+- [#3048](https://github.com/vercel/workflow/pull/3048) [`f8f6e17`](https://github.com/vercel/workflow/commit/f8f6e17aebbd138e9c6c4a03814a5bfc65e63c23) Thanks [@TooTallNate](https://github.com/TooTallNate)! - QuickJS engine performance: cache compiled WebAssembly modules process-wide, and execute steps inline in a live-VM continuation loop (no queue round-trip per step, cheap events fed before step bodies, delayed wait-continuation dispatch for racing timers).
+
+- [#3301](https://github.com/vercel/workflow/pull/3301) [`cb77725`](https://github.com/vercel/workflow/commit/cb77725960a8c280bd96fda0068fca0ba83d52f2) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix stream IDs minted while serializing a step's arguments latching the host wall clock into a run's ID sequence, which gave every entity created afterwards a different correlation ID on each replay
+
+- Updated dependencies [[`2150798`](https://github.com/vercel/workflow/commit/2150798ca6dda8810607b6fb2d6d3734ed1a1e57), [`8d47928`](https://github.com/vercel/workflow/commit/8d479283cabd9de84fa2542c4ff16f2697d16399), [`79e4c04`](https://github.com/vercel/workflow/commit/79e4c044091185e68bbdcc254a86133e54956ad3), [`e084e08`](https://github.com/vercel/workflow/commit/e084e08ac0b4f1830659cb316df50d50962aada4), [`9c1b3c8`](https://github.com/vercel/workflow/commit/9c1b3c86384181b673d41123d2eec0b987afc75a), [`cb77725`](https://github.com/vercel/workflow/commit/cb77725960a8c280bd96fda0068fca0ba83d52f2), [`939ffb4`](https://github.com/vercel/workflow/commit/939ffb4f512a35d3fd041af16f3fa518552ba730), [`27a3f15`](https://github.com/vercel/workflow/commit/27a3f15a7b08659f2b0e69e12e0c4ad923d7f4e5), [`f8f6e17`](https://github.com/vercel/workflow/commit/f8f6e17aebbd138e9c6c4a03814a5bfc65e63c23), [`f8f6e17`](https://github.com/vercel/workflow/commit/f8f6e17aebbd138e9c6c4a03814a5bfc65e63c23), [`5d591d2`](https://github.com/vercel/workflow/commit/5d591d28863b539d8ff5b5af56f99b43d1db9842), [`89ede82`](https://github.com/vercel/workflow/commit/89ede82faa25143a150edcd088cd48b6d34daf3d), [`cb77725`](https://github.com/vercel/workflow/commit/cb77725960a8c280bd96fda0068fca0ba83d52f2), [`72efc90`](https://github.com/vercel/workflow/commit/72efc90f286956e6cde25b814f9375a8ecbbff36)]:
+  - @workflow/cli@5.0.0-beta.40
+  - @workflow/core@5.0.0-beta.40
+  - @workflow/errors@5.0.0-beta.16
+  - @workflow/nitro@5.0.0-beta.40
+  - @workflow/next@5.0.0-beta.40
+  - @workflow/typescript-plugin@5.0.0-beta.5
+  - @workflow/nuxt@5.0.0-beta.40
+  - @workflow/astro@5.0.0-beta.40
+  - @workflow/nest@5.0.0-beta.40
+  - @workflow/rollup@5.0.0-beta.40
+  - @workflow/sveltekit@5.0.0-beta.40
+
+## 5.0.0-beta.39
+
+### Minor Changes
+
+- [#3145](https://github.com/vercel/workflow/pull/3145) [`1471f25`](https://github.com/vercel/workflow/commit/1471f252fa18024695f1bf149f5bee4876ab149e) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Strengthen the event-creation precondition guard: replay-context writes now also send the number of loaded events, so a snapshot that is missing an event is rejected instead of committing a divergent event log, and a rejection restarts the replay in-process (consuming the events a world may attach to the rejection) rather than re-committing the rejected payload or re-invoking over the queue. `@workflow/world-local` and `@workflow/world-postgres` do not implement the check.
+
+- [#3230](https://github.com/vercel/workflow/pull/3230) [`31f92df`](https://github.com/vercel/workflow/commit/31f92df10d295cf09c93aadd35380209c137326c) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Lazy hook resumption: on a fast path, `resumeHook()` writes the `hook_received` event and dispatches the workflow queue message concurrently instead of sequentially, cutting a round trip off resume latency. A `(runId, resumeId)` dedup constraint keeps the two writers converging on exactly one event; the runtime falls back to the sequential path when dedup support is unavailable or when `WORKFLOW_DISABLE_LAZY_HOOK_RESUME=1`. `resumeHook()` resolves to a `ResumedHook` (a `Hook` plus an optional `resilientResume: true` flag, set only when the direct write failed transiently and the resume was recovered via the queue consumer's re-ensure) — preserving the contract introduced alongside the resilient-resume work.
+
+- [#1834](https://github.com/vercel/workflow/pull/1834) [`438eaa6`](https://github.com/vercel/workflow/commit/438eaa6a595811e6d6942ba679e831d25e6cbfbe) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Make `resumeHook()` resilient to transient `hook_received` event write failures (429/5xx) by carrying the payload on the queue message for the runtime to materialize. Returned `Hook` gets a new `resilientResume: true` flag when this fallback path is taken.
+
+### Patch Changes
+
+- [#3288](https://github.com/vercel/workflow/pull/3288) [`679dfa9`](https://github.com/vercel/workflow/commit/679dfa9c15e68e841d8c326c716bc14b5997c6c3) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Simplify hardened serialization: intrinsic captures assert at import instead of degrading per use, `URLSearchParams` now serializes natively on Node 18, and bound-function getters are reported as guest code (previously a getter defined via `fn.bind()` executed with an empty report).
+
+- [#3257](https://github.com/vercel/workflow/pull/3257) [`b732e91`](https://github.com/vercel/workflow/commit/b732e91fac77e0f445349aefa8bdeac5b8b77e20) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Serializing values built inside the `node:vm` workflow VM no longer executes workflow code, using engine brand checks and host intrinsics captured at boot.
+
+- Updated dependencies [[`4a9d26b`](https://github.com/vercel/workflow/commit/4a9d26b1cb807a9e31489350b468db42a8c13ef3), [`ee944d2`](https://github.com/vercel/workflow/commit/ee944d2476daca81b89ba545b522385a7902ec03), [`1471f25`](https://github.com/vercel/workflow/commit/1471f252fa18024695f1bf149f5bee4876ab149e), [`9cc11f5`](https://github.com/vercel/workflow/commit/9cc11f5329fbc9151c2f0ccd0139387c07f2d7ce), [`679dfa9`](https://github.com/vercel/workflow/commit/679dfa9c15e68e841d8c326c716bc14b5997c6c3), [`b732e91`](https://github.com/vercel/workflow/commit/b732e91fac77e0f445349aefa8bdeac5b8b77e20), [`31f92df`](https://github.com/vercel/workflow/commit/31f92df10d295cf09c93aadd35380209c137326c), [`4174a6e`](https://github.com/vercel/workflow/commit/4174a6ea733d61709b5d66d31920badaad6df0a1), [`4017597`](https://github.com/vercel/workflow/commit/4017597a5f6a54da7ea3bf467c8c63b3bf3bc845), [`438eaa6`](https://github.com/vercel/workflow/commit/438eaa6a595811e6d6942ba679e831d25e6cbfbe)]:
+  - @workflow/core@5.0.0-beta.39
+  - @workflow/errors@5.0.0-beta.15
+  - @workflow/cli@5.0.0-beta.39
+  - @workflow/next@5.0.0-beta.39
+  - @workflow/nitro@5.0.0-beta.39
+  - @workflow/typescript-plugin@5.0.0-beta.5
+  - @workflow/astro@5.0.0-beta.39
+  - @workflow/nest@5.0.0-beta.39
+  - @workflow/rollup@5.0.0-beta.39
+  - @workflow/sveltekit@5.0.0-beta.39
+  - @workflow/nuxt@5.0.0-beta.39
+
+## 5.0.0-beta.38
+
+### Patch Changes
+
+- [#3142](https://github.com/vercel/workflow/pull/3142) [`a09d001`](https://github.com/vercel/workflow/commit/a09d00135bd96f22bd1ae1dee6b5a6f797b7d804) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Revert the static workflow world target injection: the world package is again resolved at runtime from `WORKFLOW_TARGET_WORLD` instead of being aliased into host bundles at build time.
+
+- Updated dependencies [[`25715d4`](https://github.com/vercel/workflow/commit/25715d4521164836d7f2eb2493b73d13ec595b10), [`b92c23c`](https://github.com/vercel/workflow/commit/b92c23ccb46d27066025acd8742da357603c79d8), [`25715d4`](https://github.com/vercel/workflow/commit/25715d4521164836d7f2eb2493b73d13ec595b10), [`a09d001`](https://github.com/vercel/workflow/commit/a09d00135bd96f22bd1ae1dee6b5a6f797b7d804)]:
+  - @workflow/cli@5.0.0-beta.38
+  - @workflow/core@5.0.0-beta.38
+  - @workflow/nitro@5.0.0-beta.38
+  - @workflow/nest@5.0.0-beta.38
+  - @workflow/next@5.0.0-beta.38
+  - @workflow/nuxt@5.0.0-beta.38
+  - @workflow/astro@5.0.0-beta.38
+  - @workflow/rollup@5.0.0-beta.38
+  - @workflow/sveltekit@5.0.0-beta.38
+  - @workflow/utils@5.0.0-beta.8
+  - @workflow/typescript-plugin@5.0.0-beta.5
+  - @workflow/errors@5.0.0-beta.14
+
+## 5.0.0-beta.37
+
+### Major Changes
+
+- [#3128](https://github.com/vercel/workflow/pull/3128) [`7959acc`](https://github.com/vercel/workflow/commit/7959acc8cfadfafc8082086f3063a48448139573) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - **BREAKING CHANGE**: Remove the deprecated `experimental_setAttributes` and `ExperimentalSetAttributesOptions` aliases; use `setAttributes` and `SetAttributesOptions` instead.
+
+- [#3061](https://github.com/vercel/workflow/pull/3061) [`62d570e`](https://github.com/vercel/workflow/commit/62d570ed4bf38db333ae9fe9ba513c0d6a9d6b91) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Remove the retired step route runtime and make queue health checks target the combined flow handler.
+
+- [#3045](https://github.com/vercel/workflow/pull/3045) [`d813fb8`](https://github.com/vercel/workflow/commit/d813fb8ee835c378db4428e1a9a7edb64cb0b494) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Deterministic sandbox hardening: `crypto.subtle.digest` in workflow functions now computes synchronously via `node:crypto` (byte-identical values, deterministic timing under replay); `Atomics.waitAsync`, async `WebAssembly` compilation, `WeakRef`, and `FinalizationRegistry` are no longer exposed (wall-clock timing and GC observation cannot be replayed).
+
+### Patch Changes
+
+- Updated dependencies [[`8c12358`](https://github.com/vercel/workflow/commit/8c12358075897ef1fdcc4ce3847579df63c8ca7a), [`8a95d36`](https://github.com/vercel/workflow/commit/8a95d36c9a166351829f3c6382cddb68335b54d2), [`e8bc7d6`](https://github.com/vercel/workflow/commit/e8bc7d6aadcdb5f89de1be71cfcafe5e9085ed25), [`7a65030`](https://github.com/vercel/workflow/commit/7a6503048acb72bd53e71197339de5cba312f834), [`0b1ca15`](https://github.com/vercel/workflow/commit/0b1ca15dec3a4f56c32d33c5cf5add3ea208c54c), [`b4ba79e`](https://github.com/vercel/workflow/commit/b4ba79ebc501248408474efdd6e353f1753d83e3), [`4ba223a`](https://github.com/vercel/workflow/commit/4ba223a01c56126aec5c982d3583f779ed96e8ca), [`a86035f`](https://github.com/vercel/workflow/commit/a86035f71f60e22170cae231cc6fb07e39928cc6), [`b8bcded`](https://github.com/vercel/workflow/commit/b8bcded9d9e325f48a386ac70bad5eefee9d1664), [`f11e9fe`](https://github.com/vercel/workflow/commit/f11e9fe56f49f3477a2aee15dabc7774928b1428), [`d24c91c`](https://github.com/vercel/workflow/commit/d24c91cfde678e9a4935ee94b9597b5696d6792b), [`fd05393`](https://github.com/vercel/workflow/commit/fd05393d2b47d1a2f347538dd3b6062d808548d2), [`fc81f45`](https://github.com/vercel/workflow/commit/fc81f4502fa6d8d9a7a5c48b44394dc39c141a86), [`3069b49`](https://github.com/vercel/workflow/commit/3069b4918edb82f12a45d2014dc465aee03e9c39), [`49276f2`](https://github.com/vercel/workflow/commit/49276f2d0b11d7552ac4504936cbca51df4ce98d), [`d7553c4`](https://github.com/vercel/workflow/commit/d7553c4517b98c0eef37e5701fdfd316a7d5c008), [`5d17c60`](https://github.com/vercel/workflow/commit/5d17c609b109e77c055b70b7654dfa869e2ad0f1), [`7959acc`](https://github.com/vercel/workflow/commit/7959acc8cfadfafc8082086f3063a48448139573), [`4ada27d`](https://github.com/vercel/workflow/commit/4ada27d35af197d66196288919581d839f87c9a3), [`62d570e`](https://github.com/vercel/workflow/commit/62d570ed4bf38db333ae9fe9ba513c0d6a9d6b91), [`62d570e`](https://github.com/vercel/workflow/commit/62d570ed4bf38db333ae9fe9ba513c0d6a9d6b91), [`2941b1c`](https://github.com/vercel/workflow/commit/2941b1c36048701b8aa8ae870482e54f1053ed33), [`d813fb8`](https://github.com/vercel/workflow/commit/d813fb8ee835c378db4428e1a9a7edb64cb0b494), [`0d6ec43`](https://github.com/vercel/workflow/commit/0d6ec438770f42cb3c512e97c27ec551c957de32), [`b610c46`](https://github.com/vercel/workflow/commit/b610c46f8143afe3c862fb9957f5b4b48e754b42)]:
+  - @workflow/core@5.0.0-beta.37
+  - @workflow/cli@5.0.0-beta.37
+  - @workflow/next@5.0.0-beta.37
+  - @workflow/utils@5.0.0-beta.7
+  - @workflow/nitro@5.0.0-beta.37
+  - @workflow/errors@5.0.0-beta.13
+  - @workflow/astro@5.0.0-beta.37
+  - @workflow/sveltekit@5.0.0-beta.37
+  - @workflow/typescript-plugin@5.0.0-beta.5
+  - @workflow/nest@5.0.0-beta.37
+  - @workflow/nuxt@5.0.0-beta.37
+  - @workflow/rollup@5.0.0-beta.37
+
 ## 5.0.0-beta.36
 
 ### Minor Changes

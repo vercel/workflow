@@ -1,7 +1,16 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  afterEach,
+  assert,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vitest';
 
 const {
   mockSend,
+  MockConsumerDiscoveryError,
   MockDuplicateMessageError,
   MockQueueClient,
   mockHandleCallback,
@@ -12,6 +21,13 @@ const {
       super(message);
       this.name = 'DuplicateMessageError';
       this.idempotencyKey = idempotencyKey;
+    }
+  }
+
+  class MockConsumerDiscoveryError extends Error {
+    constructor(message: string) {
+      super(message);
+      this.name = 'ConsumerDiscoveryError';
     }
   }
 
@@ -29,6 +45,7 @@ const {
 
   return {
     mockSend,
+    MockConsumerDiscoveryError,
     MockDuplicateMessageError,
     MockQueueClient,
     mockHandleCallback,
@@ -37,6 +54,7 @@ const {
 
 vi.mock('@vercel/queue', () => ({
   QueueClient: MockQueueClient,
+  ConsumerDiscoveryError: MockConsumerDiscoveryError,
   DuplicateMessageError: MockDuplicateMessageError,
 }));
 
@@ -47,6 +65,7 @@ vi.mock('./utils.js', () => ({
   getHeaders: vi.fn().mockReturnValue(new Map()),
 }));
 
+import { missingDeploymentIdMessage } from './deployment-id.js';
 import { createQueue } from './queue.js';
 import { getHttpUrl } from './utils.js';
 
@@ -57,6 +76,19 @@ describe('createQueue', () => {
 
   afterEach(() => {
     vi.clearAllMocks();
+  });
+
+  it('classifies only consumer discovery failures as unavailable deployments', () => {
+    const queue = createQueue();
+
+    expect(
+      queue.isDeploymentUnavailableError?.(
+        new MockConsumerDiscoveryError('deployment not found')
+      )
+    ).toBe(true);
+    expect(
+      queue.isDeploymentUnavailableError?.(new Error('transient send failure'))
+    ).toBe(false);
   });
 
   describe('proxy region header', () => {
@@ -160,7 +192,22 @@ describe('createQueue', () => {
         await expect(
           queue.queue('__wkf_workflow_test', { runId: 'run-123' })
         ).rejects.toThrow(
-          'No deploymentId provided and VERCEL_DEPLOYMENT_ID environment variable is not set'
+          missingDeploymentIdMessage('Enqueuing a workflow message')
+        );
+      } finally {
+        if (originalEnv !== undefined) {
+          process.env.VERCEL_DEPLOYMENT_ID = originalEnv;
+        }
+      }
+    });
+
+    it('should throw an actionable error from getDeploymentId, which start() calls before writing any state', async () => {
+      const originalEnv = process.env.VERCEL_DEPLOYMENT_ID;
+      delete process.env.VERCEL_DEPLOYMENT_ID;
+
+      try {
+        await expect(createQueue().getDeploymentId()).rejects.toThrow(
+          missingDeploymentIdMessage('Starting a workflow run')
         );
       } finally {
         if (originalEnv !== undefined) {
@@ -523,6 +570,32 @@ describe('createQueue', () => {
       );
     });
 
+    it('keeps a per-probe topic for a health check that carries a runId', async () => {
+      process.env.WORKFLOW_SEQUENTIAL_REPLAYS = '1';
+
+      const queue = createQueue();
+      // A probe issued to prepare a cross-deployment `start()` carries the run
+      // id it is about to create. It must still get its per-probe topic rather
+      // than being routed to that run's serialized replay topic, which would
+      // queue the probe behind the run it is trying to prepare.
+      await queue.queue('__wkf_workflow_health_check', {
+        __healthCheck: true as const,
+        correlationId: 'corr_123',
+        runId: 'wrun_abc',
+      });
+
+      expect(mockSend.mock.calls[0][0]).toBe(
+        '__wkf_workflow_health_check_corr_123'
+      );
+      // The payload must survive intact so the handler dispatches it as a
+      // health check rather than as a workflow invoke.
+      expect(mockSend.mock.calls[0][1].payload).toEqual({
+        __healthCheck: true,
+        correlationId: 'corr_123',
+        runId: 'wrun_abc',
+      });
+    });
+
     it('does not rewrite health check topics when the flag is unset', async () => {
       delete process.env.WORKFLOW_SEQUENTIAL_REPLAYS;
 
@@ -579,6 +652,34 @@ describe('createQueue', () => {
       expect(mockHandleCallback).toHaveBeenCalledWith(expect.any(Function), {
         retry: expect.any(Function),
       });
+    });
+
+    it('should pass handler rejections to QueueClient', async () => {
+      let capturedHandler: (
+        message: unknown,
+        metadata: unknown
+      ) => Promise<void>;
+      mockHandleCallback.mockImplementation((handler) => {
+        capturedHandler = handler;
+        return async () => new Response('ok');
+      });
+      const handlerError = new Error('retry delivery');
+
+      const queue = createQueue();
+      queue.createQueueHandler('__wkf_workflow_', async () => {
+        throw handlerError;
+      });
+
+      assert(capturedHandler);
+      await expect(
+        capturedHandler(
+          {
+            payload: { runId: 'run-123' },
+            queueName: '__wkf_workflow_test',
+          },
+          { messageId: 'msg-123', deliveryCount: 1 }
+        )
+      ).rejects.toBe(handlerError);
     });
 
     it('should ask VQS to retry handler errors with bounded backoff', () => {

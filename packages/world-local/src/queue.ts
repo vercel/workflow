@@ -61,6 +61,39 @@ const WORKFLOW_LOCAL_QUEUE_CONCURRENCY =
   parseInt(process.env.WORKFLOW_LOCAL_QUEUE_CONCURRENCY ?? '0', 10) ||
   DEFAULT_CONCURRENCY_LIMIT;
 
+/** Default time-to-first-byte deadline for local queue deliveries. */
+export const DEFAULT_HEADERS_TIMEOUT_MS = 30_000;
+
+/** Default maximum gap between response body chunks for local deliveries. */
+export const DEFAULT_BODY_TIMEOUT_MS = 30_000;
+
+function envTimeoutMs(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw === '') return fallback;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
+/**
+ * Bounds a stalled delivery below the queue handler's retry horizon. A
+ * transport timeout is retried by the delivery loop with the same durable
+ * message; `0` remains available for applications that need unbounded calls.
+ */
+export function getQueueAgentOptions() {
+  return {
+    bodyTimeout: envTimeoutMs(
+      'WORKFLOW_LOCAL_BODY_TIMEOUT_MS',
+      DEFAULT_BODY_TIMEOUT_MS
+    ),
+    connections: 1000,
+    headersTimeout: envTimeoutMs(
+      'WORKFLOW_LOCAL_HEADERS_TIMEOUT_MS',
+      DEFAULT_HEADERS_TIMEOUT_MS
+    ),
+    keepAliveTimeout: 30_000,
+  } as const;
+}
+
 export type DirectHandler = (req: Request) => Promise<Response>;
 
 export type LocalQueue = Queue & {
@@ -95,16 +128,7 @@ function isDetachedArrayBufferQueueError(error: unknown): boolean {
 }
 
 export function createQueue(config: Partial<Config>): LocalQueue {
-  // Create a custom agent optimized for high-concurrency local workflows:
-  // - headersTimeout: 0 allows long-running steps
-  // - connections: 1000 allows many parallel connections to the same host
-  // - pipelining: 1 (default) for HTTP/1.1 compatibility
-  // - keepAliveTimeout: 30s keeps connections warm for rapid step execution
-  const httpAgent = new Agent({
-    headersTimeout: 0,
-    connections: 1000,
-    keepAliveTimeout: 30_000,
-  });
+  const httpAgent = new Agent(getQueueAgentOptions());
   const transport = new TypedJsonTransport();
   const generateId = monotonicFactory();
   const semaphore = new Sema(WORKFLOW_LOCAL_QUEUE_CONCURRENCY);
@@ -180,10 +204,8 @@ export function createQueue(config: Partial<Config>): LocalQueue {
       // ok, a timeoutSeconds re-delivery, or an HTTP error response). This —
       // not the loop counter — is the attempt the handler sees via
       // `x-vqs-message-attempt`, which it counts against MAX_QUEUE_DELIVERIES.
-      // Transport-level failures (below) never reach the handler, so they must
-      // not advance this, or a burst of "fetch failed"/ETIMEDOUT timeouts under
-      // local load would exhaust the handler's delivery budget before its first
-      // real execution.
+      // Failures before response headers do not advance this; body failures do,
+      // because the handler has already accepted that delivery.
       let delivery = 0;
       try {
         for (let loop = 0; loop < MAX_LOCAL_SAFETY_LIMIT; loop++) {
@@ -196,6 +218,7 @@ export function createQueue(config: Partial<Config>): LocalQueue {
           };
           const directHandler = directHandlers.get(prefix);
           let response: Response;
+          let text: string;
 
           try {
             if (directHandler) {
@@ -220,14 +243,13 @@ export function createQueue(config: Partial<Config>): LocalQueue {
                 } as any
               );
             }
+            delivery++;
+            text = await response.text();
           } catch (err) {
-            // The delivery never reached the handler: undici threw before a
-            // response. Under heavy local concurrency the single-process dev
-            // server can't accept every connection, so undici reports
-            // `TypeError: fetch failed` with an ETIMEDOUT/ECONNRESET cause.
-            // These are transient — back off and retry the *same* delivery
-            // rather than dropping the message (which would leave the step
-            // never started, with no retry). Two failures are not retryable:
+            // A transport can fail before response headers or while consuming
+            // the body. Both are transient — back off and retry the same
+            // durable message rather than leaving its run stalled. Two
+            // failures are not retryable:
             //  - shutdown: close() aborted the agent / the backoff sleep.
             //  - a detached-ArrayBuffer proxy misconfig, which never succeeds —
             //    rethrow so the outer catch surfaces the actionable guidance.
@@ -254,9 +276,6 @@ export function createQueue(config: Partial<Config>): LocalQueue {
             await setTimeout(5000, undefined, { signal: closeSignal });
             continue;
           }
-
-          delivery++;
-          const text = await response.text();
 
           if (response.ok) {
             try {

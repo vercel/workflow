@@ -96,7 +96,7 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
     }
 
     // Generate hook ID and token
-    const correlationId = `hook_${ctx.generateUlid()}`;
+    const correlationId = `hook_${ctx.generateCorrelationId('hook')}`;
     const token = options.token ?? ctx.generateNanoid();
     const tokenRetentionUntil =
       options.experimental_minRetention === undefined
@@ -144,6 +144,27 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
     // The conflicting run handle, shared by every `getConflict` await so
     // repeated awaits observe the same instance deterministically.
     let conflictRunRef: Run<unknown> | null = null;
+
+    // Lazy-resume dedup: `resumeHook()` mints a `resumeId` per resume
+    // attempt and stamps it on the `hook_received` event. When the direct
+    // event write fails transiently, the runtime materializes the event from
+    // the queue payload instead — and because `hook_received` has no
+    // storage-level uniqueness constraint, concurrent redelivery of the same
+    // queue message can commit that materialization twice. Two rows for ONE
+    // resume attempt then share a `resumeId` (distinct resume attempts never
+    // do), so replay delivers only the first-in-log occurrence. This is a
+    // pure function of the persisted event log, keeping replay deterministic.
+    //
+    // Scope: this is defense-in-depth over the persisted log, not a
+    // cross-invocation exactly-once guarantee — an invocation replaying a
+    // snapshot taken before the duplicate row committed only sees one row,
+    // so two CONCURRENT invocations can each deliver from their own
+    // snapshot. Every replay from a log containing both rows (i.e. all
+    // subsequent deliveries) dedups. The correctness boundary that closes
+    // the concurrent window is the storage-level (runId, resumeId)
+    // constraint arriving with the parallel-resume successor work; this set
+    // stays useful after that lands, for logs written before it deployed.
+    const seenResumeIds = new Set<string>();
 
     webhookLogger.debug('Hook consumer setup', { correlationId, token });
     ctx.eventsConsumer.subscribe((event) => {
@@ -260,24 +281,71 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
       }
 
       if (event.eventType === 'hook_received') {
-        // Register a 'hook' delivery barrier at this event's log index so a
-        // later-in-log `wait_completed` is delivered only after this hook,
-        // and so this hook is delivered only after every earlier-in-log
-        // `wait_completed` — keeping any `Promise.race` against a wait
-        // deterministic and aligned with the committed event log, regardless
-        // of microtask-hop count, hydration time, or race-argument order.
-        // See `ctx.pendingDeliveryBarriers`.
-        const eventIndex = ctx.eventsConsumer.eventIndex;
-        const barrier = registerDeliveryBarrier(ctx, eventIndex, 'hook');
+        // Drop duplicate deliveries of the same resume attempt (same
+        // `resumeId` — see `seenResumeIds` above). Events without a
+        // `resumeId` (older SDKs, legacy spec versions) are never deduped.
+        //
+        // Dedup off the top-level `resumeId` the backend hoists onto the event
+        // as a first-class column. An earlier unreleased build additionally
+        // wrote it nested under `eventData`, but that form never shipped and is
+        // stripped by `EventSchema` parsing (the `hook_received` eventData
+        // schema does not declare it), so there is no persisted nested form to
+        // fall back to.
+        const resumeId = event.resumeId;
+        if (typeof resumeId === 'string') {
+          if (seenResumeIds.has(resumeId)) {
+            return EventConsumerResult.Consumed;
+          }
+          seenResumeIds.add(resumeId);
+        }
 
-        if (promises.length > 0) {
+        // Register a 'hook' delivery barrier at this event's log index so a
+        // later-in-log `wait_completed` or step result is delivered only after
+        // this hook, and so this hook is delivered only after every
+        // earlier-in-log `wait_completed` and step result — keeping any
+        // `Promise.race` (or concurrent-branch ULID allocation) deterministic
+        // and aligned with the committed event log, regardless of
+        // microtask-hop count, hydration time, or race-argument order.
+        // See `ctx.pendingDeliveryBarriers`.
+        //
+        // The barrier is registered ARMED only when a consumer is already
+        // awaiting, so this payload is committed to reaching the workflow. A
+        // buffered payload is registered unarmed and armed by `claim()`: until
+        // a consumer takes it, a later step result must not be ordered behind
+        // it (see `awaitEarlierDeliveries`).
+        const eventIndex = ctx.eventsConsumer.eventIndex;
+        const hasWaitingConsumer = promises.length > 0;
+        const barrier = registerDeliveryBarrier(ctx, eventIndex, 'hook', {
+          armed: hasWaitingConsumer,
+        });
+
+        if (hasWaitingConsumer) {
+          // A consumer is already awaiting, so this payload's delivery is
+          // pinned to this log position: capture the deferral HERE, while
+          // consuming the event, not at the end of the hydration slot below —
+          // same reasoning as step.ts. An earlier step or hook whose slot runs
+          // first on this serial queue has usually delivered, and so
+          // deregistered its barrier, before this slot ends. Read then, it
+          // would be invisible and this payload would skip both the gate AND
+          // `awaitEarlierDeliveries`' macrotask yield, letting it overtake the
+          // branch that earlier delivery just woke. Every event in one drain
+          // window is consumed before any slot runs, so capturing at
+          // consumption time sees all of them.
+          //
+          // The BUFFERED branch below deliberately does NOT do this — see the
+          // comment on `claim()`.
+          const earlierDelivered = awaitEarlierDeliveries(
+            ctx,
+            eventIndex,
+            'hook'
+          );
           const next = promises.shift();
           if (next) {
-            // A consumer is already awaiting. Hydrate through a promiseQueue
-            // slot (so async deserialization stays in event-log order), then
-            // defer behind earlier waits before resolving. The deferral runs
-            // OFF the serial queue (it may wait on an earlier wait delivery
-            // and blocking a queue slot on that would deadlock the queue).
+            // Hydrate through a promiseQueue slot (so async deserialization
+            // stays in event-log order), then defer behind earlier waits and
+            // steps before resolving. The deferral runs OFF the serial queue
+            // (it may wait on an earlier wait or step delivery and blocking a
+            // queue slot on that would deadlock the queue).
             ctx.pendingDeliveries++;
             let hydrateOutcome:
               | { ok: true; value: T }
@@ -304,16 +372,14 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
               } finally {
                 ctx.pendingDeliveries--;
               }
-              void awaitEarlierDeliveries(ctx, eventIndex, ['wait']).then(
-                () => {
-                  barrier.markDelivered();
-                  if (hydrateOutcome.ok) {
-                    next.resolve(hydrateOutcome.value);
-                  } else {
-                    next.reject(hydrateOutcome.error);
-                  }
+              void earlierDelivered.then(() => {
+                barrier.markDelivered();
+                if (hydrateOutcome.ok) {
+                  next.resolve(hydrateOutcome.value);
+                } else {
+                  next.reject(hydrateOutcome.error);
                 }
-              );
+              });
             });
           }
         } else {
@@ -331,9 +397,22 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
             | undefined;
           const hydrated = withResolvers<void>();
 
-          const claim = (): Promise<T> =>
-            hydrated.promise
-              .then(() => awaitEarlierDeliveries(ctx, eventIndex, ['wait']))
+          const claim = (): Promise<T> => {
+            // A consumer has taken this payload, so its delivery no longer
+            // waits on workflow code: later step results may now be ordered
+            // behind it.
+            barrier.arm();
+            // Unlike every other delivery, the deferral is evaluated HERE, at
+            // claim time, rather than when the event was consumed. A buffered
+            // payload's delivery genuinely happens when the workflow reads the
+            // hook, which may be many deliveries later; a consumption-time
+            // snapshot would make the claim wait on — and pay the macrotask
+            // yield for — barriers that were relevant to a moment this payload
+            // never participated in. That is not theoretical: it stalls the
+            // second payload in the e2e `hookWithSleepWorkflow` long enough
+            // for the run to suspend before delivering it.
+            return hydrated.promise
+              .then(() => awaitEarlierDeliveries(ctx, eventIndex, 'hook'))
               .then(() => {
                 barrier.markDelivered();
                 if (outcome && !outcome.ok) {
@@ -341,6 +420,7 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
                 }
                 return (outcome as { ok: true; value: T }).value;
               });
+          };
 
           ctx.pendingDeliveries++;
           ctx.promiseQueue = ctx.promiseQueue.then(async () => {
@@ -415,7 +495,7 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
           // The payload was hydrated through a promiseQueue slot at its log
           // position (buffering branch above). `claim()` builds the
           // consumer-facing promise from that outcome, deferring behind any
-          // earlier-in-log wait and marking this hook delivered — so
+          // earlier-in-log wait or step and marking this hook delivered — so
           // resolution order stays anchored to the event log, not this later
           // claim site.
           return nextDelivery.claim();

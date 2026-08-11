@@ -14,40 +14,83 @@
 
 </div>
 
-## Getting Started
+[Workflow SDK](https://workflow-sdk.dev) makes TypeScript and JavaScript
+functions durable. It persists workflow progress, retries failed steps, and
+provides built-in observability. Workflows can suspend without using compute
+while they wait.
 
-The **Workflow SDK** lets you easily add durability, reliability, and observability to async JavaScript. Build apps and AI agents that can suspend, resume, and maintain state with ease.
+## Quick start
 
-Visit [https://workflow-sdk.dev](https://workflow-sdk.dev) to view the full documentation.
+Install the SDK in an existing project:
+
+```bash
+npm install workflow
+```
+
+Configure the integration for your framework. For example, with Next.js:
+
+```ts
+// next.config.ts
+import { withWorkflow } from 'workflow/next';
+
+export default withWorkflow({});
+```
+
+Then start a workflow from an API route, Server Action, or other server-side
+code:
+
+```ts
+import { start } from 'workflow/api';
+import { onboardUser } from './workflows/onboard-user';
+
+await start(onboardUser, ['hello@example.com']);
+```
+
+Run your app, then open the local observability UI in another terminal:
+
+```bash
+npm run dev
+```
+
+```bash
+npx workflow web
+```
+
+Choose your framework in the
+[getting-started guides](https://workflow-sdk.dev/docs/getting-started).
+
+> [!NOTE]
+> The `workflow` package includes its full documentation, so coding agents can
+> read version-matched guides locally from `node_modules/workflow/docs`.
+
+## Run anywhere
+
+Local development uses the bundled backend with no configuration. Deploy to
+Vercel for managed storage, queuing, scaling, and observability. To self-host,
+use the Postgres backend or implement a custom
+[World](https://workflow-sdk.dev/docs/deploying).
+
+There are many third-party Worlds (both self-hosted or managed), see [the Worlds page](https://workflow-sdk.dev/worlds) for a list of maintainer-curated third party worlds. Submit your world by opening updating the [Worlds Manifest](https://github.com/vercel/workflow/blob/main/worlds-manifest.json).
 
 ## Community
 
-The Workflow SDK community can be found on [GitHub Discussions](https://github.com/vercel/workflow/discussions), where you can ask questions, voice ideas, and share your projects with other people.
+The Workflow SDK community lives on
+[GitHub Discussions](https://github.com/vercel/workflow/discussions), where you
+can ask questions, share ideas, and show what you have built.
 
 ## Contributing
 
-Contributions to Workflow SDK are welcome and highly appreciated. Please use GitHub [issues](https://github.com/vercel/workflow/issues) and [discussions](https://github.com/vercel/workflow/discussions) to collaborate with the team and wider community.
-
-## Author list
-
-Workflow SDK was built by engineers at [Vercel](https://vercel.com) and the [Open Source Community](https://github.com/vercel/workflow/graphs/contributors).
-
-The initial core contributing engineers are:
-
-- Adrian Lam ([@adriandlam](https://github.com/adriandlam))
-- Dillon Mulroy ([@dmmulroy](https://github.com/dmmulroy))
-- Gal Schlezinger ([@Schniz](https://github.com/Schniz))
-- JJ Kasper ([@ijjk](https://github.com/ijjk))
-- Nathan Rajlich ([@TooTallNate](https://github.com/TooTallNate))
-- Peter Wielander ([@VaguelySerious](https://github.com/VaguelySerious))
-- Pranay Prakash ([@pranaygp](https://github.com/pranaygp))
-
-The Workflow SDK logo was designed by Cecilio Ruiz [@ceciliorz](https://x.com/ceciliorz)
-
----
+Contributions are welcome. Use
+[issues](https://github.com/vercel/workflow/issues) and
+[discussions](https://github.com/vercel/workflow/discussions) to collaborate
+with the team and wider community. By participating, you agree to our
+[Code of Conduct](https://github.com/vercel/workflow/blob/main/CODE_OF_CONDUCT.md).
 
 ## Security
 
 If you believe you have found a security vulnerability in Workflow SDK, we encourage you to **_responsibly disclose this and not open a public issue_**.
 
-To participate in our Open Source Software Bug Bounty program, please email [responsible.disclosure@vercel.com](mailto:responsible.disclosure@vercel.com). We will add you to the program and provide further instructions for submitting your report.
+To participate in our Open Source Software Bug Bounty program, please email
+[responsible.disclosure@vercel.com](mailto:responsible.disclosure@vercel.com).
+We will add you to the program and provide further instructions for submitting
+your report.

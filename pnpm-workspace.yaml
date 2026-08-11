@@ -10,7 +10,7 @@ catalog:
   "@swc/core": 1.15.3
   "@types/json-schema": ^7.0.15
   "@types/node": 22.19.0
-  "@vercel/functions": ^3.4.3
+  "@vercel/functions": ^3.8.0
   "@vercel/oidc": 3.2.0
   "@vercel/queue": 0.4.0
   "@vitest/coverage-v8": ^4.1.10
@@ -21,7 +21,7 @@ catalog:
   semver: 7.7.4
   typescript: ^6.0.3
   ulid: ~3.0.1
-  undici: 7.28.0
+  undici: 7.29.0
   vitest: ^4.1.10
   zod: ~4.3.6
 
@@ -36,7 +36,7 @@ overrides:
   # spans were silently dropped this way while core's flowed (#2900).
   '@opentelemetry/api': 1.9.1
   rfc6902: 5.1.2
-  devalue: 5.8.1
+  devalue: 5.9.0
   '@sveltejs/acorn-typescript': 1.0.10
   # postcss < 8.5.18 is vulnerable to CVE-2026-45623 and GHSA-r28c-9q8g-f849
   # (arbitrary file read / .map disclosure via attacker-controlled
@@ -55,3 +55,4 @@ minimumReleaseAgeExclude:
   - '@workflow/*'
   - 'esbuild'
   - '@esbuild/*'
+  - 'quickjs-wasi'

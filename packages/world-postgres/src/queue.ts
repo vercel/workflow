@@ -53,6 +53,8 @@ function createGraphileLogger() {
 
 const graphileLogger = createGraphileLogger();
 const COMPLETED_IDEMPOTENCY_CACHE_LIMIT = 10_000;
+// Core records MAX_DELIVERIES_EXCEEDED on delivery 49.
+const MAX_GRAPHILE_JOB_ATTEMPTS = 49;
 const GraphileHelpers = z.object({
   abortSignal: z.instanceof(AbortSignal).optional(),
   job: z.object({
@@ -199,7 +201,7 @@ export function createQueue(
       {
         ...(jobKey ? { jobKey } : {}),
         ...(runAt ? { runAt } : {}),
-        maxAttempts: 3,
+        maxAttempts: MAX_GRAPHILE_JOB_ATTEMPTS,
       }
     );
   }
@@ -350,16 +352,13 @@ export function createQueue(
     if (!baseUrl) {
       throw new Error('Unable to resolve base URL for workflow queue.');
     }
-    const response = await fetch(
-      createWorkflowUrl(baseUrl, { type: 'flow' }),
-      {
-        method: 'POST',
-        duplex: 'half',
-        headers,
-        body,
-        signal: abortSignal,
-      } as any
-    );
+    const response = await fetch(createWorkflowUrl(baseUrl, { type: 'flow' }), {
+      method: 'POST',
+      duplex: 'half',
+      headers,
+      body,
+      signal: abortSignal,
+    } as any);
     const text = await response.text();
 
     if (!response.ok) {
@@ -398,7 +397,10 @@ export function createQueue(
       for (const job of jobs.rows) {
         await utils.addJob(job.name, job.data as Record<string, unknown>, {
           jobKey: job.singleton_key ?? undefined,
-          maxAttempts: job.retry_limit ?? 3,
+          maxAttempts: Math.max(
+            job.retry_limit ?? 0,
+            MAX_GRAPHILE_JOB_ATTEMPTS
+          ),
         });
       }
       await pool.query(`DROP TABLE "workflow"."_pgboss_pending_jobs"`);
@@ -421,7 +423,10 @@ export function createQueue(
       for (const job of jobs.rows) {
         await utils.addJob(job.name, job.data as Record<string, unknown>, {
           jobKey: job.singleton_key ?? undefined,
-          maxAttempts: job.retry_limit ?? 3,
+          maxAttempts: Math.max(
+            job.retry_limit ?? 0,
+            MAX_GRAPHILE_JOB_ATTEMPTS
+          ),
         });
       }
       await pool.query(`DROP SCHEMA pgboss CASCADE`);

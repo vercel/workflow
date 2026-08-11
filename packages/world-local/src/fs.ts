@@ -4,6 +4,10 @@ import { EntityConflictError, WorkflowWorldError } from '@workflow/errors';
 import type { PaginatedResponse } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
 import { z } from 'zod';
+import {
+  isUnwritableDirCode,
+  UnwritableDataDirError,
+} from './build-target-mismatch.js';
 
 const ulid = monotonicFactory(() => Math.random());
 
@@ -276,8 +280,29 @@ export async function ensureDir(dirPath: string): Promise<void> {
   try {
     await fs.mkdir(resolvedPath, { recursive: true });
     createdDirectoriesCache.add(resolvedPath);
-  } catch (_error) {
+  } catch (error) {
+    // A filesystem that refuses the directory outright will refuse every write
+    // into it too, and the caller's write would surface as a confusing ENOENT
+    // on the file rather than a missing directory. Report it here instead —
+    // unless the directory turns out to exist, in which case the failure was
+    // incidental (a race, or an unsearchable parent that reads fine) and the
+    // historical "ignore if already exists" behavior applies.
+    const code = (error as NodeJS.ErrnoException).code;
+    if (
+      isUnwritableDirCode(code) &&
+      !(await isExistingDirectory(resolvedPath))
+    ) {
+      throw new UnwritableDataDirError(resolvedPath, code as string);
+    }
     // Ignore if already exists
+  }
+}
+
+async function isExistingDirectory(dirPath: string): Promise<boolean> {
+  try {
+    return (await fs.stat(dirPath)).isDirectory();
+  } catch {
+    return false;
   }
 }
 
@@ -433,7 +458,12 @@ export async function readFirstByte(
 
 export async function deleteJSON(filePath: string): Promise<void> {
   try {
-    await fs.unlink(filePath);
+    // On Windows, a concurrent reader briefly holding the file open makes
+    // unlink fail with EPERM (share violation), so retry like the other
+    // mutation paths in this module. A reader's window is milliseconds;
+    // without the retry a transient EPERM surfaces as a failed operation
+    // (e.g. run cancellation via deleteAllHooksForRun).
+    await withWindowsRetry(() => fs.unlink(filePath));
   } catch (error) {
     if ((error as any).code !== 'ENOENT') throw error;
   }
@@ -543,7 +573,8 @@ interface PaginatedFileSystemQueryConfig<T> {
   cachedItems?: ReadonlyMap<string, T>;
   filePrefix?: string;
   fileIdFilter?: (fileId: string) => boolean;
-  filter?: (item: T) => boolean;
+  /** Runs concurrently for each read batch and must not mutate storage. */
+  filter?: (item: T) => boolean | Promise<boolean>;
   sortOrder?: 'asc' | 'desc';
   limit?: number;
   cursor?: string;
@@ -659,11 +690,13 @@ export async function paginatedFileSystemQuery<T extends { createdAt: Date }>(
     const loadedBatch = await Promise.all(
       batch.map(async (fileId): Promise<T | null> => {
         const filePath = path.join(resolvedDirectory, `${fileId}.json`);
+        let item: T | null;
         try {
           const cachedItem = cachedItems?.get(filePath);
-          return cachedItem === undefined
-            ? await readJSON(filePath, schema)
-            : structuredClone(cachedItem);
+          item =
+            cachedItem === undefined
+              ? await readJSON(filePath, schema)
+              : structuredClone(cachedItem);
         } catch (error: unknown) {
           // We don't expect zod errors to happen, but if the JSON does get malformed,
           // we skip the item. Preferably, we'd have a way to mark items as malformed,
@@ -677,13 +710,12 @@ export async function paginatedFileSystemQuery<T extends { createdAt: Date }>(
           }
           throw error;
         }
+        return item && filter && !(await filter(item)) ? null : item;
       })
     );
 
     for (const item of loadedBatch) {
       if (!item) continue;
-      // Apply custom filter early if provided
-      if (filter && !filter(item)) continue;
 
       // Double-check cursor filtering with actual createdAt from JSON
       // (in case ULID timestamp differs from stored createdAt)

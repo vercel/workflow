@@ -1,9 +1,16 @@
+import { createServer, type Server } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { setWorkflowBasePath } from '@workflow/utils';
 import type { WorkflowInvokePayload } from '@workflow/world';
 import { MessageId, ValidQueueName } from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod/v4';
-import { createQueue } from './queue';
+import {
+  createQueue,
+  DEFAULT_BODY_TIMEOUT_MS,
+  DEFAULT_HEADERS_TIMEOUT_MS,
+  getQueueAgentOptions,
+} from './queue';
 
 // Mock node:timers/promises so setTimeout resolves immediately
 vi.mock('node:timers/promises', () => ({
@@ -149,6 +156,24 @@ describe('queue timeout re-enqueue', () => {
 
     // Wait for the async queue processing to complete
     // The queue fires off processing asynchronously, so we need to wait
+    await vi.waitFor(() => {
+      expect(callCount).toBe(3);
+    });
+  });
+
+  it('queue retries when the handler rejects', async () => {
+    let callCount = 0;
+    const handler = localQueue.createQueueHandler(
+      '__wkf_workflow_',
+      async () => {
+        callCount++;
+        if (callCount < 3) throw new Error('retry delivery');
+      }
+    );
+
+    localQueue.registerHandler('__wkf_workflow_', handler);
+    await localQueue.queue('__wkf_workflow_test' as any, workflowPayload);
+
     await vi.waitFor(() => {
       expect(callCount).toBe(3);
     });
@@ -472,5 +497,121 @@ describe('transport-level delivery failures are retried (regression)', () => {
 
     await vi.waitFor(() => expect(attempts.length).toBe(1));
     expect(attempts[0]).toBe(1);
+  });
+});
+
+describe('queue transport timeouts', () => {
+  const envKeys = [
+    'WORKFLOW_LOCAL_HEADERS_TIMEOUT_MS',
+    'WORKFLOW_LOCAL_BODY_TIMEOUT_MS',
+  ] as const;
+
+  let server: Server | undefined;
+
+  afterEach(async () => {
+    for (const key of envKeys) delete process.env[key];
+    if (server !== undefined) {
+      const toClose = server;
+      server = undefined;
+      toClose.closeAllConnections();
+      await new Promise((resolve) => toClose.close(resolve));
+    }
+    vi.restoreAllMocks();
+  });
+
+  it('bounds queue requests by default', () => {
+    expect(getQueueAgentOptions()).toMatchObject({
+      bodyTimeout: DEFAULT_BODY_TIMEOUT_MS,
+      headersTimeout: DEFAULT_HEADERS_TIMEOUT_MS,
+    });
+  });
+
+  it('honors environment overrides, including 0', () => {
+    process.env.WORKFLOW_LOCAL_HEADERS_TIMEOUT_MS = '1234';
+    process.env.WORKFLOW_LOCAL_BODY_TIMEOUT_MS = '0';
+    expect(getQueueAgentOptions()).toMatchObject({
+      bodyTimeout: 0,
+      headersTimeout: 1234,
+    });
+  });
+
+  it('falls back for invalid environment overrides', () => {
+    process.env.WORKFLOW_LOCAL_HEADERS_TIMEOUT_MS = 'not-a-number';
+    process.env.WORKFLOW_LOCAL_BODY_TIMEOUT_MS = '-1';
+    expect(getQueueAgentOptions()).toMatchObject({
+      bodyTimeout: DEFAULT_BODY_TIMEOUT_MS,
+      headersTimeout: DEFAULT_HEADERS_TIMEOUT_MS,
+    });
+  });
+
+  it('redelivers when a handler accepts a request but never responds', async () => {
+    let requests = 0;
+    server = createServer((_request, response) => {
+      requests++;
+      if (requests === 1) return;
+      response.setHeader('content-type', 'application/json');
+      response.end(JSON.stringify({ ok: true }));
+    });
+    await new Promise<void>((resolve) => {
+      server?.listen(0, '127.0.0.1', resolve);
+    });
+    const { port } = server.address() as AddressInfo;
+
+    process.env.WORKFLOW_LOCAL_HEADERS_TIMEOUT_MS = '150';
+    const consoleError = vi
+      .spyOn(console, 'error')
+      .mockImplementation(() => {});
+    const localQueue = createQueue({
+      baseUrl: `http://127.0.0.1:${port}`,
+    });
+    try {
+      await localQueue.queue('__wkf_workflow_test' as any, workflowPayload);
+      await vi.waitFor(() => expect(requests).toBe(2), { timeout: 5_000 });
+      expect(consoleError).toHaveBeenCalledWith(
+        expect.stringContaining('Queue delivery failed at the transport'),
+        expect.objectContaining({
+          error: expect.stringContaining('fetch failed'),
+        })
+      );
+    } finally {
+      await localQueue.close();
+    }
+  });
+
+  it('redelivers when a handler response body stalls', async () => {
+    let requests = 0;
+    server = createServer((_request, response) => {
+      requests++;
+      response.setHeader('content-type', 'application/json');
+      if (requests === 1) {
+        response.write('{"ok":');
+        return;
+      }
+      response.end(JSON.stringify({ ok: true }));
+    });
+    await new Promise<void>((resolve) => {
+      server?.listen(0, '127.0.0.1', resolve);
+    });
+    const { port } = server.address() as AddressInfo;
+
+    process.env.WORKFLOW_LOCAL_BODY_TIMEOUT_MS = '150';
+    const consoleError = vi
+      .spyOn(console, 'error')
+      .mockImplementation(() => {});
+    const localQueue = createQueue({
+      baseUrl: `http://127.0.0.1:${port}`,
+    });
+    try {
+      await localQueue.queue('__wkf_workflow_test' as any, workflowPayload);
+      await vi.waitFor(() => expect(requests).toBe(2), { timeout: 5_000 });
+      expect(consoleError).toHaveBeenCalledWith(
+        expect.stringContaining('Queue delivery failed at the transport'),
+        expect.objectContaining({
+          error: expect.stringMatching(/terminated|fetch failed/),
+        })
+      );
+    } finally {
+      await localQueue.close();
+    }
   });
 });

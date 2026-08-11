@@ -735,7 +735,32 @@ function keyCacheId(publicKey: Uint8Array): string {
  *
  * Mirrors the `info` used for symmetric per-run key derivation so the two
  * schemes agree on what "this run" means.
+ *
+ * Note that the sealed-box construction already binds a payload to its
+ * recipient without any AAD: the content key is derived over
+ * `ephemeralPublicKey ‖ recipientPublicKey`, and a recipient public key is
+ * unique per (deployment key × project × run). Replaying a sealed payload at
+ * a different run therefore fails at key agreement regardless. AAD is
+ * available for callers that want an additional, KDF-independent binding —
+ * both sides must supply byte-identical values or the payload will not open.
  */
 export function runAad(projectId: string, runId: string): Uint8Array {
   return infoEncoder.encode(`${projectId}|${runId}`);
+}
+
+/**
+ * Decode a run's published public key, validating both encoding and length.
+ *
+ * Returns `undefined` when the value is absent, not valid base64, or not
+ * exactly 32 bytes. Callers treat that as "this run has no usable public key"
+ * and fall back to the symmetric path, so a corrupt or truncated stored value
+ * degrades to the pre-existing behavior instead of failing a resumption.
+ */
+export function decodeRunPublicKey(
+  value: string | undefined
+): Uint8Array | undefined {
+  if (!value) return undefined;
+  const bytes = base64ToBytes(value);
+  if (!bytes || bytes.byteLength !== X25519_KEY_LENGTH) return undefined;
+  return bytes;
 }

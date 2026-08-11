@@ -46,6 +46,7 @@ jobs:
     needs: ci-scope
     if: >-
       github.event_name == 'pull_request' &&
+      !startsWith(github.head_ref, 'changeset-release/') &&
       !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') &&
       needs.ci-scope.outputs.fast-path != 'true'
     timeout-minutes: 5
@@ -103,7 +104,14 @@ jobs:
     name: Benchmark (${{ matrix.target.world }}, ${{ matrix.target.app }})
     runs-on: ubuntu-latest
     needs: ci-scope
+    # `changeset-release/*` PRs are not deployed (every project's vercel.json
+    # sets `git.deploymentEnabled` false for that branch, because the branch is
+    # force-pushed to main's HEAD SHA and a same-SHA preview deployment
+    # clobbers the per-SHA Vercel commit status), so there is nothing to wait
+    # for below. Benchmarking them would also be meaningless: the code is
+    # main's, so it would only compare main's baseline against itself.
     if: >-
+      !startsWith(github.head_ref, 'changeset-release/') &&
       !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') &&
       (needs.ci-scope.outputs.fast-path != 'true' ||
       github.event_name == 'workflow_dispatch')
@@ -154,6 +162,7 @@ jobs:
           APP_NAME: ${{ matrix.target.app }}
           VERCEL_DEPLOYMENT_ID: ${{ steps.waitForDeployment.outputs.deployment-id }}
           WORKFLOW_VERCEL_ENV: ${{ github.ref == 'refs/heads/main' && 'production' || 'preview' }}
+          VERCEL_WORKFLOW_SERVER_URL: ${{ github.ref != 'refs/heads/main' && secrets.VERCEL_WORKFLOW_SERVER_URL || '' }}
           WORKFLOW_VERCEL_AUTH_TOKEN: ${{ secrets.VERCEL_LABS_TOKEN }}
           WORKFLOW_VERCEL_TEAM: "team_nO2mCG4W8IxPIeKoSsqwAxxB"
           WORKFLOW_VERCEL_PROJECT: ${{ matrix.target.project-id }}
@@ -185,6 +194,7 @@ jobs:
     if: >-
       always() && !cancelled() &&
       github.event_name == 'pull_request' &&
+      !startsWith(github.head_ref, 'changeset-release/') &&
       !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') &&
       needs.ci-scope.outputs.fast-path != 'true'
     timeout-minutes: 10

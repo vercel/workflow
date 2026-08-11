@@ -46,7 +46,7 @@ export function getMaxQueueDeliveries(): number {
  * `maxDuration` (e.g. 800s on Vercel Pro Fluid) and `NO_INLINE_REPLAY_AFTER_MS`.
  *
  * If the non-step ("replay") time within a single invocation exceeds this
- * budget, the handler exits so the queue can retry. After
+ * budget, the handler rejects so the queue can retry. After
  * `REPLAY_TIMEOUT_MAX_RETRIES` exhausted attempts the run is failed with
  * `RUN_ERROR_CODES.REPLAY_TIMEOUT`.
  *
@@ -137,7 +137,7 @@ export function _resetReplayTimeoutWarnCacheForTests(): void {
 
 // Number of queue delivery attempts to allow before permanently failing a run
 // due to a replay timeout. On attempts 1 through this value, the timeout
-// handler exits without writing run_failed so the queue retries the message.
+// handler rejects without writing run_failed so the queue retries the message.
 // On the next attempt the run is marked as failed.
 export const REPLAY_TIMEOUT_MAX_RETRIES = 3;
 
@@ -305,6 +305,42 @@ export function isTurboEnabled(): boolean {
 }
 
 /**
+ * Whether the QuickJS engine's baseline-snapshot startup optimization is
+ * enabled (default ON). When on, the engine hydrates a VM with the
+ * workflow bundle once per function instance, snapshots it, and starts
+ * every invocation by restoring the snapshot instead of re-evaluating
+ * the bundle — skipping the dominant share of VM startup (measured
+ * ~77ms → ~3ms to first suspension for a 1.3MB bundle). Bundles whose
+ * module scope consumes randomness, reads the clock, or replaces a
+ * serialization intrinsic are detected at hydrate time and
+ * automatically fall back to per-invocation fresh evaluation (see
+ * prepareBaselineSnapshot). Set WORKFLOW_QUICKJS_BASELINE_SNAPSHOT=0 to
+ * disable.
+ */
+export function isQuickJSBaselineSnapshotEnabled(): boolean {
+  const raw = process.env.WORKFLOW_QUICKJS_BASELINE_SNAPSHOT;
+  if (raw === undefined || raw === '') return true;
+  return !(raw === '0' || raw.toLowerCase() === 'false');
+}
+
+/**
+ * Whether the inline loop retains a suspended workflow VM across inline steps
+ * within one invocation (default ON). When on, a step-only suspension keeps
+ * the live VM, event consumer, and hydrated state alive, and the next loop
+ * iteration appends only the newly durable events instead of rebuilding the
+ * `vm.Context` and replaying the whole event log. Non-step suspensions and
+ * replay divergence always fall back to the ordinary durable replay path.
+ *
+ * `WORKFLOW_RETAINED_VM=0` (or `false`) is the kill switch: every iteration
+ * replays from scratch in a fresh VM, matching the pre-retention behavior.
+ */
+export function isVmRetentionEnabled(): boolean {
+  const raw = process.env.WORKFLOW_RETAINED_VM;
+  if (raw === undefined || raw === '') return true;
+  return !(raw === '0' || raw.toLowerCase() === 'false');
+}
+
+/**
  * Whether inline step ownership is enabled (default ON). When on, the lazy
  * `step_started` that creates an inline step records the owning queue
  * message ID, and wake replays that observe an actively-owned step enqueue a
@@ -386,5 +422,82 @@ export function getReplayDivergenceMaxRetries(): number {
     'WORKFLOW_REPLAY_DIVERGENCE_MAX_RETRIES',
     REPLAY_DIVERGENCE_MAX_RETRIES,
     { integer: true }
+  );
+}
+
+// A stale-snapshot rejection (412) means the replay's event log was missing an
+// event the World had already recorded, so the replay is re-derived from a
+// corrected log inside the same invocation. Bounded because a persistently
+// rejected write should escalate rather than spin: after this many restarts the
+// run is re-invoked (a new invocation, possibly in a different region), and the
+// run-level budget below then applies.
+export const PRECONDITION_MAX_INPROCESS_RESTARTS = 3;
+
+/**
+ * Effective in-process replay-restart budget for stale-snapshot rejections.
+ * Override via `WORKFLOW_PRECONDITION_MAX_INPROCESS_RESTARTS`.
+ */
+export function getPreconditionMaxInProcessRestarts(): number {
+  return envNumber(
+    'WORKFLOW_PRECONDITION_MAX_INPROCESS_RESTARTS',
+    PRECONDITION_MAX_INPROCESS_RESTARTS,
+    { integer: true }
+  );
+}
+
+// The in-process budget above is per-invocation, and a re-invocation that
+// enqueues a fresh message also restarts the queue's delivery count, so without
+// a counter carried on the message a permanently fenced run has no run-level
+// bound at all. It can stay fenced without any permanent fault — a full reload
+// is not atomic across pages, so a busy run can acquire a new hole on every
+// reload — so the chain is counted and the run fails once this many
+// re-invocations have been spent on stale-snapshot rejections.
+export const PRECONDITION_MAX_REINVOCATIONS = 5;
+
+/**
+ * Effective per-run budget for re-invocations caused by stale-snapshot
+ * rejections. Override via `WORKFLOW_PRECONDITION_MAX_REINVOCATIONS`.
+ */
+export function getPreconditionMaxReinvocations(): number {
+  return envNumber(
+    'WORKFLOW_PRECONDITION_MAX_REINVOCATIONS',
+    PRECONDITION_MAX_REINVOCATIONS,
+    { integer: true }
+  );
+}
+
+// Backoff before a precondition re-invocation. Unlike the in-process restart
+// (where the point is to re-read immediately), a re-invocation only happens
+// after the in-process budget failed to catch up, so the log is being extended
+// faster than this replay can follow it. Waiting lets the writers quiesce.
+export const PRECONDITION_REINVOKE_DELAY_SECONDS = 2;
+
+/**
+ * Effective delay before a precondition re-invocation. Override via
+ * `WORKFLOW_PRECONDITION_REINVOKE_DELAY_SECONDS`.
+ */
+export function getPreconditionReinvokeDelaySeconds(): number {
+  return envNumber(
+    'WORKFLOW_PRECONDITION_REINVOKE_DELAY_SECONDS',
+    PRECONDITION_REINVOKE_DELAY_SECONDS,
+    { integer: true }
+  );
+}
+
+// A delivery reaching a deployment the run is not pinned to is not treated as
+// permanent. Re-route the message at the run's own deployment a bounded number
+// of times before failing the run with DEPLOYMENT_MISMATCH.
+export const DEPLOYMENT_MISMATCH_MAX_RETRIES = 3;
+
+/**
+ * Effective deployment-mismatch re-route budget. Override via
+ * `WORKFLOW_DEPLOYMENT_MISMATCH_MAX_RETRIES`; `0` fails the run on the first
+ * misrouted delivery instead of attempting recovery.
+ */
+export function getDeploymentMismatchMaxRetries(): number {
+  return envNumber(
+    'WORKFLOW_DEPLOYMENT_MISMATCH_MAX_RETRIES',
+    DEPLOYMENT_MISMATCH_MAX_RETRIES,
+    { integer: true, min: 0 }
   );
 }

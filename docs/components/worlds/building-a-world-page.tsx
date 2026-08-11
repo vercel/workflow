@@ -100,7 +100,7 @@ export async function BuildingAWorldPage({
         <div className="mt-[var(--fd-nav-height)] pt-10 sm:pt-16">
           <div className="flex flex-col gap-6 sm:flex-row sm:items-start sm:justify-between">
             <div>
-              <h1 className="font-semibold text-4xl leading-[1.1] tracking-tight sm:text-5xl">
+              <h1 className="text-heading-40 sm:text-heading-48">
                 {page.data.title}
               </h1>
               <p className="mt-4 max-w-2xl text-muted-foreground sm:text-lg">

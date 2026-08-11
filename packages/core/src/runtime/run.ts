@@ -6,11 +6,15 @@ import {
 } from '@workflow/errors';
 import { WORKFLOW_DESERIALIZE, WORKFLOW_SERIALIZE } from '@workflow/serde';
 import {
+  envNumber,
   SPEC_VERSION_CURRENT,
   type WorkflowRunStatus,
   type World,
 } from '@workflow/world';
-import { type CryptoKey, importKey } from '../encryption.js';
+import {
+  deriveRunPayloadKeys,
+  type PayloadKey,
+} from '../serialization/encryption.js';
 import {
   getExternalRevivers,
   hydrateRunError,
@@ -24,6 +28,17 @@ import {
   type StopSleepResult,
   wakeUpRun,
 } from './runs.js';
+
+const RETURN_VALUE_POLL_INTERVAL_MS = 1_000;
+
+/** @internal */
+export function getReturnValuePollIntervalMs(): number {
+  return envNumber(
+    'WORKFLOW_RETURN_VALUE_POLL_INTERVAL_MS',
+    RETURN_VALUE_POLL_INTERVAL_MS,
+    { integer: true, min: 1 }
+  );
+}
 
 /**
  * A `ReadableStream` extended with workflow-specific helpers.
@@ -103,7 +118,7 @@ export class Run<TResult> {
    * reused for returnValue, getReadable(), etc.
    * @internal
    */
-  #encryptionKeyPromise: Promise<CryptoKey | undefined> | null = null;
+  #encryptionKeyPromise: Promise<PayloadKey | undefined> | null = null;
 
   /**
    * When true, run_created failed and the run may not exist yet (the
@@ -125,13 +140,13 @@ export class Run<TResult> {
    * to be resolved once.
    * @internal
    */
-  #getEncryptionKey(): Promise<CryptoKey | undefined> {
+  #getEncryptionKey(): Promise<PayloadKey | undefined> {
     if (!this.#encryptionKeyPromise) {
       this.#encryptionKeyPromise = (async () => {
         const world = await this.#lazyWorldPromise;
         const run = await world.runs.get(this.runId);
         const rawKey = await world.getEncryptionKeyForRun?.(run);
-        return rawKey ? await importKey(rawKey) : undefined;
+        return rawKey ? await deriveRunPayloadKeys(rawKey) : undefined;
       })();
     }
     return this.#encryptionKeyPromise;
@@ -143,7 +158,7 @@ export class Run<TResult> {
    * unobserved run lookup.
    * @internal
    */
-  #getEncryptionKeyLazily(): () => Promise<CryptoKey | undefined> {
+  #getEncryptionKeyLazily(): () => Promise<PayloadKey | undefined> {
     return () => this.#getEncryptionKey();
   }
 
@@ -304,7 +319,7 @@ export class Run<TResult> {
   }
 
   /**
-   * Polls the workflow return value every 1 second until it is completed.
+   * Polls the workflow return value until it is completed.
    * @internal
    * @returns The workflow return value.
    */
@@ -371,7 +386,9 @@ export class Run<TResult> {
         throw new WorkflowRunNotCompletedError(this.runId, run.status);
       } catch (error) {
         if (WorkflowRunNotCompletedError.is(error)) {
-          await new Promise((resolve) => setTimeout(resolve, 1_000));
+          await new Promise((resolve) =>
+            setTimeout(resolve, getReturnValuePollIntervalMs())
+          );
           continue;
         }
         if (

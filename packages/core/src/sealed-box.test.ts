@@ -8,6 +8,7 @@ import {
   base64ToBytes,
   bytesToBase64,
   decapsulate,
+  decodeRunPublicKey,
   deriveRunKeyPair,
   encapsulate,
   open,
@@ -477,6 +478,21 @@ describe('base64 helpers', () => {
         `expected ${bad} to be rejected`
       ).toBeUndefined();
     }
+  });
+
+  it('rejects a malformed public key at the decode boundary', () => {
+    // decodeRunPublicKey is the funnel every caller uses, so the strictness
+    // has to show up there rather than only in the raw decoder.
+    expect(decodeRunPublicKey('AAAAA')).toBeUndefined();
+    expect(decodeRunPublicKey('AA=A')).toBeUndefined();
+    expect(decodeRunPublicKey(undefined)).toBeUndefined();
+    // Right encoding, wrong length.
+    expect(
+      decodeRunPublicKey(bytesToBase64(new Uint8Array(31)))
+    ).toBeUndefined();
+    // And the happy path still resolves.
+    const valid = bytesToBase64(new Uint8Array(32).fill(3));
+    expect(decodeRunPublicKey(valid)).toEqual(new Uint8Array(32).fill(3));
   });
 
   it('accepts every canonical encoding Buffer produces', () => {

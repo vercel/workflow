@@ -7,6 +7,7 @@
  */
 
 import type {
+  BulkCancelWorkflowRunsResult,
   Event,
   Hook,
   Step,
@@ -14,6 +15,7 @@ import type {
   WorkflowRunStatus,
 } from '@workflow/world';
 import { decode, encode } from 'cbor-x';
+import { apiBase } from '~/lib/api-base';
 import type {
   EnvMap,
   HealthCheckResult,
@@ -27,7 +29,7 @@ import type {
 } from '~/lib/types';
 
 async function rpc<T>(method: string, params?: any): Promise<T> {
-  const res = await fetch('/api/rpc', {
+  const res = await fetch(`${apiBase()}/api/rpc`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/cbor',
@@ -135,6 +137,8 @@ export async function fetchEventsByCorrelationId(
     sortOrder?: 'asc' | 'desc';
     limit?: number;
     withData?: boolean;
+    /** The run the correlation id belongs to; it is unique per run, not globally. */
+    runId: string;
   }
 ): Promise<ServerActionResult<PaginatedResult<Event>>> {
   return rpc('fetchEventsByCorrelationId', {
@@ -177,6 +181,13 @@ export async function cancelRun(
   runId: string
 ): Promise<ServerActionResult<void>> {
   return rpc('cancelRun', { worldEnv, runId });
+}
+
+export async function bulkCancelRuns(
+  worldEnv: EnvMap,
+  runIds: string[]
+): Promise<ServerActionResult<BulkCancelWorkflowRunsResult>> {
+  return rpc('bulkCancelRuns', { worldEnv, runIds });
 }
 
 export async function recreateRun(

@@ -9,7 +9,7 @@ const Layout = async ({
 }: LayoutProps<'/[lang]/v4/cookbook'>) => {
   const { lang } = await params;
   return (
-    <div className="bg-background-100">
+    <div className="bg-background-200">
       <MaintenanceBanner pathname={`/${lang}/v4/cookbook`} />
       <DocsLayout
         currentVersion={MAINTENANCE_VERSION.id}

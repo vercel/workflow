@@ -3,10 +3,11 @@ import {
   SerializationError,
   WorkflowRuntimeError,
 } from '@workflow/errors';
+import { once } from '@workflow/utils';
 import { envNumber } from '@workflow/world';
 import { parse, stringify, unflatten } from 'devalue';
 import { monotonicFactory } from 'ulid';
-import { type CryptoKey, importKey } from './encryption.js';
+import { importKey } from './encryption.js';
 import {
   createFlushableState,
   flushablePipe,
@@ -20,12 +21,17 @@ import {
 import { getStepFunction } from './private.js';
 // V2: use getWorldLazy in step-side code paths so Turbopack can statically
 // resolve the world bridge from the step bundle without dragging the full
-// host world module into the flow route.
+// world.ts module (and its dynamic-import behaviour) into the flow route.
 // See `packages/core/src/runtime/get-world-lazy.ts` and the
 // "Turbopack NFT Tracing Errors in V2 Combined Flow Route" section of
 // `docs/content/docs/changelog/eager-processing.mdx`.
 import { getWorldLazy } from './runtime/get-world-lazy.js';
-import { createOpenSession, createSealSession } from './sealed-box.js';
+import {
+  bytesToBase64,
+  createOpenSession,
+  createSealSession,
+  decodeRunPublicKey,
+} from './sealed-box.js';
 import * as clientModule from './serialization/client.js';
 import {
   type CompressionStats,
@@ -35,12 +41,17 @@ import {
 import {
   aesKeyOf,
   decrypt,
+  deriveRunPayloadKeys,
   type EncryptionKeyParam,
   encrypt,
   isRunPayloadKeys,
   isSealTarget,
   type PayloadKey,
+  type RunPayloadKeys,
   resolveEncryptionKey,
+  runPayloadKeys,
+  type SealTarget,
+  sealTo,
 } from './serialization/encryption.js';
 import {
   formatSerializationError,
@@ -52,6 +63,11 @@ import {
   isEncrypted,
   peekFormatPrefix,
 } from './serialization/format.js';
+import {
+  type GuestCodeStats,
+  isInstanceOfPrototype,
+  readProperty,
+} from './serialization/hardened.js';
 import {
   getClassReducers,
   getClassRevivers,
@@ -84,6 +100,7 @@ import {
   STREAM_FRAMING_SYMBOL,
   STREAM_NAME_SYMBOL,
   STREAM_SERVER_DEPLOYMENT_ID_SYMBOL,
+  STREAM_SERVER_PUBLIC_KEY_SYMBOL,
   STREAM_SERVER_RUN_ID_SYMBOL,
   STREAM_TYPE_SYMBOL,
   WEBHOOK_RESPONSE_WRITABLE,
@@ -108,6 +125,16 @@ export {
   compress,
   decompress,
   type EncryptionKeyParam,
+  // Sealed-box ('encp') key variants — see serialization/encryption.ts.
+  type PayloadKey,
+  type RunPayloadKeys,
+  type SealTarget,
+  sealTo,
+  runPayloadKeys,
+  deriveRunPayloadKeys,
+  isSealTarget,
+  isRunPayloadKeys,
+  aesKeyOf,
 };
 
 // Re-export the legacy SerializationFormatType for backwards compatibility.
@@ -206,6 +233,34 @@ async function recordCompression(
             1 - storedBytes / uncompressedBytes
           )
         : {}),
+    });
+  } catch {
+    // ignore telemetry failures
+  }
+}
+
+/**
+ * Emits OTel span attributes for workflow (guest) code executions that the
+ * hardened serializer could not avoid (getters, proxies, custom
+ * serializers). No-ops when serialization was fully side-effect free —
+ * the common case. Same never-break-the-data-path contract as
+ * `recordCompression` above.
+ */
+async function recordGuestCodeExecutions(stats: GuestCodeStats): Promise<void> {
+  if (stats.executions.length === 0) return;
+  try {
+    const span = await getActiveSpan();
+    if (!span) return;
+    const details = [
+      ...new Set(
+        stats.executions.map((e) =>
+          e.detail ? `${e.kind} (${e.detail})` : e.kind
+        )
+      ),
+    ];
+    span.setAttributes({
+      ...Attr.SerializationGuestCodeExecutions(stats.executions.length),
+      ...Attr.SerializationGuestCodeDetails(details),
     });
   } catch {
     // ignore telemetry failures
@@ -1185,7 +1240,7 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
     // costs nothing: no request can leave before `sendGroup`'s own world
     // await either.
     let resolvedFlushIntervalMs = getEnvStreamFlushIntervalMs();
-    let flushIntervalResolution: Promise<void> | null = null;
+    let _flushIntervalResolution: Promise<void> | null = null;
     // Per-request wire limits (server caps) and the buffer bound. The bound
     // uses the same knobs the coalescing pipe used, so producer backpressure
     // behavior is unchanged: once a request-worth of chunks (or the byte
@@ -1368,7 +1423,7 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
         // Promise.resolve: everywhere else the world is only ever awaited,
         // which tolerates a synchronous value (tests stub getWorldLazy that
         // way); .then() must be given a real promise.
-        flushIntervalResolution ??= Promise.resolve(worldPromise)
+        _flushIntervalResolution ??= Promise.resolve(worldPromise)
           .then(
             (world) => {
               resolvedFlushIntervalMs =
@@ -1538,6 +1593,10 @@ import type {
 function getAllBaseReducers(
   global: Record<string, any> = globalThis
 ): Partial<Reducers> {
+  const requestPrototype = once(() => getHostClassPrototype(global, 'Request'));
+  const responsePrototype = once(() =>
+    getHostClassPrototype(global, 'Response')
+  );
   // Class/Instance MUST come before Error so that custom Error subclasses
   // with WORKFLOW_SERIALIZE take precedence (devalue uses first-match-wins).
   return {
@@ -1547,15 +1606,20 @@ function getAllBaseReducers(
     // Request and Response reducers are mode-specific and added by
     // getExternalReducers / getWorkflowReducers / getStepReducers below.
     Request: (value) => {
-      if (!(value instanceof global.Request)) return false;
+      // Chain walk rather than `instanceof global.Request`: see the
+      // ReadableStream reducer in getWorkflowReducers for why. Reads go
+      // through descriptors so a getter cannot run unreported.
+      if (!isInstanceOfPrototype(value, requestPrototype.value)) return false;
       const data: SerializableSpecial['Request'] = {
-        method: value.method,
-        url: value.url,
-        headers: value.headers,
-        body: value.body,
-        duplex: value.duplex,
+        method: readProperty(value, 'method') as string,
+        url: readProperty(value, 'url') as string,
+        headers: readProperty(value, 'headers') as Headers,
+        body: readProperty(value, 'body') as ReadableStream | null,
+        duplex: readProperty(value, 'duplex') as 'half',
       };
-      const responseWritable = value[WEBHOOK_RESPONSE_WRITABLE];
+      const responseWritable = readProperty(value, WEBHOOK_RESPONSE_WRITABLE) as
+        | WritableStream<Response>
+        | undefined;
       if (responseWritable) {
         data.responseWritable = responseWritable;
       }
@@ -1568,25 +1632,27 @@ function getAllBaseReducers(
       // Plain non-aborted native signals are intentionally dropped (would
       // mint stream infra for every Request, including the auto-generated
       // signal on `new Request(url)`).
+      const signal = readProperty(value, 'signal');
       if (
-        value.signal &&
-        (value.signal.aborted ||
-          (value.signal as AbortInternals)[ABORT_STREAM_NAME])
+        signal &&
+        (readProperty(signal, 'aborted') ||
+          readProperty(signal, ABORT_STREAM_NAME))
       ) {
-        data.signal = value.signal;
+        data.signal = signal as AbortSignal;
       }
       return data;
     },
     Response: (value) => {
-      if (!(value instanceof global.Response)) return false;
+      // See the Request reducer above.
+      if (!isInstanceOfPrototype(value, responsePrototype.value)) return false;
       return {
-        type: value.type,
-        url: value.url,
-        status: value.status,
-        statusText: value.statusText,
-        headers: value.headers,
-        body: value.body,
-        redirected: value.redirected,
+        type: readProperty(value, 'type') as Response['type'],
+        url: readProperty(value, 'url') as string,
+        status: readProperty(value, 'status') as number,
+        statusText: readProperty(value, 'statusText') as string,
+        headers: readProperty(value, 'headers') as Headers,
+        body: readProperty(value, 'body') as ReadableStream | null,
+        redirected: readProperty(value, 'redirected') as boolean,
       };
     },
   };
@@ -1850,6 +1916,12 @@ export function getExternalReducers(
           name: existingName,
           runId: existingRunId,
         };
+        const existingPublicKey = (value as any)[
+          STREAM_SERVER_PUBLIC_KEY_SYMBOL
+        ];
+        if (typeof existingPublicKey === 'string') {
+          descriptor.encryptionPublicKey = existingPublicKey;
+        }
         const existingDeploymentId = (value as any)[
           STREAM_SERVER_DEPLOYMENT_ID_SYMBOL
         ];
@@ -1910,40 +1982,99 @@ export function getExternalReducers(
  * @param global
  * @returns
  */
+/**
+ * Prototypes used for brand-style identification in the reducers below.
+ *
+ * The stream and abort classes are host classes injected into the sandbox, so
+ * instances carry the host prototype in their chain and a chain walk
+ * identifies them without consulting `Symbol.hasInstance` on the sandbox
+ * class. `undefined` when the runtime lacks the class, in which case
+ * identification falls back to the infrastructure symbols alone.
+ */
+/**
+ * The prototype of a host class that may also be injected into the sandbox.
+ * Prefers the sandbox binding (the same host class object in practice) and
+ * falls back to the host's own, so a chain walk identifies instances from
+ * either realm without consulting `Symbol.hasInstance`.
+ */
+function getHostClassPrototype(
+  global: Record<string, any>,
+  name: string
+): object | undefined {
+  // Descriptor reads (`readProperty`), not bare gets: an accessor or Proxy
+  // planted on the sandbox global (or the constructor) must be recorded in
+  // the guest-code sink — it gates VM retention — not silently executed.
+  // Callers wrap this in `once(...)` per reducer set, so the read happens
+  // exactly once per serialize pass, on the first guard invocation — inside
+  // the pass's sink scope, never per value.
+  const ctor = readProperty(global, name) ?? readProperty(globalThis, name);
+  if (typeof ctor !== 'function') return undefined;
+  return readProperty(ctor, 'prototype') as object | undefined;
+}
+
 export function getWorkflowReducers(
   global: Record<string, any> = globalThis
 ): Partial<Reducers> {
+  const readableStreamPrototype = once(() =>
+    getHostClassPrototype(global, 'ReadableStream')
+  );
+  const writableStreamPrototype = once(() =>
+    getHostClassPrototype(global, 'WritableStream')
+  );
+  const abortControllerPrototype = once(() =>
+    getHostClassPrototype(global, 'AbortController')
+  );
+  const abortSignalPrototype = once(() =>
+    getHostClassPrototype(global, 'AbortSignal')
+  );
   return {
     ...getAllBaseReducers(global),
 
     // Readable/Writable streams from within the workflow execution environment
     // are simply "handles" that can be passed around to other steps.
     ReadableStream: (value) => {
-      if (!(value instanceof global.ReadableStream)) return false;
+      // Walk the prototype chain instead of `instanceof global.ReadableStream`:
+      // the class is host-provided (injected into the sandbox), so its
+      // prototype is in the chain of both real streams and the
+      // `Object.create(ReadableStream.prototype)` handles used for request
+      // bodies — but a chain walk never consults `Symbol.hasInstance`, which
+      // the sandbox can define and which ran for every value the earlier
+      // reducers did not claim. Reads below go through descriptors so a
+      // getter on a step argument cannot run unreported.
+      if (!isInstanceOfPrototype(value, readableStreamPrototype.value))
+        return false;
 
       // Check if this is a fake stream storing BodyInit from Request/Response constructor
-      const bodyInit = value[BODY_INIT_SYMBOL];
+      const bodyInit = readProperty(value, BODY_INIT_SYMBOL);
       if (bodyInit !== undefined) {
         // This is a fake stream - serialize the BodyInit directly
         // devalue will handle serializing strings, Uint8Array, etc.
         return { bodyInit };
       }
 
-      const name = value[STREAM_NAME_SYMBOL];
+      const name = readProperty(value, STREAM_NAME_SYMBOL) as string;
       if (!name) {
         throw new WorkflowRuntimeError('ReadableStream `name` is not set');
       }
-      const s: SerializableSpecial['ReadableStream'] = { name };
-      const type = value[STREAM_TYPE_SYMBOL];
+      const s: Extract<
+        SerializableSpecial['ReadableStream'],
+        { name: string }
+      > = { name };
+      const type = readProperty(value, STREAM_TYPE_SYMBOL) as
+        | 'bytes'
+        | undefined;
       if (type) s.type = type;
-      const framing: ByteStreamFraming | undefined =
-        value[STREAM_FRAMING_SYMBOL];
+      const framing = readProperty(value, STREAM_FRAMING_SYMBOL) as
+        | ByteStreamFraming
+        | undefined;
       if (framing) s.framing = framing;
       return s;
     },
     WritableStream: (value) => {
-      if (!(value instanceof global.WritableStream)) return false;
-      const name = value[STREAM_NAME_SYMBOL];
+      // See the ReadableStream reducer above for why this walks the chain.
+      if (!isInstanceOfPrototype(value, writableStreamPrototype.value))
+        return false;
+      const name = readProperty(value, STREAM_NAME_SYMBOL) as string;
       if (!name) {
         throw new WorkflowRuntimeError('WritableStream `name` is not set');
       }
@@ -1951,11 +2082,21 @@ export function getWorkflowReducers(
       // When the handle was forwarded from another run (parent → child
       // via `start()`), preserve the foreign runId so the step-side
       // reviver opens the writable against the original stream.
-      const foreignRunId = value[STREAM_SERVER_RUN_ID_SYMBOL];
+      const foreignRunId = readProperty(value, STREAM_SERVER_RUN_ID_SYMBOL);
       if (typeof foreignRunId === 'string') s.runId = foreignRunId;
-      const foreignDeploymentId = value[STREAM_SERVER_DEPLOYMENT_ID_SYMBOL];
+      const foreignDeploymentId = readProperty(
+        value,
+        STREAM_SERVER_DEPLOYMENT_ID_SYMBOL
+      );
       if (typeof foreignDeploymentId === 'string') {
         s.deploymentId = foreignDeploymentId;
+      }
+      const foreignPublicKey = readProperty(
+        value,
+        STREAM_SERVER_PUBLIC_KEY_SYMBOL
+      );
+      if (typeof foreignPublicKey === 'string') {
+        s.encryptionPublicKey = foreignPublicKey;
       }
       return s;
     },
@@ -1965,26 +2106,42 @@ export function getWorkflowReducers(
     // is a plain object (not a class), so instanceof checks won't work for signals.
     // Detect instances by the presence of the ABORT_STREAM_NAME symbol instead.
     AbortController: (value) => {
-      if (!value || !value.signal) return false;
+      // `value.signal` was a bare read, so a `signal` getter on any object
+      // reaching this reducer executed unreported. Read through descriptors
+      // and gate on the infrastructure symbol / prototype first.
+      if (value === null || typeof value !== 'object') return false;
       const holder = value as AbortController & AbortHolder;
-      const hasAbortSymbol =
-        holder[ABORT_STREAM_NAME] ?? holder.signal?.[ABORT_STREAM_NAME];
-      const isNativeAbortController =
-        global.AbortController &&
-        typeof global.AbortController === 'function' &&
-        value instanceof global.AbortController;
-      if (!hasAbortSymbol && !isNativeAbortController) return false;
-      return reduceAbortBySymbol(value.signal, holder);
+      const ownSymbol = readProperty(value, ABORT_STREAM_NAME);
+      const isNativeAbortController = isInstanceOfPrototype(
+        value,
+        abortControllerPrototype.value
+      );
+      if (ownSymbol === undefined && !isNativeAbortController) {
+        // Not ours and not a native controller — but a foreign controller
+        // may still carry the symbol on its signal.
+        const maybeSignal = readProperty(value, 'signal');
+        if (
+          maybeSignal === null ||
+          typeof maybeSignal !== 'object' ||
+          readProperty(maybeSignal, ABORT_STREAM_NAME) === undefined
+        ) {
+          return false;
+        }
+      }
+      const signal = readProperty(value, 'signal');
+      if (!signal) return false;
+      return reduceAbortBySymbol(signal as AbortSignal, holder);
     },
     AbortSignal: (value) => {
-      const signal = value as (AbortSignal & AbortInternals) | undefined;
-      const hasAbortSymbol = signal?.[ABORT_STREAM_NAME];
-      const isNativeAbortSignal =
-        global.AbortSignal &&
-        typeof global.AbortSignal === 'function' &&
-        value instanceof global.AbortSignal;
+      if (value === null || typeof value !== 'object') return false;
+      const hasAbortSymbol =
+        readProperty(value, ABORT_STREAM_NAME) !== undefined;
+      const isNativeAbortSignal = isInstanceOfPrototype(
+        value,
+        abortSignalPrototype.value
+      );
       if (!hasAbortSymbol && !isNativeAbortSignal) return false;
-      return reduceAbortBySymbol(value, value as AbortHolder);
+      return reduceAbortBySymbol(value as AbortSignal, value as AbortHolder);
     },
   };
 }
@@ -2106,6 +2263,10 @@ function getStepReducers(
 
       const s: SerializableSpecial['WritableStream'] = { name };
       if (typeof foreignRunId === 'string') s.runId = foreignRunId;
+      const foreignPublicKey = (value as any)[STREAM_SERVER_PUBLIC_KEY_SYMBOL];
+      if (typeof foreignPublicKey === 'string') {
+        s.encryptionPublicKey = foreignPublicKey;
+      }
       const foreignDeploymentId = (value as any)[
         STREAM_SERVER_DEPLOYMENT_ID_SYMBOL
       ];
@@ -2464,14 +2625,31 @@ export function getCommonRevivers(global: Record<string, any> = globalThis) {
 }
 
 /**
- * Resolve the encrypt-only key needed when a child writes into another run's
- * stream. New descriptors include the owner's deployment ID; descriptors
- * created by older SDK versions fall back to loading the owning run.
+ * Resolve the write-only key a run needs when writing into another run's
+ * forwarded stream.
+ *
+ * Three tiers, cheapest first:
+ *
+ * 1. The descriptor carries the owner's X25519 public key — seal to it with
+ *    no I/O whatsoever. The owner published the key when it created the
+ *    stream, so this is the zero-round-trip path.
+ * 2. The descriptor carries the owner's deployment ID — resolve the owner's
+ *    symmetric key, which cross-deployment means a key-API round trip.
+ * 3. Neither (descriptors written by older SDKs) — load the owning run first,
+ *    then resolve its symmetric key.
+ *
+ * Tiers 2 and 3 import the key encrypt-only, which is an honor-system
+ * restriction: the same bytes could decrypt. Tier 1 makes it a cryptographic
+ * guarantee — a public key cannot read anything.
  */
 async function getForwardedWritableEncryptionKey(
   runId: string,
-  deploymentId: string | undefined
-): Promise<CryptoKey | undefined> {
+  deploymentId: string | undefined,
+  encryptionPublicKey: string | undefined
+): Promise<PayloadKey | undefined> {
+  const ownerPublicKey = decodeRunPublicKey(encryptionPublicKey);
+  if (ownerPublicKey) return sealTo(ownerPublicKey);
+
   const world = await getWorldLazy();
   if (!world.getEncryptionKeyForRun) return undefined;
 
@@ -2624,7 +2802,11 @@ export function getExternalRevivers(
       const targetKey: EncryptionKeyParam =
         targetRunId === runId
           ? cryptoKey
-          : getForwardedWritableEncryptionKey(targetRunId, value.deploymentId);
+          : getForwardedWritableEncryptionKey(
+              targetRunId,
+              value.deploymentId,
+              value.encryptionPublicKey
+            );
 
       const serialize = getSerializeStream(
         getExternalReducers(global, ops, targetRunId, targetKey),
@@ -2661,6 +2843,18 @@ export function getExternalRevivers(
           STREAM_SERVER_DEPLOYMENT_ID_SYMBOL,
           {
             value: value.deploymentId,
+            writable: false,
+          }
+        );
+      }
+      // Keep the owner's public key on the handle so a further forward stays on
+      // the zero-lookup sealed path.
+      if (typeof value.encryptionPublicKey === 'string') {
+        Object.defineProperty(
+          serialize.writable,
+          STREAM_SERVER_PUBLIC_KEY_SYMBOL,
+          {
+            value: value.encryptionPublicKey,
             writable: false,
           }
         );
@@ -2777,6 +2971,16 @@ export function getWorkflowRevivers(
       if (typeof value.deploymentId === 'string') {
         descriptor[STREAM_SERVER_DEPLOYMENT_ID_SYMBOL] = {
           value: value.deploymentId,
+          writable: false,
+        };
+      }
+      // Preserve the owner's public key for the same reason as the runId
+      // above. Without it, forwarding a writable through a workflow to a step
+      // silently drops the key, and the step falls back to fetching the
+      // owner's symmetric key — the round trip sealing exists to remove.
+      if (typeof value.encryptionPublicKey === 'string') {
+        descriptor[STREAM_SERVER_PUBLIC_KEY_SYMBOL] = {
+          value: value.encryptionPublicKey,
           writable: false,
         };
       }
@@ -3027,7 +3231,11 @@ function getStepRevivers(
       const targetKey: EncryptionKeyParam =
         targetRunId === runId
           ? cryptoKey
-          : getForwardedWritableEncryptionKey(targetRunId, targetDeploymentId);
+          : getForwardedWritableEncryptionKey(
+              targetRunId,
+              targetDeploymentId,
+              value.encryptionPublicKey
+            );
 
       const serialize = getSerializeStream(
         getStepReducers(global, ops, targetRunId, targetKey),
@@ -3070,6 +3278,47 @@ function getStepRevivers(
           STREAM_SERVER_DEPLOYMENT_ID_SYMBOL,
           {
             value: targetDeploymentId,
+            writable: false,
+          }
+        );
+      }
+      // Keep the owner's public key on the handle so a further forward stays on
+      // the zero-lookup sealed path.
+      //
+      // When the descriptor carries no key and the stream belongs to THIS run,
+      // derive it. A writable taken with `getWritable()` in a workflow body has
+      // only a name on it — the workflow VM holds no key material by design —
+      // so nothing could publish the key when the handle was created. Reviving
+      // happens in a step, which does hold this run's key, and any later
+      // forward then just copies the symbol.
+      //
+      // It has to happen here rather than at serialization time: `start()`
+      // dehydrates its arguments with the CHILD's runId and the CHILD's key, so
+      // the owning run's key is no longer in scope by then.
+      //
+      // `targetRunId === runId` is the guard that matters. For a stream another
+      // run owns we must not advertise our key — the receiver would seal to us
+      // and the real owner could never open what it wrote.
+      if (
+        typeof value.encryptionPublicKey !== 'string' &&
+        targetRunId === runId &&
+        isRunPayloadKeys(cryptoKey)
+      ) {
+        Object.defineProperty(
+          serialize.writable,
+          STREAM_SERVER_PUBLIC_KEY_SYMBOL,
+          {
+            value: bytesToBase64(cryptoKey.keyPair.publicKey),
+            writable: false,
+          }
+        );
+      }
+      if (typeof value.encryptionPublicKey === 'string') {
+        Object.defineProperty(
+          serialize.writable,
+          STREAM_SERVER_PUBLIC_KEY_SYMBOL,
+          {
+            value: value.encryptionPublicKey,
             writable: false,
           }
         );
@@ -3297,7 +3546,16 @@ export async function dehydrateWorkflowReturnValue(
   key: PayloadKey | undefined,
   global: Record<string, any> = globalThis,
   v1Compat = false,
-  compression = false
+  compression = false,
+  /**
+   * Optional sink receiving every workflow-code execution serialization could
+   * not avoid, for callers that need them programmatically (e.g. a
+   * retained-VM gate deciding whether the VM is still reusable). The
+   * executions are emitted as span attributes either way, so omitting this
+   * loses nothing observability-wise. The retained-VM gate in
+   * runtime/suspension-handler.ts passes one for step-input dehydration.
+   */
+  guestCodeStatsOut?: GuestCodeStats
 ): Promise<Uint8Array | unknown> {
   if (v1Compat) {
     const str = stringify(value, getWorkflowReducers(global));
@@ -3305,13 +3563,18 @@ export async function dehydrateWorkflowReturnValue(
   }
   try {
     const compressionStats: CompressionStats = {};
+    const guestCodeStats: GuestCodeStats = guestCodeStatsOut ?? {
+      executions: [],
+    };
     const result = await stepModule.serialize(value, key, {
       global,
       extraReducers: getStreamAndRequestReducers(getWorkflowReducers(global)),
       compression,
       compressionStats,
+      guestCodeStats,
     });
     await recordCompression(compressionStats, 'serialize');
+    await recordGuestCodeExecutions(guestCodeStats);
     return result;
   } catch (error) {
     const cause = unwrapSerializationCause(error);
@@ -3360,7 +3623,9 @@ export async function dehydrateStepArguments(
   key: PayloadKey | undefined,
   global: Record<string, any> = globalThis,
   v1Compat = false,
-  compression = false
+  compression = false,
+  /** See `dehydrateWorkflowReturnValue`. */
+  guestCodeStatsOut?: GuestCodeStats
 ): Promise<Uint8Array | unknown> {
   if (v1Compat) {
     const str = stringify(value, getWorkflowReducers(global));
@@ -3368,13 +3633,18 @@ export async function dehydrateStepArguments(
   }
   try {
     const compressionStats: CompressionStats = {};
+    const guestCodeStats: GuestCodeStats = guestCodeStatsOut ?? {
+      executions: [],
+    };
     const result = await stepModule.serialize(value, key, {
       global,
       extraReducers: getStreamAndRequestReducers(getWorkflowReducers(global)),
       compression,
       compressionStats,
+      guestCodeStats,
     });
     await recordCompression(compressionStats, 'serialize');
+    await recordGuestCodeExecutions(guestCodeStats);
     return result;
   } catch (error) {
     const cause = unwrapSerializationCause(error);

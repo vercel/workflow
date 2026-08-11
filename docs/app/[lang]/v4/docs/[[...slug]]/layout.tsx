@@ -12,7 +12,7 @@ const Layout = async ({
 }: LayoutProps<'/[lang]/v4/docs/[[...slug]]'>) => {
   const { lang, slug } = await params;
   return (
-    <div className="bg-background-100">
+    <div className="bg-background-200">
       {/* Deep-link the banner to the same page on the latest version; pages
           that only exist in v4 are caught by the version-switcher fallback
           redirects in next.config.ts. */}

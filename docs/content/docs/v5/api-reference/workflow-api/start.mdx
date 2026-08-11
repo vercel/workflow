@@ -114,3 +114,28 @@ When using `deploymentId: "latest"`, the workflow run will execute on a potentia
 - **Workflow identity**: The workflow ID is derived from the function name and file path. If the latest deployment has renamed the workflow function or moved it to a different directory, the workflow ID will no longer match and the run will fail to start.
 - **Input and output compatibility**: The arguments passed to `start()` are serialized by the calling deployment but deserialized by the target deployment. Similarly, the workflow's return value is serialized by the target deployment but deserialized by the caller. If the workflow's expected arguments or return type have changed (e.g. added required fields, removed fields, or changed types), the run may fail or behave unexpectedly. Ensure that input and output schemas remain backward-compatible across deployments.
 </Callout>
+
+### Inside a Workflow Function
+
+`start()` can be called directly from a workflow function to spawn a child run. It is step-backed, so the spawn records a deterministic step boundary in the parent's event log.
+
+```typescript
+import { start } from "workflow/api";
+import { childWorkflow } from "./workflows/child";
+
+export async function parentWorkflow(value: number) {
+  "use workflow";
+
+  const childRun = await start(childWorkflow, [value]); // [!code highlight]
+  const result = await childRun.returnValue; // [!code highlight]
+  return { childRunId: childRun.runId, result };
+}
+```
+
+<Callout type="info">
+The returned `Run` object is fully functional inside a workflow. Each property access or method call (`.status`, `.returnValue`, `.cancel()`) executes as a separate step. See [Workflow Composition](/cookbook/common-patterns/workflow-composition) for choosing between spawning a child run and awaiting a workflow function directly.
+</Callout>
+
+<Callout type="warn">
+`returnValue` polls the child run every second and holds the polling step's worker slot open for as long as the child takes to finish. For long-running children, spawn without awaiting `returnValue` and have the child resume a [hook](/docs/foundations/hooks) when it completes — see the [`startAndWait()` pattern](/cookbook/advanced/child-workflows).
+</Callout>

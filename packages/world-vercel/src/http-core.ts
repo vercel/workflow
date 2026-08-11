@@ -153,13 +153,29 @@ export function parseRetryAfter(
 }
 
 /**
+ * Flatten a fetch `Headers` into the plain record both `throwForErrorResponse`
+ * (mirroring the v3 `makeRequest` error contract) and the WS transport's
+ * `getHeaders` seam expect. Lives here because both `events-v4.ts` and
+ * `ws-transport.ts` need it and `events-v4` already imports the transport, so
+ * the reverse edge would be a cycle.
+ */
+export function headersToRecord(headers: Headers): Record<string, string> {
+  const out: Record<string, string> = {};
+  headers.forEach((value, key) => {
+    out[key] = value;
+  });
+  return out;
+}
+
+/**
  * Build the typed error for a non-2xx response. This is the single source of
  * truth for the status → error-type contract the runtime branches on:
  *
  *   - 409 → EntityConflictError (start() dedupe, terminal-state transitions)
  *   - 410 → RunExpiredError (runtime exits without retrying)
- *   - 412 → PreconditionFailedError + retryAfter (stale `stateUpdatedAt`
- *     snapshot — the optimistic-concurrency guard on event creation)
+ *   - 412 → PreconditionFailedError + retryAfter + details (stale precondition
+ *     snapshot — the optimistic-concurrency guard on event creation; `details`
+ *     carries the events the backend returned inline, when it did)
  *   - 425 → TooEarlyError + retryAfter (step retry pacing — see #1806 for what
  *     happens when a 425 degrades into an untyped error)
  *   - 429 → ThrottleError + retryAfter, EXCEPT a firewall challenge (429 +
@@ -179,13 +195,17 @@ export function errorForResponse(
     code?: string;
     url?: string;
     mitigated?: string | null;
+    /** Rejection detail for a 412 — the events the backend says the client's
+     *  snapshot was missing, when it returned them inline. Ignored for every
+     *  other status. */
+    details?: unknown;
   } = {}
 ): Error {
-  const { retryAfter, code, url, mitigated } = opts;
+  const { retryAfter, code, url, mitigated, details } = opts;
   if (status === 409) return new EntityConflictError(message);
   if (status === 410) return new RunExpiredError(message);
   if (status === 412)
-    return new PreconditionFailedError(message, { retryAfter });
+    return new PreconditionFailedError(message, { retryAfter, details });
   if (status === 425) return new TooEarlyError(message, { retryAfter });
   if (status === 429) {
     // A firewall challenge can't be solved by a server-to-server client, so map
@@ -343,6 +363,14 @@ export interface InstrumentedFetchOptions {
    * `errorForResponse`.
    */
   buildError?: (response: Response) => Error | Promise<Error>;
+  /**
+   * Notified about the transport-level outcome of the `fetch()` call: the thrown
+   * error when no response arrived, `undefined` when one did. An HTTP error
+   * status is *not* reported as a failure — the origin answered, so the transport
+   * worked. Lets a caller that owns a shared dispatcher retire it when its
+   * connections stop delivering (see noteEventsTransportOutcome).
+   */
+  onTransportOutcome?: (error?: unknown) => void;
 }
 
 /**
@@ -375,6 +403,7 @@ export async function instrumentedFetch(
     spanName,
     attributes,
     durationAttribute,
+    onTransportOutcome,
   } = opts;
   const label = logLabel ?? url;
 
@@ -432,6 +461,9 @@ export async function instrumentedFetch(
         } as any);
       } catch (error) {
         const elapsed = Date.now() - start;
+        // Report the raw error, before the timeout mapping below rewraps it: the
+        // undici error code the caller matches on lives in this chain.
+        onTransportOutcome?.(error);
         // AbortSignal.timeout() surfaces as a DOMException named 'TimeoutError'.
         // Map to WorkflowWorldError so existing catch sites treat it like any
         // other world transport failure.
@@ -450,6 +482,7 @@ export async function instrumentedFetch(
         throw error;
       }
       const ms = Date.now() - start;
+      onTransportOutcome?.();
 
       httpLog(method, label, response, ms);
       span?.setAttributes({ ...HttpResponseStatusCode(response.status) });

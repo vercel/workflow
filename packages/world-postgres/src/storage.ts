@@ -8,7 +8,9 @@ import {
   WorkflowWorldError,
 } from '@workflow/errors';
 import type {
+  AnyEventRequest,
   AttributeChange,
+  CreateEventParams,
   Event,
   EventResult,
   ExperimentalSetAttributesResult,
@@ -30,6 +32,7 @@ import {
   ATTRIBUTE_MAX_PER_RUN,
   AttributeValidationError,
   EventSchema,
+  getMaxEventsPerRun,
   HookSchema,
   isChildEntityCreationEvent,
   isChildEntityCreationEventType,
@@ -53,16 +56,36 @@ import {
   asc,
   desc,
   eq,
+  exists,
   gt,
   inArray,
+  isNull,
   lt,
+  lte,
+  notExists,
   notInArray,
+  or,
   sql,
 } from 'drizzle-orm';
 import { monotonicFactory } from 'ulid';
 import { type Drizzle, Schema } from './drizzle/index.js';
 import type { SerializedContent } from './drizzle/schema.js';
 import { compact } from './util.js';
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+function getHookRetentionLimitMs(): number {
+  const days = Number(
+    process.env.WORKFLOW_POSTGRES_HOOK_RETENTION_LIMIT_DAYS ?? 30
+  );
+  if (!Number.isFinite(days) || days <= 0) {
+    throw new WorkflowWorldError(
+      'WORKFLOW_POSTGRES_HOOK_RETENTION_LIMIT_DAYS must be a positive number',
+      { status: 400 }
+    );
+  }
+  return days * DAY_MS;
+}
 
 /**
  * Read helper for the deprecated `error` text column (legacy: JSON-stringified
@@ -401,8 +424,22 @@ async function handleLegacyEventPostgres(
 }
 
 export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
+  const hookRetentionLimitMs = getHookRetentionLimitMs();
   const ulid = monotonicFactory();
   const { events } = Schema;
+  const ownerRunIsTerminal = drizzle
+    .select({ runId: Schema.runs.runId })
+    .from(Schema.runs)
+    .where(
+      and(
+        eq(Schema.runs.runId, Schema.hooks.runId),
+        inArray(Schema.runs.status, TERMINAL_WORKFLOW_RUN_STATUSES)
+      )
+    );
+  const hookRetentionEnded = or(
+    isNull(Schema.hooks.tokenRetentionUntil),
+    lte(Schema.hooks.tokenRetentionUntil, sql`now()`)
+  );
 
   // Prepared statements for validation queries (performance optimization)
   const getRunForValidation = drizzle
@@ -434,7 +471,15 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
   const getHookByToken = drizzle
     .select({ hookId: Schema.hooks.hookId, runId: Schema.hooks.runId })
     .from(Schema.hooks)
-    .where(eq(Schema.hooks.token, sql.placeholder('token')))
+    .where(
+      and(
+        eq(Schema.hooks.token, sql.placeholder('token')),
+        or(
+          gt(Schema.hooks.tokenRetentionUntil, sql`now()`),
+          notExists(ownerRunIsTerminal)
+        )
+      )
+    )
     .limit(1)
     .prepare('events_get_hook_by_token');
 
@@ -465,7 +510,23 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
     .prepare('events_get_wait_for_validation');
 
   return {
-    async create(runId, data, params): Promise<EventResult> {
+    async create(
+      runId: string | null,
+      data: AnyEventRequest,
+      params?: CreateEventParams
+    ): Promise<EventResult> {
+      if (
+        data.eventType === 'hook_created' &&
+        data.eventData.tokenRetentionUntil !== undefined &&
+        data.eventData.tokenRetentionUntil.getTime() >
+          Date.now() + hookRetentionLimitMs
+      ) {
+        throw new WorkflowWorldError(
+          `Hook minimum retention cannot exceed ${hookRetentionLimitMs / DAY_MS} days in the Postgres World.`,
+          { status: 400 }
+        );
+      }
+
       let eventId: string | undefined;
       const getEventId = () => (eventId ??= `wevt_${ulid()}`);
 
@@ -647,7 +708,10 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
           );
         }
       }
-      if (data.eventType === 'attr_set' && !currentRun) {
+      if (
+        !currentRun &&
+        (data.eventType === 'attr_set' || data.eventType === 'run_started')
+      ) {
         throw new WorkflowRunNotFoundError(effectiveRunId);
       }
 
@@ -902,13 +966,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
         }
       }
 
-      // Terminal run statuses for use in SQL WHERE clauses (atomic guard).
-      // Must match the Vercel world's conditional expressions:
-      //   ne(status, 'completed') AND ne(status, 'failed') AND ne(status, 'cancelled')
-      const terminalRunStatuses: (typeof Schema.runs.status.enumValues)[number][] =
-        [...TERMINAL_WORKFLOW_RUN_STATUSES];
-
-      // Handle run_completed event: update run status and cleanup hooks
+      // Handle run_completed event: update run status
       // Uses conditional UPDATE to prevent completing an already-terminal run.
       if (data.eventType === 'run_completed') {
         const eventData = (data as any).eventData as { output?: any };
@@ -923,7 +981,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
           .where(
             and(
               eq(Schema.runs.runId, effectiveRunId),
-              notInArray(Schema.runs.status, terminalRunStatuses)
+              notInArray(Schema.runs.status, TERMINAL_WORKFLOW_RUN_STATUSES)
             )
           )
           .returning();
@@ -942,18 +1000,9 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
             );
           }
         }
-        // Delete all hooks and waits for this run to allow token reuse
-        await Promise.all([
-          drizzle
-            .delete(Schema.hooks)
-            .where(eq(Schema.hooks.runId, effectiveRunId)),
-          drizzle
-            .delete(Schema.waits)
-            .where(eq(Schema.waits.runId, effectiveRunId)),
-        ]);
       }
 
-      // Handle run_failed event: update run status and cleanup hooks
+      // Handle run_failed event: update run status
       // Uses conditional UPDATE to prevent failing an already-terminal run.
       if (data.eventType === 'run_failed') {
         const eventData = (data as any).eventData as {
@@ -975,7 +1024,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
           .where(
             and(
               eq(Schema.runs.runId, effectiveRunId),
-              notInArray(Schema.runs.status, terminalRunStatuses)
+              notInArray(Schema.runs.status, TERMINAL_WORKFLOW_RUN_STATUSES)
             )
           )
           .returning();
@@ -994,18 +1043,9 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
             );
           }
         }
-        // Delete all hooks and waits for this run to allow token reuse
-        await Promise.all([
-          drizzle
-            .delete(Schema.hooks)
-            .where(eq(Schema.hooks.runId, effectiveRunId)),
-          drizzle
-            .delete(Schema.waits)
-            .where(eq(Schema.waits.runId, effectiveRunId)),
-        ]);
       }
 
-      // Handle run_cancelled event: update run status and cleanup hooks
+      // Handle run_cancelled event: update run status
       // Uses conditional UPDATE to prevent cancelling an already-terminal run.
       // Note: idempotent run_cancelled on already-cancelled runs is handled
       // earlier in the pre-validation block (creates event and returns early).
@@ -1020,7 +1060,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
           .where(
             and(
               eq(Schema.runs.runId, effectiveRunId),
-              notInArray(Schema.runs.status, terminalRunStatuses)
+              notInArray(Schema.runs.status, TERMINAL_WORKFLOW_RUN_STATUSES)
             )
           )
           .returning();
@@ -1039,11 +1079,17 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
             );
           }
         }
-        // Delete all hooks and waits for this run to allow token reuse
+      }
+
+      if (isTerminalRunEventType(data.eventType)) {
+        // Retained Hooks remain visible after the run ends. Other Hooks and
+        // all waits are removed immediately.
         await Promise.all([
           drizzle
             .delete(Schema.hooks)
-            .where(eq(Schema.hooks.runId, effectiveRunId)),
+            .where(
+              and(eq(Schema.hooks.runId, effectiveRunId), hookRetentionEnded)
+            ),
           drizzle
             .delete(Schema.waits)
             .where(eq(Schema.waits.runId, effectiveRunId)),
@@ -1462,12 +1508,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
       // Handle hook_created event: create hook entity
       // Uses prepared statement for token uniqueness check (performance optimization)
       if (data.eventType === 'hook_created') {
-        const eventData = (data as any).eventData as {
-          token: string;
-          metadata?: any;
-          isWebhook?: boolean;
-          isSystem?: boolean;
-        };
+        const { eventData } = data;
 
         // Check for duplicate token using prepared statement
         const [existingHook] = await getHookByToken.execute({
@@ -1569,6 +1610,16 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
             };
           }
         } else {
+          await drizzle
+            .delete(Schema.hooks)
+            .where(
+              and(
+                eq(Schema.hooks.token, eventData.token),
+                exists(ownerRunIsTerminal),
+                hookRetentionEnded
+              )
+            );
+
           const [hookValue] = await drizzle
             .insert(Schema.hooks)
             .values({
@@ -1579,6 +1630,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
               ownerId: '', // TODO: get from context
               projectId: '', // TODO: get from context
               environment: '', // TODO: get from context
+              tokenRetentionUntil: eventData.tokenRetentionUntil,
               // Propagate specVersion from the event to the hook entity
               specVersion: effectiveSpecVersion,
               isWebhook: eventData.isWebhook,
@@ -1819,34 +1871,73 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
 
       // For run_started: include all events so the runtime can skip
       // the initial events.list call and reduce TTFB.
-      let allEvents: Event[] | undefined;
-      let cursor: string | null | undefined;
-      let hasMore: boolean | undefined;
-      if (data.eventType === 'run_started' && run) {
+      let eventPage: PaginatedResponse<Event> | undefined;
+      if (data.eventType === 'run_started' && run && !params?.skipPreload) {
         const eventRows = await drizzle
           .select()
           .from(Schema.events)
           .where(eq(Schema.events.runId, effectiveRunId))
           .orderBy(Schema.events.eventId);
-        allEvents = eventRows.map((e) => {
+        const data = eventRows.map((e) => {
           e.eventData ||= e.eventDataJson;
           const parsed = EventSchema.parse(compact(e));
           return stripEventDataRefs(parsed, resolveData);
         });
-        cursor = allEvents.at(-1)?.eventId ?? null;
-        hasMore = false;
+        eventPage = {
+          data,
+          cursor: data.at(-1)?.eventId ?? null,
+          hasMore: false,
+        };
       }
 
-      return {
+      // Inline delta: the caller told us the cursor of the log it holds, so
+      // return the page `events.list({ cursor: sinceCursor, sortOrder: 'asc' })`
+      // would return right now and save it the round-trip. Same query, same
+      // page size, same cursor semantics as `list` below — deliberately not
+      // paginated to exhaustion, since the contract is
+      // single-page-or-fall-back and the caller ignores a delta with
+      // `hasMore: true`.
+      if (typeof params?.sinceCursor === 'string') {
+        const limit = 100;
+        const deltaRows = await drizzle
+          .select()
+          .from(Schema.events)
+          .where(
+            and(
+              eq(Schema.events.runId, effectiveRunId),
+              gt(Schema.events.eventId, params.sinceCursor)
+            )
+          )
+          .orderBy(Schema.events.eventId)
+          .limit(limit + 1);
+        const page = deltaRows.slice(0, limit);
+        const data = page.map((e) => {
+          e.eventData ||= e.eventDataJson;
+          return stripEventDataRefs(EventSchema.parse(compact(e)), resolveData);
+        });
+        eventPage = {
+          data,
+          cursor: data.at(-1)?.eventId ?? null,
+          hasMore: deltaRows.length > limit,
+        };
+      }
+
+      const eventResult: EventResult = {
         event: stripEventDataRefs(parsed, resolveData),
         run,
         step,
         hook,
         wait,
-        events: allEvents,
-        cursor,
-        hasMore,
         ...(stepCreatedLazily ? { stepCreated: true } : {}),
+      };
+
+      if (!eventPage) return eventResult;
+
+      return {
+        ...eventResult,
+        events: eventPage.data,
+        cursor: eventPage.cursor,
+        hasMore: eventPage.hasMore,
       };
     },
     async get(
@@ -1870,37 +1961,53 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
       return stripEventDataRefs(parsed, resolveData);
     },
     async list(params: ListEventsParams): Promise<PaginatedResponse<Event>> {
-      const limit = params?.pagination?.limit ?? 100;
-      const sortOrder = params.pagination?.sortOrder || 'asc';
+      const limit = params.pagination?.limit ?? getMaxEventsPerRun();
+      const sortOrder = params.pagination?.sortOrder ?? 'asc';
       const order =
         sortOrder === 'desc'
           ? { by: desc(events.eventId), compare: lt }
           : { by: events.eventId, compare: gt };
-      const all = await drizzle
-        .select()
-        .from(events)
-        .where(
-          and(
-            eq(events.runId, params.runId),
-            map(params.pagination?.cursor, (c) =>
-              order.compare(events.eventId, c)
+      const resolveData = params.resolveData ?? 'all';
+      const data: Event[] = [];
+      let cursor = params.pagination?.cursor;
+      let hasMore = false;
+
+      do {
+        const pageLimit =
+          params.pagination?.limit === undefined
+            ? Math.min(500, limit - data.length)
+            : limit;
+        const rows = await drizzle
+          .select()
+          .from(events)
+          .where(
+            and(
+              eq(events.runId, params.runId),
+              map(cursor, (value) => order.compare(events.eventId, value))
             )
           )
-        )
-        .orderBy(order.by)
-        .limit(limit + 1);
+          .orderBy(order.by)
+          .limit(pageLimit + 1);
+        const page = rows.slice(0, pageLimit);
 
-      const values = all.slice(0, limit);
+        for (const row of page) {
+          row.eventData ||= row.eventDataJson;
+          const event = EventSchema.parse(compact(row));
+          data.push(stripEventDataRefs(event, resolveData));
+        }
 
-      const resolveData = params?.resolveData ?? 'all';
+        cursor = page.at(-1)?.eventId;
+        hasMore = rows.length > pageLimit;
+      } while (
+        params.pagination?.limit === undefined &&
+        hasMore &&
+        data.length < limit
+      );
+
       return {
-        data: values.map((v) => {
-          v.eventData ||= v.eventDataJson;
-          const parsed = EventSchema.parse(compact(v));
-          return stripEventDataRefs(parsed, resolveData);
-        }),
-        cursor: values.at(-1)?.eventId ?? null,
-        hasMore: all.length > limit,
+        data,
+        cursor: data.at(-1)?.eventId ?? null,
+        hasMore,
       };
     },
     async listByCorrelationId(params) {
@@ -1916,6 +2023,11 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
         .where(
           and(
             eq(events.correlationId, params.correlationId),
+            // A correlation id names a step or wait within its run, so an
+            // unscoped query matches one event per run that allocated the same
+            // id — and the cursor, an event id, cannot tell two such rows
+            // apart. Scoped, `(run_id, id)` is the primary key, so it can.
+            eq(events.runId, params.runId),
             map(params.pagination?.cursor, (c) =>
               order.compare(events.eventId, c)
             )
@@ -1941,11 +2053,24 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
 }
 
 export function createHooksStorage(drizzle: Drizzle): Storage['hooks'] {
-  const { hooks } = Schema;
+  const { hooks, runs } = Schema;
+  const ownerRunIsTerminal = drizzle
+    .select({ runId: runs.runId })
+    .from(runs)
+    .where(
+      and(
+        eq(runs.runId, hooks.runId),
+        inArray(runs.status, TERMINAL_WORKFLOW_RUN_STATUSES)
+      )
+    );
+  const available = or(
+    gt(hooks.tokenRetentionUntil, sql`now()`),
+    notExists(ownerRunIsTerminal)
+  );
   const getByToken = drizzle
     .select()
     .from(hooks)
-    .where(eq(hooks.token, sql.placeholder('token')))
+    .where(and(eq(hooks.token, sql.placeholder('token')), available))
     .limit(1)
     .prepare('workflow_hooks_get_by_token');
 
@@ -1954,8 +2079,11 @@ export function createHooksStorage(drizzle: Drizzle): Storage['hooks'] {
       const [value] = await drizzle
         .select()
         .from(hooks)
-        .where(eq(hooks.hookId, hookId))
+        .where(and(eq(hooks.hookId, hookId), available))
         .limit(1);
+      if (!value) {
+        throw new HookNotFoundError(hookId);
+      }
       value.metadata ||= value.metadataJson;
       const parsed = HookSchema.parse(compact(value));
       parsed.isWebhook ??= true;
@@ -1984,6 +2112,7 @@ export function createHooksStorage(drizzle: Drizzle): Storage['hooks'] {
         .from(hooks)
         .where(
           and(
+            available,
             map(params.runId, (id) => eq(hooks.runId, id)),
             map(fromCursor, (c) => cursorFn(hooks.hookId, c))
           )

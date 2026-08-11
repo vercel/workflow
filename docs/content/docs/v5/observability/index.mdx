@@ -46,6 +46,8 @@ On [Nitro](/docs/getting-started/nitro), the dev server has the web UI built
 in: open `/_workflow` while `nitro dev` is running — no separate command
 needed.
 
+In the runs table, select one or more runs and choose **Cancel** to cancel the batch in a single request. Runs that fail with a retryable error stay selected so you can retry them.
+
 To share a link to a specific run without opening a browser, use the `--url`
 flag. It prints the dashboard deep link to stdout and exits (no browser, no
 local server) — useful for scripts, PR comments, or automation. Add `--json` to

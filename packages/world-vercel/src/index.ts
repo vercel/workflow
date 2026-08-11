@@ -3,12 +3,13 @@ import { SPEC_VERSION_SUPPORTS_COMPRESSION } from '@workflow/world';
 import { createAnalytics } from './analytics.js';
 import { createRunId, describeRun } from './create-run-id.js';
 import { createGetEncryptionKeyForRun } from './encryption.js';
+import { getDeadline } from './get-deadline.js';
 import { instrumentObject } from './instrumentObject.js';
 import { createQueue } from './queue.js';
 import { createResolveLatestDeploymentId } from './resolve-latest-deployment.js';
 import { createStorage } from './storage.js';
 import { createStreamer } from './streamer.js';
-import type { APIConfig } from './utils.js';
+import { type APIConfig, resolveClientEnvironment } from './utils.js';
 
 export { createAnalytics } from './analytics.js';
 export { createRunId, describeRun, regionForRunId } from './create-run-id.js';
@@ -33,6 +34,7 @@ export function createWorld(config?: APIConfig): World {
     // those payloads opaquely, and v5 remains a superset of v4 attributes.
     specVersion: SPEC_VERSION_SUPPORTS_COMPRESSION,
     capabilities: {
+      hookRetention: { active: true },
       // workflow-server enforces the `stateUpdatedAt` optimistic-concurrency
       // guard: creations carrying a stale snapshot are rejected with 412
       // (PreconditionFailedError) when the run's outside-event marker is
@@ -42,13 +44,18 @@ export function createWorld(config?: APIConfig): World {
       // WORKFLOW_SEQUENTIAL_REPLAYS=1 uses for per-run `maxConcurrency: 1`
       // flow topics (see queue.ts and @workflow/builders).
       maxConcurrency: true,
+      // Vercel deployments are atomic and immutable, so a deployment id names
+      // one fixed build for its whole lifetime.
+      deploymentAffinity: true,
+      // NOTE: the backend half of resumeHook()'s parallel fast path — that
+      // the server enforces the `(runId, resumeId)` dedup constraint — is
+      // NO LONGER a static world capability here. It is attested per-lookup by
+      // the server via `Hook.resumeCapabilities.hookResumeDedupVersion`
+      // (response-only, recomputed every by-token read). This lets a server
+      // rollback or kill switch drop new resumes to the sequential path
+      // immediately, without a redeploy of this adapter.
     },
-    // On Vercel the platform fails the function invocation when the
-    // process exits non-zero, and VQS redelivers the queue message via a
-    // fresh invocation. The core runtime uses this to decide whether
-    // `process.exit(1)` is an acceptable response to an exhausted replay
-    // budget.
-    processExitTriggersQueueRedelivery: true,
+    getRuntimeDeadline: getDeadline,
     ...createQueue(config),
     ...createStorage(config),
     // Analytics list reads are served from an eventually-ingested store.
@@ -62,6 +69,10 @@ export function createWorld(config?: APIConfig): World {
     ...instrumentObject('world.streams', createStreamer(config)),
     createRunId,
     describeRun,
+    // Reports the environment this client's writes land in, so `start()` can
+    // stamp it into the queue message and the consuming deployment can detect
+    // that it was handed a run created against a different environment.
+    getEnvironment: () => resolveClientEnvironment(config),
     getEncryptionKeyForRun: createGetEncryptionKeyForRun(
       projectId,
       config?.projectConfig?.teamId,

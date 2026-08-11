@@ -12,7 +12,7 @@ const Layout = async ({
   const { lang, slug } = await params;
 
   return (
-    <div className="bg-background-100">
+    <div className="bg-background-200">
       <DocsLayout
         activeSlug={slug}
         currentVersion={LATEST_VERSION.id}

@@ -204,7 +204,7 @@ function EncryptedFieldBlock() {
 function ExpiredFieldBlock() {
   return (
     <div
-      className="flex items-center gap-1.5 rounded-md border px-3 py-2 text-xs"
+      className="flex items-center gap-1.5 rounded-md border px-3 py-2 text-label-12"
       style={{
         borderColor: 'var(--ds-gray-300)',
         backgroundColor: 'var(--ds-gray-100)',
@@ -243,7 +243,14 @@ type AttributeKey =
   | 'lastReceivedAt'
   | 'disposedAt'
   | 'isSystem'
-  | 'errorCode';
+  | 'errorCode'
+  // Analytics-only provenance (AnalyticsEvent / AnalyticsStep), not on Event.
+  | 'computeInstanceId'
+  // Analytics-only, and event-grained: only AnalyticsEvent carries it. The key
+  // is `vercelId` because that is the name the backend stores the SDK's
+  // `requestId` under; AnalyticsEvent's sibling `requestId` column is never
+  // written, so reading that one would always be empty.
+  | 'vercelId';
 
 const attributeOrder: AttributeKey[] = [
   'workflowName',
@@ -256,12 +263,17 @@ const attributeOrder: AttributeKey[] = [
   'runId',
   'attempt',
   'token',
+  'tokenRetentionUntil',
+  'isWebhook',
+  'isSystem',
   'receivedCount',
   'lastReceivedAt',
   'disposedAt',
   'correlationId',
   'eventType',
   'deploymentId',
+  'vercelId',
+  'computeInstanceId',
   'specVersion',
   'workflowCoreVersion',
   'ownerId',
@@ -275,6 +287,7 @@ const attributeOrder: AttributeKey[] = [
   'completedAt',
   'expiredAt',
   'retryAfter',
+  'errorCode',
   'error',
   'metadata',
   'eventData',
@@ -284,11 +297,18 @@ const attributeOrder: AttributeKey[] = [
   'resumeAt',
 ];
 
-const sortByAttributeOrder = (a: string, b: string): number => {
-  const aIndex = attributeOrder.indexOf(a as AttributeKey) || 0;
-  const bIndex = attributeOrder.indexOf(b as AttributeKey) || 0;
-  return aIndex - bIndex;
+/**
+ * Rank of an attribute in {@link attributeOrder}. Keys absent from that list
+ * sort after every listed one rather than before them — `indexOf` reports a
+ * miss as `-1`, which is truthy, so a `|| 0` fallback never fires.
+ */
+const attributeOrderIndex = (attribute: string): number => {
+  const index = attributeOrder.indexOf(attribute as AttributeKey);
+  return index === -1 ? attributeOrder.length : index;
 };
+
+const sortByAttributeOrder = (a: string, b: string): number =>
+  attributeOrderIndex(a) - attributeOrderIndex(b);
 
 /**
  * Display names for attributes that should render differently from their key.
@@ -303,10 +323,13 @@ const attributeDisplayNames: Partial<Record<AttributeKey, string>> = {
   eventId: 'Event ID',
   runId: 'Run ID',
   token: 'Token',
+  tokenRetentionUntil: 'Minimum Retention Until',
   eventType: 'Event Type',
   errorCode: 'Error Code',
   correlationId: 'Correlation ID',
   deploymentId: 'Deployment ID',
+  vercelId: 'Request ID',
+  computeInstanceId: 'Compute Instance ID',
   specVersion: 'Spec Version',
   workflowCoreVersion: '@workflow/core version',
   occurredAt: 'Occurred',
@@ -388,6 +411,14 @@ const timestampWithTooltipOrNull = (value: unknown): ReactNode | null => {
   );
 };
 
+/**
+ * Renders an opaque provenance id. The analytics read contract types these as
+ * nullable, and only a `null` return is filtered out of the panel, so a bare
+ * `String()` would surface the literal text "null" as the value.
+ */
+const opaqueIdOrNull = (value: unknown): string | null =>
+  hasDisplayContent(value) ? String(value) : null;
+
 interface DisplayContext {
   stepName?: string;
   sectionOpen?: boolean;
@@ -412,16 +443,23 @@ const attributeToDisplayFn: Record<
   attempt: (value: unknown) => String(value),
   // Hook details
   token: (value: unknown) => String(value),
+  tokenRetentionUntil: timestampWithTooltipOrNull,
   isWebhook: (value: unknown) => String(value),
   isSystem: (value: unknown) => String(value),
   receivedCount: (value: unknown) => String(value),
   lastReceivedAt: localMillisecondTimeOrNull,
   disposedAt: localMillisecondTimeOrNull,
+  // Internal resume plumbing — not surfaced in the UI
+  resumeContext: (_value: unknown) => null,
+  resumeId: (_value: unknown) => null,
+  resumeCapabilities: (_value: unknown) => null,
   // Event details
   eventType: (value: unknown) => String(value),
   correlationId: (value: unknown) => String(value),
   // Project details
   deploymentId: (value: unknown) => String(value),
+  vercelId: opaqueIdOrNull,
+  computeInstanceId: opaqueIdOrNull,
   specVersion: (value: unknown) => String(value),
   workflowCoreVersion: (value: unknown) => String(value),
   // Tenancy (we don't show these)
@@ -666,7 +704,7 @@ const selfHeaderedAttributes = new Set([
 
 const ExpiredDataMessage = () => (
   <div
-    className="text-copy-12 rounded-md border p-4 my-2"
+    className="text-label-12 rounded-md border p-4 my-2"
     style={{
       borderColor: 'var(--ds-gray-300)',
       backgroundColor: 'var(--ds-gray-100)',
@@ -682,6 +720,8 @@ const copyableBasicAttributes = new Set<AttributeKey>([
   'hookId',
   'eventId',
   'deploymentId',
+  'vercelId',
+  'computeInstanceId',
   'moduleSpecifier',
   'token',
 ]);
@@ -774,7 +814,10 @@ export const AttributeBlock = ({
         <span className="text-label-14 text-gray-1000 font-medium first-letter:uppercase">
           {attribute}
         </span>
-        <span className="text-xs" style={{ color: 'var(--ds-gray-1000)' }}>
+        <span
+          className="text-label-12"
+          style={{ color: 'var(--ds-gray-1000)' }}
+        >
           {displayValue}
         </span>
       </div>

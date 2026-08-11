@@ -7,7 +7,6 @@ import { createWorkflowUrl } from '@workflow/utils';
 import { createWorld as createVercelTestWorld } from '@workflow/world-vercel';
 import { onTestFailed } from 'vitest';
 import { getTrustedSourcesHeaders } from '../../../scripts/trusted-sources-headers.mjs';
-import { createWorld as createPostgresWorld } from '../../world-postgres/src/index.js';
 import type { Run } from '../src/runtime';
 import { getWorld, setWorld } from '../src/runtime';
 
@@ -492,7 +491,7 @@ export async function getWorkflowMetadata(
  * Configures the world based on the current environment:
  * - Local: sets env vars for local filesystem backend
  * - Vercel: creates and sets a Vercel world
- * - Postgres: creates and sets a Postgres world
+ * - Postgres: relies on WORKFLOW_TARGET_WORLD and WORKFLOW_POSTGRES_URL env vars set by CI
  */
 export function setupWorld(deploymentUrl: string): void {
   if (isLocalDeployment()) {
@@ -508,9 +507,6 @@ export function setupWorld(deploymentUrl: string): void {
     const isNextJs = appName.includes('nextjs') || appName.includes('next-');
     const dataDirName = isNextJs ? '.next/workflow-data' : '.workflow-data';
     process.env.WORKFLOW_LOCAL_DATA_DIR = path.join(appPath, dataDirName);
-    if (process.env.WORKFLOW_TARGET_WORLD === '@workflow/world-postgres') {
-      setWorld(createPostgresWorld());
-    }
   } else if (process.env.WORKFLOW_VERCEL_ENV) {
     // For Vercel tests: WORKFLOW_VERCEL_AUTH_TOKEN, WORKFLOW_VERCEL_PROJECT, etc. are set by CI.
     // Build the Vercel world explicitly with the CI-provided config rather than relying on
@@ -527,6 +523,7 @@ export function setupWorld(deploymentUrl: string): void {
       })
     );
   }
+  // For Postgres tests: WORKFLOW_TARGET_WORLD and WORKFLOW_POSTGRES_URL are set by CI
 }
 
 // ============================================================================
@@ -841,5 +838,41 @@ export const cliHealthJson = async (options?: { timeout?: number }) => {
     (err as Error).message =
       `Error parsing JSON result from health CLI: ${(err as Error).message}`;
     throw err;
+  }
+};
+
+/**
+ * Poll `cliInspectJson(args)` until `predicate(json)` holds, or the timeout
+ * elapses — in which case the LAST result is returned so the caller's
+ * assertions still run and produce a real failure message.
+ *
+ * Needed for step/event listing assertions made right after a run settles:
+ * on the vercel world these listings are served analytics-first from an
+ * eventually-consistent store, so rows for just-finished steps can be
+ * missing or carry stale pending/running statuses for a few seconds
+ * before converging on the durable state.
+ */
+export const cliInspectJsonUntil = async (
+  args: string,
+  predicate: (json: any) => boolean,
+  {
+    timeoutMs = 30_000,
+    intervalMs = 2_000,
+  }: { timeoutMs?: number; intervalMs?: number } = {}
+): Promise<any> => {
+  const deadline = Date.now() + timeoutMs;
+  // biome-ignore lint/suspicious/noExplicitAny: raw CLI JSON
+  let json: any;
+  for (;;) {
+    ({ json } = await cliInspectJson(args));
+    let satisfied = false;
+    try {
+      satisfied = predicate(json);
+    } catch {
+      // Malformed intermediate state (e.g. `.find()` returned undefined)
+      // counts as not-yet-converged.
+    }
+    if (satisfied || Date.now() >= deadline) return json;
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
   }
 };

@@ -1,4 +1,4 @@
-import { parseDurationToDate } from '@workflow/utils';
+import { parseDurationToDate, pluralize } from '@workflow/utils';
 
 import type { StringValue } from 'ms';
 
@@ -54,9 +54,9 @@ function appendFramedDetails(
     const head = isLast ? '╰▶ ' : '├▶ ';
     const cont = isLast ? '   ' : '│  ';
     const text = `${detail.label}: ${detail.value}`;
-    text
-      .split('\n')
-      .forEach((line, i) => lines.push(`${i === 0 ? head : cont}${line}`));
+    text.split('\n').forEach((line, i) => {
+      lines.push(`${i === 0 ? head : cont}${line}`);
+    });
   });
   return lines.join('\n');
 }
@@ -89,6 +89,7 @@ export const ERROR_SLUGS = {
   STEP_NOT_REGISTERED: 'step-not-registered',
   WORKFLOW_NOT_REGISTERED: 'workflow-not-registered',
   RUNTIME_DECRYPTION_FAILED: 'runtime-decryption-failed',
+  DEPLOYMENT_MISMATCH: 'deployment-mismatch',
 } as const;
 
 type ErrorSlug = (typeof ERROR_SLUGS)[keyof typeof ERROR_SLUGS];
@@ -591,6 +592,53 @@ export class WorkflowNotRegisteredError extends WorkflowRuntimeError {
 }
 
 /**
+ * Thrown when a workflow run is delivered to a deployment other than the one
+ * it is pinned to.
+ *
+ * A run is pinned to one deployment when it starts, and executing anywhere
+ * else is unsafe: that deployment's bundles may not match the run's history.
+ */
+export class WorkflowDeploymentMismatchError extends WorkflowRuntimeError {
+  readonly runId: string;
+  readonly expectedDeploymentId: string;
+  readonly actualDeploymentId: string;
+  /**
+   * How many times the runtime re-routed the message before giving up. `0`
+   * means recovery was never attempted: the budget is disabled, or the
+   * re-route itself failed and `cause` holds the enqueue error.
+   */
+  readonly recoveryAttempts: number;
+
+  constructor(
+    runId: string,
+    expectedDeploymentId: string,
+    actualDeploymentId: string,
+    options?: { recoveryAttempts?: number; cause?: unknown }
+  ) {
+    const recoveryAttempts = options?.recoveryAttempts ?? 0;
+    // Carried in the persisted message, not just a log line: the attempt count
+    // separates racing routing from a deployment that is simply gone.
+    const recovery =
+      recoveryAttempts > 0
+        ? ` The runtime re-routed the message to "${expectedDeploymentId}" ${recoveryAttempts} ${pluralize('time', 'times', recoveryAttempts)} and it kept arriving elsewhere, so the run was stopped to protect against code-skew errors.`
+        : ' The run was stopped to protect against code-skew errors.';
+    super(
+      `Workflow run "${runId}" is pinned to deployment "${expectedDeploymentId}", but was received by deployment "${actualDeploymentId}".${recovery} Verify that the run's deployment is still available and that queue callbacks are routed to it.`,
+      { slug: ERROR_SLUGS.DEPLOYMENT_MISMATCH, cause: options?.cause }
+    );
+    this.name = 'WorkflowDeploymentMismatchError';
+    this.runId = runId;
+    this.expectedDeploymentId = expectedDeploymentId;
+    this.actualDeploymentId = actualDeploymentId;
+    this.recoveryAttempts = recoveryAttempts;
+  }
+
+  static is(value: unknown): value is WorkflowDeploymentMismatchError {
+    return isError(value) && value.name === 'WorkflowDeploymentMismatchError';
+  }
+}
+
+/**
  * Thrown when performing operations on a workflow run that does not exist.
  *
  * This error occurs when you call methods on a run object (e.g. `run.status`,
@@ -786,22 +834,34 @@ export class ThrottleError extends WorkflowWorldError {
 
 /**
  * Thrown when the backend rejects an event creation because the client's
- * event-log snapshot is stale — a newer out-of-band event (e.g. a received
- * hook or a completed step) was recorded after the snapshot the client
- * replayed from (HTTP 412).
+ * event-log snapshot is stale — the log the client replayed from is missing
+ * an event the backend has already recorded (HTTP 412).
  *
- * The workflow runtime handles this automatically: it reloads the event log
- * and retries, ultimately re-enqueueing the run if it cannot catch up. Users
- * interacting with world storage backends directly may encounter it.
+ * The workflow runtime handles this automatically: it restarts the replay from
+ * a corrected event log, ultimately re-enqueueing the run if it cannot catch
+ * up. Users interacting with world storage backends directly may encounter it.
  *
  * @property retryAfter - Delay in seconds before retrying. Accepted for
- *   forward-compatibility; the runtime currently reloads and retries
- *   immediately and does not read this field.
+ *   forward-compatibility; the runtime restarts its replay immediately and
+ *   does not read this field.
+ * @property details - Optional rejection detail supplied by the World. A World
+ *   MAY attach the events the client's snapshot was missing so the client can
+ *   correct its log without a follow-up fetch; see the `stateCursor` contract
+ *   on `CreateEventParams`. Typed `unknown` because this package cannot depend
+ *   on the event type — consumers narrow it themselves and must treat a
+ *   missing or malformed value as "no detail" (a full reload is always
+ *   correct).
  */
 export class PreconditionFailedError extends WorkflowWorldError {
-  constructor(message: string, options?: { retryAfter?: number }) {
+  readonly details?: unknown;
+
+  constructor(
+    message: string,
+    options?: { retryAfter?: number; details?: unknown }
+  ) {
     super(message, { status: 412, retryAfter: options?.retryAfter });
     this.name = 'PreconditionFailedError';
+    this.details = options?.details;
   }
 
   static is(value: unknown): value is PreconditionFailedError {

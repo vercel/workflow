@@ -27,6 +27,7 @@ export {
   _resetEnvWarnCacheForTests,
   type EnvNumberOptions,
   envNumber,
+  getMaxEventsPerRun,
 } from './env-config.js';
 export type * from './events.js';
 export {
@@ -60,7 +61,12 @@ export {
   WAIT_EVENT_TYPES,
 } from './events.js';
 export type * from './hooks.js';
-export { HookSchema } from './hooks.js';
+export {
+  HOOK_RESUME_DEDUP_VERSION,
+  HOOK_RESUME_INPUT_VERSION,
+  HookResumeCapabilitiesSchema,
+  HookSchema,
+} from './hooks.js';
 export type * from './interfaces.js';
 export type * from './queue.js';
 export {
@@ -78,6 +84,10 @@ export {
 export { reenqueueActiveRuns } from './recovery.js';
 export type * from './runs.js';
 export {
+  BULK_CANCEL_MAX_RUN_IDS,
+  BulkCancelWorkflowRunResultSchema,
+  BulkCancelWorkflowRunsRequestSchema,
+  BulkCancelWorkflowRunsResultSchema,
   isTerminalWorkflowRunStatus,
   TERMINAL_WORKFLOW_RUN_STATUSES,
   TerminalWorkflowRunStatusSchema,
