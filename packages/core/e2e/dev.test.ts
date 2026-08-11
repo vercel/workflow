@@ -1373,6 +1373,26 @@ export async function hmrFuzzWorkflow() {
             },
           },
           {
+            description: 'new workflow dependency body change',
+            expectedLogCounts: { full: 1 },
+            write: async () => {
+              await fs.writeFile(
+                files.importHelper,
+                "export const hmrFuzzImportedValue = 'imported-updated';\n"
+              );
+            },
+            assert: async () => {
+              if (finalConfig.canary) {
+                return;
+              }
+              await expectWorkflowResult({
+                description:
+                  'new workflow dependency body change to affect execution',
+                workflowValue: 'imported-updated',
+              });
+            },
+          },
+          {
             description: 'step definition added',
             expectedLogCounts: expectedHotRebuild,
             write: async (iteration: number) => {
