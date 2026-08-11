@@ -1,33 +1,30 @@
 import {
   getInlineOwnershipLeaseSeconds,
   getStepDispatchWatchdogSeconds,
-  MAX_STEP_DISPATCH_WATCHDOG_SECONDS,
 } from './constants.js';
 
 /**
  * Re-dispatch watchdog for a pending step whose dispatch is gone.
  *
  * A pending step is dispatched as a queue message keyed by the step's identity
- * (`stepDispatchIdempotencyKey`). Queues dedupe an idempotency key for the
- * lifetime of the original message, so that key is effectively permanent: once
- * a message has been accepted under it, every later replay's re-send is
- * silently absorbed. That
- * is the intended behaviour while the message is doing its job — concurrent
- * wake replays must not multiply the dispatch — but it also means a step whose
- * message stops making progress can never be dispatched again. The run then
- * keeps replaying forever with one pending step that nothing will ever
- * execute: no divergence, no error, no terminal state.
+ * (`stepDispatchIdempotencyKey`). A key claim outlives the message sent under
+ * it: queues record the claim with a TTL of their own (a day is typical) and
+ * do not release it when the message is delivered, acked, or exhausted, so a
+ * later send under the same key produces no message at all. That is the
+ * intended behaviour while the dispatch is doing its job — concurrent wake
+ * replays must not multiply it — but it also means a step whose dispatch
+ * stopped short of a terminal event can never be dispatched again by re-sending
+ * the same key. The run then keeps replaying with one pending step that nothing
+ * will execute: no divergence, no error, no terminal state.
  *
- * Two ways a dispatch stops making progress, both observed on the race repro:
- *
- * 1. The message is accepted and never delivered, so no `step_started` is
- *    ever written.
- * 2. The message is delivered, the step writes `step_started`, and the
- *    invocation executing the body disappears before writing a terminal
- *    event. Inline-owned steps have a backstop wake at their ownership lease
- *    for exactly this, but the wake only brings a replay back: the re-dispatch
- *    it then attempts carried the same key the queue had already claimed, so
- *    the recovery was absorbed and the run went silent for good.
+ * What this does NOT assume is that the queue lost a message. Delivery is
+ * at-least-once, and an unacked delivery comes back on its own, so a redundant
+ * send being absorbed is harmless for a dispatch that is still in flight. The
+ * dispatches this matters for are the ones nothing will retry: a message that
+ * was acked without the step reaching a terminal event (the step's execution
+ * ended somewhere the queue considers success), and a send that collapsed into
+ * an existing claim whose message is already finished. Both leave the step
+ * pending with nothing outstanding, which is what the epoch below re-opens.
  *
  * The watchdog gives those dispatches an epoch, counted from the point the
  * dispatch is presumed lost (see `dispatchLostAtMs`), which the dispatch key is
@@ -178,14 +175,22 @@ export function getStepDispatchWake(
   if (!earliest) return undefined;
   // A second of slack past the boundary, because a wake that lands even
   // marginally early computes the same epoch, re-arms the same key, and is
-  // deduped away — leaving the run with no timer at all. Clamped to the
-  // watchdog interval so a creation timestamp in the future (clock skew)
-  // cannot ask for a delay above the queue's per-message maximum, and floored
-  // at 1s because a boundary already past still has to be a valid delay.
-  const maxDelaySeconds = Math.min(
-    getStepDispatchWatchdogSeconds() + 1,
-    MAX_STEP_DISPATCH_WATCHDOG_SECONDS
-  );
+  // deduped away — leaving the run with no timer at all. The delay must
+  // therefore never be clamped BELOW the distance to the boundary it is keyed
+  // on: an early wake is worse than no wake, since it also burns the key.
+  //
+  // The ceiling exists only to bound clock skew (a `step_created` or
+  // `step_started` stamped in the future would otherwise ask for a delay above
+  // the queue's per-message maximum). A boundary is at most one watchdog
+  // interval past an unstarted step's creation or one ownership lease past a
+  // started step's latest start, so the larger of the two covers every
+  // legitimate boundary and nothing else. Floored at 1s because a boundary
+  // already past still has to be a valid delay.
+  const maxDelaySeconds =
+    Math.max(
+      getStepDispatchWatchdogSeconds(),
+      getInlineOwnershipLeaseSeconds()
+    ) + 1;
   const delaySeconds = Math.min(
     maxDelaySeconds,
     Math.max(1, Math.ceil((earliest.boundaryMs - nowMs) / 1000) + 1)

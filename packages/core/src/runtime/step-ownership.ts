@@ -59,10 +59,10 @@ export function stepLeaseRemainingSeconds(
  * pending backstop per step. But when owner recovery re-stamps the step
  * (queue redelivery of the owning message → new `step_started` → new
  * `lastStartedAt`), the key CHANGES. This is load-bearing for liveness:
- * queues dedupe an idempotency key for the lifetime of the original
- * message — including while a delivery of it is in flight — so a backstop
+ * a key claim outlives the message sent under it, so a backstop
  * that fires during a refreshed lease and tries to re-arm under a fixed key
- * would dedupe against ITSELF and be dropped, leaving no escape hatch if
+ * would dedupe against its own spent claim and be dropped, leaving no
+ * escape hatch if
  * the recovered owner later dies without further redeliveries. The epoch
  * suffix gives the re-arm a fresh key. Pending backstops are bounded by the
  * number of ownership epochs, i.e. the queue's redelivery budget for the

@@ -12,6 +12,7 @@ import {
   nextStepDispatchBoundaryMs,
   stepDispatchEpoch,
 } from './step-dispatch.js';
+import { WAIT_CONTINUATION_MAX_DELAY_SECONDS } from './wait-continuation.js';
 
 const WATCHDOG_ENV = 'WORKFLOW_STEP_DISPATCH_WATCHDOG_SECONDS';
 
@@ -290,6 +291,21 @@ describe('getStepDispatchWake', () => {
     expect(wake?.idempotencyKey).toBe(`step_01ABC:dispatch-wake:${boundary}`);
   });
 
+  it("reaches a started step's boundary, which is a whole lease away", () => {
+    // A started step's boundary sits at the end of its ownership lease, far
+    // beyond one watchdog interval. A delay capped at the interval would land
+    // ~13 minutes early, compute the same epoch, re-arm the same key the queue
+    // still holds a claim for, and be dropped, leaving the run with no timer
+    // at all. An early wake is worse than no wake: it also spends the key.
+    const step = startedStep();
+    const nowMs = STARTED_AT;
+    const wake = getStepDispatchWake([step], nowMs);
+    expect(wake).toBeDefined();
+    const boundary = nextStepDispatchBoundaryMs(step, nowMs);
+    expect(boundary).toBe(atLeaseOffset(0));
+    expect(nowMs + wake!.delaySeconds * 1000).toBeGreaterThan(boundary!);
+  });
+
   it('picks the earliest boundary among several pending steps', () => {
     const older = makeStep({
       correlationId: 'step_older',
@@ -318,9 +334,27 @@ describe('getStepDispatchWake', () => {
 
   it('keeps the delay inside the queue-supported range at the maximum watchdog', () => {
     process.env[WATCHDOG_ENV] = String(Number.MAX_SAFE_INTEGER);
-    const clamped = getStepDispatchWatchdogSeconds();
+    const boundary = atIntervals(1);
     const wake = getStepDispatchWake([makeStep()], CREATED_AT);
-    expect(wake?.delaySeconds).toBe(clamped);
+    expect(wake).toBeDefined();
+    // Still past the boundary, and still a delay a queue message can carry.
+    expect(CREATED_AT + wake!.delaySeconds * 1000).toBeGreaterThan(boundary);
+    expect(wake!.delaySeconds).toBeLessThanOrEqual(
+      WAIT_CONTINUATION_MAX_DELAY_SECONDS
+    );
+  });
+
+  it('bounds the delay when a step timestamp is stamped in the future', () => {
+    // The ceiling exists only for clock skew: a step_created far ahead of the
+    // local clock would otherwise ask for a delay no queue would accept.
+    const skewed = makeStep({ createdEventAt: CREATED_AT + 10 ** 12 });
+    const wake = getStepDispatchWake([skewed], CREATED_AT);
+    expect(wake!.delaySeconds).toBeLessThanOrEqual(
+      Math.max(
+        getStepDispatchWatchdogSeconds(),
+        getInlineOwnershipLeaseSeconds()
+      ) + 1
+    );
   });
 
   it('still asks for a positive delay when the boundary is already past', () => {

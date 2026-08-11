@@ -3403,11 +3403,11 @@ export function workflowEntrypoint(
                                 // this step's dispatch is presumed lost: a
                                 // watchdog interval without a first start, or
                                 // an expired ownership lease with no terminal
-                                // event. The queue dedupes a key for the
-                                // lifetime of the message sent under it, so a
-                                // dispatch that stopped making progress can
-                                // only be retried under a key the queue has
-                                // not seen. Within an epoch every replay
+                                // event. A key claim outlives the message sent
+                                // under it, so a dispatch that stopped short of
+                                // a terminal event can only be retried under a
+                                // key the queue has not seen. Within an epoch
+                                // every replay
                                 // derives the same key, so concurrent wake
                                 // replays still collapse to one message. See
                                 // stepDispatchIdempotencyKey and
