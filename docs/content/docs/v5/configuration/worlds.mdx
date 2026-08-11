@@ -98,13 +98,6 @@ The Local World is the default outside Vercel and is intended for development.
 - Default: `30000`
 - Maximum gap in milliseconds between response body chunks from a local queue handler before the durable message is redelivered. Set to `0` to disable.
 
-<Callout type="info">
-  `WORKFLOW_LOCAL_HEADERS_TIMEOUT_MS` and `WORKFLOW_LOCAL_BODY_TIMEOUT_MS` are
-  inert when [`WORKFLOW_NATIVE_FETCH`](/docs/configuration/runtime-tuning#workflow_native_fetch)
-  is enabled, because the Local World no longer owns the connection pool those
-  bounds are set on.
-</Callout>
-
 ### `recoverActiveRuns`
 
 - Environment variable: `WORKFLOW_LOCAL_RECOVER_ACTIVE_RUNS`

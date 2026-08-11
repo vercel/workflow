@@ -1,7 +1,7 @@
 import { createSecureServer, type Http2SecureServer } from 'node:http2';
 import { type AddressInfo, connect, createServer, type Server } from 'node:net';
 import type { TLSSocket } from 'node:tls';
-import { NATIVE_FETCH_ENV_VAR } from '@workflow/world';
+import { NODE_HTTP_ENV_VAR } from '@workflow/world';
 import { Agent, type RetryAgent } from 'undici';
 import {
   afterAll,
@@ -14,6 +14,7 @@ import {
   vi,
 } from 'vitest';
 import {
+  _resetNodeHttpAgentsForTests,
   createDispatcherRecycler,
   createEventsDispatcher,
   createStreamDispatcher,
@@ -24,6 +25,7 @@ import {
   EVENTS_RECYCLE_AFTER_CONSECUTIVE_FAILURES,
   getDispatcher,
   getEventsDispatcher,
+  getNodeHttpAgents,
   getStreamCloseDispatcher,
   getStreamDispatcher,
   isRecyclableTransportError,
@@ -33,13 +35,13 @@ import {
   STREAM_RETRY_OPTIONS,
 } from './http-client.js';
 
-// Everything below this line asserts the undici wiring, which is what the
-// adapter builds when it owns the transport. `WORKFLOW_NATIVE_FETCH` hands the
-// transport to the runtime instead and makes every getter return `undefined`,
-// so pin it off here rather than depending on whichever way its default
-// currently points. Native mode has its own describe at the bottom of the file.
+// Everything below this line asserts the undici wiring. `WORKFLOW_NODE_HTTP`
+// takes requests off undici entirely and makes every dispatcher getter return
+// `undefined`, so pin it off here rather than depending on whichever way its
+// default currently points. That mode has its own describe at the bottom of
+// the file.
 beforeEach(() => {
-  vi.stubEnv(NATIVE_FETCH_ENV_VAR, '0');
+  vi.stubEnv(NODE_HTTP_ENV_VAR, '0');
 });
 
 afterEach(() => {
@@ -765,16 +767,20 @@ describe('dispatcher recycling accounting', () => {
   });
 });
 
-describe('native fetch mode', () => {
+describe('node:http mode', () => {
   beforeEach(() => {
-    vi.stubEnv(NATIVE_FETCH_ENV_VAR, '1');
+    vi.stubEnv(NODE_HTTP_ENV_VAR, '1');
+    _resetNodeHttpAgentsForTests();
   });
 
-  // `undefined` is the contract, not a placeholder: `fetch(url, { dispatcher:
-  // undefined })` is identical to omitting the option, so the request goes out
-  // on whatever global agent the runtime installed. Every call site in this
-  // package sources its dispatcher from one of these four getters, so covering
-  // them covers the transport switch.
+  afterEach(() => {
+    _resetNodeHttpAgentsForTests();
+  });
+
+  // `undefined` is the contract, not a placeholder: it is the signal the two
+  // dispatch sites read to send the request over `node:http` / `node:https`
+  // instead. Every call site in this package sources its dispatcher from one
+  // of these four getters, so covering them covers the transport switch.
   it('hands every call site an undefined dispatcher', () => {
     expect(getDispatcher()).toBeUndefined();
     expect(getEventsDispatcher()).toBeUndefined();
@@ -792,7 +798,7 @@ describe('native fetch mode', () => {
     expect(getStreamCloseDispatcher({ dispatcher: custom })).toBe(custom);
   });
 
-  // No pool means nothing to rebuild. The events path calls
+  // No undici pool means nothing to rebuild. The events path calls
   // noteEventsTransportOutcome on every failure regardless of transport, so it
   // has to tolerate the dispatcher it is handed being undefined.
   it('leaves the events recycler untouched', () => {
@@ -807,7 +813,7 @@ describe('native fetch mode', () => {
     expect(getEventsDispatcher()).toBeUndefined();
 
     // The pool the recycler owns is still intact for a process that flips back.
-    vi.stubEnv(NATIVE_FETCH_ENV_VAR, '0');
+    vi.stubEnv(NODE_HTTP_ENV_VAR, '0');
     expect(getEventsDispatcher()).toBe(getEventsDispatcher());
   });
 
@@ -815,9 +821,39 @@ describe('native fetch mode', () => {
   // file) can exercise both transports.
   it('is re-read on every call', () => {
     expect(getDispatcher()).toBeUndefined();
-    vi.stubEnv(NATIVE_FETCH_ENV_VAR, '0');
+    vi.stubEnv(NODE_HTTP_ENV_VAR, '0');
     expect(getDispatcher()).toBeDefined();
-    vi.stubEnv(NATIVE_FETCH_ENV_VAR, 'true');
+    vi.stubEnv(NODE_HTTP_ENV_VAR, 'true');
     expect(getDispatcher()).toBeUndefined();
+  });
+
+  // Keep-alive is the whole reason the pool exists, so it must outlive a
+  // single request. One pool serves every call site, because the four undici
+  // agents differ only in HTTP/2 and retry settings that Node's client has no
+  // equivalent for.
+  it('reuses one socket pool across calls', () => {
+    const agents = getNodeHttpAgents();
+    expect(agents).toBeDefined();
+    expect(getNodeHttpAgents()).toBe(agents);
+    expect(agents?.http.options.keepAlive).toBe(true);
+    expect(agents?.https.options.keepAlive).toBe(true);
+    // Sized from the same constants the undici agents use, not a second copy.
+    expect(agents?.https.options.maxSockets).toBe(
+      DEFAULT_AGENT_OPTIONS.connections
+    );
+    expect(agents?.https.options.keepAliveMsecs).toBe(
+      DEFAULT_AGENT_OPTIONS.keepAliveTimeout
+    );
+  });
+
+  // Same rule as the dispatcher getters: supplying a dispatcher is an
+  // instruction to use undici, so the request must stay on `fetch`.
+  it('builds no pool when the caller supplied a dispatcher', () => {
+    expect(getNodeHttpAgents({ dispatcher: {} })).toBeUndefined();
+  });
+
+  it('builds no pool when the flag is off', () => {
+    vi.stubEnv(NODE_HTTP_ENV_VAR, '0');
+    expect(getNodeHttpAgents()).toBeUndefined();
   });
 });

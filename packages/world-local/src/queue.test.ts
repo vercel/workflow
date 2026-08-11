@@ -2,11 +2,7 @@ import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { setWorkflowBasePath } from '@workflow/utils';
 import type { WorkflowInvokePayload } from '@workflow/world';
-import {
-  MessageId,
-  NATIVE_FETCH_ENV_VAR,
-  ValidQueueName,
-} from '@workflow/world';
+import { MessageId, NODE_HTTP_ENV_VAR, ValidQueueName } from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod/v4';
 import {
@@ -27,13 +23,13 @@ const workflowPayload: WorkflowInvokePayload = {
   stepName: 'test-step',
 };
 
-// The suite below covers the queue while it owns its undici agent, which is
-// where the headers/body timeouts it configures actually apply.
-// `WORKFLOW_NATIVE_FETCH` hands delivery to the runtime's global agent and
-// takes those bounds away, so pin the flag off rather than tracking whichever
-// way its default points. Native mode has its own describe at the end.
+// The suite below covers the queue on undici, including the tests that stub
+// the global `fetch`. `WORKFLOW_NODE_HTTP` sends deliveries over `node:http`
+// instead, where stubbing `fetch` proves nothing, so pin the flag off rather
+// than tracking whichever way its default points. That mode has its own
+// describe at the end.
 beforeEach(() => {
-  vi.stubEnv(NATIVE_FETCH_ENV_VAR, '0');
+  vi.stubEnv(NODE_HTTP_ENV_VAR, '0');
 });
 
 afterEach(() => {
@@ -633,11 +629,11 @@ describe('queue transport timeouts', () => {
   });
 });
 
-describe('native fetch mode', () => {
+describe('node:http mode', () => {
   let server: Server | undefined;
 
   beforeEach(() => {
-    vi.stubEnv(NATIVE_FETCH_ENV_VAR, '1');
+    vi.stubEnv(NODE_HTTP_ENV_VAR, '1');
   });
 
   afterEach(async () => {
@@ -653,8 +649,9 @@ describe('native fetch mode', () => {
 
   // The equivalence claim the flag makes: a delivery still goes out, still
   // carries the VQS headers the handler reads, and still lands on the handler.
-  // Only the dispatcher underneath changes.
-  it('delivers over the runtime global agent', async () => {
+  // The global `fetch` is stubbed to throw to prove the request left undici
+  // entirely rather than falling back to the runtime's own pool.
+  it('delivers without going through fetch', async () => {
     const attempts: (string | undefined)[] = [];
     server = createServer((request, response) => {
       attempts.push(request.headers['x-vqs-message-attempt'] as string);
@@ -665,6 +662,13 @@ describe('native fetch mode', () => {
       server?.listen(0, '127.0.0.1', resolve);
     });
     const { port } = server.address() as AddressInfo;
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => {
+        throw new Error('fetch must not be used under WORKFLOW_NODE_HTTP');
+      })
+    );
 
     const localQueue = createQueue({ baseUrl: `http://127.0.0.1:${port}` });
     try {
@@ -678,31 +682,39 @@ describe('native fetch mode', () => {
     }
   });
 
-  // Losing the agent must not lose the retry loop: redelivery on a transport
-  // throw is the queue's own logic, not undici's, so it survives the switch.
+  // Redelivery on a transport throw is the queue's own logic, not undici's, so
+  // it survives the switch. Node's client raises ECONNRESET where undici would
+  // have raised a TypeError wrapping UND_ERR_SOCKET; the delivery loop keys on
+  // neither, so both retry the same durable message.
   it('still retries a transport throw', async () => {
     let calls = 0;
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () => {
-        calls++;
-        if (calls < 3) throw fetchFailedTimeout();
-        return Response.json({ ok: true }, { status: 200 });
-      })
-    );
+    server = createServer((request, response) => {
+      calls++;
+      if (calls < 3) {
+        request.socket.destroy();
+        return;
+      }
+      response.setHeader('content-type', 'application/json');
+      response.end(JSON.stringify({ ok: true }));
+    });
+    await new Promise<void>((resolve) => {
+      server?.listen(0, '127.0.0.1', resolve);
+    });
+    const { port } = server.address() as AddressInfo;
 
-    const localQueue = createQueue({ baseUrl: 'http://localhost:3000' });
+    const localQueue = createQueue({ baseUrl: `http://127.0.0.1:${port}` });
     try {
       await localQueue.queue('__wkf_workflow_test' as any, workflowPayload);
-      await vi.waitFor(() => expect(calls).toBe(3));
+      await vi.waitFor(() => expect(calls).toBe(3), { timeout: 20_000 });
     } finally {
       await localQueue.close();
     }
-  });
+  }, 30_000);
 
-  // close() owns no pool in this mode. It still has to settle, and still has to
-  // stop in-flight deliveries via the abort controller it does own.
-  it('closes cleanly with no agent to shut down', async () => {
+  // close() owns a socket pool here too, just Node's rather than undici's. It
+  // still has to settle, still has to be idempotent, and still has to stop
+  // in-flight deliveries via the abort controller it owns.
+  it('closes idempotently', async () => {
     const localQueue = createQueue({ baseUrl: 'http://localhost:3000' });
     await expect(localQueue.close()).resolves.toBeUndefined();
     await expect(localQueue.close()).resolves.toBeUndefined();

@@ -1,3 +1,5 @@
+import { createServer, type Server } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { context, trace as otelTrace, propagation } from '@opentelemetry/api';
 import { AsyncLocalStorageContextManager } from '@opentelemetry/context-async-hooks';
 import { W3CTraceContextPropagator } from '@opentelemetry/core';
@@ -6,6 +8,7 @@ import {
   InMemorySpanExporter,
   SimpleSpanProcessor,
 } from '@opentelemetry/sdk-trace-base';
+import { NODE_HTTP_ENV_VAR } from '@workflow/world';
 import { encode } from 'cbor-x';
 import { MockAgent } from 'undici';
 import {
@@ -75,9 +78,17 @@ afterAll(async () => {
   otelTrace.disable();
 });
 
+// The HTTP suites below read the outgoing headers off a stubbed `fetch` or an
+// undici MockAgent, neither of which the node:http path goes through. It gets
+// its own suite at the bottom of this file, against a loopback origin.
+beforeEach(() => {
+  vi.stubEnv(NODE_HTTP_ENV_VAR, '0');
+});
+
 afterEach(() => {
   exporter.reset();
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
 });
 
 /** Minimal 2xx CBOR response, mirroring utils.test.ts. */
@@ -359,5 +370,68 @@ describe('ws events transport upgrade trace propagation', () => {
     expect(wsUpgrades[0]?.headers.traceparent).toBeUndefined();
     // The rest of the upgrade must survive an absent propagator unchanged.
     expect(wsUpgrades[0]?.headers.authorization).toBe('Bearer test-token');
+  });
+});
+
+// Every suite above reads the outgoing headers off a `fetch` stub or an undici
+// MockAgent, so none of them would notice if the node:http client dropped the
+// injection. This one puts a real origin on loopback and reads the header off
+// the wire.
+describe('node:http mode trace propagation', () => {
+  let server: Server | undefined;
+
+  beforeEach(() => {
+    vi.stubEnv(NODE_HTTP_ENV_VAR, '1');
+  });
+
+  afterEach(async () => {
+    const toClose = server;
+    server = undefined;
+    if (toClose) {
+      toClose.closeAllConnections();
+      await new Promise((resolve) => toClose.close(resolve));
+    }
+  });
+
+  it('sends traceparent on a request that never touches undici, parented to the client span', async () => {
+    const schema = z.object({ value: z.string() });
+    let sentTraceparent: string | undefined;
+
+    server = createServer((request, response) => {
+      sentTraceparent = request.headers.traceparent as string | undefined;
+      request.resume();
+      response.setHeader('content-type', 'application/cbor');
+      response.end(encode({ value: 'ok' }));
+    });
+    await new Promise<void>((resolve) =>
+      server?.listen(0, '127.0.0.1', resolve)
+    );
+    const { port } = server.address() as AddressInfo;
+    vi.stubEnv('VERCEL_WORKFLOW_SERVER_URL', `http://127.0.0.1:${port}`);
+
+    const tracer = otelTrace.getTracer('test');
+    let traceId = '';
+    let spanId = '';
+    await tracer.startActiveSpan('flow-invocation', async (span) => {
+      traceId = span.spanContext().traceId;
+      spanId = span.spanContext().spanId;
+      const result = await makeRequest({
+        endpoint: '/v3/runs/wrun_test/events',
+        options: { method: 'GET' },
+        schema,
+      });
+      expect(result).toEqual({ value: 'ok' });
+      span.end();
+    });
+
+    expect(sentTraceparent).toMatch(/^00-[0-9a-f]{32}-[0-9a-f]{16}-0[01]$/);
+    const clientSpan = exporter
+      .getFinishedSpans()
+      .find((s) => s.name === 'http GET');
+    expect(clientSpan?.spanContext().traceId).toBe(traceId);
+    expect(clientSpan?.parentSpanId).toBe(spanId);
+    expect(sentTraceparent).toBe(
+      `00-${traceId}-${clientSpan?.spanContext().spanId}-01`
+    );
   });
 });

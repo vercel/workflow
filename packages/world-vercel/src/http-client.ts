@@ -1,10 +1,16 @@
-import { isNativeFetchEnabled } from '@workflow/world';
+import { isNodeHttpEnabled } from '@workflow/world';
+import {
+  createNodeHttpAgents,
+  destroyNodeHttpAgents,
+  type NodeHttpAgents,
+} from '@workflow/world/node-http.js';
 import { Agent, type Dispatcher, RetryAgent, type RetryHandler } from 'undici';
 import type { APIConfig } from './utils.js';
 
 let _dispatcher: RetryAgent | undefined;
 let _streamDispatcher: RetryAgent | undefined;
 let _streamCloseDispatcher: RetryAgent | undefined;
+let _nodeHttpAgents: NodeHttpAgents | undefined;
 
 /**
  * Shared between all agents — connection pooling only. `pipelining` is
@@ -523,12 +529,13 @@ export function noteEventsTransportOutcome(
  * Resolution order shared by every `get*Dispatcher` below:
  *
  *  1. `config.dispatcher` — an explicit caller override always wins, including
- *     under native-fetch mode. The flag chooses which *default* this adapter
- *     builds; it does not take the override away.
- *  2. `undefined` when `WORKFLOW_NATIVE_FETCH` is on — `fetch()` then dispatches
- *     through the runtime's own global agent, with none of the pooling, HTTP/2,
- *     receive-window or retry configuration below. See `isNativeFetchEnabled`
- *     for what that costs.
+ *     under `WORKFLOW_NODE_HTTP`. Supplying a dispatcher is an instruction to
+ *     use undici, so the request stays on `fetch` with that dispatcher.
+ *  2. `undefined` when `WORKFLOW_NODE_HTTP` is on. Nothing then dispatches
+ *     through undici at all: `instrumentedFetch` and `makeRequest` read the same
+ *     flag and send the request over `node:http` / `node:https` instead, using
+ *     the pool from `getNodeHttpAgents` and none of the HTTP/2, receive-window
+ *     or retry configuration below. See `isNodeHttpEnabled` for what that costs.
  *  3. the shared per-call-site undici agent.
  *
  * Read per call (not memoized) so the flag can be toggled within a process.
@@ -538,12 +545,46 @@ function resolveDispatcher(
   buildDefault: () => RetryAgent
 ): unknown {
   if (config?.dispatcher) return config.dispatcher;
-  return isNativeFetchEnabled() ? undefined : buildDefault();
+  return isNodeHttpEnabled() ? undefined : buildDefault();
+}
+
+/**
+ * Shared `node:http` / `node:https` connection pool for `WORKFLOW_NODE_HTTP`
+ * mode, or `undefined` when the request should go over undici.
+ *
+ * There is one pool rather than the four the undici side maintains, because
+ * the four differ only in the two things Node's core client cannot express:
+ * HTTP/2 (with its multiplexing and receive windows) and a `RetryAgent` policy.
+ * Strip those and the remaining configuration is `BASE_AGENT_OPTIONS`, which is
+ * identical across all four, so splitting the pool would buy nothing but
+ * fragmentation of the sockets.
+ *
+ * Built on first use and then kept for the life of the process: keep-alive is
+ * the point, and a pool rebuilt per request would open a connection per
+ * request.
+ */
+export function getNodeHttpAgents(
+  config?: APIConfig
+): NodeHttpAgents | undefined {
+  if (config?.dispatcher) return undefined;
+  if (!isNodeHttpEnabled()) return undefined;
+  _nodeHttpAgents ??= createNodeHttpAgents({
+    maxSockets: BASE_AGENT_OPTIONS.connections,
+    keepAliveMs: BASE_AGENT_OPTIONS.keepAliveTimeout,
+  });
+  return _nodeHttpAgents;
+}
+
+/** Drop the shared node:http pool. Exported for tests; production keeps it. */
+export function _resetNodeHttpAgentsForTests(): void {
+  if (_nodeHttpAgents) destroyNodeHttpAgents(_nodeHttpAgents);
+  _nodeHttpAgents = undefined;
 }
 
 /**
  * Resolves the undici dispatcher for a request: the caller's override, or the
- * shared default agent (HTTP/1.1). Returns `undefined` under native-fetch mode.
+ * shared default agent (HTTP/1.1). Returns `undefined` under
+ * `WORKFLOW_NODE_HTTP`, which routes the request off undici entirely.
  */
 export function getDispatcher(config?: APIConfig): unknown {
   return resolveDispatcher(config, getDefaultDispatcher);
@@ -559,10 +600,11 @@ export function getDispatcher(config?: APIConfig): unknown {
  * noteEventsTransportOutcome). Resolve it per request rather than caching the
  * returned value.
  *
- * Under native-fetch mode there is no pool to recycle: `undefined` is returned,
- * the recycler is never asked for an agent, and `noteEventsTransportOutcome`
- * no-ops (its `!current` guard). A wedged connection is then the runtime's
- * problem, not ours.
+ * Under `WORKFLOW_NODE_HTTP` there is no undici pool to recycle: `undefined` is
+ * returned, the recycler is never asked for an agent, and
+ * `noteEventsTransportOutcome` no-ops (its `!current` guard). Node's own agent
+ * evicts a socket when the request on it fails, so there is no equivalent
+ * wedged-session failure mode to recover from.
  */
 export function getEventsDispatcher(config?: APIConfig): unknown {
   return resolveDispatcher(config, () => eventsRecycler.get());

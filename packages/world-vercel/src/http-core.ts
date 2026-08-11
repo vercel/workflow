@@ -10,10 +10,11 @@
  * `DEBUG` logging, x-vercel diagnostic headers, and the status → typed-error
  * mapping the runtime branches on.
  *
- * This module is the single source of truth for that envelope. It depends only
- * on `telemetry.js`, `@workflow/errors`, and `@vercel/oidc` so it can be
- * imported by both `utils.ts` and `events-v4.ts` without an import cycle —
- * dispatchers are passed in by the caller rather than imported here.
+ * This module is the single source of truth for that envelope. Undici
+ * dispatchers are passed in by the caller rather than resolved here, so it can
+ * be imported by both `utils.ts` and `events-v4.ts` without an import cycle.
+ * The one thing it does reach for is `http-client.js`'s shared node:http pool,
+ * which is safe: `http-client.ts` imports nothing from `utils.ts` but a type.
  */
 
 import { getVercelOidcToken } from '@vercel/oidc';
@@ -26,6 +27,8 @@ import {
   WorkflowWorldError,
 } from '@workflow/errors';
 import { envNumber } from '@workflow/world';
+import { nodeHttpFetch } from '@workflow/world/node-http.js';
+import { getNodeHttpAgents } from './http-client.js';
 import {
   ErrorType,
   getSpanKind,
@@ -451,14 +454,27 @@ export async function instrumentedFetch(
       const start = Date.now();
       let response: Response;
       try {
-        response = await fetch(url, {
-          method,
-          headers,
-          body,
-          signal,
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici dispatcher type doesn't match @types/node's RequestInit
-          dispatcher,
-        } as any);
+        // With no dispatcher to honour, `WORKFLOW_NODE_HTTP` takes the request
+        // off undici altogether rather than leaving it on the undici behind
+        // `fetch`. A dispatcher the caller supplied is an instruction to use
+        // undici, so it keeps the request on `fetch`.
+        const nodeAgents = dispatcher ? undefined : getNodeHttpAgents();
+        response = nodeAgents
+          ? await nodeHttpFetch(url, {
+              method,
+              headers,
+              body,
+              signal,
+              agents: nodeAgents,
+            })
+          : await fetch(url, {
+              method,
+              headers,
+              body,
+              signal,
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici dispatcher type doesn't match @types/node's RequestInit
+              dispatcher,
+            } as any);
       } catch (error) {
         const elapsed = Date.now() - start;
         // Report the raw error, before the timeout mapping below rewraps it: the
