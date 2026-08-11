@@ -19,11 +19,10 @@ import type { NextConfig as ProjectNextConfig } from 'next';
 import { createWatchIgnorePredicate } from './watch-ignore.js';
 import {
   classifyRebuild,
+  createRebuildScheduler,
   createSourceSnapshot,
-  type FileChanges,
   getRelevantFiles,
-  pinBaselinesAcrossFullRebuild,
-  replaceSourceSnapshots,
+  readSourceSnapshots,
   type SourceSnapshot,
 } from './watch-rebuild.js';
 
@@ -152,7 +151,8 @@ export async function getNextBuilderEager(
             ? pathname
             : resolve(this.config.workingDir, pathname)
           ).replace(/\\/g, '/');
-        const sourceSnapshots = new Map<string, SourceSnapshot>();
+        let sourceSnapshots = new Map<string, SourceSnapshot>();
+        let buildInProgress = false;
 
         const watchableExtensions = new Set([
           '.js',
@@ -190,25 +190,15 @@ export async function getNextBuilderEager(
           return isIgnoredWatchPath(normalizedPath);
         };
 
-        let rebuildQueue = Promise.resolve();
-
-        const enqueue = (task: () => Promise<void>) => {
-          rebuildQueue = rebuildQueue.then(task).catch((error) => {
-            console.error('Failed to process file change', error);
-          });
-          return rebuildQueue;
-        };
-
         const readSourceSnapshot = (file: string) =>
           createSourceSnapshot({ file, detectWorkflowPatterns });
 
-        const refreshSourceSnapshots = () =>
-          replaceSourceSnapshots({
+        const snapshotSources = () =>
+          readSourceSnapshots({
             discoveredEntries,
             inputFiles: options.inputFiles,
             normalizePath,
             readSnapshot: readSourceSnapshot,
-            sourceSnapshots,
           });
 
         const mergeCombinedManifest = (
@@ -224,6 +214,15 @@ export async function getNextBuilderEager(
             ...workflowsManifest.classes,
           },
         });
+
+        const runBuild = async (build: () => Promise<void>) => {
+          buildInProgress = true;
+          try {
+            await build();
+          } finally {
+            buildInProgress = false;
+          }
+        };
 
         const hotRebuild = async (refreshStepRegistrations: boolean) => {
           if (refreshStepRegistrations) {
@@ -251,54 +250,42 @@ export async function getNextBuilderEager(
           await writeManifest(mergeCombinedManifest(stepsManifest));
         };
 
-        // The pin helper owns the capture-before-build / restore-after-
-        // refresh ordering (including that the capture reads the CURRENT
-        // discovered entries and input files, before the rebuild replaces
-        // them), so an edit landing while the multi-second rebuild runs still
-        // diffs against what the rebuild consumed instead of being absorbed
-        // into the refreshed baseline. See `pinBaselinesAcrossFullRebuild`
-        // for the full reasoning.
-        const fullRebuild = () =>
-          pinBaselinesAcrossFullRebuild({
-            discoveredEntries,
-            inputFiles: options.inputFiles,
-            normalizePath,
-            readSnapshot: readSourceSnapshot,
-            sourceSnapshots,
-            rebuild: async () => {
-              this.clearDiscoveredEntriesCache();
-              const newInputFiles = await this.getInputFiles();
-              options.inputFiles = newInputFiles;
+        const fullRebuild = async () => {
+          this.clearDiscoveredEntriesCache();
+          const newInputFiles = await this.getInputFiles();
+          options.inputFiles = newInputFiles;
 
-              await stepsCtx?.dispose();
-              await workflowsCtx.interimBundleCtx.dispose();
+          // Snapshot before building so edits made during the build remain
+          // dirty and trigger the file event already queued behind this task.
+          const nextSourceSnapshots = await snapshotSources();
 
-              const newCombined = await this.buildCombinedFunction(options);
-              stepsCtx = newCombined.stepsContext;
-              discoveredEntries = newCombined.discoveredEntries;
-              stepsManifest = newCombined.stepsManifest;
-              workflowsManifest = newCombined.workflowsManifest;
+          await stepsCtx?.dispose();
+          await workflowsCtx.interimBundleCtx.dispose();
 
-              if (!newCombined?.interimBundleCtx || !newCombined?.bundleFinal) {
-                throw new Error(
-                  'Invariant: expected workflows bundle context after rebuild'
-                );
-              }
-              workflowsCtx = {
-                interimBundleCtx: newCombined.interimBundleCtx,
-                bundleFinal: newCombined.bundleFinal,
-              };
+          const newCombined = await this.buildCombinedFunction(options);
+          stepsCtx = newCombined.stepsContext;
+          discoveredEntries = newCombined.discoveredEntries;
+          stepsManifest = newCombined.stepsManifest;
+          workflowsManifest = newCombined.workflowsManifest;
 
-              await writeManifest(newCombined.manifest);
-              await refreshSourceSnapshots();
-            },
-          });
+          if (!newCombined?.interimBundleCtx || !newCombined?.bundleFinal) {
+            throw new Error(
+              'Invariant: expected workflows bundle context after rebuild'
+            );
+          }
+          workflowsCtx = {
+            interimBundleCtx: newCombined.interimBundleCtx,
+            bundleFinal: newCombined.bundleFinal,
+          };
+
+          await writeManifest(newCombined.manifest);
+          sourceSnapshots = nextSourceSnapshots;
+        };
 
         const isWatchableFile = (path: string) =>
           watchableExtensions.has(extname(path));
 
-        const readKnownFiles = async () => {
-          const files = new Set<string>();
+        const readKnownFileAliases = async () => {
           const aliases = new Map<string, string>();
           const relevantFiles = getRelevantFiles({
             discoveredEntries,
@@ -315,7 +302,6 @@ export async function getNextBuilderEager(
             const canonicalPath = relevantFiles.has(realFilePath)
               ? realFilePath
               : filePath;
-            files.add(canonicalPath);
             aliases.set(filePath, canonicalPath);
             aliases.set(realFilePath, canonicalPath);
             return canonicalPath;
@@ -363,216 +349,105 @@ export async function getNextBuilderEager(
           };
 
           await visit(this.config.workingDir);
-          return { files, aliases, addKnownFile };
+          return { aliases, addKnownFile };
         };
 
-        const mergeFileChanges = (
-          left: FileChanges,
-          right: FileChanges
-        ): FileChanges => ({
-          addedFiles: unique([...left.addedFiles, ...right.addedFiles]),
-          modifiedFiles: unique([
-            ...left.modifiedFiles,
-            ...right.modifiedFiles,
-          ]),
-          removedFiles: unique([...left.removedFiles, ...right.removedFiles]),
-        });
-
-        const unique = (paths: string[]) => [...new Set(paths)];
-
-        const classifyFileChanges = ({
-          changedFiles,
-          knownFiles,
-          removedFiles,
-        }: {
-          changedFiles: string[];
-          knownFiles: Set<string>;
-          removedFiles: string[];
-        }): FileChanges => {
-          const addedFiles: string[] = [];
-          const modifiedFiles: string[] = [];
-
-          for (const file of unique(changedFiles)) {
-            if (knownFiles.has(file)) {
-              modifiedFiles.push(file);
-            } else {
-              addedFiles.push(file);
-              knownFiles.add(file);
-            }
-          }
-
-          for (const file of removedFiles) {
-            knownFiles.delete(file);
-          }
-
-          return {
-            addedFiles,
-            modifiedFiles,
-            removedFiles: unique(removedFiles),
-          };
-        };
-
-        const hasFileChanges = ({
-          addedFiles,
-          modifiedFiles,
-          removedFiles,
-        }: FileChanges) =>
-          addedFiles.length > 0 ||
-          modifiedFiles.length > 0 ||
-          removedFiles.length > 0;
         const logDevHmr = (...args: unknown[]) => {
           if (process.env.WORKFLOW_DEV_HMR_LOGS === '1') {
             console.log(...args);
           }
         };
 
-        // Known gap: the initial build has the same two-read shape (the
-        // combined build above consumed sources, and this refresh re-reads
-        // them), but no pinning — and the watcher below attaches with
-        // `ignoreInitial: true`, so an edit landing inside the startup window
-        // is absorbed with no straggler event to recover it. Bounded by dev
-        // server startup rather than recurring per rebuild; knowingly out of
-        // scope for the mid-rebuild pinning above.
-        await refreshSourceSnapshots();
-        let {
-          files: knownFiles,
-          aliases: knownFileAliases,
-          addKnownFile: rememberKnownFile,
-        } = await readKnownFiles();
+        sourceSnapshots = await snapshotSources();
+        let { aliases: knownFileAliases, addKnownFile: rememberKnownFile } =
+          await readKnownFileAliases();
 
         const refreshKnownFiles = async () => {
-          const nextKnown = await readKnownFiles();
-          knownFiles = nextKnown.files;
+          const nextKnown = await readKnownFileAliases();
           knownFileAliases = nextKnown.aliases;
           rememberKnownFile = nextKnown.addKnownFile;
         };
 
-        const processFileChanges = async (fileChanges: FileChanges) => {
-          if (!hasFileChanges(fileChanges)) {
-            return;
-          }
+        const runFullRebuild = async () => {
+          logDevHmr('workflow dev hmr: full rediscovery');
+          await runBuild(fullRebuild);
+          await refreshKnownFiles();
+        };
 
+        const processFileChanges = async (files: string[]) => {
           const decision = await classifyRebuild({
+            files,
             discoveredEntries,
-            fileChanges,
             inputFiles: options.inputFiles,
             normalizePath,
             parentHasChild,
             readSnapshot: readSourceSnapshot,
             sourceSnapshots,
           });
-          if (decision.kind === 'none') {
-            logDevHmr('workflow dev hmr: skip');
-            for (const [file, snapshot] of decision.snapshots || []) {
-              sourceSnapshots.set(file, snapshot);
-            }
-            return;
+          switch (decision.kind) {
+            case 'skip':
+              logDevHmr('workflow dev hmr: skip');
+              break;
+            case 'hot':
+              logDevHmr(
+                `workflow dev hmr: hot rebuild${decision.refreshStepRegistrations ? ' with step registration refresh' : ''}`
+              );
+              await runBuild(() =>
+                hotRebuild(decision.refreshStepRegistrations)
+              );
+              break;
+            case 'full':
+              await runFullRebuild();
+              return;
+            default:
+              decision satisfies never;
+              throw new Error('Unknown rebuild decision');
           }
-          if (decision.kind === 'full') {
-            logDevHmr('workflow dev hmr: full rediscovery');
+          sourceSnapshots = new Map([
+            ...sourceSnapshots,
+            ...decision.snapshots,
+          ]);
+        };
+
+        const scheduleRebuild = createRebuildScheduler(
+          async (request) => {
             try {
-              await fullRebuild();
-              await refreshKnownFiles();
-            } finally {
-              // Lets a log reader tell "quiet" from "rebuild in flight".
-              // The e2e HMR tests drain-to-quiet before counting lines.
-              logDevHmr('workflow dev hmr: rebuild complete');
+              switch (request.kind) {
+                case 'files':
+                  await processFileChanges(request.files);
+                  return;
+                case 'full':
+                  await runFullRebuild();
+                  return;
+                default:
+                  request satisfies never;
+                  throw new Error('Unknown scheduled rebuild');
+              }
+            } catch (error) {
+              console.error('Failed to process file change', error);
             }
-            return;
-          }
-
-          logDevHmr(
-            `workflow dev hmr: hot rebuild${decision.refreshStepRegistrations ? ' with step registration refresh' : ''}`
-          );
-          try {
-            await hotRebuild(decision.refreshStepRegistrations);
-            for (const [file, snapshot] of decision.snapshots) {
-              sourceSnapshots.set(file, snapshot);
-            }
-          } finally {
-            // See the matching line on the full path above.
-            logDevHmr('workflow dev hmr: rebuild complete');
+          },
+          () => logDevHmr('workflow dev hmr: idle')
+        );
+        const scheduleFileChange = (file: string) => {
+          scheduleRebuild({ kind: 'files', files: [file] });
+        };
+        const scheduleBuildOverlap = () => {
+          if (buildInProgress) {
+            scheduleRebuild({ kind: 'full' });
           }
         };
 
-        let pendingFileChanges: FileChanges = {
-          addedFiles: [],
-          modifiedFiles: [],
-          removedFiles: [],
-        };
-        let flushTimer: ReturnType<typeof setTimeout> | undefined;
-
-        const scheduleFileChanges = (fileChanges: FileChanges) => {
-          pendingFileChanges = mergeFileChanges(
-            pendingFileChanges,
-            fileChanges
-          );
-          if (flushTimer) {
-            return;
-          }
-          flushTimer = setTimeout(() => {
-            const fileChanges = pendingFileChanges;
-            pendingFileChanges = {
-              addedFiles: [],
-              modifiedFiles: [],
-              removedFiles: [],
-            };
-            flushTimer = undefined;
-            enqueue(() => processFileChanges(fileChanges));
-          }, 10);
-        };
-
-        const resolveExistingEventPath = async (pathname: string) => {
+        const handleFileWritten = async (pathname: string) => {
           const normalizedPath = normalizePath(pathname);
           if (!isWatchableFile(normalizedPath)) {
             return;
           }
 
-          const knownPath = knownFileAliases.get(normalizedPath);
-          if (knownPath) {
-            return knownPath;
-          }
-
-          try {
-            const realFilePath = normalizePath(await realpath(normalizedPath));
-            return knownFileAliases.get(realFilePath) ?? normalizedPath;
-          } catch {
-            return normalizedPath;
-          }
-        };
-
-        const handleFileAdded = async (pathname: string) => {
-          const normalizedPath = normalizePath(pathname);
-          if (!isWatchableFile(normalizedPath)) {
-            return;
-          }
-
-          const existingPath = await resolveExistingEventPath(normalizedPath);
-          const wasKnown = existingPath ? knownFiles.has(existingPath) : false;
-          const canonicalPath = await rememberKnownFile(normalizedPath);
-          knownFiles.add(canonicalPath);
-          scheduleFileChanges({
-            addedFiles: wasKnown ? [] : [canonicalPath],
-            modifiedFiles: wasKnown ? [canonicalPath] : [],
-            removedFiles: [],
-          });
-        };
-
-        const handleFileChanged = async (pathname: string) => {
-          const canonicalPath = await resolveExistingEventPath(pathname);
-          if (!canonicalPath) {
-            return;
-          }
-
-          const fileChanges = classifyFileChanges({
-            changedFiles: [canonicalPath],
-            knownFiles,
-            removedFiles: [],
-          });
-          if (!knownFileAliases.has(canonicalPath)) {
-            await rememberKnownFile(canonicalPath);
-          }
-          scheduleFileChanges(fileChanges);
+          const canonicalPath =
+            knownFileAliases.get(normalizedPath) ??
+            (await rememberKnownFile(normalizedPath));
+          scheduleFileChange(canonicalPath);
         };
 
         const handleFileRemoved = (pathname: string) => {
@@ -583,13 +458,8 @@ export async function getNextBuilderEager(
 
           const canonicalPath =
             knownFileAliases.get(normalizedPath) ?? normalizedPath;
-          const fileChanges = classifyFileChanges({
-            changedFiles: [],
-            knownFiles,
-            removedFiles: [canonicalPath],
-          });
           knownFileAliases.delete(normalizedPath);
-          scheduleFileChanges(fileChanges);
+          scheduleFileChange(canonicalPath);
         };
 
         const watcher = chokidar.watch(this.config.workingDir, {
@@ -606,12 +476,15 @@ export async function getNextBuilderEager(
         });
 
         watcher.on('add', (pathname) => {
-          void handleFileAdded(pathname);
+          scheduleBuildOverlap();
+          void handleFileWritten(pathname);
         });
         watcher.on('change', (pathname) => {
-          void handleFileChanged(pathname);
+          scheduleBuildOverlap();
+          void handleFileWritten(pathname);
         });
         watcher.on('unlink', (pathname) => {
+          scheduleBuildOverlap();
           handleFileRemoved(pathname);
         });
         watcher.on('error', (error) => {
