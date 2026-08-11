@@ -4,6 +4,7 @@ import {
   CorruptedEventLogError,
   EntityConflictError,
   FatalError,
+  HookConflictError,
   HookNotFoundError,
   MaxEventsExceededError,
   PreconditionFailedError,
@@ -11,6 +12,7 @@ import {
   RUN_ERROR_CODES,
   type RunErrorCode,
   RunExpiredError,
+  START_HOOK_ADMISSION_REJECTED,
   WorkflowRuntimeError,
   WorkflowWorldError,
 } from '@workflow/errors';
@@ -28,6 +30,7 @@ import {
   isLegacySpecVersion,
   isTerminalRunEventType,
   ROOT_RUN_ID_ATTRIBUTE,
+  type RunCreationData,
   type RunInput,
   resolveQueueNamespace,
   SPEC_VERSION_CURRENT,
@@ -170,6 +173,7 @@ export {
   wakeUpRun,
 } from './runtime/runs.js';
 export {
+  type StartHookOptions,
   type StartOptions,
   type StartOptionsBase,
   type StartOptionsWithDeploymentId,
@@ -1011,6 +1015,7 @@ export function workflowEntrypoint(
                   const turbo =
                     isTurboEnabled() &&
                     runInput !== undefined &&
+                    runInput.startHook === undefined &&
                     metadata.attempt === 1 &&
                     incomingStepId === undefined &&
                     !replayDivergence;
@@ -2049,6 +2054,15 @@ export function workflowEntrypoint(
                     // Contract: events.create('run_started') must be idempotent
                     // for runs already in 'running' status (return the run
                     // without error), not just for pending → running transitions.
+                    let runCreationData: RunCreationData | undefined;
+                    if (runInput) {
+                      const {
+                        environment: _environment,
+                        specVersion: _specVersion,
+                        ...data
+                      } = runInput;
+                      runCreationData = data;
+                    }
                     const runStartedEvent = {
                       eventType: 'run_started' as const,
                       // Use the spec version from the original start() call
@@ -2060,18 +2074,8 @@ export function workflowEntrypoint(
                       // create the run if run_created was missed.
                       // Uint8Array values survive the queue natively
                       // (CBOR on world-vercel, JSON reviver on world-local).
-                      ...(runInput
-                        ? {
-                            eventData: {
-                              input: runInput.input,
-                              deploymentId: runInput.deploymentId,
-                              workflowName: runInput.workflowName,
-                              executionContext: runInput.executionContext,
-                              attributes: runInput.attributes,
-                              allowReservedAttributes:
-                                runInput.allowReservedAttributes,
-                            },
-                          }
+                      ...(runCreationData
+                        ? { eventData: runCreationData }
                         : {}),
                     };
                     if (turbo && runInput) {
@@ -2204,6 +2208,27 @@ export function workflowEntrypoint(
                           return;
                         }
                       } catch (err) {
+                        if (runInput?.startHook !== undefined) {
+                          if (HookConflictError.is(err)) {
+                            return;
+                          }
+                          if (
+                            WorkflowWorldError.is(err) &&
+                            err.code === START_HOOK_ADMISSION_REJECTED
+                          ) {
+                            runtimeLogger.error(
+                              'Atomic start Hook admission rejected queued candidate',
+                              {
+                                workflowRunId: runId,
+                                error:
+                                  err instanceof Error
+                                    ? err.message
+                                    : String(err),
+                              }
+                            );
+                            return;
+                          }
+                        }
                         // Run was concurrently completed/failed/cancelled
                         if (
                           EntityConflictError.is(err) ||
