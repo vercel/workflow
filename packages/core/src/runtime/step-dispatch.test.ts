@@ -1,7 +1,11 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import type { StepInvocationQueueItem } from '../global.js';
-import { getStepDispatchWatchdogSeconds } from './constants.js';
 import {
+  getInlineOwnershipLeaseSeconds,
+  getStepDispatchWatchdogSeconds,
+} from './constants.js';
+import {
+  dispatchLostAtMs,
   getStepDispatchWake,
   isStepAwaitingFirstStart,
   nextStepDispatchBoundaryMs,
@@ -12,6 +16,19 @@ import {
 const WATCHDOG_ENV = 'WORKFLOW_STEP_DISPATCH_WATCHDOG_SECONDS';
 
 const CREATED_AT = 1_000_000;
+const STARTED_AT = CREATED_AT + 1_000;
+
+/** A step mid-body, its ownership lease still live at `atLeaseOffset(-1)`. */
+function startedStep(
+  overrides: Partial<StepInvocationQueueItem> = {}
+): StepInvocationQueueItem {
+  return makeStep({ lastStartedAt: STARTED_AT, ...overrides });
+}
+
+/** `nowMs` relative to the end of a started step's ownership lease. */
+function atLeaseOffset(offsetMs: number): number {
+  return STARTED_AT + getInlineOwnershipLeaseSeconds() * 1000 + offsetMs;
+}
 
 function makeStep(
   overrides: Partial<StepInvocationQueueItem> = {}
@@ -30,6 +47,11 @@ function makeStep(
 /** `nowMs` exactly `intervals` watchdog intervals after the step's creation. */
 function atIntervals(intervals: number): number {
   return CREATED_AT + intervals * getStepDispatchWatchdogSeconds() * 1000;
+}
+
+/** One interval, in ms, at whatever the watchdog is currently configured to. */
+function intervalMs(): number {
+  return getStepDispatchWatchdogSeconds() * 1000;
 }
 
 afterEach(() => {
@@ -71,20 +93,40 @@ describe('isStepAwaitingFirstStart', () => {
   });
 });
 
+describe('dispatchLostAtMs', () => {
+  it('is one watchdog interval after creation for an unstarted step', () => {
+    expect(dispatchLostAtMs(makeStep())).toBe(atIntervals(1));
+  });
+
+  it('is the end of the ownership lease for a started step', () => {
+    expect(dispatchLostAtMs(startedStep())).toBe(atLeaseOffset(0));
+  });
+
+  it('is undefined for a step whose retry is already queued', () => {
+    expect(dispatchLostAtMs(startedStep({ sawRetrying: true }))).toBeUndefined();
+  });
+
+  it('is undefined when the world reports no creation timestamp', () => {
+    expect(dispatchLostAtMs(makeStep({ createdEventAt: undefined }))).toBe(
+      undefined
+    );
+  });
+});
+
 describe('stepDispatchIdempotencyKey', () => {
   it('uses the bare correlation ID within the first watchdog interval', () => {
     const step = makeStep();
     expect(stepDispatchIdempotencyKey(step, CREATED_AT)).toBe(
       step.correlationId
     );
-    expect(stepDispatchIdempotencyKey(step, atIntervals(1) - 1)).toBe(
+    expect(stepDispatchIdempotencyKey(step, atIntervals(1))).toBe(
       step.correlationId
     );
   });
 
   it('moves to a fresh key once an interval has passed without a start', () => {
     const step = makeStep();
-    expect(stepDispatchIdempotencyKey(step, atIntervals(1))).toBe(
+    expect(stepDispatchIdempotencyKey(step, atIntervals(1) + 1)).toBe(
       `${step.correlationId}:dispatch:1`
     );
     expect(stepDispatchIdempotencyKey(step, atIntervals(2.5))).toBe(
@@ -99,11 +141,33 @@ describe('stepDispatchIdempotencyKey', () => {
     expect(early).toBe(late);
   });
 
-  it('keeps the bare key for a step that has already started', () => {
-    // A started step may be mid-body for far longer than the watchdog; only
-    // the ownership lease and its backstop may act on it.
-    const step = makeStep({ lastStartedAt: CREATED_AT + 1 });
-    expect(stepDispatchIdempotencyKey(step, atIntervals(10))).toBe(
+  it('keeps the bare key for a started step while its lease is live', () => {
+    // A step mid-body may take far longer than the watchdog interval, so the
+    // ownership lease is the only deadline that may act on it.
+    const step = startedStep();
+    expect(stepDispatchIdempotencyKey(step, atLeaseOffset(-1))).toBe(
+      step.correlationId
+    );
+  });
+
+  it('moves to a fresh key once a started step outlives its lease', () => {
+    // The invocation that wrote step_started is gone: past the lease the
+    // inline backstop wake brings a replay back, and this is the key that
+    // makes its re-dispatch reach the queue rather than being deduped away.
+    const step = startedStep();
+    expect(stepDispatchIdempotencyKey(step, atLeaseOffset(1))).toBe(
+      `${step.correlationId}:dispatch:1`
+    );
+    expect(stepDispatchIdempotencyKey(step, atLeaseOffset(intervalMs()))).toBe(
+      `${step.correlationId}:dispatch:2`
+    );
+  });
+
+  it('keeps the bare key for a step whose retry is already queued', () => {
+    // step_retrying means the owner scheduled the next attempt under the bare
+    // key, with a backoff that may legitimately exceed any deadline here.
+    const step = startedStep({ sawRetrying: true });
+    expect(stepDispatchIdempotencyKey(step, atLeaseOffset(intervalMs()))).toBe(
       step.correlationId
     );
   });
@@ -125,8 +189,8 @@ describe('stepDispatchIdempotencyKey', () => {
   it('honours the watchdog override', () => {
     process.env[WATCHDOG_ENV] = '10';
     const step = makeStep();
-    expect(stepDispatchEpoch(step, CREATED_AT + 10_000)).toBe(1);
-    expect(stepDispatchEpoch(step, CREATED_AT + 9_999)).toBe(0);
+    expect(stepDispatchEpoch(step, CREATED_AT + 10_001)).toBe(1);
+    expect(stepDispatchEpoch(step, CREATED_AT + 10_000)).toBe(0);
   });
 
   it('clamps an override below the supported minimum', () => {
@@ -150,10 +214,16 @@ describe('nextStepDispatchBoundaryMs', () => {
     );
   });
 
+  it('is the lease boundary for a started step still inside its lease', () => {
+    expect(nextStepDispatchBoundaryMs(startedStep(), STARTED_AT)).toBe(
+      atLeaseOffset(0)
+    );
+  });
+
   it('is undefined for a step out of watchdog scope', () => {
     expect(
       nextStepDispatchBoundaryMs(
-        makeStep({ lastStartedAt: CREATED_AT }),
+        startedStep({ sawRetrying: true }),
         atIntervals(3)
       )
     ).toBeUndefined();
@@ -161,11 +231,25 @@ describe('nextStepDispatchBoundaryMs', () => {
 });
 
 describe('getStepDispatchWake', () => {
-  it('is undefined when no step is awaiting a first start', () => {
+  it('is undefined when no pending step has a lost-dispatch deadline', () => {
     expect(
-      getStepDispatchWake([makeStep({ lastStartedAt: CREATED_AT })], CREATED_AT)
+      getStepDispatchWake([startedStep({ sawRetrying: true })], CREATED_AT)
     ).toBeUndefined();
     expect(getStepDispatchWake([], CREATED_AT)).toBeUndefined();
+  });
+
+  it('re-arms itself past the lease so a lost recovery is retried', () => {
+    // The dispatch at the lease boundary computes epoch 0 and is deduped, so
+    // the wake it arms is what carries the run to the first fresh key.
+    const step = startedStep();
+    const wake = getStepDispatchWake([step], atLeaseOffset(0));
+    expect(wake?.idempotencyKey).toBe(
+      `${step.correlationId}:dispatch-wake:${atLeaseOffset(0)}`
+    );
+    const next = getStepDispatchWake([step], atLeaseOffset(1));
+    expect(next?.idempotencyKey).toBe(
+      `${step.correlationId}:dispatch-wake:${atLeaseOffset(intervalMs())}`
+    );
   });
 
   it('lands just past the boundary so the wake does not re-arm its own key', () => {

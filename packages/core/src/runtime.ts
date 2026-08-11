@@ -3212,16 +3212,18 @@ export function workflowEntrypoint(
                                 requestedAt: new Date(),
                               },
                               {
-                                // Epoch-scoped once the step has gone a full
-                                // watchdog interval without ever starting: the
-                                // bare correlation ID is deduped by the queue
-                                // for the lifetime of the message dispatched
-                                // under it, so a dispatch that never produced
-                                // a step_started can only be retried under a
-                                // key the queue has not seen. Within an epoch
-                                // every replay derives the same key, so
-                                // concurrent wake replays still collapse to
-                                // one message. See runtime/step-dispatch.ts.
+                                // Epoch-scoped once the step's dispatch is
+                                // presumed lost — a watchdog interval without
+                                // a first start, or an expired ownership lease
+                                // with no terminal event. The bare correlation
+                                // ID is deduped by the queue for the lifetime
+                                // of the message dispatched under it, so a
+                                // dispatch that stopped making progress can
+                                // only be retried under a key the queue has
+                                // not seen. Within an epoch every replay
+                                // derives the same key, so concurrent wake
+                                // replays still collapse to one message. See
+                                // runtime/step-dispatch.ts.
                                 idempotencyKey: stepDispatchIdempotencyKey(
                                   step,
                                   dispatchNowMs
@@ -3233,8 +3235,8 @@ export function workflowEntrypoint(
                         // Nothing else wakes a run whose only outstanding work
                         // is a step dispatch that was lost, so the watchdog
                         // needs its own timer: one delayed run continuation at
-                        // the earliest boundary among the steps still awaiting
-                        // a first start. Deduped on that boundary, so repeated
+                        // the earliest boundary among the steps dispatched
+                        // here. Deduped on that boundary, so repeated
                         // suspensions within an interval arm it once.
                         const dispatchWake = getStepDispatchWake(
                           dispatchedSteps,

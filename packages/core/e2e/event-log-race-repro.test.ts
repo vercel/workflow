@@ -10,6 +10,10 @@ import {
   start as rawStart,
   resumeHook,
 } from '../src/runtime';
+import {
+  getInlineOwnershipLeaseSeconds,
+  getStepDispatchWatchdogSeconds,
+} from '../src/runtime/constants';
 import { getWorkflowMetadata, setupWorld, trackRun } from './utils';
 
 /**
@@ -158,6 +162,30 @@ function envBoolean(name: string, fallback: boolean) {
 // `workflow_dispatch` inputs straight through and `envNumber` treats an unset or
 // empty variable as absent, so a blank input lands on the value below rather
 // than on a second default maintained in YAML.
+/**
+ * How long a run may take before the harness calls it `stuck`.
+ *
+ * A healthy attempt finishes in tens of seconds, so this is not a latency
+ * budget: it is the point past which a run is declared unrecoverable. That
+ * makes it meaningless to set it below the runtime's own longest recovery
+ * deadline. A step whose owning invocation disappears mid-body is presumed
+ * alive for the inline-ownership lease, and its re-dispatch reaches the queue
+ * one watchdog interval later at worst, so anything shorter reports a run that
+ * is on its way back as permanently stranded.
+ *
+ * Both deadlines are read from this process's environment, which matches the
+ * deployment under test only when neither side overrides them. Overriding the
+ * lease or the watchdog on the deployment means setting
+ * `EVENT_LOG_RACE_REPRO_RUN_TIMEOUT_MS` here to match.
+ */
+function defaultRunTimeoutMs(): number {
+  const recoveryMs =
+    (getInlineOwnershipLeaseSeconds() + getStepDispatchWatchdogSeconds()) *
+    1000;
+  // Slack for the recovered dispatch to be delivered and the step to run.
+  return recoveryMs + 60_000;
+}
+
 const config: ReproConfig = {
   stepStormAttempts: envNumber('EVENT_LOG_RACE_REPRO_STEP_STORM_ATTEMPTS', 6),
   hookStormAttempts: envNumber('EVENT_LOG_RACE_REPRO_HOOK_STORM_ATTEMPTS', 6),
@@ -173,7 +201,10 @@ const config: ReproConfig = {
   // absorb the worst case of one in-flight attempt draining its full
   // `runTimeoutMs` after the budget ends (see `testTimeoutMs` below).
   budgetMs: envNumber('EVENT_LOG_RACE_REPRO_BUDGET_MS', 12 * 60_000),
-  runTimeoutMs: envNumber('EVENT_LOG_RACE_REPRO_RUN_TIMEOUT_MS', 240_000),
+  runTimeoutMs: envNumber(
+    'EVENT_LOG_RACE_REPRO_RUN_TIMEOUT_MS',
+    defaultRunTimeoutMs()
+  ),
   hookTimeoutMs: envNumber('EVENT_LOG_RACE_REPRO_HOOK_TIMEOUT_MS', 60_000),
   rounds: envNumber('EVENT_LOG_RACE_REPRO_ROUNDS', 6),
   width: envNumber('EVENT_LOG_RACE_REPRO_WIDTH', 8),

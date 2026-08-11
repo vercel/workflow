@@ -164,7 +164,8 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 - Clamp: `10` to `900`
 - How long a step may sit created but never started before the runtime re-dispatches it. A queued step message is deduplicated on its correlation ID, so if that message is lost the step would otherwise never be delivered again and the run would keep replaying with nothing to execute. Past this interval the re-dispatch uses a key the queue has not seen, and the runtime arms a timer on the boundary so the check happens even when nothing else wakes the run.
 - Re-dispatch is at-least-once: if the original message was only slow, both deliveries execute the step body and the loser's result is discarded. Raise this if your queue's dispatch-to-start latency approaches the default.
-- Only steps that have never started are covered. A step that has started is left to the inline ownership lease above.
+- A step that has already started gets the same treatment on a later deadline: it is presumed alive for the inline ownership lease above, and only past the lease does its re-dispatch move to a fresh key. This is what recovers a step whose invocation disappeared mid-body. Once past that point, the interval here is also how often the re-dispatch is retried.
+- Steps waiting on a scheduled retry (`step_retrying`) are left alone, since that retry is already queued with its own backoff.
 
 ## Workflow VM engine
 

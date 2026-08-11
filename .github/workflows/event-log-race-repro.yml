@@ -62,11 +62,14 @@ jobs:
     name: Event Log Race Repro
     runs-on: ubuntu-latest
     # Sized for the harness' default scale: its own test timeout is
-    # `budget_ms + run_timeout_ms + 60s` (~17 min at the defaults), and the rest is
-    # checkout, build, the deployment wait, and rendering the summary. A soak
-    # dispatch that raises `budget_ms` has to raise this too, or the runner kills
-    # the job before the summary is written.
-    timeout-minutes: 25
+    # `budget_ms + run_timeout_ms + 60s` (~30 min at the defaults, where
+    # `run_timeout_ms` is derived from the runtime's inline-ownership lease so a
+    # recovering run is not misreported as stuck), and the rest is checkout,
+    # build, the deployment wait, and rendering the summary. Only a run that
+    # actually needs recovery spends that deadline; healthy attempts finish in
+    # tens of seconds. A soak dispatch that raises `budget_ms` has to raise this
+    # too, or the runner kills the job before the summary is written.
+    timeout-minutes: 40
     if: ${{ github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'event-log-race-repro') }}
     permissions:
       contents: read
