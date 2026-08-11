@@ -12,6 +12,9 @@ real World they are races:
 In `@workflow/world-local` you would answer that by polling in a loop and
 hoping. Here you state it, and it is what happens — every time, byte for byte.
 
+<!-- @skip-typecheck: four lines out of a scenario's `script`, so `sim` is
+unbound here. The same calls appear in full, type-checked form further down. -->
+
 ```ts
 const wf = sim.writer.orchestrator();
 await wf.runToEventCommitted('step_started', 'reserveInventory');
@@ -194,6 +197,8 @@ race. The script decides it: hold `stepA` before its completion is assigned a
 position, let `stepB` commit, then let both go.
 
 ```ts
+import type { ScenarioSpec } from '@workflow/world-sim';
+
 const spec: ScenarioSpec = {
   // The stable handle: what a bug report cites and `pnpm sim <id>` selects.
   // The prose `name` beside it is free to be reworded.
@@ -229,11 +234,18 @@ Playing it needs the compiled bundle, because the orchestrator runs from a code
 string inside a VM:
 
 ```ts
-import { loadFlowHandler, renderScenario, runScenario } from '@workflow/world-sim';
+import {
+  loadFlowHandler,
+  renderScenario,
+  runScenario,
+  type ScenarioSpec,
+} from '@workflow/world-sim';
 // Separate entry on purpose: this one reaches SWC and esbuild through
 // `@workflow/builders`, and playing a scenario should not drag a compiler into
 // the module graph.
 import { buildSimBundle } from '@workflow/world-sim/build';
+
+declare const spec: ScenarioSpec; // the one above
 
 const bundle = await buildSimBundle({ cwd: process.cwd(), dirs: ['workflows'] });
 const handler = await loadFlowHandler(bundle.flowBundlePath);
@@ -322,7 +334,9 @@ gets there. So a script that needs two writers held at once starts both
 watches, then awaits both.
 
 ```ts
-script: async (sim) => {
+import type { ScenarioScript } from '@workflow/world-sim';
+
+const script: ScenarioScript = async (sim) => {
   const wf = sim.writer.orchestrator();
   const reserve = sim.writer.step('reserveInventory');
 
@@ -339,7 +353,7 @@ script: async (sim) => {
   await wf.release();
   await done;
   await reserve.release();
-}
+};
 ```
 
 | method | writer | description |
@@ -382,7 +396,7 @@ handles are built from. Fields are ANDed; `eventType` implies `events.create`,
 `stepName` accepts the machine name or the plain function name, `where` covers
 what the declarative fields cannot say, and `phase` defaults to `'after'`:
 
-```ts
+```
 { call: 'events.create' | 'queue' | 'runs.get' | … , phase: 'before' | 'after',
   eventType, stepName, correlationId, token, runId, writer, failed, where }
 ```
@@ -465,6 +479,10 @@ to choose: a hook delivery enqueues a flow message of its own and it sorts
 earlier than the timer you are almost certainly after.
 
 ```ts
+import type { Tempo } from '@workflow/world-sim';
+
+declare const sim: Tempo; // the `script` parameter
+
 const fired = sim.deliverQueued(
   (pending) => pending.find((m) => m.readyAtMs > sim.world.nowMs())?.messageId
 );

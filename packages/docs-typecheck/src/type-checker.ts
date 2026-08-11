@@ -100,6 +100,12 @@ const compilerOptions: ts.CompilerOptions = {
     '@workflow/serde': [path.join(repoRoot, 'packages/serde/dist/index')],
     '@workflow/vitest': [path.join(repoRoot, 'packages/vitest/dist/index')],
     '@workflow/world': [path.join(repoRoot, 'packages/world/dist/index')],
+    '@workflow/world-sim': [
+      path.join(repoRoot, 'packages/world-sim/dist/index'),
+    ],
+    '@workflow/world-sim/build': [
+      path.join(repoRoot, 'packages/world-sim/dist/build'),
+    ],
     // Third-party deps available in docs-typecheck/node_modules
     zod: [path.join(__dirname, '../node_modules/zod')],
     ai: [path.join(__dirname, '../node_modules/ai')],
