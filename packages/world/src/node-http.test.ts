@@ -6,7 +6,12 @@ import {
   type ServerResponse,
 } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { gzipSync } from 'node:zlib';
+import {
+  brotliCompressSync,
+  deflateRawSync,
+  deflateSync,
+  gzipSync,
+} from 'node:zlib';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   createNodeHttpAgents,
@@ -132,6 +137,48 @@ describe('nodeHttpFetch', () => {
     // The coding headers described the wire body, not the one the caller sees.
     expect(response.headers.get('content-encoding')).toBeNull();
     expect(response.headers.get('content-length')).toBeNull();
+  });
+
+  it('decodes brotli', async () => {
+    const base = await listen((_request, response) => {
+      response.setHeader('content-encoding', 'br');
+      response.end(brotliCompressSync(Buffer.from('brotli payload')));
+    });
+
+    const response = await nodeHttpFetch(base);
+
+    await expect(response.text()).resolves.toBe('brotli payload');
+  });
+
+  // `content-encoding: deflate` is served both as a zlib stream and as a bare
+  // DEFLATE one, and `fetch` decodes either. Reading the second with an
+  // inflater that expects a zlib header fails it with Z_DATA_ERROR.
+  it.each([
+    ['zlib-wrapped', deflateSync],
+    ['raw', deflateRawSync],
+  ])('decodes %s deflate', async (_shape, compress) => {
+    const base = await listen((_request, response) => {
+      response.setHeader('content-encoding', 'deflate');
+      response.end(compress(Buffer.from('deflated payload')));
+    });
+
+    const response = await nodeHttpFetch(base);
+
+    await expect(response.text()).resolves.toBe('deflated payload');
+  });
+
+  // Every decoder finishes on a sync flush, so a body cut short of its trailer
+  // still yields what did arrive rather than failing as truncated input.
+  it('decodes a compressed body whose trailer never arrives', async () => {
+    const full = gzipSync(Buffer.from('hello gzip body'));
+    const base = await listen((_request, response) => {
+      response.setHeader('content-encoding', 'gzip');
+      response.end(full.subarray(0, full.length - 4));
+    });
+
+    const response = await nodeHttpFetch(base);
+
+    await expect(response.text()).resolves.toBe('hello gzip body');
   });
 
   it('streams the body incrementally rather than buffering it', async () => {
@@ -277,6 +324,43 @@ describe('nodeHttpFetch', () => {
 
     await expect(response.text()).rejects.toMatchObject({
       code: 'ECONNRESET',
+    });
+  });
+
+  // Same teardown, one decoder deeper: the reader is attached to the decoder
+  // rather than the message, so the failure only arrives if the message
+  // forwards it. `pipe()` forwards nothing but 'end'.
+  it('errors the body stream when the socket drops mid-compressed-body', async () => {
+    const compressed = gzipSync(Buffer.from('a'.repeat(4096)));
+    const base = await listen((request, response) => {
+      response.setHeader('content-encoding', 'gzip');
+      response.setHeader('content-length', String(compressed.length));
+      response.write(compressed.subarray(0, 8));
+      setTimeout(() => request.socket.destroy(), 10);
+    });
+
+    const response = await nodeHttpFetch(base);
+
+    await expect(response.text()).rejects.toMatchObject({
+      code: 'ECONNRESET',
+    });
+  });
+
+  // A deliberate teardown reaches the socket as a plain reset, and has to keep
+  // reporting its own cause through the decoder too.
+  it('reports the body deadline rather than a reset on a compressed body', async () => {
+    const compressed = gzipSync(Buffer.from('a'.repeat(4096)));
+    const base = await listen((_request, response) => {
+      response.setHeader('content-encoding', 'gzip');
+      response.setHeader('content-length', String(compressed.length));
+      response.write(compressed.subarray(0, 8));
+      // Then stalls forever without sending the rest.
+    });
+
+    const response = await nodeHttpFetch(base, { bodyTimeoutMs: 100 });
+
+    await expect(response.text()).rejects.toMatchObject({
+      code: 'ETIMEDOUT',
     });
   });
 

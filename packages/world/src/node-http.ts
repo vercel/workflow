@@ -2,7 +2,7 @@
  * A `fetch`-shaped client built on Node's core HTTP modules.
  *
  * `node:http` / `node:https` sit directly on `node:net` / `node:tls`, so a
- * request issued here involves no undici at all — not the adapter's own
+ * request issued here involves no undici at all: not the adapter's own
  * `Agent`, and not the one behind the runtime's global `fetch`. That is the
  * whole point of this module: it is the transport
  * {@link ./node-http-flag.js | WORKFLOW_NODE_HTTP} selects, for a deployment
@@ -23,6 +23,7 @@
 import { Buffer } from 'node:buffer';
 import http from 'node:http';
 import https from 'node:https';
+import { Transform, type TransformCallback } from 'node:stream';
 import zlib from 'node:zlib';
 
 /**
@@ -131,15 +132,87 @@ function toResponseHeaders(message: http.IncomingMessage): Headers {
   return headers;
 }
 
-/**
- * Wrap the message in a decoder when the origin compressed it. Errors are
- * forwarded by hand: `pipe()` does not propagate them, so a socket reset
- * mid-body would otherwise leave the decoder hanging open.
- */
 /** A Node readable that can also be torn down (both `IncomingMessage` and the zlib decoders are). */
 type DestroyableReadable = NodeJS.ReadableStream & {
   destroy?: (error?: Error) => void;
 };
+
+/**
+ * Finish on a sync flush rather than the strict default, so a body whose
+ * trailer never arrives still yields the bytes that did. `fetch` decodes such a
+ * response; the strict default rejects it as truncated input.
+ */
+const ZLIB_OPTIONS: zlib.ZlibOptions = {
+  flush: zlib.constants.Z_SYNC_FLUSH,
+  finishFlush: zlib.constants.Z_SYNC_FLUSH,
+};
+
+const BROTLI_OPTIONS: zlib.BrotliOptions = {
+  flush: zlib.constants.BROTLI_OPERATION_FLUSH,
+  finishFlush: zlib.constants.BROTLI_OPERATION_FLUSH,
+};
+
+/**
+ * `content-encoding: deflate` is served two ways: as a zlib stream (RFC 1950),
+ * which carries a two-byte header, and as a bare DEFLATE stream (RFC 1951),
+ * which does not. `createInflate` reads only the first and fails the second
+ * with `Z_DATA_ERROR`, so the method is picked from the leading byte, the same
+ * sniff `fetch` performs.
+ *
+ * Decoded output is pushed as it arrives without consulting the return value,
+ * so a consumer that stops reading buffers the inflated body rather than
+ * stalling the socket. Only this coding is affected: the other decoders are
+ * piped, and pause their source normally.
+ */
+class InflateAuto extends Transform {
+  private inner?: zlib.Inflate | zlib.InflateRaw;
+
+  override _transform(
+    chunk: Buffer,
+    _encoding: BufferEncoding,
+    callback: TransformCallback
+  ): void {
+    if (!this.inner) {
+      if (chunk.length === 0) {
+        callback();
+        return;
+      }
+      // RFC 1950 puts the compression method in the low nibble of the first
+      // byte, and DEFLATE is 8. Any other value cannot be a zlib header.
+      const inner =
+        (chunk[0] & 0x0f) === 0x08
+          ? zlib.createInflate(ZLIB_OPTIONS)
+          : zlib.createInflateRaw(ZLIB_OPTIONS);
+      inner.on('data', (decoded: Buffer) => this.push(decoded));
+      inner.on('end', () => this.push(null));
+      inner.on('error', (error: Error) => this.destroy(error));
+      this.inner = inner;
+    }
+    this.inner.write(chunk, callback);
+  }
+
+  /**
+   * Overriding `_final` keeps the readable side open past the end of the
+   * writable one, so the last inflated bytes still reach the consumer. It is
+   * closed by the inner stream's `end`, or here when there was no body at all.
+   */
+  override _final(callback: (error?: Error | null) => void): void {
+    if (this.inner) {
+      this.inner.end();
+    } else {
+      this.push(null);
+    }
+    callback();
+  }
+
+  override _destroy(
+    error: Error | null,
+    callback: (error?: Error | null) => void
+  ): void {
+    this.inner?.destroy();
+    callback(error);
+  }
+}
 
 /**
  * Wrap the response in a decompressor when the origin applied a content
@@ -150,18 +223,28 @@ function decodeBody(message: http.IncomingMessage): DestroyableReadable {
   const encoding = message.headers['content-encoding']?.toLowerCase().trim();
   if (!encoding || encoding === 'identity') return message;
 
-  let decoder: zlib.Gunzip | zlib.Inflate | zlib.BrotliDecompress;
+  let decoder: zlib.Gunzip | InflateAuto | zlib.BrotliDecompress;
   if (encoding === 'gzip' || encoding === 'x-gzip') {
-    decoder = zlib.createGunzip();
+    decoder = zlib.createGunzip(ZLIB_OPTIONS);
   } else if (encoding === 'deflate') {
-    decoder = zlib.createInflate();
+    decoder = new InflateAuto();
   } else if (encoding === 'br') {
-    decoder = zlib.createBrotliDecompress();
+    decoder = zlib.createBrotliDecompress(BROTLI_OPTIONS);
   } else {
     return message;
   }
 
+  // `pipe()` ends the decoder on 'end' and forwards nothing else, so a message
+  // torn down mid-body has to be forwarded by hand or the decoder stays open
+  // and its reader waits on a stream that can never complete. Node destroys the
+  // message with ECONNRESET in that case, which 'error' carries; 'close' is the
+  // backstop for a teardown that skips it, mirroring the one `toWebStream`
+  // keeps on the undecoded path.
   message.on('error', (error) => decoder.destroy(error));
+  message.on('close', () => {
+    if (message.complete) return;
+    decoder.destroy(transportError('socket hang up', 'ECONNRESET'));
+  });
   return message.pipe(decoder);
 }
 
