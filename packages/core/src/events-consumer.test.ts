@@ -21,9 +21,12 @@ function createMockEvent(overrides: Partial<Event> = {}): Event {
 }
 
 // Default options for tests that don't care about onUnconsumedEvent
+// No deliveries are modeled here, so the delivery-idle gate is always open; the
+// tests that exercise the gate itself pass their own predicate.
 const defaultOptions = {
   onUnconsumedEvent: vi.fn(),
   getPromiseQueue: () => Promise.resolve(),
+  isDeliveryIdle: () => true,
 };
 
 // Helper function to wait for next tick
@@ -165,6 +168,7 @@ describe('EventsConsumer', () => {
       const consumer = new EventsConsumer([event], {
         onUnconsumedEvent: unconsumedReceived.resolve,
         getPromiseQueue: () => Promise.resolve(),
+        isDeliveryIdle: () => true,
       });
       const callback1 = vi
         .fn()
@@ -421,6 +425,7 @@ describe('EventsConsumer', () => {
       const consumer = new EventsConsumer([event], {
         onUnconsumedEvent: unconsumedReceived.resolve,
         getPromiseQueue: () => Promise.resolve(),
+        isDeliveryIdle: () => true,
       });
       const callback = vi.fn().mockReturnValue(EventConsumerResult.NotConsumed);
 
@@ -435,6 +440,7 @@ describe('EventsConsumer', () => {
       const consumer = new EventsConsumer([], {
         onUnconsumedEvent,
         getPromiseQueue: () => Promise.resolve(),
+        isDeliveryIdle: () => true,
       });
       const callback = vi.fn().mockReturnValue(EventConsumerResult.NotConsumed);
 
@@ -455,6 +461,7 @@ describe('EventsConsumer', () => {
       const consumer = new EventsConsumer([event], {
         onUnconsumedEvent,
         getPromiseQueue: () => Promise.resolve(),
+        isDeliveryIdle: () => true,
       });
       const callback1 = vi
         .fn()
@@ -513,6 +520,7 @@ describe('EventsConsumer', () => {
       const consumer = new EventsConsumer([hook, wait], {
         onUnconsumedEvent,
         getPromiseQueue: () => Promise.resolve(),
+        isDeliveryIdle: () => true,
       });
       const waits = consumerFor(['wait-1']);
 
@@ -534,6 +542,7 @@ describe('EventsConsumer', () => {
       const consumer = new EventsConsumer([hook, wait], {
         onUnconsumedEvent,
         getPromiseQueue: () => Promise.resolve(),
+        isDeliveryIdle: () => true,
       });
       const waits = consumerFor(['wait-1']);
       consumer.subscribe(waits.callback);
@@ -556,6 +565,7 @@ describe('EventsConsumer', () => {
       const consumer = new EventsConsumer([hook, wait], {
         onUnconsumedEvent: vi.fn(),
         getPromiseQueue: () => Promise.resolve(),
+        isDeliveryIdle: () => true,
       });
       consumer.subscribe(consumerFor(['wait-1']).callback);
       await vi.waitFor(() => {
@@ -587,6 +597,7 @@ describe('EventsConsumer', () => {
       const consumer = new EventsConsumer([step], {
         onUnconsumedEvent: unconsumedReceived.resolve,
         getPromiseQueue: () => Promise.resolve(),
+        isDeliveryIdle: () => true,
       });
 
       consumer.subscribe(() => EventConsumerResult.NotConsumed);
@@ -601,6 +612,7 @@ describe('EventsConsumer', () => {
       const consumer = new EventsConsumer([hook, late, wait], {
         onUnconsumedEvent: vi.fn(),
         getPromiseQueue: () => Promise.resolve(),
+        isDeliveryIdle: () => true,
       });
       expect(consumer.parkedSummary).toBeUndefined();
 
@@ -633,6 +645,7 @@ describe('EventsConsumer', () => {
       const consumer = new EventsConsumer([hook, completed], {
         onUnconsumedEvent: unconsumedReceived.resolve,
         getPromiseQueue: () => Promise.resolve(),
+        isDeliveryIdle: () => true,
       });
 
       // Nothing can subscribe for the hook after the run has finished, so

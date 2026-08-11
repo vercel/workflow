@@ -27,6 +27,8 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
     globalThis: context.globalThis,
     // ctx.onWorkflowError is accessed via closure — it's defined below on the same object
     eventsConsumer: new EventsConsumer(events, {
+      // Fake context: no deliveries are modeled, so the gate is a no-op here.
+      isDeliveryIdle: () => true,
       onUnconsumedEvent: (event) => {
         ctx.onWorkflowError(
           new ReplayDivergenceError(

@@ -10,20 +10,27 @@ import { eventsLogger } from './logger.js';
 export const DEFERRED_CHECK_DELAY_MS = 100;
 
 /**
+ * Floor for the deferred-check delay, so a too-low override can't manufacture
+ * spurious divergence (each false positive burns a divergence-recovery retry
+ * and can escalate to a terminal `CorruptedEventLogError`).
+ *
+ * Exported so tests needing the shortest legal delay can ask for it instead of
+ * hardcoding a number this floor would silently clamp up.
+ */
+export const MIN_DEFERRED_CHECK_DELAY_MS = 10;
+
+/**
  * Effective deferred-check delay. Override: `WORKFLOW_DEFERRED_CHECK_DELAY_MS`.
  *
  * Unlike the other timing knobs this is not a polling interval but a
  * determinism safety margin: firing the unconsumed-event check before the
  * cross-VM subscribe() chain has landed rejects a healthy run with
- * `ReplayDivergenceError`. Floored at 10ms so a too-low override can't
- * manufacture spurious divergence (each false positive burns a
- * divergence-recovery retry and can escalate to a terminal
- * `CorruptedEventLogError`).
+ * `ReplayDivergenceError`.
  */
 const getDeferredCheckDelayMs = (): number =>
   envNumber('WORKFLOW_DEFERRED_CHECK_DELAY_MS', DEFERRED_CHECK_DELAY_MS, {
     integer: true,
-    min: 10,
+    min: MIN_DEFERRED_CHECK_DELAY_MS,
   });
 
 /**
@@ -144,10 +151,13 @@ export interface EventsConsumerOptions {
    * flight means the workflow VM is mid-reaction, and an event it has not
    * claimed yet is an event it has not reached yet.
    *
-   * Defaults to always-idle so the tests that drive a consumer with no
-   * orchestrator context keep the pre-existing timing.
+   * Required rather than defaulting to always-idle: always-idle is exactly the
+   * pre-gate behaviour, so a defaulted option would let a construction site opt
+   * a whole replay path back out without saying so. Tests that drive a consumer
+   * with no orchestrator context pass `() => true` to keep the pre-existing
+   * timing, and say so at the call site.
    */
-  isDeliveryIdle?: () => boolean;
+  isDeliveryIdle: () => boolean;
 }
 
 export class EventsConsumer {
@@ -188,7 +198,7 @@ export class EventsConsumer {
     this.onConsumedEvent = options.onConsumedEvent;
     this.onUnconsumedEvent = options.onUnconsumedEvent;
     this.getPromiseQueue = options.getPromiseQueue;
-    this.isDeliveryIdle = options.isDeliveryIdle ?? (() => true);
+    this.isDeliveryIdle = options.isDeliveryIdle;
   }
 
   /**
@@ -508,14 +518,34 @@ export class EventsConsumer {
    * batch of N parallel step results leaves N-1 of them on that detached path
    * with the queue already drained, so the walk sits on the ordered event the
    * VM is about to draw and the window is the only thing standing between a
-   * healthy run and `ReplayDivergenceError`. On a backend whose deliveries take
-   * longer than the window, that bet loses: the local race repro corrupts 34 of
-   * 42 runs at a 10ms window and 0 of 114 at 100ms, on the same event logs.
+   * healthy run and `ReplayDivergenceError`.
+   *
+   * Shortening the window shows that mechanism directly: on identical event logs
+   * the local race repro corrupts 34 of 42 runs at a 10ms window and 0 of 114 at
+   * the 100ms default. That measures how the bet loses, not that the default
+   * loses it, and no measurement of a delivery outrunning 100ms exists either
+   * way. So read this as retiring the bet rather than as repairing an observed
+   * failure of that number: the delay is a user-settable env override, which
+   * leaves the old behaviour one configuration away from losing on any backend.
    *
    * Termination is `hasParkedCommittedDelivery`'s: it counts only deliveries
    * that resolve on their own, so nothing here can gate its own retirement. A
    * genuinely orphaned event has no delivery to wait on and reaches `fn` on the
    * first poll.
+   *
+   * What the gate gives up: for the ordered events that still reach
+   * `onUnconsumedEvent` rather than {@link park}, this stops being the thing
+   * that catches a diverged log while a delivery is in flight. The suspension
+   * and this check now wake from the same `isDeliveryIdle` edge, and
+   * `scheduleWhenIdle` fires on the first timer tick after idle while this waits
+   * a further `getDeferredCheckDelayMs()`. So a run with a pending `sleep()`
+   * suspends first, and `onWorkflowError` drops the divergence arriving second
+   * (its `'suspended'` branch demotes to `'replay'` and surfaces nothing),
+   * leaving a later `resume()` to decline into a cold replay. Pre-gate the
+   * suspension already won that race whenever the delivery landed inside the
+   * fixed window, so what changed is that the outcome stopped depending on
+   * timing. Nothing should treat this check as the mechanism that reports
+   * divergence on a log the run is still delivering into.
    */
   private whenDeliveryIdle(checkVersion: number, fn: () => void): void {
     const poll = () => {
@@ -532,7 +562,13 @@ export class EventsConsumer {
           return;
         }
         // Held in the same field the fired check uses so subscribe() cancels a
-        // poll in progress exactly as it cancels the check itself.
+        // poll in progress too. The two cancellations are not identical: for the
+        // poll it is the version bump that does the work and the clearTimeout is
+        // belt-and-braces. Two state machines write this one field, so a poll
+        // invalidated between scheduling and firing can null out a handle the
+        // live chain has since stored, which is why every path out of `poll` and
+        // out of the fired check re-checks the version rather than trusting the
+        // handle.
         this.pendingUnconsumedTimeout = setTimeout(poll, 0);
       });
     };
