@@ -140,7 +140,12 @@ export function createQueue(config: Partial<Config>): LocalQueue {
   // handler wrappers, so an unwrapped Agent fails every delivery with
   // `TypeError: fetch failed` / `invalid onRequestStart method`.
   // `Dispatcher1Wrapper` is undici's bridge for this, and forwards
-  // `close()` to the Agent it wraps.
+  // `close()` to the Agent it wraps. It is usable here because this agent is
+  // HTTP/1.1 only: the wrapper reads `controller.rawHeaders`, which the H1
+  // parser fills with the `Buffer[]` pair list a v1 handler expects but
+  // `client-h2.js` fills with a parsed object that the same handler reads no
+  // headers out of. The wrapper hides that by forcing `allowH2: false` on every
+  // dispatch, which costs nothing when the agent never wanted H2.
   const httpAgent = new Dispatcher1Wrapper(new Agent(getQueueAgentOptions()));
   const transport = new TypedJsonTransport();
   const generateId = monotonicFactory();

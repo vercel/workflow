@@ -343,11 +343,11 @@ export function bufferStreamedBodyInterceptor(
         // error, so the awaiting fetch() rejects instead of hanging.
         //
         // `onResponseError` is the v2 handler callback. undici 8 removed the
-        // legacy handler wrappers, and because the composed dispatcher is
-        // wrapped in `Dispatcher1Wrapper` (see forGlobalFetch) that bridge sits
-        // *outside* this interceptor — so the handler arriving here is always v2
-        // and the v7-era `onError` no longer exists on it. Calling the old name
-        // would be a silent no-op and hang the awaiting fetch() forever.
+        // legacy handler wrappers, and the v1 bridge sits *outside* this
+        // interceptor (see forGlobalFetch), so the handler arriving here is
+        // always v2 and the v7-era `onError` no longer exists on it. Calling the
+        // old name would be a silent no-op and hang the awaiting fetch()
+        // forever.
         //
         // The failure happened before anything was dispatched, so there is no
         // real controller to hand over; a never-aborted stub satisfies the
@@ -824,8 +824,9 @@ function bridgeV1Handler<T>(dispatcher: T): T {
  * A v8 one handed straight to global `fetch` hangs forever (see
  * `forGlobalFetch`), and undici 8 is now what a caller who installs `undici`
  * alongside this package gets, so the bridge has to be applied here too. It is
- * safe for older dispatchers as well: undici 6/7 dispatchers accept the v2
- * handler the bridge produces.
+ * safe for older dispatchers as well, which is why the handler it produces
+ * carries the v1 callbacks alongside the v2 ones: undici 7 takes the v2 ones,
+ * and undici 6, which knows only v1, takes the v1 ones (see `wrapV1Handler`).
  *
  * Memoized because the recycler and the retry bookkeeping compare dispatchers by
  * reference, and a caller may pass the same instance to many calls.
