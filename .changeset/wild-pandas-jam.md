@@ -2,4 +2,4 @@
 '@workflow/core': patch
 ---
 
-Re-dispatch a pending step whose queue message is gone, so a lost dispatch or an invocation that disappears mid-step no longer strands a run
+Re-dispatch a pending step whose dispatch ended without a terminal event, so a run is no longer stranded with a step nothing will execute
