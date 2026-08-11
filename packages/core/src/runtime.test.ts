@@ -1830,6 +1830,9 @@ describe('workflowEntrypoint resilient step consumption (stepInput re-ensure)', 
      * step has been written (the in-band re-ensure path).
      */
     stepMissingError?: Error;
+    /** Stamp the message with the producer-carried run identity so the
+     *  consumer skips the blocking runs.get (vercel/workflow#3456). */
+    includeRunContext?: boolean;
   }) {
     const stepId = 'step_resilient_1';
     const dehydratedInput = (await dehydrateStepArguments(
@@ -1911,6 +1914,7 @@ describe('workflowEntrypoint resilient step consumption (stepInput re-ensure)', 
       }
     );
 
+    const runsGet = vi.fn(async () => workflowRun);
     setWorld({
       specVersion: SPEC_VERSION_CURRENT,
       createQueueHandler: vi.fn(
@@ -1928,6 +1932,16 @@ describe('workflowEntrypoint resilient step consumption (stepInput re-ensure)', 
                 ...(opts.omitStepInput
                   ? {}
                   : { stepInput: { input: dehydratedInput } }),
+                ...(opts.includeRunContext
+                  ? {
+                      runContext: {
+                        deploymentId: 'test-deployment',
+                        specVersion: SPEC_VERSION_CURRENT,
+                        startedAt: Date.parse('2024-01-01T00:00:00.000Z'),
+                        rootRunId: opts.runId,
+                      },
+                    }
+                  : {}),
               },
               {
                 requestId: 'req_test',
@@ -1949,7 +1963,7 @@ describe('workflowEntrypoint resilient step consumption (stepInput re-ensure)', 
         })),
       },
       runs: {
-        get: vi.fn(async () => workflowRun),
+        get: runsGet,
       },
       queue: vi.fn(async () => ({ messageId: null })),
       getEncryptionKeyForRun: vi.fn(async () => undefined),
@@ -1959,7 +1973,13 @@ describe('workflowEntrypoint resilient step consumption (stepInput re-ensure)', 
     const response = (await handler(
       new Request('https://example.test')
     )) as Response;
-    return { response, createdEvents, createdEventParams, dehydratedInput };
+    return {
+      response,
+      createdEvents,
+      createdEventParams,
+      dehydratedInput,
+      runsGet,
+    };
   }
 
   it('materializes step_created from stepInput on a redelivery before executing', async () => {
@@ -2120,6 +2140,57 @@ describe('workflowEntrypoint resilient step consumption (stepInput re-ensure)', 
         ),
       })
     ).rejects.toThrow('not found');
+  });
+
+  it('skips the blocking runs.get when the message carries runContext', async () => {
+    const { response, createdEvents, runsGet } = await driveStepMessage({
+      runId: 'wrun_resilient_step_run_context',
+      attempt: 1,
+      includeRunContext: true,
+    });
+
+    expect(response.status).toBe(204);
+    // The step executed to completion with the run identity from the message
+    // — no run fetch on the start path. (The all-done inline replay would
+    // fetch lazily, but this harness keeps an unrelated step pending.)
+    expect(runsGet).not.toHaveBeenCalled();
+    expect(createdEvents).toContainEqual(
+      expect.objectContaining({
+        eventType: 'step_completed',
+        correlationId: 'step_resilient_1',
+      })
+    );
+  });
+
+  it('still fetches the run for legacy messages without runContext', async () => {
+    const { response, runsGet } = await driveStepMessage({
+      runId: 'wrun_resilient_step_no_run_context',
+      attempt: 1,
+    });
+
+    expect(response.status).toBe(204);
+    expect(runsGet).toHaveBeenCalledTimes(1);
+  });
+
+  it('recovers in-band with runContext too (no run fetch, no redelivery)', async () => {
+    const { response, createdEvents, runsGet } = await driveStepMessage({
+      runId: 'wrun_resilient_step_ctx_inband',
+      attempt: 1,
+      includeRunContext: true,
+      stepMissingError: new WorkflowWorldError(
+        'workflow step step_resilient_1 not found',
+        { status: 404 }
+      ),
+    });
+
+    expect(response.status).toBe(204);
+    expect(runsGet).not.toHaveBeenCalled();
+    expect(createdEvents.map((e) => e.eventType)).toEqual([
+      'step_started',
+      'step_created',
+      'step_started',
+      'step_completed',
+    ]);
   });
 });
 

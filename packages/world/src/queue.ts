@@ -181,6 +181,32 @@ export const StepDispatchInputSchema = z.object({
 });
 export type StepDispatchInput = z.infer<typeof StepDispatchInputSchema>;
 
+/**
+ * Immutable run identity carried on a step-execution message so the consumer
+ * can start the step without a blocking `runs.get` round trip. Every field is
+ * fixed for the life of a run (runs are pinned to their deployment), and the
+ * producer holds the run row at dispatch time, so the copy can never go
+ * stale. Run *status* is deliberately NOT carried: liveness is enforced by
+ * the `step_started` claim itself, which the World rejects on a terminal run.
+ *
+ * Consumers that need the full run row (the last completer's inline replay)
+ * still fetch it lazily; messages without this field (older producers) take
+ * the legacy `runs.get` prologue. Messages are consumed by the deployment
+ * that produced them, so mixed handling within one run cannot occur.
+ */
+export const RunDispatchContextSchema = z.object({
+  /** The deployment the run is pinned to (`WorkflowRun.deploymentId`). */
+  deploymentId: z.string(),
+  /** The run's spec version (`WorkflowRun.specVersion`). */
+  specVersion: z.number(),
+  /** The run's start time as epoch ms (`WorkflowRun.startedAt`). Numeric so
+   *  it survives both queue transports without Date revival concerns. */
+  startedAt: z.number().optional(),
+  /** The run's lineage root (its `$rootRunId` attribute, or its own id). */
+  rootRunId: z.string().optional(),
+});
+export type RunDispatchContext = z.infer<typeof RunDispatchContextSchema>;
+
 export const HookResumeInputSchema = z.object({
   /** Stable idempotency key minted once per `resumeHook()` call. */
   resumeId: z.string(),
@@ -259,6 +285,12 @@ export const WorkflowInvokePayloadSchema = z.object({
    * `step_created` event exists (keyed by `stepId`) before executing the step.
    */
   stepInput: StepDispatchInputSchema.optional(),
+  /**
+   * Immutable run identity for step-execution messages (`stepId` present) —
+   * lets the consumer skip the blocking `runs.get` before starting the step.
+   * See {@link RunDispatchContextSchema}.
+   */
+  runContext: RunDispatchContextSchema.optional(),
 });
 
 export type WorkflowInvokePayload = z.infer<typeof WorkflowInvokePayloadSchema>;

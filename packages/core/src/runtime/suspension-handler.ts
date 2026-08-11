@@ -47,6 +47,7 @@ import {
   mergeReportedEvents,
   preconditionSnapshotParams,
   queueMessage,
+  runDispatchContext,
   stepDispatchIdempotencyKey,
 } from './helpers.js';
 import { ReplayRecoveryReporter } from './replay-recovery-reporter.js';
@@ -804,6 +805,9 @@ export async function handleSuspension({
                   traceCarrier,
                   requestedAt: new Date(),
                   stepInput: { input: dehydratedInput },
+                  // Immutable run identity so the consumer can start the step
+                  // without a blocking runs.get — see RunDispatchContextSchema.
+                  runContext: runDispatchContext(run),
                 },
                 // Same key as the caller's dispatch pass and any concurrent
                 // handler's — redundant publishes for this step dedupe. The
