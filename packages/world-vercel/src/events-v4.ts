@@ -104,11 +104,13 @@ async function fetchV4(
       noteEventsTransportOutcome(dispatcher, error),
     timeoutMs: null,
     logLabel: opName,
+    // Read the body as bytes, not text: a CBOR error body (the fence 412
+    // carries event payloads back) does not survive a UTF-8 decode.
     buildError: async (response) =>
       errorFromV4Response(
         response.status,
         headersToRecord(response.headers),
-        await response.text(),
+        new Uint8Array(await response.arrayBuffer()),
         opName,
         url
       ),
@@ -242,6 +244,19 @@ interface CreateEventV4InputBase {
    * on for the *accepted* path.
    */
   stateCursor?: string;
+  /**
+   * Highest event slot the writer had loaded, i.e. the length of its loaded
+   * log under slot identity. Named `maxSlot` on the wire because the meta
+   * already carries an unrelated telemetry `eventCount`.
+   *
+   * Supersedes the `stateUpdatedAt`/`stateEventCount`/`stateCursor` triple for
+   * slot-identity runs: with dense positions one integer says everything the
+   * watermark approximated. The server allocates from the tail regardless, and
+   * uses this only to report which slots the write skipped over (returned on
+   * the success response as `events`/`cursor`/`hasMore`). Older servers ignore
+   * it.
+   */
+  maxSlot?: number;
   /** Number of consecutive replay divergences resolved by this write. */
   replayDivergenceCount?: number;
   /** Content digest of the serialized resume payload. Forwarded alongside
@@ -455,6 +470,7 @@ function buildPostFrameMeta(
     meta.stateEventCount = input.stateEventCount;
   }
   if (input.stateCursor !== undefined) meta.stateCursor = input.stateCursor;
+  if (input.maxSlot !== undefined) meta.maxSlot = input.maxSlot;
   if (input.replayDivergenceCount !== undefined) {
     meta.replayDivergenceCount = input.replayDivergenceCount;
   }
@@ -479,26 +495,25 @@ function buildPostFrameMeta(
 function errorFromV4Response(
   statusCode: number,
   responseHeaders: Record<string, string | string[] | undefined>,
-  errorBody: string,
+  errorBody: string | Uint8Array,
   opName: string,
   url: string
 ): Error {
   let message = `v4 ${opName} failed: HTTP ${statusCode}`;
   let code: string | undefined;
   let details: unknown;
-  try {
-    const json = JSON.parse(errorBody) as {
-      message?: string;
-      code?: string;
-      events?: unknown;
-      cursor?: unknown;
-    };
-    if (typeof json.message === 'string') message = json.message;
-    if (typeof json.code === 'string') code = json.code;
-    if (statusCode === 412) details = decodePreconditionDetails(json);
-  } catch {
-    // body wasn't JSON — keep the default message, append raw text below
-    if (errorBody) message += ` ${errorBody}`;
+  const { record, text } = parseV4ErrorBody(
+    errorBody,
+    readHeader(responseHeaders, 'content-type')
+  );
+  if (record) {
+    if (typeof record.message === 'string') message = record.message;
+    if (typeof record.code === 'string') code = record.code;
+    if (statusCode === 412) details = decodePreconditionDetails(record);
+  } else if (text) {
+    // body wasn't a structured object — keep the default message and append
+    // whatever the server did send
+    message += ` ${text}`;
   }
 
   const retryAfter = parseRetryAfter(
@@ -513,6 +528,55 @@ function errorFromV4Response(
     mitigated: readHeader(responseHeaders, 'x-vercel-mitigated'),
     ...(details !== undefined ? { details } : {}),
   });
+}
+
+/** The fields `errorFromV4Response` reads off a structured error body. */
+interface V4ErrorBody {
+  message?: unknown;
+  code?: unknown;
+  events?: unknown;
+  cursor?: unknown;
+}
+
+/**
+ * Decode an error body into the record the error builder reads, or into the
+ * raw text to append when it is not structured.
+ *
+ * Two encodings reach this. The default is JSON: the v4 request sends no
+ * `Accept: application/cbor`, so the server's generic error responder
+ * negotiates JSON. Responses that need to carry event payloads back are
+ * hand-encoded as CBOR by the server and say so in `content-type`, because
+ * JSON cannot round-trip a `Uint8Array` (see `hasUnusablePayload`). Reading
+ * the body as bytes and branching on the header serves both; decoding bytes as
+ * text first would corrupt CBOR beyond recovery.
+ */
+function parseV4ErrorBody(
+  body: string | Uint8Array,
+  contentType: string | undefined
+): { record?: V4ErrorBody; text?: string } {
+  if (typeof body !== 'string' && contentType?.includes('application/cbor')) {
+    try {
+      // cbor-x caches decode state on its input; decode a copy so a shared
+      // buffer is never mutated under an unrelated reader.
+      const decoded = decode(body.slice()) as unknown;
+      if (typeof decoded === 'object' && decoded !== null) {
+        return { record: decoded as V4ErrorBody };
+      }
+    } catch {
+      // undecodable CBOR: appending its bytes as text would be noise
+    }
+    return {};
+  }
+  const text = typeof body === 'string' ? body : new TextDecoder().decode(body);
+  try {
+    const json = JSON.parse(text) as unknown;
+    if (typeof json === 'object' && json !== null) {
+      return { record: json as V4ErrorBody };
+    }
+  } catch {
+    // not JSON either — fall through to the raw text
+  }
+  return { text };
 }
 
 /**
@@ -530,10 +594,9 @@ function errorFromV4Response(
  * untrusted-shaped data on a failure path, and the fallback (a full reload) is
  * always correct.
  */
-function decodePreconditionDetails(json: {
-  events?: unknown;
-  cursor?: unknown;
-}): PreconditionFailureDetails | undefined {
+function decodePreconditionDetails(
+  json: V4ErrorBody
+): PreconditionFailureDetails | undefined {
   if (!Array.isArray(json.events) || json.events.length === 0) return undefined;
   const events: Event[] = [];
   for (const raw of json.events) {
@@ -558,17 +621,19 @@ function decodePreconditionDetails(json: {
  * Payload fields (input / output / result / error / payload / metadata) are
  * `Uint8Array` everywhere else in this client — the runtime dehydrates before
  * writing and rehydrates after reading, and the write path throws on anything
- * else. A 412 body is JSON, though: the request carries no
- * `Accept: application/cbor`, so resolved bytes serialize to
+ * else. A JSON 412 body cannot hold that: resolved bytes serialize to
  * `{"type":"Buffer","data":[…]}` or an index-keyed object depending on the
  * backend's serializer. `EventSchema` accepts either — its payload fields are
  * unions that bottom out in `z.any()` — so nothing downstream would flag the
- * mangled value; the runtime would hydrate garbage from it instead.
+ * mangled value; the runtime would hydrate garbage from it instead. A CBOR
+ * body round-trips the bytes intact and passes this check on its own merits,
+ * which is why a backend that attaches an event delta to a 412 encodes it that
+ * way.
  *
  * Refusing the delta is one-sided safe: the fallback full reload goes over a
  * frame-encoded path that returns real bytes. Deltas made only of
  * payload-less events (waits, hook disposal, attribute writes) keep the fast
- * path.
+ * path whatever the encoding.
  */
 function hasUnusablePayload(candidate: Record<string, unknown>): boolean {
   const eventType = candidate.eventType;
@@ -591,7 +656,7 @@ function hasUnusablePayload(candidate: Record<string, unknown>): boolean {
 export function throwForErrorResponse(
   statusCode: number,
   responseHeaders: Record<string, string | string[] | undefined>,
-  errorBody: string,
+  errorBody: string | Uint8Array,
   opName: string,
   url: string
 ): never {

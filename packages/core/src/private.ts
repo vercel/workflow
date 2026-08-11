@@ -4,7 +4,6 @@
 
 import { withResolvers } from '@workflow/utils';
 import type { WorldCapabilities } from '@workflow/world';
-import type { CorrelationIdGenerator } from './correlation-id.js';
 import type { EventsConsumer } from './events-consumer.js';
 import type { QueueItem } from './global.js';
 import type { ReplayPayloadCache } from './replay-payload-cache.js';
@@ -154,11 +153,11 @@ export interface WorkflowOrchestratorContext {
   invocationsQueue: Map<string, QueueItem>;
   onWorkflowError: (error: Error) => void;
   /**
-   * Mints a correlation id body for one entity family. Every entity a replay
-   * creates draws from here, and the family is what keeps a disagreement about
-   * one family's count from renumbering another's.
+   * Mints the ULID body of a correlation id. Every entity a replay creates
+   * draws from this one monotonic sequence, so an id is an ordinal over the
+   * whole run and both replays of a run must draw in the same order.
    */
-  generateCorrelationId: CorrelationIdGenerator;
+  generateUlid: () => string;
   generateNanoid: () => string;
   /**
    * Sequential promise queue that ensures all event-driven promise resolutions
@@ -276,23 +275,68 @@ const DEFER_BEHIND: Record<DeliveryKind, readonly DeliveryKind[]> = {
 };
 
 /**
- * Whether `entry` will resolve on its own — it is armed, and every earlier
- * delivery it defers behind will likewise resolve on its own.
+ * Whether a delivery of `kind` at log index `index` gates on the earlier
+ * registry entry `other` (at `otherIndex`).
  *
- * A step delivery is always self-resolving: it skips uncommitted deliveries
- * (see {@link awaitEarlierDeliveries}), and the earlier steps it does defer
- * behind are self-resolving by the same argument, inducting down on index.
+ * Single source of truth for that question, called by both
+ * {@link awaitEarlierDeliveries} (which awaits what it gates on) and
+ * {@link computeResolvesOnItsOwn} (which recurses into what it gates on).
+ * Those two MUST agree exactly, and the doc block on
+ * {@link awaitEarlierDeliveries} stakes deadlock-freedom on it, so the
+ * condition lives here rather than being spelled out twice.
+ */
+function gatesOn(
+  kind: DeliveryKind,
+  index: number,
+  otherIndex: number,
+  other: DeliveryBarrierEntry
+): boolean {
+  if (otherIndex >= index || !DEFER_BEHIND[kind].includes(other.kind)) {
+    return false;
+  }
+  // A step skips an UNARMED earlier entry (an unclaimed buffered hook
+  // payload) — see the asymmetry described on `awaitEarlierDeliveries`. The
+  // skip is direct, never transitive: armed entries are still gated on, even
+  // when they are themselves parked behind such a payload.
+  return !(kind === 'step' && !other.armed);
+}
+
+/**
+ * Whether `entry` will resolve on its own — it is armed, and every earlier
+ * delivery it actually gates on ({@link gatesOn}) will likewise resolve on its
+ * own.
+ *
+ * A step does not gate on an unclaimed buffered payload, so such a payload
+ * cannot keep it from resolving. A step DOES gate on earlier armed waits and
+ * hooks, so one parked behind an unclaimed payload makes the step
+ * non-self-resolving in turn. Disagreeing with {@link awaitEarlierDeliveries}
+ * here would not be a cosmetic problem: this predicate is what
+ * {@link hasParkedCommittedDelivery} uses to decide whether idle is reachable,
+ * and an entry reported self-resolving while it is in fact parked behind a
+ * payload that only the idle safety net can retire would gate its own
+ * retirement.
  *
  * Recursion terminates because every edge points to a strictly smaller index.
- * `memo` is required rather than an optimization: without it the walk is
- * exponential in the number of live hook/wait barriers (each armed entry
- * re-walks every earlier entry of the opposite kind, T(n) = Σ T(j)), and the
- * registry is not small by construction — `EventsConsumer` drains
- * consecutively consumable events synchronously while barriers only retire on
- * microtask-driven deliveries, so a fan-out of `Promise.race([hook, sleep])`
- * branches accumulates one barrier per branch per kind. Memoized, the walk is
- * linear in registry size. The memo MUST be per-call: `armed` mutates between
+ * `memo` keeps the walk linear in registry size, and the registry is not small
+ * by construction — `EventsConsumer` drains consecutively consumable events
+ * synchronously while barriers only retire on microtask-driven deliveries, so
+ * a fan-out of `Promise.race([hook, sleep])` branches accumulates one barrier
+ * per branch per kind. The memo MUST be per-call: `armed` mutates between
  * calls as buffered payloads are claimed.
+ *
+ * The memo is an optimization, not a correctness requirement. It once was one:
+ * `awaitEarlierDeliveries` used to run this walk for every earlier entry of a
+ * step delivery, with no early exit, which unmemoized is T(n) = Σ T(j) —
+ * measured at 4.3e8 recursive calls (84s) for 40 alternating armed hook/wait
+ * barriers. That call site is gone; a step now tests `armed` directly. The one
+ * surviving caller, {@link hasParkedCommittedDelivery}, cannot reach that
+ * shape: it returns at the FIRST self-resolving entry, so it only ever
+ * advances past entries that are non-self-resolving, and those short-circuit
+ * on their first false child. Every entry it evaluates therefore has
+ * all-false predecessors and returns after one child, degenerating the walk to
+ * a chain (measured: 98 calls unmemoized for the worst 40-barrier shape, 1
+ * call for the registry above). Do not restore an exponential claim here
+ * without restoring a caller that can produce it.
  */
 function resolvesOnItsOwn(
   barriers: Map<number, DeliveryBarrierEntry>,
@@ -318,16 +362,11 @@ function computeResolvesOnItsOwn(
   if (!entry.armed) {
     return false;
   }
-  if (entry.kind === 'step') {
-    return true;
-  }
-  const deferBehind = DEFER_BEHIND[entry.kind];
   for (const [otherIndex, other] of barriers) {
-    if (
-      otherIndex < index &&
-      deferBehind.includes(other.kind) &&
-      !resolvesOnItsOwn(barriers, otherIndex, other, memo)
-    ) {
+    if (!gatesOn(entry.kind, index, otherIndex, other)) {
+      continue;
+    }
+    if (!resolvesOnItsOwn(barriers, otherIndex, other, memo)) {
       return false;
     }
   }
@@ -347,17 +386,44 @@ function computeResolvesOnItsOwn(
  * suspension point first; see the comment at that `await` for why ordering the
  * `resolve()` calls alone is not enough.
  *
- * One asymmetry: a STEP result additionally skips any earlier delivery that
- * will not resolve on its own, i.e. one blocked (directly or transitively) on
- * a buffered hook payload no consumer has claimed. Such a payload is delivered
- * only when the workflow next reads the hook, and reaching that read very
- * commonly requires the step result itself (`await stepX()` before the read).
- * Gating the step on it would stall the workflow until the barrier's idle
- * safety net fires, which then releases every delivery queued behind that
+ * What counts as "defers behind" is {@link gatesOn}, shared with
+ * {@link computeResolvesOnItsOwn} so the two cannot drift.
+ *
+ * One asymmetry: a STEP result skips any earlier delivery that is UNARMED,
+ * i.e. a buffered hook payload no consumer has claimed. Such a payload is
+ * delivered only when the workflow next reads the hook, and reaching that read
+ * very commonly requires the step result itself (`await stepX()` before the
+ * read). Gating the step on it would stall the workflow until the barrier's
+ * idle safety net fires, which then releases every delivery queued behind that
  * payload at once — losing exactly the race this ordering exists to protect.
  * Waits and hooks keep gating on unclaimed payloads: for them, waiting for the
  * claim IS the ordering guarantee (a `wait_completed` must not preempt a
  * payload the log ordered first).
+ *
+ * The skip is direct, never transitive. A step still gates on an earlier ARMED
+ * wait or hook, including one that is itself parked behind an unclaimed
+ * payload. Skipping those too would invert log order for the commonest shape
+ * there is: a workflow that creates a hook it does not read on this branch,
+ * races `step` against `sleep`, and has the log say the sleep won. The step
+ * would then overtake the wait, both branches would swap the correlation ids
+ * they draw next, and replay would diverge — see
+ * `step-delivery-ordering.test.ts`. Waiting instead is safe because the
+ * payload's own idle safety net retires it and the whole chain then delivers
+ * in log order; {@link hasParkedCommittedDelivery} deliberately reports such a
+ * step as not self-resolving so that idle stays reachable.
+ *
+ * "The whole chain then delivers in log order" rests on the PAYLOAD's safety
+ * net observing idle before the net of the wait parked behind it. If the
+ * wait's net fired first, the step's gate would open while the wait was still
+ * parked on the payload barrier and the inversion above would reappear. Within
+ * one drain window that order is structural, and carried by FIFO of the
+ * safety-net polls: nets arm via `setTimeout` in log order during synchronous
+ * consumption, each polling round re-arms through `promiseQueue.then(...)` in
+ * the order the checks ran, and each net that fires flips
+ * {@link hasParkedCommittedDelivery} back to true, re-blocking the rest until
+ * the released delivery completes. Replay — where divergence manifests —
+ * always consumes the log in one window. Do not "optimize" the net scheduling
+ * in a way that breaks that per-window FIFO.
  */
 export async function awaitEarlierDeliveries(
   ctx: WorkflowOrchestratorContext,
@@ -373,18 +439,9 @@ export async function awaitEarlierDeliveries(
     return;
   }
   const barriers = ctx.pendingDeliveryBarriers;
-  const deferBehind = DEFER_BEHIND[kind];
   const earlier: Promise<void>[] = [];
-  // Shared across this call only — see `resolvesOnItsOwn`.
-  const selfResolving = new Map<number, boolean>();
   for (const [index, entry] of barriers) {
-    if (index >= eventIndex || !deferBehind.includes(entry.kind)) {
-      continue;
-    }
-    if (
-      kind === 'step' &&
-      !resolvesOnItsOwn(barriers, index, entry, selfResolving)
-    ) {
+    if (!gatesOn(kind, eventIndex, index, entry)) {
       continue;
     }
     earlier.push(entry.delivered);
@@ -517,12 +574,17 @@ export function registerDeliveryBarrier(
  * Deliveries that do NOT resolve on their own must be excluded, not for
  * accuracy but for termination: an unclaimed buffered hook payload is retired
  * BY the idle safety net in {@link registerDeliveryBarrier}, so counting it
- * here would gate its own retirement. Self-resolving deliveries always
+ * here would gate its own retirement. That reasoning extends to whatever is
+ * parked behind such a payload — a wait, and a step gating on that wait — for
+ * the same reason: the whole chain moves only once the net fires, and it
+ * cannot fire while the chain is counted. Self-resolving deliveries always
  * deliver from their own chains (see the INVARIANT on
  * {@link registerDeliveryBarrier}) and never need that net, so waiting on
  * them is deadlock-free.
  */
-function hasParkedCommittedDelivery(ctx: WorkflowOrchestratorContext): boolean {
+export function hasParkedCommittedDelivery(
+  ctx: WorkflowOrchestratorContext
+): boolean {
   const barriers = ctx.pendingDeliveryBarriers;
   if (!barriers || barriers.size === 0) {
     return false;
@@ -538,18 +600,32 @@ function hasParkedCommittedDelivery(ctx: WorkflowOrchestratorContext): boolean {
 }
 
 /**
- * Schedule a callback to fire only after all pending data deliveries
- * (step results, hook payloads) and async deserialization have completed.
- * Uses a polling loop: setTimeout(0) → check pendingDeliveries and the
- * barrier registry → if anything is still in flight, wait for promiseQueue →
- * repeat. This handles the multi-round delivery pattern where each hook
- * payload delivery cycle appends new async work to the promiseQueue.
+ * Whether no data delivery (step result, hook payload) is in flight right now.
  *
  * "In flight" is two distinct windows, each with its own guard:
  * `pendingDeliveries > 0` covers hydration inside the serial queue slots, and
  * {@link hasParkedCommittedDelivery} covers the detached gap between a slot
  * releasing that counter and the delivery's `resolve()` actually running —
  * deliberately outside `pendingDeliveries` (see step.ts), and invisible to it.
+ *
+ * Anything that decides a replay is over, or that a replay went wrong, has to
+ * consult this first: while it is false the workflow VM is mid-reaction, so
+ * what it has and has not done yet says nothing about the run. Two callers
+ * read it, for the two such decisions: {@link scheduleWhenIdle} for the
+ * suspension, and the events consumer's unconsumed-event check for divergence.
+ */
+export function isDeliveryIdle(ctx: WorkflowOrchestratorContext): boolean {
+  return ctx.pendingDeliveries === 0 && !hasParkedCommittedDelivery(ctx);
+}
+
+/**
+ * Schedule a callback to fire only after all pending data deliveries
+ * (step results, hook payloads) and async deserialization have completed.
+ * Uses a polling loop: setTimeout(0) → check pendingDeliveries and the
+ * barrier registry → if anything is still in flight, wait for promiseQueue →
+ * repeat. This handles the multi-round delivery pattern where each hook
+ * payload delivery cycle appends new async work to the promiseQueue. What
+ * counts as in flight is {@link isDeliveryIdle}.
  *
  * The initial `setTimeout(0)` macrotask is load-bearing and must NOT be
  * downgraded to a microtask (`queueMicrotask`/`Promise.resolve().then`).
@@ -568,7 +644,7 @@ export function scheduleWhenIdle(
   fn: () => void
 ): void {
   const check = () => {
-    if (ctx.pendingDeliveries > 0 || hasParkedCommittedDelivery(ctx)) {
+    if (!isDeliveryIdle(ctx)) {
       // A delivery is still hydrating, or is committed but parked behind its
       // deferral (whose resolve runs on a detached timer, not this queue).
       // Either way: let the queue drain, then re-check a timer tick later.

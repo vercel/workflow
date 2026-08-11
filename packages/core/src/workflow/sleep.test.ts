@@ -4,7 +4,6 @@ import type { Event } from '@workflow/world';
 import * as nanoid from 'nanoid';
 import { monotonicFactory } from 'ulid';
 import { describe, expect, it, vi } from 'vitest';
-import { createCorrelationIdGenerator } from '../correlation-id.js';
 import { EventsConsumer } from '../events-consumer.js';
 import { WorkflowSuspension } from '../global.js';
 import type { WorkflowOrchestratorContext } from '../private.js';
@@ -28,6 +27,8 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
     globalThis: context.globalThis,
     // ctx.onWorkflowError is accessed via closure — it's defined below on the same object
     eventsConsumer: new EventsConsumer(events, {
+      // Fake context: no deliveries are modeled, so the gate is a no-op here.
+      isDeliveryIdle: () => true,
       onUnconsumedEvent: (event) => {
         ctx.onWorkflowError(
           new ReplayDivergenceError(
@@ -39,14 +40,7 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
       getPromiseQueue: () => Promise.resolve(),
     }),
     invocationsQueue: new Map(),
-    generateCorrelationId: createCorrelationIdGenerator({
-      seed: 'test',
-      fixedTimestamp: workflowStartedAt,
-      positional: () => ulid(workflowStartedAt),
-      // The event logs in this file hardcode correlation ids the run-wide
-      // shared sequence minted, so replay only matches under that scheme.
-      perKind: false,
-    }),
+    generateUlid: () => ulid(workflowStartedAt),
     generateNanoid: nanoid.customRandom(nanoid.urlAlphabet, 21, (size) =>
       new Uint8Array(size).map(() => 256 * context.globalThis.Math.random())
     ),

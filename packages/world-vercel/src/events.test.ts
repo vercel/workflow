@@ -346,6 +346,48 @@ describe('createWorkflowRunEvent precondition snapshot wire fields', () => {
     agent.assertNoPendingInterceptors();
   });
 
+  it('renames eventCount to maxSlot', async () => {
+    // The runtime sends `eventCount` once a run's own ids are slot-shaped. It
+    // cannot ride under that name: the v4 meta already has an unrelated
+    // telemetry `eventCount`, so the backend would read a progress counter as
+    // a log position.
+    const agent = mockAgent();
+    let capturedMeta: Record<string, unknown> | undefined;
+
+    agent
+      .get(ORIGIN)
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events/run_started',
+        method: 'POST',
+      })
+      .reply(
+        200,
+        (opts: { body?: unknown }) => {
+          capturedMeta = decodePostedMeta(opts.body);
+          return runStartedResponse();
+        },
+        {
+          headers: {
+            'content-type': V4_FRAME_CONTENT_TYPE,
+            'x-wf-event-id': 'evnt_1',
+            'x-wf-run-id': 'wrun_1',
+            'x-wf-created-at': '2026-06-10T00:00:00.000Z',
+            'x-wf-max-events': '10000',
+          },
+        }
+      );
+
+    await createWorkflowRunEvent(
+      'wrun_1',
+      { eventType: 'run_started', specVersion: 2 } as AnyEventRequest,
+      { eventCount: 9 },
+      { token: 'test-token', dispatcher: agent }
+    );
+
+    expect(capturedMeta?.maxSlot).toBe(9);
+    agent.assertNoPendingInterceptors();
+  });
+
   it('never sends the snapshot on the legacy v1Compat path', async () => {
     // Pre-event-sourcing runs have no event log to fence, and the legacy
     // endpoint has no field for the snapshot: the params are dropped whole.

@@ -1,7 +1,11 @@
 import { withResolvers } from '@workflow/utils';
 import type { Event } from '@workflow/world';
 import { describe, expect, it, vi } from 'vitest';
-import { EventConsumerResult, EventsConsumer } from './events-consumer.js';
+import {
+  DEFERRED_CHECK_DELAY_MS,
+  EventConsumerResult,
+  EventsConsumer,
+} from './events-consumer.js';
 
 // Helper function to create mock events
 function createMockEvent(overrides: Partial<Event> = {}): Event {
@@ -17,9 +21,12 @@ function createMockEvent(overrides: Partial<Event> = {}): Event {
 }
 
 // Default options for tests that don't care about onUnconsumedEvent
+// No deliveries are modeled here, so the delivery-idle gate is always open; the
+// tests that exercise the gate itself pass their own predicate.
 const defaultOptions = {
   onUnconsumedEvent: vi.fn(),
   getPromiseQueue: () => Promise.resolve(),
+  isDeliveryIdle: () => true,
 };
 
 // Helper function to wait for next tick
@@ -161,6 +168,7 @@ describe('EventsConsumer', () => {
       const consumer = new EventsConsumer([event], {
         onUnconsumedEvent: unconsumedReceived.resolve,
         getPromiseQueue: () => Promise.resolve(),
+        isDeliveryIdle: () => true,
       });
       const callback1 = vi
         .fn()
@@ -417,6 +425,7 @@ describe('EventsConsumer', () => {
       const consumer = new EventsConsumer([event], {
         onUnconsumedEvent: unconsumedReceived.resolve,
         getPromiseQueue: () => Promise.resolve(),
+        isDeliveryIdle: () => true,
       });
       const callback = vi.fn().mockReturnValue(EventConsumerResult.NotConsumed);
 
@@ -431,6 +440,7 @@ describe('EventsConsumer', () => {
       const consumer = new EventsConsumer([], {
         onUnconsumedEvent,
         getPromiseQueue: () => Promise.resolve(),
+        isDeliveryIdle: () => true,
       });
       const callback = vi.fn().mockReturnValue(EventConsumerResult.NotConsumed);
 
@@ -451,6 +461,7 @@ describe('EventsConsumer', () => {
       const consumer = new EventsConsumer([event], {
         onUnconsumedEvent,
         getPromiseQueue: () => Promise.resolve(),
+        isDeliveryIdle: () => true,
       });
       const callback1 = vi
         .fn()
@@ -474,6 +485,253 @@ describe('EventsConsumer', () => {
 
       // The new callback consumed the event, so onUnconsumedEvent should NOT be called
       expect(onUnconsumedEvent).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('parking events that carry no ordering claim', () => {
+    /**
+     * A log event of a real type. The rest of this file uses a mock shape with
+     * no `eventType` at all, which is deliberately unparkable, so parking
+     * tests need events the consumer recognizes.
+     */
+    function logEvent(eventType: Event['eventType'], id: string): Event {
+      // `eventId` as well as the mock shape's `id`: the consumer reports the
+      // former, the matcher below keys on the latter.
+      return createMockEvent({ id, eventId: id, eventType } as Partial<Event>);
+    }
+
+    /** Consumes exactly the events whose id is in `ids`, once each. */
+    function consumerFor(ids: string[]) {
+      const seen: string[] = [];
+      const callback = (event: Event | null) => {
+        if (event && ids.includes(event.id) && !seen.includes(event.id)) {
+          seen.push(event.id);
+          return EventConsumerResult.Consumed;
+        }
+        return EventConsumerResult.NotConsumed;
+      };
+      return { seen, callback };
+    }
+
+    it('walks past an unclaimed hook_received instead of declaring divergence', async () => {
+      const hook = logEvent('hook_received', 'hook-1');
+      const wait = logEvent('wait_created', 'wait-1');
+      const onUnconsumedEvent = vi.fn();
+      const consumer = new EventsConsumer([hook, wait], {
+        onUnconsumedEvent,
+        getPromiseQueue: () => Promise.resolve(),
+        isDeliveryIdle: () => true,
+      });
+      const waits = consumerFor(['wait-1']);
+
+      consumer.subscribe(waits.callback);
+
+      // The hook belongs to a consumer this replay has not registered. The
+      // wait behind it is this replay's own decision and must still land.
+      await vi.waitFor(() => {
+        expect(waits.seen).toEqual(['wait-1']);
+      });
+      expect(consumer.eventIndex).toBe(2);
+      expect(onUnconsumedEvent).not.toHaveBeenCalled();
+    });
+
+    it('delivers a parked event to a consumer that subscribes later', async () => {
+      const hook = logEvent('hook_received', 'hook-1');
+      const wait = logEvent('wait_created', 'wait-1');
+      const onUnconsumedEvent = vi.fn();
+      const consumer = new EventsConsumer([hook, wait], {
+        onUnconsumedEvent,
+        getPromiseQueue: () => Promise.resolve(),
+        isDeliveryIdle: () => true,
+      });
+      const waits = consumerFor(['wait-1']);
+      consumer.subscribe(waits.callback);
+      await vi.waitFor(() => {
+        expect(waits.seen).toEqual(['wait-1']);
+      });
+
+      const hooks = consumerFor(['hook-1']);
+      consumer.subscribe(hooks.callback);
+
+      await vi.waitFor(() => {
+        expect(hooks.seen).toEqual(['hook-1']);
+      });
+      expect(onUnconsumedEvent).not.toHaveBeenCalled();
+    });
+
+    it('replays a parked event under the index it held in the log', async () => {
+      const hook = logEvent('hook_received', 'hook-1');
+      const wait = logEvent('wait_created', 'wait-1');
+      const consumer = new EventsConsumer([hook, wait], {
+        onUnconsumedEvent: vi.fn(),
+        getPromiseQueue: () => Promise.resolve(),
+        isDeliveryIdle: () => true,
+      });
+      consumer.subscribe(consumerFor(['wait-1']).callback);
+      await vi.waitFor(() => {
+        expect(consumer.eventIndex).toBe(2);
+      });
+
+      // Delivery barriers are registered under whatever `eventIndex` reads at
+      // consumption time, so a late delivery must still make the ordering
+      // claim its log position gave it — index 0, not the walk's 2.
+      let indexAtDelivery: number | undefined;
+      consumer.subscribe((event) => {
+        if (event?.id !== 'hook-1') {
+          return EventConsumerResult.NotConsumed;
+        }
+        indexAtDelivery = consumer.eventIndex;
+        return EventConsumerResult.Finished;
+      });
+
+      await vi.waitFor(() => {
+        expect(indexAtDelivery).toBe(0);
+      });
+      // The walk pointer is restored, not left behind at the parked index.
+      expect(consumer.eventIndex).toBe(2);
+    });
+
+    it('still declares divergence for an unclaimed replay-origin event', async () => {
+      const step = logEvent('step_created', 'step-1');
+      const unconsumedReceived = withResolvers<Event>();
+      const consumer = new EventsConsumer([step], {
+        onUnconsumedEvent: unconsumedReceived.resolve,
+        getPromiseQueue: () => Promise.resolve(),
+        isDeliveryIdle: () => true,
+      });
+
+      consumer.subscribe(() => EventConsumerResult.NotConsumed);
+
+      expect(await unconsumedReceived.promise).toEqual(step);
+    });
+
+    it('reports what it is still holding when the walk stops', async () => {
+      const hook = logEvent('hook_received', 'hook-1');
+      const late = logEvent('hook_received', 'hook-2');
+      const wait = logEvent('wait_created', 'wait-1');
+      const consumer = new EventsConsumer([hook, late, wait], {
+        onUnconsumedEvent: vi.fn(),
+        getPromiseQueue: () => Promise.resolve(),
+        isDeliveryIdle: () => true,
+      });
+      expect(consumer.parkedSummary).toBeUndefined();
+
+      consumer.subscribe(consumerFor(['wait-1']).callback);
+      await vi.waitFor(() => {
+        expect(consumer.eventIndex).toBe(3);
+      });
+
+      // Both hooks were walked past. A suspension is not a settling point, so
+      // the state goes on the span instead of failing the run: the oldest one
+      // held is what a query across a run's spans keys on.
+      expect(consumer.parkedSummary).toEqual({
+        count: 2,
+        eventId: 'hook-1',
+        eventType: 'hook_received',
+      });
+
+      // Once a consumer claims them the run is holding nothing, and the
+      // attribute stops appearing on later spans.
+      consumer.subscribe(consumerFor(['hook-1', 'hook-2']).callback);
+      await vi.waitFor(() => {
+        expect(consumer.parkedSummary).toBeUndefined();
+      });
+    });
+
+    it('declares divergence for an event still parked once the run has ended', async () => {
+      const hook = logEvent('hook_received', 'hook-1');
+      const completed = logEvent('run_completed', 'done-1');
+      const unconsumedReceived = withResolvers<Event>();
+      const consumer = new EventsConsumer([hook, completed], {
+        onUnconsumedEvent: unconsumedReceived.resolve,
+        getPromiseQueue: () => Promise.resolve(),
+        isDeliveryIdle: () => true,
+      });
+
+      // Nothing can subscribe for the hook after the run has finished, so
+      // parking it would silently drop it.
+      consumer.subscribe(consumerFor(['done-1']).callback);
+
+      expect(await unconsumedReceived.promise).toEqual(hook);
+    });
+  });
+
+  describe('delivery-idle gate', () => {
+    // An event nobody claims is only evidence of divergence once the workflow
+    // VM has stopped reacting. While a delivery is in flight the walk is
+    // simply ahead of the code that would register the consumer, so the check
+    // has to wait rather than time out. See `isDeliveryIdle` in private.ts.
+    it('should not fire the unconsumed check while a delivery is in flight', async () => {
+      const event = createMockEvent();
+      const onUnconsumedEvent = vi.fn();
+      let idle = false;
+      const consumer = new EventsConsumer([event], {
+        onUnconsumedEvent,
+        getPromiseQueue: () => Promise.resolve(),
+        isDeliveryIdle: () => idle,
+      });
+
+      consumer.subscribe(
+        vi.fn().mockReturnValue(EventConsumerResult.NotConsumed)
+      );
+
+      // Several times the window the check would otherwise have fired in.
+      await new Promise((resolve) =>
+        setTimeout(resolve, DEFERRED_CHECK_DELAY_MS * 5)
+      );
+      expect(onUnconsumedEvent).not.toHaveBeenCalled();
+
+      idle = true;
+      await vi.waitFor(() => {
+        expect(onUnconsumedEvent).toHaveBeenCalledWith(event);
+      });
+    });
+
+    it('should let a consumer registered during the wait claim the event', async () => {
+      const event = createMockEvent();
+      const onUnconsumedEvent = vi.fn();
+      let idle = false;
+      const consumer = new EventsConsumer([event], {
+        onUnconsumedEvent,
+        getPromiseQueue: () => Promise.resolve(),
+        isDeliveryIdle: () => idle,
+      });
+
+      consumer.subscribe(
+        vi.fn().mockReturnValue(EventConsumerResult.NotConsumed)
+      );
+      await new Promise((resolve) =>
+        setTimeout(resolve, DEFERRED_CHECK_DELAY_MS * 2)
+      );
+
+      // What the in-flight delivery was on its way to doing: resume workflow
+      // code that subscribes the consumer this event belongs to.
+      consumer.subscribe(vi.fn().mockReturnValue(EventConsumerResult.Finished));
+      idle = true;
+
+      await vi.waitFor(() => {
+        expect(consumer.eventIndex).toBe(1);
+      });
+      await new Promise((resolve) =>
+        setTimeout(resolve, DEFERRED_CHECK_DELAY_MS * 2)
+      );
+      expect(onUnconsumedEvent).not.toHaveBeenCalled();
+    });
+
+    it('should fire without delay for an event no delivery is waiting on', async () => {
+      const event = createMockEvent();
+      const unconsumedReceived = withResolvers<Event>();
+      const consumer = new EventsConsumer([event], {
+        onUnconsumedEvent: unconsumedReceived.resolve,
+        getPromiseQueue: () => Promise.resolve(),
+        isDeliveryIdle: () => true,
+      });
+
+      consumer.subscribe(
+        vi.fn().mockReturnValue(EventConsumerResult.NotConsumed)
+      );
+
+      expect(await unconsumedReceived.promise).toEqual(event);
     });
   });
 });

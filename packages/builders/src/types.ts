@@ -1,3 +1,5 @@
+import type { WorkflowAfterTransformHook } from './swc-esbuild-plugin.js';
+
 export const validBuildTargets = [
   'standalone',
   'vercel-build-output-api',
@@ -48,6 +50,18 @@ interface BaseWorkflowConfig {
   externalPackages?: string[];
 
   workflowManifestPath?: string;
+
+  /**
+   * Optional observer invoked after each authoritative SWC transform has been
+   * accepted into a workflow bundle's manifest.
+   *
+   * A source file may be observed multiple times across transform modes,
+   * bundles, and watch rebuilds. The observer is awaited and cannot replace the
+   * transformed code. Throwing rejects the build, allowing integrations to
+   * require their derived artifacts to remain consistent with the emitted
+   * workflow bundles.
+   */
+  onAfterTransform?: WorkflowAfterTransformHook;
 
   // Optional prefix for debug files (e.g., "_" for Astro to ignore them)
   debugFilePrefix?: string;

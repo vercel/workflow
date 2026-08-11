@@ -949,20 +949,21 @@ describe('workflowEntrypoint replay guards', () => {
       deploymentId: 'test-deployment',
     };
 
+    // `hook_created` records a hook a replay decided to create, so its
+    // position and identity are that replay's decision record: one the current
+    // replay does not create is divergence on the spot. A `hook_received` here
+    // would not be, since a delivery nobody claims is parked for a later
+    // consumer (see 'suspends rather than failing on a hook delivery that
+    // matches no hook' below).
     const events: Event[] = [
       {
         eventId: 'event-0',
         runId: workflowRun.runId,
-        eventType: 'hook_received',
+        eventType: 'hook_created',
         correlationId: 'hook_01HK153X00VFKAJV9XFN9JXXRS',
         eventData: {
           token: 'wrong-token',
-          payload: await dehydrateStepReturnValue(
-            { message: 'hello' },
-            'wrun_runtime_hook_guard',
-            undefined,
-            ops
-          ),
+          isWebhook: false,
         },
         createdAt: new Date('2024-01-01T00:00:00.000Z'),
       },
@@ -990,6 +991,72 @@ describe('workflowEntrypoint replay guards', () => {
         replayDivergence: { eventId: 'event-0', count: 1 },
       })
     );
+  });
+
+  it('suspends rather than failing on a hook delivery that matches no hook', async () => {
+    const ops: Promise<any>[] = [];
+    const workflowRun: WorkflowRun = {
+      runId: 'wrun_runtime_hook_parked',
+      workflowName: 'workflow',
+      status: 'running',
+      input: await dehydrateWorkflowArguments(
+        [],
+        'wrun_runtime_hook_parked',
+        undefined,
+        ops
+      ),
+      createdAt: new Date('2024-01-01T00:00:00.000Z'),
+      updatedAt: new Date('2024-01-01T00:00:00.000Z'),
+      startedAt: new Date('2024-01-01T00:00:00.000Z'),
+      deploymentId: 'test-deployment',
+    };
+
+    // A delivery for a hook this replay never registers a consumer for. A
+    // writer that raced this replay can leave one in the log legitimately, so
+    // it is held for a consumer a later replay may register instead of ending
+    // the run.
+    const events: Event[] = [
+      {
+        eventId: 'event-0',
+        runId: workflowRun.runId,
+        eventType: 'hook_received',
+        correlationId: 'hook_01HK153X00VFKAJV9XFN9JXXRS',
+        eventData: {
+          token: 'some-other-hook',
+          payload: await dehydrateStepReturnValue(
+            { message: 'hello' },
+            'wrun_runtime_hook_parked',
+            undefined,
+            ops
+          ),
+        },
+        createdAt: new Date('2024-01-01T00:00:00.000Z'),
+      },
+    ];
+
+    const createdEvents: unknown[] = [];
+    const queueCalls: QueueCall[] = [];
+    await runWorkflowHandlerWithEvents(
+      `const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
+      async function workflow() {
+        const hook = createHook({ token: 'expected-token' });
+        const payload = await hook;
+        return payload.message;
+      }${getWorkflowTransformCode('workflow')}`,
+      workflowRun,
+      events,
+      { createdEvents, queueCalls }
+    );
+
+    expect(createdEvents).not.toContainEqual(
+      expect.objectContaining({ eventType: 'run_failed' })
+    );
+    expect(createdEvents).toContainEqual(
+      expect.objectContaining({ eventType: 'hook_created' })
+    );
+    expect(
+      queueCalls.filter((call) => 'replayDivergence' in (call.message ?? {}))
+    ).toEqual([]);
   });
 
   it('replays attribute events before executing a step that loses the same race', async () => {

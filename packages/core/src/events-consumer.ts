@@ -10,21 +10,108 @@ import { eventsLogger } from './logger.js';
 export const DEFERRED_CHECK_DELAY_MS = 100;
 
 /**
+ * Floor for the deferred-check delay, so a too-low override can't manufacture
+ * spurious divergence (each false positive burns a divergence-recovery retry
+ * and can escalate to a terminal `CorruptedEventLogError`).
+ *
+ * Exported so tests needing the shortest legal delay can ask for it instead of
+ * hardcoding a number this floor would silently clamp up.
+ */
+export const MIN_DEFERRED_CHECK_DELAY_MS = 10;
+
+/**
  * Effective deferred-check delay. Override: `WORKFLOW_DEFERRED_CHECK_DELAY_MS`.
  *
  * Unlike the other timing knobs this is not a polling interval but a
  * determinism safety margin: firing the unconsumed-event check before the
  * cross-VM subscribe() chain has landed rejects a healthy run with
- * `ReplayDivergenceError`. Floored at 10ms so a too-low override can't
- * manufacture spurious divergence (each false positive burns a
- * divergence-recovery retry and can escalate to a terminal
- * `CorruptedEventLogError`).
+ * `ReplayDivergenceError`.
  */
 const getDeferredCheckDelayMs = (): number =>
   envNumber('WORKFLOW_DEFERRED_CHECK_DELAY_MS', DEFERRED_CHECK_DELAY_MS, {
     integer: true,
-    min: 10,
+    min: MIN_DEFERRED_CHECK_DELAY_MS,
   });
+
+/**
+ * Event types the ordered walk may step over and deliver later.
+ *
+ * Membership is not about who wrote the event. It is about whether the event
+ * can reach the head of the walk with nothing registered to consume it, which
+ * is the only situation parking exists for.
+ *
+ * Most types cannot. They are replay-origin: a replay emits them, in the order
+ * its code reaches them, so their position in the log is the record of what
+ * that replay decided. Reaching one of those out of order means this replay
+ * decided differently than the log holds, which is divergence and nothing else.
+ *
+ * Step lifecycle events are not replay-origin, and are still absent, because
+ * they always have a claimant. `step()` subscribes its consumer before the
+ * step's first event can exist; `step_created` is ordered, so the walk cannot
+ * pass it unless a consumer takes it; and that consumer stays subscribed until
+ * `step_completed` or `step_failed`, after which the World refuses any further
+ * write for that step. There is no window in which a replay knows about a step
+ * and has nothing registered to consume its events, so parking them would only
+ * defer reports of what is divergence either way. The same holds for
+ * `wait_created` and its consumer. `wait_completed` is listed anyway: a sleep
+ * can also be completed out of band, by the API that force-completes pending
+ * waits, and tolerating a stray one is the cheaper direction to be wrong in.
+ *
+ * An allowlist rather than the complement of the ordered set, so a type this
+ * file has not been taught about keeps the strict old behaviour.
+ *
+ * `hook_disposed` is deliberately absent despite being about a hook: it is
+ * written when the workflow's own `using` scope exits, so it is replay-origin.
+ *
+ * `attr_set` is listed by type even though a given instance of it may be
+ * replay-origin, since it is replay-origin when its writer is the workflow.
+ * Splitting that out per event was considered and rejected. A replay that
+ * reaches one of its own writes out of position has diverged, but a replay that
+ * reaches an event it did NOT write, sitting where its own write would go, has
+ * not: the writer field says who wrote the event, and not whether this replay
+ * is the same one. Guessing wrong in that direction fails healthy runs, which
+ * is the failure this file exists to stop, so the whole type is tolerated. The
+ * cost is that a divergence involving `attr_set` surfaces at the end of the
+ * replay, through `strandedEvent`, rather than at the offending event.
+ */
+const PARKABLE_EVENT_TYPES: ReadonlySet<Event['eventType']> = new Set([
+  'hook_received',
+  'hook_conflict',
+  'wait_completed',
+  'attr_set',
+  'run_cancelled',
+]);
+
+/**
+ * Parkable types that can only ever resolve their correlation id once.
+ *
+ * A second one for the same id is not a delivery this replay has not reached
+ * yet: it is a resolution for something already resolved, which no consumer
+ * this replay or any later one registers can ever claim. `hook_received` is
+ * absent because a hook legitimately fires many times under one id.
+ *
+ * Must stay a subset of {@link PARKABLE_EVENT_TYPES}: {@link park} is the only
+ * reader of what this records, and it rejects a non-parkable type before it
+ * looks, so an entry outside that set is dead weight on a hot path.
+ */
+const ONE_SHOT_EVENT_TYPES: ReadonlySet<Event['eventType']> = new Set([
+  'wait_completed',
+]);
+
+/** Identifies the thing a one-shot resolution event resolves. */
+function resolutionKey(eventType: string, correlationId: string): string {
+  return `${eventType}:${correlationId}`;
+}
+
+/**
+ * Types that end a run. Once one is in the log, no consumer will ever be
+ * registered again, so a parked event still parked here will never be claimed.
+ */
+const TERMINAL_EVENT_TYPES: ReadonlySet<Event['eventType']> = new Set([
+  'run_completed',
+  'run_failed',
+  'run_cancelled',
+]);
 
 export enum EventConsumerResult {
   /**
@@ -65,15 +152,46 @@ export interface EventsConsumerOptions {
    * deserialization delays the resolve() that triggers the next subscribe().
    */
   getPromiseQueue: () => Promise<void>;
+  /**
+   * Whether no data delivery is in flight (`isDeliveryIdle` in private.ts).
+   * The unconsumed-event check waits for this before it fires: a delivery in
+   * flight means the workflow VM is mid-reaction, and an event it has not
+   * claimed yet is an event it has not reached yet.
+   *
+   * Required rather than defaulting to always-idle: always-idle is exactly the
+   * pre-gate behaviour, so a defaulted option would let a construction site opt
+   * a whole replay path back out without saying so. Tests that drive a consumer
+   * with no orchestrator context pass `() => true` to keep the pre-existing
+   * timing, and say so at the call site.
+   */
+  isDeliveryIdle: () => boolean;
 }
 
 export class EventsConsumer {
   eventIndex: number;
   readonly events: Event[];
   readonly callbacks: EventConsumerCallback[] = [];
+  /**
+   * Events the ordered walk stepped over because nobody claimed them and their
+   * type carries no ordering claim. Each keeps the index it held in the log:
+   * consumers read {@link eventIndex} at consumption time to order their
+   * delivery against the rest of the log, and a late delivery must still make
+   * the claim its position gave it.
+   *
+   * Held in log order, drained in log order, and drained before every offer so
+   * a consumer registered after the walk passed the event still receives it.
+   */
+  private readonly parked: { event: Event; index: number }[] = [];
+  /**
+   * Correlation ids of the {@link ONE_SHOT_EVENT_TYPES} events consumed so
+   * far, so a second resolution for one of them is recognized as unclaimable
+   * rather than parked for a consumer that cannot exist.
+   */
+  private readonly resolved = new Set<string>();
   private onConsumedEvent?: (event: Event) => void;
   private onUnconsumedEvent: (event: Event) => void;
   private getPromiseQueue: () => Promise<void>;
+  private isDeliveryIdle: () => boolean;
   private pendingUnconsumedCheck: Promise<void> | null = null;
   private pendingUnconsumedTimeout: ReturnType<typeof setTimeout> | null = null;
   private unconsumedCheckVersion = 0;
@@ -87,6 +205,42 @@ export class EventsConsumer {
     this.onConsumedEvent = options.onConsumedEvent;
     this.onUnconsumedEvent = options.onUnconsumedEvent;
     this.getPromiseQueue = options.getPromiseQueue;
+    this.isDeliveryIdle = options.isDeliveryIdle;
+  }
+
+  /**
+   * The oldest event the walk stepped over that no consumer has claimed yet,
+   * if any. Parking is a bet that a consumer will be registered later, so at
+   * any point where no consumer ever will be again — the replay finishing is
+   * the definitive one — this answers which event the bet lost on.
+   */
+  get strandedEvent(): Event | undefined {
+    return this.parked[0]?.event;
+  }
+
+  /**
+   * What the walk is still holding, or `undefined` when it holds nothing.
+   *
+   * Read at every point a replay stops, including the suspensions that are not
+   * settling points, so the held state reaches telemetry. A replay cannot tell
+   * a delivery awaiting a later consumer from one no consumer will ever
+   * register, so it reports rather than decides: the same `eventId` reported on
+   * suspension after suspension of one run is the shape that says the bet
+   * parking made is not going to pay off, and that shape is only visible across
+   * replays.
+   */
+  get parkedSummary():
+    | { count: number; eventId: string; eventType: Event['eventType'] }
+    | undefined {
+    const oldest = this.parked[0]?.event;
+    if (!oldest) {
+      return undefined;
+    }
+    return {
+      count: this.parked.length,
+      eventId: oldest.eventId,
+      eventType: oldest.eventType,
+    };
   }
 
   append(events: Event[]): void {
@@ -148,26 +302,42 @@ export class EventsConsumer {
     // case no callback consumes the event and we fall through to the
     // cross-VM-safe deferred unconsumed-event check below, exactly as before.
     while (true) {
+      // Before every offer, not just on subscribe: a callback registered by
+      // the work this same pass kicked off may be the owner of something
+      // parked, and the parked event's delivery is ordered ahead of the head
+      // event's by the index it holds.
+      this.drainParked();
       const currentEvent = this.events[this.eventIndex] ?? null;
-      if (!this.consumeOne(currentEvent)) {
-        // No callback consumed the current event; handle the terminal case.
-        this.handleUnconsumed(currentEvent);
+      const consumed = this.offer(currentEvent);
+      if (consumed) {
+        this.eventIndex++;
+      }
+      if (currentEvent === null) {
+        // End of log. Consumers return NotConsumed for the `null` sentinel
+        // (the one that recognizes it as its own boundary schedules the
+        // suspension as a side effect and still declines it), so the drain
+        // stops here rather than spinning past the end. `consumed` is only
+        // true for a callback that claims the sentinel outright, which no
+        // production consumer does.
+        if (!consumed) {
+          this.handleEndOfLog();
+        }
         return;
       }
-      // A real event was consumed — advance to the next in the same pass. A
-      // consumed `null` sentinel never returns true (see consumeOne), so the
-      // synchronous drain can't spin past the end of the log.
+      if (!consumed) {
+        this.scheduleUnconsumedCheck(currentEvent, true);
+        return;
+      }
+      // A real event was consumed — advance to the next in the same pass.
     }
   };
 
   /**
    * Offer `currentEvent` to each registered callback in turn. Returns true
-   * when a callback consumed a real (non-null) event and the drain should
-   * advance to the next event in the same synchronous pass; false otherwise
-   * (nothing consumed it, or the consumed event was the end-of-events
-   * sentinel).
+   * when a callback consumed it. Does not move {@link eventIndex}: the ordered
+   * walk and the parked drain advance differently, so each does its own.
    */
-  private consumeOne(currentEvent: Event | null): boolean {
+  private offer(currentEvent: Event | null): boolean {
     for (let i = 0; i < this.callbacks.length; i++) {
       const callback = this.callbacks[i];
       let handled = EventConsumerResult.NotConsumed;
@@ -183,57 +353,232 @@ export class EventsConsumer {
         continue;
       }
       if (currentEvent !== null) {
+        if (
+          currentEvent.correlationId &&
+          ONE_SHOT_EVENT_TYPES.has(currentEvent.eventType)
+        ) {
+          this.resolved.add(
+            resolutionKey(currentEvent.eventType, currentEvent.correlationId)
+          );
+        }
         this.notifyConsumedEvent(currentEvent);
       }
-      // consumer handled this event, so increase the event index
-      this.eventIndex++;
       // remove the callback if it has finished
       if (handled === EventConsumerResult.Finished) {
         this.callbacks.splice(i, 1);
       }
-      // Continue draining only for real events. Real consumers return
-      // NotConsumed for the `null` sentinel, but guard against a pathological
-      // callback consuming it so the drain never spins past end-of-log.
-      return currentEvent !== null;
+      return true;
     }
     return false;
   }
 
-  private handleUnconsumed(currentEvent: Event | null) {
+  /**
+   * Offer everything parked, oldest first, until a pass claims nothing.
+   *
+   * Each offer runs with {@link eventIndex} moved back to the position the
+   * parked event held in the log, because that is the position its consumer
+   * will register a delivery barrier under. Restoring the walk pointer
+   * afterwards is what keeps the two pointers from interfering.
+   */
+  private drainParked(): void {
+    let progressed = this.parked.length > 0;
+    while (progressed) {
+      progressed = false;
+      for (let i = 0; i < this.parked.length; i++) {
+        const entry = this.parked[i];
+        const walkIndex = this.eventIndex;
+        this.eventIndex = entry.index;
+        let consumed: boolean;
+        try {
+          consumed = this.offer(entry.event);
+        } finally {
+          this.eventIndex = walkIndex;
+        }
+        if (consumed) {
+          this.parked.splice(i, 1);
+          // A `Finished` callback was spliced out of the list this pass, so
+          // restart rather than keep walking a mutated array.
+          progressed = this.parked.length > 0;
+          break;
+        }
+      }
+    }
+  }
+
+  /**
+   * Step the ordered walk over an event nobody claimed, holding on to it for a
+   * later consumer. Returns false when the event's type makes its position a
+   * decision record, which is the one case where nobody claiming it means the
+   * replay diverged.
+   */
+  private park(event: Event): boolean {
+    if (!PARKABLE_EVENT_TYPES.has(event.eventType)) {
+      return false;
+    }
+    if (
+      event.correlationId &&
+      this.resolved.has(resolutionKey(event.eventType, event.correlationId))
+    ) {
+      return false;
+    }
+    this.parked.push({ event, index: this.eventIndex });
+    this.eventIndex++;
+    eventsLogger.debug('Parked an unclaimed event for later delivery', {
+      eventId: event.eventId,
+      eventType: event.eventType,
+      correlationId: event.correlationId,
+      parked: this.parked.length,
+    });
+    return true;
+  }
+
+  private handleEndOfLog() {
+    // Everything still parked is waiting for a consumer some later replay will
+    // register, which is the whole point of parking — except once the log
+    // already holds the run's terminal event, because then there is no later
+    // replay and no consumer will ever come.
+    if (this.parked.length === 0) {
+      return;
+    }
+    const last = this.events.at(-1);
+    if (!last || !TERMINAL_EVENT_TYPES.has(last.eventType)) {
+      // A later replay is still expected, so nothing here is decidable and
+      // escalating would fail the healthy runs parking exists to keep alive.
+      // Reaching the end of the log holding something is not by itself a fault,
+      // so this stays at `debug`; {@link parkedSummary} is what carries the
+      // state to the span, where a run that keeps stopping on the same held
+      // event is visible and a single replay's view is not.
+      eventsLogger.debug('Reached the end of the log still holding events', {
+        eventId: this.parked[0].event.eventId,
+        eventType: this.parked[0].event.eventType,
+        correlationId: this.parked[0].event.correlationId,
+        parked: this.parked.length,
+      });
+      return;
+    }
+    this.scheduleUnconsumedCheck(this.parked[0].event, false);
+  }
+
+  private scheduleUnconsumedCheck(currentEvent: Event, mayPark: boolean) {
     // All callbacks returned NotConsumed for the current event.
-    // If the current event is non-null (a real event, not end-of-events),
-    // schedule a deferred check. We chain onto the promiseQueue so that any
+    // Schedule a deferred check. We chain onto the promiseQueue so that any
     // pending async work (e.g., deserialization/decryption that triggers
     // resolve() → user code → subscribe()) completes first. If the event
-    // is still unconsumed after the queue drains, it's truly orphaned.
-    if (currentEvent !== null) {
-      const checkVersion = ++this.unconsumedCheckVersion;
-      this.pendingUnconsumedCheck = this.getPromiseQueue()
-        .then(
-          // Yield once after the first queue drain so promise chains resumed by
-          // that drain can run across the VM boundary and append any follow-up
-          // async work (for example: step_completed resolves -> for-await loop
-          // resumes -> the next hook payload starts hydrating).
-          () => new Promise<void>((resolve) => setTimeout(resolve, 0))
-        )
-        .then(() => this.getPromiseQueue())
-        .then(() => {
-          // Use a delayed setTimeout after the queue drains. The delay must be
-          // long enough for promise chains to propagate across the VM boundary
-          // (from resolve() in the host context through to the workflow code
-          // calling subscribe() in the VM context). Node.js does not guarantee
-          // that setTimeout(0) fires after all cross-context microtasks settle,
-          // so we use a small but non-zero delay. Any subscribe() call that
-          // arrives during this window will cancel the check via version
-          // invalidation + clearTimeout.
+    // is still unconsumed after the queue drains, it's truly orphaned — or,
+    // when its type carries no ordering claim, parked for a later consumer.
+    const checkVersion = ++this.unconsumedCheckVersion;
+    this.pendingUnconsumedCheck = this.getPromiseQueue()
+      .then(
+        // Yield once after the first queue drain so promise chains resumed by
+        // that drain can run across the VM boundary and append any follow-up
+        // async work (for example: step_completed resolves -> for-await loop
+        // resumes -> the next hook payload starts hydrating).
+        () => new Promise<void>((resolve) => setTimeout(resolve, 0))
+      )
+      .then(() => this.getPromiseQueue())
+      .then(() => {
+        // Wait out any delivery still in flight before starting the timer.
+        // The queue draining says the host has no hydration work left; it
+        // does not say the VM has finished reacting to what was hydrated.
+        this.whenDeliveryIdle(checkVersion, () => {
+          // Use a delayed setTimeout once deliveries are idle. The delay must
+          // be long enough for promise chains to propagate across the VM
+          // boundary (from resolve() in the host context through to the
+          // workflow code calling subscribe() in the VM context). Node.js does
+          // not guarantee that setTimeout(0) fires after all cross-context
+          // microtasks settle, so we use a small but non-zero delay. Any
+          // subscribe() call that arrives during this window will cancel the
+          // check via version invalidation + clearTimeout.
           this.pendingUnconsumedTimeout = setTimeout(() => {
             this.pendingUnconsumedTimeout = null;
-            if (this.unconsumedCheckVersion === checkVersion) {
-              this.pendingUnconsumedCheck = null;
-              this.onUnconsumedEvent(currentEvent);
+            if (this.unconsumedCheckVersion !== checkVersion) {
+              return;
             }
+            this.pendingUnconsumedCheck = null;
+            if (mayPark) {
+              if (this.events[this.eventIndex] !== currentEvent) {
+                // An append() drain claimed it while the check was in flight.
+                // Only subscribe() cancels the check, so this is reachable.
+                return;
+              }
+              if (this.park(currentEvent)) {
+                this.consume();
+                return;
+              }
+            }
+            this.onUnconsumedEvent(currentEvent);
           }, getDeferredCheckDelayMs());
         });
-    }
+      });
+  }
+
+  /**
+   * Run `fn` once no data delivery is in flight, polling the way
+   * `scheduleWhenIdle` does: let the promise queue drain, re-check a timer
+   * tick later, repeat.
+   *
+   * Without this the check is a bet that every delivery the walk is running
+   * ahead of lands inside a fixed window. Consumption is synchronous while the
+   * resolution it triggers is not: a step result hydrates in the host, resolves
+   * from a detached continuation behind `awaitEarlierDeliveries`, and only then
+   * does VM code run far enough to subscribe the next consumer. Replaying a
+   * batch of N parallel step results leaves N-1 of them on that detached path
+   * with the queue already drained, so the walk sits on the ordered event the
+   * VM is about to draw and the window is the only thing standing between a
+   * healthy run and `ReplayDivergenceError`.
+   *
+   * Shortening the window shows that mechanism directly: on identical event logs
+   * the local race repro corrupts 34 of 42 runs at a 10ms window and 0 of 114 at
+   * the 100ms default. That measures how the bet loses, not that the default
+   * loses it, and no measurement of a delivery outrunning 100ms exists either
+   * way. So read this as retiring the bet rather than as repairing an observed
+   * failure of that number: the delay is a user-settable env override, which
+   * leaves the old behaviour one configuration away from losing on any backend.
+   *
+   * Termination is `hasParkedCommittedDelivery`'s: it counts only deliveries
+   * that resolve on their own, so nothing here can gate its own retirement. A
+   * genuinely orphaned event has no delivery to wait on and reaches `fn` on the
+   * first poll.
+   *
+   * What the gate gives up: for the ordered events that still reach
+   * `onUnconsumedEvent` rather than {@link park}, this stops being the thing
+   * that catches a diverged log while a delivery is in flight. The suspension
+   * and this check now wake from the same `isDeliveryIdle` edge, and
+   * `scheduleWhenIdle` fires on the first timer tick after idle while this waits
+   * a further `getDeferredCheckDelayMs()`. So a run with a pending `sleep()`
+   * suspends first, and `onWorkflowError` drops the divergence arriving second
+   * (its `'suspended'` branch demotes to `'replay'` and surfaces nothing),
+   * leaving a later `resume()` to decline into a cold replay. Pre-gate the
+   * suspension already won that race whenever the delivery landed inside the
+   * fixed window, so what changed is that the outcome stopped depending on
+   * timing. Nothing should treat this check as the mechanism that reports
+   * divergence on a log the run is still delivering into.
+   */
+  private whenDeliveryIdle(checkVersion: number, fn: () => void): void {
+    const poll = () => {
+      this.pendingUnconsumedTimeout = null;
+      if (this.unconsumedCheckVersion !== checkVersion) {
+        return;
+      }
+      if (this.isDeliveryIdle()) {
+        fn();
+        return;
+      }
+      this.getPromiseQueue().then(() => {
+        if (this.unconsumedCheckVersion !== checkVersion) {
+          return;
+        }
+        // Held in the same field the fired check uses so subscribe() cancels a
+        // poll in progress too. The two cancellations are not identical: for the
+        // poll it is the version bump that does the work and the clearTimeout is
+        // belt-and-braces. Two state machines write this one field, so a poll
+        // invalidated between scheduling and firing can null out a handle the
+        // live chain has since stored, which is why every path out of `poll` and
+        // out of the fired check re-checks the version rather than trusting the
+        // handle.
+        this.pendingUnconsumedTimeout = setTimeout(poll, 0);
+      });
+    };
+    poll();
   }
 }

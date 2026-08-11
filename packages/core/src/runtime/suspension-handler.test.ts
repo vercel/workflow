@@ -4,15 +4,17 @@ import {
   PreconditionFailedError,
   WorkflowWorldError,
 } from '@workflow/errors';
+import type { Event } from '@workflow/world';
 import {
   SPEC_VERSION_CURRENT,
+  slotToEventId,
   type ValidQueueName,
   type WorkflowRun,
   type World,
 } from '@workflow/world';
 import { describe, expect, it, vi } from 'vitest';
 import { WorkflowSuspension } from '../global.js';
-import { stepDispatchIdempotencyKey } from './helpers.js';
+import { maxEventSlot, stepDispatchIdempotencyKey } from './helpers.js';
 import { ReplayRecoveryReporter } from './replay-recovery-reporter.js';
 import { handleSuspension } from './suspension-handler.js';
 
@@ -547,6 +549,82 @@ describe('handleSuspension', () => {
         run,
       })
     ).rejects.toBeInstanceOf(PreconditionFailedError);
+  });
+
+  describe('skipped-slot reports', () => {
+    /** A slot-numbered log event, minimal beyond what a snapshot reads. */
+    function slotEvent(slot: number, eventType: Event['eventType']): Event {
+      return {
+        eventId: slotToEventId(slot),
+        eventType,
+        runId: run.runId,
+        createdAt: new Date(),
+      } as Event;
+    }
+
+    /** One wait, so exactly one guarded write carries the report back. */
+    function oneWait() {
+      return new Map([
+        [
+          'wait_reported',
+          {
+            type: 'wait' as const,
+            correlationId: 'wait_reported',
+            resumeAt: new Date(Date.now() + 60_000),
+          },
+        ],
+      ]);
+    }
+
+    it('merges a complete report into the caller event log', async () => {
+      const eventLog = { events: [slotEvent(1, 'run_started')], cursor: null };
+      const skipped = slotEvent(2, 'hook_received');
+      const eventsCreate = vi.fn(async (_runId, event) => ({
+        event: { ...event, eventId: slotToEventId(3) },
+        events: [skipped],
+      }));
+
+      const result = await handleSuspension({
+        suspension: new WorkflowSuspension(oneWait(), globalThis),
+        world: createWorld(eventsCreate),
+        run,
+        eventLog,
+      });
+
+      expect(result.reportedEventCount).toBe(1);
+      // The replay that resumes from this log sees the skipped event without
+      // reloading, and the log still says how far it reaches.
+      expect(eventLog.events.map((e) => e.eventId)).toEqual([
+        slotToEventId(1),
+        slotToEventId(2),
+      ]);
+      expect(maxEventSlot(eventLog.events)).toBe(2);
+    });
+
+    it('drops a truncated report instead of raising the log past a hole', async () => {
+      const eventLog = { events: [slotEvent(1, 'run_started')], cursor: null };
+      // Slot 2 is on the same skipped span but absent from the report, so
+      // merging slot 3 would put the log's maximum above a missing position.
+      // Later writes read that maximum to say what they have seen, and a World
+      // only reports the span a write skips, so slot 2 would never be sent.
+      const skipped = slotEvent(3, 'hook_received');
+      const eventsCreate = vi.fn(async (_runId, event) => ({
+        event: { ...event, eventId: slotToEventId(4) },
+        events: [skipped],
+        hasMore: true,
+      }));
+
+      const result = await handleSuspension({
+        suspension: new WorkflowSuspension(oneWait(), globalThis),
+        world: createWorld(eventsCreate),
+        run,
+        eventLog,
+      });
+
+      expect(result.reportedEventCount).toBe(0);
+      expect(eventLog.events.map((e) => e.eventId)).toEqual([slotToEventId(1)]);
+      expect(maxEventSlot(eventLog.events)).toBe(1);
+    });
   });
 });
 

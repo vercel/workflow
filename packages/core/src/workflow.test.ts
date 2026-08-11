@@ -13,14 +13,11 @@ import {
   dehydrateWorkflowArguments,
   hydrateWorkflowReturnValue,
 } from './serialization.js';
-import { pinSharedCorrelationIds } from './test-support/correlation-id-scheme.js';
 import { createContext } from './vm/index.js';
 import { replayWorkflow, resumeWorkflow, runWorkflow } from './workflow.js';
 
 // No encryption key = encryption disabled
 const noEncryptionKey = undefined;
-
-pinSharedCorrelationIds();
 
 describe('runWorkflow', () => {
   const getWorkflowTransformCode = (workflowName?: string) =>
@@ -382,13 +379,16 @@ describe('runWorkflow', () => {
       assert(suspended.type === 'suspended');
 
       // A strict extension whose appended suffix the VM cannot consume: the
-      // resume starts, then diverges mid-execution.
+      // resume starts, then diverges mid-execution. It has to be a
+      // replay-origin type: the consumer walks past an unclaimed delivery and
+      // holds it for a later consumer, so only an event whose position is a
+      // replay's own decision record diverges on the spot.
       const alien = {
         eventId: 'event-alien',
         runId: run.runId,
-        eventType: 'hook_received',
-        correlationId: 'hook_unknown',
-        eventData: {},
+        eventType: 'step_created',
+        correlationId: 'step_unknown',
+        eventData: { stepName: 'unknown' },
         createdAt: new Date('2024-01-01T00:00:01.000Z'),
       } as Event;
       await expect(resumeWorkflow(suspended.session, [alien])).rejects.toThrow(
@@ -406,7 +406,7 @@ describe('runWorkflow', () => {
     // Turbo's first delivery synthesizes `startedAt` from the local clock,
     // while later (non-turbo) deliveries load the server-canonical `startedAt`.
     // Replay matching must NOT depend on `startedAt`: correlation IDs come from
-    // `generateCorrelationId`, keyed off the run-ID-recovered `fixedTimestamp`, not
+    // `generateUlid`, keyed off the run-ID-recovered `fixedTimestamp`, not
     // `startedAt`. Here the recorded `add` event uses the createdAt-derived
     // correlation ID, but `startedAt` is months away — replay must still
     // regenerate the same ID and consume the completion rather than throwing
