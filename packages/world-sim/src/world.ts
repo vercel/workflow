@@ -25,6 +25,7 @@
  * recurse forever.
  */
 
+import { AsyncLocalStorage } from 'node:async_hooks';
 import {
   type Event,
   getQueueTopicPrefix,
@@ -82,14 +83,15 @@ export interface SimWorldOptions {
   preconditionGuard?: boolean;
   /**
    * Also enforce the count half of the fence (see `SimStoreOptions.countGuard`),
-   * and supply the `stateEventCount` it needs on the caller's behalf.
+   * and supply `stateEventCount` for the writes the runtime does not count.
    *
-   * The runtime does not send that field: `@workflow/core` sends
-   * `stateUpdatedAt` and nothing else, so in production the server's count guard
-   * evaluates to `skipped` and only the watermark runs. Turning this on models
-   * the client that does send it — the world counts what it actually served the
-   * caller in its last event-log read — which is what makes "would the count
-   * guard have caught this?" answerable here instead of hypothetical.
+   * Production arms both halves. Since #3145 `@workflow/core` sends
+   * `stateEventCount` on every replay-context create
+   * (`preconditionSnapshotParams`), gated only by the
+   * `WORKFLOW_PRECONDITION_GUARD` kill-switch, and workflow-server's count guard
+   * is on by default — so this tracks `preconditionGuard` rather than being
+   * opted into per scenario. A run with the fence on and the count off would be
+   * a world that exists nowhere.
    */
   countGuard?: boolean;
   /**
@@ -167,15 +169,26 @@ export function createSimWorld(options: SimWorldOptions = {}): SimWorld {
 
   const trace: TraceEntry[] = [];
   /**
-   * Depth of scenario-originated re-entry: non-zero inside an `asExternal`
+   * Whether *this* call chain is scenario-originated: set inside an `asExternal`
    * block, i.e. the scenario is the one calling, so the call is attributed to
    * `external` and is not itself a call point.
    *
-   * Deliberately *not* raised for the duration of a watch action — see
-   * `fireWatches`. A held action outlives the call it fired from, and a depth
+   * Async-context-scoped rather than a plain counter, because `asExternal`
+   * brackets whole operations — `scenario.ts` wraps all of `resumeHook`, which
+   * spans several awaits. A counter is a global flag for that whole window, so
+   * a step body committing concurrently gets read as the scenario's own call:
+   * attributed `external`, skipped by `fireWatches` (a `runTo` armed on it waits
+   * out its 5s watchdog instead), and left out of the count guard's loaded-set
+   * bookkeeping. `attr-from-step-body` showed this as `ext` on the `probe`
+   * step's own `step_completed`, in the one scenario whose subject is the
+   * writer column.
+   *
+   * Deliberately *not* set for the duration of a watch action — see
+   * `fireWatches`. A held action outlives the call it fired from, and a flag
    * held that long would silence every other writer.
    */
-  let externalDepth = 0;
+  const externalCtx = new AsyncLocalStorage<true>();
+  const isExternal = () => externalCtx.getStore() === true;
   /** Set by `withReservedPosition`; consumed by the next `events.create`. */
   let reservedPosition: MintedEvent | undefined;
   let callSeq = 0;
@@ -189,7 +202,7 @@ export function createSimWorld(options: SimWorldOptions = {}): SimWorld {
       ...entry,
       seq: traceSeq++,
       atMs: clock.now(),
-      depth: externalDepth,
+      depth: isExternal() ? 1 : 0,
     } as TraceEntry);
   };
 
@@ -199,8 +212,8 @@ export function createSimWorld(options: SimWorldOptions = {}): SimWorld {
     preconditionGuard: options.preconditionGuard,
     countGuard: options.countGuard,
     appendOnlyLog: options.appendOnlyLog,
-    // Fires synchronously inside `events.create`, so `externalDepth` still
-    // describes who is writing and the attribution is exact.
+    // Fires synchronously inside `events.create`, so it runs in that call's
+    // async context and `isExternal()` still describes who is writing.
     onEvent: (event) =>
       pushTrace({ kind: 'event', event, writer: writerOfEvent(event) }),
     // Two different faults, and the trace should not blur them: one read
@@ -274,7 +287,7 @@ export function createSimWorld(options: SimWorldOptions = {}): SimWorld {
     correlationId?: string;
     eventData?: unknown;
   }): WriterId {
-    if (externalDepth > 0) return 'external';
+    if (isExternal()) return 'external';
 
     const data = event.eventData as
       | {
@@ -309,7 +322,7 @@ export function createSimWorld(options: SimWorldOptions = {}): SimWorld {
     runId: string | undefined,
     request: CallContext['request']
   ): WriterId {
-    if (externalDepth > 0) return 'external';
+    if (isExternal()) return 'external';
     if (call !== 'events.create' || !request) return 'orchestrator';
     return writerOfEvent({ ...request, runId });
   }
@@ -411,7 +424,7 @@ export function createSimWorld(options: SimWorldOptions = {}): SimWorld {
   async function fireWatches(ctx: CallContext): Promise<void> {
     // Calls the scenario itself makes are not call points: they would otherwise
     // trip the very watches they were made from inside of.
-    if (externalDepth > 0) return;
+    if (isExternal()) return;
 
     // Iterate a copy: an action may dispose its own watch, or arm a new one.
     for (const entry of [...watches]) {
@@ -428,15 +441,15 @@ export function createSimWorld(options: SimWorldOptions = {}): SimWorld {
         writer: ctx.writer,
       });
 
-      // The action is NOT run with `externalDepth` raised, and that is
+      // The action is NOT run inside the external context, and that is
       // deliberate. A hold's action does not return until the scenario releases
       // it, so raising the depth for the duration would mean: for as long as one
       // writer is held, every *other* writer's call stops being a call point and
       // every event it commits is attributed to the scenario. Holding one step
       // body would make its sibling both invisible and unsteerable — the exact
       // interleaving the writer vocabulary exists to state. Scenario-originated
-      // writes get their attribution from `asExternal` instead, which brackets
-      // only the call itself.
+      // writes get their attribution from `asExternal` instead, which follows
+      // the call chain rather than the wall clock.
       try {
         if (!resolveApi) {
           throw new Error(
@@ -503,7 +516,8 @@ export function createSimWorld(options: SimWorldOptions = {}): SimWorld {
       writer: ctx.writer,
       call: ctx.call,
       phase: ctx.phase,
-      depth: externalDepth,
+      depth: isExternal() ? 1 : 0,
+      failed: ctx.error !== undefined,
       ...(ctx.event?.eventType || ctx.request?.eventType
         ? { eventType: ctx.event?.eventType ?? ctx.request?.eventType }
         : {}),
@@ -533,7 +547,7 @@ export function createSimWorld(options: SimWorldOptions = {}): SimWorld {
    * one delivery are sim-level writers, but they are one process sharing one
    * loaded log, and that log is what the count describes. The out-of-band
    * writer is the exception — a different process with its own log — so its
-   * calls are excluded, by the same `externalDepth` rule that keeps them from
+   * calls are excluded, by the same `isExternal()` rule that keeps them from
    * being call points.
    *
    * Everything a caller's own write appends counts as loaded, including events
@@ -631,14 +645,26 @@ export function createSimWorld(options: SimWorldOptions = {}): SimWorld {
           {
             ...params,
             minted,
-            // Supplied on the caller's behalf: `@workflow/core` reads the log,
-            // then writes with `stateUpdatedAt` but no count, so the count guard
-            // is dark in production. Attaching the size of the last page this
-            // writer read models the client-side change that would arm it.
+            // The runtime's own count wins when it sent one. Since #3145
+            // `preconditionSnapshotParams` puts `stateEventCount` on every
+            // replay-context create, so the value under test is normally the
+            // real client's, not ours.
+            //
+            // The reconstruction is the fallback, for the writes core does not
+            // count: a step body committing outside a replay context, and any
+            // create made while the precondition guard's env kill-switch is off
+            // (`preconditionSnapshotParams` returns `{}` wholesale then). It is
+            // the size of the last page this writer read, which is what the
+            // client would have counted had it counted.
             ...(options.countGuard &&
-            externalDepth === 0 &&
+            !isExternal() &&
             typeof params.stateUpdatedAt === 'number'
-              ? { stateEventCount: loadedCount(runId, params.stateUpdatedAt) }
+              ? {
+                  stateEventCount:
+                    typeof params.stateEventCount === 'number'
+                      ? params.stateEventCount
+                      : loadedCount(runId, params.stateUpdatedAt),
+                }
               : {}),
           },
         ] as unknown as Parameters<F>;
@@ -651,7 +677,7 @@ export function createSimWorld(options: SimWorldOptions = {}): SimWorld {
       // ahead of it, and a client that did not count both would look like it was
       // holding a hole it had itself just made.
       const before =
-        call === 'events.create' && runId && externalDepth === 0
+        call === 'events.create' && runId && !isExternal()
           ? new Set(store.allEvents(runId).map((e) => e.eventId))
           : undefined;
 
@@ -665,7 +691,7 @@ export function createSimWorld(options: SimWorldOptions = {}): SimWorld {
         threw = true;
       }
 
-      if (!threw && runId && externalDepth === 0) {
+      if (!threw && runId && !isExternal()) {
         if (call === 'events.list') {
           noteLoadedEvents(runId, args, result);
         } else if (before) {
@@ -799,12 +825,7 @@ export function createSimWorld(options: SimWorldOptions = {}): SimWorld {
       resolveApi = resolve;
     },
     async asExternal(fn) {
-      externalDepth++;
-      try {
-        return await fn();
-      } finally {
-        externalDepth--;
-      }
+      return externalCtx.run(true, fn);
     },
     reservePosition: () => store.mintEvent(),
     async withReservedPosition(position, fn) {

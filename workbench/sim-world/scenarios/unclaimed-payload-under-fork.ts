@@ -94,7 +94,12 @@ export const scenario: ScenarioSpec = {
   },
   // Both branches run to completion in either delivery order, so the output is
   // the same whichever one resumes first. That is the point: nothing about the
-  // result says which id each branch drew, and only the replay can tell.
+  // result says which id each branch drew, and only the log-order check in
+  // step 5 can tell. (Not the replay — as step 5 explains, replay reruns the
+  // same code against the same log and agrees with it either way.)
+  //
+  // This scenario was red until #3406 fixed the delivery-barrier ordering; it
+  // is kept as the regression test for that fix.
   expect: {
     status: 'completed',
     output: 'afterStep:doc-32|afterSleep:doc-32',

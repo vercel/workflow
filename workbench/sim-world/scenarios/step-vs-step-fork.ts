@@ -34,6 +34,13 @@ export const scenario: ScenarioSpec = {
         .length === 0
     );
 
+    // Who this withheld reader is in production: not this invocation. With
+    // strongly-consistent reads a single invocation cannot miss its own
+    // committed write, so the reader that misses one of these two step
+    // writes is a *concurrent second invocation* of the same run — the storm
+    // shape, which the sim cannot model directly (DESIGN §10). The withhold
+    // stands in for that reader; it is not a claim that a single-invocation
+    // read can be stale.
     sim.withholdNextEvent(1);
     await slow.release();
     await fast.release();

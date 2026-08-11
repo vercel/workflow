@@ -165,8 +165,8 @@ Two of these are measurements rather than conveniences.
 **`--append-only`** moves every event's position from its handler's mint to its
 commit, which is the one change that makes a stale read impossible: the log can
 be behind, never wrong. Running with and without it is how you tell which of
-the reds that change would actually close. Today: **34 pass / 6 violations**
-mint-ordered, **40 pass / 0 violations** append-only.
+the reds that change would actually close. Today: **35 pass / 6 violations**
+mint-ordered, **41 pass / 0 violations** append-only.
 
 The one red it does *not* close is `unclaimed-payload-under-fork`, and that is
 the point of it: no log position is wrong there, the runtime hands two
@@ -193,14 +193,14 @@ as one sticky comment — four lines until you open something:
 
 Simulated world deterministic testing for races. [Traces](…)
 
-▸ 🟠 Mint-ordered log — 7 fail of 41 total
-▸ 🔴 Append-only log — 1 fail of 41 total
+▸ 🟠 Mint-ordered log — 6 fail of 41 total
+▸ 🟢 Append-only log — 0 fail of 41 total
 ```
 
 **It never blocks a merge**: those scenarios are red on purpose, so a lane that
 gated on them would be red on every PR and read as broken rather than as
 informative. What it publishes is the pair of counts, and the thing to look at
-is whether they still say 7 and 1.
+is whether they still say 6 and 0.
 
 That is also why `pnpm test` in this package is `--report-only` while `pnpm sim`
 stays strict — a recursive `pnpm -r test` should not go red for the known reds,

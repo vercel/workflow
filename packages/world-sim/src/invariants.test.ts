@@ -1,6 +1,21 @@
 import type { Event, Step, WorkflowRun } from '@workflow/world';
 import { describe, expect, it } from 'vitest';
-import { checkInvariants } from './invariants.js';
+import { checkInvariants, type InvariantInput } from './invariants.js';
+
+/**
+ * Most cases here do not care about the commit-order/log-order distinction, so
+ * they pass one array and get it used for both. The cases that do care pass
+ * `eventsInCommitOrder` explicitly.
+ */
+function check(
+  input: Omit<InvariantInput, 'eventsInCommitOrder'> &
+    Partial<Pick<InvariantInput, 'eventsInCommitOrder'>>
+) {
+  return checkInvariants({
+    eventsInCommitOrder: input.events,
+    ...input,
+  });
+}
 
 const RUN = 'wrun_01HK153X00000000000105JM0S';
 const BASE = new Date('2024-01-01T00:00:00.000Z');
@@ -76,7 +91,7 @@ describe('invariants', () => {
       },
     ];
     expect(
-      checkInvariants({
+      check({
         runId: RUN,
         events,
         runs: [run('completed')],
@@ -84,6 +99,56 @@ describe('invariants', () => {
         waits: [],
       })
     ).toEqual([]);
+  });
+
+  it('catches a log that gained a row behind a committed peer', () => {
+    // Log order is fine; commit order is not. `b` took a position above `a`
+    // and then `a` committed into the gap — the shape an append-only log
+    // promises cannot happen.
+    const a = event({
+      eventType: 'run_created',
+      eventData: {
+        deploymentId: 'd',
+        workflowName: 'w',
+        input: new Uint8Array(),
+      },
+    });
+    const b = event({ eventType: 'run_started' });
+    expect(
+      rules(
+        check({
+          runId: RUN,
+          events: [a, b],
+          eventsInCommitOrder: [b, a],
+          runs: [run('running')],
+          steps: [],
+          waits: [],
+        })
+      )
+    ).toContain('log.monotonic-order');
+  });
+
+  it('skips the order rule when the world makes no such promise', () => {
+    const a = event({
+      eventType: 'run_created',
+      eventData: {
+        deploymentId: 'd',
+        workflowName: 'w',
+        input: new Uint8Array(),
+      },
+    });
+    const b = event({ eventType: 'run_started' });
+    expect(
+      rules(
+        checkInvariants({
+          runId: RUN,
+          events: [a, b],
+          runs: [run('running')],
+          steps: [],
+          waits: [],
+        })
+      )
+    ).not.toContain('log.monotonic-order');
   });
 
   it('catches an out-of-order log', () => {
@@ -96,7 +161,7 @@ describe('invariants', () => {
       },
     });
     const b = event({ eventType: 'run_started' });
-    const violations = checkInvariants({
+    const violations = check({
       runId: RUN,
       // Appended in the wrong order relative to how `events.list` will sort
       // them: replay would see a different sequence than what happened.
@@ -134,7 +199,7 @@ describe('invariants', () => {
     ];
     expect(
       rules(
-        checkInvariants({
+        check({
           runId: RUN,
           events,
           runs: [run('running')],
@@ -174,7 +239,7 @@ describe('invariants', () => {
       },
     ];
     const violations = rules(
-      checkInvariants({
+      check({
         runId: RUN,
         events,
         runs: [run('running')],
@@ -208,7 +273,7 @@ describe('invariants', () => {
     const drifted = { ...run('running'), attributes: { approval: 'no' } };
     expect(
       rules(
-        checkInvariants({
+        check({
           runId: RUN,
           events,
           runs: [drifted],
@@ -221,7 +286,7 @@ describe('invariants', () => {
     const agreeing = { ...run('running'), attributes: { approval: 'yes' } };
     expect(
       rules(
-        checkInvariants({
+        check({
           runId: RUN,
           events,
           runs: [agreeing],
@@ -254,7 +319,7 @@ describe('invariants', () => {
     ];
     expect(
       rules(
-        checkInvariants({
+        check({
           runId: RUN,
           events,
           runs: [{ ...run('running'), attributes: {} }],
@@ -288,7 +353,7 @@ describe('invariants', () => {
     ];
     expect(
       rules(
-        checkInvariants({
+        check({
           runId: RUN,
           events,
           runs: [run('running')],
@@ -323,7 +388,7 @@ describe('invariants', () => {
     ];
     expect(
       rules(
-        checkInvariants({
+        check({
           runId: RUN,
           events,
           runs: [run('running')],
@@ -357,7 +422,7 @@ describe('invariants', () => {
     ];
     expect(
       rules(
-        checkInvariants({
+        check({
           runId: RUN,
           events,
           runs: [run('running')],
@@ -393,7 +458,7 @@ describe('invariants', () => {
     ];
     expect(
       rules(
-        checkInvariants({
+        check({
           runId: RUN,
           events: ok,
           runs: [run('cancelled')],
@@ -413,7 +478,7 @@ describe('invariants', () => {
     ];
     expect(
       rules(
-        checkInvariants({
+        check({
           runId: RUN,
           events: bad,
           runs: [run('cancelled')],

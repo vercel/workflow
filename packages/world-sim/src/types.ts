@@ -143,6 +143,17 @@ export interface ObservedPoint {
    * possible — worth distinguishing in an error message.
    */
   depth: number;
+  /**
+   * Whether the call threw. Only meaningful on an `after` point: a `before`
+   * point happens while the outcome is still unknown, so it is always `false`
+   * there.
+   *
+   * Recorded so the level-triggered check agrees with `CallMatch.failed`. A
+   * `runToEventCommitted` that ignored this would count a rejected write as the
+   * commit it was waiting for — routine under the fence, where a 412 is an
+   * expected step on the way to a successful retry.
+   */
+  failed: boolean;
 }
 
 /** An intercepted world call that threw. */

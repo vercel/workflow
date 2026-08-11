@@ -114,6 +114,8 @@ interface PointSpec {
   stepName?: string;
   token?: string;
   correlationId?: string;
+  /** Mirrors `CallMatch.failed`; `undefined` accepts either outcome. */
+  failed?: boolean;
 }
 
 function asOptions(options: string | RunToOptions | undefined): RunToOptions {
@@ -153,6 +155,7 @@ function pointMatches(spec: PointSpec, point: ObservedPoint): boolean {
   if (spec.correlationId && point.correlationId !== spec.correlationId) {
     return false;
   }
+  if (spec.failed !== undefined && spec.failed !== point.failed) return false;
   return true;
 }
 
@@ -287,6 +290,7 @@ export function createWriters(deps: {
         ...(spec.stepName ? { stepName: spec.stepName } : {}),
         ...(spec.token ? { token: spec.token } : {}),
         ...(spec.correlationId ? { correlationId: spec.correlationId } : {}),
+        ...(spec.failed !== undefined ? { failed: spec.failed } : {}),
         ...(options.where
           ? { where: (_ctx, snapshot) => options.where?.(snapshot) ?? true }
           : {}),
@@ -347,6 +351,12 @@ export function createWriters(deps: {
         return runTo(
           {
             phase: 'after',
+            // "Committed" means committed. Without this a rejected create
+            // matches too, and under the fence a `PreconditionFailedError` is
+            // routine — the script would resume believing a write is durable
+            // when it 412'd, and the watermark would consume the point, so the
+            // retry's real commit would read as the *next* one.
+            failed: false,
             eventTypes: toArray(eventType),
             ...(opts.stepName ? { stepName: opts.stepName } : {}),
             ...(opts.token ? { token: opts.token } : {}),

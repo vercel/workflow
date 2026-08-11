@@ -28,6 +28,10 @@ export const scenario: ScenarioSpec = {
   workflow: 'stepCountForkWorkflow',
   input: ['doc-29'],
   preconditionGuard: true,
+  // Explicit against the default, which follows the fence: this scenario is the
+  // watermark half on its own, and the `-counted` twin below is the same tempo
+  // with production's second half restored. One flag apart is the whole point.
+  countGuard: false,
   script: async (sim) => {
     const wf = sim.writer.orchestrator();
 

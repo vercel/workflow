@@ -79,7 +79,10 @@ export function createIdFactory(now: () => number): IdFactory {
   const ulid = (): string => {
     counter++;
     // 48-bit timestamp, 10 base32 chars — the standard ULID time component.
-    const time = encodeBase32(now(), 10);
+    // `Math.floor` rather than trusting the caller: the clock guards its own
+    // arithmetic, but `now` is an arbitrary function and a fractional
+    // millisecond here would silently mint an id that sorts nowhere sensible.
+    const time = encodeBase32(Math.floor(now()), 10);
     // The 16-char entropy component is split so the whole ULID sorts by
     // (time, counter): a zero-padded 10-char counter, then a fixed marker
     // that makes simulated IDs visually obvious in a dump.

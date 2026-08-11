@@ -22,14 +22,20 @@ export const scenario: ScenarioSpec = {
     'orchestrator carries a pre-sleep snapshot: strictly older, so the same ' +
     'fence rejects twice and the run self-corrects — those rejections show ' +
     'up in the trace as `!!` lines, unasked for. ' +
-    'To be precise about which fence: `preconditionGuard` is only the ' +
-    'watermark half, which is all a client sends today. The count half ' +
-    '(`countGuard`) is aimed at exactly this hole and does catch it — see the ' +
+    'To be precise about which fence: this scenario arms the watermark half ' +
+    'ALONE, which is why `countGuard` is switched off below against the ' +
+    'default. The count half is aimed at exactly this hole and does catch it, ' +
+    'and since #3145 it is armed in production too — so what stays red here ' +
+    'is the watermark predicate, not a hole anything real still has. See the ' +
     'in-flight trio below, where the two halves are separated and tested one ' +
     'flag apart.',
   workflow: 'stepVsStepForkWorkflow',
   input: ['doc-27'],
   preconditionGuard: true,
+  // The subject is the watermark predicate on its own. Production arms both
+  // halves, so the count guard now follows the fence by default; a scenario
+  // that exists to show what the watermark alone misses has to opt out of it.
+  countGuard: false,
   script: async (sim) => {
     const fast = sim.writer.step('fast');
     const slow = sim.writer.step('slow');
@@ -37,6 +43,13 @@ export const scenario: ScenarioSpec = {
     const atSlow = slow.runToEventProduced('step_completed');
     await atFast;
     await atSlow;
+    // Who this withheld reader is in production: not this invocation. With
+    // strongly-consistent reads a single invocation cannot miss its own
+    // committed write, so the reader that misses one of these two step
+    // writes is a *concurrent second invocation* of the same run — the storm
+    // shape, which the sim cannot model directly (DESIGN §10). The withhold
+    // stands in for that reader; it is not a claim that a single-invocation
+    // read can be stale.
     sim.withholdNextEvent(1);
     await slow.release();
     await fast.release();

@@ -100,8 +100,8 @@ interface SimCreateParams {
   minted?: MintedEvent;
   /**
    * How many events the caller had loaded when it decided to make this write.
-   * Mirrors workflow-server's `stateEventCount`. The runtime does not send this
-   * today; see `SimStoreOptions.countGuard`.
+   * Mirrors workflow-server's `stateEventCount`, and since #3145 the runtime
+   * sends it; see `SimStoreOptions.countGuard`.
    */
   stateEventCount?: number;
 }
@@ -158,10 +158,10 @@ export interface SimStoreOptions {
    * snapshot?", which is the hole two concurrent writers actually produce.
    *
    * Requires `preconditionGuard` (it reuses `stateUpdatedAt` as the watermark to
-   * count against) and, in production, a client that sends `stateEventCount` —
-   * which `@workflow/core` does not do today, so the guard is dark there. The
-   * sim supplies the count on the caller's behalf; see
-   * `SimWorldOptions.countGuard`.
+   * count against) and a client that sends `stateEventCount` — which
+   * `@workflow/core` has done on every replay-context create since #3145. The
+   * sim uses that value when it is there and reconstructs one for the writes
+   * core does not count; see `SimWorldOptions.countGuard`.
    */
   countGuard?: boolean;
   /**
@@ -269,6 +269,13 @@ export interface SimStore extends Storage {
   withholdNextEvent(reads?: number): void;
   /** Every event ever appended, in log order. */
   allEvents(runId?: string): Event[];
+  /**
+   * The same events in the order they were *committed*, which is the order this
+   * array was appended to. Differs from `allEvents` exactly when a write was
+   * minted before another and committed after it — so the two together are what
+   * `log.monotonic-order` compares.
+   */
+  allEventsInCommitOrder(runId?: string): Event[];
   allRuns(): WorkflowRun[];
   allSteps(runId?: string): Step[];
   allHooks(runId?: string): Hook[];
@@ -1422,6 +1429,8 @@ export function createSimStore(options: SimStoreOptions): SimStore {
             a.createdAt.getTime() - b.createdAt.getTime() ||
             a.eventId.localeCompare(b.eventId)
         ),
+    allEventsInCommitOrder: (runId) =>
+      (runId ? eventsForRun(runId) : events).map(clone),
     allRuns: () => [...runs.values()].map(clone),
     allSteps: (runId) =>
       [...steps.values()].filter((s) => !runId || s.runId === runId).map(clone),

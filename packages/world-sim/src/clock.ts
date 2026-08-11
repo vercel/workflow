@@ -54,8 +54,12 @@ export function createVirtualClock(epochMs = DEFAULT_EPOCH_MS): VirtualClock {
       if (ms > current) current = ms;
     },
     advanceBy(ms) {
-      if (!Number.isFinite(ms) || ms < 0) {
-        throw new Error(`advanceBy expects a non-negative duration, got ${ms}`);
+      // Integer, not merely finite: the clock is what stamps ULID timestamps,
+      // and a fractional millisecond does not survive base32 encoding intact.
+      if (!Number.isInteger(ms) || ms < 0) {
+        throw new Error(
+          `advanceBy expects a non-negative whole number of milliseconds, got ${ms}`
+        );
       }
       current += ms;
     },

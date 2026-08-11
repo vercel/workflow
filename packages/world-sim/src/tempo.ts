@@ -115,7 +115,14 @@ export function createTempo(
           return;
         }
         settle = reject;
-        waiting.set(id, { label, reject });
+        // Indirect through `settle` rather than storing `reject`: `settle` is
+        // replaced below with the wrapper that also disposes the watch, and
+        // `abort()` walks this map. Storing the raw `reject` here would reject
+        // the script's promise while leaving the watch armed — and a watch that
+        // fires after an abort blocks its call on a promise whose `release` is
+        // no longer reachable from anywhere, which is a hang rather than a
+        // late wake-up (the global deadline is one-shot and already spent).
+        waiting.set(id, { label, reject: (err: Error) => settle?.(err) });
 
         const dispose = world.addWatch({
           match,
@@ -124,6 +131,10 @@ export function createTempo(
           // waiting or as its own timeout.
           options: { nth: 1, label },
           action: (ctx) => {
+            // Belt and braces with the disposing `settle` above: never block a
+            // call on behalf of a script that is no longer running to release
+            // it. Returning undefined lets the call through untouched.
+            if (abortedWith) return;
             reached = true;
             waiting.delete(id);
             dispose();
@@ -174,7 +185,17 @@ export function createTempo(
     const id = seq++;
 
     return new Promise<CallContext>((resolve, reject) => {
-      waiting.set(id, { label: name, reject });
+      // Same disposing-reject shape as `armHold`. A leaked watch here does not
+      // hang anything — this action resolves rather than blocking — but it
+      // still stops a writer for a wait nobody is listening to.
+      waiting.set(id, {
+        label: name,
+        reject: (err: Error) => {
+          dispose();
+          waiting.delete(id);
+          reject(err);
+        },
+      });
       const dispose = world.addWatch({
         match,
         options: { nth: 1, label: name },

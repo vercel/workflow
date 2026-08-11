@@ -291,9 +291,11 @@ about nothing interesting.
 
 ### The two guards
 
-Both are off by default and set per scenario (`ScenarioSpec.preconditionGuard` /
-`.countGuard`, which flow into `SimWorldOptions`), which is how a scenario can
-be run one flag apart from its neighbour.
+The fence is off by default and set per scenario
+(`ScenarioSpec.preconditionGuard`, which flows into `SimWorldOptions`), which is
+how a scenario can be run one flag apart from its neighbour. `countGuard`
+**follows the fence** unless a spec says otherwise, because that is what
+production does — see below.
 
 **`preconditionGuard`** models `WorldCapabilities.preconditionGuard`: reject a
 replay-context write whose `stateUpdatedAt` snapshot predates the newest
@@ -314,9 +316,34 @@ reconciles.
 
 **`countGuard`** adds the count half: how many events the log holds at or below
 `stateUpdatedAt`, compared against how many the caller loaded. It closes the
-hole the watermark cannot see, but it requires the caller to send
-`stateEventCount`, which no client does today — so it is dark in production and
-armed here only where a scenario asks for it.
+hole the watermark cannot see. It requires the caller to send
+`stateEventCount` — and since #3145 (`1471f252f`) `@workflow/core` sends it on
+every replay-context create, gated only by the `WORKFLOW_PRECONDITION_GUARD`
+kill-switch, with workflow-server's own count guard defaulting on. So both
+halves are armed together in production, and `countGuard` defaults here to
+whatever the fence is set to. A run with the fence on and the count off is a
+world that exists nowhere; the two scenarios that ask for it
+(`step-vs-step-fork-fenced`, `in-flight-before-decision`) do so explicitly,
+because isolating the watermark half is their whole subject.
+
+Where the runtime sends a count, the sim uses **that** value rather than its own
+reconstruction (`loadedCount()`), so the guard is tested against the number the
+real client computes; the reconstruction is the fallback for writes core does
+not count.
+
+**Two ways the sim's guards are stronger than production's.** Both are
+deliberate, and both mean a fenced green here is a claim about the *predicate*,
+not about production's *deployment* of it:
+
+- The server's retained-id window is a FIFO in **insertion (commit) order** —
+  its Lua script prunes with `table.remove(ids, 1)`, oldest-inserted — while
+  `pruneRunEventIndex` here sorts by id and drops the smallest, i.e. mint order.
+  The two differ exactly when commits happen out of mint order, which is these
+  scenarios' whole subject, and they differ in *when*
+  `countRecordedAtOrBelow` goes indeterminate once a run passes 16 events.
+- Production's watermark is best-effort: region-local Redis, failing open on
+  Redis errors, and blind to a webhook served in another region entirely (see
+  `outside-event-tracker.ts`'s own docs). The sim's is exact and in-process.
 
 **Overriding them for a whole run.** `RunScenarioOptions.preconditionGuard`
 (`pnpm sim --fence` / `--no-fence`) forces the fence on or off for every
@@ -600,30 +627,32 @@ finished — the log did not contain enough to rebuild the run.
 
 Measured on branch `sim-world`.
 
-**Unit tests** — 70 passing across 8 files (`pnpm --filter @workflow/world-sim test`).
+**Unit tests** — 72 passing across 8 files (`pnpm --filter @workflow/world-sim test`).
 
 **Scenarios** — `pnpm sim` in `workbench/sim-world`:
 
 ```
-41 scenario(s): 34 passed, 7 failed, 6 consistency violation(s)
+41 scenario(s): 35 passed, 6 failed, 6 consistency violation(s)
 ```
 
 And the same book against an append-only log (`pnpm sim --append-only`):
 
 ```
-41 scenario(s): 40 passed, 1 failed, 0 consistency violation(s)
+41 scenario(s): 41 passed, 0 failed, 0 consistency violation(s)
 ```
 
 Both numbers are the intended steady state; see "The six" below for which of
 the six violations that second line closes on the merits and which close
 because the correct answer itself changes.
 
-The seventh red, `unclaimed-payload-under-fork`, is a different animal and is
-counted apart from the six throughout: it trips a `sim.check`, not the replay
-invariant, and it is red in both worlds. Nothing is wrong with its log's
-*positions* — the runtime hands the workflow two resolutions in an order the
-log does not record, so live and replay run the same code, make the same
-mistake, and agree. Only the log disagreeing with itself catches it.
+There was a seventh red until recently, `unclaimed-payload-under-fork`, and it
+was a different animal: it tripped a `sim.check` rather than the replay
+invariant, and it was red in *both* worlds, because nothing was wrong with its
+log's positions — the runtime handed the workflow two resolutions in an order
+the log did not record, so live and replay ran the same code, made the same
+mistake, and agreed. Only the log disagreeing with itself caught it. #3406
+fixed the delivery-barrier ordering and it is now green in both worlds; the
+scenario stays as that fix's regression test.
 
 With the fence forced off (`pnpm sim --no-fence`), violations go to **8**
 mint-ordered and stay at **0** append-only — see §5.
@@ -677,9 +706,14 @@ So: **two** of the six have their fix demonstrated by a paired green scenario,
 Writing the three missing pairs is the obvious next increment.
 
 Note what the `fix` column does *not* mean. `countGuard` closing doc-29 is a
-statement about the World implementation, not about production: it requires the
-caller to send `stateEventCount`, which no client does today (§5). Four of the
-six therefore have no fix that is actually armed anywhere real.
+statement about the World implementation *and* about production's predicate:
+core has sent `stateEventCount` on every replay-context create since #3145 and
+the server's count guard defaults on (§5). What it is not is a statement about
+production's *deployment* of that predicate, which is region-local, fails open,
+and prunes its window in a different order than this store does — all three
+noted in §5. So the honest reading of the column is: four of the six have a fix
+whose predicate is armed in production today, and whether it fires there depends
+on conditions the sim does not model.
 
 **The append-only log closes all six, in two different senses — and the split
 is four and two, not three and three.** Four (doc-23, doc-25, doc-26, doc-27)
@@ -763,6 +797,18 @@ different ones.
 Two step bodies inside one delivery are genuinely concurrent and separately
 steerable, which is enough to reach the interesting corruption without a second
 invocation. That is why the limit has been acceptable so far.
+
+**The parallel hook-resume path is never exercised.** `resumeHook` picks
+parallel ("lazy") vs sequential from `world.capabilities.hookResumeDedup` (or a
+fresh server attestation). `world-local` declares it and `world-vercel` attests
+it per lookup, so **every real world takes the parallel path**, where the queue
+publish races the `hook_received` write and the consumer re-ensures the event
+through the durable `(runId, resumeId)` claim. The sim advertises neither the
+capability nor a `resumeId` dedupe, so every sim hook delivery takes the
+sequential path — meaning the hook-timing shapes in this book are the *legacy*
+shape, not the one production runs. Closing this needs `(runId, resumeId)`
+dedupe in the store plus the capability; it is the largest single gap for a
+package about hook races.
 
 **Also untested:** turbo / optimistic-inline-start, which skip replays and so
 give a stale branch somewhere to hide; and the fence's same-millisecond

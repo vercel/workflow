@@ -47,7 +47,11 @@ import type {
   ScenarioScript,
   TraceEntry,
 } from './types.js';
-import { createSimWorld, type SimWorld } from './world.js';
+import {
+  createSimWorld,
+  type SimWorld,
+  WORKFLOW_QUEUE_PREFIX,
+} from './world.js';
 
 /** Real-time grace period for a script to unwind after the scenario aborts it. */
 const SCRIPT_UNWIND_MS = 50;
@@ -129,9 +133,11 @@ export interface ScenarioSpec {
    * Also enforce the count half of the fence: reject a write whose caller loaded
    * fewer events at or below its watermark than the log now holds.
    *
-   * Off by default because that is production: workflow-server implements the
-   * check, but no client sends the count, so it never fires. Turning it on shows
-   * what the fence would catch if the count were wired through.
+   * Defaults to `preconditionGuard`, because that is production: since #3145
+   * `@workflow/core` sends `stateEventCount` on every replay-context create and
+   * workflow-server's count guard is on by default, so a fence is a fence with
+   * both halves. Set it to `false` alongside `preconditionGuard: true` to model
+   * the watermark alone.
    */
   countGuard?: boolean;
   /**
@@ -241,10 +247,15 @@ export async function runScenario(
   // One expectation, whichever world this is. Aliased rather than read inline
   // so the outcome check and the output check below cannot drift apart.
   const expected = spec.expect;
+  // Production arms both halves of the fence, so the count follows it unless a
+  // scenario says otherwise. Resolved once: reading `options ?? spec` twice
+  // would let a `--no-fence` run keep a count guard the fence no longer backs.
+  const preconditionGuard =
+    options.preconditionGuard ?? spec.preconditionGuard ?? false;
   const world = createSimWorld({
     clock,
-    preconditionGuard: options.preconditionGuard ?? spec.preconditionGuard,
-    countGuard: spec.countGuard,
+    preconditionGuard,
+    countGuard: spec.countGuard ?? preconditionGuard,
     appendOnlyLog,
   });
 
@@ -285,7 +296,7 @@ export async function runScenario(
   let uninstallClock = clock.install();
   const wallStart = performanceNow();
 
-  world.registerHandler('__wkf_workflow_', options.handler);
+  world.registerHandler(WORKFLOW_QUEUE_PREFIX, options.handler);
 
   const api: ScenarioApi = {
     world: world.snapshot,
@@ -551,6 +562,10 @@ export async function runScenario(
     ? checkInvariants({
         runId,
         events,
+        // Only meaningful when the world promises commit order is log order.
+        ...(appendOnlyLog
+          ? { eventsInCommitOrder: world.store.allEventsInCommitOrder(runId) }
+          : {}),
         runs: world.store.allRuns(),
         steps: world.store.allSteps(runId),
         waits: world.store.allWaits(runId),

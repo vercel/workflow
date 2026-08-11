@@ -10,8 +10,8 @@ name: World Sim
 # everyone learns to ignore, so the job publishes numbers instead of verdicts —
 # and the number to watch is in the comment, not the check mark.
 #
-#   mint-ordered (production):  33 passed, 6 failed, 6 violations
-#   append-only:                39 passed, 0 failed, 0 violations
+#   mint-ordered (production):  35 passed, 6 failed, 6 violations
+#   append-only:                41 passed, 0 failed, 0 violations
 #
 # A seventh red is a regression. Five means something got fixed and a scenario
 # is ready to retire. The append-only column is the measurement the pair exists
