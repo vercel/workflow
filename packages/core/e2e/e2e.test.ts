@@ -32,6 +32,7 @@ import {
   resumeHook,
 } from '../src/runtime';
 import {
+  assertUnsupportedTestsExist,
   cliCancel,
   cliHealthJson,
   cliInspectJson,
@@ -42,7 +43,9 @@ import {
   hasNestedStepStackFrames,
   hasStepSourceMaps,
   hasWorkflowSourceMaps,
+  isJsApp,
   isLocalDeployment,
+  requireFixture,
   setupRunTracking,
   setupWorld,
   trackRun,
@@ -109,9 +112,38 @@ function writeE2EMetadata() {
 /**
  * Shorthand for looking up workflow metadata from workflows/99_e2e.ts.
  * Usage: `const run = await start(await e2e('addTenWorkflow'), [123]);`
+ *
+ * Doubles as the conformance gate: an app that ships an `e2e-conformance.json`
+ * declaring which fixtures it implements skips the tests whose fixture it does
+ * not. Because every such test already names its fixture here, the gate needs no
+ * per-test annotation. No-op for the JS workbench apps, which ship no
+ * declaration.
  */
-const e2e = (fn: string) =>
-  getWorkflowMetadata(deploymentUrl, 'workflows/99_e2e.ts', fn);
+const e2e = (fn: string) => {
+  requireFixture(fn);
+  return getWorkflowMetadata(deploymentUrl, 'workflows/99_e2e.ts', fn);
+};
+
+/**
+ * Marks a test (or a whole describe) whose subject is the JavaScript
+ * implementation rather than the workflow protocol: JS value and class semantics
+ * (`this`, `.call()`, `WORKFLOW_SERIALIZE`, throwing a non-Error), the JS
+ * toolchain (source maps, `import.meta.url`, tsconfig path aliases), and
+ * JS-shaped platform APIs (`AbortSignal`), and the JS workflow-ID scheme
+ * (`workflow//./{path}//{fn}`). Reimplementing these in another language would
+ * mean testing something else, so a non-JS app skips them instead of carrying
+ * them as gaps.
+ *
+ * A handful of markers are weaker than that: health check, the webhook route, and
+ * app-provided API routes are protocol-level and *ought* to travel, but no other
+ * SDK serves them yet, so there is nothing to conform to. Those sites say so, and
+ * should move back to plain `test` as soon as a second implementation lands.
+ *
+ * Every test not marked here is in scope for cross-language conformance, and is
+ * gated only by `e2e-conformance.json`. No-op for the JS workbench apps.
+ */
+const testJsOnly = isJsApp() ? test : test.skip;
+const describeJsOnly = isJsApp() ? describe : describe.skip;
 
 const workflowWebhookUrl = (token: string) =>
   createWorkflowUrl(deploymentUrl, { type: 'webhook', token });
@@ -305,9 +337,15 @@ describe('e2e', () => {
   afterAll(() => {
     writeE2EMetadata();
     writeDiagnosticsSidecar();
+    // Last, so a stale exemption is reported without costing the diagnostics.
+    assertUnsupportedTestsExist();
   });
 
-  test.each([
+  // JS-only: asserts the JS workflow-ID scheme (`workflow//./{path}//{fn}`) and
+  // reaches for `98_duplicate_case.ts`, which exists to prove the compiler
+  // dedupes two files declaring the same function name. Neither travels: Python
+  // IDs are `workflow//{module}//{qualname}` and there is no compiler.
+  testJsOnly.each([
     {
       workflowFile: 'workflows/99_e2e.ts',
       workflowFn: 'addTenWorkflow',
@@ -782,16 +820,23 @@ describe('e2e', () => {
     }
   );
 
-  test('webhook route with invalid token', { timeout: 60_000 }, async () => {
-    const res = await fetch(workflowWebhookUrl('invalid'), {
-      method: 'POST',
-      headers: await getTrustedSourcesHeaders(),
-      body: JSON.stringify({}),
-    });
-    expect(res.status).toBe(404);
-    const body = await res.text();
-    expect(body).toBe('');
-  });
+  // JS-only for now: the webhook route is part of the app's HTTP surface, and an
+  // app that serves no webhook route at all would pass this by accident. Move it
+  // out of js-only once another language serves the route.
+  testJsOnly(
+    'webhook route with invalid token',
+    { timeout: 60_000 },
+    async () => {
+      const res = await fetch(workflowWebhookUrl('invalid'), {
+        method: 'POST',
+        headers: await getTrustedSourcesHeaders(),
+        body: JSON.stringify({}),
+      });
+      expect(res.status).toBe(404);
+      const body = await res.text();
+      expect(body).toBe('');
+    }
+  );
 
   test('sleepingWorkflow', { timeout: 60_000 }, async () => {
     const run = await start(await e2e('sleepingWorkflow'), []);
@@ -1225,7 +1270,7 @@ describe('e2e', () => {
   // ==================== ERROR HANDLING TESTS ====================
   describe('error handling', () => {
     describe('error propagation', () => {
-      describe('workflow errors', () => {
+      describeJsOnly('workflow errors', () => {
         test(
           'nested function calls preserve message and stack trace',
           { timeout: 60_000 },
@@ -1291,7 +1336,7 @@ describe('e2e', () => {
         );
       });
 
-      describe('step errors', () => {
+      describeJsOnly('step errors', () => {
         test(
           'basic step error preserves message and stack trace',
           { timeout: 60_000 },
@@ -1592,7 +1637,7 @@ describe('e2e', () => {
         }
       );
 
-      test(
+      testJsOnly(
         'workflow throw of a non-Error value round-trips verbatim as cause',
         { timeout: 60_000 },
         async () => {
@@ -1620,7 +1665,7 @@ describe('e2e', () => {
         }
       );
 
-      test(
+      testJsOnly(
         'step throw of a non-Error value preserves it as cause on the wrapping FatalError',
         { timeout: 60_000 },
         async () => {
@@ -1658,7 +1703,9 @@ describe('e2e', () => {
     });
 
     describe('not registered', () => {
-      test(
+      // JS-only: the workflowId is hand-built in the JS scheme, so on another
+      // language it names nothing rather than naming something missing.
+      testJsOnly(
         'WorkflowNotRegisteredError fails the run when workflow does not exist',
         { timeout: 60_000 },
         async () => {
@@ -1732,7 +1779,9 @@ describe('e2e', () => {
   });
   // ==================== END ERROR HANDLING TESTS ====================
 
-  test(
+  // JS-only: `/api/test-direct-step-call` is a route each JS workbench app
+  // hand-writes, not part of the workflow protocol.
+  testJsOnly(
     'stepDirectCallWorkflow - calling step functions directly outside workflow context',
     { timeout: 60_000 },
     async () => {
@@ -2435,7 +2484,7 @@ describe('e2e', () => {
     }
   );
 
-  test(
+  testJsOnly(
     'stepFunctionPassingWorkflow - step function references can be passed as arguments (without closure vars)',
     { timeout: 60_000 },
     async () => {
@@ -2470,7 +2519,7 @@ describe('e2e', () => {
     }
   );
 
-  test(
+  testJsOnly(
     'stepFunctionWithClosureWorkflow - step function with closure variables passed as argument',
     { timeout: 60_000 },
     async () => {
@@ -2495,7 +2544,7 @@ describe('e2e', () => {
     }
   );
 
-  test(
+  testJsOnly(
     'closureVariableWorkflow - nested step functions with closure variables',
     { timeout: 60_000 },
     async () => {
@@ -2554,7 +2603,7 @@ describe('e2e', () => {
     }
   );
 
-  test(
+  testJsOnly(
     'runClassSerializationWorkflow - Run instances serialize across workflow/step boundaries',
     { timeout: 120_000 },
     async () => {
@@ -2631,7 +2680,11 @@ describe('e2e', () => {
   // For production use on Vercel with Deployment Protection enabled, use the
   // queue-based `healthCheck(world, options)` function instead, which
   // bypasses protection by sending messages through the Queue infrastructure.
-  test.skipIf(!isLocalDeployment())(
+  // JS-only for now: health check is protocol-level and ought to travel, but no
+  // other SDK implements it yet — vercel-py defines `HealthCheckPayload` and
+  // nothing consumes it. Move all three health-check tests out of js-only
+  // together, once one does.
+  testJsOnly.skipIf(!isLocalDeployment())(
     'health check endpoint (HTTP) - workflow endpoint responds to __health query parameter',
     { timeout: 30_000 },
     async () => {
@@ -2666,7 +2719,7 @@ describe('e2e', () => {
     }
   );
 
-  test(
+  testJsOnly(
     'health check (queue-based) - workflow endpoint responds to health check messages',
     { timeout: 60_000 },
     async () => {
@@ -2687,7 +2740,7 @@ describe('e2e', () => {
     }
   );
 
-  test(
+  testJsOnly(
     'health check (CLI) - workflow health command reports healthy endpoints',
     { timeout: 60_000 },
     async () => {
@@ -2707,7 +2760,7 @@ describe('e2e', () => {
     }
   );
 
-  test(
+  testJsOnly(
     'pathsAliasWorkflow - TypeScript path aliases resolve correctly',
     { timeout: 60_000 },
     async () => {
@@ -2731,7 +2784,7 @@ describe('e2e', () => {
   // ==================== STATIC METHOD STEP/WORKFLOW TESTS ====================
   // Tests for static methods on classes with "use step" and "use workflow" directives.
 
-  test(
+  testJsOnly(
     'Calculator.calculate - static workflow method using static step methods from another class',
     { timeout: 60_000 },
     async () => {
@@ -2753,7 +2806,7 @@ describe('e2e', () => {
     }
   );
 
-  test(
+  testJsOnly(
     'AllInOneService.processNumber - static workflow method using sibling static step methods',
     { timeout: 60_000 },
     async () => {
@@ -2776,7 +2829,7 @@ describe('e2e', () => {
     }
   );
 
-  test(
+  testJsOnly(
     'ChainableService.processWithThis - static step methods using `this` to reference the class',
     { timeout: 60_000 },
     async () => {
@@ -2810,7 +2863,7 @@ describe('e2e', () => {
     }
   );
 
-  test(
+  testJsOnly(
     'thisSerializationWorkflow - step function invoked with .call() and .apply()',
     { timeout: 60_000 },
     async () => {
@@ -2833,7 +2886,7 @@ describe('e2e', () => {
     }
   );
 
-  test(
+  testJsOnly(
     'customSerializationWorkflow - custom class serialization with WORKFLOW_SERIALIZE/WORKFLOW_DESERIALIZE',
     { timeout: 60_000 },
     async () => {
@@ -2870,7 +2923,7 @@ describe('e2e', () => {
     }
   );
 
-  test(
+  testJsOnly(
     'instanceMethodStepWorkflow - instance methods with "use step" directive',
     { timeout: 60_000 },
     async () => {
@@ -2983,7 +3036,7 @@ describe('e2e', () => {
     }
   );
 
-  test(
+  testJsOnly(
     'crossContextSerdeWorkflow - classes defined in step code are deserializable in workflow context',
     { timeout: 60_000 },
     async () => {
@@ -3036,7 +3089,7 @@ describe('e2e', () => {
     }
   );
 
-  test(
+  testJsOnly(
     'errorSubclassRoundTripWorkflow - first-class Error subclasses survive every serialization boundary',
     { timeout: 60_000 },
     async () => {
@@ -3151,7 +3204,7 @@ describe('e2e', () => {
     }
   );
 
-  test(
+  testJsOnly(
     'stepFunctionAsStartArgWorkflow - step function reference passed as start() argument',
     { timeout: 120_000 },
     async () => {
@@ -3519,7 +3572,7 @@ describe('e2e', () => {
   // AbortController / AbortSignal
   // ==========================================================================
 
-  describe('AbortController', () => {
+  describeJsOnly('AbortController', () => {
     test(
       'abortTimeoutWorkflow: timeout cancels long-running step',
       { timeout: 60_000 },
@@ -4031,7 +4084,7 @@ describe('e2e', () => {
     }
   });
 
-  test(
+  testJsOnly(
     'importMetaUrlWorkflow - import.meta.url is available in step bundles',
     { timeout: 60_000 },
     async () => {
@@ -4112,7 +4165,7 @@ describe('e2e', () => {
     }
   );
 
-  test(
+  testJsOnly(
     'getterStepWorkflow - getter functions with "use step" directive',
     { timeout: 60_000 },
     async () => {

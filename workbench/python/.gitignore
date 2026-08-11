@@ -1,0 +1,6 @@
+.venv/
+__pycache__/
+.ruff_cache/
+.workflow-data/
+.vercel/
+.env*

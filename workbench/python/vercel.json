@@ -1,0 +1,16 @@
+{
+  "git": {
+    "deploymentEnabled": {
+      "changeset-release/main": false
+    }
+  },
+  "env": {
+    "WORKFLOW_PUBLIC_MANIFEST": "1"
+  },
+  "builds": [
+    {
+      "src": "pyproject.toml",
+      "use": "@vercel/python@6.55.1"
+    }
+  ]
+}

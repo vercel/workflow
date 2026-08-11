@@ -1,0 +1,84 @@
+[project]
+name = "workflow-example-python"
+version = "0.0.0"
+description = "Python conformance target for the @workflow/core e2e suite"
+requires-python = ">=3.10"
+dependencies = [
+  # The `encryption` extra is not optional here. On Vercel the run input is
+  # written by the TypeScript driver, and `@workflow/world-vercel` encrypts it
+  # whenever it can resolve a per-run key — which on a deployment it always
+  # can, with no opt-out. Reading that `encr` envelope needs AES-GCM, which
+  # vercel-py takes from `cryptography` behind this extra; without it every
+  # run fails at the first hydration of its input. `world-local` never
+  # encrypts, so this only bites the deployed lane.
+  "vercel[encryption]",
+  # A transitive dependency of `vercel`, declared here only so the git pin in
+  # `[tool.uv.sources]` below applies to it — a source is ignored for anything
+  # this project does not require directly. See the note there.
+  "vercel-queue",
+  # vercel-py carries uvicorn as a dev-only dependency, so declare it here.
+  "uvicorn>=0.30",
+]
+
+# Pinned to a vercel-py commit rather than a release: this app tracks the
+# Python SDK's `main` so the conformance suite reports on what is actually
+# being built. Bump `rev` deliberately, and re-run the suite when you do.
+#
+# `subdirectory` is required — the vercel-py repo root is a uv workspace whose
+# build backend raises, so only the leaf packages are installable on their own.
+#
+# Two entries, not one, and the second is what makes the first mean anything. A
+# `[tool.uv.sources]` entry applies only to a package this project requires
+# *directly*, so pinning `vercel` alone left every sibling — `vercel-queue`
+# included — resolving from PyPI at whatever the last release was. Naming
+# `vercel-queue` here (and in `dependencies` above) drags the whole vercel-py
+# workspace out of the checkout instead. That matters because the CBOR queue
+# transport spans both: `vercel` attaches the codec to a `Topic` /
+# `TopicPattern` (vercel-py#265), and those types only learned to carry one in
+# `vercel-queue` (vercel-py#266), so a `vercel`-only bump raises at import.
+#
+# To bump the rev:
+#
+#   rm uv.lock && uv lock --no-config   # twice — see below
+#   grep -c 'source = { git' uv.lock    # must be 8
+#
+# Three traps, each of which fails quietly:
+#
+#   - Relocking *in place* keeps the old lock as preferences, and the siblings
+#     no source names directly fall back to PyPI at unchanged version numbers.
+#     Hence the `rm`.
+#   - The first relock after a bump can still yield two git sources, because
+#     uv has not finished populating its cache with the new checkout and cannot
+#     yet see the siblings as workspace members. Do it once more — with another
+#     `rm` first, since `uv lock` on a self-consistent lock is a no-op
+#     ("Resolved 34 packages in 5ms") and will leave the bad lock in place.
+#   - `--no-config` keeps a personal `~/.config/uv/uv.toml` (an `exclude-newer`,
+#     say) from being recorded as an `[options]` block that CI and the Vercel
+#     builder then reject under `--locked`. `uv run` re-locks too, which is why
+#     the `dev` script passes it as well.
+[tool.uv.sources]
+vercel = { git = "https://github.com/vercel/vercel-py", rev = "02173de39c4146611176fd9e8197a85f9f2d7124", subdirectory = "src/vercel" }
+vercel-queue = { git = "https://github.com/vercel/vercel-py", rev = "02173de39c4146611176fd9e8197a85f9f2d7124", subdirectory = "src/vercel-queue" }
+
+# How `@vercel/python` builds this app. Reached only because `vercel.json`
+# declares `pyproject.toml` as the build src, which puts the builder in
+# "declared-only" mode: filename-based entrypoint detection never runs, and
+# `[[tool.vercel.workflows]]` is honoured. Without that src the two keys below
+# are silently ignored — a bare ASGI app is not a recognised Python framework,
+# and the builder only attaches workflows to frameworks or declared builds.
+[tool.vercel]
+# The web function. It serves `manifest.json`, which is the only route the e2e
+# driver calls over HTTP on Vercel — runs are delivered through the queue, not
+# through `/flow`.
+entrypoint = "app:app"
+
+# The workflow function. The builder imports this module at build time, reads
+# `vercel.queue.get_subscriptions()`, and emits one `queue/v2beta` trigger per
+# subscription onto a generated `vercel.queue.asgi_app()` handler. Importing
+# `app` is what registers them, because `app.py` calls `workflow_entrypoint()`
+# at import.
+#
+# Only one entry is allowed: every workflow consumer receives every `__wkf_*`
+# message, so a second one would fail on runs registered only in the first.
+[[tool.vercel.workflows]]
+entrypoint = "app:registry"
