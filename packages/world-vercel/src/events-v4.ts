@@ -245,18 +245,18 @@ interface CreateEventV4InputBase {
    */
   stateCursor?: string;
   /**
-   * Highest event slot the writer had loaded, i.e. the length of its loaded
-   * log under slot identity. Named `maxSlot` on the wire because the meta
-   * already carries an unrelated telemetry `eventCount`.
+   * The event slot this write claims under slot identity: one above the highest
+   * the writer had loaded, plus however many slots the writes issued before it
+   * off the same log already took.
    *
    * Supersedes the `stateUpdatedAt`/`stateEventCount`/`stateCursor` triple for
    * slot-identity runs: with dense positions one integer says everything the
-   * watermark approximated. The write is bound to the slot above it, so the
-   * insert that occupies that slot is also the fence: a position another writer
-   * already took answers 412 with the events this writer had not seen, rather
-   * than committing somewhere else. Older servers ignore it.
+   * watermark approximated. The write commits on this slot or not at all, so the
+   * insert that occupies it is also the fence: a slot another writer already took
+   * answers 412 with the events this writer had not seen, rather than committing
+   * somewhere else. Older backends ignore it and number the write themselves.
    */
-  maxSlot?: number;
+  slot?: number;
   /** Number of consecutive replay divergences resolved by this write. */
   replayDivergenceCount?: number;
   /** Content digest of the serialized resume payload. Forwarded alongside
@@ -463,7 +463,7 @@ function buildPostFrameMeta(
     meta.stateEventCount = input.stateEventCount;
   }
   if (input.stateCursor !== undefined) meta.stateCursor = input.stateCursor;
-  if (input.maxSlot !== undefined) meta.maxSlot = input.maxSlot;
+  if (input.slot !== undefined) meta.slot = input.slot;
   if (input.replayDivergenceCount !== undefined) {
     meta.replayDivergenceCount = input.replayDivergenceCount;
   }
