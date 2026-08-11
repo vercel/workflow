@@ -52,7 +52,13 @@ import {
   getMaxInlineSteps,
 } from './constants.js';
 import { getPortLazy } from './get-port-lazy.js';
-import { getWorkflowQueueName, queueMessage } from './helpers.js';
+import {
+  getWorkflowQueueName,
+  isPreconditionGuardEnabled,
+  latestEventStateUpdatedAt,
+  type PreconditionSnapshotParams,
+  queueMessage,
+} from './helpers.js';
 import { quickjsWasiVersion } from './quickjs-assets.generated.js';
 import {
   BASELINE_BUNDLE_FILENAME,
@@ -240,6 +246,15 @@ async function dispatchPendingOps(params: {
    * queues.
    */
   nextTraceCarrier: () => Promise<Record<string, string>>;
+  /**
+   * Optimistic-concurrency snapshot describing the event log this batch of
+   * writes was derived from (see `preconditionSnapshotParams`). Attached to
+   * every event create so a supporting World rejects writes from a stale
+   * view with 412 — the rejection propagates to runtime.ts, which restarts
+   * the replay over a corrected log. Mirrors the node:vm engine's
+   * `createGuarded` in suspension-handler.ts.
+   */
+  precondition?: PreconditionSnapshotParams;
   wfdiag: (checkpoint: string, fields: Record<string, unknown>) => void;
 }): Promise<{
   createdAttributeEvent: boolean;
@@ -253,6 +268,7 @@ async function dispatchPendingOps(params: {
     pendingOperations,
     namespace,
     nextTraceCarrier,
+    precondition,
   } = params;
   const skipStepCreation = params.skipStepCreation;
   const wfdiag = params.wfdiag;
@@ -296,26 +312,30 @@ async function dispatchPendingOps(params: {
           typeof hook.metadata === 'undefined'
             ? undefined
             : await encryptSerializedData(hook.metadata, encryptionKey);
-        const result = await world.events.create(runId, {
-          eventType: 'hook_created',
-          specVersion: SPEC_VERSION_CURRENT,
-          correlationId: hook.correlationId,
-          eventData: {
-            token: hook.token,
-            tokenRetentionUntil:
-              hook.tokenRetentionUntil === undefined
-                ? undefined
-                : new Date(hook.tokenRetentionUntil),
-            metadata: encryptedMetadata,
-            // Always include isWebhook explicitly. Worlds default it to
-            // `true` when absent, which would break the public webhook
-            // endpoint's 404 guard for hooks created via createHook().
-            isWebhook: hook.isWebhook,
-            // System hooks (AbortController) are exempt from user
-            // token namespace conflict checks.
-            ...(hook.isSystem ? { isSystem: true } : {}),
-          } as any,
-        });
+        const result = await world.events.create(
+          runId,
+          {
+            eventType: 'hook_created',
+            specVersion: SPEC_VERSION_CURRENT,
+            correlationId: hook.correlationId,
+            eventData: {
+              token: hook.token,
+              tokenRetentionUntil:
+                hook.tokenRetentionUntil === undefined
+                  ? undefined
+                  : new Date(hook.tokenRetentionUntil),
+              metadata: encryptedMetadata,
+              // Always include isWebhook explicitly. Worlds default it to
+              // `true` when absent, which would break the public webhook
+              // endpoint's 404 guard for hooks created via createHook().
+              isWebhook: hook.isWebhook,
+              // System hooks (AbortController) are exempt from user
+              // token namespace conflict checks.
+              ...(hook.isSystem ? { isSystem: true } : {}),
+            } as any,
+          },
+          precondition
+        );
 
         // If storage detected a real token conflict with another
         // workflow's hook, re-queue so the workflow handler can
@@ -356,15 +376,19 @@ async function dispatchPendingOps(params: {
             )) as Uint8Array)
           : undefined;
       try {
-        await world.events.create(runId, {
-          eventType: 'hook_received',
-          specVersion: SPEC_VERSION_CURRENT,
-          correlationId: hook.correlationId,
-          eventData: {
-            token: hook.token,
-            payload: abortPayload,
-          } as any,
-        });
+        await world.events.create(
+          runId,
+          {
+            eventType: 'hook_received',
+            specVersion: SPEC_VERSION_CURRENT,
+            correlationId: hook.correlationId,
+            eventData: {
+              token: hook.token,
+              payload: abortPayload,
+            } as any,
+          },
+          precondition
+        );
       } catch (err) {
         if (!EntityConflictError.is(err)) throw err;
       }
@@ -398,11 +422,15 @@ async function dispatchPendingOps(params: {
     op: PendingHookDispose
   ): Promise<void> => {
     try {
-      await world.events.create(runId, {
-        eventType: 'hook_disposed',
-        specVersion: SPEC_VERSION_CURRENT,
-        correlationId: op.correlationId,
-      });
+      await world.events.create(
+        runId,
+        {
+          eventType: 'hook_disposed',
+          specVersion: SPEC_VERSION_CURRENT,
+          correlationId: op.correlationId,
+        },
+        precondition
+      );
     } catch (err) {
       if (EntityConflictError.is(err)) return;
       // Disposing a hook whose entity no longer (or never) exists is an
@@ -478,15 +506,19 @@ async function dispatchPendingOps(params: {
           // on the host side — matching what
           // `dehydrateStepArguments` does in the node:vm engine.
           try {
-            await world.events.create(runId, {
-              eventType: 'step_created',
-              specVersion: SPEC_VERSION_CURRENT,
-              correlationId: step.correlationId,
-              eventData: {
-                stepName: step.stepId,
-                input: await encryptSerializedData(step.input, encryptionKey),
+            await world.events.create(
+              runId,
+              {
+                eventType: 'step_created',
+                specVersion: SPEC_VERSION_CURRENT,
+                correlationId: step.correlationId,
+                eventData: {
+                  stepName: step.stepId,
+                  input: await encryptSerializedData(step.input, encryptionKey),
+                },
               },
-            });
+              precondition
+            );
           } catch (err) {
             if (EntityConflictError.is(err)) return;
             throw err;
@@ -502,18 +534,22 @@ async function dispatchPendingOps(params: {
       opsPromises.push(
         (async () => {
           try {
-            await world.events.create(runId, {
-              eventType: 'attr_set',
-              specVersion: SPEC_VERSION_CURRENT,
-              correlationId: attr.correlationId,
-              eventData: {
-                changes: attr.changes,
-                writer: { type: 'workflow' },
-                ...(attr.allowReservedAttributes
-                  ? { allowReservedAttributes: true }
-                  : {}),
-              } as any,
-            });
+            await world.events.create(
+              runId,
+              {
+                eventType: 'attr_set',
+                specVersion: SPEC_VERSION_CURRENT,
+                correlationId: attr.correlationId,
+                eventData: {
+                  changes: attr.changes,
+                  writer: { type: 'workflow' },
+                  ...(attr.allowReservedAttributes
+                    ? { allowReservedAttributes: true }
+                    : {}),
+                } as any,
+              },
+              precondition
+            );
             createdAttributeEvent = true;
           } catch (err) {
             if (EntityConflictError.is(err)) {
@@ -531,14 +567,18 @@ async function dispatchPendingOps(params: {
       opsPromises.push(
         (async () => {
           try {
-            await world.events.create(runId, {
-              eventType: 'wait_created',
-              specVersion: SPEC_VERSION_CURRENT,
-              correlationId: wait.correlationId,
-              eventData: {
-                resumeAt: new Date(wait.resumeAt),
+            await world.events.create(
+              runId,
+              {
+                eventType: 'wait_created',
+                specVersion: SPEC_VERSION_CURRENT,
+                correlationId: wait.correlationId,
+                eventData: {
+                  resumeAt: new Date(wait.resumeAt),
+                },
               },
-            });
+              precondition
+            );
           } catch (err) {
             if (EntityConflictError.is(err)) return;
             throw err;
@@ -560,15 +600,16 @@ async function dispatchPendingOps(params: {
  * This replaces the `node:vm` replay path (runWorkflow + EventsConsumer)
  * with a QuickJS VM invocation that performs the same full event replay.
  *
- * KNOWN GAP — precondition guard: unlike the node:vm path, no event write
- * in this file participates in the optimistic-concurrency precondition
- * guard (`withPreconditionRetry` + `stateUpdatedAtForCreate`), which
- * protects a writer holding a stale event-log snapshot from clobbering a
- * concurrent one. The engine currently relies on per-(runId,
- * correlationId) event uniqueness (EntityConflictError dedup) alone. This
- * is a deliberate simplification while the engine is experimental — wiring
- * the guard is tracked follow-up work; anyone adding new write paths here
- * should not assume parity with the node engine on this axis.
+ * Precondition guard: every replay-context event write in this file carries
+ * the optimistic-concurrency snapshot (`preconditionSnapshotParams`
+ * semantics — see the view tracker in `runWorkflowWithQuickJS`), so a
+ * supporting World rejects writes derived from a stale event-log view with
+ * 412. The rejection propagates out of this entrypoint to the replay loop's
+ * catch in runtime.ts, which restarts the replay over a corrected log —
+ * the same recovery the node:vm engine uses. `run_failed` is deliberately
+ * unfenced, matching the node engine's asymmetry (a terminal failure must
+ * be recordable even from a stale view). When adding a new write path
+ * here, thread the snapshot through it.
  */
 export async function runWorkflowWithQuickJS(params: {
   workflowCode: string;
@@ -828,6 +869,7 @@ export async function runWorkflowWithQuickJS(params: {
   // snapshot's eventsCursor so restores fetch only the delta.
   let lastEventsCursor: string | null =
     existingSnapshot?.metadata.eventsCursor ?? null;
+  let initialFetchCursor: string | null = null;
   const usePreloaded =
     !existingSnapshot &&
     ((preloadedEventsComplete === true &&
@@ -863,7 +905,86 @@ export async function runWorkflowWithQuickJS(params: {
 
     events = allEvents;
     if (cursor) lastEventsCursor = cursor;
+    initialFetchCursor = cursor;
   }
+
+  // ---- Optimistic-concurrency view tracker ----
+  // The precondition snapshot attached to every replay-context write below
+  // describes the event-log view this invocation derived the write from:
+  // the maximum event-id ULID time over every event it has observed, the
+  // count of those events, and the listing cursor. Self-written events are
+  // observed either inline (when the create returns the event and it is
+  // spliced into the local log) or on read-back via fetchUnseenEvents —
+  // watermark and count always describe the same consistent set, which is
+  // the invariant the backend's marker/count comparison relies on. See
+  // `preconditionSnapshotParams` in helpers.ts for the field semantics.
+  //
+  // Also derives the open-hook state used to suppress optimistic inline
+  // starts (see the executeStep call in the inline loop): while a hook is
+  // open, an out-of-band hook_received can make this view stale at any
+  // moment, so a fenced claim must settle before the step body runs.
+  // (On a snapshot restore this set misses pre-snapshot hooks — the
+  // pendingOperations check at the call site covers those, since the
+  // restored VM's pending list includes every live hook.)
+  let viewMaxEvent: Event | undefined;
+  // With a restored snapshot `events` is only the delta after the snapshot
+  // cursor, so the pre-snapshot count is seeded from the snapshot metadata:
+  // the delta fetch only returns ids above the cursor, so the delta's
+  // maximum id is the FULL log's maximum and metadata.eventCount + delta
+  // still describes one consistent set. Old snapshots without an
+  // eventCount can't be described — fail open (send no snapshot) rather
+  // than manufacture false 412s. (A restore with an EMPTY delta also fails
+  // open: no observed event, no watermark.)
+  let viewEventCount = existingSnapshot?.metadata.eventCount ?? 0;
+  let viewIncomplete =
+    existingSnapshot != null &&
+    existingSnapshot.metadata.eventCount === undefined;
+  let viewCursor: string | null = initialFetchCursor;
+  const openHookCids = new Set<string>();
+  const observeView = (observed: Event[], cursor?: string | null): void => {
+    for (const e of observed) {
+      if (!e.eventId) continue;
+      viewEventCount++;
+      if (viewMaxEvent === undefined || e.eventId > viewMaxEvent.eventId) {
+        viewMaxEvent = e;
+      }
+      if (e.correlationId) {
+        if (e.eventType === 'hook_created') {
+          openHookCids.add(e.correlationId);
+        } else if (e.eventType === 'hook_disposed') {
+          openHookCids.delete(e.correlationId);
+        }
+      }
+    }
+    if (cursor) viewCursor = cursor;
+  };
+  const resetView = (): void => {
+    viewMaxEvent = undefined;
+    viewEventCount = 0;
+    viewIncomplete = false;
+    viewCursor = null;
+    openHookCids.clear();
+  };
+  observeView(events);
+  const preconditionSnapshot = (): PreconditionSnapshotParams => {
+    if (
+      !isPreconditionGuardEnabled() ||
+      viewIncomplete ||
+      viewMaxEvent === undefined
+    ) {
+      return {};
+    }
+    const stateUpdatedAt = latestEventStateUpdatedAt([viewMaxEvent]);
+    if (stateUpdatedAt === undefined) return {};
+    return {
+      stateUpdatedAt,
+      stateEventCount: viewEventCount,
+      ...(viewCursor ? { stateCursor: viewCursor } : {}),
+    };
+  };
+  const guardEnforced =
+    isPreconditionGuardEnabled() &&
+    world.capabilities?.preconditionGuard === true;
 
   // Event-limit guard: fail a runaway run once its log reaches the
   // server-supplied ceiling. With a restored snapshot `events` is only
@@ -925,12 +1046,21 @@ export async function runWorkflowWithQuickJS(params: {
       const resumeAt = eventData?.resumeAt;
       if (resumeAt && now >= new Date(resumeAt as string).getTime()) {
         try {
-          const result = await world.events.create(runId, {
-            eventType: 'wait_completed',
-            specVersion: SPEC_VERSION_CURRENT,
-            correlationId: event.correlationId,
-          });
-          if (result.event) events.push(result.event);
+          const result = await world.events.create(
+            runId,
+            {
+              eventType: 'wait_completed',
+              specVersion: SPEC_VERSION_CURRENT,
+              correlationId: event.correlationId,
+            },
+            preconditionSnapshot()
+          );
+          if (result.event) {
+            events.push(result.event);
+            // Spliced into the local log ahead of the seen-set init, so a
+            // read-back never observes it — count it into the view here.
+            observeView([result.event]);
+          }
         } catch (err) {
           if (EntityConflictError.is(err)) continue;
           throw err;
@@ -1005,6 +1135,11 @@ export async function runWorkflowWithQuickJS(params: {
     }
     events = allEvents;
     if (cursor) lastEventsCursor = cursor;
+    // The refetched log is the WHOLE run — rebuild the precondition view
+    // from it (the snapshot-seeded count no longer describes anything not
+    // already in `events`).
+    resetView();
+    observeView(events, cursor);
     session = await startQuickJSWorkflow({
       workflowCode: workflowCodeForVM,
       workflowId,
@@ -1190,6 +1325,7 @@ export async function runWorkflowWithQuickJS(params: {
       hasMore = response.data.length > 0 && response.cursor != null;
     }
     observeEventsForOwnership(unseen);
+    observeView(unseen, cursor);
     return unseen;
   };
 
@@ -1258,6 +1394,7 @@ export async function runWorkflowWithQuickJS(params: {
         nextTraceCarrier,
         pendingOperations: opsToDispatch,
         skipStepCreation: inlineClaimCids,
+        precondition: preconditionSnapshot(),
         wfdiag,
       });
       if (
@@ -1303,11 +1440,15 @@ export async function runWorkflowWithQuickJS(params: {
         waitCompletePromises.push(
           (async () => {
             try {
-              await world.events.create(runId, {
-                eventType: 'wait_completed',
-                specVersion: SPEC_VERSION_CURRENT,
-                correlationId: wait.correlationId,
-              });
+              await world.events.create(
+                runId,
+                {
+                  eventType: 'wait_completed',
+                  specVersion: SPEC_VERSION_CURRENT,
+                  correlationId: wait.correlationId,
+                },
+                preconditionSnapshot()
+              );
             } catch (err) {
               if (EntityConflictError.is(err)) return;
               throw err;
@@ -1499,6 +1640,19 @@ export async function runWorkflowWithQuickJS(params: {
       // own, matching the node:vm engine, where a long sequential
       // workflow likewise runs step-by-step until the platform reclaims
       // the invocation and a redelivery resumes from the log.
+      // Guard the inline claims: the lazy step_started (which creates the
+      // step) carries the same view snapshot as the durable writes above,
+      // so a stale replay can never commit a step body's result — the
+      // node engine's `inlineClaimSnapshot`. While a hook is open, an
+      // out-of-band hook_received can stale this view at any moment;
+      // on guard-enforcing Worlds, await the claim before running the
+      // body so a 412-fenced step never executes user code (mirrors the
+      // node engine's suppressOptimisticStart).
+      const inlineClaimSnapshot = preconditionSnapshot();
+      const suppressOptimisticStart =
+        guardEnforced &&
+        (openHookCids.size > 0 ||
+          pendingOperations.some((op) => op.type === 'hook'));
       budget.pause();
       let outcomes: StepExecutionResult[];
       try {
@@ -1534,6 +1688,10 @@ export async function runWorkflowWithQuickJS(params: {
                   // A lazy step is brand-new by construction — first
                   // attempt.
                   authoritativeAttempt: 1,
+                  // Fence the claim against stale views — see
+                  // inlineClaimSnapshot above.
+                  preconditionSnapshot: inlineClaimSnapshot,
+                  suppressOptimisticStart,
                 }))()
             )
           )
@@ -1762,6 +1920,7 @@ export async function runWorkflowWithQuickJS(params: {
           namespace,
           nextTraceCarrier,
           pendingOperations: result.completed.drainOperations,
+          precondition: preconditionSnapshot(),
           wfdiag,
         });
       } catch (err) {
@@ -1779,16 +1938,24 @@ export async function runWorkflowWithQuickJS(params: {
     // events have the same `encr`-prefixed payload shape that the node:vm
     // engine's `dehydrateWorkflowReturnValue` produces.
     try {
-      await world.events.create(runId, {
-        eventType: 'run_completed',
-        specVersion: SPEC_VERSION_CURRENT,
-        eventData: {
-          output: await encryptSerializedData(
-            result.completed.result,
-            encryptionKey
-          ),
+      await world.events.create(
+        runId,
+        {
+          eventType: 'run_completed',
+          specVersion: SPEC_VERSION_CURRENT,
+          eventData: {
+            output: await encryptSerializedData(
+              result.completed.result,
+              encryptionKey
+            ),
+          },
         },
-      });
+        // Fenced: a completion derived from a stale view must not land —
+        // the 412 propagates to runtime.ts, which restarts the replay
+        // over the corrected log (same as the node engine's guarded
+        // run_completed).
+        preconditionSnapshot()
+      );
       wfdiag('exit_completed', { result: 'run_completed_written' });
     } catch (err) {
       if (EntityConflictError.is(err) || RunExpiredError.is(err)) {
@@ -2005,6 +2172,7 @@ export async function runWorkflowWithQuickJS(params: {
           namespace,
           nextTraceCarrier,
           pendingOperations: result.failed.drainOperations,
+          precondition: preconditionSnapshot(),
           wfdiag,
         });
       } catch (err) {
@@ -2129,6 +2297,9 @@ export async function runWorkflowWithQuickJS(params: {
       }
     }
     try {
+      // Deliberately UNFENCED (no precondition snapshot), matching the
+      // node engine's asymmetry: a terminal run_failed must be recordable
+      // even from a stale view, or a failing run could never terminate.
       await world.events.create(runId, {
         eventType: 'run_failed',
         specVersion: SPEC_VERSION_CURRENT,
