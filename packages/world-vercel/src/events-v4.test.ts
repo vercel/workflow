@@ -60,6 +60,31 @@ const runningRun = {
  * (`RunExpiredError.is`, `TooEarlyError.is`, the 404 → HookNotFoundError
  * translation in events.ts) for core retry/terminal-state control flow.
  */
+/**
+ * Reads a request body as the mock hands it to a reply callback.
+ *
+ * undici 8's MockAgent consumes the outgoing body to drive the handler's
+ * body-sent hooks, then substitutes a replayable async iterable for it; undici 7
+ * passed whatever `fetch` dispatched (a `Uint8Array`) straight through. Reply
+ * callbacks therefore have to drain it, which makes them async.
+ */
+async function mockBodyBytes(rawBody: unknown): Promise<Uint8Array> {
+  if (rawBody == null) return new Uint8Array();
+  if (typeof rawBody === 'string') return new TextEncoder().encode(rawBody);
+  if (rawBody instanceof Uint8Array) return rawBody;
+  if (
+    typeof (rawBody as AsyncIterable<Uint8Array>)[Symbol.asyncIterator] ===
+    'function'
+  ) {
+    const chunks: Buffer[] = [];
+    for await (const chunk of rawBody as AsyncIterable<Uint8Array>) {
+      chunks.push(Buffer.from(chunk));
+    }
+    return new Uint8Array(Buffer.concat(chunks));
+  }
+  return new Uint8Array(rawBody as ArrayBufferLike);
+}
+
 describe('throwForErrorResponse', () => {
   const call = (
     status: number,
@@ -942,8 +967,8 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
       })
       .reply(
         200,
-        (opts: { body?: unknown }) => {
-          const bytes = new Uint8Array(opts.body as ArrayBufferLike);
+        async (opts: { body?: unknown }) => {
+          const bytes = await mockBodyBytes(opts.body);
           const metaLen = new DataView(
             bytes.buffer,
             bytes.byteOffset,
@@ -1237,8 +1262,8 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
       })
       .reply(
         200,
-        (opts: { body?: unknown }) => {
-          const bytes = new Uint8Array(opts.body as ArrayBufferLike);
+        async (opts: { body?: unknown }) => {
+          const bytes = await mockBodyBytes(opts.body);
           const metaLen = new DataView(
             bytes.buffer,
             bytes.byteOffset,
@@ -1295,8 +1320,8 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
       })
       .reply(
         200,
-        (opts: { body?: unknown }) => {
-          const bytes = new Uint8Array(opts.body as ArrayBufferLike);
+        async (opts: { body?: unknown }) => {
+          const bytes = await mockBodyBytes(opts.body);
           const metaLen = new DataView(
             bytes.buffer,
             bytes.byteOffset,
@@ -1468,8 +1493,8 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
       })
       .reply(
         200,
-        (opts: { body?: unknown }) => {
-          const bytes = new Uint8Array(opts.body as ArrayBufferLike);
+        async (opts: { body?: unknown }) => {
+          const bytes = await mockBodyBytes(opts.body);
           const metaLen = new DataView(
             bytes.buffer,
             bytes.byteOffset,
@@ -1526,8 +1551,8 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
       })
       .reply(
         200,
-        (opts: { body?: unknown }) => {
-          const bytes = new Uint8Array(opts.body as ArrayBufferLike);
+        async (opts: { body?: unknown }) => {
+          const bytes = await mockBodyBytes(opts.body);
           const metaLen = new DataView(
             bytes.buffer,
             bytes.byteOffset,
@@ -1585,11 +1610,10 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
  */
 describe('v4 POST frame meta forwards every field the splitter produces', () => {
   /** Decode `[u32_be meta_len][cbor_meta][u32_be body_len][body]`. */
-  function decodeFrameMeta(body: unknown): Record<string, unknown> {
-    const bytes =
-      body instanceof Uint8Array
-        ? body
-        : new Uint8Array(body as ArrayBufferLike);
+  async function decodeFrameMeta(
+    body: unknown
+  ): Promise<Record<string, unknown>> {
+    const bytes = await mockBodyBytes(body);
     const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     const metaLen = view.getUint32(0, false);
     return decode(bytes.subarray(4, 4 + metaLen)) as Record<string, unknown>;
@@ -1612,8 +1636,8 @@ describe('v4 POST frame meta forwards every field the splitter produces', () => 
       })
       .reply(
         200,
-        (opts: { body?: unknown }) => {
-          captured = decodeFrameMeta(opts.body);
+        async (opts: { body?: unknown }) => {
+          captured = await decodeFrameMeta(opts.body);
           if (data.eventType !== 'run_started') {
             return createEventBody(data, { run: runningRun });
           }

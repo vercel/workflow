@@ -6,6 +6,31 @@ import { WORKFLOW_SERVER_URL_OVERRIDE } from './utils.js';
 
 const ORIGIN = WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
 
+/**
+ * Reads a request body as the mock hands it to a reply callback.
+ *
+ * undici 8's MockAgent consumes the outgoing body to drive the handler's
+ * body-sent hooks, then substitutes a replayable async iterable for it; undici 7
+ * passed whatever `fetch` dispatched (a `Uint8Array`) straight through. Reply
+ * callbacks therefore have to drain it, which makes them async.
+ */
+async function mockBodyBytes(rawBody: unknown): Promise<Uint8Array> {
+  if (rawBody == null) return new Uint8Array();
+  if (typeof rawBody === 'string') return new TextEncoder().encode(rawBody);
+  if (rawBody instanceof Uint8Array) return rawBody;
+  if (
+    typeof (rawBody as AsyncIterable<Uint8Array>)[Symbol.asyncIterator] ===
+    'function'
+  ) {
+    const chunks: Buffer[] = [];
+    for await (const chunk of rawBody as AsyncIterable<Uint8Array>) {
+      chunks.push(Buffer.from(chunk));
+    }
+    return new Uint8Array(Buffer.concat(chunks));
+  }
+  return new Uint8Array(rawBody as ArrayBufferLike);
+}
+
 describe('getWorkflowRuns', () => {
   it('delegates to getWorkflowRun for unique IDs, preserves input order, and returns null for missing runs', async () => {
     const agent = new MockAgent();
@@ -62,9 +87,9 @@ describe('cancelWorkflowRuns', () => {
       .intercept({ path: '/api/v4/runs/cancel', method: 'POST' })
       .reply(
         200,
-        (opts: { body?: unknown }) => {
+        async (opts: { body?: unknown }) => {
           requestCount++;
-          capturedBody = decode(new Uint8Array(opts.body as ArrayBufferLike));
+          capturedBody = decode(await mockBodyBytes(opts.body));
           return encode({
             summary: {
               requested: 2,

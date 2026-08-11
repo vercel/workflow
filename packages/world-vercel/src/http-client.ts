@@ -1,4 +1,4 @@
-import { Agent, type Dispatcher, RetryAgent, type RetryHandler } from 'undici';
+import { Agent, Dispatcher, RetryAgent, type RetryHandler } from 'undici';
 import type { APIConfig } from './utils.js';
 
 let _dispatcher: RetryAgent | undefined;
@@ -15,21 +15,6 @@ const BASE_AGENT_OPTIONS = {
   connections: 8,
   keepAliveTimeout: 10_000,
 };
-
-/**
- * In-flight H2 streams allowed per connection. Matches undici's
- * `maxConcurrentStreams` default (100), which is the real ceiling once the
- * server's SETTINGS_MAX_CONCURRENT_STREAMS is known — so this only has to be
- * large enough not to be the binding constraint. The Vercel edge advertises
- * SETTINGS_MAX_CONCURRENT_STREAMS 160, so it isn't.
- *
- * Note that undici's `maxConcurrentStreams` *option* is not this gate: it only
- * seeds `peerMaxConcurrentStreams` at connect time and is then overwritten by
- * the server's SETTINGS. Raising it is inert — measured at ±1.6% (inside a 6.1%
- * noise floor) across every workload shape. `pipelining` is the only knob that
- * actually gates in-flight streams; see EVENTS_AGENT_OPTIONS.
- */
-const H2_MAX_IN_FLIGHT_STREAMS = 100;
 
 /**
  * H2 *receive* flow-control windows for the events agent, in bytes.
@@ -51,6 +36,15 @@ const H2_MAX_IN_FLIGHT_STREAMS = 100;
  * Measured against a loopback H2 origin mirroring the edge's SETTINGS at 10 ms
  * RTT, these cut read wall time by 76–86% versus undici's defaults across 1, 4
  * and 32 concurrent reads, against noise floors of 0.3–3.9%.
+ *
+ * These are set through the flat `initialWindowSize`/`connectionWindowSize`
+ * options even though undici 8.10 marks them `@deprecated` in favour of
+ * `h2Options`. The replacement the deprecation names does not work: undici reads
+ * `h2Options.initialWindowSize`, while it *validates* — and its types document —
+ * `h2Options.settings.initialWindowSize`, so the documented spelling is accepted
+ * and then silently ignored. Measured against a loopback H2 origin, the flat
+ * option puts 4 MiB on the wire and `h2Options.settings.initialWindowSize` leaves
+ * the server seeing undici's 256 KiB default. Revisit once upstream aligns them.
  *
  * Sizing: the stream window is what binds a single read, and 4 MiB captures that
  * win in full (a 4 MiB page goes from 216 ms to 17 ms; 2 MiB only reaches 29 ms).
@@ -104,29 +98,26 @@ export const DEFAULT_AGENT_OPTIONS = {
  * Re-enabling H2 more broadly is gated on resolving those issues (notably the
  * earlier SvelteKit-on-Vercel-prod hang).
  *
- * `pipelining` must be set for H2 to multiplex at all. undici gates in-flight
- * requests per connection on `getPipelining(client)`, which reads
- * `client[kPipelining] ?? httpContext.defaultPipelining ?? 1`. `client-h2.js`
- * sets `defaultPipelining: Infinity`, but the Client constructor coerces
- * `pipelining` to a number (`pipelining != null ? pipelining : 1`), so
- * `kPipelining` is never nullish and H2's Infinity is unreachable — leaving one
- * in-flight stream per connection. Before this was set, the H2 agent behaved
- * byte-for-byte like the H1 agent: 16 concurrent requests produced 8 in-flight
- * requests over 8 TCP connections. See nodejs/undici#4143.
+ * `pipelining` is deliberately not set. undici picks the per-connection
+ * in-flight ceiling protocol-aware (`getMaxConcurrent` in `client.js`): on H2 it
+ * is the peer's SETTINGS_MAX_CONCURRENT_STREAMS, and `pipelining` only applies
+ * before a protocol has been negotiated, where the H1 default of 1 is the safe
+ * value. The Vercel edge advertises SETTINGS_MAX_CONCURRENT_STREAMS 160, so the
+ * ceiling is not the binding constraint. Measured against a loopback H2 origin,
+ * 16 concurrent requests run as 16 parallel streams on one connection with no
+ * `pipelining` set at all.
  *
  * Multiplexing interacts with flow control, which is why the receive windows are
- * raised here too. Concentrating N streams onto one connection makes them share
- * that connection's single receive window, so the download side gets *worse* as
+ * raised here. Concentrating N streams onto one connection makes them share that
+ * connection's single receive window, so the download side gets *worse* as
  * multiplexing improves unless the window grows with it: at 32 concurrent reads,
- * `pipelining: 1` measured 70% faster than `pipelining: 100` on downloads purely
- * because spreading streams over 8 connections gave them 8 separate windows.
- * Raising the windows removes that trade-off — the multiplexed agent then beats
- * both.
+ * one-stream-per-connection measured 70% faster than multiplexing purely because
+ * spreading streams over 8 connections gave them 8 separate windows. Raising the
+ * windows removes that trade-off — the multiplexed agent then beats both.
  */
 export const EVENTS_AGENT_OPTIONS = {
   ...BASE_AGENT_OPTIONS,
   allowH2: true,
-  pipelining: H2_MAX_IN_FLIGHT_STREAMS,
   initialWindowSize: H2_STREAM_WINDOW_BYTES,
   connectionWindowSize: H2_CONNECTION_WINDOW_BYTES,
 } as const;
@@ -154,28 +145,35 @@ export const EVENTS_AGENT_OPTIONS_NO_H2 = {
 } as const;
 
 /**
- * Options for the stream write/close Agents. H2 is enabled (these send a
- * fully-buffered body, or none, so they avoid the duplex-streaming issues that
- * keep the long-lived live-read on plain `fetch`), but multiplexing is
- * deliberately left OFF — `pipelining: 1`, one in-flight request per
- * connection.
+ * Options for the stream write/close Agents. Multiplexing is deliberately OFF:
+ * one in-flight request per connection, so at most `connections` appends are
+ * ever exposed to a single transport failure.
  *
  * Stream appends are not idempotent. Multiplexing N appends onto one connection
- * makes a single RST_STREAM / GOAWAY / socket reset fail all N at once, and
+ * makes a single GOAWAY / socket reset fail all N at once, and
  * STREAM_RETRY_OPTIONS retries PUT on exactly those transient `errorCodes` — so
  * a connection-level blip would resend chunks the server may already have
- * applied and duplicate them. Serializing keeps the existing
- * one-request-per-connection failure isolation that policy was written against.
+ * applied and duplicate them. One request per connection keeps the failure
+ * isolation that policy was written against.
  *
- * Note this is currently belt-and-braces: undici's H2 `busy()` check already
- * serializes non-idempotent requests (`client-h2.js`: `if
- * (request.idempotent === false) return true`), so PUTs would not multiplex even
- * at a higher pipelining value. Setting it explicitly means the safety property
- * does not silently depend on that upstream detail.
+ * `pipelining: 1` alone no longer buys that on H2. It used to: undici's H2
+ * `busy()` check reported the connection busy for any non-idempotent request, so
+ * PUTs serialized regardless. undici 8 dropped that gate on purpose ("HTTP/2
+ * multiplexes requests on independent streams, so non-idempotent requests can be
+ * dispatched concurrently") and made the H2 in-flight ceiling the peer's
+ * SETTINGS_MAX_CONCURRENT_STREAMS rather than `pipelining`. Measured against a
+ * loopback H2 origin, 16 concurrent appends went from 1 to 16 in flight on one
+ * connection. There is no client-side option that caps it back: the
+ * `maxConcurrentStreams` option only seeds `peerMaxConcurrentStreams` and is
+ * overwritten by the server's SETTINGS.
+ *
+ * So H2 is off here. These requests send a fully-buffered body or none, so H2 was
+ * safe for them, but with multiplexing suppressed it was never doing anything the
+ * H1 agent does not — the events agent is where H2 earns its place.
  */
 export const STREAM_AGENT_OPTIONS = {
   ...BASE_AGENT_OPTIONS,
-  allowH2: true,
+  allowH2: false,
   pipelining: 1,
 } as const;
 
@@ -270,39 +268,49 @@ function contentLength(headers: unknown): number {
 }
 
 /**
- * Undici interceptor that lets the events API actually multiplex over H2.
- *
- * `pipelining` (see EVENTS_AGENT_OPTIONS) is necessary but not sufficient:
- * undici's H2 `busy()` check reports the connection busy — serializing the
- * request behind whatever is in flight — for two more reasons, both of which
- * every events request trips.
- *
- * 1. Non-idempotent method. `client-h2.js` returns busy when
- *    `request.idempotent === false`, and undici only treats GET/HEAD as
- *    idempotent by default (`core/request.js`), so every event-write POST
- *    serializes. We mark them idempotent for *concurrency* purposes only: in
- *    undici 7 the flag feeds nothing but the H1/H2 `busy()` gates — it does not
- *    cause resends. Retries are governed solely by RetryAgent, whose
- *    `methods` default (`['GET','HEAD','OPTIONS','PUT','DELETE','TRACE']`)
- *    excludes POST, so an event write is still never replayed. See
- *    nodejs/undici#5390.
- *
- * 2. Streamed request body. `client-h2.js` also returns busy for a body that is
- *    a stream / async iterable, because such a body can error mid-flight and
- *    take unrelated in-flight requests down with it. events-v4 hands us a fully
- *    materialized `Uint8Array`, but it dispatches through the global `fetch`
- *    (deliberately — that is what keeps v4 traffic visible in Vercel's outgoing
- *    -requests view, see events-v4.ts), and `fetch` converts every body into an
- *    async iterable on the way down. Draining it back into a Buffer restores the
- *    buffered-body shape undici needs, at the cost of one copy of an
- *    already-in-memory payload. Bodies without a usable `content-length`, or
- *    above H2_REBUFFER_MAX_BYTES, are passed through untouched (and stay
- *    serialized) rather than buffered blind.
- *
- * Without both of these, `pipelining` alone leaves the events agent at one
- * in-flight request per connection.
+ * Stand-in `DispatchController` for reporting an error that occurred before the
+ * request was dispatched, so there is no controller undici created for it. Only
+ * the error itself is consumed in that path (the v1 bridge rejects the awaiting
+ * `fetch()` with it); the accessors exist to satisfy the interface.
  */
-export function h2MultiplexInterceptor(
+const NULL_DISPATCH_CONTROLLER: Dispatcher.DispatchController = {
+  get aborted() {
+    return false;
+  },
+  get paused() {
+    return false;
+  },
+  get reason() {
+    return null;
+  },
+  abort: () => undefined,
+  pause: () => undefined,
+  resume: () => undefined,
+};
+
+/**
+ * Undici interceptor that turns a streamed events-API request body back into a
+ * Buffer before it is dispatched, so a retry can resend it.
+ *
+ * events-v4 hands us a fully materialized `Uint8Array`, but it dispatches
+ * through the global `fetch` (deliberately — that is what keeps v4 traffic
+ * visible in Vercel's outgoing-requests view, see events-v4.ts), and `fetch`
+ * converts every body into an async iterable on the way down. An async iterable
+ * can only be consumed once, so when RetryAgent re-dispatches on a 5xx the body
+ * is already exhausted: measured against a loopback H2 origin, the retry aborts
+ * the request with `NGHTTP2_PROTOCOL_ERROR` instead of resending. Draining the
+ * body into a Buffer first costs one copy of an already-in-memory payload and
+ * makes the retry byte-identical. Bodies without a usable `content-length`, or
+ * above H2_REBUFFER_MAX_BYTES, are passed through untouched rather than buffered
+ * blind.
+ *
+ * This used to also be what made the events path multiplex, by marking requests
+ * `idempotent` so undici's H2 `busy()` gate would not serialize them behind each
+ * other. undici 8 dispatches non-idempotent requests (nodejs/undici#5391) and
+ * stream-bodied requests (nodejs/undici#5538) concurrently on its own, so that
+ * part is gone and requests are no longer relabelled.
+ */
+export function bufferStreamedBodyInterceptor(
   dispatch: Dispatcher['dispatch']
 ): Dispatcher['dispatch'] {
   return (opts, handler) => {
@@ -317,26 +325,34 @@ export function h2MultiplexInterceptor(
     const length = contentLength(opts.headers);
 
     if (!isAsyncIterable || !(length >= 0) || length > H2_REBUFFER_MAX_BYTES) {
-      return dispatch({ ...opts, idempotent: true }, handler);
+      return dispatch(opts, handler);
     }
 
     // Drain asynchronously, then dispatch. Returning `true` reports "no
-    // backpressure", which is accurate: the request is accepted, and the pool
-    // gate we are lifting is exactly the one that would have reported drain.
+    // backpressure", which is accurate: the request is accepted, and the drain
+    // is bounded by H2_REBUFFER_MAX_BYTES.
     void (async () => {
       try {
         const chunks: Buffer[] = [];
         for await (const chunk of body as AsyncIterable<Uint8Array>) {
           chunks.push(Buffer.from(chunk));
         }
-        dispatch(
-          { ...opts, body: Buffer.concat(chunks), idempotent: true },
-          handler
-        );
+        dispatch({ ...opts, body: Buffer.concat(chunks) }, handler);
       } catch (error) {
         // Surface a drain failure the way undici would have surfaced a body
         // error, so the awaiting fetch() rejects instead of hanging.
-        handler.onError?.(error as Error);
+        //
+        // `onResponseError` is the v2 handler callback. undici 8 removed the
+        // legacy handler wrappers, and the v1 bridge sits *outside* this
+        // interceptor (see forGlobalFetch), so the handler arriving here is
+        // always v2 and the v7-era `onError` no longer exists on it. Calling the
+        // old name would be a silent no-op and hang the awaiting fetch()
+        // forever.
+        //
+        // The failure happened before anything was dispatched, so there is no
+        // real controller to hand over; a never-aborted stub satisfies the
+        // signature without pretending the request reached the wire.
+        handler.onResponseError?.(NULL_DISPATCH_CONTROLLER, error as Error);
       }
     })();
     return true;
@@ -523,7 +539,9 @@ export function noteEventsTransportOutcome(
  * shared default agent (HTTP/1.1).
  */
 export function getDispatcher(config?: APIConfig): unknown {
-  return config?.dispatcher ?? getDefaultDispatcher();
+  if (config?.dispatcher != null)
+    return bridgeCallerDispatcher(config.dispatcher);
+  return getDefaultDispatcher();
 }
 
 /**
@@ -537,7 +555,9 @@ export function getDispatcher(config?: APIConfig): unknown {
  * returned value.
  */
 export function getEventsDispatcher(config?: APIConfig): unknown {
-  return config?.dispatcher ?? eventsRecycler.get();
+  if (config?.dispatcher != null)
+    return bridgeCallerDispatcher(config.dispatcher);
+  return eventsRecycler.get();
 }
 
 /**
@@ -548,7 +568,9 @@ export function getEventsDispatcher(config?: APIConfig): unknown {
  * 5xx — chosen because stream appends are not idempotent.
  */
 export function getStreamDispatcher(config?: APIConfig): unknown {
-  return config?.dispatcher ?? getDefaultStreamDispatcher();
+  if (config?.dispatcher != null)
+    return bridgeCallerDispatcher(config.dispatcher);
+  return getDefaultStreamDispatcher();
 }
 
 /**
@@ -557,7 +579,274 @@ export function getStreamDispatcher(config?: APIConfig): unknown {
  * (see STREAM_CLOSE_RETRY_OPTIONS), unlike chunk appends.
  */
 export function getStreamCloseDispatcher(config?: APIConfig): unknown {
-  return config?.dispatcher ?? getDefaultStreamCloseDispatcher();
+  if (config?.dispatcher != null)
+    return bridgeCallerDispatcher(config.dispatcher);
+  return getDefaultStreamCloseDispatcher();
+}
+
+/**
+ * Makes a dispatcher usable as the `dispatcher` option of the *global* `fetch`.
+ *
+ * Every request in this package goes through global `fetch` (see `makeRequest`
+ * in http-core.ts, and `fetchV4` in events-v4.ts — v4 does so deliberately, to
+ * stay visible in Vercel's outgoing-requests view). That `fetch` belongs to the
+ * undici bundled into Node, not to the undici in our dependencies, and it drives
+ * a custom dispatcher with a *v1* handler (`onConnect`/`onHeaders`/`onData`/
+ * `onComplete`/`onError`).
+ *
+ * undici 8 removed the legacy handler wrappers that used to accept such a
+ * handler, and the two failure modes are both silent-to-severe:
+ *  - a bare `Agent` rejects the request with `TypeError: fetch failed`, cause
+ *    `invalid onRequestStart method`;
+ *  - a `RetryAgent` (or a composed dispatcher) never calls any callback the v1
+ *    handler implements, so `fetch()` simply *never settles* — every request
+ *    hangs until the caller's own timeout.
+ *
+ * `bridgeV1Handler` translates the v1 handler into the v2 callbacks the v8
+ * dispatcher emits. It must be the outermost layer, which is why it is applied
+ * here rather than inside `compose()`.
+ *
+ * undici ships its own bridge for this, `Dispatcher1Wrapper`, and it cannot be
+ * used on an H2 path. It forwards `controller.rawHeaders` to `onHeaders`, which
+ * the H1 parser sets to the raw `Buffer[]` a v1 handler expects, but which
+ * `client-h2.js` sets to a plain `{ name: value }` object. That object has no
+ * `.length`, so the pair-wise loop in `fetch`'s v1 handler reads zero headers and
+ * the response arrives with an empty `Headers` and the right status and body.
+ * Measured against a loopback H2 origin: `content-type` and every other response
+ * header disappear. undici's wrapper compensates by forcing `allowH2: false` onto
+ * every request (a v1 handler also cannot carry a WebSocket upgrade over H2,
+ * nodejs/undici#4989), and the Agent honours that per request by routing to a
+ * separate `${origin}#http1-only` pool. Accepting that would downgrade the events
+ * path to HTTP/1.1 and undo the multiplexing and flow-control work these agents
+ * exist for, with ALPN negotiating `http/1.1` while every option here still said
+ * H2. The bridge below instead normalizes the header shape and leaves `allowH2`
+ * alone. That is safe for these dispatchers specifically: they only ever carry
+ * plain request/response traffic, and the WebSocket transport (events-v4-ws.ts)
+ * does not run through them.
+ *
+ * Wrapping is done once per dispatcher, at construction, because
+ * `DispatcherRecycler.note()` identifies the dispatcher a request used by
+ * reference — a wrapper minted per request would never match.
+ *
+ * `interceptors` are composed underneath the bridge, so they observe the v2
+ * handler the bridge produces. The composed dispatcher goes through
+ * `withBoundLifecycle` because `compose()` returns a Proxy whose `close()` is
+ * broken, and the bridge forwards `close()`/`destroy()` straight through to
+ * whatever it wraps.
+ */
+function forGlobalFetch(
+  dispatcher: RetryAgent,
+  ...interceptors: Array<Dispatcher.DispatcherComposeInterceptor>
+): RetryAgent {
+  const composed = dispatcher.compose(...interceptors) as unknown as RetryAgent;
+  return bridgeV1Handler(withBoundLifecycle(dispatcher, composed));
+}
+
+interface V1Handler {
+  onConnect?: (abort: (reason?: Error) => void, context?: unknown) => void;
+  onHeaders?: (
+    statusCode: number,
+    rawHeaders: unknown,
+    resume: () => void,
+    statusText?: string
+  ) => boolean | void;
+  onData?: (chunk: Buffer) => boolean | void;
+  onComplete?: (rawTrailers: unknown) => void;
+  onError?: (error: Error) => void;
+  onUpgrade?: (
+    statusCode: number,
+    rawHeaders: unknown,
+    socket: unknown
+  ) => void;
+  onBodySent?: (chunk: unknown) => void;
+  onRequestSent?: () => void;
+  onResponseStarted?: () => void;
+}
+
+/**
+ * The `Buffer[]` pair list a v1 handler parses headers out of. Mirrors undici's
+ * internal `toRawHeaders`, which is not exported.
+ */
+function toRawHeaders(headers: Record<string, string | string[]>): Buffer[] {
+  const raw: Buffer[] = [];
+  for (const [name, value] of Object.entries(headers)) {
+    for (const entry of Array.isArray(value) ? value : [value]) {
+      raw.push(Buffer.from(name, 'latin1'), Buffer.from(`${entry}`, 'latin1'));
+    }
+  }
+  return raw;
+}
+
+/**
+ * Header list for a v1 handler, whichever shape the dispatcher produced: the H1
+ * parser exposes the raw `Buffer[]` on the controller, while H2 has only the
+ * parsed object passed as the callback argument. `field` selects which of the
+ * controller's two lists applies, since headers and trailers each have their own
+ * and the response headers stay on the controller after the body ends.
+ */
+function rawHeadersFor(
+  controller: unknown,
+  parsed: unknown,
+  field: 'rawHeaders' | 'rawTrailers' = 'rawHeaders'
+): unknown {
+  const fromController = (controller as Record<string, unknown> | undefined)?.[
+    field
+  ];
+  if (Array.isArray(fromController)) return fromController;
+  return toRawHeaders((parsed ?? {}) as Record<string, string | string[]>);
+}
+
+const V1_CALLBACKS = [
+  'onConnect',
+  'onHeaders',
+  'onData',
+  'onComplete',
+  'onError',
+  'onUpgrade',
+] as const;
+
+/**
+ * Adapts a v1 handler to the v2 callbacks an undici 8 dispatcher emits, while
+ * keeping the v1 callbacks on the same object.
+ *
+ * `APIConfig.dispatcher` accepts an instance from any undici version, and undici
+ * 6 knows only the v1 ABI: it validates the handler on dispatch and rejects a
+ * pure v2 one with `invalid onError method`. Measured across 6, 7 and 8, a
+ * handler carrying both ABIs is driven through exactly one of them and never
+ * both: 6 calls only the v1 callbacks, 7 and 8 only the v2 ones.
+ *
+ * The v1 callbacks are copied rather than defined unconditionally so that undici
+ * 6 still sees a handler missing a required callback as missing it.
+ */
+function wrapV1Handler(handler: V1Handler): Dispatcher.DispatchHandler {
+  const passthrough: Record<string, unknown> = {};
+  for (const name of V1_CALLBACKS) {
+    const callback = handler[name];
+    if (typeof callback === 'function') {
+      passthrough[name] = callback.bind(handler);
+    }
+  }
+  return {
+    ...passthrough,
+    onRequestStart(controller, context) {
+      // `abort()` types its reason as required, but undici defaults an
+      // undefined one to RequestAbortedError. Passing it through keeps the
+      // error identity a v1 caller expects.
+      handler.onConnect?.(
+        (reason?: Error) => controller.abort(reason as Error),
+        context
+      );
+    },
+    onRequestUpgrade(controller, statusCode, headers, socket) {
+      handler.onUpgrade?.(
+        statusCode,
+        rawHeadersFor(controller, headers),
+        socket
+      );
+    },
+    onResponseStart(controller, statusCode, headers, statusMessage) {
+      const proceed = handler.onHeaders?.(
+        statusCode,
+        rawHeadersFor(controller, headers),
+        () => controller.resume(),
+        statusMessage
+      );
+      if (proceed === false) controller.pause();
+    },
+    onResponseData(controller, chunk) {
+      if (handler.onData?.(chunk) === false) controller.pause();
+    },
+    onResponseEnd(controller, trailers) {
+      handler.onComplete?.(rawHeadersFor(controller, trailers, 'rawTrailers'));
+    },
+    onResponseError(_controller, error) {
+      if (!handler.onError) throw error;
+      handler.onError(error);
+    },
+    onBodySent(chunk) {
+      handler.onBodySent?.(chunk);
+    },
+    onRequestSent() {
+      handler.onRequestSent?.();
+    },
+    onResponseStarted() {
+      handler.onResponseStarted?.();
+    },
+  } as Dispatcher.DispatchHandler;
+}
+
+/**
+ * A dispatcher that accepts a v1 handler, passing a v2 one straight through (a
+ * future Node whose bundled `fetch` drives v2 handlers needs no bridging).
+ */
+class V1BridgeDispatcher extends Dispatcher {
+  readonly #inner: Dispatcher;
+
+  constructor(inner: Dispatcher) {
+    super();
+    this.#inner = inner;
+  }
+
+  dispatch(opts: Dispatcher.DispatchOptions, handler: V1Handler): boolean {
+    return this.#inner.dispatch(
+      opts,
+      typeof (handler as Dispatcher.DispatchHandler).onRequestStart ===
+        'function'
+        ? (handler as Dispatcher.DispatchHandler)
+        : wrapV1Handler(handler)
+    );
+  }
+
+  close(...args: unknown[]): Promise<void> {
+    return (this.#inner.close as (...a: unknown[]) => Promise<void>).apply(
+      this.#inner,
+      args
+    );
+  }
+
+  destroy(...args: unknown[]): Promise<void> {
+    return (this.#inner.destroy as (...a: unknown[]) => Promise<void>).apply(
+      this.#inner,
+      args
+    );
+  }
+}
+
+function bridgeV1Handler<T>(dispatcher: T): T {
+  return new V1BridgeDispatcher(dispatcher as Dispatcher) as unknown as T;
+}
+
+/**
+ * Same bridge as `forGlobalFetch`, for a dispatcher supplied by the caller
+ * through `APIConfig.dispatcher`.
+ *
+ * That option is documented as accepting a dispatcher from any undici version.
+ * A v8 one handed straight to global `fetch` hangs forever (see
+ * `forGlobalFetch`), and undici 8 is now what a caller who installs `undici`
+ * alongside this package gets, so the bridge has to be applied here too. It is
+ * safe for older dispatchers as well, which is why the handler it produces
+ * carries the v1 callbacks alongside the v2 ones: undici 7 takes the v2 ones,
+ * and undici 6, which knows only v1, takes the v1 ones (see `wrapV1Handler`).
+ *
+ * Memoized because the recycler and the retry bookkeeping compare dispatchers by
+ * reference, and a caller may pass the same instance to many calls.
+ */
+const bridgedCallerDispatchers = new WeakMap<object, unknown>();
+
+function bridgeCallerDispatcher(dispatcher: unknown): unknown {
+  if (
+    dispatcher == null ||
+    typeof dispatcher !== 'object' ||
+    dispatcher instanceof V1BridgeDispatcher
+  ) {
+    return dispatcher;
+  }
+  const cached = bridgedCallerDispatchers.get(dispatcher);
+  if (cached !== undefined) return cached;
+
+  const bridged = bridgeV1Handler(dispatcher as Dispatcher);
+  bridgedCallerDispatchers.set(dispatcher, bridged);
+  return bridged;
 }
 
 /** Build a shared undici RetryAgent wrapping an Agent with the given options. */
@@ -565,7 +854,7 @@ function makeRetryDispatcher(
   agentOptions: typeof DEFAULT_AGENT_OPTIONS,
   retryOptions: RetryHandler.RetryOptions
 ): RetryAgent {
-  return new RetryAgent(new Agent(agentOptions), retryOptions);
+  return forGlobalFetch(new RetryAgent(new Agent(agentOptions), retryOptions));
 }
 
 /**
@@ -587,7 +876,7 @@ export function createEventsDispatcher(
     RETRY_AGENT_OPTIONS
   );
   if (!h2) {
-    return agent;
+    return forGlobalFetch(agent);
   }
   // The interceptor wraps the RetryAgent (rather than the Agent inside it) so
   // that retries re-send the *drained* body. RetryHandler captures its own copy
@@ -596,10 +885,7 @@ export function createEventsDispatcher(
   // copy would wrap the stream the interceptor is about to consume, so a retry
   // would re-iterate an exhausted stream and send an empty body. Composed
   // outside, RetryHandler captures the Buffer and replays it verbatim.
-  return withBoundLifecycle(
-    agent,
-    agent.compose(h2MultiplexInterceptor) as unknown as RetryAgent
-  );
+  return forGlobalFetch(agent, bufferStreamedBodyInterceptor);
 }
 
 /**
@@ -633,9 +919,11 @@ export function createStreamDispatcher(
   retryOptions: RetryHandler.RetryOptions,
   agentOverrides?: Partial<Agent.Options>
 ): RetryAgent {
-  return new RetryAgent(
-    new Agent({ ...STREAM_AGENT_OPTIONS, ...agentOverrides }),
-    retryOptions
+  return forGlobalFetch(
+    new RetryAgent(
+      new Agent({ ...STREAM_AGENT_OPTIONS, ...agentOverrides }),
+      retryOptions
+    )
   );
 }
 

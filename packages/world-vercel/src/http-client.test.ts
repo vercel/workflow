@@ -22,15 +22,173 @@ import {
   STREAM_RETRY_OPTIONS,
 } from './http-client.js';
 
+/**
+ * A caller-supplied dispatcher, of the shape `APIConfig.dispatcher` documents:
+ * any object implementing the dispatcher contract, from any undici version.
+ */
+function fakeDispatcher() {
+  const seen: Array<Record<string, unknown>> = [];
+  return {
+    seen,
+    dispatch(opts: Record<string, unknown>) {
+      seen.push(opts);
+      return true;
+    },
+    close: async () => undefined,
+    destroy: async () => undefined,
+  };
+}
+
+/**
+ * A caller's dispatcher is handed to the global `fetch`, which drives it with a
+ * v1 handler that undici 8 rejects, so it is bridged rather than passed through.
+ * The bridge must forward to the caller's own `dispatch`, and must pass the
+ * dispatch options through untouched: nothing may rewrite the caller's protocol
+ * choice on the way down (see `bridgeCallerDispatcher`). An injected
+ * `allowH2: false` would both downgrade the caller and, under a `MockAgent`,
+ * reroute the request to a pool holding no interceptors.
+ */
+function expectBridgedTo(
+  resolved: unknown,
+  custom: ReturnType<typeof fakeDispatcher>
+) {
+  expect(resolved).not.toBe(custom);
+  (resolved as { dispatch: (o: unknown, h: unknown) => void }).dispatch(
+    { origin: 'https://example.test', path: '/', method: 'GET' },
+    { onConnect() {}, onHeaders() {}, onData() {}, onComplete() {} }
+  );
+  expect(custom.seen).toHaveLength(1);
+  expect('allowH2' in custom.seen[0]).toBe(false);
+}
+
 describe('getDispatcher', () => {
   it('returns the shared default dispatcher when none is provided', () => {
     expect(getDispatcher()).toBe(getDispatcher());
     expect(getDispatcher({})).toBe(getDispatcher());
   });
 
-  it('returns the caller-supplied dispatcher when provided', () => {
-    const custom = {};
-    expect(getDispatcher({ dispatcher: custom })).toBe(custom);
+  it('bridges the caller-supplied dispatcher for global fetch', () => {
+    const custom = fakeDispatcher();
+    expectBridgedTo(getDispatcher({ dispatcher: custom }), custom);
+    // Stable per input: the recycler and the retry bookkeeping compare
+    // dispatchers by reference.
+    expect(getDispatcher({ dispatcher: custom })).toBe(
+      getDispatcher({ dispatcher: custom })
+    );
+  });
+
+  // Headers and trailers reach a v1 handler by two different routes: the H1
+  // parser puts the raw `Buffer[]` on the controller, H2 has only the parsed
+  // object passed to the callback. The controller carries a separate list for
+  // each, and the response headers are still on it once the body ends, so
+  // reading the wrong one delivers headers where trailers belong.
+  it('keeps headers and trailers distinct in both dispatcher shapes', () => {
+    const drive = (
+      controller: Record<string, unknown>,
+      parsedHeaders: unknown,
+      parsedTrailers: unknown
+    ) => {
+      const seen: Record<string, unknown> = {};
+      const inner = {
+        dispatch(_opts: unknown, handler: Record<string, unknown>) {
+          (handler.onResponseStart as (...a: unknown[]) => void)(
+            controller,
+            200,
+            parsedHeaders,
+            'OK'
+          );
+          (handler.onResponseEnd as (...a: unknown[]) => void)(
+            controller,
+            parsedTrailers
+          );
+          return true;
+        },
+        close: async () => undefined,
+        destroy: async () => undefined,
+      };
+      const bridged = getDispatcher({ dispatcher: inner }) as {
+        dispatch: (o: unknown, h: unknown) => void;
+      };
+      bridged.dispatch(
+        { origin: 'https://example.test', path: '/', method: 'GET' },
+        {
+          onConnect() {},
+          onHeaders: (_s: number, raw: Buffer[]) => {
+            seen.headers = raw.map(String);
+          },
+          onData() {},
+          onComplete: (raw: Buffer[]) => {
+            seen.trailers = raw.map(String);
+          },
+          onError() {},
+        }
+      );
+      return seen;
+    };
+
+    // H1: both lists arrive on the controller.
+    expect(
+      drive(
+        {
+          rawHeaders: [Buffer.from('x-h'), Buffer.from('1')],
+          rawTrailers: [Buffer.from('x-t'), Buffer.from('2')],
+        },
+        undefined,
+        undefined
+      )
+    ).toEqual({ headers: ['x-h', '1'], trailers: ['x-t', '2'] });
+
+    // H2: neither list is on the controller, so both come from the parsed
+    // objects and have to be converted to the pair list a v1 handler reads.
+    expect(drive({}, { 'x-h': '1' }, { 'x-t': '2' })).toEqual({
+      headers: ['x-h', '1'],
+      trailers: ['x-t', '2'],
+    });
+  });
+
+  // `APIConfig.dispatcher` takes an instance from any undici version, and undici
+  // 6 speaks the v1 handler ABI only: it validates the handler on dispatch and
+  // rejects a pure v2 one with `invalid onError method`. So the bridge emits a
+  // handler carrying both. Measured across undici 6, 7 and 8, exactly one ABI is
+  // driven per request and never both.
+  it('gives the caller a handler that still speaks the v1 ABI', () => {
+    const seen: unknown[] = [];
+    const v1Only = {
+      dispatch(_opts: unknown, handler: Record<string, unknown>) {
+        // undici 6's own validation, then its own callback sequence.
+        for (const name of ['onConnect', 'onHeaders', 'onData', 'onComplete']) {
+          expect(typeof handler[name]).toBe('function');
+        }
+        const raw = [Buffer.from('x-probe'), Buffer.from('yes')];
+        (handler.onConnect as () => void)();
+        (handler.onHeaders as (s: number, r: unknown) => void)(200, raw);
+        (handler.onData as (c: Buffer) => void)(Buffer.from('ok'));
+        (handler.onComplete as (t: unknown) => void)(null);
+        return true;
+      },
+      close: async () => undefined,
+      destroy: async () => undefined,
+    };
+    const bridged = getDispatcher({ dispatcher: v1Only }) as {
+      dispatch: (o: unknown, h: unknown) => void;
+    };
+    bridged.dispatch(
+      { origin: 'https://example.test', path: '/', method: 'GET' },
+      {
+        onConnect: () => seen.push('onConnect'),
+        onHeaders: (status: number, raw: Buffer[]) =>
+          seen.push(`onHeaders ${status} ${raw[0]}=${raw[1]}`),
+        onData: (chunk: Buffer) => seen.push(`onData ${chunk}`),
+        onComplete: () => seen.push('onComplete'),
+        onError: () => seen.push('onError'),
+      }
+    );
+    expect(seen).toEqual([
+      'onConnect',
+      'onHeaders 200 x-probe=yes',
+      'onData ok',
+      'onComplete',
+    ]);
   });
 });
 
@@ -40,9 +198,9 @@ describe('getEventsDispatcher', () => {
     expect(getEventsDispatcher()).not.toBe(getDispatcher());
   });
 
-  it('returns the caller-supplied dispatcher when provided', () => {
-    const custom = {};
-    expect(getEventsDispatcher({ dispatcher: custom })).toBe(custom);
+  it('bridges the caller-supplied dispatcher for global fetch', () => {
+    const custom = fakeDispatcher();
+    expectBridgedTo(getEventsDispatcher({ dispatcher: custom }), custom);
   });
 });
 
@@ -53,9 +211,9 @@ describe('getStreamDispatcher', () => {
     expect(getStreamDispatcher()).not.toBe(getEventsDispatcher());
   });
 
-  it('returns the caller-supplied dispatcher when provided', () => {
-    const custom = {};
-    expect(getStreamDispatcher({ dispatcher: custom })).toBe(custom);
+  it('bridges the caller-supplied dispatcher for global fetch', () => {
+    const custom = fakeDispatcher();
+    expectBridgedTo(getStreamDispatcher({ dispatcher: custom }), custom);
   });
 
   // Stream writes (PUT) append chunks and are NOT idempotent. Retrying a write
@@ -89,8 +247,8 @@ describe('getStreamDispatcher', () => {
   it('close uses its own shared dispatcher, distinct from the write dispatcher', () => {
     expect(getStreamCloseDispatcher()).toBe(getStreamCloseDispatcher());
     expect(getStreamCloseDispatcher()).not.toBe(getStreamDispatcher());
-    const custom = {};
-    expect(getStreamCloseDispatcher({ dispatcher: custom })).toBe(custom);
+    const custom = fakeDispatcher();
+    expectBridgedTo(getStreamCloseDispatcher({ dispatcher: custom }), custom);
   });
 });
 
@@ -102,7 +260,7 @@ describe('agent transport', () => {
   // Flipping either silently would regress one side or the other.
   it('enables HTTP/2 for the events API only', () => {
     expect(EVENTS_AGENT_OPTIONS.allowH2).toBe(true);
-    expect(STREAM_AGENT_OPTIONS.allowH2).toBe(true);
+    expect(STREAM_AGENT_OPTIONS.allowH2).toBe(false);
     expect(DEFAULT_AGENT_OPTIONS.allowH2).toBe(false);
   });
 
@@ -115,12 +273,14 @@ describe('agent transport', () => {
     expect(EVENTS_AGENT_OPTIONS_NO_H2.pipelining).toBe(1);
   });
 
-  // `allowH2` alone buys nothing: undici gates in-flight requests per
-  // connection on `pipelining`, so `pipelining: 1` reduces an H2 agent to H1
-  // behavior (one stream per connection). These two constants are the
-  // difference between multiplexing and not — see EVENTS_AGENT_OPTIONS.
-  it('gives the events agent a pipelining depth that permits multiplexing', () => {
-    expect(EVENTS_AGENT_OPTIONS.pipelining).toBeGreaterThan(1);
+  // undici decides the H2 in-flight ceiling from the peer's
+  // SETTINGS_MAX_CONCURRENT_STREAMS, and `pipelining` only applies before a
+  // protocol is negotiated — where the H1 default of 1 is the value we want. A
+  // `pipelining` here would also raise H1 pipelining depth on an H2 fallback,
+  // which is exactly what DEFAULT_AGENT_OPTIONS avoids. See
+  // EVENTS_AGENT_OPTIONS; the multiplexing itself is covered end to end below.
+  it('leaves pipelining unset on the events agent', () => {
+    expect('pipelining' in EVENTS_AGENT_OPTIONS).toBe(false);
   });
 
   // Inverse guard: stream appends are not idempotent, so they must NOT
@@ -209,18 +369,23 @@ TTVKDw9WMB6CyIX5kV0cOG/S8OO+1l3ZPaogkzj0P5OnJaYPvpp2kpGrlQ==
 -----END CERTIFICATE-----`;
 
 // Proves the exact mechanism the v4 events path relies on: a request issued
-// through the *global* `fetch` with an `allowH2` undici dispatcher actually
+// through the *global* `fetch` with the real events dispatcher actually
 // negotiates HTTP/2 over ALPN. `fetchV4` (events-v4.ts) routes through global
 // `fetch` for observability instrumentation rather than `undici.request`, so we
 // verify h2 survives that route. The server only speaks h2 (allowHTTP1 left at
 // its default of false), so a client that fell back to HTTP/1.1 would fail to
 // connect instead of silently passing.
+//
+// It has to be the production factory, not a bare Agent: the global `fetch`
+// drives its dispatcher with a v1 handler, and an undici 8 Agent rejects that
+// handler outright. Only the bridge `forGlobalFetch` applies makes the request
+// possible at all, so a bare Agent here would fail on the handler ABI long
+// before it could say anything about the protocol.
 describe('HTTP/2 over global fetch with an undici dispatcher', () => {
   let server: Http2SecureServer;
   let port: number;
   let negotiatedAlpn: string | false | null | undefined;
-  const agent = new Agent({
-    allowH2: true,
+  const agent = createEventsDispatcher({
     connect: { rejectUnauthorized: false },
   });
 
@@ -230,7 +395,11 @@ describe('HTTP/2 over global fetch with an undici dispatcher', () => {
     server.on('stream', (stream) => {
       negotiatedAlpn = (stream.session?.socket as TLSSocket | undefined)
         ?.alpnProtocol;
-      stream.respond({ ':status': 200 });
+      stream.respond({
+        ':status': 200,
+        'content-type': 'application/vnd.workflow.v4-frames',
+        'x-multi': ['a', 'b'],
+      });
       stream.end('ok');
     });
     await new Promise<void>((resolve) => {
@@ -255,14 +424,57 @@ describe('HTTP/2 over global fetch with an undici dispatcher', () => {
     expect(await res.text()).toBe('ok');
     expect(negotiatedAlpn).toBe('h2');
   });
+
+  // Status and body survive a broken header bridge; the headers do not. undici's
+  // own `Dispatcher1Wrapper` forwards `controller.rawHeaders` to the v1 handler,
+  // and on an H2 path that field is a plain `{ name: value }` object rather than
+  // the `Buffer[]` pair list H1 supplies, so the handler's pair-wise loop reads
+  // nothing and every response header disappears. `fetchV4` then rejects the
+  // reply for a missing `content-type`, which is what this asserts against.
+  it('preserves response headers over h2', async () => {
+    const res = await fetch(`https://127.0.0.1:${port}/`, {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici dispatcher type doesn't match @types/node's RequestInit
+      dispatcher: agent,
+    } as any);
+    await res.text();
+    expect(negotiatedAlpn).toBe('h2');
+    expect(res.headers.get('content-type')).toBe(
+      'application/vnd.workflow.v4-frames'
+    );
+    // A repeated header must stay repeated, not collapse to its first value.
+    expect(res.headers.get('x-multi')).toBe('a, b');
+  });
+
+  // The same hazard from the other side: `APIConfig.dispatcher` takes an
+  // undici instance the caller constructed, and a caller who installs undici
+  // today gets 8, whose dispatchers reject the v1 handler global `fetch` drives
+  // them with. Unbridged, this request never settles.
+  it('lets a caller-supplied undici 8 dispatcher complete a request', async () => {
+    const callerAgent = new Agent({ connect: { rejectUnauthorized: false } });
+    negotiatedAlpn = undefined;
+    try {
+      const res = await fetch(`https://127.0.0.1:${port}/`, {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici dispatcher type doesn't match @types/node's RequestInit
+        dispatcher: getDispatcher({ dispatcher: callerAgent }),
+      } as any);
+      expect(res.status).toBe(200);
+      expect(await res.text()).toBe('ok');
+      expect(negotiatedAlpn).toBe('h2');
+      expect(res.headers.get('content-type')).toBe(
+        'application/vnd.workflow.v4-frames'
+      );
+    } finally {
+      await callerAgent.close();
+    }
+  });
 });
 
 // Negotiating h2 is not the same as using it. This measures the property the
 // events agent actually exists for: concurrent POSTs sharing ONE connection as
-// parallel H2 streams. It is the regression test the config-only assertions
-// above cannot be — before the pipelining + interceptor fix, `allowH2` was true
-// and ALPN was h2, yet 16 concurrent requests still produced 8 serialized
-// requests over 8 TCP connections, exactly like the H1 agent.
+// parallel H2 streams, and the inverse property for stream appends. It is the
+// regression test the config-only assertions above cannot be — a dispatcher can
+// be configured for H2, negotiate h2 over ALPN, and still serialize every
+// request behind the last one.
 describe('HTTP/2 multiplexing (events vs stream-write agents)', () => {
   const CONCURRENCY = 16;
 
@@ -297,7 +509,13 @@ describe('HTTP/2 multiplexing (events vs stream-write agents)', () => {
   }
 
   beforeAll(async () => {
-    server = createSecureServer({ key: TEST_KEY, cert: TEST_CERT });
+    // `allowHTTP1` so the same origin serves both agents: the events agent
+    // negotiates h2, the stream agent (`allowH2: false`) speaks HTTP/1.1.
+    server = createSecureServer({
+      key: TEST_KEY,
+      cert: TEST_CERT,
+      allowHTTP1: true,
+    });
     server.on('session', (session) => {
       sessions++;
       // Agents are closed while the pool still holds idle sessions; the
@@ -324,6 +542,32 @@ describe('HTTP/2 multiplexing (events vs stream-write agents)', () => {
           }
           stream.respond({ ':status': 200 });
           stream.end(path);
+        })();
+      });
+    });
+    // HTTP/1.1 requests do not surface as `stream` events. The stream-write
+    // agent lands here, and it has to observe the same barrier as the h2 path
+    // or the two branches would not be measuring the same thing.
+    server.on('request', (req, res) => {
+      // node's http2 compat layer raises `request` for h2 streams as well, which
+      // the `stream` handler above has already answered.
+      if (req.httpVersionMajor !== 1) return;
+      req.on('error', () => undefined);
+      const chunks: Buffer[] = [];
+      req.on('data', (c: Buffer) => chunks.push(c));
+      req.on('end', () => {
+        void (async () => {
+          const path = String(req.url);
+          receivedBodies.push(Buffer.concat(chunks).toString());
+          await onArrival(path);
+          if (path.startsWith('/req-')) inFlight--;
+          if (path === '/flaky' && ++flakyAttempts === 1) {
+            res.writeHead(503);
+            res.end('retry me');
+            return;
+          }
+          res.writeHead(200);
+          res.end(path);
         })();
       });
     });
@@ -407,7 +651,10 @@ describe('HTTP/2 multiplexing (events vs stream-write agents)', () => {
     try {
       await burst(agent);
       // Bounded by the pool size, not by CONCURRENCY: each connection carries
-      // at most one append, so a reset can only ever fail one write.
+      // at most one append, so a reset can only ever fail one write. On HTTP/1.1
+      // that ceiling is `pipelining: 1` per connection; the same assertion held
+      // on H2 until undici 8 stopped gating non-idempotent requests, which is
+      // why the agent no longer offers h2 at all.
       expect(maxConcurrentStreams).toBeLessThanOrEqual(
         STREAM_AGENT_OPTIONS.connections
       );

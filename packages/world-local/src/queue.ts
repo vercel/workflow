@@ -10,7 +10,7 @@ import {
 } from '@workflow/world';
 import { Sema } from 'async-sema';
 import { monotonicFactory } from 'ulid';
-import { Agent } from 'undici';
+import { Agent, Dispatcher1Wrapper } from 'undici';
 import { z } from 'zod/v4';
 import type { Config } from './config.js';
 import { resolveBaseUrl, resolveDirectBaseUrl } from './config.js';
@@ -81,6 +81,12 @@ function envTimeoutMs(name: string, fallback: number): number {
  */
 export function getQueueAgentOptions() {
   return {
+    // undici 8 negotiates HTTP/2 by default whenever the origin offers it over
+    // ALPN. Local deliveries carry the same duplex-streaming and
+    // webhook-respondWith shapes that keep world-vercel's default agent on
+    // HTTP/1.1, so this pins the pre-undici-8 transport rather than letting an
+    // https:// dev origin quietly switch protocols.
+    allowH2: false,
     bodyTimeout: envTimeoutMs(
       'WORKFLOW_LOCAL_BODY_TIMEOUT_MS',
       DEFAULT_BODY_TIMEOUT_MS
@@ -128,7 +134,19 @@ function isDetachedArrayBufferQueueError(error: unknown): boolean {
 }
 
 export function createQueue(config: Partial<Config>): LocalQueue {
-  const httpAgent = new Agent(getQueueAgentOptions());
+  // Wrapped for the global `fetch` below: that fetch belongs to the undici
+  // bundled into Node, which drives a custom dispatcher with a v1 handler
+  // (`onConnect`/`onHeaders`/`onData`/`onComplete`). undici 8 dropped the legacy
+  // handler wrappers, so an unwrapped Agent fails every delivery with
+  // `TypeError: fetch failed` / `invalid onRequestStart method`.
+  // `Dispatcher1Wrapper` is undici's bridge for this, and forwards
+  // `close()` to the Agent it wraps. It is usable here because this agent is
+  // HTTP/1.1 only: the wrapper reads `controller.rawHeaders`, which the H1
+  // parser fills with the `Buffer[]` pair list a v1 handler expects but
+  // `client-h2.js` fills with a parsed object that the same handler reads no
+  // headers out of. The wrapper hides that by forcing `allowH2: false` on every
+  // dispatch, which costs nothing when the agent never wanted H2.
+  const httpAgent = new Dispatcher1Wrapper(new Agent(getQueueAgentOptions()));
   const transport = new TypedJsonTransport();
   const generateId = monotonicFactory();
   const semaphore = new Sema(WORKFLOW_LOCAL_QUEUE_CONCURRENCY);
@@ -231,7 +249,7 @@ export function createQueue(config: Partial<Config>): LocalQueue {
               response = await directHandler(req);
             } else {
               const baseUrl = await resolveBaseUrl(config);
-              // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici v7 dispatcher types don't match @types/node's RequestInit
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici dispatcher types don't match @types/node's RequestInit
               response = await fetch(
                 createWorkflowUrl(baseUrl, { type: 'flow' }),
                 {
