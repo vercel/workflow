@@ -75,10 +75,13 @@ function eventDataOf(event: Event): Record<string, unknown> | undefined {
  * Events that need no claim from workflow code (parity with the node
  * engine's structural lifecycle consumer in workflow.ts): run lifecycle
  * events, attribute writes not performed by the workflow body, and anything
- * without a correlation id or outside the families the engines track.
+ * outside the families the engines track. A tracked-family event is NOT
+ * structural even when its correlation id is missing — that is a malformed
+ * log entry and must be arbitrated as divergence, exactly as the node
+ * engine's consumers (which all filter on correlation-id equality) would
+ * leave it unclaimed.
  */
 function isStructural(event: Event): boolean {
-  if (!event.correlationId) return true;
   if (event.eventType.startsWith('run_')) return true;
   if (event.eventType === 'attr_set') {
     const writer = eventDataOf(event)?.writer as { type?: string } | undefined;
@@ -136,8 +139,16 @@ function arbitrateEvent(
   opsByCid: Map<string, VmKnownOp[]>,
   auxCids: Set<string>
 ): ReplayDivergenceError | null {
-  const cid = event.correlationId as string;
+  const cid = event.correlationId;
   const families = expectedFamilies(event.eventType) as string[];
+  if (!cid) {
+    // A tracked-family event without a correlation id is a malformed log
+    // entry: no replay can ever claim it (every draw has an id).
+    return new ReplayDivergenceError(
+      `Replay divergence: event ${event.eventType} (eventId=${event.eventId}) is missing a correlationId, so no replay can consume it`,
+      { eventId: event.eventId }
+    );
+  }
   const ops = opsByCid.get(cid);
 
   if (ops === undefined || ops.length === 0) {

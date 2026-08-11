@@ -42,11 +42,28 @@ describe('findReplayDivergence', () => {
       expect(findReplayDivergence(events, view([]))).toBeNull();
     });
 
-    it('skips events without a correlationId', () => {
+    it('skips untracked events without a correlationId', () => {
       const events = [
-        makeEvent({ eventType: 'step_created', correlationId: undefined }),
+        makeEvent({ eventType: 'some_future_event', correlationId: undefined }),
       ];
       expect(findReplayDivergence(events, view([]))).toBeNull();
+    });
+
+    it('reports a tracked-family event missing its correlationId as divergence', () => {
+      // A step/wait/hook event without a correlation id is a malformed log
+      // entry — no replay can ever claim it, so skipping it would declare a
+      // log reproduced that was not.
+      const events = [
+        makeEvent({
+          eventType: 'step_created',
+          correlationId: undefined,
+          eventId: 'evnt_NOCID',
+        }),
+      ];
+      const err = findReplayDivergence(events, view([]));
+      expect(err).not.toBeNull();
+      expect(err?.message).toContain('missing a correlationId');
+      expect(err?.eventId).toBe('evnt_NOCID');
     });
 
     it('skips attr_set events written by a step', () => {

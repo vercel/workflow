@@ -199,6 +199,49 @@ describe('QuickJS entrypoint precondition guard', () => {
     expect(waitCreated?.params).toMatchObject(expected);
   });
 
+  it('fences the elapsed-wait completion and carries the wait resumeAt', async () => {
+    // The wait elapsed before this invocation, so the pre-VM pass writes
+    // its wait_completed. The event must carry resumeAt (shape parity with
+    // the node engine's elapsed-wait completion, and the input to the
+    // replay-divergence resumeAt identity check) and the view snapshot.
+    const resumeAt = '2026-05-19T12:00:01.000Z';
+    const events = [
+      ...baseLog(),
+      makeEvent('wait_created', {
+        correlationId: 'wait_01ELAPSED',
+        eventData: { resumeAt },
+      }),
+    ];
+    // The write's snapshot describes the log BEFORE the self-written
+    // wait_completed (which the entrypoint splices into `events`) — capture
+    // the expectation up front.
+    const expectedSnapshot = {
+      stateUpdatedAt: latestEventStateUpdatedAt(events),
+      stateEventCount: events.length,
+    };
+    const { created } = await runScenario({
+      events,
+      vmResult: {
+        completed: {
+          result: await dehydrateStepReturnValue(
+            'done',
+            'wrun_quickjs_fencing',
+            undefined
+          ),
+        },
+      },
+    });
+
+    const waitCompleted = created.find(
+      (c) => c.request.eventType === 'wait_completed'
+    );
+    expect(waitCompleted).toBeDefined();
+    expect(
+      (waitCompleted?.request.eventData as { resumeAt?: Date })?.resumeAt
+    ).toEqual(new Date(resumeAt));
+    expect(waitCompleted?.params).toMatchObject(expectedSnapshot);
+  });
+
   it('leaves run_failed unfenced (terminal-failure asymmetry)', async () => {
     const { created } = await runScenario({
       events: baseLog(),

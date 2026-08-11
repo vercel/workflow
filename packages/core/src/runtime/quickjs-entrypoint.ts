@@ -865,6 +865,13 @@ export async function runWorkflowWithQuickJS(params: {
               eventType: 'wait_completed',
               specVersion: SPEC_VERSION_CURRENT,
               correlationId: event.correlationId,
+              // Carry the wait's resumeAt like the node engine's elapsed-wait
+              // completion does (runtime.ts), so the event shapes match and
+              // the replay-divergence resumeAt identity check has something
+              // to validate.
+              eventData: {
+                resumeAt: new Date(resumeAt as string | Date),
+              },
             },
             preconditionSnapshot()
           );
@@ -1177,6 +1184,11 @@ export async function runWorkflowWithQuickJS(params: {
                   eventType: 'wait_completed',
                   specVersion: SPEC_VERSION_CURRENT,
                   correlationId: wait.correlationId,
+                  // resumeAt parity with the node engine's elapsed-wait
+                  // completion — see the pre-VM pass above.
+                  eventData: {
+                    resumeAt: new Date(wait.resumeAt),
+                  },
                 },
                 preconditionSnapshot()
               );
