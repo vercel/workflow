@@ -22,6 +22,7 @@ import {
   waitToSpan,
 } from '../components/workflow-traces/trace-span-construction';
 import { otelTimeToMs } from '../components/workflow-traces/trace-time-utils';
+import { findDuplicateEventIds } from './duplicate-events';
 import type { Span } from './trace-types';
 
 /**
@@ -195,8 +196,18 @@ export function buildTrace(
   events: Event[],
   now: Date
 ): TraceWithMeta {
-  const groupedEvents = groupEventsByCorrelation(events);
-  const latestKnownTime = computeLatestKnownTime(events, run);
+  // Span geometry comes from what the run acted on. A repeat of a class the
+  // log already records was passed over by the runtime, and letting one
+  // through here would stretch a span to whenever a concurrent replay
+  // committed it. The event lists still show them, marked as ignored.
+  const duplicateEventIds = findDuplicateEventIds(events);
+  const actedOnEvents =
+    duplicateEventIds.size === 0
+      ? events
+      : events.filter((event) => !duplicateEventIds.has(event.eventId));
+
+  const groupedEvents = groupEventsByCorrelation(actedOnEvents);
+  const latestKnownTime = computeLatestKnownTime(actedOnEvents, run);
   const { runSpan, spans } = buildSpans(
     run,
     groupedEvents,

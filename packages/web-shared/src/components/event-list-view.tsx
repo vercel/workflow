@@ -10,6 +10,7 @@ import type {
 } from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso';
+import { findDuplicateEventIds } from '../lib/duplicate-events';
 import {
   type ExactIdSearchResult,
   type ExactWorkflowSearchIdKind,
@@ -23,6 +24,7 @@ import { AttrSetEventBlock } from './sidebar/attributes-block';
 import { ContextCardProvider } from './ui/context-card';
 import { DataInspector, DecryptClickContext } from './ui/data-inspector';
 import { DecryptButton } from './ui/decrypt-button';
+import { DuplicateEventTooltip } from './ui/duplicate-event-tooltip';
 import {
   ErrorStackBlock,
   isStructuredError,
@@ -190,15 +192,21 @@ export interface DurationInfo {
  * Build a map from correlationId → duration info by diffing
  * created ↔ started (queued) and started ↔ completed/failed/cancelled (ran).
  * Also computes run-level durations under the key '__run__'.
+ *
+ * Events the runtime passed over as repeats are excluded: a second
+ * `step_completed` written by a concurrent replay would otherwise stretch the
+ * step's measured runtime to whenever that replay happened to commit.
  */
 export function buildDurationMap(events: Event[]): Map<string, DurationInfo> {
+  const duplicateEventIds = findDuplicateEventIds(events);
+
   // Process events in chronological order so the result doesn't depend on
   // the caller's sort direction. Retried steps emit multiple `step_started`
   // events for the same correlationId; the queued duration must be measured
   // against the first one, not the last.
-  const chronological = [...events].sort(
-    (a, b) => getEffectiveEventTime(a) - getEffectiveEventTime(b)
-  );
+  const chronological = [...events]
+    .filter((event) => !duplicateEventIds.has(event.eventId))
+    .sort((a, b) => getEffectiveEventTime(a) - getEffectiveEventTime(b));
 
   const createdTimes = new Map<string, number>();
   const firstStartedTimes = new Map<string, number>();
@@ -832,6 +840,7 @@ export function EventRow({
   onEncryptedDataDetected,
   suppressGroupDimming = false,
   showSeparateEventOccurrenceTimestamps = false,
+  isDuplicate = false,
 }: {
   event: Event;
   index: number;
@@ -856,6 +865,8 @@ export function EventRow({
   suppressGroupDimming?: boolean;
   /** Show occurredAt separately instead of folding it into the Created timestamp. */
   showSeparateEventOccurrenceTimestamps?: boolean;
+  /** The event repeats a class already in the log, so the runtime ignored it. */
+  isDuplicate?: boolean;
 }) {
   const [isLoading, setIsLoading] = useState(false);
   const [loadedEventData, setLoadedEventData] = useState<unknown | null>(
@@ -1095,43 +1106,49 @@ export function EventRow({
 
           {/* Event Type */}
           <div className="font-medium min-w-0 px-4" style={{ flex: '2 1 0%' }}>
-            <span
-              className="inline-flex items-center gap-1.5"
-              style={{ color: 'var(--ds-gray-900)' }}
-            >
+            <DuplicateEventTooltip isDuplicate={isDuplicate}>
               <span
+                className="inline-flex items-center gap-1.5"
                 style={{
-                  position: 'relative',
-                  display: 'inline-flex',
-                  width: 6,
-                  height: 6,
-                  flexShrink: 0,
+                  color: isDuplicate
+                    ? 'var(--ds-gray-700)'
+                    : 'var(--ds-gray-900)',
                 }}
               >
-                {isPulsing && (
-                  <span
-                    style={{
-                      position: 'absolute',
-                      inset: 0,
-                      borderRadius: '50%',
-                      backgroundColor: statusDotColor,
-                      opacity: 0.75,
-                      animation: DOT_PULSE_ANIMATION,
-                    }}
-                  />
-                )}
                 <span
                   style={{
                     position: 'relative',
+                    display: 'inline-flex',
                     width: 6,
                     height: 6,
-                    borderRadius: '50%',
-                    backgroundColor: statusDotColor,
+                    flexShrink: 0,
                   }}
-                />
+                >
+                  {isPulsing && (
+                    <span
+                      style={{
+                        position: 'absolute',
+                        inset: 0,
+                        borderRadius: '50%',
+                        backgroundColor: statusDotColor,
+                        opacity: 0.75,
+                        animation: DOT_PULSE_ANIMATION,
+                      }}
+                    />
+                  )}
+                  <span
+                    style={{
+                      position: 'relative',
+                      width: 6,
+                      height: 6,
+                      borderRadius: '50%',
+                      backgroundColor: statusDotColor,
+                    }}
+                  />
+                </span>
+                {formatEventType(event.eventType)}
               </span>
-              {formatEventType(event.eventType)}
-            </span>
+            </DuplicateEventTooltip>
           </div>
 
           {/* Name */}
@@ -1309,6 +1326,17 @@ function EventListViewInner({
       (a, b) => dir * (getEffectiveEventTime(a) - getEffectiveEventTime(b))
     );
   }, [events, effectiveSortOrder, isExactSearchActive, searchResults]);
+
+  // Events the runtime passed over as repeats. Computed from the source list
+  // rather than `sortedEvents` because which occurrence counted is a property
+  // of the log, not of the direction the table happens to be sorted in.
+  const duplicateEventIds = useMemo(
+    () =>
+      findDuplicateEventIds(
+        isExactSearchActive ? (searchResults ?? []) : (events ?? [])
+      ),
+    [events, isExactSearchActive, searchResults]
+  );
 
   // Detect encrypted fields across all loaded events (inline eventData).
   const hasEncryptedInlineData = useMemo(() => {
@@ -1804,6 +1832,7 @@ function EventListViewInner({
                   encryptionKey={encryptionKey}
                   onEncryptedDataDetected={handleEncryptedDataDetected}
                   suppressGroupDimming={isExactSearchActive}
+                  isDuplicate={duplicateEventIds.has(ev.eventId)}
                   showSeparateEventOccurrenceTimestamps={
                     showSeparateEventOccurrenceTimestamps
                   }
