@@ -13,6 +13,9 @@ pnpm sim --verbose       # include queue deliveries in the trace
 Exits non-zero if any scenario misses an expectation or trips a consistency
 check, so it doubles as the package's integration test.
 
+How the simulator underneath works is documented in
+[`packages/world-sim/DESIGN.md`](../../packages/world-sim/DESIGN.md).
+
 ## What the scenarios show
 
 The first three run the **same workflow with the same input** and differ only in
@@ -59,7 +62,8 @@ green the moment a client sends `stateEventCount` (the neighbouring scenario is
 that same tempo with the flag on). The sixth, doc-31, has none — both guards are
 armed and neither can fire, because the hook lands in the quiescent gap between
 deliveries where the run makes no writes and so meets no checks. Closing it
-needs the append-tail fence that does not exist yet.
+needs an append-tail fence — `assertSlotAboveTail`, proposed in
+`vercel/workflow-server#692`.
 
 ## Requirements
 

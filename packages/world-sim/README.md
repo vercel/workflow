@@ -41,6 +41,11 @@ same input and same output produce a different log, which is the point.
 
 ---
 
+For how it is built — the interception model, the store's guards, the
+determinism machinery, and the current test status — see [DESIGN.md](./DESIGN.md).
+
+---
+
 ## The model
 
 Three rules, and everything else follows from them.
