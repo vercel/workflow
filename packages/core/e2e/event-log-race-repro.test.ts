@@ -949,7 +949,6 @@ const plannedAttempts =
   config.hookSleepAttempts;
 let overallDeadline = Number.POSITIVE_INFINITY;
 let launchDeadline = Number.POSITIVE_INFINITY;
-let remainingPlanned = plannedAttempts;
 let budgetExhausted = false;
 let lastCheckpointAt = 0;
 
@@ -985,35 +984,60 @@ function recordResult(result: ReproRunResult) {
   }
 }
 
-async function runScenario(
-  attempts: number,
-  concurrency: number,
-  run: (attempt: number) => Promise<ReproRunResult>
-) {
-  if (attempts <= 0) {
-    return [];
+interface ScenarioPlan {
+  scenario: Scenario;
+  attempts: number;
+  run: (attempt: number) => Promise<ReproRunResult>;
+}
+
+/**
+ * Every planned attempt in one launch order, with each scenario's attempts
+ * spread across the whole order rather than grouped into a contiguous block.
+ *
+ * Blocks make the launch budget positional. One attempt that spends its full
+ * `runTimeoutMs` holds its block open past the budget, and every scenario
+ * behind it reports zero runs: `hook-storm` is the production shape and
+ * `hook-sleep` is the calibration control, so a truncated run loses exactly the
+ * parts of the result that carry the most meaning. Interleaved, a truncated run
+ * is proportionally short in every scenario instead.
+ *
+ * Cross-run concurrency is unchanged. One `mapLimit` over this order holds
+ * `config.concurrency` attempts in flight no matter which scenarios they belong
+ * to, and the race each attempt reproduces is between replays *within* its own
+ * run, so which scenarios its neighbours are running does not enter into it.
+ */
+function interleaveAttempts(plans: ScenarioPlan[]) {
+  const queues = plans
+    .filter((plan) => plan.attempts > 0)
+    .map((plan) => ({ plan, issued: 0 }));
+  const order: {
+    scenario: Scenario;
+    attempt: number;
+    run: () => Promise<ReproRunResult>;
+  }[] = [];
+  for (;;) {
+    // Whichever scenario is furthest behind its share of the order goes next,
+    // so every prefix of the order tracks the planned proportions.
+    let next: (typeof queues)[number] | undefined;
+    for (const queue of queues) {
+      if (queue.issued >= queue.plan.attempts) {
+        continue;
+      }
+      if (
+        next === undefined ||
+        queue.issued / queue.plan.attempts < next.issued / next.plan.attempts
+      ) {
+        next = queue;
+      }
+    }
+    if (next === undefined) {
+      return order;
+    }
+    next.issued += 1;
+    const { scenario, run } = next.plan;
+    const attempt = next.issued;
+    order.push({ scenario, attempt, run: () => run(attempt) });
   }
-  // Each scenario gets the share of the remaining budget its remaining planned
-  // attempts represent, so a truncated run still carries data for every
-  // scenario — including the `hook-sleep` control, which runs last and would
-  // otherwise be the first thing a single global deadline dropped. A scenario
-  // that finishes under its slice hands the surplus to the next one, since the
-  // slice is recomputed from the wall-clock left until `overallDeadline`.
-  const now = Date.now();
-  launchDeadline = Math.min(
-    overallDeadline,
-    now + ((overallDeadline - now) * attempts) / remainingPlanned
-  );
-  remainingPlanned -= attempts;
-  const attemptNumbers = Array.from(
-    { length: attempts },
-    (_, index) => index + 1
-  );
-  return await mapLimit(attemptNumbers, concurrency, async (attempt) => {
-    const result = await run(attempt);
-    recordResult(result);
-    return result;
-  });
 }
 
 // Derived from the launch budget, not from the attempt count: the budget is
@@ -1077,25 +1101,33 @@ describe('event log race repro', () => {
     { timeout: testTimeoutMs },
     async () => {
       overallDeadline = Date.now() + config.budgetMs;
+      launchDeadline = overallDeadline;
       // Written up front so a kill before the first checkpoint still produces a
       // file the renderer can report against, rather than nothing at all.
       writeResults(collected, false);
 
-      await runScenario(
-        config.stepStormAttempts,
-        config.concurrency,
-        runStepStormAttempt
-      );
-      await runScenario(
-        config.hookStormAttempts,
-        config.concurrency,
-        runHookStormAttempt
-      );
-      await runScenario(
-        config.hookSleepAttempts,
-        config.concurrency,
-        runHookSleepAttempt
-      );
+      const order = interleaveAttempts([
+        {
+          scenario: 'step-storm',
+          attempts: config.stepStormAttempts,
+          run: runStepStormAttempt,
+        },
+        {
+          scenario: 'hook-storm',
+          attempts: config.hookStormAttempts,
+          run: runHookStormAttempt,
+        },
+        {
+          scenario: 'hook-sleep',
+          attempts: config.hookSleepAttempts,
+          run: runHookSleepAttempt,
+        },
+      ]);
+      await mapLimit(order, config.concurrency, async (item) => {
+        const result = await item.run();
+        recordResult(result);
+        return result;
+      });
 
       const results = collected;
       // A budget-exhausted run launched fewer than `plannedAttempts` attempts,
