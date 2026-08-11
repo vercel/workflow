@@ -17,6 +17,11 @@ const StreamPublishMessage = z.object({
   chunkId: z.templateLiteral(['chnk_', z.string()]),
 });
 
+const StreamCursorSchema = z.object({
+  c: z.templateLiteral(['chnk_', z.string()]),
+  i: z.number().int().nonnegative(),
+});
+
 interface StreamChunkEvent {
   id: `chnk_${string}`;
   data: Uint8Array;
@@ -238,14 +243,12 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
       ): Promise<StreamChunksResponse> {
         const limit = options?.limit ?? 100;
 
-        // Decode cursor to get the last seen chunkId
-        let cursorChunkId: string | null = null;
+        let cursor: z.infer<typeof StreamCursorSchema> | undefined;
         if (options?.cursor) {
           try {
-            const decoded = JSON.parse(
-              Buffer.from(options.cursor, 'base64').toString('utf-8')
+            cursor = StreamCursorSchema.parse(
+              JSON.parse(Buffer.from(options.cursor, 'base64').toString())
             );
-            cursorChunkId = decoded.c;
           } catch {
             // Invalid cursor, start from beginning
           }
@@ -264,9 +267,7 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
             and(
               eq(streams.streamId, name),
               eq(streams.eof, false),
-              ...(cursorChunkId
-                ? [gt(streams.chunkId, cursorChunkId as `chnk_${string}`)]
-                : [])
+              ...(cursor ? [gt(streams.chunkId, cursor.c)] : [])
             )
           )
           .orderBy(asc(streams.chunkId))
@@ -275,51 +276,30 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
         const hasMore = rows.length > limit;
         const pageRows = rows.slice(0, limit);
 
-        // Check if stream is complete via a separate EOF query
-        let streamDone = false;
         const [eofRow] = await drizzle
           .select({ eof: streams.eof })
           .from(streams)
           .where(and(eq(streams.streamId, name), eq(streams.eof, true)))
           .limit(1);
-        if (eofRow) {
-          streamDone = true;
-        }
-
-        // Build the cursor index: we need a running index across pages.
-        // Decode the current start index from the cursor.
-        let baseIndex = 0;
-        if (options?.cursor) {
-          try {
-            const decoded = JSON.parse(
-              Buffer.from(options.cursor, 'base64').toString('utf-8')
-            );
-            if (typeof decoded.i === 'number') {
-              baseIndex = decoded.i;
-            }
-          } catch {
-            // Invalid cursor
-          }
-        }
+        const streamDone = eofRow !== undefined;
+        const baseIndex = cursor?.i ?? 0;
 
         const chunks = pageRows.map((row, i) => ({
           index: baseIndex + i,
           data: new Uint8Array(row.data),
         }));
 
-        const nextCursor =
-          hasMore && pageRows.length > 0
-            ? Buffer.from(
-                JSON.stringify({
-                  c: pageRows[pageRows.length - 1].chunkId,
-                  i: baseIndex + pageRows.length,
-                })
-              ).toString('base64')
-            : null;
-
         return {
           data: chunks,
-          cursor: nextCursor,
+          cursor:
+            pageRows.length > 0 && (hasMore || !streamDone)
+              ? Buffer.from(
+                  JSON.stringify({
+                    c: pageRows[pageRows.length - 1].chunkId,
+                    i: baseIndex + pageRows.length,
+                  })
+                ).toString('base64')
+              : null,
           hasMore,
           done: streamDone,
         };
