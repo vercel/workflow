@@ -42,8 +42,11 @@ function fakeDispatcher() {
 /**
  * A caller's dispatcher is handed to the global `fetch`, which drives it with a
  * v1 handler that undici 8 rejects, so it is bridged rather than passed through.
- * The bridge must forward to the caller's own `dispatch`, and must not leak the
- * `allowH2: false` the bridge injects (see `bridgeCallerDispatcher`).
+ * The bridge must forward to the caller's own `dispatch`, and must pass the
+ * dispatch options through untouched: nothing may rewrite the caller's protocol
+ * choice on the way down (see `bridgeCallerDispatcher`). An injected
+ * `allowH2: false` would both downgrade the caller and, under a `MockAgent`,
+ * reroute the request to a pool holding no interceptors.
  */
 function expectBridgedTo(
   resolved: unknown,
@@ -72,6 +75,51 @@ describe('getDispatcher', () => {
     expect(getDispatcher({ dispatcher: custom })).toBe(
       getDispatcher({ dispatcher: custom })
     );
+  });
+
+  // `APIConfig.dispatcher` takes an instance from any undici version, and undici
+  // 6 speaks the v1 handler ABI only: it validates the handler on dispatch and
+  // rejects a pure v2 one with `invalid onError method`. So the bridge emits a
+  // handler carrying both. Measured across undici 6, 7 and 8, exactly one ABI is
+  // driven per request and never both.
+  it('gives the caller a handler that still speaks the v1 ABI', () => {
+    const seen: unknown[] = [];
+    const v1Only = {
+      dispatch(_opts: unknown, handler: Record<string, unknown>) {
+        // undici 6's own validation, then its own callback sequence.
+        for (const name of ['onConnect', 'onHeaders', 'onData', 'onComplete']) {
+          expect(typeof handler[name]).toBe('function');
+        }
+        const raw = [Buffer.from('x-probe'), Buffer.from('yes')];
+        (handler.onConnect as () => void)();
+        (handler.onHeaders as (s: number, r: unknown) => void)(200, raw);
+        (handler.onData as (c: Buffer) => void)(Buffer.from('ok'));
+        (handler.onComplete as (t: unknown) => void)(null);
+        return true;
+      },
+      close: async () => undefined,
+      destroy: async () => undefined,
+    };
+    const bridged = getDispatcher({ dispatcher: v1Only }) as {
+      dispatch: (o: unknown, h: unknown) => void;
+    };
+    bridged.dispatch(
+      { origin: 'https://example.test', path: '/', method: 'GET' },
+      {
+        onConnect: () => seen.push('onConnect'),
+        onHeaders: (status: number, raw: Buffer[]) =>
+          seen.push(`onHeaders ${status} ${raw[0]}=${raw[1]}`),
+        onData: (chunk: Buffer) => seen.push(`onData ${chunk}`),
+        onComplete: () => seen.push('onComplete'),
+        onError: () => seen.push('onError'),
+      }
+    );
+    expect(seen).toEqual([
+      'onConnect',
+      'onHeaders 200 x-probe=yes',
+      'onData ok',
+      'onComplete',
+    ]);
   });
 });
 
@@ -260,10 +308,10 @@ TTVKDw9WMB6CyIX5kV0cOG/S8OO+1l3ZPaogkzj0P5OnJaYPvpp2kpGrlQ==
 // connect instead of silently passing.
 //
 // It has to be the production factory, not a bare Agent: the global `fetch`
-// drives its dispatcher with a v1 handler, which undici 8 only accepts through
-// `Dispatcher1Wrapper` — and that wrapper forces `allowH2: false` onto every
-// request unless the wiring in `forGlobalFetch` undoes it. A bare Agent here
-// would fail on the handler ABI long before it could catch that downgrade.
+// drives its dispatcher with a v1 handler, and an undici 8 Agent rejects that
+// handler outright. Only the bridge `forGlobalFetch` applies makes the request
+// possible at all, so a bare Agent here would fail on the handler ABI long
+// before it could say anything about the protocol.
 describe('HTTP/2 over global fetch with an undici dispatcher', () => {
   let server: Http2SecureServer;
   let port: number;
@@ -278,7 +326,11 @@ describe('HTTP/2 over global fetch with an undici dispatcher', () => {
     server.on('stream', (stream) => {
       negotiatedAlpn = (stream.session?.socket as TLSSocket | undefined)
         ?.alpnProtocol;
-      stream.respond({ ':status': 200 });
+      stream.respond({
+        ':status': 200,
+        'content-type': 'application/vnd.workflow.v4-frames',
+        'x-multi': ['a', 'b'],
+      });
       stream.end('ok');
     });
     await new Promise<void>((resolve) => {
@@ -304,11 +356,30 @@ describe('HTTP/2 over global fetch with an undici dispatcher', () => {
     expect(negotiatedAlpn).toBe('h2');
   });
 
+  // Status and body survive a broken header bridge; the headers do not. undici's
+  // own `Dispatcher1Wrapper` forwards `controller.rawHeaders` to the v1 handler,
+  // and on an H2 path that field is a plain `{ name: value }` object rather than
+  // the `Buffer[]` pair list H1 supplies, so the handler's pair-wise loop reads
+  // nothing and every response header disappears. `fetchV4` then rejects the
+  // reply for a missing `content-type`, which is what this asserts against.
+  it('preserves response headers over h2', async () => {
+    const res = await fetch(`https://127.0.0.1:${port}/`, {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici dispatcher type doesn't match @types/node's RequestInit
+      dispatcher: agent,
+    } as any);
+    await res.text();
+    expect(negotiatedAlpn).toBe('h2');
+    expect(res.headers.get('content-type')).toBe(
+      'application/vnd.workflow.v4-frames'
+    );
+    // A repeated header must stay repeated, not collapse to its first value.
+    expect(res.headers.get('x-multi')).toBe('a, b');
+  });
+
   // The same hazard from the other side: `APIConfig.dispatcher` takes an
   // undici instance the caller constructed, and a caller who installs undici
   // today gets 8, whose dispatchers reject the v1 handler global `fetch` drives
-  // them with. Unbridged, this request never settles. Stripping `allowH2` in
-  // the bridge is what keeps the caller's own H2 preference intact.
+  // them with. Unbridged, this request never settles.
   it('lets a caller-supplied undici 8 dispatcher complete a request', async () => {
     const callerAgent = new Agent({ connect: { rejectUnauthorized: false } });
     negotiatedAlpn = undefined;
@@ -320,6 +391,9 @@ describe('HTTP/2 over global fetch with an undici dispatcher', () => {
       expect(res.status).toBe(200);
       expect(await res.text()).toBe('ok');
       expect(negotiatedAlpn).toBe('h2');
+      expect(res.headers.get('content-type')).toBe(
+        'application/vnd.workflow.v4-frames'
+      );
     } finally {
       await callerAgent.close();
     }

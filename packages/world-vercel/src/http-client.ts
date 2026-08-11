@@ -1,10 +1,4 @@
-import {
-  Agent,
-  type Dispatcher,
-  Dispatcher1Wrapper,
-  RetryAgent,
-  type RetryHandler,
-} from 'undici';
+import { Agent, Dispatcher, RetryAgent, type RetryHandler } from 'undici';
 import type { APIConfig } from './utils.js';
 
 let _dispatcher: RetryAgent | undefined;
@@ -608,21 +602,27 @@ export function getStreamCloseDispatcher(config?: APIConfig): unknown {
  *    handler implements, so `fetch()` simply *never settles* — every request
  *    hangs until the caller's own timeout.
  *
- * `Dispatcher1Wrapper` is undici's supported bridge for exactly this: it accepts
- * the v1 handler and translates to the v2 callbacks the v8 dispatcher emits. It
- * must be the outermost layer, which is why it is applied here rather than
- * inside `compose()`.
+ * `bridgeV1Handler` translates the v1 handler into the v2 callbacks the v8
+ * dispatcher emits. It must be the outermost layer, which is why it is applied
+ * here rather than inside `compose()`.
  *
- * It also forces `allowH2: false` onto every request it forwards, because a v1
- * handler cannot carry a WebSocket upgrade over H2 (nodejs/undici#4989), and the
- * Agent honours that per-request: `opts.allowH2 === false` routes to a separate
- * `${origin}#http1-only` pool. Left in place that would silently downgrade the
- * events path to HTTP/1.1 and undo the multiplexing and flow-control work these
- * agents exist for — ALPN would negotiate `http/1.1` while every option here
- * still said H2. `restoreH2` deletes the injected flag again on the way down.
- * That is safe for these dispatchers specifically: they only ever carry plain
- * request/response traffic, and the WebSocket transport (events-v4-ws.ts) does
- * not run through them.
+ * undici ships its own bridge for this, `Dispatcher1Wrapper`, and it cannot be
+ * used on an H2 path. It forwards `controller.rawHeaders` to `onHeaders`, which
+ * the H1 parser sets to the raw `Buffer[]` a v1 handler expects, but which
+ * `client-h2.js` sets to a plain `{ name: value }` object. That object has no
+ * `.length`, so the pair-wise loop in `fetch`'s v1 handler reads zero headers and
+ * the response arrives with an empty `Headers` and the right status and body.
+ * Measured against a loopback H2 origin: `content-type` and every other response
+ * header disappear. undici's wrapper compensates by forcing `allowH2: false` onto
+ * every request (a v1 handler also cannot carry a WebSocket upgrade over H2,
+ * nodejs/undici#4989), and the Agent honours that per request by routing to a
+ * separate `${origin}#http1-only` pool. Accepting that would downgrade the events
+ * path to HTTP/1.1 and undo the multiplexing and flow-control work these agents
+ * exist for, with ALPN negotiating `http/1.1` while every option here still said
+ * H2. The bridge below instead normalizes the header shape and leaves `allowH2`
+ * alone. That is safe for these dispatchers specifically: they only ever carry
+ * plain request/response traffic, and the WebSocket transport (events-v4-ws.ts)
+ * does not run through them.
  *
  * Wrapping is done once per dispatcher, at construction, because
  * `DispatcherRecycler.note()` identifies the dispatcher a request used by
@@ -631,36 +631,181 @@ export function getStreamCloseDispatcher(config?: APIConfig): unknown {
  * `interceptors` are composed underneath the bridge, so they observe the v2
  * handler the bridge produces. The composed dispatcher goes through
  * `withBoundLifecycle` because `compose()` returns a Proxy whose `close()` is
- * broken, and `Dispatcher1Wrapper` forwards `close()`/`destroy()` straight
- * through to whatever it wraps.
+ * broken, and the bridge forwards `close()`/`destroy()` straight through to
+ * whatever it wraps.
  */
 function forGlobalFetch(
   dispatcher: RetryAgent,
   ...interceptors: Array<Dispatcher.DispatcherComposeInterceptor>
 ): RetryAgent {
-  // `compose` applies left to right, so `restoreH2` last makes it outermost.
-  const composed = dispatcher.compose(
-    ...interceptors,
-    restoreH2
-  ) as unknown as RetryAgent;
-  return new Dispatcher1Wrapper(
-    withBoundLifecycle(dispatcher, composed)
-  ) as unknown as RetryAgent;
+  const composed = dispatcher.compose(...interceptors) as unknown as RetryAgent;
+  return bridgeV1Handler(withBoundLifecycle(dispatcher, composed));
+}
+
+interface V1Handler {
+  onConnect?: (abort: (reason?: Error) => void, context?: unknown) => void;
+  onHeaders?: (
+    statusCode: number,
+    rawHeaders: unknown,
+    resume: () => void,
+    statusText?: string
+  ) => boolean | void;
+  onData?: (chunk: Buffer) => boolean | void;
+  onComplete?: (rawTrailers: unknown) => void;
+  onError?: (error: Error) => void;
+  onUpgrade?: (
+    statusCode: number,
+    rawHeaders: unknown,
+    socket: unknown
+  ) => void;
+  onBodySent?: (chunk: unknown) => void;
+  onRequestSent?: () => void;
+  onResponseStarted?: () => void;
 }
 
 /**
- * Drops the `allowH2: false` that `Dispatcher1Wrapper` injects, so the agent's
- * own `allowH2` decides the protocol. Deleting the key rather than setting it to
- * `true` keeps `DEFAULT_AGENT_OPTIONS`/`EVENTS_AGENT_OPTIONS_NO_H2` on HTTP/1.1.
+ * The `Buffer[]` pair list a v1 handler parses headers out of. Mirrors undici's
+ * internal `toRawHeaders`, which is not exported.
  */
-function restoreH2(dispatch: Dispatcher['dispatch']): Dispatcher['dispatch'] {
-  return (opts, handler) => {
-    const { allowH2: _injected, ...rest } =
-      opts as Dispatcher.DispatchOptions & {
-        allowH2?: boolean;
-      };
-    return dispatch(rest, handler);
-  };
+function toRawHeaders(headers: Record<string, string | string[]>): Buffer[] {
+  const raw: Buffer[] = [];
+  for (const [name, value] of Object.entries(headers)) {
+    for (const entry of Array.isArray(value) ? value : [value]) {
+      raw.push(Buffer.from(name, 'latin1'), Buffer.from(`${entry}`, 'latin1'));
+    }
+  }
+  return raw;
+}
+
+/**
+ * Header list for a v1 handler, whichever shape the dispatcher produced: the H1
+ * parser hands the raw `Buffer[]` through the controller, H2 hands a parsed
+ * object as the `onResponseStart` argument.
+ */
+function rawHeadersFor(controller: unknown, parsed: unknown): unknown {
+  const fromController = (controller as { rawHeaders?: unknown })?.rawHeaders;
+  if (Array.isArray(fromController)) return fromController;
+  return toRawHeaders((parsed ?? {}) as Record<string, string | string[]>);
+}
+
+const V1_CALLBACKS = [
+  'onConnect',
+  'onHeaders',
+  'onData',
+  'onComplete',
+  'onError',
+  'onUpgrade',
+] as const;
+
+/**
+ * Adapts a v1 handler to the v2 callbacks an undici 8 dispatcher emits, while
+ * keeping the v1 callbacks on the same object.
+ *
+ * `APIConfig.dispatcher` accepts an instance from any undici version, and undici
+ * 6 knows only the v1 ABI: it validates the handler on dispatch and rejects a
+ * pure v2 one with `invalid onError method`. Measured across 6, 7 and 8, a
+ * handler carrying both ABIs is driven through exactly one of them and never
+ * both: 6 calls only the v1 callbacks, 7 and 8 only the v2 ones.
+ *
+ * The v1 callbacks are copied rather than defined unconditionally so that undici
+ * 6 still sees a handler missing a required callback as missing it.
+ */
+function wrapV1Handler(handler: V1Handler): Dispatcher.DispatchHandler {
+  const passthrough: Record<string, unknown> = {};
+  for (const name of V1_CALLBACKS) {
+    const callback = handler[name];
+    if (typeof callback === 'function') {
+      passthrough[name] = callback.bind(handler);
+    }
+  }
+  return {
+    ...passthrough,
+    onRequestStart(controller, context) {
+      // `abort()` types its reason as required, but undici defaults an
+      // undefined one to RequestAbortedError. Passing it through keeps the
+      // error identity a v1 caller expects.
+      handler.onConnect?.(
+        (reason?: Error) => controller.abort(reason as Error),
+        context
+      );
+    },
+    onRequestUpgrade(controller, statusCode, headers, socket) {
+      handler.onUpgrade?.(
+        statusCode,
+        rawHeadersFor(controller, headers),
+        socket
+      );
+    },
+    onResponseStart(controller, statusCode, headers, statusMessage) {
+      const proceed = handler.onHeaders?.(
+        statusCode,
+        rawHeadersFor(controller, headers),
+        () => controller.resume(),
+        statusMessage
+      );
+      if (proceed === false) controller.pause();
+    },
+    onResponseData(controller, chunk) {
+      if (handler.onData?.(chunk) === false) controller.pause();
+    },
+    onResponseEnd(controller, trailers) {
+      handler.onComplete?.(rawHeadersFor(controller, trailers));
+    },
+    onResponseError(_controller, error) {
+      if (!handler.onError) throw error;
+      handler.onError(error);
+    },
+    onBodySent(chunk) {
+      handler.onBodySent?.(chunk);
+    },
+    onRequestSent() {
+      handler.onRequestSent?.();
+    },
+    onResponseStarted() {
+      handler.onResponseStarted?.();
+    },
+  } as Dispatcher.DispatchHandler;
+}
+
+/**
+ * A dispatcher that accepts a v1 handler, passing a v2 one straight through (a
+ * future Node whose bundled `fetch` drives v2 handlers needs no bridging).
+ */
+class V1BridgeDispatcher extends Dispatcher {
+  readonly #inner: Dispatcher;
+
+  constructor(inner: Dispatcher) {
+    super();
+    this.#inner = inner;
+  }
+
+  dispatch(opts: Dispatcher.DispatchOptions, handler: V1Handler): boolean {
+    return this.#inner.dispatch(
+      opts,
+      typeof (handler as Dispatcher.DispatchHandler).onRequestStart ===
+        'function'
+        ? (handler as Dispatcher.DispatchHandler)
+        : wrapV1Handler(handler)
+    );
+  }
+
+  close(...args: unknown[]): Promise<void> {
+    return (this.#inner.close as (...a: unknown[]) => Promise<void>).apply(
+      this.#inner,
+      args
+    );
+  }
+
+  destroy(...args: unknown[]): Promise<void> {
+    return (this.#inner.destroy as (...a: unknown[]) => Promise<void>).apply(
+      this.#inner,
+      args
+    );
+  }
+}
+
+function bridgeV1Handler<T>(dispatcher: T): T {
+  return new V1BridgeDispatcher(dispatcher as Dispatcher) as unknown as T;
 }
 
 /**
@@ -674,12 +819,6 @@ function restoreH2(dispatch: Dispatcher['dispatch']): Dispatcher['dispatch'] {
  * safe for older dispatchers as well: undici 6/7 dispatchers accept the v2
  * handler the bridge produces.
  *
- * `allowH2` is stripped for the same reason as in `restoreH2`, and it matters
- * more here: an undici `MockAgent` keys its interceptors off the pool the inner
- * Agent selects, and the injected flag sends the request to a separate
- * `${origin}#http1-only` pool that holds no interceptors, so mocked requests
- * escape to the network instead of being intercepted.
- *
  * Memoized because the recycler and the retry bookkeeping compare dispatchers by
  * reference, and a caller may pass the same instance to many calls.
  */
@@ -689,32 +828,14 @@ function bridgeCallerDispatcher(dispatcher: unknown): unknown {
   if (
     dispatcher == null ||
     typeof dispatcher !== 'object' ||
-    dispatcher instanceof Dispatcher1Wrapper
+    dispatcher instanceof V1BridgeDispatcher
   ) {
     return dispatcher;
   }
   const cached = bridgedCallerDispatchers.get(dispatcher);
   if (cached !== undefined) return cached;
 
-  const inner = dispatcher as Dispatcher;
-  const bridged = new Dispatcher1Wrapper({
-    dispatch(opts: Dispatcher.DispatchOptions, handler: unknown) {
-      const { allowH2: _injected, ...rest } =
-        opts as Dispatcher.DispatchOptions & {
-          allowH2?: boolean;
-        };
-      return (
-        inner.dispatch as unknown as (
-          o: Dispatcher.DispatchOptions,
-          h: unknown
-        ) => boolean
-      ).call(inner, rest, handler);
-    },
-    close: (...args: unknown[]) =>
-      (inner.close as (...a: unknown[]) => unknown).apply(inner, args),
-    destroy: (...args: unknown[]) =>
-      (inner.destroy as (...a: unknown[]) => unknown).apply(inner, args),
-  } as unknown as Dispatcher);
+  const bridged = bridgeV1Handler(dispatcher as Dispatcher);
   bridgedCallerDispatchers.set(dispatcher, bridged);
   return bridged;
 }
