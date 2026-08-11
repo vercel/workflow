@@ -30,10 +30,12 @@ import {
 } from '../fs.js';
 import { filterHookData } from './filters.js';
 import {
+  type HookTokenClaim,
   hookRecoveryMarkerPath,
   hookTokenClaimPath,
   isHookDisposalCommitted,
   readHookTokenClaim,
+  readStartHookAdmission,
   releaseHookTokenClaimIfOwnedBy,
 } from './helpers.js';
 import {
@@ -156,7 +158,8 @@ async function restoreHookCachesFromEvent(
       runId: hook.runId,
       eventId: event.eventId,
       tokenRetentionUntil: event.eventData.tokenRetentionUntil,
-    })
+      tag,
+    } satisfies HookTokenClaim)
   );
   // Marker before entity (see hook-index.ts crash-ordering invariant).
   await writeHookByRunMarker(basedir, hook.runId, hook.hookId, tag);
@@ -340,7 +343,8 @@ export function createHooksStorage(
  */
 export async function deleteAllHooksForRun(
   basedir: string,
-  runId: string
+  runId: string,
+  tag?: string
 ): Promise<void> {
   // Discover this run's hooks via by-run markers (a prefix readdir)
   // instead of reading every live hook entity in the world.
@@ -371,12 +375,11 @@ export async function deleteAllHooksForRun(
         // Release the claim only if it still points at this hook — a
         // claimant may already hold a fresh claim for the token (see
         // `isHookTokenClaimReleasable`).
-        await releaseHookTokenClaimIfOwnedBy(
-          basedir,
-          hook.token,
-          hook.runId,
-          hook.hookId
-        );
+        await releaseHookTokenClaimIfOwnedBy(basedir, hook.token, {
+          runId: hook.runId,
+          hookId: hook.hookId,
+          tag: marker.tag,
+        });
         await deleteJSON(
           hookRecoveryMarkerPath(basedir, hook.token, hook.runId, hook.hookId)
         );
@@ -384,5 +387,19 @@ export async function deleteAllHooksForRun(
       }
     }
     await deleteHookByRunMarkerFile(basedir, marker.fileId);
+  }
+
+  const admission = await readStartHookAdmission(basedir, runId, tag);
+  if (
+    admission &&
+    !('redirectRunId' in admission) &&
+    (!admission.tokenRetentionUntil ||
+      admission.tokenRetentionUntil.getTime() <= Date.now())
+  ) {
+    await releaseHookTokenClaimIfOwnedBy(basedir, admission.token, {
+      runId,
+      eventId: admission.eventId,
+      tag,
+    });
   }
 }

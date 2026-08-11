@@ -18,7 +18,11 @@ import {
 import { initDataDir } from './init.js';
 import { instrumentObject } from './instrumentObject.js';
 import { createQueue, type DirectHandler } from './queue.js';
-import { hashToken, hookRecoveryMarkerPath } from './storage/helpers.js';
+import {
+  hookRecoveryMarkerPath,
+  releaseHookTokenClaimIfOwnedBy,
+  StartHookAdmissionSchema,
+} from './storage/helpers.js';
 import { resetHookIndexEnsureCache } from './storage/hook-index.js';
 import { createStorage } from './storage.js';
 import { createStreamer } from './streamer.js';
@@ -75,6 +79,7 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
     specVersion: SPEC_VERSION_CURRENT,
     capabilities: {
       hookRetention: { active: true },
+      atomicStartHook: { active: true },
       // world-local deduplicates concurrent `hook_received` writes sharing a
       // `(runId, resumeId)` via a filesystem sidecar claim (see
       // events-storage.ts `claimHookResume`), so resumeHook()'s parallel fast
@@ -128,12 +133,8 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
         // Selectively delete only files matching this tag
         const basedir = mergedConfig.dataDir;
 
-        // Delete hook token constraint files (and recovery markers,
-        // for disk hygiene) BEFORE deleting the hooks, since we need
-        // to read each hook to extract its token hash. Constraint
-        // files and markers are untagged (`{sha256}.json` and
-        // `{sha256}.recovery.json`) so listTaggedFiles won't find
-        // them — we must resolve them via the hook data.
+        // Claims and recovery markers are untagged, so release them through
+        // their tagged Hook or admission before deleting tagged entities.
         const hooksDir = path.join(basedir, 'hooks');
         const taggedHookFiles = await listTaggedFiles(hooksDir, tag);
         const { HookSchema } = await import('@workflow/world');
@@ -144,9 +145,11 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
               HookSchema
             );
             if (hook?.token) {
-              await deleteJSON(
-                path.join(hooksDir, 'tokens', `${hashToken(hook.token)}.json`)
-              );
+              await releaseHookTokenClaimIfOwnedBy(basedir, hook.token, {
+                runId: hook.runId,
+                hookId: hook.hookId,
+                tag,
+              });
               await deleteJSON(
                 hookRecoveryMarkerPath(
                   basedir,
@@ -156,6 +159,26 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
                 )
               );
             }
+          })
+        );
+
+        const admissionsDir = path.join(basedir, 'hooks', 'admissions');
+        const taggedAdmissionFiles = await listTaggedFiles(admissionsDir, tag);
+        await Promise.all(
+          taggedAdmissionFiles.map(async (admissionFile) => {
+            const admissionPath = path.join(admissionsDir, admissionFile);
+            const admission = await readJSON(
+              admissionPath,
+              StartHookAdmissionSchema
+            );
+            if (admission && !('redirectRunId' in admission)) {
+              await releaseHookTokenClaimIfOwnedBy(basedir, admission.token, {
+                runId: admission.runId,
+                eventId: admission.eventId,
+                tag,
+              });
+            }
+            await deleteJSON(admissionPath);
           })
         );
 

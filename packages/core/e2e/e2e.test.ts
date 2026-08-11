@@ -2129,6 +2129,37 @@ describe('e2e', () => {
     }
   );
 
+  test.skipIf(
+    !isLocalDeployment() ||
+      process.env.WORKFLOW_TARGET_WORLD === '@workflow/world-postgres'
+  )(
+    'atomic start Hooks admit one concurrent run',
+    { timeout: 60_000 },
+    async () => {
+      const token = `atomic-start-${Math.random().toString(36).slice(2)}`;
+      const workflow = await e2e('sleepingWorkflow');
+      const results = await Promise.allSettled(
+        Array.from({ length: 6 }, () =>
+          start(workflow, [5_000], { hook: { token } })
+        )
+      );
+      const winner = results.find((result) => result.status === 'fulfilled');
+      assert(winner?.status === 'fulfilled');
+
+      expect(
+        results.filter((result) => result.status === 'fulfilled')
+      ).toHaveLength(1);
+      for (const result of results) {
+        if (result.status === 'rejected') {
+          expect(HookConflictError.is(result.reason)).toBe(true);
+          assert(HookConflictError.is(result.reason));
+          expect(result.reason.conflictingRunId).toBe(winner.value.runId);
+        }
+      }
+      await winner.value.returnValue;
+    }
+  );
+
   test(
     'hookAdoptOwnerResultWorkflow - duplicate adopts the owner result via conflict.returnValue',
     { timeout: 120_000 },
