@@ -607,10 +607,16 @@ async function createWorkflowRunEventInner(
     stateEventCount: params?.stateEventCount,
     ...(params?.stateCursor ? { stateCursor: params.stateCursor } : {}),
     // Slot-identity snapshot. The runtime sends `eventCount` instead of the
-    // watermark triple once the run's own ids are slot-shaped; it rides as
-    // `maxSlot` because the v4 meta already has an unrelated telemetry
-    // `eventCount`.
-    ...(params?.eventCount !== undefined ? { maxSlot: params.eventCount } : {}),
+    // watermark triple once the run's own ids are slot-shaped: the highest slot
+    // this write has accounted for, so the slot it claims is the one above.
+    //
+    // The claim rides in its own meta field rather than reusing the one that
+    // reports how much of the log the writer holds, because a backend cannot
+    // tell the two apart from the number: an SDK that only reports would have
+    // every write of a flush but the first bound to a slot it lost.
+    ...(params?.eventCount !== undefined
+      ? { slot: params.eventCount + 1 }
+      : {}),
     replayDivergenceCount: params?.replayDivergenceCount,
     occurredAt: params?.occurredAt ?? new Date(),
     // Opt-in inline-delta: forward the cursor the runtime held before

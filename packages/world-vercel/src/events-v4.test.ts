@@ -1340,7 +1340,7 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
     agent.assertNoPendingInterceptors();
   });
 
-  it('forwards maxSlot in the frame meta', async () => {
+  it('forwards slot in the frame meta', async () => {
     const origin =
       WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
     const agent = new MockAgent();
@@ -1388,16 +1388,16 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
         eventType: 'wait_created',
         specVersion: 6,
         correlationId: 'wait_1',
-        maxSlot: 12,
+        slot: 12,
       },
       { token: 'test-token', dispatcher: agent }
     );
 
-    expect(capturedMeta?.maxSlot).toBe(12);
+    expect(capturedMeta?.slot).toBe(12);
     agent.assertNoPendingInterceptors();
   });
 
-  it('omits maxSlot from the frame meta when not set', async () => {
+  it('omits slot from the frame meta when not set', async () => {
     const origin =
       WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
     const agent = new MockAgent();
@@ -1449,7 +1449,7 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
       { token: 'test-token', dispatcher: agent }
     );
 
-    expect('maxSlot' in (capturedMeta ?? {})).toBe(false);
+    expect('slot' in (capturedMeta ?? {})).toBe(false);
     agent.assertNoPendingInterceptors();
   });
 

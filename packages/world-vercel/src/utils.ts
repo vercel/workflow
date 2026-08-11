@@ -32,7 +32,10 @@ import { version } from './version.js';
  * `main` — rewritten by external CI for branch-deployment testing.
  * Prefer `VERCEL_WORKFLOW_SERVER_URL` for deployment-time configuration.
  */
-export const WORKFLOW_SERVER_URL_OVERRIDE = '';
+// TEMPORARY: points e2e at the paired backend branch deployment so this PR's
+// writer-named slots are honoured. Revert to '' before merge.
+export const WORKFLOW_SERVER_URL_OVERRIDE =
+  'https://workflow-server-git-peter-slot-event-identity.vercel.sh';
 
 /**
  * HTTP methods that are safe to transparently re-issue inside the adapter.

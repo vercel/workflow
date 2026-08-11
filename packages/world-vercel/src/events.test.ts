@@ -346,11 +346,11 @@ describe('createWorkflowRunEvent precondition snapshot wire fields', () => {
     agent.assertNoPendingInterceptors();
   });
 
-  it('renames eventCount to maxSlot', async () => {
-    // The runtime sends `eventCount` once a run's own ids are slot-shaped. It
-    // cannot ride under that name: the v4 meta already has an unrelated
-    // telemetry `eventCount`, so the backend would read a progress counter as
-    // a log position.
+  it('sends eventCount as the slot above it', async () => {
+    // The runtime sends `eventCount` once a run's own ids are slot-shaped: the
+    // highest slot the write accounts for, so the slot it claims is the next
+    // one. It cannot ride under that name either, because the v4 meta already
+    // has an unrelated telemetry `eventCount`.
     const agent = mockAgent();
     let capturedMeta: Record<string, unknown> | undefined;
 
@@ -384,7 +384,7 @@ describe('createWorkflowRunEvent precondition snapshot wire fields', () => {
       { token: 'test-token', dispatcher: agent }
     );
 
-    expect(capturedMeta?.maxSlot).toBe(9);
+    expect(capturedMeta?.slot).toBe(10);
     agent.assertNoPendingInterceptors();
   });
 
