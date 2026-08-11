@@ -1,0 +1,149 @@
+---
+title: Diagnostics Channel
+description: Subscribe to step execution events through Node.js diagnostics_channel — no OpenTelemetry required.
+type: reference
+summary: The workflow.step tracing channel and its payload schema.
+prerequisites:
+  - /docs/foundations/workflows-and-steps
+related:
+  - /docs/observability/tracing
+  - /docs/how-it-works/event-sourcing
+---
+
+The runtime publishes a [`TracingChannel`](https://nodejs.org/api/diagnostics_channel.html#class-tracingchannel)
+named `workflow.step` around every step attempt. This is a plain
+`node:diagnostics_channel` convention — the same primitive Node.js core and
+undici use — so any APM or observability library that consumes tracing
+channels can observe step execution with **zero dependencies on this SDK's
+internals and no OpenTelemetry requirement**. When nothing subscribes, the
+channel adds no meaningful overhead to step execution.
+
+Steps are the only emission point. Workflow function bodies replay
+deterministically, so they deliberately have no channel: emission there would
+produce duplicate events for work that already happened.
+
+## Channel and events
+
+`diagnostics_channel.tracingChannel('workflow.step')` exposes the five
+standard events, published as
+`tracing:workflow.step:{start,end,asyncStart,asyncEnd,error}`:
+
+| Event | When |
+| --- | --- |
+| `start` | synchronously, immediately before the step function is invoked |
+| `end` | synchronously, when the invocation returns (the promise is still pending) |
+| `error` | once, if the step function's promise rejects |
+| `asyncStart` / `asyncEnd` | when the step function's promise settles |
+
+## Payload
+
+All events share one context object per attempt:
+
+```typescript
+interface StepTracingContext {
+  runId: string        // wrun_...
+  stepId: string       // step correlation id within the run
+  stepName: string     // full machine step name (including source module)
+  workflowName: string
+  attempt: number      // 1-based
+  // on error events only:
+  classification?: "fatal" | "retryable"
+  error?: unknown      // the thrown value
+}
+```
+
+Step **arguments and return values are never on the payload**. Step payloads
+can be encrypted end to end, so the channel carries metadata only.
+
+`classification` is `"fatal"` when the thrown error is a
+[`FatalError`](/docs/api-reference/workflow-errors/fatal-error) (including
+aborts promoted to fatal), `"retryable"` otherwise. Whether a retry actually
+happens is decided afterwards against the step's retry budget — a subscriber
+that needs "did it retry" should watch for the next attempt's `start`.
+
+## Subscribing
+
+```typescript title="instrumentation.ts" lineNumbers
+import { tracingChannel } from "node:diagnostics_channel"
+
+interface StepTracingContext {
+  runId: string
+  stepId: string
+  stepName: string
+  workflowName: string
+  attempt: number
+  classification?: "fatal" | "retryable"
+  error?: unknown
+}
+
+const channel = tracingChannel<unknown, StepTracingContext>("workflow.step")
+
+channel.start.subscribe((ctx) => {
+  const step = ctx as StepTracingContext
+  console.log(`step ${step.stepName} attempt ${step.attempt} starting`)
+})
+
+channel.error.subscribe((ctx) => {
+  const step = ctx as StepTracingContext
+  console.error(`step ${step.stepName} failed (${step.classification})`, step.error)
+})
+```
+
+## Binding spans with async context
+
+The channel's `start` event supports
+[`bindStore`](https://nodejs.org/api/diagnostics_channel.html#tracingchannelstart),
+which makes a store value active for the entire step body — across every
+`await`. This is how a subscriber opens a span per attempt and has all
+auto-instrumented work inside the step (fetch/undici, database clients, AI
+SDK calls) parent under it, without touching user code:
+
+```typescript title="instrumentation.ts" lineNumbers
+import { AsyncLocalStorage } from "node:async_hooks"
+import { tracingChannel } from "node:diagnostics_channel"
+import { context, trace, type Context, type Span } from "@opentelemetry/api"
+
+interface StepTracingContext {
+  runId: string
+  stepId: string
+  stepName: string
+  workflowName: string
+  attempt: number
+}
+
+// The AsyncLocalStorage your OpenTelemetry context manager reads from
+// (e.g. AsyncLocalStorageContextManager's storage).
+declare const store: AsyncLocalStorage<Context>
+
+const channel = tracingChannel<Context, StepTracingContext>("workflow.step")
+const tracer = trace.getTracer("workflow-steps")
+const spans = new Map<string, Span>()
+
+channel.start.bindStore(store, (ctx) => {
+  const span = tracer.startSpan(`workflow.step.attempt ${ctx.stepName}`, {
+    attributes: {
+      "workflow.run_id": ctx.runId,
+      "workflow.step_id": ctx.stepId,
+      "workflow.attempt": ctx.attempt,
+    },
+  })
+  spans.set(ctx.stepId, span)
+  return trace.setSpan(context.active(), span)
+})
+
+const endSpan = (ctx: unknown) =>
+  spans.get((ctx as StepTracingContext).stepId)?.end()
+channel.asyncEnd.subscribe(endSpan)
+channel.error.subscribe(endSpan)
+```
+
+When the SDK's [built-in OpenTelemetry tracing](/docs/observability/tracing)
+is also active, its `step.execute` span becomes a child of the span you set
+here, and auto-instrumented spans nest beneath it — the two mechanisms
+compose.
+
+## Stability
+
+The channel name and the payload fields documented above are a public
+convention: fields may be added over time, but existing fields will not be
+renamed or removed within a major version.

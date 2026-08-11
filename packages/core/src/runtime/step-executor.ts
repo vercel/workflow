@@ -1,3 +1,4 @@
+import { tracingChannel } from 'node:diagnostics_channel';
 import { types } from 'node:util';
 import {
   EntityConflictError,
@@ -64,6 +65,48 @@ import {
 import { safeWaitUntil } from './wait-until.js';
 
 export const DEFAULT_STEP_MAX_RETRIES = 3;
+
+/**
+ * Context published on the `workflow.step` tracing channel around every step
+ * attempt (channel names `tracing:workflow.step:{start,end,asyncStart,
+ * asyncEnd,error}`). The payload is metadata only — step arguments and return
+ * values never appear on it, because step payloads may be encrypted
+ * end-to-end. The channel has zero meaningful overhead when nothing
+ * subscribes, and subscribing requires no OpenTelemetry (or any other)
+ * dependency: it is a plain `node:diagnostics_channel` convention, so any
+ * consumer of `tracingChannel` (OTel instrumentations, dd-trace, custom
+ * subscribers) can observe step execution.
+ *
+ * The workflow-body execution path deliberately has NO channel: workflow
+ * scope replays, and emission there would produce duplicate and fictional
+ * events. Steps execute exactly once per attempt, so this is the only sound
+ * emission point.
+ */
+export interface StepTracingContext {
+  /** Workflow run id (`wrun_...`). */
+  runId: string;
+  /** Compiler-assigned step correlation id within the run. */
+  stepId: string;
+  /** Full machine step name (including source module). */
+  stepName: string;
+  /** Workflow function name. */
+  workflowName: string;
+  /** 1-based attempt number for this execution. */
+  attempt: number;
+  /**
+   * Set before the channel's `error` event fires: `fatal` when the thrown
+   * error is a `FatalError` (including promoted abort errors), `retryable`
+   * otherwise. Whether a retry actually happens is decided later against the
+   * step's retry budget — subscribers wanting "will retry" must also watch
+   * the next attempt's `start`.
+   */
+  classification?: 'fatal' | 'retryable';
+  /** The thrown error, populated by TracingChannel on the error event. */
+  error?: unknown;
+}
+const stepTracingChannel = tracingChannel<unknown, StepTracingContext>(
+  'workflow.step'
+);
 
 /**
  * Extract the inline delta from a step-terminal `events.create` result,
@@ -871,8 +914,38 @@ export async function executeStep(
           ),
         });
       }
+      const stepBody = stepFn;
+      const tracingContext: StepTracingContext = {
+        runId: workflowRunId,
+        stepId,
+        stepName,
+        workflowName,
+        attempt,
+      };
       try {
-        result = await trace('step.execute', {}, async () => {
+        // The traced fn resolves `undefined` on purpose: TracingChannel
+        // copies a promise's resolved value onto `context.result`, and step
+        // return values must never reach subscribers (see
+        // StepTracingContext). The real result is captured into `result`
+        // directly.
+        await stepTracingChannel.tracePromise(async () => {
+          try {
+            result = await runStepUserCode();
+          } catch (err) {
+            tracingContext.classification = FatalError.is(
+              promoteAbortErrorToFatal(err)
+            )
+              ? 'fatal'
+              : 'retryable';
+            throw err;
+          }
+        }, tracingContext);
+      } catch (err) {
+        userCodeError = err;
+        userCodeFailed = true;
+      }
+      async function runStepUserCode(): Promise<unknown> {
+        return await trace('step.execute', {}, async () => {
           return await contextStorage.run(
             {
               stepMetadata: {
@@ -902,12 +975,9 @@ export async function executeStep(
                 ? params.runReadyBarrier
                 : undefined,
             },
-            () => stepFn.apply(thisVal, args)
+            () => stepBody.apply(thisVal, args)
           );
         });
-      } catch (err) {
-        userCodeError = err;
-        userCodeFailed = true;
       }
       const executionTimeMs = Date.now() - executionStartTime;
 
