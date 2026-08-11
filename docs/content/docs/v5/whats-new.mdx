@@ -132,9 +132,9 @@ The local tooling around it grew as well: on [Nitro](/docs/getting-started/nitro
 
 Each run also carries more of the infrastructure it ran on. A step attempt records the compute instance that executed it, surfaced as **Compute Instance ID** in the run sidebar and as a `faas.instance` span attribute on flow and step spans, so a run that behaves oddly can be correlated with one warm instance. The sidebar also shows a copyable **Request ID** for looking the invocation up in your platform's logs.
 
-### Hook tokens can outlive their run
+### Custom hook token retention
 
-A [Hook](/docs/foundations/hooks) token is normally reserved only while its workflow is running. Pass `experimental_minRetention` to [`createHook()`](/docs/api-reference/workflow/create-hook#keep-a-token-unavailable-after-the-run-ends) to keep the token unavailable for at least a given duration after the Hook is created, so a duplicate request arriving after the original run finished still collides instead of starting fresh work. This is how [run idempotency](/docs/foundations/idempotency#run-idempotency) becomes durable rather than only concurrent.
+A [Hook](/docs/foundations/hooks) token is normally reserved only while its workflow is running. Pass `experimental_minRetention` to [`createHook()`](/docs/api-reference/workflow/create-hook#keep-a-token-unavailable-after-the-run-ends) to keep the token unavailable for at least a given duration after the Hook is created, so a duplicate request arriving after the original run finished still collides instead of starting fresh work. This allows for durable [run idempotency](/docs/foundations/idempotency#run-idempotency) with custom durations.
 
 All three first-party Worlds now implement it: Vercel accepts up to 30 days, and the Local and Postgres Worlds default to the same ceiling (see [`WORKFLOW_LOCAL_HOOK_RETENTION_LIMIT_DAYS`](/docs/configuration/worlds) and its Postgres equivalent). A retained Hook remains readable with [`getHookByToken()`](/docs/api-reference/workflow-api/get-hook-by-token) after its run ends, but cannot be resumed.
 
