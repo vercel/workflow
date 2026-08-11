@@ -7,6 +7,7 @@ prerequisites:
   - /docs/deploying
   - /docs/foundations/workflows-and-steps
 related:
+  - /worlds/upgrading-to-v5
   - /worlds/local
   - /worlds/postgres
   - /worlds/vercel
@@ -20,6 +21,10 @@ A **World** is the abstraction that allows workflows to run on any infrastructur
 
 <Callout type="info">
   **Reference Implementation:** The [Postgres World source code](https://github.com/vercel/workflow/tree/main/packages/world-postgres) is a production-ready example of how to implement the World interface with a database backend and graphile-worker for queuing.
+</Callout>
+
+<Callout type="info">
+  Already have a World on the 4.x spec? See [Upgrading a World to v5](/worlds/upgrading-to-v5) for the interface delta and the contract changes, rather than reading this guide top to bottom.
 </Callout>
 
 ## What is a World?

@@ -3,7 +3,7 @@ name: migrating-workflow-v4-to-v5
 description: Upgrades an app from Workflow SDK 4.x to 5.0. Use when bumping the `workflow` / `@workflow/*` dependencies to v5, or when hitting removed v4 APIs — `runStep`, `stepEntrypoint`, `workflow/internal/private`, `@workflow/core/private`, `writeToStream` / `closeStream` / `readFromStream` on a World, `world.steps.get` without a runId, `hook.getConflict()` returning `{ runId }`, `experimental_setAttributes`, `createLocalWorld` / `createVercelWorld`, `NestLocalBuilder` imported from `@workflow/nest`, or an SWC transform invoked with `mode: 'client'`.
 metadata:
   author: Vercel Inc.
-  version: '0.2.4'
+  version: '0.2.5'
 ---
 
 # Migrating Workflow SDK 4.x to 5.0
@@ -172,7 +172,7 @@ import { experimental_setAttributes } from 'workflow';
 import { setAttributes } from 'workflow';
 ```
 
-The old name is a deprecated alias, so this rewrite is safe but not urgent. The `attributes` option on `start()` is unchanged.
+The old name was removed in v5, so this rewrite is required. `ExperimentalSetAttributesOptions` is likewise now `SetAttributesOptions`. The `attributes` option on `start()` is unchanged.
 
 ### `mode: 'client'` removed from the SWC transform
 
@@ -224,7 +224,7 @@ Three contract changes affect existing implementations:
 - **Step queue topics are retired.** The `'step'` queue kind no longer exists: queued steps travel on the workflow topic (carrying `stepId`/`stepName` in the payload) and execute in the combined flow handler. A World that provisioned or routed separate `__wkf_step_*` topics can drop them.
 - **World resolution happens at build time.** Worlds are statically injected into host bundles rather than selected dynamically at runtime, and first-party World packages expose a `createWorld()` factory. A custom or community World must be resolvable by the build; verify the app still boots against it rather than assuming a runtime lookup.
 
-Optional methods may be omitted; the runtime falls back. Point the user at the "Building a World" guide for the full interface rather than inventing method bodies.
+Optional methods may be omitted; the runtime falls back. Point the user at the "Upgrading a World to v5" guide, which carries the full v4-to-v5 interface delta and the contract changes above, rather than inventing method bodies.
 
 ## Required output shape
 
@@ -273,5 +273,6 @@ Fail the migration if any of these are true:
 
 - What's new in v5: <https://workflow.dev/docs/whats-new>
 - Configuration and runtime tuning: <https://workflow.dev/docs/configuration>
+- Upgrading a World to v5: <https://workflow.dev/worlds/upgrading-to-v5>
 - Building a World: <https://workflow.dev/worlds/building-a-world>
 - v4 documentation: <https://workflow.dev/v4/docs>

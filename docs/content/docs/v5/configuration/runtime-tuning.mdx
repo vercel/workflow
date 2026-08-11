@@ -116,9 +116,10 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 
 ### `WORKFLOW_V2_TIMEOUT_MS`
 
-- Default: `120000`
+- Default: derived from the runtime deadline — `600000` when the invocation has 25 minutes or more left, `300000` when it has 10 minutes or more, otherwise `120000`
 - Wall-clock guard for the inline replay loop.
 - Once elapsed, the handler requeues the workflow instead of continuing to run more inline work in the same invocation.
+- The default comes from `World.getRuntimeDeadline()`, so raising a function's `maxDuration` widens the inline budget without configuration. Worlds that do not report a deadline get the flat `120000`. Setting this variable to a finite positive number overrides the tiering entirely.
 
 ### `WORKFLOW_MAX_INLINE_STEPS`
 
@@ -177,6 +178,14 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
   - `process` exposes only a frozen copy of `env`, matching the node engine.
 - The engine choice is stamped into the run's `executionContext` when the run starts, so a run keeps executing on the engine it started on even if the deployment's `WORKFLOW_VM` changes. Runs without a stamped engine use the handler's `WORKFLOW_VM` value.
 - Unknown values throw at startup.
+
+### `WORKFLOW_QUICKJS_BASELINE_SNAPSHOT`
+
+- Default: enabled
+- Only read when `WORKFLOW_VM=quickjs`.
+- Evaluates the workflow bundle once per function instance, snapshots the resulting VM, and restores that snapshot at the start of every invocation instead of re-evaluating the bundle. This is the dominant share of QuickJS VM startup: roughly 77ms to 3ms to first suspension for a 1.3MB bundle.
+- A bundle whose module scope consumes randomness, reads the clock, or replaces a serialization intrinsic cannot be snapshotted safely. Those are detected when the snapshot is prepared and fall back to per-invocation evaluation automatically.
+- Set `0` or `false` to always evaluate the bundle per invocation.
 
 ## Compression and tracing
 

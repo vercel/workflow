@@ -1,10 +1,121 @@
 ---
 title: Upgrading a World to v5
-description: Placeholder.
+description: Port a custom World implementation from the v4 spec to v5, including the interface delta, the contract changes, and the new event ID allocation rules.
 type: guide
-summary: Placeholder.
+summary: What changed in the World spec between v4 and v5, and how to update a custom World.
+prerequisites:
+  - /worlds/building-a-world
+related:
+  - /docs/whats-new
+  - /worlds/building-a-world
+  - /worlds/postgres
+  - /worlds/vercel
 ---
 
-## Placeholder
+This page is for people who implement the `World` interface themselves, or who maintain a build integration that compiles workflow files. It covers what changed between the v4 and v5 spec, which of those changes break an existing implementation, and what new surface is worth adopting.
 
-Content pending.
+If your application runs on the [Vercel](/worlds/vercel), [Local](/worlds/local), or [Postgres](/worlds/postgres) World, you need nothing from this page. Those implementations ship with the SDK and are already on the v5 spec. For the application-facing changes, see [What's new in v5](/docs/whats-new).
+
+The fastest way to start is to hand the diff to an agent:
+
+<CopyPrompt text="My app uses a custom Workflow SDK World. Help me upgrade it from the v4 World spec to v5. Clone https://github.com/vercel/workflow and, on the main branch, study packages/world (the World interface and types) plus the first-party implementations in packages/world-vercel and packages/world-postgres. Run git diff stable...workflow@<the 5.x version I am upgrading to> -- packages/world packages/world-vercel packages/world-postgres (release tags are named like workflow@5.0.0; fall back to main if the tag does not exist) to see exactly what changed since the 4.x line, and use those diffs to identify the spec and implementation changes. Then port the same changes into my custom World and verify it by running a workflow end to end against it." />
+
+We're working on bringing back World compatibility tests and reporting on the [Worlds page](/worlds), to make it easier to see which Workflow versions each World is compatible with.
+
+## Spec versions
+
+A World declares the protocol version it speaks on `specVersion`. In v4 the runtime required that number to equal its own current version exactly. In v5 it accepts a range, from the current version up to the highest version the SDK can read, so a World may opt into a version above the default without the runtime refusing it.
+
+The default for v5 is `SPEC_VERSION_CURRENT`, which is `5`. Declare that unless you implement the newer event ID scheme described below, in which case declare `SPEC_VERSION_SUPPORTS_SLOT_IDENTITY`. Both constants are exported from `@workflow/world`; import them rather than hardcoding a number, so a later bump doesn't silently strand your implementation.
+
+Runs carry a spec version too, and a run created before your World adopted a newer scheme keeps its own version for its whole life. Read the stamped version off the run rather than assuming every run matches what your World declares today.
+
+## Interface changes
+
+These break an existing v4 implementation. Each one is a signature or module-shape change your World has to follow.
+
+| Change | What to do |
+| --- | --- |
+| `getWorld()` and `createWorld()` are async | `await getWorld()`. This already worked in 4.x, so it is safe to write before upgrading. See [`getWorld`](/docs/api-reference/workflow-runtime/get-world). |
+| Stream methods moved to `world.streams.*`, with `runId` first | `writeToStream(name, runId, chunk)` becomes `streams.write(runId, name, chunk)`; likewise `writeToStreamMulti` → `streams.writeMulti`, `closeStream` → `streams.close`, `readFromStream` → `streams.get`, `getStreamChunks` → `streams.getChunks`, `listStreamsByRunId` → `streams.list`. |
+| `world.steps.get()` requires `runId` | The first argument is no longer `string \| undefined` — pass the run ID that owns the step. |
+| `events.listByCorrelationId()` requires `runId` | A correlation ID identifies a step, hook or wait within its run, not across runs, so the lookup is scoped to one run — pass the run that owns the correlation ID. Same for `analytics.events.listByCorrelationId()`. A World that paginates by event ID needs the scope in its cursor comparison too, since two runs can hold the same correlation ID. |
+| `createLocalWorld()` and `createVercelWorld()` removed | Export a `createWorld()` factory from your package instead, matching the first-party Worlds. The arguments are unchanged. |
+| Worlds are injected into host bundles at build time | Selection is static rather than resolved dynamically at runtime. Verify your World still resolves after the upgrade, and that its module graph survives bundling. |
+| `@workflow/world-local` stream chunks moved | Chunks live at `streams/chunks/<streamName>/`. Files written in the old flat layout are not read back, so local development state from 4.x can be deleted. Only relevant if your World inherited that layout. |
+
+## Contract changes
+
+These do not change any signature, so an implementation ported by types alone will compile and then behave incorrectly.
+
+**Suspension and dispatch.** The asymmetric `{ timeoutSeconds }` wait-return contract is gone. A wait is now an ordinary queue continuation with `delaySeconds`, and a suspension dispatches its waits and its steps as one parallel batch. A queue that assumed one message per suspension needs to handle the batch.
+
+**Step queue topics are retired.** The `'step'` queue kind no longer exists. Queued steps travel on the workflow topic, carrying `stepId` and `stepName` in the payload, and execute in the combined flow handler. A World that provisioned separate `__wkf_step_*` topics can drop them.
+
+**Capabilities fail closed.** The optional `capabilities` object advertises behavior the runtime otherwise assumes is absent. An unadvertised capability costs performance, never correctness, so a partial World stays correct while it catches up. The reverse is not true: advertising something you do not enforce removes a guard the runtime was relying on. Only set a flag once the behavior is implemented.
+
+**Event creation can return a delta.** `events.create()` may return events alongside the one it created, in `events` with a matching `cursor` and `hasMore`. The runtime uses this to skip a follow-up `events.list` round trip on `run_started`, on step-terminal writes that carried a `sinceCursor`, and on `hook_received` writes that carried `preloadEvents`. All three are advisory: a World that returns only the created event stays correct and pays one more round trip.
+
+## Event ID allocation
+
+This is the largest change for a World implementation, and it is optional.
+
+In v4 an event ID was a ULID your World minted however it liked. In v5 a World may instead allocate **dense slot IDs**: `evnt_` followed by the event's 1-based position in that run's log, zero-padded to 26 characters, so a run's first event is `evnt_00000000000000000000000001`. Format one with `slotToEventId()` from `@workflow/world`, declare `capabilities.slotEventIds`, and declare `SPEC_VERSION_SUPPORTS_SLOT_IDENTITY`.
+
+The point is what a reader can conclude from a log it just fetched. Positions are dense, so the length of a log is enough to tell a complete one from a truncated one, without a second read to confirm. That is what makes an event log safe to replay across, and it is why the two invariants below are not negotiable if you adopt the scheme:
+
+- **Uniqueness.** Two writers racing to append must not both take a position. Settle it where the store settles it, with a unique constraint on `(runId, eventId)` or a conditional write, not by reading the maximum in your own process and adding one.
+- **Density.** Positions run from 1 with no holes. A writer that loses a race re-derives its position from the store and takes the next free one. Incrementing a local number after a loss leaves a permanent hole, and the runtime treats a hole as a log it cannot replay across.
+
+Callers help you place the write: `events.create()` params carry `eventCount`, the number of events the writer held in the log it replayed from, so the position it expects is `eventCount + 1`. When that position is already taken, **do not reject the write**. Advance to the next free position, commit there, and return the events occupying the positions you skipped on the success response. The writer merges them and replays once. A stale count is the normal case for a parallel fan-out, so rejecting it would serialize writes the runtime deliberately issues concurrently.
+
+For a World that allocates positions, `eventCount` supersedes the `stateUpdatedAt` / `stateEventCount` / `stateCursor` triple used by the [precondition guard](/worlds/building-a-world#optional-the-event-creation-precondition-guard). The triple approximates a position with a timestamp watermark plus a count of events at or below it, which a complete-but-stale snapshot passes: every event the writer holds is at or below its own watermark, so the count matches and no fence fires. A dense position has no such blind spot.
+
+Nothing forces this on you. A World that keeps minting ULIDs declares spec version 5, leaves `slotEventIds` unset, and keeps working. See [Building a World](/worlds/building-a-world) for the full allocation rules alongside the rest of the storage contract.
+
+## New optional surface
+
+None of this is required. Each entry is a hook the runtime uses if your World provides it, and routes around if it does not.
+
+| Member | What it buys |
+| --- | --- |
+| `capabilities` | Advertises `hookRetention.active`, `preconditionGuard`, `hookResumeDedup`, `deploymentAffinity`, `maxConcurrency`, and `slotEventIds`. See the contract note above about failing closed. |
+| `analytics` | A metadata-only read namespace for observability surfaces. Payload-bearing reads stay on `runs`, `steps`, `events`, and `hooks`. |
+| `runs.experimentalSetAttributes` | Backs `setAttributes()` from application code. Without it, run attributes are unavailable. |
+| `runs.cancelMany` | Bulk cancellation: up to 500 unique run IDs per request (`BULK_CANCEL_MAX_RUN_IDS`), an optional `cancelReason` of at most 512 characters, and a per-run outcome for every ID. Without it, the runtime falls back to bounded-concurrency individual cancels. |
+| `getRuntimeDeadline()` | The absolute time the current invocation will be terminated. The runtime derives its inline replay budget from this, so a host with a long function timeout gets more work per invocation. Without it, the budget is a flat two minutes. See [`WORKFLOW_V2_TIMEOUT_MS`](/docs/configuration/runtime-tuning#workflow_v2_timeout_ms). |
+| `getEnvironment()` | The environment your World's writes are attributed to. Must be synchronous, side-effect free, and match what the backend will actually apply. A wrong answer is worse than `undefined`, because callers use it to detect cross-environment mismatches. Worlds with a single tenant should omit it. |
+| `createRunId(options)` | Mints the bare run ID; the core adds the `wrun_` prefix. Return a valid ULID. You may embed World-specific metadata in it, as `@workflow/world-vercel` does with a region identifier. Read only the option keys you recognize and ignore the rest. |
+| `describeRun(run)` | World-specific display fields for observability surfaces. |
+| `getEncryptionKeyForRun()` | Returns a ready-to-use 32-byte AES-256 key. Without it, data is stored unencrypted. Two overloads: pass the `WorkflowRun` when you have it, or a `runId` plus opaque World context when the entity is not available locally. |
+| `resolveLatestDeploymentId()` | Resolves `deploymentId: 'latest'`. Only meaningful for Worlds where deployment routing exists. |
+| `close()` | Releases connection pools and listeners so CLI commands and short-lived processes can exit without `process.exit()`. |
+| `streams.streamFlushIntervalMs` | Sets the stream flush window. The v5 default is `0`, so the first chunk flushes immediately; set a value to coalesce writes again. |
+| Hook token retention | `Hook.tokenRetentionUntil` marks the earliest time a token may become available after its run ends. Keep the owning run readable at least that long, and honor `hook_disposed` as an immediate release. Declare `capabilities.hookRetention.active` only once this is implemented, since the runtime otherwise rejects retained hooks before registration. |
+| Hook resume dedup | `resumeHook()` writes `hook_received` and dispatches the queue message in parallel when the backend collapses concurrent writes carrying the same `(runId, resumeId)` onto one committed event. Declare `capabilities.hookResumeDedup` only if you enforce that constraint. A World that accepts `resumeId` without enforcing it must leave the flag unset, which keeps the sequential path. See [Resilient hook resumption](/docs/changelog/resilient-resume). |
+
+## If you also maintain a build integration
+
+Compiling workflow files changed independently of the storage contract.
+
+| Change | What to do |
+| --- | --- |
+| The `client` SWC transform mode was removed | It merged into `step` mode. Integrations passing `mode: 'client'` pass `mode: 'step'`. |
+| `stepEntrypoint` removed from `workflow/runtime` | Steps execute through the combined workflow handler the framework integrations generate. Custom hosts use `getWorldHandlers()`. |
+| Step, workflow and webhook bundles are ESM | Generated output moved from CJS to ESM, with a `createRequire` banner for CJS dependencies. The VM-executed workflow bundle stays CJS. |
+| `workflow/internal/private` and `@workflow/core/private` removed | These were never public API. The compiler no longer emits imports from them, so regenerate build output rather than importing them yourself. |
+| Duplicate step or workflow IDs fail the build | 4.x resolved collisions across non-exported workspace files last-write-wins. A build integration that derived IDs from a partial path may now produce build failures. |
+
+## Verifying the upgrade
+
+Run a workflow end to end against your World, not just the type checker. The contract changes above compile cleanly and fail at runtime.
+
+The cases worth covering explicitly:
+
+- A run that suspends on a step and one that suspends on a wait, to exercise the batched dispatch.
+- A parallel fan-out, so concurrent `events.create()` calls race on the same position or the same precondition.
+- A hook resumed after its run has already progressed, and a hook whose token is retained past the end of its run.
+- A stream written and read back, including a stream closed before the reader attaches.
+- A run created under an older spec version, if your World has any, read back by the new code.
+
+The first-party implementations in `packages/world-local` and `packages/world-postgres` are the reference for all of the above, and their test suites are the closest thing to a conformance suite while the compatibility tests are being rebuilt.
