@@ -1,0 +1,22 @@
+{
+  "name": "@workflow/sim-world-workbench",
+  "private": true,
+  "type": "module",
+  "version": "0.0.1",
+  "license": "Apache-2.0",
+  "scripts": {
+    "sim": "node run.ts",
+    "test": "node run.ts",
+    "clean": "rm -rf .workflow-sim"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "@workflow/tsconfig": "workspace:*",
+    "@workflow/world-sim": "workspace:*",
+    "typescript": "catalog:",
+    "workflow": "workspace:*"
+  },
+  "engines": {
+    "node": ">=22.18"
+  }
+}
