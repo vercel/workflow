@@ -57,13 +57,24 @@ needs no stale read either, once ids are minted at the handler boundary. And
 `preconditionGuard` fences the hook variant while missing the step-vs-step one,
 which is the asymmetry the count guard exists to fix.
 
-Of the six, five have known fixes: four predate the count guard, and doc-29 goes
-green the moment a client sends `stateEventCount` (the neighbouring scenario is
-that same tempo with the flag on). The sixth, doc-31, has none — both guards are
-armed and neither can fire, because the hook lands in the quiescent gap between
-deliveries where the run makes no writes and so meets no checks. Closing it
-needs an append-tail fence — `assertSlotAboveTail`, proposed in
-`vercel/workflow-server#692`.
+Five of the six have a fix identified. Two of those are *demonstrated* — a
+passing scenario that is the red one with the fix armed, same workflow and same
+tempo, one flag apart: `preconditionGuard` closes doc-23 (see doc-24), and
+`countGuard` closes doc-29 (see doc-30). The other three — doc-25, doc-26,
+doc-27 — have a fix named by argument and no paired scenario yet, which is the
+obvious next increment. The table in
+[`DESIGN.md`](../../packages/world-sim/DESIGN.md#the-six) says which is which.
+
+The sixth, doc-31, has no fix — both guards are armed and neither can fire,
+because the hook lands in the quiescent gap between deliveries where the run
+makes no writes and so meets no checks. Closing it needs an append-tail fence —
+`assertSlotAboveTail`, proposed in `vercel/workflow-server#692`.
+
+Worth separating "fixed" from "fixed in production". `preconditionGuard` is
+declared by `world-vercel`, so the two stale-read hook scenarios have a fix that
+is really armed. `countGuard` needs the caller to send `stateEventCount`, which
+no client does — so for doc-26, doc-27 and doc-29 the fix exists in the World
+and is dark everywhere real.
 
 ## Requirements
 

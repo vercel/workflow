@@ -575,14 +575,28 @@ bugs rather than to be green.
 
 ### The six
 
-| scenario | mechanism | fix status |
-|---|---|---|
-| `corrupt: stale event load + step-count fork` | `withholdNextEvent(1)` + `deliverHook`; hook at position 7, `wait_completed` at 8, no-hook branch at 9 | predates the count guard |
-| `corrupt: stale event load with EQUAL step counts` | same fault on a fork whose branches emit one step each | predates the count guard |
-| `corrupt: two racing STEPS, no hook anywhere` | two of the run's own `step_completed` events, one delivery | predates the count guard |
-| `corrupt: two racing STEPS, WITH the precondition fence on` | same, `preconditionGuard: true`, zero rejections | fence is structurally blind here (§5) |
-| `in-flight: A commits BEFORE the decision — count guard off` | `beginHookDelivery`, committed before the decision is written | **green one flag over**: the neighbouring scenario is the same tempo with `countGuard` on |
-| `in-flight: A commits AFTER the decision — no guard can see it` | `beginHookDelivery`, committed after the decision | no guard can fire; needs an append-tail fence |
+The `fix` column names the specific change that closes the scenario. `shown
+green by` is the stronger claim: a *passing* scenario that is this one with that
+fix armed, same workflow and same tempo, one flag apart. Where it says "none
+yet", the fix is identified by argument but nothing in the book proves it.
+
+| scenario | mechanism | fix | shown green by |
+|---|---|---|---|
+| `corrupt: stale event load + step-count fork` (doc-23) | `withholdNextEvent(1)` + `deliverHook`; hook at position 7, `wait_completed` at 8, no-hook branch at 9 | `preconditionGuard` — the withheld `hook_received` is the newest out-of-band write and the orchestrator's snapshot predates the sleep, so the watermark fires | `corrupt: same shape, with the optimistic-concurrency fence armed` (doc-24) |
+| `corrupt: stale event load with EQUAL step counts` (doc-25) | same fault on a fork whose branches emit one step each | `preconditionGuard`, for the same reason | none yet |
+| `corrupt: two racing STEPS, no hook anywhere` (doc-26) | two of the run's own `step_completed` events, one delivery | `countGuard`. **Not** `preconditionGuard`: the withheld completion is a hole in the middle of the log, which moves no high-water mark (§5) | none yet |
+| `corrupt: two racing STEPS, WITH the precondition fence on` (doc-27) | same, `preconditionGuard: true`, zero rejections | `countGuard`. This row *is* the proof that the watermark half does not fix doc-26 | none yet |
+| `in-flight: A commits BEFORE the decision — count guard off` (doc-29) | `beginHookDelivery`, committed before the decision is written | `countGuard` | `in-flight: same tempo, count guard ON — the write is fenced` (doc-30) |
+| `in-flight: A commits AFTER the decision — no guard can see it` (doc-31) | `beginHookDelivery`, committed after the decision | none in the SDK. Needs an append-tail fence — `assertSlotAboveTail`, `vercel/workflow-server#692` | — |
+
+So: **two** of the six have their fix demonstrated by a paired green scenario,
+**three** have a fix identified but unproven here, and **one** has no fix at all.
+Writing the three missing pairs is the obvious next increment.
+
+Note what the `fix` column does *not* mean. `countGuard` closing doc-29 is a
+statement about the World implementation, not about production: it requires the
+caller to send `stateEventCount`, which no client does today (§5). Four of the
+six therefore have no fix that is actually armed anywhere real.
 
 Four of the six are hook-driven and two deliberately are not — the pair proves
 the corruption needs no out-of-band event type. All the pure hook-timing
