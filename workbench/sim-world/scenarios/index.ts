@@ -38,6 +38,7 @@ import { scenario as inFlightAfterDecision } from './in-flight-after-decision.ts
 import { scenario as inFlightBeforeDecision } from './in-flight-before-decision.ts';
 import { scenario as inFlightBeforeDecisionCounted } from './in-flight-before-decision-counted.ts';
 import { scenario as longSleep } from './long-sleep.ts';
+import { scenario as lostStepDispatch } from './lost-step-dispatch.ts';
 import { scenario as parallelSteps } from './parallel-steps.ts';
 import { scenario as peekHookAfterBranch } from './peek-hook-after-branch.ts';
 import { scenario as peekHookAtRegistration } from './peek-hook-at-registration.ts';
@@ -94,6 +95,7 @@ export const scenarios: ScenarioSpec[] = [
   // -------------------------------------------------------------------------
   stepRetriesTwice,
   parallelSteps,
+  lostStepDispatch,
   hookOnExecutionState,
 
   // -------------------------------------------------------------------------

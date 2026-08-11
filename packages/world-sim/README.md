@@ -448,6 +448,7 @@ be behind, never wrong — and an overtaken hook re-takes the tail on `commit()`
 | `cancelRun(reason?)` | Cancel the run under test |
 | `advanceTime(ms)` | Jump the virtual clock |
 | `deliverQueued(select?)` | Deliver one queued message now, concurrently with a held writer |
+| `dropQueued(select?)` | Take one queued message out and never deliver it, keeping its idempotency key claimed |
 | `note(msg)` / `check(name, cond)` | Record a marker / an assertion in the trace; a false check fails the scenario |
 | `world` | Read-only snapshot: runs, events, steps, hooks, waits, pending messages, rejected calls |
 | `appendOnlyLog` | Which log this run is playing against — for *phrasing* a check, never for branching the tempo |
@@ -492,6 +493,19 @@ Note the missing `await` — awaiting it here would wait for the delivery to
 *finish*, which defeats the purpose. Arm a hold on the writer that delivery will
 wake, fire it, await the hold, and the two are now interleaved. Await the
 returned promise at the end to assert it found something.
+
+#### `dropQueued`, and what a lost message costs
+
+`dropQueued` is the same take without the delivery. The message is gone and it
+is never settled, so the queue keeps its idempotency key for the rest of the
+scenario: every later re-send under that key is absorbed, and the only writer
+that can get the work dispatched again is one that changes the key.
+
+That second half is what makes the fault worth simulating. A queue that forgot
+the key on drop would recover on the next replay for free, and nothing about the
+runtime's key scheme would be under test. `lost-step-dispatch` is the scenario
+that asks the question: a step created, its dispatch dropped, and a run whose
+only remaining work is a message that will never arrive.
 
 ## Extending the simulator
 

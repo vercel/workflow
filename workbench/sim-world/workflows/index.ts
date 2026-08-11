@@ -114,6 +114,43 @@ export async function parallelStepsWorkflow(input: string) {
   return `${a}|${b}`;
 }
 
+async function fanA(input: string) {
+  'use step';
+  return `a:${input}`;
+}
+
+async function fanB(input: string) {
+  'use step';
+  return `b:${input}`;
+}
+
+async function fanC(input: string) {
+  'use step';
+  return `c:${input}`;
+}
+
+async function fanD(input: string) {
+  'use step';
+  return `d:${input}`;
+}
+
+/**
+ * Four steps suspend together, one more than the inline cap, so the last one
+ * is handed to the queue instead of running in the invocation. That single
+ * queued dispatch is the one a scenario can take away with `dropQueued` to ask
+ * what happens when the queue accepts a step message and loses it.
+ */
+export async function fanOutStepsWorkflow(input: string) {
+  'use workflow';
+  const parts = await Promise.all([
+    fanA(input),
+    fanB(input),
+    fanC(input),
+    fanD(input),
+  ]);
+  return parts.join('|');
+}
+
 // ---------------------------------------------------------------------------
 // 3. Approval — a hook and a step suspended together
 // ---------------------------------------------------------------------------

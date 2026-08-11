@@ -370,6 +370,22 @@ export async function runScenario(
       await deliver(world, message);
       return true;
     },
+    dropQueued(select) {
+      const pending = world.simQueue.view();
+      const chosen = select ? select(pending) : pending[0]?.messageId;
+      if (!chosen) return false;
+      // Taken but never settled: the queue keeps the idempotency key claimed,
+      // which is what a lost message looks like to every later writer.
+      const message = world.simQueue.takeById(chosen);
+      if (!message) return false;
+      world.pushTrace({
+        kind: 'note',
+        message: `dropped queue message ${message.messageId}${
+          message.idempotencyKey ? ` (key ${message.idempotencyKey})` : ''
+        }`,
+      });
+      return true;
+    },
     note(message) {
       world.pushTrace({ kind: 'note', message });
     },

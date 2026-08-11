@@ -417,6 +417,22 @@ export interface ScenarioApi {
     select?: (pending: PendingMessageView[]) => string | undefined
   ): Promise<boolean>;
   /**
+   * Take one pending queue message out of the queue and never deliver it,
+   * modelling a message the queue accepted and lost.
+   *
+   * The message is removed but never settled, so its idempotency key stays
+   * claimed for the rest of the scenario. That is the part that makes the
+   * fault interesting: a re-send under the same key is silently absorbed, so
+   * only a writer that changes the key can get the work dispatched again.
+   *
+   * `select` receives the pending messages in the loop's own order and returns
+   * a `messageId`; the default drops the first. Resolves `false` when nothing
+   * matched.
+   */
+  dropQueued(
+    select?: (pending: PendingMessageView[]) => string | undefined
+  ): boolean;
+  /**
    * Hide the next event this scenario commits from the following `reads`
    * event-log reads, modelling one concurrent writer the reader missed.
    *
