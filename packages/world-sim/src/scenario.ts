@@ -87,25 +87,23 @@ export interface ScenarioSpec {
    */
   verifyReplay?: boolean;
   /**
-   * Assertions about how the run should end.
+   * Assertions about how the run should end — what *correct* looks like, which
+   * is not always what happens today.
    *
    * `status` accepts the non-run outcomes too (`stalled`, `budget-exceeded`),
    * because "this workflow deadlocks when the hook never arrives" is a
    * property worth pinning down rather than an accident to be tolerated.
+   *
+   * There is deliberately no way to expect a consistency violation. A scenario
+   * that reproduces a corruption states the outcome the run *should* have had
+   * and fails until the runtime delivers it: the failure is the open bug, and
+   * it goes green when the bug is fixed, not when it is observed one more time.
+   * Any violation fails the scenario that tripped it.
    */
   expect?: {
     status?: ScenarioOutcome;
     /** Compared against the hydrated run output with deep equality. */
     output?: unknown;
-    /**
-     * The exact set of consistency-violation rules this scenario is expected to
-     * trip, e.g. `['replay.diverged']`.
-     *
-     * For pinning a known bad shape as a regression test: the scenario passes
-     * while the violation is present and *fails* once it stops happening, which
-     * is the signal to retire it. Omit it and any violation fails the scenario.
-     */
-    violations?: string[];
   };
   limits?: ScenarioLimits;
   /** Enforce (and advertise) the optimistic-concurrency fence. */
@@ -477,19 +475,6 @@ export async function runScenario(
     output = await hydrateOutput(runEntity.output);
   }
 
-  let violationsExpected = false;
-  if (spec.expect?.violations) {
-    const actual = [...new Set(violations.map((v) => v.rule))].sort();
-    const expected = [...new Set(spec.expect.violations)].sort();
-    if (actual.join(',') === expected.join(',')) {
-      violationsExpected = true;
-    } else {
-      problems.push(
-        `expected violations [${expected.join(', ')}], got [${actual.join(', ') || 'none'}]`
-      );
-    }
-  }
-
   if (spec.expect?.status && outcome !== spec.expect.status) {
     problems.push(
       `expected run to end "${spec.expect.status}", got "${outcome}"`
@@ -508,10 +493,7 @@ export async function runScenario(
     description: spec.description,
     runId,
     outcome,
-    ok:
-      problems.length === 0 &&
-      (violationsExpected || violations.length === 0) &&
-      outcome !== 'error',
+    ok: problems.length === 0 && violations.length === 0 && outcome !== 'error',
     problems,
     violations,
     events,

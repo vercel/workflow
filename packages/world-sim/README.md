@@ -151,8 +151,16 @@ console.log(renderScenario(result));
 ```
 
 `workbench/sim-world` is a worked example: `pnpm sim` builds its workflows,
-plays 35 scenarios, prints every event stream, and exits non-zero if any
+plays 39 scenarios, prints every event stream, and exits non-zero if any
 expectation or invariant fails.
+
+`expect` states what *correct* looks like, which is not always what happens
+today. There is no way to expect a consistency violation: a scenario that
+reproduces a corruption declares the outcome the run should have reached and
+stays red until the runtime delivers it. Six of the 39 are red for that reason.
+The alternative — letting a scenario pass because the bug it documents is still
+present — makes a suite that is green and a system that is broken, and gives no
+signal on the day someone fixes it.
 
 ## Writers
 

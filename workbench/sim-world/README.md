@@ -33,12 +33,33 @@ microseconds, a step that retries twice, cancellation landing mid-step, and a
 hook that never arrives — which is reported as a stall naming the undelivered
 token rather than hanging the run.
 
-Four scenarios ("corrupt: …") are pinned **reproductions**: they expect
-`replay.diverged`, so they pass while the corruption reproduces and fail if it
-ever stops — which is the signal to retire them. They also record what was ruled
-out along the way: the corruption needs no out-of-band event type (two racing
-step bodies are enough), and `preconditionGuard` fences the hook variant but not
-the step-vs-step one.
+## The six red scenarios
+
+Six scenarios fail, on purpose and by construction. `run.ts` exits non-zero.
+
+They are reproductions of corruptions the runtime can still produce, and there
+is deliberately no way for a scenario to *expect* a violation. Each one states
+the outcome the run should have reached — the branch its own durable log
+implies — and fails until the runtime gets there. The failure line names both
+sides, e.g. `expected "afterSlow:doc-26", got "afterFast:doc-26"`. So a red is
+an open bug rather than a recorded observation, and it turns green when the bug
+is fixed rather than when the bug is seen once more.
+
+The number is the thing to watch: **six today**. A seventh is a regression, and
+five means something got fixed and a scenario is ready to retire.
+
+They also record what was ruled out along the way. The corruption needs no
+out-of-band event type — two racing step bodies in one delivery are enough. It
+needs no stale read either, once ids are minted at the handler boundary. And
+`preconditionGuard` fences the hook variant while missing the step-vs-step one,
+which is the asymmetry the count guard exists to fix.
+
+Of the six, five have known fixes: four predate the count guard, and doc-29 goes
+green the moment a client sends `stateEventCount` (the neighbouring scenario is
+that same tempo with the flag on). The sixth, doc-31, has none — both guards are
+armed and neither can fire, because the hook lands in the quiescent gap between
+deliveries where the run makes no writes and so meets no checks. Closing it
+needs the append-tail fence that does not exist yet.
 
 ## Requirements
 

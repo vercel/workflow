@@ -491,9 +491,13 @@ export const scenarios: ScenarioSpec[] = [
       await sim.deliverHook('count:doc-23', { approved: true });
       await wf.release();
     },
-    // Pinned as a reproduction: passes while the corruption happens, and fails
-    // if it ever stops — which is the signal to retire the scenario.
-    expect: { status: 'completed', violations: ['replay.diverged'] },
+    // FAILS TODAY. The log puts the hook ahead of the timeout, so the run that
+    // agrees with its own log takes the recovery branch. It takes `settle`
+    // instead and then cannot replay what it wrote.
+    expect: {
+      status: 'completed',
+      output: 'reconciled(recovered:doc-23+second)',
+    },
   },
 
   {
@@ -511,11 +515,12 @@ export const scenarios: ScenarioSpec[] = [
       await sim.deliverHook('fork:doc-25', { approved: true });
       await wf.release();
     },
-    // It does corrupt. So the amplifier is not required for corruption — it is
-    // required for the *rate* under concurrent load, and for divergence deep in
-    // a long log. What corruption needs is that the flipped branch claim an
-    // ordinal the log already gave to a differently-named step.
-    expect: { status: 'completed', violations: ['replay.diverged'] },
+    // FAILS TODAY, which answers the question in the name: the amplifier is not
+    // required for corruption — it is required for the *rate* under concurrent
+    // load, and for divergence deep in a long log. What corruption needs is
+    // that the flipped branch claim an ordinal the log already gave to a
+    // differently-named step.
+    expect: { status: 'completed', output: 'step2:doc-25' },
   },
 
   {
@@ -555,8 +560,9 @@ export const scenarios: ScenarioSpec[] = [
       await slow.release();
       await fast.release();
     },
-    // Pinned as a reproduction, like the stale-read scenarios above.
-    expect: { status: 'completed', violations: ['replay.diverged'] },
+    // FAILS TODAY. `slow` commits first, so the log says `slow` won the race
+    // and the run should end on `afterSlow`. The live pass sees only `fast`.
+    expect: { status: 'completed', output: 'afterSlow:doc-26' },
   },
 
   {
@@ -599,7 +605,9 @@ export const scenarios: ScenarioSpec[] = [
       await slow.release();
       await fast.release();
     },
-    expect: { status: 'completed', violations: ['replay.diverged'] },
+    // FAILS TODAY, identically to the unfenced scenario above — which is the
+    // finding. Turning the watermark on changes nothing here.
+    expect: { status: 'completed', output: 'afterSlow:doc-27' },
   },
 
   {
@@ -718,9 +726,14 @@ export const scenarios: ScenarioSpec[] = [
       await hook.commit();
       await wf.release();
     },
-    // Pinned as a reproduction, like the stale-read scenarios above. The
-    // difference is that this one needs no stale read to happen.
-    expect: { status: 'completed', violations: ['replay.diverged'] },
+    // FAILS TODAY, like the stale-read scenarios above. The difference is that
+    // this one needs no stale read to happen — and, unlike them, the fix is
+    // already known and sitting one flag away: see the scenario below, which is
+    // this one with the count guard on and green.
+    expect: {
+      status: 'completed',
+      output: 'reconciled(recovered:doc-29+second)',
+    },
   },
 
   {
@@ -806,11 +819,16 @@ export const scenarios: ScenarioSpec[] = [
       await hook.commit();
       await wf.release();
     },
-    // The corruption is not merely latent here: the next delivery replays a log
-    // that says the hook won, finds `settle` where `recoverFirst` belongs, and
-    // gives up after its recovery replays. A run that dies is the honest
-    // outcome of a log no execution could have produced.
-    expect: { status: 'failed', violations: ['replay.diverged'] },
+    // FAILS TODAY, and worse than the others: the corruption is not merely
+    // latent. The next delivery replays a log that says the hook won, finds
+    // `settle` where `recoverFirst` belongs, and gives up after its recovery
+    // replays — so the run dies rather than completing wrongly. Of the six
+    // reds, this is the one with no known fix: both guards are on, and closing
+    // it needs the append-tail fence that does not exist yet.
+    expect: {
+      status: 'completed',
+      output: 'reconciled(recovered:doc-31+second)',
+    },
   },
 
   {
