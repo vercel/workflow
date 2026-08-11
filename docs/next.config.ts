@@ -396,6 +396,14 @@ const config: NextConfig = {
         destination: '/v4/docs/observability',
         permanent: false,
       },
+      // The World upgrade guide describes the v4 -> v5 spec move, so it has no
+      // v4 counterpart; the World spec it starts from is documented in the v4
+      // Building a World page.
+      {
+        source: '/v4/worlds/upgrading-to-v5',
+        destination: '/v4/worlds/building-a-world',
+        permanent: false,
+      },
       // Pages that exist only in v4 (v4 -> v5 switch):
       {
         source: '/docs/api-reference/workflow-runtime/step-entrypoint',

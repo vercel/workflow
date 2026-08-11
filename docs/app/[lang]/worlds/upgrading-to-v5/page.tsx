@@ -5,9 +5,9 @@ import {
 } from '@/components/worlds/worlds-guide-page';
 
 export function generateMetadata(): Promise<Metadata> {
-  return generateWorldsGuideMetadata('building-a-world', 'v5');
+  return generateWorldsGuideMetadata('upgrading-to-v5', 'v5');
 }
 
 export default function Page() {
-  return <WorldsGuidePage slug="building-a-world" version="v5" />;
+  return <WorldsGuidePage slug="upgrading-to-v5" version="v5" />;
 }
