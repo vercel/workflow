@@ -15,6 +15,7 @@ import type { QueueItem } from './global.js';
 import { ENOTSUP, WorkflowSuspension } from './global.js';
 import { runtimeLogger } from './logger.js';
 import type { WorkflowOrchestratorContext } from './private.js';
+import { isDeliveryIdle } from './private.js';
 import { getPortLazy } from './runtime/get-port-lazy.js';
 import {
   dehydrateWorkflowReturnValue,
@@ -142,6 +143,11 @@ export async function runWorkflow(
     // by step/hook/sleep callbacks as events are processed.
     const promiseQueueHolder = { current: Promise.resolve() };
 
+    // Same reason as the queue holder: the consumer is built before the context
+    // whose delivery state it has to read. Idle until the context exists, which
+    // is before any delivery can be registered against it.
+    const deliveryIdleHolder = { current: (): boolean => true };
+
     const eventsConsumer = new EventsConsumer(events, {
       onConsumedEvent: (event) => {
         updateTimestamp(+event.createdAt);
@@ -155,6 +161,7 @@ export async function runWorkflow(
         );
       },
       getPromiseQueue: () => promiseQueueHolder.current,
+      isDeliveryIdle: () => deliveryIdleHolder.current(),
     });
 
     const workflowContext: WorkflowOrchestratorContext = {
@@ -178,6 +185,8 @@ export async function runWorkflow(
       pendingDeliveryBarriers: new Map(),
       stepHydrationCache,
     };
+
+    deliveryIdleHolder.current = () => isDeliveryIdle(workflowContext);
 
     // Consume run lifecycle events - these are structural events that don't
     // need special handling in the workflow, but must be consumed to advance
