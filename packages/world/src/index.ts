@@ -38,6 +38,7 @@ export {
   EVENT_DATA_REF_FIELDS,
   EventSchema,
   EventTypeSchema,
+  entityEventClass,
   getEventDataPayloadField,
   getEventDataRefFields,
   HOOK_EVENTS_REQUIRING_EXISTENCE,

@@ -429,6 +429,21 @@ async function createWorkflowSession({
         )
       );
     },
+    onDuplicateEvent: (event) => {
+      // Not an error: the first event of this class decided the outcome at a
+      // lower log position and replay reads that one. Logged because a
+      // straggler is still evidence of two replays writing for the same
+      // entity, which is worth seeing when diagnosing a run.
+      runtimeLogger.info(
+        'Ignoring event that repeats a class already in the event log',
+        {
+          workflowRunId: workflowRun.runId,
+          eventId: event.eventId,
+          eventType: event.eventType,
+          correlationId: event.correlationId,
+        }
+      );
+    },
     getPromiseQueue: () => promiseQueueHolder.current,
     isDeliveryIdle: () => deliveryIdleHolder.current(),
   });
@@ -462,6 +477,7 @@ async function createWorkflowSession({
   // Consume run lifecycle events - these are structural events that don't
   // need special handling in the workflow, but must be consumed to advance
   // past them in the event log
+  let consumedRunStarted = false;
   workflowContext.eventsConsumer.subscribe((event) => {
     if (!event) {
       return EventConsumerResult.NotConsumed;
@@ -472,8 +488,16 @@ async function createWorkflowSession({
       return EventConsumerResult.Consumed;
     }
 
-    // Consume run_started - every run has exactly one
+    // Consume the first run_started. Two replays can each write one (the
+    // create is idempotent for a run already running, which makes the write
+    // safe, not single-shot); the first is the one the replay observes, and
+    // the consumer skips the rest rather than advancing the workflow clock
+    // twice.
     if (event.eventType === 'run_started') {
+      if (consumedRunStarted) {
+        return EventConsumerResult.NotConsumed;
+      }
+      consumedRunStarted = true;
       return EventConsumerResult.Consumed;
     }
 
