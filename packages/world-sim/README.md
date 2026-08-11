@@ -494,18 +494,23 @@ Note the missing `await` — awaiting it here would wait for the delivery to
 wake, fire it, await the hold, and the two are now interleaved. Await the
 returned promise at the end to assert it found something.
 
-#### `dropQueued`, and what a lost message costs
+#### `dropQueued`, and what a spent key costs
 
 `dropQueued` is the same take without the delivery. The message is gone and it
 is never settled, so the queue keeps its idempotency key for the rest of the
 scenario: every later re-send under that key is absorbed, and the only writer
 that can get the work dispatched again is one that changes the key.
 
-That second half is what makes the fault worth simulating. A queue that forgot
+This is not a claim that queues drop messages. Delivery is at-least-once, so an
+outstanding delivery comes back on its own. What `dropQueued` models is the end
+state shared by every dispatch that stopped short of a terminal event: nothing
+outstanding to redeliver, and a key already spent.
+
+That second half is what makes the fault worth simulating. A queue that released
 the key on drop would recover on the next replay for free, and nothing about the
 runtime's key scheme would be under test. `lost-step-dispatch` is the scenario
-that asks the question: a step created, its dispatch dropped, and a run whose
-only remaining work is a message that will never arrive.
+that asks the question: a step created, its dispatch gone, and a run whose only
+remaining work sits behind a key no re-send can reach.
 
 ## Extending the simulator
 
