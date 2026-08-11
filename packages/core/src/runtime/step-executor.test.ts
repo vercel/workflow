@@ -171,7 +171,7 @@ describe('executeStep — compute instance stamping', () => {
     counter += 1;
   });
 
-  it('stamps computeInstanceId on step_started without displacing the precondition snapshot', async () => {
+  it('stamps computeInstanceId on step_started without displacing the slot snapshot', async () => {
     const world = makeWorld();
     const stepName = uniqueStepName();
     const { runId, stepId } = await setupRunningStep({
@@ -184,11 +184,7 @@ describe('executeStep — compute instance stamping', () => {
     // persist — so observe the call itself rather than the stored event.
     const createSpy = vi.spyOn(world.events, 'create');
 
-    const preconditionSnapshot = {
-      stateUpdatedAt: 1_700_000_000_000,
-      stateEventCount: 7,
-      stateCursor: 'eid:evnt_01H0000000000000000000000',
-    };
+    const slotSnapshot = { eventCount: 7 };
 
     await executeStep({
       world,
@@ -197,7 +193,7 @@ describe('executeStep — compute instance stamping', () => {
       workflowStartedAt: Date.now(),
       stepId,
       stepName,
-      preconditionSnapshot,
+      slotSnapshot,
     });
 
     const started = createSpy.mock.calls.filter(
@@ -205,8 +201,41 @@ describe('executeStep — compute instance stamping', () => {
     );
     expect(started).toHaveLength(1);
     expect(started[0]?.[2]?.computeInstanceId).toBe(COMPUTE_INSTANCE_ID);
-    // Both ride the same params object — neither may clobber the other, and the
-    // three snapshot fields must arrive as one unit.
-    expect(started[0]?.[2]).toMatchObject(preconditionSnapshot);
+    // Both ride the same params object and neither may clobber the other.
+    expect(started[0]?.[2]?.eventCount).toBe(slotSnapshot.eventCount);
+  });
+
+  it('advances the snapshot it sends as its own writes land', async () => {
+    // The executor writes twice for one step. If the second write still named
+    // the position its caller scheduled against, the World would report the
+    // first one back to it on every step, forever.
+    const world = makeWorld();
+    const stepName = uniqueStepName();
+    const { runId, stepId } = await setupRunningStep({
+      world,
+      stepName,
+      onBody: () => {},
+    });
+
+    const createSpy = vi.spyOn(world.events, 'create');
+    const scheduledAt = 7;
+
+    await executeStep({
+      world,
+      workflowRunId: runId,
+      workflowName: 'wf',
+      workflowStartedAt: Date.now(),
+      stepId,
+      stepName,
+      slotSnapshot: { eventCount: scheduledAt },
+    });
+
+    // world-local mints ULIDs, so nothing the executor commits reads back as a
+    // slot and the seeded position is all it ever has to go on. What matters
+    // here is that every write carries one.
+    for (const call of createSpy.mock.calls) {
+      expect(call[2]?.eventCount).toBeGreaterThanOrEqual(scheduledAt);
+    }
+    expect(createSpy.mock.calls.length).toBeGreaterThan(1);
   });
 });

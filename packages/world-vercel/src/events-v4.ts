@@ -223,38 +223,14 @@ interface CreateEventV4InputBase {
    *  falls back to events.list). */
   sinceCursor?: string;
   /**
-   * Epoch ms (the ULID time of the latest event the runtime has loaded
-   * during replay). Sent by replay-context creates so the backend can
-   * reject the event when a newer out-of-band event was recorded after this
-   * snapshot, enabling an optimistic-concurrency guard. Omitted by callers
-   * without a loaded event log; older servers ignore it entirely.
-   */
-  stateUpdatedAt?: number;
-  /**
-   * Number of loaded events at or below `stateUpdatedAt` (i.e. the loaded
-   * log's length). Sent with `stateUpdatedAt` so the backend can also reject
-   * a snapshot that is *missing* an event at or below its watermark — the
-   * corruption case a watermark alone cannot detect. Older servers ignore it.
-   */
-  stateEventCount?: number;
-  /**
-   * The runtime's event-log cursor at snapshot time. Advisory: sent so a
-   * rejecting backend MAY return the missing events on the 412 body, saving a
-   * follow-up events.list. Distinct from `sinceCursor`, which the server acts
-   * on for the *accepted* path.
-   */
-  stateCursor?: string;
-  /**
    * Highest event slot the writer had loaded, i.e. the length of its loaded
    * log under slot identity. Named `maxSlot` on the wire because the meta
    * already carries an unrelated telemetry `eventCount`.
    *
-   * Supersedes the `stateUpdatedAt`/`stateEventCount`/`stateCursor` triple for
-   * slot-identity runs: with dense positions one integer says everything the
-   * watermark approximated. The server allocates from the tail regardless, and
-   * uses this only to report which slots the write skipped over (returned on
-   * the success response as `events`/`cursor`/`hasMore`). Older servers ignore
-   * it.
+   * Sent by every replay-context create on a slot-identity run. The server
+   * allocates from the tail regardless, and uses this only to report which
+   * slots the write skipped over (returned on the success response as
+   * `events`/`cursor`/`hasMore`). Older servers ignore it.
    */
   maxSlot?: number;
   /** Number of consecutive replay divergences resolved by this write. */
@@ -463,13 +439,6 @@ function buildPostFrameMeta(
   }
   if (input.sinceCursor !== undefined) meta.sinceCursor = input.sinceCursor;
   if (input.skipPreload) meta.skipPreload = true;
-  if (input.stateUpdatedAt !== undefined) {
-    meta.stateUpdatedAt = input.stateUpdatedAt;
-  }
-  if (input.stateEventCount !== undefined) {
-    meta.stateEventCount = input.stateEventCount;
-  }
-  if (input.stateCursor !== undefined) meta.stateCursor = input.stateCursor;
   if (input.maxSlot !== undefined) meta.maxSlot = input.maxSlot;
   if (input.replayDivergenceCount !== undefined) {
     meta.replayDivergenceCount = input.replayDivergenceCount;

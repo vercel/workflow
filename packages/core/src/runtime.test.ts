@@ -7,6 +7,7 @@ import {
 } from '@workflow/errors';
 import {
   type Event,
+  slotToEventId,
   SPEC_VERSION_CURRENT,
   type WorkflowRun,
 } from '@workflow/world';
@@ -2450,20 +2451,13 @@ describe('workflowEntrypoint turbo mode', () => {
 });
 
 describe('workflowEntrypoint inline-delta gate with open hooks', () => {
-  const ORIG_GUARD = process.env.WORKFLOW_PRECONDITION_GUARD;
   const ORIG_OPT = process.env.WORKFLOW_OPTIMISTIC_INLINE_START;
 
   beforeEach(() => {
-    delete process.env.WORKFLOW_PRECONDITION_GUARD;
     delete process.env.WORKFLOW_OPTIMISTIC_INLINE_START;
     deltaGateBodyRuns = [];
   });
   afterEach(() => {
-    if (ORIG_GUARD === undefined) {
-      delete process.env.WORKFLOW_PRECONDITION_GUARD;
-    } else {
-      process.env.WORKFLOW_PRECONDITION_GUARD = ORIG_GUARD;
-    }
     if (ORIG_OPT === undefined) {
       delete process.env.WORKFLOW_OPTIMISTIC_INLINE_START;
     } else {
@@ -2509,7 +2503,7 @@ describe('workflowEntrypoint inline-delta gate with open hooks', () => {
    * off and the initial events.list — which supplies the cursor the delta
    * diffs against — runs). Returns the events.create mock so tests can
    * inspect the step-terminal write's params for `sinceCursor` and the
-   * step_started claims' params for `stateUpdatedAt`.
+   * step_started claims' params for `eventCount`.
    */
   async function driveDeltaGate(
     runId: string,
@@ -2542,10 +2536,11 @@ describe('workflowEntrypoint inline-delta gate with open hooks', () => {
 
     const durableEvents: Event[] = [];
     const recordEvent = (data: any): Event => {
-      // ULID-shaped event IDs so the runtime's stateUpdatedAt snapshot
-      // (derived from the latest event id's ULID timestamp) is computable.
+      // Slot-numbered event ids, so the runtime's snapshot (the highest slot
+      // its loaded log occupies) is computable. This is the only kind of run
+      // that reaches a fencing backend.
       const created = {
-        eventId: `evnt_${ulid()}`,
+        eventId: slotToEventId(durableEvents.length + 1),
         runId,
         createdAt: new Date(),
         ...data,
@@ -2658,8 +2653,7 @@ describe('workflowEntrypoint inline-delta gate with open hooks', () => {
     return call?.[2] as { sinceCursor?: string } | undefined;
   }
 
-  it('requests the inline delta despite the open hook when the precondition guard is enabled and the World enforces it', async () => {
-    process.env.WORKFLOW_PRECONDITION_GUARD = '1';
+  it('requests the inline delta despite the open hook when the World enforces the precondition guard', async () => {
     const { res, eventsCreate } = await driveDeltaGate(
       'wrun_delta_gate_guard_on',
       { capabilities: { preconditionGuard: true } }
@@ -2678,7 +2672,7 @@ describe('workflowEntrypoint inline-delta gate with open hooks', () => {
     );
   });
 
-  it('does not request the inline delta with an open hook when the guard is disabled', async () => {
+  it('does not request the inline delta with an open hook when no World fence exists', async () => {
     const { res, eventsCreate } = await driveDeltaGate(
       'wrun_delta_gate_guard_off'
     );
@@ -2688,20 +2682,7 @@ describe('workflowEntrypoint inline-delta gate with open hooks', () => {
     expect(stepCompletedParams(eventsCreate)?.sinceCursor).toBeUndefined();
   });
 
-  it('does not request the inline delta when the env flag is set but the World does not enforce the guard', async () => {
-    process.env.WORKFLOW_PRECONDITION_GUARD = '1';
-    // No capabilities declared: the env flag only makes the runtime SEND
-    // snapshots — a World that ignores stateUpdatedAt provides no 412 fence,
-    // so the relaxation must fail closed to the conservative gate.
-    const { res, eventsCreate } = await driveDeltaGate(
-      'wrun_delta_gate_guard_no_capability'
-    );
-    expect(res.status).toBe(204);
-    expect(stepCompletedParams(eventsCreate)?.sinceCursor).toBeUndefined();
-  });
-
   it('restarts the replay in-process and still completes the run when a stale lazy claim is rejected by the guard (interleaved hook_received)', async () => {
-    process.env.WORKFLOW_PRECONDITION_GUARD = '1';
     // Simulates the interleaving the fence exists for: after step A's
     // terminal write, an out-of-band hook_received bumps the run's marker;
     // the next replay (working from a view that misses it) schedules step B,
@@ -2714,7 +2695,7 @@ describe('workflowEntrypoint inline-delta gate with open hooks', () => {
         rejectClaimOnce: {
           stepName: 'deltaGateStepB',
           error: new PreconditionFailedError(
-            'stale stateUpdatedAt: a newer outside event exists'
+            'stale snapshot: a newer outside event exists'
           ),
         },
       }
@@ -2722,17 +2703,17 @@ describe('workflowEntrypoint inline-delta gate with open hooks', () => {
     // The handler responds normally: the rejection restarts the replay inside
     // this delivery, never a run_failed.
     expect(res.status).toBe(204);
-    // Step B's claim was issued from a loaded (non-empty) log, so it carried
-    // the guard snapshot — that is what lets the backend fence it. (The very
-    // first batch of a run loads an empty log and has no snapshot to send;
-    // the guard is best-effort there, matching the suspension creates.)
+    // Step B's claim was issued from a loaded (non-empty) log, so it named the
+    // position it was decided against. (The very first batch of a run loads an
+    // empty log and has no position to name; reporting is best-effort there,
+    // matching the suspension creates.)
     const rejectedClaim = eventsCreate.mock.calls.find(
       (c) =>
         (c[1] as any).eventType === 'step_started' &&
         ((c[1] as any).eventData as { stepName?: string })?.stepName ===
           'deltaGateStepB'
     );
-    expect(typeof (rejectedClaim?.[2] as any)?.stateUpdatedAt).toBe('number');
+    expect(typeof (rejectedClaim?.[2] as any)?.eventCount).toBe('number');
     // The fenced claim's body never ran: step B executes exactly once, on the
     // restarted replay whose claim the backend accepted.
     expect(deltaGateBodyRuns).toEqual(['B']);
@@ -2760,7 +2741,6 @@ describe('workflowEntrypoint inline-delta gate with open hooks', () => {
   });
 
   it('suppresses optimistic start on guarded stale-sensitive batches: a 412-fenced step never runs its body even with WORKFLOW_OPTIMISTIC_INLINE_START=1', async () => {
-    process.env.WORKFLOW_PRECONDITION_GUARD = '1';
     process.env.WORKFLOW_OPTIMISTIC_INLINE_START = '1';
     // Same interleaving as above, but with optimistic start enabled globally.
     // Without suppression, executeStep would begin step B's body immediately
@@ -2777,7 +2757,7 @@ describe('workflowEntrypoint inline-delta gate with open hooks', () => {
         rejectClaimOnce: {
           stepName: 'deltaGateStepB',
           error: new PreconditionFailedError(
-            'stale stateUpdatedAt: a newer outside event exists'
+            'stale snapshot: a newer outside event exists'
           ),
         },
       }

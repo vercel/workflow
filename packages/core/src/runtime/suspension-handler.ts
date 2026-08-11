@@ -42,11 +42,10 @@ import {
 } from './constants.js';
 import {
   type EventCreator,
-  isPreconditionGuardEnabled,
   type LoadedEventLog,
   mergeReportedEvents,
-  preconditionSnapshotParams,
   queueMessage,
+  slotSnapshotParams,
   stepDispatchIdempotencyKey,
 } from './helpers.js';
 import { ReplayRecoveryReporter } from './replay-recovery-reporter.js';
@@ -356,7 +355,7 @@ export async function handleSuspension({
     const log = eventLog;
     const result = await createEvent(data, {
       ...params,
-      ...preconditionSnapshotParams(log.events, log.cursor),
+      ...slotSnapshotParams(log.events),
     });
     // Bump-and-report: the write landed above the slot it asked for, so these
     // are the events it was decided without. Merging them here rather than at
@@ -691,7 +690,8 @@ export async function handleSuspension({
   //  - The caller provided a dispatch target (`stepDispatch`) — terminal
   //    drains and other create-only callers never queue.
   //  - The feature is enabled (`WORKFLOW_RESILIENT_STEP_DISPATCH` opt-out).
-  //  - The optimistic-concurrency guard is not in effect. A guard-enforcing
+  //  - The World does not fence stale writes
+  //    (`capabilities.preconditionGuard`). A guard-enforcing
   //    backend can reject the step_created as stale (412) and the caller then
   //    restarts the replay — but a queue message carrying the payload would
   //    already be out, letting the consumer materialize a step the guard
@@ -708,10 +708,7 @@ export async function handleSuspension({
   const resilientDispatchEligible =
     stepDispatch !== undefined &&
     isResilientStepDispatchEnabled() &&
-    !(
-      isPreconditionGuardEnabled() &&
-      world.capabilities?.preconditionGuard === true
-    ) &&
+    world.capabilities?.preconditionGuard !== true &&
     (run.specVersion ?? 0) >= SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT;
 
   // The trace carrier for resilient step dispatches, resolved at most once per

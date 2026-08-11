@@ -22,7 +22,6 @@ import {
   resolveQueueNamespace,
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_LEGACY,
-  ulidToDate,
 } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
 import { runtimeLogger } from '../logger.js';
@@ -711,18 +710,6 @@ export interface LoadedEventLog {
 }
 
 /**
- * Whether the optimistic-concurrency guard for event creation is enabled.
- * **On by default** where the runtime executes: replay-context creates send a
- * `stateUpdatedAt` snapshot (and can be rejected with 412 by a supporting
- * backend) unless `WORKFLOW_PRECONDITION_GUARD` is set to `0`. Backends without
- * guard support ignore the snapshot, so enabling by default is
- * backward-compatible.
- */
-export function isPreconditionGuardEnabled(): boolean {
-  return process.env.WORKFLOW_PRECONDITION_GUARD !== '0';
-}
-
-/**
  * Whether a replay refuses to run over a log with a hole in it (see
  * {@link findEventSlotGap}). **On by default**; set
  * `WORKFLOW_SLOT_GAP_CHECK=0` to replay across holes instead.
@@ -737,58 +724,6 @@ export function isPreconditionGuardEnabled(): boolean {
  */
 export function isSlotGapCheckEnabled(): boolean {
   return process.env.WORKFLOW_SLOT_GAP_CHECK !== '0';
-}
-
-/**
- * The `stateUpdatedAt` value to send with a replay-context event creation: the
- * *maximum* ULID time (epoch ms) over the events the runtime has loaded. Returns
- * `undefined` when there are no events or that id is not a decodable ULID.
- *
- * It is the maximum rather than the tail's because the loaded log is in the
- * World's canonical order, which is not necessarily event-id order (see
- * {@link appendUniqueEvents}). The maximum is what lets the count sent alongside
- * it be read as "events at or below this watermark": every loaded event is at or
- * below it, so the count is exactly `events.length`. Reading the tail instead
- * would understate the watermark on a World whose order is not id-ordered, which
- * is safe (it can only weaken detection) but needlessly imprecise.
- *
- * The maximum is found by lexicographic id comparison, decoding only once: the
- * 26-character Crockford ULID encodes its timestamp in the leading 10
- * characters, so the greatest id also carries the greatest time.
- *
- * Granularity: snapshots are epoch-milliseconds, and the backend allows an
- * equal-timestamp snapshot (an up-to-date client must not be rejected). Two
- * out-of-band events landing in the same millisecond where only the first was
- * loaded therefore pass this half of the guard undetected — that is exactly
- * the hole `stateEventCount` closes, since the count of events at or below the
- * watermark differs even when the watermarks are equal.
- */
-export function latestEventStateUpdatedAt(events: Event[]): number | undefined {
-  let latest: string | undefined;
-  for (const event of events) {
-    if (latest === undefined || event.eventId > latest) {
-      latest = event.eventId;
-    }
-  }
-  if (latest === undefined) {
-    return undefined;
-  }
-  // Event IDs are prefixed ULIDs (e.g. `evnt_01ARYZ...`); ulidToDate only
-  // decodes the bare 26-char ULID, so strip the prefix first.
-  const eventId = latest;
-  const underscore = eventId.lastIndexOf('_');
-  const rawUlid = underscore === -1 ? eventId : eventId.slice(underscore + 1);
-  const time = ulidToDate(rawUlid)?.getTime();
-  if (time === undefined) {
-    // Fail open: a non-decodable id disarms the guard for this create (no
-    // snapshot sent). Log so a fleet-wide silent disarm is diagnosable.
-    runtimeLogger.debug(
-      'Precondition guard: latest event id is not a decodable ULID; sending no snapshot',
-      { eventId }
-    );
-    return undefined;
-  }
-  return time;
 }
 
 /**
@@ -971,66 +906,36 @@ export async function settleEventSlotGap(
 }
 
 /**
- * The precondition snapshot a replay-context event creation sends, describing
- * the event log the replay derived the event from.
+ * How much of its run's log a replay-context event creation had loaded when it
+ * decided to write, as the highest slot that log occupies.
  *
- * On a slot-numbered run this is `eventCount`, optionally with the set of
- * correlation ids the writer is blocked on. On a ULID-numbered run it is the
- * `stateUpdatedAt` / `stateEventCount` / `stateCursor` triple, whose three
- * fields are one indivisible unit: the backend reads the count only relative to
- * the watermark, and returns its inline delta only relative to the cursor.
- * Passing them as a single object is what keeps them from drifting apart at a
- * call site.
+ * One integer says it because slots are dense: a writer that names slot N is
+ * claiming to hold every event from 1 to N and nothing above. The World answers
+ * by numbering the write above whatever the log has actually reached and handing
+ * back the events on the slots in between — the ones this writer decided
+ * without.
+ *
+ * Its own object rather than a bare number so a call site cannot half-send it,
+ * and so the empty case (a run that is not slot-numbered) spreads to nothing.
  */
-export interface PreconditionSnapshotParams {
-  stateUpdatedAt?: number;
-  stateEventCount?: number;
-  stateCursor?: string;
+export interface SlotSnapshotParams {
   eventCount?: number;
 }
 
 /**
- * Build the precondition snapshot to attach to a replay-context event creation.
+ * Build the slot snapshot to attach to a replay-context event creation.
  *
- * Returns an empty object — no guard, backend behaves as before — when the
- * guard is disabled or the watermark is not derivable. All three fields fail
- * open together: a count without a watermark is meaningless to the backend, and
- * a cursor without either would invite a delta nobody asked for.
+ * Empty for a run that is not slot-numbered: there is no position to name, and
+ * a World that numbers by ULID has nothing to compare against.
  *
- * `stateEventCount` is `events.length` because the watermark is the log's
- * *maximum* ULID time, so every loaded event is at or below it regardless of the
- * order the World returned them in.
- *
- * Both fields are therefore invariant under permutation of the log: a maximum is
- * order-independent, and the length is set cardinality once `appendUniqueEvents`
- * has deduped by event id. Two replays that consume the same events in different
- * orders send an identical snapshot, so this guard detects that a log is missing
- * an event and can never detect that a replay consumed one in a different order.
+ * The maximum rather than the length, for the reason {@link maxEventSlot}
+ * gives: a partially-read log holds fewer events than its highest position, and
+ * counting those would make the write claim to have seen less than it has, so
+ * the World would report the same events back on every attempt.
  */
-export function preconditionSnapshotParams(
-  events: Event[],
-  cursor?: string | null
-): PreconditionSnapshotParams {
-  if (!isPreconditionGuardEnabled()) {
-    return {};
-  }
-  // A slot-numbered run says with one integer everything the triple was
-  // approximating, so the two are alternatives rather than a pair. Sending the
-  // triple here would also be futile: a slot id carries no time, so
-  // `latestEventStateUpdatedAt` would fail open on every single write.
+export function slotSnapshotParams(events: Event[]): SlotSnapshotParams {
   const eventCount = maxEventSlot(events);
-  if (eventCount !== undefined) {
-    return { eventCount };
-  }
-  const stateUpdatedAt = latestEventStateUpdatedAt(events);
-  if (stateUpdatedAt === undefined) {
-    return {};
-  }
-  return {
-    stateUpdatedAt,
-    stateEventCount: events.length,
-    ...(cursor ? { stateCursor: cursor } : {}),
-  };
+  return eventCount === undefined ? {} : { eventCount };
 }
 
 /**

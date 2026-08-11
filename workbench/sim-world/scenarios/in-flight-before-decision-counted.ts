@@ -13,11 +13,10 @@ export const scenario: ScenarioSpec = {
     'ahead of the timeout in log order, re-decides the fork as "arrived", and ' +
     'commits the branch the log agrees with. This is the regression test for ' +
     'the half of the fence a high-water mark cannot express: same fault, same ' +
-    'tempo, one flag apart. This is also the production-shaped one of the ' +
-    'pair: since #3145 `@workflow/core` sends the count on every ' +
-    'replay-context create and the server checks it by default, so the flag ' +
-    'below is now the default rather than an opt-in, and it is the twin above ' +
-    'that has to switch it off. ' +
+    'tempo, one flag apart. The count the caller sends is the same number ' +
+    '`@workflow/core` puts on every replay-context create; what differs is ' +
+    'what a World does with it. This sim rejects on it, which is why the flag ' +
+    'below is the default and the twin above has to switch it off. ' +
     'Under an append-only log the 412 still fires and now saves nothing: the ' +
     'count is taken at or below the caller’s watermark, and the watermark ' +
     'is a millisecond, so a hook that commits after the timeout inside the ' +

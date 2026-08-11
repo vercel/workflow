@@ -73,7 +73,6 @@ import {
   getWorkflowQueueName,
   handleHealthCheckMessage,
   insertEventByEventId,
-  isPreconditionGuardEnabled,
   isSlotGapCheckEnabled,
   type LoadedEventLog,
   loadWorkflowRunEvents,
@@ -81,9 +80,10 @@ import {
   mergeReportedEvents,
   parseHealthCheckPayload,
   preconditionEventDelta,
-  preconditionSnapshotParams,
   queueMessage,
   settleEventSlotGap,
+  type SlotSnapshotParams,
+  slotSnapshotParams,
   stepDispatchIdempotencyKey,
   withHealthCheck,
 } from './runtime/helpers.js';
@@ -890,10 +890,11 @@ export function workflowEntrypoint(
                     params?: CreateEventParams
                   ) => {
                     const sinceCursor = deltaRequestCursor(data, params);
+                    const withSnapshot = { ...slotSnapshot(), ...params };
                     const result = await replayRecoveryReporter.withEventCreate(
                       sinceCursor === undefined
-                        ? params
-                        : { ...params, sinceCursor },
+                        ? withSnapshot
+                        : { ...withSnapshot, sinceCursor },
                       (p) => world.events.create(runId, data, p)
                     );
                     if (sinceCursor !== undefined) {
@@ -901,6 +902,30 @@ export function workflowEntrypoint(
                     }
                     return result;
                   };
+
+                  /**
+                   * The slot snapshot for a write issued from this loop: how
+                   * much of the run's log the decision behind it was made
+                   * against.
+                   *
+                   * Every write goes through here, including the ones that ask
+                   * for an inline delta. The two answer different questions and
+                   * a World is free to serve both: the cursor says where to
+                   * start listing from, the slot says which events this writer
+                   * had already decided without. Worlds that treat the delta as
+                   * the better answer simply ignore the slot.
+                   *
+                   * Taken from whatever is loaded, including the stale
+                   * `loadAfter` state. Understating is safe: the World reports
+                   * back a wider span than strictly needed, and
+                   * `mergeReportedEvents` drops what the log already holds.
+                   * Overstating is not, so there is no guessing when nothing is
+                   * loaded at all.
+                   */
+                  const slotSnapshot = (): SlotSnapshotParams =>
+                    eventLog.type === 'loadAll'
+                      ? {}
+                      : slotSnapshotParams(eventLog.events);
 
                   /**
                    * The cursor to ask for an inline delta against, or
@@ -2556,6 +2581,7 @@ export function workflowEntrypoint(
                         requestId,
                         attempt: metadata.attempt,
                         limitMs: replayBudget.configuredLimitMs,
+                        slotSnapshot: slotSnapshot(),
                       });
                       // Only the terminal attempt returns, after run_failed is
                       // durable. Earlier attempts reject for queue redelivery.
@@ -2738,14 +2764,11 @@ export function workflowEntrypoint(
                         try {
                           const created = await createEvent(waitEvent, {
                             requestId,
-                            ...preconditionSnapshotParams(
-                              eventLog.events,
-                              eventLog.cursor
-                            ),
                           });
                           // Bump-and-report: fold what this write skipped over
-                          // into the snapshot the remaining waits are guarded
-                          // against, so each asks for a slot above it.
+                          // into the log, which is what `createEvent` reads the
+                          // slot snapshot off, so each remaining wait asks for
+                          // a slot above it.
                           //
                           // Only a complete answer. `hasMore` means the World
                           // returned part of what it was asked for, and the
@@ -2968,12 +2991,12 @@ export function workflowEntrypoint(
                       });
                       replayRecoveryReporter.activate();
 
-                      // Workflow completed. Send the snapshot but do NOT
-                      // reload-and-retry the create in place: `result` was
-                      // computed by this replay, so a stale (412) rejection must
-                      // force a *fresh replay* (which may observe the new event
-                      // and produce a different result), not re-commit the stale
-                      // result. The catch below restarts the replay in-process.
+                      // Workflow completed. Do NOT reload-and-retry the create
+                      // in place: `result` was computed by this replay, so a
+                      // stale (412) rejection must force a *fresh replay* (which
+                      // may observe the new event and produce a different
+                      // result), not re-commit the stale result. The catch below
+                      // restarts the replay in-process.
                       try {
                         // Turbo: a workflow that finishes with no steps reaches
                         // here before the backgrounded run_started; order the
@@ -2985,13 +3008,7 @@ export function workflowEntrypoint(
                             specVersion: SPEC_VERSION_CURRENT,
                             eventData: { output: result },
                           },
-                          {
-                            requestId,
-                            ...preconditionSnapshotParams(
-                              eventLog.events,
-                              eventLog.cursor
-                            ),
-                          }
+                          { requestId }
                         );
                       } catch (err) {
                         if (
@@ -3672,11 +3689,8 @@ export function workflowEntrypoint(
                         //    does not bump the outside-event marker, so nothing
                         //    fences a replay from the stale delta.
                         //  - No open (or this-suspension-created) hook — UNLESS
-                        //    the precondition guard is enabled AND the World
-                        //    declares it actually enforces the guard
-                        //    (`capabilities.preconditionGuard`; the env flag
-                        //    alone only makes the runtime SEND snapshots, which
-                        //    an unsupporting backend ignores — no fence). The
+                        //    the World declares it fences stale writes
+                        //    (`capabilities.preconditionGuard`). The
                         //    delta snapshots the log at the step_completed
                         //    write but is consumed on the next replay, so an
                         //    out-of-band `hook_received` landing in that window
@@ -3685,24 +3699,24 @@ export function workflowEntrypoint(
                         //    it. That staleness is qualitatively the same
                         //    read-to-write race the fetch path already has (an
                         //    event can land right after `events.list` returns
-                        //    and before the suspension's writes); with an
-                        //    enforced guard it is also fenced: `hook_received`
-                        //    bumps the per-run outside-event marker, so every
-                        //    durable write the stale replay attempts is
-                        //    rejected with 412 — its guarded suspension creates
-                        //    (retried over the reloaded log, or exhausted into
-                        //    a queue re-invocation), AND the lazy step_started
-                        //    claim of its next inline step, which carries the
-                        //    snapshot too (threaded below via
-                        //    `stateUpdatedAt`; on rejection the batch is
-                        //    abandoned and re-invoked for a fresh replay, so a
-                        //    stale view can never commit a step). Hooks created
+                        //    and before the suspension's writes); on a fencing
+                        //    World it is also fenced: `hook_received` bumps the
+                        //    per-run outside-event marker, so every durable
+                        //    write the stale replay attempts is rejected with
+                        //    412 — its guarded suspension creates (retried over
+                        //    the reloaded log, or exhausted into a queue
+                        //    re-invocation), AND the lazy step_started claim of
+                        //    its next inline step, which carries the snapshot
+                        //    too (threaded below via `slotSnapshot`; on
+                        //    rejection the batch is abandoned and re-invoked for
+                        //    a fresh replay, so a stale view can never commit a
+                        //    step). Hooks created
                         //    by THIS suspension are inside the delta (their
                         //    `hook_created` lands before the step-terminal
                         //    write), so only their `hook_received` responses
-                        //    are subject to the same fenced window. Without an
-                        //    enforced guard there is no fence, so keep the
-                        //    conservative gate.
+                        //    are subject to the same fenced window. Without a
+                        //    fencing World there is nothing to reject a stale
+                        //    write, so keep the conservative gate.
                         //  - With no hook or wait open at all, the only
                         //    out-of-band writer is cancellation, which is safe
                         //    to observe one iteration late. See
@@ -3712,12 +3726,11 @@ export function workflowEntrypoint(
                         // own events and the per-write delta would be partial, so
                         // the delta is not requested (the gate below is false for
                         // multi-step) and the next iteration does a normal fetch.
-                        // Whether the precondition guard is actually in force:
-                        // enabled by env AND enforced by the World. The env
-                        // flag alone only makes the runtime send snapshots,
-                        // which an unsupporting backend ignores (no fence).
+                        // Whether the World fences a stale write. Sending a
+                        // snapshot is not the same as it being enforced: a
+                        // World that does not declare the capability ignores
+                        // what it is sent, so nothing rejects.
                         const guardEnforced =
-                          isPreconditionGuardEnabled() &&
                           world.capabilities?.preconditionGuard === true;
 
                         const requestInlineDelta =
@@ -3836,20 +3849,19 @@ export function workflowEntrypoint(
                           turbo,
                         });
 
-                        // Precondition-guard snapshot for the inline
-                        // step_started claims: the lazy claim is the first
-                        // durable write of a hot-path step (its step_created
-                        // is deferred), so without a snapshot it would bypass
-                        // the guard entirely and a stale replay could claim —
-                        // and commit — a step scheduled off a view that misses
-                        // an event it never loaded.
-                        // `preconditionSnapshotParams` returns an empty object
-                        // when the guard env flag is off, so this is a no-op
-                        // outside guarded deployments; Worlds that don't
-                        // enforce the guard ignore it.
-                        const inlineClaimSnapshot = preconditionSnapshotParams(
-                          eventLog.events,
-                          eventLog.cursor
+                        // Slot snapshot for the inline step_started claims: the
+                        // lazy claim is the first durable write of a hot-path
+                        // step (its step_created is deferred), so without a
+                        // snapshot it would name no position at all and a stale
+                        // replay could claim — and commit — a step scheduled off
+                        // a view that misses an event it never loaded.
+                        //
+                        // Taken here rather than inside the executor because
+                        // this is the view the scheduling decision was made
+                        // against. The executor advances from it as its own
+                        // writes land; see `slotSnapshot` in step-executor.
+                        const inlineClaimSnapshot = slotSnapshotParams(
+                          eventLog.events
                         );
 
                         // TTR: consumed by this batch. Every step is handed
@@ -3943,7 +3955,7 @@ export function workflowEntrypoint(
                                 // see suppressOptimisticStart above.
                                 suppressOptimisticStart,
                                 runReadyBarrier,
-                                preconditionSnapshot: inlineClaimSnapshot,
+                                slotSnapshot: inlineClaimSnapshot,
                                 ...(stepIndex === 0 &&
                                 s.lazyStepInput !== undefined &&
                                 latencyTracking
@@ -4376,16 +4388,14 @@ export function workflowEntrypoint(
                         // type identity and custom properties round-trip
                         // through the event log.
                         //
-                        // Precondition-guard asymmetry: unlike `run_completed`,
-                        // this terminal `run_failed` sends no `stateUpdatedAt`
-                        // snapshot, so it is never 412-rejected even if a hook
-                        // landed mid-replay and could have changed the path that
-                        // threw. This is intentional and fail-open: a spurious
-                        // failure is recoverable (the run can be re-run from the
+                        // Like every other write from this loop it carries the
+                        // slot snapshot, so a World that fences can reject it
+                        // and a slot-allocating one reports back what the
+                        // failing replay had not seen. Fail-open on purpose
+                        // where neither applies: a spurious failure is
+                        // recoverable (the run can be re-run from the
                         // dashboard), whereas a spurious *completion* commits a
-                        // wrong result. Guarding this write symmetrically would
-                        // also need the loaded event log, which is scoped to the
-                        // replay `try` above and not available in this catch.
+                        // wrong result.
                         try {
                           // Turbo: order the terminal write after the
                           // backgrounded run_started so the run exists.
