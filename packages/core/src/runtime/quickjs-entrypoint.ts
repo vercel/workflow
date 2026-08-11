@@ -1813,40 +1813,14 @@ export async function runWorkflowWithQuickJS(params: {
       return;
     }
 
-    if (soonestWait) {
-      // Delayed continuation for the soonest pending wait the loop has
-      // not already scheduled. The dispatch helper handles delay
-      // clamping (long waits chain across hops) and idempotency-key
-      // dedup of re-observations of the same pending wait — see
-      // runtime/wait-continuation.ts.
-      wfdiag('exit_suspended', {
-        action: 'schedule_wait_timeout',
-        timeoutSeconds: soonestWait.seconds,
-        waitCorrelationId: soonestWait.correlationId,
-      });
-      scheduledWaitContinuations.add(soonestWait.correlationId);
-      await queueMessage(
-        world,
-        getWorkflowQueueName(workflowRun.workflowName, namespace),
-        {
-          runId,
-          traceCarrier: await nextTraceCarrier(),
-          requestedAt: new Date(),
-        },
-        getWaitContinuationDispatch(
-          soonestWait.seconds,
-          soonestWait.correlationId
-        )
-      );
-      return;
-    }
-
-    // Nothing else will wake a run whose only outstanding work is a step
-    // dispatch the queue lost, so arm a timer on the soonest watchdog
-    // boundary among the pending steps. Same
-    // scheme as the node engine's suspension wake (step-dispatch.ts): the
-    // key is derived from the durable creation timestamp, so concurrent
-    // invocations arm one timer, not one each.
+    // Nothing else wakes a run whose only outstanding work is a step dispatch
+    // that ended without a terminal event, so arm a timer on the soonest
+    // watchdog boundary among the pending steps. Armed independently of the
+    // wait continuation below: a run holding both a pending wait and a lost
+    // dispatch would otherwise not re-evaluate the step until the wait
+    // elapsed, which can be hours away. Same scheme as the node engine's
+    // suspension wake (step-dispatch.ts): the key is derived from the
+    // boundary, so concurrent invocations arm one timer, not one each.
     const dispatchWake = getStepDispatchWake(
       pendingOperations
         .filter((op): op is PendingStep => op.type === 'step')
@@ -1867,6 +1841,35 @@ export async function runWorkflowWithQuickJS(params: {
           idempotencyKey: dispatchWake.idempotencyKey,
         }
       );
+    }
+
+    if (soonestWait) {
+      // Delayed continuation for the soonest pending wait the loop has
+      // not already scheduled. The dispatch helper handles delay
+      // clamping (long waits chain across hops) and idempotency-key
+      // dedup of re-observations of the same pending wait — see
+      // runtime/wait-continuation.ts.
+      wfdiag('exit_suspended', {
+        action: 'schedule_wait_timeout',
+        timeoutSeconds: soonestWait.seconds,
+        waitCorrelationId: soonestWait.correlationId,
+        dispatchWakeSeconds: dispatchWake?.delaySeconds,
+      });
+      scheduledWaitContinuations.add(soonestWait.correlationId);
+      await queueMessage(
+        world,
+        getWorkflowQueueName(workflowRun.workflowName, namespace),
+        {
+          runId,
+          traceCarrier: await nextTraceCarrier(),
+          requestedAt: new Date(),
+        },
+        getWaitContinuationDispatch(
+          soonestWait.seconds,
+          soonestWait.correlationId
+        )
+      );
+      return;
     }
 
     wfdiag('exit_suspended', {
