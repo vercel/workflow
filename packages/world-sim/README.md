@@ -345,9 +345,7 @@ script: async (sim) => {
 | method | writer | description |
 | --- | --- | --- |
 | `wf.runToEventProduced(type, opts?)` | any | Hold once the event has crossed the world boundary — formed, attributed, in the trace — and before it is assigned a position in the event log. Anything committed to storage during the hold sorts *ahead* of it. |
-| `wf.runToPositionMinted(type, opts?)` | any | Hold once the event is assigned a position in the event log and before it is committed to storage. The position is fixed and no reader can see it, so anything committed during the hold sorts *behind* it. |
 | `wf.runToEventCommitted(type, opts?)` | any | Hold once the event is committed to storage, before the writer resumes. |
-| `wf.runToCall(call, opts?)` | any | The same three places, for a world call that is not `events.create`. `opts.phase` picks which, and defaults to after the call returns. |
 | `wf.release()` | the held one | Let the writer go. Idempotent; awaiting it yields the event loop, so the writer has really moved by the time it resolves. |
 | `wf.isHeld()` / `wf.history()` | — | Is it held / where it has been. |
 | `sim.park(match, label?)` | whichever matches | Hold the next matching call, whoever makes it. |
@@ -357,10 +355,13 @@ script: async (sim) => {
 `type` is one event type or several. `opts` is a step name as a bare string, or
 `{stepName, token, correlationId, where, label, timeoutMs}`.
 
-**Not every world assigns a position without also committing it.** Under
-`appendOnlyLog` a write overtaken while held gives up its position and re-takes
-the tail when it commits, so what `runToPositionMinted` holds is provisional and
-the gap it opens is closed by construction. See [World behaviors](#world-behaviors).
+Both advances hold a writer whose event has no position yet, so a write that
+commits during the hold sorts *ahead* of it. For the other order — an event that
+already owns an earlier slot and has not appeared — hold the write itself with
+[`sim.beginHookDelivery`](#withholdings), which reserves the position and hands
+back a `commit()`. Under `appendOnlyLog` that reservation is provisional: an
+overtaken write gives it up and re-takes the tail, which is exactly how the world
+closes the gap. See [World behaviors](#world-behaviors).
 
 `runTo` is **level-triggered**: it consults recorded history, so a point this
 writer already passed is an `AlreadyPassedError` naming the point rather than a
@@ -449,7 +450,7 @@ The module map is [DESIGN.md §1](./DESIGN.md#1-module-map).
 | I want to… | Change | Read first |
 | --- | --- | --- |
 | let scripts hold at a point the API can't name | `world.ts` — the call-point wrapper, and `CallMatch` in `types.ts` | [§3 Interception](./DESIGN.md#3-interception) |
-| add a phase to an existing call | `CallPhase` in `types.ts`, where `world.ts` parks on it, plus the writer op that names it | [§3 Three phases](./DESIGN.md#three-phases-because-a-write-is-not-atomic) |
+| add a phase to an existing call | `CallPhase` in `types.ts`, where `world.ts` parks on it, plus the writer op that names it | [§3 Two phases](./DESIGN.md#two-phases-and-a-third-hold-that-is-not-one) |
 | add a rule the log must satisfy | `invariants.ts`, plus the rule table above | [§8 Consistency checking](./DESIGN.md#8-consistency-checking) |
 | add or change a writer kind | `writers.ts` for the handles, `world.ts` for attribution | [§3 Writer attribution](./DESIGN.md#writer-attribution-is-derived-not-instrumented) |
 | add a fault injector | `store.ts` — next to `withholdNextEvent` and the guards | [§5 Fault injection](./DESIGN.md#fault-injection) |
@@ -459,7 +460,15 @@ The module map is [DESIGN.md §1](./DESIGN.md#1-module-map).
 | change the replay check | `replay.ts` | [§8 Replay verification](./DESIGN.md#replay-verification) |
 | change the output | `report.ts` — `renderScenario`, `renderSummary`, `renderMarkdownSummary` | [Reading the output](#reading-the-output) above |
 
-Three things worth knowing before you start:
+Four things worth knowing before you start:
+
+**The package entry is the scenario surface, not the whole package.**
+`index.ts` exports what it takes to write a scenario, play it and render the
+result. The construction kit — `createSimWorld`, `createSimStore`, `driveQueue`,
+`verifyReplay`, `checkInvariants`, the clock — is imported from its own module,
+so adding an option to one of them is not a change to the package's public
+signature. Promote a name to the entry when something outside the package needs
+it, not before.
 
 **A new world flag is tri-state at the runner.** `ScenarioSpec` carries the
 scenario's own choice, `RunScenarioOptions` the run-wide override, and

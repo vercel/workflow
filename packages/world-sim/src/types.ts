@@ -38,22 +38,19 @@ export type WorldCallName =
   | 'streams.list';
 
 /**
- * The three points a world call can be caught at.
+ * The two points a world call can be caught at: entering it, and returning
+ * from it.
  *
- * `'before'` and `'after'` bracket the call. `'positioned'` sits between them and
- * exists only for `events.create`, because a write is not one atomic act in a
- * real backend: the handler mints the event id *first* — DynamoDB does not
- * generate ids, and that id is the log's sort key — and only then attempts the
- * storage write. Between the two the event has a position but no visibility.
- *
- * That gap is not a detail. It is the only way a log can later gain an event
- * *behind* a position a reader has already read past, which is the one shape no
- * high-water-mark fence can see. A writer held at `'before'` has decided nothing
- * durable and has no position, so a competing write that lands during the hold
- * sorts *ahead* of it; a writer held at `'positioned'` already owns its slot and
- * a competing write sorts *behind* it. Scenarios need both.
+ * A held `'before'` has decided nothing durable and owns no log position, so a
+ * write that commits during the hold sorts *ahead* of it. For the other order —
+ * a writer that already owns an earlier slot and has not yet appeared — hold the
+ * write itself with `sim.beginHookDelivery`, which reserves the position that
+ * `events.create` would have minted and hands the caller the moment in between.
+ * That gap is not a detail: it is the only way a log can gain an event *behind*
+ * a position a reader has already read past, which is the one shape no
+ * high-water-mark fence can see.
  */
-export type CallPhase = 'before' | 'positioned' | 'after';
+export type CallPhase = 'before' | 'after';
 
 /**
  * Who made a world call.
@@ -108,13 +105,6 @@ export interface CallContext {
   runId?: string;
   /** For `events.create`: the request as submitted. */
   request?: AnyEventRequest;
-  /**
-   * For `events.create` from the `positioned` phase onwards: the log position
-   * minted for this write. A writer held here already owns where its event will
-   * sort, so a scenario can reason about the log's eventual order long before any
-   * reader can see the event.
-   */
-  minted?: { eventId: string; createdAt: Date };
   /** For `events.create` in the `after` phase: the committed event. */
   event?: Event;
   /** For `queue`: the enqueued payload. */
@@ -299,23 +289,11 @@ export interface Writer {
    *
    * Having no position yet, a write that commits to storage while this one is
    * held sorts *ahead* of it. For the opposite — an event that already owns an
-   * earlier slot and has not appeared — use `runToPositionMinted`.
+   * earlier slot and has not appeared — hold the write itself with
+   * `sim.beginHookDelivery`, which reserves the position on one side of the
+   * gap and commits on the other.
    */
   runToEventProduced(
-    eventType: EventType | EventType[],
-    options?: string | RunToOptions
-  ): Promise<Held>;
-  /**
-   * Stop *after* the log position is minted and *before* the write commits.
-   *
-   * The event's id — the log's sort key — is fixed, so it will sort here no matter
-   * how long the hold lasts; nothing can read it yet. Holding one writer here
-   * while another commits past it is how a scenario opens a hole *behind* the
-   * visible tail, with no stale read involved: the reader sees a complete,
-   * consistent prefix of the log that is simply missing an event still in flight.
-   * That is the shape production has, now that reads are strongly consistent.
-   */
-  runToPositionMinted(
     eventType: EventType | EventType[],
     options?: string | RunToOptions
   ): Promise<Held>;
@@ -327,11 +305,6 @@ export interface Writer {
   runToEventCommitted(
     eventType: EventType | EventType[],
     options?: string | RunToOptions
-  ): Promise<Held>;
-  /** The same, for a non-`events.create` world call. */
-  runToCall(
-    call: WorldCallName | WorldCallName[],
-    options?: RunToOptions & { phase?: CallPhase }
   ): Promise<Held>;
   /** Let this writer go, if it is held. Idempotent. */
   release(): Promise<void>;

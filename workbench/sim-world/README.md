@@ -92,9 +92,9 @@ from it come up on the first scenario you write:
   gets there first. Naming the wrong one is a wait that times out, so the
   failure is loud, but knowing the rule saves the trip.
 - **Pick the right advance.** `runToEventCommitted` is what most scenarios want.
-  Reach for `runToEventProduced` or `runToPositionMinted` when the point is
-  whether a write committed during the hold sorts ahead of the held event or
-  behind it.
+  Reach for `runToEventProduced` when the point is that a write committed during
+  the hold sorts *ahead* of the held event, and for `sim.beginHookDelivery` when
+  it has to sort *behind* one.
 - **Calling an advance starts watching; awaiting it waits for the hold.** To
   hold two writers at once, call both, then await both.
 - **`runTo` is level-triggered.** Asking for a point that has already gone by

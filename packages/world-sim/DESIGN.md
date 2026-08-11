@@ -148,31 +148,37 @@ A watch action returns a promise, and the intercepted call awaits it. That is
 the entire hold mechanism: a "held" writer is a caller blocked inside a World
 method. `release()` resolves that promise.
 
-### Three phases, because a write is not atomic
+### Two phases, and a third hold that is not one
 
 ```ts
-type CallPhase = 'before' | 'positioned' | 'after';
+type CallPhase = 'before' | 'after';
 ```
 
-`before` and `after` bracket the call. `positioned` sits between them and
-exists only for `events.create`, because a real backend mints the event id
-*first* — DynamoDB does not generate ids, and that id is the log's sort key —
-and only then attempts the storage write. Between the two, the event has a
-position but no visibility.
-
-That gap is the point, not a detail:
+`before` and `after` bracket the call:
 
 | held at | what a competing write does |
 |---|---|
 | `before` | no position taken yet, so a write landing during the hold sorts **ahead** |
-| `positioned` | the slot is owned but invisible, so a competing write sorts **behind** |
 | `after` | durable, and the writer has not been resumed yet |
 
-`positioned` is the only way to produce an event *behind* a position a reader
-has already read past — a complete, consistent log prefix that is simply
-missing an event still in flight. No high-water-mark fence can represent that
-shape. `after` is the window the package was originally built for: "the hook
-arrives after `step_started` is durable and before the workflow resumes".
+`after` is the window the package was originally built for: "the hook arrives
+after `step_started` is durable and before the workflow resumes".
+
+Neither phase produces the opposite order, and a write is not atomic, so the
+opposite order is reachable: a real backend mints the event id *first* —
+DynamoDB does not generate ids, and that id is the log's sort key — and only
+then attempts the storage write. Between the two the event has a position but
+no visibility, and a write that commits in that window sorts **behind** it.
+
+That gap is the point, not a detail. It is the only way to produce an event
+*behind* a position a reader has already read past — a complete, consistent log
+prefix that is simply missing an event still in flight. No high-water-mark fence
+can represent that shape.
+
+It is not a phase, though, because the writer holding it is not blocked inside a
+World method: the script owns the two halves explicitly, via `reservePosition` /
+`withReservedPosition` under `sim.beginHookDelivery` (§Withholdings below). A
+phase would have been a second way to say the same thing, and it went unused.
 
 ### Watches do not fire inside watches
 
@@ -349,7 +355,7 @@ event sitting before the cursor can never re-enter that invocation's view.
 Incremental reads make the hole permanent.
 
 **`beginHookDelivery(token, payload)`** returns an `InFlightWrite` — a write
-held at the `positioned` phase, with `eventId` already fixed and `commit()`
+held between mint and commit, with `eventId` already fixed and `commit()`
 still pending. Unlike a held writer, nothing is blocked meanwhile, because the
 receiver is a separate process from the run's invocation. Holding an *inline*
 write instead would stall the delivery that made it, and thus the reader too,
@@ -441,9 +447,7 @@ before the step exists and binds to whichever writer shows up under it.
 | method | phase | meaning |
 |---|---|---|
 | `runToEventProduced` | `before` | decided and submitted, nothing in the log |
-| `runToPositionMinted` | `positioned` | slot owned, invisible |
 | `runToEventCommitted` | `after` | durable, writer not yet resumed |
-| `runToCall` | any | the same for a non-`events.create` call |
 | `release` | — | let it go; idempotent |
 | `isHeld` / `history` | — | inspection |
 
@@ -596,7 +600,7 @@ finished — the log did not contain enough to rebuild the run.
 
 Measured on branch `sim-world`.
 
-**Unit tests** — 67 passing across 8 files (`pnpm --filter @workflow/world-sim test`).
+**Unit tests** — 70 passing across 8 files (`pnpm --filter @workflow/world-sim test`).
 
 **Scenarios** — `pnpm sim` in `workbench/sim-world`:
 

@@ -97,10 +97,10 @@ export interface SimWorldOptions {
    * log is append-only and no read can be contradicted by a later one. See
    * `SimStoreOptions.appendOnlyLog` for what that buys and what it costs.
    *
-   * The boundary mint still happens — `reservePosition`, the `positioned` call
-   * phase, and everything a scenario hangs off them work unchanged. It just
-   * stops being binding: a held write that nothing overtook keeps the position
-   * it reserved, and one that was overtaken re-mints when it lands.
+   * The boundary mint still happens — `reservePosition` and everything a
+   * scenario hangs off it work unchanged. It just stops being binding: a held
+   * write that nothing overtook keeps the position it reserved, and one that was
+   * overtaken re-mints when it lands.
    */
   appendOnlyLog?: boolean;
 }
@@ -614,10 +614,11 @@ export function createSimWorld(options: SimWorldOptions = {}): SimWorld {
       // The handler boundary. workflow-server mints the event id here
       // (`EventId.make()`, before the storage write is attempted) because
       // DynamoDB does not generate ids and that id *is* the log's sort key. So a
-      // write acquires its position and its visibility at two different moments,
-      // and a scenario can be held between them — see `CallPhase`.
+      // write acquires its position and its visibility at two different moments.
+      // A scenario holds that gap open with `sim.beginHookDelivery`, which takes
+      // the position on one side and lets the write land on the other.
       let callArgs = args;
-      let positioned = base;
+      let entered = base;
       if (call === 'events.create') {
         // A reserved position wins: it belongs to a write whose handler was
         // entered earlier and is only now reaching storage.
@@ -641,15 +642,7 @@ export function createSimWorld(options: SimWorldOptions = {}): SimWorld {
               : {}),
           },
         ] as unknown as Parameters<F>;
-        positioned = {
-          ...base,
-          phase: 'positioned',
-          args: callArgs,
-          atMs: clock.now(),
-          minted,
-        };
-        record(positioned);
-        await fireWatches(positioned);
+        entered = { ...base, args: callArgs };
       }
 
       // For a create, what the log held going in — so the caller can be
@@ -684,7 +677,7 @@ export function createSimWorld(options: SimWorldOptions = {}): SimWorld {
       }
 
       const after: CallContext = {
-        ...positioned,
+        ...entered,
         phase: 'after',
         atMs: clock.now(),
         ...(threw ? { error } : {}),

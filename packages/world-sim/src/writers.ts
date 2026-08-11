@@ -133,12 +133,7 @@ function describePoint(spec: PointSpec): string {
     spec.token ? `token=${spec.token}` : '',
     spec.correlationId ? `correlation=${spec.correlationId}` : '',
   ].filter(Boolean);
-  const where =
-    spec.phase === 'before'
-      ? 'produced'
-      : spec.phase === 'positioned'
-        ? 'positioned'
-        : 'committed';
+  const where = spec.phase === 'before' ? 'produced' : 'committed';
   return `${bits.join(' ') || 'any call'} (${where})`;
 }
 
@@ -347,42 +342,12 @@ export function createWriters(deps: {
           opts
         );
       },
-      runToPositionMinted: (eventType, options) => {
-        const opts = asOptions(options);
-        return runTo(
-          {
-            phase: 'positioned',
-            eventTypes: toArray(eventType),
-            ...(opts.stepName ? { stepName: opts.stepName } : {}),
-            ...(opts.token ? { token: opts.token } : {}),
-            ...(opts.correlationId
-              ? { correlationId: opts.correlationId }
-              : {}),
-          },
-          opts
-        );
-      },
       runToEventCommitted: (eventType, options) => {
         const opts = asOptions(options);
         return runTo(
           {
             phase: 'after',
             eventTypes: toArray(eventType),
-            ...(opts.stepName ? { stepName: opts.stepName } : {}),
-            ...(opts.token ? { token: opts.token } : {}),
-            ...(opts.correlationId
-              ? { correlationId: opts.correlationId }
-              : {}),
-          },
-          opts
-        );
-      },
-      runToCall: (call, options) => {
-        const opts = asOptions(options);
-        return runTo(
-          {
-            phase: options?.phase ?? 'after',
-            calls: toArray(call),
             ...(opts.stepName ? { stepName: opts.stepName } : {}),
             ...(opts.token ? { token: opts.token } : {}),
             ...(opts.correlationId

@@ -367,6 +367,14 @@ function paginate<T>(
   };
 }
 
+/** What one event changed. Empty when the event owns no entity. */
+interface AppliedEntities {
+  run?: WorkflowRun;
+  step?: Step;
+  hook?: Hook;
+  wait?: Wait;
+}
+
 export function createSimStore(options: SimStoreOptions): SimStore {
   const { ids, now: nowMs } = options;
   const appendOnlyLog = options.appendOnlyLog === true;
@@ -528,6 +536,244 @@ export function createSimStore(options: SimStoreOptions): SimStore {
     return events.filter((e) => e.runId === runId);
   }
 
+  /**
+   * Apply one event to the entity rows, and report what it touched.
+   *
+   * The single copy of the event → entity state machine. Both paths into the
+   * store end here: `create` runs its validation and then calls this, and
+   * `seedFromLog` calls it with no validation at all — those events were
+   * accepted once already, and re-litigating them would reject legitimate
+   * history (a `step_completed` recorded after the run was cancelled, say).
+   *
+   * So the applier is *total*: an event whose subject is missing is a no-op
+   * rather than an error, and refusing anything is the caller's job. Holding
+   * both paths to one fold is what keeps a replay from diverging from the run
+   * it is checking for a reason that is not the runtime's fault.
+   *
+   * `at` is the entity timestamp: commit time on the write path; the event's
+   * own position time when seeding, where there is no live clock to read.
+   */
+  function applyEvent(event: Event, at: Date): AppliedEntities {
+    const runId = event.runId;
+    const data = (event as { eventData?: Record<string, unknown> }).eventData;
+    const correlationId = event.correlationId;
+
+    switch (event.eventType) {
+      case 'run_created': {
+        const run = {
+          runId,
+          deploymentId: data?.deploymentId as string,
+          workflowName: data?.workflowName as string,
+          status: 'pending',
+          specVersion: event.specVersion,
+          executionContext: data?.executionContext as Record<string, unknown>,
+          input: data?.input as Uint8Array,
+          attributes: (data?.attributes as Record<string, string>) ?? {},
+          encryptionPublicKey: data?.encryptionPublicKey as string | undefined,
+          createdAt: at,
+          updatedAt: at,
+        } as WorkflowRun;
+        runs.set(runId, run);
+        return { run };
+      }
+
+      case 'run_started': {
+        const existing = runs.get(runId);
+        if (!existing) return {};
+        // The clears are for the write path, where a restart is a real
+        // transition. On a seeded log they are already undefined: a
+        // `run_started` never follows a terminal event in a log the write path
+        // accepted.
+        const run = {
+          ...existing,
+          status: 'running',
+          output: undefined,
+          error: undefined,
+          completedAt: undefined,
+          startedAt: existing.startedAt ?? at,
+          updatedAt: at,
+        } as WorkflowRun;
+        runs.set(runId, run);
+        return { run };
+      }
+
+      case 'run_completed':
+      case 'run_failed':
+      case 'run_cancelled': {
+        const existing = runs.get(runId);
+        if (!existing) return {};
+        const run = {
+          ...existing,
+          status:
+            event.eventType === 'run_completed'
+              ? 'completed'
+              : event.eventType === 'run_failed'
+                ? 'failed'
+                : 'cancelled',
+          output: data?.output as Uint8Array | undefined,
+          error: data?.error as Uint8Array | undefined,
+          errorCode: data?.errorCode as string | undefined,
+          completedAt: at,
+          updatedAt: at,
+        } as WorkflowRun;
+        runs.set(runId, run);
+        releaseRunResources(runId);
+        return { run };
+      }
+
+      case 'attr_set': {
+        const existing = runs.get(runId);
+        if (!existing) return {};
+        const attributes = { ...existing.attributes };
+        for (const change of (data?.changes ?? []) as {
+          key: string;
+          value: string | null;
+        }[]) {
+          if (change.value === null) delete attributes[change.key];
+          else attributes[change.key] = change.value;
+        }
+        const run = { ...existing, attributes, updatedAt: at } as WorkflowRun;
+        runs.set(runId, run);
+        return { run };
+      }
+
+      case 'step_created': {
+        if (!correlationId) return {};
+        const step: Step = {
+          runId,
+          stepId: correlationId,
+          stepName: data?.stepName as string,
+          status: 'pending',
+          input: data?.input as Uint8Array,
+          attempt: 0,
+          createdAt: at,
+          updatedAt: at,
+          specVersion: event.specVersion,
+        };
+        steps.set(stepKey(runId, correlationId), step);
+        return { step };
+      }
+
+      case 'step_started':
+      case 'step_completed':
+      case 'step_failed':
+      case 'step_retrying': {
+        if (!correlationId) return {};
+        const key = stepKey(runId, correlationId);
+        const existing = steps.get(key);
+        if (!existing) return {};
+        const step: Step =
+          event.eventType === 'step_started'
+            ? {
+                ...existing,
+                status: 'running',
+                startedAt: existing.startedAt ?? at,
+                attempt: existing.attempt + 1,
+                retryAfter: undefined,
+                updatedAt: at,
+              }
+            : event.eventType === 'step_completed'
+              ? {
+                  ...existing,
+                  status: 'completed',
+                  output: data?.result as Uint8Array,
+                  completedAt: at,
+                  updatedAt: at,
+                }
+              : event.eventType === 'step_failed'
+                ? {
+                    ...existing,
+                    status: 'failed',
+                    error: data?.error as Uint8Array,
+                    completedAt: at,
+                    updatedAt: at,
+                  }
+                : {
+                    ...existing,
+                    status: 'pending',
+                    error: data?.error as Uint8Array,
+                    retryAfter: data?.retryAfter as Date | undefined,
+                    updatedAt: at,
+                  };
+        steps.set(key, step);
+        return { step };
+      }
+
+      case 'hook_created': {
+        if (!correlationId) return {};
+        const token = data?.token as string;
+        const owningRun = runs.get(runId);
+        const hook: Hook = {
+          runId,
+          hookId: correlationId,
+          token,
+          metadata: data?.metadata as Uint8Array | undefined,
+          ownerId: 'sim-owner',
+          projectId: 'sim-project',
+          environment: 'sim',
+          createdAt: at,
+          specVersion: event.specVersion,
+          isWebhook: (data?.isWebhook as boolean) ?? false,
+          isSystem: (data?.isSystem as boolean) ?? false,
+          ...(owningRun ? { resumeContext: resumeContextFor(owningRun) } : {}),
+        };
+        hooks.set(correlationId, hook);
+        tokenOwners.set(token, correlationId);
+        return { hook };
+      }
+
+      // A delivered payload changes no row of its own; the hook is reported
+      // back so the caller can return it.
+      case 'hook_received':
+        return correlationId ? { hook: hooks.get(correlationId) } : {};
+
+      case 'hook_disposed': {
+        if (!correlationId) return {};
+        disposedHooks.add(correlationId);
+        const existing = hooks.get(correlationId);
+        if (existing && tokenOwners.get(existing.token) === correlationId) {
+          tokenOwners.delete(existing.token);
+        }
+        hooks.delete(correlationId);
+        return {};
+      }
+
+      case 'wait_created': {
+        if (!correlationId) return {};
+        const key = waitKey(runId, correlationId);
+        const wait: Wait = {
+          waitId: key,
+          runId,
+          status: 'waiting',
+          resumeAt: data?.resumeAt as Date | undefined,
+          createdAt: at,
+          updatedAt: at,
+          specVersion: event.specVersion,
+        };
+        waits.set(key, wait);
+        return { wait };
+      }
+
+      case 'wait_completed': {
+        if (!correlationId) return {};
+        const key = waitKey(runId, correlationId);
+        const existing = waits.get(key);
+        if (!existing) return {};
+        const wait: Wait = {
+          ...existing,
+          status: 'completed',
+          completedAt: at,
+          updatedAt: at,
+        };
+        waits.set(key, wait);
+        return { wait };
+      }
+
+      default:
+        return {};
+    }
+  }
+
   async function create(
     runIdArg: string | null,
     data: AnyEventRequest,
@@ -567,21 +813,7 @@ export function createSimStore(options: SimStoreOptions): SimStore {
     if (data.eventType === 'run_started' && !currentRun && data.eventData) {
       const seed = data.eventData;
       if (seed.deploymentId && seed.workflowName && seed.input !== undefined) {
-        currentRun = {
-          runId,
-          deploymentId: seed.deploymentId,
-          workflowName: seed.workflowName,
-          status: 'pending',
-          specVersion,
-          executionContext: seed.executionContext,
-          input: seed.input,
-          attributes: seed.attributes ?? {},
-          encryptionPublicKey: seed.encryptionPublicKey,
-          createdAt: now,
-          updatedAt: now,
-        };
-        runs.set(runId, currentRun);
-        append({
+        const synthetic = {
           eventType: 'run_created',
           runId,
           ...position,
@@ -594,7 +826,9 @@ export function createSimStore(options: SimStoreOptions): SimStore {
             attributes: seed.attributes,
             encryptionPublicKey: seed.encryptionPublicKey,
           },
-        } as Event);
+        } as Event;
+        currentRun = applyEvent(synthetic, now).run;
+        append(synthetic);
         // The synthetic took the boundary-minted position, so the `run_started`
         // row built below needs a fresh one to sort after it.
         position = mintEvent();
@@ -715,6 +949,20 @@ export function createSimStore(options: SimStoreOptions): SimStore {
             `Cannot modify step in terminal state "${validatedStep.status}"`
           );
         }
+        if (
+          data.eventType === 'step_started' &&
+          validatedStep.retryAfter &&
+          validatedStep.retryAfter.getTime() > nowMs()
+        ) {
+          throw new TooEarlyError(
+            `Cannot start step "${data.correlationId}": retryAfter timestamp has not been reached yet`,
+            {
+              retryAfter: Math.ceil(
+                (validatedStep.retryAfter.getTime() - nowMs()) / 1000
+              ),
+            }
+          );
+        }
         if (currentRun && isTerminalWorkflowRunStatus(currentRun.status)) {
           // A terminal run still accepts the terminal write of a step that was
           // already running when the run ended — that write is how an inline
@@ -751,12 +999,9 @@ export function createSimStore(options: SimStoreOptions): SimStore {
       delete (event as Record<string, unknown>).eventData;
     }
 
-    let run: WorkflowRun | undefined;
-    let step: Step | undefined;
-    let hook: Hook | undefined;
-    let wait: Wait | undefined;
-    let stepCreatedLazily = false;
-
+    // ---- Per-event-type validation ----------------------------------------
+    // Everything the write path *refuses*. What it does to the entity rows is
+    // `applyEvent` below — the same fold the seed path runs.
     switch (data.eventType) {
       case 'run_created': {
         if (runs.has(runId)) {
@@ -764,243 +1009,23 @@ export function createSimStore(options: SimStoreOptions): SimStore {
             `Workflow run "${runId}" already exists`
           );
         }
-        const d = data.eventData;
-        run = {
-          runId,
-          deploymentId: d.deploymentId,
-          workflowName: d.workflowName,
-          status: 'pending',
-          specVersion,
-          executionContext: d.executionContext,
-          input: d.input,
-          attributes: d.attributes ?? {},
-          encryptionPublicKey: d.encryptionPublicKey,
-          createdAt: now,
-          updatedAt: now,
-        };
-        runs.set(runId, run);
         break;
       }
 
       case 'run_started': {
-        if (currentRun) {
-          if (currentRun.status === 'running') {
-            // Idempotent: a concurrent invocation already started the run.
-            // No event is appended — replay must not see two `run_started`.
-            return { run: clone(currentRun), maxEvents: MAX_EVENTS_PER_RUN };
-          }
-          run = {
-            ...currentRun,
-            status: 'running',
-            output: undefined,
-            error: undefined,
-            completedAt: undefined,
-            startedAt: currentRun.startedAt ?? now,
-            updatedAt: now,
-          } as WorkflowRun;
-          runs.set(runId, run);
+        if (currentRun?.status === 'running') {
+          // Idempotent: a concurrent invocation already started the run. No
+          // event is appended — replay must not see two `run_started`.
+          return { run: clone(currentRun), maxEvents: MAX_EVENTS_PER_RUN };
         }
-        break;
-      }
-
-      case 'run_completed': {
-        if (currentRun) {
-          run = {
-            ...currentRun,
-            status: 'completed',
-            output: data.eventData.output,
-            completedAt: now,
-            updatedAt: now,
-          } as WorkflowRun;
-          runs.set(runId, run);
-          releaseRunResources(runId);
-        }
-        break;
-      }
-
-      case 'run_failed': {
-        if (currentRun) {
-          run = {
-            ...currentRun,
-            status: 'failed',
-            error: data.eventData.error,
-            errorCode: data.eventData.errorCode,
-            completedAt: now,
-            updatedAt: now,
-          } as WorkflowRun;
-          runs.set(runId, run);
-          releaseRunResources(runId);
-        }
-        break;
-      }
-
-      case 'run_cancelled': {
-        if (currentRun) {
-          run = {
-            ...currentRun,
-            status: 'cancelled',
-            output: undefined,
-            error: undefined,
-            completedAt: now,
-            updatedAt: now,
-          } as WorkflowRun;
-          runs.set(runId, run);
-          releaseRunResources(runId);
-        }
-        break;
-      }
-
-      case 'attr_set': {
-        const fresh = requireRun(runId);
-        const attributes = { ...fresh.attributes };
-        for (const change of data.eventData.changes) {
-          if (change.value === null) delete attributes[change.key];
-          else attributes[change.key] = change.value;
-        }
-        run = { ...fresh, attributes, updatedAt: now };
-        runs.set(runId, run);
         break;
       }
 
       case 'step_created': {
-        const key = stepKey(runId, data.correlationId);
-        if (steps.has(key)) {
+        if (steps.has(stepKey(runId, data.correlationId))) {
           throw new EntityConflictError(
             `Step "${data.correlationId}" already created`
           );
-        }
-        step = {
-          runId,
-          stepId: data.correlationId,
-          stepName: data.eventData.stepName,
-          status: 'pending',
-          input: data.eventData.input,
-          attempt: 0,
-          createdAt: now,
-          updatedAt: now,
-          specVersion,
-        };
-        steps.set(key, step);
-        break;
-      }
-
-      case 'step_started': {
-        const key = stepKey(runId, data.correlationId);
-        if (!validatedStep && lazyStepStart && data.eventData) {
-          // Lazy start: this event both creates and starts the step. A
-          // synthetic `step_created` keeps replay honest, because the client's
-          // step consumer only flips `hasCreatedEvent` on that event type.
-          const created: Step = {
-            runId,
-            stepId: data.correlationId,
-            stepName: data.eventData.stepName as string,
-            status: 'pending',
-            input: data.eventData.input,
-            attempt: 0,
-            createdAt: now,
-            updatedAt: now,
-            specVersion,
-          };
-          steps.set(key, created);
-          append({
-            eventType: 'step_created',
-            runId,
-            ...position,
-            specVersion,
-            correlationId: data.correlationId,
-            eventData: {
-              stepName: created.stepName,
-              input: data.eventData.input,
-            },
-          } as Event);
-          validatedStep = created;
-          stepCreatedLazily = true;
-
-          // The input now lives on the synthetic `step_created`; keep only the
-          // metadata on the `step_started` row. The synthetic took the position
-          // minted at the boundary — production mints it first for this very
-          // reason — so re-mint the `step_started` to sort after it.
-          //
-          // Consequence worth knowing: a lazy `step_started` held mid-flight
-          // does *not* keep an early position, because the pair's positions are
-          // settled here, at commit. Production mints both in the handler, so
-          // it can hold an early position for either. No scenario needs that
-          // yet; the writes that race for position in practice are the
-          // completions.
-          const { input: _dropped, ...rest } = data.eventData;
-          position = mintEvent();
-          event = {
-            ...event,
-            ...position,
-            eventData: rest,
-          } as Event;
-        }
-
-        if (validatedStep) {
-          if (
-            validatedStep.retryAfter &&
-            validatedStep.retryAfter.getTime() > nowMs()
-          ) {
-            throw new TooEarlyError(
-              `Cannot start step "${data.correlationId}": retryAfter timestamp has not been reached yet`,
-              {
-                retryAfter: Math.ceil(
-                  (validatedStep.retryAfter.getTime() - nowMs()) / 1000
-                ),
-              }
-            );
-          }
-          step = {
-            ...validatedStep,
-            status: 'running',
-            startedAt: validatedStep.startedAt ?? now,
-            attempt: validatedStep.attempt + 1,
-            retryAfter: undefined,
-            updatedAt: now,
-          };
-          steps.set(key, step);
-        }
-        break;
-      }
-
-      case 'step_completed': {
-        if (validatedStep) {
-          step = {
-            ...validatedStep,
-            status: 'completed',
-            output: data.eventData.result,
-            completedAt: now,
-            updatedAt: now,
-          };
-          steps.set(stepKey(runId, data.correlationId), step);
-        }
-        break;
-      }
-
-      case 'step_failed': {
-        if (validatedStep) {
-          step = {
-            ...validatedStep,
-            status: 'failed',
-            error: data.eventData.error,
-            completedAt: now,
-            updatedAt: now,
-          };
-          steps.set(stepKey(runId, data.correlationId), step);
-        }
-        break;
-      }
-
-      case 'step_retrying': {
-        if (validatedStep) {
-          step = {
-            ...validatedStep,
-            status: 'pending',
-            error: data.eventData.error,
-            retryAfter: data.eventData.retryAfter,
-            updatedAt: now,
-          };
-          steps.set(stepKey(runId, data.correlationId), step);
         }
         break;
       }
@@ -1034,71 +1059,32 @@ export function createSimStore(options: SimStoreOptions): SimStore {
             `Hook "${data.correlationId}" already created`
           );
         }
-        const owningRun = requireRun(runId);
-        hook = {
-          runId,
-          hookId: data.correlationId,
-          token,
-          metadata: data.eventData.metadata,
-          ownerId: 'sim-owner',
-          projectId: 'sim-project',
-          environment: 'sim',
-          createdAt: now,
-          specVersion,
-          isWebhook: data.eventData.isWebhook ?? false,
-          isSystem: data.eventData.isSystem ?? false,
-          resumeContext: resumeContextFor(owningRun),
-        };
-        hooks.set(data.correlationId, hook);
-        tokenOwners.set(token, data.correlationId);
-        break;
-      }
-
-      case 'hook_received': {
-        hook = hooks.get(data.correlationId);
+        // The hook copies a resume context off its run, so that resuming it
+        // needs no run read. No run, no hook.
+        requireRun(runId);
         break;
       }
 
       case 'hook_disposed': {
-        const existing = hooks.get(data.correlationId);
         if (disposedHooks.has(data.correlationId)) {
           throw new EntityConflictError(
             `Hook "${data.correlationId}" already disposed`
           );
         }
-        disposedHooks.add(data.correlationId);
-        if (existing) {
-          if (tokenOwners.get(existing.token) === data.correlationId) {
-            tokenOwners.delete(existing.token);
-          }
-          hooks.delete(data.correlationId);
-        }
         break;
       }
 
       case 'wait_created': {
-        const key = waitKey(runId, data.correlationId);
-        if (waits.has(key)) {
+        if (waits.has(waitKey(runId, data.correlationId))) {
           throw new EntityConflictError(
             `Wait "${data.correlationId}" already exists`
           );
         }
-        wait = {
-          waitId: key,
-          runId,
-          status: 'waiting',
-          resumeAt: data.eventData.resumeAt,
-          createdAt: now,
-          updatedAt: now,
-          specVersion,
-        };
-        waits.set(key, wait);
         break;
       }
 
       case 'wait_completed': {
-        const key = waitKey(runId, data.correlationId);
-        const existing = waits.get(key);
+        const existing = waits.get(waitKey(runId, data.correlationId));
         if (!existing) {
           throw new WorkflowWorldError(
             `Wait "${data.correlationId}" not found`
@@ -1109,16 +1095,54 @@ export function createSimStore(options: SimStoreOptions): SimStore {
             `Wait "${data.correlationId}" already completed`
           );
         }
-        wait = {
-          ...existing,
-          status: 'completed',
-          completedAt: now,
-          updatedAt: now,
-        };
-        waits.set(key, wait);
         break;
       }
     }
+
+    // ---- Lazy step creation ------------------------------------------------
+    // A `step_started` that carries a payload and finds no step of its own both
+    // creates and starts one. The synthetic `step_created` keeps replay honest,
+    // because the client's step consumer only flips `hasCreatedEvent` on that
+    // event type.
+    let stepCreatedLazily = false;
+    if (
+      data.eventType === 'step_started' &&
+      lazyStepStart &&
+      !validatedStep &&
+      data.eventData
+    ) {
+      const created = {
+        eventType: 'step_created',
+        runId,
+        ...position,
+        specVersion,
+        correlationId: data.correlationId,
+        eventData: {
+          stepName: data.eventData.stepName,
+          input: data.eventData.input,
+        },
+      } as Event;
+      applyEvent(created, now);
+      append(created);
+      stepCreatedLazily = true;
+
+      // The input now lives on the synthetic `step_created`; keep only the
+      // metadata on the `step_started` row. The synthetic took the position
+      // minted at the boundary — production mints it first for this very
+      // reason — so re-mint the `step_started` to sort after it.
+      //
+      // Consequence worth knowing: a lazy `step_started` held mid-flight does
+      // *not* keep an early position, because the pair's positions are settled
+      // here, at commit. Production mints both in the handler, so it can hold
+      // an early position for either. No scenario needs that yet; the writes
+      // that race for position in practice are the completions.
+      const { input: _dropped, ...rest } = data.eventData;
+      position = mintEvent();
+      event = { ...event, ...position, eventData: rest } as Event;
+    }
+
+    // ---- The fold ----------------------------------------------------------
+    const { run, step, hook, wait } = applyEvent(event, now);
 
     // Reassigned, not just appended: under `appendOnlyLog` the commit is where
     // the position is decided, and everything below — the fence's marker, the
@@ -1195,207 +1219,6 @@ export function createSimStore(options: SimStoreOptions): SimStore {
       ...(stepCreatedLazily ? { stepCreated: true } : {}),
       ...(run ? { maxEvents: MAX_EVENTS_PER_RUN } : {}),
     };
-  }
-
-  /**
-   * Apply one already-committed event to the entity maps.
-   *
-   * This is the same state machine `create` runs, minus every validation:
-   * these events were accepted once already, and re-litigating them would
-   * reject legitimate history (a `step_completed` recorded after the run was
-   * cancelled, say). Keeping it separate is deliberate — the write path stays
-   * strict, and the load path stays total.
-   */
-  function foldSeededEvent(event: Event): void {
-    const runId = event.runId;
-    const at = event.createdAt;
-    const data = (event as { eventData?: Record<string, unknown> }).eventData;
-    const correlationId = event.correlationId;
-
-    switch (event.eventType) {
-      case 'run_created':
-        runs.set(runId, {
-          runId,
-          deploymentId: data?.deploymentId as string,
-          workflowName: data?.workflowName as string,
-          status: 'pending',
-          specVersion: event.specVersion,
-          executionContext: data?.executionContext as Record<string, unknown>,
-          input: data?.input as Uint8Array,
-          attributes: (data?.attributes as Record<string, string>) ?? {},
-          encryptionPublicKey: data?.encryptionPublicKey as string | undefined,
-          createdAt: at,
-          updatedAt: at,
-        } as WorkflowRun);
-        break;
-      case 'run_started': {
-        const run = runs.get(runId);
-        if (run) {
-          runs.set(runId, {
-            ...run,
-            status: 'running',
-            startedAt: run.startedAt ?? at,
-            updatedAt: at,
-          } as WorkflowRun);
-        }
-        break;
-      }
-      case 'run_completed':
-      case 'run_failed':
-      case 'run_cancelled': {
-        const run = runs.get(runId);
-        if (run) {
-          runs.set(runId, {
-            ...run,
-            status:
-              event.eventType === 'run_completed'
-                ? 'completed'
-                : event.eventType === 'run_failed'
-                  ? 'failed'
-                  : 'cancelled',
-            output: data?.output as Uint8Array | undefined,
-            error: data?.error as Uint8Array | undefined,
-            errorCode: data?.errorCode as string | undefined,
-            completedAt: at,
-            updatedAt: at,
-          } as WorkflowRun);
-          releaseRunResources(runId);
-        }
-        break;
-      }
-      case 'attr_set': {
-        const run = runs.get(runId);
-        if (run) {
-          const attributes = { ...run.attributes };
-          for (const change of (data?.changes ?? []) as {
-            key: string;
-            value: string | null;
-          }[]) {
-            if (change.value === null) delete attributes[change.key];
-            else attributes[change.key] = change.value;
-          }
-          runs.set(runId, { ...run, attributes, updatedAt: at } as WorkflowRun);
-        }
-        break;
-      }
-      case 'step_created':
-        if (correlationId) {
-          steps.set(stepKey(runId, correlationId), {
-            runId,
-            stepId: correlationId,
-            stepName: data?.stepName as string,
-            status: 'pending',
-            input: data?.input as Uint8Array,
-            attempt: 0,
-            createdAt: at,
-            updatedAt: at,
-            specVersion: event.specVersion,
-          });
-        }
-        break;
-      case 'step_started':
-      case 'step_completed':
-      case 'step_failed':
-      case 'step_retrying': {
-        if (!correlationId) break;
-        const key = stepKey(runId, correlationId);
-        const step = steps.get(key);
-        if (!step) break;
-        if (event.eventType === 'step_started') {
-          steps.set(key, {
-            ...step,
-            status: 'running',
-            startedAt: step.startedAt ?? at,
-            attempt: step.attempt + 1,
-            retryAfter: undefined,
-            updatedAt: at,
-          });
-        } else if (event.eventType === 'step_completed') {
-          steps.set(key, {
-            ...step,
-            status: 'completed',
-            output: data?.result as Uint8Array,
-            completedAt: at,
-            updatedAt: at,
-          });
-        } else if (event.eventType === 'step_failed') {
-          steps.set(key, {
-            ...step,
-            status: 'failed',
-            error: data?.error as Uint8Array,
-            completedAt: at,
-            updatedAt: at,
-          });
-        } else {
-          steps.set(key, {
-            ...step,
-            status: 'pending',
-            error: data?.error as Uint8Array,
-            retryAfter: data?.retryAfter as Date | undefined,
-            updatedAt: at,
-          });
-        }
-        break;
-      }
-      case 'hook_created': {
-        if (!correlationId) break;
-        const run = runs.get(runId);
-        hooks.set(correlationId, {
-          runId,
-          hookId: correlationId,
-          token: data?.token as string,
-          metadata: data?.metadata as Uint8Array | undefined,
-          ownerId: 'sim-owner',
-          projectId: 'sim-project',
-          environment: 'sim',
-          createdAt: at,
-          specVersion: event.specVersion,
-          isWebhook: (data?.isWebhook as boolean) ?? false,
-          isSystem: (data?.isSystem as boolean) ?? false,
-          ...(run ? { resumeContext: resumeContextFor(run) } : {}),
-        });
-        tokenOwners.set(data?.token as string, correlationId);
-        break;
-      }
-      case 'hook_disposed': {
-        if (!correlationId) break;
-        disposedHooks.add(correlationId);
-        const hook = hooks.get(correlationId);
-        if (hook && tokenOwners.get(hook.token) === correlationId) {
-          tokenOwners.delete(hook.token);
-        }
-        hooks.delete(correlationId);
-        break;
-      }
-      case 'wait_created':
-        if (correlationId) {
-          waits.set(waitKey(runId, correlationId), {
-            waitId: waitKey(runId, correlationId),
-            runId,
-            status: 'waiting',
-            resumeAt: data?.resumeAt as Date | undefined,
-            createdAt: at,
-            updatedAt: at,
-            specVersion: event.specVersion,
-          });
-        }
-        break;
-      case 'wait_completed': {
-        if (!correlationId) break;
-        const wait = waits.get(waitKey(runId, correlationId));
-        if (wait) {
-          waits.set(waitKey(runId, correlationId), {
-            ...wait,
-            status: 'completed',
-            completedAt: at,
-            updatedAt: at,
-          });
-        }
-        break;
-      }
-      default:
-        break;
-    }
   }
 
   const storage: SimStore = {
@@ -1568,7 +1391,9 @@ export function createSimStore(options: SimStoreOptions): SimStore {
         const seeded = clone(event) as Event;
         events.push(seeded);
         recordInIndex(seeded);
-        foldSeededEvent(event);
+        // The event's own position time is the only clock a seeded row can
+        // have: the live one belongs to whenever this world was built.
+        applyEvent(seeded, seeded.createdAt);
       }
     },
 

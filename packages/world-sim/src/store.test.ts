@@ -599,4 +599,166 @@ describe('sim store', () => {
       expect(await read()).toBe(short + 1);
     });
   });
+
+  describe('seeding a log', () => {
+    // `seedFromLog` folds a committed log back into entity rows, and it is the
+    // path a replay check cold-starts from. If that fold disagrees with the one
+    // the write path runs, the replay diverges from the run it is checking for
+    // reasons that have nothing to do with the runtime under test — so the
+    // property worth pinning is that the two agree.
+    //
+    // Timestamps line up for free: an event's `createdAt` is minted inside the
+    // same `create` call that commits it, so the seeded row and the written row
+    // read the same clock even when the test ticks between writes.
+    const seededFrom = (source: SimStore): SimStore => {
+      const { store: fresh } = setup();
+      fresh.seedFromLog(source.allEvents());
+      return fresh;
+    };
+
+    const expectSameEntities = (source: SimStore, fresh: SimStore) => {
+      expect(fresh.allRuns()).toEqual(source.allRuns());
+      expect(fresh.allSteps()).toEqual(source.allSteps());
+      expect(fresh.allHooks()).toEqual(source.allHooks());
+      expect(fresh.allWaits()).toEqual(source.allWaits());
+    };
+
+    it('rebuilds the run and its steps', async () => {
+      await createRun(store, RUN);
+      await store.events.create(RUN, {
+        eventType: 'attr_set',
+        specVersion: SPEC,
+        eventData: {
+          changes: [
+            { key: 'kept', value: 'yes' },
+            { key: 'dropped', value: null },
+          ],
+        },
+      });
+      await store.events.create(RUN, {
+        eventType: 'step_created',
+        specVersion: SPEC,
+        correlationId: 'step_1',
+        eventData: {
+          stepName: 'step//./w//charge',
+          input: new Uint8Array([1]),
+        },
+      });
+      await store.events.create(RUN, {
+        eventType: 'step_started',
+        specVersion: SPEC,
+        correlationId: 'step_1',
+      });
+      await store.events.create(RUN, {
+        eventType: 'step_completed',
+        specVersion: SPEC,
+        correlationId: 'step_1',
+        eventData: { result: new Uint8Array([2]) },
+      });
+      // A lazy start, so the seeded fold has to pick up the synthetic
+      // `step_created` the write path wrote alongside it.
+      await store.events.create(RUN, {
+        eventType: 'step_started',
+        specVersion: SPEC,
+        correlationId: 'step_2',
+        eventData: { stepName: 'step//./w//ship', input: new Uint8Array([3]) },
+      });
+      await store.events.create(RUN, {
+        eventType: 'step_retrying',
+        specVersion: SPEC,
+        correlationId: 'step_2',
+        eventData: { error: new Uint8Array([4]) },
+      });
+      tick(1);
+      await store.events.create(RUN, {
+        eventType: 'step_started',
+        specVersion: SPEC,
+        correlationId: 'step_2',
+      });
+
+      const fresh = seededFrom(store);
+      expectSameEntities(store, fresh);
+      // The rows are not trivially empty on either side.
+      expect(fresh.allSteps(RUN).map((s) => s.status)).toEqual([
+        'completed',
+        'running',
+      ]);
+      expect(fresh.allSteps(RUN)[1].attempt).toBe(2);
+      expect(fresh.allRuns()[0].attributes).toEqual({ kept: 'yes' });
+    });
+
+    it('rebuilds hooks and waits, including who owns a token', async () => {
+      await createRun(store, RUN);
+      await store.events.create(RUN, {
+        eventType: 'hook_created',
+        specVersion: SPEC,
+        correlationId: 'hook_1',
+        eventData: { token: 'approval:1' },
+      });
+      await store.events.create(RUN, {
+        eventType: 'hook_received',
+        specVersion: SPEC,
+        correlationId: 'hook_1',
+        eventData: { payload: new Uint8Array([5]) },
+      });
+      await store.events.create(RUN, {
+        eventType: 'hook_created',
+        specVersion: SPEC,
+        correlationId: 'hook_2',
+        eventData: { token: 'approval:2' },
+      });
+      await store.events.create(RUN, {
+        eventType: 'hook_disposed',
+        specVersion: SPEC,
+        correlationId: 'hook_2',
+      });
+      await store.events.create(RUN, {
+        eventType: 'wait_created',
+        specVersion: SPEC,
+        correlationId: 'wait_1',
+        eventData: { resumeAt: new Date(1_704_067_260_000) },
+      });
+      await store.events.create(RUN, {
+        eventType: 'wait_completed',
+        specVersion: SPEC,
+        correlationId: 'wait_1',
+      });
+
+      const fresh = seededFrom(store);
+      expectSameEntities(store, fresh);
+      // A disposed hook releases its token on both paths; a live one keeps it.
+      expect(fresh.hookByToken('approval:1')).toEqual(
+        store.hookByToken('approval:1')
+      );
+      expect(fresh.hookByToken('approval:2')).toBeUndefined();
+      expect(fresh.allWaits(RUN)[0].status).toBe('completed');
+    });
+
+    it('releases the hooks and waits of a terminated run', async () => {
+      await createRun(store, RUN);
+      await store.events.create(RUN, {
+        eventType: 'hook_created',
+        specVersion: SPEC,
+        correlationId: 'hook_1',
+        eventData: { token: 'approval:1' },
+      });
+      await store.events.create(RUN, {
+        eventType: 'wait_created',
+        specVersion: SPEC,
+        correlationId: 'wait_1',
+        eventData: { resumeAt: new Date(1_704_067_260_000) },
+      });
+      await store.events.create(RUN, {
+        eventType: 'run_completed',
+        specVersion: SPEC,
+        eventData: { output: new Uint8Array([6]) },
+      });
+
+      const fresh = seededFrom(store);
+      expectSameEntities(store, fresh);
+      expect(fresh.allHooks()).toEqual([]);
+      expect(fresh.allWaits()).toEqual([]);
+      expect(fresh.allRuns()[0].status).toBe('completed');
+    });
+  });
 });

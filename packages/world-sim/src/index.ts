@@ -6,38 +6,28 @@
  * world happens on its own, every World method is a point a scenario can
  * inject at, and virtual time means a scenario that sleeps for a month still
  * finishes in milliseconds.
+ *
+ * This entry is the *scenario* surface: write one, play it, render the result,
+ * and name anything those three hand you. The pieces that build or inspect the
+ * simulator itself — `createSimWorld`, `createSimStore`, `driveQueue`,
+ * `verifyReplay`, `checkInvariants`, the clock — are deliberately not here.
+ * Nothing outside the package has wanted them, and re-exporting them makes
+ * every one of their signatures a compatibility promise. Import them from their
+ * module if you are extending the simulator; see `DESIGN.md`.
  */
 
-export {
-  createVirtualClock,
-  DEFAULT_EPOCH_MS,
-  type VirtualClock,
-} from './clock.js';
-export {
-  DEFAULT_LIMITS,
-  type DriveResult,
-  driveQueue,
-  type ScenarioLimits,
-  type SelectNext,
-} from './drive.js';
-export { checkInvariants, type InvariantInput } from './invariants.js';
-// `buildSimBundle` is deliberately absent from this entry: it reaches SWC and
-// esbuild through `@workflow/builders`, and a consumer that only wants to
-// *play* scenarios should not drag a compiler into its module graph. It is
-// exported from `@workflow/world-sim/build` instead.
+// `buildSimBundle` is deliberately absent too, for a different reason: it
+// reaches SWC and esbuild through `@workflow/builders`, and a consumer that
+// only wants to *play* scenarios should not drag a compiler into its module
+// graph. It is exported from `@workflow/world-sim/build` instead.
+export type { SelectNext } from './drive.js';
 export { loadFlowHandler } from './load.js';
-export {
-  type ReplayCheckInput,
-  type ReplayCheckResult,
-  verifyReplay,
-} from './replay.js';
 export {
   type MarkdownSummaryOptions,
   type RenderOptions,
   renderMarkdownSummary,
   renderScenario,
   renderSummary,
-  renderTrace,
 } from './report.js';
 export {
   type RunScenarioOptions,
@@ -47,18 +37,13 @@ export {
   type ScenarioResult,
   type ScenarioSpec,
 } from './scenario.js';
-export {
-  createSimStore,
-  type SimStore,
-  type SimStoreOptions,
-  type StaleRead,
-} from './store.js';
 export { ScenarioAborted } from './tempo.js';
 export type {
   CallContext,
   CallMatch,
   CallPhase,
   Held,
+  InFlightWrite,
   InvariantViolation,
   ObservedPoint,
   Parked,
@@ -75,10 +60,4 @@ export type {
   WriterHandles,
   WriterId,
 } from './types.js';
-export {
-  createSimWorld,
-  type SimWorld,
-  type SimWorldOptions,
-  WORKFLOW_QUEUE_PREFIX,
-} from './world.js';
 export { AlreadyPassedError, RunToTimeoutError } from './writers.js';
