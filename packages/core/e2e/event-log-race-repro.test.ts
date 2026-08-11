@@ -182,8 +182,11 @@ function defaultRunTimeoutMs(): number {
   const recoveryMs =
     (getInlineOwnershipLeaseSeconds() + getStepDispatchWatchdogSeconds()) *
     1000;
-  // Slack for the recovered dispatch to be delivered and the step to run.
-  return recoveryMs + 60_000;
+  // The recovery deadline is measured from the lost step's start, not from the
+  // run's, so the slack has to cover a run that gets that far in before it
+  // loses a step, plus delivering the recovered dispatch and finishing the
+  // remaining rounds.
+  return recoveryMs + 3 * 60_000;
 }
 
 const config: ReproConfig = {
