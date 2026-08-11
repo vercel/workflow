@@ -631,9 +631,13 @@ five means something got fixed and a scenario is ready to retire.
 
 That makes the book a poor plain CI gate, which is what `--report-only` is for:
 it prints every failure and exits 0, so a job can *publish* the book's current
-state rather than block on it. `--summary-file` writes a markdown counts-plus-
-table for a PR comment or `$GITHUB_STEP_SUMMARY`, and `--detail-file` writes the
-full colour-free trace as an artifact to read when a number moves. The
+state rather than block on it. `--summary-file` writes one collapsed
+`<details>` — a visible line carrying the count and a green or orange dot, the
+whole table behind it — for a PR comment or `$GITHUB_STEP_SUMMARY`, and
+`--detail-file` writes the full colour-free trace as an artifact to read when a
+number moves. Deliberately nothing above the fold but the count: six are red on
+purpose, so a comment that leads with the failures leads with the part that is
+not news, and grows a wall of text on exactly the PRs that changed nothing. The
 workbench's `pnpm test` is `--report-only --summary-file`, so a recursive
 `pnpm -r test` stays green and still says what happened; `pnpm sim` stays
 strict, so running it by hand fails loudly.

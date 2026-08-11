@@ -164,7 +164,7 @@ the argument. The command-line flags below override the spec for a whole run.
 | `--append-only` / `--no-append-only` | play against an append-only log, or force production behaviour back on |
 | `--fence` / `--no-fence` | force the optimistic-concurrency fence on or off for every scenario |
 | `--report-only` | print every failure, exit 0 anyway |
-| `--summary-file <path>` | markdown counts and table, sized for a PR comment or `$GITHUB_STEP_SUMMARY` |
+| `--summary-file <path>` | one collapsed `<details>` — the count on the visible line, the table behind it — for a PR comment or `$GITHUB_STEP_SUMMARY` |
 | `--detail-file <path>` | the full trace, colour forced off, as a CI artifact |
 | `--title <text>` | heading for the summary file, so two of them in one comment are told apart by more than their chips line |
 
@@ -189,10 +189,21 @@ commit.
 
 [`.github/workflows/world-sim.yml`](../../.github/workflows/world-sim.yml)
 plays the book on every pull request, once per world, and posts both summaries
-as one sticky comment. **It never blocks a merge**: six scenarios are red on
-purpose, so a lane that gated on them would be red on every PR and read as
-broken rather than as informative. What it publishes is the pair of counts, and
-the thing to look at is whether they still say 33/6 and 39/0.
+as one sticky comment — four lines until you open something:
+
+```
+## Sim World
+
+Simulated world deterministic testing for races. [Traces](…)
+
+▸ 🟠 Mint-ordered log — 6 fail of 39 total
+▸ 🟢 Append-only log — 0 fail of 39 total
+```
+
+**It never blocks a merge**: six scenarios are red on purpose, so a lane that
+gated on them would be red on every PR and read as broken rather than as
+informative. What it publishes is the pair of counts, and the thing to look at
+is whether they still say 6 and 0.
 
 That is also why `pnpm test` in this package is `--report-only` while `pnpm sim`
 stays strict — a recursive `pnpm -r test` should not go red for the six, but

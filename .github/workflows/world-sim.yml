@@ -82,7 +82,7 @@ jobs:
         run: |
           pnpm --filter @workflow/sim-world-workbench sim \
             --no-color \
-            --title 'Mint-ordered log — how production orders events today' \
+            --title 'Mint-ordered log' \
             --summary-file "${{ github.workspace }}/world-sim-mint.md" \
             --detail-file "${{ github.workspace }}/world-sim-mint.txt"
 
@@ -93,20 +93,22 @@ jobs:
           pnpm --filter @workflow/sim-world-workbench sim \
             --no-color \
             --append-only \
-            --title 'Append-only log — positions assigned at commit' \
+            --title 'Append-only log' \
             --summary-file "${{ github.workspace }}/world-sim-append-only.md" \
             --detail-file "${{ github.workspace }}/world-sim-append-only.txt"
 
+      # Four visible lines when collapsed: the heading, one line saying what
+      # this is, and one per world. Everything else is behind a fold. The
+      # comment is reposted on every push to the PR, so what it costs when it
+      # has nothing new to say is the thing to keep small.
       - name: Render summary
         if: always()
         run: |
+          run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           {
-            echo "## World Sim"
+            echo "## Sim World"
             echo
-            echo "The scenario book played against this commit, once per log world."
-            echo "**This lane does not block:** six scenarios are red on purpose, and"
-            echo "the number is the signal — a seventh is a regression, five means one"
-            echo "is ready to retire."
+            echo "Simulated world deterministic testing for races. [Traces]($run_url)"
             echo
             for world in mint append-only; do
               if [ -f "world-sim-$world.md" ]; then
@@ -115,14 +117,15 @@ jobs:
                 # scatter them. Strip the workspace prefix back off, leaving
                 # the bare name the artifact below actually contains.
                 sed "s|${{ github.workspace }}/||g" "world-sim-$world.md"
+                # Blank line between the two folds. Adjacent HTML blocks with
+                # nothing between them get parsed as one, and the second world
+                # disappears into the first one's fold.
                 echo
               else
-                echo "_The $world run produced no summary — see the job log._"
+                echo "🟠 _The $world run produced no summary — see the job log._"
                 echo
               fi
             done
-            run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-            echo "[Full traces are attached to this run as an artifact.]($run_url)"
           } | tee world-sim-summary.md >> "$GITHUB_STEP_SUMMARY"
 
       # Skipped on forks, where `pull_request` grants read-only permissions and
