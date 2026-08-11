@@ -11,6 +11,7 @@
     "workflow-run-cancelled-error",
     "workflow-run-not-completed-error",
     "workflow-runtime-error",
+    "workflow-start-error",
     "workflow-world-error",
     "throttle-error",
     "entity-conflict-error",

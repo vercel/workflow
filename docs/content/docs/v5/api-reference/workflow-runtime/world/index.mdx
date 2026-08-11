@@ -43,6 +43,18 @@ const world = await getWorld(); // [!code highlight]
   The World SDK is the low-level foundation that higher-level functions like [`getRun()`](/docs/api-reference/workflow-api/get-run) and [`start()`](/docs/api-reference/workflow-api/start) are built on. Use it when you need capabilities beyond what those functions provide.
 </Callout>
 
+## Capabilities
+
+`world.capabilities` declares optional behavior implemented by the complete World, including its storage and queue runtime. The SDK returns the same object from deployment health checks so `start()` can verify both the calling and target deployments before using a feature.
+
+A World may advertise `atomicStartHook: { active: true }` only when `events.create()` atomically admits a `run_created` or resilient `run_started` event containing `startHook`:
+
+- Reserve the token and create the run as one operation.
+- If another run owns the token, throw `HookConflictError` with its `conflictingRunId` and create no run or events for the candidate.
+- Keep each candidate `runId`'s decision immutable while a queued copy can still arrive. Repeating admission for that candidate must return the same accepted run or the same conflict, even if the token becomes available between attempts.
+
+This contract lets the direct `start()` request and its queued copy safely race without executing a candidate after the caller was told it lost.
+
 ## Data Hydration
 
 Step input/output data is serialized using the [devalue](https://github.com/Rich-Harris/devalue) format. To display this data in your UI, use the hydration utilities from `workflow/observability`:

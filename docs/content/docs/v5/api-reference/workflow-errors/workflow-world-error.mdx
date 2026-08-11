@@ -74,6 +74,7 @@ if (WorkflowWorldError.is(error)) {
 The following error types extend `WorkflowWorldError`:
 
 - [`EntityConflictError`](/docs/api-reference/workflow-errors/entity-conflict-error) — operation conflicts with entity state
+- [`WorkflowStartError`](/docs/api-reference/workflow-errors/workflow-start-error) — atomic-start queue or admission outcome could not be confirmed
 - [`RunExpiredError`](/docs/api-reference/workflow-errors/run-expired-error) — run has expired
 - [`TooEarlyError`](/docs/api-reference/workflow-errors/too-early-error) — request made before system is ready
 - [`ThrottleError`](/docs/api-reference/workflow-errors/throttle-error) — request was rate-limited

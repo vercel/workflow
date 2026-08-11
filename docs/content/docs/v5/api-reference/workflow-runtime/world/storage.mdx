@@ -64,6 +64,8 @@ await world.events.create(runId, { // [!code highlight]
 
 **Returns:** `EventResult` — The created event and the affected entity (run/step/hook)
 
+Worlds that advertise `capabilities.atomicStartHook.active` must apply the [atomic start Hook contract](/docs/api-reference/workflow-runtime/world#capabilities) when `run_created` or resilient `run_started` includes `startHook`.
+
 ### events.get()
 
 Retrieve a single event by run ID and event ID.

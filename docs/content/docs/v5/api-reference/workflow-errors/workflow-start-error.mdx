@@ -1,0 +1,48 @@
+---
+title: WorkflowStartError
+description: Thrown when start with a Hook cannot confirm whether a workflow candidate was queued or admitted.
+type: reference
+summary: Use WorkflowStartError to identify an atomic-start candidate whose outcome could not be confirmed.
+related:
+  - /docs/api-reference/workflow-api/start
+  - /docs/foundations/idempotency
+---
+
+`WorkflowStartError` is thrown when [`start()`](/docs/api-reference/workflow-api/start#prevent-duplicate-starts) uses a Hook token but cannot confirm whether its candidate was queued or admitted.
+
+```typescript lineNumbers
+import { start } from "workflow/api";
+import { WorkflowStartError } from "workflow/errors";
+import { processOrder } from "./workflows/process-order";
+declare const orderId: string; // @setup
+
+try {
+  await start(processOrder, [orderId], {
+    hook: { token: `order:${orderId}` },
+  });
+} catch (error) {
+  if (WorkflowStartError.is(error)) {
+    console.error(error.runId, error.stage);
+  }
+}
+```
+
+The candidate might never become a run. Keep `runId` for inspection and retry the logical request with the same Hook token.
+
+## API Signature
+
+### Properties
+
+<TSDoc
+definition={`
+import { WorkflowStartError } from "workflow/errors";
+export default WorkflowStartError;`}
+/>
+
+`stage` is `"queue"` when the SDK could not confirm queueing and `"admission"` when the workflow message was queued but the SDK could not confirm admission.
+
+### Static Methods
+
+#### `WorkflowStartError.is(value)`
+
+Type-safe check for `WorkflowStartError` instances across module boundaries and VM contexts.
