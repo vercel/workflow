@@ -22,5 +22,8 @@
  * per-write instrumentation is a prerequisite for defaulting to it.
  */
 export function isWsEventsTransportEnabled(): boolean {
-  return process.env.WORKFLOW_EVENTS_TRANSPORT === 'ws';
+  // Forced on for workflow-server integration-test branches: the WS
+  // transport is the path under test. Opt a lane back out with
+  // WORKFLOW_EVENTS_TRANSPORT=http.
+  return process.env.WORKFLOW_EVENTS_TRANSPORT !== 'http';
 }
