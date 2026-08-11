@@ -27,6 +27,7 @@ import {
   getQueueTopicPrefix,
   isLegacySpecVersion,
   isTerminalRunEventType,
+  isTerminalWorkflowRunStatus,
   type RunInput,
   resolveQueueNamespace,
   SPEC_VERSION_CURRENT,
@@ -1415,11 +1416,14 @@ export function workflowEntrypoint(
                       //    ~300s visibility-timeout redelivery — measured
                       //    exactly so in the durabench parallel sweeps before
                       //    this path existed.
-                      //  - EAGERLY on a genuine redelivery (attempt > 1),
-                      //    in parallel with the run fetch below — a
+                      //  - EAGERLY on a genuine redelivery (attempt > 1) — a
                       //    redelivered dispatch already had its create race
-                      //    resolved either way, so this saves the failed
-                      //    start round-trip at no wall-time cost. First
+                      //    resolved either way, so ensuring up front saves the
+                      //    failed-start round trip the in-band recovery would
+                      //    otherwise pay. On the legacy prologue it overlaps
+                      //    the run fetch (no wall-time cost); on the
+                      //    fetch-free (runContext) prologue it is the sole
+                      //    pre-step write and still the cheaper trade. First
                       //    deliveries skip it: the producer's write almost
                       //    always lands, and an eager ensure would burn a
                       //    conditional write per step.
@@ -1492,10 +1496,15 @@ export function workflowEntrypoint(
                       // entirely — one less round trip on the TTLS-critical
                       // path, and N fewer reads on the run's partition per
                       // fan-out (vercel/workflow#3456). The run-status early
-                      // exit is not lost: a terminal run rejects the
-                      // `step_started` claim server-side (RunExpired → gone,
-                      // terminal step → skipped). Older messages without the
-                      // field keep the legacy fetch.
+                      // exit is not lost: every World rejects a `step_started`
+                      // claim on a terminal run (RunExpired → gone, terminal
+                      // step → skipped) — including a redelivered start whose
+                      // step row still reads `running`, which world-local and
+                      // world-postgres reject as of this change (previously
+                      // only world-vercel's run-status fence covered that
+                      // shape, and the body could re-run on a finished run).
+                      // Older messages without the field keep the legacy
+                      // fetch.
                       let bgRun: WorkflowRun | undefined;
                       let runIdentity: {
                         deploymentId: string;
@@ -1503,7 +1512,21 @@ export function workflowEntrypoint(
                         startedAt?: number;
                         rootRunId?: string;
                       };
+                      // Which prologue ran — makes adoption of the fetch-free
+                      // path (and the round trip it saves) directly observable
+                      // during version-skew windows.
+                      span?.setAttributes(
+                        Attribute.StepDispatchPrologue(
+                          runContext ? 'run_context' : 'runs_get'
+                        )
+                      );
                       if (runContext) {
+                        // The eager redelivery re-ensure has no run fetch to
+                        // overlap with on this path — it is kept because a
+                        // redelivered dispatch has already had its create race
+                        // resolved, so one conditional write here is cheaper
+                        // than letting the bare start fail and paying the
+                        // in-band recovery's extra start round trip.
                         const ensureOutcome =
                           stepInput && metadata.attempt > 1
                             ? await ensureStepFromMessage()
@@ -1782,7 +1805,23 @@ export function workflowEntrypoint(
                           (await world.runs.get(runId, {
                             resolveData: 'none',
                           }));
-                        if (replayRunRow.status !== 'running') {
+                        // Terminal statuses only: a `pending` read here is a
+                        // stale row (this run has completed steps, so it has
+                        // started), and under the fetch-free prologue this is
+                        // the last completer's ONLY status read — returning on
+                        // it would silently abandon the fan-out's continuation
+                        // (the final step_completed is written, the inline
+                        // replay never runs). Fall through instead: the replay
+                        // synthesizes `running` and the next entity write is
+                        // fenced server-side if the run truly ended meanwhile.
+                        if (isTerminalWorkflowRunStatus(replayRunRow.status)) {
+                          runtimeLogger.debug(
+                            'Run already finished, skipping inline replay after background step',
+                            {
+                              workflowRunId: runId,
+                              status: replayRunRow.status,
+                            }
+                          );
                           return;
                         }
                         const runCreatedEvent = loaded.events.find(
