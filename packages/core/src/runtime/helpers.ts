@@ -495,7 +495,7 @@ function recordRequestedEventCursor(
  * so that the two diverge. Every append source is already in canonical order
  * relative to the tail (a cursor-delimited page, or a write-response delta), so
  * receipt order is the order to keep. Nothing downstream may assume the tail is
- * the newest event — see {@link latestEventStateUpdatedAt}.
+ * the newest event — see {@link maxEventSlot}.
  */
 export function appendUniqueEvents(
   target: Event[],
