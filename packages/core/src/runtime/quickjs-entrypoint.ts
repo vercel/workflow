@@ -70,8 +70,8 @@ import {
 import { ReplayBudget } from './replay-budget.js';
 import {
   getStepDispatchWake,
-  stepDispatchEpoch,
   type StepDispatchState,
+  stepDispatchEpoch,
 } from './step-dispatch.js';
 import { executeStep, type StepExecutionResult } from './step-executor.js';
 import { runStepSingleFlight } from './step-single-flight.js';
