@@ -702,59 +702,12 @@ export async function loadWorkflowRunEvents(
 
 /**
  * The runtime's loaded event-log snapshot: the events replayed so far and the
- * cursor positioned after them.
- *
- * On a slot-numbered run it also carries the positions handed out to writes this
- * replay has issued but not yet seen come back (see
- * {@link reserveEventSlots}), which is the only thing in here that helpers
- * mutate.
+ * cursor positioned after them. Handed to helpers that derive the precondition
+ * snapshot from it; they do not mutate it.
  */
 export interface LoadedEventLog {
   events: Event[];
   cursor: string | null;
-  /** How many positions above {@link reservedFrom} are already handed out. */
-  reservedSlots?: number;
-  /** The log maximum {@link reservedSlots} counts from. */
-  reservedFrom?: number;
-}
-
-/**
- * Reserve `slots` consecutive positions for a write issued from this log, and
- * answer the position that write must name: the one directly below the first it
- * reserves. Returns `undefined` when the run is not slot-numbered.
- *
- * A write names the slot above the highest one its replay had loaded, so the
- * insert that occupies it proves in one conditional write both that the position
- * is free and that the log the write was decided from is still current. Two
- * writes derived from the same log therefore name the same position, and one of
- * them loses it. Across invocations that is the point. Within one suspension
- * flush, where twenty writes go out together and every one of them is wanted, it
- * would be twenty attempts at one position. Reserving locally hands them twenty
- * consecutive positions instead, at no round trip and no shared state.
- *
- * `slots` exceeds 1 only where one request persists more than one event: a lazy
- * inline `step_started` also writes the `step_created` below it.
- *
- * Reservations are anchored to the log's maximum and rebase when it moves, so a
- * count is never read against a maximum it was not taken from. Rebasing can
- * re-issue a position an in-flight write already holds; that write's insert
- * rejects the second one, which is the recovery this design already has.
- */
-export function reserveEventSlots(
-  log: LoadedEventLog,
-  slots = 1
-): number | undefined {
-  const max = maxEventSlot(log.events);
-  if (max === undefined) {
-    return undefined;
-  }
-  if (log.reservedFrom !== max) {
-    log.reservedFrom = max;
-    log.reservedSlots = 0;
-  }
-  const reserved = log.reservedSlots ?? 0;
-  log.reservedSlots = reserved + slots;
-  return max + reserved;
 }
 
 /**
@@ -1021,8 +974,8 @@ export async function settleEventSlotGap(
  * The precondition snapshot a replay-context event creation sends, describing
  * the event log the replay derived the event from.
  *
- * On a slot-numbered run this is `eventCount`, the position the write is bound
- * to. On a ULID-numbered run it is the
+ * On a slot-numbered run this is `eventCount`, optionally with the set of
+ * correlation ids the writer is blocked on. On a ULID-numbered run it is the
  * `stateUpdatedAt` / `stateEventCount` / `stateCursor` triple, whose three
  * fields are one indivisible unit: the backend reads the count only relative to
  * the watermark, and returns its inline delta only relative to the cursor.
@@ -1037,8 +990,7 @@ export interface PreconditionSnapshotParams {
 }
 
 /**
- * Build the precondition snapshot to attach to a replay-context event creation,
- * reserving `slots` positions for it on a slot-numbered run.
+ * Build the precondition snapshot to attach to a replay-context event creation.
  *
  * Returns an empty object — no guard, backend behaves as before — when the
  * guard is disabled or the watermark is not derivable. All three fields fail
@@ -1054,14 +1006,10 @@ export interface PreconditionSnapshotParams {
  * has deduped by event id. Two replays that consume the same events in different
  * orders send an identical snapshot, so this guard detects that a log is missing
  * an event and can never detect that a replay consumed one in a different order.
- *
- * Call this once per write, at the point the write is issued. It has a side
- * effect on a slot-numbered run, and two writes sharing one return value would
- * name one position between them.
  */
 export function preconditionSnapshotParams(
-  log: LoadedEventLog,
-  slots = 1
+  events: Event[],
+  cursor?: string | null
 ): PreconditionSnapshotParams {
   if (!isPreconditionGuardEnabled()) {
     return {};
@@ -1070,18 +1018,18 @@ export function preconditionSnapshotParams(
   // approximating, so the two are alternatives rather than a pair. Sending the
   // triple here would also be futile: a slot id carries no time, so
   // `latestEventStateUpdatedAt` would fail open on every single write.
-  const eventCount = reserveEventSlots(log, slots);
+  const eventCount = maxEventSlot(events);
   if (eventCount !== undefined) {
     return { eventCount };
   }
-  const stateUpdatedAt = latestEventStateUpdatedAt(log.events);
+  const stateUpdatedAt = latestEventStateUpdatedAt(events);
   if (stateUpdatedAt === undefined) {
     return {};
   }
   return {
     stateUpdatedAt,
-    stateEventCount: log.events.length,
-    ...(log.cursor ? { stateCursor: log.cursor } : {}),
+    stateEventCount: events.length,
+    ...(cursor ? { stateCursor: cursor } : {}),
   };
 }
 

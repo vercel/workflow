@@ -2504,11 +2504,14 @@ export function workflowEntrypoint(
                         try {
                           const created = await createEvent(waitEvent, {
                             requestId,
-                            ...preconditionSnapshotParams(eventLog),
+                            ...preconditionSnapshotParams(
+                              eventLog.events,
+                              eventLog.cursor
+                            ),
                           });
-                          // Fold what the World handed back into the snapshot
-                          // the remaining waits are guarded against, so each
-                          // asks for a slot above it.
+                          // Bump-and-report: fold what this write skipped over
+                          // into the snapshot the remaining waits are guarded
+                          // against, so each asks for a slot above it.
                           //
                           // Only a complete answer. `hasMore` means the World
                           // returned part of what it was asked for, and the
@@ -2742,7 +2745,10 @@ export function workflowEntrypoint(
                           },
                           {
                             requestId,
-                            ...preconditionSnapshotParams(eventLog),
+                            ...preconditionSnapshotParams(
+                              eventLog.events,
+                              eventLog.cursor
+                            ),
                           }
                         );
                       } catch (err) {
@@ -3486,36 +3492,28 @@ export function workflowEntrypoint(
                           turbo,
                         });
 
+                        // Precondition-guard snapshot for the inline
+                        // step_started claims: the lazy claim is the first
+                        // durable write of a hot-path step (its step_created
+                        // is deferred), so without a snapshot it would bypass
+                        // the guard entirely and a stale replay could claim —
+                        // and commit — a step scheduled off a view that misses
+                        // an event it never loaded.
+                        // `preconditionSnapshotParams` returns an empty object
+                        // when the guard env flag is off, so this is a no-op
+                        // outside guarded deployments; Worlds that don't
+                        // enforce the guard ignore it.
+                        const inlineClaimSnapshot = preconditionSnapshotParams(
+                          eventLog.events,
+                          eventLog.cursor
+                        );
+
                         replayBudget.pause();
                         let stepResults: Awaited<
                           ReturnType<typeof executeStep>
                         >[];
                         const stepExecutionPromises = inlineExecutions.map(
                           (s, stepIndex) => {
-                            // Precondition-guard snapshot for this inline
-                            // step_started claim: the lazy claim is the first
-                            // durable write of a hot-path step (its step_created
-                            // is deferred), so without a snapshot it would
-                            // bypass the guard entirely and a stale replay could
-                            // claim — and commit — a step scheduled off a view
-                            // that misses an event it never loaded.
-                            // `preconditionSnapshotParams` returns an empty
-                            // object when the guard env flag is off, so this is
-                            // a no-op outside guarded deployments; Worlds that
-                            // don't enforce the guard ignore it.
-                            //
-                            // Taken per execution, in map order, because on a
-                            // slot-numbered run it names the position the write
-                            // takes: one snapshot shared across the batch would
-                            // point every claim at the same slot and leave one
-                            // winner. A lazy claim persists its deferred
-                            // step_created below its step_started, so it spans
-                            // two positions.
-                            assert(eventLog.type === 'ready');
-                            const claimSnapshot = preconditionSnapshotParams(
-                              eventLog,
-                              s.lazyStepInput !== undefined ? 2 : 1
-                            );
                             const run = () => {
                               assert(eventLog.type === 'ready');
                               return executeStep({
@@ -3588,7 +3586,7 @@ export function workflowEntrypoint(
                                 // see suppressOptimisticStart above.
                                 suppressOptimisticStart,
                                 runReadyBarrier,
-                                preconditionSnapshot: claimSnapshot,
+                                preconditionSnapshot: inlineClaimSnapshot,
                                 ...(stepIndex === 0 &&
                                 s.lazyStepInput !== undefined &&
                                 latencyTracking

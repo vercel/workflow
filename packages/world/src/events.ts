@@ -836,12 +836,13 @@ export interface CreateEventParams {
    * fence fires. A dense position has no such blind spot. Worlds without slots
    * ignore this field and keep using the triple.
    *
-   * Because the position is the fence, each write of a batch issued from one
-   * snapshot has to send its own: the writer hands out consecutive positions
-   * locally so a suspension flush stays a parallel fan-out instead of one winner
-   * and a rejection for every sibling. A write that persists more than one event
-   * takes the whole span it needs, and the next position sent is above all of
-   * them.
+   * The position is the whole fence, so a writer may only ever name the one
+   * directly above the log it holds. Several writes issued from one snapshot
+   * therefore name one position between them and exactly one of them takes it;
+   * the rest are rejected, merge what they were missing, and name the position
+   * above that. Handing out consecutive positions locally instead would let a
+   * write commit at a position two above a log it never re-read, which is the
+   * decision-without-the-event this field exists to prevent.
    */
   eventCount?: number;
   /**
