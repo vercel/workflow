@@ -12,6 +12,7 @@ import {
   type RunErrorCode,
   RunExpiredError,
   WorkflowRuntimeError,
+  WorkflowWorldError,
 } from '@workflow/errors';
 import { once, setWorkflowBasePath } from '@workflow/utils';
 import {
@@ -337,6 +338,27 @@ function getWorkflowSetupErrorCode(err: unknown): RunErrorCode | null {
   }
 
   return null;
+}
+
+/**
+ * Whether a step execution rejected because the step entity does not exist —
+ * the signature of a resilient step dispatch message whose delivery beat (or
+ * outlived a transient failure of) the producer's parallel `step_created`
+ * write. Every World surfaces it as a `WorkflowWorldError` naming the missing
+ * step: world-vercel maps the backend's 404 to
+ * `workflow step step_… not found`, world-local and world-postgres throw
+ * `Step "step_…" not found` directly. The message match is deliberately loose
+ * across those shapes; the status check narrows the remote case without
+ * excluding the local ones (which carry no status).
+ *
+ * Used only when the message carries `stepInput` — a bare dispatch without a
+ * payload has nothing to recover from, and the error keeps propagating for
+ * queue-driven recovery exactly as before.
+ */
+function isStepMissingError(err: unknown): boolean {
+  if (!WorkflowWorldError.is(err)) return false;
+  if (err.status !== undefined && err.status !== 404) return false;
+  return /step/i.test(err.message) && /not found/i.test(err.message);
 }
 
 async function recordFatalRunError({
@@ -1376,27 +1398,41 @@ export function workflowEntrypoint(
                   if (incomingStepId && incomingStepName) {
                     try {
                       // Resilient step dispatch: the producer parallelized the
-                      // `step_created` write with this queue publish, so on a
-                      // rare transient write failure the step entity may not
-                      // exist. Idempotently re-ensure it from the message's
-                      // `stepInput` — keyed by the step's correlation id, so
-                      // the producer's write and this re-ensure converge on
-                      // exactly one event.
+                      // `step_created` write with this queue publish, so the
+                      // step entity may not exist yet when this delivery
+                      // executes — the delivery beat the write, or the write
+                      // failed transiently and this message carries the only
+                      // copy of the input. Idempotently re-ensure the event
+                      // from the message's `stepInput` — keyed by the step's
+                      // correlation id, so the producer's write and this
+                      // re-ensure converge on exactly one event.
                       //
-                      // Only on a redelivery (attempt > 1): on the first
-                      // delivery the producer's write has almost always landed
-                      // (it raced only the queue round-trip), so an eager
-                      // re-ensure would burn a conditional write per step. If
-                      // it DIDN'T land, this delivery's bare `step_started`
-                      // rejects with a "step not found" error that no world
-                      // maps to an ack-able result, the message redelivers,
-                      // and this branch materializes the step on attempt 2.
-                      // Runs in parallel with the run fetch below, so the
-                      // recovery attempt costs no extra wall time.
+                      // Invoked from two places:
+                      //
+                      //  - IN-BAND (the load-bearing path): when the bare
+                      //    `step_started` below rejects with "step not found",
+                      //    the executor catch materializes the step and
+                      //    retries once, all within this delivery. This must
+                      //    not rely on delivery attempts: world-vercel's
+                      //    failure-retry path re-enqueues a FRESH message
+                      //    (attempt resets to 1), so an attempt-gated recovery
+                      //    is unreachable on the retry chain and the step
+                      //    would stall until the ORIGINAL message's
+                      //    ~300s visibility-timeout redelivery — measured
+                      //    exactly so in the durabench parallel sweeps before
+                      //    this path existed.
+                      //  - EAGERLY on a genuine redelivery (attempt > 1),
+                      //    in parallel with the run fetch below — a
+                      //    redelivered dispatch already had its create race
+                      //    resolved either way, so this saves the failed
+                      //    start round-trip at no wall-time cost. First
+                      //    deliveries skip it: the producer's write almost
+                      //    always lands, and an eager ensure would burn a
+                      //    conditional write per step.
                       const ensureStepFromMessage = async (): Promise<
                         'ok' | 'gone'
                       > => {
-                        if (!stepInput || metadata.attempt <= 1) return 'ok';
+                        if (!stepInput) return 'ok';
                         try {
                           await world.events.create(
                             runId,
@@ -1460,7 +1496,9 @@ export function workflowEntrypoint(
                         world.runs.get(runId, {
                           resolveData: 'none',
                         }),
-                        ensureStepFromMessage(),
+                        stepInput && metadata.attempt > 1
+                          ? ensureStepFromMessage()
+                          : ('ok' as const),
                       ]);
                       if (ensureOutcome === 'gone') {
                         runtimeLogger.debug(
@@ -1545,25 +1583,47 @@ export function workflowEntrypoint(
                         // step_started of a queue-driven execution
                         // intentionally clears inline ownership (the step is
                         // queue-owned from this point).
+                        const executeQueuedStep = () =>
+                          executeStep({
+                            world,
+                            workflowRunId: runId,
+                            workflowDeploymentId: bgRun.deploymentId,
+                            workflowName,
+                            workflowStartedAt: bgStartedAt,
+                            rootRunId: rootRunIdFrom(bgRun.attributes, runId),
+                            stepId: incomingStepId,
+                            stepName: incomingStepName,
+                            runSpecVersion: bgRun.specVersion,
+                            // Retry ceiling: the queue delivery count as a fast
+                            // gate, verified against the recorded step_started
+                            // count once it crosses the ceiling (see above).
+                            authoritativeAttempt: bgAuthoritativeAttempt,
+                          });
                         stepResult = await runStepSingleFlight(
                           runId,
                           incomingStepId,
-                          () =>
-                            executeStep({
-                              world,
-                              workflowRunId: runId,
-                              workflowDeploymentId: bgRun.deploymentId,
-                              workflowName,
-                              workflowStartedAt: bgStartedAt,
-                              rootRunId: rootRunIdFrom(bgRun.attributes, runId),
-                              stepId: incomingStepId,
-                              stepName: incomingStepName,
-                              runSpecVersion: bgRun.specVersion,
-                              // Retry ceiling: the queue delivery count as a fast
-                              // gate, verified against the recorded step_started
-                              // count once it crosses the ceiling (see above).
-                              authoritativeAttempt: bgAuthoritativeAttempt,
-                            })
+                          async () => {
+                            try {
+                              return await executeQueuedStep();
+                            } catch (err) {
+                              // In-band resilient recovery: a missing step on
+                              // a stepInput-carrying message means this
+                              // delivery outran (or outlived a transient
+                              // failure of) the producer's parallel
+                              // step_created write. Materialize the event
+                              // from the payload and retry ONCE, within this
+                              // delivery — see ensureStepFromMessage for why
+                              // this cannot wait for a redelivery. A second
+                              // failure propagates as before.
+                              if (!stepInput || !isStepMissingError(err)) {
+                                throw err;
+                              }
+                              if ((await ensureStepFromMessage()) === 'gone') {
+                                return { type: 'gone' as const };
+                              }
+                              return await executeQueuedStep();
+                            }
+                          }
                         );
                       } finally {
                         replayBudget.resume();

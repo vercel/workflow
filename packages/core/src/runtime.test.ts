@@ -1757,6 +1757,12 @@ describe('workflowEntrypoint resilient step consumption (stepInput re-ensure)', 
     /** Reject the step_created re-ensure with this error. */
     ensureError?: Error;
     omitStepInput?: boolean;
+    /**
+     * Simulate the delivery beating the producer's parallel step_created:
+     * bare step_started rejects with this error until a step_created for the
+     * step has been written (the in-band re-ensure path).
+     */
+    stepMissingError?: Error;
   }) {
     const stepId = 'step_resilient_1';
     const dehydratedInput = (await dehydrateStepArguments(
@@ -1805,15 +1811,20 @@ describe('workflowEntrypoint resilient step consumption (stepInput re-ensure)', 
 
     const createdEvents: any[] = [];
     const createdEventParams: any[] = [];
+    let stepEntityExists = false;
     const eventsCreate = vi.fn(
       async (_runId: string, data: any, params?: any) => {
         createdEvents.push(data);
         createdEventParams.push(params);
         if (data.eventType === 'step_created') {
           if (opts.ensureError) throw opts.ensureError;
+          stepEntityExists = true;
           return { event: recordEvent(data) };
         }
         if (data.eventType === 'step_started') {
+          if (opts.stepMissingError && !stepEntityExists) {
+            throw opts.stepMissingError;
+          }
           return {
             event: recordEvent(data),
             step: {
@@ -1976,6 +1987,72 @@ describe('workflowEntrypoint resilient step consumption (stepInput re-ensure)', 
     expect(
       createdEvents.filter((e) => e.eventType === 'step_created')
     ).toHaveLength(0);
+  });
+
+  // The load-bearing recovery: a FIRST delivery that beats (or outlives a
+  // transient failure of) the producer's parallel step_created must
+  // materialize the step and execute it within the same delivery. It cannot
+  // wait for a redelivery — world-vercel's failure retries re-enqueue fresh
+  // messages whose attempt resets to 1, so an attempt-gated recovery would
+  // stall the step until the original message's ~300s visibility-timeout
+  // redelivery (measured exactly so in the durabench parallel sweeps).
+  it('recovers in-band on attempt 1 when the bare start rejects with step-not-found (world-vercel shape)', async () => {
+    const { response, createdEvents, createdEventParams } =
+      await driveStepMessage({
+        runId: 'wrun_resilient_step_inband_vercel',
+        attempt: 1,
+        stepMissingError: new WorkflowWorldError(
+          'workflow step step_resilient_1 not found',
+          { status: 404 }
+        ),
+      });
+
+    expect(response.status).toBe(204);
+    // Order: failed bare start → re-ensured step_created (viaStepDispatch) →
+    // successful start → completion, all in this delivery.
+    const types = createdEvents.map((e) => e.eventType);
+    expect(types).toEqual([
+      'step_started',
+      'step_created',
+      'step_started',
+      'step_completed',
+    ]);
+    const ensureIdx = types.indexOf('step_created');
+    expect(createdEventParams[ensureIdx]).toMatchObject({
+      viaStepDispatch: true,
+    });
+  });
+
+  it('recovers in-band on attempt 1 with the local-world error shape (no status)', async () => {
+    const { response, createdEvents } = await driveStepMessage({
+      runId: 'wrun_resilient_step_inband_local',
+      attempt: 1,
+      stepMissingError: new WorkflowWorldError(
+        'Step "step_resilient_1" not found'
+      ),
+    });
+
+    expect(response.status).toBe(204);
+    expect(createdEvents.map((e) => e.eventType)).toEqual([
+      'step_started',
+      'step_created',
+      'step_started',
+      'step_completed',
+    ]);
+  });
+
+  it('propagates step-not-found without stepInput (nothing to recover from)', async () => {
+    await expect(
+      driveStepMessage({
+        runId: 'wrun_resilient_step_inband_legacy',
+        attempt: 1,
+        omitStepInput: true,
+        stepMissingError: new WorkflowWorldError(
+          'workflow step step_resilient_1 not found',
+          { status: 404 }
+        ),
+      })
+    ).rejects.toThrow('not found');
   });
 });
 
