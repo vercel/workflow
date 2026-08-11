@@ -209,8 +209,9 @@ const spec: ScenarioSpec = {
     // Calling an advance starts watching for its point; awaiting it waits for
     // the writer to get there. Start both watches, then await both — asking
     // for a point that has already gone by is an error, not a wait.
+    const held = prepare.runToEventProduced('step_completed');
     const committed = finalize.runToEventCommitted('step_completed');
-    await prepare.runToEventProduced('step_completed');
+    await held;
     await committed;
 
     await finalize.release();
