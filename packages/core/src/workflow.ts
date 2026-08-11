@@ -15,10 +15,6 @@ import type { Event, WorkflowRun, WorldCapabilities } from '@workflow/world';
 import { SPEC_VERSION_SUPPORTS_COMPRESSION } from '@workflow/world';
 import * as nanoid from 'nanoid';
 import { monotonicFactory } from 'ulid';
-import {
-  createCorrelationIdGenerator,
-  isPerKindCorrelationIdsEnabled,
-} from './correlation-id.js';
 import { EventConsumerResult, EventsConsumer } from './events-consumer.js';
 import type { QueueItem } from './global.js';
 import { ENOTSUP, WorkflowSuspension } from './global.js';
@@ -155,6 +151,16 @@ export type WorkflowResult =
       readonly type: 'suspended';
       readonly suspension: WorkflowSuspension;
       readonly session: WorkflowSession;
+      /**
+       * Events the replay walked past unclaimed and is still holding, if any.
+       * Ordinary on a suspension, and only actionable across a run's
+       * suspensions, so it is reported for telemetry rather than acted on here.
+       */
+      readonly parked?: {
+        readonly count: number;
+        readonly eventId: string;
+        readonly eventType: string;
+      };
     };
 
 /**
@@ -238,6 +244,20 @@ function recordResult(
     });
   } else if (span) {
     applyWorkflowSuspensionToSpan(result.suspension, span);
+    // Events this pass walked past unclaimed and is still holding. Ordinary on
+    // a suspension: an out-of-band delivery that landed ahead of the code that
+    // reads it waits for the pass that reaches that code, and failing here
+    // would fail exactly the runs that tolerance exists for. The case that is
+    // not ordinary — the same event still held pass after pass — is a shape
+    // across these spans, which is why the eventId is on each one and no pass
+    // tries to rule on it alone.
+    if (result.parked) {
+      span.setAttributes({
+        ...Attribute.WorkflowParkedEventsCount(result.parked.count),
+        ...Attribute.WorkflowParkedEventId(result.parked.eventId),
+        ...Attribute.WorkflowParkedEventType(result.parked.eventType),
+      });
+    }
   }
   return result;
 }
@@ -325,14 +345,12 @@ async function createWorkflowSession({
       : `http://localhost:${(await getPortLazy()) ?? 3000}`
   );
 
-  const seed = `${workflowRun.runId}:${workflowRun.workflowName}:${workflowRun.deploymentId}`;
-
   const {
     context,
     globalThis: vmGlobalThis,
     updateTimestamp,
   } = createContext({
-    seed,
+    seed: `${workflowRun.runId}:${workflowRun.workflowName}:${workflowRun.deploymentId}`,
     fixedTimestamp,
   });
 
@@ -371,14 +389,9 @@ async function createWorkflowSession({
   };
 
   const ulid = monotonicFactory(() => vmGlobalThis.Math.random());
-  const generateCorrelationId = createCorrelationIdGenerator({
-    seed,
-    fixedTimestamp,
-    // Correlation IDs must be replay-stable. `startedAt` differs between a
-    // turbo delivery and a later server-backed replay, so use fixedTimestamp.
-    positional: () => ulid(fixedTimestamp),
-    perKind: isPerKindCorrelationIdsEnabled(),
-  });
+  // Correlation IDs must be replay-stable. `startedAt` differs between a turbo
+  // delivery and a later server-backed replay, so use fixedTimestamp.
+  const generateUlid = () => ulid(fixedTimestamp);
   const generateNanoid = nanoid.customRandom(nanoid.urlAlphabet, 21, (size) =>
     new Uint8Array(size).map(() => 256 * vmGlobalThis.Math.random())
   );
@@ -393,9 +406,20 @@ async function createWorkflowSession({
   // is before any delivery can be registered against it.
   const deliveryIdleHolder = { current: (): boolean => true };
 
+  // The VM clock only ever moves forward. Consumption order is log order for
+  // everything whose order the replay decides, but an event the consumer
+  // parked is delivered after the walk has already passed events written after
+  // it, and letting its `createdAt` set the clock would make `Date.now()` go
+  // backwards inside a single replay.
+  let clock = fixedTimestamp;
+
   const eventsConsumer = new EventsConsumer(events, {
     onConsumedEvent: (event) => {
-      updateTimestamp(+event.createdAt);
+      const at = +event.createdAt;
+      if (at > clock) {
+        clock = at;
+        updateTimestamp(at);
+      }
     },
     onUnconsumedEvent: (event) => {
       onWorkflowError(
@@ -416,7 +440,7 @@ async function createWorkflowSession({
     globalThis: vmGlobalThis,
     onWorkflowError,
     eventsConsumer,
-    generateCorrelationId,
+    generateUlid,
     generateNanoid,
     invocationsQueue: new Map(),
     // Use getter/setter so the EventsConsumer's getPromiseQueue() always
@@ -497,11 +521,11 @@ async function createWorkflowSession({
   // Serialization mints stream ids through this symbol, and calls it with no
   // seed time. `monotonicFactory` returns `encodeTime(lastTime)` on its
   // increment branch, so one such call latches the *host* wall clock into
-  // `lastTime` and every id the run mints afterwards carries that timestamp
-  // instead of `fixedTimestamp` — a value that differs on every replay.
-  // Binding the seed time here keeps the whole run on one replay-stable clock.
+  // `lastTime`, and every id the run mints afterwards carries that timestamp
+  // instead of `fixedTimestamp`, a value that differs on every replay. Binding
+  // the seed time here keeps the whole run on one replay-stable clock.
   // @ts-expect-error - `@types/node` says symbol is not valid, but it does work
-  vmGlobalThis[STABLE_ULID] = () => generateCorrelationId('stream');
+  vmGlobalThis[STABLE_ULID] = generateUlid;
 
   // Workflow code must import the deterministic `fetch` step from `workflow`.
   vmGlobalThis.fetch = () => {
@@ -1066,12 +1090,34 @@ async function createWorkflowSession({
       result = await Promise.race([workflowBody, interruption.promise]);
     } catch (error) {
       if (state.type === 'suspended' && error === state.suspension) {
-        return { type: 'suspended', suspension: state.suspension, session };
+        return {
+          type: 'suspended',
+          suspension: state.suspension,
+          session,
+          // A suspension is not a settling point: the consumer for something
+          // held may well be registered by the replay that follows this one.
+          // So it is carried out for the span instead of being judged here.
+          parked: eventsConsumer.parkedSummary,
+        };
       }
       return failWorkflow(error);
     }
 
     state = { type: 'completed' };
+    // The consumer walks past events whose type carries no ordering claim and
+    // holds them for a consumer it expects a later `subscribe()` to register.
+    // The workflow function returning is the point where that expectation is
+    // settled: nothing more will subscribe, so anything still held was never
+    // anyone's, and completing here would drop it silently.
+    const stranded = eventsConsumer.strandedEvent;
+    if (stranded) {
+      return failWorkflow(
+        new ReplayDivergenceError(
+          `Replay finished without consuming event: eventType=${stranded.eventType}, correlationId=${stranded.correlationId}, eventId=${stranded.eventId}.`,
+          { eventId: stranded.eventId }
+        )
+      );
+    }
     try {
       const output = await dehydrateWorkflowReturnValue(
         result,
