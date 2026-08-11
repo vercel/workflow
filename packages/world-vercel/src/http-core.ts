@@ -153,6 +153,21 @@ export function parseRetryAfter(
 }
 
 /**
+ * Flatten a fetch `Headers` into the plain record both `throwForErrorResponse`
+ * (mirroring the v3 `makeRequest` error contract) and the WS transport's
+ * `getHeaders` seam expect. Lives here because both `events-v4.ts` and
+ * `ws-transport.ts` need it and `events-v4` already imports the transport, so
+ * the reverse edge would be a cycle.
+ */
+export function headersToRecord(headers: Headers): Record<string, string> {
+  const out: Record<string, string> = {};
+  headers.forEach((value, key) => {
+    out[key] = value;
+  });
+  return out;
+}
+
+/**
  * Build the typed error for a non-2xx response. This is the single source of
  * truth for the status → error-type contract the runtime branches on:
  *

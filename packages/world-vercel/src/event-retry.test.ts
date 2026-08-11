@@ -113,6 +113,62 @@ describe('isRetryableEventPostError', () => {
     ).toBe(true);
   });
 
+  it('retries a TRANSPORT failure from either transport', () => {
+    // The one code that lets this policy serve HTTP and WS alike: `utils.ts`
+    // sets it for a `fetch` that failed transiently, `events-v4.ts` for a WS
+    // socket that died or produced no correlatable reply. Both mean the write
+    // was never acked.
+    expect(
+      isRetryableEventPostError(
+        new WorkflowWorldError('POST … transport failure: socket hang up', {
+          code: 'TRANSPORT',
+        })
+      )
+    ).toBe(true);
+  });
+
+  it('retries a TRANSPORT failure whose cause carries no known marker', () => {
+    // Why the code has to be read directly rather than left to the cause walk:
+    // a WS failure's cause is a `WsTransportError`, which carries none of the
+    // undici/Node markers in TRANSIENT_CODES.
+    const cause = Object.assign(new Error('connection closed (code 1006)'), {
+      name: 'WsTransportError',
+    });
+    expect(isRetryableEventPostError(cause)).toBe(false);
+    expect(
+      isRetryableEventPostError(
+        new WorkflowWorldError('POST … transport failure: connection closed', {
+          code: 'TRANSPORT',
+          cause,
+        })
+      )
+    ).toBe(true);
+  });
+
+  it('does not retry a TIMEOUT that is a caller-requested abort', () => {
+    // `utils.ts` maps both a missed deadline and an `AbortError` onto
+    // `code: 'TIMEOUT'`, so — unlike TRANSPORT — that code must not be a
+    // blanket yes; it falls through to the marker walk, which tells them apart.
+    expect(
+      isRetryableEventPostError(
+        new WorkflowWorldError('request aborted', {
+          code: 'TIMEOUT',
+          cause: Object.assign(new Error('aborted'), { name: 'AbortError' }),
+        })
+      )
+    ).toBe(false);
+    expect(
+      isRetryableEventPostError(
+        new WorkflowWorldError('request timed out', {
+          code: 'TIMEOUT',
+          cause: Object.assign(new Error('timed out'), {
+            name: 'TimeoutError',
+          }),
+        })
+      )
+    ).toBe(true);
+  });
+
   it('retries raw transport errors by code', () => {
     for (const code of [
       'ECONNRESET',

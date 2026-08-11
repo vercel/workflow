@@ -1,3 +1,4 @@
+import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -350,6 +351,15 @@ describe('Storage', () => {
         expect(updated.updatedAt.getTime()).toBeGreaterThanOrEqual(
           created.updatedAt.getTime()
         );
+      });
+
+      it('should reject run_started on a non-existent run', async () => {
+        await expect(
+          storage.events.create('wrun_nonexistent', {
+            eventType: 'run_started',
+            specVersion: SPEC_VERSION_CURRENT,
+          })
+        ).rejects.toMatchObject({ name: 'WorkflowRunNotFoundError' });
       });
 
       it('should update run status to completed via run_completed event', async () => {
@@ -1271,6 +1281,101 @@ describe('Storage', () => {
         expect(fileExists).toBe(true);
       });
 
+      it('returns the complete preload when run_started is retried', async () => {
+        await storage.events.create(testRunId, {
+          eventType: 'run_started',
+          specVersion: SPEC_VERSION_CURRENT,
+        });
+
+        for (let index = 0; index < 999; index++) {
+          await storage.events.create(testRunId, {
+            eventType: 'attr_set',
+            specVersion: SPEC_VERSION_CURRENT,
+            eventData: {
+              changes: [{ key: 'index', value: String(index) }],
+              writer: { type: 'workflow' },
+            },
+          });
+        }
+
+        const preloaded = await storage.events.create(testRunId, {
+          eventType: 'run_started',
+          specVersion: SPEC_VERSION_CURRENT,
+        });
+        assert(preloaded.events);
+        assert(preloaded.cursor);
+        expect(preloaded.events).toHaveLength(1001);
+        expect(preloaded.hasMore).toBe(false);
+
+        const all = await storage.events.list({
+          runId: testRunId,
+          pagination: { sortOrder: 'asc', limit: 2000 },
+        });
+
+        expect(preloaded.events).toEqual(all.data);
+      }, 120_000);
+
+      it('returns a resumable partial preload at the event ceiling', async () => {
+        await storage.events.create(testRunId, {
+          eventType: 'run_started',
+          specVersion: SPEC_VERSION_CURRENT,
+        });
+        for (let index = 0; index < 4; index++) {
+          await storage.events.create(testRunId, {
+            eventType: 'attr_set',
+            specVersion: SPEC_VERSION_CURRENT,
+            eventData: {
+              changes: [{ key: 'index', value: String(index) }],
+              writer: { type: 'workflow' },
+            },
+          });
+        }
+        vi.stubEnv('WORKFLOW_MAX_EVENTS', '4');
+
+        const preloaded = await storage.events.create(testRunId, {
+          eventType: 'run_started',
+          specVersion: SPEC_VERSION_CURRENT,
+        });
+        assert(preloaded.events);
+        assert(preloaded.cursor);
+        expect(preloaded.events).toHaveLength(4);
+        expect(preloaded.hasMore).toBe(true);
+
+        const remaining = await storage.events.list({
+          runId: testRunId,
+          pagination: { sortOrder: 'asc', cursor: preloaded.cursor },
+        });
+        const all = await storage.events.list({
+          runId: testRunId,
+          pagination: { sortOrder: 'asc', limit: 100 },
+        });
+
+        expect([...preloaded.events, ...remaining.data]).toEqual(all.data);
+        expect(remaining.hasMore).toBe(false);
+      });
+
+      it('skips the run_started preload when requested', async () => {
+        const started = await storage.events.create(
+          testRunId,
+          {
+            eventType: 'run_started',
+            specVersion: SPEC_VERSION_CURRENT,
+          },
+          { skipPreload: true }
+        );
+        expect(started.events).toBeUndefined();
+
+        const retried = await storage.events.create(
+          testRunId,
+          {
+            eventType: 'run_started',
+            specVersion: SPEC_VERSION_CURRENT,
+          },
+          { skipPreload: true }
+        );
+        expect(retried.events).toBeUndefined();
+      });
+
       it('should handle run completed events', async () => {
         const eventData = {
           eventType: 'run_completed' as const,
@@ -1393,13 +1498,9 @@ describe('Storage', () => {
       });
 
       it('truncates the delta and surfaces hasMore=true when it exceeds one page, matching events.list', async () => {
-        // Safety property the runtime relies on (see the limit/hasMore/fallback
-        // contract at events-storage.ts and the consume gate in runtime.ts):
-        // the inline-delta query uses paginatedFileSystemQuery's default page
-        // size, so a delta larger than one page is truncated and MUST report
-        // hasMore=true. The runtime refuses to consume a truncated delta and
-        // falls back to the exhaustive events.list loop, so a partial page can
-        // never be mistaken for the complete delta.
+        // The inline-delta query uses paginatedFileSystemQuery's default page
+        // size, so a larger delta is truncated and MUST report hasMore=true.
+        // The runtime consumes this page and continues from its cursor.
         await updateRun(storage, testRunId, 'run_started');
 
         await createHook(storage, testRunId, {
@@ -1444,7 +1545,7 @@ describe('Storage', () => {
         // that more remains — byte-identical to events.list(sinceCursor).
         const firstPage = await storage.events.list({
           runId: testRunId,
-          pagination: { sortOrder: 'asc', cursor: sinceCursor },
+          pagination: { limit: 20, sortOrder: 'asc', cursor: sinceCursor },
         });
 
         expect(result.hasMore).toBe(true);
@@ -1477,7 +1578,7 @@ describe('Storage', () => {
         expect(result.cursor).toBeUndefined();
       });
 
-      it('does not return a delta for non-terminal step events', async () => {
+      it('returns a delta for non-terminal event types too', async () => {
         await updateRun(storage, testRunId, 'run_started');
         const sinceCursor = await currentCursor();
         await createStep(storage, testRunId, {
@@ -1485,8 +1586,9 @@ describe('Storage', () => {
           stepName: 'seq-step',
           input: new Uint8Array(),
         });
-        // step_started carries sinceCursor but is not a loop boundary, so the
-        // World should not compute a delta for it.
+        // Whether the delta is worth asking for is the caller's decision, not
+        // the World's: outside turbo the runtime sends `sinceCursor` on every
+        // write so each response carries its log forward.
         const result = await storage.events.create(
           testRunId,
           {
@@ -1496,7 +1598,46 @@ describe('Storage', () => {
           },
           { sinceCursor }
         );
-        expect(result.events).toBeUndefined();
+        const expected = await storage.events.list({
+          runId: testRunId,
+          pagination: { sortOrder: 'asc', cursor: sinceCursor },
+        });
+        expect(result.events?.map((e) => e.eventId)).toEqual(
+          expected.data.map((e) => e.eventId)
+        );
+        expect(result.events?.at(-1)?.eventType).toBe('step_started');
+        expect(result.cursor).toBe(expected.cursor);
+        expect(result.hasMore).toBe(expected.hasMore);
+      });
+
+      it('returns a delta for a wait_completed write', async () => {
+        await updateRun(storage, testRunId, 'run_started');
+        await storage.events.create(testRunId, {
+          eventType: 'wait_created' as const,
+          correlationId: 'corr_wait1',
+          eventData: { resumeAt: new Date(Date.now() - 1000) },
+        });
+        const sinceCursor = await currentCursor();
+        // The runtime's elapsed-wait pass relies on this delta instead of a
+        // follow-up events.list, so the response must carry the completion it
+        // just wrote.
+        const result = await storage.events.create(
+          testRunId,
+          {
+            eventType: 'wait_completed' as const,
+            correlationId: 'corr_wait1',
+            eventData: { resumeAt: new Date(Date.now() - 1000) },
+          },
+          { sinceCursor }
+        );
+        expect(
+          result.events?.some(
+            (e) =>
+              e.eventType === 'wait_completed' &&
+              e.correlationId === 'corr_wait1'
+          )
+        ).toBe(true);
+        expect(result.hasMore).toBe(false);
       });
     });
 
@@ -1611,6 +1752,20 @@ describe('Storage', () => {
 
         expect(page2.data).toHaveLength(2);
         expect(page2.data[0].eventId).not.toBe(page1.data[0].eventId);
+      });
+
+      it('returns all remaining events when no limit is set', async () => {
+        await storage.events.create(testRunId, {
+          eventType: 'run_started',
+        });
+
+        const result = await storage.events.list({
+          runId: testRunId,
+          pagination: { sortOrder: 'asc' },
+        });
+
+        expect(result.data).toHaveLength(2);
+        expect(result.hasMore).toBe(false);
       });
     });
 

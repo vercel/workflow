@@ -25,9 +25,15 @@
  *     branch-deciding as any other delivery — but it resolved straight off its
  *     `promiseQueue` slot and registered no barrier.
  *
- * Cases 1-4 assert the same thing: the replay allocates its follow-up step
+ * Cases 1-3 assert the same thing: the replay allocates its follow-up step
  * ULIDs in the order the committed log recorded. A regression surfaces as the
  * production `ReplayDivergenceError`.
+ *
+ * Section 4 asserts the registry's other job directly, over a registry built
+ * by hand rather than by a replay: which entries an idle check may ignore. Get
+ * that wrong in one direction and a chain parked on an unclaimed hook payload
+ * deadlocks; wrong in the other and a suspension preempts a batch of parked
+ * step results.
  *
  * The final section covers the SUSPENSION side of the registry
  * (vercel/workflow#3183): an idle check must not observe idle — and raise a
@@ -53,6 +59,7 @@ import { WorkflowSuspension } from './global.js';
 import {
   awaitEarlierDeliveries,
   registerDeliveryBarrier,
+  scheduleWhenIdle,
   type WorkflowOrchestratorContext,
 } from './private.js';
 import { ReplayPayloadCache } from './replay-payload-cache.js';
@@ -491,41 +498,121 @@ describe('abort delivery ordering against an earlier step result', () => {
   });
 });
 
-// ─── 4. registry scan cost ─────────────────────────────────────────────────
+// ─── 4. idle reachability over the barrier registry ────────────────────────
 //
-// `resolvesOnItsOwn` walks the registry recursively: an armed hook re-checks
-// every earlier wait and step, an armed wait every earlier hook and step, and
-// so on. Unmemoized that is T(n) = Σ T(j) — exponential — and the registry is
-// not small by construction: `EventsConsumer` drains consecutively consumable
-// events synchronously while barriers only retire on microtask-driven
-// deliveries, so a fan-out of `Promise.race([hook, sleep(watchdog)])` branches
-// accumulates one barrier per branch per kind (measured: 49 live barriers for
-// 24 branches).
+// `hasParkedCommittedDelivery` decides whether an idle check may observe idle,
+// and it is the only remaining caller of the recursive `resolvesOnItsOwn`
+// walk. Two opposite answers are load-bearing, and neither is covered by the
+// replay sections above, which exercise the walk only through whichever shape
+// their fixture happens to build:
 //
-// The scan runs synchronously, before `awaitEarlierDeliveries` first awaits,
-// so timing the call alone measures it. Unmemoized, 40 alternating armed
-// hook/wait barriers is ~10^8 recursive calls — minutes. Memoized it is
-// linear. The bound is deliberately loose; this is an order-of-magnitude
-// guard, not a benchmark.
-describe('delivery-barrier registry scan cost', () => {
-  it('stays linear in registry size for a step delivery', () => {
-    const ctx = {
+//  - A PARKED CHAIN must not be counted. An unclaimed buffered hook payload is
+//    retired by the idle safety net in `registerDeliveryBarrier`, so counting
+//    it would gate its own retirement — and that extends to the wait parked
+//    behind it and the step gated on that wait. If any link were counted, idle
+//    would be unreachable, no net could fire, and the chain would never
+//    deliver: a deadlock, not a divergence.
+//  - An ALL-ARMED BATCH must be counted (vercel/workflow#3183). Parallel step
+//    results parked between their queue slots and their detached `resolve()`
+//    are invisible to `pendingDeliveries`, and an idle check that observed idle
+//    there would raise a `WorkflowSuspension` carrying none of the follow-up
+//    work the batch was about to create.
+//
+// Asserted through `scheduleWhenIdle`, which is the coupling that matters, and
+// which makes both cases unambiguous: nothing in these registries ever
+// delivers, so the callback can only fire if the registry was excluded from
+// the idle count AND the barriers' own nets then retired it.
+//
+// This replaces a timing guard that no longer measured anything. It timed
+// `awaitEarlierDeliveries(ctx, 40, 'step')` against 40 alternating armed
+// hook/wait barriers to catch an unmemoized exponential walk (4.3e8 recursive
+// calls, 84s). That call site is gone: a step now tests `armed` directly, so
+// the call is a flat loop. The surviving caller cannot reach an exponential
+// shape at all — it returns at the first self-resolving entry, so it only
+// advances past entries that short-circuit on their first false child
+// (measured: 98 recursive calls unmemoized for the worst 40-barrier shape).
+// Timing it would assert nothing; see the memo note on `resolvesOnItsOwn`.
+describe('delivery-barrier idle reachability', () => {
+  function emptyCtx(): WorkflowOrchestratorContext {
+    return {
       pendingDeliveries: 0,
       promiseQueue: Promise.resolve(),
       pendingDeliveryBarriers: new Map(),
     } as unknown as WorkflowOrchestratorContext;
+  }
 
-    const BARRIERS = 40;
-    for (let index = 0; index < BARRIERS; index++) {
-      registerDeliveryBarrier(ctx, index, index % 2 ? 'hook' : 'wait');
+  /** Whether `scheduleWhenIdle` observes idle within `rounds` timer ticks. */
+  async function reachesIdle(
+    ctx: WorkflowOrchestratorContext,
+    rounds = 10
+  ): Promise<boolean> {
+    let idle = false;
+    scheduleWhenIdle(ctx, () => {
+      idle = true;
+    });
+    for (let round = 0; round < rounds && !idle; round++) {
+      await ctx.promiseQueue;
+      await new Promise((resolve) => setTimeout(resolve, 0));
     }
-    expect(ctx.pendingDeliveryBarriers?.size).toBe(BARRIERS);
+    return idle;
+  }
 
-    const startedAt = performance.now();
-    // The floating promise never settles (nothing delivers these barriers);
-    // only the synchronous scan inside the call is under test.
-    void awaitEarlierDeliveries(ctx, BARRIERS, 'step');
-    expect(performance.now() - startedAt).toBeLessThan(1_000);
+  it('unwinds a step parked behind a wait parked on an unclaimed payload, in log order', async () => {
+    const ctx = emptyCtx();
+    const order: string[] = [];
+    let payloadRetiredBeforeWait: boolean | undefined;
+
+    // The shape `step-delivery-ordering.test.ts` replays, as a registry: an
+    // unread hook's payload at index 0, a wait behind it, a step gated on that
+    // wait. Only the payload lacks a delivery chain — nothing in the workflow
+    // ever claims it, so the idle safety net is the only thing that can retire
+    // it. The wait and the step get the unconditional chain their real call
+    // sites attach at event-consumption time, as the INVARIANT on
+    // `registerDeliveryBarrier` requires of any armed barrier.
+    registerDeliveryBarrier(ctx, 0, 'hook', { armed: false });
+    const wait = registerDeliveryBarrier(ctx, 1, 'wait');
+    const step = registerDeliveryBarrier(ctx, 2, 'step');
+    const chains = [
+      awaitEarlierDeliveries(ctx, 1, 'wait').then(() => {
+        order.push('wait');
+        payloadRetiredBeforeWait = !ctx.pendingDeliveryBarriers?.has(0);
+        wait.markDelivered();
+      }),
+      awaitEarlierDeliveries(ctx, 2, 'step').then(() => {
+        order.push('step');
+        step.markDelivered();
+      }),
+    ];
+    expect(ctx.pendingDeliveryBarriers?.size).toBe(3);
+
+    // Neither chain can run yet: the wait gates on the unclaimed payload, and
+    // the step gates on the wait (it skips the payload directly, but the skip
+    // is not transitive through the armed wait).
+    await Promise.resolve();
+    expect(order).toEqual([]);
+
+    // Idle must stay reachable for the payload's net to fire at all. If any
+    // link of the chain were counted against idle, this would hang.
+    expect(await reachesIdle(ctx)).toBe(true);
+    await Promise.all(chains);
+
+    expect(payloadRetiredBeforeWait).toBe(true);
+    expect(order).toEqual(['wait', 'step']);
+    expect(ctx.pendingDeliveryBarriers?.size).toBe(0);
+  });
+
+  it('is blocked by an all-armed batch of step results', async () => {
+    const ctx = emptyCtx();
+    // Armed and undelivered is exactly the window #3183 is about: the batch's
+    // queue slots have released `pendingDeliveries` and their detached
+    // `resolve()` calls have not run yet.
+    for (let index = 0; index < 3; index++) {
+      registerDeliveryBarrier(ctx, index, 'step');
+    }
+
+    expect(await reachesIdle(ctx)).toBe(false);
+    // The nets are idle-gated too, so nothing retires behind our back.
+    expect(ctx.pendingDeliveryBarriers?.size).toBe(3);
   });
 });
 

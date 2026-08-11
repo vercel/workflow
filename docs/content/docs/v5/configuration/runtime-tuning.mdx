@@ -43,6 +43,14 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 - Delivery attempts before a run or step is failed gracefully.
 - Can only be lowered. The default is calibrated so Workflow can record failure before the queue expires the message.
 
+### `WORKFLOW_MAX_EVENTS`
+
+- Default: `25000`
+- Positive-integer event limit reported by the Local World and enforced by the runtime as `MAX_EVENTS_EXCEEDED`.
+- The Local and Postgres Worlds also use it as the maximum number of events returned when `events.list()` is called without a limit. If more events exist, the response includes `hasMore: true` and a continuation cursor.
+- The Vercel World receives its event limit from the service; this environment variable does not override that service-owned value.
+- Invalid or non-positive values fall back to the default.
+
 ### `WORKFLOW_REPLAY_DIVERGENCE_MAX_RETRIES`
 
 - Default: `3`

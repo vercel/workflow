@@ -41,6 +41,11 @@
  *
  * Only transient/ambiguous transport failures are retried; definitive responses
  * (409/410/425/429 and any other 4xx) surface immediately, exactly as before.
+ *
+ * This is the *only* retry loop on the event-write path, for both transports.
+ * The WebSocket transport raises `code: 'TRANSPORT'` — the shape `utils.ts`
+ * produces for a failed `fetch` — so it lands here rather than carrying a
+ * second policy blind to `EVENT_RETRY_ELIGIBILITY`.
  */
 
 import {
@@ -230,6 +235,22 @@ export function isRetryableEventPostError(err: unknown): boolean {
     // Body parsed past the response but the write may have landed — safe to
     // retry for eligible events (a landed original re-surfaces as 409).
     if (err.code === 'PARSE_ERROR') return true;
+    // A transport failure the world layer already classified as transient:
+    // `utils.ts` sets this for a `fetch` failing with a
+    // `TRANSIENT_TRANSPORT_ERROR_CODES` code, `events-v4.ts` for a WS socket
+    // that died, refused a send, produced no correlatable reply or missed its
+    // deadline. The frame was never acked in any of them. Keying on the code
+    // rather than re-deriving transience from the cause chain is what lets one
+    // policy serve both transports; it also collapses a drift, since
+    // `UND_ERR_CONNECT`, `UND_ERR_CLOSED` and `EAI_AGAIN` are in utils.ts's set
+    // but not in TRANSIENT_CODES below, so they counted as retryable for queue
+    // redelivery yet were skipped in-process.
+    //
+    // `TIMEOUT` is deliberately excluded: utils.ts maps both a missed deadline
+    // and a caller's `AbortError` onto that one code, so it must keep falling
+    // through to the marker walk, which retries the former and refuses the
+    // latter.
+    if (err.code === 'TRANSPORT') return true;
     if (typeof err.status === 'number') {
       // Transient server errors; 4xx are definitive and not retried.
       return err.status >= 500 && err.status <= 599;

@@ -5,8 +5,6 @@ import {
   WorkflowWorldError,
 } from '@workflow/errors';
 import type {
-  CreateEventParams,
-  CreateEventRequest,
   Event,
   EventResult,
   HealthCheckPayload,
@@ -619,7 +617,7 @@ function shouldRetryWithoutEventCursor(
 export async function loadWorkflowRunEvents(
   runId: string,
   afterCursor?: string
-): Promise<{ events: Event[]; cursor: string | null }> {
+): Promise<LoadedEventLog> {
   const incremental = afterCursor !== undefined;
   return trace(
     incremental ? 'workflow.loadNewEvents' : 'workflow.loadEvents',
@@ -1049,12 +1047,6 @@ export function preconditionEventDelta(
   };
 }
 
-/** Creates one event on a bound run, carrying replay-recovery telemetry. */
-export type EventCreator = (
-  data: CreateEventRequest,
-  params?: CreateEventParams
-) => Promise<EventResult>;
-
 /**
  * The concurrency fence a replay-context event creation carries. Exactly one of
  * the two schemes is ever populated: the precondition snapshot for a run guarded
@@ -1303,9 +1295,9 @@ export function claimFenceFor(
  * Runs one create the caller carries no fence for, ordering it against the
  * claims drawn off the same log.
  */
-export type OrderedCreate = (
-  op: (fence: EventCreateFence | undefined) => Promise<EventResult>
-) => Promise<EventResult>;
+export type OrderedCreate = <R extends EventResult>(
+  op: (fence: EventCreateFence | undefined) => Promise<R>
+) => Promise<R>;
 
 /**
  * Orders a write the caller does not fence against every claim on this log,

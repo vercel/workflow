@@ -16,13 +16,12 @@
  *
  *   - POST request body is one v4 frame (meta + payload). The response
  *     surfaces eventId/runId/createdAt as `x-wf-*` headers and carries
- *     the materialized EventResult (event/run/step/hook/wait/events/
- *     cursor/hasMore) as a CBOR body — `remoteRefBehavior` in the frame
- *     meta still controls server-side ref resolution.
+ *     a materialized EventResult. `run_started` instead returns the current
+ *     event log using the same frame stream as LIST; other events use CBOR.
  *   - GET single event returns one v4 frame: the event entity in the
  *     frame meta, the user payload bytes in the frame body.
  *   - LIST events returns a stream of v4 frames terminated by a sentinel
- *     frame whose meta carries `{_end: 1, next?: cursor, hasMore?: boolean}`.
+ *     frame whose meta carries `{_end: 1, next?: cursor, hasMore: boolean}`.
  *     The old
  *     per-event `/refs` round-trip is eliminated.
  *
@@ -32,11 +31,7 @@
  * the v3 path.
  */
 
-import {
-  HookNotFoundError,
-  SlotConflictError,
-  WorkflowWorldError,
-} from '@workflow/errors';
+import { HookNotFoundError, WorkflowWorldError } from '@workflow/errors';
 import {
   type AnyEventRequest,
   applyAttributeChanges,
@@ -51,35 +46,24 @@ import {
   type ListEventsByCorrelationIdParams,
   type ListEventsParams,
   type PaginatedResponse,
-  StructuredErrorSchema,
-  stripEventDataRefs,
   validateUlidTimestamp,
   type WorkflowRun,
 } from '@workflow/world';
-import { decode } from 'cbor-x';
-import { coerceEventDates } from './event-coerce.js';
 import { withEventPostRetry } from './event-retry.js';
 import {
-  type CreateEventV4Result,
   createHookReceivedPreloadEventV4,
   createWorkflowRunEventV4,
-  type DecodedV4Event,
+  createWorkflowRunStartedEventV4,
   getEventsByCorrelationIdV4,
   getEventV4,
   getWorkflowRunEventsV4,
+  type ListEventsV4Params,
 } from './events-v4.js';
 import { decode as decodeRunId } from './run-id/index.js';
 import { cancelWorkflowRunV1, createWorkflowRunV1 } from './runs.js';
 import {
-  hasSerializedDataFormatPrefix,
-  normalizeEventData,
-  normalizeSerializedData,
-} from './serialized-data.js';
-import { deserializeStep } from './steps.js';
-import {
   type APIConfig,
   DEFAULT_RESOLVE_DATA_OPTION,
-  deserializeError,
   makeRequest,
 } from './utils.js';
 
@@ -116,15 +100,6 @@ const eventsNeedingResolve = new Set<string>([
   'run_created', // runtime reads result.run.runId
   'run_started', // runtime reads result.run (checks startedAt, status)
   'step_started', // runtime reads result.step (checks attempt, state)
-]);
-
-// Stable runtimes stored these errors as backend-materialized
-// StructuredError objects. Their resolved v4 frame bodies are CBOR rather
-// than the format-prefixed serialized data emitted by current runtimes.
-const legacyStructuredErrorEventTypes = new Set<string>([
-  'run_failed',
-  'step_failed',
-  'step_retrying',
 ]);
 
 // =============================================================================
@@ -437,122 +412,6 @@ export function splitEventDataForV4(data: AnyEventRequest): SplitEventData {
   return { payload, meta };
 }
 
-function coerceNormalizedEvent(raw: Record<string, unknown>): Event {
-  return coerceEventDates(normalizeEventData(raw));
-}
-
-/**
- * Runs an event create, normalizing the event-log delta a slot conflict carries
- * into the same `Event` shape every other read path produces.
- *
- * The delta arrives as raw CBOR off the error response, so its nested dates are
- * still ISO strings; the runtime merges these events into its loaded log and
- * calls `.getTime()` on them, exactly as it does for the inline delta on the
- * success path. Doing the coercion here rather than in the runtime keeps the
- * wire's shape a concern of this adapter, and keeps `SlotConflictError.events`
- * meaning the same thing for every World that raises it.
- */
-async function withCoercedSlotConflictDelta<T>(
-  op: () => Promise<T>
-): Promise<T> {
-  try {
-    return await op();
-  } catch (error) {
-    if (!SlotConflictError.is(error) || error.events.length === 0) {
-      throw error;
-    }
-    throw new SlotConflictError(error.message, {
-      eventId: error.eventId,
-      events: (error.events as Record<string, unknown>[]).map(coerceEventDates),
-      cursor: error.cursor,
-      hasMore: error.hasMore,
-    });
-  }
-}
-
-function decodeLegacyStructuredError(payload: Uint8Array): unknown {
-  if (hasSerializedDataFormatPrefix(payload)) {
-    return payload;
-  }
-
-  try {
-    // cbor-x caches decode state on its input, so decode a copy to keep the
-    // raw-byte fallback byte-for-byte and property-for-property unchanged.
-    const parsed = StructuredErrorSchema.safeParse(decode(payload.slice()));
-    return parsed.success ? parsed.data : payload;
-  } catch {
-    return payload;
-  }
-}
-
-/**
- * Turn a v4 event (frame meta + frame body) into the Event shape the
- * workflow runtime expects.
- *
- * Both GET single-event and LIST use the same frame format: meta is the
- * full event entity with the payload field as a RefDescriptor, body is
- * the resolved payload bytes (possibly empty). This helper splices the
- * body bytes into `eventData[fieldName]`, normalizing any zstd wrapper
- * back to the raw devalue-with-format-prefix Uint8Array the runtime's
- * hydrate helpers (hydrateStepIO, hydrateRunError, …) consume. Stable-line
- * structured errors are the exception: the backend stored those as CBOR,
- * so they are decoded after checking that the payload is not a current
- * format-prefixed serialized value.
- */
-function buildEventFromV4(
-  decoded: DecodedV4Event,
-  payloadBody: Uint8Array,
-  resolveData: 'none' | 'all'
-): Event {
-  const eventData = (decoded.eventData ?? {}) as Record<string, unknown>;
-
-  if (payloadBody.byteLength > 0) {
-    const payloadField = getEventDataPayloadField(decoded.eventType);
-    const normalizedPayload = normalizeSerializedData(payloadBody);
-    if (payloadField && normalizedPayload instanceof Uint8Array) {
-      eventData[payloadField] = legacyStructuredErrorEventTypes.has(
-        decoded.eventType
-      )
-        ? decodeLegacyStructuredError(normalizedPayload)
-        : normalizedPayload;
-    }
-  }
-
-  const raw = {
-    eventId: decoded.eventId,
-    runId: decoded.runId,
-    eventType: decoded.eventType,
-    createdAt:
-      decoded.createdAt instanceof Date
-        ? decoded.createdAt
-        : new Date(decoded.createdAt),
-    ...(decoded.occurredAt !== undefined
-      ? {
-          occurredAt:
-            decoded.occurredAt instanceof Date
-              ? decoded.occurredAt
-              : new Date(decoded.occurredAt),
-        }
-      : {}),
-    ...(decoded.correlationId ? { correlationId: decoded.correlationId } : {}),
-    eventData,
-    ...(decoded.specVersion !== undefined
-      ? { specVersion: decoded.specVersion }
-      : {}),
-    // The persisted lazy-resume idempotency key. The runtime matches it
-    // against the queue message's hookInput.resumeId to recognize its own
-    // resume in a preloaded log — dropping it here would silently disable
-    // that check for frame-decoded events.
-    ...(decoded.resumeId ? { resumeId: decoded.resumeId } : {}),
-  };
-
-  const event = coerceNormalizedEvent(raw);
-
-  // For resolveData='none', strip eventData entirely. Reuse the world-
-  // side helper so behavior stays in sync with other backends.
-  return resolveData === 'none' ? stripEventDataRefs(event, 'none') : event;
-}
-
 // =============================================================================
 // Public API
 // =============================================================================
@@ -563,11 +422,12 @@ export async function getEvent(
   params?: GetEventParams,
   config?: APIConfig
 ): Promise<Event> {
-  const resolveData = params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
-  const { event, body } = await getEventV4(runId, eventId, config);
-  // Same shape as a LIST frame — splice the body bytes into
-  // eventData[payloadField] in buildEventFromV4.
-  return buildEventFromV4(event, body, resolveData);
+  return getEventV4(
+    runId,
+    eventId,
+    params?.resolveData === 'none' ? 'lazy' : 'resolve',
+    config
+  );
 }
 
 export async function getWorkflowRunEvents(
@@ -575,67 +435,47 @@ export async function getWorkflowRunEvents(
   config?: APIConfig
 ): Promise<PaginatedResponse<Event>> {
   const { pagination, resolveData = DEFAULT_RESOLVE_DATA_OPTION } = params;
-  // `resolveData: 'none'` means the caller only wants metadata — it discards
-  // payloads in buildEventFromV4 below. Tell the backend not to stream them
-  // in the first place (lazy → empty frame bodies). On `'all'` we resolve
-  // (the default). A backend that predates this flag ignores it and streams
-  // full bodies regardless; buildEventFromV4 still strips them when
-  // resolveData is 'none', so this is purely a bandwidth optimization and is
-  // safe against an older backend.
-  const wirePagination = {
-    cursor: pagination?.cursor ?? undefined,
-    limit: pagination?.limit,
-    sortOrder: pagination?.sortOrder,
-    remoteRefBehavior: (resolveData === 'none' ? 'lazy' : 'resolve') as
-      | 'lazy'
-      | 'resolve',
+  // `resolveData: 'none'` leaves payload refs unresolved, so the backend can
+  // skip reading and streaming their contents. The validated lazy descriptors
+  // remain on the returned events.
+  const listParams: ListEventsV4Params = {
+    ...pagination,
+    remoteRefBehavior: resolveData === 'none' ? 'lazy' : 'resolve',
   };
 
   const result = await ('correlationId' in params
     ? getEventsByCorrelationIdV4(
         params.correlationId,
         params.runId,
-        wirePagination,
+        listParams,
         config
       )
-    : getWorkflowRunEventsV4(params.runId, wirePagination, config));
-
-  const events = result.events.map((listed) =>
-    buildEventFromV4(listed.event, listed.body, resolveData)
-  );
+    : getWorkflowRunEventsV4(params.runId, listParams, config));
 
   // A correlation id is unique per run, not globally — a slot-numbered run
   // numbers its own steps, so `step_…001` names the first step of every such
-  // run. The run id goes out on the request above, and a backend that
-  // understands it answers for that run alone. One that predates the parameter
-  // selects by correlation id and spans runs, so the scope is re-applied here.
+  // run. The run id scopes the backend query; the filter also protects against
+  // an older backend that ignores that parameter.
   // `hasMore`/`cursor` stay the backend's, so a page that filters down to
   // nothing is still followed by the next one.
-  const runScoped =
-    'correlationId' in params
-      ? events.filter((event) => event.runId === params.runId)
-      : events;
-
   return {
-    data: runScoped,
-    // `next` is present even on the final page (it's the incremental-load
-    // resume cursor), so prefer the server's explicit `hasMore`. The
-    // `Boolean(next)` fallback covers older servers that don't emit it —
-    // at the cost of one extra empty-page request per load.
-    cursor: result.next ?? null,
-    hasMore:
-      typeof result.hasMore === 'boolean'
-        ? result.hasMore
-        : Boolean(result.next),
-  } as PaginatedResponse<Event>;
+    data:
+      'correlationId' in params
+        ? result.events.filter((event) => event.runId === params.runId)
+        : result.events,
+    // The cursor is present even on the final page because it is also the
+    // incremental-load resume point. `hasMore` is the pagination signal.
+    cursor: result.cursor,
+    hasMore: result.hasMore,
+  };
 }
 
-export async function createWorkflowRunEvent(
+export async function createWorkflowRunEvent<T extends AnyEventRequest>(
   id: string | null,
-  data: AnyEventRequest,
+  data: T,
   params?: CreateEventParams,
   config?: APIConfig
-): Promise<EventResult> {
+): Promise<EventResult<T['eventType']>> {
   try {
     // Retry transient transport failures (UND_ERR_REQ_RETRY, ECONNRESET,
     // socket/headers timeouts, transient 5xx) in-process for event types that
@@ -645,21 +485,38 @@ export async function createWorkflowRunEvent(
     // the next queue delivery. Non-retryable
     // types (step_started, step_retrying, hook_received) run once. See
     // ./event-retry for the validated per-event classification.
-    return await withCoercedSlotConflictDelta(() =>
-      withEventPostRetry(
-        () => createWorkflowRunEventInner(id, data, params, config),
-        data.eventType,
-        {
-          // The atomic lazy-resume shape is deduplicated server-side by the
-          // (runId, resumeId) claim, so its POST is idempotent-on-retry even
-          // though plain hook_received is not — see EVENT_RETRY_ELIGIBILITY.
-          idempotentHookResume:
-            data.eventType === 'hook_received' &&
-            params?.resumeId !== undefined &&
-            params?.resumePayloadDigest !== undefined,
-        }
-      )
+    const result = await withEventPostRetry(
+      () => createWorkflowRunEventInner(id, data, params, config),
+      data.eventType,
+      {
+        // The atomic lazy-resume shape is deduplicated server-side by the
+        // (runId, resumeId) claim, so its POST is idempotent-on-retry even
+        // though plain hook_received is not — see EVENT_RETRY_ELIGIBILITY.
+        idempotentHookResume:
+          data.eventType === 'hook_received' &&
+          params?.resumeId !== undefined &&
+          params?.resumePayloadDigest !== undefined,
+      }
     );
+    if (data.eventType === 'run_created' && !result.run) {
+      throw new WorkflowWorldError(
+        `${data.eventType} response is missing the run entity`,
+        { code: 'SCHEMA_VALIDATION' }
+      );
+    }
+    if (data.eventType === 'run_started' && !result.run?.startedAt) {
+      throw new WorkflowWorldError(
+        'run_started response is missing run.startedAt',
+        { code: 'SCHEMA_VALIDATION' }
+      );
+    }
+    if (data.eventType === 'step_started' && !result.step?.startedAt) {
+      throw new WorkflowWorldError(
+        'step_started response is missing step.startedAt',
+        { code: 'SCHEMA_VALIDATION' }
+      );
+    }
+    return result as EventResult<T['eventType']>;
   } catch (err) {
     // 404 on hook_disposed / hook_received → already-disposed hook.
     if (
@@ -737,50 +594,29 @@ async function createWorkflowRunEventInner(
     : 'lazy';
 
   const { payload, meta } = splitEventDataForV4(data);
-  const resolveData = params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
 
-  const v4Input = {
+  const input = {
     runId: id,
-    eventType: data.eventType,
     specVersion: data.specVersion ?? 2,
     ...(data.correlationId ? { correlationId: data.correlationId } : {}),
     ...(params?.requestId ? { vercelId: params.requestId } : {}),
     ...(params?.computeInstanceId
       ? { computeInstanceId: params.computeInstanceId }
       : {}),
-    // Precondition snapshot. The three fields describe one snapshot and the
-    // runtime always sends them together (or not at all); each is spread
-    // independently only so an older server that knows one but not the
-    // others still gets what it understands.
-    ...(params?.stateUpdatedAt !== undefined
-      ? { stateUpdatedAt: params.stateUpdatedAt }
-      : {}),
-    ...(params?.stateEventCount !== undefined
-      ? { stateEventCount: params.stateEventCount }
-      : {}),
+    stateUpdatedAt: params?.stateUpdatedAt,
+    stateEventCount: params?.stateEventCount,
     ...(params?.stateCursor ? { stateCursor: params.stateCursor } : {}),
-    ...(params?.replayDivergenceCount !== undefined
-      ? { replayDivergenceCount: params.replayDivergenceCount }
-      : {}),
+    replayDivergenceCount: params?.replayDivergenceCount,
     occurredAt: params?.occurredAt ?? new Date(),
     // Opt-in inline-delta: forward the cursor the runtime held before
     // this write so the server can return the authoritative event-log
-    // delta on the response (events/cursor/hasMore), letting the inline
-    // loop skip a follow-up events.list. The server only acts on it for
-    // step_completed/step_failed; older servers ignore it and the runtime
-    // falls back to events.list.
+    // delta on the response (events/cursor/hasMore), letting the caller
+    // skip a follow-up events.list. Outside turbo the runtime sends this on
+    // every write, but a server may act on only some event types (or none);
+    // a response without a delta just means the runtime keeps its cursor
+    // and fetches when it next needs to.
     ...(params?.sinceCursor ? { sinceCursor: params.sinceCursor } : {}),
-    // Run-started preload opt-out: turbo backgrounds run_started as a write
-    // barrier only and never reads the preloaded log, so tell the server to
-    // skip the list+resolve. The server only acts on it for run_started;
-    // older servers ignore it and simply preload as before.
-    ...(params?.skipPreload ? { skipPreload: true } : {}),
-    // Lazy hook resume idempotency key (hook_received only). Routes the
-    // write through the server's (runId, resumeId) constraint so a
-    // concurrent queue-consumer re-ensure deduplicates to one event.
     ...(params?.resumeId ? { resumeId: params.resumeId } : {}),
-    // Content digest forwarded alongside resumeId so the direct write and the
-    // queue re-ensure record an identical digest on the server constraint.
     ...(params?.resumePayloadDigest
       ? { resumePayloadDigest: params.resumePayloadDigest }
       : {}),
@@ -795,6 +631,57 @@ async function createWorkflowRunEventInner(
     payload,
     ...meta,
   };
+
+  if (data.eventType === 'run_started' && !params?.skipPreload) {
+    const result = await createWorkflowRunStartedEventV4(input, config);
+    const runCreated = result.events.find(
+      (event) => event.eventType === 'run_created'
+    );
+    const runStarted = result.events.find(
+      (event) => event.eventType === 'run_started'
+    );
+    if (!runCreated) {
+      throw new Error(
+        'v4 createEvent: run_started stream is missing run_created'
+      );
+    }
+    if (!runStarted) {
+      throw new Error(
+        'v4 createEvent: run_started stream is missing run_started'
+      );
+    }
+
+    let attributes = runCreated.eventData.attributes ?? {};
+    let updatedAt = runStarted.createdAt;
+    for (const event of result.events) {
+      if (event.eventType === 'attr_set') {
+        attributes = applyAttributeChanges(attributes, event.eventData.changes);
+        updatedAt = event.createdAt;
+      }
+    }
+
+    return {
+      event: runStarted,
+      run: {
+        runId: runCreated.runId,
+        status: 'running',
+        deploymentId: runCreated.eventData.deploymentId,
+        workflowName: runCreated.eventData.workflowName,
+        specVersion: runCreated.specVersion,
+        executionContext: runCreated.eventData.executionContext,
+        input: runCreated.eventData.input,
+        attributes,
+        encryptionPublicKey: runCreated.eventData.encryptionPublicKey,
+        startedAt: runStarted.createdAt,
+        createdAt: runCreated.createdAt,
+        updatedAt,
+      },
+      events: result.events,
+      cursor: result.cursor,
+      hasMore: result.hasMore,
+      maxEvents: result.maxEvents,
+    };
+  }
 
   if (
     data.eventType === 'hook_received' &&
@@ -812,19 +699,16 @@ async function createWorkflowRunEventInner(
     // lightweight: it answers the mutation without resolving and echoing
     // an S3-backed hook payload the runtime would discard anyway.
     const outcome = await createHookReceivedPreloadEventV4(
-      { ...v4Input, remoteRefBehavior: 'lazy' },
+      { ...input, remoteRefBehavior: 'lazy' },
       config
     );
     if (outcome.kind === 'materialized') {
       // Older server (or optimization declined): the write still succeeded
       // and this is its normal materialized result. The runtime sees no
       // replay preload on it and falls back to the run_started setup.
-      return materializedV4ToEventResult(outcome.result, resolveData);
+      return outcome.result;
     }
-    const { canonicalEventId, maxEvents, next, hasMore } = outcome;
-    const events = outcome.events.map((listed) =>
-      buildEventFromV4(listed.event, listed.body, 'all')
-    );
+    const { canonicalEventId, maxEvents, events, cursor, hasMore } = outcome;
     const canonicalEvent = events.find(
       (event) => event.eventId === canonicalEventId
     );
@@ -836,76 +720,18 @@ async function createWorkflowRunEventInner(
       ...(canonicalEvent ? { event: canonicalEvent } : {}),
       ...(run ? { run } : {}),
       events,
-      cursor: next ?? null,
-      // Our streaming server always stamps hasMore on the sentinel; treat a
-      // missing flag as "not the complete log" so the runtime falls back
-      // rather than replaying a possibly-truncated prefix.
-      hasMore: hasMore ?? true,
+      cursor,
+      hasMore,
       ...(maxEvents !== undefined ? { maxEvents } : {}),
     };
   }
 
-  const result = await createWorkflowRunEventV4(v4Input, config);
-  return materializedV4ToEventResult(result, resolveData);
-}
-
-/**
- * Map a materialized v4 POST response onto the EventResult the runtime
- * consumes.
- *
- * The server already CBOR-decoded into result.body — just thread the
- * fields through. This is the runtime's event-append path (world.events
- * .create is only ever called from the workflow runtime, never from
- * o11y), and the runtime re-hydrates every payload it consumes through
- * the decompress-aware helpers (hydrateStepReturnValue, hydrateRunError,
- * …). So we deliberately do NOT decompress here: doing so would be
- * redundant work on the TTFB-sensitive run_started/inline-delta path and
- * would make the runtime's deserialize compression telemetry report
- * `codec: none` for payloads that were compressed at rest. gzip/zstd
- * normalization for o11y/display lives on the read paths (getEvent,
- * getWorkflowRunEvents, getStep, getRun, getHook).
- *
- * `event`/`events` go through coerceEventDates only: they can be read
- * back from the backing store server-side (e.g. the run_started TTFB
- * preload queries the event log), where nested eventData dates are ISO
- * strings — same coercion the GET/LIST path applies. The returned event
- * honors the caller's resolveData: 'none' strips payload fields,
- * matching the v3 path's stripEventAndLegacyRefs behavior.
- */
-function materializedV4ToEventResult(
-  result: CreateEventV4Result,
-  resolveData: NonNullable<CreateEventParams['resolveData']>
-): EventResult {
-  const body = result.body;
-  return {
-    event: body.event
-      ? stripEventDataRefs(
-          coerceEventDates(body.event as Record<string, unknown>),
-          resolveData
-        )
-      : undefined,
-    run: body.run
-      ? deserializeError<WorkflowRun>(body.run as Record<string, unknown>)
-      : undefined,
-    step: body.step
-      ? deserializeStep(body.step as Parameters<typeof deserializeStep>[0])
-      : undefined,
-    hook: body.hook as EventResult['hook'],
-    wait: body.wait as EventResult['wait'],
-    events: body.events
-      ? (body.events as Record<string, unknown>[]).map(coerceEventDates)
-      : undefined,
-    cursor: body.cursor ?? undefined,
-    hasMore: body.hasMore,
-    // Lazy step start: thread the server's "I created the step on this call"
-    // signal through so the owned-inline runtime path can gate body execution
-    // on it. Absent from older servers → undefined → safe default.
-    ...(body.stepCreated ? { stepCreated: true } : {}),
-    // Server-supplied per-run event ceiling; absent from older servers.
-    ...(typeof body.maxEvents === 'number'
-      ? { maxEvents: body.maxEvents }
-      : {}),
-  };
+  return createWorkflowRunEventV4(
+    data.eventType === 'run_started'
+      ? { ...input, eventType: 'run_started', skipPreload: true }
+      : { ...input, eventType: data.eventType },
+    config
+  );
 }
 
 /**

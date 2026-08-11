@@ -16,10 +16,11 @@ import {
 } from '@workflow/utils';
 import type {
   CreateEventParams,
+  CreateEventRequest,
   Event,
   EventResult,
   SerializedData,
-  Step,
+  StartedStep,
   World,
 } from '@workflow/world';
 import {
@@ -54,7 +55,6 @@ import {
 import { getPortLazy } from './get-port-lazy.js';
 import {
   type EventCreateFence,
-  type EventCreator,
   type FencedCreate,
   memoizeEncryptionKey,
   type OrderedCreate,
@@ -371,7 +371,10 @@ export async function executeStep(
     (params.runSpecVersion ?? 0) >= SPEC_VERSION_SUPPORTS_COMPRESSION;
   const replayRecoveryReporter =
     params.replayRecoveryReporter ?? ReplayRecoveryReporter.inert();
-  const rawCreateEvent: EventCreator = (data, eventParams) =>
+  const rawCreateEvent = <T extends CreateEventRequest>(
+    data: T,
+    eventParams?: CreateEventParams
+  ) =>
     replayRecoveryReporter.withEventCreate(eventParams, (p) =>
       world.events.create(workflowRunId, data, p)
     );
@@ -379,7 +382,10 @@ export async function executeStep(
   // Every write except the fenced `step_started` claim, which carries its own
   // position and runs under `runClaim` on the same chain — nesting the two would
   // deadlock on it.
-  const createEvent: EventCreator = (data, eventParams) =>
+  const createEvent = <T extends CreateEventRequest>(
+    data: T,
+    eventParams?: CreateEventParams
+  ) =>
     orderedCreate
       ? orderedCreate((fence) =>
           rawCreateEvent(
@@ -685,7 +691,7 @@ export async function executeStep(
         (params.forceOptimisticStart === true &&
           !isOptimisticInlineStartExplicitlyDisabled()));
 
-    let step: Step;
+    let step: StartedStep;
     // Params for the `step_started` create on either path below: the ambient
     // compute-instance stamp plus whichever fence the claim is running under.
     const startEventParams = (
@@ -822,11 +828,6 @@ export async function executeStep(
           )
         );
 
-        if (!startResult.step) {
-          throw new WorkflowRuntimeError(
-            `step_started event for "${stepId}" did not return step entity`
-          );
-        }
         step = startResult.step;
       } catch (err) {
         const mapped = startErrorToResult(err);

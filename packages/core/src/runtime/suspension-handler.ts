@@ -8,7 +8,9 @@ import {
 } from '@workflow/errors';
 import {
   AttributeValidationError,
+  type CreateEventParams,
   type CreateEventRequest,
+  type EventResult,
   type SerializedData,
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_SUPPORTS_COMPRESSION,
@@ -31,7 +33,6 @@ import { getAbortStreamIdFromToken } from '../util.js';
 import { getMaxInlineSteps } from './constants.js';
 import {
   claimFenceFor,
-  type EventCreator,
   isStaleWriteRejection,
   type MutableEventLog,
   observeEventSlot,
@@ -151,7 +152,10 @@ async function createHookEvent({
   hookEvent: CreateEventRequest;
   queueItem: HookInvocationQueueItem;
   requestId?: string;
-  createEvent: EventCreator;
+  createEvent: (
+    data: CreateEventRequest,
+    params?: CreateEventParams
+  ) => Promise<EventResult>;
 }): Promise<{
   hasHookConflict: boolean;
   hasAwaitedHookCreation: boolean;
@@ -196,6 +200,16 @@ async function createHookEvent({
         hasHookConflict: false,
         hasAwaitedHookCreation: false,
       };
+    }
+
+    if (isWorldValidationFailure(err)) {
+      const fatal = new FatalError(
+        `createHook failed World validation: ${
+          err instanceof Error ? err.message : String(err)
+        }`
+      );
+      fatal.cause = err;
+      throw fatal;
     }
 
     throw err;
@@ -276,7 +290,10 @@ export async function handleSuspension({
   // that commits after replay recovered. All suspension events are
   // non-run_created events on this run's `runId`.
   const reporter = replayRecoveryReporter ?? ReplayRecoveryReporter.inert();
-  const createEvent: EventCreator = async (data, params) => {
+  const createEvent = async (
+    data: CreateEventRequest,
+    params?: CreateEventParams
+  ) => {
     const result = await reporter.withEventCreate(params, (p) =>
       world.events.create(runId, data, p)
     );
@@ -293,7 +310,10 @@ export async function handleSuspension({
   // event's correlation id was minted by *this* replay's seeded sequence, so
   // re-committing it against a corrected log would persist an event no correct
   // replay produces.
-  const createGuarded: EventCreator = (data, params) =>
+  const createGuarded = (
+    data: CreateEventRequest,
+    params?: CreateEventParams
+  ) =>
     eventLog
       ? claimFenceFor(
           eventLog,
@@ -721,7 +741,7 @@ export async function handleSuspension({
                 message: err.message,
               }
             );
-          } else if (isAttributeValidationFailure(err)) {
+          } else if (isWorldValidationFailure(err)) {
             // Deterministic validation rejection from the World — e.g. the
             // cumulative per-run attribute cap, which only the World can
             // check against the run's existing attributes. Redelivering the
@@ -816,15 +836,15 @@ export async function handleSuspension({
 }
 
 /**
- * Whether an `events.create` rejection is a deterministic attribute
- * validation failure rather than a transient/storage error. Local Worlds
+ * Whether an `events.create` rejection is deterministic World validation
+ * rather than a transient/storage error. Local Worlds
  * (world-local, world-postgres) throw `AttributeValidationError` directly;
  * remote Worlds surface the equivalent server-side rejection as a
  * `WorkflowWorldError` with HTTP status 400. The name check covers
  * `AttributeValidationError` instances from a different copy of
  * `@workflow/world` than the one this package resolved.
  */
-function isAttributeValidationFailure(err: unknown): boolean {
+function isWorldValidationFailure(err: unknown): boolean {
   if (err instanceof AttributeValidationError) return true;
   if (err instanceof Error && err.name === 'AttributeValidationError') {
     return true;
