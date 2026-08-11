@@ -164,6 +164,68 @@ diffing the results is what the pair is for; [DESIGN.md
 
 ## Usage
 
+You write two things: a **workflow**, and a **script** that controls how that
+workflow executes.
+
+The workflow is ordinary workflow code, compiled the way a deployment compiles
+it:
+
+```ts
+// workflows/index.ts
+async function prepare(input: string) {
+  'use step';
+  return `prepared:${input}`;
+}
+
+async function finalize(input: string) {
+  'use step';
+  return `finalized:${input}`;
+}
+
+export async function parallelStepsWorkflow(input: string) {
+  'use workflow';
+  const [a, b] = await Promise.all([prepare(input), finalize(input)]);
+  return `${a}|${b}`;
+}
+```
+
+Two steps are in flight at once, so which of them reaches the log first is a
+race. The script decides it: hold `prepare` before its completion is assigned a
+position, let `finalize` commit, then let both go.
+
+```ts
+const spec: ScenarioSpec = {
+  // The stable handle: what a bug report cites and `pnpm sim <id>` selects.
+  // The prose `name` beside it is free to be reworded.
+  id: 'finalize-first',
+  name: 'finalize lands in the log before prepare',
+  // Named from the build manifest — no client transform needed.
+  workflow: 'parallelStepsWorkflow',
+  input: ['x'],
+  script: async (sim) => {
+    const prepare = sim.writer.step('prepare');
+    const finalize = sim.writer.step('finalize');
+
+    // Arm both waits before awaiting either: a point that has already gone by
+    // is an error rather than a wait.
+    const committed = finalize.runToEventCommitted('step_completed');
+    await prepare.runToEventProduced('step_completed');
+    await committed;
+
+    await finalize.release();
+    await prepare.release();
+  },
+  expect: { status: 'completed', output: 'prepared:x|finalized:x' },
+};
+```
+
+`prepare` is held before it takes a position, so `finalize` gets the earlier
+one — `#6 finalize`, `#7 prepare` — on every run, in either order the runtime
+would otherwise have picked.
+
+Playing it needs the compiled bundle, because the orchestrator runs from a code
+string inside a VM:
+
 ```ts
 import { loadFlowHandler, renderScenario, runScenario } from '@workflow/world-sim';
 // Separate entry on purpose: this one reaches SWC and esbuild through
@@ -171,43 +233,25 @@ import { loadFlowHandler, renderScenario, runScenario } from '@workflow/world-si
 // the module graph.
 import { buildSimBundle } from '@workflow/world-sim/build';
 
-// The orchestrator runs from a code string inside a VM, so a scenario needs
-// the same compiled bundle a deployment would serve.
 const bundle = await buildSimBundle({ cwd: process.cwd(), dirs: ['workflows'] });
 const handler = await loadFlowHandler(bundle.flowBundlePath);
 
-const result = await runScenario(
-  {
-    // The stable handle: what a bug report cites and `pnpm sim <id>` selects.
-    // The prose `name` next to it is free to be reworded.
-    id: 'hook-at-step-started',
-    name: 'hook arrives inside the step_started commit',
-    // Named from the build manifest — no client transform needed.
-    workflow: 'approvalWorkflow',
-    input: ['doc-1'],
-    script: async (sim) => {
-      const wf = sim.writer.orchestrator();
-      await wf.runToEventCommitted('step_started', 'reserveInventory');
-      await sim.deliverHook('approval:doc-1', { approved: true });
-      await wf.release();
-    },
-    expect: { status: 'completed' },
-  },
-  { handler, workflowIds: bundle.workflowIds }
-);
-
+const result = await runScenario(spec, {
+  handler,
+  workflowIds: bundle.workflowIds,
+});
 console.log(renderScenario(result));
 ```
-
-`workbench/sim-world` is a worked example: `pnpm sim` builds its workflows,
-plays the whole book, prints every event stream, and exits non-zero if any
-expectation or invariant fails.
 
 `expect` states what *correct* looks like, which is not always what the runtime
 does. There is deliberately no way to expect a consistency violation: a scenario
 reproducing a corruption declares the outcome the run should have reached and
 stays red until the runtime delivers it, because a suite that goes green by
 recording the bug gives no signal on the day someone fixes it.
+
+[`workbench/sim-world`](../../workbench/sim-world/README.md) is the worked
+example — a book of scenarios, a CLI that plays them, and a guide to adding
+one.
 
 ## Reading the output
 
