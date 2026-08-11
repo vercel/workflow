@@ -156,7 +156,10 @@ function selectMessage(
  * `messageId`, which the runtime's inline step-ownership lease depends on),
  * a non-2xx redelivers after a backoff, anything else settles it.
  */
-async function deliver(world: SimWorld, message: QueuedMessage): Promise<void> {
+export async function deliver(
+  world: SimWorld,
+  message: QueuedMessage
+): Promise<void> {
   const handler = world.simQueue.handlerFor(message.queueName);
   if (!handler) {
     world.pushTrace({

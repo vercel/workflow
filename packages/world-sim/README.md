@@ -433,12 +433,47 @@ be behind, never wrong — and an overtaken hook re-takes the tail on `commit()`
 | `deliverHook(token, payload)` | Runs the real `resumeHook()` — the same code an out-of-band webhook receiver would |
 | `cancelRun(reason?)` | Cancel the run under test |
 | `advanceTime(ms)` | Jump the virtual clock |
+| `deliverQueued(select?)` | Deliver one queued message now, concurrently with a held writer |
 | `note(msg)` / `check(name, cond)` | Record a marker / an assertion in the trace; a false check fails the scenario |
 | `world` | Read-only snapshot: runs, events, steps, hooks, waits, pending messages, rejected calls |
 | `appendOnlyLog` | Which log this run is playing against — for *phrasing* a check, never for branching the tempo |
 
 A scenario with no script at all is a control: the run plays out on the default
 schedule, and the only question is whether the log it leaves reproduces it.
+
+#### `deliverQueued`, and why it is not an advance
+
+The scheduler is strictly serial: one message at a time, and the clock only
+moves when it picks the next one up. So a held writer freezes virtual time
+along with everything else, and a whole family of interleavings is simply
+unreachable from the advances above — anything of the form *a timer fires while
+a step result is outstanding*. Both halves need to be in flight at once, and the
+loop will only ever have one.
+
+`deliverQueued` takes a message out of the pending set and delivers it right
+there in the script, so it runs alongside the held writer rather than after it.
+`takeById` removes it first, so the loop can never pick up the same message: the
+two are different deliveries running concurrently, not a race for one.
+
+That concurrency is real, and so is its fallout. Two flow deliveries for one run
+will collide the way they do in production — expect `EntityConflictError` and
+`HookNotFoundError` in the rejection list once both branches finish. Those are
+the deliveries losing races they are supposed to lose, not violations.
+
+The default picks `pending[0]`, matching the loop's own order. Usually you want
+to choose: a hook delivery enqueues a flow message of its own and it sorts
+earlier than the timer you are almost certainly after.
+
+```ts
+const fired = sim.deliverQueued(
+  (pending) => pending.find((m) => m.readyAtMs > sim.world.nowMs())?.messageId
+);
+```
+
+Note the missing `await` — awaiting it here would wait for the delivery to
+*finish*, which defeats the purpose. Arm a hold on the writer that delivery will
+wake, fire it, await the hold, and the two are now interleaved. Await the
+returned promise at the end to assert it found something.
 
 ## Extending the simulator
 

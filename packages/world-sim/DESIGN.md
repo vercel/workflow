@@ -605,23 +605,30 @@ Measured on branch `sim-world`.
 **Scenarios** — `pnpm sim` in `workbench/sim-world`:
 
 ```
-39 scenario(s): 33 passed, 6 failed, 6 consistency violation(s)
+41 scenario(s): 34 passed, 7 failed, 6 consistency violation(s)
 ```
 
 And the same book against an append-only log (`pnpm sim --append-only`):
 
 ```
-39 scenario(s): 39 passed, 0 failed, 0 consistency violation(s)
+41 scenario(s): 40 passed, 1 failed, 0 consistency violation(s)
 ```
 
 Both numbers are the intended steady state; see "The six" below for which of
-the six that second line closes on the merits and which close because the
-correct answer itself changes.
+the six violations that second line closes on the merits and which close
+because the correct answer itself changes.
+
+The seventh red, `unclaimed-payload-under-fork`, is a different animal and is
+counted apart from the six throughout: it trips a `sim.check`, not the replay
+invariant, and it is red in both worlds. Nothing is wrong with its log's
+*positions* — the runtime hands the workflow two resolutions in an order the
+log does not record, so live and replay run the same code, make the same
+mistake, and agree. Only the log disagreeing with itself catches it.
 
 With the fence forced off (`pnpm sim --no-fence`), violations go to **8**
 mint-ordered and stay at **0** append-only — see §5.
 
-Replay verification across those 39: **31 `ok`, 6 `MISMATCH`, 2 `skipped`**
+Replay verification across the book: **33 `ok`, 6 `MISMATCH`, 2 `skipped`**
 (skipped where the run did not reach a terminal status).
 
 `run.ts` exits non-zero, and that is the intended steady state. The six

@@ -19,6 +19,7 @@ import { scenario as attrFromStepBody } from './attr-from-step-body.ts';
 import { scenario as attrHookAfterStep } from './attr-hook-after-step.ts';
 import { scenario as attrHookBeforeStep } from './attr-hook-before-step.ts';
 import { scenario as cancelMidStep } from './cancel-mid-step.ts';
+import { scenario as claimedPayloadUnderFork } from './claimed-payload-under-fork.ts';
 import { scenario as countHookAfterTimeout } from './count-hook-after-timeout.ts';
 import { scenario as countHookBeforeTimeout } from './count-hook-before-timeout.ts';
 import { scenario as deadlineExpires } from './deadline-expires.ts';
@@ -52,6 +53,7 @@ import { scenario as staleReadStepCountForkFenced } from './stale-read-step-coun
 import { scenario as stepRetriesTwice } from './step-retries-twice.ts';
 import { scenario as stepVsStepFork } from './step-vs-step-fork.ts';
 import { scenario as stepVsStepForkFenced } from './step-vs-step-fork-fenced.ts';
+import { scenario as unclaimedPayloadUnderFork } from './unclaimed-payload-under-fork.ts';
 import { scenario as writersIndependentStepBodies } from './writers-independent-step-bodies.ts';
 import { scenario as writersScriptedTempo } from './writers-scripted-tempo.ts';
 
@@ -159,6 +161,23 @@ export const scenarios: ScenarioSpec[] = [
   staleReadStepCountForkFenced,
   forkHookWins,
   forkTimeoutWins,
+
+  // -------------------------------------------------------------------------
+  // An unclaimed hook payload under the fork.
+  //
+  // The three scenarios above all turn on *when* an event lands. These two
+  // turn on something the log alone does not show: whether anything in the
+  // workflow is waiting for it. A payload nobody reads registers a delivery
+  // barrier that only the runtime's idle net can retire, and every later
+  // delivery that defers behind hooks parks on it — so it changes the order
+  // other events are delivered in without appearing to do anything at all.
+  //
+  // The pair is a controlled comparison: identical steps, identical tempo,
+  // identical log order, differing only in whether a branch claims the
+  // payload.
+  // -------------------------------------------------------------------------
+  unclaimedPayloadUnderFork,
+  claimedPayloadUnderFork,
 
   // -------------------------------------------------------------------------
   // What the writer vocabulary buys, stated as scenarios.

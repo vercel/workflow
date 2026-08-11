@@ -31,6 +31,7 @@ import {
 import { createVirtualClock } from './clock.js';
 import {
   DEFAULT_LIMITS,
+  deliver,
   driveQueue,
   performanceNow,
   type ScenarioLimits,
@@ -344,6 +345,19 @@ export async function runScenario(
         kind: 'note',
         message: `advanced virtual time by ${ms}ms`,
       });
+    },
+    async deliverQueued(select) {
+      const pending = world.simQueue.view();
+      const chosen = select ? select(pending) : pending[0]?.messageId;
+      if (!chosen) return false;
+      // `takeById` removes it from pending, so the delivery loop cannot pick
+      // the same message up: the two never race for one message, they only run
+      // two different ones at once.
+      const message = world.simQueue.takeById(chosen);
+      if (!message) return false;
+      clock.advanceTo(message.readyAtMs);
+      await deliver(world, message);
+      return true;
     },
     note(message) {
       world.pushTrace({ kind: 'note', message });

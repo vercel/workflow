@@ -375,6 +375,37 @@ export interface ScenarioApi {
   /** Jump virtual time forward. */
   advanceTime(ms: number): void;
   /**
+   * Deliver one pending queue message now, jumping the clock to its ready
+   * time, without waiting for the delivery loop to reach it.
+   *
+   * This is the timer counterpart of {@link deliverHook}, and it exists for
+   * one reason: the delivery loop is serial, so while a script holds an inline
+   * step body the loop is stopped inside that same delivery and no timer can
+   * fire. Every interleaving in which a `wait_completed` lands *while a step
+   * result is still outstanding* is therefore unreachable from the loop alone
+   * — and that is not an exotic corner, it is what
+   * `Promise.race([step, sleep])` does whenever the step is slower than the
+   * sleep.
+   *
+   * Calling this runs a second flow delivery concurrently with the held one,
+   * which is what a real queue does with two messages for the same run.
+   * Concurrency in this simulator is otherwise structural rather than
+   * scheduled, so this is the one place a script creates some; it stays
+   * deterministic because the script decides both when it starts and — through
+   * the writer it is holding — when the other delivery resumes.
+   *
+   * `select` receives the pending messages in the loop's own order — earliest
+   * `readyAt`, then enqueue order — and returns a `messageId`. The default
+   * takes the first, i.e. exactly what the loop would have done next. A script
+   * that wants a timer specifically should say so rather than rely on the
+   * default: a hook delivery enqueues a flow message too, and it will usually
+   * be earlier. Resolves `false` when nothing matched, so a script can assert
+   * that something fired.
+   */
+  deliverQueued(
+    select?: (pending: PendingMessageView[]) => string | undefined
+  ): Promise<boolean>;
+  /**
    * Hide the next event this scenario commits from the following `reads`
    * event-log reads, modelling one concurrent writer the reader missed.
    *

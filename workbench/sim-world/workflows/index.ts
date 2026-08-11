@@ -16,6 +16,7 @@
  *   5. Attributes   — the only mutable run state, written from two contexts.
  *   6. Forks        — a hook racing a timeout, which is where corruption lives.
  *   7. Step-vs-step — the same fork with no out-of-band event at all.
+ *   8. Unclaimed    — a hook payload nobody reads, parked under a fork.
  *
  * Step functions are module-private and sit directly above the first workflow
  * that uses them. Names are unique across the whole file, so a scenario can
@@ -562,4 +563,106 @@ export async function stepVsStepForkWorkflow(documentId: string) {
   return winner === 'fast'
     ? await afterFast(documentId)
     : await afterSlow(documentId);
+}
+
+// ---------------------------------------------------------------------------
+// 8. Unclaimed payload — a hook nobody reads, sitting under the fork
+// ---------------------------------------------------------------------------
+
+/**
+ * A hook payload registers its delivery barrier **unarmed** when no branch is
+ * waiting on it (`workflow/hook.ts`, `armed: promises.length > 0`), because
+ * nothing in the workflow will ever resolve it — only the barrier registry's
+ * idle safety net retires it. Every other delivery that defers behind hooks
+ * therefore parks behind that payload, waits included.
+ *
+ * A step result may skip an unclaimed payload, or it would stall until that
+ * net fires. The hazard is that the skip can be *transitive*: the step also
+ * skips a `wait_completed` that is merely parked behind the payload, even
+ * though the wait sits earlier in the log and would otherwise gate it. The two
+ * branches then draw each other's correlation ids, and the log stops replaying
+ * into the run that wrote it.
+ *
+ * The shape below is the smallest thing that has all three barriers pending in
+ * one delivery: an unclaimed payload, an armed wait, and a step result, in
+ * that log order. It is written as `Promise.all` rather than `Promise.race`
+ * because the fault is not which branch *wins* — both branches run either way,
+ * and the output is the same — it is which branch resumes first and therefore
+ * which `step_created` id each one draws. That is invisible in the output and
+ * visible only to a replay.
+ */
+
+async function pokedWork(documentId: string) {
+  'use step';
+  return `worked:${documentId}`;
+}
+
+async function afterPokedStep(documentId: string) {
+  'use step';
+  return `afterStep:${documentId}`;
+}
+
+async function afterPokedSleep(documentId: string) {
+  'use step';
+  return `afterSleep:${documentId}`;
+}
+
+export async function unclaimedPayloadForkWorkflow(documentId: string) {
+  'use workflow';
+
+  // Created and never read. Everything about this scenario follows from that.
+  using _poke = createHook<{ kind: string }>({ token: `poke:${documentId}` });
+
+  const branchStep = (async () => {
+    await pokedWork(documentId);
+    return await afterPokedStep(documentId);
+  })();
+
+  const branchSleep = (async () => {
+    await sleep('1m');
+    return await afterPokedSleep(documentId);
+  })();
+
+  const [stepTail, sleepTail] = await Promise.all([branchStep, branchSleep]);
+  return `${stepTail}|${sleepTail}`;
+}
+
+/**
+ * The control: the same three events in the same log order, with one branch
+ * awaiting the payload.
+ *
+ * Claiming it arms the hook barrier, so the wait no longer parks behind an
+ * entry that cannot resolve itself, and the step result gates on the wait the
+ * ordinary way. Everything else — the steps, the sleep, the tempo the scenario
+ * scripts — is identical, which is what makes the pair a controlled
+ * comparison rather than two unrelated runs.
+ */
+export async function claimedPayloadForkWorkflow(documentId: string) {
+  'use workflow';
+
+  using poke = createHook<{ kind: string }>({ token: `poke:${documentId}` });
+
+  const branchStep = (async () => {
+    await pokedWork(documentId);
+    return await afterPokedStep(documentId);
+  })();
+
+  const branchSleep = (async () => {
+    await sleep('1m');
+    return await afterPokedSleep(documentId);
+  })();
+
+  // Draws no correlation id of its own, so both workflows leave the same log
+  // shape; the only difference is that this one has a consumer attached when
+  // the payload lands.
+  const branchPoke = (async () => {
+    await poke;
+  })();
+
+  const [stepTail, sleepTail] = await Promise.all([
+    branchStep,
+    branchSleep,
+    branchPoke,
+  ]);
+  return `${stepTail}|${sleepTail}`;
 }
