@@ -1180,9 +1180,12 @@ export function createSimStore(options: SimStoreOptions): SimStore {
     }
 
     // ---- Optional inline event delta --------------------------------------
-    let deltaEvents: Event[] | undefined;
-    let deltaCursor: string | null | undefined;
-    let deltaHasMore: boolean | undefined;
+    // All three fields or none of them: `EventResult` is a union of a populated
+    // page and an all-`undefined` one, so they travel together as one object
+    // rather than three variables the type cannot see are in agreement.
+    let deltaPage:
+      | { events: Event[]; cursor: string | null; hasMore: boolean }
+      | undefined;
 
     if (data.eventType === 'run_started' && run && !params?.skipPreload) {
       const page = paginate(eventsForRun(runId), {
@@ -1190,9 +1193,11 @@ export function createSimStore(options: SimStoreOptions): SimStore {
         getCreatedAt: (e) => e.createdAt,
         getId: (e) => e.eventId,
       });
-      deltaEvents = page.data;
-      deltaCursor = page.cursor;
-      deltaHasMore = page.hasMore;
+      deltaPage = {
+        events: page.data,
+        cursor: page.cursor,
+        hasMore: page.hasMore,
+      };
     } else if (
       isTerminalStepEventType(data.eventType) &&
       typeof params?.sinceCursor === 'string'
@@ -1202,23 +1207,28 @@ export function createSimStore(options: SimStoreOptions): SimStore {
         getCreatedAt: (e) => e.createdAt,
         getId: (e) => e.eventId,
       });
-      deltaEvents = page.data.map((e) => stripEventDataRefs(e, resolveData));
-      deltaCursor = page.cursor;
-      deltaHasMore = page.hasMore;
+      deltaPage = {
+        events: page.data.map((e) => stripEventDataRefs(e, resolveData)),
+        cursor: page.cursor,
+        hasMore: page.hasMore,
+      };
     }
 
-    return {
+    const result = {
       event: stripEventDataRefs(clone(event), resolveData),
       run: run ? clone(run) : undefined,
       step: step ? clone(step) : undefined,
       hook: hook ? clone(hook) : undefined,
       wait: wait ? clone(wait) : undefined,
-      events: deltaEvents,
-      cursor: deltaCursor,
-      hasMore: deltaHasMore,
-      ...(stepCreatedLazily ? { stepCreated: true } : {}),
+      // `as const`: outside a returned literal there is no contextual type to
+      // keep this from widening to `boolean`, and the field is `true | undefined`.
+      ...(stepCreatedLazily ? { stepCreated: true as const } : {}),
       ...(run ? { maxEvents: MAX_EVENTS_PER_RUN } : {}),
     };
+    // Spread as a whole or not at all, and as a *conditional* rather than an
+    // optional spread: the latter widens the three fields to `T | undefined`,
+    // which is neither arm of the union.
+    return deltaPage ? { ...result, ...deltaPage } : result;
   }
 
   const storage: SimStore = {

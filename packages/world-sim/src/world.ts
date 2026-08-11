@@ -740,10 +740,6 @@ export function createSimWorld(options: SimWorldOptions = {}): SimWorld {
       // runtime fast path gated on this capability must never run without one.
       ...(options.preconditionGuard ? { preconditionGuard: true } : {}),
     },
-    // Calling `process.exit()` here would kill the scenario runner rather than
-    // trigger a redelivery.
-    processExitTriggersQueueRedelivery: false,
-
     getDeploymentId: intercept('getDeploymentId', () =>
       simQueue.getDeploymentId()
     ),
