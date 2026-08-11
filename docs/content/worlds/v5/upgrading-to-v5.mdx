@@ -105,7 +105,7 @@ Compiling workflow files changed independently of the storage contract.
 | --- | --- |
 | The `client` SWC transform mode was removed | It merged into `step` mode. Integrations passing `mode: 'client'` pass `mode: 'step'`. |
 | `stepEntrypoint` removed from `workflow/runtime` | Steps execute through the combined workflow handler the framework integrations generate. Custom hosts use `getWorldHandlers()`. |
-| Step, workflow and webhook bundles are ESM | Generated output moved from CJS to ESM, with a `createRequire` banner for CJS dependencies. The VM-executed workflow bundle stays CJS. |
+| Step, workflow and webhook bundles are ESM | Generated output moved from CJS to ESM, with a `createRequire` banner for CJS dependencies. The VM-executed workflow bundle stays CJS. The CLI's standalone output is renamed to match: `flow.mjs`, `webhook.mjs`, and `__step_registrations.mjs` in place of `flow.js`, `webhook.js`, and `step.js`. Consumers import the namespace rather than a default. |
 | `workflow/internal/private` and `@workflow/core/private` removed | These were never public API. The compiler no longer emits imports from them, so regenerate build output rather than importing them yourself. |
 | Duplicate step or workflow IDs fail the build | 4.x resolved collisions across non-exported workspace files last-write-wins. A build integration that derived IDs from a partial path may now produce build failures. |
 
