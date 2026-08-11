@@ -358,33 +358,25 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
           }
         }
 
-        // Walk from startIndex, reading only the files we need.
-        // Files before the cursor are skipped entirely.
         let streamDone = false;
+        let hasMore = false;
         const resultChunks: { index: number; data: Uint8Array }[] = [];
-        let dataIndex = 0; // running count of data (non-EOF) files seen
 
-        for (const file of chunkFiles) {
+        for (
+          let fileIndex = startIndex;
+          fileIndex < chunkFiles.length;
+          fileIndex++
+        ) {
+          const file = chunkFiles[fileIndex];
           const ext = fileExtMap.get(file) ?? '.bin';
           const filePath = path.join(chunksDir, `${file}${ext}`);
-
-          // Before the cursor: only need to check EOF (1 byte), skip content
-          if (dataIndex < startIndex) {
-            if (isEofByte(await readFirstByte(filePath))) {
-              streamDone = true;
-              break;
-            }
-            dataIndex++;
-            continue;
-          }
 
           // Collected enough data chunks — peek at the next file for EOF/hasMore
           if (resultChunks.length >= limit) {
             if (isEofByte(await readFirstByte(filePath))) {
               streamDone = true;
             } else {
-              // More data files exist beyond this page
-              dataIndex++;
+              hasMore = true;
             }
             break;
           }
@@ -396,23 +388,18 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
             break;
           }
           resultChunks.push({
-            index: dataIndex,
+            index: startIndex + resultChunks.length,
             data: Uint8Array.from(chunk.chunk),
           });
-          dataIndex++;
         }
-
-        // hasMore = we know there are data files beyond this page
-        const hasMore =
-          !streamDone && dataIndex > startIndex + resultChunks.length;
-        const nextIndex = startIndex + resultChunks.length;
-        const nextCursor = resultChunks.length
-          ? Buffer.from(JSON.stringify({ i: nextIndex })).toString('base64')
-          : null;
 
         return {
           data: resultChunks,
-          cursor: nextCursor,
+          cursor: resultChunks.length
+            ? Buffer.from(
+                JSON.stringify({ i: startIndex + resultChunks.length })
+              ).toString('base64')
+            : null,
           hasMore,
           done: streamDone,
         };

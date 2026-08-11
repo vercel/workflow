@@ -102,10 +102,6 @@ export interface Streamer {
      * @param runId - The workflow run ID that owns the stream
      * @param name - The stream name/ID
      * @param options - Pagination options (limit defaults to 100, max 1000)
-     * The response cursor is a checkpoint after the returned chunks, even when
-     * no additional chunks are currently available. Use `hasMore`, not cursor
-     * presence, to continue paging through currently available chunks.
-     *
      * @returns Paginated chunks with a `done` flag indicating stream completion
      */
     getChunks(

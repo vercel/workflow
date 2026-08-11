@@ -1267,13 +1267,12 @@ export interface StreamChunksResult {
  * the next request.
  */
 export async function readStreamChunksServerAction(
-  env: EnvMap,
   streamId: string,
   runId: string,
-  startCursor?: string
+  startCursor: string | undefined
 ): Promise<StreamChunksResult | ServerActionError> {
   try {
-    const world = await getWorldFromEnv(env);
+    const world = await getWorldFromEnv({});
     const allChunks: Uint8Array[] = [];
     let cursor: string | undefined = startCursor;
     let streamDone = false;
@@ -1296,19 +1295,11 @@ export async function readStreamChunksServerAction(
       if (!result.hasMore) break;
     }
 
-    let totalSize = 0;
-    for (const chunk of allChunks) {
-      totalSize += chunk.length;
-    }
-
-    const body = new Uint8Array(totalSize);
-    let offset = 0;
-    for (const chunk of allChunks) {
-      body.set(chunk, offset);
-      offset += chunk.length;
-    }
-
-    return { buffer: body, cursor: cursor ?? null, done: streamDone };
+    return {
+      buffer: Buffer.concat(allChunks),
+      cursor: cursor ?? null,
+      done: streamDone,
+    };
   } catch (error) {
     const actionError = createServerActionError(
       error,

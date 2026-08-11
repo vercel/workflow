@@ -23,11 +23,10 @@ export interface StreamResponse {
 }
 
 export async function readStream(
-  _env: EnvMap,
   streamId: string,
   runId: string,
-  signal?: AbortSignal,
-  cursor?: string | null
+  cursor: string | null,
+  signal?: AbortSignal
 ): Promise<StreamResponse> {
   try {
     const params = new URLSearchParams({ runId });

@@ -8,7 +8,6 @@ import {
 import { getWebRevivers } from '@workflow/web-shared';
 import type { WorkflowRunStatus } from '@workflow/world';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { EnvMap } from '~/lib/types';
 import { readStream } from '~/lib/workflow-api-client';
 
 export interface StreamChunk {
@@ -21,7 +20,7 @@ const FRAME_HEADER_SIZE = 4;
 const ENCRYPTED_PLACEHOLDER = '[Encrypted]';
 const POLL_INTERVAL_MS = 3000;
 
-function isRunActive(status?: WorkflowRunStatus): boolean {
+function isRunActive(status: WorkflowRunStatus): boolean {
   return status === 'pending' || status === 'running';
 }
 
@@ -49,19 +48,15 @@ function detectEncoding(data: Uint8Array): StreamEncoding {
 }
 
 export function useStreamReader(
-  env: EnvMap,
   streamId: string | null,
-  runId?: string,
-  encryptionKey?: Uint8Array | null,
-  runStatus?: WorkflowRunStatus
+  runId: string,
+  encryptionKey: Uint8Array | null,
+  runStatus: WorkflowRunStatus
 ) {
   const [chunks, setChunks] = useState<StreamChunk[]>([]);
   const [isLive, setIsLive] = useState(false);
-  const [isInitialLoading, setIsInitialLoading] = useState(
-    Boolean(streamId && runId)
-  );
+  const [isInitialLoading, setIsInitialLoading] = useState(Boolean(streamId));
   const [error, setError] = useState<string | null>(null);
-  const abortControllerRef = useRef<AbortController | null>(null);
   const chunkIdRef = useRef(0);
   const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const runStatusRef = useRef(runStatus);
@@ -131,7 +126,7 @@ export function useStreamReader(
     setChunks([]);
     setError(null);
     setIsLive(false);
-    setIsInitialLoading(Boolean(streamId && runId));
+    setIsInitialLoading(Boolean(streamId));
     chunkIdRef.current = 0;
     serverCursorRef.current = null;
 
@@ -140,14 +135,13 @@ export function useStreamReader(
       pollTimerRef.current = null;
     }
 
-    if (!streamId || !runId) {
+    if (!streamId) {
       setIsInitialLoading(false);
       return;
     }
 
     let mounted = true;
     const abortController = new AbortController();
-    abortControllerRef.current = abortController;
 
     const revivers = getWebRevivers();
 
@@ -169,25 +163,25 @@ export function useStreamReader(
      * position (incremental fetch).
      */
     const fetchAndParse = async (
-      targetBuffer: StreamChunk[],
       cryptoKey: PayloadKey | undefined,
-      cursor?: string | null
+      cursor: string | null
     ): Promise<
       | { encrypted: true }
       | {
           encrypted: false;
+          chunks: StreamChunk[];
           cursor: string | null;
           done: boolean;
         }
     > => {
       const streamResponse = await readStream(
-        env,
         streamId,
         runId,
-        abortController.signal,
-        cursor
+        cursor,
+        abortController.signal
       );
 
+      const chunks: StreamChunk[] = [];
       const reader = streamResponse.body.getReader();
       const decoder = new TextDecoder();
       let buffer = new Uint8Array(0);
@@ -207,7 +201,7 @@ export function useStreamReader(
         const { value, done } = await reader.read();
         if (done) {
           if (encoding === 'legacy' && textRemainder.trim()) {
-            targetBuffer.push(parseLegacyLine(textRemainder.trim()));
+            chunks.push(parseLegacyLine(textRemainder.trim()));
             textRemainder = '';
           }
           break;
@@ -234,7 +228,7 @@ export function useStreamReader(
           for (const line of lines) {
             const trimmed = line.trim();
             if (trimmed) {
-              targetBuffer.push(parseLegacyLine(trimmed));
+              chunks.push(parseLegacyLine(trimmed));
             }
           }
           continue;
@@ -270,7 +264,7 @@ export function useStreamReader(
             reader.cancel().catch(() => {});
             return { encrypted: true };
           }
-          targetBuffer.push(result.chunk);
+          chunks.push(result.chunk);
 
           framesInBatch++;
           if (framesInBatch % YIELD_EVERY_N_FRAMES === 0) {
@@ -284,6 +278,7 @@ export function useStreamReader(
 
       return {
         encrypted: false,
+        chunks,
         cursor: streamResponse.cursor,
         done: streamResponse.done,
       };
@@ -297,8 +292,7 @@ export function useStreamReader(
           ? await deriveRunPayloadKeys(encryptionKey)
           : undefined;
 
-        const initialChunks: StreamChunk[] = [];
-        const result = await fetchAndParse(initialChunks, cryptoKey);
+        const result = await fetchAndParse(cryptoKey, null);
 
         if (result.encrypted) {
           if (mounted) {
@@ -313,7 +307,7 @@ export function useStreamReader(
 
         if (!mounted || abortController.signal.aborted) return;
 
-        setChunks(initialChunks);
+        setChunks(result.chunks);
         setIsInitialLoading(false);
 
         // If the stream itself is done, no need to poll regardless of run status
@@ -327,18 +321,15 @@ export function useStreamReader(
           const poll = async () => {
             if (!mounted || abortController.signal.aborted) return;
             try {
-              const newChunks: StreamChunk[] = [];
               const pollResult = await fetchAndParse(
-                newChunks,
                 cryptoKey,
                 serverCursorRef.current
               );
               if (!pollResult.encrypted) {
-                if (pollResult.cursor) {
-                  serverCursorRef.current = pollResult.cursor;
-                }
-                if (newChunks.length > 0 && mounted) {
-                  setChunks((prev) => [...prev, ...newChunks]);
+                serverCursorRef.current =
+                  pollResult.cursor ?? serverCursorRef.current;
+                if (pollResult.chunks.length > 0 && mounted) {
+                  setChunks((prev) => [...prev, ...pollResult.chunks]);
                 }
                 if (pollResult.done) {
                   setIsLive(false);
@@ -377,7 +368,7 @@ export function useStreamReader(
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [env, streamId, runId, encryptionKey, processFrame]);
+  }, [streamId, runId, encryptionKey, processFrame]);
 
   // When run finishes, stop polling
   useEffect(() => {
