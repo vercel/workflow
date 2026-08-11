@@ -1305,11 +1305,21 @@ export function createEventsStorage(
               );
             }
 
-            // On terminal runs: only allow completing/failing in-progress steps
+            // On terminal runs: only allow completing/failing in-progress
+            // steps. A step_started is never that — it begins work, and no
+            // work should begin on a finished run — so it is rejected even
+            // when the step row still reads `running` (a redelivery of a
+            // start a previous delivery already claimed). Without this, a
+            // redelivered start on a cancelled/completed run passes the
+            // claim and executes the step body whose outcome nothing will
+            // ever consume.
             if (currentRun && isTerminalWorkflowRunStatus(currentRun.status)) {
-              if (validatedStep.status !== 'running') {
+              if (
+                validatedStep.status !== 'running' ||
+                data.eventType === 'step_started'
+              ) {
                 throw new RunExpiredError(
-                  `Cannot modify non-running step on run in terminal state "${currentRun.status}"`
+                  `Cannot ${data.eventType === 'step_started' ? 'start' : 'modify non-running'} step on run in terminal state "${currentRun.status}"`
                 );
               }
             }

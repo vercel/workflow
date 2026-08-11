@@ -9,6 +9,7 @@ import type {
   Event,
   EventResult,
   HealthCheckPayload,
+  RunDispatchContext,
   ValidQueueName,
   WorkflowRun,
   World,
@@ -19,6 +20,7 @@ import {
   getQueueTopicPrefix,
   HealthCheckPayloadSchema,
   HOOK_RESUME_INPUT_VERSION,
+  ROOT_RUN_ID_ATTRIBUTE,
   resolveQueueNamespace,
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_LEGACY,
@@ -1130,6 +1132,37 @@ export function withHealthCheck(
       );
     }
     return await handler(req);
+  };
+}
+
+/**
+ * The lineage root of a loaded run: its `$rootRunId` attribute, or its own id
+ * when it is itself a root.
+ */
+export function rootRunIdFrom(
+  attributes: Record<string, string> | undefined,
+  runId: string
+): string {
+  return attributes?.[ROOT_RUN_ID_ATTRIBUTE] ?? runId;
+}
+
+/**
+ * The immutable run identity a step-execution message carries so its consumer
+ * can start the step without a blocking `runs.get` — see
+ * `RunDispatchContextSchema` in @workflow/world. Built at dispatch time from
+ * the run row the producer already holds.
+ */
+export function runDispatchContext(
+  run: Pick<
+    WorkflowRun,
+    'runId' | 'deploymentId' | 'specVersion' | 'startedAt' | 'attributes'
+  >
+): RunDispatchContext {
+  return {
+    deploymentId: run.deploymentId,
+    specVersion: run.specVersion ?? 0,
+    ...(run.startedAt ? { startedAt: +run.startedAt } : {}),
+    rootRunId: rootRunIdFrom(run.attributes, run.runId),
   };
 }
 

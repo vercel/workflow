@@ -491,6 +491,17 @@ export const StepResilientDispatchMaterialized = SemanticConvention<boolean>(
   'workflow.step.resilient_dispatch_materialized'
 );
 
+/**
+ * How the queued-step consumer resolved the run identity for this execution:
+ * `run_context` — carried on the dispatch message, no `runs.get` before the
+ * step (the fetch-free prologue); `runs_get` — the legacy blocking fetch
+ * (message from an older producer). Distinguishes the two paths during
+ * version-skew windows and makes the saved round trip directly measurable.
+ */
+export const StepDispatchPrologue = SemanticConvention<
+  'run_context' | 'runs_get'
+>('workflow.step.dispatch_prologue');
+
 // Webhook attributes
 
 /** Number of webhook handlers triggered */

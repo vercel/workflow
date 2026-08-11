@@ -701,6 +701,13 @@ describe('resilient step dispatch', () => {
       stepId: 's4',
       stepName: 's4',
       traceCarrier: { traceparent: '00-abc' },
+      // Immutable run identity so the consumer can start the step without a
+      // blocking runs.get (vercel/workflow#3456).
+      runContext: {
+        deploymentId: run.deploymentId,
+        specVersion: cborRun.specVersion,
+        rootRunId: run.runId,
+      },
     });
     // The message carries the same serialized input as the direct write.
     expect(payload.stepInput.input).toBeInstanceOf(Uint8Array);

@@ -55,6 +55,7 @@ import { getPortLazy } from './get-port-lazy.js';
 import {
   getWorkflowQueueName,
   queueMessage,
+  runDispatchContext,
   stepDispatchIdempotencyKey,
 } from './helpers.js';
 import {
@@ -171,6 +172,9 @@ async function queueStepMessage(params: {
       traceCarrier,
       requestedAt: new Date(),
       ...(stepInput !== undefined ? { stepInput: { input: stepInput } } : {}),
+      // Immutable run identity so the consumer can start the step without a
+      // blocking runs.get — see RunDispatchContextSchema.
+      runContext: runDispatchContext(workflowRun),
     },
     {
       // The 'dispatch' key is step-identity-scoped (correlationId + hashed
