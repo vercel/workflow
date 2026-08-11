@@ -206,8 +206,9 @@ const spec: ScenarioSpec = {
     const prepare = sim.writer.step('prepare');
     const finalize = sim.writer.step('finalize');
 
-    // Arm both waits before awaiting either: a point that has already gone by
-    // is an error rather than a wait.
+    // Calling an advance starts watching for its point; awaiting it waits for
+    // the writer to get there. Start both watches, then await both — asking
+    // for a point that has already gone by is an error, not a wait.
     const committed = finalize.runToEventCommitted('step_completed');
     await prepare.runToEventProduced('step_completed');
     await committed;
@@ -313,6 +314,12 @@ An advance tells one writer to move to a named place and hold there until
 `release()`. Every other writer keeps running, so whatever the script does in
 between is guaranteed to land first.
 
+**Calling an advance starts watching; awaiting it waits for the hold.** The two
+are separate on purpose: `const p = wf.runToEventCommitted(…)` is already
+watching for that point, and `await p` only blocks the script until the writer
+gets there. So a script that needs two writers held at once starts both
+watches, then awaits both.
+
 ```ts
 script: async (sim) => {
   const wf = sim.writer.orchestrator();
@@ -324,8 +331,9 @@ script: async (sim) => {
   sim.check('no payload yet', !sim.world.events().some((e) => e.eventType === 'hook_received'));
   await sim.deliverHook('approval:doc-1', { approved: true });
 
-  // Arm the next wait BEFORE releasing: a released writer can reach the next
-  // point within the same turn, and a wait armed afterwards has missed it.
+  // Start the next watch BEFORE releasing: a released writer can reach the
+  // next point within the same turn, and a watch started afterwards has
+  // missed it.
   const done = reserve.runToEventCommitted('step_completed');
   await wf.release();
   await done;
@@ -362,7 +370,7 @@ running out.
 
 Two mistakes are worth knowing, and the errors name both:
 
-- **Arming too late.** Releasing writer A before arming writer B's wait. B's
+- **Watching too late.** Releasing writer A before B's watch has started. B's
   step body may already be in flight and commit during the release.
 - **Naming the wrong writer.** `step_started` is the orchestrator's write;
   `step_completed` is the step body's. The wrong one is a timeout.

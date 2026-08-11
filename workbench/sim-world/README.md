@@ -95,11 +95,12 @@ from it come up on the first scenario you write:
   Reach for `runToEventProduced` or `runToPositionMinted` when the point is
   whether a write committed during the hold sorts ahead of the held event or
   behind it.
-- **`runTo` is level-triggered.** A point that has already gone by is an error,
-  not a wait. To hold two writers at the same point, start both waits before
-  awaiting either.
-- **Arm B's wait before releasing A.** A released writer can reach the next
-  point within the same turn, and a wait armed afterwards has missed it.
+- **Calling an advance starts watching; awaiting it waits for the hold.** To
+  hold two writers at once, call both, then await both.
+- **`runTo` is level-triggered.** Asking for a point that has already gone by
+  is an error, not a wait that never ends.
+- **Start B's watch before releasing A.** A released writer can reach the next
+  point within the same turn, and a watch started afterwards has missed it.
 
 ### What to assert, and what not to
 
