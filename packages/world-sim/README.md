@@ -172,58 +172,58 @@ it:
 
 ```ts
 // workflows/index.ts
-async function prepare(input: string) {
+async function stepA(input: string) {
   'use step';
-  return `prepared:${input}`;
+  return `a:${input}`;
 }
 
-async function finalize(input: string) {
+async function stepB(input: string) {
   'use step';
-  return `finalized:${input}`;
+  return `b:${input}`;
 }
 
-export async function parallelStepsWorkflow(input: string) {
+export async function twoStepsWorkflow(input: string) {
   'use workflow';
-  const [a, b] = await Promise.all([prepare(input), finalize(input)]);
+  const [a, b] = await Promise.all([stepA(input), stepB(input)]);
   return `${a}|${b}`;
 }
 ```
 
-Two steps are in flight at once, so which of them reaches the log first is a
-race. The script decides it: hold `prepare` before its completion is assigned a
-position, let `finalize` commit, then let both go.
+Both steps are in flight at once, so which of them reaches the log first is a
+race. The script decides it: hold `stepA` before its completion is assigned a
+position, let `stepB` commit, then let both go.
 
 ```ts
 const spec: ScenarioSpec = {
   // The stable handle: what a bug report cites and `pnpm sim <id>` selects.
   // The prose `name` beside it is free to be reworded.
-  id: 'finalize-first',
-  name: 'finalize lands in the log before prepare',
+  id: 'b-lands-first',
+  name: 'stepB lands in the log before stepA',
   // Named from the build manifest — no client transform needed.
-  workflow: 'parallelStepsWorkflow',
+  workflow: 'twoStepsWorkflow',
   input: ['x'],
   script: async (sim) => {
-    const prepare = sim.writer.step('prepare');
-    const finalize = sim.writer.step('finalize');
+    const a = sim.writer.step('stepA');
+    const b = sim.writer.step('stepB');
 
     // Calling an advance starts watching for its point; awaiting it waits for
     // the writer to get there. Start both watches, then await both — asking
     // for a point that has already gone by is an error, not a wait.
-    const held = prepare.runToEventProduced('step_completed');
-    const committed = finalize.runToEventCommitted('step_completed');
-    await held;
-    await committed;
+    const watchA = a.runToEventProduced('step_completed');
+    const watchB = b.runToEventCommitted('step_completed');
+    await watchA;
+    await watchB;
 
-    await finalize.release();
-    await prepare.release();
+    await b.release();
+    await a.release();
   },
-  expect: { status: 'completed', output: 'prepared:x|finalized:x' },
+  expect: { status: 'completed', output: 'a:x|b:x' },
 };
 ```
 
-`prepare` is held before it takes a position, so `finalize` gets the earlier
-one — `#6 finalize`, `#7 prepare` — on every run, in either order the runtime
-would otherwise have picked.
+`stepA` is held before it takes a position, so `stepB` gets the earlier one —
+`#6 stepB`, `#7 stepA` — on every run, in either order the runtime would
+otherwise have picked.
 
 Playing it needs the compiled bundle, because the orchestrator runs from a code
 string inside a VM:
