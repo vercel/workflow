@@ -14,10 +14,14 @@ import {
   type EventResult,
   type SerializedData,
   SPEC_VERSION_CURRENT,
+  SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
   SPEC_VERSION_SUPPORTS_COMPRESSION,
+  type TraceCarrier,
+  type ValidQueueName,
   type WorkflowRun,
   type World,
 } from '@workflow/world';
+import { isRetryableWorldError } from '../classify-error.js';
 import { importKey } from '../encryption.js';
 import type {
   AttributeInvocationQueueItem,
@@ -31,12 +35,19 @@ import type { GuestCodeStats } from '../serialization/hardened.js';
 import { dehydrateStepArguments } from '../serialization.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { getAbortStreamIdFromToken } from '../util.js';
-import { getMaxInlineSteps } from './constants.js';
+import {
+  getMaxInlineSteps,
+  isResilientStepDispatchEnabled,
+  MAX_RESILIENT_STEP_INPUT_BYTES,
+} from './constants.js';
 import {
   type EventCreator,
+  isPreconditionGuardEnabled,
   type LoadedEventLog,
   mergeReportedEvents,
   preconditionSnapshotParams,
+  queueMessage,
+  stepDispatchIdempotencyKey,
 } from './helpers.js';
 import { ReplayRecoveryReporter } from './replay-recovery-reporter.js';
 
@@ -68,6 +79,26 @@ export interface SuspensionHandlerParams {
   runReadyBarrier?: Promise<unknown>;
   /** One-shot telemetry reporter, activated only after replay has recovered. */
   replayRecoveryReporter?: ReplayRecoveryReporter;
+  /**
+   * Resilient step dispatch: when provided (and the per-step eligibility gates
+   * pass — see the step ops below), each newly created non-inline step's
+   * `step_created` write is parallelized with its step-execution queue
+   * publish, and the queue message carries the serialized step input
+   * (`stepInput`) so the consumer can idempotently re-ensure the event if the
+   * direct write failed transiently. Steps queued this way are reported in
+   * {@link SuspensionHandlerResult.queuedStepCorrelationIds} so the caller
+   * skips them in its own dispatch pass. Omitted by callers that must not
+   * queue (terminal drain, tests) — creates then behave exactly as before.
+   */
+  stepDispatch?: {
+    /** The unified workflow queue this run's step messages are published to. */
+    queueName: ValidQueueName;
+    /**
+     * Lazily resolves the trace carrier to stamp on the step messages.
+     * Called at most once per suspension (memoized here).
+     */
+    getTraceCarrier: () => Promise<TraceCarrier>;
+  };
 }
 
 /**
@@ -86,6 +117,16 @@ export interface SuspensionHandlerResult {
    * into the same batch boundary.
    */
   createdStepCorrelationIds: Set<string>;
+  /**
+   * Correlation IDs of steps this suspension call already published
+   * step-execution queue messages for, via resilient step dispatch (the
+   * `step_created` write parallelized with a `stepInput`-carrying queue
+   * publish). The caller MUST NOT dispatch these again — the message is
+   * already out (a duplicate would be deduped by its idempotency key, but
+   * costs a wasted round-trip). Empty when {@link SuspensionHandlerParams.stepDispatch}
+   * was not provided or no step was eligible.
+   */
+  queuedStepCorrelationIds: Set<string>;
   /**
    * How many events this phase's writes reported back as occupying slots they
    * skipped over, already merged into the caller's `eventLog.events`. Nonzero
@@ -242,6 +283,7 @@ export async function handleSuspension({
   eventLog,
   runReadyBarrier,
   replayRecoveryReporter,
+  stepDispatch,
 }: SuspensionHandlerParams): Promise<SuspensionHandlerResult> {
   const runId = run.runId;
 
@@ -638,7 +680,56 @@ export async function handleSuspension({
 
   const ops: Promise<void>[] = [];
 
-  // Steps: create step_created events (no queuing — V2 returns pending steps to caller)
+  // Correlation IDs of steps whose step-execution queue message was already
+  // published by the resilient-dispatch ops below (alongside the step_created
+  // write). Reported to the caller so its dispatch pass skips them.
+  const queuedStepCorrelationIds = new Set<string>();
+
+  // Resilient step dispatch eligibility, shared by every step op below (the
+  // per-step input-size check is applied inside the op). All must hold:
+  //
+  //  - The caller provided a dispatch target (`stepDispatch`) — terminal
+  //    drains and other create-only callers never queue.
+  //  - The feature is enabled (`WORKFLOW_RESILIENT_STEP_DISPATCH` opt-out).
+  //  - The optimistic-concurrency guard is not in effect. A guard-enforcing
+  //    backend can reject the step_created as stale (412) and the caller then
+  //    restarts the replay — but a queue message carrying the payload would
+  //    already be out, letting the consumer materialize a step the guard
+  //    rejected. This gate is deliberately NOT liftable by backend-side
+  //    revocation bookkeeping: nothing orders a slow create's eventual 412
+  //    (which is when the backend learns the dispatch is poisoned) before the
+  //    consumer's redelivery re-ensure, and a best-effort marker that fails
+  //    open cannot carry a correctness property. The sequential path is the
+  //    only thing that gives the message a happens-after edge over its
+  //    create's guard verdict.
+  //  - The run's queue transport preserves binary payloads (CBOR,
+  //    specVersion >= 3): `stepInput.input` is the serialized (possibly
+  //    encrypted) input bytes, which the JSON transport would mangle.
+  const resilientDispatchEligible =
+    stepDispatch !== undefined &&
+    isResilientStepDispatchEnabled() &&
+    !(
+      isPreconditionGuardEnabled() &&
+      world.capabilities?.preconditionGuard === true
+    ) &&
+    (run.specVersion ?? 0) >= SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT;
+
+  // The trace carrier for resilient step dispatches, resolved at most once per
+  // suspension (the per-step ops run concurrently and share it).
+  let stepDispatchTraceCarrier: Promise<TraceCarrier> | undefined;
+  const getStepDispatchTraceCarrier = (): Promise<TraceCarrier> => {
+    stepDispatchTraceCarrier ??=
+      stepDispatch?.getTraceCarrier() ?? Promise.resolve({});
+    return stepDispatchTraceCarrier;
+  };
+
+  // Producer-side resilient recovery count for the suspension span attribute.
+  let resilientDispatchRecovered = 0;
+
+  // Steps: create step_created events (no queuing — V2 returns pending steps
+  // to caller — EXCEPT on the resilient dispatch path, which parallelizes the
+  // create with the step's queue publish and reports it in
+  // `queuedStepCorrelationIds`).
   for (const queueItem of stepItems) {
     if (stepsNeedingCreation.has(queueItem.correlationId)) {
       ops.push(
@@ -685,6 +776,95 @@ export async function handleSuspension({
               input: dehydratedInput as SerializedData,
             },
           };
+
+          // Resilient step dispatch: fire the step_created write and the
+          // step-execution queue publish in parallel — the message carries the
+          // same serialized input (`stepInput`) so the consumer can
+          // idempotently re-ensure the event if the direct write failed
+          // transiently. Mirrors the resilient start (`runInput`) and
+          // resilient hook resume (`hookInput`) patterns. Only for inputs the
+          // queue message can safely carry (binary, under the VQS size cap).
+          if (
+            resilientDispatchEligible &&
+            dehydratedInput instanceof Uint8Array &&
+            dehydratedInput.byteLength <= MAX_RESILIENT_STEP_INPUT_BYTES
+          ) {
+            await ensureRunReady();
+            const traceCarrier = await getStepDispatchTraceCarrier();
+            const [createResult, queueResult] = await Promise.allSettled([
+              createGuarded(stepEvent, { requestId }),
+              queueMessage(
+                world,
+                // biome-ignore lint/style/noNonNullAssertion: implied by resilientDispatchEligible
+                stepDispatch!.queueName,
+                {
+                  runId,
+                  stepId: queueItem.correlationId,
+                  stepName: queueItem.stepName,
+                  traceCarrier,
+                  requestedAt: new Date(),
+                  stepInput: { input: dehydratedInput },
+                },
+                // Same key as the caller's dispatch pass and any concurrent
+                // handler's — redundant publishes for this step dedupe. The
+                // key is step-identity-scoped so a revoked message for a
+                // reassigned correlation id cannot absorb the corrected
+                // schedule's dispatch — see stepDispatchIdempotencyKey.
+                {
+                  idempotencyKey: stepDispatchIdempotencyKey(
+                    queueItem.correlationId,
+                    queueItem.stepName
+                  ),
+                }
+              ),
+            ]);
+            // Queue failure is always fatal for this suspension pass: without
+            // the message the step would rely on the create alone, and if the
+            // create ALSO failed there would be no durable record at all.
+            // Propagating redelivers the orchestrator message, which
+            // re-creates the (idempotent) step_created and re-dispatches —
+            // the same recovery as the sequential path.
+            if (queueResult.status === 'rejected') {
+              throw queueResult.reason;
+            }
+            queuedStepCorrelationIds.add(queueItem.correlationId);
+            if (createResult.status === 'rejected') {
+              const err = createResult.reason;
+              if (EntityConflictError.is(err)) {
+                // Concurrent handler wrote it first — same as the sequential
+                // path. The step message is already out; a duplicate publish
+                // by that handler dedupes on the shared idempotency key.
+                runtimeLogger.info('Step already exists, continuing', {
+                  workflowRunId: runId,
+                  correlationId: queueItem.correlationId,
+                  message: err.message,
+                });
+              } else if (isRetryableWorldError(err)) {
+                // Resilient: the write failed transiently (429 / 5xx /
+                // transport) but the step message — carrying the same
+                // serialized input — was published, so the consumer
+                // idempotently re-ensures the step_created before executing.
+                resilientDispatchRecovered++;
+                runtimeLogger.warn(
+                  'Step creation event write failed, but the step was ' +
+                    'dispatched via the queue. The step_created event will ' +
+                    'be ensured by the queue consumer.',
+                  {
+                    workflowRunId: runId,
+                    correlationId: queueItem.correlationId,
+                    stepName: queueItem.stepName,
+                    error: err instanceof Error ? err.message : String(err),
+                  }
+                );
+              } else {
+                throw err;
+              }
+            } else {
+              createdStepCorrelationIds.add(queueItem.correlationId);
+            }
+            return;
+          }
+
           try {
             await ensureRunReady();
             await createGuarded(stepEvent, { requestId });
@@ -849,11 +1029,15 @@ export async function handleSuspension({
     ...Attribute.WorkflowStepsCreated(stepItems.length),
     ...Attribute.WorkflowHooksCreated(hooksNeedingCreation.length),
     ...Attribute.WorkflowWaitsCreated(waitItems.length),
+    ...(resilientDispatchRecovered > 0
+      ? Attribute.StepResilientDispatchRecovered(resilientDispatchRecovered)
+      : {}),
   });
 
   return {
     pendingSteps: stepItems,
     createdStepCorrelationIds,
+    queuedStepCorrelationIds,
     lazyInlineSteps,
     // On hook conflict the caller re-invokes immediately and never reads
     // the wait timeout, so don't report one.

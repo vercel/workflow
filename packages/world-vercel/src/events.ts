@@ -625,6 +625,11 @@ async function createWorkflowRunEventInner(
     ...(params?.resumePayloadDigest
       ? { resumePayloadDigest: params.resumePayloadDigest }
       : {}),
+    // Resilient step dispatch re-ensure marker (step_created only). Advisory
+    // — the server MAY refuse it with 410 → RunExpiredError as
+    // defense-in-depth when it recorded a 412 rejection for this correlation
+    // id and no step entity exists.
+    ...(params?.viaStepDispatch ? { viaStepDispatch: true } : {}),
     remoteRefBehavior,
     payload,
     ...meta,

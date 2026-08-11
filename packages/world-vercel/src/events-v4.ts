@@ -264,6 +264,13 @@ interface CreateEventV4InputBase {
    *  digest on the server's `(runId, resumeId)` constraint (the v4 payload ref
    *  is not content-stable server-side). Older servers ignore it. */
   resumePayloadDigest?: string;
+  /** Marks a `step_created` as the queue consumer's re-ensure of a resilient
+   *  step dispatch (`stepInput`-carrying step message). Advisory — see
+   *  CreateEventParams.viaStepDispatch in @workflow/world: the server MAY
+   *  refuse it with 410 (`step-dispatch-revoked` → RunExpiredError) as
+   *  defense-in-depth when it recorded a 412 rejection for this correlation
+   *  id and no step entity exists. Older servers ignore it. */
+  viaStepDispatch?: boolean;
 }
 
 export type CreateEventV4Input = CreateEventV4InputBase &
@@ -469,6 +476,9 @@ function buildPostFrameMeta(
   }
   if (input.resumePayloadDigest !== undefined) {
     meta.resumePayloadDigest = input.resumePayloadDigest;
+  }
+  if (input.viaStepDispatch !== undefined) {
+    meta.viaStepDispatch = input.viaStepDispatch;
   }
   return meta;
 }
