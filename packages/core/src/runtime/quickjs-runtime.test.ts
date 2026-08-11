@@ -5,6 +5,7 @@ import {
   __peekBaselineEntryForTests,
   BASELINE_BUNDLE_FILENAME,
   runQuickJSWorkflow,
+  startQuickJSWorkflow,
 } from './quickjs-runtime.js';
 
 /** Helper to deserialize the format-prefixed result bytes */
@@ -1497,5 +1498,181 @@ describe('baseline snapshot startup optimization', () => {
     const entry = await __peekBaselineEntryForTests(throwingCode);
     expect(entry?.state).toBe('ineligible');
     __clearBaselineSnapshotCacheForTests();
+  });
+});
+
+describe('replay-divergence arbitration', () => {
+  // Parity with the node:vm engine's EventsConsumer: a log the replay does
+  // not reproduce must escalate as ReplayDivergenceError (which runtime.ts
+  // turns into bounded recovery replays and, past the budget, a terminal
+  // CORRUPTED_EVENT_LOG) — never be absorbed into a wrong completion,
+  // a wrong-payload delivery, or a spurious user error.
+
+  const stepWorkflow = `
+    var add = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//test//add");
+    async function workflow() { return await add(10, 7); }
+    workflow.workflowId = "workflow//test//workflow";
+    globalThis.__private_workflows.set("workflow//test//workflow", workflow);
+  `;
+
+  it('rejects a replay whose log contains a correlation id it never drew', async () => {
+    const run = makeRun();
+    await expect(
+      runQuickJSWorkflow({
+        workflowCode: stepWorkflow,
+        workflowId: 'workflow//test//workflow',
+        workflowRun: run,
+        events: [
+          runCreatedEvent(run),
+          {
+            eventId: 'evnt_orphan',
+            runId: run.runId,
+            eventType: 'step_created' as const,
+            correlationId: 'step_01JUNKJUNKJUNKJUNKJUNKJUNK',
+            eventData: { stepName: 'step//test//other' },
+            createdAt: new Date('2025-01-01T00:00:01Z'),
+          },
+        ],
+      })
+    ).rejects.toMatchObject({
+      name: 'ReplayDivergenceError',
+      eventId: 'evnt_orphan',
+    });
+  });
+
+  it('rejects a replay when a recorded step belongs to a different step function', async () => {
+    const run = makeRun();
+    // Learn the deterministic correlation id the workflow draws.
+    const first = await runQuickJSWorkflow({
+      workflowCode: stepWorkflow,
+      workflowId: 'workflow//test//workflow',
+      workflowRun: run,
+      events: [],
+    });
+    const stepCid = first.suspended!.pendingOperations[0].correlationId;
+
+    // Same ordinal, different step function — the racing-writer shape that
+    // used to resolve the wrong call with the wrong payload silently.
+    await expect(
+      runQuickJSWorkflow({
+        workflowCode: stepWorkflow,
+        workflowId: 'workflow//test//workflow',
+        workflowRun: run,
+        events: [
+          runCreatedEvent(run),
+          {
+            eventId: 'evnt_wrong_step',
+            runId: run.runId,
+            eventType: 'step_created' as const,
+            correlationId: stepCid,
+            eventData: { stepName: 'step//test//DIFFERENT' },
+            createdAt: new Date('2025-01-01T00:00:01Z'),
+          },
+          {
+            eventId: 'evnt_wrong_step_done',
+            runId: run.runId,
+            eventType: 'step_completed' as const,
+            correlationId: stepCid,
+            eventData: { result: 999 },
+            createdAt: new Date('2025-01-01T00:00:02Z'),
+          },
+        ],
+      })
+    ).rejects.toMatchObject({ name: 'ReplayDivergenceError' });
+  });
+
+  it('accepts a healthy replay of a fully reproduced log', async () => {
+    const run = makeRun();
+    const first = await runQuickJSWorkflow({
+      workflowCode: stepWorkflow,
+      workflowId: 'workflow//test//workflow',
+      workflowRun: run,
+      events: [],
+    });
+    const stepCid = first.suspended!.pendingOperations[0].correlationId;
+
+    const replayed = await runQuickJSWorkflow({
+      workflowCode: stepWorkflow,
+      workflowId: 'workflow//test//workflow',
+      workflowRun: run,
+      events: [
+        runCreatedEvent(run),
+        {
+          eventId: 'evnt_step_created',
+          runId: run.runId,
+          eventType: 'step_created' as const,
+          correlationId: stepCid,
+          eventData: { stepName: 'step//test//add' },
+          createdAt: new Date('2025-01-01T00:00:01Z'),
+        },
+        {
+          eventId: 'evnt_step_done',
+          runId: run.runId,
+          eventType: 'step_completed' as const,
+          correlationId: stepCid,
+          eventData: { result: 17 },
+          createdAt: new Date('2025-01-01T00:00:02Z'),
+        },
+      ],
+    });
+    expect(replayed.completed).toBeDefined();
+    expect(unwrapResult(replayed.completed!.result)).toBe(17);
+  });
+
+  it('records a genuine user failure instead of arbitrating the log', async () => {
+    // The workflow throws before ever drawing the orphaned id. A genuine
+    // user failure must be recorded as such — divergence detection only
+    // arbitrates logs the replay claims to have reproduced.
+    const run = makeRun();
+    const throwingWorkflow = `
+      async function workflow() { throw new Error("user boom"); }
+      workflow.workflowId = "workflow//test//workflow";
+      globalThis.__private_workflows.set("workflow//test//workflow", workflow);
+    `;
+    const result = await runQuickJSWorkflow({
+      workflowCode: throwingWorkflow,
+      workflowId: 'workflow//test//workflow',
+      workflowRun: run,
+      events: [
+        runCreatedEvent(run),
+        {
+          eventId: 'evnt_orphan',
+          runId: run.runId,
+          eventType: 'step_created' as const,
+          correlationId: 'step_01JUNKJUNKJUNKJUNKJUNKJUNK',
+          eventData: { stepName: 'step//test//other' },
+          createdAt: new Date('2025-01-01T00:00:01Z'),
+        },
+      ],
+    });
+    expect(result.failed?.message).toBe('user boom');
+  });
+
+  it('rejects a live continuation fed events the session cannot reproduce', async () => {
+    const run = makeRun();
+    const session = await startQuickJSWorkflow({
+      workflowCode: stepWorkflow,
+      workflowId: 'workflow//test//workflow',
+      workflowRun: run,
+      events: [runCreatedEvent(run)],
+    });
+    expect(session.result.suspended).toBeDefined();
+    const stepCid =
+      session.result.suspended!.pendingOperations[0].correlationId;
+
+    await expect(
+      session.continueWithEvents([
+        {
+          eventId: 'evnt_wrong_step',
+          runId: run.runId,
+          eventType: 'step_created' as const,
+          correlationId: stepCid,
+          eventData: { stepName: 'step//test//DIFFERENT' },
+          createdAt: new Date('2025-01-01T00:00:01Z'),
+        } as any,
+      ])
+    ).rejects.toMatchObject({ name: 'ReplayDivergenceError' });
+    // The session disposed itself on divergence; dispose() must be a no-op.
+    session.dispose();
   });
 });
