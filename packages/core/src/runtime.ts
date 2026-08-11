@@ -12,6 +12,7 @@ import {
   type RunErrorCode,
   RunExpiredError,
   WorkflowRuntimeError,
+  WorkflowWorldError,
 } from '@workflow/errors';
 import { once, setWorkflowBasePath } from '@workflow/utils';
 import {
@@ -83,6 +84,7 @@ import {
   preconditionSnapshotParams,
   queueMessage,
   settleEventSlotGap,
+  stepDispatchIdempotencyKey,
   withHealthCheck,
 } from './runtime/helpers.js';
 import {
@@ -93,7 +95,7 @@ import { ReplayRecoveryReporter } from './runtime/replay-recovery-reporter.js';
 import { runIdCreatedAt } from './runtime/run-id-time.js';
 import {
   getStepDispatchWake,
-  stepDispatchIdempotencyKey,
+  stepDispatchEpoch,
 } from './runtime/step-dispatch.js';
 import {
   DEFAULT_STEP_MAX_RETRIES,
@@ -343,6 +345,27 @@ function getWorkflowSetupErrorCode(err: unknown): RunErrorCode | null {
   }
 
   return null;
+}
+
+/**
+ * Whether a step execution rejected because the step entity does not exist —
+ * the signature of a resilient step dispatch message whose delivery beat (or
+ * outlived a transient failure of) the producer's parallel `step_created`
+ * write. Every World surfaces it as a `WorkflowWorldError` naming the missing
+ * step: world-vercel maps the backend's 404 to
+ * `workflow step step_… not found`, world-local and world-postgres throw
+ * `Step "step_…" not found` directly. The message match is deliberately loose
+ * across those shapes; the status check narrows the remote case without
+ * excluding the local ones (which carry no status).
+ *
+ * Used only when the message carries `stepInput` — a bare dispatch without a
+ * payload has nothing to recover from, and the error keeps propagating for
+ * queue-driven recovery exactly as before.
+ */
+function isStepMissingError(err: unknown): boolean {
+  if (!WorkflowWorldError.is(err)) return false;
+  if (err.status !== undefined && err.status !== 404) return false;
+  return /step/i.test(err.message) && /not found/i.test(err.message);
 }
 
 async function recordFatalRunError({
@@ -648,6 +671,7 @@ export function workflowEntrypoint(
           deploymentMismatchRetryCount,
           runInput,
           hookInput,
+          stepInput,
         } = WorkflowInvokePayloadSchema.parse(message_);
         // `start()` always attaches a trace carrier, but
         // serializeTraceCarrier() returns `{}` when no OTEL SDK is registered
@@ -1380,9 +1404,116 @@ export function workflowEntrypoint(
                   // will pick up the replay.
                   if (incomingStepId && incomingStepName) {
                     try {
-                      const bgRun = await world.runs.get(runId, {
-                        resolveData: 'none',
-                      });
+                      // Resilient step dispatch: the producer parallelized the
+                      // `step_created` write with this queue publish, so the
+                      // step entity may not exist yet when this delivery
+                      // executes — the delivery beat the write, or the write
+                      // failed transiently and this message carries the only
+                      // copy of the input. Idempotently re-ensure the event
+                      // from the message's `stepInput` — keyed by the step's
+                      // correlation id, so the producer's write and this
+                      // re-ensure converge on exactly one event.
+                      //
+                      // Invoked from two places:
+                      //
+                      //  - IN-BAND (the load-bearing path): when the bare
+                      //    `step_started` below rejects with "step not found",
+                      //    the executor catch materializes the step and
+                      //    retries once, all within this delivery. This must
+                      //    not rely on delivery attempts: world-vercel's
+                      //    failure-retry path re-enqueues a FRESH message
+                      //    (attempt resets to 1), so an attempt-gated recovery
+                      //    is unreachable on the retry chain and the step
+                      //    would stall until the ORIGINAL message's
+                      //    ~300s visibility-timeout redelivery — measured
+                      //    exactly so in the durabench parallel sweeps before
+                      //    this path existed.
+                      //  - EAGERLY on a genuine redelivery (attempt > 1),
+                      //    in parallel with the run fetch below — a
+                      //    redelivered dispatch already had its create race
+                      //    resolved either way, so this saves the failed
+                      //    start round-trip at no wall-time cost. First
+                      //    deliveries skip it: the producer's write almost
+                      //    always lands, and an eager ensure would burn a
+                      //    conditional write per step.
+                      const ensureStepFromMessage = async (): Promise<
+                        'ok' | 'gone'
+                      > => {
+                        if (!stepInput) return 'ok';
+                        try {
+                          await world.events.create(
+                            runId,
+                            {
+                              eventType: 'step_created',
+                              specVersion: SPEC_VERSION_CURRENT,
+                              correlationId: incomingStepId,
+                              eventData: {
+                                stepName: incomingStepName,
+                                workflowName,
+                                // Typed Uint8Array by StepDispatchInputSchema:
+                                // a non-binary (mangled) payload fails the
+                                // message parse above and never reaches this
+                                // write.
+                                input: stepInput.input,
+                              },
+                            },
+                            {
+                              requestId,
+                              // Marks this create as a dispatch re-ensure so
+                              // a guard-enforcing backend can refuse it when
+                              // the producer's write was 412-rejected (the
+                              // dispatch was revoked). Surfaces as
+                              // RunExpiredError → 'gone' below, acking the
+                              // message. Worlds without the guard ignore it.
+                              viaStepDispatch: true,
+                            }
+                          );
+                          // This delivery materialized the step — the
+                          // completion of the producer's recovery path.
+                          span?.setAttributes(
+                            Attribute.StepResilientDispatchMaterialized(true)
+                          );
+                          runtimeLogger.warn(
+                            'Materialized step_created from the queue message — the producer\u2019s direct write did not land',
+                            {
+                              workflowRunId: runId,
+                              stepId: incomingStepId,
+                              stepName: incomingStepName,
+                            }
+                          );
+                        } catch (err) {
+                          // The common case: the producer's write (or a
+                          // concurrent re-ensure) already landed.
+                          if (EntityConflictError.is(err)) return 'ok';
+                          // Nothing left to execute: the run went terminal
+                          // (matches the run-status check below), or a
+                          // guard-enforcing backend revoked this dispatch
+                          // (410 `step-dispatch-revoked` — the producer's
+                          // write was 412-rejected and the replay restarted
+                          // with a corrected schedule).
+                          if (RunExpiredError.is(err)) return 'gone';
+                          // Transient — rethrow so the queue redelivers and a
+                          // later attempt converges instead of executing (and
+                          // acking) a step that may not exist.
+                          throw err;
+                        }
+                        return 'ok';
+                      };
+                      const [bgRun, ensureOutcome] = await Promise.all([
+                        world.runs.get(runId, {
+                          resolveData: 'none',
+                        }),
+                        stepInput && metadata.attempt > 1
+                          ? ensureStepFromMessage()
+                          : ('ok' as const),
+                      ]);
+                      if (ensureOutcome === 'gone') {
+                        runtimeLogger.debug(
+                          'Run already finished, skipping background step',
+                          { workflowRunId: runId }
+                        );
+                        return;
+                      }
                       if (bgRun.status !== 'running') {
                         runtimeLogger.debug(
                           'Run already finished, skipping background step',
@@ -1459,25 +1590,47 @@ export function workflowEntrypoint(
                         // step_started of a queue-driven execution
                         // intentionally clears inline ownership (the step is
                         // queue-owned from this point).
+                        const executeQueuedStep = () =>
+                          executeStep({
+                            world,
+                            workflowRunId: runId,
+                            workflowDeploymentId: bgRun.deploymentId,
+                            workflowName,
+                            workflowStartedAt: bgStartedAt,
+                            rootRunId: rootRunIdFrom(bgRun.attributes, runId),
+                            stepId: incomingStepId,
+                            stepName: incomingStepName,
+                            runSpecVersion: bgRun.specVersion,
+                            // Retry ceiling: the queue delivery count as a fast
+                            // gate, verified against the recorded step_started
+                            // count once it crosses the ceiling (see above).
+                            authoritativeAttempt: bgAuthoritativeAttempt,
+                          });
                         stepResult = await runStepSingleFlight(
                           runId,
                           incomingStepId,
-                          () =>
-                            executeStep({
-                              world,
-                              workflowRunId: runId,
-                              workflowDeploymentId: bgRun.deploymentId,
-                              workflowName,
-                              workflowStartedAt: bgStartedAt,
-                              rootRunId: rootRunIdFrom(bgRun.attributes, runId),
-                              stepId: incomingStepId,
-                              stepName: incomingStepName,
-                              runSpecVersion: bgRun.specVersion,
-                              // Retry ceiling: the queue delivery count as a fast
-                              // gate, verified against the recorded step_started
-                              // count once it crosses the ceiling (see above).
-                              authoritativeAttempt: bgAuthoritativeAttempt,
-                            })
+                          async () => {
+                            try {
+                              return await executeQueuedStep();
+                            } catch (err) {
+                              // In-band resilient recovery: a missing step on
+                              // a stepInput-carrying message means this
+                              // delivery outran (or outlived a transient
+                              // failure of) the producer's parallel
+                              // step_created write. Materialize the event
+                              // from the payload and retry ONCE, within this
+                              // delivery — see ensureStepFromMessage for why
+                              // this cannot wait for a redelivery. A second
+                              // failure propagates as before.
+                              if (!stepInput || !isStepMissingError(err)) {
+                                throw err;
+                              }
+                              if ((await ensureStepFromMessage()) === 'gone') {
+                                return { type: 'gone' as const };
+                              }
+                              return await executeQueuedStep();
+                            }
+                          }
                         );
                       } finally {
                         replayBudget.resume();
@@ -2848,6 +3001,19 @@ export function workflowEntrypoint(
                             eventLog,
                             runReadyBarrier,
                             replayRecoveryReporter,
+                            // Resilient step dispatch: lets eligible newly
+                            // created steps publish their step-execution
+                            // message (carrying `stepInput`) in parallel with
+                            // the step_created write. Steps queued there are
+                            // reported back in `queuedStepCorrelationIds` and
+                            // skipped by the dispatch pass below.
+                            stepDispatch: {
+                              queueName: getWorkflowQueueName(
+                                workflowName,
+                                namespace
+                              ),
+                              getTraceCarrier: nextTraceCarrier,
+                            },
                           });
                         } catch (suspensionError) {
                           // A suspension create was rejected as stale: re-derive
@@ -3115,8 +3281,8 @@ export function workflowEntrypoint(
                         //     kill-switched) → immediate enqueue, exactly as
                         //     before. This covers crash recovery: if a prior
                         //     handler wrote step_created but crashed before
-                        //     queueing, a later handler queues it;
-                        //     idempotencyKey on correlationId dedupes
+                        //     queueing, a later handler queues it; the
+                        //     step-identity-scoped idempotencyKey dedupes
                         //     redundant queues across concurrent handlers.
                         //
                         // The wait continuation is what makes
@@ -3142,12 +3308,33 @@ export function workflowEntrypoint(
                         const dispatchNowMs = Date.now();
                         const ownedRecoverySteps: StepInvocationQueueItem[] =
                           [];
-                        // Steps dispatched as queue messages this suspension,
-                        // for the re-dispatch watchdog's boundary wake below.
+                        // Steps whose step-execution message went out this
+                        // suspension, here or from the suspension handler's
+                        // parallel dispatch, for the re-dispatch watchdog's
+                        // boundary wake below.
                         const dispatchedSteps: StepInvocationQueueItem[] = [];
                         let backstopWakesArmed = 0;
                         for (const step of pendingSteps) {
                           if (inlineCorrelationIds.has(step.correlationId)) {
+                            continue;
+                          }
+                          // Already published by the suspension handler's
+                          // resilient dispatch (create + queue in parallel,
+                          // message carrying `stepInput`). A re-publish here
+                          // would dedupe on the idempotency key anyway, but
+                          // skip the wasted round-trip. Ownership never
+                          // applies to these: they were created this pass, so
+                          // no step_started stamp can exist yet.
+                          if (
+                            suspensionResult.queuedStepCorrelationIds.has(
+                              step.correlationId
+                            )
+                          ) {
+                            // Its message can still be lost, and this is the
+                            // only suspension that will ever see the step
+                            // without something else already waking the run,
+                            // so it still counts for the boundary wake.
+                            dispatchedSteps.push(step);
                             continue;
                           }
                           const ownershipActive =
@@ -3212,21 +3399,23 @@ export function workflowEntrypoint(
                                 requestedAt: new Date(),
                               },
                               {
-                                // Epoch-scoped once the step's dispatch is
-                                // presumed lost — a watchdog interval without
-                                // a first start, or an expired ownership lease
-                                // with no terminal event. The bare correlation
-                                // ID is deduped by the queue for the lifetime
-                                // of the message dispatched under it, so a
+                                // Step-identity-scoped, and epoch-scoped once
+                                // this step's dispatch is presumed lost: a
+                                // watchdog interval without a first start, or
+                                // an expired ownership lease with no terminal
+                                // event. The queue dedupes a key for the
+                                // lifetime of the message sent under it, so a
                                 // dispatch that stopped making progress can
                                 // only be retried under a key the queue has
                                 // not seen. Within an epoch every replay
                                 // derives the same key, so concurrent wake
                                 // replays still collapse to one message. See
+                                // stepDispatchIdempotencyKey and
                                 // runtime/step-dispatch.ts.
                                 idempotencyKey: stepDispatchIdempotencyKey(
-                                  step,
-                                  dispatchNowMs
+                                  step.correlationId,
+                                  step.stepName,
+                                  stepDispatchEpoch(step, dispatchNowMs)
                                 ),
                               }
                             )
@@ -3829,10 +4018,10 @@ export function workflowEntrypoint(
                                 {
                                   delaySeconds,
                                   // Key the delayed retry on the step's
-                                  // correlationId so it dedupes against the
+                                  // dispatch key so it dedupes against the
                                   // keyed re-dispatch the suspension handler
-                                  // performs on replay (it also uses
-                                  // `idempotencyKey: step.correlationId`).
+                                  // performs on replay (it uses the same
+                                  // stepDispatchIdempotencyKey).
                                   //
                                   // Without this, a mixed batch where one step
                                   // `completed` with unflushed background ops
@@ -3851,7 +4040,10 @@ export function workflowEntrypoint(
                                   // retry body could run early/concurrently.
                                   // Sharing the key lets the earlier delayed
                                   // message win, honoring the backoff.
-                                  idempotencyKey: step.correlationId,
+                                  idempotencyKey: stepDispatchIdempotencyKey(
+                                    step.correlationId,
+                                    step.stepName
+                                  ),
                                 }
                               )
                             )

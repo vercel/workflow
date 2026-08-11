@@ -1,4 +1,5 @@
 import {
+  EntityConflictError,
   PreconditionFailedError,
   RUN_ERROR_CODES,
   ThrottleError,
@@ -20,6 +21,7 @@ import {
 import { setWorld } from './runtime/world.js';
 import { workflowEntrypoint } from './runtime.js';
 import {
+  dehydrateStepArguments,
   dehydrateStepReturnValue,
   dehydrateWorkflowArguments,
   hydrateRunError,
@@ -1787,6 +1789,337 @@ describe('workflowEntrypoint step-dispatch ack ordering', () => {
     // The throttled step is NOT re-queued as a background (stepId) message —
     // the orchestrator is deferred instead so it re-runs inline with input.
     expect(stepIdMessages).toHaveLength(0);
+  });
+});
+
+describe('workflowEntrypoint resilient step consumption (stepInput re-ensure)', () => {
+  afterEach(() => {
+    setWorld(undefined);
+    vi.clearAllMocks();
+  });
+
+  const getWorkflowTransformCode = (workflowName: string) =>
+    `;globalThis.__private_workflows = new Map();
+    globalThis.__private_workflows.set(${JSON.stringify(workflowName)}, ${workflowName});`;
+
+  // The workflow body is never replayed by these tests: the seeded log keeps
+  // an unrelated step pending, so the background-step path returns right
+  // after executing the message's step.
+  const resilientWorkflow = `const resilientAdd = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("resilientAdd");
+    async function workflow() {
+      return await resilientAdd(2, 3);
+    }${getWorkflowTransformCode('workflow')}`;
+
+  const stepBodySpy = vi.fn(async (a: number, b: number) => a + b);
+  registerStepFunction('resilientAdd', stepBodySpy);
+
+  /**
+   * Drives the handler with a background-step message carrying `stepInput`.
+   * The event log is seeded with a pending unrelated step so the handler
+   * returns after the step executes (no full workflow replay to converge).
+   */
+  async function driveStepMessage(opts: {
+    runId: string;
+    attempt: number;
+    /** Reject the step_created re-ensure with this error. */
+    ensureError?: Error;
+    omitStepInput?: boolean;
+    /**
+     * Simulate the delivery beating the producer's parallel step_created:
+     * bare step_started rejects with this error until a step_created for the
+     * step has been written (the in-band re-ensure path).
+     */
+    stepMissingError?: Error;
+  }) {
+    const stepId = 'step_resilient_1';
+    const dehydratedInput = (await dehydrateStepArguments(
+      { args: [2, 3], closureVars: [], thisVal: null },
+      opts.runId,
+      undefined
+    )) as Uint8Array;
+
+    const workflowRun: WorkflowRun = {
+      runId: opts.runId,
+      workflowName: 'workflow',
+      status: 'running',
+      specVersion: SPEC_VERSION_CURRENT,
+      input: await dehydrateWorkflowArguments([], opts.runId, undefined, []),
+      createdAt: new Date('2024-01-01T00:00:00.000Z'),
+      updatedAt: new Date('2024-01-01T00:00:00.000Z'),
+      startedAt: new Date('2024-01-01T00:00:00.000Z'),
+      deploymentId: 'test-deployment',
+    };
+
+    let eventSeq = 0;
+    const durableEvents: Event[] = [
+      // An unrelated pending step: keeps the run un-replayable so the handler
+      // returns right after the background step completes.
+      {
+        eventId: 'event-other',
+        runId: opts.runId,
+        createdAt: new Date(),
+        eventType: 'step_created',
+        specVersion: SPEC_VERSION_CURRENT,
+        correlationId: 'step_other',
+        eventData: { stepName: 'otherStep', input: dehydratedInput },
+      } as unknown as Event,
+    ];
+    const recordEvent = (data: any): Event => {
+      eventSeq += 1;
+      const created = {
+        eventId: `event-${eventSeq}`,
+        runId: opts.runId,
+        createdAt: new Date(),
+        ...data,
+      } as Event;
+      durableEvents.push(created);
+      return created;
+    };
+
+    const createdEvents: any[] = [];
+    const createdEventParams: any[] = [];
+    let stepEntityExists = false;
+    const eventsCreate = vi.fn(
+      async (_runId: string, data: any, params?: any) => {
+        createdEvents.push(data);
+        createdEventParams.push(params);
+        if (data.eventType === 'step_created') {
+          if (opts.ensureError) throw opts.ensureError;
+          stepEntityExists = true;
+          return { event: recordEvent(data) };
+        }
+        if (data.eventType === 'step_started') {
+          if (opts.stepMissingError && !stepEntityExists) {
+            throw opts.stepMissingError;
+          }
+          return {
+            event: recordEvent(data),
+            step: {
+              runId: opts.runId,
+              stepId,
+              stepName: 'resilientAdd',
+              status: 'running' as const,
+              attempt: 1,
+              input: dehydratedInput,
+              startedAt: new Date(),
+              createdAt: new Date(),
+              updatedAt: new Date(),
+            },
+          };
+        }
+        return { event: recordEvent(data) };
+      }
+    );
+
+    setWorld({
+      specVersion: SPEC_VERSION_CURRENT,
+      createQueueHandler: vi.fn(
+        (
+          _prefix: string,
+          handler: (message: unknown, metadata: unknown) => Promise<unknown>
+        ) => {
+          return async () => {
+            await handler(
+              {
+                runId: opts.runId,
+                stepId,
+                stepName: 'resilientAdd',
+                requestedAt: new Date('2024-01-01T00:00:00.000Z'),
+                ...(opts.omitStepInput
+                  ? {}
+                  : { stepInput: { input: dehydratedInput } }),
+              },
+              {
+                requestId: 'req_test',
+                attempt: opts.attempt,
+                queueName: '__wkf_workflow_workflow',
+                messageId: 'msg_test',
+              }
+            );
+            return new Response(null, { status: 204 });
+          };
+        }
+      ),
+      events: {
+        create: eventsCreate,
+        list: vi.fn(async () => ({
+          data: [...durableEvents],
+          hasMore: false,
+          cursor: 'cursor_test',
+        })),
+      },
+      runs: {
+        get: vi.fn(async () => workflowRun),
+      },
+      queue: vi.fn(async () => ({ messageId: null })),
+      getEncryptionKeyForRun: vi.fn(async () => undefined),
+    } as any);
+
+    const handler = workflowEntrypoint(resilientWorkflow);
+    const response = (await handler(
+      new Request('https://example.test')
+    )) as Response;
+    return { response, createdEvents, createdEventParams, dehydratedInput };
+  }
+
+  it('materializes step_created from stepInput on a redelivery before executing', async () => {
+    const { response, createdEvents, createdEventParams, dehydratedInput } =
+      await driveStepMessage({
+        runId: 'wrun_resilient_step_materialize',
+        attempt: 2,
+      });
+
+    expect(response.status).toBe(204);
+    // The re-ensure wrote the step_created with the message's payload…
+    expect(createdEvents).toContainEqual(
+      expect.objectContaining({
+        eventType: 'step_created',
+        correlationId: 'step_resilient_1',
+        eventData: expect.objectContaining({
+          stepName: 'resilientAdd',
+          input: dehydratedInput,
+        }),
+      })
+    );
+    // …marked as a dispatch re-ensure so a guard-enforcing backend can refuse
+    // it when the producer's write was 412-rejected (dispatch revoked).
+    const ensureParamIdx = createdEvents.findIndex(
+      (e) => e.eventType === 'step_created'
+    );
+    expect(createdEventParams[ensureParamIdx]).toMatchObject({
+      viaStepDispatch: true,
+    });
+    // …and it preceded the step's start.
+    const createdIdx = createdEvents.findIndex(
+      (e) => e.eventType === 'step_created'
+    );
+    const startedIdx = createdEvents.findIndex(
+      (e) => e.eventType === 'step_started'
+    );
+    expect(createdIdx).toBeGreaterThanOrEqual(0);
+    expect(createdIdx).toBeLessThan(startedIdx);
+    // The step body ran and its terminal event was written.
+    expect(stepBodySpy).toHaveBeenCalledWith(2, 3);
+    expect(createdEvents).toContainEqual(
+      expect.objectContaining({
+        eventType: 'step_completed',
+        correlationId: 'step_resilient_1',
+      })
+    );
+  });
+
+  it('skips the re-ensure on a first delivery (no per-step write overhead)', async () => {
+    const { response, createdEvents } = await driveStepMessage({
+      runId: 'wrun_resilient_step_first_delivery',
+      attempt: 1,
+    });
+
+    expect(response.status).toBe(204);
+    expect(
+      createdEvents.filter((e) => e.eventType === 'step_created')
+    ).toHaveLength(0);
+    expect(createdEvents).toContainEqual(
+      expect.objectContaining({
+        eventType: 'step_completed',
+        correlationId: 'step_resilient_1',
+      })
+    );
+  });
+
+  it('treats an EntityConflict re-ensure as the common already-created case', async () => {
+    const { response, createdEvents } = await driveStepMessage({
+      runId: 'wrun_resilient_step_conflict',
+      attempt: 2,
+      ensureError: new EntityConflictError('already exists'),
+    });
+
+    expect(response.status).toBe(204);
+    // The conflict is swallowed and the step still executes to completion.
+    expect(createdEvents).toContainEqual(
+      expect.objectContaining({
+        eventType: 'step_completed',
+        correlationId: 'step_resilient_1',
+      })
+    );
+  });
+
+  it('does not re-ensure when the message carries no stepInput (legacy dispatch)', async () => {
+    const { response, createdEvents } = await driveStepMessage({
+      runId: 'wrun_resilient_step_legacy',
+      attempt: 2,
+      omitStepInput: true,
+    });
+
+    expect(response.status).toBe(204);
+    expect(
+      createdEvents.filter((e) => e.eventType === 'step_created')
+    ).toHaveLength(0);
+  });
+
+  // The load-bearing recovery: a FIRST delivery that beats (or outlives a
+  // transient failure of) the producer's parallel step_created must
+  // materialize the step and execute it within the same delivery. It cannot
+  // wait for a redelivery — world-vercel's failure retries re-enqueue fresh
+  // messages whose attempt resets to 1, so an attempt-gated recovery would
+  // stall the step until the original message's ~300s visibility-timeout
+  // redelivery (measured exactly so in the durabench parallel sweeps).
+  it('recovers in-band on attempt 1 when the bare start rejects with step-not-found (world-vercel shape)', async () => {
+    const { response, createdEvents, createdEventParams } =
+      await driveStepMessage({
+        runId: 'wrun_resilient_step_inband_vercel',
+        attempt: 1,
+        stepMissingError: new WorkflowWorldError(
+          'workflow step step_resilient_1 not found',
+          { status: 404 }
+        ),
+      });
+
+    expect(response.status).toBe(204);
+    // Order: failed bare start → re-ensured step_created (viaStepDispatch) →
+    // successful start → completion, all in this delivery.
+    const types = createdEvents.map((e) => e.eventType);
+    expect(types).toEqual([
+      'step_started',
+      'step_created',
+      'step_started',
+      'step_completed',
+    ]);
+    const ensureIdx = types.indexOf('step_created');
+    expect(createdEventParams[ensureIdx]).toMatchObject({
+      viaStepDispatch: true,
+    });
+  });
+
+  it('recovers in-band on attempt 1 with the local-world error shape (no status)', async () => {
+    const { response, createdEvents } = await driveStepMessage({
+      runId: 'wrun_resilient_step_inband_local',
+      attempt: 1,
+      stepMissingError: new WorkflowWorldError(
+        'Step "step_resilient_1" not found'
+      ),
+    });
+
+    expect(response.status).toBe(204);
+    expect(createdEvents.map((e) => e.eventType)).toEqual([
+      'step_started',
+      'step_created',
+      'step_started',
+      'step_completed',
+    ]);
+  });
+
+  it('propagates step-not-found without stepInput (nothing to recover from)', async () => {
+    await expect(
+      driveStepMessage({
+        runId: 'wrun_resilient_step_inband_legacy',
+        attempt: 1,
+        omitStepInput: true,
+        stepMissingError: new WorkflowWorldError(
+          'workflow step step_resilient_1 not found',
+          { status: 404 }
+        ),
+      })
+    ).rejects.toThrow('not found');
   });
 });
 

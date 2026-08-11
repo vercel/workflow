@@ -4,13 +4,13 @@ import {
   getInlineOwnershipLeaseSeconds,
   getStepDispatchWatchdogSeconds,
 } from './constants.js';
+import { stepDispatchIdempotencyKey } from './helpers.js';
 import {
   dispatchLostAtMs,
   getStepDispatchWake,
   isStepAwaitingFirstStart,
   nextStepDispatchBoundaryMs,
   stepDispatchEpoch,
-  stepDispatchIdempotencyKey,
 } from './step-dispatch.js';
 
 const WATCHDOG_ENV = 'WORKFLOW_STEP_DISPATCH_WATCHDOG_SECONDS';
@@ -124,41 +124,53 @@ describe('dispatchLostAtMs', () => {
   });
 });
 
-describe('stepDispatchIdempotencyKey', () => {
-  it('uses the bare correlation ID within the first watchdog interval', () => {
+/**
+ * The key a dispatch is actually published under: the step-identity key from
+ * `helpers.ts`, suffixed with the watchdog epoch. Every producer of a step
+ * message shares the unsuffixed form, so the two layers are asserted together.
+ */
+function dispatchKey(step: StepInvocationQueueItem, nowMs: number): string {
+  return stepDispatchIdempotencyKey(
+    step.correlationId,
+    step.stepName,
+    stepDispatchEpoch(step, nowMs)
+  );
+}
+
+/** The unsuffixed identity key, as the other step-message producers derive it. */
+function identityKey(step: StepInvocationQueueItem): string {
+  return stepDispatchIdempotencyKey(step.correlationId, step.stepName);
+}
+
+describe('dispatch idempotency key', () => {
+  it('is the identity key within the first watchdog interval', () => {
     const step = makeStep();
-    expect(stepDispatchIdempotencyKey(step, CREATED_AT)).toBe(
-      step.correlationId
-    );
-    expect(stepDispatchIdempotencyKey(step, atIntervals(1))).toBe(
-      step.correlationId
-    );
+    expect(dispatchKey(step, CREATED_AT)).toBe(identityKey(step));
+    expect(dispatchKey(step, atIntervals(1))).toBe(identityKey(step));
   });
 
   it('moves to a fresh key once an interval has passed without a start', () => {
     const step = makeStep();
-    expect(stepDispatchIdempotencyKey(step, atIntervals(1) + 1)).toBe(
-      `${step.correlationId}:dispatch:1`
+    expect(dispatchKey(step, atIntervals(1) + 1)).toBe(
+      `${identityKey(step)}:dispatch:1`
     );
-    expect(stepDispatchIdempotencyKey(step, atIntervals(2.5))).toBe(
-      `${step.correlationId}:dispatch:2`
+    expect(dispatchKey(step, atIntervals(2.5))).toBe(
+      `${identityKey(step)}:dispatch:2`
     );
   });
 
   it('is stable across replays within one epoch', () => {
     const step = makeStep();
-    const early = stepDispatchIdempotencyKey(step, atIntervals(1.01));
-    const late = stepDispatchIdempotencyKey(step, atIntervals(1.99));
+    const early = dispatchKey(step, atIntervals(1.01));
+    const late = dispatchKey(step, atIntervals(1.99));
     expect(early).toBe(late);
   });
 
-  it('keeps the bare key for a started step while its lease is live', () => {
+  it('keeps the identity key for a started step while its lease is live', () => {
     // A step mid-body may take far longer than the watchdog interval, so the
     // ownership lease is the only deadline that may act on it.
     const step = startedStep();
-    expect(stepDispatchIdempotencyKey(step, atLeaseOffset(-1))).toBe(
-      step.correlationId
-    );
+    expect(dispatchKey(step, atLeaseOffset(-1))).toBe(identityKey(step));
   });
 
   it('moves to a fresh key once a started step outlives its lease', () => {
@@ -166,34 +178,41 @@ describe('stepDispatchIdempotencyKey', () => {
     // inline backstop wake brings a replay back, and this is the key that
     // makes its re-dispatch reach the queue rather than being deduped away.
     const step = startedStep();
-    expect(stepDispatchIdempotencyKey(step, atLeaseOffset(1))).toBe(
-      `${step.correlationId}:dispatch:1`
+    expect(dispatchKey(step, atLeaseOffset(1))).toBe(
+      `${identityKey(step)}:dispatch:1`
     );
-    expect(stepDispatchIdempotencyKey(step, atLeaseOffset(intervalMs()))).toBe(
-      `${step.correlationId}:dispatch:2`
+    expect(dispatchKey(step, atLeaseOffset(intervalMs()))).toBe(
+      `${identityKey(step)}:dispatch:2`
     );
   });
 
-  it('keeps the bare key for a step whose retry is already queued', () => {
-    // step_retrying means the owner scheduled the next attempt under the bare
-    // key, with a backoff that may legitimately exceed any deadline here.
+  it('keeps the identity key for a step whose retry is already queued', () => {
+    // step_retrying means the owner scheduled the next attempt under the
+    // identity key, with a backoff that may legitimately exceed any deadline
+    // here.
     const step = startedStep({ sawRetrying: true });
-    expect(stepDispatchIdempotencyKey(step, atLeaseOffset(intervalMs()))).toBe(
-      step.correlationId
+    expect(dispatchKey(step, atLeaseOffset(intervalMs()))).toBe(
+      identityKey(step)
     );
   });
 
-  it('keeps the bare key when the world reports no creation timestamp', () => {
+  it('keeps the identity key when the world reports no creation timestamp', () => {
     const step = makeStep({ createdEventAt: undefined });
-    expect(stepDispatchIdempotencyKey(step, atIntervals(10))).toBe(
-      step.correlationId
-    );
+    expect(dispatchKey(step, atIntervals(10))).toBe(identityKey(step));
   });
 
-  it('keeps the bare key when the creation timestamp is in the future', () => {
+  it('keeps the identity key when the creation timestamp is in the future', () => {
     const step = makeStep();
-    expect(stepDispatchIdempotencyKey(step, CREATED_AT - 60_000)).toBe(
-      step.correlationId
+    expect(dispatchKey(step, CREATED_AT - 60_000)).toBe(identityKey(step));
+  });
+
+  it('separates two steps that share a correlation ID', () => {
+    // A guard-corrected replay can re-derive one correlation ID for a
+    // different step; the epoch suffix must not collapse them.
+    const a = makeStep({ stepName: 'first' });
+    const b = makeStep({ stepName: 'second' });
+    expect(dispatchKey(a, atIntervals(2))).not.toBe(
+      dispatchKey(b, atIntervals(2))
     );
   });
 

@@ -7,10 +7,11 @@ import {
 /**
  * Re-dispatch watchdog for a pending step whose dispatch is gone.
  *
- * A pending step is dispatched as a queue message keyed by its correlation
- * ID. Queues dedupe an idempotency key for the lifetime of the original
- * message, so that key is effectively permanent: once a message has been
- * accepted under it, every later replay's re-send is silently absorbed. That
+ * A pending step is dispatched as a queue message keyed by the step's identity
+ * (`stepDispatchIdempotencyKey`). Queues dedupe an idempotency key for the
+ * lifetime of the original message, so that key is effectively permanent: once
+ * a message has been accepted under it, every later replay's re-send is
+ * silently absorbed. That
  * is the intended behaviour while the message is doing its job — concurrent
  * wake replays must not multiply the dispatch — but it also means a step whose
  * message stops making progress can never be dispatched again. The run then
@@ -25,20 +26,20 @@ import {
  *    invocation executing the body disappears before writing a terminal
  *    event. Inline-owned steps have a backstop wake at their ownership lease
  *    for exactly this, but the wake only brings a replay back: the re-dispatch
- *    it then attempts carried the bare correlation ID, which the queue had
- *    already claimed, so the recovery was absorbed and the run went silent for
- *    good.
+ *    it then attempts carried the same key the queue had already claimed, so
+ *    the recovery was absorbed and the run went silent for good.
  *
  * The watchdog gives those dispatches an epoch, counted from the point the
- * dispatch is presumed lost (see `dispatchLostAtMs`). Every replay derives the
- * epoch from durable event timestamps, so concurrent replays agree on the key
- * and fan-out stays capped at one message per epoch, while a step still
- * pending an interval later gets a key the queue has never seen and is
- * dispatched again.
+ * dispatch is presumed lost (see `dispatchLostAtMs`), which the dispatch key is
+ * suffixed with. Every replay derives the epoch from durable event timestamps,
+ * so concurrent replays agree on the key and fan-out stays capped at one
+ * message per epoch, while a step still pending an interval later gets a key
+ * the queue has never seen and is dispatched again.
  *
  * Out of scope: a step in `step_retrying`. Its retry is already queued under
- * the bare key with a backoff that can legitimately exceed any interval here,
- * and re-dispatching it would duplicate work that is scheduled and healthy.
+ * the unsuffixed key with a backoff that can legitimately exceed any interval
+ * here, and re-dispatching it would duplicate work that is scheduled and
+ * healthy.
  *
  * Re-dispatch is at-least-once: if the original message was merely slow
  * rather than lost, both deliveries execute the step body and the loser's
@@ -111,9 +112,10 @@ export function dispatchLostAtMs(step: StepDispatchState): number | undefined {
  * How many re-dispatches the watchdog has reached for this step. 0 means the
  * current dispatch is not yet presumed lost, or the step is out of scope (a
  * retry in flight, or a world whose events carry no usable timestamp) — in
- * both cases dispatch keeps the bare correlation-ID key and today's behaviour
- * exactly. Past that the epoch advances once per watchdog interval, so a
- * re-dispatch that is itself lost is followed by another.
+ * both cases dispatch keeps the unsuffixed identity key, which every other
+ * producer of a step message uses. Past that the epoch advances once per
+ * watchdog interval, so a re-dispatch that is itself lost is followed by
+ * another.
  */
 export function stepDispatchEpoch(
   step: StepDispatchState,
@@ -124,23 +126,6 @@ export function stepDispatchEpoch(
   const elapsedMs = nowMs - lostAtMs;
   if (!Number.isFinite(elapsedMs) || elapsedMs <= 0) return 0;
   return Math.floor(elapsedMs / (getStepDispatchWatchdogSeconds() * 1000)) + 1;
-}
-
-/**
- * Idempotency key for a pending step's dispatch message. Epoch 0 is the bare
- * correlation ID, which is also the key the owner's retry handoff enqueues
- * under — the two must agree so a re-dispatch never races a queued retry.
- * Later epochs suffix the key so the queue sees a message it has not
- * deduped.
- */
-export function stepDispatchIdempotencyKey(
-  step: StepDispatchState,
-  nowMs: number
-): string {
-  const epoch = stepDispatchEpoch(step, nowMs);
-  return epoch === 0
-    ? step.correlationId
-    : `${step.correlationId}:dispatch:${epoch}`;
 }
 
 /**

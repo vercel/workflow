@@ -71,6 +71,14 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 - Only applies to Worlds with atomic, immutable deployments (the Vercel World). A run whose pinned deployment cannot be reached at all fails immediately regardless of this value.
 - Transient or unknown queue publishing failures use normal queue redelivery and do not consume this budget.
 
+### `WORKFLOW_RESILIENT_STEP_DISPATCH`
+
+- Default: enabled
+- When a suspension hands newly created steps to the queue, the runtime publishes each step's execution message in parallel with its `step_created` event write instead of sequencing them, cutting a round trip per dispatched step. The message also carries the serialized step input (`stepInput`), so a transient `step_created` write failure (429 / 5xx / transport) still executes the step — the queue consumer idempotently re-ensures the event before running it, converging with the producer's write on the step's correlation ID. This mirrors resilient start (`runInput`) and the lazy hook resume (`hookInput`).
+- The runtime falls back to the sequential create-then-publish dispatch automatically when the step input is too large to inline on the queue message, when the run's queue transport cannot carry binary payloads (pre-CBOR spec versions), or — on the `node` VM engine, whose suspension writes carry the [precondition guard](#workflow_precondition_guard) snapshot — when the World enforces that guard (`capabilities.preconditionGuard`; the Vercel World does): a guard-rejected `step_created` must not be materializable through the queue side-channel, and only sequencing the publish after the create gives the message a happens-after edge over the create's guard verdict. The `quickjs` engine's suspension writes are unguarded, so it uses resilient dispatch against every World.
+- Producer-side recoveries are reported on the suspension span as `workflow.step.resilient_dispatch_recovered`; a consumer that materialized the event reports `workflow.step.resilient_dispatch_materialized`.
+- Set `0` to force the sequential dispatch as a kill switch.
+
 ### `WORKFLOW_PRECONDITION_GUARD`
 
 - Default: enabled
@@ -162,7 +170,7 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 
 - Default: `60`
 - Clamp: `10` to `900`
-- How long a step may sit created but never started before the runtime re-dispatches it. A queued step message is deduplicated on its correlation ID, so if that message is lost the step would otherwise never be delivered again and the run would keep replaying with nothing to execute. Past this interval the re-dispatch uses a key the queue has not seen, and the runtime arms a timer on the boundary so the check happens even when nothing else wakes the run.
+- How long a step may sit created but never started before the runtime re-dispatches it. A queued step message is deduplicated on a key derived from the step's identity, so if that message is lost the step would otherwise never be delivered again and the run would keep replaying with nothing to execute. Past this interval the re-dispatch uses a key the queue has not seen, and the runtime arms a timer on the boundary so the check happens even when nothing else wakes the run.
 - Re-dispatch is at-least-once: if the original message was only slow, both deliveries execute the step body and the loser's result is discarded. Raise this if your queue's dispatch-to-start latency approaches the default.
 - A step that has already started gets the same treatment on a later deadline: it is presumed alive for the inline ownership lease above, and only past the lease does its re-dispatch move to a fresh key. This is what recovers a step whose invocation disappeared mid-body. Once past that point, the interval here is also how often the re-dispatch is retried.
 - Steps waiting on a scheduled retry (`step_retrying`) are left alone, since that retry is already queued with its own backoff.
