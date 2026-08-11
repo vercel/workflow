@@ -687,7 +687,15 @@ export async function handleSuspension({
           };
           try {
             await ensureRunReady();
-            await createGuarded(stepEvent, { requestId });
+            const created = await createGuarded(stepEvent, { requestId });
+            // Anchors the re-dispatch watchdog from this suspension onward,
+            // so a dispatch lost on the step's very first hand-off is still
+            // retried. Later replays read the same timestamp off the event
+            // log, so every invocation derives the same epoch and the same
+            // keys (runtime/step-dispatch.ts).
+            if (created.event?.createdAt) {
+              queueItem.createdEventAt = +new Date(created.event.createdAt);
+            }
             createdStepCorrelationIds.add(queueItem.correlationId);
           } catch (err) {
             if (EntityConflictError.is(err)) {

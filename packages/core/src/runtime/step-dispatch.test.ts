@@ -41,9 +41,20 @@ describe('isStepAwaitingFirstStart', () => {
     expect(isStepAwaitingFirstStart(makeStep())).toBe(true);
   });
 
-  it('is false before step_created is observed', () => {
+  it('is false when no durable creation timestamp is known', () => {
+    expect(
+      isStepAwaitingFirstStart(
+        makeStep({ hasCreatedEvent: false, createdEventAt: undefined })
+      )
+    ).toBe(false);
+  });
+
+  it('is true for a step whose creation this invocation just wrote', () => {
+    // The suspension that writes step_created stamps the timestamp onto the
+    // queue item it is about to dispatch, so a dispatch lost on the very
+    // first hand-off is still covered.
     expect(isStepAwaitingFirstStart(makeStep({ hasCreatedEvent: false }))).toBe(
-      false
+      true
     );
   });
 

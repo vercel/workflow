@@ -225,6 +225,14 @@ async function dispatchPendingOps(params: {
 }): Promise<{
   createdAttributeEvent: boolean;
   createdGetConflictHook: boolean;
+  /**
+   * `createdAt` (ms) of every `step_created` written by this call, keyed by
+   * correlation ID. The overflow hand-off queues those steps in the same turn,
+   * before any feed observes their events, so this is the only way their
+   * dispatch can be watchdog-scoped from the first hand-off on
+   * (step-dispatch.ts).
+   */
+  stepCreatedAtMs: Map<string, number>;
 }> {
   const {
     world,
@@ -246,6 +254,7 @@ async function dispatchPendingOps(params: {
   // setAttributes() promise), so the entrypoint requeues immediately —
   // same pattern as an elapsed wait.
   let createdAttributeEvent = false;
+  const stepCreatedAtMs = new Map<string, number>();
   const opsPromises: Promise<void>[] = [];
 
   const processHookOp = async (hook: PendingHook): Promise<void> => {
@@ -459,7 +468,7 @@ async function dispatchPendingOps(params: {
           // on the host side — matching what
           // `dehydrateStepArguments` does in the node:vm engine.
           try {
-            await world.events.create(runId, {
+            const created = await world.events.create(runId, {
               eventType: 'step_created',
               specVersion: SPEC_VERSION_CURRENT,
               correlationId: step.correlationId,
@@ -468,6 +477,12 @@ async function dispatchPendingOps(params: {
                 input: await encryptSerializedData(step.input, encryptionKey),
               },
             });
+            if (created.event?.createdAt) {
+              stepCreatedAtMs.set(
+                step.correlationId,
+                +new Date(created.event.createdAt)
+              );
+            }
           } catch (err) {
             if (EntityConflictError.is(err)) return;
             throw err;
@@ -532,7 +547,7 @@ async function dispatchPendingOps(params: {
   // Per-op dispatch runs in parallel.
   await Promise.all(opsPromises);
 
-  return { createdAttributeEvent, createdGetConflictHook };
+  return { createdAttributeEvent, createdGetConflictHook, stepCreatedAtMs };
 }
 
 /**
@@ -914,16 +929,25 @@ export async function runWorkflowWithQuickJS(params: {
       createdAtMs?: number;
     }
   >();
+  const recordStepCreatedAt = (
+    correlationId: string,
+    createdAtMs: number | undefined
+  ): void => {
+    const prior = stepOwnership.get(correlationId);
+    stepOwnership.set(correlationId, {
+      sawRetrying: false,
+      ...(prior ?? {}),
+      createdAtMs,
+    });
+  };
   const observeEventsForOwnership = (observed: Event[]): void => {
     for (const e of observed) {
       if (e.correlationId === undefined) continue;
       if (e.eventType === 'step_created') {
-        const prior = stepOwnership.get(e.correlationId);
-        stepOwnership.set(e.correlationId, {
-          sawRetrying: false,
-          ...(prior ?? {}),
-          createdAtMs: e.createdAt ? +new Date(e.createdAt) : undefined,
-        });
+        recordStepCreatedAt(
+          e.correlationId,
+          e.createdAt ? +new Date(e.createdAt) : undefined
+        );
       } else if (e.eventType === 'step_started') {
         const owner =
           'eventData' in e &&
@@ -951,15 +975,14 @@ export async function runWorkflowWithQuickJS(params: {
   observeEventsForOwnership(events);
   /**
    * The re-dispatch watchdog's view of a pending step, assembled from the
-   * ownership map. A step this invocation is creating right now carries no
-   * observed `step_created` yet, so it is out of scope and keeps the bare
-   * dispatch key.
+   * ownership map. Creation timestamps come from the log for steps created by
+   * an earlier invocation and from the write itself for steps created in this
+   * turn, so a step is in watchdog scope from its very first hand-off.
    */
   const dispatchStateOf = (step: PendingStep): StepDispatchState => {
     const ownership = stepOwnership.get(step.correlationId);
     return {
       correlationId: step.correlationId,
-      hasCreatedEvent: step.hasCreatedEvent,
       createdEventAt: ownership?.createdAtMs,
       lastStartedAt: ownership?.startedAtMs,
       sawRetrying: ownership?.sawRetrying,
@@ -1078,6 +1101,9 @@ export async function runWorkflowWithQuickJS(params: {
         dispatched.createdGetConflictHook
       ) {
         pendingRequeueSignal = true;
+      }
+      for (const [correlationId, createdAtMs] of dispatched.stepCreatedAtMs) {
+        recordStepCreatedAt(correlationId, createdAtMs);
       }
 
       // Hand steps beyond the inline cap to the queue NOW — in the same

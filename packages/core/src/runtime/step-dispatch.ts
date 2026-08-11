@@ -43,9 +43,13 @@ import {
  */
 export interface StepDispatchState {
   correlationId: string;
-  /** Whether a durable `step_created` was observed for this step. */
-  hasCreatedEvent?: boolean;
-  /** `createdAt` (ms) of that `step_created`, when the world reports one. */
+  /**
+   * `createdAt` (ms) of the step's durable `step_created`: stamped by the
+   * suspension that wrote it, and re-derived from the log by every later
+   * replay. Undefined means no durable creation is known to this
+   * invocation (a lazily-created inline step, or a world whose events carry
+   * no usable timestamp), which leaves the step out of watchdog scope.
+   */
   createdEventAt?: number;
   /** `createdAt` (ms) of the latest observed `step_started`, if any. */
   lastStartedAt?: number;
@@ -54,13 +58,14 @@ export interface StepDispatchState {
 }
 
 /**
- * Whether a pending step is waiting for its first `step_started`: created
- * durably, no start observed, and no `step_retrying` (which implies a prior
- * start). Steps outside this state keep the bare correlation-ID key.
+ * Whether a pending step is waiting for its first `step_started`: a durable
+ * creation timestamp is known, no start has been observed, and no
+ * `step_retrying` (which implies a prior start). Steps outside this state keep
+ * the bare correlation-ID key.
  */
 export function isStepAwaitingFirstStart(step: StepDispatchState): boolean {
   return (
-    step.hasCreatedEvent === true &&
+    step.createdEventAt !== undefined &&
     step.lastStartedAt === undefined &&
     step.sawRetrying !== true
   );
@@ -77,9 +82,9 @@ export function stepDispatchEpoch(
   step: StepDispatchState,
   nowMs: number
 ): number {
-  if (!isStepAwaitingFirstStart(step)) return 0;
-  if (step.createdEventAt === undefined) return 0;
-  const elapsedMs = nowMs - step.createdEventAt;
+  const createdEventAt = step.createdEventAt;
+  if (createdEventAt === undefined || !isStepAwaitingFirstStart(step)) return 0;
+  const elapsedMs = nowMs - createdEventAt;
   if (!Number.isFinite(elapsedMs) || elapsedMs <= 0) return 0;
   return Math.floor(elapsedMs / (getStepDispatchWatchdogSeconds() * 1000));
 }
@@ -111,12 +116,12 @@ export function nextStepDispatchBoundaryMs(
   step: StepDispatchState,
   nowMs: number
 ): number | undefined {
-  if (!isStepAwaitingFirstStart(step)) return undefined;
-  if (step.createdEventAt === undefined) return undefined;
+  const createdEventAt = step.createdEventAt;
+  if (createdEventAt === undefined || !isStepAwaitingFirstStart(step)) {
+    return undefined;
+  }
   const watchdogMs = getStepDispatchWatchdogSeconds() * 1000;
-  return (
-    step.createdEventAt + (stepDispatchEpoch(step, nowMs) + 1) * watchdogMs
-  );
+  return createdEventAt + (stepDispatchEpoch(step, nowMs) + 1) * watchdogMs;
 }
 
 /**
