@@ -123,6 +123,18 @@ describe('findDuplicateEventIds', () => {
     expect(descending).toEqual(ascending);
   });
 
+  it('skips events with no id, which callers cannot match on', () => {
+    const anonymous = (at: number) =>
+      ({
+        ...event('step_created', { correlationId: 'step_a', at }),
+        eventId: undefined,
+      }) as unknown as Event;
+
+    expect(findDuplicateEventIds([anonymous(1), anonymous(2)])).toEqual(
+      new Set()
+    );
+  });
+
   it('breaks timestamp ties on the order the log lists them in', () => {
     const first = event('wait_completed', { at: 5, correlationId: 'wait_a' });
     const second = event('wait_completed', { at: 5, correlationId: 'wait_a' });

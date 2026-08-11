@@ -77,6 +77,10 @@ export function findDuplicateEventIds(events: readonly Event[]): Set<string> {
 
   const seen = new Set<string>();
   for (const { event } of ordered) {
+    // An event the caller cannot identify cannot be marked: callers match on
+    // the id, so reporting a missing one would tar every other such event with
+    // it.
+    if (!event.eventId) continue;
     const key = entityKey(event);
     if (key === undefined) continue;
     if (seen.has(key)) {
