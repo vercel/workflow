@@ -293,11 +293,12 @@ export interface Held {
 export interface Writer {
   readonly id: WriterId;
   /**
-   * Stop just *before* this writer's `events.create` commits — the event has
-   * been decided and submitted, and nothing is in the log yet.
+   * Stop once the event has crossed the world boundary — fully formed,
+   * attributed to this writer, already in the trace — and before it is assigned
+   * a position in the event log.
    *
-   * No position has been minted yet either, so a write that lands while this one
-   * is held sorts *ahead* of it. For the opposite — an event that already owns an
+   * Having no position yet, a write that commits to storage while this one is
+   * held sorts *ahead* of it. For the opposite — an event that already owns an
    * earlier slot and has not appeared — use `runToPositionMinted`.
    */
   runToEventProduced(

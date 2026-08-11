@@ -64,8 +64,8 @@ does not exist yet.
 
 ### The three moves
 
-Every script is the same shape: **stop a writer at a named point, act while it
-is stopped, let it go.**
+Every script is the same shape: **hold a writer at a named point, act while it
+is held, let it go.**
 
 ```ts
 const wf = sim.writer.orchestrator();
@@ -89,16 +89,21 @@ the failure is loud, but knowing the rule saves the trip:
 | `step_completed` / `step_failed` for a step | `sim.writer.step('reserveInventory')` — the step body commits its own outcome |
 | whichever step body gets there first | `sim.writer.anyStep()` |
 
-Two steps sharing a function name share a writer id. The three `runTo*` methods
-differ in *where* in the call they stop:
+Two steps sharing a function name share a writer id. The three `runTo*`
+movements differ in *where* in the call they stop, and the difference between
+the first two is the whole reason both exist:
 
-- `runToEventProduced` — before the write is submitted. Nothing is minted yet.
-- `runToPositionMinted` — the log position is taken, the event is not there yet.
-- `runToEventCommitted` — the event is durable, the writer has not resumed.
+- `runToEventProduced` — the event has crossed the world boundary and has not
+  been assigned a position in the event log, so a write that commits during the
+  hold sorts *ahead* of it.
+- `runToPositionMinted` — it has a position and nothing can read it, so a write
+  that commits during the hold sorts *behind* it. That is the hole the guards
+  exist to catch.
+- `runToEventCommitted` — the event is committed to storage, the writer has not
+  resumed.
 
-`runToCall` reaches any world call by name, and `sim.park` / `sim.until` /
-`sim.during` are the primitive underneath — for a point no writer op names,
-such as a plain read.
+[API reference](#api-reference) has the full list, including the movements that
+are not on a writer at all.
 
 ### Two rules, both learned the hard way
 
@@ -113,10 +118,10 @@ such as a plain read.
 | | |
 | --- | --- |
 | `sim.deliverHook(token, payload)` | an out-of-band `resumeHook()`: commit `hook_received`, enqueue the flow message |
-| `sim.beginHookDelivery(...)` | the same delivery, stopped between its two halves — position taken, event not landed. Returns a handle with `.commit()` |
+| `sim.beginHookDelivery(...)` | the same delivery, withheld between its two halves. See [Withholdings](#withholdings) |
 | `sim.cancelRun(reason?)` | cancel, as an operator would |
 | `sim.advanceTime(ms)` | jump virtual time forward |
-| `sim.withholdNextEvent(reads?)` | hide the next committed event from the next `reads` event-log reads |
+| `sim.withholdNextEvent(reads?)` | hide the next committed event from the next `reads` reads. See [Withholdings](#withholdings) |
 | `sim.world` | a read-only view of the world at this instant |
 | `sim.note(message)` | a free-text marker in the trace |
 | `sim.check(name, condition)` | a named assertion in the trace; false fails the scenario |
@@ -154,6 +159,78 @@ outcome the run should have reached and stays red until the runtime gets there.
 this scenario plays in. The usual reason to set one is a **paired scenario**:
 the red one and the same tempo with a fix armed, one flag apart, so the diff is
 the argument. The command-line flags below override the spec for a whole run.
+
+## API reference
+
+### Writers
+
+A **writer** is one concurrent thread of execution against the world: the thing
+that crosses the world boundary, is assigned a position in the event log, and
+commits to storage. Several of them writing to one log is the simulation's
+entire subject.
+
+| handle | writer id | what it is |
+| --- | --- | --- |
+| `sim.writer.orchestrator()` | `orchestrator` | The workflow function and the machinery around it — the suspension handler committing `step_created` / `step_started` / `hook_created` / `wait_created`, the run lifecycle writes, and the reads that decide what to do next. One per queue delivery. |
+| `sim.writer.step(shortName)` | `step:<shortName>` | One step body, which commits its own `step_completed` / `step_failed`. Several are in flight inside a single delivery. Two steps sharing a function name share the id. |
+| `sim.writer.anyStep()` | `step:*` | Whichever step body reaches the movement first. |
+| `sim.writer.any()` | `*` | Whichever writer reaches the movement first. |
+| — | `external` | The scenario itself, standing in for what a deployment does out of band: a webhook receiver, an operator cancelling a run. It has no handle and takes no movements — see [Withholdings](#withholdings) for the one place inside it a scenario can reach. |
+
+A handle is a *name*, not a live object: `sim.writer.step('slow')` can be taken
+before that step exists and resolves against whichever writer turns up under the
+name. `sim.writer.seen()` is not a writer but the ids observed so far, in
+first-appearance order.
+
+### Movements
+
+A **movement** is an instruction given to a writer to move to a specific place
+and pause there — *held*, in the word the API and the trace use. Every other
+writer keeps running; the held one resumes on `release()`.
+
+| method | writer | description |
+| --- | --- | --- |
+| `wf.runToEventProduced(type, opts?)` | any | Hold once the event has crossed the world boundary — fully formed, attributed, in the trace — and before it is assigned a position in the event log. Anything committed to storage during the hold sorts *ahead* of it. |
+| `wf.runToPositionMinted(type, opts?)` | any | Hold once the event is assigned a position in the event log and before it is committed to storage. The position is fixed and no reader can see it, so anything committed during the hold sorts *behind* it. |
+| `wf.runToEventCommitted(type, opts?)` | any | Hold once the event is committed to storage, before the writer resumes. |
+| `wf.runToCall(call, opts?)` | any | The same three places, for a world call that is not `events.create` — `events.list`, `runs.update`, a queue send. `opts.phase` picks which; it defaults to after the call returns. |
+| `wf.release()` | the held one | Resume. Idempotent; awaiting it yields the event loop, so the writer has really moved by the time it resolves. |
+| `sim.park(match, label?)` | whichever matches | Hold the next call that matches, whoever makes it. Edge-triggered, unlike `runTo`: it waits for the next occurrence instead of erroring on one already gone by. |
+| `sim.until(match, label?)` | whichever matches | Wait for a matching call to cross the world boundary, without holding it. |
+| `sim.during(match, body)` | whichever matches | `park`, run `body` while it is held, then release. |
+
+`type` is one event type or an array of them. `opts` is a step name as a bare
+string, or `{stepName, token, correlationId, where, label, timeoutMs}`.
+
+Not every world assigns a position without also committing it. Under
+`--append-only` the position an event holds at `runToPositionMinted` is
+provisional — a write overtaken while paused is reassigned to the tail when it
+commits — so the gap that movement exists to open is closed by construction.
+That is a result the book is there to produce, not a reason to avoid the
+movement.
+
+### Withholdings
+
+A **withholding** keeps something out of what a reader can see without holding
+the writer that produced it. Where a movement stops one thread, a withholding
+lets every thread run and changes what storage answers.
+
+| method | writer | description |
+| --- | --- | --- |
+| `sim.withholdNextEvent(reads?)` | whichever commits next | Hide the next event committed to storage from the next `reads` event-log reads (default 1). Call it immediately before the write to hide. |
+| `sim.beginHookDelivery(token, payload)` | `external` | Deliver a hook, withheld between its two halves: assigned a position in the event log, not committed to storage. Returns `{eventId, commit()}`. |
+
+`beginHookDelivery` is the one place inside an `external` writer a scenario can
+reach, and it is a withholding rather than a movement because holding that
+writer would be the wrong model: an out-of-band receiver is a separate process
+from the run's invocation, so nothing of the run's is blocked while its write is
+in flight. Holding an inline write instead would stall the delivery that made
+it, and the reader with it.
+
+Both are world-sensitive the same way `runToPositionMinted` is. Under
+`--append-only` a withheld read is cut short at the withheld event rather than
+missing it from the middle — the log can be behind, never wrong — and a hook
+whose position was overtaken re-takes the tail on `commit()`.
 
 ## Flags
 
@@ -235,52 +312,26 @@ microseconds, a step that retries twice, cancellation landing mid-step, and a
 hook that never arrives — which is reported as a stall naming the undelivered
 token rather than hanging the run.
 
-## The six red scenarios
+## Red scenarios
 
-Six scenarios fail, on purpose and by construction. `pnpm sim` exits non-zero.
+Some scenarios fail, on purpose and by construction, and `pnpm sim` exits
+non-zero because of them. They are reproductions of corruptions the runtime can
+still produce: each states the outcome the run should have reached — the branch
+its own durable log implies — and fails until the runtime gets there. The
+failure line names both sides, e.g. `expected "afterSlow:doc-26", got
+"afterFast:doc-26"`.
 
-They are reproductions of corruptions the runtime can still produce. Each one
-states the outcome the run should have reached — the branch its own durable log
-implies — and fails until the runtime gets there. The failure line names both
-sides, e.g. `expected "afterSlow:doc-26", got "afterFast:doc-26"`. So a red is
-an open bug rather than a recorded observation, and it turns green when the bug
-is fixed rather than when the bug is seen once more.
+So a red is an open bug, not a recorded observation, and it goes green when the
+bug is fixed rather than when the bug is seen once more. Which means the count
+is the thing to watch, in either direction: one more is a regression, one fewer
+means a scenario is ready to retire.
 
-The number is the thing to watch: **six today**. A seventh is a regression, and
-five means something got fixed and a scenario is ready to retire.
-
-| id | fix | shown green by |
-| --- | --- | --- |
-| `stale-read-step-count-fork` (doc-23) | `preconditionGuard` | `stale-read-step-count-fork-fenced` |
-| `stale-read-equal-step-counts` (doc-25) | `preconditionGuard` | none yet |
-| `step-vs-step-fork` (doc-26) | `countGuard` | none yet |
-| `step-vs-step-fork-fenced` (doc-27) | `countGuard` | none yet |
-| `in-flight-before-decision` (doc-29) | `countGuard` | `in-flight-before-decision-counted` |
-| `in-flight-after-decision` (doc-31) | none in the SDK | — |
-
-Two have their fix demonstrated by a paired green scenario, three have one
-identified but unproven here, and one has no fix at all. Writing the three
-missing pairs is the obvious next increment.
-
-All six go green under `--append-only`.
-
-They also record what was ruled out along the way. The corruption needs no
-out-of-band event type — two racing step bodies in one delivery are enough. It
-needs no stale read either, once ids are minted at the handler boundary. And
-`preconditionGuard` fences the hook variant while missing the step-vs-step one,
-which is the asymmetry the count guard exists to fix.
-
-`in-flight-after-decision` has no fix because the hook lands in the quiescent
-gap between deliveries, where the run makes no writes and so meets no checks.
-Closing it needs an append-tail fence — `assertSlotAboveTail`, proposed in
-`vercel/workflow-server#692`.
-
-Worth separating "fixed" from "fixed in production". `preconditionGuard` is
-declared by `world-vercel`, so the stale-read hook scenarios have a fix that is
-really armed. `countGuard` needs the caller to send `stateEventCount`, which no
-client does — so those fixes exist in the World and are dark everywhere real.
-The table in [`DESIGN.md`](../../packages/world-sim/DESIGN.md#the-six) has the
-long form.
+Run the book to see the current set — this file deliberately does not keep a
+list, because a list here is a second copy of something the book already says
+exactly, and it is the copy that goes stale. The analysis that is *not*
+re-derivable from a run — which guard closes which shape, which of those guards
+is armed in production and which is dark — is in
+[`DESIGN.md`](../../packages/world-sim/DESIGN.md#the-six).
 
 ## Requirements
 
