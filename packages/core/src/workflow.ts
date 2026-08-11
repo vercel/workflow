@@ -19,10 +19,8 @@ import { EventConsumerResult, EventsConsumer } from './events-consumer.js';
 import type { QueueItem } from './global.js';
 import { ENOTSUP, WorkflowSuspension } from './global.js';
 import { runtimeLogger } from './logger.js';
-import {
-  hasInFlightDelivery,
-  type WorkflowOrchestratorContext,
-} from './private.js';
+import type { WorkflowOrchestratorContext } from './private.js';
+import { isDeliveryIdle } from './private.js';
 import { ReplayPayloadCache } from './replay-payload-cache.js';
 import { getPortLazy } from './runtime/get-port-lazy.js';
 import {
@@ -428,9 +426,10 @@ async function createWorkflowSession({
   // by step/hook/sleep callbacks as events are processed.
   const promiseQueueHolder = { current: Promise.resolve() };
 
-  // Assigned immediately below. The consumer needs to test the context's
-  // delivery state, and the context needs the consumer.
-  let workflowContext: WorkflowOrchestratorContext;
+  // Same reason as the queue holder: the consumer is built before the context
+  // whose delivery state it has to read. Idle until the context exists, which
+  // is before any delivery can be registered against it.
+  const deliveryIdleHolder = { current: (): boolean => true };
 
   const eventsConsumer = new EventsConsumer(events, {
     onConsumedEvent: (event) => {
@@ -451,11 +450,10 @@ async function createWorkflowSession({
       );
     },
     getPromiseQueue: () => promiseQueueHolder.current,
-    isDeliveryInFlight: () =>
-      workflowContext !== undefined && hasInFlightDelivery(workflowContext),
+    isDeliveryIdle: () => deliveryIdleHolder.current(),
   });
 
-  workflowContext = {
+  const workflowContext: WorkflowOrchestratorContext = {
     runId: workflowRun.runId,
     encryptionKey,
     worldCapabilities,
@@ -478,6 +476,8 @@ async function createWorkflowSession({
     pendingDeliveryBarriers: new Map(),
     replayPayloadCache,
   };
+
+  deliveryIdleHolder.current = () => isDeliveryIdle(workflowContext);
 
   // Consume run lifecycle events - these are structural events that don't
   // need special handling in the workflow, but must be consumed to advance

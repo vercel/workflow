@@ -26,26 +26,6 @@ const getDeferredCheckDelayMs = (): number =>
     min: 10,
   });
 
-/**
- * Upper bound on how long the unconsumed-event check keeps re-arming while a
- * data delivery is still in flight (see `isDeliveryInFlight`). The delay above
- * is a margin for a microtask chain; this is a margin for real async work —
- * decrypting a hook payload, fetching a remote ref — that has to finish before
- * the VM can resume the branch that registers the next event's consumer.
- *
- * Bounded rather than unbounded so a genuinely orphaned event still reports,
- * and so a delivery that never lands cannot park the check forever.
- */
-export const DEFERRED_CHECK_MAX_GRACE_MS = 15_000;
-
-/** Override: `WORKFLOW_DEFERRED_CHECK_MAX_GRACE_MS`. */
-const getDeferredCheckMaxGraceMs = (): number =>
-  envNumber(
-    'WORKFLOW_DEFERRED_CHECK_MAX_GRACE_MS',
-    DEFERRED_CHECK_MAX_GRACE_MS,
-    { integer: true, min: 0 }
-  );
-
 export enum EventConsumerResult {
   /**
    * Callback consumed the event, but should not be removed from the callbacks list
@@ -86,15 +66,15 @@ export interface EventsConsumerOptions {
    */
   getPromiseQueue: () => Promise<void>;
   /**
-   * Whether a data delivery (step result, hook payload) is still on its way to
-   * the workflow. The unconsumed-event check re-arms while this holds instead
-   * of reporting: an event whose consumer has not been registered yet is
-   * indistinguishable from an orphaned one by log inspection alone, and the
-   * promise-queue drain does not cover the gap between a delivery's `resolve()`
-   * and the VM body reaching its next `subscribe()`. Defaults to never in
-   * flight, which is the plain wall-clock behaviour.
+   * Whether no data delivery is in flight (`isDeliveryIdle` in private.ts).
+   * The unconsumed-event check waits for this before it fires: a delivery in
+   * flight means the workflow VM is mid-reaction, and an event it has not
+   * claimed yet is an event it has not reached yet.
+   *
+   * Defaults to always-idle so the tests that drive a consumer with no
+   * orchestrator context keep the pre-existing timing.
    */
-  isDeliveryInFlight?: () => boolean;
+  isDeliveryIdle?: () => boolean;
 }
 
 export class EventsConsumer {
@@ -104,7 +84,7 @@ export class EventsConsumer {
   private onConsumedEvent?: (event: Event) => void;
   private onUnconsumedEvent: (event: Event) => void;
   private getPromiseQueue: () => Promise<void>;
-  private isDeliveryInFlight: () => boolean;
+  private isDeliveryIdle: () => boolean;
   private pendingUnconsumedCheck: Promise<void> | null = null;
   private pendingUnconsumedTimeout: ReturnType<typeof setTimeout> | null = null;
   private unconsumedCheckVersion = 0;
@@ -118,7 +98,7 @@ export class EventsConsumer {
     this.onConsumedEvent = options.onConsumedEvent;
     this.onUnconsumedEvent = options.onUnconsumedEvent;
     this.getPromiseQueue = options.getPromiseQueue;
-    this.isDeliveryInFlight = options.isDeliveryInFlight ?? (() => false);
+    this.isDeliveryIdle = options.isDeliveryIdle ?? (() => true);
   }
 
   append(events: Event[]): void {
@@ -240,66 +220,81 @@ export class EventsConsumer {
     // is still unconsumed after the queue drains, it's truly orphaned.
     if (currentEvent !== null) {
       const checkVersion = ++this.unconsumedCheckVersion;
-      this.armUnconsumedCheck(
-        currentEvent,
-        checkVersion,
-        getDeferredCheckMaxGraceMs()
-      );
+      this.pendingUnconsumedCheck = this.getPromiseQueue()
+        .then(
+          // Yield once after the first queue drain so promise chains resumed by
+          // that drain can run across the VM boundary and append any follow-up
+          // async work (for example: step_completed resolves -> for-await loop
+          // resumes -> the next hook payload starts hydrating).
+          () => new Promise<void>((resolve) => setTimeout(resolve, 0))
+        )
+        .then(() => this.getPromiseQueue())
+        .then(() => {
+          // Wait out any delivery still in flight before starting the timer.
+          // The queue draining says the host has no hydration work left; it
+          // does not say the VM has finished reacting to what was hydrated.
+          this.whenDeliveryIdle(checkVersion, () => {
+            // Use a delayed setTimeout once deliveries are idle. The delay must
+            // be long enough for promise chains to propagate across the VM
+            // boundary (from resolve() in the host context through to the
+            // workflow code calling subscribe() in the VM context). Node.js
+            // does not guarantee that setTimeout(0) fires after all
+            // cross-context microtasks settle, so we use a small but non-zero
+            // delay. Any subscribe() call that arrives during this window will
+            // cancel the check via version invalidation + clearTimeout.
+            this.pendingUnconsumedTimeout = setTimeout(() => {
+              this.pendingUnconsumedTimeout = null;
+              if (this.unconsumedCheckVersion === checkVersion) {
+                this.pendingUnconsumedCheck = null;
+                this.onUnconsumedEvent(currentEvent);
+              }
+            }, getDeferredCheckDelayMs());
+          });
+        });
     }
   }
 
   /**
-   * Wait for the promise queue to drain, then a short delay, then report
-   * `currentEvent` as unconsumed — unless a `subscribe()` invalidated
-   * `checkVersion` in the meantime, or a delivery is still in flight, in which
-   * case re-arm with `graceRemainingMs` reduced by the delay just spent.
+   * Run `fn` once no data delivery is in flight, polling the way
+   * `scheduleWhenIdle` does: let the promise queue drain, re-check a timer
+   * tick later, repeat.
+   *
+   * Without this the check is a bet that every delivery the walk is running
+   * ahead of lands inside a fixed window. Consumption is synchronous while the
+   * resolution it triggers is not: a step result hydrates in the host, resolves
+   * from a detached continuation behind `awaitEarlierDeliveries`, and only then
+   * does VM code run far enough to subscribe the next consumer. Replaying a
+   * batch of N parallel step results leaves N-1 of them on that detached path
+   * with the queue already drained, so the walk sits on the ordered event the
+   * VM is about to draw and the window is the only thing standing between a
+   * healthy run and `ReplayDivergenceError`. On a backend whose deliveries take
+   * longer than the window, that bet loses: the local race repro corrupts 34 of
+   * 42 runs at a 10ms window and 0 of 114 at 100ms, on the same event logs.
+   *
+   * Termination is `hasParkedCommittedDelivery`'s: it counts only deliveries
+   * that resolve on their own, so nothing here can gate its own retirement. A
+   * genuinely orphaned event has no delivery to wait on and reaches `fn` on the
+   * first poll.
    */
-  private armUnconsumedCheck(
-    currentEvent: Event,
-    checkVersion: number,
-    graceRemainingMs: number
-  ) {
-    const delay = getDeferredCheckDelayMs();
-    this.pendingUnconsumedCheck = this.getPromiseQueue()
-      .then(
-        // Yield once after the first queue drain so promise chains resumed by
-        // that drain can run across the VM boundary and append any follow-up
-        // async work (for example: step_completed resolves -> for-await loop
-        // resumes -> the next hook payload starts hydrating).
-        () => new Promise<void>((resolve) => setTimeout(resolve, 0))
-      )
-      .then(() => this.getPromiseQueue())
-      .then(() => {
-        // Use a delayed setTimeout after the queue drains. The delay must be
-        // long enough for promise chains to propagate across the VM boundary
-        // (from resolve() in the host context through to the workflow code
-        // calling subscribe() in the VM context). Node.js does not guarantee
-        // that setTimeout(0) fires after all cross-context microtasks settle,
-        // so we use a small but non-zero delay. Any subscribe() call that
-        // arrives during this window will cancel the check via version
-        // invalidation + clearTimeout.
-        this.pendingUnconsumedTimeout = setTimeout(() => {
-          this.pendingUnconsumedTimeout = null;
-          if (this.unconsumedCheckVersion !== checkVersion) {
-            return;
-          }
-          if (graceRemainingMs > 0 && this.isDeliveryInFlight()) {
-            // A delivery is hydrating, or has resolved but is parked behind its
-            // deferral. The workflow body has not had the chance to register
-            // this event's consumer yet, so reporting now would reject a
-            // healthy run: the resulting `ReplayDivergenceError` recurs on
-            // every replay that is unlucky in the same way and escalates to a
-            // terminal `CorruptedEventLogError`.
-            this.armUnconsumedCheck(
-              currentEvent,
-              checkVersion,
-              graceRemainingMs - delay
-            );
-            return;
-          }
-          this.pendingUnconsumedCheck = null;
-          this.onUnconsumedEvent(currentEvent);
-        }, delay);
+  private whenDeliveryIdle(checkVersion: number, fn: () => void): void {
+    const poll = () => {
+      this.pendingUnconsumedTimeout = null;
+      if (this.unconsumedCheckVersion !== checkVersion) {
+        return;
+      }
+      if (this.isDeliveryIdle()) {
+        fn();
+        return;
+      }
+      this.getPromiseQueue().then(() => {
+        if (this.unconsumedCheckVersion !== checkVersion) {
+          return;
+        }
+        // Held in the same field the fired check uses so subscribe() cancels a
+        // poll in progress exactly as it cancels the check itself.
+        this.pendingUnconsumedTimeout = setTimeout(poll, 0);
       });
+    };
+    poll();
   }
 }

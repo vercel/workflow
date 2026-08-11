@@ -281,12 +281,6 @@ These variables are primarily for tests, debugging, or unusual deployments.
 - Delay before the unconsumed-event check fires.
 - Minimum: `10`.
 
-### `WORKFLOW_DEFERRED_CHECK_MAX_GRACE_MS`
-
-- Default: `15000`
-- How long the unconsumed-event check keeps waiting while a step result or hook payload is still on its way to the workflow. An event whose consumer has not been registered yet looks exactly like an orphaned one, so the check waits rather than failing the run.
-- Once this budget is spent the check reports regardless, so a delivery that never lands cannot keep a genuinely orphaned event from being detected.
-
 ### `WORKFLOW_LOCK_POLL_INTERVAL_MS`
 
 - Default: `10`
