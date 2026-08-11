@@ -1,7 +1,8 @@
 import assert from 'node:assert';
+import { once } from 'node:events';
 import { constants } from 'node:fs';
 import { access, mkdir, realpath, rm, stat } from 'node:fs/promises';
-import { extname, isAbsolute, join, relative, resolve } from 'node:path';
+import { isAbsolute, join, relative, resolve } from 'node:path';
 import type {
   NextConfig as BuilderNextConfig,
   WorkflowManifest,
@@ -123,8 +124,95 @@ export async function getNextBuilderEager(
       }
       await writeFileIfChanged(join(workflowGeneratedDir, '.gitignore'), '*');
 
-      const inputFiles = await this.getInputFiles();
-      const tsconfigPath = await this.findTsConfigPath();
+      const normalizePath = (pathname: string) =>
+        (isAbsolute(pathname)
+          ? pathname
+          : resolve(this.config.workingDir, pathname)
+        ).replace(/\\/g, '/');
+      let relevantFiles = new Set<string>();
+      const isWatchableFile = (path: string) =>
+        isSourceFile(path) || relevantFiles.has(path);
+      const normalizedGeneratedDir = workflowGeneratedDir.replace(/\\/g, '/');
+      const normalizedDistDir = normalizePath(this.config.distDir);
+      const isIgnoredWatchPath = createWatchIgnorePredicate({
+        workingDir: this.config.workingDir,
+        projectRoot: this.transformProjectRoot,
+        extraFragments: [normalizedGeneratedDir],
+      });
+      const hasIgnoredPathFragment = (normalizedPath: string) => {
+        if (
+          normalizedPath === normalizedDistDir ||
+          normalizedPath.startsWith(`${normalizedDistDir}/`)
+        ) {
+          return true;
+        }
+        return isIgnoredWatchPath(normalizedPath);
+      };
+      const logDevHmr = (...args: unknown[]) => {
+        if (process.env.WORKFLOW_DEV_HMR_LOGS === '1') {
+          console.log(...args);
+        }
+      };
+
+      type WatchEvent = {
+        kind: 'add' | 'change' | 'unlink';
+        pathname: string;
+      };
+      let watchGeneration = 0;
+      let handleWatchEvent = async (_event: WatchEvent) => {};
+      const attachWatchEvents = (
+        currentWatcher: ReturnType<typeof chokidar.watch>
+      ) => {
+        const dispatch = (event: WatchEvent) => {
+          watchGeneration++;
+          void handleWatchEvent(event).catch((error) => {
+            console.error('Failed to process file change', error);
+          });
+        };
+        currentWatcher.on('add', (pathname) =>
+          dispatch({ kind: 'add', pathname })
+        );
+        currentWatcher.on('change', (pathname) =>
+          dispatch({ kind: 'change', pathname })
+        );
+        currentWatcher.on('unlink', (pathname) =>
+          dispatch({ kind: 'unlink', pathname })
+        );
+      };
+      // Chokidar 4 registers an fs.watch per directory, so prune ignored trees
+      // before it walks the project.
+      const watcher = this.config.watch
+        ? chokidar.watch(this.config.workingDir, {
+            ignoreInitial: true,
+            followSymlinks: true,
+            ignored: (pathname, stats) => {
+              const normalizedPath = normalizePath(String(pathname));
+              if (hasIgnoredPathFragment(normalizedPath)) {
+                return true;
+              }
+              return stats?.isFile() === true && !isSourceFile(normalizedPath);
+            },
+          })
+        : undefined;
+      let dependencyWatcher: ReturnType<typeof chokidar.watch> | undefined;
+      const closeWatcherOnError = async <T>(promise: Promise<T>) => {
+        try {
+          return await promise;
+        } catch (error) {
+          await Promise.all([watcher?.close(), dependencyWatcher?.close()]);
+          throw error;
+        }
+      };
+      if (watcher) {
+        attachWatchEvents(watcher);
+        watcher.on('error', (error) => {
+          console.error('Workflow dev watcher error', error);
+        });
+        await closeWatcherOnError(once(watcher, 'ready'));
+      }
+
+      const inputFiles = await closeWatcherOnError(this.getInputFiles());
+      const tsconfigPath = await closeWatcherOnError(this.findTsConfigPath());
 
       const options = {
         inputFiles,
@@ -133,8 +221,12 @@ export async function getNextBuilderEager(
       };
 
       // V2: Build combined route (replaces separate step + flow routes)
-      const combinedResult = await this.buildCombinedFunction(options);
-      await this.buildWebhookRoute({ workflowGeneratedDir });
+      const combinedResult = await closeWatcherOnError(
+        this.buildCombinedFunction(options)
+      );
+      await closeWatcherOnError(
+        this.buildWebhookRoute({ workflowGeneratedDir })
+      );
 
       const writeManifest = async (
         sourceManifest: WorkflowManifest | undefined
@@ -175,12 +267,14 @@ export async function getNextBuilderEager(
         }
       };
 
-      await writeManifest(combinedResult?.manifest);
+      await closeWatcherOnError(writeManifest(combinedResult?.manifest));
 
-      await this.writeFunctionsConfig(outputDir);
+      await closeWatcherOnError(this.writeFunctionsConfig(outputDir));
 
       if (this.config.watch) {
+        assert(watcher, 'Invariant: expected workflow watcher in watch mode');
         if (!combinedResult?.interimBundleCtx || !combinedResult.bundleFinal) {
+          await watcher.close();
           throw new Error(
             'Invariant: expected workflow build context in watch mode'
           );
@@ -199,43 +293,40 @@ export async function getNextBuilderEager(
           '__step_registrations.js'
         );
 
-        const normalizePath = (pathname: string) =>
-          (isAbsolute(pathname)
-            ? pathname
-            : resolve(this.config.workingDir, pathname)
-          ).replace(/\\/g, '/');
         let affectedWorkflowFiles = getAffectedWorkflowFiles({
           discoveredEntries,
           importGraph: discoveredEntries.importParents,
           normalizePath,
         });
-        let sourceSnapshots = new Map<string, SourceSnapshot>();
-
-        const normalizedGeneratedDir = workflowGeneratedDir.replace(/\\/g, '/');
-        const normalizedDistDir = normalizePath(this.config.distDir);
-
-        // Prune the dev watch set to keep chokidar from registering an
-        // fs.watch per directory across the whole project tree (chokidar 4
-        // dropped fsevents, so on macOS that exhausts the fd limit -> EMFILE
-        // on large monorepos). This honors `.gitignore` and the
-        // WORKFLOW_DEV_WATCH_IGNORED_PATHS env var in addition to the
-        // built-in fragments. The generated workflow dir is passed as an
-        // extra fragment so it is pruned regardless of `.gitignore`.
-        const isIgnoredWatchPath = createWatchIgnorePredicate({
-          workingDir: this.config.workingDir,
-          projectRoot: this.transformProjectRoot,
-          extraFragments: [normalizedGeneratedDir],
+        relevantFiles = getRelevantFiles({
+          discoveredEntries,
+          inputFiles: options.inputFiles,
+          normalizePath,
         });
 
-        const hasIgnoredPathFragment = (normalizedPath: string) => {
-          if (
-            normalizedPath === normalizedDistDir ||
-            normalizedPath.startsWith(`${normalizedDistDir}/`)
-          ) {
-            return true;
+        const replaceDependencyWatcher = async () => {
+          const nextWatcher = chokidar.watch([...relevantFiles], {
+            ignoreInitial: true,
+            followSymlinks: true,
+          });
+          attachWatchEvents(nextWatcher);
+          nextWatcher.on('error', (error) => {
+            console.error('Workflow dev watcher error', error);
+          });
+          try {
+            await once(nextWatcher, 'ready');
+          } catch (error) {
+            await nextWatcher.close();
+            throw error;
           }
-          return isIgnoredWatchPath(normalizedPath);
+
+          const previousWatcher = dependencyWatcher;
+          dependencyWatcher = nextWatcher;
+          await previousWatcher?.close();
         };
+        await closeWatcherOnError(replaceDependencyWatcher());
+
+        let sourceSnapshots = new Map<string, SourceSnapshot>();
 
         const readSourceSnapshot = (file: string) =>
           createSourceSnapshot({ file, analyzeWorkflowSource });
@@ -317,6 +408,11 @@ export async function getNextBuilderEager(
             interimBundleCtx: newCombined.interimBundleCtx,
             bundleFinal: newCombined.bundleFinal,
           };
+          relevantFiles = getRelevantFiles({
+            discoveredEntries,
+            inputFiles: options.inputFiles,
+            normalizePath,
+          });
 
           await previousWorkflowsCtx.dispose();
 
@@ -328,38 +424,18 @@ export async function getNextBuilderEager(
           );
         };
 
-        let relevantFiles = getRelevantFiles({
-          discoveredEntries,
-          inputFiles: options.inputFiles,
-          normalizePath,
-        });
-        const isWatchableFile = (path: string) =>
-          isSourceFile(path) || relevantFiles.has(path);
-
-        const logDevHmr = (...args: unknown[]) => {
-          if (process.env.WORKFLOW_DEV_HMR_LOGS === '1') {
-            console.log(...args);
-          }
-        };
-
-        sourceSnapshots = await snapshotSources();
-        let watchGeneration = 0;
-
-        const refreshKnownFiles = async () => {
-          relevantFiles = getRelevantFiles({
-            discoveredEntries,
-            inputFiles: options.inputFiles,
-            normalizePath,
-          });
-          await watcher.add([...relevantFiles]);
-        };
+        sourceSnapshots = await closeWatcherOnError(snapshotSources());
 
         const runFullRebuild = async () => {
           const generation = watchGeneration;
           logDevHmr('workflow dev hmr: full rediscovery');
           const buildWasStable = await fullRebuild();
-          await refreshKnownFiles();
-          return buildWasStable && generation === watchGeneration;
+          await replaceDependencyWatcher();
+          return (
+            buildWasStable &&
+            generation === watchGeneration &&
+            sourceSnapshotsMatch(sourceSnapshots, await snapshotSources())
+          );
         };
 
         const processFileChanges = async (files: string[]) => {
@@ -415,7 +491,6 @@ export async function getNextBuilderEager(
           () => logDevHmr('workflow dev hmr: idle')
         );
         const handleFileChanged = async (pathname: string) => {
-          watchGeneration++;
           const normalizedPath = normalizePath(pathname);
           if (!isWatchableFile(normalizedPath)) {
             return;
@@ -431,7 +506,6 @@ export async function getNextBuilderEager(
         };
 
         const scheduleFullRebuild = (pathname: string) => {
-          watchGeneration++;
           const normalizedPath = normalizePath(pathname);
           if (!isWatchableFile(normalizedPath)) {
             return;
@@ -439,34 +513,26 @@ export async function getNextBuilderEager(
           scheduleRebuild({ kind: 'full' });
         };
 
-        const watcher = chokidar.watch(
-          [this.config.workingDir, ...relevantFiles],
-          {
-            ignoreInitial: true,
-            followSymlinks: true,
-            ignored: (pathname) => {
-              const normalizedPath = normalizePath(String(pathname));
-              if (relevantFiles.has(normalizedPath)) {
-                return false;
-              }
-              const extension = extname(normalizedPath);
-              if (extension && !isSourceFile(normalizedPath)) {
-                return true;
-              }
-              return hasIgnoredPathFragment(normalizedPath);
-            },
-          }
-        );
+        const startupWasStable = await closeWatcherOnError(runFullRebuild());
 
-        watcher.on('add', scheduleFullRebuild);
-        watcher.on('change', handleFileChanged);
-        watcher.on('unlink', scheduleFullRebuild);
-        watcher.on('error', (error) => {
-          console.error('Workflow dev watcher error', error);
-        });
-        watcher.on('ready', () => {
-          logDevHmr('workflow dev hmr: ready');
-        });
+        handleWatchEvent = async (event) => {
+          switch (event.kind) {
+            case 'add':
+            case 'unlink':
+              scheduleFullRebuild(event.pathname);
+              return;
+            case 'change':
+              await handleFileChanged(event.pathname);
+              return;
+            default:
+              event.kind satisfies never;
+              throw new Error('Unknown watch event');
+          }
+        };
+        logDevHmr('workflow dev hmr: ready');
+        if (!startupWasStable) {
+          scheduleRebuild({ kind: 'full' });
+        }
       }
     }
 
