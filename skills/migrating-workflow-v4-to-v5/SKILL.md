@@ -3,7 +3,7 @@ name: migrating-workflow-v4-to-v5
 description: Upgrades an app from Workflow SDK 4.x to 5.0. Use when bumping the `workflow` / `@workflow/*` dependencies to v5, or when hitting removed v4 APIs — `runStep`, `stepEntrypoint`, `workflow/internal/private`, `@workflow/core/private`, `writeToStream` / `closeStream` / `readFromStream` on a World, `world.steps.get` without a runId, `hook.getConflict()` returning `{ runId }`, `experimental_setAttributes`, `createLocalWorld` / `createVercelWorld`, `NestLocalBuilder` imported from `@workflow/nest`, or an SWC transform invoked with `mode: 'client'`.
 metadata:
   author: Vercel Inc.
-  version: '0.2.5'
+  version: '0.2.6'
 ---
 
 # Migrating Workflow SDK 4.x to 5.0
@@ -218,7 +218,9 @@ Only if the app implements `World` itself. Beyond the stream and step signatures
 - an optional per-run event ceiling returned on run reads, which the runtime enforces.
 - optional `createRunId()` and a `region` on queue options, for worlds that place run state regionally.
 
-Three contract changes affect existing implementations:
+Four contract changes affect existing implementations. The first is required and is not visible from the type signatures:
+
+- **Event IDs are slots, and allocating them is mandatory.** An event ID is no longer a ULID the World mints freely: it is `evnt_` followed by the event's 1-based position in that run's log, zero-padded to 26 characters (`slotToEventId()` from `@workflow/world` formats one). Positions must be unique and dense with no holes, so the race has to be settled in the store — a unique constraint on `(runId, eventId)` or a conditional write — rather than by reading the maximum in process and adding one. `events.create()` params carry `eventCount` to place the write; when that position is taken the World must not reject the create, it advances to the next free position, commits there, and returns the events occupying the skipped positions on the success response. Declare `capabilities.slotEventIds`. Existing runs are unaffected: a run's scheme is pinned by the run, so a World that switches this on keeps replaying its ULID-numbered runs. Do not treat this as optional work; send the user to the "Upgrading a World to v5" guide for the full rules.
 
 - **Suspension and dispatch.** The asymmetric `{ timeoutSeconds }` return contract for waits is gone. Waits are ordinary queue continuations carrying `delaySeconds`, and wait plus step dispatch is unified into one parallel batch per suspension. A World that special-cased the old wait return needs rewriting against the current interface.
 - **Step queue topics are retired.** The `'step'` queue kind no longer exists: queued steps travel on the workflow topic (carrying `stepId`/`stepName` in the payload) and execute in the combined flow handler. A World that provisioned or routed separate `__wkf_step_*` topics can drop them.

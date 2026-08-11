@@ -14,19 +14,23 @@ related:
 
 This page is for people who implement the `World` interface themselves, or who maintain a build integration that compiles workflow files. It covers what changed between the v4 and v5 spec, which of those changes break an existing implementation, and what new surface is worth adopting.
 
+Three things are required to be a v5 World: the [interface changes](#interface-changes), the [contract changes](#contract-changes), and [event ID allocation](#event-id-allocation). The last one is the largest piece of work and the only one that is not visible from the type signatures. Everything under [new optional surface](#new-optional-surface) can wait.
+
 If your application runs on the [Vercel](/worlds/vercel), [Local](/worlds/local), or [Postgres](/worlds/postgres) World, you need nothing from this page. Those implementations ship with the SDK and are already on the v5 spec. For the application-facing changes, see [What's new in v5](/docs/whats-new).
 
 The fastest way to start is to hand the diff to an agent:
 
-<CopyPrompt text="My app uses a custom Workflow SDK World. Help me upgrade it from the v4 World spec to v5. Clone https://github.com/vercel/workflow and, on the main branch, study packages/world (the World interface and types) plus the first-party implementations in packages/world-vercel and packages/world-postgres. Run git diff stable...workflow@<the 5.x version I am upgrading to> -- packages/world packages/world-vercel packages/world-postgres (release tags are named like workflow@5.0.0; fall back to main if the tag does not exist) to see exactly what changed since the 4.x line, and use those diffs to identify the spec and implementation changes. Then port the same changes into my custom World and verify it by running a workflow end to end against it." />
+<CopyPrompt text="My app uses a custom Workflow SDK World. Help me upgrade it from the v4 World spec to v5. Clone https://github.com/vercel/workflow and, on the main branch, study packages/world (the World interface and types) plus the first-party implementations in packages/world-vercel and packages/world-postgres. Run git diff stable...workflow@<the 5.x version I am upgrading to> -- packages/world packages/world-vercel packages/world-postgres (release tags are named like workflow@5.0.0; fall back to main if the tag does not exist) to see exactly what changed since the 4.x line, and use those diffs to identify the spec and implementation changes. Then port the same changes into my custom World and verify it by running a workflow end to end against it. Pay particular attention to event id allocation, which is required and is not visible from the type signatures: a v5 World assigns each event a dense, 1-based slot within its run, must settle races on a slot in the store rather than in process, and must never reject a create for a taken slot — it advances to the next free slot and returns the events it skipped." />
 
 We're working on bringing back World compatibility tests and reporting on the [Worlds page](/worlds), to make it easier to see which Workflow versions each World is compatible with.
 
 ## Spec versions
 
-A World declares the protocol version it speaks on `specVersion`. In v4 the runtime required that number to equal its own current version exactly. In v5 it accepts a range, from the current version up to the highest version the SDK can read, so a World may opt into a version above the default without the runtime refusing it.
+A World declares the protocol version it speaks on `specVersion`. In v4 the runtime required that number to equal its own current version exactly. In v5 it accepts a range, from the current version up to the highest version the SDK can read, so a World may declare a version above the default without the runtime refusing it.
 
-The default for v5 is `SPEC_VERSION_CURRENT`, which is `5`. Declare that unless you implement the newer event ID scheme described below, in which case declare `SPEC_VERSION_SUPPORTS_SLOT_IDENTITY`. Both constants are exported from `@workflow/world`; import them rather than hardcoding a number, so a later bump doesn't silently strand your implementation.
+Declare `SPEC_VERSION_CURRENT`, which is `5`. Import it from `@workflow/world` rather than hardcoding a number, so a later bump doesn't silently strand your implementation.
+
+`SPEC_VERSION_SUPPORTS_SLOT_IDENTITY`, which is `6`, is narrower than it looks. It is not "the version with the new event IDs" — every v5 World allocates those, including `@workflow/world-local` and `@workflow/world-postgres`, which both stay on `5`. It exists for a World that cannot tell from its own storage which ID scheme a given run started under, because the ID is minted by a remote allocator deciding per request. `@workflow/world-vercel` is that case, and the version stamped on `run_created` is what carries the choice for the life of the run. If your World owns the counter that mints its IDs, you already know each run's scheme and you do not need this version.
 
 Runs carry a spec version too, and a run created before your World adopted a newer scheme keeps its own version for its whole life. Read the stamped version off the run rather than assuming every run matches what your World declares today.
 
@@ -58,20 +62,22 @@ These do not change any signature, so an implementation ported by types alone wi
 
 ## Event ID allocation
 
-This is the largest change for a World implementation, and it is optional.
+This is the largest change for a World implementation, and it is required.
 
-In v4 an event ID was a ULID your World minted however it liked. In v5 a World may instead allocate **dense slot IDs**: `evnt_` followed by the event's 1-based position in that run's log, zero-padded to 26 characters, so a run's first event is `evnt_00000000000000000000000001`. Format one with `slotToEventId()` from `@workflow/world`, declare `capabilities.slotEventIds`, and declare `SPEC_VERSION_SUPPORTS_SLOT_IDENTITY`.
+In v4 an event ID was a ULID your World minted however it liked. In v5 an event ID is its **slot**: `evnt_` followed by the event's 1-based position in that run's log, zero-padded to 26 characters, so a run's first event is `evnt_00000000000000000000000001`. Format one with `slotToEventId()` from `@workflow/world`, and declare `capabilities.slotEventIds`.
 
-The point is what a reader can conclude from a log it just fetched. Positions are dense, so the length of a log is enough to tell a complete one from a truncated one, without a second read to confirm. That is what makes an event log safe to replay across, and it is why the two invariants below are not negotiable if you adopt the scheme:
+The scheme exists for what a reader can conclude from a log it just fetched. Positions are dense, so the number of events a reader holds *is* the position of the last one, and a truncated log is distinguishable from a complete one by its length alone. The runtime relies on that, which is why the two invariants below are not negotiable:
 
 - **Uniqueness.** Two writers racing to append must not both take a position. Settle it where the store settles it, with a unique constraint on `(runId, eventId)` or a conditional write, not by reading the maximum in your own process and adding one.
 - **Density.** Positions run from 1 with no holes. A writer that loses a race re-derives its position from the store and takes the next free one. Incrementing a local number after a loss leaves a permanent hole, and the runtime treats a hole as a log it cannot replay across.
 
-Callers help you place the write: `events.create()` params carry `eventCount`, the number of events the writer held in the log it replayed from, so the position it expects is `eventCount + 1`. When that position is already taken, **do not reject the write**. Advance to the next free position, commit there, and return the events occupying the positions you skipped on the success response. The writer merges them and replays once. A stale count is the normal case for a parallel fan-out, so rejecting it would serialize writes the runtime deliberately issues concurrently.
+Callers help you place the write: `events.create()` params carry `eventCount`, the number of events the writer held in the log it replayed from, so the position it expects is `eventCount + 1`. When that position is already taken, **do not reject the write**. Advance to the next free position, commit there, and return the events occupying the positions you skipped on the success response. The writer learns its snapshot was stale, merges the events, and replays once. A stale count is the normal case for a parallel fan-out, so rejecting it would serialize writes the runtime deliberately issues concurrently.
 
-For a World that allocates positions, `eventCount` supersedes the `stateUpdatedAt` / `stateEventCount` / `stateCursor` triple used by the [precondition guard](/worlds/building-a-world#optional-the-event-creation-precondition-guard). The triple approximates a position with a timestamp watermark plus a count of events at or below it, which a complete-but-stale snapshot passes: every event the writer holds is at or below its own watermark, so the count matches and no fence fires. A dense position has no such blind spot.
+`eventCount` supersedes the `stateUpdatedAt` / `stateEventCount` / `stateCursor` triple used by the [precondition guard](/worlds/building-a-world#optional-the-event-creation-precondition-guard). The triple approximates a position with a timestamp watermark plus a count of events at or below it, which a complete-but-stale snapshot passes: every event the writer holds is at or below its own watermark, so the count matches and no fence fires. A dense position has no such blind spot.
 
-Nothing forces this on you. A World that keeps minting ULIDs declares spec version 5, leaves `slotEventIds` unset, and keeps working. See [Building a World](/worlds/building-a-world) for the full allocation rules alongside the rest of the storage contract.
+Runs already in your store are unaffected. A run's scheme is pinned by the run rather than by the capability flag, and it is readable off the shape of its own first event ID, so a World that switches slots on keeps replaying its existing ULID-numbered runs unchanged. `capabilities.slotEventIds` states what *new* runs get.
+
+See [Building a World](/worlds/building-a-world) for the allocation rules alongside the rest of the storage contract.
 
 ## New optional surface
 
@@ -79,7 +85,7 @@ None of this is required. Each entry is a hook the runtime uses if your World pr
 
 | Member | What it buys |
 | --- | --- |
-| `capabilities` | Advertises `hookRetention.active`, `preconditionGuard`, `hookResumeDedup`, `deploymentAffinity`, `maxConcurrency`, and `slotEventIds`. See the contract note above about failing closed. |
+| `capabilities` | Advertises `hookRetention.active`, `preconditionGuard`, `hookResumeDedup`, `deploymentAffinity`, and `maxConcurrency`. See the contract note above about failing closed. (`slotEventIds` also lives here, but it is not optional — see [Event ID allocation](#event-id-allocation).) |
 | `analytics` | A metadata-only read namespace for observability surfaces. Payload-bearing reads stay on `runs`, `steps`, `events`, and `hooks`. |
 | `runs.experimentalSetAttributes` | Backs `setAttributes()` from application code. Without it, run attributes are unavailable. |
 | `runs.cancelMany` | Bulk cancellation: up to 500 unique run IDs per request (`BULK_CANCEL_MAX_RUN_IDS`), an optional `cancelReason` of at most 512 characters, and a per-run outcome for every ID. Without it, the runtime falls back to bounded-concurrency individual cancels. |
