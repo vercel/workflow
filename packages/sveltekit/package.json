@@ -22,9 +22,11 @@
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
+    "test": "vitest run src",
     "clean": "tsc --build --clean && rm -rf dist"
   },
   "dependencies": {
+    "@sveltejs/load-config": "^0.2.3",
     "@swc/core": "catalog:",
     "@workflow/builders": "workspace:*",
     "@workflow/rollup": "workspace:*",

@@ -33,6 +33,7 @@ minimumReleaseAgeExclude:
   - '@workflow/*'
   - esbuild
   - '@esbuild/*'
+  - '@sveltejs/load-config'
 
 onlyBuiltDependencies:
   - esbuild
