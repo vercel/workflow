@@ -36,14 +36,26 @@ const getDeferredCheckDelayMs = (): number =>
 /**
  * Event types the ordered walk may step over and deliver later.
  *
- * Everything else is replay-origin: a replay emits it, in the order its code
- * reaches it, so its position in the log is the record of what that replay
- * decided. Reaching one of those out of order means this replay decided
- * differently than the log holds, which is divergence and nothing else. The
- * types listed here are written by something outside the replay (a hook
- * delivery, a cancellation) or by a step runner, so they land wherever they
- * land: the replay's code path does not fix where they sit relative to the
- * events around them, and a mismatch there says nothing about divergence.
+ * Membership is not about who wrote the event. It is about whether the event
+ * can reach the head of the walk with nothing registered to consume it, which
+ * is the only situation parking exists for.
+ *
+ * Most types cannot. They are replay-origin: a replay emits them, in the order
+ * its code reaches them, so their position in the log is the record of what
+ * that replay decided. Reaching one of those out of order means this replay
+ * decided differently than the log holds, which is divergence and nothing else.
+ *
+ * Step lifecycle events are not replay-origin, and are still absent, because
+ * they always have a claimant. `step()` subscribes its consumer before the
+ * step's first event can exist; `step_created` is ordered, so the walk cannot
+ * pass it unless a consumer takes it; and that consumer stays subscribed until
+ * `step_completed` or `step_failed`, after which the World refuses any further
+ * write for that step. There is no window in which a replay knows about a step
+ * and has nothing registered to consume its events, so parking them would only
+ * defer reports of what is divergence either way. The same holds for
+ * `wait_created` and its consumer. `wait_completed` is listed anyway: a sleep
+ * can also be completed out of band, by the API that force-completes pending
+ * waits, and tolerating a stray one is the cheaper direction to be wrong in.
  *
  * An allowlist rather than the complement of the ordered set, so a type this
  * file has not been taught about keeps the strict old behaviour.
@@ -51,28 +63,21 @@ const getDeferredCheckDelayMs = (): number =>
  * `hook_disposed` is deliberately absent despite being about a hook: it is
  * written when the workflow's own `using` scope exits, so it is replay-origin.
  *
- * Two entries are listed by type even though a given instance of them may be
- * replay-origin: `attr_set` is replay-origin when its writer is the workflow,
- * and an inline step's `step_completed` is written by the replay that ran the
- * step. Splitting those out per event was considered and rejected. A replay
- * that reaches one of its own writes out of position has diverged, but a replay
- * that reaches an event it did NOT write, sitting where its own write would go,
- * has not: the writer field says who wrote the event, and not whether this
- * replay is the same one. Guessing wrong in that direction fails healthy runs,
- * which is the failure this file exists to stop, so the whole type is tolerated
- * and the {@link ONE_SHOT_EVENT_TYPES} check catches the case that is decidable
- * (a second resolution for something already resolved). The cost is that a
- * divergence involving these two types surfaces at the end of the replay,
- * through `strandedEvent`, rather than at the offending event.
+ * `attr_set` is listed by type even though a given instance of it may be
+ * replay-origin, since it is replay-origin when its writer is the workflow.
+ * Splitting that out per event was considered and rejected. A replay that
+ * reaches one of its own writes out of position has diverged, but a replay that
+ * reaches an event it did NOT write, sitting where its own write would go, has
+ * not: the writer field says who wrote the event, and not whether this replay
+ * is the same one. Guessing wrong in that direction fails healthy runs, which
+ * is the failure this file exists to stop, so the whole type is tolerated. The
+ * cost is that a divergence involving `attr_set` surfaces at the end of the
+ * replay, through `strandedEvent`, rather than at the offending event.
  */
 const PARKABLE_EVENT_TYPES: ReadonlySet<Event['eventType']> = new Set([
   'hook_received',
   'hook_conflict',
   'wait_completed',
-  'step_started',
-  'step_retrying',
-  'step_completed',
-  'step_failed',
   'attr_set',
   'run_cancelled',
 ]);
@@ -84,11 +89,13 @@ const PARKABLE_EVENT_TYPES: ReadonlySet<Event['eventType']> = new Set([
  * yet: it is a resolution for something already resolved, which no consumer
  * this replay or any later one registers can ever claim. `hook_received` is
  * absent because a hook legitimately fires many times under one id.
+ *
+ * Must stay a subset of {@link PARKABLE_EVENT_TYPES}: {@link park} is the only
+ * reader of what this records, and it rejects a non-parkable type before it
+ * looks, so an entry outside that set is dead weight on a hot path.
  */
 const ONE_SHOT_EVENT_TYPES: ReadonlySet<Event['eventType']> = new Set([
   'wait_completed',
-  'step_completed',
-  'step_failed',
 ]);
 
 /** Identifies the thing a one-shot resolution event resolves. */
