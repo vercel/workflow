@@ -3,6 +3,7 @@ import {
   EntityConflictError,
   FatalError,
   HookNotFoundError,
+  PreconditionFailedError,
   RunExpiredError,
   WorkflowWorldError,
 } from '@workflow/errors';
@@ -32,10 +33,10 @@ import * as Attribute from '../telemetry/semantic-conventions.js';
 import { getAbortStreamIdFromToken } from '../util.js';
 import { getMaxInlineSteps } from './constants.js';
 import {
-  claimFenceFor,
-  isStaleWriteRejection,
-  type MutableEventLog,
-  observeEventSlot,
+  type EventCreator,
+  type LoadedEventLog,
+  mergeReportedEvents,
+  preconditionSnapshotParams,
 } from './helpers.js';
 import { ReplayRecoveryReporter } from './replay-recovery-reporter.js';
 
@@ -47,14 +48,14 @@ export interface SuspensionHandlerParams {
   requestId?: string;
   /**
    * The runtime's loaded event log. Every event creation this suspension makes
-   * carries a fence derived from it, the event slot it claims, so a backend that
-   * has recorded an event the replay did not see rejects the write instead of
-   * accepting a divergent event. The rejection is not retried here: the event's
-   * correlation id was minted by *this* replay's seeded sequence, so
-   * re-committing it against a corrected log would persist an event no correct
-   * replay produces. The caller restarts the replay instead.
+   * is sent with the precondition snapshot derived from it, so a backend that
+   * has recorded an event the replay did not see rejects the write with a 412
+   * instead of accepting a divergent event. The rejection is not retried here:
+   * the event's correlation id was minted by *this* replay's seeded sequence,
+   * so re-committing it against a corrected log would persist an event no
+   * correct replay produces. The caller restarts the replay instead.
    */
-  eventLog?: MutableEventLog;
+  eventLog?: LoadedEventLog;
   /**
    * Turbo mode only: a promise that resolves once the backgrounded
    * `run_started` has landed (the run exists). When present, every world write
@@ -85,6 +86,13 @@ export interface SuspensionHandlerResult {
    * into the same batch boundary.
    */
   createdStepCorrelationIds: Set<string>;
+  /**
+   * How many events this phase's writes reported back as occupying slots they
+   * skipped over, already merged into the caller's `eventLog.events`. Nonzero
+   * means the array was reordered to restore slot order, so any index the
+   * caller cached into it (payload prewarm scan position) is stale.
+   */
+  reportedEventCount: number;
   /**
    * The steps whose `step_created` writes were intentionally deferred so the
    * caller can run them inline via lazy `step_started` events (which create
@@ -257,7 +265,7 @@ export async function handleSuspension({
 
   /**
    * Await every operation in a suspension phase before letting a failure
-   * escape, preferring a stale-write rejection when one occurred.
+   * escape, preferring a stale-snapshot (412) rejection when one occurred.
    *
    * `Promise.all` rejects as soon as one operation does and leaves its siblings
    * in flight. That matters for a 412: the caller reacts by reloading the event
@@ -269,57 +277,81 @@ export async function handleSuspension({
    * It mirrors the runtime's inline step claim, which settles the in-flight
    * step executions before escalating a 412.
    *
-   * A stale-write rejection is preferred over any other rejection in the same
-   * phase because it has a defined, cheap recovery (replay from a corrected
-   * log) while the others do not. A deterministic failure such as an
-   * attribute-validation `FatalError` recurs on the restart and fails the run
-   * then, at the cost of one extra replay. Both fences qualify: a lost slot
-   * (409) says exactly what a stale watermark (412) says, and preferring only
-   * the latter would send a run whose phase produced both a slot conflict and a
-   * `FatalError` down the failure path instead of the restart.
+   * A 412 is preferred over any other rejection in the same phase because it
+   * has a defined, cheap recovery (replay from a corrected log) while the
+   * others do not. A deterministic failure such as an attribute-validation
+   * `FatalError` recurs on the restart and fails the run then, at the cost of
+   * one extra replay.
    */
   const settlePhase = async (ops: Promise<unknown>[]): Promise<void> => {
     const reasons = (await Promise.allSettled(ops))
       .filter((r): r is PromiseRejectedResult => r.status === 'rejected')
       .map((r) => r.reason);
     if (reasons.length === 0) return;
-    throw reasons.find((r) => isStaleWriteRejection(r)) ?? reasons[0];
+    throw reasons.find((r) => PreconditionFailedError.is(r)) ?? reasons[0];
   };
 
   // Every suspension write carries replay-recovery telemetry on the first one
   // that commits after replay recovered. All suspension events are
   // non-run_created events on this run's `runId`.
   const reporter = replayRecoveryReporter ?? ReplayRecoveryReporter.inert();
-  const createEvent = async (
-    data: CreateEventRequest,
-    params?: CreateEventParams
-  ) => {
-    const result = await reporter.withEventCreate(params, (p) =>
+  const createEvent = (data: CreateEventRequest, params?: CreateEventParams) =>
+    reporter.withEventCreate(params, (p) =>
       world.events.create(runId, data, p)
     );
-    // The backend numbers events this log did not claim (a lazy step's deferred
-    // `step_created`, anything written unfenced), and the next claim off the
-    // same log has to name a slot above them. See `observeEventSlot`.
-    if (eventLog) observeEventSlot(eventLog, result?.event?.eventId);
+  // Adds the optimistic-concurrency guard when the caller supplied a loaded
+  // event log; without one it creates directly (callers with no replay
+  // snapshot, e.g. tests). A stale (412) rejection propagates to the caller,
+  // which restarts the replay from a corrected log — it is not retried here,
+  // because the event's correlation id was minted by *this* replay's seeded
+  // sequence, so re-committing it against a corrected log would persist an
+  // event no correct replay produces.
+  let reportedEvents = 0;
+  const createGuarded: EventCreator = async (data, params) => {
+    if (!eventLog) {
+      return createEvent(data, params);
+    }
+    const log = eventLog;
+    const result = await createEvent(data, {
+      ...params,
+      ...preconditionSnapshotParams(log.events, log.cursor),
+    });
+    // Bump-and-report: the write landed above the slot it asked for, so these
+    // are the events it was decided without. Merging them here rather than at
+    // each call site means the rest of this phase's writes — which read the
+    // same array to build their own snapshot — ask for a slot above them, and
+    // the replay that resumes from this log sees them without a reload.
+    //
+    // A truncated report (`hasMore`) is dropped whole rather than merged, the
+    // same way the wait loop treats one. It covers a span of positions but
+    // carries only some of the events on them, so merging it would raise the
+    // log's highest position past a position whose event is missing. Every
+    // later write of this phase reads that maximum to say what it has seen, so
+    // each would claim a position it never saw and the World, which only
+    // reports the span a write skips, would never send it. Dropping the report
+    // costs one more round of the same events on the next write and keeps the
+    // log a prefix of the truth.
+    if (result.events?.length && result.hasMore !== true) {
+      const added = mergeReportedEvents(log.events, result.events);
+      reportedEvents += added;
+      if (added > 0) {
+        runtimeLogger.debug('Suspension write skipped occupied slots', {
+          workflowRunId: runId,
+          eventType: data.eventType,
+          eventId: result.event?.eventId,
+          reported: added,
+        });
+      }
+    } else if (result.events?.length) {
+      runtimeLogger.debug('Dropped a truncated skipped-slot report', {
+        workflowRunId: runId,
+        eventType: data.eventType,
+        eventId: result.event?.eventId,
+        offered: result.events.length,
+      });
+    }
     return result;
   };
-  // Fences the create against the run's event log when the caller supplied a
-  // loaded one; without it the create goes out unfenced (callers with no replay
-  // snapshot, e.g. tests). A rejection propagates to the caller, which restarts
-  // the replay from a corrected log — it is not retried here, because the
-  // event's correlation id was minted by *this* replay's seeded sequence, so
-  // re-committing it against a corrected log would persist an event no correct
-  // replay produces.
-  const createGuarded = (
-    data: CreateEventRequest,
-    params?: CreateEventParams
-  ) =>
-    eventLog
-      ? claimFenceFor(
-          eventLog,
-          run.specVersion
-        )((fence) => createEvent(data, { ...params, ...fence }))
-      : createEvent(data, params);
   // Separate queue items by type
   const stepItems = suspension.steps.filter(
     (item): item is StepInvocationQueueItem => item.type === 'step'
@@ -832,6 +864,7 @@ export async function handleSuspension({
     hasHookEvents: hooksNeedingCreation.length > 0,
     hookCreationMs,
     retainedStepInputsSafe,
+    reportedEventCount: reportedEvents,
   };
 }
 

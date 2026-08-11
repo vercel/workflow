@@ -1,7 +1,6 @@
 import {
   EntityConflictError,
   RunExpiredError,
-  SlotConflictError,
   ThrottleError,
   TooEarlyError,
   WorkflowWorldError,
@@ -93,16 +92,6 @@ describe('isRetryableEventPostError', () => {
     expect(isRetryableEventPostError(new RunExpiredError('410'))).toBe(false);
     expect(isRetryableEventPostError(new TooEarlyError('425'))).toBe(false);
     expect(isRetryableEventPostError(new ThrottleError('429'))).toBe(false);
-  });
-
-  it('does not retry a lost event slot', () => {
-    // Re-issuing the same write is guaranteed to lose the slot again; only a
-    // merge and a replay can produce a write that lands.
-    expect(
-      isRetryableEventPostError(
-        new SlotConflictError('taken', { eventId: 'evnt_x' })
-      )
-    ).toBe(false);
   });
 
   it('retries a body-parse failure (write may have landed)', () => {

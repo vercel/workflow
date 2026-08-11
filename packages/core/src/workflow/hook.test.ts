@@ -6,12 +6,12 @@ import {
 import { withResolvers } from '@workflow/utils';
 import type { Event } from '@workflow/world';
 import * as nanoid from 'nanoid';
+import { monotonicFactory } from 'ulid';
 import { describe, expect, it, vi } from 'vitest';
 import {
   aliasSerializationClass,
   RUN_CLASS_ID,
 } from '../class-serialization.js';
-import { createCorrelationIdGenerator } from '../correlation-id.js';
 import { EventsConsumer } from '../events-consumer.js';
 import { WorkflowSuspension } from '../global.js';
 import type { WorkflowOrchestratorContext } from '../private.js';
@@ -23,10 +23,7 @@ import { createWebhook } from './create-hook.js';
 import { createCreateHook } from './hook.js';
 
 // Helper to setup context to simulate a workflow run
-function setupWorkflowContext(
-  events: Event[],
-  onUnconsumedEvent: (event: Event) => void = () => {}
-): WorkflowOrchestratorContext {
+function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
   const context = createContext({
     seed: 'test',
     fixedTimestamp: 1753481739458,
@@ -36,6 +33,7 @@ function setupWorkflowContext(
   // mirror that here so `hook.getConflict()` can construct the
   // conflicting run through the registry.
   aliasSerializationClass(RUN_CLASS_ID, Run, context.globalThis);
+  const ulid = monotonicFactory(() => context.globalThis.Math.random());
   const workflowStartedAt = context.globalThis.Date.now();
   return {
     runId: 'wrun_test',
@@ -44,14 +42,13 @@ function setupWorkflowContext(
     replayPayloadCache: new ReplayPayloadCache(undefined),
     globalThis: context.globalThis,
     eventsConsumer: new EventsConsumer(events, {
-      onUnconsumedEvent,
+      // Fake context: no deliveries are modeled, so the gate is a no-op here.
+      isDeliveryIdle: () => true,
+      onUnconsumedEvent: () => {},
       getPromiseQueue: () => Promise.resolve(),
     }),
     invocationsQueue: new Map(),
-    generateCorrelationId: createCorrelationIdGenerator({
-      seed: 'test',
-      fixedTimestamp: workflowStartedAt,
-    }),
+    generateUlid: () => ulid(workflowStartedAt),
     generateNanoid: nanoid.customRandom(nanoid.urlAlphabet, 21, (size) =>
       new Uint8Array(size).map(() => 256 * context.globalThis.Math.random())
     ),
@@ -69,7 +66,7 @@ describe('createCreateHook', () => {
         eventId: 'evnt_0',
         runId: 'wrun_123',
         eventType: 'hook_received',
-        correlationId: 'hook_01K11TFZ62C752Z96G9MRSN85J',
+        correlationId: 'hook_01K11TFZ62YS0YYFDQ3E8B9YCV',
         eventData: {
           token: 'test-token',
           payload: await dehydrateStepReturnValue(
@@ -95,7 +92,7 @@ describe('createCreateHook', () => {
         eventId: 'evnt_0',
         runId: 'wrun_123',
         eventType: 'hook_created',
-        correlationId: 'hook_01K11TFZ62C752Z96G9MRSN85J',
+        correlationId: 'hook_01K11TFZ62YS0YYFDQ3E8B9YCV',
         eventData: {
           token: 'wrong-token',
         },
@@ -123,7 +120,7 @@ describe('createCreateHook', () => {
         eventId: 'evnt_0',
         runId: 'wrun_123',
         eventType: 'hook_received',
-        correlationId: 'hook_01K11TFZ62C752Z96G9MRSN85J',
+        correlationId: 'hook_01K11TFZ62YS0YYFDQ3E8B9YCV',
         eventData: {
           token: 'wrong-token',
           payload: await dehydrateStepReturnValue(
@@ -157,7 +154,7 @@ describe('createCreateHook', () => {
         eventId: 'evnt_0',
         runId: 'wrun_123',
         eventType: 'hook_disposed',
-        correlationId: 'hook_01K11TFZ62C752Z96G9MRSN85J',
+        correlationId: 'hook_01K11TFZ62YS0YYFDQ3E8B9YCV',
         eventData: {
           token: 'wrong-token',
         },
@@ -184,7 +181,7 @@ describe('createCreateHook', () => {
         eventId: 'evnt_0',
         runId: 'wrun_123',
         eventType: 'hook_conflict',
-        correlationId: 'hook_01K11TFZ62C752Z96G9MRSN85J',
+        correlationId: 'hook_01K11TFZ62YS0YYFDQ3E8B9YCV',
         eventData: {
           token: 'wrong-token',
           conflictingRunId: 'wrun_conflicting',
@@ -230,7 +227,7 @@ describe('createCreateHook', () => {
         eventId: 'evnt_0',
         runId: 'wrun_123',
         eventType: 'step_completed', // Wrong event type for a hook!
-        correlationId: 'hook_01K11TFZ62C752Z96G9MRSN85J',
+        correlationId: 'hook_01K11TFZ62YS0YYFDQ3E8B9YCV',
         eventData: {
           stepName: 'unexpectedStep',
           result: ['test'],
@@ -251,7 +248,7 @@ describe('createCreateHook', () => {
     const workflowError = await errorReceived.promise;
     expect(workflowError).toBeInstanceOf(ReplayDivergenceError);
     expect(workflowError?.message).toContain('Unexpected event type for hook');
-    expect(workflowError?.message).toContain('hook_01K11TFZ62C752Z96G9MRSN85J');
+    expect(workflowError?.message).toContain('hook_01K11TFZ62YS0YYFDQ3E8B9YCV');
     expect(workflowError?.message).toContain('step_completed');
   });
 
@@ -262,7 +259,7 @@ describe('createCreateHook', () => {
         eventId: 'evnt_0',
         runId: 'wrun_123',
         eventType: 'hook_created',
-        correlationId: 'hook_01K11TFZ62C752Z96G9MRSN85J',
+        correlationId: 'hook_01K11TFZ62YS0YYFDQ3E8B9YCV',
         eventData: {
           token: 'test-token',
         },
@@ -272,7 +269,7 @@ describe('createCreateHook', () => {
         eventId: 'evnt_1',
         runId: 'wrun_123',
         eventType: 'hook_received',
-        correlationId: 'hook_01K11TFZ62C752Z96G9MRSN85J',
+        correlationId: 'hook_01K11TFZ62YS0YYFDQ3E8B9YCV',
         eventData: {
           token: 'test-token',
           payload: await dehydrateStepReturnValue(
@@ -309,7 +306,7 @@ describe('createCreateHook', () => {
         eventId: 'evnt_0',
         runId: 'wrun_123',
         eventType: 'hook_created',
-        correlationId: 'hook_01K11TFZ62C752Z96G9MRSN85J',
+        correlationId: 'hook_01K11TFZ62YS0YYFDQ3E8B9YCV',
         eventData: {},
         createdAt: new Date(),
       },
@@ -357,7 +354,7 @@ describe('createCreateHook', () => {
         eventId: 'evnt_0',
         runId: 'wrun_123',
         eventType: 'hook_conflict',
-        correlationId: 'hook_01K11TFZ62C752Z96G9MRSN85J',
+        correlationId: 'hook_01K11TFZ62YS0YYFDQ3E8B9YCV',
         eventData: {
           token: 'my-conflicting-token',
           conflictingRunId: 'wrun_conflicting_owner',
@@ -389,7 +386,7 @@ describe('createCreateHook', () => {
         eventId: 'evnt_0',
         runId: 'wrun_123',
         eventType: 'hook_conflict',
-        correlationId: 'hook_01K11TFZ62C752Z96G9MRSN85J',
+        correlationId: 'hook_01K11TFZ62YS0YYFDQ3E8B9YCV',
         eventData: {
           token: 'my-conflicting-token',
         },
@@ -412,7 +409,7 @@ describe('createCreateHook', () => {
         eventId: 'evnt_0',
         runId: 'wrun_123',
         eventType: 'hook_created',
-        correlationId: 'hook_01K11TFZ62C752Z96G9MRSN85J',
+        correlationId: 'hook_01K11TFZ62YS0YYFDQ3E8B9YCV',
         eventData: {},
         createdAt: new Date(),
       },
@@ -420,7 +417,7 @@ describe('createCreateHook', () => {
         eventId: 'evnt_1',
         runId: 'wrun_123',
         eventType: 'hook_received',
-        correlationId: 'hook_01K11TFZ62C752Z96G9MRSN85J',
+        correlationId: 'hook_01K11TFZ62YS0YYFDQ3E8B9YCV',
         eventData: {
           payload: await dehydrateStepReturnValue(
             { data: 'after-ready' },
@@ -446,7 +443,7 @@ describe('createCreateHook', () => {
         eventId: 'evnt_0',
         runId: 'wrun_123',
         eventType: 'hook_disposed',
-        correlationId: 'hook_01K11TFZ62C752Z96G9MRSN85J',
+        correlationId: 'hook_01K11TFZ62YS0YYFDQ3E8B9YCV',
         eventData: {
           token: 'test-token',
         },
@@ -471,65 +468,6 @@ describe('createCreateHook', () => {
     expect(runtimeErrors).toHaveLength(0);
   });
 
-  it('should discard a hook_received ordered after the hook_disposed', async () => {
-    // The world orders a delivery by when its event row commits, not by when
-    // the payload arrived, so a delivery that raced the disposal can land after
-    // it in the log. Nothing else in the run can consume that event, so the
-    // hook's own consumer has to swallow it — otherwise the events consumer
-    // reports an orphan and the replay diverges on a well-formed log.
-    const ops: Promise<any>[] = [];
-    const onUnconsumedEvent = vi.fn();
-    const ctx = setupWorkflowContext(
-      [
-        {
-          eventId: 'evnt_0',
-          runId: 'wrun_123',
-          eventType: 'hook_created',
-          correlationId: 'hook_01K11TFZ62C752Z96G9MRSN85J',
-          eventData: { token: 'test-token' },
-          createdAt: new Date(),
-        },
-        {
-          eventId: 'evnt_1',
-          runId: 'wrun_123',
-          eventType: 'hook_disposed',
-          correlationId: 'hook_01K11TFZ62C752Z96G9MRSN85J',
-          eventData: { token: 'test-token' },
-          createdAt: new Date(),
-        },
-        {
-          eventId: 'evnt_2',
-          runId: 'wrun_123',
-          eventType: 'hook_received',
-          correlationId: 'hook_01K11TFZ62C752Z96G9MRSN85J',
-          eventData: {
-            token: 'test-token',
-            payload: await dehydrateStepReturnValue(
-              { message: 'lost the race' },
-              'wrun_test',
-              undefined,
-              ops
-            ),
-          },
-          createdAt: new Date(),
-        },
-      ],
-      onUnconsumedEvent
-    );
-
-    const createHook = createCreateHook(ctx);
-    createHook({ token: 'test-token' });
-
-    // The whole log is consumed: the disposal retires the hook and the late
-    // delivery is dropped on the floor.
-    await vi.waitFor(() => {
-      expect(ctx.eventsConsumer.eventIndex).toBe(3);
-    });
-    expect(onUnconsumedEvent).not.toHaveBeenCalled();
-    expect(ctx.onWorkflowError).not.toHaveBeenCalled();
-    expect(ctx.invocationsQueue.size).toBe(0);
-  });
-
   it('should handle multiple hook_received events with iterator', async () => {
     const ops: Promise<any>[] = [];
     const ctx = setupWorkflowContext([
@@ -537,7 +475,7 @@ describe('createCreateHook', () => {
         eventId: 'evnt_0',
         runId: 'wrun_123',
         eventType: 'hook_created',
-        correlationId: 'hook_01K11TFZ62C752Z96G9MRSN85J',
+        correlationId: 'hook_01K11TFZ62YS0YYFDQ3E8B9YCV',
         eventData: {
           token: 'test-token',
         },
@@ -547,7 +485,7 @@ describe('createCreateHook', () => {
         eventId: 'evnt_1',
         runId: 'wrun_123',
         eventType: 'hook_received',
-        correlationId: 'hook_01K11TFZ62C752Z96G9MRSN85J',
+        correlationId: 'hook_01K11TFZ62YS0YYFDQ3E8B9YCV',
         eventData: {
           token: 'test-token',
           payload: await dehydrateStepReturnValue(
@@ -563,7 +501,7 @@ describe('createCreateHook', () => {
         eventId: 'evnt_2',
         runId: 'wrun_123',
         eventType: 'hook_received',
-        correlationId: 'hook_01K11TFZ62C752Z96G9MRSN85J',
+        correlationId: 'hook_01K11TFZ62YS0YYFDQ3E8B9YCV',
         eventData: {
           token: 'test-token',
           payload: await dehydrateStepReturnValue(
@@ -579,7 +517,7 @@ describe('createCreateHook', () => {
         eventId: 'evnt_3',
         runId: 'wrun_123',
         eventType: 'hook_disposed',
-        correlationId: 'hook_01K11TFZ62C752Z96G9MRSN85J',
+        correlationId: 'hook_01K11TFZ62YS0YYFDQ3E8B9YCV',
         eventData: {
           token: 'test-token',
         },
@@ -608,7 +546,7 @@ describe('createCreateHook', () => {
         eventId: 'evnt_0',
         runId: 'wrun_123',
         eventType: 'step_completed', // Wrong event type
-        correlationId: 'hook_01K11TFZ62C752Z96G9MRSN85J',
+        correlationId: 'hook_01K11TFZ62YS0YYFDQ3E8B9YCV',
         eventData: {
           stepName: 'unexpectedStep',
           result: ['test'],
@@ -638,7 +576,7 @@ describe('createCreateHook', () => {
         eventId: 'evnt_0',
         runId: 'wrun_123',
         eventType: 'hook_conflict',
-        correlationId: 'hook_01K11TFZ62C752Z96G9MRSN85J',
+        correlationId: 'hook_01K11TFZ62YS0YYFDQ3E8B9YCV',
         eventData: {
           token: 'my-conflicting-token',
           conflictingRunId: 'wrun_conflicting',
@@ -670,7 +608,7 @@ describe('createCreateHook', () => {
         eventId: 'evnt_0',
         runId: 'wrun_123',
         eventType: 'hook_conflict',
-        correlationId: 'hook_01K11TFZ62C752Z96G9MRSN85J',
+        correlationId: 'hook_01K11TFZ62YS0YYFDQ3E8B9YCV',
         eventData: {
           token: 'my-conflicting-token',
         },
@@ -696,7 +634,7 @@ describe('createCreateHook', () => {
         eventId: 'evnt_0',
         runId: 'wrun_123',
         eventType: 'hook_created',
-        correlationId: 'hook_01K11TFZ62C752Z96G9MRSN85J',
+        correlationId: 'hook_01K11TFZ62YS0YYFDQ3E8B9YCV',
         eventData: {
           token: 'test-token',
         },
@@ -706,7 +644,7 @@ describe('createCreateHook', () => {
         eventId: 'evnt_1',
         runId: 'wrun_123',
         eventType: 'hook_received',
-        correlationId: 'hook_01K11TFZ62C752Z96G9MRSN85J',
+        correlationId: 'hook_01K11TFZ62YS0YYFDQ3E8B9YCV',
         eventData: {
           token: 'test-token',
           payload: await dehydrateStepReturnValue(
@@ -722,7 +660,7 @@ describe('createCreateHook', () => {
         eventId: 'evnt_2',
         runId: 'wrun_123',
         eventType: 'hook_disposed',
-        correlationId: 'hook_01K11TFZ62C752Z96G9MRSN85J',
+        correlationId: 'hook_01K11TFZ62YS0YYFDQ3E8B9YCV',
         eventData: {
           token: 'test-token',
         },
@@ -789,7 +727,7 @@ describe('createCreateHook', () => {
         eventId: 'evnt_0',
         runId: 'wrun_123',
         eventType: 'hook_created',
-        correlationId: 'hook_01K11TFZ62C752Z96G9MRSN85J',
+        correlationId: 'hook_01K11TFZ62YS0YYFDQ3E8B9YCV',
         eventData: {
           token: 'test-token',
         },
@@ -807,7 +745,7 @@ describe('createCreateHook', () => {
 
     // Wait for events to process (hook_created sets hasCreatedEvent on queue item)
     await vi.waitFor(() => {
-      const item = ctx.invocationsQueue.get('hook_01K11TFZ62C752Z96G9MRSN85J');
+      const item = ctx.invocationsQueue.get('hook_01K11TFZ62YS0YYFDQ3E8B9YCV');
       expect(item?.type === 'hook' && item.hasCreatedEvent).toBe(true);
     });
 
@@ -815,7 +753,7 @@ describe('createCreateHook', () => {
     hook.dispose();
 
     const queueItem = ctx.invocationsQueue.get(
-      'hook_01K11TFZ62C752Z96G9MRSN85J'
+      'hook_01K11TFZ62YS0YYFDQ3E8B9YCV'
     );
     expect(queueItem?.type).toBe('hook');
     if (queueItem?.type === 'hook') {
@@ -831,7 +769,7 @@ describe('createCreateHook', () => {
         eventId: 'evnt_0',
         runId: 'wrun_123',
         eventType: 'hook_created',
-        correlationId: 'hook_01K11TFZ62C752Z96G9MRSN85J',
+        correlationId: 'hook_01K11TFZ62YS0YYFDQ3E8B9YCV',
         eventData: {
           token: 'test-token',
         },
@@ -841,7 +779,7 @@ describe('createCreateHook', () => {
         eventId: 'evnt_1',
         runId: 'wrun_123',
         eventType: 'hook_received',
-        correlationId: 'hook_01K11TFZ62C752Z96G9MRSN85J',
+        correlationId: 'hook_01K11TFZ62YS0YYFDQ3E8B9YCV',
         eventData: {
           token: 'test-token',
           payload: await dehydrateStepReturnValue(
@@ -857,7 +795,7 @@ describe('createCreateHook', () => {
         eventId: 'evnt_2',
         runId: 'wrun_123',
         eventType: 'hook_received',
-        correlationId: 'hook_01K11TFZ62C752Z96G9MRSN85J',
+        correlationId: 'hook_01K11TFZ62YS0YYFDQ3E8B9YCV',
         eventData: {
           token: 'test-token',
           payload: await dehydrateStepReturnValue(
@@ -873,7 +811,7 @@ describe('createCreateHook', () => {
         eventId: 'evnt_3',
         runId: 'wrun_123',
         eventType: 'hook_disposed',
-        correlationId: 'hook_01K11TFZ62C752Z96G9MRSN85J',
+        correlationId: 'hook_01K11TFZ62YS0YYFDQ3E8B9YCV',
         eventData: {
           token: 'test-token',
         },
@@ -909,7 +847,7 @@ describe('createCreateHook', () => {
         eventId: 'evnt_0',
         runId: 'wrun_123',
         eventType: 'hook_conflict',
-        correlationId: 'hook_01K11TFZ62C752Z96G9MRSN85J',
+        correlationId: 'hook_01K11TFZ62YS0YYFDQ3E8B9YCV',
         eventData: {
           token: 'my-conflicting-token',
         },
@@ -940,7 +878,7 @@ describe('createCreateHook', () => {
         eventId: 'evnt_0',
         runId: 'wrun_123',
         eventType: 'hook_created',
-        correlationId: 'hook_01K11TFZ62C752Z96G9MRSN85J',
+        correlationId: 'hook_01K11TFZ62YS0YYFDQ3E8B9YCV',
         eventData: {
           token: 'test-token',
         },
@@ -1043,7 +981,7 @@ describe('createCreateHook', () => {
         eventId: 'evnt_0',
         runId: 'wrun_123',
         eventType: 'hook_conflict',
-        correlationId: 'hook_01K11TFZ62C752Z96G9MRSN85J',
+        correlationId: 'hook_01K11TFZ62YS0YYFDQ3E8B9YCV',
         eventData: {
           token: 'my-conflicting-token',
         },
@@ -1106,7 +1044,7 @@ describe('createCreateHook', () => {
         eventId: 'evnt_0',
         runId: 'wrun_123',
         eventType: 'hook_created',
-        correlationId: 'hook_01K11TFZ62C752Z96G9MRSN85J',
+        correlationId: 'hook_01K11TFZ62YS0YYFDQ3E8B9YCV',
         eventData: {
           token: 'test-token',
         },
@@ -1116,7 +1054,7 @@ describe('createCreateHook', () => {
         eventId: 'evnt_1',
         runId: 'wrun_123',
         eventType: 'hook_received',
-        correlationId: 'hook_01K11TFZ62C752Z96G9MRSN85J',
+        correlationId: 'hook_01K11TFZ62YS0YYFDQ3E8B9YCV',
         eventData: {
           token: 'test-token',
           payload: await dehydrateStepReturnValue(
@@ -1155,7 +1093,7 @@ describe('createCreateHook', () => {
         eventId: 'evnt_0',
         runId: 'wrun_123',
         eventType: 'hook_created',
-        correlationId: 'hook_01K11TFZ62C752Z96G9MRSN85J',
+        correlationId: 'hook_01K11TFZ62YS0YYFDQ3E8B9YCV',
         eventData: {
           token: 'test-token',
         },
@@ -1171,7 +1109,7 @@ describe('createCreateHook', () => {
 
     // Wait for events to process (hook_created sets hasCreatedEvent on queue item)
     await vi.waitFor(() => {
-      const item = ctx.invocationsQueue.get('hook_01K11TFZ62C752Z96G9MRSN85J');
+      const item = ctx.invocationsQueue.get('hook_01K11TFZ62YS0YYFDQ3E8B9YCV');
       expect(item?.type === 'hook' && item.hasCreatedEvent).toBe(true);
     });
 
@@ -1291,7 +1229,7 @@ describe('createCreateHook', () => {
         eventId: 'evnt_0',
         runId: 'wrun_123',
         eventType: 'hook_created',
-        correlationId: 'hook_01K11TFZ62C752Z96G9MRSN85J',
+        correlationId: 'hook_01K11TFZ62YS0YYFDQ3E8B9YCV',
         eventData,
         createdAt: new Date(),
       },

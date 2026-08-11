@@ -113,29 +113,6 @@ describe('composeLogLine', () => {
     `);
   });
 
-  test('renders errorMessage when the message does not already carry it', () => {
-    // The replay-divergence warn writes its own summary line and passes the
-    // error only as metadata, so this is the sole place the divergent event's
-    // identity appears. Dropping it leaves the log naming a symptom with no
-    // way to tell which event diverged.
-    const out = composeLogLine(
-      PREFIX,
-      'Workflow replay diverged; queueing a recovery replay before declaring the event log corrupted',
-      {
-        errorCode: 'REPLAY_DIVERGENCE',
-        errorMessage:
-          'Replay could not consume event: eventType=step_created, correlationId=step_01ABCDEFGHJKMNPQRSTVWXYZ.',
-        divergenceCount: 1,
-      }
-    );
-    expect(out).toMatchInlineSnapshot(`
-      "[workflow-sdk] Workflow replay diverged; queueing a recovery replay before declaring the event log corrupted
-        code   REPLAY_DIVERGENCE
-        error  Replay could not consume event: eventType=step_created, correlationId=step_01ABCDEFGHJKMNPQRSTVWXYZ.
-        divergenceCount 1"
-    `);
-  });
-
   test('falls back gracefully on machine names it cannot parse', () => {
     const out = composeLogLine(PREFIX, 'msg', {
       workflowRunId: 'wrun_X',
@@ -179,8 +156,7 @@ describe('composeLogLine', () => {
         user error · Error
         run    wrun_01ABC · myWorkflow (./workflows/x)
         step   step_01XYZ · add (./workflows/x)
-        retry  4 attempts · 3 max retries
-        error  Transient failure"
+        retry  4 attempts · 3 max retries"
     `);
   });
 });

@@ -2,11 +2,8 @@ import { WorkflowRuntimeError } from '@workflow/errors';
 import { withResolvers } from '@workflow/utils';
 import type { Event } from '@workflow/world';
 import * as nanoid from 'nanoid';
+import { monotonicFactory } from 'ulid';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import {
-  type CorrelationIdKind,
-  createCorrelationIdGenerator,
-} from './correlation-id.js';
 import { EventsConsumer } from './events-consumer.js';
 import { WorkflowSuspension } from './global.js';
 import type { WorkflowOrchestratorContext } from './private.js';
@@ -92,16 +89,15 @@ import { createSleep } from './workflow/sleep.js';
  * one cache exactly like the replay loop inside a single production queue
  * delivery does (see the `ReplayPayloadCache` class docstring).
  */
-const FIXED_TIMESTAMP = 1753481739458;
-
 function setupWorkflowContext(
   events: Event[],
   replayPayloadCache: ReplayPayloadCache = new ReplayPayloadCache(undefined)
 ): WorkflowOrchestratorContext {
   const context = createContext({
     seed: 'test',
-    fixedTimestamp: FIXED_TIMESTAMP,
+    fixedTimestamp: 1753481739458,
   });
+  const ulid = monotonicFactory(() => context.globalThis.Math.random());
   const workflowStartedAt = context.globalThis.Date.now();
   const promiseQueueHolder = { current: Promise.resolve() };
   const ctxRef: { current?: WorkflowOrchestratorContext } = {};
@@ -112,6 +108,8 @@ function setupWorkflowContext(
     replayPayloadCache,
     globalThis: context.globalThis,
     eventsConsumer: new EventsConsumer(events, {
+      // Fake context: no deliveries are modeled, so the gate is a no-op here.
+      isDeliveryIdle: () => true,
       onUnconsumedEvent: (event) => {
         ctxRef.current?.onWorkflowError(
           new WorkflowRuntimeError(
@@ -122,10 +120,7 @@ function setupWorkflowContext(
       getPromiseQueue: () => promiseQueueHolder.current,
     }),
     invocationsQueue: new Map(),
-    generateCorrelationId: createCorrelationIdGenerator({
-      seed: 'test',
-      fixedTimestamp: workflowStartedAt,
-    }),
+    generateUlid: () => ulid(workflowStartedAt),
     generateNanoid: nanoid.customRandom(nanoid.urlAlphabet, 21, (size) =>
       new Uint8Array(size).map(() => 256 * context.globalThis.Math.random())
     ),
@@ -143,22 +138,14 @@ function setupWorkflowContext(
   return ctx;
 }
 
-/**
- * The correlation IDs the seeded generator hands out for one kind, in draw
- * order. Each kind draws from its own sequence, so a fixture indexes into the
- * kind it is naming.
- */
-function correlationIds(kind: CorrelationIdKind, count: number): string[] {
-  const generate = createCorrelationIdGenerator({
-    seed: 'test',
-    fixedTimestamp: FIXED_TIMESTAMP,
-  });
-  return Array.from({ length: count }, () => generate(kind));
-}
-
-const STEP_IDS = correlationIds('step', 4);
-const WAIT_IDS = correlationIds('wait', 4);
-const HOOK_IDS = correlationIds('hook', 4);
+// Deterministic correlation IDs from the ULID generator with seed 'test'
+const CORR_IDS = [
+  '01K11TFZ62YS0YYFDQ3E8B9YCV',
+  '01K11TFZ62YS0YYFDQ3E8B9YCW',
+  '01K11TFZ62YS0YYFDQ3E8B9YCX',
+  '01K11TFZ62YS0YYFDQ3E8B9YCY',
+  '01K11TFZ62YS0YYFDQ3E8B9YCZ',
+];
 
 function pendingStepNames(ctx: WorkflowOrchestratorContext): string[] {
   return [...ctx.invocationsQueue.values()]
@@ -242,7 +229,7 @@ describe('step result delivery ordering across replays', () => {
           eventId: 'evnt_0',
           runId: 'wrun_test',
           eventType: 'step_created',
-          correlationId: `step_${STEP_IDS[0]}`,
+          correlationId: `step_${CORR_IDS[0]}`,
           eventData: { stepName: 'stepA' },
           createdAt: new Date(),
         },
@@ -250,7 +237,7 @@ describe('step result delivery ordering across replays', () => {
           eventId: 'evnt_1',
           runId: 'wrun_test',
           eventType: 'wait_created',
-          correlationId: `wait_${WAIT_IDS[0]}`,
+          correlationId: `wait_${CORR_IDS[1]}`,
           eventData: { resumeAt },
           createdAt: new Date(),
         },
@@ -258,7 +245,7 @@ describe('step result delivery ordering across replays', () => {
           eventId: 'evnt_2',
           runId: 'wrun_test',
           eventType: 'step_started',
-          correlationId: `step_${STEP_IDS[0]}`,
+          correlationId: `step_${CORR_IDS[0]}`,
           eventData: { stepName: 'stepA' },
           createdAt: new Date(),
         },
@@ -269,7 +256,7 @@ describe('step result delivery ordering across replays', () => {
           eventId: 'evnt_3',
           runId: 'wrun_test',
           eventType: 'wait_completed',
-          correlationId: `wait_${WAIT_IDS[0]}`,
+          correlationId: `wait_${CORR_IDS[1]}`,
           eventData: { resumeAt },
           createdAt: new Date(),
         },
@@ -277,7 +264,7 @@ describe('step result delivery ordering across replays', () => {
           eventId: 'evnt_4',
           runId: 'wrun_test',
           eventType: 'step_completed',
-          correlationId: `step_${STEP_IDS[0]}`,
+          correlationId: `step_${CORR_IDS[0]}`,
           eventData: { stepName: 'stepA', result: stepAResult },
           createdAt: new Date(),
         },
@@ -285,7 +272,7 @@ describe('step result delivery ordering across replays', () => {
           eventId: 'evnt_5',
           runId: 'wrun_test',
           eventType: 'step_created',
-          correlationId: `step_${STEP_IDS[1]}`,
+          correlationId: `step_${CORR_IDS[2]}`,
           eventData: { stepName: 'afterSleep' },
           createdAt: new Date(),
         },
@@ -293,16 +280,16 @@ describe('step result delivery ordering across replays', () => {
           eventId: 'evnt_6',
           runId: 'wrun_test',
           eventType: 'step_created',
-          correlationId: `step_${STEP_IDS[2]}`,
+          correlationId: `step_${CORR_IDS[3]}`,
           eventData: { stepName: 'afterStep' },
           createdAt: new Date(),
         },
       ];
     }
 
-    // Correlation-id draw order in this body: `stepA()` takes STEP_IDS[0], `sleep()`
-    // takes WAIT_IDS[0], and then whichever branch is resumed FIRST takes
-    // STEP_IDS[1] while the other takes STEP_IDS[2].
+    // ULID draw order in this body: `stepA()` takes CORR_IDS[0], `sleep()`
+    // takes CORR_IDS[1], and then whichever branch is resumed FIRST takes
+    // CORR_IDS[2] while the other takes CORR_IDS[3].
     function workflowBody(ctx: WorkflowOrchestratorContext) {
       const useStep = createUseStep(ctx);
       const sleep = createSleep(ctx);
@@ -339,7 +326,7 @@ describe('step result delivery ordering across replays', () => {
       }
 
       // The log's ordering was reproduced: the sleep branch resumed first and
-      // drew STEP_IDS[1] for `afterSleep`, so both `step_created` events at
+      // drew CORR_IDS[2] for `afterSleep`, so both `step_created` events at
       // the tail matched their consumers and the run suspends with both
       // follow-up steps pending.
       expect(pendingStepNames(ctx).sort()).toEqual(['afterSleep', 'afterStep']);
@@ -377,7 +364,7 @@ describe('step result delivery ordering across replays', () => {
 
       expect(error).toBeDefined();
       // FAILS on `main`: the step result now wins, `afterStep` draws
-      // STEP_IDS[1], and replay diverges at evnt_5 with the production error
+      // CORR_IDS[2], and replay diverges at evnt_5 with the production error
       // shape ("... belongs to \"afterSleep\", but the current step consumer
       // is \"afterStep\"").
       if (!WorkflowSuspension.is(error)) {
@@ -404,7 +391,7 @@ describe('step result delivery ordering across replays', () => {
           eventId: 'evnt_0',
           runId: 'wrun_test',
           eventType: 'hook_created',
-          correlationId: `hook_${HOOK_IDS[0]}`,
+          correlationId: `hook_${CORR_IDS[0]}`,
           eventData: { token: 'test-token', isWebhook: false },
           createdAt: new Date(),
         },
@@ -412,7 +399,7 @@ describe('step result delivery ordering across replays', () => {
           eventId: 'evnt_1',
           runId: 'wrun_test',
           eventType: 'step_created',
-          correlationId: `step_${STEP_IDS[0]}`,
+          correlationId: `step_${CORR_IDS[1]}`,
           eventData: { stepName: 'stepA' },
           createdAt: new Date(),
         },
@@ -420,7 +407,7 @@ describe('step result delivery ordering across replays', () => {
           eventId: 'evnt_2',
           runId: 'wrun_test',
           eventType: 'step_started',
-          correlationId: `step_${STEP_IDS[0]}`,
+          correlationId: `step_${CORR_IDS[1]}`,
           eventData: { stepName: 'stepA' },
           createdAt: new Date(),
         },
@@ -430,7 +417,7 @@ describe('step result delivery ordering across replays', () => {
           eventId: 'evnt_3',
           runId: 'wrun_test',
           eventType: 'hook_received',
-          correlationId: `hook_${HOOK_IDS[0]}`,
+          correlationId: `hook_${CORR_IDS[0]}`,
           eventData: { token: 'test-token', payload: hookPayload },
           createdAt: new Date(),
         },
@@ -438,7 +425,7 @@ describe('step result delivery ordering across replays', () => {
           eventId: 'evnt_4',
           runId: 'wrun_test',
           eventType: 'step_completed',
-          correlationId: `step_${STEP_IDS[0]}`,
+          correlationId: `step_${CORR_IDS[1]}`,
           eventData: { stepName: 'stepA', result: stepAResult },
           createdAt: new Date(),
         },
@@ -446,7 +433,7 @@ describe('step result delivery ordering across replays', () => {
           eventId: 'evnt_5',
           runId: 'wrun_test',
           eventType: 'step_created',
-          correlationId: `step_${STEP_IDS[1]}`,
+          correlationId: `step_${CORR_IDS[2]}`,
           eventData: { stepName: 'afterHook' },
           createdAt: new Date(),
         },
@@ -454,7 +441,7 @@ describe('step result delivery ordering across replays', () => {
           eventId: 'evnt_6',
           runId: 'wrun_test',
           eventType: 'step_created',
-          correlationId: `step_${STEP_IDS[2]}`,
+          correlationId: `step_${CORR_IDS[3]}`,
           eventData: { stepName: 'afterStep' },
           createdAt: new Date(),
         },
@@ -462,8 +449,8 @@ describe('step result delivery ordering across replays', () => {
     }
 
     /**
-     * Correlation-id draw order: `createHook()` takes HOOK_IDS[0], `stepA()` takes
-     * STEP_IDS[0], then the branch resumed FIRST takes STEP_IDS[1].
+     * ULID draw order: `createHook()` takes CORR_IDS[0], `stepA()` takes
+     * CORR_IDS[1], then the branch resumed FIRST takes CORR_IDS[2].
      *
      * Two ways of consuming the hook. Both subscribe before `hook_received` is
      * consumed, so both take the same delivery path in `workflow/hook.ts` (the
@@ -479,7 +466,7 @@ describe('step result delivery ordering across replays', () => {
      *   settles the promise returned by `next()`, and only then does the loop
      *   body run. Those extra hops are enough for a memo-warm `step_completed`
      *   — which on an unfixed runtime resolves inside its own queue slot with
-     *   no detached chain at all — to draw STEP_IDS[1] first.
+     *   no detached chain at all — to draw CORR_IDS[2] first.
      * - `await hook` (control): resolution resumes the branch's continuation
      *   directly, so it reaches `afterHook()` in the first microtask and stays
      *   ahead of the step result even on a warm cache.
@@ -568,7 +555,7 @@ describe('step result delivery ordering across replays', () => {
 
       expect(error).toBeDefined();
       // FAILS on `main`: the step result overtakes the hook payload,
-      // `afterStep` draws STEP_IDS[1], and replay diverges at evnt_5 with the
+      // `afterStep` draws CORR_IDS[2], and replay diverges at evnt_5 with the
       // production error shape.
       if (!WorkflowSuspension.is(error)) {
         throw error;
@@ -654,7 +641,7 @@ describe('step result delivery ordering across replays', () => {
           eventId: 'evnt_0',
           runId: 'wrun_test',
           eventType: 'hook_created',
-          correlationId: `hook_${HOOK_IDS[0]}`,
+          correlationId: `hook_${CORR_IDS[0]}`,
           eventData: { token: 'poke-token', isWebhook: false },
           createdAt: new Date(),
         },
@@ -662,7 +649,7 @@ describe('step result delivery ordering across replays', () => {
           eventId: 'evnt_1',
           runId: 'wrun_test',
           eventType: 'step_created',
-          correlationId: `step_${STEP_IDS[0]}`,
+          correlationId: `step_${CORR_IDS[1]}`,
           eventData: { stepName: 'stepA' },
           createdAt: new Date(),
         },
@@ -670,7 +657,7 @@ describe('step result delivery ordering across replays', () => {
           eventId: 'evnt_2',
           runId: 'wrun_test',
           eventType: 'wait_created',
-          correlationId: `wait_${WAIT_IDS[0]}`,
+          correlationId: `wait_${CORR_IDS[2]}`,
           eventData: { resumeAt },
           createdAt: new Date(),
         },
@@ -678,7 +665,7 @@ describe('step result delivery ordering across replays', () => {
           eventId: 'evnt_3',
           runId: 'wrun_test',
           eventType: 'step_started',
-          correlationId: `step_${STEP_IDS[0]}`,
+          correlationId: `step_${CORR_IDS[1]}`,
           eventData: { stepName: 'stepA' },
           createdAt: new Date(),
         },
@@ -689,7 +676,7 @@ describe('step result delivery ordering across replays', () => {
           eventId: 'evnt_4',
           runId: 'wrun_test',
           eventType: 'hook_received',
-          correlationId: `hook_${HOOK_IDS[0]}`,
+          correlationId: `hook_${CORR_IDS[0]}`,
           eventData: { token: 'poke-token', payload: hookPayload },
           createdAt: new Date(),
         },
@@ -699,7 +686,7 @@ describe('step result delivery ordering across replays', () => {
           eventId: 'evnt_5',
           runId: 'wrun_test',
           eventType: 'wait_completed',
-          correlationId: `wait_${WAIT_IDS[0]}`,
+          correlationId: `wait_${CORR_IDS[2]}`,
           eventData: { resumeAt },
           createdAt: new Date(),
         },
@@ -707,7 +694,7 @@ describe('step result delivery ordering across replays', () => {
           eventId: 'evnt_6',
           runId: 'wrun_test',
           eventType: 'step_completed',
-          correlationId: `step_${STEP_IDS[0]}`,
+          correlationId: `step_${CORR_IDS[1]}`,
           eventData: { stepName: 'stepA', result: stepAResult },
           createdAt: new Date(),
         },
@@ -715,7 +702,7 @@ describe('step result delivery ordering across replays', () => {
           eventId: 'evnt_7',
           runId: 'wrun_test',
           eventType: 'step_created',
-          correlationId: `step_${STEP_IDS[1]}`,
+          correlationId: `step_${CORR_IDS[3]}`,
           eventData: { stepName: 'afterSleep' },
           createdAt: new Date(),
         },
@@ -723,7 +710,7 @@ describe('step result delivery ordering across replays', () => {
           eventId: 'evnt_8',
           runId: 'wrun_test',
           eventType: 'step_created',
-          correlationId: `step_${STEP_IDS[2]}`,
+          correlationId: `step_${CORR_IDS[4]}`,
           eventData: { stepName: 'afterStep' },
           createdAt: new Date(),
         },
@@ -731,9 +718,9 @@ describe('step result delivery ordering across replays', () => {
     }
 
     /**
-     * Draw order: `createHook()` takes HOOK_IDS[0], `stepA()` STEP_IDS[0],
-     * `sleep()` WAIT_IDS[0]; then whichever branch resumes FIRST takes
-     * STEP_IDS[1] and the other takes STEP_IDS[2].
+     * Draw order: `createHook()` takes CORR_IDS[0], `stepA()` CORR_IDS[1],
+     * `sleep()` CORR_IDS[2]; then whichever branch resumes FIRST takes
+     * CORR_IDS[3] and the other takes CORR_IDS[4].
      *
      * The `awaited` variant adds a third branch that awaits the payload and
      * draws nothing, so both variants replay the SAME event log and differ
@@ -782,7 +769,7 @@ describe('step result delivery ordering across replays', () => {
 
       expect(error).toBeDefined();
       // FAILS on `main`: the step result skips the wait transitively through
-      // the unclaimed payload, `afterStep` draws STEP_IDS[1], and replay
+      // the unclaimed payload, `afterStep` draws CORR_IDS[3], and replay
       // diverges at evnt_7 with the production error shape ("... belongs to
       // \"afterSleep\", but the current step consumer is \"afterStep\"").
       if (!WorkflowSuspension.is(error)) {

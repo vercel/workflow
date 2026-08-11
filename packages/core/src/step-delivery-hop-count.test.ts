@@ -27,11 +27,8 @@ import { WorkflowRuntimeError } from '@workflow/errors';
 import { withResolvers } from '@workflow/utils';
 import type { Event } from '@workflow/world';
 import * as nanoid from 'nanoid';
+import { monotonicFactory } from 'ulid';
 import { describe, expect, it, vi } from 'vitest';
-import {
-  type CorrelationIdKind,
-  createCorrelationIdGenerator,
-} from './correlation-id.js';
 import { EventsConsumer } from './events-consumer.js';
 import { WorkflowSuspension } from './global.js';
 import type { WorkflowOrchestratorContext } from './private.js';
@@ -45,16 +42,15 @@ import { createContext } from './vm/index.js';
 import { createCreateHook } from './workflow/hook.js';
 import { createSleep } from './workflow/sleep.js';
 
-const FIXED_TIMESTAMP = 1753481739458;
-
 function setupWorkflowContext(
   events: Event[],
   replayPayloadCache: ReplayPayloadCache = new ReplayPayloadCache(undefined)
 ): WorkflowOrchestratorContext {
   const context = createContext({
     seed: 'test',
-    fixedTimestamp: FIXED_TIMESTAMP,
+    fixedTimestamp: 1753481739458,
   });
+  const ulid = monotonicFactory(() => context.globalThis.Math.random());
   const workflowStartedAt = context.globalThis.Date.now();
   const promiseQueueHolder = { current: Promise.resolve() };
   const ctxRef: { current?: WorkflowOrchestratorContext } = {};
@@ -65,6 +61,8 @@ function setupWorkflowContext(
     replayPayloadCache,
     globalThis: context.globalThis,
     eventsConsumer: new EventsConsumer(events, {
+      // Fake context: no deliveries are modeled, so the gate is a no-op here.
+      isDeliveryIdle: () => true,
       onUnconsumedEvent: (event) => {
         ctxRef.current?.onWorkflowError(
           new WorkflowRuntimeError(`Unconsumed event: ${event.eventType}`)
@@ -73,10 +71,7 @@ function setupWorkflowContext(
       getPromiseQueue: () => promiseQueueHolder.current,
     }),
     invocationsQueue: new Map(),
-    generateCorrelationId: createCorrelationIdGenerator({
-      seed: 'test',
-      fixedTimestamp: workflowStartedAt,
-    }),
+    generateUlid: () => ulid(workflowStartedAt),
     generateNanoid: nanoid.customRandom(nanoid.urlAlphabet, 21, (size) =>
       new Uint8Array(size).map(() => 256 * context.globalThis.Math.random())
     ),
@@ -94,22 +89,12 @@ function setupWorkflowContext(
   return ctx;
 }
 
-/**
- * The correlation IDs the seeded generator hands out for one kind, in draw
- * order. Each kind draws from its own sequence, so a fixture indexes into the
- * kind it is naming.
- */
-function correlationIds(kind: CorrelationIdKind, count: number): string[] {
-  const generate = createCorrelationIdGenerator({
-    seed: 'test',
-    fixedTimestamp: FIXED_TIMESTAMP,
-  });
-  return Array.from({ length: count }, () => generate(kind));
-}
-
-const STEP_IDS = correlationIds('step', 4);
-const WAIT_IDS = correlationIds('wait', 4);
-const HOOK_IDS = correlationIds('hook', 4);
+const CORR_IDS = [
+  '01K11TFZ62YS0YYFDQ3E8B9YCV',
+  '01K11TFZ62YS0YYFDQ3E8B9YCW',
+  '01K11TFZ62YS0YYFDQ3E8B9YCX',
+  '01K11TFZ62YS0YYFDQ3E8B9YCY',
+];
 
 async function runWithDiscontinuation(
   ctx: WorkflowOrchestratorContext,
@@ -151,7 +136,7 @@ async function buildEventLog(): Promise<Event[]> {
       eventId: 'evnt_0',
       runId: 'wrun_test',
       eventType: 'hook_created',
-      correlationId: `hook_${HOOK_IDS[0]}`,
+      correlationId: `hook_${CORR_IDS[0]}`,
       eventData: { token: 'test-token', isWebhook: false },
       createdAt: new Date(),
     },
@@ -159,7 +144,7 @@ async function buildEventLog(): Promise<Event[]> {
       eventId: 'evnt_1',
       runId: 'wrun_test',
       eventType: 'step_created',
-      correlationId: `step_${STEP_IDS[0]}`,
+      correlationId: `step_${CORR_IDS[1]}`,
       eventData: { stepName: 'stepA' },
       createdAt: new Date(),
     },
@@ -167,7 +152,7 @@ async function buildEventLog(): Promise<Event[]> {
       eventId: 'evnt_2',
       runId: 'wrun_test',
       eventType: 'step_started',
-      correlationId: `step_${STEP_IDS[0]}`,
+      correlationId: `step_${CORR_IDS[1]}`,
       eventData: { stepName: 'stepA' },
       createdAt: new Date(),
     },
@@ -175,7 +160,7 @@ async function buildEventLog(): Promise<Event[]> {
       eventId: 'evnt_3',
       runId: 'wrun_test',
       eventType: 'hook_received',
-      correlationId: `hook_${HOOK_IDS[0]}`,
+      correlationId: `hook_${CORR_IDS[0]}`,
       eventData: { token: 'test-token', payload: hookPayload },
       createdAt: new Date(),
     },
@@ -183,7 +168,7 @@ async function buildEventLog(): Promise<Event[]> {
       eventId: 'evnt_4',
       runId: 'wrun_test',
       eventType: 'step_completed',
-      correlationId: `step_${STEP_IDS[0]}`,
+      correlationId: `step_${CORR_IDS[1]}`,
       eventData: { stepName: 'stepA', result: stepAResult },
       createdAt: new Date(),
     },
@@ -191,7 +176,7 @@ async function buildEventLog(): Promise<Event[]> {
       eventId: 'evnt_5',
       runId: 'wrun_test',
       eventType: 'step_created',
-      correlationId: `step_${STEP_IDS[1]}`,
+      correlationId: `step_${CORR_IDS[2]}`,
       eventData: { stepName: 'afterHook' },
       createdAt: new Date(),
     },
@@ -199,7 +184,7 @@ async function buildEventLog(): Promise<Event[]> {
       eventId: 'evnt_6',
       runId: 'wrun_test',
       eventType: 'step_created',
-      correlationId: `step_${STEP_IDS[2]}`,
+      correlationId: `step_${CORR_IDS[3]}`,
       eventData: { stepName: 'afterStep' },
       createdAt: new Date(),
     },
@@ -278,7 +263,7 @@ async function buildWaitEventLog(): Promise<Event[]> {
       eventId: 'evnt_0',
       runId: 'wrun_test',
       eventType: 'step_created',
-      correlationId: `step_${STEP_IDS[0]}`,
+      correlationId: `step_${CORR_IDS[0]}`,
       eventData: { stepName: 'stepA' },
       createdAt: new Date(),
     },
@@ -286,7 +271,7 @@ async function buildWaitEventLog(): Promise<Event[]> {
       eventId: 'evnt_1',
       runId: 'wrun_test',
       eventType: 'wait_created',
-      correlationId: `wait_${WAIT_IDS[0]}`,
+      correlationId: `wait_${CORR_IDS[1]}`,
       eventData: { resumeAt: RESUME_AT },
       createdAt: new Date(),
     },
@@ -294,7 +279,7 @@ async function buildWaitEventLog(): Promise<Event[]> {
       eventId: 'evnt_2',
       runId: 'wrun_test',
       eventType: 'step_started',
-      correlationId: `step_${STEP_IDS[0]}`,
+      correlationId: `step_${CORR_IDS[0]}`,
       eventData: { stepName: 'stepA' },
       createdAt: new Date(),
     },
@@ -302,7 +287,7 @@ async function buildWaitEventLog(): Promise<Event[]> {
       eventId: 'evnt_3',
       runId: 'wrun_test',
       eventType: 'wait_completed',
-      correlationId: `wait_${WAIT_IDS[0]}`,
+      correlationId: `wait_${CORR_IDS[1]}`,
       eventData: { resumeAt: RESUME_AT },
       createdAt: new Date(),
     },
@@ -310,7 +295,7 @@ async function buildWaitEventLog(): Promise<Event[]> {
       eventId: 'evnt_4',
       runId: 'wrun_test',
       eventType: 'step_completed',
-      correlationId: `step_${STEP_IDS[0]}`,
+      correlationId: `step_${CORR_IDS[0]}`,
       eventData: { stepName: 'stepA', result: stepAResult },
       createdAt: new Date(),
     },
@@ -318,7 +303,7 @@ async function buildWaitEventLog(): Promise<Event[]> {
       eventId: 'evnt_5',
       runId: 'wrun_test',
       eventType: 'step_created',
-      correlationId: `step_${STEP_IDS[1]}`,
+      correlationId: `step_${CORR_IDS[2]}`,
       eventData: { stepName: 'afterSleep' },
       createdAt: new Date(),
     },
@@ -326,7 +311,7 @@ async function buildWaitEventLog(): Promise<Event[]> {
       eventId: 'evnt_6',
       runId: 'wrun_test',
       eventType: 'step_created',
-      correlationId: `step_${STEP_IDS[2]}`,
+      correlationId: `step_${CORR_IDS[3]}`,
       eventData: { stepName: 'afterStep' },
       createdAt: new Date(),
     },
@@ -401,7 +386,7 @@ async function buildFailedEventLog(): Promise<Event[]> {
       eventId: 'evnt_0',
       runId: 'wrun_test',
       eventType: 'step_created',
-      correlationId: `step_${STEP_IDS[0]}`,
+      correlationId: `step_${CORR_IDS[0]}`,
       eventData: { stepName: 'stepA' },
       createdAt: new Date(),
     },
@@ -409,7 +394,7 @@ async function buildFailedEventLog(): Promise<Event[]> {
       eventId: 'evnt_1',
       runId: 'wrun_test',
       eventType: 'wait_created',
-      correlationId: `wait_${WAIT_IDS[0]}`,
+      correlationId: `wait_${CORR_IDS[1]}`,
       eventData: { resumeAt: RESUME_AT },
       createdAt: new Date(),
     },
@@ -417,7 +402,7 @@ async function buildFailedEventLog(): Promise<Event[]> {
       eventId: 'evnt_2',
       runId: 'wrun_test',
       eventType: 'step_started',
-      correlationId: `step_${STEP_IDS[0]}`,
+      correlationId: `step_${CORR_IDS[0]}`,
       eventData: { stepName: 'stepA' },
       createdAt: new Date(),
     },
@@ -425,7 +410,7 @@ async function buildFailedEventLog(): Promise<Event[]> {
       eventId: 'evnt_3',
       runId: 'wrun_test',
       eventType: 'wait_completed',
-      correlationId: `wait_${WAIT_IDS[0]}`,
+      correlationId: `wait_${CORR_IDS[1]}`,
       eventData: { resumeAt: RESUME_AT },
       createdAt: new Date(),
     },
@@ -433,7 +418,7 @@ async function buildFailedEventLog(): Promise<Event[]> {
       eventId: 'evnt_4',
       runId: 'wrun_test',
       eventType: 'step_failed',
-      correlationId: `step_${STEP_IDS[0]}`,
+      correlationId: `step_${CORR_IDS[0]}`,
       eventData: { stepName: 'stepA', error: stepAError },
       createdAt: new Date(),
     },
@@ -441,7 +426,7 @@ async function buildFailedEventLog(): Promise<Event[]> {
       eventId: 'evnt_5',
       runId: 'wrun_test',
       eventType: 'step_created',
-      correlationId: `step_${STEP_IDS[1]}`,
+      correlationId: `step_${CORR_IDS[2]}`,
       eventData: { stepName: 'afterSleep' },
       createdAt: new Date(),
     },
@@ -449,7 +434,7 @@ async function buildFailedEventLog(): Promise<Event[]> {
       eventId: 'evnt_6',
       runId: 'wrun_test',
       eventType: 'step_created',
-      correlationId: `step_${STEP_IDS[2]}`,
+      correlationId: `step_${CORR_IDS[3]}`,
       eventData: { stepName: 'afterFailure' },
       createdAt: new Date(),
     },

@@ -815,6 +815,38 @@ export interface CreateEventParams {
    */
   stateCursor?: string;
   /**
+   * How many events the writer held in its loaded log when it decided to write
+   * this one — equivalently, the slot it expects to land on minus one.
+   *
+   * Only meaningful against a World that declares
+   * `WorldCapabilities.slotEventIds`, where slots are dense and 1-based so a
+   * count and a position are the same number. Such a World attempts
+   * `eventCount + 1`, and on contention **bumps** to the next free slot and
+   * commits there anyway — a stale count never rejects a write. What it does
+   * instead is report: when the committed slot is higher than the one asked
+   * for, the events occupying the skipped slots come back on the success
+   * response in {@link EventResult.events} / `cursor` / `hasMore`, so the
+   * writer learns exactly what it had not seen.
+   *
+   * This supersedes the {@link stateUpdatedAt} / {@link stateEventCount} /
+   * {@link stateCursor} triple for slot Worlds. That triple approximates a
+   * position with a ULID-time watermark plus a count of events at or below it,
+   * which is why a *complete but stale* prefix passes it: every event the
+   * writer holds is at or below its own watermark, so the count matches and no
+   * fence fires. A dense position has no such blind spot. Worlds without slots
+   * ignore this field and keep using the triple.
+   *
+   * A batch of writes issued from one snapshot starts from the same
+   * `eventCount`; they land on consecutive slots in whatever order the World
+   * serializes them, which is why they can stay a parallel fan-out instead of
+   * a chain of round-trips. The count a given write sends is the writer's
+   * position *at that moment*, so it advances mid-batch as reported events are
+   * folded back into the loaded log: a write issued after a sibling's
+   * bump-and-report already holds the slots that report named, and asks for a
+   * slot above them.
+   */
+  eventCount?: number;
+  /**
    * Timestamp for when the event occurred on the client side. Worlds that
    * support this can persist it separately from `createdAt`, which represents
    * when the backing service accepted or stored the event.
@@ -873,47 +905,6 @@ export interface CreateEventParams {
    * across the SDK and the backend.
    */
   skipPreload?: true;
-  /**
-   * The event's id, chosen by the client rather than the World.
-   *
-   * Only sent for a run whose spec version numbers events by slot
-   * (`SPEC_VERSION_SLOT_IDENTITY`), where the id encodes the event's position in
-   * the log and is therefore the client's claim on that position.
-   *
-   * Backend contract (for World implementers who want to support slot
-   * identity): treat the id as a claim to be won, not a hint. Insert it under a
-   * uniqueness constraint on `(runId, eventId)` and, when the id is already
-   * taken, reject the write with `SlotConflictError` (HTTP 409) instead of
-   * minting a different id — a lost slot means the client replayed against an
-   * event log missing at least one event, so its whole proposed event, not just
-   * its id, is suspect. Reject a mismatch in either direction with a 400: a
-   * ULID names a time and a slot names a position, so a log holding both sorts
-   * partly by one and partly by the other and no replay can read it in the order
-   * it was written.
-   *
-   * Uniqueness is the whole of the check, deliberately: do NOT additionally
-   * require the claim to be exactly one past the log's tail. The runtime
-   * reserves a contiguous block of positions synchronously and then issues the
-   * writes concurrently, so the claim for a position arrives in no particular
-   * order relative to the ones below it, and a tail+1 rule would reject most of
-   * every batch. Density is therefore a property the runtime maintains (it only
-   * ever reserves from a position it has observed, and rewinds a reservation
-   * that failed) rather than one a World can enforce write-by-write. What a
-   * World can do is notice: {@link maxSlot} makes a hole visible at the moment
-   * it is created, and it is worth a counter, because a hole never heals.
-   *
-   * A World that ignores this field mints ids itself, which is correct only for
-   * a run that was never stamped with slot identity.
-   */
-  eventId?: string;
-  /**
-   * The highest slot the client has observed in the run's event log, or 0 for a
-   * log holding no slot ids. Sent alongside {@link eventId} purely as
-   * an observability signal: because slots are dense, a persisted slot more
-   * than one past this is a hole, which is unrecoverable and worth alerting on.
-   * Worlds MAY ignore it.
-   */
-  maxSlot?: number;
   /**
    * Replay-log preload opt-in (advisory) — the `hook_received` dual of
    * {@link skipPreload}. Set only by the queue consumer's idempotent
@@ -986,7 +977,7 @@ export type EventResult<T extends EventType = EventType> = {
 } & (
   | {
       /**
-       * Events with data resolved. Three producers populate this:
+       * Events with data resolved. Four producers populate this:
        *
        * - On a `run_started` response: all events up to this point, so the
        *   runtime can skip the initial `events.list` call and reduce TTFB.
@@ -999,6 +990,13 @@ export type EventResult<T extends EventType = EventType> = {
        *   log through the canonical `hook_received`, so the lazy hook queue
        *   consumer can skip both the `run_started` write and the initial
        *   `events.list`.
+       * - On any response from a slot-allocating World (see
+       *   `WorldCapabilities.slotEventIds`) whose committed slot came out
+       *   higher than the one {@link CreateEventParams.eventCount} asked for:
+       *   the events occupying the slots that were skipped over, in slot
+       *   order. This is the "report" half of bump-and-report — the write
+       *   succeeded, and these are the events the writer had not seen when it
+       *   decided to make it.
        */
       events: Event[];
       /** Pagination cursor for `events`, matching events.list semantics. */

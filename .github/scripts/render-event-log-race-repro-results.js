@@ -407,11 +407,6 @@ function renderLatestFailures(entry) {
       `\nShowing 20 of ${entry.failing.length + entry.truncatedFailingCount} non-completed runs.`
     );
   }
-  // Deliberately not inlined here: the slices are large and this comment has a
-  // size limit, while the artifact has none.
-  console.log(
-    '\nThe `event-log-race-repro-results` artifact carries a window of the committed log around the divergent event, for a sample of the corruptions.'
-  );
   console.log('');
 }
 

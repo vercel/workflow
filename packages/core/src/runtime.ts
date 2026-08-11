@@ -6,6 +6,7 @@ import {
   FatalError,
   HookNotFoundError,
   MaxEventsExceededError,
+  PreconditionFailedError,
   ReplayDivergenceError,
   RUN_ERROR_CODES,
   type RunErrorCode,
@@ -22,18 +23,14 @@ import {
   type CreateEventRequest,
   type Event,
   type EventResult,
-  FIRST_SLOT,
   getQueueTopicPrefix,
   isLegacySpecVersion,
   isTerminalRunEventType,
-  maxSlotOf,
   ROOT_RUN_ID_ATTRIBUTE,
   type RunInput,
   resolveQueueNamespace,
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_SUPPORTS_COMPRESSION,
-  slotFromId,
-  usesSlotIdentity,
   type WorkflowInvokePayload,
   WorkflowInvokePayloadSchema,
   type WorkflowRun,
@@ -62,7 +59,6 @@ import {
   isInlineOwnershipEnabled,
   isTurboEnabled,
   isVmRetentionEnabled,
-  preconditionRestartBackoffMs,
 } from './runtime/constants.js';
 import { countStepStartedEvents } from './runtime/count-step-started-events.js';
 import {
@@ -72,24 +68,21 @@ import {
 } from './runtime/deployment-guard.js';
 import {
   appendUniqueEvents,
-  claimFenceFor,
-  eventCreateFenceFor,
   getQueueOverhead,
   getWorkflowQueueName,
   handleHealthCheckMessage,
   insertEventByEventId,
   isPreconditionGuardEnabled,
-  isStaleWriteRejection,
+  isSlotGapCheckEnabled,
   type LoadedEventLog,
   loadWorkflowRunEvents,
   memoizeEncryptionKey,
-  type OrderedCreate,
-  orderedCreateFor,
+  mergeReportedEvents,
   parseHealthCheckPayload,
   preconditionEventDelta,
+  preconditionSnapshotParams,
   queueMessage,
-  staleWriteRejectionClass,
-  toMutableEventLog,
+  settleEventSlotGap,
   withHealthCheck,
 } from './runtime/helpers.js';
 import {
@@ -828,22 +821,6 @@ export function workflowEntrypoint(
                   const replayRecoveryReporter = replayDivergence
                     ? new ReplayRecoveryReporter(replayDivergence.count)
                     : ReplayRecoveryReporter.inert();
-                  // Highest slot known to be published, seeding the logs each
-                  // loop iteration builds. Two things put a slot beyond what a
-                  // snapshot shows: turbo backgrounds `run_started` and replays
-                  // against an empty log, and the backend numbers every event
-                  // the client did not claim itself. A log built without them
-                  // renumbers from a tail that has already moved, and its first
-                  // claim loses a fence it should have won.
-                  // 0 for a run whose ids carry no position to compare.
-                  let knownSlotFloor = 0;
-                  const observeSlotFloor = (eventId: string | undefined) => {
-                    const slot = eventId ? slotFromId(eventId) : undefined;
-                    if (slot !== undefined && slot > knownSlotFloor) {
-                      knownSlotFloor = slot;
-                    }
-                  };
-
                   // Every write this loop makes carries the cursor of the log
                   // it was computed against, and folds a complete returned
                   // delta into that log.
@@ -858,7 +835,6 @@ export function workflowEntrypoint(
                         : { ...params, sinceCursor },
                       (p) => world.events.create(runId, data, p)
                     );
-                    observeSlotFloor(result?.event?.eventId);
                     if (sinceCursor !== undefined) {
                       absorbCreateDelta(sinceCursor, result);
                     }
@@ -892,33 +868,6 @@ export function workflowEntrypoint(
                       return undefined;
                     }
                     return eventLog.cursor ?? undefined;
-                  };
-
-                  // What the next load owes the density check, which is the
-                  // only thing that turns "my log looks complete" into a proof
-                  // (a log dense from slot 1 holds exactly `maxSlot` events).
-                  //
-                  //   'reload'  the log came from somewhere that could be
-                  //             short — a restart merging an inline delta or
-                  //             one page above its cursor, or a preload the
-                  //             World assembled alongside the run. A gap costs
-                  //             the authoritative load, which is the load the
-                  //             shortcut skipped.
-                  //   'report'  the log came from the paged load itself, so a
-                  //             gap is a hole rather than a missed page: a
-                  //             write that took a position and then failed.
-                  //             Loading again would only fetch it back, so this
-                  //             counts it instead.
-                  //   'none'    nothing to check.
-                  //
-                  // See the consume site below the load.
-                  let slotDensityCheck: 'none' | 'reload' | 'report' = 'none';
-                  const markDensityCheck = (source: 'reload' | 'report') => {
-                    slotDensityCheck = usesSlotIdentity(
-                      workflowRun?.specVersion
-                    )
-                      ? source
-                      : 'none';
                   };
 
                   /**
@@ -963,9 +912,6 @@ export function workflowEntrypoint(
                       events: result.events,
                       cursor: result.cursor,
                     });
-                    // A delta stands in for the load the next iteration would
-                    // have made, so the log it produces owes the same proof.
-                    markDensityCheck('reload');
                   };
 
                   // `ready` can replay once without a read. The other states
@@ -1149,14 +1095,6 @@ export function workflowEntrypoint(
                   // has thrown away its replay and started over in-process.
                   let preconditionRestarts = 0;
                   /**
-                   * Wait the next loop iteration owes before re-deriving, set
-                   * by `restartReplayInProcess`. Held here rather than awaited
-                   * at the restart's call sites because the restart is decided
-                   * from three of them, in synchronous code, while the loop head
-                   * is the single point every restart passes through.
-                   */
-                  let pendingRestartBackoffMs = 0;
-                  /**
                    * Event ids the discarded replay held, kept until the next
                    * load resolves so a restart can report what its reload
                    * actually found. Without this a 412 only ever tells you that
@@ -1171,7 +1109,7 @@ export function workflowEntrypoint(
                     ids: Set<string>;
                     restart: number;
                     reason: string;
-                    source: 'inline-delta' | 'full-reload' | 'slot-top-up';
+                    source: 'inline-delta' | 'full-reload';
                   } | null = null;
                   /**
                    * Report what a stale-snapshot restart's reload found, once
@@ -1221,15 +1159,13 @@ export function workflowEntrypoint(
                    * per-invocation budget is spent (the caller then falls back
                    * to a fresh invocation).
                    *
-                   * A rejection — 412 for the event-log watermark, 409 for a
-                   * lost slot claim — means the log this replay derived its
-                   * events from was missing an event the backend had already
-                   * recorded. The rejected write cannot simply be retried:
-                   * correlation ids are positional ordinals of one seeded
-                   * sequence, and a slot event id is a position in the log, so
-                   * a replay over the corrected log mints different ids for the
-                   * same logical event, and re-posting this one would persist
-                   * an event no correct replay ever produces. The whole replay has
+                   * A 412 means the log this replay derived its events from was
+                   * missing an event the backend had already recorded. The
+                   * rejected write cannot simply be retried: correlation ids
+                   * are positional ordinals of one seeded sequence, so a replay
+                   * over the corrected log mints a different id for the same
+                   * logical event, and re-posting this one would persist an
+                   * event no correct replay ever produces. The whole replay has
                    * to be re-derived — which the loop does by discarding its
                    * cached log, since `runWorkflow` then builds a fresh VM,
                    * seed and correlation-id sequence from the reloaded events.
@@ -1250,9 +1186,7 @@ export function workflowEntrypoint(
                   ): boolean => {
                     if (
                       preconditionRestarts >=
-                      getPreconditionMaxInProcessRestarts(
-                        usesSlotIdentity(workflowRun?.specVersion)
-                      )
+                      getPreconditionMaxInProcessRestarts()
                     ) {
                       return false;
                     }
@@ -1260,49 +1194,25 @@ export function workflowEntrypoint(
                     // Every stale-snapshot restart invalidates the parked VM:
                     // the log it consumed was missing events, so only a fresh
                     // replay over the corrected log is authoritative. This
-                    // also covers the suspension-create rejection, which fires
+                    // also covers the suspension-create 412, which fires
                     // before the retention decision (kill switch + step-input
-                    // gate) ever ran, and the run_completed rejection, where a
+                    // gate) ever ran, and the run_completed 412, where a
                     // completed session must not be resumed again.
                     retainedSession = null;
-                    // A World MAY return the events we were missing on the
-                    // rejection. A merged log is checked for density before the
-                    // replay trusts it, so a delta that left a hole costs the
-                    // reload it would have done anyway and every restart can
-                    // take one. A run fenced by the watermark has no such check
-                    // — its delta's completeness rests on the backend's own
-                    // bookkeeping — so it trusts one delta and loads
-                    // authoritatively after that.
-                    const slotNumbered = usesSlotIdentity(
-                      workflowRun?.specVersion
-                    );
+                    // A World MAY return the events we were missing on the 412.
+                    // Trust it only on the FIRST restart: its completeness proof
+                    // leans on the backend's own bookkeeping, so if that
+                    // under-counts, a "complete" delta can still leave a hole.
+                    // Bounding it to one attempt caps that at a single wasted
+                    // restart; every later restart does the authoritative load.
                     const delta =
-                      allowDelta && (slotNumbered || preconditionRestarts === 1)
+                      allowDelta && preconditionRestarts === 1
                         ? preconditionEventDelta(error, runId)
                         : null;
-                    // A delta is only usable as a delta if there is a loaded
-                    // log to merge it into; with no base log the restart has to
-                    // load the whole thing anyway.
+                    // A delta is only usable if there is a loaded log to merge
+                    // it into; without one the restart must load everything.
                     const usedDelta =
                       delta !== null && eventLog.type !== 'loadAll';
-                    // Without a delta, the log heals from its cursor rather
-                    // than from a full reload. Slot ids sort in write order, so
-                    // every event this replay was missing is strictly above the
-                    // cursor and one incremental page brings it in, and density
-                    // (a dense log from slot 1 holds exactly `maxSlot` events)
-                    // proves afterwards that it did, so nothing is being trusted
-                    // here that is not checked. Neither property holds for a
-                    // ULID-numbered log, so those restarts reload whole.
-                    const topsUpFromCursor =
-                      !usedDelta &&
-                      slotNumbered &&
-                      eventLog.type !== 'loadAll' &&
-                      eventLog.cursor !== null;
-                    const restartSource = usedDelta
-                      ? 'inline-delta'
-                      : topsUpFromCursor
-                        ? 'slot-top-up'
-                        : 'full-reload';
                     // Snapshot the set being discarded while it is still in
                     // hand; the comparison happens once the next load resolves.
                     preconditionRestartBaseline =
@@ -1313,28 +1223,12 @@ export function workflowEntrypoint(
                             ),
                             restart: preconditionRestarts,
                             reason,
-                            source: restartSource,
+                            source: usedDelta ? 'inline-delta' : 'full-reload',
                           }
                         : null;
                     if (delta && eventLog.type !== 'loadAll') {
-                      // Merged in place, so the next iteration replays without
-                      // an events.list round trip at all.
                       appendEventLog(eventLog, delta);
                       eventLog = { ...eventLog, type: 'ready' };
-                      markDensityCheck('reload');
-                    } else if (
-                      topsUpFromCursor &&
-                      eventLog.type !== 'loadAll'
-                    ) {
-                      // Keep the loaded log and its cursor: the loop fetches
-                      // the page above the cursor and appends it, and the
-                      // density check below the load sends the restart to a
-                      // full reload if that page did not close the gap. Appends
-                      // land above everything already scanned for payload
-                      // prewarming, so no rescan is needed unless that fallback
-                      // fires.
-                      eventLog = nextEventLogLoad(eventLog);
-                      markDensityCheck('reload');
                     } else {
                       // MUST be a full, cursor-less reload. The cursor filters
                       // by lexicographic event id while a hole is defined by
@@ -1345,36 +1239,23 @@ export function workflowEntrypoint(
                       // An incremental load therefore heals the hole only by
                       // luck.
                       eventLog = { type: 'loadAll' };
-                      slotDensityCheck = 'none';
                       // The corrected log inserts the missing events BELOW the
                       // length already scanned for payload prewarming, shifting
                       // every later position. Only a full rescan sees them.
                       replayPayloadCache.resetScan();
                     }
-                    pendingRestartBackoffMs =
-                      preconditionRestartBackoffMs(preconditionRestarts);
-                    // Which fence rejected, and how long the restart waits.
-                    // Both fences are live at once and recover identically, so
-                    // without the class an operator watching a rollout cannot
-                    // tell slot churn from watermark churn — and a wide flush
-                    // can spend the restart budget with no writer being wrong,
-                    // where the failure message alone misreads the run.
-                    const rejectionClass = staleWriteRejectionClass(error);
                     runtimeLogger.warn(
                       'Event creation rejected as stale; restarting replay in-process',
                       {
                         workflowRunId: runId,
                         reason,
-                        rejectionClass,
                         loopIteration,
                         preconditionRestarts,
-                        source: restartSource,
-                        backoffMs: pendingRestartBackoffMs,
+                        source: usedDelta ? 'inline-delta' : 'full-reload',
                       }
                     );
                     span?.setAttributes({
                       'workflow.precondition_restarts': preconditionRestarts,
-                      'workflow.stale_write_rejection_class': rejectionClass,
                     });
                     return true;
                   };
@@ -1416,7 +1297,7 @@ export function workflowEntrypoint(
                       return {
                         reinvoked: false,
                         error: new WorkflowRuntimeError(
-                          `Event creation was rejected as stale after ${maxReinvocations} re-invocations of ${getPreconditionMaxInProcessRestarts(usesSlotIdentity(workflowRun?.specVersion))} in-process replay restarts each: this run cannot observe its own event log completely enough to make progress. Last rejection (${reason}): ${error instanceof Error ? error.message : String(error)}`,
+                          `Event creation was rejected as stale after ${maxReinvocations} re-invocations of ${getPreconditionMaxInProcessRestarts()} in-process replay restarts each: this run cannot observe its own event log completely enough to make progress. Last rejection (${reason}): ${error instanceof Error ? error.message : String(error)}`,
                           { cause: error }
                         ),
                       };
@@ -2040,14 +1921,6 @@ export function workflowEntrypoint(
                           }
                         : {}),
                     };
-                    const recordRunStartedCreateStart = (
-                      skipPreload: boolean
-                    ) => {
-                      span?.addEvent('workflow.run_started.create.start', {
-                        'workflow.run_started.skip_preload': skipPreload,
-                      });
-                    };
-
                     if (turbo && runInput) {
                       // Turbo: background `run_started` and synthesize the run
                       // entity locally so replay can begin without waiting for
@@ -2057,17 +1930,9 @@ export function workflowEntrypoint(
                       // barrier is consumed by every downstream write (suspension
                       // handler, optimistic step_started, terminal run writes) so
                       // nothing is written before the run exists.
-                      recordRunStartedCreateStart(true);
-                      // The instant this invocation calls the run started, sent
-                      // with the event and reused for the synthesized run row
-                      // below. Backends that persist `occurredAt` record the
-                      // run's `startedAt` from it, which is what keeps
-                      // `workflowStartedAt` identical between this optimistic
-                      // pass and every later replay that reads the persisted
-                      // run. Without it the two disagree by the round-trip, and
-                      // a step's captured metadata no longer matches the
-                      // workflow's on the next replay.
-                      const now = new Date();
+                      span?.addEvent('workflow.run_started.create.start', {
+                        'workflow.run_started.skip_preload': true,
+                      });
                       const startedPromise = createEvent(
                         runStartedEvent,
                         // We background this purely as a write barrier and
@@ -2076,7 +1941,7 @@ export function workflowEntrypoint(
                         // run_started request the chained first step_started
                         // waits on — shortening time-to-second-step — and the
                         // wasted list+resolve it would otherwise compute.
-                        { requestId, skipPreload: true, occurredAt: now }
+                        { requestId, skipPreload: true }
                       );
                       runReadyBarrier = startedPromise;
                       // Turbo backgrounds run_started, so the non-turbo assignment
@@ -2104,20 +1969,7 @@ export function workflowEntrypoint(
                         events: [],
                         cursor: null,
                       };
-                      // The run's first two positions are its own:
-                      // `run_created` from start(), then the `run_started`
-                      // in flight above. Both are certain before any write of
-                      // this invocation, and turbo replays against the empty
-                      // snapshot skipped just above — so seed the floor with
-                      // them here rather than waiting for the backgrounded
-                      // response to report it. Waiting loses the race: a
-                      // suspension reserves its whole batch of positions
-                      // synchronously, so a batch that starts numbering from an
-                      // empty log claims the two the run already holds and the
-                      // ops holding them lose their claims.
-                      if (usesSlotIdentity(runInput.specVersion)) {
-                        knownSlotFloor = FIRST_SLOT + 1;
-                      }
+                      const now = new Date();
                       workflowRun = {
                         runId,
                         status: 'running',
@@ -2155,7 +2007,9 @@ export function workflowEntrypoint(
                       });
                     } else {
                       try {
-                        recordRunStartedCreateStart(false);
+                        span?.addEvent('workflow.run_started.create.start', {
+                          'workflow.run_started.skip_preload': false,
+                        });
                         const result = await createEvent(runStartedEvent, {
                           requestId,
                         });
@@ -2456,19 +2310,6 @@ export function workflowEntrypoint(
                   while (true) {
                     loopIteration++;
 
-                    // A restart lost a slot to a concurrent replay of this same
-                    // run. Pause before re-deriving so the winner gets a clear
-                    // window to extend the log: re-deriving immediately puts
-                    // every loser back in contention at once, and none of them
-                    // pulls ahead.
-                    if (pendingRestartBackoffMs > 0) {
-                      const backoffMs = pendingRestartBackoffMs;
-                      pendingRestartBackoffMs = 0;
-                      await new Promise((resolve) =>
-                        setTimeout(resolve, backoffMs)
-                      );
-                    }
-
                     // Replay-budget check: bail out (retry or fail) if
                     // non-step time within this invocation has exceeded
                     // the configured budget. Step bodies are excluded
@@ -2614,53 +2455,9 @@ export function workflowEntrypoint(
                           eventLog = { ...eventLog, type: 'ready' };
                         } else {
                           eventLog = { ...page, type: 'ready' };
-                          markDensityCheck('report');
                         }
                       }
                       assert(eventLog.type === 'ready');
-
-                      if (slotDensityCheck !== 'none') {
-                        const densityCheck = slotDensityCheck;
-                        slotDensityCheck = 'none';
-                        // The log is dense from slot 1, so a complete one
-                        // holds exactly `maxSlot` events. A short count has two
-                        // readings: the load this one stood in for would have
-                        // brought in more, or a write took a position and then
-                        // failed and the position is empty for good.
-                        if (
-                          maxSlotOf(eventLog.events) !== eventLog.events.length
-                        ) {
-                          if (densityCheck === 'reload') {
-                            eventLog = {
-                              ...(await loadWorkflowRunEvents(runId)),
-                              type: 'ready',
-                            };
-                            // The reload can insert events below the prefix
-                            // already scanned for payload prewarming.
-                            replayPayloadCache.resetScan();
-                          }
-                          if (
-                            maxSlotOf(eventLog.events) !==
-                            eventLog.events.length
-                          ) {
-                            // The authoritative log is short, so this is the
-                            // second reading: a hole. Nothing here can heal it
-                            // and the replay proceeds over it, which is correct
-                            // — the events that exist are still every event
-                            // there is. What is lost is the proof, for the rest
-                            // of the run's life, so the one useful response is
-                            // to say so where it can be counted.
-                            runtimeLogger.warn(
-                              'Event log is missing a slot; it can no longer prove it is complete',
-                              {
-                                workflowRunId: runId,
-                                maxSlot: maxSlotOf(eventLog.events),
-                                eventCount: eventLog.events.length,
-                              }
-                            );
-                          }
-                        }
-                      }
 
                       reportPreconditionRestartReload(eventLog.events);
 
@@ -2703,24 +2500,36 @@ export function workflowEntrypoint(
                           },
                         }));
 
-                      // One log for the whole loop: `events` is appended to in
-                      // place by the guard's reloads, so a per-iteration
-                      // rescan for the slot high-water mark would be wasted
-                      // work on an array that never changes identity here.
-                      const waitLog = toMutableEventLog(
-                        eventLog.events,
-                        eventLog.cursor,
-                        knownSlotFloor
-                      );
-                      const waitClaim = claimFenceFor(
-                        waitLog,
-                        workflowRun.specVersion
-                      );
                       for (const waitEvent of waitsToComplete) {
                         try {
-                          await waitClaim((fence) =>
-                            createEvent(waitEvent, { requestId, ...fence })
-                          );
+                          const created = await createEvent(waitEvent, {
+                            requestId,
+                            ...preconditionSnapshotParams(
+                              eventLog.events,
+                              eventLog.cursor
+                            ),
+                          });
+                          // Bump-and-report: fold what this write skipped over
+                          // into the snapshot the remaining waits are guarded
+                          // against, so each asks for a slot above it.
+                          //
+                          // Only a complete answer. `hasMore` means the World
+                          // returned part of what it was asked for, and the
+                          // missing-completion check below is what decides
+                          // whether this handler still has to fetch. Folding in
+                          // a partial page would make the log look like it
+                          // holds the completion when the rest of the page is
+                          // still unread, so the fetch would be skipped on a
+                          // snapshot that is short of the World's.
+                          if (
+                            created.events?.length &&
+                            created.hasMore !== true
+                          ) {
+                            mergeReportedEvents(
+                              eventLog.events,
+                              created.events
+                            );
+                          }
                         } catch (err) {
                           if (EntityConflictError.is(err)) {
                             runtimeLogger.info(
@@ -2801,6 +2610,30 @@ export function workflowEntrypoint(
                         }
                       }
 
+                      // A replay reads the log as the complete record of what
+                      // has happened, so a position nothing occupies is
+                      // indistinguishable from an event that never occurred and
+                      // the branch it would have decided gets decided the other
+                      // way. Failing here is the difference between a run that
+                      // reports its own corruption and one that silently
+                      // returns the wrong answer.
+                      //
+                      // A hole that is merely a write mid-commit fills in on
+                      // its own, so settleEventSlotGap re-reads before
+                      // concluding, and adopts whichever log it settled on.
+                      if (isSlotGapCheckEnabled()) {
+                        const settled = await settleEventSlotGap(runId, {
+                          events: eventLog.events,
+                          cursor: eventLog.cursor,
+                        });
+                        eventLog = { ...settled.log, type: 'ready' };
+                        if (settled.gap !== undefined) {
+                          throw new CorruptedEventLogError(
+                            `Event log for run ${runId} has a hole at slot ${settled.gap.firstMissingSlot}: ${settled.gap.missingCount} of the ${settled.gap.maxSlot} slots up to the log's maximum hold no event.`
+                          );
+                        }
+                      }
+
                       // Completing elapsed waits refreshes the event snapshot.
                       // A concurrent handler may have written the terminal run
                       // event after the initial snapshot but before this
@@ -2839,20 +2672,6 @@ export function workflowEntrypoint(
                           e.eventType === 'attr_set'
                       );
 
-                      // One log for everything this replay writes on its way to
-                      // a terminal event: the end-of-run drain inside
-                      // `runWorkflow` (fire-and-forget `*_created` events, and
-                      // the implicit disposal of the abort hooks a completing
-                      // run leaves behind) and the `run_completed` /
-                      // `run_failed` write below. Sharing it is what keeps the
-                      // two from claiming the same slot — the terminal write
-                      // numbers from a snapshot that predates the drain.
-                      const replayWriteLog = toMutableEventLog(
-                        eventLog.events,
-                        eventLog.cursor,
-                        knownSlotFloor
-                      );
-
                       runtimeLogger.debug('Starting workflow execution', {
                         workflowRunId: runId,
                         loopIteration,
@@ -2870,11 +2689,7 @@ export function workflowEntrypoint(
                         eventLog.events
                       );
                       let workflowResult: WorkflowResumeResult = retainedSession
-                        ? await resumeWorkflow(
-                            retainedSession,
-                            eventLog.events,
-                            replayWriteLog
-                          )
+                        ? await resumeWorkflow(retainedSession, eventLog.events)
                         : { type: 'replay' };
 
                       if (workflowResult.type === 'replay') {
@@ -2890,7 +2705,6 @@ export function workflowEntrypoint(
                           // events before the terminal `awaitRunReady()` below.
                           runReadyBarrier,
                           worldCapabilities: world.capabilities,
-                          eventLog: replayWriteLog,
                         });
                       }
                       await payloadPrewarm;
@@ -2914,12 +2728,10 @@ export function workflowEntrypoint(
 
                       // Workflow completed. Send the snapshot but do NOT
                       // reload-and-retry the create in place: `result` was
-                      // computed by this replay, so a rejection proving the view
-                      // was incomplete — 412 stale watermark, or 409 taken slot
-                      // — must force a *fresh replay* (which may observe the new
-                      // event and produce a different result), not re-commit the
-                      // stale result. The catch below restarts the replay
-                      // in-process.
+                      // computed by this replay, so a stale (412) rejection must
+                      // force a *fresh replay* (which may observe the new event
+                      // and produce a different result), not re-commit the stale
+                      // result. The catch below restarts the replay in-process.
                       try {
                         // Turbo: a workflow that finishes with no steps reaches
                         // here before the backgrounded run_started; order the
@@ -2933,9 +2745,9 @@ export function workflowEntrypoint(
                           },
                           {
                             requestId,
-                            ...eventCreateFenceFor(
-                              replayWriteLog,
-                              workflowRun.specVersion
+                            ...preconditionSnapshotParams(
+                              eventLog.events,
+                              eventLog.cursor
                             ),
                           }
                         );
@@ -3008,28 +2820,16 @@ export function workflowEntrypoint(
                         }
 
                         // V2: handle suspension without queuing steps.
-                        // Each event creation inside handleSuspension carries
-                        // the run's concurrency fence — its own event slot, or
-                        // the loaded snapshot's watermark — so a backend holding
-                        // an event this replay never saw rejects the write
-                        // (409/412) instead of accepting a divergent one. The
-                        // rejection is handled here, by restarting the replay —
-                        // never by re-posting the same event.
+                        // Each event creation inside handleSuspension carries the
+                        // precondition snapshot of the loaded event log, so a
+                        // backend holding an event this replay never saw rejects
+                        // the write (412) instead of accepting a divergent one.
+                        // The rejection is handled here, by restarting the
+                        // replay — never by re-posting the same event.
                         const suspensionStart = Date.now();
                         assert(
                           eventLog.type === 'ready',
                           'Workflow suspended before its event log was loaded'
-                        );
-                        // Narrowed alias: the closures below would otherwise
-                        // lose the `ready` narrowing on a reassignable `let`.
-                        const loadedLog = eventLog;
-                        // One log for every write this suspension makes. It
-                        // wraps the loaded events array by reference, so the
-                        // guard's reloads and this log's appends stay in sync.
-                        const suspensionLog = toMutableEventLog(
-                          loadedLog.events,
-                          loadedLog.cursor,
-                          knownSlotFloor
                         );
                         let suspensionResult: Awaited<
                           ReturnType<typeof handleSuspension>
@@ -3041,20 +2841,19 @@ export function workflowEntrypoint(
                             run: workflowRun,
                             span,
                             requestId,
-                            eventLog: suspensionLog,
+                            eventLog,
                             runReadyBarrier,
                             replayRecoveryReporter,
                           });
                         } catch (suspensionError) {
-                          // A suspension create was rejected as stale (412
-                          // watermark, or 409 taken slot): re-derive the replay
-                          // from a corrected log in this invocation. Once the
-                          // in-process budget is spent, fall back to an
+                          // A suspension create was rejected as stale: re-derive
+                          // the replay from a corrected log in this invocation.
+                          // Once the in-process budget is spent, fall back to an
                           // explicit immediate re-invocation (a rethrow relies
                           // on redelivery of a message the turbo path already
                           // acked — the run would stall for the queue's ~300s
                           // default visibility timeout).
-                          if (isStaleWriteRejection(suspensionError)) {
+                          if (PreconditionFailedError.is(suspensionError)) {
                             if (
                               restartReplayInProcess(
                                 'suspension-create',
@@ -3147,6 +2946,16 @@ export function workflowEntrypoint(
                           });
                           return;
                         }
+                        if (suspensionResult.reportedEventCount > 0) {
+                          // Bump-and-report merged events BELOW the tail and
+                          // re-sorted the array to slot order, shifting every
+                          // position the prewarm scan had already recorded.
+                          // The cursor is deliberately left alone: the report
+                          // is a lower bound on what was skipped, so the next
+                          // incremental read still has to cover the same range.
+                          replayPayloadCache.resetScan();
+                        }
+
                         // Open hooks/waits in the log as loaded for this
                         // replay. This suspension's own hook/wait writes are
                         // NOT in it — they never reach retention anyway,
@@ -3158,14 +2967,10 @@ export function workflowEntrypoint(
                         // below — the attr-detour and hook-conflict paths
                         // return/continue before the gates and usually
                         // short-circuit before ever scanning the log.
-                        // Reloads inside `handleSuspension` advance the log it
-                        // was handed; carry that cursor back so the next
-                        // iteration resumes from it instead of refetching.
-                        loadedLog.cursor = suspensionLog.cursor;
-
-                        const openHookWait = once(() =>
-                          openHookAndWaitState(loadedLog.events)
-                        );
+                        const openHookWait = once(() => {
+                          assert(eventLog.type === 'ready');
+                          return openHookAndWaitState(eventLog.events);
+                        });
 
                         // The single retention decision: keep the parked
                         // session only across a pure step boundary with no
@@ -3543,22 +3348,14 @@ export function workflowEntrypoint(
                         //    rejected with 412 — its guarded suspension creates
                         //    (retried over the reloaded log, or exhausted into
                         //    a queue re-invocation), AND the lazy step_started
-                        //    claim of its next inline step, which is fenced too
-                        //    (threaded below via `claimFenceFor`; on rejection
-                        //    the batch is abandoned and re-invoked for a fresh
-                        //    replay, so a stale view can never commit a step).
-                        //    A slot claim reaches the same place by the same
-                        //    route: it rejects, and the batch is abandoned for
-                        //    a replay over the corrected log. Neither fence
-                        //    retries a rejected write in place — the missing
-                        //    event can be the one that sends the workflow down
-                        //    another branch, which moves every correlation id
-                        //    after it. See claimFenceFor.
-                        //
-                        //    Hooks created by THIS suspension are inside the
-                        //    delta (their `hook_created` lands before the
-                        //    step-terminal write), so only their
-                        //    `hook_received` responses
+                        //    claim of its next inline step, which carries the
+                        //    snapshot too (threaded below via
+                        //    `stateUpdatedAt`; on rejection the batch is
+                        //    abandoned and re-invoked for a fresh replay, so a
+                        //    stale view can never commit a step). Hooks created
+                        //    by THIS suspension are inside the delta (their
+                        //    `hook_created` lands before the step-terminal
+                        //    write), so only their `hook_received` responses
                         //    are subject to the same fenced window. Without an
                         //    enforced guard there is no fence, so keep the
                         //    conservative gate.
@@ -3695,40 +3492,21 @@ export function workflowEntrypoint(
                           turbo,
                         });
 
-                        // Concurrency fence for the inline step_started claims:
-                        // the lazy claim is the first durable write of a
-                        // hot-path step (its step_created is deferred), so
-                        // without one it would be unguarded and a stale replay
-                        // could claim — and commit — a step scheduled off a view
-                        // that misses an out-of-band event. One log for the
-                        // whole batch so each claim draws its own event slot;
-                        // for a run fenced by the watermark instead, every claim
-                        // in the batch carries the same snapshot.
-                        //
-                        // The suspension's own log, not a second one over the
-                        // same snapshot: its reservations are what the hook and
-                        // wait creates just above took, and those events are not
-                        // in the loaded log yet. A fresh log would number these
-                        // claims from the same base and hand the batch's first
-                        // step a slot the suspension already holds.
-                        const inlineClaimLog = suspensionLog;
-                        // A step also writes events it carries no claim for —
-                        // its terminal event above all. Ordering those against
-                        // the batch's claims keeps the backend from landing one
-                        // at the tail while a claim still holds that position,
-                        // which is where the next start has already promised its
-                        // deferred `step_created`.
-                        const orderedInlineCreate = orderedCreateFor(
-                          inlineClaimLog,
-                          workflowRun.specVersion
+                        // Precondition-guard snapshot for the inline
+                        // step_started claims: the lazy claim is the first
+                        // durable write of a hot-path step (its step_created
+                        // is deferred), so without a snapshot it would bypass
+                        // the guard entirely and a stale replay could claim —
+                        // and commit — a step scheduled off a view that misses
+                        // an event it never loaded.
+                        // `preconditionSnapshotParams` returns an empty object
+                        // when the guard env flag is off, so this is a no-op
+                        // outside guarded deployments; Worlds that don't
+                        // enforce the guard ignore it.
+                        const inlineClaimSnapshot = preconditionSnapshotParams(
+                          eventLog.events,
+                          eventLog.cursor
                         );
-                        const orderedInlineWrite: OrderedCreate | undefined =
-                          orderedInlineCreate &&
-                          (async (op) => {
-                            const result = await orderedInlineCreate(op);
-                            observeSlotFloor(result?.event?.eventId);
-                            return result;
-                          });
 
                         replayBudget.pause();
                         let stepResults: Awaited<
@@ -3736,28 +3514,9 @@ export function workflowEntrypoint(
                         >[];
                         const stepExecutionPromises = inlineExecutions.map(
                           (s, stepIndex) => {
-                            // Drawn here — synchronously, in replay order —
-                            // rather than inside `run`: a slot claim is
-                            // positional, so it has to be assigned before these
-                            // executions start racing each other, and the order
-                            // it is assigned in has to be replay-stable.
-                            const claimFence = claimFenceFor(
-                              inlineClaimLog,
-                              workflowRun.specVersion,
-                              {
-                                // A lazy start publishes two events: the World
-                                // writes the step's deferred `step_created`
-                                // alongside the claim, so the batch has to
-                                // reserve a slot for that one too — otherwise
-                                // it lands on the slot the next start in the
-                                // batch is holding and costs that start its
-                                // claim.
-                                extraEvents:
-                                  s.lazyStepInput !== undefined ? 1 : 0,
-                              }
-                            );
-                            const run = () =>
-                              executeStep({
+                            const run = () => {
+                              assert(eventLog.type === 'ready');
+                              return executeStep({
                                 world,
                                 workflowRunId: runId,
                                 workflowDeploymentId: workflowRun.deploymentId,
@@ -3796,7 +3555,7 @@ export function workflowEntrypoint(
                                   s.lazyStepInput !== undefined
                                     ? 1
                                     : countStepStartedEvents(
-                                        loadedLog.events,
+                                        eventLog.events,
                                         s.correlationId,
                                         {
                                           type: 'ownedBy',
@@ -3827,20 +3586,20 @@ export function workflowEntrypoint(
                                 // see suppressOptimisticStart above.
                                 suppressOptimisticStart,
                                 runReadyBarrier,
-                                claimFence,
-                                orderedCreate: orderedInlineWrite,
+                                preconditionSnapshot: inlineClaimSnapshot,
                                 ...(stepIndex === 0 &&
                                 s.lazyStepInput !== undefined &&
                                 latencyTracking
                                   ? { latencyTracking }
                                   : {}),
-                                ...(requestInlineDelta && loadedLog.cursor
+                                ...(requestInlineDelta && eventLog.cursor
                                   ? {
-                                      inlineDeltaSinceCursor: loadedLog.cursor,
+                                      inlineDeltaSinceCursor: eventLog.cursor,
                                     }
                                   : {}),
                                 replayRecoveryReporter,
                               });
+                            };
                             // Invariant bookkeeping: this invocation owns
                             // these bodies until they settle — see
                             // assertNoInFlightOwnedSteps.
@@ -3869,26 +3628,23 @@ export function workflowEntrypoint(
                             stepExecutionPromises
                           );
                         } catch (stepErr) {
-                          // An incomplete-view rejection of an inline
-                          // step_started claim — 412 for the event-log
-                          // watermark, 409 for a lost slot claim: the loaded
-                          // view this batch was scheduled from is missing an
-                          // event the backend already has, so the claim was
-                          // fenced and no step events were written. Abandon the
-                          // batch — any optimistic body result is discarded by
-                          // executeStep's reconciliation — and restart the
-                          // replay so it observes the missing event. Wait for
-                          // the sibling executions to settle first so no owned
-                          // body is in flight when the restart (or the ack
-                          // path) runs.
-                          if (isStaleWriteRejection(stepErr)) {
+                          // A stale (412) rejection of an inline step_started
+                          // claim: the loaded view this batch was scheduled
+                          // from is missing an event the backend already has,
+                          // so the claim was fenced by the guard and no step
+                          // events were written. Abandon the batch — any
+                          // optimistic body result is discarded by executeStep's
+                          // reconciliation — and restart the replay so it
+                          // observes the missing event. Wait for the sibling
+                          // executions to settle first so no owned body is in
+                          // flight when the restart (or the ack path) runs.
+                          if (PreconditionFailedError.is(stepErr)) {
                             const settled = await Promise.allSettled(
                               stepExecutionPromises
                             );
                             // A sibling whose claim was accepted wrote step
                             // events of its own, possibly after the World built
-                            // the rejection's delta — so that delta can no
-                            // longer be
+                            // this 412's delta — so that delta can no longer be
                             // assumed to complete the log, and the restart has
                             // to reload it in full. `skipped` (the step already
                             // existed), `gone` and `throttled` (claim rejected)
@@ -4026,7 +3782,7 @@ export function workflowEntrypoint(
                                   // correlationId so it dedupes against the
                                   // keyed re-dispatch the suspension handler
                                   // performs on replay (it also uses
-                                  // the same run-scoped correlationId key).
+                                  // `idempotencyKey: step.correlationId`).
                                   //
                                   // Without this, a mixed batch where one step
                                   // `completed` with unflushed background ops
@@ -4097,25 +3853,24 @@ export function workflowEntrypoint(
                         }
                         eventLog = nextEventLogLoad(eventLog);
                       } else {
-                        // Incomplete-view rejection of a guarded write made
-                        // directly by the replay loop — a stale watermark (412)
-                        // or a taken slot (409), on the result-bearing
-                        // `run_completed` or on the `wait_completed` of the
-                        // wait pass. Both reach this one catch and the
-                        // rejection does not say which, hence the neutral
-                        // label. Neither may be re-posted in place: the
-                        // correlation id and (for run_completed) the result
-                        // itself came from this replay, and a corrected log may
-                        // produce different ones. Don't fail the run — restart
-                        // the replay in this invocation, and only once that
-                        // budget is spent schedule an explicit re-invocation.
+                        // Stale-snapshot rejection of a guarded write made
+                        // directly by the replay loop — the result-bearing
+                        // `run_completed`, or the `wait_completed` of the wait
+                        // pass. Both reach this one catch and the rejection
+                        // does not say which, hence the neutral label.
+                        // Neither may be re-posted in place: the correlation id
+                        // and (for run_completed) the result itself came from
+                        // this replay, and a corrected log may produce
+                        // different ones. Don't fail the run — restart the
+                        // replay in this invocation, and only once that budget
+                        // is spent schedule an explicit re-invocation.
                         // Rethrowing instead would rely on redelivery of the
                         // CURRENT message, which the turbo path has already
                         // acked — empirically the run then stalls for the
                         // queue's ~300s default visibility timeout before
                         // completing.
                         let terminalError = err;
-                        if (isStaleWriteRejection(err)) {
+                        if (PreconditionFailedError.is(err)) {
                           if (restartReplayInProcess('replay-write', err)) {
                             continue;
                           }
@@ -4258,10 +4013,10 @@ export function workflowEntrypoint(
                         // type identity and custom properties round-trip
                         // through the event log.
                         //
-                        // Fencing asymmetry: unlike `run_completed`, this
-                        // terminal `run_failed` carries no concurrency fence, so
-                        // it is never rejected even if a hook landed mid-replay
-                        // and could have changed the path that
+                        // Precondition-guard asymmetry: unlike `run_completed`,
+                        // this terminal `run_failed` sends no `stateUpdatedAt`
+                        // snapshot, so it is never 412-rejected even if a hook
+                        // landed mid-replay and could have changed the path that
                         // threw. This is intentional and fail-open: a spurious
                         // failure is recoverable (the run can be re-run from the
                         // dashboard), whereas a spurious *completion* commits a

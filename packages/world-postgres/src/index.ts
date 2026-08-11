@@ -1,8 +1,5 @@
 import type { Storage, World } from '@workflow/world';
-import {
-  reenqueueActiveRuns,
-  SPEC_VERSION_SLOT_IDENTITY,
-} from '@workflow/world';
+import { reenqueueActiveRuns, SPEC_VERSION_CURRENT } from '@workflow/world';
 import { Pool } from 'pg';
 import type { PostgresWorldConfig } from './config.js';
 import { createClient, type Drizzle } from './drizzle/index.js';
@@ -66,10 +63,14 @@ export function createWorld(
   const streamer = createStreamer(pool, drizzle);
 
   return {
-    // What this world stamps on new runs: slot identity. Every world reads
-    // both schemes whatever this says.
-    specVersion: SPEC_VERSION_SLOT_IDENTITY,
-    capabilities: { hookRetention: { active: true } },
+    specVersion: SPEC_VERSION_CURRENT,
+    capabilities: {
+      hookRetention: { active: true },
+      // New runs get dense per-run slot event ids. Runs created before this
+      // keep their ULIDs; the scheme is pinned by whether the run owns a slot
+      // counter, not by this flag, which only says what new runs get.
+      slotEventIds: true,
+    },
     ...storage,
     ...streamer,
     ...queue,

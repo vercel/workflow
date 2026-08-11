@@ -148,7 +148,6 @@ describe('logger', () => {
           user error · FatalError
           run    wrun_123
           step   step_456
-          error  boom
           hint: Move the call to a step function.",
           ],
         ]
@@ -179,8 +178,7 @@ describe('logger', () => {
           user error · Error
           run    wrun_abc
           step   step_xyz
-          retry  4 attempts · 3 max retries
-          error  Transient failure",
+          retry  4 attempts · 3 max retries",
           ],
         ]
       `);

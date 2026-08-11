@@ -6,7 +6,6 @@ import {
   HookNotFoundError,
   RunExpiredError,
   RunNotSupportedError,
-  SlotConflictError,
   TooEarlyError,
   WorkflowRunNotFoundError,
   WorkflowWorldError,
@@ -14,12 +13,14 @@ import {
 import type {
   AnyEventRequest,
   CreateEventParams,
+  CreateEventRequest,
   Event,
   EventResult,
   Hook,
   HookCreatedEventRequest,
   PaginatedResponse,
   PaginationOptions,
+  ResolveData,
   SerializedData,
   Step,
   Storage,
@@ -29,26 +30,24 @@ import type {
 import {
   applyAttributeChanges,
   EventSchema,
+  eventIdToSlot,
+  FIRST_EVENT_SLOT,
   getMaxEventsPerRun,
   HookSchema,
   isChildEntityCreationEvent,
   isHookEventRequiringExistence,
   isHookLifecycleEventType,
   isLegacySpecVersion,
+  isSlotEventId,
   isStepEventType,
   isTerminalRunEventType,
   isTerminalStepStatus,
   isTerminalWorkflowRunStatus,
   requiresNewerWorld,
-  SLOT_RETRY_BUDGET_MS,
   SPEC_VERSION_CURRENT,
-  SPEC_VERSION_MAX_SUPPORTED,
   StepSchema,
-  slotEventId,
-  slotFromId,
-  slotRetryDelay,
+  slotToEventId,
   ulidToDate,
-  usesSlotIdentity,
   validateAttributeChanges,
   validateUlidTimestamp,
   WaitSchema,
@@ -67,6 +66,8 @@ import {
   readJSON,
   readJSONWithFallback,
   resolveWithinBase,
+  SORT_KEY_CURSOR_PREFIX,
+  stripTag,
   taggedPath,
   write,
   writeExclusive,
@@ -89,6 +90,7 @@ import {
   reapPendingHookEvents,
   releaseHookTokenClaimIfOwnedBy,
   runTerminalMarkerPath,
+  scanRunEventIds,
   withHookTokenClaimLock,
 } from './helpers.js';
 import {
@@ -103,7 +105,6 @@ import {
 } from './hooks-storage.js';
 import { handleLegacyEvent } from './legacy.js';
 import { withRunFileLock } from './runs-storage.js';
-import { createSlotBook, RUN_CREATED_SLOT } from './slots.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -136,19 +137,6 @@ function getHookRetentionLimitMs(): number {
 // `createEventsStorage` call (see inside the function) rather than
 // being module-level. Claim files remain the durable ownership record;
 // cross-process Hook token handoffs use `withHookTokenClaimLock`.
-
-/**
- * The time an event orders and paginates by. Slot order is the log's order —
- * the position *is* the order, the way the sort key is for the other backends —
- * so every slot-named event reports the same time and lets the event-id
- * tie-break do the ordering. Ordering those by `createdAt` reads the log in an
- * order no replay produced: a writer that loses a slot re-proposes above the
- * winner while keeping the stamp it started with, and a caller that reserves
- * slots for a whole flush commits them in whatever order the network returns. A
- * ULID-numbered run keeps its wall-clock order, which its ids agree with anyway.
- */
-const eventOrderTime = (event: { eventId: string; createdAt: Date }): number =>
-  slotFromId(event.eventId) === undefined ? event.createdAt.getTime() : 0;
 
 /**
  * Sidecar recovery marker that pins a canonical `hook_created`
@@ -189,18 +177,65 @@ const HookResumeClaimSchema = z.object({
 });
 
 /**
- * How long a writer that adopted a claim's pinned event id waits for that event
- * to become reader-visible.
+ * Whether `event` is the `hook_received` a resume claim stands for.
  *
- * It is waiting on the other writer of the same resume, which holds the position
- * staged under `.locks` while it re-checks the run's terminal marker and links
- * the file into `events/`: two filesystem operations, so the window is short and
- * the wait almost always ends on the first look. The bound exists for the one
- * case that never ends — a writer that died between staging and promoting, whose
- * staged file no one will ever promote or clean up.
+ * The claim names the id its writer INTENDED to publish at, drawn from that
+ * writer's slot allocator before the append. Under slot ids that intent is not
+ * a reservation: the allocator is per storage instance, so an instance sharing
+ * the directory can publish an unrelated event at the same position first, and
+ * the resume then lands somewhere else. An event read back at the claimed id
+ * therefore has to be identified, not assumed — returning whatever occupies the
+ * position reports a `run_started` as the resume's own event and silently drops
+ * the payload.
  */
-const PINNED_EVENT_WAIT_MS = 2_000;
+function isResumeEvent(
+  event: Event,
+  claim: z.infer<typeof HookResumeClaimSchema>
+): boolean {
+  return (
+    event.eventType === 'hook_received' &&
+    event.correlationId === claim.hookId &&
+    // `resumeId` is persisted on every hook_received written through the
+    // resume path; an event without one predates that and can only be matched
+    // by position.
+    (event.resumeId === undefined || event.resumeId === claim.resumeId)
+  );
+}
 
+/**
+ * Finds the event a resume already committed, by the `resumeId` persisted on
+ * the event itself rather than by the position the claim guessed.
+ *
+ * This is the authority the claim's `eventId` only approximates. Reached when
+ * the claimed position holds nothing (a crash between claim and append) or
+ * holds an unrelated event (a cross-instance slot collision), so it pays its
+ * O(run's events) reads on rare paths only.
+ */
+async function findCommittedResumeEvent(
+  basedir: string,
+  runId: string,
+  claim: z.infer<typeof HookResumeClaimSchema>,
+  tag?: string
+): Promise<Event | null> {
+  const scan = await scanRunEventIds(basedir, runId, tag);
+  for (const eventId of scan.ids) {
+    const event = await readJSONWithFallback(
+      basedir,
+      'events',
+      `${runId}-${eventId}`,
+      EventSchema,
+      tag
+    );
+    if (
+      event &&
+      event.resumeId === claim.resumeId &&
+      isResumeEvent(event, claim)
+    ) {
+      return event;
+    }
+  }
+  return null;
+}
 /**
  * Whether a token claim held by another `(runId, hookId)` can never become
  * live again and may therefore be released by a new claimant:
@@ -274,6 +309,37 @@ async function readHookRecoveryMarker(
  * already exists at that exact path — which is the correct
  * "already-published" semantic.
  */
+/**
+ * Log order for a slot-numbered run is slot order, not `createdAt` order. A
+ * writer stamps `createdAt` when it enters `create()` but only claims its slot
+ * at publish time, so a writer that loses a slot race and bumps ends up with a
+ * higher slot and an older timestamp than the writer that beat it. Slot order
+ * is the one both writers agree on, and it is what makes the log dense and
+ * position-addressable, so it wins.
+ *
+ * Returns `null` for a ULID-numbered run, which falls back to
+ * `(createdAt, eventId)` — the two never mix within one run.
+ */
+function eventSortKey(event: Event): string | null {
+  return isSlotEventId(event.eventId) ? event.eventId : null;
+}
+
+/**
+ * The same key as {@link eventSortKey}, recovered from an event file's name.
+ *
+ * Event files are named `${runId}-${eventId}` plus an optional tag suffix, so
+ * a run-scoped listing can read the slot without opening the file. That lets a
+ * sort-key cursor discard the pages it has already returned on the filename
+ * alone; without it every page of a long log loads and parses every event file
+ * for the run.
+ *
+ * Returns `null` for a ULID-numbered event, which has no slot to compare.
+ */
+function eventSortKeyFromFileId(runId: string, fileId: string): string | null {
+  const eventId = stripTag(fileId).slice(runId.length + 1);
+  return isSlotEventId(eventId) ? eventId : null;
+}
+
 async function findExistingHookCreatedEventId(
   basedir: string,
   runId: string,
@@ -288,38 +354,9 @@ async function findExistingHookCreatedEventId(
       event.correlationId === correlationId,
     limit: 1,
     getCreatedAt: getObjectCreatedAt('evnt'),
-    getOrderTime: eventOrderTime,
     getId: (event) => event.eventId,
   });
   return result.data[0]?.eventId ?? null;
-}
-
-/**
- * The run's committed `hook_received` for one resume, if it has one.
- *
- * The resume claim records where the event is going to be published, and that
- * is only a hint: another instance can allocate the same
- * position for an unrelated event from its own book, and then the claim points
- * at a stranger. The key the event itself carries is the durable identity, so
- * this scan is what decides whether a resume has already been recorded.
- */
-async function findCommittedResumeEvent(
-  basedir: string,
-  runId: string,
-  resumeId: string
-): Promise<Event | null> {
-  const result = await paginatedFileSystemQuery({
-    directory: path.join(basedir, 'events'),
-    schema: EventSchema,
-    filePrefix: `${runId}-`,
-    filter: (event) =>
-      event.eventType === 'hook_received' && event.resumeId === resumeId,
-    limit: 1,
-    getCreatedAt: getObjectCreatedAt('evnt'),
-    getOrderTime: eventOrderTime,
-    getId: (event) => event.eventId,
-  });
-  return result.data[0] ?? null;
 }
 
 /**
@@ -544,8 +581,6 @@ export function createEventsStorage(
   const cachedPathsByRunId = new Map<string, Set<string>>();
   let totalCachedEventBytes = 0;
 
-  const slots = createSlotBook(basedir, tag);
-
   function deleteCachedEvent(eventPath: string): void {
     const event = eventCache.get(eventPath);
     if (!event) {
@@ -565,7 +600,6 @@ export function createEventsStorage(
     for (const cachedPath of cachedPathsByRunId.get(runId) ?? []) {
       deleteCachedEvent(cachedPath);
     }
-    slots.forget(runId);
   }
 
   function clearCache(): void {
@@ -573,7 +607,159 @@ export function createEventsStorage(
     cachedEventBytes.clear();
     cachedPathsByRunId.clear();
     totalCachedEventBytes = 0;
-    slots.clear();
+    runSlotState.clear();
+  }
+
+  // ------------------------------------------------------------------
+  // Slot allocation
+  // ------------------------------------------------------------------
+  //
+  // Event ids are per-run positions (`evnt_` + a 26-char zero-padded
+  // decimal), dense and 1-based, so the count of a run's events and the
+  // highest id are the same number. That equivalence is what lets a writer
+  // state its position with a single integer, and it only holds if the World
+  // never leaves a hole: a slot is claimed by the publish that occupies it,
+  // never reserved ahead of a write that might still be rejected.
+  //
+  // Runs created before slot ids keep their ULIDs for life. A log may not mix
+  // the two schemes (`events.list` sorts on the id, and they do not
+  // interleave), so the ids already on disk are the authoritative pin — no
+  // spec-version negotiation is involved. `null` state below means "this run
+  // is ULID-numbered".
+  //
+  // The map holds the highest slot this instance has seen PUBLISHED for a
+  // run, never a reservation. A draw reports `published + 1` and leaves the
+  // entry alone, so a write rejected anywhere between its draw and its
+  // publish costs nothing: the next writer draws the same position. That is
+  // what keeps the log dense, and it is not a rare path — a duplicate
+  // `step_started` from a concurrent replay is rejected on every storm.
+  //
+  // The cost is that two in-flight writers hold the same candidate. The
+  // exclusive publish arbitrates and the loser bumps, which is the same
+  // mechanism two instances sharing one directory (a test-only configuration
+  // this backend supports) already rely on.
+  const runSlotState = new Map<string, { published: number } | null>();
+
+  function slotStateKey(runId: string): string {
+    return tag ? `${runId}.${tag}` : runId;
+  }
+
+  /** Whether a slot is occupied by a reader-visible event file. */
+  async function slotOccupied(runId: string, slot: number): Promise<boolean> {
+    const fileId = `${runId}-${slotToEventId(slot)}`;
+    for (const candidate of tag
+      ? [
+          taggedPath(basedir, 'events', fileId, tag),
+          taggedPath(basedir, 'events', fileId),
+        ]
+      : [taggedPath(basedir, 'events', fileId)]) {
+      try {
+        await fs.stat(candidate);
+        return true;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+          throw error;
+        }
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Draws the candidate slot for `runId`, or null when the run is
+   * ULID-numbered and should keep minting ULIDs.
+   *
+   * `atLeast` re-floors the candidate after a lost publish. The directory scan
+   * runs once per run per instance (and again on a `rescan`), not once per
+   * write.
+   *
+   * The watermark alone is a lower bound: it only counts publishes this
+   * instance made or last scanned for, so another instance sharing the
+   * directory can be ahead of it. The candidate is therefore probed upward
+   * until it lands on a free position — one `stat` that returns ENOENT in the
+   * uncontended case. Skipping the probe would be tolerable for an ordinary
+   * write (the exclusive publish bumps it), but not for the writes that
+   * record their candidate in a durable claim for other writers to converge
+   * on: a claim naming an occupied slot never converges.
+   */
+  async function drawEventSlot(
+    runId: string,
+    opts?: { rescan?: boolean; atLeast?: number }
+  ): Promise<number | null> {
+    const key = slotStateKey(runId);
+    let state = runSlotState.get(key);
+    if (state === undefined || opts?.rescan) {
+      const scan = await scanRunEventIds(basedir, runId, tag);
+      if (state === undefined) {
+        // A run with no events yet is brand new: it starts on slots. A run
+        // whose visible events are ULIDs stays on ULIDs for life.
+        state =
+          scan.count > 0 && !scan.usesSlots
+            ? null
+            : { published: scan.maxSlot };
+        runSlotState.set(key, state);
+      } else if (state !== null) {
+        state.published = Math.max(state.published, scan.maxSlot);
+      }
+    }
+    if (state === null) {
+      return null;
+    }
+    let slot = Math.max(
+      state.published + 1,
+      FIRST_EVENT_SLOT,
+      opts?.atLeast ?? FIRST_EVENT_SLOT
+    );
+    while (await slotOccupied(runId, slot)) {
+      state.published = Math.max(state.published, slot);
+      slot += 1;
+    }
+    return slot;
+  }
+
+  /**
+   * Records that `eventId` is now on disk, so the next draw starts above it.
+   *
+   * Only a committed publish moves the watermark. A draw that never published
+   * leaves no trace, which is the whole reason the log has no holes.
+   *
+   * A no-op for ULID-numbered runs, where ids are not positions, and for runs
+   * this instance has never drawn for — the first draw scans the directory.
+   */
+  function notePublishedSlot(runId: string, eventId: string): void {
+    const slot = eventIdToSlot(eventId);
+    if (slot === null) {
+      return;
+    }
+    const state = runSlotState.get(slotStateKey(runId));
+    if (state) {
+      state.published = Math.max(state.published, slot);
+    }
+  }
+
+  /** Mints the next event id for `runId` under whichever scheme it uses. */
+  async function mintEventId(runId: string): Promise<string> {
+    const slot = await drawEventSlot(runId);
+    return slot === null ? `evnt_${monotonicUlid()}` : slotToEventId(slot);
+  }
+
+  /**
+   * Mints the key a terminal transition appends under, re-derived at its
+   * linearization point (after the marker + reap) so it sorts after any
+   * `hook_received` that legitimately won the promote arbitration.
+   *
+   * For slot runs the rescan is the whole mechanism: it floors the candidate
+   * past anything another instance promoted while this invocation was
+   * stalled, and the drawn slot dominates by construction.
+   */
+  async function mintDominantEventKey(
+    runId: string
+  ): Promise<{ eventId: string; createdAt: Date }> {
+    const slot = await drawEventSlot(runId, { rescan: true });
+    if (slot !== null) {
+      return { eventId: slotToEventId(slot), createdAt: new Date() };
+    }
+    return mintRunDominantEventKey(basedir, runId, tag);
   }
 
   function cacheEvent(
@@ -635,88 +821,46 @@ export function createEventsStorage(
   }
 
   /**
-   * The events a caller that just lost a slot is missing: one ascending page of
-   * the run's log after the cursor it wrote from, minus anything at or below the
-   * highest slot it already held. Because slots are dense, that second filter is
-   * exact — a caller cannot be missing an event whose position it can name.
+   * Publishes a synthetic event (one this call writes in addition to the
+   * event it was asked for) and returns it under the id it actually landed
+   * on.
    *
-   * Returned inline with the conflict so the common case (a handful of events
-   * arrived out of band) costs the caller no extra round-trip. `hasMore` is
-   * forwarded verbatim: an overflowing delta is the caller's signal to page from
-   * `cursor` instead of treating this as the whole story.
-   *
-   * The high-water mark is the cursor of the *query*, not a filter applied to
-   * whatever the query returned. Paging from the caller's cursor and discarding
-   * what it already holds looks equivalent and is not: a claim carries no
-   * `sinceCursor`, so that query starts at the head of the log and a run past
-   * one page long fills its whole page with events below the mark. The caller
-   * then gets an empty delta with `hasMore`, and the round-trip the inline
-   * delta exists to avoid happens on every conflict of every long run.
+   * A slot is a position, so the candidate this event was drawn at may have
+   * been taken by a concurrent writer between the draw and here; the
+   * exclusive create detects that and the next position is tried. ULID ids
+   * are globally unique, so a collision there can only be a retry of this
+   * same event and the write stays an overwrite.
    */
-  async function eventsAfterClaim(
-    runId: string,
-    params: CreateEventParams | undefined
-  ): Promise<{ events: Event[]; cursor: string | null; hasMore: boolean }> {
-    const maxSlot = params?.maxSlot ?? 0;
-    // Dense slots make this exact rather than approximate: the caller cannot be
-    // missing an event at or below the highest position it can name.
-    const from =
-      maxSlot > 0
-        ? slotEventId(maxSlot)
-        : typeof params?.sinceCursor === 'string'
-          ? params.sinceCursor
-          : undefined;
-    const page = await paginatedFileSystemQuery({
-      directory: path.join(basedir, 'events'),
-      schema: EventSchema,
-      cachedItems: eventCache,
-      filePrefix: `${runId}-`,
-      sortOrder: 'asc',
-      ...(from !== undefined ? { cursor: from } : {}),
-      getCreatedAt: getObjectCreatedAt('evnt'),
-      getOrderTime: eventOrderTime,
-      getId: (event) => event.eventId,
-    });
-    const resolveData = params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
-    const missing = page.data.filter(
-      (event) => (slotFromId(event.eventId) ?? 0) > maxSlot
-    );
-    return {
-      events:
-        resolveData === 'none'
-          ? missing.map((event) => stripEventDataRefs(event, resolveData))
-          : missing,
-      cursor: page.cursor,
-      hasMore: page.hasMore,
-    };
-  }
-
-  /**
-   * The 409 a caller gets when the slot it named turns out to belong to someone
-   * else, carrying the events it is missing so it can merge, replay and
-   * re-propose at a free position.
-   */
-  async function slotConflict(
-    runId: string,
-    eventId: string,
-    params: CreateEventParams | undefined
-  ): Promise<SlotConflictError> {
-    return new SlotConflictError(
-      `Slot ${slotFromId(eventId)} of run "${runId}" is already taken`,
-      { eventId, ...(await eventsAfterClaim(runId, params)) }
-    );
-  }
-
-  async function storeEvent(event: Event): Promise<void> {
-    const eventPath = taggedPath(
-      basedir,
-      'events',
-      `${event.runId}-${event.eventId}`,
-      tag
-    );
-    const serializedEvent = JSON.stringify(event, jsonReplacer, 2);
-    await write(eventPath, serializedEvent);
-    rememberStoredEvent(event, eventPath, serializedEvent);
+  async function storeEvent(event: Event): Promise<Event> {
+    let current = event;
+    for (let attempt = 0; ; attempt++) {
+      const eventPath = taggedPath(
+        basedir,
+        'events',
+        `${current.runId}-${current.eventId}`,
+        tag
+      );
+      const serializedEvent = JSON.stringify(current, jsonReplacer, 2);
+      const slot = eventIdToSlot(current.eventId);
+      if (slot === null) {
+        await write(eventPath, serializedEvent);
+        rememberStoredEvent(current, eventPath, serializedEvent);
+        return current;
+      }
+      if (await writeExclusive(eventPath, serializedEvent)) {
+        notePublishedSlot(current.runId, current.eventId);
+        rememberStoredEvent(current, eventPath, serializedEvent);
+        return current;
+      }
+      const next = await drawEventSlot(current.runId, {
+        rescan: attempt > 0 && attempt % 8 === 0,
+        atLeast: slot + 1,
+      });
+      // `next` is null only for a ULID-numbered run, which the branch above
+      // already returned for.
+      assert(next !== null);
+      current = { ...current, eventId: slotToEventId(next) };
+    }
   }
 
   const queryRunEvents = (runId: string, pagination: PaginationOptions) =>
@@ -729,8 +873,9 @@ export function createEventsStorage(
       limit: pagination.limit,
       cursor: pagination.cursor,
       getCreatedAt: getObjectCreatedAt('evnt'),
-      getOrderTime: eventOrderTime,
       getId: (event) => event.eventId,
+      getSortKey: eventSortKey,
+      getSortKeyFromFileId: (fileId) => eventSortKeyFromFileId(runId, fileId),
     });
 
   // Per-instance in-process mutexes. Two storage instances sharing
@@ -752,7 +897,7 @@ export function createEventsStorage(
   const stepLocks = new Map<string, Promise<unknown>>();
   const hookLocks = new Map<string, Promise<unknown>>();
 
-  return {
+  const storage: LocalEventsStorage = {
     clearCache,
     async create(
       runId: string | null,
@@ -788,72 +933,6 @@ export function createEventsStorage(
       if ('correlationId' in data && typeof data.correlationId === 'string') {
         assertSafeEntityId('correlationId', data.correlationId);
       }
-      if (params?.eventId !== undefined) {
-        assertSafeEntityId('eventId', params.eventId);
-      }
-
-      // A create reserves its position before running the validation and
-      // materialization that may still reject it. Handing the
-      // reservation back on the way out — whether the create throws or returns
-      // another writer's event — is what keeps the log dense: an abandoned slot
-      // below a sibling's published one is a hole that can never be filled, and
-      // a log with a hole can no longer prove it is complete.
-      const reserved = new Set<number>();
-      let reservedRunId: string | undefined;
-      /**
-       * Undo actions for the duplicate-suppression claims a create takes before
-       * its event exists, newest last. Run only when the create ends without
-       * publishing anything: the answer to a lost position is to propose the
-       * same operation one position higher, and a claim left behind is what
-       * would reject that retry as a duplicate of a write that never landed.
-       */
-      const abandonedClaims: Array<() => Promise<unknown>> = [];
-      /**
-       * Whether any event of this create became reader-visible. Once one has,
-       * nothing the create claimed may be undone: the entity an event describes
-       * has to keep existing even if a later step of the same call fails.
-       */
-      let eventCommitted = false;
-      /**
-       * Hands the slots of a create that never published back to the allocator.
-       *
-       * The allocator recycles a returned position only while it is still the
-       * top of the book, which is the case that keeps a run dense: a create that
-       * takes the next position and then publishes nothing would otherwise leave
-       * the log one short forever. A position that already sits below a
-       * sibling's published event stays empty by design — reusing it there would
-       * put a later event below an earlier one.
-       */
-      async function releasingSlots(
-        result: Promise<EventResult>
-      ): Promise<EventResult> {
-        try {
-          return await result;
-        } catch (error) {
-          if (!eventCommitted) {
-            for (const undo of abandonedClaims.reverse()) {
-              // Best effort: the throw the caller sees is the one that matters,
-              // and a claim that outlives its create is a duplicate suppressed
-              // for a write that is not coming back.
-              await undo().catch(() => {});
-            }
-          }
-          throw error;
-        } finally {
-          // Every reservation this create still holds goes back, including on
-          // the paths that succeed without publishing anything: a create that
-          // converged on another writer's event returns a result and leaves its
-          // own position untouched, and keeping it reserved would stop the next
-          // event of the run from taking it. Handing back a position that *was*
-          // published is a no-op — the publish recorded it as written, so it
-          // cannot be handed out again.
-          if (reservedRunId !== undefined) {
-            for (const slot of reserved) {
-              slots.release(reservedRunId, slot);
-            }
-          }
-        }
-      }
 
       // Step lifecycle events are serialized per-step via an in-process mutex
       // so that the "check state, then write" sequence in step_started /
@@ -864,9 +943,7 @@ export function createEventsStorage(
         const lockKey = tag
           ? `${runId}-${data.correlationId}.${tag}`
           : `${runId}-${data.correlationId}`;
-        return releasingSlots(
-          withInProcessLock(stepLocks, lockKey, createImpl)
-        );
+        return withInProcessLock(stepLocks, lockKey, createImpl);
       }
       // `hook_created` is serialized per-(runId, hookId) so the
       // "claim token, write hook entity, write event" sequence runs to
@@ -894,35 +971,30 @@ export function createEventsStorage(
         const lockKey = tag
           ? `${runId}-${data.correlationId}.hook.${tag}`
           : `${runId}-${data.correlationId}.hook`;
-        return releasingSlots(
-          withInProcessLock(hookLocks, lockKey, () => createImpl())
-        );
+        return withInProcessLock(hookLocks, lockKey, createImpl);
       }
-      return releasingSlots(createImpl());
+      return createImpl();
 
       async function createImpl(): Promise<EventResult> {
-        // Most paths use the freshly-generated candidate eventId. The
+        // Most paths use the freshly-drawn candidate eventId. The
         // hook_created dedup-recovery path below may reassign it to
         // the canonical eventId persisted in the durable token claim
         // so concurrent / cross-process workers converge on a single
-        // event in the log.
-        let eventId = `evnt_${monotonicUlid()}`;
-        // Set when a resume claim names `eventId` — either this write reserved
-        // the claim, or it adopted the position another writer of the same resume
-        // pinned. Losing the publish at a pinned position is resolved against
-        // that other writer instead of by moving to a free position, which would
-        // give one resume two events.
-        let pinnedEventId: string | undefined;
-        // Whether this write is the one that reserved the resume claim. The
-        // claim's owner is the only writer allowed to move off the pinned
-        // position while the resume is still unrecorded.
-        let ownsResumeClaim = false;
-        // Whether the position this write ends up publishing to was chosen by
-        // this world for idempotency rather than claimed by the caller. A hook
-        // retry adopts the canonical `hook_created` position recorded in the
-        // token claim, so losing that position says the hook is already
-        // created, not that the caller's log is short an event.
-        let convergedOnCanonicalPosition = false;
+        // event in the log; `eventIdPinned` records that, because a pinned
+        // id must never be bumped past a slot collision (bumping would
+        // defeat the convergence and duplicate the event).
+        //
+        // Drawn below rather than here: slots are positions, so they must be
+        // drawn in publish order. The resilient-start path writes a synthetic
+        // `run_created` that has to precede this event in the log, and a slot
+        // drawn at function entry would sort after it.
+        let eventId = '';
+        let eventIdPinned = false;
+        // The eventId currently recorded in this resume's `(runId, resumeId)`
+        // claim, when one was written or read below. An unpinned publish is
+        // free to land somewhere else, and the claim is the fast path other
+        // writers read first, so it is corrected once the append commits.
+        let resumeClaimRecordedId: string | null = null;
         const now = new Date();
 
         // For run_created events, use client-provided runId or generate one server-side
@@ -948,18 +1020,6 @@ export function createEventsStorage(
 
         // specVersion is always sent by the runtime, but we provide a fallback for safety
         const effectiveSpecVersion = data.specVersion ?? SPEC_VERSION_CURRENT;
-
-        // Whether this run numbers its events by slot. Read from what was
-        // persisted, never from this request or this build, so a run stays in
-        // the mode it was created in for life — a run whose log holds ULID ids
-        // must never be handed a slot id, and vice versa. `run_created` is the
-        // one event that decides the mode instead of reading it; the
-        // resilient-start path below decides it too, on the request that
-        // creates the run.
-        let slotMode =
-          data.eventType === 'run_created'
-            ? usesSlotIdentity(effectiveSpecVersion)
-            : await slots.usesSlots(effectiveRunId);
 
         // Get current run state for validation (if not creating a new run)
         // Skip run validation for step_completed and step_retrying - they only operate
@@ -1042,14 +1102,10 @@ export function createEventsStorage(
               );
 
               if (created) {
-                // We created the run, so this request also decided its mode.
-                slotMode = usesSlotIdentity(effectiveSpecVersion);
-                // We created the run — also write the run_created event. Its
-                // slot needs no allocation: a run's own `run_created` provably
-                // has nothing before it.
-                const runCreatedEventId = slotMode
-                  ? slotEventId(RUN_CREATED_SLOT)
-                  : `evnt_${monotonicUlid()}`;
+                // We created the run — also write the run_created event.
+                // Drawn before this invocation's own id so it takes the
+                // earlier slot: it must replay first.
+                const runCreatedEventId = await mintEventId(effectiveRunId);
                 const runCreatedEvent: Event = {
                   eventType: 'run_created',
                   runId: effectiveRunId,
@@ -1068,7 +1124,6 @@ export function createEventsStorage(
                   },
                 };
                 await storeEvent(runCreatedEvent);
-                slots.observe(effectiveRunId, runCreatedEventId);
                 currentRun = createdRun;
               } else {
                 // Run already exists (concurrent run_created won the
@@ -1085,19 +1140,15 @@ export function createEventsStorage(
           }
         }
 
-        // The run entity we just read is the authority on the mode, and it can
-        // appear between the probe above and this read: start() issues
-        // `run_created` and the queue send concurrently, so the delivery's
-        // `run_started` can arrive while the run is still being published. A
-        // stale "no" there would number that one event with a ULID on an
-        // otherwise slot-numbered run, and a ULID names no position: the replay
-        // would read it wherever its timestamp happens to sort rather than where
-        // the writer meant it to go.
-        if (currentRun && data.eventType !== 'run_created') {
-          slotMode = usesSlotIdentity(currentRun.specVersion);
-        }
+        // Draw this event's id now that any synthetic `run_created` above has
+        // taken the earlier slot. A slot draw is a candidate, not a
+        // reservation: the many rejections below (a duplicate step_started
+        // from a concurrent replay, a terminal run, a step already in a
+        // terminal state) return without publishing, and the position stays
+        // available to the next writer.
+        eventId = await mintEventId(effectiveRunId);
 
-        // These events on a non-existent run are rejected to match the
+        // These events are rejected on a non-existent run to match the
         // postgres and vercel worlds, which both surface this as a
         // WorkflowRunNotFoundError rather than silently persisting an
         // event for a run that was never created.
@@ -1120,7 +1171,7 @@ export function createEventsStorage(
           if (requiresNewerWorld(currentRun.specVersion)) {
             throw new RunNotSupportedError(
               currentRun.specVersion!,
-              SPEC_VERSION_MAX_SUPPORTED
+              SPEC_VERSION_CURRENT
             );
           }
 
@@ -1136,108 +1187,19 @@ export function createEventsStorage(
           }
         }
 
+        // ============================================================
+        // VALIDATION: Terminal state and event ordering checks
+        // ============================================================
+
         // Lazy step start: a step_started carrying step-creation data
         // (stepName + input) is allowed to arrive with no prior step_created
         // — it creates the step on the fly (see the materialization block
         // below). This mirrors the resilient run_started path. Detect it here
-        // so the second event it publishes can be numbered alongside the
-        // first, the entity-creation terminal-run guard treats it like a
-        // creation, and the "step must exist" ordering guard doesn't reject it.
+        // so the entity-creation terminal-run guard treats it like a creation
+        // and the "step must exist" ordering guard doesn't reject it.
         const createsChildEntity = isChildEntityCreationEvent(data);
         const lazyStepStart =
           createsChildEntity && data.eventType === 'step_started';
-
-        // ============================================================
-        // EVENT ID: the caller's slot claim, an allocated slot, or a ULID
-        // ============================================================
-        // A run's own `run_created` owns the first slot — provably, since
-        // nothing precedes it — so it takes that position outright instead of
-        // allocating one, and every other event allocates above it even when it
-        // is the first to arrive here. Allocation is append-only (see SlotBook),
-        // so `run_created` cannot get the first position by asking for the lowest
-        // free one: a `run_started` racing it (start() issues the creation and
-        // the queue send in parallel) may already have moved the book past it.
-        const ownsFirstSlot = data.eventType === 'run_created';
-        // An event id names a position in the run's log, so it is either claimed
-        // by a caller that holds the log (and is therefore asserting the log is
-        // complete up to that position) or allocated here for a caller that has
-        // no log — a step completion reporting in, a cancellation from an API
-        // call.
-        //
-        // The position of the second event a lazy start publishes, when this
-        // one publishes two. Consumed by the materialization below; released
-        // again if that block turns out not to need it.
-        let companionSlot: number | undefined;
-        if (params?.eventId !== undefined) {
-          const claimedSlot = slotFromId(params.eventId);
-          if (!slotMode) {
-            throw new WorkflowWorldError(
-              `Event id "${params.eventId}" was supplied for run "${effectiveRunId}", whose events are not numbered by slot`,
-              { status: 400 }
-            );
-          }
-          if (claimedSlot === undefined) {
-            throw new WorkflowWorldError(
-              `Event id "${params.eventId}" is not a slot id, and run "${effectiveRunId}" numbers its events by slot`,
-              { status: 400 }
-            );
-          }
-          eventId = params.eventId;
-          reservedRunId = effectiveRunId;
-          reserved.add(claimedSlot);
-          slots.claim(effectiveRunId, claimedSlot);
-          // One request, two events: a lazy start also publishes the
-          // `step_created` it deferred. A claim names the *top* of the pair,
-          // so the second event takes the slot immediately below it — the
-          // caller reserved both positions and named only one, which is what
-          // keeps the pair from landing on a position another write in the
-          // same batch is already holding.
-          if (lazyStepStart) {
-            companionSlot = claimedSlot - 1;
-            if (companionSlot < RUN_CREATED_SLOT + 1) {
-              throw new WorkflowWorldError(
-                `Event id "${params.eventId}" leaves no slot below it in run "${effectiveRunId}" for the "step_created" published alongside it`,
-                { status: 400 }
-              );
-            }
-            reserved.add(companionSlot);
-            slots.claim(effectiveRunId, companionSlot);
-          }
-          // A claim has to clear the log's tail, not merely be free: a
-          // position left unwritten by an abandoned reservation stays empty
-          // for good, and a caller numbering from a stale snapshot aims
-          // straight at it, landing an event below events another replay
-          // already consumed. Rejected before the materialization below
-          // creates the step, hook or wait this event will now never
-          // accompany. See SlotBook.highestWritten.
-          const tail = await slots.highestWritten(effectiveRunId);
-          for (const slot of companionSlot === undefined
-            ? [claimedSlot]
-            : [companionSlot, claimedSlot]) {
-            if (slot <= tail) {
-              throw await slotConflict(
-                effectiveRunId,
-                slotEventId(slot),
-                params
-              );
-            }
-          }
-        } else if (slotMode) {
-          reservedRunId = effectiveRunId;
-          let slot: number;
-          if (ownsFirstSlot) {
-            slot = RUN_CREATED_SLOT;
-            slots.claim(effectiveRunId, slot);
-          } else {
-            slot = await slots.reserve(effectiveRunId);
-          }
-          reserved.add(slot);
-          eventId = slotEventId(slot);
-        }
-
-        // ============================================================
-        // VALIDATION: Terminal state and event ordering checks
-        // ============================================================
 
         // Run terminal state validation
         if (currentRun && isTerminalWorkflowRunStatus(currentRun.status)) {
@@ -1247,18 +1209,17 @@ export function createEventsStorage(
             currentRun.status === 'cancelled'
           ) {
             // Return existing state (idempotent)
-            const event: Event = {
+            const stored = await storeEvent({
               ...data,
               runId: effectiveRunId,
               eventId,
               createdAt: now,
               specVersion: effectiveSpecVersion,
-            };
-            await storeEvent(event);
+            });
             const resolveData =
               params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
             return {
-              event: stripEventDataRefs(event, resolveData),
+              event: stripEventDataRefs(stored, resolveData),
               run: currentRun,
               ...(currentRun ? { maxEvents: getMaxEventsPerRun() } : {}),
             };
@@ -1385,13 +1346,22 @@ export function createEventsStorage(
                 !committedClaim.payloadDigest ||
                 committedClaim.payloadDigest === params.resumePayloadDigest)
             ) {
-              const committedEvent = await readJSONWithFallback(
+              const atClaimedId = await readJSONWithFallback(
                 basedir,
                 'events',
                 `${effectiveRunId}-${committedClaim.eventId}`,
                 EventSchema,
                 tag
               );
+              const committedEvent =
+                atClaimedId && isResumeEvent(atClaimedId, committedClaim)
+                  ? atClaimedId
+                  : await findCommittedResumeEvent(
+                      basedir,
+                      effectiveRunId,
+                      committedClaim,
+                      tag
+                    );
               if (committedEvent) {
                 return { event: committedEvent };
               }
@@ -1435,11 +1405,10 @@ export function createEventsStorage(
           // converges too. Gated on `resumeId` so the historical single-write
           // path is untouched.
           if (data.eventType === 'hook_received' && params?.resumeId) {
-            const resumeId = params.resumeId;
             const claimPath = hookResumeClaimPath(
               basedir,
               effectiveRunId,
-              resumeId
+              params.resumeId
             );
             const converge = async (
               claim: z.infer<typeof HookResumeClaimSchema>
@@ -1468,35 +1437,42 @@ export function createEventsStorage(
                   `hook_received resumeId "${params.resumeId}" already recorded with a different payload`
                 );
               }
-              const pinned = await readJSONWithFallback(
+              const atClaimedId = await readJSONWithFallback(
                 basedir,
                 'events',
                 `${effectiveRunId}-${claim.eventId}`,
                 EventSchema,
                 tag
               );
-              // The event the claim points at answers for this resume only if it
-              // is this resume's. The pinned position can hold an unrelated
-              // event another instance allocated it for, and returning that
-              // would report a step's event as the resume's.
-              if (pinned?.resumeId === resumeId) {
-                return { event: pinned };
+              if (atClaimedId && isResumeEvent(atClaimedId, claim)) {
+                return { event: atClaimedId };
               }
+              // Either nothing is at the claimed position, or something that
+              // is not this resume is. The claim's `eventId` is only where its
+              // writer meant to append, so before concluding the resume is
+              // uncommitted, look for it by the `resumeId` persisted on the
+              // event.
               const committed = await findCommittedResumeEvent(
                 basedir,
                 effectiveRunId,
-                resumeId
+                claim,
+                tag
               );
               if (committed) {
                 return { event: committed };
               }
-              // The resume has no event yet: the pinning writer is mid-publish
-              // (its event is staged, not yet linked into `events/`), or it
-              // crashed between the claim write and the append. Adopt the pinned
-              // position and fall through to (re)write the event there, so the
-              // two writers of this resume still contend for one position.
-              eventId = claim.eventId;
-              pinnedEventId = claim.eventId;
+              // The resume really is uncommitted: a crash between the claim
+              // write and the append. Take over the append. Adopt the claimed
+              // position when it is still free — under ULIDs it always is, and
+              // adopting keeps two takers writing the same path so one loses
+              // the exclusive create instead of publishing a second event.
+              // When an unrelated event holds it, there is nothing to converge
+              // on: keep this writer's own id and let the publish bump.
+              resumeClaimRecordedId = claim.eventId;
+              if (!atClaimedId) {
+                eventId = claim.eventId;
+                eventIdPinned = true;
+              }
               return null;
             };
 
@@ -1510,9 +1486,23 @@ export function createEventsStorage(
                 return converged;
               }
             } else {
-              // Reserve the claim (pinning this candidate eventId) before the
+              // Reserve the claim (naming this candidate eventId) before the
               // append. If a concurrent/cross-process writer reserved it first,
-              // converge on their pinned event instead.
+              // converge on their event instead.
+              //
+              // Under ULIDs the candidate is pinned: the id is globally unique,
+              // so the only writer that can collide with it is the other writer
+              // of this same resume, and both must land on the one event.
+              //
+              // Under slot ids it cannot be. A slot is a position, not a name:
+              // another instance's allocator hands out the same number for a
+              // different event, and refusing to bump would fail this resume's
+              // append outright. So the claimed id is a hint, the publish is
+              // free to move, and `converge` identifies the resume's event by
+              // its persisted `resumeId`. The claim is rewritten with the id
+              // actually published once the append commits.
+              eventIdPinned = !isSlotEventId(eventId);
+              resumeClaimRecordedId = eventId;
               const won = await writeExclusive(
                 claimPath,
                 JSON.stringify({
@@ -1525,15 +1515,10 @@ export function createEventsStorage(
                     : {}),
                 } satisfies z.infer<typeof HookResumeClaimSchema>)
               );
-              if (won) {
-                // The claim now names this position for this resume, and the
-                // other writer is on its way to adopting it. Losing the publish
-                // here therefore has to be resolved against that writer rather
-                // than by moving to a free position, which would give one resume
-                // two events.
-                pinnedEventId = eventId;
-                ownsResumeClaim = true;
-              } else {
+              if (!won) {
+                // Someone else's claim is the durable one now; this writer's
+                // candidate is not what the claim records.
+                resumeClaimRecordedId = null;
                 const winner = await readJSON(claimPath, HookResumeClaimSchema);
                 if (winner) {
                   const converged = await converge(winner);
@@ -1647,40 +1632,9 @@ export function createEventsStorage(
           // strictly dominates all visible events of the run guarantees the
           // terminal event replays last. See mintRunDominantEventKey for
           // the dominance argument.
-          //
-          // A key the *caller* chose is left alone. Its slot was picked from
-          // the caller's own log, so a concurrent event either sits below it
-          // (and already replays first) or takes the slot itself — in which
-          // case the publish below conflicts and the caller merges and
-          // re-proposes, which is the stronger answer. Re-numbering it here
-          // would also be actively wrong: the caller reserves slots for a
-          // whole flush of concurrent ops at once, so moving this one to
-          // "highest visible + 1" would steal the slot a sibling op is still
-          // in flight with.
-          if (params?.eventId === undefined) {
-            const dominantKey = await mintRunDominantEventKey(
-              basedir,
-              effectiveRunId,
-              tag,
-              slotMode
-            );
-            const staleSlot = slotFromId(eventId);
-            const dominantSlot = slotFromId(dominantKey.eventId);
-            if (staleSlot !== undefined && staleSlot !== dominantSlot) {
-              // Only reachable when the log moved under us, which means the
-              // slot we held is now someone else's written event — handing it
-              // back leaves no hole.
-              reserved.delete(staleSlot);
-              slots.release(effectiveRunId, staleSlot);
-            }
-            if (dominantSlot !== undefined) {
-              reservedRunId = effectiveRunId;
-              reserved.add(dominantSlot);
-              slots.claim(effectiveRunId, dominantSlot);
-            }
-            eventId = dominantKey.eventId;
-            event = { ...event, eventId, createdAt: dominantKey.createdAt };
-          }
+          const dominantKey = await mintDominantEventKey(effectiveRunId);
+          eventId = dominantKey.eventId;
+          event = { ...event, eventId, createdAt: dominantKey.createdAt };
         }
 
         // Create/update entity based on event type (event-sourced architecture)
@@ -1976,7 +1930,6 @@ export function createEventsStorage(
               `Step "${data.correlationId}" already created`
             );
           }
-          abandonedClaims.push(() => fs.unlink(stepCreatedLockPath));
           const stepData = data.eventData as {
             stepName: string;
             input: any;
@@ -1998,14 +1951,10 @@ export function createEventsStorage(
             specVersion: effectiveSpecVersion,
           };
           const stepCompositeKey = `${effectiveRunId}-${data.correlationId}`;
-          const stepEntityPath = taggedPath(
-            basedir,
-            'steps',
-            stepCompositeKey,
-            tag
+          await writeJSON(
+            taggedPath(basedir, 'steps', stepCompositeKey, tag),
+            step
           );
-          await writeJSON(stepEntityPath, step);
-          abandonedClaims.push(() => deleteJSON(stepEntityPath));
         } else if (data.eventType === 'step_started') {
           // step_started: Increments attempt, sets status to 'running'
           // Sets startedAt only on the first start (not updated on retries)
@@ -2044,7 +1993,6 @@ export function createEventsStorage(
                 `Step "${data.correlationId}" already created`
               );
             } else {
-              abandonedClaims.push(() => fs.unlink(stepCreatedLockPath));
               const createdStep: Step = {
                 runId: effectiveRunId,
                 stepId: data.correlationId,
@@ -2060,35 +2008,28 @@ export function createEventsStorage(
                 updatedAt: now,
                 specVersion: effectiveSpecVersion,
               };
-              const lazyStepEntityPath = taggedPath(
-                basedir,
-                'steps',
-                `${effectiveRunId}-${data.correlationId}`,
-                tag
+              await writeJSON(
+                taggedPath(
+                  basedir,
+                  'steps',
+                  `${effectiveRunId}-${data.correlationId}`,
+                  tag
+                ),
+                createdStep
               );
-              await writeJSON(lazyStepEntityPath, createdStep);
-              abandonedClaims.push(() => deleteJSON(lazyStepEntityPath));
               // Write the synthetic step_created event so replay observes it
               // (the client step consumer sets hasCreatedEvent only on a
-              // step_created event). Its eventId is a second slot, or a fresh
-              // monotonic ULID — one request, two events.
-              // Ordering vs. the step_started event row does not affect
-              // correctness: the step_started consumer is a no-op and only
-              // step_created flips hasCreatedEvent, so the end state is the
-              // same whichever sorts first — this matches the resilient
-              // run_started → run_created precedent in this file.
-              let stepCreatedEventId = `evnt_${monotonicUlid()}`;
-              if (slotMode) {
-                // A claimed start numbers this event one below its own
-                // position, which the caller reserved for exactly this. A start
-                // that allocated takes the next free slot instead: nothing
-                // outside this world named either position.
-                const slot =
-                  companionSlot ?? (await slots.reserve(effectiveRunId));
-                companionSlot = undefined;
-                reserved.add(slot);
-                stepCreatedEventId = slotEventId(slot);
-              }
+              // step_created event). Its id comes from the run's own
+              // allocator: minting a ULID here would put a second identity
+              // scheme in a slot-numbered log, and `events.list` cannot
+              // paginate a mixed log (a ULID id has no sort key, so it lands
+              // on every page and the cursor eventually repeats).
+              //
+              // This publishes into the position the step_started event is
+              // still only a candidate for, so the synthetic step_created
+              // sorts ahead of the step_started that triggered it and the
+              // step_started bumps up one.
+              const stepCreatedEventId = await mintEventId(effectiveRunId);
               const stepCreatedEvent: Event = {
                 eventType: 'step_created',
                 runId: effectiveRunId,
@@ -2101,45 +2042,7 @@ export function createEventsStorage(
                   input: lazyData.input,
                 },
               };
-              const stepCreatedEventPath = taggedPath(
-                basedir,
-                'events',
-                `${effectiveRunId}-${stepCreatedEventId}`,
-                tag
-              );
-              if (slotMode) {
-                // The position decides this event as much as it decides the
-                // start it rides with, so it is published the same way: whoever
-                // links the file first owns the slot. A loss here is the
-                // caller's to resolve — it named this position — and the undo
-                // list above takes the step entity and its claim back out, so
-                // the re-proposal one position higher starts the step lazily
-                // again instead of tripping its own leftovers.
-                const published = await writeExclusive(
-                  stepCreatedEventPath,
-                  JSON.stringify(stepCreatedEvent, jsonReplacer, 2)
-                );
-                if (!published) {
-                  throw await slotConflict(
-                    effectiveRunId,
-                    stepCreatedEventId,
-                    params
-                  );
-                }
-              } else {
-                await writeJSON(stepCreatedEventPath, stepCreatedEvent);
-              }
-              // Readers can see this event from here on, so the step entity it
-              // describes has to keep existing even if the start it rides with
-              // goes on to lose its own position. That leaves the pair split —
-              // a creation with no start — and the log still dense, because the
-              // event that landed is the one that tells the next replay this
-              // step is created: its re-proposal is an ordinary start reserving
-              // one position, not another lazy pair reserving two. A retry that
-              // reserved a companion it would no longer publish is what would
-              // leave a hole, and a hole below a published event never heals.
-              eventCommitted = true;
-              slots.observe(effectiveRunId, stepCreatedEventId);
+              await storeEvent(stepCreatedEvent);
               validatedStep = createdStep;
               stepCreatedLazily = true;
             }
@@ -2433,26 +2336,14 @@ export function createEventsStorage(
               canonicalEventId = pinned;
             }
 
-            if (canonicalEventId !== eventId) {
-              // Moving to the canonical position leaves the position this
-              // write was going to take unused. Hand it back so the allocator
-              // can fill it rather than leaving a hole the log can never close.
-              const abandoned = slotFromId(eventId);
-              if (abandoned !== undefined && reserved.delete(abandoned)) {
-                slots.release(effectiveRunId, abandoned);
-              }
-            }
-            convergedOnCanonicalPosition = true;
-
-            // A canonical ULID also makes converging writes byte-identical.
-            // A slot id carries no time, and reading one as a ULID yields the
-            // epoch, so a slot-numbered run keeps the wall clock and the two
-            // writers converge on one event through the position instead of
-            // through the bytes.
+            // Pinned: this id is the convergence point for every writer of
+            // this hook, so it must not be bumped past a slot collision. A
+            // collision here means the canonical event is already published,
+            // which is exactly the duplicate the handler below repairs from.
             eventId = canonicalEventId;
-            const canonicalCreatedAt = slotMode
-              ? now
-              : (ulidToDate(eventId.replace(/^evnt_/, '')) ?? now);
+            eventIdPinned = true;
+            const canonicalCreatedAt =
+              ulidToDate(eventId.replace(/^evnt_/, '')) ?? now;
             event = {
               ...data,
               // The first claim fixes the retention deadline even when its
@@ -2483,11 +2374,11 @@ export function createEventsStorage(
               specVersion: effectiveSpecVersion,
             };
 
-            await storeEvent(conflictEvent);
+            const storedConflict = await storeEvent(conflictEvent);
             const resolveData =
               params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
             return {
-              event: stripEventDataRefs(conflictEvent, resolveData),
+              event: stripEventDataRefs(storedConflict, resolveData),
               run,
               step,
               hook: undefined,
@@ -2621,7 +2512,6 @@ export function createEventsStorage(
               `Wait "${data.correlationId}" already exists`
             );
           }
-          abandonedClaims.push(() => fs.unlink(waitCreatedLockPath));
           const waitData = data.eventData as {
             resumeAt?: Date;
           };
@@ -2635,14 +2525,10 @@ export function createEventsStorage(
             updatedAt: now,
             specVersion: effectiveSpecVersion,
           };
-          const waitEntityPath = taggedPath(
-            basedir,
-            'waits',
-            waitCompositeKey,
-            tag
+          await writeJSON(
+            taggedPath(basedir, 'waits', waitCompositeKey, tag),
+            wait
           );
-          await writeJSON(waitEntityPath, wait);
-          abandonedClaims.push(() => deleteJSON(waitEntityPath));
         } else if (data.eventType === 'wait_completed') {
           // wait_completed: Transitions wait to 'completed', rejects duplicates.
           // Uses writeExclusive on a lock file to atomically prevent concurrent
@@ -2704,17 +2590,11 @@ export function createEventsStorage(
         // race here; whoever links the file first wins, the loser
         // throws EntityConflictError, and the runtime's existing
         // concurrent-replay catch path at suspension-handler.ts:142
-        // swallows it. For all other event types of a ULID-numbered run,
-        // eventIds are monotonic ULIDs (globally unique by construction) so
-        // a collision indicates a real bug and EntityConflictError is
+        // swallows it. For all other event types, eventIds are
+        // monotonic ULIDs (globally unique by construction) so a
+        // collision indicates a real bug and EntityConflictError is
         // also the right surface — same shape as step_created's
         // claim-file behavior.
-        //
-        // A slot-numbered run collides by design: the id names a position in
-        // the log, so a loser is not a bug but a writer whose log was missing
-        // an event. It gets a SlotConflictError carrying that event instead
-        // (see below), and this write is the authority that decides it — the
-        // allocator's book is only ever a hint.
         // Last-instant re-validation for `hook_received` (see the acceptance
         // check above). The per-hook in-process lock already serializes
         // resume vs. dispose within one storage instance; this second check
@@ -2730,47 +2610,102 @@ export function createEventsStorage(
           throw new HookNotFoundError(data.correlationId);
         }
 
+        let eventPath = taggedPath(
+          basedir,
+          'events',
+          `${effectiveRunId}-${eventId}`,
+          tag
+        );
+        // Capture the serialized payload before the write's `await` so the
+        // cached snapshot can't observe a later mutation (see
+        // rememberStoredEvent).
+        let serializedEvent = JSON.stringify(event, jsonReplacer, 2);
+
         /**
-         * One attempt at publishing the event at the position `eventId`
-         * currently names: `true` when this call made it reader-visible,
-         * `false` when the position was already taken. What a loss means is the
-         * loop's decision — a position this world allocated is simply retried
-         * one higher, a position the caller claimed is a conflict it has to
-         * resolve.
+         * Moves this event to the next free slot after a lost publish, and
+         * reports whether it could.
+         *
+         * A slot id is a position in the run's log, not a globally unique
+         * token, so losing the publish means another writer took the
+         * position — an ordinary concurrent write. The World's contract is to
+         * bump and commit rather than reject: `create` must not fail for a
+         * reason its caller could not have avoided. Bumping is refused for:
+         *
+         * - ULID-numbered runs, where ids ARE globally unique and a collision
+         *   really is a duplicate publish that must surface;
+         * - ids pinned by a durable claim (`hook_created`'s canonical id,
+         *   `hook_received`'s resume claim), which exist precisely so two
+         *   writers converge on ONE event — bumping would publish a second.
+         *
+         * A pinned id is only ever read back from a claim its own writer
+         * recorded before publishing, and that writer bumps only when the
+         * position it recorded is already occupied. So an adopter that finds
+         * the claim stale finds the slot taken too: it collides, and the
+         * collision is the benign-duplicate path this dedup already has. It
+         * never publishes a second `hook_created` into a free slot.
          */
-        async function publishOnce(): Promise<boolean> {
-          // Cross-process terminal-run guard for `hook_received`. A terminal
-          // transition (run_completed / run_failed / run_cancelled) in ANY
-          // process (1) publishes a durable `runTerminalMarkerPath` marker and
-          // (2) reaps the run's staged hook_received events, both BEFORE it
-          // writes the terminal run state or appends its terminal event (see
-          // the terminal-transition block earlier in this function). In-memory
-          // locks cannot close the shared-filesystem race this backend
-          // explicitly supports, and a published event file is immediately
-          // visible to `events.list()` in other processes — so it can never be
-          // "rolled back" after the fact. Instead, the event stays INVISIBLE
-          // to readers until a single atomic filesystem operation decides its
-          // fate:
-          //
-          //   1. (fast path) reject if the run is already terminal — by
-          //      marker, or by run state for runs that predate the marker —
-          //      so the common case never creates a file.
-          //   2. STAGE the event at a non-reader-visible path under `.locks`.
-          //   3. re-CHECK the terminal marker; reject if present.
-          //   4. PROMOTE the staged file into `events/` with an atomic hard
-          //      link; reject if the staged file was reaped (`'missing'`).
-          //
-          // Correctness: the reap's `unlink` and step 4's `link` target the
-          // same staged file, so the filesystem serializes them — exactly one
-          // wins. If the link wins, the event was reader-visible before the
-          // reap completed, and therefore before the terminal state and
-          // terminal event were written: acceptance happened-before the
-          // termination and legitimately precedes it. If the unlink wins,
-          // promotion fails and the event is never visible to any reader —
-          // there is nothing to roll back. A resume that stages after the
-          // reap has passed necessarily stages after the marker was
-          // committed, so step 3 rejects it. Rejections before step 4 unlink
-          // a file no reader can see.
+        const bumpEventSlot = async (attempt: number): Promise<boolean> => {
+          const current = eventIdToSlot(eventId);
+          if (eventIdPinned || current === null) {
+            return false;
+          }
+          // Every failure moves this write up by at least one position, so
+          // this terminates even under heavy contention. Rescan periodically
+          // so a batch committed by another instance is skipped in one step
+          // rather than one slot at a time.
+          const slot = await drawEventSlot(effectiveRunId, {
+            rescan: attempt > 0 && attempt % 8 === 0,
+            atLeast: current + 1,
+          });
+          if (slot === null) {
+            return false;
+          }
+          eventId = slotToEventId(slot);
+          event = { ...event, eventId };
+          eventPath = taggedPath(
+            basedir,
+            'events',
+            `${effectiveRunId}-${eventId}`,
+            tag
+          );
+          serializedEvent = JSON.stringify(event, jsonReplacer, 2);
+          return true;
+        };
+
+        // Cross-process terminal-run guard for `hook_received`. A terminal
+        // transition (run_completed / run_failed / run_cancelled) in ANY
+        // process (1) publishes a durable `runTerminalMarkerPath` marker and
+        // (2) reaps the run's staged hook_received events, both BEFORE it
+        // writes the terminal run state or appends its terminal event (see
+        // the terminal-transition block earlier in this function). In-memory
+        // locks cannot close the shared-filesystem race this backend
+        // explicitly supports, and a published event file is immediately
+        // visible to `events.list()` in other processes — so it can never be
+        // "rolled back" after the fact. Instead, the event stays INVISIBLE
+        // to readers until a single atomic filesystem operation decides its
+        // fate:
+        //
+        //   1. (fast path) reject if the run is already terminal — by
+        //      marker, or by run state for runs that predate the marker —
+        //      so the common case never creates a file.
+        //   2. STAGE the event at a non-reader-visible path under `.locks`.
+        //   3. re-CHECK the terminal marker; reject if present.
+        //   4. PROMOTE the staged file into `events/` with an atomic hard
+        //      link; reject if the staged file was reaped (`'missing'`).
+        //
+        // Correctness: the reap's `unlink` and step 4's `link` target the
+        // same staged file, so the filesystem serializes them — exactly one
+        // wins. If the link wins, the event was reader-visible before the
+        // reap completed, and therefore before the terminal state and
+        // terminal event were written: acceptance happened-before the
+        // termination and legitimately precedes it. If the unlink wins,
+        // promotion fails and the event is never visible to any reader —
+        // there is nothing to roll back. A resume that stages after the
+        // reap has passed necessarily stages after the marker was
+        // committed, so step 3 rejects it. Rejections before step 4 unlink
+        // a file no reader can see.
+        let eventPublished = false;
+        for (let attempt = 0; ; attempt++) {
           if (data.eventType === 'hook_received') {
             // Step 1: fast path. The marker is the authoritative durable
             // signal; the run-state read additionally rejects runs whose
@@ -2807,18 +2742,14 @@ export function createEventsStorage(
             );
             const staged = await writeExclusive(stagedPath, serializedEvent);
             if (!staged) {
-              // For a ULID-numbered run the eventId is freshly generated, so
-              // its staging path can only be occupied by a previous crashed
-              // attempt of this very event, which never promoted. A
-              // slot-numbered run can also collide here with another instance
-              // that allocated the same slot from its own book. Either way the
-              // event is not reader-visible, so there is no delta to hand back
-              // and nothing for the caller to merge: surface the same conflict
-              // shape as a visible-path collision — or, when this world
-              // allocated the position itself, let the loop below re-probe and
-              // take the next one.
-              if (reallocatesSlot) {
-                return false;
+              // The staging path can be occupied by a previous crashed
+              // attempt of this very event (which never promoted), or, under
+              // slot ids, by a concurrent writer holding the same position.
+              // Both are handled the same way: fall through to the bump
+              // below, which moves off the position when it can and surfaces
+              // the conflict when it cannot.
+              if (await bumpEventSlot(attempt)) {
+                continue;
               }
               throw new EntityConflictError(
                 `Event "${eventId}" already exists for run "${effectiveRunId}"`
@@ -2838,136 +2769,28 @@ export function createEventsStorage(
                   `Workflow run "${effectiveRunId}" is already in a terminal state`
                 );
               }
-              return promoted === 'linked';
+              eventPublished = promoted === 'linked';
             } finally {
               // The staged path is not reader-visible; removing it is pure
               // cleanup on every outcome (already gone when reaped).
               await deleteJSON(stagedPath).catch(() => {});
             }
+          } else {
+            eventPublished = await writeExclusive(eventPath, serializedEvent);
           }
-          return await writeExclusive(eventPath, serializedEvent);
-        }
 
-        // A write that allocated its own position may take the next free one
-        // when it loses: nothing outside this world named the slot, so which
-        // position the event lands on is this world's business, and the caller
-        // — a step reporting its completion, a hook being received — has no log
-        // to reconcile. A write whose position the *caller* claimed may not:
-        // the claim asserts a log complete up to that position, so losing it
-        // means that log is stale and only the caller can resolve it.
-        // `run_created` is excluded even though it named its own position: the
-        // first slot is the only position it can ever occupy, so losing it means
-        // the run already has a creation event, and appending a second one above
-        // it would be worse than the duplicate the publish is reporting.
-        const reallocatesSlot =
-          slotMode &&
-          params?.eventId === undefined &&
-          !ownsFirstSlot &&
-          // A write that adopted the canonical position of an existing hook is
-          // pinned to it for the same reason `run_created` is pinned to the
-          // first slot: moving somewhere free would publish a second
-          // `hook_created` for one hook.
-          !convergedOnCanonicalPosition;
-        const slotDeadline = Date.now() + SLOT_RETRY_BUDGET_MS;
-        const pinnedDeadline = Date.now() + PINNED_EVENT_WAIT_MS;
-        let compositeKey = '';
-        let eventPath = '';
-        let serializedEvent = '';
-        let eventPublished = false;
-
-        for (let round = 0; ; round++) {
-          compositeKey = `${effectiveRunId}-${eventId}`;
-          eventPath = taggedPath(basedir, 'events', compositeKey, tag);
-          // Capture the serialized payload before the write's `await` so the
-          // cached snapshot can't observe a later mutation (see
-          // rememberStoredEvent).
-          serializedEvent = JSON.stringify(event, jsonReplacer, 2);
-          eventPublished = await publishOnce();
           if (eventPublished) {
+            // The position is occupied now, so the next draw for this run
+            // starts above it. Only a committed publish moves the watermark.
+            notePublishedSlot(effectiveRunId, eventId);
             break;
           }
-          if (pinnedEventId === eventId && params?.resumeId) {
-            // This resume's claim names this position and something else holds
-            // it. Taking a free position on the strength of that alone would
-            // publish a second event for one resume — the duplicate the claim
-            // exists to prevent, and one the log can never be rid of. So find out
-            // who holds it first.
-            const occupant = await readJSONWithFallback(
-              basedir,
-              'events',
-              compositeKey,
-              EventSchema,
-              tag
-            );
-            if (occupant?.resumeId === params.resumeId) {
-              // The other writer of this same resume got there first; its event
-              // is this write's answer.
-              return { event: occupant };
-            }
-            const committed = await findCommittedResumeEvent(
-              basedir,
-              effectiveRunId,
-              params.resumeId
-            );
-            if (committed) {
-              // The other writer published elsewhere: it reallocated around a
-              // stranger sitting on the pinned position.
-              return { event: committed };
-            }
-            // Nobody has recorded this resume yet, so both of its writers are
-            // still live candidates and only one of them may leave the pinned
-            // position: if both moved, they could publish two events for one
-            // resume. That one is the writer that owns the claim, and only once
-            // it can see a stranger on the position — an unrelated event another
-            // instance allocated it for, which will never become this resume's.
-            // Anyone else waits for the owner's event to show up anywhere in the
-            // log, which the scan above will find.
-            const strangerHoldsPosition = occupant !== null;
-            if (
-              !(ownsResumeClaim && strangerHoldsPosition) &&
-              Date.now() < pinnedDeadline
-            ) {
-              await new Promise((resolve) =>
-                setTimeout(resolve, slotRetryDelay(round))
-              );
-              continue;
-            }
-            // Out of patience. Placing the resume's event somewhere beats leaving
-            // it unrecorded: an owner that died between staging and promoting, or
-            // between the claim and the append, is never coming back, and a resume
-            // with no event hangs the run for good. The claim keeps pointing where
-            // it always did, which costs nothing — a recorded resume is found by
-            // the scan above, keyed on the resume itself.
-            if (!reallocatesSlot) {
-              throw new EntityConflictError(
-                `Event "${eventId}" already exists for run "${effectiveRunId}"`
-              );
-            }
+          if (!(await bumpEventSlot(attempt))) {
+            break;
           }
-          if (reallocatesSlot && Date.now() < slotDeadline) {
-            // The position is someone else's — either published there or
-            // staged for it. Record that, top the book up from disk, and try
-            // again above whatever the log has reached rather than surfacing a
-            // conflict the caller cannot act on. Re-reading rather than
-            // incrementing bounds the search: every round at least one writer
-            // wins, so the top of the log is never further than the number of
-            // writers still contending for it.
-            const lost = slotFromId(eventId);
-            if (lost !== undefined) {
-              reserved.delete(lost);
-            }
-            slots.observe(effectiveRunId, eventId);
-            await slots.refresh(effectiveRunId);
-            await new Promise((resolve) =>
-              setTimeout(resolve, slotRetryDelay(round))
-            );
-            const slot = await slots.reserve(effectiveRunId);
-            reservedRunId = effectiveRunId;
-            reserved.add(slot);
-            eventId = slotEventId(slot);
-            event = { ...event, eventId };
-            continue;
-          }
+        }
+
+        if (!eventPublished) {
           // For `hook_created`, losing the event publish means the
           // event was already committed at this exact (canonical)
           // path. The original publisher may have crashed between
@@ -2988,53 +2811,41 @@ export function createEventsStorage(
               tag
             );
           }
-          if (reallocatesSlot) {
-            // Out of budget: every position this writer tried was taken by
-            // someone else. Surfacing it as a 503 puts the whole operation
-            // back on the queue rather than stalling the run here.
-            throw new WorkflowWorldError(
-              `Could not place an event in run "${effectiveRunId}" within ${SLOT_RETRY_BUDGET_MS}ms of contention`,
-              { status: 503 }
-            );
-          }
-          if (slotMode && !convergedOnCanonicalPosition) {
-            // Losing a claimed slot means someone else's event occupies this
-            // position, so the log this event was derived from is missing at
-            // least that event — the whole proposed event is stale, not just
-            // its id. Hand back what the caller is missing so it can merge,
-            // replay and re-propose, and forget the run's book so the next
-            // allocation re-reads the log this instance evidently does not
-            // have.
-            //
-            // Reaching here means the slot was taken *after* the pre-check at
-            // the claim site, so the entity this event was going to describe
-            // has already been materialized. Only two storage instances
-            // sharing a directory can do that, since one instance's book
-            // hands the same slot to nobody else.
-            slots.forget(effectiveRunId);
-            throw await slotConflict(effectiveRunId, eventId, params);
-          }
           throw new EntityConflictError(
             `Event "${eventId}" already exists for run "${effectiveRunId}"`
           );
         }
 
         // The event is now committed; cache it so an immediate sequential
-        // replay can serve it without rereading from disk. Nothing this create
-        // claimed may be undone from here on: readers can see the event, so the
-        // entity it describes has to keep existing even if a later step of this
-        // call fails.
-        eventCommitted = true;
+        // replay can serve it without rereading from disk.
         rememberStoredEvent(event, eventPath, serializedEvent);
-        slots.observe(effectiveRunId, eventId);
-        if (companionSlot !== undefined) {
-          // A start that carried creation data for a step that already existed
-          // synthesized no `step_created`, so the position below it went
-          // unused. Hand it back instead of leaving it outstanding for the life
-          // of the process, where it would block the allocator from ever
-          // filling that position.
-          reserved.delete(companionSlot);
-          slots.release(effectiveRunId, companionSlot);
+
+        // Point the resume claim at where the event actually landed. An
+        // unpinned publish bumps past occupied slots, so the id the claim
+        // recorded before the append can be stale; leaving it stale would
+        // send every later reader of this resume down the `resumeId` scan
+        // instead of the single read the claim exists to provide. Plain
+        // overwrite, not exclusive-create: the claim is already this
+        // writer's, and only the eventId changes.
+        if (
+          data.eventType === 'hook_received' &&
+          params?.resumeId &&
+          resumeClaimRecordedId !== null &&
+          resumeClaimRecordedId !== eventId
+        ) {
+          await write(
+            hookResumeClaimPath(basedir, effectiveRunId, params.resumeId),
+            JSON.stringify({
+              runId: effectiveRunId,
+              resumeId: params.resumeId,
+              hookId: data.correlationId,
+              eventId,
+              ...(params.resumePayloadDigest
+                ? { payloadDigest: params.resumePayloadDigest }
+                : {}),
+            } satisfies z.infer<typeof HookResumeClaimSchema>),
+            { overwrite: true }
+          );
         }
 
         // Write the hook entity ONLY now that the event publish has
@@ -3196,8 +3007,10 @@ export function createEventsStorage(
         limit: params.pagination?.limit,
         cursor: params.pagination?.cursor,
         getCreatedAt: getObjectCreatedAt('evnt'),
-        getOrderTime: eventOrderTime,
         getId: (event) => event.eventId,
+        getSortKey: eventSortKey,
+        getSortKeyFromFileId: (fileId) =>
+          eventSortKeyFromFileId(params.runId, fileId),
       });
 
       // If resolveData is "none", remove eventData from events
@@ -3213,4 +3026,88 @@ export function createEventsStorage(
       return result;
     },
   };
+
+  /**
+   * The report half of bump-and-report: the events sitting on the slots
+   * between the one the writer asked for and the one its write landed on.
+   *
+   * Wrapped around `create` rather than folded into it because `create` has a
+   * dozen commit points (dedup recovery, hook conflict, lazy step creation)
+   * and the report is the same at every one of them: read the committed id,
+   * read back what is below it.
+   *
+   * The read is a directory scan, so it only runs when the write actually
+   * skipped a slot. `hasMore` says the set is a lower bound: another instance
+   * may hold a lower slot it has not published yet, and a draw whose publish
+   * was lost leaves one permanently empty.
+   */
+  async function reportSkippedSlots(
+    result: EventResult,
+    askedFor: number,
+    resolveData: ResolveData
+  ): Promise<EventResult> {
+    if (!result.event) {
+      return result;
+    }
+    const committedSlot = eventIdToSlot(result.event.eventId);
+    if (
+      committedSlot === null ||
+      askedFor < FIRST_EVENT_SLOT ||
+      committedSlot <= askedFor + 1
+    ) {
+      return result;
+    }
+    const span = committedSlot - askedFor - 1;
+    const page = await storage.list({
+      runId: result.event.runId,
+      pagination: {
+        cursor: `${SORT_KEY_CURSOR_PREFIX}${slotToEventId(askedFor)}`,
+        limit: span,
+        sortOrder: 'asc',
+      },
+      resolveData,
+    });
+    // The cursor is exclusive and the page is in slot order, so a dense log
+    // yields exactly the skipped slots. A hole lets the page reach past the
+    // committed slot, which is this writer's own event and anything a later
+    // writer already published: neither is something it skipped over.
+    const committedEventId = result.event.eventId;
+    const events = page.data.filter(
+      (event) => event.eventId < committedEventId
+    );
+    return {
+      ...result,
+      events,
+      // Deliberately no cursor: the report is a lower bound on what this write
+      // skipped over, not a page the caller has now read to the end of, so it
+      // must not advance the caller's read position.
+      cursor: null,
+      hasMore: events.length < committedSlot - askedFor - 1,
+    };
+  }
+
+  const create = (async (
+    runId: string,
+    data: CreateEventRequest,
+    params?: CreateEventParams
+  ): Promise<EventResult> => {
+    if (params?.eventCount === undefined) {
+      return storage.create(runId, data, params);
+    }
+    const resolveData = params.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
+    const result = await storage.create(runId, data, params);
+    // `sinceCursor` and the skipped-slot report share `events`/`cursor`/
+    // `hasMore`, and the runtime sends both on the same write. The delta wins:
+    // the skipped slots all sit above the cursor, so it is a strict superset,
+    // and it is the only one of the two that advances `cursor`. Narrowing
+    // `events` to the report while leaving the delta's cursor would tell the
+    // caller it has read a range it was only handed part of, and the rest
+    // would never be fetched again.
+    if (typeof params.sinceCursor === 'string') {
+      return result;
+    }
+    return reportSkippedSlots(result, params.eventCount, resolveData);
+  }) as LocalEventsStorage['create'];
+
+  return { ...storage, create };
 }

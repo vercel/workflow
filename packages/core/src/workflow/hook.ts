@@ -96,7 +96,7 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
     }
 
     // Generate hook ID and token
-    const correlationId = `hook_${ctx.generateCorrelationId('hook')}`;
+    const correlationId = `hook_${ctx.generateUlid()}`;
     const token = options.token ?? ctx.generateNanoid();
     const tokenRetentionUntil =
       options.experimental_minRetention === undefined
@@ -175,9 +175,8 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
         eventLogEmpty = true;
 
         if (
-          !hasDisposedEvent &&
-          ((promises.length > 0 && payloadsQueue.length === 0) ||
-            (getConflictPromises.length > 0 && !hasCreated && !hasConflict))
+          (promises.length > 0 && payloadsQueue.length === 0) ||
+          (getConflictPromises.length > 0 && !hasCreated && !hasConflict)
         ) {
           scheduleWhenIdle(ctx, () => {
             ctx.onWorkflowError(
@@ -191,31 +190,6 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
       if (event.correlationId !== correlationId) {
         // We're not interested in this event - the correlationId belongs to a different entity
         return EventConsumerResult.NotConsumed;
-      }
-
-      if (hasDisposedEvent) {
-        // A delivery ordered AFTER this hook's own `hook_disposed`. The world
-        // orders a delivery by when its event row is written, not by when the
-        // payload arrived, so a delivery that raced the disposal — arriving
-        // first, committing second — lands here. Swallow it: the hook is gone,
-        // there is no consumer to hand the payload to, and every awaiter was
-        // already settled by `disposeHook`.
-        //
-        // This consumer must stay registered to do that. Retiring it on
-        // `hook_disposed` leaves the late delivery with no consumer at all,
-        // which the events consumer reports as an orphaned event —
-        // a `ReplayDivergenceError` that recurs on every replay of a log that
-        // is otherwise perfectly well-formed, escalating to a terminal
-        // `CorruptedEventLogError`.
-        webhookLogger.warn(
-          'Discarding a hook delivery ordered after disposal',
-          {
-            correlationId,
-            eventId: event.eventId,
-            eventType: event.eventType,
-          }
-        );
-        return EventConsumerResult.Consumed;
       }
 
       const eventToken =
@@ -483,10 +457,8 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
         ctx.invocationsQueue.delete(correlationId);
         // Mark that the event log confirms disposal happened
         hasDisposedEvent = true;
-        // Stay registered as a tombstone rather than retiring: a delivery that
-        // raced this disposal can still be ordered after it, and nothing else
-        // in the run can consume it. See the `hasDisposedEvent` branch above.
-        return EventConsumerResult.Consumed;
+        // We're done processing any more events for this hook
+        return EventConsumerResult.Finished;
       }
 
       // This replay installed a different consumer than the stored event needs.
@@ -606,9 +578,8 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
 
       // Drain any pending promises that are waiting for payloads.
       // Without this, promises created by `await hook` or the async iterator's
-      // `yield await this` would hang forever: a hook_received ordered after
-      // the disposal is discarded rather than handed to an awaiter, so nothing
-      // will ever settle them.
+      // `yield await this` would hang forever since the event consumer will
+      // never deliver another hook_received after disposal.
       if (promises.length > 0) {
         promises.length = 0;
         scheduleWhenIdle(ctx, () => {

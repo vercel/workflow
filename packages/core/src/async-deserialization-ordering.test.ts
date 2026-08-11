@@ -1,9 +1,9 @@
 import { FatalError } from '@workflow/errors';
 import type { Event } from '@workflow/world';
 import * as nanoid from 'nanoid';
+import { monotonicFactory } from 'ulid';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { registerSerializationClass } from './class-serialization.js';
-import { createCorrelationIdGenerator } from './correlation-id.js';
 import { EventsConsumer } from './events-consumer.js';
 import type { WorkflowOrchestratorContext } from './private.js';
 import { ReplayPayloadCache } from './replay-payload-cache.js';
@@ -45,6 +45,7 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
   if (hostRegistry) {
     (context.globalThis as any)[WORKFLOW_CLASS_REGISTRY] = hostRegistry;
   }
+  const ulid = monotonicFactory(() => context.globalThis.Math.random());
   const workflowStartedAt = context.globalThis.Date.now();
   return {
     runId: 'wrun_test',
@@ -52,14 +53,13 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
     replayPayloadCache: new ReplayPayloadCache(undefined),
     globalThis: context.globalThis,
     eventsConsumer: new EventsConsumer(events, {
+      // Fake context: no deliveries are modeled, so the gate is a no-op here.
+      isDeliveryIdle: () => true,
       onUnconsumedEvent: () => {},
       getPromiseQueue: () => Promise.resolve(),
     }),
     invocationsQueue: new Map(),
-    generateCorrelationId: createCorrelationIdGenerator({
-      seed: 'test',
-      fixedTimestamp: workflowStartedAt,
-    }),
+    generateUlid: () => ulid(workflowStartedAt),
     generateNanoid: nanoid.customRandom(nanoid.urlAlphabet, 21, (size) =>
       new Uint8Array(size).map(() => 256 * context.globalThis.Math.random())
     ),
@@ -94,7 +94,7 @@ describe('async deserialization ordering', () => {
         eventId: 'evnt_0',
         runId: 'wrun_test',
         eventType: 'step_completed',
-        correlationId: 'step_01K11TFZ62CHHYKN8SS4KKNC9V',
+        correlationId: 'step_01K11TFZ62YS0YYFDQ3E8B9YCV',
         eventData: {
           stepName: 'stepA',
           result: resultA,
@@ -105,7 +105,7 @@ describe('async deserialization ordering', () => {
         eventId: 'evnt_1',
         runId: 'wrun_test',
         eventType: 'step_completed',
-        correlationId: 'step_01K11TFZ62CHHYKN8SS4KKNC9W',
+        correlationId: 'step_01K11TFZ62YS0YYFDQ3E8B9YCW',
         eventData: {
           stepName: 'stepB',
           result: resultB,
@@ -170,7 +170,7 @@ describe('async deserialization ordering', () => {
         eventId: 'evnt_0',
         runId: 'wrun_test',
         eventType: 'step_completed',
-        correlationId: 'step_01K11TFZ62CHHYKN8SS4KKNC9V',
+        correlationId: 'step_01K11TFZ62YS0YYFDQ3E8B9YCV',
         eventData: {
           stepName: 'step1',
           result: results[0],
@@ -181,7 +181,7 @@ describe('async deserialization ordering', () => {
         eventId: 'evnt_1',
         runId: 'wrun_test',
         eventType: 'step_completed',
-        correlationId: 'step_01K11TFZ62CHHYKN8SS4KKNC9W',
+        correlationId: 'step_01K11TFZ62YS0YYFDQ3E8B9YCW',
         eventData: {
           stepName: 'step2',
           result: results[1],
@@ -192,7 +192,7 @@ describe('async deserialization ordering', () => {
         eventId: 'evnt_2',
         runId: 'wrun_test',
         eventType: 'step_completed',
-        correlationId: 'step_01K11TFZ62CHHYKN8SS4KKNC9X',
+        correlationId: 'step_01K11TFZ62YS0YYFDQ3E8B9YCX',
         eventData: {
           stepName: 'step3',
           result: results[2],
@@ -265,7 +265,7 @@ describe('async deserialization ordering', () => {
         eventId: 'evnt_0',
         runId: 'wrun_test',
         eventType: 'hook_received',
-        correlationId: 'hook_01K11TFZ62C752Z96G9MRSN85J',
+        correlationId: 'hook_01K11TFZ62YS0YYFDQ3E8B9YCV',
         eventData: {
           token: 'test-token',
           payload: payloadA,
@@ -276,7 +276,7 @@ describe('async deserialization ordering', () => {
         eventId: 'evnt_1',
         runId: 'wrun_test',
         eventType: 'hook_received',
-        correlationId: 'hook_01K11TFZ62C752Z96G9MRSN85J',
+        correlationId: 'hook_01K11TFZ62YS0YYFDQ3E8B9YCV',
         eventData: {
           token: 'test-token',
           payload: payloadB,
@@ -287,7 +287,7 @@ describe('async deserialization ordering', () => {
         eventId: 'evnt_2',
         runId: 'wrun_test',
         eventType: 'hook_disposed',
-        correlationId: 'hook_01K11TFZ62C752Z96G9MRSN85J',
+        correlationId: 'hook_01K11TFZ62YS0YYFDQ3E8B9YCV',
         eventData: {
           token: 'test-token',
         },
@@ -357,7 +357,7 @@ describe('async deserialization ordering', () => {
         eventId: 'evnt_0',
         runId: 'wrun_test',
         eventType: 'step_completed',
-        correlationId: 'step_01K11TFZ62CHHYKN8SS4KKNC9V',
+        correlationId: 'step_01K11TFZ62YS0YYFDQ3E8B9YCV',
         eventData: {
           stepName: 'stepA',
           result: resultA,
@@ -368,7 +368,7 @@ describe('async deserialization ordering', () => {
         eventId: 'evnt_1',
         runId: 'wrun_test',
         eventType: 'step_failed',
-        correlationId: 'step_01K11TFZ62CHHYKN8SS4KKNC9W',
+        correlationId: 'step_01K11TFZ62YS0YYFDQ3E8B9YCW',
         eventData: {
           stepName: 'stepB',
           error: errorB,
@@ -379,7 +379,7 @@ describe('async deserialization ordering', () => {
         eventId: 'evnt_2',
         runId: 'wrun_test',
         eventType: 'step_completed',
-        correlationId: 'step_01K11TFZ62CHHYKN8SS4KKNC9X',
+        correlationId: 'step_01K11TFZ62YS0YYFDQ3E8B9YCX',
         eventData: {
           stepName: 'stepC',
           result: resultC,
@@ -444,16 +444,16 @@ describe('async deserialization ordering', () => {
 
     // Correlation IDs from the deterministic ULID generator
     const correlationIds = [
-      'step_01K11TFZ62CHHYKN8SS4KKNC9V',
-      'step_01K11TFZ62CHHYKN8SS4KKNC9W',
-      'step_01K11TFZ62CHHYKN8SS4KKNC9X',
-      'step_01K11TFZ62CHHYKN8SS4KKNC9Y',
-      'step_01K11TFZ62CHHYKN8SS4KKNC9Z',
-      'step_01K11TFZ62CHHYKN8SS4KKNCA0',
-      'step_01K11TFZ62CHHYKN8SS4KKNCA1',
-      'step_01K11TFZ62CHHYKN8SS4KKNCA2',
-      'step_01K11TFZ62CHHYKN8SS4KKNCA3',
-      'step_01K11TFZ62CHHYKN8SS4KKNCA4',
+      'step_01K11TFZ62YS0YYFDQ3E8B9YCV',
+      'step_01K11TFZ62YS0YYFDQ3E8B9YCW',
+      'step_01K11TFZ62YS0YYFDQ3E8B9YCX',
+      'step_01K11TFZ62YS0YYFDQ3E8B9YCY',
+      'step_01K11TFZ62YS0YYFDQ3E8B9YCZ',
+      'step_01K11TFZ62YS0YYFDQ3E8B9YD0',
+      'step_01K11TFZ62YS0YYFDQ3E8B9YD1',
+      'step_01K11TFZ62YS0YYFDQ3E8B9YD2',
+      'step_01K11TFZ62YS0YYFDQ3E8B9YD3',
+      'step_01K11TFZ62YS0YYFDQ3E8B9YD4',
     ];
 
     const events: Event[] = results.map((result, i) => ({
@@ -518,7 +518,7 @@ describe('async deserialization ordering', () => {
         eventId: 'evnt_0',
         runId: 'wrun_test',
         eventType: 'step_completed',
-        correlationId: 'step_01K11TFZ62CHHYKN8SS4KKNC9V',
+        correlationId: 'step_01K11TFZ62YS0YYFDQ3E8B9YCV',
         eventData: {
           stepName: 'stepA',
           result: resultA,
@@ -529,7 +529,7 @@ describe('async deserialization ordering', () => {
         eventId: 'evnt_1',
         runId: 'wrun_test',
         eventType: 'wait_created',
-        correlationId: 'wait_01K11TFZ62FEAJPFZ0JMCV2A5V',
+        correlationId: 'wait_01K11TFZ62YS0YYFDQ3E8B9YCW',
         eventData: { resumeAt: new Date('2024-01-01T00:00:05.000Z') },
         createdAt: new Date(),
       },
@@ -537,7 +537,7 @@ describe('async deserialization ordering', () => {
         eventId: 'evnt_2',
         runId: 'wrun_test',
         eventType: 'wait_completed',
-        correlationId: 'wait_01K11TFZ62FEAJPFZ0JMCV2A5V',
+        correlationId: 'wait_01K11TFZ62YS0YYFDQ3E8B9YCW',
         eventData: {
           resumeAt: new Date('2024-01-01T00:00:05.000Z'),
         },
@@ -547,7 +547,7 @@ describe('async deserialization ordering', () => {
         eventId: 'evnt_3',
         runId: 'wrun_test',
         eventType: 'step_completed',
-        correlationId: 'step_01K11TFZ62CHHYKN8SS4KKNC9W',
+        correlationId: 'step_01K11TFZ62YS0YYFDQ3E8B9YCX',
         eventData: {
           stepName: 'stepC',
           result: resultC,
@@ -613,7 +613,7 @@ describe('async deserialization ordering', () => {
         eventId: 'evnt_0',
         runId: 'wrun_test',
         eventType: 'step_started',
-        correlationId: 'step_01K11TFZ62CHHYKN8SS4KKNC9V',
+        correlationId: 'step_01K11TFZ62YS0YYFDQ3E8B9YCV',
         eventData: {
           stepName: 'stepA',
         },
@@ -623,7 +623,7 @@ describe('async deserialization ordering', () => {
         eventId: 'evnt_1',
         runId: 'wrun_test',
         eventType: 'step_started',
-        correlationId: 'step_01K11TFZ62CHHYKN8SS4KKNC9W',
+        correlationId: 'step_01K11TFZ62YS0YYFDQ3E8B9YCW',
         eventData: {
           stepName: 'stepB',
         },
@@ -633,7 +633,7 @@ describe('async deserialization ordering', () => {
         eventId: 'evnt_2',
         runId: 'wrun_test',
         eventType: 'step_completed',
-        correlationId: 'step_01K11TFZ62CHHYKN8SS4KKNC9V',
+        correlationId: 'step_01K11TFZ62YS0YYFDQ3E8B9YCV',
         eventData: {
           stepName: 'stepA',
           result: resultA,
@@ -644,7 +644,7 @@ describe('async deserialization ordering', () => {
         eventId: 'evnt_3',
         runId: 'wrun_test',
         eventType: 'step_completed',
-        correlationId: 'step_01K11TFZ62CHHYKN8SS4KKNC9W',
+        correlationId: 'step_01K11TFZ62YS0YYFDQ3E8B9YCW',
         eventData: {
           stepName: 'stepB',
           result: resultB,
@@ -706,7 +706,7 @@ describe('async deserialization ordering', () => {
           eventId: 'evnt_0',
           runId: 'wrun_test',
           eventType: 'hook_received',
-          correlationId: 'hook_01K11TFZ62C752Z96G9MRSN85J',
+          correlationId: 'hook_01K11TFZ62YS0YYFDQ3E8B9YCV',
           eventData: {
             payload: new Uint8Array([101, 110, 99, 114]), // "encr" without a key
           },
@@ -743,7 +743,7 @@ describe('async deserialization ordering', () => {
         eventId: 'evnt_0',
         runId: 'wrun_test',
         eventType: 'hook_received',
-        correlationId: 'hook_01K11TFZ62C752Z96G9MRSN85J',
+        correlationId: 'hook_01K11TFZ62YS0YYFDQ3E8B9YCV',
         eventData: { payload },
         createdAt: new Date(),
       },
@@ -751,7 +751,7 @@ describe('async deserialization ordering', () => {
         eventId: 'evnt_1',
         runId: 'wrun_test',
         eventType: 'wait_completed',
-        correlationId: 'wait_01K11TFZ62FEAJPFZ0JMCV2A5V',
+        correlationId: 'wait_01K11TFZ62YS0YYFDQ3E8B9YCW',
         eventData: { resumeAt },
         createdAt: new Date(),
       },

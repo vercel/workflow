@@ -1,7 +1,11 @@
 import { withResolvers } from '@workflow/utils';
 import type { Event } from '@workflow/world';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { EventConsumerResult, EventsConsumer } from './events-consumer.js';
+import {
+  EventConsumerResult,
+  EventsConsumer,
+  MIN_DEFERRED_CHECK_DELAY_MS,
+} from './events-consumer.js';
 import type { WorkflowOrchestratorContext } from './private.js';
 import { isDeliveryIdle, registerDeliveryBarrier } from './private.js';
 
@@ -17,11 +21,15 @@ import { isDeliveryIdle, registerDeliveryBarrier } from './private.js';
  * The unconsumed-event check used to resolve that by waiting a fixed
  * `DEFERRED_CHECK_DELAY_MS` after the promise queue drained, which is a bet
  * that every delivery lands inside the window. Replaying a batch of N parallel
- * step results loses it: the queue drains with N-1 of them still on the
- * detached path, and the check declares `ReplayDivergenceError` against a log
- * the very same replay goes on to reproduce exactly. Measured on the event-log
- * race repro against world-postgres, on identical event logs: 0 of 114 runs
- * corrupted with a 100ms window, 34 of 42 with a 10ms one.
+ * step results is what puts that bet under load: the queue drains with N-1 of
+ * them still on the detached path, so whether the check declares
+ * `ReplayDivergenceError` against a log the very same replay goes on to
+ * reproduce exactly comes down to the clock. Shrinking the window makes it lose.
+ * Measured on the event-log race repro against world-postgres, on identical
+ * event logs: 0 of 114 runs corrupted at the 100ms default, 34 of 42 at 10ms.
+ * That is evidence for the mechanism, not for the default being too short; the
+ * delay is also a user-settable override, so the old behaviour stayed one
+ * configuration away from losing.
  *
  * `hasParkedCommittedDelivery` in private.ts already documents this hazard for
  * the suspension path (vercel/workflow#3183). These tests pin the same guard
@@ -29,6 +37,17 @@ import { isDeliveryIdle, registerDeliveryBarrier } from './private.js';
  * a real armed delivery barrier must hold the check off however long it takes,
  * and the check must still fire for an event no delivery is waiting on.
  */
+
+/**
+ * Shortest delay the check accepts, and a wait comfortably past it. Both derive
+ * from the floor so that raising the floor cannot quietly turn the negative
+ * assertions below into no-ops: were the stub a hardcoded number the floor
+ * outgrew, `getDeferredCheckDelayMs` would clamp it up, the delay would stop
+ * being shorter than the delivery, and the check would be "not fired yet"
+ * rather than "held off by the gate".
+ */
+const CHECK_DELAY_MS = MIN_DEFERRED_CHECK_DELAY_MS;
+const PAST_CHECK_DELAY_MS = CHECK_DELAY_MS * 25;
 
 function createEvent(overrides: Partial<Event> = {}): Event {
   return {
@@ -69,7 +88,7 @@ describe('unconsumed-event check against in-flight deliveries', () => {
   it('does not declare divergence while a step delivery is outstanding', async () => {
     // Far shorter than the delivery below, so the run survives only if the
     // check waits for the delivery rather than for the clock.
-    vi.stubEnv('WORKFLOW_DEFERRED_CHECK_DELAY_MS', '10');
+    vi.stubEnv('WORKFLOW_DEFERRED_CHECK_DELAY_MS', String(CHECK_DELAY_MS));
 
     const ctx = createDeliveryContext();
     const event = createEvent();
@@ -88,7 +107,7 @@ describe('unconsumed-event check against in-flight deliveries', () => {
       vi.fn().mockReturnValue(EventConsumerResult.NotConsumed)
     );
 
-    await new Promise((resolve) => setTimeout(resolve, 250));
+    await new Promise((resolve) => setTimeout(resolve, PAST_CHECK_DELAY_MS));
     expect(onUnconsumedEvent).not.toHaveBeenCalled();
 
     // The delivery lands and the workflow reaches the call this event records.
@@ -98,12 +117,12 @@ describe('unconsumed-event check against in-flight deliveries', () => {
     await vi.waitFor(() => {
       expect(consumer.eventIndex).toBe(1);
     });
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await new Promise((resolve) => setTimeout(resolve, PAST_CHECK_DELAY_MS));
     expect(onUnconsumedEvent).not.toHaveBeenCalled();
   });
 
   it('does not declare divergence while a payload is hydrating', async () => {
-    vi.stubEnv('WORKFLOW_DEFERRED_CHECK_DELAY_MS', '10');
+    vi.stubEnv('WORKFLOW_DEFERRED_CHECK_DELAY_MS', String(CHECK_DELAY_MS));
 
     const ctx = createDeliveryContext();
     const event = createEvent();
@@ -121,7 +140,7 @@ describe('unconsumed-event check against in-flight deliveries', () => {
       vi.fn().mockReturnValue(EventConsumerResult.NotConsumed)
     );
 
-    await new Promise((resolve) => setTimeout(resolve, 250));
+    await new Promise((resolve) => setTimeout(resolve, PAST_CHECK_DELAY_MS));
     expect(onUnconsumedEvent).not.toHaveBeenCalled();
 
     ctx.pendingDeliveries--;

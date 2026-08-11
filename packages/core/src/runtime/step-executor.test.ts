@@ -1,7 +1,6 @@
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { SlotConflictError } from '@workflow/errors';
 import type { Event, World } from '@workflow/world';
 import { SPEC_VERSION_CURRENT } from '@workflow/world';
 import { createWorld } from '@workflow/world-local';
@@ -172,7 +171,7 @@ describe('executeStep — compute instance stamping', () => {
     counter += 1;
   });
 
-  it('stamps computeInstanceId on step_started without displacing the claim fence', async () => {
+  it('stamps computeInstanceId on step_started without displacing the precondition snapshot', async () => {
     const world = makeWorld();
     const stepName = uniqueStepName();
     const { runId, stepId } = await setupRunningStep({
@@ -198,7 +197,7 @@ describe('executeStep — compute instance stamping', () => {
       workflowStartedAt: Date.now(),
       stepId,
       stepName,
-      claimFence: (op) => op(preconditionSnapshot),
+      preconditionSnapshot,
     });
 
     const started = createSpy.mock.calls.filter(
@@ -209,176 +208,5 @@ describe('executeStep — compute instance stamping', () => {
     // Both ride the same params object — neither may clobber the other, and the
     // three snapshot fields must arrive as one unit.
     expect(started[0]?.[2]).toMatchObject(preconditionSnapshot);
-  });
-});
-
-// A run that numbers its events by position rejects a claim whose slot was
-// taken, and the rejection carries the events that took it. When those events
-// show the same step already started, the loser is in the ordinary "another
-// handler owns this step" position and skips — the outcome an unfenced write
-// reaches via EntityConflictError. Anything less than proof of the same call
-// must propagate instead, because correlation ids are positional: a replay
-// that diverged can reach the same step number naming a different call.
-describe('executeStep — slot rejection carrying a duplicate start', () => {
-  afterEach(() => {
-    counter += 1;
-  });
-
-  function startedEvent(opts: { stepId: string; stepName: string }) {
-    return {
-      eventType: 'step_started',
-      correlationId: opts.stepId,
-      eventData: { stepName: opts.stepName },
-    };
-  }
-
-  // The companion a lazy start publishes alongside its `step_started`. Both
-  // Worlds move the step input here and strip it from the start's own row, so
-  // this is the only event in a delta that can carry it.
-  function createdEvent(opts: { stepId: string; input: unknown }) {
-    return {
-      eventType: 'step_created',
-      correlationId: opts.stepId,
-      eventData: { input: opts.input },
-    };
-  }
-
-  async function runAgainstRejection(opts: {
-    events: unknown[];
-    lazyStepInput?: Uint8Array;
-    onBody?: () => void;
-  }) {
-    const world = makeWorld();
-    const stepName = uniqueStepName();
-    let bodyRuns = 0;
-    const { runId, stepId } = await setupRunningStep({
-      world,
-      stepName,
-      onBody: () => {
-        bodyRuns += 1;
-        opts.onBody?.();
-      },
-    });
-
-    const rejection = new SlotConflictError('slot taken', {
-      eventId: 'evnt_00000000000000000000000007',
-      events: opts.events.map((build) =>
-        typeof build === 'function'
-          ? (build as (ids: { stepId: string; stepName: string }) => unknown)({
-              stepId,
-              stepName,
-            })
-          : build
-      ),
-    });
-
-    const run = () =>
-      executeStep({
-        world,
-        workflowRunId: runId,
-        workflowName: 'wf',
-        workflowStartedAt: Date.now(),
-        stepId,
-        stepName,
-        lazyStepInput: opts.lazyStepInput,
-        // Take the awaited claim path so the rejection is translated before a
-        // body ever runs; the optimistic path reconciles the same way but
-        // would run the body first and muddy the assertion.
-        suppressOptimisticStart: true,
-        claimFence: () => Promise.reject(rejection),
-      });
-
-    return { run, bodyRuns: () => bodyRuns, stepName, stepId };
-  }
-
-  it('skips when the delta already started this step (no lazy input to compare)', async () => {
-    const { run, bodyRuns } = await runAgainstRejection({
-      events: [
-        (ids: { stepId: string; stepName: string }) => startedEvent(ids),
-      ],
-    });
-
-    await expect(run()).resolves.toEqual({ type: 'skipped' });
-    expect(bodyRuns()).toBe(0);
-  });
-
-  it('skips when the delta started this step with byte-identical input', async () => {
-    const { run, bodyRuns } = await runAgainstRejection({
-      lazyStepInput: new Uint8Array([1, 2, 3]),
-      events: [
-        (ids: { stepId: string }) =>
-          createdEvent({ ...ids, input: new Uint8Array([1, 2, 3]) }),
-        (ids: { stepId: string; stepName: string }) => startedEvent(ids),
-      ],
-    });
-
-    await expect(run()).resolves.toEqual({ type: 'skipped' });
-    expect(bodyRuns()).toBe(0);
-  });
-
-  it('propagates when the delta start has no companion carrying the input', async () => {
-    // The start alone proves the correlation id and the step name, and neither
-    // distinguishes this call from a diverged replay's call at the same
-    // ordinal. Without the companion there is nothing to compare the input
-    // against, so the restart is the only correct answer.
-    const { run } = await runAgainstRejection({
-      lazyStepInput: new Uint8Array([1, 2, 3]),
-      events: [
-        (ids: { stepId: string; stepName: string }) => startedEvent(ids),
-      ],
-    });
-
-    await expect(run()).rejects.toThrow(SlotConflictError);
-  });
-
-  it('propagates when the delta started the same slot under a different step name', async () => {
-    const { run } = await runAgainstRejection({
-      events: [
-        (ids: { stepId: string }) =>
-          startedEvent({ ...ids, stepName: 'step//./other//someOtherStep' }),
-      ],
-    });
-
-    await expect(run()).rejects.toThrow(SlotConflictError);
-  });
-
-  it('propagates when the delta started this step with different input bytes', async () => {
-    const { run } = await runAgainstRejection({
-      lazyStepInput: new Uint8Array([1, 2, 3]),
-      events: [
-        (ids: { stepId: string }) =>
-          createdEvent({ ...ids, input: new Uint8Array([1, 2, 4]) }),
-        (ids: { stepId: string; stepName: string }) => startedEvent(ids),
-      ],
-    });
-
-    await expect(run()).rejects.toThrow(SlotConflictError);
-  });
-
-  it('propagates when the delta start carries a remote ref instead of inline bytes', async () => {
-    // A ref says nothing about the value behind it, so identity is unprovable
-    // and the replay restart is the only correct answer.
-    const { run } = await runAgainstRejection({
-      lazyStepInput: new Uint8Array([1, 2, 3]),
-      events: [
-        (ids: { stepId: string }) =>
-          createdEvent({ ...ids, input: { ref: 'payload_abc' } }),
-        (ids: { stepId: string; stepName: string }) => startedEvent(ids),
-      ],
-    });
-
-    await expect(run()).rejects.toThrow(SlotConflictError);
-  });
-
-  it('propagates when the delta holds no start for this step', async () => {
-    const { run } = await runAgainstRejection({
-      events: [
-        { eventType: 'step_completed', correlationId: 'step_other' },
-        (ids: { stepName: string }) =>
-          startedEvent({ ...ids, stepId: 'step_other' }),
-      ],
-    });
-
-    await expect(run()).rejects.toThrow(SlotConflictError);
   });
 });

@@ -39,12 +39,12 @@ import {
   it,
   vi,
 } from 'vitest';
-import { createCorrelationIdGenerator } from '../correlation-id.js';
 import { workflowEntrypoint } from '../runtime.js';
 import {
   dehydrateStepReturnValue,
   dehydrateWorkflowArguments,
 } from '../serialization.js';
+import { createContext } from '../vm/index.js';
 import { setWorld } from './world.js';
 
 vi.mock('@vercel/functions', () => ({ waitUntil: vi.fn() }));
@@ -160,14 +160,15 @@ async function runResumeConsumerScenario(options: {
     undefined
   );
 
-  // Derive the hook correlation id the replay will compute, so the preloaded /
-  // re-ensured hook_received matches the workflow's own createHook call. The
-  // workflow creates one hook, so it draws its kind's first id.
-  const generate = createCorrelationIdGenerator({
+  // Derive the hook correlation id the seeded VM will compute during replay,
+  // so the preloaded / re-ensured hook_received matches the workflow's own
+  // createHook call (id assignment order: the hook is the first id derived).
+  const { globalThis: vmGlobalThis } = createContext({
     seed: `${runId}:${workflowName}:${deploymentId}`,
     fixedTimestamp: +startedAt,
   });
-  const hookCorrelationId = `hook_${generate('hook')}`;
+  const vmUlid = monotonicFactory(() => vmGlobalThis.Math.random());
+  const hookCorrelationId = `hook_${vmUlid(+startedAt)}`;
 
   const workflowRun: WorkflowRun = {
     runId,

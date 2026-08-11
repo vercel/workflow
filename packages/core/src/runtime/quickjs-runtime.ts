@@ -635,10 +635,6 @@ globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")] = function(options) {
   if (options.isWebhook === true && options.experimental_minRetention !== undefined) {
     throw new Error('Webhook hooks do not support \`experimental_minRetention\`. Use a non-webhook \`createHook()\` with \`resumeHook()\`.');
   }
-  // Fail closed when the configured World does not declare hook-retention
-  // support (parity with the node:vm engine's world-capability gate in
-  // hook.ts). The host injects \`__worldCapabilities\` per run from
-  // \`world.capabilities\`; absence means unsupported.
   if (options.experimental_minRetention !== undefined && globalThis.__worldCapabilities?.hookRetention?.active !== true) {
     var unsupportedRetentionError = new Error('The configured World does not support \`experimental_minRetention\` for Hooks.');
     unsupportedRetentionError.name = "FatalError";

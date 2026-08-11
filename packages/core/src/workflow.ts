@@ -14,7 +14,7 @@ import { parseWorkflowName } from '@workflow/utils/parse-name';
 import type { Event, WorkflowRun, WorldCapabilities } from '@workflow/world';
 import { SPEC_VERSION_SUPPORTS_COMPRESSION } from '@workflow/world';
 import * as nanoid from 'nanoid';
-import { createCorrelationIdGenerator } from './correlation-id.js';
+import { monotonicFactory } from 'ulid';
 import { EventConsumerResult, EventsConsumer } from './events-consumer.js';
 import type { QueueItem } from './global.js';
 import { ENOTSUP, WorkflowSuspension } from './global.js';
@@ -23,10 +23,6 @@ import type { WorkflowOrchestratorContext } from './private.js';
 import { isDeliveryIdle } from './private.js';
 import { ReplayPayloadCache } from './replay-payload-cache.js';
 import { getPortLazy } from './runtime/get-port-lazy.js';
-import {
-  type MutableEventLog,
-  staleWriteRejectionClass,
-} from './runtime/helpers.js';
 import { runIdCreatedAt } from './runtime/run-id-time.js';
 import { handleSuspension } from './runtime/suspension-handler.js';
 import { getWorld } from './runtime/world.js';
@@ -71,14 +67,7 @@ import { createSleep } from './workflow/sleep.js';
  * bodies: `step_started` is rejected after the run becomes terminal. A
  * fire-and-forget step therefore needs a later suspension to be scheduled.
  *
- * Drain failures do not change the workflow's terminal outcome. That is the
- * point of the swallow, and it is why a lost slot cannot be rethrown from here:
- * this runs after the workflow function settled, so a throw on the success path
- * lands in the caller's `catch` and fails a run that completed. What a lost
- * slot does instead is latch on the log, so the terminal write that follows
- * fails without a round-trip and the run restarts over the corrected log —
- * a defined recovery, one replay long. The rejection class is logged because
- * that restart is otherwise indistinguishable from an unexplained one.
+ * Drain failures do not change the workflow's terminal outcome.
  */
 async function drainPendingQueueItems(
   runId: string,
@@ -90,15 +79,7 @@ async function drainPendingQueueItems(
    * In turbo mode, gates final `*_created` writes on backgrounded
    * `run_started`. Undefined when `run_started` is awaited.
    */
-  runReadyBarrier?: Promise<unknown>,
-  /**
-   * The replay's event log, so the drain's writes claim their slots from the
-   * same source the terminal `run_completed` / `run_failed` write draws from.
-   * Without it the drain writes unfenced — the World picks the next free slot —
-   * and the terminal write, numbering from a snapshot taken before the drain,
-   * proposes the slot the drain just took and loses it.
-   */
-  eventLog?: MutableEventLog
+  runReadyBarrier?: Promise<unknown>
 ): Promise<void> {
   if (pendingQueue.size === 0) return;
   // Implicitly dispose any abort hooks (system hooks) that are still alive at
@@ -125,7 +106,6 @@ async function drainPendingQueueItems(
       world,
       run: workflowRun,
       runReadyBarrier,
-      eventLog,
     });
   } catch (err) {
     runtimeLogger.warn(
@@ -133,7 +113,6 @@ async function drainPendingQueueItems(
       {
         workflowRunId: runId,
         message: err instanceof Error ? err.message : String(err),
-        rejectionClass: staleWriteRejectionClass(err),
       }
     );
   }
@@ -148,12 +127,6 @@ interface WorkflowSessionOptions {
   readonly replayPayloadCache: ReplayPayloadCache;
   readonly runReadyBarrier?: Promise<unknown>;
   readonly worldCapabilities?: WorldCapabilities;
-  /**
-   * The caller's event log for this execution. Its only use here is the
-   * end-of-run drain, whose writes have to be ordered with the caller's
-   * terminal write — see {@link drainPendingQueueItems}.
-   */
-  readonly eventLog?: MutableEventLog;
 }
 
 /**
@@ -163,10 +136,7 @@ interface WorkflowSessionOptions {
 export interface WorkflowSession {
   readonly workflowRun: WorkflowRun;
   readonly argumentCount: number;
-  resume(
-    events: Event[],
-    eventLog?: MutableEventLog
-  ): Promise<WorkflowResumeResult>;
+  resume(events: Event[]): Promise<WorkflowResumeResult>;
 }
 
 /** A finished execution attempt: the workflow's output or a live boundary. */
@@ -181,6 +151,16 @@ export type WorkflowResult =
       readonly type: 'suspended';
       readonly suspension: WorkflowSuspension;
       readonly session: WorkflowSession;
+      /**
+       * Events the replay walked past unclaimed and is still holding, if any.
+       * Ordinary on a suspension, and only actionable across a run's
+       * suspensions, so it is reported for telemetry rather than acted on here.
+       */
+      readonly parked?: {
+        readonly count: number;
+        readonly eventId: string;
+        readonly eventType: string;
+      };
     };
 
 /**
@@ -220,13 +200,7 @@ export function replayWorkflow(
 /** Warm-start: advance a retained session by appending events. */
 export function resumeWorkflow(
   session: WorkflowSession,
-  events: Event[],
-  /**
-   * The caller's event log for this attempt. A retained session outlives the
-   * log it was built with, so the drain has to number from the caller's
-   * current one rather than the one captured at session creation.
-   */
-  eventLog?: MutableEventLog
+  events: Event[]
 ): Promise<WorkflowResumeResult> {
   return traceExecution(
     'retained',
@@ -236,7 +210,7 @@ export function resumeWorkflow(
       span?.setAttributes({
         ...Attribute.WorkflowArgumentsCount(session.argumentCount),
       });
-      const result = await session.resume(events, eventLog);
+      const result = await session.resume(events);
       return result.type === 'replay' ? result : recordResult(result, span);
     }
   );
@@ -270,6 +244,20 @@ function recordResult(
     });
   } else if (span) {
     applyWorkflowSuspensionToSpan(result.suspension, span);
+    // Events this pass walked past unclaimed and is still holding. Ordinary on
+    // a suspension: an out-of-band delivery that landed ahead of the code that
+    // reads it waits for the pass that reaches that code, and failing here
+    // would fail exactly the runs that tolerance exists for. The case that is
+    // not ordinary — the same event still held pass after pass — is a shape
+    // across these spans, which is why the eventId is on each one and no pass
+    // tries to rule on it alone.
+    if (result.parked) {
+      span.setAttributes({
+        ...Attribute.WorkflowParkedEventsCount(result.parked.count),
+        ...Attribute.WorkflowParkedEventId(result.parked.eventId),
+        ...Attribute.WorkflowParkedEventType(result.parked.eventType),
+      });
+    }
   }
   return result;
 }
@@ -302,12 +290,7 @@ export async function runWorkflow(
    * Features supported by the World executing this workflow. Missing
    * capabilities are treated as unsupported.
    */
-  worldCapabilities?: WorldCapabilities,
-  /**
-   * The caller's event log for this replay. Its only use here is the end-of-run
-   * drain — see {@link drainPendingQueueItems}.
-   */
-  eventLog?: MutableEventLog
+  worldCapabilities?: WorldCapabilities
 ): Promise<Uint8Array | unknown> {
   const result = await replayWorkflow({
     workflowCode,
@@ -317,7 +300,6 @@ export async function runWorkflow(
     replayPayloadCache,
     runReadyBarrier,
     worldCapabilities,
-    eventLog,
   });
   if (result.type === 'suspended') throw result.suspension;
   return result.output;
@@ -331,7 +313,6 @@ async function createWorkflowSession({
   replayPayloadCache,
   runReadyBarrier,
   worldCapabilities,
-  eventLog,
 }: WorkflowSessionOptions): Promise<{
   session: WorkflowSession;
   execution: Promise<WorkflowResult>;
@@ -364,18 +345,14 @@ async function createWorkflowSession({
       : `http://localhost:${(await getPortLazy()) ?? 3000}`
   );
 
-  const seed = `${workflowRun.runId}:${workflowRun.workflowName}:${workflowRun.deploymentId}`;
-
   const {
     context,
     globalThis: vmGlobalThis,
     updateTimestamp,
   } = createContext({
-    seed,
+    seed: `${workflowRun.runId}:${workflowRun.workflowName}:${workflowRun.deploymentId}`,
     fixedTimestamp,
   });
-
-  let currentEventLog = eventLog;
 
   const initialInterruption = withResolvers<never>();
   let state: WorkflowSessionState = {
@@ -411,12 +388,10 @@ async function createWorkflowSession({
     state satisfies never;
   };
 
-  const generateCorrelationId = createCorrelationIdGenerator({
-    seed,
-    // Correlation IDs must be replay-stable. `startedAt` differs between a
-    // turbo delivery and a later server-backed replay, so use fixedTimestamp.
-    fixedTimestamp,
-  });
+  const ulid = monotonicFactory(() => vmGlobalThis.Math.random());
+  // Correlation IDs must be replay-stable. `startedAt` differs between a turbo
+  // delivery and a later server-backed replay, so use fixedTimestamp.
+  const generateUlid = () => ulid(fixedTimestamp);
   const generateNanoid = nanoid.customRandom(nanoid.urlAlphabet, 21, (size) =>
     new Uint8Array(size).map(() => 256 * vmGlobalThis.Math.random())
   );
@@ -431,20 +406,25 @@ async function createWorkflowSession({
   // is before any delivery can be registered against it.
   const deliveryIdleHolder = { current: (): boolean => true };
 
+  // The VM clock only ever moves forward. Consumption order is log order for
+  // everything whose order the replay decides, but an event the consumer
+  // parked is delivered after the walk has already passed events written after
+  // it, and letting its `createdAt` set the clock would make `Date.now()` go
+  // backwards inside a single replay.
+  let clock = fixedTimestamp;
+
   const eventsConsumer = new EventsConsumer(events, {
     onConsumedEvent: (event) => {
-      updateTimestamp(+event.createdAt);
+      const at = +event.createdAt;
+      if (at > clock) {
+        clock = at;
+        updateTimestamp(at);
+      }
     },
     onUnconsumedEvent: (event) => {
-      // Name what the replay was waiting for instead. An unconsumable event
-      // is almost always one whose entity this replay never issued, or
-      // issued under a different correlation ID; the pending invocation
-      // queue is the only place that distinction is visible, and without it
-      // the log names a symptom with no way to reach the cause.
-      const pending = [...workflowContext.invocationsQueue.keys()];
       onWorkflowError(
         new ReplayDivergenceError(
-          `Replay could not consume event: eventType=${event.eventType}, correlationId=${event.correlationId}, eventId=${event.eventId}. Pending invocations: ${pending.length > 0 ? pending.join(', ') : '(none)'}.`,
+          `Replay could not consume event: eventType=${event.eventType}, correlationId=${event.correlationId}, eventId=${event.eventId}.`,
           { eventId: event.eventId }
         )
       );
@@ -460,7 +440,7 @@ async function createWorkflowSession({
     globalThis: vmGlobalThis,
     onWorkflowError,
     eventsConsumer,
-    generateCorrelationId,
+    generateUlid,
     generateNanoid,
     invocationsQueue: new Map(),
     // Use getter/setter so the EventsConsumer's getPromiseQueue() always
@@ -539,12 +519,13 @@ async function createWorkflowSession({
   // @ts-expect-error - `@types/node` says symbol is not valid, but it does work
   vmGlobalThis[WORKFLOW_CONTEXT_SYMBOL] = ctx;
   // Serialization mints stream ids through this symbol, and calls it with no
-  // seed time of its own. Routing it through the run's generator keeps those
-  // ids on `fixedTimestamp` like every other id the run mints, and puts them
-  // in their own sequence so serializing a stream does not renumber the
-  // entities created after it.
+  // seed time. `monotonicFactory` returns `encodeTime(lastTime)` on its
+  // increment branch, so one such call latches the *host* wall clock into
+  // `lastTime`, and every id the run mints afterwards carries that timestamp
+  // instead of `fixedTimestamp`, a value that differs on every replay. Binding
+  // the seed time here keeps the whole run on one replay-stable clock.
   // @ts-expect-error - `@types/node` says symbol is not valid, but it does work
-  vmGlobalThis[STABLE_ULID] = () => generateCorrelationId('stream');
+  vmGlobalThis[STABLE_ULID] = generateUlid;
 
   // Workflow code must import the deterministic `fetch` step from `workflow`.
   vmGlobalThis.fetch = () => {
@@ -1095,8 +1076,7 @@ async function createWorkflowSession({
       vmGlobalThis,
       workflowRun,
       'failed',
-      runReadyBarrier,
-      currentEventLog
+      runReadyBarrier
     );
 
     throw error;
@@ -1110,12 +1090,34 @@ async function createWorkflowSession({
       result = await Promise.race([workflowBody, interruption.promise]);
     } catch (error) {
       if (state.type === 'suspended' && error === state.suspension) {
-        return { type: 'suspended', suspension: state.suspension, session };
+        return {
+          type: 'suspended',
+          suspension: state.suspension,
+          session,
+          // A suspension is not a settling point: the consumer for something
+          // held may well be registered by the replay that follows this one.
+          // So it is carried out for the span instead of being judged here.
+          parked: eventsConsumer.parkedSummary,
+        };
       }
       return failWorkflow(error);
     }
 
     state = { type: 'completed' };
+    // The consumer walks past events whose type carries no ordering claim and
+    // holds them for a consumer it expects a later `subscribe()` to register.
+    // The workflow function returning is the point where that expectation is
+    // settled: nothing more will subscribe, so anything still held was never
+    // anyone's, and completing here would drop it silently.
+    const stranded = eventsConsumer.strandedEvent;
+    if (stranded) {
+      return failWorkflow(
+        new ReplayDivergenceError(
+          `Replay finished without consuming event: eventType=${stranded.eventType}, correlationId=${stranded.correlationId}, eventId=${stranded.eventId}.`,
+          { eventId: stranded.eventId }
+        )
+      );
+    }
     try {
       const output = await dehydrateWorkflowReturnValue(
         result,
@@ -1134,8 +1136,7 @@ async function createWorkflowSession({
         vmGlobalThis,
         workflowRun,
         'completed',
-        runReadyBarrier,
-        currentEventLog
+        runReadyBarrier
       );
 
       return { type: 'completed', output, resultType: typeof result };
@@ -1147,12 +1148,7 @@ async function createWorkflowSession({
   const session: WorkflowSession = {
     workflowRun,
     argumentCount: args.length,
-    async resume(nextEvents, nextEventLog) {
-      // A retained session outlives the log its replay was numbered from, so
-      // every attempt's drain numbers from the caller's current one.
-      if (nextEventLog) {
-        currentEventLog = nextEventLog;
-      }
+    async resume(nextEvents) {
       switch (state.type) {
         case 'suspended': {
           // The full O(known events) prefix compare is required: the runtime

@@ -1,6 +1,6 @@
 import { decodeTime } from 'ulid';
 import { z } from 'zod';
-import { isSlotId } from './slot-identity.js';
+import { isSlotBody } from './slot-identity.js';
 
 const UlidSchema = z.string().ulid();
 
@@ -38,18 +38,17 @@ export const DEFAULT_TIMESTAMP_THRESHOLD_MS =
 /**
  * Extracts a Date from a ULID string, or null if the string is not a valid ULID.
  *
- * Slot ids are not ULIDs even though they pass the ULID *syntax* check: their
- * body is all decimal digits, which Crockford base32 accepts, and it would
- * decode to a timestamp of epoch 0 instead of failing. A slot encodes a
- * position, not a time, so it is reported here as having no time at all —
- * callers must read the object's own `createdAt`. Silently returning 1970
- * instead would, among other things, rewind a replaying workflow's clock and
- * make cursor pagination skip every event named by a slot.
+ * A slot-numbered event id is syntactically a valid ULID (26 zero-padded
+ * decimal digits are all Crockford characters) whose timestamp component is
+ * zero, so decoding one would silently yield the Unix epoch. Slots carry no
+ * time at all, so this returns null for them and callers fall back to a real
+ * `createdAt`. See `slot-identity.ts`.
  */
 export function ulidToDate(maybeUlid: string): Date | null {
-  if (isSlotId(maybeUlid)) {
+  if (isSlotBody(maybeUlid)) {
     return null;
   }
+
   const ulid = UlidSchema.safeParse(maybeUlid);
   if (!ulid.success) {
     return null;

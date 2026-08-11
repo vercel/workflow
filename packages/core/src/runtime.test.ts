@@ -6,11 +6,7 @@ import {
 } from '@workflow/errors';
 import {
   type Event,
-  FIRST_SLOT,
   SPEC_VERSION_CURRENT,
-  SPEC_VERSION_SLOT_IDENTITY,
-  slotEventId,
-  slotFromId,
   type WorkflowRun,
 } from '@workflow/world';
 import { ulid } from 'ulid';
@@ -28,7 +24,6 @@ import {
   dehydrateWorkflowArguments,
   hydrateRunError,
 } from './serialization.js';
-import { getWorkflowMetadata } from './step/get-workflow-metadata.js';
 
 // Capture every promise handed to `waitUntil` so tests can assert that
 // progress-critical sends are never registered on a detached, unconsumed
@@ -952,20 +947,21 @@ describe('workflowEntrypoint replay guards', () => {
       deploymentId: 'test-deployment',
     };
 
+    // `hook_created` records a hook a replay decided to create, so its
+    // position and identity are that replay's decision record: one the current
+    // replay does not create is divergence on the spot. A `hook_received` here
+    // would not be, since a delivery nobody claims is parked for a later
+    // consumer (see 'suspends rather than failing on a hook delivery that
+    // matches no hook' below).
     const events: Event[] = [
       {
         eventId: 'event-0',
         runId: workflowRun.runId,
-        eventType: 'hook_received',
+        eventType: 'hook_created',
         correlationId: 'hook_01HK153X00VFKAJV9XFN9JXXRS',
         eventData: {
           token: 'wrong-token',
-          payload: await dehydrateStepReturnValue(
-            { message: 'hello' },
-            'wrun_runtime_hook_guard',
-            undefined,
-            ops
-          ),
+          isWebhook: false,
         },
         createdAt: new Date('2024-01-01T00:00:00.000Z'),
       },
@@ -993,6 +989,72 @@ describe('workflowEntrypoint replay guards', () => {
         replayDivergence: { eventId: 'event-0', count: 1 },
       })
     );
+  });
+
+  it('suspends rather than failing on a hook delivery that matches no hook', async () => {
+    const ops: Promise<any>[] = [];
+    const workflowRun: WorkflowRun = {
+      runId: 'wrun_runtime_hook_parked',
+      workflowName: 'workflow',
+      status: 'running',
+      input: await dehydrateWorkflowArguments(
+        [],
+        'wrun_runtime_hook_parked',
+        undefined,
+        ops
+      ),
+      createdAt: new Date('2024-01-01T00:00:00.000Z'),
+      updatedAt: new Date('2024-01-01T00:00:00.000Z'),
+      startedAt: new Date('2024-01-01T00:00:00.000Z'),
+      deploymentId: 'test-deployment',
+    };
+
+    // A delivery for a hook this replay never registers a consumer for. A
+    // writer that raced this replay can leave one in the log legitimately, so
+    // it is held for a consumer a later replay may register instead of ending
+    // the run.
+    const events: Event[] = [
+      {
+        eventId: 'event-0',
+        runId: workflowRun.runId,
+        eventType: 'hook_received',
+        correlationId: 'hook_01HK153X00VFKAJV9XFN9JXXRS',
+        eventData: {
+          token: 'some-other-hook',
+          payload: await dehydrateStepReturnValue(
+            { message: 'hello' },
+            'wrun_runtime_hook_parked',
+            undefined,
+            ops
+          ),
+        },
+        createdAt: new Date('2024-01-01T00:00:00.000Z'),
+      },
+    ];
+
+    const createdEvents: unknown[] = [];
+    const queueCalls: QueueCall[] = [];
+    await runWorkflowHandlerWithEvents(
+      `const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
+      async function workflow() {
+        const hook = createHook({ token: 'expected-token' });
+        const payload = await hook;
+        return payload.message;
+      }${getWorkflowTransformCode('workflow')}`,
+      workflowRun,
+      events,
+      { createdEvents, queueCalls }
+    );
+
+    expect(createdEvents).not.toContainEqual(
+      expect.objectContaining({ eventType: 'run_failed' })
+    );
+    expect(createdEvents).toContainEqual(
+      expect.objectContaining({ eventType: 'hook_created' })
+    );
+    expect(
+      queueCalls.filter((call) => 'replayDivergence' in (call.message ?? {}))
+    ).toEqual([]);
   });
 
   it('replays attribute events before executing a step that loses the same race', async () => {
@@ -1766,17 +1828,6 @@ describe('workflowEntrypoint turbo mode', () => {
     return undefined;
   });
 
-  // Records the workflow start time the step body observes, which is the one
-  // the synthesized run row carries under turbo.
-  let turboObservedStartedAt: Date | undefined;
-  registerStepFunction('turboMetadataStep', async () => {
-    turboObservedStartedAt = getWorkflowMetadata().workflowStartedAt;
-    return undefined;
-  });
-
-  const oneMetadataStepWorkflow = `const s = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("turboMetadataStep");
-    async function workflow() { return await s(); }${xform('workflow')}`;
-
   const oneStepWorkflow = `const s = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("turboStep");
     async function workflow() { return await s(); }${xform('workflow')}`;
 
@@ -1789,15 +1840,12 @@ describe('workflowEntrypoint turbo mode', () => {
       return r;
     }${xform('workflow')}`;
 
-  async function makeRunInput(
-    runId: string,
-    specVersion = SPEC_VERSION_CURRENT
-  ) {
+  async function makeRunInput(runId: string) {
     return {
       input: await dehydrateWorkflowArguments([], runId, undefined, []),
       deploymentId: 'test-deployment',
       workflowName: 'workflow',
-      specVersion,
+      specVersion: SPEC_VERSION_CURRENT,
       executionContext: {},
     };
   }
@@ -1813,17 +1861,15 @@ describe('workflowEntrypoint turbo mode', () => {
     attempt: number;
     source: string;
     runStartedGate?: Promise<void>;
-    specVersion?: typeof SPEC_VERSION_CURRENT;
   }) {
     const { runId, attempt, source } = opts;
-    const specVersion = opts.specVersion ?? SPEC_VERSION_CURRENT;
     const order = turboOrder;
     const durable: Event[] = [];
     let seq = 0;
-    const rec = (data: any, claimedEventId?: string): Event => {
+    const rec = (data: any): Event => {
       seq += 1;
       const e = {
-        eventId: claimedEventId ?? `e-${seq}`,
+        eventId: `e-${seq}`,
         runId,
         createdAt: new Date(),
         ...data,
@@ -1835,7 +1881,6 @@ describe('workflowEntrypoint turbo mode', () => {
       runId,
       workflowName: 'workflow',
       status: 'running',
-      specVersion,
       input: await dehydrateWorkflowArguments([], runId, undefined, []),
       createdAt: new Date('2024-01-01T00:00:00.000Z'),
       updatedAt: new Date('2024-01-01T00:00:00.000Z'),
@@ -1843,58 +1888,45 @@ describe('workflowEntrypoint turbo mode', () => {
       deploymentId: 'test-deployment',
     };
 
-    const eventsCreate = vi.fn(
-      async (_runId: string, data: any, params?: { eventId?: string }) => {
-        // A claim names the event being created, and a lazy start's companion
-        // `step_created` takes the position below it — the extra slot the
-        // runtime reserved for exactly that.
-        const claimedSlot = params?.eventId
-          ? slotFromId(params.eventId)
-          : undefined;
-        if (data.eventType === 'run_started') {
-          if (opts.runStartedGate) await opts.runStartedGate;
-          order.push('run_started_resolved');
-          return { run: runEntity, events: [] as Event[] };
-        }
-        if (data.eventType === 'step_started') {
-          order.push('step_started_called');
-          const d = data.eventData as { stepName?: string; input?: unknown };
-          if (d?.input !== undefined) {
-            rec(
-              {
-                eventType: 'step_created',
-                specVersion: SPEC_VERSION_CURRENT,
-                correlationId: data.correlationId,
-                eventData: { stepName: d.stepName, input: d.input },
-              },
-              claimedSlot === undefined
-                ? undefined
-                : slotEventId(claimedSlot - 1)
-            );
-          }
-          return {
-            event: rec(data, params?.eventId),
-            step: {
-              runId,
-              stepId: data.correlationId,
-              stepName: d?.stepName,
-              status: 'running' as const,
-              attempt: 1,
-              input: d?.input,
-              startedAt: new Date(),
-              createdAt: new Date(),
-              updatedAt: new Date(),
-            },
-            ...(d?.input !== undefined ? { stepCreated: true } : {}),
-          };
-        }
-        if (data.eventType === 'wait_created') order.push('wait_created');
-        return { event: rec(data, params?.eventId) };
+    const eventsCreate = vi.fn(async (_runId: string, data: any) => {
+      if (data.eventType === 'run_started') {
+        if (opts.runStartedGate) await opts.runStartedGate;
+        order.push('run_started_resolved');
+        return { run: runEntity, events: [] as Event[] };
       }
-    );
+      if (data.eventType === 'step_started') {
+        order.push('step_started_called');
+        const d = data.eventData as { stepName?: string; input?: unknown };
+        if (d?.input !== undefined) {
+          rec({
+            eventType: 'step_created',
+            specVersion: SPEC_VERSION_CURRENT,
+            correlationId: data.correlationId,
+            eventData: { stepName: d.stepName, input: d.input },
+          });
+        }
+        return {
+          event: rec(data),
+          step: {
+            runId,
+            stepId: data.correlationId,
+            stepName: d?.stepName,
+            status: 'running' as const,
+            attempt: 1,
+            input: d?.input,
+            startedAt: new Date(),
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          },
+          ...(d?.input !== undefined ? { stepCreated: true } : {}),
+        };
+      }
+      if (data.eventType === 'wait_created') order.push('wait_created');
+      return { event: rec(data) };
+    });
 
     setWorld({
-      specVersion,
+      specVersion: SPEC_VERSION_CURRENT,
       getDeploymentId: vi.fn(async () => 'test-deployment'),
       createQueueHandler: vi.fn(
         (_p: string, handler: (m: unknown, md: unknown) => Promise<unknown>) =>
@@ -1903,7 +1935,7 @@ describe('workflowEntrypoint turbo mode', () => {
               {
                 runId,
                 requestedAt: new Date('2024-01-01T00:00:00.000Z'),
-                runInput: await makeRunInput(runId, specVersion),
+                runInput: await makeRunInput(runId),
               },
               {
                 requestId: 'req_turbo',
@@ -1989,33 +2021,6 @@ describe('workflowEntrypoint turbo mode', () => {
     );
   });
 
-  it('claims slots above the run own positions on a first delivery', async () => {
-    // Turbo replays against an empty snapshot, so the log the claims are
-    // numbered from cannot show `run_created` or the in-flight `run_started`.
-    // Both positions are nonetheless taken, and the mocked `run_started`
-    // response reports no event — the same shape as a World that skips the
-    // preload — so nothing but the floor seeded at turbo entry keeps the first
-    // batch of claims off them.
-    const { handlerPromise, eventsCreate } = await driveTurbo({
-      runId: 'wrun_turbo_slots',
-      attempt: 1,
-      source: stepAndSleepWorkflow,
-      specVersion: SPEC_VERSION_SLOT_IDENTITY,
-    });
-
-    const res = await handlerPromise;
-    expect(res.status).toBe(204);
-
-    const claimed = eventsCreate.mock.calls
-      .map((c) => (c[2] as { eventId?: unknown } | undefined)?.eventId)
-      .filter((id): id is string => typeof id === 'string');
-    // The sleep's `wait_created` is claimed, so there is something to assert on.
-    expect(claimed.length).toBeGreaterThan(0);
-    for (const eventId of claimed) {
-      expect(slotFromId(eventId)).toBeGreaterThan(FIRST_SLOT + 1);
-    }
-  });
-
   it('does not turbo when WORKFLOW_TURBO=0 (parity with the awaited path)', async () => {
     process.env.WORKFLOW_TURBO = '0';
     const { handlerPromise, order } = await driveTurbo({
@@ -2060,30 +2065,6 @@ describe('workflowEntrypoint turbo mode', () => {
       (c) => (c[1] as any).eventType === 'run_started'
     );
     expect((redeliverRunStarted?.[2] as any)?.skipPreload).toBeUndefined();
-  });
-
-  it('sends run_started the same instant it synthesizes the run from', async () => {
-    // Turbo starts the run against a locally synthesized run row, so the start
-    // time this invocation reports comes from the client clock. Backends that
-    // persist `occurredAt` record the run's `startedAt` from it, so sending it
-    // is what makes a later replay — which reads the persisted run — report the
-    // same `workflowStartedAt` this pass already captured into its steps.
-    turboObservedStartedAt = undefined;
-    const { handlerPromise, eventsCreate } = await driveTurbo({
-      runId: 'wrun_turbo_occurred_at',
-      attempt: 1,
-      source: oneMetadataStepWorkflow,
-      specVersion: SPEC_VERSION_SLOT_IDENTITY,
-    });
-    expect((await handlerPromise).status).toBe(204);
-
-    const runStarted = eventsCreate.mock.calls.find(
-      (c) => (c[1] as any).eventType === 'run_started'
-    );
-    const occurredAt = (runStarted?.[2] as { occurredAt?: Date } | undefined)
-      ?.occurredAt;
-    expect(occurredAt).toBeInstanceOf(Date);
-    expect(turboObservedStartedAt).toEqual(occurredAt);
   });
 
   it('never asks for an inline delta on a run-terminal write, or anywhere under turbo', async () => {

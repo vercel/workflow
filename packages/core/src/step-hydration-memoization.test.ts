@@ -1,7 +1,7 @@
 import type { Event } from '@workflow/world';
 import * as nanoid from 'nanoid';
+import { monotonicFactory } from 'ulid';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createCorrelationIdGenerator } from './correlation-id.js';
 import { EventsConsumer } from './events-consumer.js';
 import type { WorkflowOrchestratorContext } from './private.js';
 import { ReplayPayloadCache } from './replay-payload-cache.js';
@@ -31,20 +31,20 @@ function setupWorkflowContext(
     seed: 'test',
     fixedTimestamp: 1753481739458,
   });
+  const ulid = monotonicFactory(() => context.globalThis.Math.random());
   const workflowStartedAt = context.globalThis.Date.now();
   return {
     runId: 'wrun_test',
     encryptionKey: undefined,
     globalThis: context.globalThis,
     eventsConsumer: new EventsConsumer(events, {
+      // Fake context: no deliveries are modeled, so the gate is a no-op here.
+      isDeliveryIdle: () => true,
       onUnconsumedEvent: () => {},
       getPromiseQueue: () => Promise.resolve(),
     }),
     invocationsQueue: new Map(),
-    generateCorrelationId: createCorrelationIdGenerator({
-      seed: 'test',
-      fixedTimestamp: workflowStartedAt,
-    }),
+    generateUlid: () => ulid(workflowStartedAt),
     generateNanoid: nanoid.customRandom(nanoid.urlAlphabet, 21, (size) =>
       new Uint8Array(size).map(() => 256 * context.globalThis.Math.random())
     ),
@@ -62,7 +62,7 @@ async function makeStepEvents(): Promise<Event[]> {
       eventId: 'evnt_0',
       runId: 'wrun_test',
       eventType: 'step_completed',
-      correlationId: 'step_01K11TFZ62CHHYKN8SS4KKNC9V',
+      correlationId: 'step_01K11TFZ62YS0YYFDQ3E8B9YCV',
       eventData: {
         stepName: 'step1',
         result: await dehydrateStepReturnValue('one', 'wrun_test', undefined),
@@ -73,7 +73,7 @@ async function makeStepEvents(): Promise<Event[]> {
       eventId: 'evnt_1',
       runId: 'wrun_test',
       eventType: 'step_completed',
-      correlationId: 'step_01K11TFZ62CHHYKN8SS4KKNC9W',
+      correlationId: 'step_01K11TFZ62YS0YYFDQ3E8B9YCW',
       eventData: {
         stepName: 'step2',
         result: await dehydrateStepReturnValue('two', 'wrun_test', undefined),
@@ -156,7 +156,7 @@ describe('step hydration memoization through the step consumer', () => {
         eventId: 'evnt_0',
         runId: 'wrun_test',
         eventType: 'step_completed',
-        correlationId: 'step_01K11TFZ62CHHYKN8SS4KKNC9V',
+        correlationId: 'step_01K11TFZ62YS0YYFDQ3E8B9YCV',
         eventData: {
           stepName: 'obj',
           result: await dehydrateStepReturnValue(

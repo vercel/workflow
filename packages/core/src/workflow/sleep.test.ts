@@ -2,8 +2,8 @@ import { ReplayDivergenceError } from '@workflow/errors';
 import { withResolvers } from '@workflow/utils';
 import type { Event } from '@workflow/world';
 import * as nanoid from 'nanoid';
+import { monotonicFactory } from 'ulid';
 import { describe, expect, it, vi } from 'vitest';
-import { createCorrelationIdGenerator } from '../correlation-id.js';
 import { EventsConsumer } from '../events-consumer.js';
 import { WorkflowSuspension } from '../global.js';
 import type { WorkflowOrchestratorContext } from '../private.js';
@@ -17,6 +17,7 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
     seed: 'test',
     fixedTimestamp: 1753481739458,
   });
+  const ulid = monotonicFactory(() => context.globalThis.Math.random());
   const workflowStartedAt = context.globalThis.Date.now();
   const ctx: WorkflowOrchestratorContext = {
     suspensionGeneration: 0,
@@ -26,6 +27,8 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
     globalThis: context.globalThis,
     // ctx.onWorkflowError is accessed via closure — it's defined below on the same object
     eventsConsumer: new EventsConsumer(events, {
+      // Fake context: no deliveries are modeled, so the gate is a no-op here.
+      isDeliveryIdle: () => true,
       onUnconsumedEvent: (event) => {
         ctx.onWorkflowError(
           new ReplayDivergenceError(
@@ -37,10 +40,7 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
       getPromiseQueue: () => Promise.resolve(),
     }),
     invocationsQueue: new Map(),
-    generateCorrelationId: createCorrelationIdGenerator({
-      seed: 'test',
-      fixedTimestamp: workflowStartedAt,
-    }),
+    generateUlid: () => ulid(workflowStartedAt),
     generateNanoid: nanoid.customRandom(nanoid.urlAlphabet, 21, (size) =>
       new Uint8Array(size).map(() => 256 * context.globalThis.Math.random())
     ),
@@ -59,7 +59,7 @@ describe('createSleep', () => {
         eventId: 'evnt_0',
         runId: 'wrun_123',
         eventType: 'wait_created',
-        correlationId: 'wait_01K11TFZ62FEAJPFZ0JMCV2A5V',
+        correlationId: 'wait_01K11TFZ62YS0YYFDQ3E8B9YCV',
         eventData: {
           resumeAt: new Date('2024-01-01T00:00:01.000Z'),
         },
@@ -69,7 +69,7 @@ describe('createSleep', () => {
         eventId: 'evnt_1',
         runId: 'wrun_123',
         eventType: 'wait_completed',
-        correlationId: 'wait_01K11TFZ62FEAJPFZ0JMCV2A5V',
+        correlationId: 'wait_01K11TFZ62YS0YYFDQ3E8B9YCV',
         eventData: {
           resumeAt: new Date('2024-01-01T00:00:01.000Z'),
         },
@@ -90,7 +90,7 @@ describe('createSleep', () => {
         eventId: 'evnt_0',
         runId: 'wrun_123',
         eventType: 'wait_created',
-        correlationId: 'wait_01K11TFZ62FEAJPFZ0JMCV2A5V',
+        correlationId: 'wait_01K11TFZ62YS0YYFDQ3E8B9YCV',
         eventData: {
           resumeAt: new Date('2024-01-01T00:00:01.000Z'),
         },
@@ -100,7 +100,7 @@ describe('createSleep', () => {
         eventId: 'evnt_1',
         runId: 'wrun_123',
         eventType: 'wait_completed',
-        correlationId: 'wait_01K11TFZ62FEAJPFZ0JMCV2A5V',
+        correlationId: 'wait_01K11TFZ62YS0YYFDQ3E8B9YCV',
         createdAt: new Date(),
       },
     ]);
@@ -118,7 +118,7 @@ describe('createSleep', () => {
         eventId: 'evnt_0',
         runId: 'wrun_123',
         eventType: 'wait_created',
-        correlationId: 'wait_01K11TFZ62FEAJPFZ0JMCV2A5V',
+        correlationId: 'wait_01K11TFZ62YS0YYFDQ3E8B9YCV',
         eventData: {
           resumeAt: new Date('2024-01-01T00:00:01.000Z'),
         },
@@ -128,7 +128,7 @@ describe('createSleep', () => {
         eventId: 'evnt_1',
         runId: 'wrun_123',
         eventType: 'wait_completed',
-        correlationId: 'wait_01K11TFZ62FEAJPFZ0JMCV2A5V',
+        correlationId: 'wait_01K11TFZ62YS0YYFDQ3E8B9YCV',
         eventData: {
           resumeAt: new Date('2024-01-01T00:00:02.000Z'),
         },
@@ -146,7 +146,7 @@ describe('createSleep', () => {
     expect(workflowError).toBeInstanceOf(ReplayDivergenceError);
     expect(workflowError?.message).toContain('wait_completed');
     expect(workflowError?.message).toContain('resumeAt');
-    expect(workflowError?.message).toContain('wait_01K11TFZ62FEAJPFZ0JMCV2A5V');
+    expect(workflowError?.message).toContain('wait_01K11TFZ62YS0YYFDQ3E8B9YCV');
   });
 
   it('should invoke workflow error handler when wait_completed resumeAt is invalid', async () => {
@@ -155,7 +155,7 @@ describe('createSleep', () => {
         eventId: 'evnt_0',
         runId: 'wrun_123',
         eventType: 'wait_created',
-        correlationId: 'wait_01K11TFZ62FEAJPFZ0JMCV2A5V',
+        correlationId: 'wait_01K11TFZ62YS0YYFDQ3E8B9YCV',
         eventData: {
           resumeAt: new Date('2024-01-01T00:00:01.000Z'),
         },
@@ -165,7 +165,7 @@ describe('createSleep', () => {
         eventId: 'evnt_1',
         runId: 'wrun_123',
         eventType: 'wait_completed',
-        correlationId: 'wait_01K11TFZ62FEAJPFZ0JMCV2A5V',
+        correlationId: 'wait_01K11TFZ62YS0YYFDQ3E8B9YCV',
         eventData: {
           resumeAt: new Date(Number.NaN),
         },
@@ -208,7 +208,7 @@ describe('createSleep', () => {
         eventId: 'evnt_0',
         runId: 'wrun_123',
         eventType: 'step_completed', // Wrong event type for a wait!
-        correlationId: 'wait_01K11TFZ62FEAJPFZ0JMCV2A5V',
+        correlationId: 'wait_01K11TFZ62YS0YYFDQ3E8B9YCV',
         eventData: {
           stepName: 'unexpectedStep',
           result: ['test'],
@@ -228,7 +228,7 @@ describe('createSleep', () => {
     const workflowError = await errorReceived.promise;
     expect(workflowError).toBeInstanceOf(ReplayDivergenceError);
     expect(workflowError?.message).toContain('Unexpected event type for wait');
-    expect(workflowError?.message).toContain('wait_01K11TFZ62FEAJPFZ0JMCV2A5V');
+    expect(workflowError?.message).toContain('wait_01K11TFZ62YS0YYFDQ3E8B9YCV');
     expect(workflowError?.message).toContain('step_completed');
   });
 
@@ -238,7 +238,7 @@ describe('createSleep', () => {
         eventId: 'evnt_0',
         runId: 'wrun_123',
         eventType: 'wait_created',
-        correlationId: 'wait_01K11TFZ62FEAJPFZ0JMCV2A5V',
+        correlationId: 'wait_01K11TFZ62YS0YYFDQ3E8B9YCV',
         eventData: {
           resumeAt: new Date('2024-01-01T00:00:05.000Z'),
         },
@@ -258,7 +258,7 @@ describe('createSleep', () => {
 
     // Check that the wait item has been updated with hasCreatedEvent
     const waitItem = ctx.invocationsQueue.get(
-      'wait_01K11TFZ62FEAJPFZ0JMCV2A5V'
+      'wait_01K11TFZ62YS0YYFDQ3E8B9YCV'
     );
     expect(waitItem).toBeDefined();
     expect(waitItem?.type).toBe('wait');
@@ -277,7 +277,7 @@ describe('createSleep', () => {
         eventId: 'evnt_0',
         runId: 'wrun_123',
         eventType: 'hook_received', // Wrong event type for a wait!
-        correlationId: 'wait_01K11TFZ62FEAJPFZ0JMCV2A5V',
+        correlationId: 'wait_01K11TFZ62YS0YYFDQ3E8B9YCV',
         eventData: {
           token: 'test-token',
           payload: { data: 'test' },
@@ -304,7 +304,7 @@ describe('createSleep', () => {
         eventId: 'evnt_0',
         runId: 'wrun_123',
         eventType: 'wait_created',
-        correlationId: 'wait_01K11TFZ62FEAJPFZ0JMCV2A5V',
+        correlationId: 'wait_01K11TFZ62YS0YYFDQ3E8B9YCV',
         eventData: {
           resumeAt: new Date('2024-01-01T00:00:05.000Z'),
         },
@@ -323,7 +323,7 @@ describe('createSleep', () => {
     // Queue item should still exist (wait_created is not terminal)
     expect(ctx.invocationsQueue.size).toBe(1);
     const waitItem = ctx.invocationsQueue.get(
-      'wait_01K11TFZ62FEAJPFZ0JMCV2A5V'
+      'wait_01K11TFZ62YS0YYFDQ3E8B9YCV'
     );
     expect(waitItem).toBeDefined();
     expect(waitItem?.type).toBe('wait');
@@ -338,7 +338,7 @@ describe('createSleep', () => {
         eventId: 'evnt_0',
         runId: 'wrun_123',
         eventType: 'wait_created',
-        correlationId: 'wait_01K11TFZ62FEAJPFZ0JMCV2A5V',
+        correlationId: 'wait_01K11TFZ62YS0YYFDQ3E8B9YCV',
         eventData: {
           resumeAt: new Date('2024-01-01T00:00:01.000Z'),
         },
@@ -348,7 +348,7 @@ describe('createSleep', () => {
         eventId: 'evnt_1',
         runId: 'wrun_123',
         eventType: 'wait_completed',
-        correlationId: 'wait_01K11TFZ62FEAJPFZ0JMCV2A5V',
+        correlationId: 'wait_01K11TFZ62YS0YYFDQ3E8B9YCV',
         eventData: {
           resumeAt: new Date('2024-01-01T00:00:01.000Z'),
         },
@@ -378,7 +378,7 @@ describe('createSleep', () => {
         eventId: 'evnt_0',
         runId: 'wrun_123',
         eventType: 'wait_created',
-        correlationId: 'wait_01K11TFZ62FEAJPFZ0JMCV2A5V',
+        correlationId: 'wait_01K11TFZ62YS0YYFDQ3E8B9YCV',
         eventData: {
           resumeAt: new Date('2024-01-01T00:00:01.000Z'),
         },
@@ -388,7 +388,7 @@ describe('createSleep', () => {
         eventId: 'evnt_1',
         runId: 'wrun_123',
         eventType: 'wait_completed',
-        correlationId: 'wait_01K11TFZ62FEAJPFZ0JMCV2A5V',
+        correlationId: 'wait_01K11TFZ62YS0YYFDQ3E8B9YCV',
         eventData: {
           resumeAt: new Date('2024-01-01T00:00:01.000Z'),
         },
@@ -398,7 +398,7 @@ describe('createSleep', () => {
         eventId: 'evnt_2',
         runId: 'wrun_123',
         eventType: 'wait_completed', // Duplicate!
-        correlationId: 'wait_01K11TFZ62FEAJPFZ0JMCV2A5V',
+        correlationId: 'wait_01K11TFZ62YS0YYFDQ3E8B9YCV',
         eventData: {
           resumeAt: new Date('2024-01-01T00:00:01.000Z'),
         },
@@ -425,7 +425,7 @@ describe('createSleep', () => {
         eventId: 'evnt_0',
         runId: 'wrun_123',
         eventType: 'wait_created',
-        correlationId: 'wait_01K11TFZ62FEAJPFZ0JMCV2A5V',
+        correlationId: 'wait_01K11TFZ62YS0YYFDQ3E8B9YCV',
         eventData: {
           resumeAt,
         },
@@ -435,7 +435,7 @@ describe('createSleep', () => {
         eventId: 'evnt_1',
         runId: 'wrun_123',
         eventType: 'wait_completed',
-        correlationId: 'wait_01K11TFZ62FEAJPFZ0JMCV2A5V',
+        correlationId: 'wait_01K11TFZ62YS0YYFDQ3E8B9YCV',
         eventData: {
           resumeAt,
         },

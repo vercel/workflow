@@ -137,31 +137,6 @@ interface ReproRunResult {
     resumesFailed: number;
     stragglers?: number;
   };
-  /**
-   * The committed log around the divergent event, for corruptions only. A
-   * divergence is a disagreement between the order the log records and the
-   * order a replay reconstructs, so the log's own ordering is the only
-   * evidence that distinguishes the candidate causes — and the run is on an
-   * ephemeral preview deployment, so it has to be captured while the job is
-   * still running rather than read back afterwards.
-   */
-  logSlice?: LogSliceEntry[];
-}
-
-/**
- * One committed event, projected to the fields that decide replay order:
- * its position (`slot`), what it resolves (`eventType`/`correlationId`), and
- * both clock domains. `occurredAt` is the client/VM moment and `createdAt`
- * the persisted event time the sandbox clock is driven from; a race between a
- * `sleep` and a step is decided by that clock, so the two have to be
- * comparable side by side.
- */
-interface LogSliceEntry {
-  slot: number | string;
-  eventType: string;
-  correlationId?: string;
-  occurredAt?: string;
-  createdAt?: string;
 }
 
 function envNumber(name: string, fallback: number) {
@@ -417,98 +392,6 @@ function validateStormReturn(value: unknown): {
   return { stragglers };
 }
 
-/**
- * Reads a terminal-failed run's error through `returnValue()`, which hydrates
- * the stored payload into an Error. Returns undefined when the read itself
- * fails — the outcome is already known from `errorCode`, so a missing message
- * degrades the report rather than the classification.
- */
-async function readFailureMessage(
-  run: Run<unknown>
-): Promise<{ name?: string; message?: string } | undefined> {
-  try {
-    await run.returnValue();
-    return undefined;
-  } catch (err) {
-    if (WorkflowRunFailedError.is(err)) {
-      const cause = err.cause;
-      return {
-        name: cause instanceof Error ? cause.name : err.name,
-        message: cause instanceof Error ? cause.message : err.message,
-      };
-    }
-    return undefined;
-  }
-}
-
-/**
- * How many events either side of the divergent one to keep. The window has to
- * span a whole round of the storm — width branches, each with a step create,
- * start and completion, plus the round's waits — or it can miss the very
- * event whose position explains the divergence.
- */
-const LOG_SLICE_RADIUS = envNumber('EVENT_LOG_RACE_REPRO_LOG_SLICE_RADIUS', 45);
-
-/**
- * Cap on how many corruptions carry a slice. The results JSON is rendered into
- * a PR comment, and a body over GitHub's limit is rejected outright, so the
- * slices are a sample rather than a complete record.
- */
-const LOG_SLICE_MAX_RUNS = envNumber('EVENT_LOG_RACE_REPRO_LOG_SLICE_RUNS', 6);
-
-let logSlicesCaptured = 0;
-
-/** Worlds hand timestamps back as a Date or as the stored ISO string. */
-function isoOrUndefined(value: unknown): string | undefined {
-  if (value instanceof Date) return value.toISOString();
-  return typeof value === 'string' ? value : undefined;
-}
-
-/** Ordinal of a slot-numbered id, or the raw id when it is a ULID. */
-function idOrdinal(id: string): number | string {
-  const body = id.slice(id.indexOf('_') + 1);
-  return /^\d+$/.test(body) ? Number(body) : id;
-}
-
-/**
- * Reads the committed log and returns the window around the divergent event
- * named in `message`. Best-effort: the report is a measurement, so a failed
- * read costs a slice rather than the attempt's classification.
- */
-async function readLogSlice(
-  runId: string,
-  message: string | undefined
-): Promise<LogSliceEntry[] | undefined> {
-  if (logSlicesCaptured >= LOG_SLICE_MAX_RUNS) return undefined;
-  try {
-    const world = await getWorld();
-    const { data: events } = await world.events.list({ runId });
-    const projected: LogSliceEntry[] = events.map((event) => ({
-      slot: idOrdinal(event.eventId),
-      eventType: event.eventType,
-      correlationId: event.correlationId,
-      occurredAt: isoOrUndefined(event.occurredAt),
-      createdAt: isoOrUndefined(event.createdAt),
-    }));
-
-    // The corruption message names the last divergent event; centre on it when
-    // it is there, and otherwise keep the tail, where a divergence that ran out
-    // of recovery replays ends up.
-    const divergent = message?.match(/evnt_[0-9A-Z]+/)?.[0];
-    const at = divergent
-      ? projected.findIndex((entry) => entry.slot === idOrdinal(divergent))
-      : -1;
-    const centre = at >= 0 ? at : projected.length - 1;
-    logSlicesCaptured += 1;
-    return projected.slice(
-      Math.max(0, centre - LOG_SLICE_RADIUS),
-      centre + LOG_SLICE_RADIUS + 1
-    );
-  } catch {
-    return undefined;
-  }
-}
-
 async function pollTerminalRun(
   run: Run<unknown>,
   startedAt: number,
@@ -548,27 +431,14 @@ async function pollTerminalRun(
         errorCode?: string;
         error?: { name?: string; message?: string };
       };
-      // `runs.get` hands back the raw serialized error payload, not an Error, so
-      // reading `.message` off it yields undefined and the report records the
-      // code with no diagnosis. Read the failure through the public
-      // return-value path, which hydrates it. For a corruption that message
-      // carries the divergent event and what the replay was waiting for, which
-      // is the whole reason to keep the report.
-      const hydrated = await readFailureMessage(run);
-      const outcome = classifyFailure(failure.errorCode);
-      const errorMessage = hydrated?.message ?? failure.error?.message;
       return {
         ...base,
-        outcome,
+        outcome: classifyFailure(failure.errorCode),
         status: runData.status,
         errorCode: failure.errorCode,
-        errorMessage,
-        errorName: hydrated?.name ?? failure.error?.name,
+        errorMessage: failure.error?.message,
+        errorName: failure.error?.name,
         durationMs: Date.now() - startedAt,
-        logSlice:
-          outcome === 'CORRUPTED_EVENT_LOG'
-            ? await readLogSlice(run.runId, errorMessage)
-            : undefined,
       };
     }
 

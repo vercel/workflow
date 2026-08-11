@@ -1,700 +1,469 @@
-import { promises as fs } from 'node:fs';
+import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { EntityConflictError, SlotConflictError } from '@workflow/errors';
-import type { Storage } from '@workflow/world';
 import {
-  FIRST_SLOT,
-  maxSlotOf,
+  EVENT_ID_BODY_LENGTH,
+  EVENT_ID_PREFIX,
+  eventIdToSlot,
+  FIRST_EVENT_SLOT,
   SPEC_VERSION_CURRENT,
-  SPEC_VERSION_SLOT_IDENTITY,
-  slotEventId,
-  slotFromId,
 } from '@workflow/world';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createStorage } from './index.js';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { SORT_KEY_CURSOR_PREFIX } from '../fs.js';
+import { createStorage } from '../storage.js';
+import { monotonicUlid } from './helpers.js';
 
 let testDir: string;
-let storage: Storage;
+let storage: ReturnType<typeof createStorage>;
 
 beforeEach(async () => {
-  testDir = await fs.mkdtemp(path.join(os.tmpdir(), 'slot-identity-'));
+  testDir = await fs.mkdtemp(path.join(os.tmpdir(), 'wl-slot-'));
   storage = createStorage(testDir);
 });
 
 afterEach(async () => {
-  vi.restoreAllMocks();
   await fs.rm(testDir, { recursive: true, force: true });
 });
 
-/** Start a run whose events are numbered by slot, and return its id. */
-async function newSlotRun(): Promise<string> {
-  const result = await storage.events.create(null, {
+const serialized = (value: unknown) =>
+  ({ data: JSON.stringify(value), encoding: 'json' }) as any;
+
+function slotId(slot: number): string {
+  return `${EVENT_ID_PREFIX}${String(slot).padStart(EVENT_ID_BODY_LENGTH, '0')}`;
+}
+
+async function startRun(): Promise<string> {
+  const created = await storage.events.create('', {
     eventType: 'run_created',
-    specVersion: SPEC_VERSION_SLOT_IDENTITY,
+    specVersion: SPEC_VERSION_CURRENT,
     eventData: {
-      deploymentId: 'dpl_test',
-      workflowName: 'test-workflow',
-      input: new Uint8Array(),
+      deploymentId: 'dpl_slot',
+      workflowName: 'slotWorkflow',
+      input: serialized([]),
     },
-  });
-  if (!result.run) {
-    throw new Error('Expected run to be created');
-  }
-  return result.run.runId;
+  } as any);
+  const { runId } = created.event;
+  await storage.events.create(runId, {
+    eventType: 'run_started',
+    specVersion: SPEC_VERSION_CURRENT,
+  } as any);
+  return runId;
 }
 
-/**
- * The slots of the run's log, in list order. The page size is explicit: the
- * default would silently truncate a fan-out and make a dense log look sparse.
- */
-async function slotsOf(runId: string): Promise<number[]> {
-  const { data } = await eventsOf(runId);
-  return data.map((event) => slotFromId(event.eventId) ?? -1);
-}
-
-function eventsOf(runId: string) {
-  return storage.events.list({ runId, pagination: { limit: 500 } });
-}
-
-async function createStep(
-  runId: string,
-  stepId: string,
-  eventId?: string
-): Promise<string> {
-  const result = await storage.events.create(
+async function listEventIds(runId: string): Promise<string[]> {
+  const result = await storage.events.list({
     runId,
-    {
-      eventType: 'step_created',
-      specVersion: SPEC_VERSION_SLOT_IDENTITY,
-      correlationId: stepId,
-      eventData: { stepName: 'a-step', input: new Uint8Array() },
-    },
-    eventId === undefined ? undefined : { eventId }
-  );
-  if (!result.event) {
-    throw new Error('Expected an event');
-  }
-  return result.event.eventId;
+    pagination: { limit: 1000 },
+  });
+  return result.data.map((event) => event.eventId);
 }
 
-async function createWait(
-  runId: string,
-  waitId: string,
-  eventId?: string
-): Promise<string> {
-  const result = await storage.events.create(
-    runId,
-    {
-      eventType: 'wait_created',
-      specVersion: SPEC_VERSION_SLOT_IDENTITY,
-      correlationId: waitId,
-      eventData: { resumeAt: new Date('2030-01-01T00:00:00.000Z') },
-    },
-    eventId === undefined ? undefined : { eventId }
-  );
-  if (!result.event) {
-    throw new Error('Expected an event');
-  }
-  return result.event.eventId;
+function slotsOf(eventIds: string[]): (number | null)[] {
+  return eventIds.map((eventId) => eventIdToSlot(eventId));
 }
 
-describe('numbering', () => {
-  it('puts run_created in the first slot', async () => {
-    const runId = await newSlotRun();
-    await expect(slotsOf(runId)).resolves.toEqual([FIRST_SLOT]);
-  });
+describe('slot event ids', () => {
+  it('numbers a new run densely from the first slot, in log order', async () => {
+    const runId = await startRun();
+    for (let i = 0; i < 5; i++) {
+      await storage.events.create(runId, {
+        eventType: 'step_created',
+        correlationId: `step_${i}`,
+        specVersion: SPEC_VERSION_CURRENT,
+        eventData: { stepName: `step${i}`, input: serialized([]) },
+      } as any);
+    }
 
-  it('allocates dense slots for writers that hold no log', async () => {
-    // A step completion reporting in, a cancellation from an API call: the
-    // caller has no event log, so the world numbers the event for it.
-    const runId = await newSlotRun();
-    await createStep(runId, 'step_a');
-    await createStep(runId, 'step_b');
-    await expect(slotsOf(runId)).resolves.toEqual([1, 2, 3]);
-  });
-
-  it('honours a slot the caller claims', async () => {
-    const runId = await newSlotRun();
-    const eventId = await createStep(runId, 'step_a', slotEventId(2));
-    expect(eventId).toBe(slotEventId(2));
-    await expect(slotsOf(runId)).resolves.toEqual([1, 2]);
-  });
-
-  it('rejects a claim on a free position below the log’s tail', async () => {
-    // The undercut that a "is the position free?" check cannot catch. A
-    // position claimed by a write that then failed is never filled, so a log
-    // carries holes below its tail — and a caller numbering from a snapshot
-    // that predates the events above one of those holes aims straight at it.
-    // Let it land and the event sits below events another replay has already
-    // consumed: the log stays internally consistent while its order silently
-    // changes, which is enough to flip a race between a step and a sleep from
-    // one replay to the next. A claim asserts a complete log, so a claim that
-    // does not clear the tail is a conflict, exactly as a taken one is.
-    const runId = await newSlotRun();
-    await createStep(runId, 'step_late', slotEventId(3));
-    await expect(
-      createStep(runId, 'step_early', slotEventId(2))
-    ).rejects.toThrow(SlotConflictError);
-    // The hole stays a hole, and the log stays in slot order.
-    await expect(slotsOf(runId)).resolves.toEqual([1, 3]);
-  });
-
-  it('accepts the claim immediately above a tail with a hole below it', async () => {
-    // The fence rejects at-or-below, so the first position above the tail has
-    // to stay writable — otherwise every write following a hole would conflict
-    // forever and the run could never make progress again.
-    const runId = await newSlotRun();
-    await createStep(runId, 'step_late', slotEventId(3));
-    expect(await createStep(runId, 'step_next', slotEventId(4))).toBe(
-      slotEventId(4)
-    );
-    await expect(slotsOf(runId)).resolves.toEqual([1, 3, 4]);
-  });
-
-  it('keeps a burst of concurrent writers dense', async () => {
-    // The suspension flush issues every op at once. Density is what lets a
-    // reader prove its log is complete, so a burst must not leave holes.
-    const runId = await newSlotRun();
-    const ids = await Promise.all(
-      Array.from({ length: 20 }, (_, index) =>
-        createStep(runId, `step_${index}`)
-      )
-    );
-    expect(new Set(ids).size).toBe(ids.length);
-    const slots = await slotsOf(runId);
-    expect([...slots].sort((a, b) => a - b)).toEqual(
-      Array.from({ length: ids.length + 1 }, (_, index) => FIRST_SLOT + index)
+    const eventIds = await listEventIds(runId);
+    // run_created, run_started, then one step_created each. `events.list`
+    // returns chronological order, so the slots must come out sorted and
+    // gapless starting at the first slot.
+    expect(eventIds).toEqual(
+      eventIds.map((_, i) => slotId(FIRST_EVENT_SLOT + i))
     );
   });
 
-  it('numbers a run densely when every write it makes lands', async () => {
-    const runId = await newSlotRun();
+  it('stays dense when writers race for the same slot', async () => {
+    const runId = await startRun();
+    const width = 20;
     await Promise.all(
-      Array.from({ length: 5 }, (_, index) =>
-        createStep(runId, `step_${index}`)
-      )
-    );
-    const { data } = await eventsOf(runId);
-    expect(maxSlotOf(data)).toBe(data.length);
-  });
-
-  it('reuses a rejected write’s position when nothing published above it', async () => {
-    // The rejected op took a position and gave it back with nothing above it, so
-    // the next write lands there and the log stays dense. Below a published
-    // event the position stays a hole instead: see the SlotBook's own tests,
-    // where the ordering can be forced.
-    const runId = await newSlotRun();
-    await expect(
-      storage.events.create(runId, {
-        eventType: 'step_completed',
-        specVersion: SPEC_VERSION_SLOT_IDENTITY,
-        correlationId: 'step_never_created',
-        eventData: { output: new Uint8Array() },
-      })
-    ).rejects.toThrow();
-    await createStep(runId, 'step_a');
-    await expect(slotsOf(runId)).resolves.toEqual([FIRST_SLOT, FIRST_SLOT + 1]);
-  });
-});
-
-/**
- * A lazy step start: a `step_started` carrying the step's creation data, which
- * the world materializes into a step plus the `step_created` event the caller
- * deferred — one request, two events.
- */
-async function startStepLazily(
-  runId: string,
-  stepId: string,
-  eventId?: string
-): Promise<string> {
-  const result = await storage.events.create(
-    runId,
-    {
-      eventType: 'step_started',
-      specVersion: SPEC_VERSION_SLOT_IDENTITY,
-      correlationId: stepId,
-      eventData: { stepName: 'a-step', input: new Uint8Array(), attempt: 0 },
-    },
-    eventId === undefined ? undefined : { eventId }
-  );
-  if (!result.event) {
-    throw new Error('Expected an event');
-  }
-  return result.event.eventId;
-}
-
-describe('a write that publishes two events', () => {
-  it('numbers the deferred step_created below the claim', async () => {
-    // The caller reserves both positions and names only the top one, so the
-    // pair is fixed before either lands — which is what keeps it off the slot
-    // the next write of the same batch is holding.
-    const runId = await newSlotRun();
-    const startedEventId = await startStepLazily(
-      runId,
-      'step_a',
-      slotEventId(3)
-    );
-    expect(startedEventId).toBe(slotEventId(3));
-    await expect(slotsOf(runId)).resolves.toEqual([1, 2, 3]);
-  });
-
-  it('allocates both positions for a start that claims neither', async () => {
-    const runId = await newSlotRun();
-    await startStepLazily(runId, 'step_a');
-    await expect(slotsOf(runId)).resolves.toEqual([1, 2, 3]);
-  });
-
-  it('keeps every claim in a burst of lazy starts', async () => {
-    // The suspension flush issues its lazy starts at once, each having reserved
-    // two positions. A second event numbered off the log as this world sees it
-    // would take the slot the next start in the batch claimed, and cost every
-    // start after the first its claim — collapsing the fan-out to one step.
-    const runId = await newSlotRun();
-    const claims = Array.from({ length: 10 }, (_, index) =>
-      slotEventId(FIRST_SLOT + 2 * (index + 1))
-    );
-    const ids = await Promise.all(
-      claims.map((eventId, index) =>
-        startStepLazily(runId, `step_${index}`, eventId)
-      )
-    );
-    expect(ids).toEqual(claims);
-    const slots = await slotsOf(runId);
-    expect([...slots].sort((a, b) => a - b)).toEqual(
-      Array.from({ length: 2 * claims.length + 1 }, (_, i) => FIRST_SLOT + i)
-    );
-  });
-
-  it('rejects a claim that leaves no room for the second event', async () => {
-    // The run's own run_created holds the first slot, so a claim of the second
-    // means the caller reserved one position for a write that publishes two.
-    const runId = await newSlotRun();
-    await expect(
-      startStepLazily(runId, 'step_a', slotEventId(FIRST_SLOT + 1))
-    ).rejects.toThrow(/leaves no slot below it/);
-  });
-});
-
-describe('mode is pinned to the run', () => {
-  it('rejects a slot id claimed on a ULID-numbered run', async () => {
-    const created = await storage.events.create(null, {
-      eventType: 'run_created',
-      specVersion: SPEC_VERSION_CURRENT,
-      eventData: {
-        deploymentId: 'dpl_test',
-        workflowName: 'test-workflow',
-        input: new Uint8Array(),
-      },
-    });
-    const runId = created.run?.runId as string;
-    await expect(createStep(runId, 'step_a', slotEventId(2))).rejects.toThrow(
-      /not numbered by slot/
-    );
-  });
-
-  it('rejects a ULID id claimed on a slot-numbered run', async () => {
-    const runId = await newSlotRun();
-    await expect(
-      createStep(runId, 'step_a', 'evnt_01K5Z0000000000000000000AA')
-    ).rejects.toThrow(/not a slot id/);
-  });
-
-  it('ignores the spec version of later requests', async () => {
-    // A run is in exactly one mode for life; only what was persisted decides.
-    const runId = await newSlotRun();
-    const result = await storage.events.create(runId, {
-      eventType: 'step_created',
-      specVersion: SPEC_VERSION_CURRENT,
-      correlationId: 'step_a',
-      eventData: { stepName: 'a-step', input: new Uint8Array() },
-    });
-    expect(slotFromId(result.event?.eventId ?? '')).toBe(2);
-  });
-});
-
-describe('conflict', () => {
-  it('reports the events the loser is missing', async () => {
-    const runId = await newSlotRun();
-    // Out of band: something else takes the slot this caller was about to
-    // claim, so the caller's log is provably missing an event.
-    await createStep(runId, 'step_out_of_band');
-
-    const conflict = await storage.events
-      .create(
-        runId,
-        {
+      Array.from({ length: width }, (_, i) =>
+        storage.events.create(runId, {
           eventType: 'step_created',
-          specVersion: SPEC_VERSION_SLOT_IDENTITY,
-          correlationId: 'step_a',
-          eventData: { stepName: 'a-step', input: new Uint8Array() },
-        },
-        { eventId: slotEventId(2), maxSlot: 1 }
+          correlationId: `step_${i}`,
+          specVersion: SPEC_VERSION_CURRENT,
+          eventData: { stepName: `step${i}`, input: serialized([]) },
+        } as any)
       )
-      .catch((error: unknown) => error);
+    );
 
-    expect(SlotConflictError.is(conflict)).toBe(true);
-    const slotConflict = conflict as SlotConflictError;
-    expect(slotConflict.status).toBe(409);
-    expect(slotConflict.eventId).toBe(slotEventId(2));
-    expect(slotConflict.events?.map((event) => event.eventId)).toEqual([
-      slotEventId(2),
+    // Every writer starts from the same view of the log, so all but one lose
+    // the publish and bump. Bump-and-report means none of them fail, and the
+    // log they produce is still gapless.
+    const slots = slotsOf(await listEventIds(runId));
+    expect(slots).toEqual(
+      Array.from({ length: width + 2 }, (_, i) => FIRST_EVENT_SLOT + i)
+    );
+  });
+
+  it('leaves no hole behind writes that are rejected', async () => {
+    const runId = await startRun();
+    const width = 20;
+    // Every writer claims the same correlation id, so exactly one
+    // step_created survives the entity-creation dedup and the rest are
+    // rejected. A slot
+    // drawn before the publish and never handed back would be burned by each
+    // rejection, and allocation only moves forward, so every such hole is
+    // permanent.
+    const results = await Promise.allSettled(
+      Array.from({ length: width }, () =>
+        storage.events.create(runId, {
+          eventType: 'step_created',
+          correlationId: 'step_contended',
+          specVersion: SPEC_VERSION_CURRENT,
+          eventData: { stepName: 'contended', input: serialized([]) },
+        } as any)
+      )
+    );
+    expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+
+    // The next write is what exposes a burned slot: it lands right behind the
+    // winner if every rejection gave its slot back, and `width - 1` positions
+    // past it if none of them did.
+    await storage.events.create(runId, {
+      eventType: 'step_created',
+      correlationId: 'step_after',
+      specVersion: SPEC_VERSION_CURRENT,
+      eventData: { stepName: 'after', input: serialized([]) },
+    } as any);
+
+    const slots = slotsOf(await listEventIds(runId));
+    // run_created, run_started, the one step_created that won, and the write
+    // that followed it.
+    expect(slots).toEqual([
+      FIRST_EVENT_SLOT,
+      FIRST_EVENT_SLOT + 1,
+      FIRST_EVENT_SLOT + 2,
+      FIRST_EVENT_SLOT + 3,
     ]);
   });
 
-  it('lets the loser re-propose at the next free slot', async () => {
-    const runId = await newSlotRun();
-    await createStep(runId, 'step_out_of_band');
-    await expect(createStep(runId, 'step_a', slotEventId(2))).rejects.toThrow(
-      SlotConflictError
-    );
-    // Merging the delta moves the caller's own numbering forward by one.
-    const eventId = await createStep(runId, 'step_a', slotEventId(3));
-    expect(eventId).toBe(slotEventId(3));
-    await expect(slotsOf(runId)).resolves.toEqual([1, 2, 3]);
-  });
+  it('leaves no hole when a rejected write is overtaken by another', async () => {
+    const runId = await startRun();
+    const width = 8;
+    for (let i = 0; i < width; i++) {
+      await storage.events.create(runId, {
+        eventType: 'step_started',
+        correlationId: `step_${i}`,
+        specVersion: SPEC_VERSION_CURRENT,
+        eventData: { stepName: `step${i}`, input: serialized([]) },
+      } as any);
+    }
 
-  it('excludes events the loser already holds from the delta', async () => {
-    const runId = await newSlotRun();
-    await createStep(runId, 'step_one');
-    await createStep(runId, 'step_two');
-
-    const conflict = await storage.events
-      .create(
-        runId,
-        {
-          eventType: 'step_created',
-          specVersion: SPEC_VERSION_SLOT_IDENTITY,
-          correlationId: 'step_a',
-          eventData: { stepName: 'a-step', input: new Uint8Array() },
-        },
-        { eventId: slotEventId(2), maxSlot: 2 }
+    // Each duplicate names a different step, so they take different per-step
+    // locks and their draws interleave. This is the shape a step storm
+    // produces: several replays of one run each re-issuing a step_started the
+    // winner already published. A slot reserved at the draw and handed back
+    // only when it is still the highest one drawn cannot survive this — by the
+    // time a rejection lands, the next writer has drawn past it.
+    const results = await Promise.allSettled(
+      Array.from({ length: width }, (_, i) =>
+        storage.events.create(runId, {
+          eventType: 'step_started',
+          correlationId: `step_${i}`,
+          specVersion: SPEC_VERSION_CURRENT,
+          eventData: { stepName: `step${i}`, input: serialized([]) },
+        } as any)
       )
-      .catch((error: unknown) => error);
-
-    // Slots 1 and 2 are at or below what the caller had; only 3 is news.
-    expect(
-      (conflict as SlotConflictError).events?.map((event) => event.eventId)
-    ).toEqual([slotEventId(3)]);
-  });
-
-  it('conflicts when another instance takes a claimed slot', async () => {
-    // Two instances keep independent books, so the exclusive write — not the
-    // book — is what decides who owns a slot. A claim asserts a complete log,
-    // so its loser has to reload rather than move over.
-    const runId = await newSlotRun();
-    const other = createStorage(testDir);
-    await other.events.create(runId, {
-      eventType: 'step_created',
-      specVersion: SPEC_VERSION_SLOT_IDENTITY,
-      correlationId: 'step_b',
-      eventData: { stepName: 'b-step', input: new Uint8Array() },
-    });
-    await expect(createStep(runId, 'step_a', slotEventId(2))).rejects.toThrow(
-      SlotConflictError
     );
-    await expect(slotsOf(runId)).resolves.toEqual([1, 2]);
-  });
+    expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(0);
 
-  it('lets a lost claim re-propose an entity it had already materialized', async () => {
-    // A claim only reaches its exclusive write after the entity it describes
-    // exists, so a claim that loses leaves that entity behind. The caller's
-    // whole answer to a conflict is to merge, replay and propose the same
-    // operation one position higher — which it cannot do if its own leftover
-    // entity is what rejects the retry.
-    const runId = await newSlotRun();
-    // Seed this instance's book, then let another instance take the position
-    // the book will hand out next. The claim below passes the book's
-    // "is it written?" check because the book has not seen that write.
-    await createStep(runId, 'step_seed');
-    const other = createStorage(testDir);
-    await other.events.create(runId, {
+    await storage.events.create(runId, {
       eventType: 'step_created',
-      specVersion: SPEC_VERSION_SLOT_IDENTITY,
-      correlationId: 'step_out_of_band',
-      eventData: { stepName: 'b-step', input: new Uint8Array() },
-    });
+      correlationId: 'step_after',
+      specVersion: SPEC_VERSION_CURRENT,
+      eventData: { stepName: 'after', input: serialized([]) },
+    } as any);
 
-    await expect(createWait(runId, 'wait_a', slotEventId(3))).rejects.toThrow(
-      SlotConflictError
+    // run_created, run_started, a step_created + step_started per step, and
+    // the write that followed the rejections.
+    const slots = slotsOf(await listEventIds(runId));
+    expect(slots).toEqual(
+      Array.from({ length: width * 2 + 3 }, (_, i) => FIRST_EVENT_SLOT + i)
     );
-    const eventId = await createWait(runId, 'wait_a', slotEventId(4));
-    expect(eventId).toBe(slotEventId(4));
-    await expect(slotsOf(runId)).resolves.toEqual([1, 2, 3, 4]);
   });
 
-  it('lets a lazy start lose the position of the event it defers', async () => {
-    // The deferred `step_created` is published on the same terms as the start
-    // itself, so it is the pair's first position that can be lost. The retry has
-    // to be able to start the step lazily all over again — its own claim file
-    // and step entity would otherwise answer for a write that never landed.
-    const runId = await newSlotRun();
-    await createStep(runId, 'step_seed');
-    const other = createStorage(testDir);
-    await other.events.create(runId, {
+  it('orders a terminal event after every event it raced', async () => {
+    const runId = await startRun();
+    await storage.events.create(runId, {
       eventType: 'step_created',
-      specVersion: SPEC_VERSION_SLOT_IDENTITY,
-      correlationId: 'step_out_of_band',
-      eventData: { stepName: 'b-step', input: new Uint8Array() },
-    });
+      correlationId: 'step_a',
+      specVersion: SPEC_VERSION_CURRENT,
+      eventData: { stepName: 'a', input: serialized([]) },
+    } as any);
+    await storage.events.create(runId, {
+      eventType: 'run_completed',
+      specVersion: SPEC_VERSION_CURRENT,
+      eventData: { output: serialized('done') },
+    } as any);
 
-    await expect(
-      startStepLazily(runId, 'step_a', slotEventId(4))
-    ).rejects.toThrow(SlotConflictError);
-    const eventId = await startStepLazily(runId, 'step_a', slotEventId(5));
-    expect(eventId).toBe(slotEventId(5));
-    await expect(slotsOf(runId)).resolves.toEqual([1, 2, 3, 4, 5]);
+    const eventIds = await listEventIds(runId);
+    expect(eventIds.at(-1)).toBe(slotId(eventIds.length));
   });
 
-  it('keeps the log dense when a lazy start loses its own position', async () => {
-    // The pair is published in two writes, so the start can lose the second
-    // after the first is already reader-visible — the one case where a
-    // rejected claim leaves an entity behind on purpose. Density survives it
-    // because of what landed: the `step_created` is exactly the event that
-    // tells the next replay this step is created, so the re-proposal is an
-    // ordinary start reserving one position rather than another lazy pair
-    // reserving two. A retry that still reserved a companion would leave the
-    // position below it empty for a write that is no longer coming, and a
-    // position below a published event can never be filled.
-    //
-    // Only reachable across instances, and only inside the window between the
-    // pair's two writes: a claim is checked against the log's tail before
-    // anything is materialized, so an occupant that is already on disk is
-    // caught there instead.
-    const runId = await newSlotRun();
-    const other = createStorage(testDir);
-    const contested = slotEventId(3);
-    const link = fs.link;
-    let stolen = false;
-    vi.spyOn(fs, 'link').mockImplementation(async (existing, target) => {
-      if (!stolen && String(target).includes(`${runId}-${contested}`)) {
-        stolen = true;
-        await other.events.create(
+  it('numbers a lazily created step_created from the same allocator', async () => {
+    const runId = await startRun();
+    // A step_started carrying the creation payload with no step_created ahead
+    // of it makes the World synthesize one. That synthetic event is the only
+    // event the World writes without a caller asking for it by name, so it is
+    // the one place a second id scheme can leak into a slot-numbered log.
+    await storage.events.create(runId, {
+      eventType: 'step_started',
+      correlationId: 'step_lazy',
+      specVersion: SPEC_VERSION_CURRENT,
+      eventData: { stepName: 'lazy', input: serialized([]) },
+    } as any);
+
+    const eventIds = await listEventIds(runId);
+    expect(slotsOf(eventIds)).toEqual(
+      Array.from({ length: eventIds.length }, (_, i) => FIRST_EVENT_SLOT + i)
+    );
+    // A ULID id here has no sort key, so `events.list` would return it on
+    // every page and the cursor would eventually repeat.
+    const events = await storage.events.list({
+      runId,
+      pagination: { limit: 1000 },
+    });
+    // The synthetic step_created takes the lower slot: the step_started that
+    // triggered it holds a candidate, not a reservation, so publishing the
+    // step_created first pushes the step_started up one. Replay reads them in
+    // the order they happened.
+    expect(events.data.map((event) => event.eventType)).toEqual([
+      'run_created',
+      'run_started',
+      'step_created',
+      'step_started',
+    ]);
+  });
+
+  it('paginates a run whose step_created events were created lazily', async () => {
+    const runId = await startRun();
+    for (let i = 0; i < 6; i++) {
+      await storage.events.create(runId, {
+        eventType: 'step_started',
+        correlationId: `step_lazy_${i}`,
+        specVersion: SPEC_VERSION_CURRENT,
+        eventData: { stepName: `lazy${i}`, input: serialized([]) },
+      } as any);
+    }
+
+    // Walk the log the way the runtime does: one page at a time, asserting the
+    // cursor always advances. A mixed-scheme log stalls here rather than at
+    // the id assertion above.
+    const seenCursors = new Set<string>();
+    const walked: string[] = [];
+    let cursor: string | undefined;
+    for (let page = 0; page < 20; page++) {
+      const result = await storage.events.list({
+        runId,
+        pagination: { limit: 3, sortOrder: 'asc', cursor },
+      });
+      walked.push(...result.data.map((event) => event.eventId));
+      if (!result.hasMore) break;
+      expect(result.cursor).toBeTruthy();
+      expect(seenCursors.has(result.cursor as string)).toBe(false);
+      seenCursors.add(result.cursor as string);
+      cursor = result.cursor as string;
+    }
+
+    expect(walked).toEqual(await listEventIds(runId));
+    expect(slotsOf(walked)).toEqual(
+      Array.from({ length: walked.length }, (_, i) => FIRST_EVENT_SLOT + i)
+    );
+  });
+
+  it('keeps a ULID-numbered run on ULIDs', async () => {
+    const runId = await startRun();
+    // Rewrite the run's log the way it would look had it been created before
+    // slot ids existed. The scheme is pinned by what is on disk, not by a
+    // stored flag, so this is the whole of the upgrade path.
+    const eventsDir = path.join(testDir, 'events');
+    const files = (await fs.readdir(eventsDir)).filter((file) =>
+      file.startsWith(`${runId}-`)
+    );
+    files.sort();
+    for (const file of files) {
+      const legacyId = `${EVENT_ID_PREFIX}${monotonicUlid()}`;
+      const raw = await fs.readFile(path.join(eventsDir, file), 'utf8');
+      await fs.writeFile(
+        path.join(eventsDir, `${runId}-${legacyId}.json`),
+        raw.replace(/"eventId": "evnt_[^"]+"/, `"eventId": "${legacyId}"`)
+      );
+      await fs.rm(path.join(eventsDir, file));
+    }
+    // The allocator memoizes each run's scheme, so drop the cache the way a
+    // fresh process would see it.
+    storage.events.clearCache?.();
+
+    await storage.events.create(runId, {
+      eventType: 'step_created',
+      correlationId: 'step_after_upgrade',
+      specVersion: SPEC_VERSION_CURRENT,
+      eventData: { stepName: 'afterUpgrade', input: serialized([]) },
+    } as any);
+
+    const eventIds = await listEventIds(runId);
+    expect(eventIds).toHaveLength(3);
+    // No slot ids anywhere: one slot id in a ULID log would sort before every
+    // ULID (its body starts with ten zeros) and replay out of order.
+    expect(slotsOf(eventIds)).toEqual([null, null, null]);
+  });
+});
+
+describe('skipped-slot report', () => {
+  /** Writes `count` step_created events, returning the slots they landed on. */
+  async function fill(runId: string, count: number): Promise<number[]> {
+    const slots: number[] = [];
+    for (let i = 0; i < count; i++) {
+      const result = await storage.events.create(runId, {
+        eventType: 'step_created',
+        correlationId: `filler_${i}`,
+        specVersion: SPEC_VERSION_CURRENT,
+        eventData: { stepName: `filler${i}`, input: serialized([]) },
+      } as any);
+      slots.push(eventIdToSlot(result.event.eventId) as number);
+    }
+    return slots;
+  }
+
+  it('hands back the events occupying the slots the write skipped', async () => {
+    const runId = await startRun();
+    const stale = FIRST_EVENT_SLOT + 1; // what the run had after run_started
+    const filled = await fill(runId, 3);
+
+    // A writer whose loaded log stopped at run_started asks for the slot right
+    // above it and is bumped past everything written since.
+    const result = await storage.events.create(
+      runId,
+      {
+        eventType: 'wait_created',
+        correlationId: 'wait_a',
+        specVersion: SPEC_VERSION_CURRENT,
+        eventData: { resumeAt: new Date(0).toISOString() },
+      } as any,
+      { eventCount: stale }
+    );
+
+    expect(eventIdToSlot(result.event.eventId)).toBe(stale + filled.length + 1);
+    expect(result.events?.map((event) => event.eventId)).toEqual(
+      filled.map(slotId)
+    );
+    expect(result.hasMore).toBe(false);
+  });
+
+  it('reports nothing when the write lands on the slot it asked for', async () => {
+    const runId = await startRun();
+    const result = await storage.events.create(
+      runId,
+      {
+        eventType: 'wait_created',
+        correlationId: 'wait_a',
+        specVersion: SPEC_VERSION_CURRENT,
+        eventData: { resumeAt: new Date(0).toISOString() },
+      } as any,
+      { eventCount: FIRST_EVENT_SLOT + 1 }
+    );
+
+    expect(eventIdToSlot(result.event.eventId)).toBe(FIRST_EVENT_SLOT + 2);
+    expect(result.events).toBeUndefined();
+  });
+
+  it('reports nothing when the writer sends no count', async () => {
+    const runId = await startRun();
+    await fill(runId, 2);
+    const result = await storage.events.create(runId, {
+      eventType: 'wait_created',
+      correlationId: 'wait_a',
+      specVersion: SPEC_VERSION_CURRENT,
+      eventData: { resumeAt: new Date(0).toISOString() },
+    } as any);
+
+    expect(result.events).toBeUndefined();
+  });
+
+  it('lets the sinceCursor delta answer when the writer asks for both', async () => {
+    // `sinceCursor` and `eventCount` both report through
+    // `events`/`cursor`/`hasMore`, and the runtime sends both on the same
+    // write. The delta is a strict superset of the skipped span (the skipped
+    // slots are all above the cursor) and, unlike the report, it advances
+    // `cursor`. Returning the narrower set alongside the delta's cursor would
+    // tell the caller it has read up to the delta end while handing it only
+    // part of that range, and the events in between would never be fetched
+    // again.
+    const runId = await startRun();
+    const stale = FIRST_EVENT_SLOT + 1;
+    const filled = await fill(runId, 3);
+
+    const result = await storage.events.create(
+      runId,
+      {
+        eventType: 'wait_created',
+        correlationId: 'wait_a',
+        specVersion: SPEC_VERSION_CURRENT,
+        eventData: { resumeAt: new Date(0).toISOString() },
+      } as any,
+      {
+        eventCount: stale,
+        sinceCursor: `${SORT_KEY_CURSOR_PREFIX}${slotId(stale)}`,
+      }
+    );
+
+    const committed = result.event.eventId;
+    expect(eventIdToSlot(committed)).toBe(stale + filled.length + 1);
+    // Everything after the cursor, this write's own event included.
+    expect(result.events?.map((event) => event.eventId)).toEqual([
+      ...filled.map(slotId),
+      committed,
+    ]);
+    expect(result.cursor).toBe(`${SORT_KEY_CURSOR_PREFIX}${committed}`);
+    expect(result.hasMore).toBe(false);
+  });
+
+  it('gives every racing writer the events it was decided without', async () => {
+    const runId = await startRun();
+    const stale = FIRST_EVENT_SLOT + 1;
+    const width = 8;
+
+    // All eight start from the same view, so seven of them are bumped and each
+    // one's report covers exactly the slots between `stale` and where it
+    // landed. Under contention the report can be a lower bound: a writer
+    // holding a lower slot may not have published yet, which `hasMore` says.
+    const results = await Promise.all(
+      Array.from({ length: width }, (_, i) =>
+        storage.events.create(
           runId,
           {
             eventType: 'step_created',
-            specVersion: SPEC_VERSION_SLOT_IDENTITY,
-            correlationId: 'step_out_of_band',
-            eventData: { stepName: 'b-step', input: new Uint8Array() },
-          },
-          { eventId: contested }
-        );
+            correlationId: `racer_${i}`,
+            specVersion: SPEC_VERSION_CURRENT,
+            eventData: { stepName: `racer${i}`, input: serialized([]) },
+          } as any,
+          { eventCount: stale }
+        )
+      )
+    );
+
+    for (const result of results) {
+      const landed = eventIdToSlot(result.event.eventId) as number;
+      const reported = result.events ?? [];
+      const span = landed - stale - 1;
+      expect(reported.length).toBeLessThanOrEqual(span);
+      expect(result.hasMore ?? false).toBe(reported.length < span);
+      for (const event of reported) {
+        const slot = eventIdToSlot(event.eventId) as number;
+        expect(slot).toBeGreaterThan(stale);
+        expect(slot).toBeLessThan(landed);
       }
-      return link(existing, target);
-    });
-
-    await expect(startStepLazily(runId, 'step_a', contested)).rejects.toThrow(
-      SlotConflictError
-    );
-    expect(stolen).toBe(true);
-    vi.restoreAllMocks();
-    // The deferred `step_created` took the position below the claim and is in
-    // the log; the stranger holds the claim itself.
-    await expect(slotsOf(runId)).resolves.toEqual([1, 2, 3]);
-
-    const started = await storage.events.create(
-      runId,
-      {
-        eventType: 'step_started',
-        specVersion: SPEC_VERSION_SLOT_IDENTITY,
-        correlationId: 'step_a',
-        eventData: { stepName: 'a-step', attempt: 0 },
-      },
-      { eventId: slotEventId(4) }
-    );
-    expect(started.event?.eventId).toBe(slotEventId(4));
-    await expect(slotsOf(runId)).resolves.toEqual([1, 2, 3, 4]);
-  });
-
-  it('reallocates around another instance holding the slot it picked', async () => {
-    // Neither writer holds a log, so neither has anything to reconcile: the
-    // loser takes the next free position instead of surfacing a conflict its
-    // caller could not act on.
-    const runId = await newSlotRun();
-    const other = createStorage(testDir);
-    const outcomes = await Promise.allSettled([
-      storage.events.create(runId, {
-        eventType: 'step_created',
-        specVersion: SPEC_VERSION_SLOT_IDENTITY,
-        correlationId: 'step_a',
-        eventData: { stepName: 'a-step', input: new Uint8Array() },
-      }),
-      other.events.create(runId, {
-        eventType: 'step_created',
-        specVersion: SPEC_VERSION_SLOT_IDENTITY,
-        correlationId: 'step_b',
-        eventData: { stepName: 'b-step', input: new Uint8Array() },
-      }),
-    ]);
-    expect(outcomes.map((outcome) => outcome.status)).toEqual([
-      'fulfilled',
-      'fulfilled',
-    ]);
-    await expect(slotsOf(runId)).resolves.toEqual([1, 2, 3]);
-  });
-});
-
-async function createHook(runId: string, hookId: string, token: string) {
-  await storage.events.create(runId, {
-    eventType: 'hook_created',
-    specVersion: SPEC_VERSION_SLOT_IDENTITY,
-    correlationId: hookId,
-    eventData: { token, hookId },
-  });
-  return { hookId, token };
-}
-
-/**
- * One writer of a resume. A resume has two of these — `resumeHook`'s direct
- * write and the queue consumer's re-ensure — and they are byte-for-byte
- * identical, which is what makes them converge on one event.
- */
-function resume(
-  from: Storage,
-  runId: string,
-  hook: { hookId: string; token: string },
-  resumeId: string,
-  payload = new Uint8Array([1, 2, 3])
-) {
-  return from.events.create(
-    runId,
-    {
-      eventType: 'hook_received',
-      specVersion: SPEC_VERSION_SLOT_IDENTITY,
-      correlationId: hook.hookId,
-      eventData: { token: hook.token, payload },
-    },
-    { resumeId, resumePayloadDigest: `digest_${resumeId}` }
-  );
-}
-
-async function hookReceivedCount(runId: string): Promise<number> {
-  const { data } = await eventsOf(runId);
-  return data.filter((event) => event.eventType === 'hook_received').length;
-}
-
-describe('a resume with two writers', () => {
-  it('leaves no hole behind a converged redelivery', async () => {
-    const runId = await newSlotRun();
-    const hook = await createHook(runId, 'hook_a', 'tok:1');
-
-    const first = await resume(storage, runId, hook, 'resume_1');
-    const second = await resume(storage, runId, hook, 'resume_1');
-    expect(second.event.eventId).toBe(first.event.eventId);
-
-    // The redelivery took a position to write at and then converged on the
-    // event that already existed, so it published nothing. Unless it hands that
-    // position back, the next event lands above a hole and the run can no longer
-    // prove its log is complete.
-    await resume(storage, runId, hook, 'resume_2');
-    await expect(slotsOf(runId)).resolves.toEqual([1, 2, 3, 4]);
-  });
-
-  it('commits one event when both writers race across instances', async () => {
-    // The two writers of a resume are usually two processes: the request that
-    // resumed the hook and the queue consumer that replays the run. They share
-    // the data directory and nothing else, so the claim on disk is the only
-    // thing that can converge them.
-    const runId = await newSlotRun();
-    const hook = await createHook(runId, 'hook_a', 'tok:1');
-    const other = createStorage(testDir);
-
-    const [a, b] = await Promise.all([
-      resume(storage, runId, hook, 'resume_1'),
-      resume(other, runId, hook, 'resume_1'),
-    ]);
-
-    expect(b.event.eventId).toBe(a.event.eventId);
-    await expect(hookReceivedCount(runId)).resolves.toBe(1);
-    await expect(slotsOf(runId)).resolves.toEqual([1, 2, 3]);
-  });
-
-  it('numbers distinct resumes of one hook densely under load', async () => {
-    const runId = await newSlotRun();
-    const hook = await createHook(runId, 'hook_a', 'tok:1');
-    const other = createStorage(testDir);
-    const resumeIds = ['r_0', 'r_1', 'r_2', 'r_3', 'r_4'];
-
-    const results = await Promise.all(
-      resumeIds.flatMap((resumeId, index) => {
-        const payload = new Uint8Array([index]);
-        return [
-          resume(storage, runId, hook, resumeId, payload),
-          resume(other, runId, hook, resumeId, payload),
-        ];
-      })
-    );
-
-    // Each resume's pair shares one event; the five resumes are distinct and sit
-    // in the five positions above the hook.
-    expect(new Set(results.map((r) => r.event.eventId)).size).toBe(
-      resumeIds.length
-    );
-    await expect(hookReceivedCount(runId)).resolves.toBe(resumeIds.length);
-    await expect(slotsOf(runId)).resolves.toEqual([1, 2, 3, 4, 5, 6, 7]);
-  });
-});
-
-async function hookCreatedCount(runId: string): Promise<number> {
-  const { data } = await eventsOf(runId);
-  return data.filter((event) => event.eventType === 'hook_created').length;
-}
-
-describe('a hook created twice', () => {
-  it('commits one event when the retry allocated its own position', async () => {
-    // Two replays of the same run both reach `hook.create`. Neither holds an
-    // event log, so each takes a position of its own choosing; the token claim
-    // then points the second at the first's event. Losing that position says
-    // the hook exists, so the retry must stop there. Reallocating around it —
-    // which is what a writer that picked its own position normally does — would
-    // publish a second `hook_created` for one hook.
-    const runId = await newSlotRun();
-    const hook = { hookId: 'hook_a', token: 'tok:1' };
-
-    await createHook(runId, hook.hookId, hook.token);
-    await expect(createHook(runId, hook.hookId, hook.token)).rejects.toThrow(
-      EntityConflictError
-    );
-
-    await expect(hookCreatedCount(runId)).resolves.toBe(1);
-    await expect(slotsOf(runId)).resolves.toEqual([1, 2]);
-  });
-
-  it('leaves no hole behind the retry it turned away', async () => {
-    // The retry reserved a position before the claim redirected it. Handing it
-    // back is what keeps the run's log dense, and a dense log is the only thing
-    // that lets a client prove it holds every event.
-    const runId = await newSlotRun();
-    await createHook(runId, 'hook_a', 'tok:1');
-    await createHook(runId, 'hook_a', 'tok:1').catch(() => {});
-
-    await createHook(runId, 'hook_b', 'tok:2');
-    await expect(slotsOf(runId)).resolves.toEqual([1, 2, 3]);
-  });
-
-  it('commits one event when both replays race across instances', async () => {
-    const runId = await newSlotRun();
-    const other = createStorage(testDir);
-
-    const outcomes = await Promise.allSettled([
-      storage.events.create(runId, {
-        eventType: 'hook_created',
-        specVersion: SPEC_VERSION_SLOT_IDENTITY,
-        correlationId: 'hook_a',
-        eventData: { token: 'tok:1', hookId: 'hook_a' },
-      }),
-      other.events.create(runId, {
-        eventType: 'hook_created',
-        specVersion: SPEC_VERSION_SLOT_IDENTITY,
-        correlationId: 'hook_a',
-        eventData: { token: 'tok:1', hookId: 'hook_a' },
-      }),
-    ]);
-
-    expect(
-      outcomes.filter((outcome) => outcome.status === 'fulfilled')
-    ).toHaveLength(1);
-    await expect(hookCreatedCount(runId)).resolves.toBe(1);
-    await expect(slotsOf(runId)).resolves.toEqual([1, 2]);
+    }
   });
 });

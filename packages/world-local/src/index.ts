@@ -2,10 +2,7 @@ import { promises as fs } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import path from 'node:path';
 import type { QueuePrefix, World } from '@workflow/world';
-import {
-  reenqueueActiveRuns,
-  SPEC_VERSION_SLOT_IDENTITY,
-} from '@workflow/world';
+import { reenqueueActiveRuns, SPEC_VERSION_CURRENT } from '@workflow/world';
 import { warnIfRunningInVercelDeployment } from './build-target-mismatch.js';
 import type { Config } from './config.js';
 import { config, resolveRecoverActiveRuns } from './config.js';
@@ -75,9 +72,7 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
   );
   const recoverActiveRuns = resolveRecoverActiveRuns(mergedConfig);
   return {
-    // What this world stamps on new runs: slot identity. Every world reads
-    // both schemes whatever this says.
-    specVersion: SPEC_VERSION_SLOT_IDENTITY,
+    specVersion: SPEC_VERSION_CURRENT,
     capabilities: {
       hookRetention: { active: true },
       // world-local deduplicates concurrent `hook_received` writes sharing a
@@ -85,6 +80,10 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
       // events-storage.ts `claimHookResume`), so resumeHook()'s parallel fast
       // path converges on one event in dev exactly as it does on Vercel.
       hookResumeDedup: true,
+      // New runs get dense per-run slot event ids. Runs created before this
+      // keep their ULIDs; the scheme is pinned by a run's own first event id,
+      // not by this flag, which only says what new runs get.
+      slotEventIds: true,
     },
     ...queue,
     ...storage,

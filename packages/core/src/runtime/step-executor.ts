@@ -4,7 +4,6 @@ import {
   FatalError,
   RetryableError,
   RunExpiredError,
-  SlotConflictError,
   ThrottleError,
   TooEarlyError,
   WorkflowRuntimeError,
@@ -26,7 +25,6 @@ import type {
 import {
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_SUPPORTS_COMPRESSION,
-  usesSlotIdentity,
 } from '@workflow/world';
 import { runtimeLogger, stepLogger } from '../logger.js';
 import { getStepFunction } from '../private.js';
@@ -54,10 +52,8 @@ import {
 } from './constants.js';
 import { getPortLazy } from './get-port-lazy.js';
 import {
-  type EventCreateFence,
-  type FencedCreate,
   memoizeEncryptionKey,
-  type OrderedCreate,
+  type PreconditionSnapshotParams,
 } from './helpers.js';
 import { ReplayRecoveryReporter } from './replay-recovery-reporter.js';
 import {
@@ -88,81 +84,6 @@ function extractInlineDelta(
     cursor: result.cursor,
     hasMore: result.hasMore ?? false,
   };
-}
-
-/**
- * Byte-equality for two dehydrated step inputs, used to decide whether a
- * conflicting `step_started` describes the same call as ours. Only inline
- * bytes can answer that: a `SerializedData` that came back as a remote ref
- * carries no payload, and two refs being unequal says nothing about the
- * values behind them, so anything that is not a pair of `Uint8Array`s is
- * reported as "cannot tell".
- */
-function sameSerializedInput(
-  a: SerializedData | undefined,
-  b: SerializedData | undefined
-): boolean {
-  if (!(a instanceof Uint8Array) || !(b instanceof Uint8Array)) return false;
-  if (a.byteLength !== b.byteLength) return false;
-  for (let i = 0; i < a.byteLength; i++) {
-    if (a[i] !== b[i]) return false;
-  }
-  return true;
-}
-
-/**
- * Decide whether a slot rejection carrying a delta is a *benign duplicate*:
- * the events we lost the slot to already contain a `step_started` for this
- * exact step, so a concurrent handler is running (or has run) the very call
- * we were about to claim. The step is then someone else's to finish and we
- * can skip, exactly as we do on the `EntityConflictError` the unfenced path
- * would have raised instead.
- *
- * The identity test is deliberately strict. Correlation ids are positional
- * ordinals of one seeded sequence, so a replay that diverged — a
- * `Promise.race` between a hook and a step resolving the other way, say — can
- * arrive at the same correlation id naming a different call. Matching on it
- * alone would let such a replay adopt a foreign step's completion as its own. So
- * the step name must match, and on the lazy path (where we hold the input)
- * the inputs must be byte-identical. Anything we cannot prove identical
- * returns false and takes the replay restart, which is always correct and
- * merely slower.
- *
- * The input is read off the companion `step_created`, never off the
- * `step_started` itself. A lazy start publishes the pair, and both Worlds move
- * the input onto the `step_created` and strip it from the row they write for
- * the start — so comparing against the start's own `eventData.input` would be
- * comparing against `undefined` on exactly the path that holds an input, and
- * every lazy duplicate would pay a replay restart instead of the skip. The two
- * events take adjacent slots, so a delta containing one contains the other.
- */
-function isBenignDuplicateStart(
-  events: unknown[],
-  stepId: string,
-  stepName: string,
-  lazyStepInput: SerializedData | undefined
-): boolean {
-  let started = false;
-  let createdInput: SerializedData | undefined;
-  for (const candidate of events) {
-    if (!candidate || typeof candidate !== 'object') continue;
-    const event = candidate as {
-      eventType?: unknown;
-      correlationId?: unknown;
-      eventData?: { stepName?: unknown; input?: unknown } | null;
-    };
-    if (event.correlationId !== stepId) continue;
-    if (event.eventType === 'step_created') {
-      createdInput = event.eventData?.input as SerializedData | undefined;
-      continue;
-    }
-    if (event.eventType !== 'step_started') continue;
-    if (event.eventData?.stepName !== stepName) continue;
-    started = true;
-  }
-  if (!started) return false;
-  if (lazyStepInput === undefined) return true;
-  return sameSerializedInput(lazyStepInput, createdInput);
 }
 
 export interface StepExecutorParams {
@@ -220,35 +141,20 @@ export interface StepExecutorParams {
    */
   inlineDeltaSinceCursor?: string;
   /**
-   * Runs this step's `step_started` claim under its run's concurrency fence:
-   * the event slot the claim occupies.
-   *
-   * On the lazy inline path the claim is the step's FIRST durable write (its
-   * `step_created` is deferred), so without a fence it would be unguarded
-   * entirely: a replay working from a stale view could claim — and then commit —
-   * a step scheduled without observing an out-of-band event. A fencing World
-   * rejects such a claim with `SlotConflictError` (409) or
-   * `PreconditionFailedError` (412).
-   *
-   * Whether a rejection is retried in place is the caller's decision, see
-   * `claimFenceFor`. Either way executeStep does NOT translate a rejection that
-   * reaches it, so an unretried one propagates for the caller to abandon the
-   * batch and force a fresh replay.
-   *
-   * Undefined when the caller has no snapshot; a World that does not fence
-   * ignores it.
+   * Precondition-guard snapshot of the event log the caller's replay loaded, to
+   * attach to this step's `step_started` claim. On the lazy inline path the
+   * claim is the step's FIRST durable write (its `step_created` is deferred),
+   * so without this the claim would bypass the optimistic-concurrency guard
+   * entirely: a replay working from a stale view could claim — and then commit
+   * — a step scheduled without observing an event it never loaded. A
+   * guard-enforcing World rejects a stale claim with `PreconditionFailedError`
+   * (412); executeStep does NOT translate that rejection (re-claiming in place
+   * would still commit the stale schedule), so it propagates for the caller to
+   * abandon the batch and restart its replay. Undefined when the guard is
+   * disabled or the caller has no snapshot; Worlds that don't enforce the guard
+   * ignore it.
    */
-  claimFence?: FencedCreate;
-  /**
-   * Numbers this step's other writes — its terminal event, an eager
-   * `step_started` on a path that carries no claim — off the caller's log,
-   * rather than leaving them for the backend to place at the tail. That tail is
-   * a position a sibling's claim may already hold, and a collision there costs
-   * the whole batch a replay. See `orderedCreateFor`.
-   *
-   * Undefined when the caller has no log, which leaves the writes unnumbered.
-   */
-  orderedCreate?: OrderedCreate;
+  preconditionSnapshot?: PreconditionSnapshotParams;
   /**
    * Suppress optimistic inline start for this step regardless of
    * `WORKFLOW_OPTIMISTIC_INLINE_START` / `forceOptimisticStart`: take the
@@ -362,38 +268,18 @@ export async function executeStep(
   // put us on the Vercel branch with nothing to build a host from, making
   // `https://` the base URL of every step.
   const isVercel = Boolean(process.env.VERCEL_URL);
-  // Unfenced when the caller passes no fence, which runs the create plainly. A
-  // World that does not fence also ignores a fence it is handed, so passing one
-  // is never wrong.
-  const runClaim: FencedCreate = params.claimFence ?? ((op) => op(undefined));
   // Gate payload compression on the run's specVersion.
   const compression =
     (params.runSpecVersion ?? 0) >= SPEC_VERSION_SUPPORTS_COMPRESSION;
   const replayRecoveryReporter =
     params.replayRecoveryReporter ?? ReplayRecoveryReporter.inert();
-  const rawCreateEvent = <T extends CreateEventRequest>(
+  const createEvent = <T extends CreateEventRequest>(
     data: T,
     eventParams?: CreateEventParams
   ) =>
     replayRecoveryReporter.withEventCreate(eventParams, (p) =>
       world.events.create(workflowRunId, data, p)
     );
-  const orderedCreate = params.orderedCreate;
-  // Every write except the fenced `step_started` claim, which carries its own
-  // position and runs under `runClaim` on the same chain — nesting the two would
-  // deadlock on it.
-  const createEvent = <T extends CreateEventRequest>(
-    data: T,
-    eventParams?: CreateEventParams
-  ) =>
-    orderedCreate
-      ? orderedCreate((fence) =>
-          rawCreateEvent(
-            data,
-            fence ? { ...eventParams, ...fence } : eventParams
-          )
-        )
-      : rawCreateEvent(data, eventParams);
 
   const spanName = `step.execute ${stepDisplayName(stepName)}`;
   return trace(spanName, {}, async (span) => {
@@ -593,58 +479,11 @@ export async function executeStep(
         return { type: 'gone' };
       }
       if (EntityConflictError.is(err)) {
-        // Reported at warn on a run that numbers its events, because there the
-        // conflict has a second, indistinguishable cause worth counting. A
-        // claim that loses its position is rejected as a slot conflict and
-        // nothing is written; a claim that wins but whose write is not atomic
-        // with the step row leaves the row behind with no event, and the
-        // re-proposal then trips its own leftover and reads it as "someone
-        // else owns this step". Both arrive here as the same error. There is no
-        // local test that separates them — the step row says nothing about
-        // which writer made it — so this logs rather than escalates: skipping
-        // is right in the common case, and failing the run on the suspicion
-        // would trade a rare wedge for a frequent false alarm.
-        const slotNumbered = usesSlotIdentity(params.runSpecVersion);
-        runtimeLogger[slotNumbered ? 'warn' : 'debug'](
-          'Step in terminal state, skipping',
-          {
-            stepName,
-            stepId,
-            workflowRunId,
-            slotNumbered,
-            error: err instanceof Error ? err.message : String(err),
-          }
-        );
-        span?.setAttributes({
-          ...Attribute.StepSkipped(true),
-          ...Attribute.StepSkipReason('completed'),
-        });
-        return { type: 'skipped' };
-      }
-      if (
-        SlotConflictError.is(err) &&
-        isBenignDuplicateStart(
-          err.events,
-          stepId,
-          stepName,
-          params.lazyStepInput
-        )
-      ) {
-        // We lost the slot to a writer that had already started this same
-        // step, so this is the ordinary "another handler owns it" outcome
-        // wearing a slot rejection — the same thing an unfenced write reports
-        // as EntityConflictError. Skip rather than restart the replay: the
-        // restart would re-derive this identical claim and lose again.
-        //
-        // The delta on the error is deliberately NOT merged into the log.
-        // Adopting events this VM never replayed would let the next claim
-        // fence itself against a tail it cannot account for, which is the
-        // one thing the fence exists to prevent. Siblings in the batch fail
-        // with their own rejection and the handler defers as usual.
-        runtimeLogger.debug('Step already started by a concurrent writer', {
+        runtimeLogger.debug('Step in terminal state, skipping', {
           stepName,
           stepId,
           workflowRunId,
+          error: err instanceof Error ? err.message : String(err),
         });
         span?.setAttributes({
           ...Attribute.StepSkipped(true),
@@ -693,15 +532,13 @@ export async function executeStep(
 
     let step: StartedStep;
     // Params for the `step_started` create on either path below: the ambient
-    // compute-instance stamp plus whichever fence the claim is running under.
-    const startEventParams = (
-      fence: EventCreateFence | undefined
-    ): CreateEventParams => ({
+    // compute-instance stamp plus the optimistic-concurrency claim guard.
+    const startEventParams: CreateEventParams = {
       computeInstanceId: COMPUTE_INSTANCE_ID,
-      // Spread as a unit: the fence's fields describe one fence and must
-      // travel together — see StepExecutorParams.claimFence.
-      ...fence,
-    });
+      // Spread as a unit: the three snapshot fields describe one snapshot and
+      // must travel together — see StepExecutorParams.preconditionSnapshot.
+      ...params.preconditionSnapshot,
+    };
     // `Date.now()` taken immediately before the `step_started` create is
     // issued (either path below) — anchors RSFS's end point. See
     // StepLatencyEventData.rsfs and the call sites below.
@@ -741,29 +578,26 @@ export async function executeStep(
           // RSFS measures the run_started-to-POST stretch, and the barrier
           // wait IS part of that stretch under turbo.
           stepStartPostSentAtMs = Date.now();
-          // Fence the claim — see StepExecutorParams.claimFence. A rejection
-          // the fence does not retry surfaces via reconcileOptimisticStart:
-          // the body result is discarded, and unless the rejection proves
-          // another writer already started this same step (a benign
-          // duplicate, skipped) it propagates to the caller.
-          return runClaim((fence) =>
-            rawCreateEvent(
-              {
-                eventType: 'step_started',
-                specVersion: SPEC_VERSION_CURRENT,
-                correlationId: stepId,
-                eventData: {
-                  stepName,
-                  workflowName,
-                  input: params.lazyStepInput,
-                  // Inline-ownership stamp — see StepExecutorParams.ownerMessageId.
-                  ...(params.ownerMessageId !== undefined
-                    ? { ownerMessageId: params.ownerMessageId }
-                    : {}),
-                },
+          return createEvent(
+            {
+              eventType: 'step_started',
+              specVersion: SPEC_VERSION_CURRENT,
+              correlationId: stepId,
+              eventData: {
+                stepName,
+                workflowName,
+                input: params.lazyStepInput,
+                // Inline-ownership stamp — see StepExecutorParams.ownerMessageId.
+                ...(params.ownerMessageId !== undefined
+                  ? { ownerMessageId: params.ownerMessageId }
+                  : {}),
               },
-              startEventParams(fence)
-            )
+            },
+            // Guard the claim — see StepExecutorParams.preconditionSnapshot. A
+            // stale (412) rejection surfaces via reconcileOptimisticStart as a
+            // non-translatable error: the body result is discarded and the
+            // rejection propagates to the caller.
+            startEventParams
           );
         }
       );
@@ -804,28 +638,26 @@ export async function executeStep(
             ? { ownerMessageId: params.ownerMessageId }
             : {};
         stepStartPostSentAtMs = Date.now();
-        // Fence the claim — see StepExecutorParams.claimFence. A rejection the
-        // fence does not retry propagates to the caller for a fresh replay,
-        // except where startErrorToResult below can read the rejection's delta
-        // as "another writer already started this exact step" and skip.
-        const startResult = await runClaim((fence) =>
-          rawCreateEvent(
-            {
-              eventType: 'step_started',
-              specVersion: SPEC_VERSION_CURRENT,
-              correlationId: stepId,
-              eventData:
-                params.lazyStepInput !== undefined
-                  ? {
-                      stepName,
-                      workflowName,
-                      input: params.lazyStepInput,
-                      ...ownershipStamp,
-                    }
-                  : { stepName, ...ownershipStamp },
-            },
-            startEventParams(fence)
-          )
+        const startResult = await createEvent(
+          {
+            eventType: 'step_started',
+            specVersion: SPEC_VERSION_CURRENT,
+            correlationId: stepId,
+            eventData:
+              params.lazyStepInput !== undefined
+                ? {
+                    stepName,
+                    workflowName,
+                    input: params.lazyStepInput,
+                    ...ownershipStamp,
+                  }
+                : { stepName, ...ownershipStamp },
+          },
+          // Guard the claim — see StepExecutorParams.preconditionSnapshot. A
+          // stale (412) rejection is intentionally NOT translated by
+          // startErrorToResult below, so it propagates to the caller for a
+          // fresh replay.
+          startEventParams
         );
 
         step = startResult.step;

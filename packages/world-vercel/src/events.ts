@@ -606,6 +606,11 @@ async function createWorkflowRunEventInner(
     stateUpdatedAt: params?.stateUpdatedAt,
     stateEventCount: params?.stateEventCount,
     ...(params?.stateCursor ? { stateCursor: params.stateCursor } : {}),
+    // Slot-identity snapshot. The runtime sends `eventCount` instead of the
+    // watermark triple once the run's own ids are slot-shaped; it rides as
+    // `maxSlot` because the v4 meta already has an unrelated telemetry
+    // `eventCount`.
+    ...(params?.eventCount !== undefined ? { maxSlot: params.eventCount } : {}),
     replayDivergenceCount: params?.replayDivergenceCount,
     occurredAt: params?.occurredAt ?? new Date(),
     // Opt-in inline-delta: forward the cursor the runtime held before
@@ -620,13 +625,6 @@ async function createWorkflowRunEventInner(
     ...(params?.resumePayloadDigest
       ? { resumePayloadDigest: params.resumePayloadDigest }
       : {}),
-    // Slot identity: the runtime names the event's own id, claiming that
-    // position in the run's event log. The server inserts it conditionally
-    // and answers 409 slot-conflict when another writer got there first.
-    // `maxSlot` rides along so the server can spot a gap, which slots being
-    // dense makes an unrecoverable corruption.
-    ...(params?.eventId ? { eventId: params.eventId } : {}),
-    ...(params?.maxSlot !== undefined ? { maxSlot: params.maxSlot } : {}),
     remoteRefBehavior,
     payload,
     ...meta,

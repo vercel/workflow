@@ -153,11 +153,14 @@ export const events = schema.table(
     >
   >,
   (tb) => [
-    // Event ids are only unique within their run: every run numbers its own log
-    // from 1, so `evnt_0…001` exists once per run. The run leads the key so the
-    // range scans in `list` stay a single index seek, which also makes a
-    // separate `run_id` index redundant.
+    // Event ids are per-run slot positions, so `evnt_…0001` exists once per
+    // run and is only unique together with the run it belongs to. Runs
+    // created before slots keep globally-unique ULIDs, which this key also
+    // admits.
     primaryKey({ columns: [tb.runId, tb.eventId] }),
+    // No standalone index on `runId`: the primary key leads with it, so every
+    // by-run lookup and range scan is served by that index already. Keeping one
+    // would cost a second write per event on the table's hottest path.
     index().on(tb.correlationId),
     // Runtime-correlated one-shot events must be unique per (run, correlation)
     // — without
@@ -173,6 +176,21 @@ export const events = schema.table(
       ),
   ]
 );
+
+/**
+ * Which runs are slot-numbered. A row exists iff the run is, so its absence is
+ * exactly the "this run predates slots, keep minting ULIDs" signal — no scan of
+ * the event log is needed to tell the two schemes apart.
+ *
+ * A marker, not a counter. Positions are allocated by the insert that occupies
+ * them (`MAX(slot) + 1` read from the log inside the INSERT), so nothing is
+ * handed out ahead of the write that uses it and a write that fails leaves the
+ * position free for the next one. A counter here would instead burn a position
+ * per failed write, and every such hole is permanent.
+ */
+export const eventSlots = schema.table('workflow_event_slots', {
+  runId: varchar('run_id').primaryKey(),
+});
 
 export const steps = schema.table(
   'workflow_steps',

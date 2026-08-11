@@ -5,9 +5,9 @@ import {
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_LEGACY,
   SPEC_VERSION_MAX_SUPPORTED,
-  SPEC_VERSION_SLOT_IDENTITY,
   SPEC_VERSION_SUPPORTS_ATTRIBUTES,
   SPEC_VERSION_SUPPORTS_COMPRESSION,
+  SPEC_VERSION_SUPPORTS_SLOT_IDENTITY,
 } from './spec-version.js';
 
 describe('spec version constants', () => {
@@ -16,10 +16,14 @@ describe('spec version constants', () => {
     expect(SPEC_VERSION_SUPPORTS_COMPRESSION).toBe(5);
   });
 
-  it('can read a newer spec version than the floor it requires', () => {
-    // Worlds stamp slot identity on new runs while still reading everything
-    // back to the compression version, so the ceiling sits above the floor.
-    expect(SPEC_VERSION_MAX_SUPPORTED).toBe(SPEC_VERSION_SLOT_IDENTITY);
+  it('the readable ceiling is the slot-identity version', () => {
+    // The default a World stamps and the highest version this SDK can read
+    // are separate dials. Slot identity is above the default on purpose: only
+    // a World that actually allocates slots opts into it.
+    expect(SPEC_VERSION_SUPPORTS_SLOT_IDENTITY).toBe(6);
+    expect(SPEC_VERSION_MAX_SUPPORTED).toBe(
+      SPEC_VERSION_SUPPORTS_SLOT_IDENTITY
+    );
     expect(SPEC_VERSION_MAX_SUPPORTED).toBeGreaterThanOrEqual(
       SPEC_VERSION_CURRENT
     );
@@ -27,8 +31,7 @@ describe('spec version constants', () => {
 });
 
 describe('requiresNewerWorld', () => {
-  it('accepts runs at or below the newest readable spec version', () => {
-    expect(requiresNewerWorld(SPEC_VERSION_MAX_SUPPORTED)).toBe(false);
+  it('accepts runs at or below the current spec version', () => {
     expect(requiresNewerWorld(SPEC_VERSION_CURRENT)).toBe(false);
     expect(requiresNewerWorld(SPEC_VERSION_SUPPORTS_ATTRIBUTES)).toBe(false);
     expect(requiresNewerWorld(SPEC_VERSION_LEGACY)).toBe(false);
@@ -36,14 +39,14 @@ describe('requiresNewerWorld', () => {
     expect(requiresNewerWorld(null)).toBe(false);
   });
 
-  it('accepts a slot-identity run', () => {
-    // Gates the flag rollout: a world that rejected spec-6 would reject the
-    // runs it had just stamped spec-6 itself, at their first event after
-    // run_created.
-    expect(requiresNewerWorld(SPEC_VERSION_SLOT_IDENTITY)).toBe(false);
+  it('accepts a slot-identity run even though it is above the default', () => {
+    // world-vercel stamps this version on the runs it creates. Testing
+    // against SPEC_VERSION_CURRENT instead of the ceiling would make this SDK
+    // reject the runs its own adapter just wrote.
+    expect(requiresNewerWorld(SPEC_VERSION_SUPPORTS_SLOT_IDENTITY)).toBe(false);
   });
 
-  it('rejects runs newer than the newest readable spec version', () => {
+  it('rejects runs newer than the highest supported spec version', () => {
     // This is the contract that protects older SDKs from compressed
     // payloads they cannot decode: a spec-5 run read by an SDK whose
     // ceiling is 4 fails this check up front (with RunNotSupportedError at
@@ -68,15 +71,5 @@ describe('isLegacySpecVersion', () => {
     expect(isLegacySpecVersion(2)).toBe(false);
     expect(isLegacySpecVersion(4)).toBe(false);
     expect(isLegacySpecVersion(5)).toBe(false);
-  });
-});
-
-describe('the version worlds stamp on new runs', () => {
-  it('is slot identity, and is readable by the worlds that stamp it', () => {
-    // Every world's `specVersion` is SPEC_VERSION_SLOT_IDENTITY. A world that
-    // rejected spec-6 would reject the runs it had just stamped spec-6 itself,
-    // at their first event after run_created.
-    expect(SPEC_VERSION_SLOT_IDENTITY).toBeGreaterThan(SPEC_VERSION_CURRENT);
-    expect(requiresNewerWorld(SPEC_VERSION_SLOT_IDENTITY)).toBe(false);
   });
 });

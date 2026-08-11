@@ -10,10 +10,7 @@
  * 2. The restart reloads the whole event log with no cursor, because a hole is
  *    defined by ULID time while a cursor filters lexicographically — unless
  *    the World attached the missing events to the 412, which the runtime
- *    consumes with no events.list round trip at all. A run numbering its events
- *    by slot heals from its cursor when nothing was attached, since slot ids
- *    sort in write order and density proves afterwards that the merge closed
- *    the gap; a short count sends it back to the full reload.
+ *    consumes with no events.list round trip at all (first restart only).
  * 3. Restarts are bounded; once the bound is spent the runtime schedules a
  *    delayed re-invocation instead of failing the run — and that escalation is
  *    itself counted on the queue message, so a run that can never observe its
@@ -22,25 +19,16 @@
  * Modeled on wait-completion-replay.test.ts, but with real ULID event IDs so
  * latestEventStateUpdatedAt() actually derives snapshot times.
  */
-import {
-  PreconditionFailedError,
-  RUN_ERROR_CODES,
-  SlotConflictError,
-} from '@workflow/errors';
+import { PreconditionFailedError, RUN_ERROR_CODES } from '@workflow/errors';
 import {
   type CreateEventRequest,
   type Event,
-  FIRST_SLOT,
   SPEC_VERSION_CURRENT,
-  SPEC_VERSION_SLOT_IDENTITY,
-  slotFromId,
-  slotIdBody,
   type WorkflowRun,
   type World,
 } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createCorrelationIdGenerator } from '../correlation-id.js';
 import { runtimeLogger } from '../logger.js';
 import { registerStepFunction } from '../private.js';
 import { workflowEntrypoint } from '../runtime.js';
@@ -49,11 +37,11 @@ import {
   dehydrateStepReturnValue,
   dehydrateWorkflowArguments,
 } from '../serialization.js';
+import { createContext } from '../vm/index.js';
 import {
   getPreconditionMaxInProcessRestarts,
   getPreconditionMaxReinvocations,
   getPreconditionReinvokeDelaySeconds,
-  PRECONDITION_MAX_INPROCESS_RESTARTS,
 } from './constants.js';
 import { setWorld } from './world.js';
 
@@ -100,8 +88,6 @@ interface SnapshotParams {
   stateUpdatedAt: number | undefined;
   stateEventCount: number | undefined;
   stateCursor: string | undefined;
-  /** The claimed position, on a run that numbers its events by slot. */
-  eventId?: string | undefined;
 }
 
 async function runPreconditionScenario(options: {
@@ -112,17 +98,6 @@ async function runPreconditionScenario(options: {
    * or a payload the runtime must refuse to narrow (`malformed`).
    */
   attachDelta?: 'complete' | 'malformed';
-  /**
-   * Number the run's events by slot rather than by ULID, and reject with the
-   * 409 a taken slot produces instead of the 412.
-   */
-  slotIdentity?: boolean;
-  /**
-   * Slot mode only: land a second out-of-band event ahead of the hook and hide
-   * it from the page above the cursor, so a restart that tops up incrementally
-   * ends holding a log that is short of its own highest slot.
-   */
-  hideFirstOutsideEventFromCursor?: boolean;
 }) {
   vi.spyOn(Date, 'now').mockReturnValue(+fixedNow);
 
@@ -137,20 +112,14 @@ async function runPreconditionScenario(options: {
     undefined
   );
 
-  const SPEC = options.slotIdentity
-    ? SPEC_VERSION_SLOT_IDENTITY
-    : SPEC_VERSION_CURRENT;
-
-  // Correlation ids are ULIDs in both modes: slot identity numbers event ids
-  // only. Each kind draws from its own sequence, so these are the first id of
-  // three separate sequences rather than three draws of one.
-  const generate = createCorrelationIdGenerator({
+  const { globalThis: vmGlobalThis } = createContext({
     seed: `${runId}:${workflowName}:${deploymentId}`,
     fixedTimestamp: +startedAt,
   });
-  const hookCorrelationId = `hook_${generate('hook')}`;
-  const syncStep0CorrelationId = `step_${generate('step')}`;
-  const waitCorrelationId = `wait_${generate('wait')}`;
+  const vmUlid = monotonicFactory(() => vmGlobalThis.Math.random());
+  const hookCorrelationId = `hook_${vmUlid(+startedAt)}`;
+  const syncStep0CorrelationId = `step_${vmUlid(+startedAt)}`;
+  const waitCorrelationId = `wait_${vmUlid(+startedAt)}`;
 
   const workflowRun: WorkflowRun = {
     runId,
@@ -158,35 +127,23 @@ async function runPreconditionScenario(options: {
     status: 'running',
     input: workflowArgs,
     deploymentId,
-    specVersion: SPEC,
+    specVersion: SPEC_VERSION_CURRENT,
     startedAt,
     createdAt: startedAt,
     updatedAt: startedAt,
   };
 
   // Real ULID event IDs at controlled times so latestEventStateUpdatedAt()
-  // resolves an actual epoch-ms snapshot from the loaded log. Under slot
-  // identity the id is instead the next free slot, or the one the writer
-  // claimed, and the log stays dense from slot 1.
+  // resolves an actual epoch-ms snapshot from the loaded log.
   const hostUlid = monotonicFactory();
   let eventIndex = 0;
-  let nextSlot = FIRST_SLOT;
-  const event = (
-    data: CreateEventRequest,
-    atMs?: number,
-    claimedEventId?: string
-  ): Event => {
+  const event = (data: CreateEventRequest, atMs?: number): Event => {
     const t = atMs ?? +startedAt + ++eventIndex * 100;
-    let eventId = `evnt_${hostUlid(t)}`;
-    if (options.slotIdentity) {
-      eventId = claimedEventId ?? `evnt_${slotIdBody(nextSlot)}`;
-      nextSlot = Math.max(nextSlot, slotFromId(eventId) ?? nextSlot) + 1;
-    }
     return {
       ...data,
-      specVersion: data.specVersion ?? SPEC,
+      specVersion: data.specVersion ?? SPEC_VERSION_CURRENT,
       runId,
-      eventId,
+      eventId: `evnt_${hostUlid(t)}`,
       createdAt: new Date(t),
     } as Event;
   };
@@ -194,19 +151,19 @@ async function runPreconditionScenario(options: {
   const staleEvents: Event[] = [
     event({
       eventType: 'run_created',
-      specVersion: SPEC,
+      specVersion: SPEC_VERSION_CURRENT,
       eventData: { deploymentId, workflowName, input: workflowArgs },
     }),
-    event({ eventType: 'run_started', specVersion: SPEC }),
+    event({ eventType: 'run_started', specVersion: SPEC_VERSION_CURRENT }),
     event({
       eventType: 'hook_created',
-      specVersion: SPEC,
+      specVersion: SPEC_VERSION_CURRENT,
       correlationId: hookCorrelationId,
       eventData: { token: hookToken },
     }),
     event({
       eventType: 'step_created',
-      specVersion: SPEC,
+      specVersion: SPEC_VERSION_CURRENT,
       correlationId: syncStep0CorrelationId,
       eventData: {
         stepName: 'syncStep',
@@ -219,12 +176,12 @@ async function runPreconditionScenario(options: {
     }),
     event({
       eventType: 'step_started',
-      specVersion: SPEC,
+      specVersion: SPEC_VERSION_CURRENT,
       correlationId: syncStep0CorrelationId,
     }),
     event({
       eventType: 'step_completed',
-      specVersion: SPEC,
+      specVersion: SPEC_VERSION_CURRENT,
       correlationId: syncStep0CorrelationId,
       eventData: {
         result: await dehydrateStepReturnValue(undefined, runId, undefined),
@@ -232,7 +189,7 @@ async function runPreconditionScenario(options: {
     }),
     event({
       eventType: 'wait_created',
-      specVersion: SPEC,
+      specVersion: SPEC_VERSION_CURRENT,
       correlationId: waitCorrelationId,
       eventData: { resumeAt: new Date(+startedAt - 1_000) },
     }),
@@ -242,30 +199,10 @@ async function runPreconditionScenario(options: {
 
   const staleEventsCursor = 'cursor-after-stale-events';
   const OUTSIDE_EVENT_MS = +startedAt + 5_000;
-  // Lands ahead of the winning delivery and is withheld from the page above
-  // the cursor, so an incremental top-up comes back holding fewer events than
-  // its own highest slot names.
-  const hiddenOutsideEvent = options.hideFirstOutsideEventFromCursor
-    ? event(
-        {
-          eventType: 'hook_received',
-          specVersion: SPEC,
-          correlationId: hookCorrelationId,
-          eventData: {
-            payload: await dehydrateStepReturnValue(
-              { value: 'hook-poke' },
-              runId,
-              undefined
-            ),
-          },
-        },
-        OUTSIDE_EVENT_MS - 1
-      )
-    : undefined;
   const hookReceivedEvent = event(
     {
       eventType: 'hook_received',
-      specVersion: SPEC,
+      specVersion: SPEC_VERSION_CURRENT,
       correlationId: hookCorrelationId,
       eventData: {
         payload: await dehydrateStepReturnValue(
@@ -296,9 +233,7 @@ async function runPreconditionScenario(options: {
     }) => {
       const data =
         params.pagination?.cursor === staleEventsCursor
-          ? durableEvents
-              .slice(staleEvents.length)
-              .filter((e) => e !== hiddenOutsideEvent)
+          ? durableEvents.slice(staleEvents.length)
           : [...durableEvents];
       return {
         data,
@@ -327,7 +262,6 @@ async function runPreconditionScenario(options: {
         stateUpdatedAt?: number;
         stateEventCount?: number;
         stateCursor?: string;
-        eventId?: string;
       }
     ) => {
       createParams.push({
@@ -335,7 +269,6 @@ async function runPreconditionScenario(options: {
         stateUpdatedAt: params?.stateUpdatedAt,
         stateEventCount: params?.stateEventCount,
         stateCursor: params?.stateCursor,
-        eventId: params?.eventId,
       });
 
       if (request.eventType === 'run_started') {
@@ -345,32 +278,11 @@ async function runPreconditionScenario(options: {
       if (request.eventType === 'wait_completed') {
         // The out-of-band hook payload becomes durable just before the
         // wait_completed commit — this is the exact race the guard closes.
-        if (hiddenOutsideEvent && !durableEvents.includes(hiddenOutsideEvent)) {
-          durableEvents.push(hiddenOutsideEvent);
-        }
         if (!durableEvents.includes(hookReceivedEvent)) {
           durableEvents.push(hookReceivedEvent);
         }
         if (waitCompletedRejections < (options.rejectWaitCompletedTimes ?? 0)) {
           waitCompletedRejections++;
-          // Both rejections say the same thing — "you decided from a log you
-          // had not fully seen" — and differ only in how the writer found out:
-          // a watermark comparison, or the slot it claimed already being
-          // occupied by the event it was missing.
-          if (options.slotIdentity) {
-            throw new SlotConflictError(
-              `Event ${params?.eventId} is already taken.`,
-              {
-                eventId: params?.eventId ?? '',
-                events:
-                  options.attachDelta === 'complete'
-                    ? [hookReceivedEvent]
-                    : undefined,
-                cursor:
-                  options.attachDelta === 'complete' ? 'cursor-409' : undefined,
-              }
-            );
-          }
           throw new PreconditionFailedError(
             'Run state is stale: the client event log is missing at least one event at or before its snapshot.',
             options.attachDelta === undefined
@@ -391,34 +303,17 @@ async function runPreconditionScenario(options: {
         !!request.eventData &&
         (request.eventData as { input?: unknown }).input !== undefined;
       let effectiveRequest = request;
-      // A claim covers the whole write and names the event being created, so a
-      // lazy start's synthesized step_created takes the position below the
-      // claim and the step_started the claim itself — the extra slot the caller
-      // reserved for exactly this.
-      let claimedEventId = params?.eventId;
-      const takeClaim = () => {
-        const claim = claimedEventId;
-        claimedEventId = undefined;
-        return claim;
-      };
       if (lazyStepStart) {
         const lazyData = request.eventData as {
           stepName?: string;
           input?: unknown;
         };
-        const claimedSlot = claimedEventId
-          ? slotFromId(claimedEventId)
-          : undefined;
-        const syntheticStepCreated = event(
-          {
-            eventType: 'step_created',
-            specVersion: SPEC,
-            correlationId: request.correlationId,
-            eventData: { stepName: lazyData.stepName, input: lazyData.input },
-          } as CreateEventRequest,
-          undefined,
-          claimedSlot ? `evnt_${slotIdBody(claimedSlot - 1)}` : undefined
-        );
+        const syntheticStepCreated = event({
+          eventType: 'step_created',
+          specVersion: SPEC_VERSION_CURRENT,
+          correlationId: request.correlationId,
+          eventData: { stepName: lazyData.stepName, input: lazyData.input },
+        } as CreateEventRequest);
         durableEvents.push(syntheticStepCreated);
         createdEvents.push(syntheticStepCreated);
         const { input: _strippedInput, ...startEventData } = lazyData;
@@ -428,7 +323,7 @@ async function runPreconditionScenario(options: {
         } as CreateEventRequest;
       }
 
-      const created = event(effectiveRequest, undefined, takeClaim());
+      const created = event(effectiveRequest);
       durableEvents.push(created);
       createdEvents.push(created);
       if (effectiveRequest.eventType === 'step_started') {
@@ -448,7 +343,7 @@ async function runPreconditionScenario(options: {
 
   const queue = vi.fn().mockResolvedValue({ messageId: 'msg_step' });
   const fakeWorld = {
-    specVersion: SPEC,
+    specVersion: SPEC_VERSION_CURRENT,
     createQueueHandler: vi.fn((_prefix, handler) => {
       capturedHandler = handler;
       return vi.fn();
@@ -1156,89 +1051,6 @@ describe('precondition guard through the real replay loop', () => {
     );
   });
 
-  it('heals a slot-numbered log from its cursor instead of reloading it whole', async () => {
-    const result = await runPreconditionScenario({
-      slotIdentity: true,
-      rejectWaitCompletedTimes: 1,
-    });
-    await result.handlerInvocation;
-
-    expect(result.waitCompletedRejectionCount()).toBe(1);
-    // Slot ids sort in write order, so the event the snapshot was missing is
-    // strictly above the cursor and one incremental page brings it in. The
-    // full reload the ULID path needs exists only because a hole defined by
-    // ULID time can sort below the cursor.
-    expect(cursorlessLoads(result.listEvents)).toBe(0);
-
-    const waitCreates = result.createParams.filter(
-      (c) => c.eventType === 'wait_completed'
-    );
-    expect(waitCreates).toHaveLength(2);
-    // No watermark is sent on a run that fences by position.
-    expect(waitCreates[0]?.stateUpdatedAt).toBeUndefined();
-    // The rejected claim sat at the position the hook had just taken; the
-    // restarted replay claims the one after it.
-    expect(slotFromId(waitCreates[1]?.eventId ?? '')).toBe(
-      (slotFromId(waitCreates[0]?.eventId ?? '') ?? 0) + 1
-    );
-
-    // Replay after the restart observed the hook and took the hook branch.
-    expect(result.createdEvents).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          eventType: 'step_created',
-          eventData: expect.objectContaining({ stepName: 'drainStep' }),
-        }),
-      ])
-    );
-  });
-
-  it('falls back to the full reload when a slot top-up leaves the log short of its own highest slot', async () => {
-    const result = await runPreconditionScenario({
-      slotIdentity: true,
-      rejectWaitCompletedTimes: 1,
-      hideFirstOutsideEventFromCursor: true,
-    });
-    await result.handlerInvocation;
-
-    // A slot log is dense from slot 1, so a complete one holds exactly
-    // `maxSlot` events. The page above the cursor withheld one, the count came
-    // up short, and the restart fell through to the authoritative load — the
-    // check is what lets the cheap path be taken in the first place.
-    expect(cursorlessLoads(result.listEvents)).toBe(1);
-    expect(
-      result.createParams.filter((c) => c.eventType === 'wait_completed')
-    ).toHaveLength(2);
-    expect(result.createdEvents).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          eventType: 'step_created',
-          eventData: expect.objectContaining({ stepName: 'drainStep' }),
-        }),
-      ])
-    );
-  });
-
-  it('spends a larger in-process restart budget when restarts heal from the cursor', async () => {
-    // One more rejection than a reloading run is allowed to absorb. That run
-    // would be out of budget and re-invoked; this one keeps recovering in
-    // process, because each of its restarts costs one incremental page rather
-    // than a full reload and so is not worth a queue hop to avoid.
-    const rejections = PRECONDITION_MAX_INPROCESS_RESTARTS + 1;
-    const result = await runPreconditionScenario({
-      slotIdentity: true,
-      rejectWaitCompletedTimes: rejections,
-    });
-
-    await expect(result.handlerInvocation).resolves.toBeUndefined();
-    expect(result.waitCompletedRejectionCount()).toBe(rejections);
-    expect(
-      result.createParams.filter((c) => c.eventType === 'wait_completed')
-    ).toHaveLength(rejections + 1);
-    // Every one of them healed from the cursor.
-    expect(cursorlessLoads(result.listEvents)).toBe(0);
-  });
-
   it('falls back to the full reload when the 412 payload does not narrow to events', async () => {
     const result = await runPreconditionScenario({
       rejectWaitCompletedTimes: 1,
@@ -1265,31 +1077,6 @@ describe('precondition guard through the real replay loop', () => {
     // trusted again — the second restart does the authoritative full reload.
     expect(result.waitCompletedRejectionCount()).toBe(2);
     expect(cursorlessLoads(result.listEvents)).toBe(1);
-  });
-
-  it('trusts an attached delta on every restart of a slot-numbered run', async () => {
-    const warn = vi.spyOn(runtimeLogger, 'warn');
-    const result = await runPreconditionScenario({
-      slotIdentity: true,
-      rejectWaitCompletedTimes: 2,
-      attachDelta: 'complete',
-    });
-    await result.handlerInvocation;
-
-    // Density checks the merged log here, so a delta that left a hole would be
-    // caught rather than replayed over. Nothing rests on the World's own
-    // bookkeeping, and no restart has to spend a load of any kind to be sure.
-    expect(result.waitCompletedRejectionCount()).toBe(2);
-    expect(cursorlessLoads(result.listEvents)).toBe(0);
-    expect(
-      warn.mock.calls
-        .filter(
-          ([message]) =>
-            message ===
-            'Event creation rejected as stale; restarting replay in-process'
-        )
-        .map(([, fields]) => (fields as { source?: string }).source)
-    ).toEqual(['inline-delta', 'inline-delta']);
   });
 
   it('reports whether a restarted replay reloaded the events it was missing', async () => {

@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { WorkflowWorldError } from '@workflow/errors';
-import { FIRST_SLOT, maxSlotOf, slotEventId } from '@workflow/world';
+import { eventIdToSlot } from '@workflow/world';
 import { lock } from 'proper-lockfile';
 import { decodeTime, monotonicFactory } from 'ulid';
 import { z } from 'zod';
@@ -215,46 +215,6 @@ export async function reapPendingHookEvents(
 }
 
 /**
- * The event ids of `runId` that are visible in the given tag's view, read from
- * the event filenames alone — no file contents, so the cost is one `readdir`
- * however large the log is.
- *
- * A missing `events` directory means the run provably has no events yet. Any
- * other failure is thrown: callers derive an event key from this scan, and a
- * silently short answer would mint a key that collides with, or fails to
- * dominate, an event that is actually there.
- */
-export async function listRunEventIds(
-  basedir: string,
-  runId: string,
-  tag?: string
-): Promise<string[]> {
-  let files: string[] = [];
-  try {
-    files = await fs.readdir(path.join(basedir, 'events'));
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
-      throw error;
-    }
-  }
-  const prefix = `${runId}-`;
-  const eventIds: string[] = [];
-  for (const file of files) {
-    if (!file.startsWith(prefix) || !file.endsWith('.json')) {
-      continue;
-    }
-    const fileId = file.slice(0, -'.json'.length);
-    // Mirror read visibility: untagged files are visible to every tag,
-    // tagged files only to their own tag.
-    if (!isUntagged(fileId) && !(tag && hasTag(fileId, tag))) {
-      continue;
-    }
-    eventIds.push(stripTag(fileId).slice(prefix.length));
-  }
-  return eventIds;
-}
-
-/**
  * Mint an event key (eventId + createdAt) that sorts strictly AFTER every
  * reader-visible event of the run in the given tag's view.
  *
@@ -276,42 +236,23 @@ export async function listRunEventIds(
  * `createImpl()` entry — before its publish, and thus before this call.
  * Equal-`createdAt` ties fall to the strictly-dominant eventId.
  *
- * In slot mode the event takes the slot above the highest visible one, which
- * dominates by construction, paired with the wall clock — `createdAt` needs
- * only to be >= every visible one, by the same argument as above. This is
- * the one allocation that deliberately does *not* fill a hole below the max:
- * a lower slot would sort before the events it has to follow, and density
- * matters less here than replay order, since a hole below a terminal event
- * means the run already lost an event it can never write.
+ * ULID-numbered runs only. A slot-numbered run needs no temporal argument:
+ * the next slot dominates every allocated one by construction, so its
+ * terminal transition just draws from the run's slot allocator after the
+ * reap. Callers pick the branch (see `mintDominantEventKey` in
+ * events-storage.ts).
  */
 export async function mintRunDominantEventKey(
   basedir: string,
   runId: string,
-  tag: string | undefined,
-  slotMode: boolean
+  tag?: string
 ): Promise<{ eventId: string; createdAt: Date }> {
-  const eventIds = await listRunEventIds(basedir, runId, tag);
-  if (slotMode) {
-    // Above every event on disk, and above the run's own first slot even when
-    // that event has not landed yet: only `run_created` may occupy it, and a
-    // terminal event is never the run's first.
-    return {
-      eventId: slotEventId(
-        Math.max(maxSlotOf(eventIds.map(toEventRef)), FIRST_SLOT) + 1
-      ),
-      createdAt: new Date(),
-    };
-  }
-  let maxUlid: string | null = null;
-  for (const candidate of eventIds) {
-    if (!maxUlid || candidate > maxUlid) {
-      maxUlid = candidate;
-    }
-  }
+  const scan = await scanRunEventIds(basedir, runId, tag);
+
   let ts = Date.now();
-  if (maxUlid) {
+  if (scan.maxId) {
     try {
-      const maxTs = decodeTime(maxUlid.replace(/^evnt_/, ''));
+      const maxTs = decodeTime(scan.maxId.replace(/^evnt_/, ''));
       if (ts <= maxTs) {
         ts = maxTs + 1;
       }
@@ -322,8 +263,81 @@ export async function mintRunDominantEventKey(
   return { eventId: `evnt_${monotonicUlid(ts)}`, createdAt: new Date(ts) };
 }
 
-function toEventRef(eventId: string): { eventId: string } {
-  return { eventId };
+/**
+ * What a run's already-published event ids say about its identity scheme.
+ *
+ * A run keeps the scheme it was created under for its whole life (a log may
+ * not mix ULID and slot ids — `events.list` sorts on the id, and the two
+ * schemes do not interleave), so the ids on disk are the authoritative pin.
+ * `usesSlots` is false for a run with no events yet; the caller decides what a
+ * brand-new run gets.
+ */
+export interface RunEventIdScan {
+  /** Highest reader-visible event id, or null when the run has no events. */
+  maxId: string | null;
+  /** Whether the run's ids are slot-numbered. */
+  usesSlots: boolean;
+  /** Highest allocated slot, or 0 when the run has none. */
+  maxSlot: number;
+  /** Number of reader-visible events found for the run. */
+  count: number;
+  /** Reader-visible event ids, tag stripped, in directory order. */
+  ids: string[];
+}
+
+/**
+ * Scans the events directory for one run's ids, honoring tag visibility.
+ *
+ * O(all event files), like every other directory-walking read in this
+ * backend. Callers that run it per write memoize the result and use the
+ * publish itself to detect when the memo has fallen behind.
+ */
+export async function scanRunEventIds(
+  basedir: string,
+  runId: string,
+  tag?: string
+): Promise<RunEventIdScan> {
+  let files: string[] = [];
+  try {
+    files = await fs.readdir(path.join(basedir, 'events'));
+  } catch (error) {
+    // Only ENOENT ("no events directory yet") means there is provably
+    // nothing visible. Any other failure would silently report an empty run,
+    // which would mint a colliding slot / a non-dominant ULID — let the
+    // caller's retry re-run the scan instead.
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+      throw error;
+    }
+  }
+  const prefix = `${runId}-`;
+  const ids: string[] = [];
+  let maxId: string | null = null;
+  let maxSlot = 0;
+  let usesSlots = false;
+  let count = 0;
+  for (const file of files) {
+    if (!file.startsWith(prefix) || !file.endsWith('.json')) {
+      continue;
+    }
+    const fileId = file.slice(0, -'.json'.length);
+    // Mirror read visibility: untagged files are visible to every tag,
+    // tagged files only to their own tag.
+    if (!isUntagged(fileId) && !(tag && hasTag(fileId, tag))) {
+      continue;
+    }
+    const candidate = stripTag(fileId).slice(prefix.length);
+    count += 1;
+    ids.push(candidate);
+    if (!maxId || candidate > maxId) {
+      maxId = candidate;
+    }
+    const slot = eventIdToSlot(candidate);
+    if (slot !== null) {
+      usesSlots = true;
+      if (slot > maxSlot) maxSlot = slot;
+    }
+  }
+  return { maxId, usesSlots, maxSlot, count, ids };
 }
 
 /**

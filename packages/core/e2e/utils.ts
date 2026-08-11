@@ -659,11 +659,7 @@ async function getRunDiagnostics(tracked: TrackedRun): Promise<string> {
           const elapsed = baseTime
             ? ((event.createdAt?.getTime?.() ?? 0) - baseTime) / 1000
             : 0;
-          // The event's own id leads the line: on a run numbering its events
-          // by position it says where in the log the event sits, which is what
-          // a diagnosis of an out-of-order or gapped log needs and what the
-          // correlation id below cannot report.
-          const prefix = `  ${event.eventId} +${elapsed.toFixed(1)}s`;
+          const prefix = `  +${elapsed.toFixed(1)}s`;
           let detail = event.eventType;
           if ('eventData' in event) {
             const data = (event as any).eventData;
