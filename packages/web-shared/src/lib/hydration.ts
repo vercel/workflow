@@ -58,6 +58,16 @@ function base64ToArrayBuffer(base64: string): ArrayBuffer {
 // Web revivers (browser-safe, no Buffer dependency)
 // ---------------------------------------------------------------------------
 
+type ErrorValue = { message: string; stack?: string; cause?: unknown };
+
+function makeWebError(name: string, value: ErrorValue): Error {
+  const opts = 'cause' in value ? { cause: value.cause } : undefined;
+  const error = new Error(value.message, opts);
+  error.name = name;
+  if (value.stack !== undefined) error.stack = value.stack;
+  return error;
+}
+
 /**
  * Build a reviver for one of the built-in `Error` subclasses (e.g.
  * `TypeError`, `RangeError`). The constructor for the named subclass is
@@ -90,10 +100,8 @@ function makeWebErrorSubclassReviver(
     if (typeof Ctor === 'function') {
       error = new Ctor(value.message, opts);
     } else {
-      // Fallback path: no built-in subclass available (exotic env). Construct
-      // a plain Error with the right `name` and copy `cause` manually since
-      // the base Error constructor is what we actually called.
-      error = Object.assign(new Error(value.message, opts), { name });
+      // Keep rendering in environments without this built-in subclass.
+      error = makeWebError(name, value);
     }
     if (value.stack !== undefined) error.stack = value.stack;
     return error;
@@ -136,7 +144,8 @@ export function getWebRevivers(): Revivers {
     // `packages/core/src/serialization/reducers/common.ts`) emits a tagged
     // entry for each built-in Error subclass plus the workflow-specific
     // `FatalError` / `RetryableError` / `HookConflictError` /
-    // `RuntimeDecryptionError` and `AggregateError`. Without
+    // `WorkflowStartError` / `RuntimeDecryptionError` and `AggregateError`.
+    // Without
     // matching revivers here, `devalue.unflatten` throws "Unknown type X",
     // which surfaces in the web o11y UI as "Failed to load resource
     // details: Unknown type FatalError".
@@ -177,34 +186,31 @@ export function getWebRevivers(): Revivers {
     // class label, but we don't have the real class, so we emit a tagged
     // Error whose `name` field carries the class identity. This matches
     // how the existing base `Error` reviver presents unknown subclasses.
-    FatalError: (value) => {
-      const opts = 'cause' in value ? { cause: value.cause } : undefined;
-      const error = new Error(value.message, opts);
-      error.name = 'FatalError';
-      if (value.stack !== undefined) error.stack = value.stack;
-      return error;
-    },
+    FatalError: (value) => makeWebError('FatalError', value),
     HookConflictError: (value) => {
-      const opts = 'cause' in value ? { cause: value.cause } : undefined;
-      const error = new Error(value.message, opts) as Error & {
+      const error = makeWebError('HookConflictError', value) as Error & {
         token?: string;
         conflictingRunId?: string;
       };
-      error.name = 'HookConflictError';
       error.token = value.token;
       if (value.conflictingRunId !== undefined) {
         error.conflictingRunId = value.conflictingRunId;
       }
-      if (value.stack !== undefined) error.stack = value.stack;
+      return error;
+    },
+    WorkflowStartError: (value) => {
+      const error = makeWebError('WorkflowStartError', value) as Error & {
+        runId: string;
+        stage: string;
+      };
+      error.runId = value.runId;
+      error.stage = value.stage;
       return error;
     },
     RetryableError: (value) => {
-      const opts = 'cause' in value ? { cause: value.cause } : undefined;
-      const error = new Error(value.message, opts) as Error & {
+      const error = makeWebError('RetryableError', value) as Error & {
         retryAfter?: Date;
       };
-      error.name = 'RetryableError';
-      if (value.stack !== undefined) error.stack = value.stack;
       // `retryAfter` is serialized as an epoch ms number (see the runtime
       // RetryableError reducer for the rationale around realm-safety).
       // Rehydrate as a Date so o11y consumers can render it directly.
@@ -217,15 +223,12 @@ export function getWebRevivers(): Revivers {
       return error;
     },
     RuntimeDecryptionError: (value) => {
-      const opts = 'cause' in value ? { cause: value.cause } : undefined;
-      const error = new Error(value.message, opts) as Error & {
+      const error = makeWebError('RuntimeDecryptionError', value) as Error & {
         context?: unknown;
       };
-      error.name = 'RuntimeDecryptionError';
       if (value.context !== undefined) {
         error.context = value.context;
       }
-      if (value.stack !== undefined) error.stack = value.stack;
       return error;
     },
     DOMException: (value) => {
@@ -239,13 +242,7 @@ export function getWebRevivers(): Revivers {
         if ('cause' in value) (e as { cause?: unknown }).cause = value.cause;
         return e;
       }
-      const error = new Error(value.message);
-      error.name = value.name;
-      if (value.stack !== undefined) error.stack = value.stack;
-      if ('cause' in value) {
-        (error as Error & { cause?: unknown }).cause = value.cause;
-      }
-      return error;
+      return makeWebError(value.name, value);
     },
     Float32Array: (value: string) => new Float32Array(reviveArrayBuffer(value)),
     Float64Array: (value: string) => new Float64Array(reviveArrayBuffer(value)),

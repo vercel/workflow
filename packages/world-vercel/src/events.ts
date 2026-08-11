@@ -50,6 +50,7 @@ import {
   type ListEventsByCorrelationIdParams,
   type ListEventsParams,
   type PaginatedResponse,
+  type StartHook,
   validateUlidTimestamp,
   type WorkflowRun,
 } from '@workflow/world';
@@ -134,6 +135,8 @@ interface SplitEventData {
     executionContext?: Record<string, unknown>;
     /** Initial run attributes (run_created / resilient-start run_started). */
     attributes?: Record<string, string>;
+    /** Atomic start Hook admission data. */
+    startHook?: StartHook;
     /** attr_set change list, included verbatim in frame meta. */
     changes?: Array<Record<string, unknown>>;
     /** attr_set writer provenance, included verbatim in frame meta. */
@@ -190,6 +193,7 @@ type MetaSourceField =
   | 'ownerMessageId'
   | 'executionContext'
   | 'attributes'
+  | 'startHook'
   | 'changes'
   | 'writer'
   | 'allowReservedAttributes'
@@ -334,6 +338,9 @@ export function splitEventDataForV4(data: AnyEventRequest): SplitEventData {
     typeof eventData.attributes === 'object'
   ) {
     meta.attributes = eventData.attributes as Record<string, string>;
+  }
+  if (eventData.startHook !== undefined) {
+    meta.startHook = eventData.startHook as StartHook;
   }
   if (Array.isArray(eventData.changes)) {
     meta.changes = eventData.changes as Array<Record<string, unknown>>;

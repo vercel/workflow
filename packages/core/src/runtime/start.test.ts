@@ -1,4 +1,11 @@
-import { WorkflowRuntimeError, WorkflowWorldError } from '@workflow/errors';
+import {
+  FatalError,
+  HookConflictError,
+  START_HOOK_ADMISSION_REJECTED,
+  WorkflowRuntimeError,
+  WorkflowStartError,
+  WorkflowWorldError,
+} from '@workflow/errors';
 import {
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_LEGACY,
@@ -915,6 +922,327 @@ describe('start', () => {
         }),
         expect.anything()
       );
+    });
+  });
+
+  describe('atomic start Hook', () => {
+    const now = new Date('2026-08-10T12:00:00.000Z');
+    const validWorkflow = Object.assign(() => Promise.resolve('result'), {
+      workflowId: 'test-workflow',
+    });
+    let eventsCreate: ReturnType<typeof vi.fn>;
+    let queue: ReturnType<typeof vi.fn>;
+
+    beforeEach(() => {
+      vi.useFakeTimers();
+      vi.setSystemTime(now);
+      eventsCreate = vi.fn(async (runId) => ({
+        run: { runId, status: 'pending' },
+      }));
+      queue = vi.fn().mockResolvedValue(undefined);
+      setWorld({
+        specVersion: SPEC_VERSION_CURRENT,
+        capabilities: {
+          atomicStartHook: { active: true },
+          hookRetention: { active: true },
+        },
+        getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
+        events: { create: eventsCreate },
+        queue,
+      });
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+      setWorld(undefined);
+      vi.clearAllMocks();
+    });
+
+    it.each([
+      ['duration string', '1m', 60_000],
+      ['milliseconds', 5_000, 5_000],
+      ['absolute Date', new Date(+now + 10_000), 10_000],
+    ] as const)('normalizes a %s once and queues it before admission', async (_label, retention, offset) => {
+      await start(validWorkflow, [], {
+        hook: {
+          token: 'order:123',
+          experimental_minRetention: retention,
+        },
+      });
+
+      const queuedHook = queue.mock.calls[0][1].runInput.startHook;
+      const admittedHook = eventsCreate.mock.calls[0][1].eventData.startHook;
+      expect(queuedHook).toEqual({
+        token: 'order:123',
+        tokenRetentionUntil: new Date(+now + offset),
+      });
+      expect(admittedHook).toEqual(queuedHook);
+      expect(queue.mock.invocationCallOrder[0]).toBeLessThan(
+        eventsCreate.mock.invocationCallOrder[0]
+      );
+      expect(queue.mock.calls[0][2]).toMatchObject({
+        idempotencyKey: eventsCreate.mock.calls[0][0],
+      });
+    });
+
+    it('fails before side effects when the World lacks support', async () => {
+      setWorld({
+        specVersion: SPEC_VERSION_CURRENT,
+        getDeploymentId: vi.fn(),
+        events: { create: eventsCreate },
+        queue,
+      } as any);
+
+      await expect(
+        start(validWorkflow, [], { hook: { token: 'order:123' } })
+      ).rejects.toThrow('does not support atomic start Hooks');
+      expect(queue).not.toHaveBeenCalled();
+      expect(eventsCreate).not.toHaveBeenCalled();
+    });
+
+    it('requires Hook retention support only when retention is requested', async () => {
+      setWorld({
+        specVersion: SPEC_VERSION_CURRENT,
+        capabilities: { atomicStartHook: { active: true } },
+        getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
+        events: { create: eventsCreate },
+        queue,
+      } as any);
+
+      await start(validWorkflow, [], { hook: { token: 'order:123' } });
+      await expect(
+        start(validWorkflow, [], {
+          hook: {
+            token: 'order:456',
+            experimental_minRetention: '1m',
+          },
+        })
+      ).rejects.toThrow('does not support Hook retention');
+      expect(queue).toHaveBeenCalledOnce();
+      expect(eventsCreate).toHaveBeenCalledOnce();
+    });
+
+    it.each([
+      0,
+      new Date(+now - 1),
+    ])('rejects a retention time that is not in the future', async (retention) => {
+      await expect(
+        start(validWorkflow, [], {
+          hook: {
+            token: 'order:123',
+            experimental_minRetention: retention,
+          },
+        })
+      ).rejects.toThrow('must resolve to a future time');
+      expect(queue).not.toHaveBeenCalled();
+    });
+
+    it('surfaces the winning run when admission rejects a duplicate', async () => {
+      eventsCreate.mockRejectedValue(
+        new HookConflictError('order:123', 'wrun_winner')
+      );
+
+      const error = await start(validWorkflow, [], {
+        hook: { token: 'order:123' },
+      }).catch((cause) => cause);
+
+      expect(error).toMatchObject({
+        name: 'HookConflictError',
+        conflictingRunId: 'wrun_winner',
+      });
+      expect(FatalError.is(error)).toBe(true);
+      expect(queue).toHaveBeenCalledOnce();
+    });
+
+    it.each([
+      ['queue', () => queue.mockRejectedValue(new Error('offline'))],
+      [
+        'admission',
+        () =>
+          eventsCreate.mockRejectedValue(
+            new WorkflowWorldError('unavailable', { status: 503 })
+          ),
+      ],
+    ] as const)('reports uncertain %s outcomes', async (stage, fail) => {
+      fail();
+
+      const error = await start(validWorkflow, [], {
+        hook: { token: 'order:123' },
+      }).catch((cause) => cause);
+
+      expect(error).toBeInstanceOf(WorkflowStartError);
+      expect(error).toMatchObject({ stage });
+      expect(error.runId).toMatch(/^wrun_/);
+      expect(FatalError.is(error)).toBe(true);
+    });
+
+    it.each([
+      'queue',
+      'admission',
+    ] as const)('surfaces deterministic %s rejections without wrapping them', async (stage) => {
+      const rejection = new WorkflowWorldError('invalid token', {
+        status: 400,
+        ...(stage === 'admission'
+          ? { code: START_HOOK_ADMISSION_REJECTED }
+          : {}),
+      });
+      (stage === 'queue' ? queue : eventsCreate).mockRejectedValue(rejection);
+
+      await expect(
+        start(validWorkflow, [], { hook: { token: 'order:123' } })
+      ).rejects.toBe(rejection);
+      expect(FatalError.is(rejection)).toBe(true);
+    });
+
+    it('wraps unrelated admission errors as uncertain', async () => {
+      const rejection = new WorkflowWorldError('invalid response', {
+        status: 400,
+      });
+      eventsCreate.mockRejectedValue(rejection);
+
+      const error = await start(validWorkflow, [], {
+        hook: { token: 'order:123' },
+      }).catch((cause) => cause);
+
+      expect(error).toBeInstanceOf(WorkflowStartError);
+      expect(error).toMatchObject({
+        stage: 'admission',
+        cause: rejection,
+        fatal: true,
+      });
+    });
+
+    it('requires the target deployment to report support', async () => {
+      const healthResponse = JSON.stringify({
+        healthy: true,
+        specVersion: SPEC_VERSION_CURRENT,
+      });
+      setWorld({
+        specVersion: SPEC_VERSION_CURRENT,
+        capabilities: { atomicStartHook: { active: true } },
+        getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
+        events: { create: eventsCreate },
+        queue,
+        streams: {
+          get: vi.fn(
+            async () =>
+              new ReadableStream<Uint8Array>({
+                start(controller) {
+                  controller.enqueue(new TextEncoder().encode(healthResponse));
+                  controller.close();
+                },
+              })
+          ),
+        },
+      } as any);
+
+      await expect(
+        start(validWorkflow, [], {
+          deploymentId: 'deploy_other',
+          hook: { token: 'order:123' },
+        })
+      ).rejects.toThrow('target deployment does not support');
+      expect(eventsCreate).not.toHaveBeenCalled();
+      expect(queue).toHaveBeenCalledOnce();
+      expect(queue.mock.calls[0][0]).toBe('__wkf_workflow_health_check');
+    });
+
+    it('reports probe failures separately from unsupported targets', async () => {
+      queue.mockRejectedValueOnce(new Error('offline'));
+      setWorld({
+        specVersion: SPEC_VERSION_CURRENT,
+        capabilities: { atomicStartHook: { active: true } },
+        getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
+        events: { create: eventsCreate },
+        queue,
+        streams: { get: vi.fn() },
+      } as any);
+
+      const error = await start(validWorkflow, [], {
+        deploymentId: 'deploy_other',
+        hook: { token: 'order:123' },
+      }).catch((cause) => cause);
+
+      expect(error).toMatchObject({ name: 'WorkflowWorldError' });
+      expect(error.message).toContain(
+        'Could not verify atomic start Hook support: offline'
+      );
+      expect(error.message).not.toContain('does not support');
+      expect(FatalError.is(error)).toBe(false);
+      expect(eventsCreate).not.toHaveBeenCalled();
+      expect(queue).toHaveBeenCalledOnce();
+    });
+
+    it('keeps probe failures best-effort for ordinary starts', async () => {
+      const healthResponse = JSON.stringify({
+        healthy: false,
+        error: 'maintenance',
+      });
+      setWorld({
+        specVersion: SPEC_VERSION_CURRENT,
+        getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
+        events: { create: eventsCreate },
+        queue,
+        streams: {
+          get: vi.fn(
+            async () =>
+              new ReadableStream<Uint8Array>({
+                start(controller) {
+                  controller.enqueue(new TextEncoder().encode(healthResponse));
+                  controller.close();
+                },
+              })
+          ),
+        },
+      } as any);
+
+      await expect(
+        start(validWorkflow, [], { deploymentId: 'deploy_other' })
+      ).resolves.toBeDefined();
+      expect(eventsCreate).toHaveBeenCalledOnce();
+      expect(queue).toHaveBeenCalledTimes(2);
+    });
+
+    it('requires the target deployment to support requested retention', async () => {
+      const healthResponse = JSON.stringify({
+        healthy: true,
+        specVersion: SPEC_VERSION_CURRENT,
+        capabilities: { atomicStartHook: { active: true } },
+      });
+      setWorld({
+        specVersion: SPEC_VERSION_CURRENT,
+        capabilities: {
+          atomicStartHook: { active: true },
+          hookRetention: { active: true },
+        },
+        getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
+        events: { create: eventsCreate },
+        queue,
+        streams: {
+          get: vi.fn(
+            async () =>
+              new ReadableStream<Uint8Array>({
+                start(controller) {
+                  controller.enqueue(new TextEncoder().encode(healthResponse));
+                  controller.close();
+                },
+              })
+          ),
+        },
+      } as any);
+
+      await expect(
+        start(validWorkflow, [], {
+          deploymentId: 'deploy_other',
+          hook: {
+            token: 'order:123',
+            experimental_minRetention: '1m',
+          },
+        })
+      ).rejects.toThrow('target deployment does not support Hook retention');
+      expect(eventsCreate).not.toHaveBeenCalled();
+      expect(queue).toHaveBeenCalledOnce();
+      expect(queue.mock.calls[0][0]).toBe('__wkf_workflow_health_check');
     });
   });
 

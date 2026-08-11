@@ -177,6 +177,13 @@ const SERIALIZABLE_PAYLOADS: Record<string, unknown[]> = {
     { workflowId: 2 },
     'workflow//example',
   ],
+  WorkflowStartError: [
+    ['WorkflowStartError', 1],
+    { message: 2, runId: 3, stage: 4 },
+    'Could not confirm admission',
+    'wrun_candidate',
+    'admission',
+  ],
   WritableStream: [['WritableStream', 1], { name: 2 }, 'stream-a'],
 };
 

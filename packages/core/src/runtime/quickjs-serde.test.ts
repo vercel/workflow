@@ -19,6 +19,7 @@
 
 import fs from 'node:fs';
 import { createRequire } from 'node:module';
+import { WorkflowStartError } from '@workflow/errors';
 import { QuickJS } from 'quickjs-wasi';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
@@ -523,6 +524,74 @@ describe('NUL (U+0000) safety across the WASM boundary', () => {
 });
 
 describe('workflow-specific reducers', () => {
+  it('round-trips WorkflowStartError through its registered guest class', () => {
+    vm.evalCode(`
+      class WorkflowStartError extends Error {
+        constructor(runId, stage, cause) {
+          super(
+            'Failed to ' + (stage === 'queue' ? 'queue' : 'admit') +
+              ' workflow run "' + runId + '": ' + cause.message,
+            { cause }
+          );
+          this.name = 'WorkflowStartError';
+          this.fatal = true;
+          this.runId = runId;
+          this.stage = stage;
+        }
+      }
+      globalThis[Symbol.for('@workflow/errors//WorkflowStartError')] = WorkflowStartError;
+    `).dispose();
+
+    const guestBytes = serializeGuest(`(() => {
+      const cause = new Error('gateway timed out');
+      cause.stack = 'cause-stack';
+      const error = new globalThis[Symbol.for('@workflow/errors//WorkflowStartError')](
+        'wrun_candidate',
+        'admission',
+        cause
+      );
+      error.stack = 'start-stack';
+      return error;
+    })()`);
+    const cause = new Error('gateway timed out');
+    cause.stack = 'cause-stack';
+    const hostError = new WorkflowStartError(
+      'wrun_candidate',
+      'admission',
+      cause
+    );
+    hostError.stack = 'start-stack';
+
+    expect(text(guestBytes)).toBe(text(referenceSerialize(hostError)));
+    expect(
+      checkInGuest(
+        guestBytes,
+        `function (error) {
+          const Ctor = globalThis[Symbol.for('@workflow/errors//WorkflowStartError')];
+          return [
+            error instanceof Ctor,
+            error.runId,
+            error.stage,
+            error.message,
+            error.stack,
+            error.cause.message,
+            error.cause.stack,
+            error.fatal,
+          ];
+        }`
+      )
+    ).toEqual([
+      true,
+      'wrun_candidate',
+      'admission',
+      'Failed to admit workflow run "wrun_candidate": gateway timed out',
+      'start-stack',
+      'gateway timed out',
+      'cause-stack',
+      true,
+    ]);
+  });
+
   it('step function proxies round-trip through StepFunction (with closure vars and bound this)', () => {
     // Minimal WORKFLOW_USE_STEP mirroring the runtime bootstrap's proxy shape.
     vm.evalCode(`

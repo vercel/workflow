@@ -1,7 +1,9 @@
 import {
   EntityConflictError,
+  HookConflictError,
   PreconditionFailedError,
   RUN_ERROR_CODES,
+  START_HOOK_ADMISSION_REJECTED,
   ThrottleError,
   WorkflowWorldError,
 } from '@workflow/errors';
@@ -2216,6 +2218,7 @@ describe('workflowEntrypoint turbo mode', () => {
       workflowName: 'workflow',
       specVersion: SPEC_VERSION_CURRENT,
       executionContext: {},
+      encryptionPublicKey: 'test-public-key',
     };
   }
 
@@ -2232,6 +2235,8 @@ describe('workflowEntrypoint turbo mode', () => {
     runStartedGate?: Promise<void>;
     currentDeploymentId?: string;
     encryptionKeyError?: Error;
+    startHook?: { token: string };
+    runStartedError?: Error;
   }) {
     const { runId, attempt, source } = opts;
     const order = turboOrder;
@@ -2261,6 +2266,7 @@ describe('workflowEntrypoint turbo mode', () => {
 
     const eventsCreate = vi.fn(async (_runId: string, data: any) => {
       if (data.eventType === 'run_started') {
+        if (opts.runStartedError) throw opts.runStartedError;
         if (opts.runStartedGate) await opts.runStartedGate;
         order.push('run_started_resolved');
         return { run: runEntity, events: [] as Event[] };
@@ -2311,7 +2317,10 @@ describe('workflowEntrypoint turbo mode', () => {
               {
                 runId,
                 requestedAt: new Date('2024-01-01T00:00:00.000Z'),
-                runInput: await makeRunInput(runId),
+                runInput: {
+                  ...(await makeRunInput(runId)),
+                  ...(opts.startHook ? { startHook: opts.startHook } : {}),
+                },
               },
               {
                 requestId: 'req_turbo',
@@ -2383,6 +2392,9 @@ describe('workflowEntrypoint turbo mode', () => {
       (c) => (c[1] as any).eventType === 'run_started'
     );
     expect(runStartedCreates).toHaveLength(1);
+    expect(runStartedCreates[0]?.[1].eventData.encryptionPublicKey).toBe(
+      'test-public-key'
+    );
   });
 
   it('handles a speculative key rejection when turbo exits before replay', async () => {
@@ -2418,6 +2430,80 @@ describe('workflowEntrypoint turbo mode', () => {
     expect(order.indexOf('run_started_resolved')).toBeLessThan(
       order.indexOf('body')
     );
+  });
+
+  it('awaits atomic start Hook admission before running user code', async () => {
+    const startHook = { token: 'order:123' };
+    const { handlerPromise, order, eventsCreate } = await driveTurbo({
+      runId: 'wrun_atomic_start_hook',
+      attempt: 1,
+      source: oneStepWorkflow,
+      startHook,
+    });
+
+    expect((await handlerPromise).status).toBe(204);
+    expect(order.indexOf('run_started_resolved')).toBeLessThan(
+      order.indexOf('body')
+    );
+    const runStarted = eventsCreate.mock.calls.find(
+      (call) => call[1].eventType === 'run_started'
+    );
+    expect(runStarted?.[1].eventData.startHook).toEqual(startHook);
+  });
+
+  it('acknowledges a queued atomic-start loser without running user code', async () => {
+    const { handlerPromise, order, eventsCreate } = await driveTurbo({
+      runId: 'wrun_atomic_start_loser',
+      attempt: 1,
+      source: oneStepWorkflow,
+      startHook: { token: 'order:123' },
+      runStartedError: new HookConflictError('order:123', 'wrun_winner'),
+    });
+
+    expect((await handlerPromise).status).toBe(204);
+    expect(order).not.toContain('body');
+    expect(
+      eventsCreate.mock.calls.some((call) => call[1].eventType === 'run_failed')
+    ).toBe(false);
+  });
+
+  it('acknowledges a permanent atomic-start admission rejection', async () => {
+    const { handlerPromise, order, eventsCreate } = await driveTurbo({
+      runId: 'wrun_atomic_start_rejected',
+      attempt: 1,
+      source: oneStepWorkflow,
+      startHook: { token: 'order:123' },
+      runStartedError: new WorkflowWorldError('retention exceeds limit', {
+        status: 400,
+        code: START_HOOK_ADMISSION_REJECTED,
+      }),
+    });
+
+    expect((await handlerPromise).status).toBe(204);
+    expect(order).not.toContain('body');
+    expect(
+      eventsCreate.mock.calls.some((call) => call[1].eventType === 'run_failed')
+    ).toBe(false);
+  });
+
+  it('records unrelated World contract errors on atomic starts', async () => {
+    const { handlerPromise, order, eventsCreate } = await driveTurbo({
+      runId: 'wrun_atomic_start_world_error',
+      attempt: 1,
+      source: oneStepWorkflow,
+      startHook: { token: 'order:123' },
+      runStartedError: new WorkflowWorldError('invalid response', {
+        code: RUN_ERROR_CODES.WORLD_CONTRACT_ERROR,
+      }),
+    });
+
+    expect((await handlerPromise).status).toBe(204);
+    expect(order).not.toContain('body');
+    expect(
+      eventsCreate.mock.calls.filter(
+        (call) => call[1].eventType === 'run_failed'
+      )
+    ).toHaveLength(1);
   });
 
   it('does not turbo when WORKFLOW_TURBO=0 (parity with the awaited path)', async () => {

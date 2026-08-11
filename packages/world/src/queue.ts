@@ -1,4 +1,5 @@
 import { z } from 'zod/v4';
+import { RunCreationDataSchema } from './events.js';
 
 export type QueueKind = 'workflow';
 
@@ -97,20 +98,8 @@ export type TraceCarrier = z.infer<typeof TraceCarrierSchema>;
  * When the runtime processes the message, it passes this data to the
  * run_started event so the server can create the run if it doesn't exist yet.
  */
-export const RunInputSchema = z.object({
-  input: z.unknown(),
-  deploymentId: z.string(),
-  workflowName: z.string(),
+export const RunInputSchema = RunCreationDataSchema.extend({
   specVersion: z.number(),
-  executionContext: z.record(z.string(), z.any()).optional(),
-  /** Initial plaintext run attributes, for resilient run creation. */
-  attributes: z.record(z.string(), z.string()).optional(),
-  /**
-   * Permits reserved `$`-prefixed keys in `attributes`, mirrored from the
-   * `start()` option so resilient run creation validates the same way as
-   * the original `run_created` attempt.
-   */
-  allowReservedAttributes: z.literal(true).optional(),
   /**
    * The environment the creating client's writes are attributed to, as
    * reported by {@link World.getEnvironment} at `start()` time (on Vercel:

@@ -529,7 +529,26 @@ describe('createWorkflowRunEvent replayDivergenceCount wire field', () => {
  * runtime tests are the complement: they prove the fields that ARE routed
  * actually reach the frame meta with the right values and renames.
  */
-describe('splitEventDataForV4 attribute fields', () => {
+describe('splitEventDataForV4 structured fields', () => {
+  it('carries atomic start Hook admission data as metadata', () => {
+    const startHook = {
+      token: 'order:123',
+      tokenRetentionUntil: new Date('2026-09-01T00:00:00.000Z'),
+    };
+    const { meta } = splitEventDataForV4({
+      eventType: 'run_created',
+      specVersion: 5,
+      eventData: {
+        deploymentId: 'dpl_1',
+        workflowName: 'workflow',
+        input: new Uint8Array(),
+        startHook,
+      },
+    });
+
+    expect(meta.startHook).toEqual(startHook);
+  });
+
   it('carries a Hook retention deadline in the frame meta', () => {
     const tokenRetentionUntil = new Date('2026-07-10T12:00:00.000Z');
     const { payload, meta } = splitEventDataForV4({

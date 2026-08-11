@@ -5,6 +5,7 @@ import {
   HookConflictError,
   RetryableError,
   RuntimeDecryptionError,
+  WorkflowStartError,
 } from '@workflow/errors';
 import { WORKFLOW_DESERIALIZE, WORKFLOW_SERIALIZE } from '@workflow/serde';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
@@ -4237,7 +4238,7 @@ describe('DOMException serialization', () => {
 });
 
 describe('Workflow error serialization', () => {
-  // FatalError, RetryableError, and HookConflictError are first-class serialization targets
+  // Workflow-specific errors are first-class serialization targets
   // (handled by dedicated reducers/revivers in the common reducers module),
   // so unlike user-defined classes they round-trip without any
   // `registerSerializationClass` setup. This is what makes them usable
@@ -4257,6 +4258,22 @@ describe('Workflow error serialization', () => {
       globalThis
     );
   }
+
+  it('should round-trip WorkflowStartError recovery details', async () => {
+    const hydrated = (await roundTrip(
+      new WorkflowStartError(
+        'wrun_candidate',
+        'admission',
+        new Error('gateway timed out')
+      )
+    )) as WorkflowStartError;
+
+    expect(hydrated).toBeInstanceOf(WorkflowStartError);
+    expect(hydrated.runId).toBe('wrun_candidate');
+    expect(hydrated.stage).toBe('admission');
+    expect((hydrated.cause as Error).message).toBe('gateway timed out');
+    expect(hydrated.fatal).toBe(true);
+  });
 
   it('should round-trip FatalError preserving type and message', async () => {
     const error = new FatalError('step failed permanently');
@@ -4340,6 +4357,7 @@ describe('Workflow error serialization', () => {
     expect(HookConflictError.is(hydrated)).toBe(true);
     expect(hydrated.token).toBe('approval-token');
     expect(hydrated.conflictingRunId).toBe('wrun_conflicting');
+    expect(hydrated.fatal).toBe(true);
     expect(hydrated.message).toContain('wrun_conflicting');
   });
 

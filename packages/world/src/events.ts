@@ -365,6 +365,13 @@ export const HookCreatedEventSchema = BaseEventSchema.extend({
   }),
 });
 
+/** Hook token reserved atomically while admitting a workflow run. */
+export const StartHookSchema = z.object({
+  token: z.string().min(1),
+  tokenRetentionUntil: z.coerce.date().optional(),
+});
+export type StartHook = z.infer<typeof StartHookSchema>;
+
 const HookReceivedEventSchema = BaseEventSchema.extend({
   eventType: z.literal('hook_received'),
   correlationId: z.string(),
@@ -469,27 +476,27 @@ const AttrSetEventSchema = BaseEventSchema.extend({
 // Run lifecycle events
 // =============================================================================
 
+/** Data shared by direct and resilient run creation. */
+export const RunCreationDataSchema = z.object({
+  deploymentId: z.string(),
+  workflowName: z.string(),
+  input: SerializedDataSchema,
+  executionContext: z.record(z.string(), z.any()).optional(),
+  attributes: z.record(z.string(), z.string()).optional(),
+  allowReservedAttributes: z.literal(true).optional(),
+  startHook: StartHookSchema.optional(),
+  /** Public key used by cross-run writers to seal payloads to this run. */
+  encryptionPublicKey: z.string().optional(),
+});
+export type RunCreationData = z.infer<typeof RunCreationDataSchema>;
+
 /**
  * Event created when a workflow run is first created. The World implementation
  * atomically creates both the event and the run entity with status 'pending'.
  */
 const RunCreatedEventSchema = BaseEventSchema.extend({
   eventType: z.literal('run_created'),
-  eventData: z.object({
-    deploymentId: z.string(),
-    workflowName: z.string(),
-    input: SerializedDataSchema,
-    executionContext: z.record(z.string(), z.any()).optional(),
-    attributes: z.record(z.string(), z.string()).optional(),
-    allowReservedAttributes: z.literal(true).optional(),
-    /**
-     * The run's X25519 public key (base64), stamped by SDKs that support
-     * sealed (`encp`) envelopes. Persisted onto the run entity so that
-     * cross-run writers can seal payloads to this run without holding its
-     * symmetric key. Not secret. See `WorkflowRunBaseSchema`.
-     */
-    encryptionPublicKey: z.string().optional(),
-  }),
+  eventData: RunCreationDataSchema,
 });
 
 /**
@@ -503,23 +510,7 @@ const RunCreatedEventSchema = BaseEventSchema.extend({
  */
 const RunStartedEventSchema = BaseEventSchema.extend({
   eventType: z.literal('run_started'),
-  eventData: z
-    .object({
-      input: SerializedDataSchema.optional(),
-      deploymentId: z.string().optional(),
-      workflowName: z.string().optional(),
-      executionContext: z.record(z.string(), z.any()).optional(),
-      attributes: z.record(z.string(), z.string()).optional(),
-      allowReservedAttributes: z.literal(true).optional(),
-      /**
-       * Mirrors `run_created.eventData.encryptionPublicKey`. Carried here for
-       * the resilient-start path: when the `run_created` write failed, the
-       * server creates the run from this event instead, and without the key
-       * the run would silently lose its ability to receive sealed writes.
-       */
-      encryptionPublicKey: z.string().optional(),
-    })
-    .optional(),
+  eventData: RunCreationDataSchema.partial().optional(),
 });
 
 /**
