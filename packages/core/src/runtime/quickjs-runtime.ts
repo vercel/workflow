@@ -29,6 +29,7 @@
  * `node:vm` engine's replay determinism.
  */
 
+import type { ReplayDivergenceError } from '@workflow/errors';
 import type {
   Event,
   RunInput,
@@ -59,6 +60,10 @@ import {
   quickjsWasiVersion,
   quickjsWasm,
 } from './quickjs-assets.generated.js';
+import {
+  findReplayDivergence,
+  type VmReplayView,
+} from './quickjs-divergence.js';
 import {
   adoptSerdeRoot,
   captureSerdeRoot,
@@ -1666,6 +1671,19 @@ export async function startQuickJSWorkflow(
         } while (madeProgress && --maxIterations > 0);
       }
 
+      // ---- Replay-divergence arbitration (delta view) ----
+      // Only the delta after the snapshot cursor is observable here. A
+      // divergence throws into the catch below (which disposes the VM),
+      // and the entrypoint's restore-failure fallback re-runs a fresh
+      // boot + FULL event replay — whose sweep arbitrates the whole log
+      // and is the authoritative second opinion before anything
+      // escalates to the recovery machinery.
+      const observedEvents: Event[] = [...events];
+      {
+        const divergence = sweepForReplayDivergence(vm, observedEvents);
+        if (divergence) throw divergence;
+      }
+
       return makeLiveSession(
         vm,
         serde,
@@ -1678,6 +1696,7 @@ export async function startQuickJSWorkflow(
           clockMs: vmNowMs,
           engineVersion: quickjsWasiVersion,
         }),
+        observedEvents,
         options.encryptionKey
       );
     } catch (err) {
@@ -1975,6 +1994,23 @@ export async function startQuickJSWorkflow(
       }
     }
 
+    // ---- Replay-divergence arbitration ----
+    // The replay is at a fixed point: every deliverable event has been
+    // delivered and the VM's job queue is drained. Arbitrate the log
+    // against the VM's draws before evaluating the workflow state — a
+    // divergence must escalate through runtime.ts's recovery machinery
+    // (bounded recovery replays → CorruptedEventLogError), never be
+    // absorbed into a wrong completion/suspension. Parity with the
+    // node:vm engine's EventsConsumer checks.
+    const observedEvents: Event[] = [...events];
+    {
+      const divergence = sweepForReplayDivergence(vm, observedEvents);
+      if (divergence) {
+        vm.dispose();
+        throw divergence;
+      }
+    }
+
     // ---- Check result ----
     return makeLiveSession(
       vm,
@@ -1988,6 +2024,7 @@ export async function startQuickJSWorkflow(
         clockMs: vmNowMs,
         engineVersion: quickjsWasiVersion,
       }),
+      observedEvents,
       options.encryptionKey
     );
   }
@@ -2036,6 +2073,7 @@ function makeLiveSession(
     clockMs: number;
     engineVersion: string;
   },
+  observedEvents: Event[],
   encryptionKey?: DecryptionKey
 ): QuickJSWorkflowSession {
   const result = checkWorkflowState(vm, serde, { keepAliveOnSuspend: true });
@@ -2071,6 +2109,19 @@ function makeLiveSession(
           if (batch > 0) madeProgress = true;
         } while (batch > 0);
       } while (madeProgress && --maxIterations > 0);
+
+      // Fixed point for this burst — arbitrate the full observed log
+      // (initial replay + every fed delta) against the VM's draws before
+      // evaluating state. See the sweep in startQuickJSWorkflow.
+      observedEvents.push(...newEvents);
+      {
+        const divergence = sweepForReplayDivergence(vm, observedEvents);
+        if (divergence) {
+          alive = false;
+          vm.dispose();
+          throw divergence;
+        }
+      }
 
       const next = checkWorkflowState(vm, serde, {
         keepAliveOnSuspend: true,
@@ -2728,6 +2779,49 @@ function markCreated(vm: QuickJS, cidJs: string, opType?: string): void {
     `var __p=globalThis.__pending.find(${predicate});` +
       `if(__p)__p.hasCreatedEvent=true;`
   ).dispose();
+}
+
+// ---- Replay-Divergence Arbitration ----
+
+/**
+ * Arbitrate the observed event log against the VM's fixed-point view of its
+ * own draws. Returns the divergence to escalate, or `null` when the replay
+ * reproduced the log (or when the workflow already failed — a genuine user
+ * failure is recorded as such; divergence detection only arbitrates logs the
+ * replay claims to have reproduced).
+ *
+ * Must only be called at a fixed point (event drain loop converged, VM job
+ * queue empty): that is what makes an unclaimed event evidence of divergence
+ * rather than of work still in flight. The node:vm engine needs a grace
+ * window and a delivery-idle gate to reach the same certainty; here the
+ * host drains the VM's microtask queue synchronously, so the fixed point is
+ * exact.
+ */
+function sweepForReplayDivergence(
+  vm: QuickJS,
+  observedEvents: readonly Event[]
+): ReplayDivergenceError | null {
+  {
+    using failed = vm.evalCode('globalThis.__workflowError !== undefined');
+    if (vm.dump(failed)) return null;
+  }
+  using viewHandle = vm.evalCode(`(function(){
+    return {
+      ops: globalThis.__pending.map(function(p){
+        return {
+          correlationId: p.correlationId,
+          type: p.type,
+          stepId: p.stepId,
+          token: p.token,
+          resumeAt: p.resumeAt,
+        };
+      }),
+      hookCids: globalThis.__hooks ? Object.keys(globalThis.__hooks) : [],
+      abortCids: globalThis.__abortSignals ? Object.keys(globalThis.__abortSignals) : [],
+    };
+  })()`);
+  const view = vm.dump(viewHandle) as VmReplayView;
+  return findReplayDivergence(observedEvents, view);
 }
 
 // ---- State Checking ----
