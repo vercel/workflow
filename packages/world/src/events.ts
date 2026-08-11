@@ -820,13 +820,13 @@ export interface CreateEventParams {
    *
    * Only meaningful against a World that declares
    * `WorldCapabilities.slotEventIds`, where slots are dense and 1-based so a
-   * count and a position are the same number. Such a World attempts
-   * `eventCount + 1`, and on contention **bumps** to the next free slot and
-   * commits there anyway — a stale count never rejects a write. What it does
-   * instead is report: when the committed slot is higher than the one asked
-   * for, the events occupying the skipped slots come back on the success
-   * response in {@link EventResult.events} / `cursor` / `hasMore`, so the
-   * writer learns exactly what it had not seen.
+   * count and a position are the same number. Such a World binds the write to
+   * `eventCount + 1` and commits it there or not at all: the insert that
+   * occupies the position proves in one operation both that nothing else took it
+   * and that the log the write was decided from is still the whole log. A
+   * position already taken is rejected with a 412, optionally carrying the
+   * events the writer had not seen (see {@link stateCursor}), and the writer
+   * merges them and replays rather than committing a decision made without them.
    *
    * This supersedes the {@link stateUpdatedAt} / {@link stateEventCount} /
    * {@link stateCursor} triple for slot Worlds. That triple approximates a
@@ -836,14 +836,12 @@ export interface CreateEventParams {
    * fence fires. A dense position has no such blind spot. Worlds without slots
    * ignore this field and keep using the triple.
    *
-   * A batch of writes issued from one snapshot starts from the same
-   * `eventCount`; they land on consecutive slots in whatever order the World
-   * serializes them, which is why they can stay a parallel fan-out instead of
-   * a chain of round-trips. The count a given write sends is the writer's
-   * position *at that moment*, so it advances mid-batch as reported events are
-   * folded back into the loaded log: a write issued after a sibling's
-   * bump-and-report already holds the slots that report named, and asks for a
-   * slot above them.
+   * Because the position is the fence, each write of a batch issued from one
+   * snapshot has to send its own: the writer hands out consecutive positions
+   * locally so a suspension flush stays a parallel fan-out instead of one winner
+   * and a rejection for every sibling. A write that persists more than one event
+   * takes the whole span it needs, and the next position sent is above all of
+   * them.
    */
   eventCount?: number;
   /**
@@ -990,13 +988,14 @@ export type EventResult<T extends EventType = EventType> = {
        *   log through the canonical `hook_received`, so the lazy hook queue
        *   consumer can skip both the `run_started` write and the initial
        *   `events.list`.
-       * - On any response from a slot-allocating World (see
-       *   `WorldCapabilities.slotEventIds`) whose committed slot came out
-       *   higher than the one {@link CreateEventParams.eventCount} asked for:
-       *   the events occupying the slots that were skipped over, in slot
-       *   order. This is the "report" half of bump-and-report — the write
-       *   succeeded, and these are the events the writer had not seen when it
-       *   decided to make it.
+       * - On a response from a slot-numbering World (see
+       *   `WorldCapabilities.slotEventIds`) that picked the committed slot
+       *   itself and came out above the position the writer reported in
+       *   {@link CreateEventParams.eventCount}: the events occupying the slots
+       *   in between, in slot order — what the writer had not seen when it
+       *   decided to write. A writer that binds itself to a position instead
+       *   (which is what sending `eventCount` does) is rejected rather than
+       *   moved, so it reads its missing events off the 412.
        */
       events: Event[];
       /** Pagination cursor for `events`, matching events.list semantics. */

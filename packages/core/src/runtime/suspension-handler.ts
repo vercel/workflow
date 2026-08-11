@@ -314,13 +314,13 @@ export async function handleSuspension({
     const log = eventLog;
     const result = await createEvent(data, {
       ...params,
-      ...preconditionSnapshotParams(log.events, log.cursor),
+      ...preconditionSnapshotParams(log),
     });
-    // Bump-and-report: the write landed above the slot it asked for, so these
-    // are the events it was decided without. Merging them here rather than at
-    // each call site means the rest of this phase's writes — which read the
-    // same array to build their own snapshot — ask for a slot above them, and
-    // the replay that resumes from this log sees them without a reload.
+    // The events the World reported back are the ones this write was decided
+    // without. Merging them here rather than at each call site means the rest of
+    // this phase's writes — which read the same array to build their own
+    // snapshot — ask for a slot above them, and the replay that resumes from
+    // this log sees them without a reload.
     //
     // A truncated report (`hasMore`) is dropped whole rather than merged, the
     // same way the wait loop treats one. It covers a span of positions but

@@ -18,6 +18,7 @@ import {
   handleHealthCheckMessage,
   healthCheck,
   insertEventByEventId,
+  type LoadedEventLog,
   latestEventStateUpdatedAt,
   loadWorkflowRunEvents,
   maxEventSlot,
@@ -25,6 +26,7 @@ import {
   mergeReportedEvents,
   preconditionEventDelta,
   preconditionSnapshotParams,
+  reserveEventSlots,
   SLOT_GAP_RECHECK_ATTEMPTS,
   settleEventSlotGap,
 } from './helpers.js';
@@ -57,6 +59,11 @@ const makeEvent = (eventId: string): Event =>
     correlationId: 'step_mock',
     createdAt: new Date(),
   }) as unknown as Event;
+
+const makeLog = (events: Event[], cursor: string | null): LoadedEventLog => ({
+  events,
+  cursor,
+});
 
 describe('insertEventByEventId', () => {
   it('keeps ascending eventId order when splicing a late-committing earlier event', () => {
@@ -656,7 +663,7 @@ describe('preconditionSnapshotParams', () => {
     const time = 1_700_000_000_000;
     const events = [makeUlidEvent(time - 1000), makeUlidEvent(time)];
 
-    expect(preconditionSnapshotParams(events, 'eid:abc')).toEqual({
+    expect(preconditionSnapshotParams(makeLog(events, 'eid:abc'))).toEqual({
       stateUpdatedAt: time,
       stateEventCount: events.length,
       stateCursor: 'eid:abc',
@@ -666,7 +673,9 @@ describe('preconditionSnapshotParams', () => {
   it('sends the count without a cursor when the caller has none', () => {
     const time = 1_700_000_000_000;
 
-    expect(preconditionSnapshotParams([makeUlidEvent(time)], null)).toEqual({
+    expect(
+      preconditionSnapshotParams(makeLog([makeUlidEvent(time)], null))
+    ).toEqual({
       stateUpdatedAt: time,
       stateEventCount: 1,
     });
@@ -677,7 +686,7 @@ describe('preconditionSnapshotParams', () => {
     const time = 1_700_000_000_000;
 
     expect(
-      preconditionSnapshotParams([makeUlidEvent(time)], 'eid:abc')
+      preconditionSnapshotParams(makeLog([makeUlidEvent(time)], 'eid:abc'))
     ).toEqual({
       stateUpdatedAt: time,
       stateEventCount: 1,
@@ -689,19 +698,23 @@ describe('preconditionSnapshotParams', () => {
     process.env.WORKFLOW_PRECONDITION_GUARD = '0';
 
     expect(
-      preconditionSnapshotParams([makeUlidEvent(1_700_000_000_000)], 'eid:abc')
+      preconditionSnapshotParams(
+        makeLog([makeUlidEvent(1_700_000_000_000)], 'eid:abc')
+      )
     ).toEqual({});
   });
 
   it('omits every field on an empty log', () => {
-    expect(preconditionSnapshotParams([], 'eid:abc')).toEqual({});
+    expect(preconditionSnapshotParams(makeLog([], 'eid:abc'))).toEqual({});
   });
 
   it('omits every field when the latest event id is not a decodable ULID', () => {
     // A count without a watermark would be meaningless to the backend, so the
     // three fields have to fail open together.
     expect(
-      preconditionSnapshotParams([makeEvent('evnt_not-a-ulid')], 'eid:abc')
+      preconditionSnapshotParams(
+        makeLog([makeEvent('evnt_not-a-ulid')], 'eid:abc')
+      )
     ).toEqual({});
   });
 });
@@ -725,7 +738,7 @@ describe('preconditionSnapshotParams on a slot-numbered run', () => {
   it('sends eventCount instead of the ULID triple', () => {
     const events = [1, 2, 3].map((slot) => makeEvent(slotToEventId(slot)));
 
-    expect(preconditionSnapshotParams(events, 'eid:abc')).toEqual({
+    expect(preconditionSnapshotParams(makeLog(events, 'eid:abc'))).toEqual({
       eventCount: 3,
     });
   });
@@ -737,7 +750,7 @@ describe('preconditionSnapshotParams on a slot-numbered run', () => {
     // on every single create.
     const events = [1, 2, 5].map((slot) => makeEvent(slotToEventId(slot)));
 
-    expect(preconditionSnapshotParams(events, 'eid:abc')).toEqual({
+    expect(preconditionSnapshotParams(makeLog(events, 'eid:abc'))).toEqual({
       eventCount: 5,
     });
   });
@@ -745,16 +758,16 @@ describe('preconditionSnapshotParams on a slot-numbered run', () => {
   it('is invariant under the order the World returned the log in', () => {
     const forward = [1, 2, 3].map((slot) => makeEvent(slotToEventId(slot)));
 
-    expect(preconditionSnapshotParams([...forward].reverse(), null)).toEqual(
-      preconditionSnapshotParams(forward, null)
-    );
+    expect(
+      preconditionSnapshotParams(makeLog([...forward].reverse(), null))
+    ).toEqual(preconditionSnapshotParams(makeLog(forward, null)));
   });
 
   it('omits eventCount when the guard is disabled', () => {
     process.env.WORKFLOW_PRECONDITION_GUARD = '0';
 
     expect(
-      preconditionSnapshotParams([makeEvent(slotToEventId(1))], null)
+      preconditionSnapshotParams(makeLog([makeEvent(slotToEventId(1))], null))
     ).toEqual({});
   });
 
@@ -764,10 +777,58 @@ describe('preconditionSnapshotParams on a slot-numbered run', () => {
     const time = 1_700_000_000_000;
     const events = [makeEvent(slotToEventId(1)), makeUlidEvent(time)];
 
-    expect(preconditionSnapshotParams(events, null)).toEqual({
+    expect(preconditionSnapshotParams(makeLog(events, null))).toEqual({
       stateUpdatedAt: time,
       stateEventCount: 2,
     });
+  });
+
+  it('names a distinct position for each write issued from one log', () => {
+    // A suspension phase sends its writes together, off one loaded log. Every
+    // one of them is wanted, so they cannot all name the same position: that
+    // would be one winner and a rejection for the rest, every single flush.
+    const log = makeLog(
+      [1, 2].map((s) => makeEvent(slotToEventId(s))),
+      null
+    );
+
+    expect([
+      preconditionSnapshotParams(log),
+      preconditionSnapshotParams(log),
+      preconditionSnapshotParams(log),
+    ]).toEqual([{ eventCount: 2 }, { eventCount: 3 }, { eventCount: 4 }]);
+  });
+
+  it('skips the positions a multi-event write occupies', () => {
+    // A lazy inline step_started persists the deferred step_created below it, so
+    // the next write has to name above both.
+    const log = makeLog([makeEvent(slotToEventId(1))], null);
+
+    expect([
+      preconditionSnapshotParams(log, 2),
+      preconditionSnapshotParams(log),
+    ]).toEqual([{ eventCount: 1 }, { eventCount: 3 }]);
+  });
+});
+
+describe('reserveEventSlots', () => {
+  it('is undefined on a ULID-numbered log, which has no positions to reserve', () => {
+    const log = makeLog([makeUlidEvent(1_700_000_000_000)], null);
+
+    expect(reserveEventSlots(log)).toBeUndefined();
+    expect(log.reservedSlots).toBeUndefined();
+  });
+
+  it('rebases on the log maximum when the log moves', () => {
+    // A write's reported events, or a mid-phase reload, raise the maximum. A
+    // count taken against the old one would name a position below the log.
+    const log = makeLog([makeEvent(slotToEventId(1))], null);
+
+    expect(reserveEventSlots(log)).toBe(1);
+    log.events.push(makeEvent(slotToEventId(7)));
+
+    expect(reserveEventSlots(log)).toBe(7);
+    expect(reserveEventSlots(log)).toBe(8);
   });
 });
 
@@ -1024,7 +1085,7 @@ describe('appendUniqueEvents', () => {
     appendUniqueEvents(target, [makeUlidEvent(1_700_000_001_000)]);
 
     expect(latestEventStateUpdatedAt(target)).toBe(time);
-    expect(preconditionSnapshotParams(target, 'eid:abc')).toEqual({
+    expect(preconditionSnapshotParams(makeLog(target, 'eid:abc'))).toEqual({
       stateUpdatedAt: time,
       stateEventCount: 3,
       stateCursor: 'eid:abc',

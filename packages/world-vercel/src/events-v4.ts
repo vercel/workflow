@@ -251,10 +251,10 @@ interface CreateEventV4InputBase {
    *
    * Supersedes the `stateUpdatedAt`/`stateEventCount`/`stateCursor` triple for
    * slot-identity runs: with dense positions one integer says everything the
-   * watermark approximated. The server allocates from the tail regardless, and
-   * uses this only to report which slots the write skipped over (returned on
-   * the success response as `events`/`cursor`/`hasMore`). Older servers ignore
-   * it.
+   * watermark approximated. The write is bound to the slot above it, so the
+   * insert that occupies that slot is also the fence: a position another writer
+   * already took answers 412 with the events this writer had not seen, rather
+   * than committing somewhere else. Older servers ignore it.
    */
   maxSlot?: number;
   /** Number of consecutive replay divergences resolved by this write. */
