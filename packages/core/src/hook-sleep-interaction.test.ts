@@ -1,14 +1,12 @@
-import { withResolvers } from '@workflow/utils';
-import type { Event } from '@workflow/world';
-import * as nanoid from 'nanoid';
-import { monotonicFactory } from 'ulid';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { EventsConsumer } from './events-consumer.js';
 import { WorkflowSuspension } from './global.js';
-import type { WorkflowOrchestratorContext } from './private.js';
 import { dehydrateStepReturnValue } from './serialization.js';
 import { createUseStep } from './step.js';
-import { createContext } from './vm/index.js';
+import {
+  CORR_IDS,
+  runWithDiscontinuation,
+  setupWorkflowContext,
+} from './test-support/orchestrator-context.js';
 import { createCreateHook } from './workflow/hook.js';
 import { createSleep } from './workflow/sleep.js';
 
@@ -26,72 +24,7 @@ import { createSleep } from './workflow/sleep.js';
  * so suspensions wait for both async deserialization AND microtask deliveries.
  */
 
-function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
-  const context = createContext({
-    seed: 'test',
-    fixedTimestamp: 1753481739458,
-  });
-  const ulid = monotonicFactory(() => context.globalThis.Math.random());
-  const workflowStartedAt = context.globalThis.Date.now();
-  const promiseQueueHolder = { current: Promise.resolve() };
-  const ctx: WorkflowOrchestratorContext = {
-    runId: 'wrun_test',
-    encryptionKey: undefined,
-    globalThis: context.globalThis,
-    eventsConsumer: new EventsConsumer(events, {
-      onUnconsumedEvent: () => {},
-      getPromiseQueue: () => promiseQueueHolder.current,
-    }),
-    invocationsQueue: new Map(),
-    generateUlid: () => ulid(workflowStartedAt),
-    generateNanoid: nanoid.customRandom(nanoid.urlAlphabet, 21, (size) =>
-      new Uint8Array(size).map(() => 256 * context.globalThis.Math.random())
-    ),
-    onWorkflowError: vi.fn(),
-    get promiseQueue() {
-      return promiseQueueHolder.current;
-    },
-    set promiseQueue(value: Promise<void>) {
-      promiseQueueHolder.current = value;
-    },
-    pendingDeliveries: 0,
-    pendingDeliveryBarriers: new Map(),
-  };
-  return ctx;
-}
-
-// Deterministic correlation IDs from the ULID generator with seed 'test'
-const CORR_IDS = [
-  '01K11TFZ62YS0YYFDQ3E8B9YCV',
-  '01K11TFZ62YS0YYFDQ3E8B9YCW',
-  '01K11TFZ62YS0YYFDQ3E8B9YCX',
-  '01K11TFZ62YS0YYFDQ3E8B9YCY',
-  '01K11TFZ62YS0YYFDQ3E8B9YCZ',
-  '01K11TFZ62YS0YYFDQ3E8B9YD0',
-];
 const DEFAULT_HOOK_TOKEN = '51reay3g91mW9qOHSORA_';
-
-// ─── Helpers ───────────────────────────────────────────
-
-async function runWithDiscontinuation(
-  ctx: WorkflowOrchestratorContext,
-  workflowFn: () => Promise<any>
-): Promise<{ result?: any; error?: any }> {
-  const workflowDiscontinuation = withResolvers<void>();
-  ctx.onWorkflowError = workflowDiscontinuation.reject;
-
-  let result: any;
-  let error: any;
-  try {
-    result = await Promise.race([
-      workflowFn(),
-      workflowDiscontinuation.promise,
-    ]);
-  } catch (err) {
-    error = err;
-  }
-  return { result, error };
-}
 
 /**
  * Defines the full test suite for a given deserialization mode.

@@ -5,6 +5,7 @@ export {
   EVENT_DATA_REF_FIELDS,
   EventSchema,
   EventTypeSchema,
+  entityEventClass,
   HookCreatedEventSchema,
   isTerminalRunEventType,
   stripEventDataRefs,

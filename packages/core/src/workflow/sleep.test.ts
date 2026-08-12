@@ -4,7 +4,7 @@ import type { Event } from '@workflow/world';
 import * as nanoid from 'nanoid';
 import { monotonicFactory } from 'ulid';
 import { describe, expect, it, vi } from 'vitest';
-import { EventsConsumer } from '../events-consumer.js';
+import { DEFERRED_CHECK_DELAY_MS, EventsConsumer } from '../events-consumer.js';
 import { WorkflowSuspension } from '../global.js';
 import type { WorkflowOrchestratorContext } from '../private.js';
 import { createContext } from '../vm/index.js';
@@ -363,11 +363,11 @@ describe('createSleep', () => {
     expect(ctx.onWorkflowError).not.toHaveBeenCalled();
   });
 
-  it('should raise ReplayDivergenceError when duplicate wait_completed events cannot be consumed', async () => {
-    // When the event log has 2 wait_completed for a single wait_created,
-    // the first wait_completed removes the callback (Finished), but the second
-    // wait_completed has no consumer. The onUnconsumedEvent callback should
-    // trigger a ReplayDivergenceError via onWorkflowError.
+  it('should ignore a duplicate wait_completed rather than reporting divergence', async () => {
+    // When the event log has 2 wait_completed for a single wait_created, the
+    // first one removes the callback (Finished) and the second has no consumer
+    // left. That is not divergence: the wait's outcome was already decided by
+    // the first, so the duplicate is committed but inert and replay skips it.
     const ctx = setupWorkflowContext([
       {
         eventId: 'evnt_0',
@@ -401,16 +401,18 @@ describe('createSleep', () => {
       },
     ]);
 
-    const errorReceived = withResolvers<Error>();
-    ctx.onWorkflowError = errorReceived.resolve;
-
     const sleep = createSleep(ctx);
     await sleep('1s');
 
-    // The duplicate wait_completed at index 2 is orphaned and triggers the error
-    const workflowError = await errorReceived.promise;
-    expect(workflowError).toBeInstanceOf(ReplayDivergenceError);
-    expect(workflowError?.message).toContain('evnt_2');
+    // Wait past the deferred unconsumed-event window so a check that was not
+    // skipped would have fired by now.
+    await new Promise((resolve) =>
+      setTimeout(resolve, DEFERRED_CHECK_DELAY_MS * 2)
+    );
+
+    expect(ctx.onWorkflowError).not.toHaveBeenCalled();
+    // The cursor moved past the duplicate instead of stalling on it.
+    expect(ctx.eventsConsumer.eventIndex).toBe(3);
   });
 
   it('should resolve with void when wait_completed', async () => {

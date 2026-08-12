@@ -3677,7 +3677,7 @@ describe('runWorkflow', () => {
       ).toEqual('sleep with date completed');
     });
 
-    it('should reject with WorkflowRuntimeError when event log has duplicate wait_completed', async () => {
+    it('should ignore a duplicate wait_completed and keep replaying', async () => {
       const ops: Promise<any>[] = [];
       const workflowRunId = 'test-run-123';
       const workflowRun: WorkflowRun = {
@@ -3715,7 +3715,9 @@ describe('runWorkflow', () => {
           createdAt: new Date('2024-01-01T00:00:05.000Z'),
         },
         {
-          // Duplicate wait_completed - should trigger WorkflowRuntimeError
+          // Duplicate wait_completed. The wait's outcome was already decided by
+          // event-1, so this one is committed but inert and replay skips past
+          // it to the step events below rather than stalling on it.
           eventId: 'event-2',
           runId: workflowRunId,
           eventType: 'wait_completed',
@@ -3741,22 +3743,28 @@ describe('runWorkflow', () => {
         },
       ];
 
-      await expect(
-        runWorkflow(
-          `const doWork = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("doWork");
-          const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")];
-          async function workflow() {
-            await sleep('5s');
-            const result = await doWork();
-            return result;
-          }${getWorkflowTransformCode('workflow')}`,
-          workflowRun,
-          events
+      const result = await runWorkflow(
+        `const doWork = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("doWork");
+            const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")];
+            async function workflow() {
+              await sleep('5s');
+              const result = await doWork();
+              return result;
+            }${getWorkflowTransformCode('workflow')}`,
+        workflowRun,
+        events
+      );
+      expect(
+        await hydrateWorkflowReturnValue(
+          result as any,
+          workflowRunId,
+          noEncryptionKey,
+          ops
         )
-      ).rejects.toThrow(WorkflowRuntimeError);
+      ).toEqual('step done');
     });
 
-    it('should reject with WorkflowRuntimeError for duplicate step_completed blocking subsequent events', async () => {
+    it('should ignore a duplicate step_completed and keep replaying', async () => {
       const ops: Promise<any>[] = [];
       const workflowRunId = 'test-run-123';
       const workflowRun: WorkflowRun = {
@@ -3794,7 +3802,9 @@ describe('runWorkflow', () => {
           createdAt: new Date('2024-01-01T00:00:01.000Z'),
         },
         {
-          // Duplicate step_completed - orphaned, blocks events below
+          // Duplicate step_completed. doWork1's result was already decided by
+          // event-1, so the second result is never observed and replay skips
+          // past it to doWork2's events.
           eventId: 'event-2',
           runId: workflowRunId,
           eventType: 'step_completed',
@@ -3823,18 +3833,24 @@ describe('runWorkflow', () => {
         },
       ];
 
-      await expect(
-        runWorkflow(
-          `const doWork1 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("doWork1");
+      const result = await runWorkflow(
+        `const doWork1 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("doWork1");
           const doWork2 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("doWork2");
           async function workflow() {
             await doWork1();
             return await doWork2();
           }${getWorkflowTransformCode('workflow')}`,
-          workflowRun,
-          events
+        workflowRun,
+        events
+      );
+      expect(
+        await hydrateWorkflowReturnValue(
+          result as any,
+          workflowRunId,
+          noEncryptionKey,
+          ops
         )
-      ).rejects.toThrow(WorkflowRuntimeError);
+      ).toEqual('second done');
     });
 
     it('should reject with WorkflowRuntimeError for orphaned step_completed blocking workflow step', async () => {
