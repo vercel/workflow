@@ -3,6 +3,7 @@ import type {
   AttributeChange,
   ExperimentalSetAttributesResult,
 } from './attributes.js';
+import type { WorldCapabilities } from './capabilities.js';
 import type {
   CreateEventParams,
   CreateEventRequest,
@@ -315,130 +316,6 @@ export interface Storage {
      */
     list(params: ListHooksParams): Promise<PaginatedResponse<Hook>>;
   };
-}
-
-/**
- * Optional feature capabilities a World implementation declares so the core
- * runtime can enable optimizations that depend on backend behavior, instead
- * of inferring support from environment variables alone. Every capability
- * defaults to "unsupported" when absent — runtime fast paths that rely on
- * one must fail closed (keep their conservative behavior) unless the World
- * explicitly declares it.
- */
-export interface WorldCapabilities {
-  /**
-   * Supports `experimental_minRetention` for Hooks. Missing or inactive means
-   * the runtime rejects retained Hooks before registration.
-   */
-  hookRetention?: {
-    active: boolean;
-  };
-
-  /**
-   * The World enforces the optimistic-concurrency precondition guard: an
-   * event creation carrying a `stateUpdatedAt` snapshot is rejected with a
-   * `PreconditionFailedError` (412) when a newer out-of-band event (e.g. a
-   * received hook) was recorded after that snapshot. Worlds that accept but
-   * ignore `stateUpdatedAt` must leave this unset so runtime optimizations
-   * that rely on the 412 fence (see `WORKFLOW_PRECONDITION_GUARD`) are not
-   * enabled without an actual fence behind them.
-   *
-   * A World declaring this should honour the whole snapshot the runtime sends,
-   * not just the watermark: `stateUpdatedAt`, `stateEventCount` (the count
-   * fence, which catches an event missing at or below the watermark — the case
-   * the watermark provably cannot see) and, optionally, `stateCursor` (return
-   * the missing events on the 412 to save the client a reload). See
-   * `CreateEventParams` for each field's contract. The runtime does not branch
-   * on which halves are implemented; a World that ignores the count simply
-   * fences less.
-   */
-  preconditionGuard?: boolean;
-
-  /**
-   * The World's queue supports `maxConcurrency`-limited consumption — in
-   * particular the per-run flow topics consumed with `maxConcurrency: 1`
-   * that `WORKFLOW_SEQUENTIAL_REPLAYS=1` uses to serialize a run's
-   * orchestrator invocations. Worlds whose queue has no concurrency-limit
-   * concept must leave this unset.
-   *
-   * Note this declares queue *support*, not deployed configuration: the
-   * serialization also requires the build-time half (a flow trigger emitted
-   * with `maxConcurrency: 1`), which a runtime process cannot verify today.
-   * The core runtime therefore does not yet take any fast path from this
-   * capability alone — it exists so a future build-verified signal can be
-   * combined with it (and so Worlds document the contract explicitly).
-   */
-  maxConcurrency?: boolean;
-
-  /**
-   * The World's `events.create` deduplicates concurrent `hook_received` writes
-   * that carry the same `(runId, resumeId)` — collapsing them onto a single
-   * committed event and returning the canonical one to every caller. This is
-   * the backend half of `resumeHook()`'s parallel fast path: the producer's
-   * direct write and the queue consumer's re-ensure both write the same
-   * `resumeId`, and exactly one event must survive or the run replays a
-   * duplicated `hook_received`.
-   *
-   * The core runtime fails closed on this: the parallel path is taken ONLY
-   * when the World declares `hookResumeDedup === true` AND the target run's
-   * deployment can re-ensure from `hookInput` (see the execution-context
-   * marker `hookResumeInputVersion`). A World that accepts a `resumeId` but
-   * does not enforce the `(runId, resumeId)` constraint must leave this unset
-   * so the runtime keeps the sequential single-writer path.
-   *
-   * Enabled statically for `world-local` (filesystem sidecar claim keyed on
-   * `(runId, resumeId)`; the adapter and its backend ship together, so a static
-   * capability can never drift from the backend). `world-vercel` deliberately
-   * leaves this UNSET and instead attests support per-lookup via the
-   * server-computed, response-only `Hook.resumeCapabilities.hookResumeDedupVersion`
-   * (see `HookResumeCapabilitiesSchema`), so a server rollback or kill switch
-   * degrades new resumes to the sequential path immediately without redeploying
-   * the adapter. `world-postgres` leaves it unset for now and stays sequential.
-   *
-   * The resume gate treats EITHER signal as backend support (see
-   * `resume-hook.ts`): this static capability OR a current
-   * `resumeCapabilities.hookResumeDedupVersion` on the by-token hook.
-   */
-  hookResumeDedup?: boolean;
-
-  /**
-   * Deployments are atomic and immutable: a deployment id names one fixed
-   * build for its whole lifetime, so a run pinned to one may only execute
-   * there. Worlds that declare this get the runtime's deployment-affinity
-   * guard, which re-routes a misrouted delivery to the run's own deployment
-   * and ultimately fails the run with `DEPLOYMENT_MISMATCH`.
-   *
-   * Worlds whose deployment id is synthetic or version-tagged (e.g.
-   * `dpl_local@<sdk-version>`, which legitimately differs across SDK versions
-   * within one logical environment) must leave this unset: there a
-   * "mismatch" is not a real cross-deployment delivery, and guarding would
-   * fail ordinary runs after a version bump.
-   */
-  deploymentAffinity?: boolean;
-
-  /**
-   * The World allocates **slot-numbered** event ids: `evnt_` plus the event's
-   * dense, 1-based position in its run's log, zero-padded to 26 characters
-   * (see `slot-identity.ts`). Two guarantees come with it, and the runtime
-   * relies on both:
-   *
-   * - **Density.** A run's slots are contiguous from 1, so the number of
-   *   events a reader holds *is* the position of the last one. That is what
-   *   makes {@link CreateEventParams.eventCount} a complete statement of the
-   *   writer's snapshot, where the `stateUpdatedAt` / `stateEventCount`
-   *   watermark pair could only approximate it.
-   * - **Bump and report.** A create never fails because its requested slot is
-   *   taken. The World advances to the next free slot, commits there, and
-   *   returns the events occupying the slots it skipped over on the success
-   *   response (see {@link EventResult.events}). The writer learns its
-   *   snapshot was stale without the write being rejected.
-   *
-   * A run's scheme is pinned by the run, not by this flag: it is readable off
-   * the shape of the run's own first event id, so a World that turns slots on
-   * keeps replaying its existing ULID-numbered runs unchanged. The capability
-   * only says what *new* runs get.
-   */
-  slotEventIds?: boolean;
 }
 
 /**

@@ -24,6 +24,8 @@ export {
   validateAttributeKey,
   validateAttributeValue,
 } from './attributes.js';
+export type * from './capabilities.js';
+export { WorldCapabilitiesSchema } from './capabilities.js';
 export {
   _resetEnvWarnCacheForTests,
   type EnvNumberOptions,
