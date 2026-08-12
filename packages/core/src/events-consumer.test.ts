@@ -750,8 +750,10 @@ describe('EventsConsumer', () => {
       vi.unstubAllEnvs();
     });
 
-    // Waits past the deferred unconsumed-event window so a check that was not
-    // cancelled has definitely fired.
+    // Waits long enough for a deferred check that was not cancelled to have
+    // fired. Assertions that a check DID fire should poll instead: the window
+    // is a lower bound on when the timer is eligible to run, and a loaded
+    // runner with a coarse timer can take considerably longer to get there.
     function waitPastDeferredCheck(): Promise<void> {
       return new Promise((resolve) =>
         setTimeout(resolve, MIN_DEFERRED_CHECK_DELAY_MS * 4)
@@ -945,7 +947,9 @@ describe('EventsConsumer', () => {
 
       expect(consumer.eventIndex).toBe(3);
       expect(onDuplicateEvent).not.toHaveBeenCalled();
-      expect(onUnconsumedEvent).toHaveBeenCalledWith(events[3]);
+      await vi.waitFor(() => {
+        expect(onUnconsumedEvent).toHaveBeenCalledWith(events[3]);
+      });
     });
 
     it('does not let one class suppress another for the same entity', async () => {
@@ -970,7 +974,9 @@ describe('EventsConsumer', () => {
 
       expect(consumer.eventIndex).toBe(2);
       expect(onDuplicateEvent).not.toHaveBeenCalled();
-      expect(onUnconsumedEvent).toHaveBeenCalledWith(events[2]);
+      await vi.waitFor(() => {
+        expect(onUnconsumedEvent).toHaveBeenCalledWith(events[2]);
+      });
     });
 
     it('does not track hook deliveries, whose consumers subscribe lazily', async () => {
