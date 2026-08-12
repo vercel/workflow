@@ -88,7 +88,7 @@ describe('events repeating a class already in the log', () => {
     expect(observed).toEqual(['a-result']);
     expect(pendingStepNames(ctx)).toEqual(['stepB']);
     expect(onDuplicateEvent).toHaveBeenCalledTimes(1);
-    expect(onDuplicateEvent).toHaveBeenCalledWith(events[3]);
+    expect(onDuplicateEvent).toHaveBeenCalledWith(events[3], 'step_started');
   });
 
   it('ignores a wait_created that lands after the wait completed', async () => {
@@ -117,7 +117,7 @@ describe('events repeating a class already in the log', () => {
     expect(WorkflowSuspension.is(error)).toBe(true);
     expect(pendingStepNames(ctx)).toEqual(['afterSleep']);
     expect(onDuplicateEvent).toHaveBeenCalledTimes(1);
-    expect(onDuplicateEvent).toHaveBeenCalledWith(events[2]);
+    expect(onDuplicateEvent).toHaveBeenCalledWith(events[2], 'wait_created');
   });
 
   it('still reports divergence for an event repeating nothing in the log', async () => {

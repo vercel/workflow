@@ -7,8 +7,8 @@
  *    re-post the rejected payload. The payload's correlation ids were minted
  *    by the rejected replay's seeded ULID sequence, so a corrected event log
  *    generally implies different ids; only a fresh replay may write again.
- * 2. The restart reloads the whole event log with no cursor, because a hole is
- *    defined by ULID time while a cursor filters lexicographically — unless
+ * 2. The restart reloads the whole event log with no cursor, because a hole
+ *    can sit below the held cursor and survive an incremental load — unless
  *    the World attached the missing events to the 412, which the runtime
  *    consumes with no events.list round trip at all (first restart only).
  * 3. Restarts are bounded; once the bound is spent the runtime schedules a
@@ -16,14 +16,17 @@
  *    itself counted on the queue message, so a run that can never observe its
  *    own log completely fails loudly rather than cycling restart chains.
  *
- * Modeled on wait-completion-replay.test.ts, but with real ULID event IDs so
- * latestEventStateUpdatedAt() actually derives snapshot times.
+ * Modeled on wait-completion-replay.test.ts, but with slot-numbered event ids,
+ * which is what lets the runtime name a position at all: the snapshot it sends
+ * is the highest slot it holds, and a log of ids it cannot read as slots
+ * produces no snapshot.
  */
 import { PreconditionFailedError, RUN_ERROR_CODES } from '@workflow/errors';
 import {
   type CreateEventRequest,
   type Event,
   SPEC_VERSION_CURRENT,
+  slotToEventId,
   type WorkflowRun,
   type World,
 } from '@workflow/world';
@@ -85,9 +88,7 @@ function buildStepEntity(
 
 interface SnapshotParams {
   eventType: string;
-  stateUpdatedAt: number | undefined;
-  stateEventCount: number | undefined;
-  stateCursor: string | undefined;
+  eventCount: number | undefined;
 }
 
 async function runPreconditionScenario(options: {
@@ -133,18 +134,18 @@ async function runPreconditionScenario(options: {
     updatedAt: startedAt,
   };
 
-  // Real ULID event IDs at controlled times so latestEventStateUpdatedAt()
-  // resolves an actual epoch-ms snapshot from the loaded log.
-  const hostUlid = monotonicFactory();
-  let eventIndex = 0;
+  // Dense slot-numbered event ids in commit order, so the runtime can derive a
+  // snapshot from the loaded log at all. `atMs` only moves `createdAt`: an
+  // event's position is its slot, which is always the next one.
+  let eventSlot = 0;
   const event = (data: CreateEventRequest, atMs?: number): Event => {
-    const t = atMs ?? +startedAt + ++eventIndex * 100;
+    const slot = ++eventSlot;
     return {
       ...data,
       specVersion: data.specVersion ?? SPEC_VERSION_CURRENT,
       runId,
-      eventId: `evnt_${hostUlid(t)}`,
-      createdAt: new Date(t),
+      eventId: slotToEventId(slot),
+      createdAt: new Date(atMs ?? +startedAt + slot * 100),
     } as Event;
   };
 
@@ -194,10 +195,9 @@ async function runPreconditionScenario(options: {
       eventData: { resumeAt: new Date(+startedAt - 1_000) },
     }),
   ];
-  const staleSnapshotMs = +startedAt + staleEvents.length * 100;
-  expect(staleSnapshotMs).toBe(+startedAt + 700);
-
   const staleEventsCursor = 'cursor-after-stale-events';
+  // The hook lands far enough in the future that the replay's own `sleep("5s")`
+  // has already elapsed against it.
   const OUTSIDE_EVENT_MS = +startedAt + 5_000;
   const hookReceivedEvent = event(
     {
@@ -258,17 +258,11 @@ async function runPreconditionScenario(options: {
     async (
       _runId: string,
       request: CreateEventRequest,
-      params?: {
-        stateUpdatedAt?: number;
-        stateEventCount?: number;
-        stateCursor?: string;
-      }
+      params?: { eventCount?: number }
     ) => {
       createParams.push({
         eventType: request.eventType,
-        stateUpdatedAt: params?.stateUpdatedAt,
-        stateEventCount: params?.stateEventCount,
-        stateCursor: params?.stateCursor,
+        eventCount: params?.eventCount,
       });
 
       if (request.eventType === 'run_started') {
@@ -418,8 +412,7 @@ async function runPreconditionScenario(options: {
     queue,
     runId,
     staleEventsCursor,
-    staleSnapshotMs,
-    OUTSIDE_EVENT_MS,
+    staleEventCount: staleEvents.length,
     waitCorrelationId,
     waitCompletedRejectionCount: () => waitCompletedRejections,
   };
@@ -464,16 +457,15 @@ async function runCompletedRejectionScenario({
     updatedAt: startedAt,
   };
 
-  const hostUlid = monotonicFactory();
-  let eventIndex = 0;
+  let eventSlot = 0;
   const event = (data: CreateEventRequest, atMs?: number): Event => {
-    const t = atMs ?? +startedAt + ++eventIndex * 100;
+    const slot = ++eventSlot;
     return {
       ...data,
       specVersion: data.specVersion ?? SPEC_VERSION_CURRENT,
       runId,
-      eventId: `evnt_${hostUlid(t)}`,
-      createdAt: new Date(t),
+      eventId: slotToEventId(slot),
+      createdAt: new Date(atMs ?? +startedAt + slot * 100),
     } as Event;
   };
 
@@ -506,17 +498,11 @@ async function runCompletedRejectionScenario({
     async (
       _runId: string,
       request: CreateEventRequest,
-      params?: {
-        stateUpdatedAt?: number;
-        stateEventCount?: number;
-        stateCursor?: string;
-      }
+      params?: { eventCount?: number }
     ) => {
       createParams.push({
         eventType: request.eventType,
-        stateUpdatedAt: params?.stateUpdatedAt,
-        stateEventCount: params?.stateEventCount,
-        stateCursor: params?.stateCursor,
+        eventCount: params?.eventCount,
       });
       createRequests.push(request);
       if (request.eventType === 'run_started') {
@@ -597,7 +583,6 @@ async function runCompletedRejectionScenario({
     queue,
     staleEventCount: staleEvents.length,
     staleEventsCursor,
-    runStartedSnapshotMs: +startedAt + 200,
   };
 }
 
@@ -627,17 +612,18 @@ async function attributeSnapshotScenario() {
     updatedAt: startedAt,
   };
 
-  const hostUlid = monotonicFactory();
-  let eventIndex = 0;
+  let eventSlot = 0;
   const durableEvents: Event[] = [];
-  const event = (data: CreateEventRequest): Event =>
-    ({
+  const event = (data: CreateEventRequest): Event => {
+    const slot = ++eventSlot;
+    return {
       ...data,
       specVersion: data.specVersion ?? SPEC_VERSION_CURRENT,
       runId,
-      eventId: `evnt_${hostUlid(+startedAt + ++eventIndex * 100)}`,
-      createdAt: new Date(+startedAt + eventIndex * 100),
-    }) as Event;
+      eventId: slotToEventId(slot),
+      createdAt: new Date(+startedAt + slot * 100),
+    } as Event;
+  };
 
   durableEvents.push(
     event({
@@ -648,6 +634,7 @@ async function attributeSnapshotScenario() {
     event({ eventType: 'run_started', specVersion: SPEC_VERSION_CURRENT })
   );
   const preloadedCursor = 'cursor-after-run-started';
+  const preloadedEventCount = durableEvents.length;
 
   const createParams: SnapshotParams[] = [];
   let capturedHandler:
@@ -661,17 +648,11 @@ async function attributeSnapshotScenario() {
     async (
       _runId: string,
       request: CreateEventRequest,
-      params?: {
-        stateUpdatedAt?: number;
-        stateEventCount?: number;
-        stateCursor?: string;
-      }
+      params?: { eventCount?: number }
     ) => {
       createParams.push({
         eventType: request.eventType,
-        stateUpdatedAt: params?.stateUpdatedAt,
-        stateEventCount: params?.stateEventCount,
-        stateCursor: params?.stateCursor,
+        eventCount: params?.eventCount,
       });
       if (request.eventType === 'run_started') {
         return {
@@ -731,7 +712,7 @@ async function attributeSnapshotScenario() {
     }
   );
 
-  return { createParams, preloadedCursor };
+  return { createParams, preloadedEventCount };
 }
 
 /**
@@ -762,16 +743,17 @@ async function inlineClaimRejectionScenario() {
     updatedAt: startedAt,
   };
 
-  const hostUlid = monotonicFactory();
-  let eventIndex = 0;
-  const event = (data: CreateEventRequest): Event =>
-    ({
+  let eventSlot = 0;
+  const event = (data: CreateEventRequest): Event => {
+    const slot = ++eventSlot;
+    return {
       ...data,
       specVersion: data.specVersion ?? SPEC_VERSION_CURRENT,
       runId,
-      eventId: `evnt_${hostUlid(+startedAt + ++eventIndex * 100)}`,
-      createdAt: new Date(+startedAt + eventIndex * 100),
-    }) as Event;
+      eventId: slotToEventId(slot),
+      createdAt: new Date(+startedAt + slot * 100),
+    } as Event;
+  };
 
   const staleEvents: Event[] = [
     event({
@@ -808,17 +790,11 @@ async function inlineClaimRejectionScenario() {
     async (
       _runId: string,
       request: CreateEventRequest,
-      params?: {
-        stateUpdatedAt?: number;
-        stateEventCount?: number;
-        stateCursor?: string;
-      }
+      params?: { eventCount?: number }
     ) => {
       createParams.push({
         eventType: request.eventType,
-        stateUpdatedAt: params?.stateUpdatedAt,
-        stateEventCount: params?.stateEventCount,
-        stateCursor: params?.stateCursor,
+        eventCount: params?.eventCount,
       });
 
       if (request.eventType === 'run_started') {
@@ -931,16 +907,13 @@ async function inlineClaimRejectionScenario() {
 }
 
 describe('precondition guard through the real replay loop', () => {
-  let originalGuard: string | undefined;
   let originalRestartBound: string | undefined;
   let originalInlineCap: string | undefined;
 
   beforeEach(() => {
-    originalGuard = process.env.WORKFLOW_PRECONDITION_GUARD;
     originalRestartBound =
       process.env.WORKFLOW_PRECONDITION_MAX_INPROCESS_RESTARTS;
     originalInlineCap = process.env.WORKFLOW_MAX_INLINE_STEPS;
-    process.env.WORKFLOW_PRECONDITION_GUARD = '1';
     // The inline-claim scenario needs a whole two-step batch to run inline,
     // which the default cap allows.
     delete process.env.WORKFLOW_MAX_INLINE_STEPS;
@@ -948,7 +921,6 @@ describe('precondition guard through the real replay loop', () => {
 
   afterEach(() => {
     for (const [name, value] of [
-      ['WORKFLOW_PRECONDITION_GUARD', originalGuard],
       ['WORKFLOW_PRECONDITION_MAX_INPROCESS_RESTARTS', originalRestartBound],
       ['WORKFLOW_MAX_INLINE_STEPS', originalInlineCap],
     ] as const) {
@@ -980,18 +952,17 @@ describe('precondition guard through the real replay loop', () => {
       (c) => c.eventType === 'wait_completed'
     );
     expect(waitCreates).toHaveLength(2);
-    // First attempt carried the stale snapshot (ULID time of wait_created)...
-    expect(waitCreates[0]?.stateUpdatedAt).toBe(result.staleSnapshotMs);
-    // ...the restarted replay carried the corrected one (ULID time of
-    // hook_received), with a count covering the event it had been missing.
-    expect(waitCreates[1]?.stateUpdatedAt).toBe(result.OUTSIDE_EVENT_MS);
-    expect(waitCreates[1]?.stateEventCount).toBe(
-      (waitCreates[0]?.stateEventCount ?? 0) + 1
+    // First attempt named the stale position (the last slot it had loaded)...
+    expect(waitCreates[0]?.eventCount).toBe(result.staleEventCount);
+    // ...the restarted replay named one slot higher, covering the event it had
+    // been missing.
+    expect(waitCreates[1]?.eventCount).toBe(
+      (waitCreates[0]?.eventCount ?? 0) + 1
     );
 
     // The restart reloaded the full log rather than reading from the held
-    // cursor: an `eid:` cursor filters lexicographically, so a hole defined by
-    // ULID time can sort below it and survive an incremental load.
+    // cursor: a hole can sit below that cursor and survive an incremental
+    // load.
     expect(cursorlessLoads(result.listEvents)).toBe(1);
 
     // Replay after the restart observed the hook and took the hook branch.
@@ -1040,7 +1011,7 @@ describe('precondition guard through the real replay loop', () => {
       (c) => c.eventType === 'wait_completed'
     );
     expect(waitCreates).toHaveLength(2);
-    expect(waitCreates[1]?.stateUpdatedAt).toBe(result.OUTSIDE_EVENT_MS);
+    expect(waitCreates[1]?.eventCount).toBe(result.staleEventCount + 1);
     expect(result.createdEvents).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -1160,8 +1131,7 @@ describe('precondition guard through the real replay loop', () => {
       1 + getPreconditionMaxInProcessRestarts()
     );
     for (const create of runCompletedCreates) {
-      expect(create.stateUpdatedAt).toBe(result.runStartedSnapshotMs);
-      expect(create.stateEventCount).toBe(result.staleEventCount);
+      expect(create.eventCount).toBe(result.staleEventCount);
     }
     // And the runtime must not convert the rejection into a run failure.
     expect(
@@ -1227,8 +1197,6 @@ describe('precondition guard through the real replay loop', () => {
       (c) => c.eventType === 'attr_set'
     );
     expect(attrCreate).toBeDefined();
-    expect(attrCreate?.stateUpdatedAt).toBeTypeOf('number');
-    expect(attrCreate?.stateEventCount).toBe(2);
-    expect(attrCreate?.stateCursor).toBe(result.preloadedCursor);
+    expect(attrCreate?.eventCount).toBe(result.preloadedEventCount);
   });
 });

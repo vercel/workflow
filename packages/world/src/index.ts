@@ -1,5 +1,6 @@
 export type * from './analytics.js';
 export {
+  ANALYTICS_EVENTS_GET_MANY_LIMIT,
   AnalyticsAttributeKeySchema,
   AnalyticsEventSchema,
   AnalyticsHookSchema,

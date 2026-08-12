@@ -49,7 +49,7 @@ interface World extends Storage, Queue, Streamer {
 }
 ```
 
-The optional `capabilities` object advertises additional behavior. Set `hookRetention.active` to `true` only when the World implements Hook token retention, `slotEventIds` when it allocates [slot-numbered event IDs](#event-id-allocation), and `preconditionGuard` when it enforces the [precondition guard](#optional-the-event-creation-precondition-guard). The optional `start()` method initializes background tasks (for example, queue polling). The optional `close()` method releases resources like connection pools and listeners. The optional `getEncryptionKeyForRun()` method returns the AES-256 key used to encrypt data for a run; if it is not implemented, encryption is disabled.
+The optional `capabilities` object advertises additional behavior. Set `hookRetention.active` to `true` only when the World implements Hook token retention, `slotEventIds` when it allocates [slot-numbered event IDs](#event-id-allocation), and `preconditionGuard` when it can [reject a stale write](#optional-rejecting-a-stale-write). The optional `start()` method initializes background tasks (for example, queue polling). The optional `close()` method releases resources like connection pools and listeners. The optional `getEncryptionKeyForRun()` method returns the AES-256 key used to encrypt data for a run; if it is not implemented, encryption is disabled.
 
 ## The Event Log Model
 
@@ -119,29 +119,20 @@ Two properties have to hold, and both are about what a reader can conclude from 
 
 `events.create()` params carry `eventCount`: how many events the writer held in the log it replayed from, which is the position it expects to land on minus one. Attempt `eventCount + 1`. When that position is taken, **do not reject the write**. Advance to the next free position, commit there, and return the events occupying the positions you skipped over on the success response, in `events` with a matching `cursor` and `hasMore`. The writer merges them into its own log and replays once, rather than paying a second round trip to discover it was behind. A caller with a stale count is the normal case for a fan-out, and rejecting it would serialize writes the runtime issues in parallel.
 
-`eventCount` supersedes the `stateUpdatedAt` / `stateEventCount` / `stateCursor` triple below for a World that allocates positions. The triple approximates a position with a timestamp watermark plus a count of events at or below it, which a complete-but-stale snapshot passes: every event the writer holds is at or below its own watermark, so the count matches and no fence fires. A dense position has no such blind spot.
+### Optional: Rejecting a Stale Write
 
-### Optional: The Event Creation Precondition Guard
+A replay writes events derived from the event log it loaded, so a write made from an event log that no longer matches the store can commit events no correct replay would produce. Rejecting one means answering `events.create()` with a `PreconditionFailedError` when the run's log already holds more events than the caller's `eventCount` says it had loaded.
 
-A replay writes events derived from the event log it loaded, so a write made from an event log that no longer matches the store can commit events no correct replay would produce. To let a World fence those writes, `events.create()` params may carry a description of the snapshot the caller replayed from:
-
-- `stateUpdatedAt` — the timestamp encoded in the latest loaded event's ID.
-- `stateEventCount` — how many events the caller loaded. Only sent together with `stateUpdatedAt`; ignore a count that arrives without one.
-- `stateCursor` — the caller's event-log cursor. Advisory, and only meaningful on the reject path (see below).
-
-Enforcing the guard means rejecting the creation with a `PreconditionFailedError` when either holds:
-
-1. An event was recorded after `stateUpdatedAt` that the caller could not have loaded.
-2. More events were recorded at or before `stateUpdatedAt` than `stateEventCount` — the caller's snapshot is missing one.
+Check first whether the field can reach you at all. The runtime derives `eventCount` from the highest slot in the log it loaded, and sends nothing when any loaded event ID is not a slot, so a World whose IDs are not positions never receives it and has nothing to fence on. A World that does allocate positions has the better mechanism already: commit above the contention and report the skipped events back, which costs the writer no replay. That leaves this worth implementing in one case — your store allocates positions, but not atomically with the commit, so refusing a stale write is safer than accepting one out of order.
 
 Two rules make this safe:
 
-- **Compare at or below `stateUpdatedAt`, not strictly below.** Events routinely share a millisecond with the caller's latest event, and a strict comparison misses exactly those.
-- **Every uncertainty must allow the write.** If your record of a run's events is incomplete, expired, or cannot answer the question, accept the creation. A rejection must always mean a real discrepancy, because the runtime responds to one by discarding a replay.
+- **Only reject on evidence.** If your record of a run's events is incomplete, expired, or cannot answer the question, accept the creation. A rejection must always mean a real discrepancy, because the runtime responds to one by discarding a replay.
+- **Accept a creation that carries no `eventCount`.** It came from a caller with no loaded log to be stale (a queued step body, an out-of-band writer), not from a caller claiming the log is empty.
 
 A rejection may optionally carry the events the caller was missing, as `{ events, cursor }` on the error's `details`. Only include them when you can prove the set is complete — that those events fully account for the discrepancy and are not truncated — and that every one of them belongs to the run being written. The runtime merges them straight into the replay's event log, so anything else there is worse than no delta at all. Otherwise omit them, and the runtime performs a full reload instead.
 
-A World that enforces the guard should declare `capabilities.preconditionGuard`, which the runtime also reads to keep event-log delta optimizations enabled. A World that ignores these params must not declare it.
+Declare `capabilities.preconditionGuard` if your World can refuse a write this way. The runtime reads it as "a write can come back refused", not as a promise that any particular one will be, and three behaviors key on it: the per-step event-log delta optimization stays enabled while the run has an open hook, an inline step's `step_started` claim is awaited before the body runs, and a `step_created` publish is sequenced after the create on the `node` VM engine. A World that accepts `eventCount` and ignores it must leave the capability unset — sending a position is not the same as one being enforced.
 
 ## Queue Interface
 

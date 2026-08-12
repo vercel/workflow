@@ -15,7 +15,7 @@ export const scenario: ScenarioSpec = {
     'holds an event the writer never loaded. The watermark guard is on and ' +
     'passes anyway, by construction: the marker moves to the ULID time of the ' +
     "hook, which sorts at or below the writer's own snapshot, so " +
-    '`stateUpdatedAt < marker` is false. It corrupts — the same corruption as ' +
+    '`snapshot.updatedAt < marker` is false. It corrupts — the same corruption as ' +
     'the doc-23 pair, reached without a stale read. ' +
     'Under an append-only log there is no position to be spoken for: the hook ' +
     'commits after the timeout and therefore sorts after it, the log says the ' +

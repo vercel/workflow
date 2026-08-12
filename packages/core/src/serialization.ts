@@ -1,6 +1,7 @@
 import {
   RuntimeDecryptionError,
   SerializationError,
+  StreamExpiredError,
   WorkflowRuntimeError,
 } from '@workflow/errors';
 import { once } from '@workflow/utils';
@@ -945,7 +946,11 @@ export function createReconnectingFramedStream(
       try {
         await connect();
         return;
-      } catch {
+      } catch (error) {
+        // Retention expiry is terminal and retrying cannot restore the stream.
+        // Preserve the typed error immediately instead of turning one 410 into
+        // 50 reconnect attempts and a generic budget-exhaustion error.
+        if (StreamExpiredError.is(error)) throw error;
         // Reopen failed transiently; loop to retry, counting against the
         // budget so a server that never recovers still terminates the stream.
       }

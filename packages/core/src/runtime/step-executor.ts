@@ -23,6 +23,7 @@ import type {
   World,
 } from '@workflow/world';
 import {
+  eventIdToSlot,
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_SUPPORTS_COMPRESSION,
 } from '@workflow/world';
@@ -52,10 +53,15 @@ import {
 } from './constants.js';
 import { getPortLazy } from './get-port-lazy.js';
 import {
+  maxEventSlot,
   memoizeEncryptionKey,
-  type PreconditionSnapshotParams,
+  type SlotSnapshotParams,
 } from './helpers.js';
 import { ReplayRecoveryReporter } from './replay-recovery-reporter.js';
+import {
+  computeResumeTtrAttributes,
+  type ResumeTtrTracking,
+} from './resume-latency.js';
 import {
   computeStepLatencyEventData,
   type StepLatencyEventData,
@@ -141,20 +147,25 @@ export interface StepExecutorParams {
    */
   inlineDeltaSinceCursor?: string;
   /**
-   * Precondition-guard snapshot of the event log the caller's replay loaded, to
-   * attach to this step's `step_started` claim. On the lazy inline path the
-   * claim is the step's FIRST durable write (its `step_created` is deferred),
-   * so without this the claim would bypass the optimistic-concurrency guard
-   * entirely: a replay working from a stale view could claim — and then commit
-   * — a step scheduled without observing an event it never loaded. A
-   * guard-enforcing World rejects a stale claim with `PreconditionFailedError`
+   * How much of the run's log the caller's replay had loaded when it scheduled
+   * this step, as the highest slot that log occupies. Seeds the snapshot every
+   * write this executor makes carries; each committed event advances it to its
+   * own slot, so a later write never names a position that predates an earlier
+   * one from the same step.
+   *
+   * It matters most on the lazy inline path, where the `step_started` claim is
+   * the step's FIRST durable write (its `step_created` is deferred): without a
+   * seed the claim would name no position at all, and a replay working from a
+   * stale view could claim — and then commit — a step scheduled without
+   * observing an event it never loaded.
+   *
+   * A World that fences rejects a stale claim with `PreconditionFailedError`
    * (412); executeStep does NOT translate that rejection (re-claiming in place
    * would still commit the stale schedule), so it propagates for the caller to
-   * abandon the batch and restart its replay. Undefined when the guard is
-   * disabled or the caller has no snapshot; Worlds that don't enforce the guard
-   * ignore it.
+   * abandon the batch and restart its replay. Undefined for a run that is not
+   * slot-numbered, or a caller with nothing loaded.
    */
-  preconditionSnapshot?: PreconditionSnapshotParams;
+  slotSnapshot?: SlotSnapshotParams;
   /**
    * Suppress optimistic inline start for this step regardless of
    * `WORKFLOW_OPTIMISTIC_INLINE_START` / `forceOptimisticStart`: take the
@@ -193,6 +204,15 @@ export interface StepExecutorParams {
    * runtime/step-latency.ts.
    */
   latencyTracking?: StepLatencyTracking;
+  /**
+   * Hook-resume TTR telemetry: the boundaries of a hook resumption whose next
+   * durable step is the one this call is about to execute. When set, the
+   * executor closes the measurement against the `step_started` claim and the
+   * wall clock taken immediately before user code, and attaches the total plus
+   * its phase breakdown to this step's `step.execute` span. Set by the runtime
+   * for exactly one step per resumption — see runtime/resume-latency.ts.
+   */
+  resumeTracking?: ResumeTtrTracking;
   /**
    * Authoritative attempt number for this execution, used to bound retries
    * against `maxRetries` BEFORE the body runs. In order to also catch
@@ -273,13 +293,48 @@ export async function executeStep(
     (params.runSpecVersion ?? 0) >= SPEC_VERSION_SUPPORTS_COMPRESSION;
   const replayRecoveryReporter =
     params.replayRecoveryReporter ?? ReplayRecoveryReporter.inert();
-  const createEvent = <T extends CreateEventRequest>(
+  /**
+   * The highest log slot this executor knows about, seeded from the view its
+   * caller scheduled the step against and advanced by every event it commits.
+   *
+   * Advancing is what keeps the snapshot honest across a step's own writes. A
+   * step commits `step_started` and then `step_completed`; if the second still
+   * named the caller's original position, the World would report the first one
+   * back as an event this writer had not seen, on every step, forever.
+   *
+   * This reads a report for its highest position and then discards it, where
+   * the replay loop and the suspension handler merge theirs with
+   * `absorbSkippedSlotReport`. That is the difference between the callers, not
+   * an oversight: an executor holds no loaded log to merge into. It runs from a
+   * queued delivery whose only view of the log is the integer its caller passed
+   * in, so the position is the entire value the report has to it. Whoever
+   * replays next loads the log and gets the events themselves.
+   */
+  let knownSlot = params.slotSnapshot?.eventCount;
+  const observeSlot = (result: { event?: Event; events?: Event[] }): void => {
+    if (knownSlot === undefined) {
+      return;
+    }
+    const committed = result.event ? eventIdToSlot(result.event.eventId) : null;
+    for (const slot of [committed, maxEventSlot(result.events ?? []) ?? null]) {
+      if (slot !== null && slot > knownSlot) {
+        knownSlot = slot;
+      }
+    }
+  };
+  const createEvent = async <T extends CreateEventRequest>(
     data: T,
     eventParams?: CreateEventParams
-  ) =>
-    replayRecoveryReporter.withEventCreate(eventParams, (p) =>
-      world.events.create(workflowRunId, data, p)
+  ) => {
+    const result = await replayRecoveryReporter.withEventCreate(
+      knownSlot === undefined
+        ? eventParams
+        : { eventCount: knownSlot, ...eventParams },
+      (p) => world.events.create(workflowRunId, data, p)
     );
+    observeSlot(result);
+    return result;
+  };
 
   const spanName = `step.execute ${stepDisplayName(stepName)}`;
   return trace(spanName, {}, async (span) => {
@@ -531,18 +586,23 @@ export async function executeStep(
           !isOptimisticInlineStartExplicitlyDisabled()));
 
     let step: StartedStep;
-    // Params for the `step_started` create on either path below: the ambient
-    // compute-instance stamp plus the optimistic-concurrency claim guard.
+    // Params for the `step_started` create on either path below. The slot
+    // snapshot is not spread here: `createEvent` attaches it to every write,
+    // this one included.
     const startEventParams: CreateEventParams = {
       computeInstanceId: COMPUTE_INSTANCE_ID,
-      // Spread as a unit: the three snapshot fields describe one snapshot and
-      // must travel together — see StepExecutorParams.preconditionSnapshot.
-      ...params.preconditionSnapshot,
     };
     // `Date.now()` taken immediately before the `step_started` create is
     // issued (either path below) — anchors RSFS's end point. See
     // StepLatencyEventData.rsfs and the call sites below.
     let stepStartPostSentAtMs: number | undefined;
+    // `Date.now()` taken once the `step_started` response has returned and the
+    // claim succeeded — T6 of the hook-resume TTR window. Only the await path
+    // can set it: optimistic inline start deliberately does not wait for the
+    // claim before running the body, so at T7 it has no completion instant and
+    // the TTR breakdown reports no `step_claim_ms` (see
+    // runtime/resume-latency.ts).
+    let stepClaimCompletedAtMs: number | undefined;
     // Settled outcome of the in-flight optimistic `step_started`. Handlers are
     // attached synchronously (`.then(ok, err)`) so a fast rejection never
     // surfaces as an unhandledRejection while the body runs.
@@ -593,7 +653,7 @@ export async function executeStep(
                   : {}),
               },
             },
-            // Guard the claim — see StepExecutorParams.preconditionSnapshot. A
+            // Guard the claim — see StepExecutorParams.slotSnapshot. A
             // stale (412) rejection surfaces via reconcileOptimisticStart as a
             // non-translatable error: the body result is discarded and the
             // rejection propagates to the caller.
@@ -653,12 +713,13 @@ export async function executeStep(
                   }
                 : { stepName, ...ownershipStamp },
           },
-          // Guard the claim — see StepExecutorParams.preconditionSnapshot. A
+          // Guard the claim — see StepExecutorParams.slotSnapshot. A
           // stale (412) rejection is intentionally NOT translated by
           // startErrorToResult below, so it propagates to the caller for a
           // fresh replay.
           startEventParams
         );
+        stepClaimCompletedAtMs = Date.now();
 
         step = startResult.step;
       } catch (err) {
@@ -871,6 +932,41 @@ export async function executeStep(
           ),
         });
       }
+      /**
+       * Close the hook-resume TTR measurement (see runtime/resume-latency.ts).
+       *
+       * Called from INSIDE `contextStorage.run`, immediately before
+       * `stepFn.apply()` — deliberately not alongside the step-latency
+       * telemetry above. `executionStartTime` is taken before the inner
+       * `step.execute` span and the step context are established, and
+       * `step_prepare_ms` is documented to include exactly that setup, so
+       * anchoring T7 there would under-report both the phase and the total.
+       * TTFS/STSO keep their own anchor so this changes nothing about them.
+       *
+       * The `reported` latch makes one resumption yield one sample even
+       * though every step of an inline batch is handed the same tracking
+       * object: whichever step first reaches user code takes the
+       * measurement. Sharing it (rather than pinning the batch's first step)
+       * is what keeps the sample alive when that first step loses its atomic
+       * create-claim to a concurrent invocation while a sibling proceeds.
+       * The check-and-set is synchronous, so concurrent siblings cannot both
+       * pass it.
+       */
+      const reportResumeTtr = (): void => {
+        const tracking = params.resumeTracking;
+        if (!tracking || tracking.reported) return;
+        const attributes = computeResumeTtrAttributes({
+          tracking,
+          attempt,
+          stepClaimStartedAtMs: stepStartPostSentAtMs,
+          stepClaimCompletedAtMs,
+          stepCodeStartedAtMs: Date.now(),
+        });
+        if (!attributes) return;
+        tracking.reported = true;
+        span?.setAttributes(attributes);
+      };
+
       try {
         result = await trace('step.execute', {}, async () => {
           return await contextStorage.run(
@@ -902,7 +998,11 @@ export async function executeStep(
                 ? params.runReadyBarrier
                 : undefined,
             },
-            () => stepFn.apply(thisVal, args)
+            () => {
+              // The last instant before user code — T7 of the resume window.
+              reportResumeTtr();
+              return stepFn.apply(thisVal, args);
+            }
           );
         });
       } catch (err) {

@@ -1,10 +1,11 @@
 import { withResolvers } from '@workflow/utils';
 import type { Event } from '@workflow/world';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   DEFERRED_CHECK_DELAY_MS,
   EventConsumerResult,
   EventsConsumer,
+  MIN_DEFERRED_CHECK_DELAY_MS,
 } from './events-consumer.js';
 
 // Helper function to create mock events
@@ -736,11 +737,26 @@ describe('EventsConsumer', () => {
   });
 
   describe('duplicate event classes', () => {
-    // Waits past the deferred unconsumed-event window so a check that was not
-    // cancelled has definitely fired.
+    // Nothing here waits on the window for its result — a duplicate is stepped
+    // over in the pass that offers it — so run at the shortest legal delay and
+    // let the assertions that a check did NOT fire be cheap.
+    beforeEach(() => {
+      vi.stubEnv(
+        'WORKFLOW_DEFERRED_CHECK_DELAY_MS',
+        String(MIN_DEFERRED_CHECK_DELAY_MS)
+      );
+    });
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    // Waits long enough for a deferred check that was not cancelled to have
+    // fired. Assertions that a check DID fire should poll instead: the window
+    // is a lower bound on when the timer is eligible to run, and a loaded
+    // runner with a coarse timer can take considerably longer to get there.
     function waitPastDeferredCheck(): Promise<void> {
       return new Promise((resolve) =>
-        setTimeout(resolve, DEFERRED_CHECK_DELAY_MS * 2)
+        setTimeout(resolve, MIN_DEFERRED_CHECK_DELAY_MS * 4)
       );
     }
 
@@ -783,7 +799,10 @@ describe('EventsConsumer', () => {
       events: Event[],
       overrides: Partial<{
         onUnconsumedEvent: (event: Event) => void;
-        onDuplicateEvent: (event: Event) => void;
+        onDuplicateEvent: (
+          event: Event,
+          firstEventType: Event['eventType']
+        ) => void;
         onConsumedEvent: (event: Event) => void;
       }> = {}
     ) {
@@ -819,7 +838,7 @@ describe('EventsConsumer', () => {
       expect(consumer.eventIndex).toBe(events.length);
       expect(onUnconsumedEvent).not.toHaveBeenCalled();
       expect(onDuplicateEvent).toHaveBeenCalledTimes(1);
-      expect(onDuplicateEvent).toHaveBeenCalledWith(events[3]);
+      expect(onDuplicateEvent).toHaveBeenCalledWith(events[3], 'step_started');
     });
 
     it('skips a step_created that repeats a class already in the log', async () => {
@@ -843,7 +862,7 @@ describe('EventsConsumer', () => {
 
       expect(consumer.eventIndex).toBe(events.length);
       expect(onUnconsumedEvent).not.toHaveBeenCalled();
-      expect(onDuplicateEvent).toHaveBeenCalledWith(events[2]);
+      expect(onDuplicateEvent).toHaveBeenCalledWith(events[2], 'step_created');
     });
 
     it('skips a duplicate wait_completed ahead of parking it', async () => {
@@ -868,7 +887,10 @@ describe('EventsConsumer', () => {
       expect(consumer.eventIndex).toBe(events.length);
       expect(consumer.parkedSummary).toBeUndefined();
       expect(onUnconsumedEvent).not.toHaveBeenCalled();
-      expect(onDuplicateEvent).toHaveBeenCalledWith(events[2]);
+      expect(onDuplicateEvent).toHaveBeenCalledWith(
+        events[2],
+        'wait_completed'
+      );
     });
 
     it('skips a duplicate run_started, which carries no correlation id', async () => {
@@ -900,7 +922,7 @@ describe('EventsConsumer', () => {
 
       expect(consumer.eventIndex).toBe(events.length);
       expect(onUnconsumedEvent).not.toHaveBeenCalled();
-      expect(onDuplicateEvent).toHaveBeenCalledWith(events[1]);
+      expect(onDuplicateEvent).toHaveBeenCalledWith(events[1], 'run_started');
       expect(onConsumedEvent).toHaveBeenCalledTimes(1);
     });
 
@@ -925,7 +947,9 @@ describe('EventsConsumer', () => {
 
       expect(consumer.eventIndex).toBe(3);
       expect(onDuplicateEvent).not.toHaveBeenCalled();
-      expect(onUnconsumedEvent).toHaveBeenCalledWith(events[3]);
+      await vi.waitFor(() => {
+        expect(onUnconsumedEvent).toHaveBeenCalledWith(events[3]);
+      });
     });
 
     it('does not let one class suppress another for the same entity', async () => {
@@ -950,7 +974,9 @@ describe('EventsConsumer', () => {
 
       expect(consumer.eventIndex).toBe(2);
       expect(onDuplicateEvent).not.toHaveBeenCalled();
-      expect(onUnconsumedEvent).toHaveBeenCalledWith(events[2]);
+      await vi.waitFor(() => {
+        expect(onUnconsumedEvent).toHaveBeenCalledWith(events[2]);
+      });
     });
 
     it('does not track hook deliveries, whose consumers subscribe lazily', async () => {
@@ -1009,6 +1035,92 @@ describe('EventsConsumer', () => {
       expect(callback).toHaveBeenCalledWith(events[3]);
       expect(onDuplicateEvent).not.toHaveBeenCalled();
       expect(onUnconsumedEvent).not.toHaveBeenCalled();
+    });
+
+    it('steps over a straggler without waiting out the deferred window', async () => {
+      // The window buys time for a consumer that has yet to register, and no
+      // such consumer can want an event of a class this replay already
+      // consumed. Paying it anyway costs the delay per straggler per replay,
+      // which is what makes a stormed run's log expensive to walk.
+      const corr = 'step_A';
+      const stragglers = 3;
+      const events = [
+        realEvent('step_created', corr),
+        realEvent('step_started', corr),
+        realEvent('step_completed', corr),
+        ...Array.from({ length: stragglers }, () =>
+          realEvent('step_started', corr)
+        ),
+      ];
+      // Run at the real delay: the point of the test is the difference
+      // between paying it and not, so shortening it would erase the signal.
+      vi.unstubAllEnvs();
+      const consumer = consumerFor(events);
+
+      const start = Date.now();
+      consumer.subscribe(entityConsumer(corr, 'step_completed'));
+      await vi.waitFor(
+        () => {
+          expect(consumer.eventIndex).toBe(events.length);
+        },
+        { interval: 1 }
+      );
+
+      // Deferring each straggler would cost one window apiece, so the walk
+      // finishing inside a single window means none of them went through the
+      // deferred check.
+      expect(Date.now() - start).toBeLessThan(DEFERRED_CHECK_DELAY_MS);
+    });
+
+    it('reports the first outcome when a repeat decides the class differently', async () => {
+      // Two replays raced a nondeterministic step to opposite results. The
+      // first one is what the workflow observed, on every replay; the second
+      // is dropped, and the drop is worth surfacing.
+      const corr = 'step_A';
+      const events = [
+        realEvent('step_created', corr),
+        realEvent('step_completed', corr),
+        realEvent('step_failed', corr),
+      ];
+      const onDuplicateEvent = vi.fn();
+      const consumer = consumerFor(events, { onDuplicateEvent });
+
+      consumer.subscribe(entityConsumer(corr, 'step_completed'));
+      await waitPastDeferredCheck();
+
+      expect(consumer.eventIndex).toBe(events.length);
+      expect(onDuplicateEvent).toHaveBeenCalledWith(
+        events[2],
+        'step_completed'
+      );
+    });
+
+    it('leaves a duplicate run_cancelled to the parking path', async () => {
+      // Terminal run events have no class: nothing consumes them, so no class
+      // could ever be recorded for one. In production the runtime exits before
+      // replaying a body whose log already holds one, so this path is only
+      // reachable in a test — the point is that the skip does not claim to
+      // handle it.
+      const events = [
+        realEvent('run_started', undefined),
+        realEvent('run_cancelled', undefined),
+        realEvent('run_cancelled', undefined),
+      ];
+      const onDuplicateEvent = vi.fn();
+      const consumer = consumerFor(events, { onDuplicateEvent });
+
+      let consumedRunStarted = false;
+      consumer.subscribe((event: Event | null) => {
+        if (event?.eventType !== 'run_started' || consumedRunStarted) {
+          return EventConsumerResult.NotConsumed;
+        }
+        consumedRunStarted = true;
+        return EventConsumerResult.Consumed;
+      });
+      await waitPastDeferredCheck();
+
+      expect(onDuplicateEvent).not.toHaveBeenCalled();
+      expect(consumer.parkedSummary?.eventType).toBe('run_cancelled');
     });
 
     it('does not advance the deterministic clock for a skipped event', async () => {
