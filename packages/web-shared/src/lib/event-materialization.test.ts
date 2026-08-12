@@ -65,7 +65,7 @@ describe('materializeSteps', () => {
       event('step_completed', { correlationId: 'step_a', at: 9 }),
     ];
 
-    const [step] = materializeSteps(events);
+    const [step] = materializeSteps(events, { isCompleteHistory: true });
 
     expect(step.status).toBe('failed');
     expect(step.completedAt?.getTime()).toBe(BASE_TIME + 3000);
@@ -75,13 +75,43 @@ describe('materializeSteps', () => {
   it('still lists the passed-over event on the entity', () => {
     const events = [
       event('step_created', { correlationId: 'step_a', at: 1 }),
+      event('step_started', { correlationId: 'step_a', at: 2 }),
+      event('step_failed', { correlationId: 'step_a', at: 3 }),
+      event('step_completed', { correlationId: 'step_a', at: 9 }),
+    ];
+
+    const [step] = materializeSteps(events, { isCompleteHistory: true });
+
+    expect(step.events).toHaveLength(4);
+  });
+
+  it('takes the last outcome when the log may be incomplete', () => {
+    const events = [
+      event('step_created', { correlationId: 'step_a', at: 1 }),
+      event('step_started', { correlationId: 'step_a', at: 2 }),
+      event('step_failed', { correlationId: 'step_a', at: 3 }),
+      event('step_completed', { correlationId: 'step_a', at: 9 }),
+    ];
+
+    // On a page of the log there is no telling which failure the run acted on,
+    // so nothing is passed over and the fold reports what it was given.
+    const [step] = materializeSteps(events);
+
+    expect(step.status).toBe('completed');
+  });
+
+  it('counts a repeated creation as one attempt while the step is open', () => {
+    const events = [
+      event('step_created', { correlationId: 'step_a', at: 1 }),
+      // A live step consumer claims this, so it is an attempt, not a repeat.
       event('step_created', { correlationId: 'step_a', at: 2 }),
       event('step_started', { correlationId: 'step_a', at: 3 }),
     ];
 
-    const [step] = materializeSteps(events);
+    const [step] = materializeSteps(events, { isCompleteHistory: true });
 
     expect(step.events).toHaveLength(3);
     expect(step.status).toBe('running');
+    expect(step.attempt).toBe(1);
   });
 });

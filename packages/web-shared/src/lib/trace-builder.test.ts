@@ -43,11 +43,32 @@ describe('buildTrace', () => {
       event('step_completed', { correlationId: 'step_a', at: 20 }),
     ];
 
-    const trace = buildTrace(run, events, new Date(BASE_TIME + 30_000));
+    const trace = buildTrace(run, events, new Date(BASE_TIME + 30_000), {
+      isCompleteHistory: true,
+    });
     const stepSpan = trace.spans.find((span) => span.resource === 'step');
 
     expect(stepSpan).toBeDefined();
     expect(otelTimeToMs(stepSpan?.endTime ?? [0, 0])).toBe(BASE_TIME + 4000);
     expect(trace.knownDurationMs).toBe(4000);
+  });
+
+  it('keeps every event in the geometry when the log may be incomplete', () => {
+    const events = [
+      event('run_created', { at: 0 }),
+      event('run_started', { at: 0 }),
+      event('step_created', { correlationId: 'step_a', at: 1 }),
+      event('step_started', { correlationId: 'step_a', at: 1 }),
+      event('step_completed', { correlationId: 'step_a', at: 4 }),
+      event('step_completed', { correlationId: 'step_a', at: 20 }),
+    ];
+
+    // Without the whole log there is no telling which of the two completions
+    // the run acted on, so neither is dropped and the span covers both.
+    const trace = buildTrace(run, events, new Date(BASE_TIME + 30_000));
+    const stepSpan = trace.spans.find((span) => span.resource === 'step');
+
+    expect(otelTimeToMs(stepSpan?.endTime ?? [0, 0])).toBe(BASE_TIME + 20_000);
+    expect(trace.duplicateEventIds.size).toBe(0);
   });
 });

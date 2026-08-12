@@ -5,89 +5,119 @@ import {
 } from '@workflow/world';
 
 /**
- * Copy shown on an event the runtime passed over as a repeat.
- */
-export const DUPLICATE_EVENT_MESSAGE =
-  'Multiple processes resuming may result in duplicate events. This event was ignored and had no effect.';
-
-/**
- * Event classes a run records at most once per entity. A second event of one
- * of these classes for the same entity is a repeat: the first one is what the
- * replay acted on, and the runtime passes over the rest.
+ * Identifies events a replay reads past.
  *
- * `step_started` and `step_retrying` are the two classes deliberately left
- * out. A retried step records one of each per attempt, and the runtime
- * consumes them, so a repeat there is an extra attempt rather than an ignored
- * event.
+ * Concurrent replays of one run write to a shared log, so a replay working
+ * from a stale prefix can commit a second `step_created` / `step_started` /
+ * `wait_created` for an entity the log already records one of. Every replay
+ * reads the first event of that class at the same position, so a later one
+ * cannot change what the workflow observes.
+ *
+ * The classification mirrors `entityEventClass` in `@workflow/world`, which is
+ * what the runtime keys its own duplicate detection on. What it cannot mirror
+ * is consumer state: the runtime passes over an event only after every
+ * registered callback has declined it, and a callback registered for a
+ * still-open entity legitimately claims a repeat (each retry of a step writes
+ * another `step_started`, and a live step consumer absorbs a second
+ * `step_created`). So a repeat counts here only once a terminal event for the
+ * same entity sits earlier in the log, which is the point past which no
+ * consumer remains.
  */
-const ONCE_PER_ENTITY_CLASSES: ReadonlySet<EntityEventClass> = new Set([
-  'step_created',
+
+/** Classes whose event closes its entity: no consumer is left for it after. */
+const TERMINAL_EVENT_CLASSES: ReadonlySet<EntityEventClass> = new Set([
   'step_terminal',
-  'wait_created',
   'wait_completed',
-  'hook_created',
   'hook_disposed',
-  'run_started',
   'run_terminal',
 ]);
 
-function entityKey(event: Event): string | undefined {
-  const eventClass = entityEventClass(event.eventType);
-  if (eventClass === undefined || !ONCE_PER_ENTITY_CLASSES.has(eventClass)) {
-    return undefined;
-  }
-  // Run events carry no correlation id, so they key on the class alone.
-  return `${eventClass}:${event.correlationId ?? ''}`;
-}
+/** Classes with no entity to close first: the log records one per run. */
+const SINGLETON_EVENT_CLASSES: ReadonlySet<EntityEventClass> = new Set([
+  'run_started',
+]);
 
-function effectiveTime(event: Event): number {
-  const occurredAt = event.occurredAt;
-  if (occurredAt != null) {
-    const parsed =
-      occurredAt instanceof Date ? occurredAt : new Date(String(occurredAt));
-    if (!Number.isNaN(parsed.getTime())) return parsed.getTime();
+/** Entity key for events that carry no correlation ID (the run itself). */
+const RUN_ENTITY_KEY = '';
+
+/**
+ * Shown against an event this module reports. Deliberately says what the log
+ * shows rather than what the runtime did with it: tolerating these repeats is
+ * recent, and on a run recorded before it a repeat no consumer claimed failed
+ * the replay instead of being passed over.
+ */
+export const DUPLICATE_EVENT_MESSAGE =
+  'Written by a concurrent replay after an event of the same kind was already recorded and acted on. The run follows the earlier one.';
+
+/**
+ * Log order.
+ *
+ * Event IDs are fixed-width and monotonic within a run under both the ULID and
+ * the slot scheme, so comparing them orders the log even where timestamps do
+ * not: a writer stamps `createdAt` on entry but takes its log position at
+ * publish time, and `occurredAt` is measured on the client. Length is compared
+ * first so a shorter ID never sorts after a longer one on a fixture or a log
+ * that mixes widths.
+ */
+function compareLogPosition(a: Event, b: Event): number {
+  if (a.eventId.length !== b.eventId.length) {
+    return a.eventId.length - b.eventId.length;
   }
-  return new Date(event.createdAt).getTime();
+  return a.eventId < b.eventId ? -1 : a.eventId > b.eventId ? 1 : 0;
 }
 
 /**
- * Event ids that repeat a class the log already records for the same entity.
+ * The IDs of the events in `events` that repeat a class the log already
+ * records for the same entity, after that entity finished.
  *
- * Concurrent replays of one run share an event log, so a replay working from
- * a stale prefix can commit a write the log already has. The runtime passes
- * over those (see `EventsConsumer` in `@workflow/core`); this reports them so
- * the UI can say so rather than showing them as ordinary progress.
- *
- * Order is decided here, not by the caller: the earliest event of a class is
- * the one that counted, whichever direction the view happens to sort in. The
- * answer is exact only over a complete event list. A partial list (pagination,
- * an exact-id search) can miss a repeat whose first occurrence is absent,
- * which under-reports rather than mislabels.
+ * `isCompleteHistory` must be false whenever the caller holds a subset of the
+ * run's log: one page of a paginated list, or the result of a search. Which
+ * occurrence of a class came first is a property of the whole log, so on a
+ * subset the earlier event may simply be missing, and the fold would report
+ * the surviving one. Nothing is classified in that case.
  */
-export function findDuplicateEventIds(events: readonly Event[]): Set<string> {
+export function findDuplicateEventIds(
+  events: readonly Event[],
+  { isCompleteHistory }: { isCompleteHistory: boolean }
+): Set<string> {
   const duplicates = new Set<string>();
-  if (events.length < 2) return duplicates;
+  if (!isCompleteHistory || events.length < 2) return duplicates;
 
+  const seenClasses = new Set<string>();
+  const closedEntities = new Set<string>();
+
+  // Dropped before the sort, not during the fold: an event with no ID has no
+  // log position to order on, and the caller could not match it either.
   const ordered = events
-    .map((event, index) => ({ event, index }))
-    .sort(
-      (a, b) =>
-        effectiveTime(a.event) - effectiveTime(b.event) || a.index - b.index
-    );
+    .filter((event) => Boolean(event.eventId))
+    .sort(compareLogPosition);
 
-  const seen = new Set<string>();
-  for (const { event } of ordered) {
-    // An event the caller cannot identify cannot be marked: callers match on
-    // the id, so reporting a missing one would tar every other such event with
-    // it.
-    if (!event.eventId) continue;
-    const key = entityKey(event);
-    if (key === undefined) continue;
-    if (seen.has(key)) {
-      duplicates.add(event.eventId);
+  for (const event of ordered) {
+    const eventClass = entityEventClass(event.eventType);
+    if (eventClass === undefined) continue;
+
+    const entity = event.correlationId ?? RUN_ENTITY_KEY;
+    const classKey = `${eventClass}:${entity}`;
+    const repeatsClass = seenClasses.has(classKey);
+    const entityWasClosed = closedEntities.has(entity);
+
+    if (TERMINAL_EVENT_CLASSES.has(eventClass)) {
+      closedEntities.add(entity);
+    }
+
+    if (!repeatsClass) {
+      seenClasses.add(classKey);
       continue;
     }
-    seen.add(key);
+
+    // The entity is still open, so a consumer is registered for it and takes
+    // this event: another attempt, not a repeat read past.
+    if (!entityWasClosed && !SINGLETON_EVENT_CLASSES.has(eventClass)) {
+      continue;
+    }
+
+    duplicates.add(event.eventId);
   }
+
   return duplicates;
 }

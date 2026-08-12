@@ -193,13 +193,16 @@ export interface DurationInfo {
  * created ↔ started (queued) and started ↔ completed/failed/cancelled (ran).
  * Also computes run-level durations under the key '__run__'.
  *
- * Events the runtime passed over as repeats are excluded: a second
+ * Events every replay reads past as repeats are excluded: a second
  * `step_completed` written by a concurrent replay would otherwise stretch the
- * step's measured runtime to whenever that replay happened to commit.
+ * step's measured runtime to whenever that replay happened to commit. The
+ * caller supplies them, because whether an event is a repeat is a property of
+ * the whole log and this function may be handed a page of it.
  */
-export function buildDurationMap(events: Event[]): Map<string, DurationInfo> {
-  const duplicateEventIds = findDuplicateEventIds(events);
-
+export function buildDurationMap(
+  events: Event[],
+  duplicateEventIds: ReadonlySet<string> = new Set()
+): Map<string, DurationInfo> {
   // Process events in chronological order so the result doesn't depend on
   // the caller's sort direction. Retried steps emit multiple `step_started`
   // events for the same correlationId; the queued duration must be measured
@@ -1327,15 +1330,21 @@ function EventListViewInner({
     );
   }, [events, effectiveSortOrder, isExactSearchActive, searchResults]);
 
-  // Events the runtime passed over as repeats. Computed from the source list
+  // Events every replay reads past as repeats. Computed from the source list
   // rather than `sortedEvents` because which occurrence counted is a property
   // of the log, not of the direction the table happens to be sorted in.
+  //
+  // A page short of the whole log, or an exact-ID search that returns one
+  // event, cannot answer that question: the event a repeat lost to may be
+  // outside the window, and reading it the other way round would mark the
+  // event the run acted on and drop it from the durations. Both cases classify
+  // nothing.
   const duplicateEventIds = useMemo(
     () =>
-      findDuplicateEventIds(
-        isExactSearchActive ? (searchResults ?? []) : (events ?? [])
-      ),
-    [events, isExactSearchActive, searchResults]
+      findDuplicateEventIds(events ?? [], {
+        isCompleteHistory: !hasMoreEvents && !isExactSearchActive,
+      }),
+    [events, hasMoreEvents, isExactSearchActive]
   );
 
   // Detect encrypted fields across all loaded events (inline eventData).
@@ -1370,8 +1379,8 @@ function EventListViewInner({
   );
 
   const durationMap = useMemo(
-    () => buildDurationMap(sortedEvents),
-    [sortedEvents]
+    () => buildDurationMap(sortedEvents, duplicateEventIds),
+    [sortedEvents, duplicateEventIds]
   );
 
   const [selectedGroupKey, setSelectedGroupKey] = useState<string | undefined>(

@@ -2,7 +2,6 @@
 
 import { type Event, getEventDataRefFields } from '@workflow/world';
 import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { findDuplicateEventIds } from '../../lib/duplicate-events';
 import { hasEncryptedFields, isExpiredMarker } from '../../lib/hydration';
 import {
   Collapsible,
@@ -305,6 +304,7 @@ export function EventsList({
   onRunClick,
   encryptionKey,
   showSeparateEventOccurrenceTimestamps = false,
+  duplicateEventIds,
 }: {
   events: Event[];
   isLoading?: boolean;
@@ -316,6 +316,12 @@ export function EventsList({
   encryptionKey?: Uint8Array;
   /** Show occurredAt separately instead of folding it into the Created timestamp. */
   showSeparateEventOccurrenceTimestamps?: boolean;
+  /**
+   * Events every replay reads past as repeats, from the caller that holds the
+   * whole log. `events` here is one entity's slice of it, which cannot answer
+   * the question on its own.
+   */
+  duplicateEventIds?: ReadonlySet<string>;
 }) {
   // Sort by the timestamp shown as Created by default.
   const sortedEvents = useMemo(
@@ -325,11 +331,6 @@ export function EventsList({
           getEffectiveEventDate(a).getTime() -
           getEffectiveEventDate(b).getTime()
       ),
-    [events]
-  );
-
-  const duplicateEventIds = useMemo(
-    () => findDuplicateEventIds(events),
     [events]
   );
 
@@ -368,7 +369,7 @@ export function EventsList({
                     showSeparateEventOccurrenceTimestamps={
                       showSeparateEventOccurrenceTimestamps
                     }
-                    isDuplicate={duplicateEventIds.has(event.eventId)}
+                    isDuplicate={duplicateEventIds?.has(event.eventId)}
                   />
                 ))}
               </div>

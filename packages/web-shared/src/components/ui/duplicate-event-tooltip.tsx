@@ -11,7 +11,7 @@ import {
 
 /**
  * Explains why an event is shown greyed out: it repeats a class the log
- * already records for the same entity, so the runtime passed over it.
+ * already records for the same entity, after that entity finished.
  *
  * Renders `children` untouched when `isDuplicate` is false, so a call site can
  * wrap an event label unconditionally. Mounts its own {@link TooltipProvider}
@@ -19,10 +19,10 @@ import {
  * existing provider is harmless.
  */
 export function DuplicateEventTooltip({
-  isDuplicate,
+  isDuplicate = false,
   children,
 }: {
-  isDuplicate: boolean;
+  isDuplicate?: boolean;
   children: ReactNode;
 }): ReactNode {
   if (!isDuplicate) return children;
