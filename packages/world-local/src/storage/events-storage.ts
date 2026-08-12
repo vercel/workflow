@@ -108,6 +108,14 @@ import { withRunFileLock } from './runs-storage.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
+/**
+ * Entry ceiling for the in-process event cache. A run whose log exceeds this
+ * cannot be served from the cache alone, so reads past it go back to the JSON
+ * files. Exported so a test that means to cross that boundary can size itself
+ * from the ceiling rather than restate it.
+ */
+export const MAX_CACHED_EVENT_ENTRIES = 1000;
+
 function getHookRetentionLimitMs(): number {
   const days = Number(
     process.env.WORKFLOW_LOCAL_HOOK_RETENTION_LIMIT_DAYS ?? 30
@@ -575,7 +583,7 @@ export function createEventsStorage(
   // and entry count are both bounded so active/waiting runs cannot retain
   // unbounded histories in a long-lived development server.
   const maxCachedEventBytes = 4 * 1024 * 1024;
-  const maxCachedEventEntries = 1000;
+  const maxCachedEventEntries = MAX_CACHED_EVENT_ENTRIES;
   const eventCache = new Map<string, Event>();
   const cachedEventBytes = new Map<string, number>();
   const cachedPathsByRunId = new Map<string, Set<string>>();
