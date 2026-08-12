@@ -25,6 +25,7 @@ import {
   useRef,
   useState,
 } from 'react';
+import { cn } from '../../lib/cn';
 import { ENCRYPTED_DISPLAY_NAME } from '../../lib/hydration';
 import {
   type DecodedStreamChunkSource,
@@ -182,16 +183,8 @@ function EncryptedInlineLabel() {
     );
   }
   return (
-    <span style={{ color: 'var(--ds-gray-600)', fontStyle: 'italic' }}>
-      <Lock
-        className="h-3 w-3"
-        style={{
-          display: 'inline',
-          verticalAlign: 'middle',
-          marginRight: '3px',
-          marginTop: '-1px',
-        }}
-      />
+    <span className="text-gray-600 italic">
+      <Lock className="-mt-px mr-[3px] inline h-3 w-3 align-middle" />
       Encrypted
     </span>
   );
@@ -199,18 +192,10 @@ function EncryptedInlineLabel() {
 
 function StreamRefInline({ streamRef }: { streamRef: StreamRef }) {
   const onStreamClick = useContext(StreamClickContext);
-  const [hovered, setHovered] = useState(false);
   return (
     <button
       type="button"
-      className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-mono cursor-pointer underline decoration-transparent transition-colors"
-      style={{
-        backgroundColor: hovered ? 'var(--ds-blue-200)' : 'var(--ds-blue-100)',
-        color: 'var(--ds-blue-900)',
-        border: '1px solid var(--ds-blue-300)',
-      }}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
+      className="inline-flex cursor-pointer items-center gap-1 rounded border border-blue-300 bg-blue-100 px-1.5 py-0.5 font-mono text-[10px] text-blue-900 underline decoration-transparent transition-colors hover:bg-blue-200"
       onClick={(e) => {
         e.stopPropagation();
         onStreamClick?.(streamRef.streamId);
@@ -225,20 +210,10 @@ function StreamRefInline({ streamRef }: { streamRef: StreamRef }) {
 
 function RunRefInline({ runRef }: { runRef: RunRef }) {
   const onRunClick = useContext(RunClickContext);
-  const [hovered, setHovered] = useState(false);
   return (
     <button
       type="button"
-      className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-mono cursor-pointer underline decoration-transparent transition-colors"
-      style={{
-        backgroundColor: hovered
-          ? 'var(--ds-purple-200)'
-          : 'var(--ds-purple-100)',
-        color: 'var(--ds-purple-900)',
-        border: '1px solid var(--ds-purple-300)',
-      }}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
+      className="inline-flex cursor-pointer items-center gap-1 rounded border border-purple-300 bg-purple-100 px-1.5 py-0.5 font-mono text-[10px] text-purple-900 underline decoration-transparent transition-colors hover:bg-purple-200"
       onClick={(e) => {
         e.stopPropagation();
         onRunClick?.(runRef.runId);
@@ -267,10 +242,7 @@ function DecodedBytesChunk({
       {selectedView === 'decoded' ? (
         <div className="min-w-0">
           {typeof parsed === 'string' ? (
-            <span
-              className="whitespace-pre-wrap break-words"
-              style={{ color: 'var(--ds-gray-1000)' }}
-            >
+            <span className="whitespace-pre-wrap break-words text-gray-1000">
               {deserializeChunkText(parsed)}
             </span>
           ) : (
@@ -282,20 +254,15 @@ function DecodedBytesChunk({
       )}
       <div className="mt-2 flex">
         <div
-          className="inline-flex overflow-hidden rounded border"
-          style={{ borderColor: 'var(--ds-gray-400)' }}
+          className="inline-flex overflow-hidden rounded border border-gray-400"
           title={`${source.type} decoded as ${source.encoding.toUpperCase()} text. Switch to Bytes to inspect the summarized raw value.`}
         >
           <button
             type="button"
-            className="h-5 px-1.5 text-[10px] font-medium"
-            style={{
-              backgroundColor:
-                selectedView === 'decoded'
-                  ? 'var(--ds-gray-200)'
-                  : 'var(--ds-gray-100)',
-              color: 'var(--ds-gray-900)',
-            }}
+            className={cn(
+              'h-5 px-1.5 font-medium text-[10px] text-gray-900',
+              selectedView === 'decoded' ? 'bg-gray-200' : 'bg-gray-100'
+            )}
             onClick={() => setSelectedView('decoded')}
             aria-pressed={selectedView === 'decoded'}
             aria-label="Show decoded text"
@@ -304,15 +271,10 @@ function DecodedBytesChunk({
           </button>
           <button
             type="button"
-            className="h-5 border-l px-1.5 text-[10px] font-medium"
-            style={{
-              borderColor: 'var(--ds-gray-400)',
-              backgroundColor:
-                selectedView === 'bytes'
-                  ? 'var(--ds-gray-200)'
-                  : 'var(--ds-gray-100)',
-              color: 'var(--ds-gray-900)',
-            }}
+            className={cn(
+              'h-5 border-gray-400 border-l px-1.5 font-medium text-[10px] text-gray-900',
+              selectedView === 'bytes' ? 'bg-gray-200' : 'bg-gray-100'
+            )}
             onClick={() => setSelectedView('bytes')}
             aria-pressed={selectedView === 'bytes'}
             aria-label="Show raw bytes summary"
@@ -338,23 +300,19 @@ function DecodedBytesInspector({
     <div className="font-mono">
       <button
         type="button"
-        className="flex max-w-full items-start gap-1 text-left"
-        style={{ color: 'var(--ds-gray-1000)' }}
+        className="flex max-w-full items-start gap-1 text-left text-gray-1000"
         onClick={() => setExpanded((value) => !value)}
         title={`${source.type} decoded as ${source.encoding.toUpperCase()} text`}
       >
-        <span className="select-none" style={{ color: 'var(--ds-gray-700)' }}>
+        <span className="select-none text-gray-700">
           {expanded ? '▼' : '▶'}
         </span>
         <span className="min-w-0 break-words">{source.rawSummary}</span>
       </button>
       {expanded && (
         <div className="mt-1 pl-5">
-          <span style={{ color: 'var(--ds-gray-700)' }}>decoded: </span>
-          <span
-            className="whitespace-pre-wrap break-words"
-            style={{ color: 'var(--ds-green-900)' }}
-          >
+          <span className="text-gray-700">decoded: </span>
+          <span className="whitespace-pre-wrap break-words text-green-900">
             {JSON.stringify(decodedText)}
           </span>
         </div>
@@ -373,10 +331,7 @@ function BytesDisplayValue({ display }: { display: BytesDisplay }) {
     );
   }
   return (
-    <span
-      className="whitespace-pre-wrap break-words"
-      style={{ color: 'var(--ds-gray-1000)' }}
-    >
+    <span className="whitespace-pre-wrap break-words text-gray-1000">
       {display.text}
     </span>
   );

@@ -1,5 +1,5 @@
 import type { World } from '@workflow/world';
-import { SPEC_VERSION_SUPPORTS_COMPRESSION } from '@workflow/world';
+import { SPEC_VERSION_SUPPORTS_SLOT_IDENTITY } from '@workflow/world';
 import { createAnalytics } from './analytics.js';
 import { createRunId, describeRun } from './create-run-id.js';
 import { createGetEncryptionKeyForRun } from './encryption.js';
@@ -30,15 +30,24 @@ export function createWorld(config?: APIConfig): World {
     config?.projectConfig?.projectId || process.env.VERCEL_PROJECT_ID;
 
   return {
-    // Spec v5 adds client-side zstd/gzip payload compression. The server stores
-    // those payloads opaquely, and v5 remains a superset of v4 attributes.
-    specVersion: SPEC_VERSION_SUPPORTS_COMPRESSION,
+    // Spec v6 adds slot-numbered event ids on top of v5's client-side
+    // zstd/gzip payload compression. The version is what tells the backend
+    // which id scheme a run uses: it is stamped on `run_created` and read back
+    // on every later write, so a run created before v6 keeps its ULIDs even
+    // though this adapter now asks for slots.
+    specVersion: SPEC_VERSION_SUPPORTS_SLOT_IDENTITY,
     capabilities: {
       hookRetention: { active: true },
-      // workflow-server enforces the `stateUpdatedAt` optimistic-concurrency
-      // guard: creations carrying a stale snapshot are rejected with 412
-      // (PreconditionFailedError) when the run's outside-event marker is
-      // newer. See vercel/workflow-server#484.
+      // The backend rejects a stale create with 412 (PreconditionFailedError)
+      // rather than committing it.
+      //
+      // No write this adapter now sends can be rejected that way: the backend
+      // evaluates the fence only for a create carrying a ULID-era snapshot,
+      // and this SDK sends none. A run created here is v6, where staleness is
+      // handled by allocating the write above the contention and reporting
+      // back the slots it skipped. The capability is kept because the runtime
+      // reads it as "a write can be refused", and the choices keyed on it stay
+      // the conservative ones while the slot path carries the load.
       preconditionGuard: true,
       // Vercel Queues supports maxConcurrency-limited consumers, which
       // WORKFLOW_SEQUENTIAL_REPLAYS=1 uses for per-run `maxConcurrency: 1`
@@ -47,6 +56,11 @@ export function createWorld(config?: APIConfig): World {
       // Vercel deployments are atomic and immutable, so a deployment id names
       // one fixed build for its whole lifetime.
       deploymentAffinity: true,
+      // New runs get dense per-run slot event ids. Runs created before the
+      // backend adopted them keep their ULIDs; the scheme is pinned by the
+      // spec version stamped on each run, not by this flag, which only says
+      // what new runs get.
+      slotEventIds: true,
       // NOTE: the backend half of resumeHook()'s parallel fast path — that
       // the server enforces the `(runId, resumeId)` dedup constraint — is
       // NO LONGER a static world capability here. It is attested per-lookup by

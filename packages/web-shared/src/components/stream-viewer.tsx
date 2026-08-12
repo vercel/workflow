@@ -122,7 +122,7 @@ export function StreamViewer({
                 <ChunkRow chunk={chunks[index]} />
               </div>
             )}
-            style={{ flex: 1, minHeight: 0 }}
+            className="min-h-0 flex-1"
           />
         )}
       </div>

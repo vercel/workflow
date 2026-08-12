@@ -7,7 +7,7 @@ import {
   computeSpanMarkers,
   computeSpanSegments,
   computeTimeMarkers,
-  getResourceColor,
+  getResourceClassNames,
 } from './utils';
 
 /** Build a high-res timestamp tuple ([seconds, nanoseconds]) for a given ms. */
@@ -248,13 +248,11 @@ describe('computeTimeMarkers', () => {
   });
 });
 
-describe('getResourceColor', () => {
+describe('getResourceClassNames', () => {
   it('uses gray for hooks (passive spans), not amber', () => {
-    expect(getResourceColor('hook')).toEqual({
-      bg: 'var(--ds-gray-200)',
-      border: 'var(--ds-gray-500)',
-      errorBg: 'var(--ds-red-200)',
-      errorBorder: 'var(--ds-red-500)',
+    expect(getResourceClassNames('hook')).toEqual({
+      className: 'border-gray-500 bg-gray-200',
+      errorClassName: 'border-red-500 bg-red-200',
     });
   });
 });

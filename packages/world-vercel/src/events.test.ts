@@ -179,54 +179,14 @@ describe('createWorkflowRunEvent with v1Compat', () => {
 });
 
 /**
- * The optimistic-concurrency precondition guard: a replay-context create
- * describes the runtime's loaded snapshot with three params — `stateUpdatedAt`
- * (the ULID time of the latest loaded event), `stateEventCount` (how many
- * events that snapshot holds at or below it) and `stateCursor` (so a rejecting
- * backend may return the missing events inline). Locks in that each reaches
- * the v4 frame meta, and that all are omitted when the caller has no loaded
- * snapshot — an unsent field disables the corresponding backend check.
+ * A replay-context create names the position its decisions were made at:
+ * `eventCount`, the highest event slot the runtime had loaded. Locks in that it
+ * reaches the v4 frame meta under the wire name the backend reads, and that it
+ * is omitted when the caller has no loaded snapshot — an unsent field leaves
+ * the backend with no position to report a skipped span against.
  */
-describe('createWorkflowRunEvent precondition snapshot wire fields', () => {
-  it('includes stateUpdatedAt in the v4 frame meta when provided', async () => {
-    const agent = mockAgent();
-    let capturedMeta: Record<string, unknown> | undefined;
-
-    agent
-      .get(ORIGIN)
-      .intercept({
-        path: '/api/v4/runs/wrun_1/events/run_started',
-        method: 'POST',
-      })
-      .reply(
-        200,
-        (opts: { body?: unknown }) => {
-          capturedMeta = decodePostedMeta(opts.body);
-          return runStartedResponse();
-        },
-        {
-          headers: {
-            'content-type': V4_FRAME_CONTENT_TYPE,
-            'x-wf-event-id': 'evnt_1',
-            'x-wf-run-id': 'wrun_1',
-            'x-wf-created-at': '2026-06-10T00:00:00.000Z',
-            'x-wf-max-events': '10000',
-          },
-        }
-      );
-
-    await createWorkflowRunEvent(
-      'wrun_1',
-      { eventType: 'run_started', specVersion: 2 } as AnyEventRequest,
-      { stateUpdatedAt: 1_700_000_000_000 },
-      { token: 'test-token', dispatcher: agent }
-    );
-
-    expect(capturedMeta?.stateUpdatedAt).toBe(1_700_000_000_000);
-    agent.assertNoPendingInterceptors();
-  });
-
-  it('omits stateUpdatedAt from the v4 frame meta when not provided', async () => {
+describe('createWorkflowRunEvent slot snapshot wire fields', () => {
+  it('omits maxSlot from the v4 frame meta when no snapshot is provided', async () => {
     const agent = mockAgent();
     let capturedMeta: Record<string, unknown> | undefined;
 
@@ -260,11 +220,15 @@ describe('createWorkflowRunEvent precondition snapshot wire fields', () => {
       { token: 'test-token', dispatcher: agent }
     );
 
-    expect('stateUpdatedAt' in (capturedMeta ?? {})).toBe(false);
+    expect('maxSlot' in (capturedMeta ?? {})).toBe(false);
     agent.assertNoPendingInterceptors();
   });
 
-  it('includes stateEventCount and stateCursor in the v4 frame meta when provided', async () => {
+  it('renames eventCount to maxSlot', async () => {
+    // The runtime sends `eventCount` once a run's own ids are slot-shaped. It
+    // cannot ride under that name: the v4 meta already has an unrelated
+    // telemetry `eventCount`, so the backend would read a progress counter as
+    // a log position.
     const agent = mockAgent();
     let capturedMeta: Record<string, unknown> | undefined;
 
@@ -294,61 +258,18 @@ describe('createWorkflowRunEvent precondition snapshot wire fields', () => {
     await createWorkflowRunEvent(
       'wrun_1',
       { eventType: 'run_started', specVersion: 2 } as AnyEventRequest,
-      {
-        stateUpdatedAt: 1_700_000_000_000,
-        stateEventCount: 7,
-        stateCursor: 'eid:evnt_1',
-      },
+      { eventCount: 9 },
       { token: 'test-token', dispatcher: agent }
     );
 
-    expect(capturedMeta?.stateEventCount).toBe(7);
-    expect(capturedMeta?.stateCursor).toBe('eid:evnt_1');
-    agent.assertNoPendingInterceptors();
-  });
-
-  it('omits stateEventCount and stateCursor from the v4 frame meta when not provided', async () => {
-    const agent = mockAgent();
-    let capturedMeta: Record<string, unknown> | undefined;
-
-    agent
-      .get(ORIGIN)
-      .intercept({
-        path: '/api/v4/runs/wrun_1/events/run_started',
-        method: 'POST',
-      })
-      .reply(
-        200,
-        (opts: { body?: unknown }) => {
-          capturedMeta = decodePostedMeta(opts.body);
-          return runStartedResponse();
-        },
-        {
-          headers: {
-            'content-type': V4_FRAME_CONTENT_TYPE,
-            'x-wf-event-id': 'evnt_1',
-            'x-wf-run-id': 'wrun_1',
-            'x-wf-created-at': '2026-06-10T00:00:00.000Z',
-            'x-wf-max-events': '10000',
-          },
-        }
-      );
-
-    await createWorkflowRunEvent(
-      'wrun_1',
-      { eventType: 'run_started', specVersion: 2 } as AnyEventRequest,
-      { stateUpdatedAt: 1_700_000_000_000 },
-      { token: 'test-token', dispatcher: agent }
-    );
-
-    expect('stateEventCount' in (capturedMeta ?? {})).toBe(false);
-    expect('stateCursor' in (capturedMeta ?? {})).toBe(false);
+    expect(capturedMeta?.maxSlot).toBe(9);
     agent.assertNoPendingInterceptors();
   });
 
   it('never sends the snapshot on the legacy v1Compat path', async () => {
-    // Pre-event-sourcing runs have no event log to fence, and the legacy
-    // endpoint has no field for the snapshot: the params are dropped whole.
+    // Pre-event-sourcing runs have no slot-numbered log to name a position
+    // in, and the legacy endpoint has no field for one: the params are dropped
+    // whole.
     const agent = mockAgent();
     let capturedBody = '';
 
@@ -383,19 +304,13 @@ describe('createWorkflowRunEvent precondition snapshot wire fields', () => {
         specVersion: 1,
         eventData: { resumeAt: '2026-06-10T00:00:00.000Z' },
       } as AnyEventRequest,
-      {
-        v1Compat: true,
-        stateUpdatedAt: 1_700_000_000_000,
-        stateEventCount: 7,
-        stateCursor: 'eid:evnt_1',
-      },
+      { v1Compat: true, eventCount: 7 },
       { token: 'test-token', dispatcher: agent }
     );
 
     expect(capturedBody).toContain('wait_completed');
-    expect(capturedBody).not.toContain('stateUpdatedAt');
-    expect(capturedBody).not.toContain('stateEventCount');
-    expect(capturedBody).not.toContain('stateCursor');
+    expect(capturedBody).not.toContain('maxSlot');
+    expect(capturedBody).not.toContain('eventCount');
     agent.assertNoPendingInterceptors();
   });
 });

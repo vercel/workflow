@@ -12,6 +12,7 @@ import {
   type RunErrorCode,
   RunExpiredError,
   WorkflowRuntimeError,
+  WorkflowWorldError,
 } from '@workflow/errors';
 import { once, setWorkflowBasePath } from '@workflow/utils';
 import {
@@ -67,19 +68,23 @@ import {
   type ReenqueueArgs,
 } from './runtime/deployment-guard.js';
 import {
+  absorbSkippedSlotReport,
   appendUniqueEvents,
   getQueueOverhead,
   getWorkflowQueueName,
   handleHealthCheckMessage,
   insertEventByEventId,
-  isPreconditionGuardEnabled,
+  isSlotGapCheckEnabled,
   type LoadedEventLog,
   loadWorkflowRunEvents,
   memoizeEncryptionKey,
   parseHealthCheckPayload,
   preconditionEventDelta,
-  preconditionSnapshotParams,
   queueMessage,
+  type SlotSnapshotParams,
+  settleEventSlotGap,
+  slotSnapshotParams,
+  stepDispatchIdempotencyKey,
   withHealthCheck,
 } from './runtime/helpers.js';
 import {
@@ -87,6 +92,10 @@ import {
   ReplayBudget,
 } from './runtime/replay-budget.js';
 import { ReplayRecoveryReporter } from './runtime/replay-recovery-reporter.js';
+import {
+  resumeTimingForMessage,
+  resumeTrackingFromMessage,
+} from './runtime/resume-latency.js';
 import { runIdCreatedAt } from './runtime/run-id-time.js';
 import {
   DEFAULT_STEP_MAX_RETRIES,
@@ -336,6 +345,27 @@ function getWorkflowSetupErrorCode(err: unknown): RunErrorCode | null {
   }
 
   return null;
+}
+
+/**
+ * Whether a step execution rejected because the step entity does not exist —
+ * the signature of a resilient step dispatch message whose delivery beat (or
+ * outlived a transient failure of) the producer's parallel `step_created`
+ * write. Every World surfaces it as a `WorkflowWorldError` naming the missing
+ * step: world-vercel maps the backend's 404 to
+ * `workflow step step_… not found`, world-local and world-postgres throw
+ * `Step "step_…" not found` directly. The message match is deliberately loose
+ * across those shapes; the status check narrows the remote case without
+ * excluding the local ones (which carry no status).
+ *
+ * Used only when the message carries `stepInput` — a bare dispatch without a
+ * payload has nothing to recover from, and the error keeps propagating for
+ * queue-driven recovery exactly as before.
+ */
+function isStepMissingError(err: unknown): boolean {
+  if (!WorkflowWorldError.is(err)) return false;
+  if (err.status !== undefined && err.status !== 404) return false;
+  return /step/i.test(err.message) && /not found/i.test(err.message);
 }
 
 async function recordFatalRunError({
@@ -617,6 +647,11 @@ export function workflowEntrypoint(
     worldHandlers.createQueueHandler(
       workflowPrefix,
       async (message_, metadata) => {
+        // T2 of the hook-resume TTR window (see runtime/resume-latency.ts):
+        // the instant this consumer began, before message parsing. Only used
+        // when the message turns out to carry resume timing; taking it
+        // unconditionally keeps it honest for the deliveries that do.
+        const handlerEnteredAtMs = Date.now();
         // Check if this is a health check message
         // NOTE: Health check messages are intentionally unauthenticated for monitoring purposes.
         // They only write a simple status response to a stream and do not expose sensitive data.
@@ -641,7 +676,36 @@ export function workflowEntrypoint(
           deploymentMismatchRetryCount,
           runInput,
           hookInput,
+          stepInput,
+          hookResumeTiming,
         } = WorkflowInvokePayloadSchema.parse(message_);
+
+        // --- Hook-resume TTR telemetry (runtime/resume-latency.ts) ---
+        // Threaded through this invocation and CONSUMED by the first durable
+        // step that follows the resumption — cleared at that point so a later
+        // step, a retry, or a redelivery never re-reports the same resume.
+        //
+        // Two delivery shapes carry timing:
+        //  - the resume's own invocation (no `stepId`): the producer's T0/T1
+        //    ride the message and this handler's entry is T2.
+        //  - a step this invocation handed to another invocation (`stepId`
+        //    present): the resuming invocation already stamped T2..T4 onto
+        //    the message, so they are read back verbatim.
+        let resumeTracking = resumeTrackingFromMessage(
+          hookResumeTiming,
+          incomingStepId !== undefined ? 'dispatched' : 'inline'
+        );
+        if (resumeTracking && incomingStepId === undefined) {
+          resumeTracking.consumerStartedAtMs = handlerEnteredAtMs;
+        }
+        if (
+          resumeTracking &&
+          !Number.isFinite(resumeTracking.consumerStartedAtMs)
+        ) {
+          // A step message from a producer that forwarded timing without the
+          // consumer boundaries. Nothing additive can be reported.
+          resumeTracking = undefined;
+        }
         // `start()` always attaches a trace carrier, but
         // serializeTraceCarrier() returns `{}` when no OTEL SDK is registered
         // or no span is active — treat an empty carrier the same as an
@@ -826,10 +890,11 @@ export function workflowEntrypoint(
                     params?: CreateEventParams
                   ) => {
                     const sinceCursor = deltaRequestCursor(data, params);
+                    const withSnapshot = { ...slotSnapshot(), ...params };
                     const result = await replayRecoveryReporter.withEventCreate(
                       sinceCursor === undefined
-                        ? params
-                        : { ...params, sinceCursor },
+                        ? withSnapshot
+                        : { ...withSnapshot, sinceCursor },
                       (p) => world.events.create(runId, data, p)
                     );
                     if (sinceCursor !== undefined) {
@@ -837,6 +902,30 @@ export function workflowEntrypoint(
                     }
                     return result;
                   };
+
+                  /**
+                   * The slot snapshot for a write issued from this loop: how
+                   * much of the run's log the decision behind it was made
+                   * against.
+                   *
+                   * Every write goes through here, including the ones that ask
+                   * for an inline delta. The two answer different questions and
+                   * a World is free to serve both: the cursor says where to
+                   * start listing from, the slot says which events this writer
+                   * had already decided without. Worlds that treat the delta as
+                   * the better answer simply ignore the slot.
+                   *
+                   * Taken from whatever is loaded, including the stale
+                   * `loadAfter` state. Understating is safe: the World reports
+                   * back a wider span than strictly needed, and
+                   * `mergeReportedEvents` drops what the log already holds.
+                   * Overstating is not, so there is no guessing when nothing is
+                   * loaded at all.
+                   */
+                  const slotSnapshot = (): SlotSnapshotParams =>
+                    eventLog.type === 'loadAll'
+                      ? {}
+                      : slotSnapshotParams(eventLog.events);
 
                   /**
                    * The cursor to ask for an inline delta against, or
@@ -877,6 +966,15 @@ export function workflowEntrypoint(
                    * appended in band. Absorbing it here means the next reader
                    * already has the log and the loop's incremental
                    * `events.list` finds nothing left to fetch.
+                   *
+                   * Deliberately not `absorbSkippedSlotReport`, even though the
+                   * `hasMore` half of the two policies coincides. A delta
+                   * extends the tail and carries a cursor that has to move with
+                   * it, so it appends without re-sorting and needs the cursor
+                   * guard below; a skipped-slot report is a window strictly
+                   * below the write, carries no cursor, and has to be sorted
+                   * back into place. Sharing an implementation would mean one
+                   * of them doing the other's work.
                    *
                    * Declining is always safe — an unabsorbed delta is a delta
                    * the next `events.list` returns — so the guards are free to
@@ -1373,9 +1471,116 @@ export function workflowEntrypoint(
                   // will pick up the replay.
                   if (incomingStepId && incomingStepName) {
                     try {
-                      const bgRun = await world.runs.get(runId, {
-                        resolveData: 'none',
-                      });
+                      // Resilient step dispatch: the producer parallelized the
+                      // `step_created` write with this queue publish, so the
+                      // step entity may not exist yet when this delivery
+                      // executes — the delivery beat the write, or the write
+                      // failed transiently and this message carries the only
+                      // copy of the input. Idempotently re-ensure the event
+                      // from the message's `stepInput` — keyed by the step's
+                      // correlation id, so the producer's write and this
+                      // re-ensure converge on exactly one event.
+                      //
+                      // Invoked from two places:
+                      //
+                      //  - IN-BAND (the load-bearing path): when the bare
+                      //    `step_started` below rejects with "step not found",
+                      //    the executor catch materializes the step and
+                      //    retries once, all within this delivery. This must
+                      //    not rely on delivery attempts: world-vercel's
+                      //    failure-retry path re-enqueues a FRESH message
+                      //    (attempt resets to 1), so an attempt-gated recovery
+                      //    is unreachable on the retry chain and the step
+                      //    would stall until the ORIGINAL message's
+                      //    ~300s visibility-timeout redelivery — measured
+                      //    exactly so in the durabench parallel sweeps before
+                      //    this path existed.
+                      //  - EAGERLY on a genuine redelivery (attempt > 1),
+                      //    in parallel with the run fetch below — a
+                      //    redelivered dispatch already had its create race
+                      //    resolved either way, so this saves the failed
+                      //    start round-trip at no wall-time cost. First
+                      //    deliveries skip it: the producer's write almost
+                      //    always lands, and an eager ensure would burn a
+                      //    conditional write per step.
+                      const ensureStepFromMessage = async (): Promise<
+                        'ok' | 'gone'
+                      > => {
+                        if (!stepInput) return 'ok';
+                        try {
+                          await world.events.create(
+                            runId,
+                            {
+                              eventType: 'step_created',
+                              specVersion: SPEC_VERSION_CURRENT,
+                              correlationId: incomingStepId,
+                              eventData: {
+                                stepName: incomingStepName,
+                                workflowName,
+                                // Typed Uint8Array by StepDispatchInputSchema:
+                                // a non-binary (mangled) payload fails the
+                                // message parse above and never reaches this
+                                // write.
+                                input: stepInput.input,
+                              },
+                            },
+                            {
+                              requestId,
+                              // Marks this create as a dispatch re-ensure so
+                              // a guard-enforcing backend can refuse it when
+                              // the producer's write was 412-rejected (the
+                              // dispatch was revoked). Surfaces as
+                              // RunExpiredError → 'gone' below, acking the
+                              // message. Worlds without the guard ignore it.
+                              viaStepDispatch: true,
+                            }
+                          );
+                          // This delivery materialized the step — the
+                          // completion of the producer's recovery path.
+                          span?.setAttributes(
+                            Attribute.StepResilientDispatchMaterialized(true)
+                          );
+                          runtimeLogger.warn(
+                            'Materialized step_created from the queue message — the producer\u2019s direct write did not land',
+                            {
+                              workflowRunId: runId,
+                              stepId: incomingStepId,
+                              stepName: incomingStepName,
+                            }
+                          );
+                        } catch (err) {
+                          // The common case: the producer's write (or a
+                          // concurrent re-ensure) already landed.
+                          if (EntityConflictError.is(err)) return 'ok';
+                          // Nothing left to execute: the run went terminal
+                          // (matches the run-status check below), or a
+                          // guard-enforcing backend revoked this dispatch
+                          // (410 `step-dispatch-revoked` — the producer's
+                          // write was 412-rejected and the replay restarted
+                          // with a corrected schedule).
+                          if (RunExpiredError.is(err)) return 'gone';
+                          // Transient — rethrow so the queue redelivers and a
+                          // later attempt converges instead of executing (and
+                          // acking) a step that may not exist.
+                          throw err;
+                        }
+                        return 'ok';
+                      };
+                      const [bgRun, ensureOutcome] = await Promise.all([
+                        world.runs.get(runId, {
+                          resolveData: 'none',
+                        }),
+                        stepInput && metadata.attempt > 1
+                          ? ensureStepFromMessage()
+                          : ('ok' as const),
+                      ]);
+                      if (ensureOutcome === 'gone') {
+                        runtimeLogger.debug(
+                          'Run already finished, skipping background step',
+                          { workflowRunId: runId }
+                        );
+                        return;
+                      }
                       if (bgRun.status !== 'running') {
                         runtimeLogger.debug(
                           'Run already finished, skipping background step',
@@ -1390,6 +1595,10 @@ export function workflowEntrypoint(
                           ...(await replayMessage()),
                           stepId: incomingStepId,
                           stepName: incomingStepName,
+                          // Carry the resume timing verbatim so the re-routed
+                          // hop stays inside `step_dispatch` rather than
+                          // vanishing from the TTR decomposition.
+                          ...(hookResumeTiming ? { hookResumeTiming } : {}),
                         }))) !== 'continue'
                       ) {
                         return;
@@ -1435,6 +1644,13 @@ export function workflowEntrypoint(
                           ) + 1;
                       }
 
+                      // TTR: this delivery IS the dispatched next step of a
+                      // resumption. Consume the tracking here so the inline
+                      // replay this handler may fall through to cannot
+                      // report it again.
+                      const bgResumeTracking = resumeTracking;
+                      resumeTracking = undefined;
+
                       // Pause the replay budget while the step body runs —
                       // step duration is bounded by the platform's function
                       // maxDuration, not by the replay timeout. See the
@@ -1452,25 +1668,50 @@ export function workflowEntrypoint(
                         // step_started of a queue-driven execution
                         // intentionally clears inline ownership (the step is
                         // queue-owned from this point).
+                        const executeQueuedStep = () =>
+                          executeStep({
+                            world,
+                            workflowRunId: runId,
+                            workflowDeploymentId: bgRun.deploymentId,
+                            workflowName,
+                            workflowStartedAt: bgStartedAt,
+                            rootRunId: rootRunIdFrom(bgRun.attributes, runId),
+                            stepId: incomingStepId,
+                            stepName: incomingStepName,
+                            runSpecVersion: bgRun.specVersion,
+                            // Retry ceiling: the queue delivery count as a fast
+                            // gate, verified against the recorded step_started
+                            // count once it crosses the ceiling (see above).
+                            authoritativeAttempt: bgAuthoritativeAttempt,
+                            ...(bgResumeTracking
+                              ? { resumeTracking: bgResumeTracking }
+                              : {}),
+                          });
                         stepResult = await runStepSingleFlight(
                           runId,
                           incomingStepId,
-                          () =>
-                            executeStep({
-                              world,
-                              workflowRunId: runId,
-                              workflowDeploymentId: bgRun.deploymentId,
-                              workflowName,
-                              workflowStartedAt: bgStartedAt,
-                              rootRunId: rootRunIdFrom(bgRun.attributes, runId),
-                              stepId: incomingStepId,
-                              stepName: incomingStepName,
-                              runSpecVersion: bgRun.specVersion,
-                              // Retry ceiling: the queue delivery count as a fast
-                              // gate, verified against the recorded step_started
-                              // count once it crosses the ceiling (see above).
-                              authoritativeAttempt: bgAuthoritativeAttempt,
-                            })
+                          async () => {
+                            try {
+                              return await executeQueuedStep();
+                            } catch (err) {
+                              // In-band resilient recovery: a missing step on
+                              // a stepInput-carrying message means this
+                              // delivery outran (or outlived a transient
+                              // failure of) the producer's parallel
+                              // step_created write. Materialize the event
+                              // from the payload and retry ONCE, within this
+                              // delivery — see ensureStepFromMessage for why
+                              // this cannot wait for a redelivery. A second
+                              // failure propagates as before.
+                              if (!stepInput || !isStepMissingError(err)) {
+                                throw err;
+                              }
+                              if ((await ensureStepFromMessage()) === 'gone') {
+                                return { type: 'gone' as const };
+                              }
+                              return await executeQueuedStep();
+                            }
+                          }
                         );
                       } finally {
                         replayBudget.resume();
@@ -1672,6 +1913,11 @@ export function workflowEntrypoint(
                           async () => ({
                             ...(await replayMessage()),
                             hookInput,
+                            // Forwarded UNMODIFIED — in particular without
+                            // this delivery's entry time — so the misrouted
+                            // hop is attributed to `queue_delivery` and T2
+                            // ends up being the final consumer's entry.
+                            ...(hookResumeTiming ? { hookResumeTiming } : {}),
                           }),
                           awaitRunReady
                         )) !== 'continue'
@@ -1832,6 +2078,9 @@ export function workflowEntrypoint(
                         // Anchors RSFS — see the declaration above. This
                         // response plays run_started's role on this path.
                         runStartedReceivedAtMs = Date.now();
+                        if (resumeTracking) {
+                          resumeTracking.setupSource = 'hook_preload';
+                        }
                         eventLog = {
                           type: 'ready',
                           events: result.events,
@@ -2014,6 +2263,13 @@ export function workflowEntrypoint(
                         maxEventsLimit = clampMaxEvents(result.maxEvents);
                         // Anchors RSFS — see the declaration above.
                         runStartedReceivedAtMs = Date.now();
+                        // Covers both the plain sequential resume and the
+                        // lazy fast path's fallback (whose hoisted write
+                        // returned no usable preload and left workflowRun
+                        // unset, so it lands here).
+                        if (resumeTracking) {
+                          resumeTracking.setupSource = 'run_started';
+                        }
 
                         if (result.events?.length) {
                           const loaded = {
@@ -2086,6 +2342,18 @@ export function workflowEntrypoint(
                     workflowRun,
                     'Workflow run must be loaded before replay'
                   );
+                  // Neither setup branch ran, so the run arrived already
+                  // loaded and setup was a plain event load. Only the
+                  // background-step fall-through reaches here with a run
+                  // preloaded today, and it consumes the tracking before this
+                  // point — so this is the honest default rather than a live
+                  // path, and keeps the dimension total if one is ever added.
+                  if (
+                    resumeTracking &&
+                    resumeTracking.setupSource === undefined
+                  ) {
+                    resumeTracking.setupSource = 'event_load';
+                  }
 
                   // Covers every flow replay — initial start, step completions,
                   // hook resumptions, wait completions — and stops before any
@@ -2113,6 +2381,9 @@ export function workflowEntrypoint(
                       async () => ({
                         ...(await replayMessage()),
                         ...(hookInput ? { hookInput } : {}),
+                        // See the pre-check re-route above: forwarded as
+                        // received, so the extra hop is queue delivery.
+                        ...(hookResumeTiming ? { hookResumeTiming } : {}),
                       }),
                       awaitRunReady
                     )) !== 'continue'
@@ -2319,6 +2590,7 @@ export function workflowEntrypoint(
                         requestId,
                         attempt: metadata.attempt,
                         limitMs: replayBudget.configuredLimitMs,
+                        slotSnapshot: slotSnapshot(),
                       });
                       // Only the terminal attempt returns, after run_failed is
                       // durable. Earlier attempts reject for queue redelivery.
@@ -2499,13 +2771,22 @@ export function workflowEntrypoint(
 
                       for (const waitEvent of waitsToComplete) {
                         try {
-                          await createEvent(waitEvent, {
+                          const created = await createEvent(waitEvent, {
                             requestId,
-                            ...preconditionSnapshotParams(
-                              eventLog.events,
-                              eventLog.cursor
-                            ),
                           });
+                          // Bump-and-report: fold what this write skipped over
+                          // into the log, which is what `createEvent` reads the
+                          // slot snapshot off, so each remaining wait asks for
+                          // a slot above it.
+                          //
+                          // The truncated case matters twice over here. Beyond
+                          // the position accounting `absorbSkippedSlotReport`
+                          // rejects it for, the missing-completion check below
+                          // decides from this log whether the handler still has
+                          // to fetch, so a partial page would make the log look
+                          // like it holds a completion whose page is unread and
+                          // skip the fetch on a snapshot short of the World's.
+                          absorbSkippedSlotReport(eventLog.events, created);
                         } catch (err) {
                           if (EntityConflictError.is(err)) {
                             runtimeLogger.info(
@@ -2586,6 +2867,30 @@ export function workflowEntrypoint(
                         }
                       }
 
+                      // A replay reads the log as the complete record of what
+                      // has happened, so a position nothing occupies is
+                      // indistinguishable from an event that never occurred and
+                      // the branch it would have decided gets decided the other
+                      // way. Failing here is the difference between a run that
+                      // reports its own corruption and one that silently
+                      // returns the wrong answer.
+                      //
+                      // A hole that is merely a write mid-commit fills in on
+                      // its own, so settleEventSlotGap re-reads before
+                      // concluding, and adopts whichever log it settled on.
+                      if (isSlotGapCheckEnabled()) {
+                        const settled = await settleEventSlotGap(runId, {
+                          events: eventLog.events,
+                          cursor: eventLog.cursor,
+                        });
+                        eventLog = { ...settled.log, type: 'ready' };
+                        if (settled.gap !== undefined) {
+                          throw new CorruptedEventLogError(
+                            `Event log for run ${runId} has a hole at slot ${settled.gap.firstMissingSlot}: ${settled.gap.missingCount} of the ${settled.gap.maxSlot} slots up to the log's maximum hold no event.`
+                          );
+                        }
+                      }
+
                       // Completing elapsed waits refreshes the event snapshot.
                       // A concurrent handler may have written the terminal run
                       // event after the initial snapshot but before this
@@ -2631,6 +2936,14 @@ export function workflowEntrypoint(
                         executionMode: retainedSession ? 'retained' : 'replay',
                       });
                       replayStart = Date.now();
+                      // TTR T3. `??=` so it marks the FIRST replay pass of
+                      // this invocation: a resume that needs more than one
+                      // pass to reach its step (e.g. a pre-step
+                      // `setAttributes` detour) reports the extra passes
+                      // inside `replay`, keeping the phases additive.
+                      if (resumeTracking) {
+                        resumeTracking.replayStartedAtMs ??= replayStart;
+                      }
                       // Start every missing decrypt/decompress operation up
                       // front (already-prepared payloads are skipped). Web
                       // Crypto work overlaps VM setup on the replay path and
@@ -2678,12 +2991,12 @@ export function workflowEntrypoint(
                       });
                       replayRecoveryReporter.activate();
 
-                      // Workflow completed. Send the snapshot but do NOT
-                      // reload-and-retry the create in place: `result` was
-                      // computed by this replay, so a stale (412) rejection must
-                      // force a *fresh replay* (which may observe the new event
-                      // and produce a different result), not re-commit the stale
-                      // result. The catch below restarts the replay in-process.
+                      // Workflow completed. Do NOT reload-and-retry the create
+                      // in place: `result` was computed by this replay, so a
+                      // stale (412) rejection must force a *fresh replay* (which
+                      // may observe the new event and produce a different
+                      // result), not re-commit the stale result. The catch below
+                      // restarts the replay in-process.
                       try {
                         // Turbo: a workflow that finishes with no steps reaches
                         // here before the backgrounded run_started; order the
@@ -2695,13 +3008,7 @@ export function workflowEntrypoint(
                             specVersion: SPEC_VERSION_CURRENT,
                             eventData: { output: result },
                           },
-                          {
-                            requestId,
-                            ...preconditionSnapshotParams(
-                              eventLog.events,
-                              eventLog.cursor
-                            ),
-                          }
+                          { requestId }
                         );
                       } catch (err) {
                         if (
@@ -2752,7 +3059,18 @@ export function workflowEntrypoint(
                         // resume this measures the resume (typically ~0ms),
                         // not a replay, so the field's distribution is
                         // bimodal once retention is active.
-                        const replayDurationMs = Date.now() - replayStart;
+                        const suspendedAtMs = Date.now();
+                        const replayDurationMs = suspendedAtMs - replayStart;
+                        // TTR T4 — the next durable step has been encountered.
+                        // Gated on the suspension actually scheduling steps:
+                        // a suspension that only creates hooks/waits has not
+                        // reached a step, and a later pass may. Taken from
+                        // the same instant as `replayDurationMs` so T4 can
+                        // never precede T3.
+                        if (resumeTracking && err.stepCount > 0) {
+                          resumeTracking.nextStepEncounteredAtMs ??=
+                            suspendedAtMs;
+                        }
                         runtimeLogger.debug('Workflow suspended', {
                           workflowRunId: runId,
                           loopIteration,
@@ -2796,6 +3114,19 @@ export function workflowEntrypoint(
                             eventLog,
                             runReadyBarrier,
                             replayRecoveryReporter,
+                            // Resilient step dispatch: lets eligible newly
+                            // created steps publish their step-execution
+                            // message (carrying `stepInput`) in parallel with
+                            // the step_created write. Steps queued there are
+                            // reported back in `queuedStepCorrelationIds` and
+                            // skipped by the dispatch pass below.
+                            stepDispatch: {
+                              queueName: getWorkflowQueueName(
+                                workflowName,
+                                namespace
+                              ),
+                              getTraceCarrier: nextTraceCarrier,
+                            },
                           });
                         } catch (suspensionError) {
                           // A suspension create was rejected as stale: re-derive
@@ -2898,6 +3229,16 @@ export function workflowEntrypoint(
                           });
                           return;
                         }
+                        if (suspensionResult.reportedEventCount > 0) {
+                          // Bump-and-report merged events BELOW the tail and
+                          // re-sorted the array to slot order, shifting every
+                          // position the prewarm scan had already recorded.
+                          // The cursor is deliberately left alone: the report
+                          // is a lower bound on what was skipped, so the next
+                          // incremental read still has to cover the same range.
+                          replayPayloadCache.resetScan();
+                        }
+
                         // Open hooks/waits in the log as loaded for this
                         // replay. This suspension's own hook/wait writes are
                         // NOT in it — they never reach retention anyway,
@@ -3053,8 +3394,8 @@ export function workflowEntrypoint(
                         //     kill-switched) → immediate enqueue, exactly as
                         //     before. This covers crash recovery: if a prior
                         //     handler wrote step_created but crashed before
-                        //     queueing, a later handler queues it;
-                        //     idempotencyKey on correlationId dedupes
+                        //     queueing, a later handler queues it; the
+                        //     step-identity-scoped idempotencyKey dedupes
                         //     redundant queues across concurrent handlers.
                         //
                         // The wait continuation is what makes
@@ -3081,8 +3422,63 @@ export function workflowEntrypoint(
                         const ownedRecoverySteps: StepInvocationQueueItem[] =
                           [];
                         let backstopWakesArmed = 0;
+                        // TTR hand-off. The measurement may only go to an
+                        // execution that will actually ATTEMPT the next
+                        // durable step, and the loop below is what decides
+                        // which those are — so the decision is made against
+                        // its classification, never ahead of it.
+                        //
+                        // This invocation keeps the tracking whenever it will
+                        // run something itself: a deferred lazy-inline step,
+                        // or an owned-recovery step (a redelivery of the
+                        // owning message re-executing the step it crashed
+                        // on). Both land in `inlineExecutions` below and
+                        // consume it there. Only when neither exists is it
+                        // handed to the FIRST step this invocation actually
+                        // enqueues as a step message.
+                        //
+                        // A step converted into a delayed backstop wake is
+                        // NOT an attempt — the wake is a plain run
+                        // continuation, and whichever invocation eventually
+                        // runs the step is a different delivery — so it must
+                        // not take the sample. If every pending step becomes
+                        // a backstop, nothing here attempts the step and the
+                        // resumption goes unreported, which is the honest
+                        // outcome rather than a total attributed to work this
+                        // delivery never did.
+                        //
+                        // Gated on there being a measurement to place at all:
+                        // `&&` short-circuits, so a delivery carrying no
+                        // tracking — every non-resume delivery, and every
+                        // resume past the step that consumed it — never pays
+                        // for the pending-step scan. That matters on wide
+                        // fan-outs, where `pendingSteps` runs to hundreds.
+                        let handOffResumeTiming =
+                          resumeTracking !== undefined &&
+                          lazyInlineSteps.length === 0 &&
+                          !pendingSteps.some(
+                            (step) =>
+                              !inlineCorrelationIds.has(step.correlationId) &&
+                              inlineOwnership &&
+                              isStepOwnershipActive(step) &&
+                              step.ownerMessageId === metadata.messageId
+                          );
                         for (const step of pendingSteps) {
                           if (inlineCorrelationIds.has(step.correlationId)) {
+                            continue;
+                          }
+                          // Already published by the suspension handler's
+                          // resilient dispatch (create + queue in parallel,
+                          // message carrying `stepInput`). A re-publish here
+                          // would dedupe on the idempotency key anyway, but
+                          // skip the wasted round-trip. Ownership never
+                          // applies to these: they were created this pass, so
+                          // no step_started stamp can exist yet.
+                          if (
+                            suspensionResult.queuedStepCorrelationIds.has(
+                              step.correlationId
+                            )
+                          ) {
                             continue;
                           }
                           const ownershipActive =
@@ -3134,6 +3530,16 @@ export function workflowEntrypoint(
                             );
                             continue;
                           }
+                          // This step IS being attempted, by the invocation
+                          // that picks the message up. Consume the tracking
+                          // here — the first such step and no other.
+                          const stepResumeTiming = handOffResumeTiming
+                            ? resumeTimingForMessage(resumeTracking)
+                            : undefined;
+                          if (stepResumeTiming) {
+                            handOffResumeTiming = false;
+                            resumeTracking = undefined;
+                          }
                           dispatches.push(
                             queueMessage(
                               world,
@@ -3144,9 +3550,22 @@ export function workflowEntrypoint(
                                 stepName: step.stepName,
                                 traceCarrier,
                                 requestedAt: new Date(),
+                                ...(stepResumeTiming
+                                  ? { hookResumeTiming: stepResumeTiming }
+                                  : {}),
                               },
                               {
-                                idempotencyKey: step.correlationId,
+                                // Step-identity-scoped: dedupes against every
+                                // other dispatch of THIS step (concurrent
+                                // handlers, crash-recovery re-dispatch, the
+                                // suspension handler's resilient publish)
+                                // without absorbing a dispatch of a different
+                                // step under a reassigned correlation id —
+                                // see stepDispatchIdempotencyKey.
+                                idempotencyKey: stepDispatchIdempotencyKey(
+                                  step.correlationId,
+                                  step.stepName
+                                ),
                               }
                             )
                           );
@@ -3270,11 +3689,8 @@ export function workflowEntrypoint(
                         //    does not bump the outside-event marker, so nothing
                         //    fences a replay from the stale delta.
                         //  - No open (or this-suspension-created) hook — UNLESS
-                        //    the precondition guard is enabled AND the World
-                        //    declares it actually enforces the guard
-                        //    (`capabilities.preconditionGuard`; the env flag
-                        //    alone only makes the runtime SEND snapshots, which
-                        //    an unsupporting backend ignores — no fence). The
+                        //    the World declares it fences stale writes
+                        //    (`capabilities.preconditionGuard`). The
                         //    delta snapshots the log at the step_completed
                         //    write but is consumed on the next replay, so an
                         //    out-of-band `hook_received` landing in that window
@@ -3283,24 +3699,24 @@ export function workflowEntrypoint(
                         //    it. That staleness is qualitatively the same
                         //    read-to-write race the fetch path already has (an
                         //    event can land right after `events.list` returns
-                        //    and before the suspension's writes); with an
-                        //    enforced guard it is also fenced: `hook_received`
-                        //    bumps the per-run outside-event marker, so every
-                        //    durable write the stale replay attempts is
-                        //    rejected with 412 — its guarded suspension creates
-                        //    (retried over the reloaded log, or exhausted into
-                        //    a queue re-invocation), AND the lazy step_started
-                        //    claim of its next inline step, which carries the
-                        //    snapshot too (threaded below via
-                        //    `stateUpdatedAt`; on rejection the batch is
-                        //    abandoned and re-invoked for a fresh replay, so a
-                        //    stale view can never commit a step). Hooks created
+                        //    and before the suspension's writes); on a fencing
+                        //    World it is also fenced: `hook_received` bumps the
+                        //    per-run outside-event marker, so every durable
+                        //    write the stale replay attempts is rejected with
+                        //    412 — its guarded suspension creates (retried over
+                        //    the reloaded log, or exhausted into a queue
+                        //    re-invocation), AND the lazy step_started claim of
+                        //    its next inline step, which carries the snapshot
+                        //    too (threaded below via `slotSnapshot`; on
+                        //    rejection the batch is abandoned and re-invoked for
+                        //    a fresh replay, so a stale view can never commit a
+                        //    step). Hooks created
                         //    by THIS suspension are inside the delta (their
                         //    `hook_created` lands before the step-terminal
                         //    write), so only their `hook_received` responses
-                        //    are subject to the same fenced window. Without an
-                        //    enforced guard there is no fence, so keep the
-                        //    conservative gate.
+                        //    are subject to the same fenced window. Without a
+                        //    fencing World there is nothing to reject a stale
+                        //    write, so keep the conservative gate.
                         //  - With no hook or wait open at all, the only
                         //    out-of-band writer is cancellation, which is safe
                         //    to observe one iteration late. See
@@ -3310,12 +3726,11 @@ export function workflowEntrypoint(
                         // own events and the per-write delta would be partial, so
                         // the delta is not requested (the gate below is false for
                         // multi-step) and the next iteration does a normal fetch.
-                        // Whether the precondition guard is actually in force:
-                        // enabled by env AND enforced by the World. The env
-                        // flag alone only makes the runtime send snapshots,
-                        // which an unsupporting backend ignores (no fence).
+                        // Whether the World fences a stale write. Sending a
+                        // snapshot is not the same as it being enforced: a
+                        // World that does not declare the capability ignores
+                        // what it is sent, so nothing rejects.
                         const guardEnforced =
-                          isPreconditionGuardEnabled() &&
                           world.capabilities?.preconditionGuard === true;
 
                         const requestInlineDelta =
@@ -3434,21 +3849,33 @@ export function workflowEntrypoint(
                           turbo,
                         });
 
-                        // Precondition-guard snapshot for the inline
-                        // step_started claims: the lazy claim is the first
-                        // durable write of a hot-path step (its step_created
-                        // is deferred), so without a snapshot it would bypass
-                        // the guard entirely and a stale replay could claim —
-                        // and commit — a step scheduled off a view that misses
-                        // an event it never loaded.
-                        // `preconditionSnapshotParams` returns an empty object
-                        // when the guard env flag is off, so this is a no-op
-                        // outside guarded deployments; Worlds that don't
-                        // enforce the guard ignore it.
-                        const inlineClaimSnapshot = preconditionSnapshotParams(
-                          eventLog.events,
-                          eventLog.cursor
+                        // Slot snapshot for the inline step_started claims: the
+                        // lazy claim is the first durable write of a hot-path
+                        // step (its step_created is deferred), so without a
+                        // snapshot it would name no position at all and a stale
+                        // replay could claim — and commit — a step scheduled off
+                        // a view that misses an event it never loaded.
+                        //
+                        // Taken here rather than inside the executor because
+                        // this is the view the scheduling decision was made
+                        // against. The executor advances from it as its own
+                        // writes land; see `slotSnapshot` in step-executor.
+                        const inlineClaimSnapshot = slotSnapshotParams(
+                          eventLog.events
                         );
+
+                        // TTR: consumed by this batch. Every step is handed
+                        // the SAME tracking object and its one-shot
+                        // `reported` latch picks the single step that
+                        // actually reaches user code — so the sample
+                        // survives the batch's first step losing its atomic
+                        // create-claim to a concurrent invocation while a
+                        // sibling runs, without a parallel batch reporting
+                        // once per sibling. Cleared here so a later loop
+                        // iteration's steps — and any in-process replay
+                        // restart — cannot report the same resumption again.
+                        const batchResumeTracking = resumeTracking;
+                        resumeTracking = undefined;
 
                         replayBudget.pause();
                         let stepResults: Awaited<
@@ -3528,11 +3955,14 @@ export function workflowEntrypoint(
                                 // see suppressOptimisticStart above.
                                 suppressOptimisticStart,
                                 runReadyBarrier,
-                                preconditionSnapshot: inlineClaimSnapshot,
+                                slotSnapshot: inlineClaimSnapshot,
                                 ...(stepIndex === 0 &&
                                 s.lazyStepInput !== undefined &&
                                 latencyTracking
                                   ? { latencyTracking }
+                                  : {}),
+                                ...(batchResumeTracking
+                                  ? { resumeTracking: batchResumeTracking }
                                   : {}),
                                 ...(requestInlineDelta && eventLog.cursor
                                   ? {
@@ -3721,10 +4151,10 @@ export function workflowEntrypoint(
                                 {
                                   delaySeconds,
                                   // Key the delayed retry on the step's
-                                  // correlationId so it dedupes against the
+                                  // dispatch key so it dedupes against the
                                   // keyed re-dispatch the suspension handler
-                                  // performs on replay (it also uses
-                                  // `idempotencyKey: step.correlationId`).
+                                  // performs on replay (it uses the same
+                                  // stepDispatchIdempotencyKey).
                                   //
                                   // Without this, a mixed batch where one step
                                   // `completed` with unflushed background ops
@@ -3743,7 +4173,10 @@ export function workflowEntrypoint(
                                   // retry body could run early/concurrently.
                                   // Sharing the key lets the earlier delayed
                                   // message win, honoring the backoff.
-                                  idempotencyKey: step.correlationId,
+                                  idempotencyKey: stepDispatchIdempotencyKey(
+                                    step.correlationId,
+                                    step.stepName
+                                  ),
                                 }
                               )
                             )
@@ -3955,16 +4388,14 @@ export function workflowEntrypoint(
                         // type identity and custom properties round-trip
                         // through the event log.
                         //
-                        // Precondition-guard asymmetry: unlike `run_completed`,
-                        // this terminal `run_failed` sends no `stateUpdatedAt`
-                        // snapshot, so it is never 412-rejected even if a hook
-                        // landed mid-replay and could have changed the path that
-                        // threw. This is intentional and fail-open: a spurious
-                        // failure is recoverable (the run can be re-run from the
+                        // Like every other write from this loop it carries the
+                        // slot snapshot, so a World that fences can reject it
+                        // and a slot-allocating one reports back what the
+                        // failing replay had not seen. Fail-open on purpose
+                        // where neither applies: a spurious failure is
+                        // recoverable (the run can be re-run from the
                         // dashboard), whereas a spurious *completion* commits a
-                        // wrong result. Guarding this write symmetrically would
-                        // also need the loaded event log, which is scoped to the
-                        // replay `try` above and not available in this catch.
+                        // wrong result.
                         try {
                           // Turbo: order the terminal write after the
                           // backgrounded run_started so the run exists.
