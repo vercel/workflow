@@ -12,6 +12,12 @@ export const WorldCapabilitiesSchema = z.object({
   hookRetention: z.object({ active: z.boolean() }).optional(),
 
   /**
+   * Atomically admits a workflow run and reserves its start Hook token.
+   * Missing or inactive means `start({ hook })` must fail before enqueueing.
+   */
+  atomicStartHook: z.object({ active: z.boolean() }).optional(),
+
+  /**
    * Enforces the event count and update-time preconditions on event creation.
    * Worlds that accept but ignore either field must leave this unset.
    */

@@ -153,6 +153,7 @@ const ERROR_REVIVER_KEYS = [
   'EvalError',
   'FatalError',
   'HookConflictError',
+  'WorkflowStartError',
   'RangeError',
   'ReferenceError',
   'RetryableError',

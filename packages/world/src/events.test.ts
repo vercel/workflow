@@ -22,6 +22,28 @@ describe('hook_created token retention', () => {
   });
 });
 
+describe('atomic start Hook', () => {
+  it('parses its absolute retention deadline on run admission', () => {
+    const parsed = CreateEventSchema.parse({
+      eventType: 'run_created',
+      specVersion: 5,
+      eventData: {
+        deploymentId: 'dpl_1',
+        workflowName: 'workflow',
+        input: new Uint8Array(),
+        startHook: {
+          token: 'order:123',
+          tokenRetentionUntil: '2026-09-01T00:00:00.000Z',
+        },
+      },
+    });
+
+    expect(parsed.eventData.startHook?.tokenRetentionUntil).toEqual(
+      new Date('2026-09-01T00:00:00.000Z')
+    );
+  });
+});
+
 describe('step_started ownerMessageId', () => {
   it('accepts a bare step_started with no eventData (legacy contract)', () => {
     const parsed = CreateEventSchema.parse({

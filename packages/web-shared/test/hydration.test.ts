@@ -4,7 +4,11 @@ import {
   dehydrateStepReturnValue,
 } from '@workflow/core/serialization';
 import { hydrateData } from '@workflow/core/serialization-format';
-import { FatalError, RetryableError } from '@workflow/errors';
+import {
+  FatalError,
+  RetryableError,
+  WorkflowStartError,
+} from '@workflow/errors';
 import { describe, expect, it } from 'vitest';
 import {
   getWebRevivers,
@@ -121,6 +125,16 @@ describe('getWebRevivers — error family', () => {
     expect(revived.message).toContain('already in use');
     expect(revived.token).toBe('approval-token');
     expect(revived.conflictingRunId).toBe('wrun_conflicting');
+  });
+
+  it('hydrates WorkflowStartError details', async () => {
+    const revived = await roundTrip<Error & { runId: string; stage: string }>(
+      new WorkflowStartError('wrun_candidate', 'queue', new Error('offline'))
+    );
+
+    expect(revived.name).toBe('WorkflowStartError');
+    expect(revived.runId).toBe('wrun_candidate');
+    expect(revived.stage).toBe('queue');
   });
 
   it('hydrates a RetryableError with retryAfter as a Date', async () => {

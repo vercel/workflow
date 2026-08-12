@@ -188,6 +188,35 @@ export class WorkflowWorldError extends WorkflowError {
   }
 }
 
+/** A start Hook request that the World will never admit. */
+export const START_HOOK_ADMISSION_REJECTED = 'START_HOOK_ADMISSION_REJECTED';
+
+export type WorkflowStartStage = 'queue' | 'admission';
+
+/**
+ * Thrown when `start({ hook })` cannot confirm whether a candidate was queued
+ * or admitted. `runId` identifies that candidate for inspection.
+ */
+export class WorkflowStartError extends WorkflowWorldError {
+  readonly runId: string;
+  readonly stage: WorkflowStartStage;
+
+  constructor(runId: string, stage: WorkflowStartStage, cause: unknown) {
+    const causeMessage = isError(cause) ? cause.message : String(cause);
+    super(
+      `Failed to ${stage === 'queue' ? 'queue' : 'admit'} workflow run "${runId}": ${causeMessage}`,
+      { cause }
+    );
+    this.name = 'WorkflowStartError';
+    this.runId = runId;
+    this.stage = stage;
+  }
+
+  static is(value: unknown): value is WorkflowStartError {
+    return isError(value) && value.name === 'WorkflowStartError';
+  }
+}
+
 /**
  * Thrown when a workflow run fails during execution.
  *
@@ -1046,7 +1075,7 @@ export { RUN_ERROR_CODES, type RunErrorCode } from './error-codes.js';
 // Cross-realm class registration
 // ---------------------------------------------------------------------------
 //
-// `FatalError`, `RetryableError`, and `HookConflictError` are not built-ins, so different realms
+// Workflow-specific errors are not built-ins, so different realms
 // (e.g. the workflow VM context vs. the host context that runs the queue
 // handler) bundle and load their own copies of this module — meaning each
 // realm has its own distinct class identity. Cross-realm `instanceof` fails
@@ -1060,43 +1089,20 @@ export { RUN_ERROR_CODES, type RunErrorCode } from './error-codes.js';
 //
 // First registration in a given realm wins. The descriptor is non-writable
 // and non-configurable to make accidental clobbering loud.
-const FATAL_ERROR_KEY = Symbol.for('@workflow/errors//FatalError');
-const RETRYABLE_ERROR_KEY = Symbol.for('@workflow/errors//RetryableError');
-const HOOK_CONFLICT_ERROR_KEY = Symbol.for(
-  '@workflow/errors//HookConflictError'
-);
-const RUNTIME_DECRYPTION_ERROR_KEY = Symbol.for(
-  '@workflow/errors//RuntimeDecryptionError'
-);
+const CROSS_REALM_ERROR_CLASSES = {
+  FatalError,
+  RetryableError,
+  HookConflictError,
+  WorkflowStartError,
+  RuntimeDecryptionError,
+} as const;
 
 if (typeof globalThis !== 'undefined') {
-  if (!Object.hasOwn(globalThis, FATAL_ERROR_KEY)) {
-    Object.defineProperty(globalThis, FATAL_ERROR_KEY, {
-      value: FatalError,
-      writable: false,
-      enumerable: false,
-      configurable: false,
-    });
-  }
-  if (!Object.hasOwn(globalThis, RETRYABLE_ERROR_KEY)) {
-    Object.defineProperty(globalThis, RETRYABLE_ERROR_KEY, {
-      value: RetryableError,
-      writable: false,
-      enumerable: false,
-      configurable: false,
-    });
-  }
-  if (!Object.hasOwn(globalThis, HOOK_CONFLICT_ERROR_KEY)) {
-    Object.defineProperty(globalThis, HOOK_CONFLICT_ERROR_KEY, {
-      value: HookConflictError,
-      writable: false,
-      enumerable: false,
-      configurable: false,
-    });
-  }
-  if (!Object.hasOwn(globalThis, RUNTIME_DECRYPTION_ERROR_KEY)) {
-    Object.defineProperty(globalThis, RUNTIME_DECRYPTION_ERROR_KEY, {
-      value: RuntimeDecryptionError,
+  for (const [name, ErrorClass] of Object.entries(CROSS_REALM_ERROR_CLASSES)) {
+    const key = Symbol.for(`@workflow/errors//${name}`);
+    if (Object.hasOwn(globalThis, key)) continue;
+    Object.defineProperty(globalThis, key, {
+      value: ErrorClass,
       writable: false,
       enumerable: false,
       configurable: false,

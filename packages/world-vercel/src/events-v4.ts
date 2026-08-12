@@ -32,6 +32,7 @@ import {
   getEventDataPayloadField,
   HookSchema,
   type PaginationOptions,
+  type StartHook,
   StructuredErrorSchema,
   WaitSchema,
   WorkflowRunSchema,
@@ -176,6 +177,8 @@ interface CreateEventV4InputBase {
    *  resilient-start path). Validated server-side against the attribute
    *  key/value/count caps. */
   attributes?: Record<string, string>;
+  /** Atomic start Hook admission data. */
+  startHook?: StartHook;
   /** attr_set's attribute change list ({key, value|null} entries). */
   changes?: Array<Record<string, unknown>>;
   /** attr_set's writer provenance ({type:'workflow'} or
@@ -442,6 +445,7 @@ function buildPostFrameMeta(
     meta.executionContext = input.executionContext;
   }
   if (input.attributes !== undefined) meta.attributes = input.attributes;
+  if (input.startHook !== undefined) meta.startHook = input.startHook;
   if (input.changes !== undefined) meta.changes = input.changes;
   if (input.writer !== undefined) meta.writer = input.writer;
   if (input.allowReservedAttributes !== undefined) {

@@ -1,6 +1,20 @@
-import { EntityConflictError, WorkflowRuntimeError } from '@workflow/errors';
+import {
+  EntityConflictError,
+  HookConflictError,
+  RUN_ERROR_CODES,
+  WorkflowRuntimeError,
+  WorkflowStartError,
+  WorkflowWorldError,
+} from '@workflow/errors';
+import { parseDurationToDate } from '@workflow/utils';
 import { workflowDisplayName } from '@workflow/utils/parse-name';
-import type { WorkflowInvokePayload, World } from '@workflow/world';
+import type {
+  RunCreationData,
+  StartHook,
+  WorkflowInvokePayload,
+  WorkflowRunStatus,
+  World,
+} from '@workflow/world';
 import {
   HOOK_RESUME_INPUT_VERSION,
   isLegacySpecVersion,
@@ -11,6 +25,7 @@ import {
   SPEC_VERSION_SUPPORTS_COMPRESSION,
   workflowRunIdSchema,
 } from '@workflow/world';
+import type { StringValue } from 'ms';
 import { monotonicFactory } from 'ulid';
 import { normalizeAttributeChanges } from '../attribute-changes.js';
 import { getRunCapabilities } from '../capabilities.js';
@@ -92,7 +107,57 @@ export function _resetLatestNoOpWarnForTests(): void {
   hasWarnedLatestNoOp = false;
 }
 
+export interface StartHookOptions {
+  /** Non-empty token reserved atomically while the workflow is admitted. */
+  token: string;
+
+  /**
+   * **Experimental.** Keeps the token unavailable for at least this long.
+   * Accepts the same duration string, millisecond number, or absolute `Date`
+   * as `sleep()` and `createHook({ experimental_minRetention })`.
+   *
+   * The workflow remains the owner until it ends even if this time passes
+   * first. A matching `createHook()` can extend, but cannot shorten, it.
+   */
+  experimental_minRetention?: StringValue | Date | number;
+}
+
+function normalizeStartHook(options: StartHookOptions): StartHook {
+  if (options.token.length === 0) {
+    throw new WorkflowRuntimeError('hook.token must be a non-empty string.');
+  }
+  if (options.experimental_minRetention === undefined) {
+    return { token: options.token };
+  }
+
+  const tokenRetentionUntil = parseDurationToDate(
+    options.experimental_minRetention
+  );
+  if (
+    !Number.isFinite(tokenRetentionUntil.getTime()) ||
+    tokenRetentionUntil.getTime() <= Date.now()
+  ) {
+    throw new WorkflowRuntimeError(
+      'hook.experimental_minRetention must resolve to a future time.'
+    );
+  }
+  return { token: options.token, tokenRetentionUntil };
+}
+
+function atomicStartContractError(message: string): WorkflowWorldError {
+  return new WorkflowWorldError(message, {
+    code: RUN_ERROR_CODES.WORLD_CONTRACT_ERROR,
+  });
+}
+
 export interface StartOptionsBase {
+  /**
+   * Atomically reserves a Hook token while admitting the workflow run. If
+   * another run owns the token, `start()` throws `HookConflictError` and the
+   * duplicate candidate never becomes a run.
+   */
+  hook?: StartHookOptions;
+
   /**
    * The world to use for the workflow run creation,
    * by default the world is inferred from the environment variables.
@@ -251,38 +316,119 @@ export async function start<TArgs extends unknown[], TResult>(
   options?: StartOptions
 ) {
   'use step';
+  // @ts-expect-error this field is added by our client transform
+  const workflowName = workflow?.workflowId;
+  if (!workflowName) {
+    throw new WorkflowRuntimeError(
+      `'start' received an invalid workflow function. Ensure the Workflow SDK is configured correctly and the function includes a 'use workflow' directive.`,
+      { slug: 'start-invalid-workflow-function' }
+    );
+  }
+
+  let args: Serializable[] = [];
+  let opts: StartOptions = options ?? {};
+  if (Array.isArray(argsOrOptions)) {
+    args = argsOrOptions as Serializable[];
+  } else if (typeof argsOrOptions === 'object') {
+    opts = argsOrOptions;
+  }
+  const startHook = opts.hook && normalizeStartHook(opts.hook);
+  const spanName = `workflow.start ${workflowDisplayName(workflowName)}`;
+
   return await waitedUntil(() => {
-    // @ts-expect-error this field is added by our client transform
-    const workflowName = workflow?.workflowId;
-
-    if (!workflowName) {
-      throw new WorkflowRuntimeError(
-        `'start' received an invalid workflow function. Ensure the Workflow SDK is configured correctly and the function includes a 'use workflow' directive.`,
-        { slug: 'start-invalid-workflow-function' }
-      );
-    }
-
-    const spanName = `workflow.start ${workflowDisplayName(workflowName)}`;
     return trace(spanName, async (span) => {
       span?.setAttributes({
         ...Attribute.WorkflowName(workflowName),
         ...Attribute.WorkflowOperation('start'),
-      });
-
-      let args: Serializable[] = [];
-      let opts: StartOptions = options ?? {};
-      if (Array.isArray(argsOrOptions)) {
-        args = argsOrOptions as Serializable[];
-      } else if (typeof argsOrOptions === 'object') {
-        opts = argsOrOptions;
-      }
-
-      span?.setAttributes({
         ...Attribute.WorkflowArgumentsCount(args.length),
       });
 
       const world = opts.world ?? (await getWorldLazy());
       assertWorldSupportsRuntimeProtocol(world);
+      if (startHook !== undefined) {
+        if (world.capabilities?.atomicStartHook?.active !== true) {
+          throw atomicStartContractError(
+            'The configured World does not support atomic start Hooks.'
+          );
+        }
+        if (
+          startHook.tokenRetentionUntil !== undefined &&
+          world.capabilities?.hookRetention?.active !== true
+        ) {
+          throw atomicStartContractError(
+            'The configured World does not support Hook retention.'
+          );
+        }
+      }
+
+      // Reject invalid input before deployment lookup or health-check I/O.
+      const specVersion = opts.specVersion ?? world.specVersion;
+      const v1Compat = isLegacySpecVersion(specVersion);
+      if (
+        startHook !== undefined &&
+        specVersion < SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT
+      ) {
+        throw atomicStartContractError(
+          'Atomic start Hooks require a spec version with resilient run input.'
+        );
+      }
+
+      const allowReservedAttributes = opts.allowReservedAttributes === true;
+      let attributes: Record<string, string> | undefined;
+      if (opts.attributes && Object.keys(opts.attributes).length > 0) {
+        if (specVersion < SPEC_VERSION_SUPPORTS_ATTRIBUTES) {
+          throw new WorkflowRuntimeError(
+            'Initial workflow attributes require a World that supports spec version 4 or later.'
+          );
+        }
+        // Creation cannot remove attributes, so reject non-string values.
+        for (const [key, value] of Object.entries(opts.attributes)) {
+          if (typeof value !== 'string') {
+            throw new WorkflowRuntimeError(
+              `Initial workflow attribute ${JSON.stringify(key)} must be a string value.`
+            );
+          }
+        }
+        const changes = normalizeAttributeChanges(opts.attributes, {
+          allowReservedAttributes,
+        });
+        attributes = Object.fromEntries(
+          changes.map(({ key, value }) => [key, value as string])
+        );
+      }
+
+      // Child runs inherit the root and record their direct parent.
+      const lineage =
+        specVersion >= SPEC_VERSION_SUPPORTS_ATTRIBUTES
+          ? resolveLineageAttributes()
+          : undefined;
+      const runAttributes = lineage
+        ? { ...lineage, ...attributes }
+        : attributes;
+      const attributeSeed = runAttributes
+        ? {
+            attributes: runAttributes,
+            ...(allowReservedAttributes || lineage
+              ? { allowReservedAttributes: true as const }
+              : {}),
+          }
+        : {};
+      const startHookSeed = startHook ? { startHook } : {};
+
+      // This is persisted as a foreign key to the source run.
+      if (
+        opts.replayedFromRunId !== undefined &&
+        !workflowRunIdSchema.safeParse(opts.replayedFromRunId).success
+      ) {
+        throw new WorkflowRuntimeError(
+          `replayedFromRunId must be a run ID (wrun_<ulid>); received ${JSON.stringify(
+            String(opts.replayedFromRunId).slice(0, 64)
+          )}.`
+        );
+      }
+      // Pin the run to the VM engine selected when it starts.
+      const workflowVm = getWorkflowVmFromEnv();
+
       const currentDeploymentId = await world.getDeploymentId();
       let deploymentId = opts.deploymentId ?? currentDeploymentId;
 
@@ -323,8 +469,6 @@ export async function start<TArgs extends unknown[], TResult>(
       // probe has a tight timeout — on miss/failure we fall back to the
       // legacy raw byte format, which is universally readable.
       //
-      // Worlds that don't expose the `streams` API (e.g. minimal test
-      // mocks) can't service health checks, so we skip the probe for them.
       // Generate runId client-side so we have it before serialization
       // (required for future E2E encryption where runId is part of the
       // encryption context). When the World provides a `createRunId()`
@@ -354,12 +498,6 @@ export async function start<TArgs extends unknown[], TResult>(
         // Same deployment: this process is the consumer, so its own constant
         // is authoritative.
         targetHookResumeInputVersion = HOOK_RESUME_INPUT_VERSION;
-      } else if (typeof world.streams?.get !== 'function') {
-        framedByteStreams = false;
-        targetSupportsCompression = false;
-        // No probe channel to the target — cannot attest the consumer honors
-        // `hookInput`, so leave the marker off (fail closed to sequential).
-        targetHookResumeInputVersion = undefined;
       } else {
         // Ask for this run's public key while we're here. The probe already
         // blocks `start()` on every cross-deployment call, and the responder
@@ -374,6 +512,22 @@ export async function start<TArgs extends unknown[], TResult>(
           timeout: CROSS_DEPLOYMENT_CAPABILITY_PROBE_TIMEOUT_MS,
           namespace: opts.namespace,
         }).catch(() => undefined);
+        if (
+          startHook &&
+          probe?.capabilities?.atomicStartHook?.active !== true
+        ) {
+          throw atomicStartContractError(
+            'The target deployment does not support atomic start Hooks.'
+          );
+        }
+        if (
+          startHook?.tokenRetentionUntil !== undefined &&
+          probe?.capabilities?.hookRetention?.active !== true
+        ) {
+          throw atomicStartContractError(
+            'The target deployment does not support Hook retention.'
+          );
+        }
         probedRunPublicKey = probe?.encryptionPublicKey;
         const capabilities = getRunCapabilities(probe?.workflowCoreVersion);
         framedByteStreams = capabilities.framedByteStreams;
@@ -390,72 +544,6 @@ export async function start<TArgs extends unknown[], TResult>(
 
       // Serialize current trace context to propagate across queue boundary
       const traceCarrier = await serializeTraceCarrier();
-
-      // Default new runs to the configured world's spec version. The world
-      // itself has already been checked against this runtime's spec version.
-      const specVersion = opts.specVersion ?? world.specVersion;
-      const v1Compat = isLegacySpecVersion(specVersion);
-      const allowReservedAttributes = opts.allowReservedAttributes === true;
-      let attributes: Record<string, string> | undefined;
-      if (opts.attributes && Object.keys(opts.attributes).length > 0) {
-        if (specVersion < SPEC_VERSION_SUPPORTS_ATTRIBUTES) {
-          throw new WorkflowRuntimeError(
-            'Initial workflow attributes require a World that supports spec version 4 or later.'
-          );
-        }
-        // `normalizeAttributeChanges` treats `undefined` as "remove this
-        // key", which is meaningless at creation time — reject it up front
-        // so JS callers get a clear error instead of a downstream schema
-        // failure (the types already forbid non-string values).
-        for (const [key, value] of Object.entries(opts.attributes)) {
-          if (typeof value !== 'string') {
-            throw new WorkflowRuntimeError(
-              `Initial workflow attribute ${JSON.stringify(key)} must be a string value.`
-            );
-          }
-        }
-        const changes = normalizeAttributeChanges(opts.attributes, {
-          allowReservedAttributes,
-        });
-        attributes = Object.fromEntries(
-          changes.map(({ key, value }) => [key, value as string])
-        );
-      }
-
-      // Cross-run lineage: the reserved keys ride on the run's existing
-      // attributes, so they add no extra write. Caller attributes are spread
-      // last, so a caller with allowReservedAttributes can deliberately
-      // re-parent.
-      const lineage =
-        specVersion >= SPEC_VERSION_SUPPORTS_ATTRIBUTES
-          ? resolveLineageAttributes()
-          : undefined;
-      const runAttributes = lineage
-        ? { ...lineage, ...attributes }
-        : attributes;
-
-      // Shared by the run_created event and the resilient-start queue input.
-      const attributeSeed = runAttributes
-        ? {
-            attributes: runAttributes,
-            ...(allowReservedAttributes || lineage != null
-              ? { allowReservedAttributes: true as const }
-              : {}),
-          }
-        : {};
-
-      // `replayedFromRunId` is a foreign key to the source run; reject anything
-      // that isn't a real run ID so the lineage link can't point at garbage.
-      if (
-        opts.replayedFromRunId !== undefined &&
-        !workflowRunIdSchema.safeParse(opts.replayedFromRunId).success
-      ) {
-        throw new WorkflowRuntimeError(
-          `replayedFromRunId must be a run ID (wrun_<ulid>); received ${JSON.stringify(
-            String(opts.replayedFromRunId).slice(0, 64)
-          )}.`
-        );
-      }
 
       // Resolve encryption key for the new run. The runId has already been
       // generated above (client-generated ULID) and will be used for both
@@ -523,6 +611,16 @@ export async function start<TArgs extends unknown[], TResult>(
         framedByteStreams,
         compression
       );
+      // Admission can deliver the queue message before start() returns.
+      safeWaitUntil(Promise.all(ops), (err) => {
+        runtimeLogger.warn(
+          'Background flush of workflow argument streams failed',
+          {
+            workflowRunId: runId,
+            error: err instanceof Error ? err.message : String(err),
+          }
+        );
+      });
 
       // The environment this caller's own `run_created` write is attributed
       // to. Stamped into the queue message's `runInput` (NOT into
@@ -541,13 +639,6 @@ export async function start<TArgs extends unknown[], TResult>(
       // executing. Worlds with a single tenant return undefined and the field
       // is simply absent.
       const creatorEnvironment = world.getEnvironment?.();
-
-      // If WORKFLOW_VM is set on the client starting the run, stamp the
-      // engine choice into the run's executionContext so the run keeps
-      // executing on the engine it started on (the same deployment can
-      // serve both VM engines). Unknown values throw — see
-      // getWorkflowVmFromEnv().
-      const workflowVm = getWorkflowVmFromEnv();
 
       const executionContext = {
         traceCarrier,
@@ -571,117 +662,136 @@ export async function start<TArgs extends unknown[], TResult>(
           : {}),
       };
 
-      // Call events.create (run_created) and queue in parallel.
-      // If events.create fails with 429/5xx, the run was still accepted
-      // via the queue and creation will be re-tried async by the runtime.
-      const [runCreatedResult, queueResult] = await Promise.allSettled([
-        world.events.create(
-          runId,
-          {
-            eventType: 'run_created',
-            specVersion,
-            eventData: {
-              deploymentId: deploymentId,
-              workflowName: workflowName,
-              input: workflowArguments,
-              executionContext,
-              ...(encryptionPublicKey ? { encryptionPublicKey } : {}),
-              ...attributeSeed,
-            },
-          },
-          { v1Compat }
-        ),
+      const runCreationData = {
+        deploymentId,
+        workflowName,
+        input: workflowArguments,
+        executionContext,
+        ...(encryptionPublicKey ? { encryptionPublicKey } : {}),
+        ...attributeSeed,
+        ...startHookSeed,
+      } satisfies RunCreationData;
+
+      const runCreatedEvent = {
+        eventType: 'run_created' as const,
+        specVersion,
+        eventData: runCreationData,
+      };
+      const queuePayload = {
+        runId,
+        traceCarrier,
+        ...(specVersion >= SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT
+          ? {
+              runInput: {
+                ...runCreationData,
+                specVersion,
+                ...(creatorEnvironment !== undefined
+                  ? { environment: creatorEnvironment }
+                  : {}),
+              },
+            }
+          : {}),
+      } satisfies WorkflowInvokePayload;
+      const createRun = () =>
+        world.events.create(runId, runCreatedEvent, { v1Compat });
+      const enqueueRun = () =>
         world.queue(
           getWorkflowQueueName(workflowName, opts.namespace),
-          {
-            runId,
-            traceCarrier,
-            ...(specVersion >= SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT
-              ? {
-                  runInput: {
-                    input: workflowArguments,
-                    deploymentId,
-                    workflowName,
-                    specVersion,
-                    executionContext,
-                    ...(encryptionPublicKey ? { encryptionPublicKey } : {}),
-                    ...(creatorEnvironment !== undefined
-                      ? { environment: creatorEnvironment }
-                      : {}),
-                    ...attributeSeed,
-                  },
-                }
-              : {}),
-          } satisfies WorkflowInvokePayload,
+          queuePayload,
           {
             deploymentId,
             specVersion,
-            // Forward any caller-supplied region hint so worlds with
-            // per-region queue routing (e.g. world-vercel) can target the
-            // matching queue. Worlds without a regional dimension ignore
-            // this field.
             ...(opts.region !== undefined ? { region: opts.region } : {}),
           }
-        ),
-      ]);
+        );
 
-      // Queue failure is always fatal — the run was not enqueued
-      if (queueResult.status === 'rejected') {
-        throw queueResult.reason;
-      }
-
-      // Handle events.create result
       let resilientStart = false;
-      if (runCreatedResult.status === 'rejected') {
-        const err = runCreatedResult.reason;
-        if (EntityConflictError.is(err)) {
-          // 409: The run already exists. This can happen in extreme cases where
-          // the run creation call gets a cold start or other slowdown, and the queue
-          // + run_started call completes faster. We expect this to be <=1% of cases.
-          // In this case, we can safely return.
-        } else if (isRetryableWorldError(err)) {
-          // 429 (ThrottleError), 5xx, and transient transport failures
-          // (TRANSPORT/TIMEOUT) are retryable — the run was accepted via the
-          // queue and creation will be re-tried by the runtime when it calls
-          // run_started.
-          resilientStart = true;
-          runtimeLogger.warn(
-            'Run creation event failed, but the run was accepted via the queue. ' +
-              'The run_created event will be re-tried async by the runtime.',
-            { workflowRunId: runId, error: err.message }
-          );
-        } else {
-          throw err;
+      let createdRunStatus: WorkflowRunStatus | undefined;
+      if (startHook) {
+        try {
+          await enqueueRun();
+        } catch (error) {
+          if (
+            (error instanceof WorkflowWorldError ||
+              WorkflowWorldError.is(error)) &&
+            !isRetryableWorldError(error)
+          ) {
+            throw error;
+          }
+          throw new WorkflowStartError(runId, 'queue', error);
+        }
+
+        try {
+          const result = await createRun();
+          if (result.run.runId !== runId) {
+            throw atomicStartContractError(
+              `World admitted run "${result.run.runId}" for candidate "${runId}".`
+            );
+          }
+          createdRunStatus = result.run.status;
+        } catch (error) {
+          if (HookConflictError.is(error)) {
+            if (error.conflictingRunId === undefined) {
+              throw atomicStartContractError(
+                'Atomic start Hook conflicts must include conflictingRunId.'
+              );
+            }
+            throw error;
+          }
+          if (EntityConflictError.is(error)) {
+            throw atomicStartContractError(
+              'Atomic start admission must replay the candidate decision instead of returning EntityConflictError.'
+            );
+          }
+          if (
+            (error instanceof WorkflowWorldError ||
+              WorkflowWorldError.is(error)) &&
+            !isRetryableWorldError(error)
+          ) {
+            throw error;
+          }
+          throw new WorkflowStartError(runId, 'admission', error);
         }
       } else {
-        const result = runCreatedResult.value;
-        // Verify server accepted our runId
-        if (!v1Compat && result.run.runId !== runId) {
-          throw new WorkflowRuntimeError(
-            `Server returned different runId than requested: expected ${runId}, got ${result.run.runId}`
-          );
+        // Ordinary starts keep the existing parallel, resilient admission
+        // behavior. Only atomic Hook starts require queue-first ordering.
+        const [runCreatedResult, queueResult] = await Promise.allSettled([
+          createRun(),
+          enqueueRun(),
+        ]);
+        if (queueResult.status === 'rejected') {
+          throw queueResult.reason;
+        }
+        if (runCreatedResult.status === 'rejected') {
+          const err = runCreatedResult.reason;
+          if (EntityConflictError.is(err)) {
+            // The queued resilient start created this candidate first.
+          } else if (isRetryableWorldError(err)) {
+            resilientStart = true;
+            runtimeLogger.warn(
+              'Run creation event failed, but the run was accepted via the queue. ' +
+                'The run_created event will be re-tried async by the runtime.',
+              { workflowRunId: runId, error: err.message }
+            );
+          } else {
+            throw err;
+          }
+        } else {
+          const result = runCreatedResult.value;
+          if (!v1Compat && result.run.runId !== runId) {
+            throw new WorkflowRuntimeError(
+              `Server returned different runId than requested: expected ${runId}, got ${result.run.runId}`
+            );
+          }
+          createdRunStatus = result.run.status;
         }
       }
-
-      // These argument-stream ops are flushed in the background; the promise
-      // handed to waitUntil must never reject (an unconsumed waitUntil
-      // rejection crashes the process as unhandledRejection), so unexpected
-      // failures are logged instead.
-      safeWaitUntil(Promise.all(ops), (err) => {
-        runtimeLogger.warn(
-          'Background flush of workflow argument streams failed',
-          {
-            workflowRunId: runId,
-            error: err instanceof Error ? err.message : String(err),
-          }
-        );
-      });
 
       span?.setAttributes({
         ...Attribute.WorkflowRunId(runId),
         ...Attribute.DeploymentId(deploymentId),
-        ...(runCreatedResult.status === 'fulfilled'
-          ? Attribute.WorkflowRunStatus(runCreatedResult.value.run.status)
+        ...(createdRunStatus
+          ? Attribute.WorkflowRunStatus(createdRunStatus)
           : {}),
       });
 
