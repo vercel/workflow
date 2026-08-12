@@ -301,6 +301,14 @@ export async function executeStep(
    * step commits `step_started` and then `step_completed`; if the second still
    * named the caller's original position, the World would report the first one
    * back as an event this writer had not seen, on every step, forever.
+   *
+   * This reads a report for its highest position and then discards it, where
+   * the replay loop and the suspension handler merge theirs with
+   * `absorbSkippedSlotReport`. That is the difference between the callers, not
+   * an oversight: an executor holds no loaded log to merge into. It runs from a
+   * queued delivery whose only view of the log is the integer its caller passed
+   * in, so the position is the entire value the report has to it. Whoever
+   * replays next loads the log and gets the events themselves.
    */
   let knownSlot = params.slotSnapshot?.eventCount;
   const observeSlot = (result: { event?: Event; events?: Event[] }): void => {

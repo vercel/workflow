@@ -68,6 +68,7 @@ import {
   type ReenqueueArgs,
 } from './runtime/deployment-guard.js';
 import {
+  absorbSkippedSlotReport,
   appendUniqueEvents,
   getQueueOverhead,
   getWorkflowQueueName,
@@ -77,7 +78,6 @@ import {
   type LoadedEventLog,
   loadWorkflowRunEvents,
   memoizeEncryptionKey,
-  mergeReportedEvents,
   parseHealthCheckPayload,
   preconditionEventDelta,
   queueMessage,
@@ -966,6 +966,15 @@ export function workflowEntrypoint(
                    * appended in band. Absorbing it here means the next reader
                    * already has the log and the loop's incremental
                    * `events.list` finds nothing left to fetch.
+                   *
+                   * Deliberately not `absorbSkippedSlotReport`, even though the
+                   * `hasMore` half of the two policies coincides. A delta
+                   * extends the tail and carries a cursor that has to move with
+                   * it, so it appends without re-sorting and needs the cursor
+                   * guard below; a skipped-slot report is a window strictly
+                   * below the write, carries no cursor, and has to be sorted
+                   * back into place. Sharing an implementation would mean one
+                   * of them doing the other's work.
                    *
                    * Declining is always safe — an unabsorbed delta is a delta
                    * the next `events.list` returns — so the guards are free to
@@ -2770,23 +2779,14 @@ export function workflowEntrypoint(
                           // slot snapshot off, so each remaining wait asks for
                           // a slot above it.
                           //
-                          // Only a complete answer. `hasMore` means the World
-                          // returned part of what it was asked for, and the
-                          // missing-completion check below is what decides
-                          // whether this handler still has to fetch. Folding in
-                          // a partial page would make the log look like it
-                          // holds the completion when the rest of the page is
-                          // still unread, so the fetch would be skipped on a
-                          // snapshot that is short of the World's.
-                          if (
-                            created.events?.length &&
-                            created.hasMore !== true
-                          ) {
-                            mergeReportedEvents(
-                              eventLog.events,
-                              created.events
-                            );
-                          }
+                          // The truncated case matters twice over here. Beyond
+                          // the position accounting `absorbSkippedSlotReport`
+                          // rejects it for, the missing-completion check below
+                          // decides from this log whether the handler still has
+                          // to fetch, so a partial page would make the log look
+                          // like it holds a completion whose page is unread and
+                          // skip the fetch on a snapshot short of the World's.
+                          absorbSkippedSlotReport(eventLog.events, created);
                         } catch (err) {
                           if (EntityConflictError.is(err)) {
                             runtimeLogger.info(

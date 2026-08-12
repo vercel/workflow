@@ -41,9 +41,9 @@ import {
   MAX_RESILIENT_STEP_INPUT_BYTES,
 } from './constants.js';
 import {
+  absorbSkippedSlotReport,
   type EventCreator,
   type LoadedEventLog,
-  mergeReportedEvents,
   queueMessage,
   slotSnapshotParams,
   stepDispatchIdempotencyKey,
@@ -357,38 +357,26 @@ export async function handleSuspension({
       ...params,
       ...slotSnapshotParams(log.events),
     });
-    // Bump-and-report: the write landed above the slot it asked for, so these
-    // are the events it was decided without. Merging them here rather than at
-    // each call site means the rest of this phase's writes — which read the
-    // same array to build their own snapshot — ask for a slot above them, and
-    // the replay that resumes from this log sees them without a reload.
-    //
-    // A truncated report (`hasMore`) is dropped whole rather than merged, the
-    // same way the wait loop treats one. It covers a span of positions but
-    // carries only some of the events on them, so merging it would raise the
-    // log's highest position past a position whose event is missing. Every
-    // later write of this phase reads that maximum to say what it has seen, so
-    // each would claim a position it never saw and the World, which only
-    // reports the span a write skips, would never send it. Dropping the report
-    // costs one more round of the same events on the next write and keeps the
-    // log a prefix of the truth.
-    if (result.events?.length && result.hasMore !== true) {
-      const added = mergeReportedEvents(log.events, result.events);
-      reportedEvents += added;
-      if (added > 0) {
-        runtimeLogger.debug('Suspension write skipped occupied slots', {
-          workflowRunId: runId,
-          eventType: data.eventType,
-          eventId: result.event?.eventId,
-          reported: added,
-        });
-      }
-    } else if (result.events?.length) {
+    // Bump-and-report: the write landed above the slot it asked for, so the
+    // report holds the events it was decided without. Absorbing here rather
+    // than at each call site means the rest of this phase's writes — which read
+    // the same array to build their own snapshot — ask for a slot above them,
+    // and the replay that resumes from this log sees them without a reload.
+    const report = absorbSkippedSlotReport(log.events, result);
+    reportedEvents += report.added;
+    if (report.truncated) {
       runtimeLogger.debug('Dropped a truncated skipped-slot report', {
         workflowRunId: runId,
         eventType: data.eventType,
         eventId: result.event?.eventId,
-        offered: result.events.length,
+        offered: report.offered,
+      });
+    } else if (report.added > 0) {
+      runtimeLogger.debug('Suspension write skipped occupied slots', {
+        workflowRunId: runId,
+        eventType: data.eventType,
+        eventId: result.event?.eventId,
+        reported: report.added,
       });
     }
     return result;

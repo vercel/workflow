@@ -217,8 +217,14 @@ describe('executeStep — compute instance stamping', () => {
       onBody: () => {},
     });
 
+    // The position the caller would have scheduled against, taken from the log
+    // rather than written down, so the seed stays below the slots the executor
+    // is about to commit at. Seeding it above them would leave `observeSlot`
+    // with nothing to raise and the test would pass without exercising it.
+    const { data: seeded } = await world.events.list({ runId });
+    const scheduledAt = seeded.length;
+
     const createSpy = vi.spyOn(world.events, 'create');
-    const scheduledAt = 7;
 
     await executeStep({
       world,
@@ -230,12 +236,14 @@ describe('executeStep — compute instance stamping', () => {
       slotSnapshot: { eventCount: scheduledAt },
     });
 
-    // world-local mints ULIDs, so nothing the executor commits reads back as a
-    // slot and the seeded position is all it ever has to go on. What matters
-    // here is that every write carries one.
-    for (const call of createSpy.mock.calls) {
-      expect(call[2]?.eventCount).toBeGreaterThanOrEqual(scheduledAt);
+    // world-local mints slots for a run created on this scheme, so every write
+    // reads back as a position and each one has to name the position its
+    // predecessor landed on.
+    const counts = createSpy.mock.calls.map((call) => call[2]?.eventCount);
+    expect(counts.length).toBeGreaterThan(1);
+    expect(counts[0]).toBe(scheduledAt);
+    for (let i = 1; i < counts.length; i++) {
+      expect(counts[i]).toBeGreaterThan(counts[i - 1] as number);
     }
-    expect(createSpy.mock.calls.length).toBeGreaterThan(1);
   });
 });

@@ -49,7 +49,7 @@ interface World extends Storage, Queue, Streamer {
 }
 ```
 
-The optional `capabilities` object advertises additional behavior. Set `hookRetention.active` to `true` only when the World implements Hook token retention, `slotEventIds` when it allocates [slot-numbered event IDs](#event-id-allocation), and `preconditionGuard` when it enforces the [precondition guard](#optional-the-event-creation-precondition-guard). The optional `start()` method initializes background tasks (for example, queue polling). The optional `close()` method releases resources like connection pools and listeners. The optional `getEncryptionKeyForRun()` method returns the AES-256 key used to encrypt data for a run; if it is not implemented, encryption is disabled.
+The optional `capabilities` object advertises additional behavior. Set `hookRetention.active` to `true` only when the World implements Hook token retention, `slotEventIds` when it allocates [slot-numbered event IDs](#event-id-allocation), and `preconditionGuard` when it can [reject a stale write](#optional-rejecting-a-stale-write). The optional `start()` method initializes background tasks (for example, queue polling). The optional `close()` method releases resources like connection pools and listeners. The optional `getEncryptionKeyForRun()` method returns the AES-256 key used to encrypt data for a run; if it is not implemented, encryption is disabled.
 
 ## The Event Log Model
 
@@ -121,9 +121,9 @@ Two properties have to hold, and both are about what a reader can conclude from 
 
 ### Optional: Rejecting a Stale Write
 
-A World that allocates positions never needs this: a write that named a stale position still commits, at the next free position, and the skipped events go back on the success response. A World whose event IDs are not positions has no such mechanism, and may fence instead.
+A replay writes events derived from the event log it loaded, so a write made from an event log that no longer matches the store can commit events no correct replay would produce. Rejecting one means answering `events.create()` with a `PreconditionFailedError` when the run's log already holds more events than the caller's `eventCount` says it had loaded.
 
-A replay writes events derived from the event log it loaded, so a write made from an event log that no longer matches the store can commit events no correct replay would produce. `events.create()` params carry `eventCount`, the number of events the caller had loaded. Fencing means rejecting the creation with a `PreconditionFailedError` when the run's log holds more events than that.
+Check first whether the field can reach you at all. The runtime derives `eventCount` from the highest slot in the log it loaded, and sends nothing when any loaded event ID is not a slot, so a World whose IDs are not positions never receives it and has nothing to fence on. A World that does allocate positions has the better mechanism already: commit above the contention and report the skipped events back, which costs the writer no replay. That leaves this worth implementing in one case — your store allocates positions, but not atomically with the commit, so refusing a stale write is safer than accepting one out of order.
 
 Two rules make this safe:
 
@@ -132,7 +132,7 @@ Two rules make this safe:
 
 A rejection may optionally carry the events the caller was missing, as `{ events, cursor }` on the error's `details`. Only include them when you can prove the set is complete — that those events fully account for the discrepancy and are not truncated — and that every one of them belongs to the run being written. The runtime merges them straight into the replay's event log, so anything else there is worse than no delta at all. Otherwise omit them, and the runtime performs a full reload instead.
 
-A World that fences should declare `capabilities.preconditionGuard`, which the runtime also reads to keep event-log delta optimizations enabled. A World that ignores `eventCount` must not declare it.
+Declare `capabilities.preconditionGuard` if your World can refuse a write this way. The runtime reads it as "a write can come back refused", not as a promise that any particular one will be, and three behaviors key on it: the per-step event-log delta optimization stays enabled while the run has an open hook, an inline step's `step_started` claim is awaited before the body runs, and a `step_created` publish is sequenced after the create on the `node` VM engine. A World that accepts `eventCount` and ignores it must leave the capability unset — sending a position is not the same as one being enforced.
 
 ## Queue Interface
 

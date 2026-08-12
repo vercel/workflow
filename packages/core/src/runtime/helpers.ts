@@ -490,9 +490,11 @@ function recordRequestedEventCursor(
  *
  * Events are appended in the order the World returned them, and are not
  * re-sorted: a World's canonical order is its own, and the runtime cannot
- * reproduce it from event ids alone. `world-vercel` orders by event id, while
- * `world-local` orders by `(createdAt, eventId)` and deliberately re-mints keys
- * so that the two diverge. Every append source is already in canonical order
+ * reproduce it from event ids alone. That is true even though the id schemes in
+ * this repo happen to sort correctly today — a slot-numbered run orders by id
+ * everywhere, and `world-local` falls back to `(createdAt, eventId)` only for a
+ * run minted before slots, where it re-mints keys and the two orders diverge.
+ * Every append source is already in canonical order
  * relative to the tail (a cursor-delimited page, or a write-response delta), so
  * receipt order is the order to keep. Nothing downstream may assume the tail is
  * the newest event — see {@link maxEventSlot}.
@@ -524,8 +526,15 @@ export function appendUniqueEvents(
  * `preloadedEvents` is loaded `sortOrder: 'asc'` and is never re-sorted
  * client-side, so a `hook_received` spliced in by the lazy-resume consumer must
  * land in `eventId` order — a plain `push` would place a late-committing
- * earlier event after events that sort before it, corrupting replay. Event IDs
- * are ULIDs, so lexicographic string order matches commit order.
+ * earlier event after events that sort before it, corrupting replay.
+ *
+ * Lexicographic string order matches commit order under both id schemes, which
+ * is why this needs no slot gate the way {@link mergeReportedEvents} does: a
+ * slot id is a fixed-width zero-padded position, and a ULID is monotonic by
+ * construction. What differs is the guarantee. On a slot run the id order *is*
+ * the World's canonical order, while on a ULID run it is the runtime's best
+ * reconstruction of it, which is enough for a single splice into a page that
+ * was already loaded in that order.
  */
 export function insertEventByEventId(target: Event[], event: Event): void {
   // Linear scan from the end: the spliced event is almost always the newest
@@ -714,17 +723,50 @@ export interface LoadedEventLog {
  * {@link findEventSlotGap}). **On by default**; set
  * `WORKFLOW_SLOT_GAP_CHECK=0` to replay across holes instead.
  *
- * The switch exists because the check trades one failure for another. A hole is
- * a position claimed by a write that then failed, so most of them stand for an
- * event that never happened and replaying past one is correct. But a hole
- * standing for an event that *did* happen is indistinguishable from that, and
- * replaying past that one produces a run whose result is wrong with nothing to
- * show for it. Failing loudly is the recoverable side of the trade, and this is
- * the way back out if a fleet turns out to carry benign holes.
+ * A World that allocates a position at the moment it commits leaves no hole
+ * behind when a write fails, so density is a property the log has by
+ * construction rather than one this check maintains. What the check is for is
+ * the reads and the Worlds where that does not hold, and by the time it runs
+ * the benign explanations are spent: a position missing because a concurrent
+ * commit is not visible yet clears on a re-read, which is what
+ * {@link settleEventSlotGap} does first.
+ *
+ * What is left is a hole that persists, and its two causes are
+ * indistinguishable from the log. Either a World allocated the position outside
+ * the commit and lost the write, in which case nothing happened there and
+ * replaying past it is correct, or an event that did happen is missing, in
+ * which case replaying past it decides a branch on absence and produces a wrong
+ * result with nothing to show for it. Failing is the recoverable side of that
+ * trade, and this is the way back out if a fleet turns out to carry holes of
+ * the first kind.
  */
 export function isSlotGapCheckEnabled(): boolean {
   return process.env.WORKFLOW_SLOT_GAP_CHECK !== '0';
 }
+
+/*
+ * Merging into a log a replay is midway through reading.
+ *
+ * Three paths add events to a loaded log after the replay has started: a
+ * bump-and-report write hands back the slots it skipped ({@link
+ * mergeReportedEvents}), an inline delta extends the tail (`absorbCreateDelta`
+ * in `runtime.ts`), and a listed page appends ({@link appendUniqueEvents}).
+ * They look alarming — the replay is reading an array while something else
+ * writes to it — and they are safe for one reason worth stating plainly, since
+ * every correctness argument in this file leans on it.
+ *
+ * **An event in the log is a fact, and a longer log cannot retract one.** The
+ * log is append-only and positions are never reused, so a replay that produced
+ * event E from the prefix it had loaded has made E true for every replay that
+ * follows. A later replay reading a fuller log does not get to decide E should
+ * not be there; it consumes E and reconciles to it, which is what the events
+ * consumer does when it walks a log holding writes from a replay that raced it.
+ *
+ * Merging is therefore monotone: it can only add facts this replay has yet to
+ * reconcile to, never remove one it already has. That is why absorbing is
+ * always optional and never wrong to decline — an unabsorbed event is one the
+ * next read returns — and why the guards below can afford to be strict.
+ */
 
 /**
  * Merge the events a bump-and-report write handed back into the log it was
@@ -750,6 +792,56 @@ export function mergeReportedEvents(
     );
   }
   return added;
+}
+
+/** What {@link absorbSkippedSlotReport} did with a write's report. */
+export interface SkippedSlotReport {
+  /** How many of the reported events were new to the log. Zero if dropped. */
+  added: number;
+  /** How many events the report offered, whether or not they were taken. */
+  offered: number;
+  /** The report was truncated, so it was dropped whole instead of merged. */
+  truncated: boolean;
+}
+
+/**
+ * Apply a write's skipped-slot report to the log it was derived from, deciding
+ * whether the report may be taken at all.
+ *
+ * Every replay-context write can come back carrying the events on the slots it
+ * skipped over, and every caller wants the same thing from them: fold them in
+ * so the writes that follow name a position above them, and so the replay
+ * resuming from this log sees them without a reload.
+ *
+ * The one policy is that a **truncated report is dropped whole**. It covers a
+ * span of positions but carries only some of the events on them, so merging it
+ * would raise the log's highest position past a position whose event is
+ * missing. Later writes read that maximum to say what they have seen, so each
+ * would claim a position it never saw, and the World only reports the span a
+ * write skips — it would never send the missing one. Dropping costs one more
+ * round of the same events on the next write and keeps the log a prefix of the
+ * truth, which the note above {@link mergeReportedEvents} explains is always an
+ * available answer.
+ *
+ * Callers that log do so from the returned counts; the decision is not theirs
+ * to re-derive.
+ */
+export function absorbSkippedSlotReport(
+  target: Event[],
+  result: { events?: readonly Event[]; hasMore?: boolean }
+): SkippedSlotReport {
+  const offered = result.events?.length ?? 0;
+  if (offered === 0) {
+    return { added: 0, offered: 0, truncated: false };
+  }
+  if (result.hasMore === true) {
+    return { added: 0, offered, truncated: true };
+  }
+  return {
+    added: mergeReportedEvents(target, result.events ?? []),
+    offered,
+    truncated: false,
+  };
 }
 
 /**
@@ -909,11 +1001,17 @@ export async function settleEventSlotGap(
  * How much of its run's log a replay-context event creation had loaded when it
  * decided to write, as the highest slot that log occupies.
  *
- * One integer says it because slots are dense: a writer that names slot N is
- * claiming to hold every event from 1 to N and nothing above. The World answers
- * by numbering the write above whatever the log has actually reached and handing
- * back the events on the slots in between — the ones this writer decided
- * without.
+ * One integer says it because the World keeps its positions dense: a writer
+ * that names slot N is claiming to hold every event from 1 to N and nothing
+ * above. The World answers by numbering the write above whatever the log has
+ * actually reached and handing back the events on the slots in between — the
+ * ones this writer decided without.
+ *
+ * Density is the World's invariant, not a claim about this particular read. A
+ * reader that is short of a position it holds no event for names a lower N,
+ * which understates what it has seen and only costs it a wider report. Naming
+ * a position it cannot account for is the direction that is unsafe, which is
+ * why {@link slotSnapshotParams} takes the maximum rather than the count.
  *
  * Its own object rather than a bare number so a call site cannot half-send it,
  * and so the empty case (a run that is not slot-numbered) spreads to nothing.
