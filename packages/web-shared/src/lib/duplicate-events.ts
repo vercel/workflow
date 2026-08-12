@@ -24,12 +24,17 @@ import {
  * consumer remains.
  */
 
-/** Classes whose event closes its entity: no consumer is left for it after. */
+/**
+ * Classes whose event closes its entity: no consumer is left for it after.
+ *
+ * The run's own terminal events are absent because `entityEventClass` gives
+ * them no class. The runtime exits rather than replaying the body once the log
+ * holds one, so nothing ever consumes them and nothing can repeat them.
+ */
 const TERMINAL_EVENT_CLASSES: ReadonlySet<EntityEventClass> = new Set([
   'step_terminal',
   'wait_completed',
   'hook_disposed',
-  'run_terminal',
 ]);
 
 /** Classes with no entity to close first: the log records one per run. */

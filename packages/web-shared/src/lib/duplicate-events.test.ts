@@ -141,18 +141,25 @@ describe('findDuplicateEventIds', () => {
     expect(findDuplicateEventIds(events, COMPLETE)).toEqual(new Set());
   });
 
-  it('flags run-level repeats, which carry no correlation id', () => {
+  it('flags a second start of the run, which carries no correlation id', () => {
     const started = event('run_started');
     const startedAgain = event('run_started');
+
+    expect(findDuplicateEventIds([started, startedAgain], COMPLETE)).toEqual(
+      new Set([startedAgain.eventId])
+    );
+  });
+
+  it('leaves a second outcome for the run alone', () => {
+    // Nothing consumes the run's own terminal events: the runtime exits rather
+    // than replaying the body once the log holds one. A second is a fault
+    // worth seeing, not a repeat the run passed over.
     const completed = event('run_completed');
     const cancelled = event('run_cancelled');
 
-    expect(
-      findDuplicateEventIds(
-        [started, startedAgain, completed, cancelled],
-        COMPLETE
-      )
-    ).toEqual(new Set([startedAgain.eventId, cancelled.eventId]));
+    expect(findDuplicateEventIds([completed, cancelled], COMPLETE)).toEqual(
+      new Set()
+    );
   });
 
   it('folds in log order, not in createdAt order', () => {

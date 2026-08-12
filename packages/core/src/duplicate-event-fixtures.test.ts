@@ -26,7 +26,6 @@ const TERMINAL_CLASSES = new Set([
   'step_terminal',
   'wait_completed',
   'hook_disposed',
-  'run_terminal',
 ]);
 
 /**
