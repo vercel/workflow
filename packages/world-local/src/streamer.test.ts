@@ -1078,6 +1078,40 @@ describe('streamer', () => {
         );
         expect(result.data).toHaveLength(1);
         expect(result.data[0].index).toBe(0);
+
+        const invalidShape = Buffer.from(
+          JSON.stringify({ i: 'not-a-number' })
+        ).toString('base64');
+        const shapeResult = await streamer.streams.getChunks(
+          TEST_RUN_ID,
+          streamName,
+          { cursor: invalidShape }
+        );
+        expect(shapeResult.data[0].index).toBe(0);
+      });
+
+      it('reports a closed stream after a cursor past its final chunk', async () => {
+        const { streamer } = await setupStreamer();
+        const streamName = 'cursor-past-end';
+
+        await streamer.streams.write(TEST_RUN_ID, streamName, 'data');
+        await streamer.streams.close(TEST_RUN_ID, streamName);
+
+        const cursor = Buffer.from(JSON.stringify({ i: 50 })).toString(
+          'base64'
+        );
+        const result = await streamer.streams.getChunks(
+          TEST_RUN_ID,
+          streamName,
+          { cursor }
+        );
+
+        expect(result).toMatchObject({
+          data: [],
+          cursor: null,
+          hasMore: false,
+          done: true,
+        });
       });
     });
 

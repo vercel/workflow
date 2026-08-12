@@ -111,6 +111,7 @@ export type {
 } from './shared.js';
 export {
   PaginatedResponseSchema,
+  StreamCursorPositionSchema,
   StructuredErrorSchema,
 } from './shared.js';
 export {
