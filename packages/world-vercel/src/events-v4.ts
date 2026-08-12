@@ -309,10 +309,13 @@ const CreateEventV4PageSchema = z.union([
     cursor: z.string().nullable(),
     hasMore: z.boolean(),
   }),
+  // No page at all. The keys have to be spelled `.optional()` and not just
+  // `z.undefined()`: since zod 4.4 a key is only allowed to be missing when its
+  // schema is optional, and a response without a page omits these outright.
   z.object({
-    events: z.undefined(),
-    cursor: z.undefined(),
-    hasMore: z.undefined(),
+    events: z.undefined().optional(),
+    cursor: z.undefined().optional(),
+    hasMore: z.undefined().optional(),
   }),
 ]);
 

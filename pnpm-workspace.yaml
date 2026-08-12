@@ -21,9 +21,9 @@ catalog:
   semver: 7.7.4
   typescript: ^6.0.3
   ulid: ~3.0.1
-  undici: 7.29.0
+  undici: ^7.29.0
   vitest: ^4.1.10
-  zod: ~4.3.6
+  zod: ^4.3.6
 
 onlyBuiltDependencies:
   - esbuild
