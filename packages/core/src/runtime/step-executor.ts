@@ -57,6 +57,10 @@ import {
 } from './helpers.js';
 import { ReplayRecoveryReporter } from './replay-recovery-reporter.js';
 import {
+  computeResumeTtrAttributes,
+  type ResumeTtrTracking,
+} from './resume-latency.js';
+import {
   computeStepLatencyEventData,
   type StepLatencyEventData,
   type StepLatencyTracking,
@@ -193,6 +197,15 @@ export interface StepExecutorParams {
    * runtime/step-latency.ts.
    */
   latencyTracking?: StepLatencyTracking;
+  /**
+   * Hook-resume TTR telemetry: the boundaries of a hook resumption whose next
+   * durable step is the one this call is about to execute. When set, the
+   * executor closes the measurement against the `step_started` claim and the
+   * wall clock taken immediately before user code, and attaches the total plus
+   * its phase breakdown to this step's `step.execute` span. Set by the runtime
+   * for exactly one step per resumption — see runtime/resume-latency.ts.
+   */
+  resumeTracking?: ResumeTtrTracking;
   /**
    * Authoritative attempt number for this execution, used to bound retries
    * against `maxRetries` BEFORE the body runs. In order to also catch
@@ -543,6 +556,13 @@ export async function executeStep(
     // issued (either path below) — anchors RSFS's end point. See
     // StepLatencyEventData.rsfs and the call sites below.
     let stepStartPostSentAtMs: number | undefined;
+    // `Date.now()` taken once the `step_started` response has returned and the
+    // claim succeeded — T6 of the hook-resume TTR window. Only the await path
+    // can set it: optimistic inline start deliberately does not wait for the
+    // claim before running the body, so at T7 it has no completion instant and
+    // the TTR breakdown reports no `step_claim_ms` (see
+    // runtime/resume-latency.ts).
+    let stepClaimCompletedAtMs: number | undefined;
     // Settled outcome of the in-flight optimistic `step_started`. Handlers are
     // attached synchronously (`.then(ok, err)`) so a fast rejection never
     // surfaces as an unhandledRejection while the body runs.
@@ -659,6 +679,7 @@ export async function executeStep(
           // fresh replay.
           startEventParams
         );
+        stepClaimCompletedAtMs = Date.now();
 
         step = startResult.step;
       } catch (err) {
@@ -871,6 +892,41 @@ export async function executeStep(
           ),
         });
       }
+      /**
+       * Close the hook-resume TTR measurement (see runtime/resume-latency.ts).
+       *
+       * Called from INSIDE `contextStorage.run`, immediately before
+       * `stepFn.apply()` — deliberately not alongside the step-latency
+       * telemetry above. `executionStartTime` is taken before the inner
+       * `step.execute` span and the step context are established, and
+       * `step_prepare_ms` is documented to include exactly that setup, so
+       * anchoring T7 there would under-report both the phase and the total.
+       * TTFS/STSO keep their own anchor so this changes nothing about them.
+       *
+       * The `reported` latch makes one resumption yield one sample even
+       * though every step of an inline batch is handed the same tracking
+       * object: whichever step first reaches user code takes the
+       * measurement. Sharing it (rather than pinning the batch's first step)
+       * is what keeps the sample alive when that first step loses its atomic
+       * create-claim to a concurrent invocation while a sibling proceeds.
+       * The check-and-set is synchronous, so concurrent siblings cannot both
+       * pass it.
+       */
+      const reportResumeTtr = (): void => {
+        const tracking = params.resumeTracking;
+        if (!tracking || tracking.reported) return;
+        const attributes = computeResumeTtrAttributes({
+          tracking,
+          attempt,
+          stepClaimStartedAtMs: stepStartPostSentAtMs,
+          stepClaimCompletedAtMs,
+          stepCodeStartedAtMs: Date.now(),
+        });
+        if (!attributes) return;
+        tracking.reported = true;
+        span?.setAttributes(attributes);
+      };
+
       try {
         result = await trace('step.execute', {}, async () => {
           return await contextStorage.run(
@@ -902,7 +958,11 @@ export async function executeStep(
                 ? params.runReadyBarrier
                 : undefined,
             },
-            () => stepFn.apply(thisVal, args)
+            () => {
+              // The last instant before user code — T7 of the resume window.
+              reportResumeTtr();
+              return stepFn.apply(thisVal, args);
+            }
           );
         });
       } catch (err) {
