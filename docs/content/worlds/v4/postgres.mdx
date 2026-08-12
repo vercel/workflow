@@ -75,6 +75,14 @@ The migration is idempotent and can safely be run as a post-deployment lifecycle
 
 To subscribe to the graphile-worker queue, your workflow app needs to start the world on server start. Here are examples for a few frameworks:
 
+<Callout type="warn">
+This step is specific to worlds that run a background worker, such as Postgres
+World. Do not copy it into an app deployed to Vercel: the Vercel world has no
+`start()`, so the call is a no-op, and importing `workflow/runtime` from a
+server-startup hook pulls the whole runtime into the cold-start path before the
+first request is served.
+</Callout>
+
 <Tabs items={["Next.js", "SvelteKit", "Nitro"]}>
 
 <Tab value="Next.js">

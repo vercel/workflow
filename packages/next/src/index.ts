@@ -11,13 +11,29 @@ import semver from 'semver';
 import { getNextBuilder } from './builder.js';
 
 const VERCEL_WORLD_PACKAGE = '@workflow/world-vercel';
+// `@vercel/queue` performs a fully dynamic `import(absolutePath)`, which
+// Turbopack cannot resolve ("server relative imports are not implemented
+// yet"), so it has to stay external. `@vercel/oidc` is reached through it, and
+// `@vercel/cli-auth`/`@napi-rs/keyring` are only present in workspaces that
+// also depend on the CLI; keeping them external avoids bundlers walking into a
+// native dependency tree that never runs on a server.
 const VERCEL_WORLD_DEPENDENCY_PACKAGES = [
   '@vercel/queue',
   '@vercel/oidc',
   '@vercel/cli-auth',
   '@napi-rs/keyring',
 ];
-const VERCEL_WORLD_SERVER_EXTERNAL_PACKAGES = [
+// Only the dependencies above are externalized for the Next.js server bundle.
+// `@workflow/world-vercel` itself is bundled: every module it pulls in that is
+// left external has to be resolved from disk on a cold start, one file at a
+// time, and `register()` in `instrumentation.ts` sits in front of the first
+// request. Bundling it cuts the module count for that import from ~440 to
+// ~250 and takes ~50ms off `register()`.
+const VERCEL_WORLD_SERVER_EXTERNAL_PACKAGES = VERCEL_WORLD_DEPENDENCY_PACKAGES;
+// The workflow/step bundles are built by esbuild, which resolves
+// `@vercel/queue`'s dynamic import fine but has no reason to inline the world
+// either. Keep the previous behavior there.
+const WORKFLOW_BUNDLE_EXTERNAL_PACKAGES = [
   VERCEL_WORLD_PACKAGE,
   ...VERCEL_WORLD_DEPENDENCY_PACKAGES,
 ];
@@ -412,9 +428,6 @@ export function withWorkflow(
     nextConfig.serverExternalPackages = [
       ...new Set([
         ...(nextConfig.serverExternalPackages || []),
-        // Keep the Vercel world and its native-prone dependencies external so
-        // local builds do not try to parse @vercel/queue's keyring dependency
-        // tree.
         ...VERCEL_WORLD_SERVER_EXTERNAL_PACKAGES,
       ]),
     ];
@@ -532,7 +545,10 @@ export function withWorkflow(
               // See: https://nextjs.org/docs/app/getting-started/server-and-client-components
               'server-only',
               'client-only',
-              ...effectiveServerExternalPackages,
+              ...new Set([
+                ...effectiveServerExternalPackages,
+                ...WORKFLOW_BUNDLE_EXTERNAL_PACKAGES,
+              ]),
             ],
           });
         })();
