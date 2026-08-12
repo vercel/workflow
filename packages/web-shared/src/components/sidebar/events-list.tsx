@@ -13,7 +13,7 @@ import { RunClickContext, StreamClickContext } from '../ui/data-inspector';
 import { ErrorCard } from '../ui/error-card';
 import { ErrorStackBlock, isStructuredError } from '../ui/error-stack-block';
 import { Skeleton } from '../ui/skeleton';
-import { TimestampTooltip } from '../ui/timestamp-tooltip';
+import { TimestampTooltip, useShortTimeAgo } from '../ui/timestamp-tooltip';
 import { AttrSetEventBlock } from './attributes-block';
 import { CopyableDataBlock, EncryptedDataBlock } from './copyable-data-block';
 
@@ -106,19 +106,11 @@ function EventItem({
     void loadEventData(true);
   }, [encryptionKey, loadEventData]);
 
-  const createdAt = new Date(event.createdAt);
+  // Show how long ago the event happened (e.g. "2 minutes ago") rather than a
+  // bare wall-clock time; the exact date/time lives in the hover card below.
+  const createdAtMs = new Date(event.createdAt).getTime();
+  const timeAgo = useShortTimeAgo(createdAtMs);
   const occurredAt = parseDateValue(event.occurredAt);
-  const displayedCreatedAt = showSeparateEventOccurrenceTimestamps
-    ? createdAt
-    : getEffectiveEventDate(event);
-  const displayedCreatedAtTime = displayedCreatedAt.toLocaleTimeString(
-    undefined,
-    {
-      hour: 'numeric',
-      minute: 'numeric',
-      second: 'numeric',
-    }
-  );
 
   const displayPayload = isLoading ? loadedData : mergedDisplay;
 
@@ -138,9 +130,11 @@ function EventItem({
           <span className="text-gray-1000 text-label-12 font-mono">
             {event.eventType}
           </span>
-          <span className="shrink-0 text-label-13 text-gray-900">
-            {displayedCreatedAtTime}
-          </span>
+          <TimestampTooltip date={createdAtMs}>
+            <span className="shrink-0 text-label-13 text-gray-900 tabular-nums">
+              {timeAgo}
+            </span>
+          </TimestampTooltip>
         </div>
       </CollapsibleTrigger>
       <CollapsibleContent>
