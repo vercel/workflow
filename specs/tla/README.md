@@ -119,15 +119,96 @@ invariants also rule out live-vs-replay wake-order divergence.
   sessions, and the 412 precondition guard on suspension writes are not
   modeled (see Roadmap).
 
+## Spec 2: dispatch-layer self-healing
+
+`SelfHealing.tla` models the dispatch layer — what a suspension pass
+enqueues, how the queue's idempotency dedup treats those enqueues, and
+what an adversary can lose — and checks the design claim:
+
+> **Self-healing.** If a run is stuck at any point after creation (every
+> queue message driving it lost — crash, prune, TTL), enqueueing one
+> replay of the event log rehydrates every queue message the run needs to
+> continue making progress. The event log is the source of truth; queue
+> messages are reconstructible cache.
+
+The run is abstracted to a set of pending entities, each needing one
+driver message: a pending step needs a step-dispatch message
+(`runtime.ts`, `idempotencyKey = step.correlationId`) and a pending wait
+needs a delayed continuation (`runtime/wait-continuation.ts`, key seeded
+from the wait's correlationId — the bare correlationId for mid-range
+waits). The property is encoded as a safety postcondition on every replay
+pass: *no pass may finish leaving a pending entity with neither a
+resolution nor a driver message in flight* (`SelfHealSound`).
+
+### Results
+
+| Config | Setup | Result |
+| --- | --- | --- |
+| `SelfHealing.cfg` | Entity-keyed driver messages (shipping discipline) + dedup records that outlive their messages (documented world behavior) | ❌ **SelfHealSound violated** — see below |
+| `SelfHealingVolatileDedup.cfg` | Same keying, but message loss also forgets the dedup record | ✅ holds |
+| `SelfHealingAttemptKeys.cfg` | Keys include the replay-pass ordinal, dedup records survive loss | ✅ holds (at the cost of the one-message-per-entity collapse) |
+
+### The hole
+
+The minimal witness TLC produces (5 states, one wait + one step pending):
+
+1. The initial replay pass enqueues both driver messages, burning keys
+   `⟨wait⟩` and `⟨step⟩` into the queue's idempotency memory.
+2. The step executes and wakes the orchestrator.
+3. The wait's continuation message is **lost** (prune / crash / TTL). Its
+   idempotency record survives — `wait-continuation.ts` documents exactly
+   this: "VQS keeps idempotency records until message-retention TTL;
+   world-postgres keeps a completed-keys cache", so "a later enqueue under
+   the same key is silently dropped".
+4. The next replay pass (the step-completion wake — or, identically, a
+   manual healing replay) re-observes the pending wait, derives the *same*
+   key, and its re-enqueue is silently absorbed. The pass ends with an
+   empty queue and an unresolved wait.
+
+No number of further healing replays helps: each derives the same key.
+The run stays stuck until the wait's deadline passes **and** something
+else wakes it (a heal after the deadline resolves the wait directly via
+the elapsed-waits pass), or until the dedup record expires. Single-shot
+self-healing therefore does not hold under the shipping keying discipline
+whenever dedup records can outlive the messages they deduplicate — for
+step dispatch and mid-range wait continuations alike. (The near-elapsed
+and multi-hop wait keys vary with time/hop and partially escape; the bare
+keys do not.)
+
+The two passing configs pin down the fix space: make loss erase the dedup
+record (a queue-semantics fix — e.g. a prune that also purges idempotency
+state), or vary the key across passes (a keying fix — trading away the
+duplicate-message collapse the dedup exists to provide; a real design
+would scope the variation narrowly, e.g. only for explicit heal-mode
+replays).
+
+### Assumptions
+
+- **B1** — the entities' `*_created` events are durable in the log (that
+  is what makes them reconstructible by a replay at all).
+- **B2** — replay passes are atomic (the suspension handler settles all
+  writes and dispatches before acking).
+- **B3** — a healing replay reaches pre-existing steps through the keyed
+  "immediate enqueue" path, not inline execution
+  (`createdStepCorrelationIds` gating: only the handler that wrote
+  `step_created` inlines it).
+- **B4** — the wait/step delivery itself always wakes the orchestrator
+  (queue-handler behavior, not modeled further).
+
 ## Files
 
-- `ReplayDelivery.tla` — the model (log consumption, barrier discipline,
-  claims, idle retirement, invariants). Extensively commented with code
-  references.
+- `ReplayDelivery.tla` — the delivery-ordering model (log consumption,
+  barrier discipline, claims, idle retirement, invariants). Extensively
+  commented with code references.
 - `MCReplayDelivery.tla` — concrete schedules (`SafeSchedule`,
   `UnreadHookSchedule`, `RaceSchedule`).
 - `ReplayDelivery.cfg`, `ReplayDeliveryUnreadHook.cfg`,
-  `ReplayDeliveryNoBarriers.cfg` — the experiments from the results table.
+  `ReplayDeliveryNoBarriers.cfg` — the spec 1 experiments.
+- `SelfHealing.tla` — the dispatch-layer model (driver messages,
+  idempotency dedup, adversarial loss, healing replays).
+- `MCSelfHealing.tla` — the one-wait-one-step entity set.
+- `SelfHealing.cfg`, `SelfHealingVolatileDedup.cfg`,
+  `SelfHealingAttemptKeys.cfg` — the spec 2 experiments.
 
 ## Running
 
@@ -140,11 +221,16 @@ for cfg in ReplayDelivery ReplayDeliveryUnreadHook ReplayDeliveryNoBarriers; do
   java -XX:+UseParallelGC -cp tla2tools.jar tlc2.TLC \
     -deadlock -workers auto -config $cfg.cfg MCReplayDelivery.tla
 done
+for cfg in SelfHealing SelfHealingVolatileDedup SelfHealingAttemptKeys; do
+  java -XX:+UseParallelGC -cp tla2tools.jar tlc2.TLC \
+    -deadlock -workers auto -config $cfg.cfg MCSelfHealing.tla
+done
 ```
 
 (`-deadlock` disables deadlock reporting — fully-delivered quiescent states
-are legitimate terminal states. The NoBarriers run is EXPECTED to report an
-invariant violation; that is the point of that config.)
+are legitimate terminal states. The `ReplayDeliveryNoBarriers` and
+`SelfHealing` runs are EXPECTED to report an invariant violation; that is
+the point of those configs.)
 
 ## Roadmap
 
