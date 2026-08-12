@@ -294,19 +294,23 @@ about nothing interesting.
 The fence is off by default and set per scenario
 (`ScenarioSpec.preconditionGuard`, which flows into `SimWorldOptions`), which is
 how a scenario can be run one flag apart from its neighbour. `countGuard`
-**follows the fence** unless a spec says otherwise, because that is what
-production does — see below.
+**follows the fence** unless a spec says otherwise, because a World that fences
+arms both halves — see below.
 
 **`preconditionGuard`** models `WorldCapabilities.preconditionGuard`: reject a
-replay-context write whose `stateUpdatedAt` snapshot predates the newest
-externally-originated event. In the SDK this is declared by **world-vercel
-only** (`packages/world-vercel/src/index.ts:40`); `world-local` and
-`world-postgres` declare neither it nor `maxConcurrency`.
+replay-context write whose snapshot predates the newest externally-originated
+event. In the SDK the capability is declared by **world-vercel only**
+(`packages/world-vercel/src/index.ts`); `world-local` and `world-postgres`
+declare neither it nor `maxConcurrency`. It no longer describes what world-vercel
+does to a run, though: a slot-identity run has no snapshot to reject, because the
+World allocates the event's position at commit time and reports the positions the
+write skipped over. What the sim's fence still covers is the 412 *reception* path
+the runtime keeps for Worlds that do fence, and the predicate itself.
 
 Its predicate is narrower than the bug class, and the reason is its *shape*,
 not the event type it watches. The marker advances on `hook_received` **or**
 `step_completed`, but it is a **high-water mark** — the newest such write — and
-the test is `stateUpdatedAt < marker`, strictly. So it detects a log truncated
+the test is `snapshot.updatedAt < marker`, strictly. So it detects a log truncated
 at the end and is blind to a hole in the middle: when the withheld event is
 *older* than one the reader can see, the reader's snapshot is never strictly
 older than the mark. The hook direction is caught for the mirror-image reason —
@@ -315,25 +319,44 @@ orchestrator's snapshot predates the sleep, so the fence fires and the run
 reconciles.
 
 **`countGuard`** adds the count half: how many events the log holds at or below
-`stateUpdatedAt`, compared against how many the caller loaded. It closes the
-hole the watermark cannot see. It requires the caller to send
-`stateEventCount` — and since #3145 (`1471f252f`) `@workflow/core` sends it on
-every replay-context create, gated only by the `WORKFLOW_PRECONDITION_GUARD`
-kill-switch, with workflow-server's own count guard defaulting on. So both
-halves are armed together in production, and `countGuard` defaults here to
-whatever the fence is set to. A run with the fence on and the count off is a
-world that exists nowhere; the two scenarios that ask for it
-(`step-vs-step-fork-fenced`, `in-flight-before-decision`) do so explicitly,
-because isolating the watermark half is their whole subject.
+the caller's watermark, compared against how many the caller loaded. It closes
+the hole the watermark cannot see. A World that fences arms both halves
+together, so `countGuard` defaults here to whatever the fence is set to; a run
+with the fence on and the count off is a world that exists nowhere, and the two
+scenarios that ask for it (`step-vs-step-fork-fenced`,
+`in-flight-before-decision`) do so explicitly, because isolating the watermark
+half is their whole subject.
 
-Where the runtime sends a count, the sim uses **that** value rather than its own
-reconstruction (`loadedCount()`), so the guard is tested against the number the
-real client computes; the reconstruction is the fallback for writes core does
-not count.
+**Where the snapshot comes from.** Both halves read one
+`SimCreateParams.snapshot`, and the sim **reconstructs** it rather than reading
+it off the wire. `@workflow/core` states its position as a slot count
+(`eventCount`), derived from slot-numbered event IDs; the sim mints ULIDs, so a
+create arrives with nothing the fence can compare against a ULID watermark. The
+world facade therefore derives `{ updatedAt, count }` from the pages the writer
+read: newest loaded position, and how many loaded events sit at or below it.
+That is the same derivation the client used to make, and it is what lets the
+count half see a hole *behind* the watermark at all.
 
-**Two ways the sim's guards are stronger than production's.** Both are
-deliberate, and both mean a fenced green here is a claim about the *predicate*,
-not about production's *deployment* of it:
+Two rules keep that derivation honest, and both were learned by getting them
+wrong. **A read is what starts the set**: a runtime that writes before loading
+anything (a fresh delivery's `run_started`) sends no snapshot, so crediting it
+with its own write would hand the fence a position lower than the log holds and
+reject the next concurrent write on a claim nobody made. **The set lives for one
+delivery**: it is scoped to the queue handler invocation, because a cold-
+starting replay holds nothing until it reads, and inheriting the previous
+delivery's view fences it for a log it never loaded.
+
+One consequence worth holding: the discriminator for "this write did not come
+from a replay context" is now **the facade attached no snapshot**, where it used
+to be "the client sent no watermark". Those differ for a write issued from a
+step body that did load a log. Such a write is fenced here where it previously
+advanced the out-of-band marker instead.
+
+**Two ways the sim's guards are stronger than a deployed fence.** The
+comparison is against the fence as world-vercel ran it for ULID runs, which is
+the only shape it ever ran against. Both differences are deliberate, and both
+mean a fenced green here is a claim about the *predicate*, not about any
+deployment of it:
 
 - The server's retained-id window is a FIFO in **insertion (commit) order** —
   its Lua script prunes with `table.remove(ids, 1)`, oldest-inserted — while
@@ -706,14 +729,13 @@ So: **two** of the six have their fix demonstrated by a paired green scenario,
 Writing the three missing pairs is the obvious next increment.
 
 Note what the `fix` column does *not* mean. `countGuard` closing doc-29 is a
-statement about the World implementation *and* about production's predicate:
-core has sent `stateEventCount` on every replay-context create since #3145 and
-the server's count guard defaults on (§5). What it is not is a statement about
-production's *deployment* of that predicate, which is region-local, fails open,
-and prunes its window in a different order than this store does — all three
-noted in §5. So the honest reading of the column is: four of the six have a fix
-whose predicate is armed in production today, and whether it fires there depends
-on conditions the sim does not model.
+statement about a fencing World's *predicate*, and nothing more. It is not a
+statement about world-vercel, which does not fence a slot-identity run at all:
+positions there are assigned at commit, so a write that named a stale one still
+commits and comes back carrying the events it skipped over. That is the
+append-only column below, reached by a different mechanism. Read the `fix`
+column as "which predicate would have caught this fault", and read the
+append-only column for what production actually does about it.
 
 **The append-only log closes all six, in two different senses — and the split
 is four and two, not three and three.** Four (doc-23, doc-25, doc-26, doc-27)
@@ -812,7 +834,7 @@ package about hook races.
 
 **Also untested:** turbo / optimistic-inline-start, which skip replays and so
 give a stale branch somewhere to hide; and the fence's same-millisecond
-behaviour, where an equal `stateUpdatedAt` passes by design as anti-livelock.
+behaviour, where an equal snapshot watermark passes by design as anti-livelock.
 
 **Not modelled at all:** the concurrency machinery `world-local` needs and this
 store omits — claim files, per-entity locks, staged/promoted hook events,

@@ -30,7 +30,7 @@ describe('ErrorStackBlock', () => {
     expect(markup).toContain(
       'Workflow replay exceeded maximum duration after 4 attempts'
     );
-    expect(markup).toContain('var(--ds-red-100)');
+    expect(markup).toContain('bg-red-100');
   });
 
   it('ignores non-string stack values on message-only errors', () => {
