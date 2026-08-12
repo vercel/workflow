@@ -94,7 +94,7 @@ flowchart TD
 - `cancelled`: Reserved for future use (not currently emitted)
 
 <Callout type="info">
-The `step_retrying` event is optional. Steps can retry without it - the retry mechanism works regardless of whether this event is emitted. You may see back-to-back `step_started` events in logs when a step retries after a timeout or when the error is not explicitly captured. See [Errors and Retries](/docs/foundations/errors-and-retries) for more on how retries work.
+The `step_retrying` event is optional. Steps can retry without it - the retry mechanism works regardless of whether this event is emitted. You may see back-to-back `step_started` events in logs when a step retries after a timeout or when the error is not explicitly captured, and also when concurrent replays each commit one (see [Duplicate Events](#duplicate-events)). See [Errors and Retries](/docs/foundations/errors-and-retries) for more on how retries work.
 </Callout>
 
 When present, the `step_retrying` event moves a step back to `pending` state and records the error that caused the retry. This provides two benefits:
@@ -224,6 +224,44 @@ Terminal states represent the end of an entity's lifecycle. Once an entity reach
 - `completed`: Delay period has elapsed
 
 Attempting to create an event that would transition an entity out of a terminal state will result in an error. This prevents inconsistent state and ensures the integrity of the event log.
+
+That guard sits on the write path. A duplicate the write path does permit — a second `step_created` for a step that is not yet terminal, for example — is handled during replay instead, described next.
+
+## Duplicate Events
+
+Concurrent invocations replaying the same run share one event log and append to it without a currency guard. An invocation working from a prefix that predates another invocation's write can commit its own `step_created`, `step_started`, or `wait_created` for an entity the log already records one of.
+
+Those duplicates are committed but inert. The outcome was decided by the first event of its kind at a lower position in the log, and every replay reads that same event at that same position, so a later copy cannot change what the workflow observes.
+
+To keep an inert copy from failing an otherwise healthy run, the runtime groups event types into **classes** and tracks, per entity, which classes the current replay has already consumed. When an event is offered to every registered consumer and none wants it, and its class is already recorded for that entity, the replay steps over it instead of reporting a [replay divergence](/docs/errors/replay-divergence) — which, once the recovery budget is exhausted, ends the run with [`CORRUPTED_EVENT_LOG`](/docs/errors/corrupted-event-log).
+
+| Class | Event types |
+|-------|-------------|
+| `run_started` | `run_started` |
+| `step_created` | `step_created` |
+| `step_started` | `step_started` |
+| `step_retrying` | `step_retrying` |
+| `step_terminal` | `step_completed`, `step_failed` |
+| `wait_created` | `wait_created` |
+| `wait_completed` | `wait_completed` |
+| `hook_created` | `hook_created` |
+| `hook_disposed` | `hook_disposed` |
+
+Types that share a class are the mutually exclusive outcomes of one decision: a step either completes or fails, and the first outcome recorded is the one that counts. Classes are independent of one another, so passing over one does not suppress another. A step whose result is already in the log has still recorded exactly one `step_created`, which is what makes a second one ignorable on its own terms.
+
+The remaining event types belong to no class and are never skipped:
+
+- `hook_received` and `hook_conflict` are deliveries rather than decisions. A hook legitimately receives many payloads under one ID, so a second `hook_received` is not a repeat of anything.
+- `attr_set` is written on every attribute write.
+- `run_created` precedes every replay and is always consumed.
+- `run_completed`, `run_failed`, and `run_cancelled` never reach the check. The runtime exits before replaying the workflow body once the log holds one of them, so no consumer ever takes one and no class is ever recorded for them.
+
+Two properties hold for every skipped event:
+
+- **A live consumer always wins.** The class check runs only after every registered consumer has declined the event. A retry's `step_started` still reaches the step's consumer and still counts as an attempt. Only the copies nobody claims are skipped.
+- **The deterministic clock does not move.** Skipped events do not advance replay's notion of the current time, so a log that happens to contain a duplicate produces the same timestamps as one that does not.
+
+Duplicates are visible in the run's logs. A repeat of the same event type is logged at `info`. A repeat that decides a class differently — a `step_failed` behind a `step_completed`, or the reverse — is logged at `error`. Ignoring it is still correct and still deterministic, but unlike a re-commit of the same outcome there is no reading in which both writers were right, so the discarded outcome is worth surfacing.
 
 ## Event Correlation
 
