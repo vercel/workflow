@@ -2742,25 +2742,32 @@ export function createEventsStorage(
               );
             }
 
+            // Staging is private to this attempt, so the name carries a
+            // nonce rather than only the event id. Sharing a name across
+            // writers would make the staging directory a second, invisible
+            // claim on the slot: the allocator probes `events/` alone, so a
+            // staged file is not evidence the position is taken, and bumping
+            // off it moves this writer past a position no one will ever
+            // publish. A crashed attempt (its cleanup lives in a `finally`
+            // the kill skips) would hole the log permanently that way, and
+            // two live writers drawing the same candidate would hole it
+            // whenever the stager is later rejected. The slot is arbitrated
+            // where it is actually taken: the promote below.
             const stagedPath = pendingHookEventPath(
               basedir,
               effectiveRunId,
-              eventId,
+              `${eventId}.${monotonicUlid()}`,
               tag
             );
             const staged = await writeExclusive(stagedPath, serializedEvent);
             if (!staged) {
-              // The staging path can be occupied by a previous crashed
-              // attempt of this very event (which never promoted), or, under
-              // slot ids, by a concurrent writer holding the same position.
-              // Both are handled the same way: fall through to the bump
-              // below, which moves off the position when it can and surfaces
-              // the conflict when it cannot.
-              if (await bumpEventSlot(attempt)) {
-                continue;
-              }
-              throw new EntityConflictError(
-                `Event "${eventId}" already exists for run "${effectiveRunId}"`
+              // A nonced path cannot already exist, so this is a filesystem
+              // fault rather than a lost race. It is deliberately NOT an
+              // `EntityConflictError`: the runtime reads that as a benign
+              // duplicate publish and carries on, which would absorb infra
+              // trouble as "someone else already wrote it".
+              throw new WorkflowWorldError(
+                `Failed to stage event "${eventId}" for run "${effectiveRunId}": staging path already exists`
               );
             }
             try {
@@ -2793,6 +2800,45 @@ export function createEventsStorage(
             notePublishedSlot(effectiveRunId, eventId);
             break;
           }
+          // Losing this publish to THIS SAME resume is the convergence the
+          // claim exists to force, and it has to be answered before the bump
+          // rather than after the loop, because only one of the two takers of
+          // a claim is pinned. The taker that wrote the claim keeps its own
+          // (unpinned) id, since a slot is a position another instance hands
+          // out for unrelated events too; the taker that adopts the claim is
+          // pinned to the claimed position. So whichever one loses the
+          // promote, the loser may be the unpinned owner, and bumping it
+          // publishes a SECOND hook_received for one resumeId: the log stays
+          // dense, and replay delivers the resume twice.
+          //
+          // `converge` above already answers this case with the committed
+          // event — it just could not see it yet, because the other taker had
+          // not published when this attempt read. Answer it the same way. An
+          // occupant that is NOT this resume is the unrelated-event collision
+          // the bump is for, and still bumps (or conflicts, when pinned).
+          if (data.eventType === 'hook_received' && params?.resumeId) {
+            const occupant = await readJSONWithFallback(
+              basedir,
+              'events',
+              `${effectiveRunId}-${eventId}`,
+              EventSchema,
+              tag
+            );
+            if (
+              occupant &&
+              isResumeEvent(occupant, {
+                runId: effectiveRunId,
+                resumeId: params.resumeId,
+                hookId: data.correlationId,
+                eventId,
+              })
+            ) {
+              // The claim already names this position, so there is no claim
+              // rewrite to do: the resume is committed, exactly once, and
+              // both writers return that one event.
+              return { event: occupant };
+            }
+          }
           if (!(await bumpEventSlot(attempt))) {
             break;
           }
@@ -2819,6 +2865,10 @@ export function createEventsStorage(
               tag
             );
           }
+          // A resume that lost its publish to its own committed event already
+          // returned it from inside the loop above, so reaching here means the
+          // occupant is an unrelated event and this is a duplicate publish the
+          // runtime's concurrent-replay catch path handles.
           throw new EntityConflictError(
             `Event "${eventId}" already exists for run "${effectiveRunId}"`
           );
