@@ -39,8 +39,22 @@
  *                       standard policy via
  *                       {@link EventPostRetryOptions.idempotentHookResume}.
  *
- * Only transient/ambiguous transport failures are retried; definitive responses
- * (409/410/425/429 and any other 4xx) surface immediately, exactly as before.
+ * Only transient/ambiguous transport failures are retried under that
+ * eligibility matrix; definitive responses (409/410/425 and any other 4xx)
+ * surface immediately, exactly as before.
+ *
+ * A 429 (`ThrottleError`) is handled by a separate in-process policy that
+ * applies to EVERY event type: a genuine application 429 means the server
+ * rejected the write outright — nothing landed — so none of the duplicate-row /
+ * attempt-double-count hazards above apply (the same definitive-no-write
+ * reasoning `STREAM_RETRY_OPTIONS` uses to retry 429 on stream PUTs). Firewall
+ * challenges never reach here as `ThrottleError`: `errorForResponse` maps a
+ * 429 + `x-vercel-mitigated: challenge` to a transport `WorkflowWorldError`
+ * instead (see isFirewallChallenge429), so throttle retries cannot hot-loop
+ * against the firewall. Each retry honors the server's `retryAfter`, and the
+ * cumulative wait is capped by THROTTLE_RETRY_BUDGET_MS — beyond that the
+ * ThrottleError surfaces and the queue's redelivery takes over, exactly as
+ * before this policy existed.
  *
  * This is the *only* retry loop on the event-write path, for both transports.
  * The WebSocket transport raises `code: 'TRANSPORT'` — the shape `utils.ts`
@@ -162,6 +176,20 @@ export const EVENT_RETRY_ELIGIBILITY = {
 
 /** Up to this many retries after the initial attempt (3 attempts total). */
 export const MAX_EVENT_POST_RETRIES = 2;
+
+/**
+ * Cumulative in-process wait budget for 429 (`ThrottleError`) retries, per
+ * event POST. Bounds the "no attempt tracking" failure mode: a server that
+ * keeps 429ing cannot pin the invocation — once the budget cannot cover the
+ * next `retryAfter`, the ThrottleError surfaces and the queue's (delivery-
+ * counted, backed-off) redelivery takes over. Sized to ride out the
+ * transaction-conflict shape workflow-server produces (a jittered Retry-After
+ * on the order of ~10s, so a couple of attempts fit) while staying well inside
+ * a flow invocation's duration limit.
+ */
+export const THROTTLE_RETRY_BUDGET_MS = 30_000;
+/** Backoff when a 429 carries no usable Retry-After. */
+const DEFAULT_THROTTLE_RETRY_AFTER_SECONDS = 1;
 /** Base backoff; doubles per attempt. Kept tiny — the goal is riding out a
  * brief blip inline, not waiting out an outage (that falls through to the
  * queue's redelivery). */
@@ -210,13 +238,17 @@ function collectErrorMarkers(err: unknown, depth = 0): string[] {
 }
 
 /**
- * Whether a failed event POST should be retried. Retries transient/ambiguous
- * transport failures and transient 5xx; never retries a definitive response
- * (409/410/425/429 and other 4xx), which surfaces immediately as today.
+ * Whether a failed event POST should be retried as a transient failure.
+ * Retries transient/ambiguous transport failures and transient 5xx; never
+ * retries a definitive response (409/410/425/429 and other 4xx). 429 is not
+ * "transient" in this classification — `withEventPostRetry` gives it its own
+ * budgeted, Retry-After-honoring policy.
  */
 export function isRetryableEventPostError(err: unknown): boolean {
-  // Definitive, server-considered outcomes — never retried in-process.
-  // (425/429 are intentionally left to the runtime's retry-after handling.)
+  // Definitive, server-considered outcomes — never retried as *transient*.
+  // (425 is left to the runtime's retry-after handling; 429 has its own
+  // in-process policy in withEventPostRetry, gated by THROTTLE_RETRY_BUDGET_MS
+  // rather than this transient classification.)
   if (
     EntityConflictError.is(err) ||
     RunExpiredError.is(err) ||
@@ -302,39 +334,86 @@ export interface EventPostRetryOptions {
 }
 
 /**
+ * Per-POST throttle-wait accounting. The returned function waits out a 429's
+ * `retryAfter` in-process (so the caller can re-attempt), or rethrows the
+ * ThrottleError once the cumulative wait would exceed THROTTLE_RETRY_BUDGET_MS
+ * — at which point the queue's delivery-counted redelivery takes over.
+ */
+function createThrottleWaiter(
+  eventType: WorkflowEventType
+): (err: ThrottleError) => Promise<void> {
+  let waitedMs = 0;
+  return async (err) => {
+    const waitMs =
+      Math.max(
+        1,
+        typeof err.retryAfter === 'number'
+          ? err.retryAfter
+          : DEFAULT_THROTTLE_RETRY_AFTER_SECONDS
+      ) * 1000;
+    if (waitedMs + waitMs > THROTTLE_RETRY_BUDGET_MS) {
+      logRetry('throttle retry budget exhausted; surfacing to the queue', {
+        eventType,
+        waitedMs,
+        retryAfter: err.retryAfter,
+      });
+      throw err;
+    }
+    waitedMs += waitMs;
+    // Visible (not debug-gated): this stalls the invocation for whole
+    // seconds, which would otherwise read as unexplained latency.
+    console.warn(
+      `[workflow] Throttled (429) writing ${eventType} event; retrying in-process in ${waitMs / 1000}s`
+    );
+    await sleep(waitMs);
+  };
+}
+
+/** Whether this event type may retry transient failures in-process, including
+ * the narrow `hook_received` lazy-resume opt-in (see EventPostRetryOptions). */
+function isEligibleForTransientRetry(
+  eventType: WorkflowEventType,
+  options?: EventPostRetryOptions
+): boolean {
+  return (
+    (eventType === 'hook_received' && options?.idempotentHookResume === true) ||
+    (EVENT_RETRY_ELIGIBILITY[eventType]?.retryable ?? false)
+  );
+}
+
+/**
  * Run an event POST, retrying transient transport failures in-process when the
- * event type is idempotent-on-retry. Non-retryable event types and definitive
- * responses run/throw on the first attempt, preserving existing behavior.
+ * event type is idempotent-on-retry, and 429 throttles in-process for every
+ * event type (a 429 is a definitive no-write — see the module comment) while
+ * the cumulative `retryAfter` wait fits THROTTLE_RETRY_BUDGET_MS. Other
+ * definitive responses run/throw on the first attempt, preserving existing
+ * behavior.
  */
 export async function withEventPostRetry<T>(
   fn: () => Promise<T>,
   eventType: WorkflowEventType,
   options?: EventPostRetryOptions
 ): Promise<T> {
-  const retryable =
-    (eventType === 'hook_received' && options?.idempotentHookResume === true) ||
-    (EVENT_RETRY_ELIGIBILITY[eventType]?.retryable ?? false);
-  for (let attempt = 0; ; attempt++) {
+  const retryable = isEligibleForTransientRetry(eventType, options);
+  // Throttle waits draw on a shared per-POST budget instead of the transient
+  // attempt counter, so a throttled write keeps its full transient-blip
+  // allowance (and vice versa).
+  const waitOutThrottle = createThrottleWaiter(eventType);
+  for (let attempt = 0; ; ) {
     try {
       return await fn();
     } catch (err) {
-      const transient = retryable && isRetryableEventPostError(err);
-      if (transient && attempt < MAX_EVENT_POST_RETRIES) {
-        const backoff =
-          EVENT_POST_RETRY_BASE_MS * 2 ** attempt +
-          Math.floor(Math.random() * EVENT_POST_RETRY_JITTER_MS);
-        logRetry('retrying event POST after transient failure', {
-          eventType,
-          attempt: attempt + 1,
-          backoffMs: backoff,
-          error: errorMarker(err),
-        });
-        await sleep(backoff);
+      if (ThrottleError.is(err)) {
+        await waitOutThrottle(err);
         continue;
       }
-      // Out of retries on a still-transient failure: surface it so the queue
-      // redelivers (the worst-case fallthrough the in-process retry rode against).
-      if (transient) {
+      if (!retryable || !isRetryableEventPostError(err)) {
+        throw err;
+      }
+      if (attempt >= MAX_EVENT_POST_RETRIES) {
+        // Out of retries on a still-transient failure: surface it so the queue
+        // redelivers (the worst-case fallthrough the in-process retry rode
+        // against).
         logRetry(
           'exhausted in-process retries; surfacing for queue redelivery',
           {
@@ -343,8 +422,19 @@ export async function withEventPostRetry<T>(
             error: errorMarker(err),
           }
         );
+        throw err;
       }
-      throw err;
+      const backoff =
+        EVENT_POST_RETRY_BASE_MS * 2 ** attempt +
+        Math.floor(Math.random() * EVENT_POST_RETRY_JITTER_MS);
+      attempt++;
+      logRetry('retrying event POST after transient failure', {
+        eventType,
+        attempt,
+        backoffMs: backoff,
+        error: errorMarker(err),
+      });
+      await sleep(backoff);
     }
   }
 }
