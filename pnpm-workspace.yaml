@@ -55,4 +55,5 @@ minimumReleaseAgeExclude:
   - '@workflow/*'
   - 'esbuild'
   - '@esbuild/*'
+  - '@sveltejs/load-config'
   - 'quickjs-wasi'
