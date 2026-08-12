@@ -32,11 +32,12 @@
 (* observing it lie a variable number of microtask hops (hydration,        *)
 (* decrypt/decompress, iterator wrappers, replay-cache memo hits). The     *)
 (* model captures this by making every enabled arrival a nondeterministic  *)
-(* scheduler choice. With Barriers = FALSE the choice is unconstrained     *)
-(* (the historical engine): TLC finds arrival-order divergence between two *)
-(* replays of the same log -- the CorruptedEventLogError class. With       *)
-(* Barriers = TRUE the DEFER_BEHIND discipline constrains the choice and   *)
-(* the divergence invariants hold.                                         *)
+(* scheduler choice. With Barriers = TRUE the DEFER_BEHIND discipline      *)
+(* constrains the choice and the divergence invariants hold. Barriers =    *)
+(* FALSE removes the discipline as a falsifiability check: TLC finds       *)
+(* arrival-order divergence between two replays of the same log (the       *)
+(* CorruptedEventLogError failure mode), showing the invariants have teeth *)
+(* and that the ordering discipline is what discharges them.               *)
 (***************************************************************************)
 EXTENDS Naturals, Sequences, FiniteSets
 
@@ -57,37 +58,11 @@ CONSTANTS
   Schedule,
   \* Number of concurrent replay invocations of the same run.
   NInv,
-  \* TRUE: enforce the delivery-barrier discipline (current engine).
-  \* FALSE: arrivals race freely on scheduler timing (historical engine).
-  Barriers,
-  \* How a step result treats earlier registry entries it would defer
-  \* behind (awaitEarlierDeliveries' "one asymmetry"):
-  \*
-  \*  "direct"     -- current engine (#3406, gatesOn in private.ts): a step
-  \*                  skips an UNARMED earlier entry (an unclaimed buffered
-  \*                  hook payload) directly, but still gates on earlier
-  \*                  ARMED waits/hooks/steps, even ones themselves parked
-  \*                  behind such a payload. The payload's idle safety net
-  \*                  retires it and the parked chain then delivers in log
-  \*                  order.
-  \*
-  \*  "transitive" -- the engine BEFORE #3406: a step skipped every earlier
-  \*                  entry that would not resolve on its own, i.e. also
-  \*                  armed waits/hooks transitively parked behind an
-  \*                  unclaimed payload. Model checking found this breaks
-  \*                  prefix consistency (see ReplayDeliveryPre3406.cfg):
-  \*                  the step overtakes a log-earlier wait in a full-window
-  \*                  replay, while a shorter-window invocation (with no
-  \*                  step to skip with) delivered the wait after idle
-  \*                  retirement -- so the guest-visible order of the SHARED
-  \*                  prefix depended on events beyond it. #3406 narrows the
-  \*                  skip to "direct" and its PR description matches the
-  \*                  witness this spec produces.
-  \*
-  \*  "none"       -- hypothetical: steps gate on unarmed entries too,
-  \*                  stalling until the idle safety net fires. Also
-  \*                  prefix-consistent, at a latency cost "direct" avoids.
-  SkipMode
+  \* TRUE: enforce the delivery-barrier discipline (the engine).
+  \* FALSE: arrivals race freely on scheduler timing -- a falsifiability
+  \* check that the invariants can fail and that the discipline is what
+  \* makes them hold.
+  Barriers
 
 Kinds == {"hook", "wait", "step"}
 
@@ -100,7 +75,6 @@ ASSUME
        Schedule[n].kind \in {"wait", "step"} => Schedule[n].armed
   /\ NInv \in Nat \ {0}
   /\ Barriers \in BOOLEAN
-  /\ SkipMode \in {"direct", "transitive", "none"}
 
 N    == Len(Schedule)
 Idx  == 1..N
@@ -153,49 +127,46 @@ ClaimReached(i, e) == Len(arrivals[i]) >= Schedule[e].claimAfter
 ArmedNow(i, e) == Schedule[e].armed \/ ClaimReached(i, e)
 
 (***************************************************************************)
-(* gatesOn (private.ts, #3406): whether a delivery at index e defers       *)
-(* behind the still-registered earlier entry at index j. The single       *)
-(* source of truth shared by the gate (Blocked) and self-resolution       *)
-(* (SelfRes), exactly as the implementation shares it between             *)
-(* awaitEarlierDeliveries and computeResolvesOnItsOwn. Under "direct" a   *)
-(* step does not gate on an unarmed entry (unclaimed buffered payload);   *)
-(* the skip is direct, never transitive. "transitive" and "none" keep     *)
-(* plain DEFER_BEHIND edges here and differ in Blocked/SelfRes below.     *)
+(* gatesOn (private.ts): whether a delivery at index e defers behind the   *)
+(* still-registered earlier entry at index j. The single source of truth   *)
+(* shared by the gate (Blocked) and self-resolution (SelfRes), exactly as  *)
+(* the implementation shares it between awaitEarlierDeliveries and         *)
+(* computeResolvesOnItsOwn. A step does not gate on an unarmed entry (an   *)
+(* unclaimed buffered hook payload) -- the skip is direct, never           *)
+(* transitive: a step still gates on earlier ARMED waits/hooks/steps,      *)
+(* even ones themselves parked behind such a payload. The payload's idle   *)
+(* safety net retires it and the parked chain then delivers in log order.  *)
 (***************************************************************************)
 GatesOn(i, e, j) ==
   /\ j < e
   /\ status[i][j] = "pending"
   /\ Schedule[j].kind \in DeferBehind[Schedule[e].kind]
-  /\ (SkipMode = "direct") =>
-       ~(Schedule[e].kind = "step" /\ ~ArmedNow(i, j))
+  /\ ~(Schedule[e].kind = "step" /\ ~ArmedNow(i, j))
 
 (***************************************************************************)
 (* resolvesOnItsOwn (private.ts): a delivery is committed to reaching the  *)
 (* workflow without further guest action iff it is armed and every earlier *)
-(* entry it gates on is likewise self-resolving. Under the pre-#3406      *)
-(* "transitive" rule, steps were unconditionally self-resolving once      *)
-(* armed (they skipped every non-committed entry); under "direct" a step  *)
-(* parked behind an armed-but-parked wait is NOT self-resolving, which is *)
-(* what keeps idle (and hence the payload's retirement) reachable.        *)
-(* Terminates: every recursive call strictly decreases the index.         *)
+(* entry it gates on is likewise self-resolving. A step parked behind an   *)
+(* armed-but-parked wait is NOT self-resolving, which is what keeps idle   *)
+(* (and hence the payload's retirement) reachable.                         *)
+(* Terminates: every recursive call strictly decreases the index.          *)
 (***************************************************************************)
 RECURSIVE SelfRes(_, _)
 SelfRes(i, e) ==
   /\ ArmedNow(i, e)
-  /\ \/ (Schedule[e].kind = "step" /\ SkipMode = "transitive")
-     \/ \A j \in 1..(e-1): GatesOn(i, e, j) => SelfRes(i, j)
+  /\ \A j \in 1..(e-1): GatesOn(i, e, j) => SelfRes(i, j)
 
 (***************************************************************************)
 (* awaitEarlierDeliveries (private.ts): delivery e is gated behind an      *)
 (* earlier still-registered (pending) delivery j when:                     *)
 (*                                                                         *)
-(*  - j's kind is in DEFER_BEHIND[kind(e)]; for steps only, j must be      *)
-(*    self-resolving -- a step SKIPS entries transitively parked behind an *)
-(*    unclaimed buffered payload (gating on them would deadlock against    *)
-(*    the guest needing the step result to reach the claim). Waits and     *)
-(*    hooks do NOT skip: for them, waiting for the claim IS the ordering   *)
-(*    guarantee (a wait_completed must not preempt a payload the log       *)
-(*    ordered first).                                                      *)
+(*  - e gates on j per GatesOn: j's kind is in DEFER_BEHIND[kind(e)], and  *)
+(*    when e is a step, j is armed -- a step skips an unclaimed buffered   *)
+(*    payload DIRECTLY (gating on it would stall against the guest         *)
+(*    needing the step result to reach the claim), but never               *)
+(*    transitively. Waits and hooks do not skip at all: for them, waiting  *)
+(*    for the claim IS the ordering guarantee (a wait_completed must not   *)
+(*    preempt a payload the log ordered first).                            *)
 (*                                                                         *)
 (*  - OR j is an armed delivery of the SAME kind (hook-hook, wait-wait).   *)
 (*    DEFER_BEHIND has no such edges; in the implementation same-kind      *)
@@ -211,10 +182,7 @@ SelfRes(i, e) ==
 Blocked(i, e) ==
   LET k == Schedule[e].kind IN
   \E j \in 1..(e-1):
-    \/ /\ GatesOn(i, e, j)
-       \* Pre-#3406 only: the step's skip was transitive -- it gated only on
-       \* entries that would resolve on their own.
-       /\ ((k = "step" /\ SkipMode = "transitive") => SelfRes(i, j))
+    \/ GatesOn(i, e, j)
     \/ /\ status[i][j] = "pending"
        /\ k # "step"            \* step-step is already a DEFER_BEHIND edge
        /\ Schedule[e].armed     \* claim path is claim-anchored, not queue-anchored
