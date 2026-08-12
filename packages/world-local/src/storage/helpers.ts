@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { WorkflowWorldError } from '@workflow/errors';
-import { eventIdToSlot } from '@workflow/world';
+import { eventIdToSlot, StartHookSchema } from '@workflow/world';
 import { lock } from 'proper-lockfile';
 import { decodeTime, monotonicFactory } from 'ulid';
 import { z } from 'zod';
@@ -13,6 +13,7 @@ import {
   readJSON,
   resolveWithinBase,
   stripTag,
+  taggedPath,
   ulidToDate,
   withWindowsRetry,
 } from '../fs.js';
@@ -347,15 +348,53 @@ export function hookTokenClaimPath(basedir: string, token: string): string {
   return path.join(basedir, 'hooks', 'tokens', `${hashToken(token)}.json`);
 }
 
+export function startHookAdmissionPath(
+  basedir: string,
+  runId: string,
+  tag?: string
+): string {
+  return taggedPath(basedir, 'hooks/admissions', runId, tag);
+}
+
+const StartHookAdmissionBaseSchema = StartHookSchema.extend({
+  runId: z.string(),
+});
+
+export const StartHookAdmissionSchema = z.union([
+  StartHookAdmissionBaseSchema.extend({
+    eventId: z.string(),
+  }).strict(),
+  StartHookAdmissionBaseSchema.omit({ tokenRetentionUntil: true })
+    .extend({
+      redirectRunId: z.string(),
+    })
+    .strict(),
+]);
+
+export type StartHookAdmission = z.infer<typeof StartHookAdmissionSchema>;
+
+export function readStartHookAdmission(
+  basedir: string,
+  runId: string,
+  tag?: string
+): Promise<StartHookAdmission | null> {
+  return readJSON(
+    startHookAdmissionPath(basedir, runId, tag),
+    StartHookAdmissionSchema
+  );
+}
+
 export const HookTokenClaimSchema = z.object({
-  // Legacy claims omitted hookId. Keeping it optional preserves their
-  // existing cross-hook conflict behavior (see #2283).
+  // The path is hashed, so current claims retain the token for inspection.
+  token: z.string().optional(),
+  // Reservations and legacy claims omit hookId. Legacy claims also omit
+  // eventId; their recovery marker pins the canonical hook_created event.
   hookId: z.string().optional(),
   runId: z.string(),
-  // Legacy claims also omitted eventId. Their recovery marker pins the
-  // canonical hook_created event before concurrent retries publish it.
   eventId: z.string().optional(),
   tokenRetentionUntil: z.coerce.date().optional(),
+  // Token claims are global, while run and Hook files may be tagged.
+  tag: z.string().optional(),
 });
 
 export type HookTokenClaim = z.infer<typeof HookTokenClaimSchema>;
@@ -456,18 +495,28 @@ export function hookResumeClaimPath(
   return path.join(basedir, 'hooks', 'resumes', `${key}.json`);
 }
 
-/** Deletes a claim only while it still belongs to this Hook. */
+type HookTokenClaimOwner = { runId: string; tag: string | undefined } & (
+  | { hookId: string }
+  | { eventId: string }
+);
+
+/** Deletes a claim only while it still belongs to this owner. */
 export async function releaseHookTokenClaimIfOwnedBy(
   basedir: string,
   token: string,
-  runId: string,
-  hookId: string
+  owner: HookTokenClaimOwner
 ): Promise<void> {
   await withHookTokenClaimLock(basedir, token, async (signal) => {
     const claimPath = hookTokenClaimPath(basedir, token);
     const claim = await readHookTokenClaim(claimPath);
     if (!claim) return;
-    if (claim.runId === runId && claim.hookId === hookId) {
+    const owned =
+      claim.runId === owner.runId &&
+      (claim.tag === undefined || claim.tag === owner.tag) &&
+      ('hookId' in owner
+        ? claim.hookId === owner.hookId
+        : claim.hookId === undefined && claim.eventId === owner.eventId);
+    if (owned) {
       signal.throwIfAborted();
       await deleteJSON(claimPath);
     }

@@ -1,5 +1,6 @@
 import type {
   Hook,
+  RunCreationData,
   SerializedData,
   Step,
   Storage,
@@ -18,13 +19,7 @@ import { SPEC_VERSION_CURRENT } from '@workflow/world';
  */
 export async function createRun(
   storage: Storage,
-  data: {
-    deploymentId: string;
-    workflowName: string;
-    input: SerializedData;
-    executionContext?: Record<string, unknown>;
-    attributes?: Record<string, string>;
-  }
+  data: RunCreationData
 ): Promise<WorkflowRun> {
   const result = await storage.events.create(null, {
     eventType: 'run_created',

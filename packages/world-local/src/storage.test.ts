@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { WorkflowWorldError } from '@workflow/errors';
+import { HookConflictError, WorkflowWorldError } from '@workflow/errors';
 import type { Event, Storage } from '@workflow/world';
 import { SPEC_VERSION_CURRENT, stripEventDataRefs } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
@@ -14,6 +14,7 @@ import {
   hashToken,
   hookDisposeLockPath,
   hookTokenClaimPath,
+  readStartHookAdmission,
   runTerminalMarkerPath,
   withHookTokenClaimLock,
 } from './storage/helpers.js';
@@ -330,6 +331,254 @@ describe('Storage', () => {
           input: new Uint8Array(),
         });
         expect(created.encryptionPublicKey).toBeUndefined();
+      });
+    });
+
+    describe('atomic start Hooks', () => {
+      const runId = () => `wrun_${monotonicFactory()()}`;
+      const admit = (
+        {
+          candidate,
+          token,
+          tokenRetentionUntil,
+        }: {
+          candidate: string;
+          token: string;
+          tokenRetentionUntil?: Date;
+        },
+        worker: Storage = storage
+      ) =>
+        worker.events.create(candidate, {
+          eventType: 'run_created',
+          specVersion: SPEC_VERSION_CURRENT,
+          eventData: {
+            deploymentId: 'deployment-123',
+            workflowName: 'atomic-start-workflow',
+            input: new Uint8Array(),
+            startHook: { token, tokenRetentionUntil },
+          },
+        });
+
+      it('admits one run across storage instances', async () => {
+        const token = 'atomic-start-race';
+        const candidates = Array.from({ length: 8 }, () => runId());
+        const results = await Promise.allSettled(
+          candidates.map((candidate) =>
+            admit({ candidate, token }, createStorage(testDir))
+          )
+        );
+        const winner = results.find((result) => result.status === 'fulfilled');
+        assert(winner?.status === 'fulfilled');
+        const winnerRunId = winner.value.run?.runId;
+        assert(winnerRunId);
+
+        expect(
+          results.filter((result) => result.status === 'fulfilled')
+        ).toHaveLength(1);
+        for (const [index, result] of results.entries()) {
+          const decision = await readStartHookAdmission(
+            testDir,
+            candidates[index]
+          );
+          if (result.status === 'fulfilled') {
+            expect(decision?.redirectRunId).toBeUndefined();
+            continue;
+          }
+          expect(HookConflictError.is(result.reason)).toBe(true);
+          expect(result.reason.conflictingRunId).toBe(winnerRunId);
+          expect(decision?.redirectRunId).toBe(winnerRunId);
+          await expect(
+            storage.runs.get(candidates[index])
+          ).rejects.toMatchObject({ name: 'WorkflowRunNotFoundError' });
+          expect(
+            (await storage.events.list({ runId: candidates[index] })).data
+          ).toHaveLength(0);
+        }
+      });
+
+      it('releases the losing token when a candidate is reused', async () => {
+        const candidate = runId();
+        const tokens = ['atomic-start-token-a', 'atomic-start-token-b'];
+        const results = await Promise.allSettled(
+          tokens.map((token) =>
+            admit({ candidate, token }, createStorage(testDir))
+          )
+        );
+        const decision = await readStartHookAdmission(testDir, candidate);
+        assert(decision);
+        const winnerIndex = tokens.indexOf(decision.token);
+        const loserIndex = winnerIndex === 0 ? 1 : 0;
+
+        expect(results[winnerIndex].status).toBe('fulfilled');
+        expect(results[loserIndex]).toMatchObject({
+          status: 'rejected',
+          reason: { name: 'EntityConflictError' },
+        });
+        await expect(
+          admit({ candidate: runId(), token: tokens[loserIndex] })
+        ).resolves.toHaveProperty('run');
+      });
+
+      it('reclaims a reservation abandoned before admission', async () => {
+        const token = 'atomic-start-abandoned-reservation';
+        const claimPath = hookTokenClaimPath(testDir, token);
+        await fs.mkdir(path.dirname(claimPath), { recursive: true });
+        await fs.writeFile(
+          claimPath,
+          JSON.stringify({
+            token,
+            runId: runId(),
+            eventId: 'evnt_abandoned',
+          })
+        );
+
+        await expect(
+          admit({ candidate: runId(), token })
+        ).resolves.toHaveProperty('run');
+      });
+
+      it('keeps a committed reservation while its run is unpublished', async () => {
+        const token = 'atomic-start-committed-reservation';
+        const ownerRunId = runId();
+        await admit({ candidate: ownerRunId, token });
+        await fs.unlink(path.join(testDir, 'runs', `${ownerRunId}.json`));
+
+        await expect(
+          admit({ candidate: runId(), token })
+        ).rejects.toMatchObject({
+          name: 'HookConflictError',
+          conflictingRunId: ownerRunId,
+        });
+      });
+
+      it('replays a rejected candidate after the token is reused', async () => {
+        const token = 'atomic-start-redirect';
+        const ownerRunId = runId();
+        const rejectedRunId = runId();
+        await admit({ candidate: ownerRunId, token });
+        await expect(
+          admit({ candidate: rejectedRunId, token })
+        ).rejects.toMatchObject({
+          name: 'HookConflictError',
+          conflictingRunId: ownerRunId,
+        });
+
+        await updateRun(storage, ownerRunId, 'run_started');
+        await updateRun(storage, ownerRunId, 'run_completed', {
+          output: new Uint8Array(),
+        });
+        await admit({ candidate: runId(), token });
+
+        await expect(
+          admit({ candidate: rejectedRunId, token })
+        ).rejects.toMatchObject({
+          name: 'HookConflictError',
+          conflictingRunId: ownerRunId,
+        });
+        await expect(storage.runs.get(rejectedRunId)).rejects.toMatchObject({
+          name: 'WorkflowRunNotFoundError',
+        });
+      });
+
+      it('converges direct and resilient admission for one candidate', async () => {
+        const token = 'atomic-start-replay';
+        const candidate = runId();
+        const runCreationData = {
+          deploymentId: 'deployment-123',
+          workflowName: 'atomic-start-workflow',
+          input: new Uint8Array(),
+          startHook: { token },
+        };
+        const direct = createStorage(testDir).events.create(candidate, {
+          eventType: 'run_created',
+          specVersion: SPEC_VERSION_CURRENT,
+          eventData: runCreationData,
+        });
+        const queued = createStorage(testDir).events.create(candidate, {
+          eventType: 'run_started',
+          specVersion: SPEC_VERSION_CURRENT,
+          eventData: runCreationData,
+        });
+
+        await expect(Promise.all([direct, queued])).resolves.toHaveLength(2);
+        expect((await storage.runs.get(candidate)).status).toBe('running');
+        const events = await storage.events.list({ runId: candidate });
+        expect(
+          events.data.filter((event) => event.eventType === 'run_created')
+        ).toHaveLength(1);
+      });
+
+      it('materializes a reservation and preserves its retention', async () => {
+        const token = 'atomic-start-materialize';
+        const ownerRunId = runId();
+        const tokenRetentionUntil = new Date(Date.now() + 60_000);
+        await admit({ candidate: ownerRunId, token, tokenRetentionUntil });
+
+        await expect(storage.hooks.getByToken(token)).rejects.toMatchObject({
+          name: 'HookNotFoundError',
+        });
+        const hook = await createHook(storage, ownerRunId, {
+          hookId: 'hook_materialized',
+          token,
+          tokenRetentionUntil: new Date(Date.now() + 1_000),
+        });
+        expect(hook.tokenRetentionUntil).toEqual(tokenRetentionUntil);
+
+        await disposeHook(storage, ownerRunId, hook.hookId);
+        await expect(
+          admit({ candidate: runId(), token })
+        ).resolves.toHaveProperty('run');
+      });
+
+      it('retains a reservation across tags until its deadline', async () => {
+        const token = 'atomic-start-retention';
+        const owner = createStorage(testDir, 'vitest-0');
+        const claimant = createStorage(testDir, 'vitest-1');
+        const ownerRunId = runId();
+        const tokenRetentionUntil = new Date(Date.now() + 100);
+        await admit(
+          { candidate: ownerRunId, token, tokenRetentionUntil },
+          owner
+        );
+        await updateRun(owner, ownerRunId, 'run_started');
+        await updateRun(owner, ownerRunId, 'run_completed', {
+          output: new Uint8Array(),
+        });
+
+        await expect(
+          admit({ candidate: runId(), token }, claimant)
+        ).rejects.toMatchObject({
+          name: 'HookConflictError',
+          conflictingRunId: ownerRunId,
+        });
+        await new Promise((resolve) =>
+          setTimeout(
+            resolve,
+            Math.max(0, tokenRetentionUntil.getTime() - Date.now() + 1)
+          )
+        );
+        await expect(
+          admit({ candidate: runId(), token }, claimant)
+        ).resolves.toHaveProperty('run');
+      });
+
+      it('rejects start Hook retention beyond the Local limit', async () => {
+        const candidate = runId();
+        await expect(
+          admit({
+            candidate,
+            token: 'atomic-start-over-retention-limit',
+            tokenRetentionUntil: new Date(
+              Date.now() + 31 * 24 * 60 * 60 * 1000
+            ),
+          })
+        ).rejects.toMatchObject({
+          name: 'WorkflowWorldError',
+          status: 400,
+        });
+        await expect(storage.runs.get(candidate)).rejects.toMatchObject({
+          name: 'WorkflowRunNotFoundError',
+        });
       });
     });
 
@@ -2532,6 +2781,25 @@ describe('Storage', () => {
         expect(result.hook?.hookId).toBe('hook_new');
       });
 
+      it('releases an ownerless materialized Hook claim', async () => {
+        const token = 'ownerless-materialized-claim';
+        const claimPath = hookTokenClaimPath(testDir, token);
+        await fs.mkdir(path.dirname(claimPath), { recursive: true });
+        await fs.writeFile(
+          claimPath,
+          JSON.stringify({
+            token,
+            hookId: 'hook_missing',
+            runId: 'wrun_missing',
+            eventId: 'evnt_missing',
+          })
+        );
+
+        await expect(
+          createHook(storage, testRunId, { hookId: 'hook_new', token })
+        ).resolves.toMatchObject({ hookId: 'hook_new' });
+      });
+
       it('should allow multiple hooks with different tokens for the same run', async () => {
         const hook1 = await createHook(storage, testRunId, {
           hookId: 'hook_1',
@@ -2728,36 +2996,42 @@ describe('Storage', () => {
       // instead of recording a hook_conflict against a finished run. The
       // claim file is rewritten manually to simulate the window where the
       // run-completion cleanup has not deleted it yet (or crashed).
-      it('should treat a token claim owned by a terminal run as vacant', async () => {
+      it('should release a legacy tagged claim after its run ends', async () => {
         const token = 'terminal-owner-token';
+        const taggedStorage = createStorage(testDir, 'vitest-0');
+        const owner = await createRun(taggedStorage, {
+          deploymentId: 'deployment-123',
+          workflowName: 'test-workflow',
+          input: new Uint8Array(),
+        });
 
-        await createHook(storage, testRunId, {
+        await createHook(taggedStorage, owner.runId, {
           hookId: 'hook_1',
           token,
         });
-        await updateRun(storage, testRunId, 'run_started');
-        await updateRun(storage, testRunId, 'run_completed', {
+        await updateRun(taggedStorage, owner.runId, 'run_started');
+        await updateRun(taggedStorage, owner.runId, 'run_completed', {
           output: new Uint8Array(),
         });
 
-        // Simulate the stale claim surviving the terminal-run cleanup
+        // Simulate a pre-tag claim surviving terminal cleanup.
         await fs.writeFile(
           path.join(testDir, 'hooks', 'tokens', `${hashToken(token)}.json`),
           JSON.stringify({
             token,
             hookId: 'hook_1',
-            runId: testRunId,
+            runId: owner.runId,
             eventId: 'evnt_00000000000000000000000000',
           })
         );
 
-        const run2 = await createRun(storage, {
+        const run2 = await createRun(taggedStorage, {
           deploymentId: 'deployment-456',
           workflowName: 'another-workflow',
           input: new Uint8Array(),
         });
 
-        const result = await storage.events.create(run2.runId, {
+        const result = await taggedStorage.events.create(run2.runId, {
           eventType: 'hook_created',
           correlationId: 'hook_2',
           eventData: { token },
