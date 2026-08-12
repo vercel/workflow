@@ -41,12 +41,11 @@ import {
   MAX_RESILIENT_STEP_INPUT_BYTES,
 } from './constants.js';
 import {
+  absorbSkippedSlotReport,
   type EventCreator,
-  isPreconditionGuardEnabled,
   type LoadedEventLog,
-  mergeReportedEvents,
-  preconditionSnapshotParams,
   queueMessage,
+  slotSnapshotParams,
   stepDispatchIdempotencyKey,
 } from './helpers.js';
 import { ReplayRecoveryReporter } from './replay-recovery-reporter.js';
@@ -356,40 +355,28 @@ export async function handleSuspension({
     const log = eventLog;
     const result = await createEvent(data, {
       ...params,
-      ...preconditionSnapshotParams(log.events, log.cursor),
+      ...slotSnapshotParams(log.events),
     });
-    // Bump-and-report: the write landed above the slot it asked for, so these
-    // are the events it was decided without. Merging them here rather than at
-    // each call site means the rest of this phase's writes — which read the
-    // same array to build their own snapshot — ask for a slot above them, and
-    // the replay that resumes from this log sees them without a reload.
-    //
-    // A truncated report (`hasMore`) is dropped whole rather than merged, the
-    // same way the wait loop treats one. It covers a span of positions but
-    // carries only some of the events on them, so merging it would raise the
-    // log's highest position past a position whose event is missing. Every
-    // later write of this phase reads that maximum to say what it has seen, so
-    // each would claim a position it never saw and the World, which only
-    // reports the span a write skips, would never send it. Dropping the report
-    // costs one more round of the same events on the next write and keeps the
-    // log a prefix of the truth.
-    if (result.events?.length && result.hasMore !== true) {
-      const added = mergeReportedEvents(log.events, result.events);
-      reportedEvents += added;
-      if (added > 0) {
-        runtimeLogger.debug('Suspension write skipped occupied slots', {
-          workflowRunId: runId,
-          eventType: data.eventType,
-          eventId: result.event?.eventId,
-          reported: added,
-        });
-      }
-    } else if (result.events?.length) {
+    // Bump-and-report: the write landed above the slot it asked for, so the
+    // report holds the events it was decided without. Absorbing here rather
+    // than at each call site means the rest of this phase's writes — which read
+    // the same array to build their own snapshot — ask for a slot above them,
+    // and the replay that resumes from this log sees them without a reload.
+    const report = absorbSkippedSlotReport(log.events, result);
+    reportedEvents += report.added;
+    if (report.truncated) {
       runtimeLogger.debug('Dropped a truncated skipped-slot report', {
         workflowRunId: runId,
         eventType: data.eventType,
         eventId: result.event?.eventId,
-        offered: result.events.length,
+        offered: report.offered,
+      });
+    } else if (report.added > 0) {
+      runtimeLogger.debug('Suspension write skipped occupied slots', {
+        workflowRunId: runId,
+        eventType: data.eventType,
+        eventId: result.event?.eventId,
+        reported: report.added,
       });
     }
     return result;
@@ -691,7 +678,8 @@ export async function handleSuspension({
   //  - The caller provided a dispatch target (`stepDispatch`) — terminal
   //    drains and other create-only callers never queue.
   //  - The feature is enabled (`WORKFLOW_RESILIENT_STEP_DISPATCH` opt-out).
-  //  - The optimistic-concurrency guard is not in effect. A guard-enforcing
+  //  - The World does not fence stale writes
+  //    (`capabilities.preconditionGuard`). A guard-enforcing
   //    backend can reject the step_created as stale (412) and the caller then
   //    restarts the replay — but a queue message carrying the payload would
   //    already be out, letting the consumer materialize a step the guard
@@ -708,10 +696,7 @@ export async function handleSuspension({
   const resilientDispatchEligible =
     stepDispatch !== undefined &&
     isResilientStepDispatchEnabled() &&
-    !(
-      isPreconditionGuardEnabled() &&
-      world.capabilities?.preconditionGuard === true
-    ) &&
+    world.capabilities?.preconditionGuard !== true &&
     (run.specVersion ?? 0) >= SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT;
 
   // The trace carrier for resilient step dispatches, resolved at most once per
