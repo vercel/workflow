@@ -2734,23 +2734,28 @@ export function createEventsStorage(
               );
             }
 
+            // Staging is private to this attempt, so the name carries a
+            // nonce rather than only the event id. Sharing a name across
+            // writers would make the staging directory a second, invisible
+            // claim on the slot: the allocator probes `events/` alone, so a
+            // staged file is not evidence the position is taken, and bumping
+            // off it moves this writer past a position no one will ever
+            // publish. A crashed attempt (its cleanup lives in a `finally`
+            // the kill skips) would hole the log permanently that way, and
+            // two live writers drawing the same candidate would hole it
+            // whenever the stager is later rejected. The slot is arbitrated
+            // where it is actually taken: the promote below.
             const stagedPath = pendingHookEventPath(
               basedir,
               effectiveRunId,
-              eventId,
+              `${eventId}.${monotonicUlid()}`,
               tag
             );
             const staged = await writeExclusive(stagedPath, serializedEvent);
             if (!staged) {
-              // The staging path can be occupied by a previous crashed
-              // attempt of this very event (which never promoted), or, under
-              // slot ids, by a concurrent writer holding the same position.
-              // Both are handled the same way: fall through to the bump
-              // below, which moves off the position when it can and surfaces
-              // the conflict when it cannot.
-              if (await bumpEventSlot(attempt)) {
-                continue;
-              }
+              // A nonced path cannot already exist. Surfacing rather than
+              // retrying keeps a filesystem fault from looking like a
+              // publish that did not happen.
               throw new EntityConflictError(
                 `Event "${eventId}" already exists for run "${effectiveRunId}"`
               );
@@ -2810,6 +2815,36 @@ export function createEventsStorage(
               eventId,
               tag
             );
+          }
+          // For a resume, losing this publish is the convergence the pinned
+          // id exists to force: both takers of one resume adopt the claim's
+          // position, so the event now at it is this same resume, written by
+          // the other taker. That is the case `converge` above already
+          // answers with the committed event — it just could not see it yet,
+          // because the other taker had not published when this attempt
+          // read. Answer it the same way rather than reporting a conflict
+          // the caller cannot act on: the resume IS committed, exactly once,
+          // and the dedup contract is that both writers return that event.
+          if (eventIdPinned && data.eventType === 'hook_received') {
+            const occupant = await readJSONWithFallback(
+              basedir,
+              'events',
+              `${effectiveRunId}-${eventId}`,
+              EventSchema,
+              tag
+            );
+            if (
+              occupant &&
+              params?.resumeId &&
+              isResumeEvent(occupant, {
+                runId: effectiveRunId,
+                resumeId: params.resumeId,
+                hookId: data.correlationId,
+                eventId,
+              })
+            ) {
+              return { event: occupant };
+            }
           }
           throw new EntityConflictError(
             `Event "${eventId}" already exists for run "${effectiveRunId}"`

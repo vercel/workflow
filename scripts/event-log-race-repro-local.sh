@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 #
-# Run the event-log race repro harness locally, against @workflow/world-postgres
-# and a workbench app started on this machine. No Vercel deployment, no GitHub
+# Run the event-log race repro harness locally, against a workbench app started
+# on this machine and either @workflow/world-postgres (the default) or
+# @workflow/world-local (--world local). No Vercel deployment, no GitHub
 # Actions, no VERCEL_* credentials.
 #
 # This is the same harness `.github/workflows/event-log-race-repro.yml` runs
@@ -16,12 +17,18 @@
 #     defaults it to `local` when VERCEL_DEPLOYMENT_ID is absent, which bakes the
 #     filesystem backend into the app and leaves the harness talking to a
 #     different world than the app is.
-#   * The schema has to exist before the app boots, or Graphile Worker starts
-#     against an unmigrated database.
-#   * The queue has to be empty before the app boots. Postgres outlives the app
-#     here, so an interrupted run leaves its unfinished flow messages behind and
-#     the next boot resumes all of them — thousands of stale jobs starving the
-#     run you actually care about. See clear_queue below.
+#   * (postgres) The schema has to exist before the app boots, or Graphile Worker
+#     starts against an unmigrated database.
+#   * The backend's pending work has to be empty before the app boots. Both
+#     backends outlive the app here, so an interrupted run leaves its unfinished
+#     flow messages behind and the next boot resumes all of them — stale work
+#     starving the run you actually care about. See clear_pending below.
+#
+# Both worlds are worth running. They fail differently, and neither subsumes the
+# other: world-postgres arbitrates event slots inside one SQL statement, while
+# world-local arbitrates them with an exclusive `link(2)` against a directory
+# that two processes (the app and this harness) both write to. A slot race that
+# a transaction closes is not automatically closed by a filesystem.
 #
 # Usage: scripts/event-log-race-repro-local.sh [options]
 # Run with --help for options.
@@ -39,6 +46,8 @@ SKIP_DB_SETUP="0"
 USE_DOCKER="1"
 TEARDOWN="0"
 KEEP_QUEUE="0"
+# Which World the app and the harness both talk to: `postgres` or `local`.
+WORLD="postgres"
 # In CI every replay of a run lands in its own Fluid invocation; here they all
 # land in one Next.js process, and a storm run has tens of replays in flight at
 # once, each holding a VM sandbox and its own copy of the event log. That is
@@ -57,6 +66,11 @@ SERVER_HEAP_MB="8192"
 # replays per process does not weaken the repro: the race is between a handful of
 # concurrent replays of one run, not a throughput effect.
 LOCAL_WORKER_CONCURRENCY="10"
+# The world-local equivalent. Its queue is in-process timers driving HTTP
+# deliveries, and it defaults to 1000 in flight, which saturates the one
+# Next.js process the same way the Graphile default does. Held at the same
+# number as the postgres lane so the two are comparable.
+LOCAL_QUEUE_CONCURRENCY="10"
 
 COMPOSE_FILE="packages/world-postgres/docker-compose.yaml"
 # Matches the compose file and the `e2e-local-postgres` job in tests.yml.
@@ -67,9 +81,18 @@ RENDERER=".github/scripts/render-event-log-race-repro-results.js"
 
 usage() {
   cat <<'EOF'
-Run the event-log race repro harness against world-postgres + a local workbench app.
+Run the event-log race repro harness against a local workbench app, backed by
+either world-postgres (default) or world-local.
 
 Options:
+  --world NAME       Backend World: `postgres` (default) or `local`.
+                     `local` needs no Docker and no database: the app and this
+                     harness share the app's filesystem data directory, and
+                     --skip-db-setup / --no-docker / --teardown are ignored.
+                     The two worlds arbitrate event slots by different means
+                     (one SQL statement vs. an exclusive link(2) between two
+                     processes), so a clean run on one says nothing about the
+                     other.
   --app NAME         Workbench app to drive (default: nextjs-turbopack).
                      The repro workflow fixtures (101_hook_sleep_repro.ts,
                      103_event_log_corruption_repro.ts) only exist in
@@ -84,17 +107,18 @@ Options:
                      Faster to iterate on workflow fixtures; less like CI.
   --skip-build       Skip `pnpm build` and the app build. Use when only the
                      harness or the driver changed.
-  --skip-db-setup    Skip applying migrations (schema already set up).
-  --no-docker        Do not manage Postgres. Point WORKFLOW_POSTGRES_URL at your
-                     own instance; the schema still needs to exist.
-  --keep-queue       Leave queued Graphile Worker jobs in place. By default they
-                     are deleted before the app boots: an interrupted earlier run
-                     leaves its flow messages queued, and resuming those abandoned
-                     runs saturates the app so this run reports `stuck` for
-                     reasons that have nothing to do with the event log. Only
+  --skip-db-setup    (postgres) Skip applying migrations (schema already set up).
+  --no-docker        (postgres) Do not manage Postgres. Point WORKFLOW_POSTGRES_URL
+                     at your own instance; the schema still needs to exist.
+  --keep-queue       Leave the backend's pending work in place. By default it is
+                     discarded before the app boots: an interrupted earlier run
+                     leaves its flow messages queued (postgres) or its runs
+                     pending in the data directory (local), and resuming those
+                     abandoned runs saturates the app so this run reports `stuck`
+                     for reasons that have nothing to do with the event log. Only
                      useful if you are inspecting the leftovers themselves.
-  --teardown         Stop and delete the Postgres container on exit. Off by
-                     default so repeat runs skip container startup.
+  --teardown         (postgres) Stop and delete the Postgres container on exit.
+                     Off by default so repeat runs skip container startup.
   -h, --help         Show this help.
 
 Scale knobs are read from the environment by the harness itself, so anything
@@ -111,15 +135,22 @@ This script deliberately sets none of them. Their defaults — and the full list
 live in packages/core/e2e/event-log-race-repro.test.ts, which is the single
 source of truth the CI workflow also defers to.
 
-The one knob this script does set is WORKFLOW_POSTGRES_WORKER_CONCURRENCY, which
-caps how many replays the app and the harness each run at once. world-postgres
-defaults it to 50, i.e. ~100 replays sharing one Next.js process, which on a
-12-core laptop saturates GC and reports all 14 attempts as `stuck`. It is set to
-10 here instead, matching the pool size. Export your own value to override.
+The one knob this script does set is the backend's replay concurrency, which
+caps how many replays the app and the harness each run at once. Both backends
+default it far too high for one Next.js process on one machine (50 for
+world-postgres, i.e. ~100 replays in flight; 1000 for world-local), which on a
+12-core laptop saturates GC and reports every attempt as `stuck`. Both are set
+to 10 here. Export your own value to override:
+
+  WORKFLOW_POSTGRES_WORKER_CONCURRENCY   (--world postgres)
+  WORKFLOW_LOCAL_QUEUE_CONCURRENCY       (--world local)
 
 Examples:
   # Default scale (a regression check, a few minutes).
   scripts/event-log-race-repro-local.sh
+
+  # Same, against world-local. No Docker, no database.
+  scripts/event-log-race-repro-local.sh --world local
 
   # One run per scenario, to smoke the plumbing.
   EVENT_LOG_RACE_REPRO_STEP_STORM_ATTEMPTS=1 \
@@ -139,6 +170,7 @@ EOF
 
 while [ $# -gt 0 ]; do
   case "$1" in
+    --world) WORLD="${2:?--world needs a value}"; shift 2 ;;
     --app) APP_NAME="${2:?--app needs a value}"; shift 2 ;;
     --port) PORT="${2:?--port needs a value}"; shift 2 ;;
     --heap-mb) SERVER_HEAP_MB="${2:?--heap-mb needs a value}"; shift 2 ;;
@@ -167,10 +199,39 @@ for fixture in 101_hook_sleep_repro.ts 103_event_log_corruption_repro.ts; do
     die "$APP_DIR/workflows/$fixture is missing — the repro fixtures live in workbench/nextjs-turbopack."
 done
 
-export WORKFLOW_POSTGRES_URL="${WORKFLOW_POSTGRES_URL:-$DEFAULT_POSTGRES_URL}"
-export WORKFLOW_TARGET_WORLD="@workflow/world-postgres"
+case "$WORLD" in
+  postgres|local) ;;
+  *) die "Unknown --world: $WORLD (expected \`postgres\` or \`local\`)" ;;
+esac
+
 export WORKFLOW_PUBLIC_MANIFEST="1"
-export WORKFLOW_POSTGRES_WORKER_CONCURRENCY="${WORKFLOW_POSTGRES_WORKER_CONCURRENCY:-$LOCAL_WORKER_CONCURRENCY}"
+
+if [ "$WORLD" = "postgres" ]; then
+  export WORKFLOW_POSTGRES_URL="${WORKFLOW_POSTGRES_URL:-$DEFAULT_POSTGRES_URL}"
+  export WORKFLOW_TARGET_WORLD="@workflow/world-postgres"
+  export WORKFLOW_POSTGRES_WORKER_CONCURRENCY="${WORKFLOW_POSTGRES_WORKER_CONCURRENCY:-$LOCAL_WORKER_CONCURRENCY}"
+else
+  # Postgres is a service both processes address by URL; world-local is a
+  # directory both processes address by path, so the path has to be pinned
+  # explicitly and identically or the two silently use different backends.
+  #
+  # `withWorkflow()` pairs its `local` default with `.next/workflow-data`, but
+  # only when WORKFLOW_TARGET_WORLD is unset — naming the world here suppresses
+  # the data-dir half of that pair, and the app would fall back to
+  # `.workflow-data` while the harness (`setupWorld` in packages/core/e2e/utils.ts)
+  # went on using `.next/workflow-data`. Both halves are therefore set here, as
+  # an absolute path so the app's cwd does not enter into it. `setupWorld`
+  # recomputes the same path for the harness process.
+  case "$APP_NAME" in
+    nextjs*|next-*) DATA_DIR_NAME=".next/workflow-data" ;;
+    *) DATA_DIR_NAME=".workflow-data" ;;
+  esac
+  DATA_DIR="$REPO_ROOT/$APP_DIR/$DATA_DIR_NAME"
+  export WORKFLOW_TARGET_WORLD="local"
+  export WORKFLOW_LOCAL_DATA_DIR="$DATA_DIR"
+  export WORKFLOW_LOCAL_QUEUE_CONCURRENCY="${WORKFLOW_LOCAL_QUEUE_CONCURRENCY:-$LOCAL_QUEUE_CONCURRENCY}"
+fi
+
 export PORT="$PORT"
 DEPLOYMENT_URL="http://localhost:$PORT"
 MANIFEST_URL="$DEPLOYMENT_URL/.well-known/workflow/v1/manifest.json"
@@ -215,7 +276,7 @@ cleanup() {
     [ -z "$(port_pids)" ] ||
       log "Port $PORT is still held by $(port_pids | tr '\n' ' ')— the next run needs --port or a manual kill."
   fi
-  if [ "$TEARDOWN" = "1" ] && [ "$USE_DOCKER" = "1" ]; then
+  if [ "$WORLD" = "postgres" ] && [ "$TEARDOWN" = "1" ] && [ "$USE_DOCKER" = "1" ]; then
     log "Removing the Postgres container"
     docker compose -f "$COMPOSE_FILE" down -v >/dev/null 2>&1
   fi
@@ -226,7 +287,9 @@ trap cleanup EXIT
 
 # --- postgres -----------------------------------------------------------------
 
-if [ "$USE_DOCKER" = "1" ]; then
+if [ "$WORLD" != "postgres" ]; then
+  log "Backend: world-local at $WORKFLOW_LOCAL_DATA_DIR"
+elif [ "$USE_DOCKER" = "1" ]; then
   command -v docker >/dev/null 2>&1 || die "docker not found. Install Docker, or use --no-docker with your own Postgres."
   log "Starting Postgres ($COMPOSE_FILE)"
   docker compose -f "$COMPOSE_FILE" up -d
@@ -244,7 +307,7 @@ else
   log "Using the Postgres at WORKFLOW_POSTGRES_URL (not managed by this script)"
 fi
 
-# --- queue ---------------------------------------------------------------------
+# --- pending work ---------------------------------------------------------------
 
 # Runs a single statement as the `world` user. Prefers the container's own psql so
 # no local Postgres client is required.
@@ -274,8 +337,29 @@ clear_queue() {
   log "Discarded $count queued job(s) left over from an earlier run ($table)"
 }
 
+# world-local's queue is in-process, so nothing survives the app exiting — but
+# the runs do. `start()` re-enqueues every pending/running run it finds in the
+# data directory on boot (see resolveRecoverActiveRuns), so an interrupted
+# earlier run resumes its abandoned storms alongside this one. Deleting the
+# directory is the equivalent of emptying the jobs table, and it also keeps the
+# per-run event files from accumulating across runs, which slows every
+# directory scan the slot allocator makes.
+clear_data_dir() {
+  [ -d "$WORKFLOW_LOCAL_DATA_DIR" ] || return 0
+  local runs
+  runs="$(find "$WORKFLOW_LOCAL_DATA_DIR/runs" -name '*.json' 2>/dev/null | wc -l | tr -d ' ')"
+  rm -rf "$WORKFLOW_LOCAL_DATA_DIR" ||
+    die "Could not remove $WORKFLOW_LOCAL_DATA_DIR. Pass --keep-queue to skip this."
+  [ "${runs:-0}" -gt 0 ] || return 0
+  # Loud on purpose: a backlog here means the previous run was interrupted, which
+  # is worth knowing when comparing results between runs.
+  log "Discarded $runs run(s) left over from an earlier run ($WORKFLOW_LOCAL_DATA_DIR)"
+}
+
 if [ "$KEEP_QUEUE" = "0" ]; then
-  if [ "$USE_DOCKER" = "0" ] && ! command -v psql >/dev/null 2>&1; then
+  if [ "$WORLD" = "local" ]; then
+    clear_data_dir
+  elif [ "$USE_DOCKER" = "0" ] && ! command -v psql >/dev/null 2>&1; then
     log "psql not found — leaving the queue as it is. Stale jobs from an interrupted run will compete with this one."
   else
     clear_queue
@@ -291,7 +375,7 @@ if [ "$SKIP_BUILD" = "0" ]; then
   pnpm build
 fi
 
-if [ "$SKIP_DB_SETUP" = "0" ]; then
+if [ "$WORLD" = "postgres" ] && [ "$SKIP_DB_SETUP" = "0" ]; then
   log "Applying the world-postgres schema"
   ./packages/world-postgres/bin/setup.js
 fi
@@ -376,7 +460,7 @@ else
   log "No $RESULTS_FILE was written — the harness died before its first checkpoint."
 fi
 
-if [ "$USE_DOCKER" = "1" ] && [ "$TEARDOWN" = "0" ]; then
+if [ "$WORLD" = "postgres" ] && [ "$USE_DOCKER" = "1" ] && [ "$TEARDOWN" = "0" ]; then
   log "Postgres is still running. Stop it with: docker compose -f $COMPOSE_FILE down -v"
 fi
 

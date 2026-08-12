@@ -137,20 +137,30 @@ control that provides the calibration baseline. Any outcome other than
 `completed` fails the run, except `infra`, which means the harness could not
 reach the deployment.
 
-Run it locally against `@workflow/world-postgres` and a locally started
-workbench app — no Vercel deployment, no credentials:
+Run it locally against a locally started workbench app — no Vercel deployment,
+no credentials:
 
 ```bash
-pnpm run test:e2e:event-log-race-repro:local
+pnpm run test:e2e:event-log-race-repro:local              # world-postgres
+pnpm run test:e2e:event-log-race-repro:local --world local # world-local
 ```
 
-The script (`scripts/event-log-race-repro-local.sh`, `--help` for flags) brings up
-the world-postgres container, applies migrations, builds and starts
-`workbench/nextjs-turbopack` with `WORKFLOW_TARGET_WORLD` and
+The script (`scripts/event-log-race-repro-local.sh`, `--help` for flags) builds
+and starts `workbench/nextjs-turbopack` with `WORKFLOW_TARGET_WORLD` and
 `WORKFLOW_PUBLIC_MANIFEST=1` set **at build time** (both are build-time inputs;
-missing either silently yields a world-local app or a 404 manifest), runs the
-harness, prints the same summary table CI posts, and tears the server down.
-Postgres is left running for the next iteration unless `--teardown` is passed.
+missing either silently yields a default-world app or a 404 manifest), runs the
+harness, prints the same summary table CI posts, and tears the server down. For
+world-postgres it first brings up the container and applies migrations, and
+leaves Postgres running for the next iteration unless `--teardown` is passed;
+the container flags (`--skip-db-setup`, `--no-docker`, `--teardown`) do nothing
+under `--world local`, whose only state is a data directory the script clears
+before each run.
+
+Both worlds are worth running, and neither subsumes the other: world-postgres
+arbitrates event slots inside one SQL statement, while world-local arbitrates
+them with an exclusive `link(2)` against a directory that two processes (the app
+and the harness) both write to. A slot race a transaction closes is not
+automatically closed by a filesystem.
 
 Scale is controlled entirely by `EVENT_LOG_RACE_REPRO_*` environment variables.
 Their defaults live only in `event-log-race-repro.test.ts` — neither the CI
@@ -185,6 +195,17 @@ one heap saturates GC — measured on a 12-core laptop, all 14 attempts came bac
 sets `WORKFLOW_POSTGRES_WORKER_CONCURRENCY=10` (override by exporting it) and
 raises the app's old-space limit (`--heap-mb`). If a local run reports `stuck`
 rather than `CORRUPTED_EVENT_LOG`, suspect the machine before the SDK.
+world-local saturates the same single process from its own in-process queue,
+which defaults to 1000 deliveries in flight, so the script holds it at the same
+number via `WORKFLOW_LOCAL_QUEUE_CONCURRENCY`.
+
+world-local's storms come out clean far more often than world-postgres's, so the
+default scale says even less there: the corruption it does produce needs a
+`hook_received` to be staged and then rejected, which the harness reaches only
+in a run's terminal moments. Reach for a unit test in
+`packages/world-local/src/storage/` when a suspected filesystem race can be
+staged directly — it costs milliseconds and does not depend on the interleaving
+showing up.
 
 In CI the same harness runs from `.github/workflows/event-log-race-repro.yml`,
 triggered by adding the `event-log-race-repro` label to a PR (or by
@@ -197,6 +218,10 @@ To poke at a run afterwards, the CLI reads the same world from the environment:
 ```bash
 WORKFLOW_TARGET_WORLD=@workflow/world-postgres \
 WORKFLOW_POSTGRES_URL=postgres://world:world@localhost:5432/world \
+  pnpm wf inspect <run-id>
+
+WORKFLOW_TARGET_WORLD=local \
+WORKFLOW_LOCAL_DATA_DIR=workbench/nextjs-turbopack/.next/workflow-data \
   pnpm wf inspect <run-id>
 ```
 
