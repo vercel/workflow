@@ -22,6 +22,10 @@ keywords:
 
 `world.analytics` is an optional, read-only namespace for observability surfaces — dashboards, CLIs, and admin tools that list large numbers of runs without touching payload data.
 
+For observability and inspection listings, prefer this namespace over
+[`world.runs.list()`](/docs/api-reference/workflow-runtime/world/storage#runslist).
+The storage API remains available for operational and payload-bearing reads.
+
 It differs from [Storage](/docs/api-reference/workflow-runtime/world/storage) in two ways:
 
 - **Metadata only.** Results never include run input/output, step data, or hook tokens. There is no `resolveData` option.
