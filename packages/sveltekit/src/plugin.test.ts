@@ -43,6 +43,7 @@ let workingDir: string;
 beforeEach(async () => {
   workingDir = await mkdtemp(join(tmpdir(), 'workflow-sveltekit-'));
   process.chdir(workingDir);
+  workingDir = process.cwd(); // MacOS: resolves symlink of generated /var/folders/... through to /private/var/folders/...
   mocks.build.mockResolvedValue(undefined);
 });
 
