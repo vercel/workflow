@@ -3,7 +3,7 @@ name: workflow
 description: Creates durable, resumable workflows using Vercel's Workflow SDK. Use when building workflows that need to survive restarts, pause for external events, retry on failure, or coordinate multi-step operations over time. Triggers on mentions of "workflow", "durable functions", "resumable", "workflow sdk", "queue", "event", "push", "subscribe", or step-based orchestration.
 metadata:
   author: Vercel Inc.
-  version: '1.10'
+  version: '1.11'
 ---
 
 ## *CRITICAL*: Always Use Correct `workflow` Documentation
@@ -691,7 +691,13 @@ await world.streams.writeMulti?.(runId, name, chunks);
 const readable = await world.streams.get(runId, name, startIndex);
 await world.streams.close(runId, name);
 const streamNames = await world.streams.list(runId);
-const chunks = await world.streams.getChunks(runId, name, { limit, cursor });
+let cursor: string | undefined;
+let hasMore: boolean;
+do {
+  const page = await world.streams.getChunks(runId, name, { limit, cursor });
+  cursor = page.cursor ?? cursor;
+  hasMore = page.hasMore;
+} while (hasMore);
 const info = await world.streams.getInfo(runId, name);
 
 // Queue (methods live directly on world — internal SDK infrastructure)

@@ -137,16 +137,18 @@ const result = await world.streams.getChunks(runId, "default", { // [!code highl
 | `runId` | `string` | The workflow run ID |
 | `name` | `string` | The stream name |
 | `options.limit` | `number` | Max chunks per page (default: 100, max: 1000) |
-| `options.cursor` | `string` | Cursor from a previous response |
+| `options.cursor` | `string` | Resume cursor from a previous non-empty response |
 
 **Returns:** `StreamChunksResponse`
 
 | Field | Type | Description |
 |-------|------|-------------|
 | `data` | `StreamChunk[]` | Chunks in index order. Each has `index` (0-based) and `data` (`Uint8Array`). |
-| `cursor` | `string \| null` | Cursor for the next page |
+| `cursor` | `string \| null` | Position immediately after the returned chunks. `null` for an empty page or a completed tail. |
 | `hasMore` | `boolean` | Whether more pages of already-written chunks exist |
 | `done` | `boolean` | Whether the stream is fully closed. When `false`, new chunks may appear in future requests even after `hasMore` is `false`. |
+
+`cursor` and `hasMore` answer different questions. A non-empty page at the current tail of an open stream returns `hasMore: false` and a cursor so a later poll can resume after the chunks already returned. An empty page returns `cursor: null`; retain the cursor from the previous non-empty response when polling an open stream.
 
 ### getInfo()
 
@@ -199,14 +201,16 @@ import { getWorld } from "workflow/runtime";
 
 const world = await getWorld();
 let cursor: string | undefined;
+let hasMore: boolean;
 
 do {
   const result = await world.streams.getChunks(runId, "default", { cursor }); // [!code highlight]
   for (const chunk of result.data) {
     console.log(`Chunk ${chunk.index}:`, chunk.data);
   }
-  cursor = result.cursor ?? undefined;
-} while (cursor);
+  cursor = result.cursor ?? cursor;
+  hasMore = result.hasMore;
+} while (hasMore);
 ```
 
 ## Related

@@ -89,6 +89,10 @@ export interface GetChunksOptions {
   cursor?: string;
 }
 
+export const StreamCursorPositionSchema = z.object({
+  i: z.number().int().nonnegative(),
+});
+
 /**
  * Metadata about a stream, returned by {@link Streamer.getStreamInfo}.
  */

@@ -134,7 +134,10 @@ export function createSimStreamer(): SimStreamer {
         const next = from + slice.length;
         return {
           data: slice.map((data, i) => ({ index: from + i, data })),
-          cursor: next < state.chunks.length ? String(next) : null,
+          cursor:
+            slice.length > 0 && (next < state.chunks.length || !state.closed)
+              ? String(next)
+              : null,
           hasMore: next < state.chunks.length,
           done: state.closed,
         };

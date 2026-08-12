@@ -1,9 +1,10 @@
 import { EventEmitter } from 'node:events';
-import type {
-  GetChunksOptions,
-  StreamChunksResponse,
-  Streamer,
-  StreamInfoResponse,
+import {
+  type GetChunksOptions,
+  type StreamChunksResponse,
+  StreamCursorPositionSchema,
+  type Streamer,
+  type StreamInfoResponse,
 } from '@workflow/world';
 import { and, asc, eq, gt, sql } from 'drizzle-orm';
 import { Client, type Pool } from 'pg';
@@ -17,9 +18,8 @@ const StreamPublishMessage = z.object({
   chunkId: z.templateLiteral(['chnk_', z.string()]),
 });
 
-const StreamCursorSchema = z.object({
+const StreamCursorSchema = StreamCursorPositionSchema.extend({
   c: z.templateLiteral(['chnk_', z.string()]),
-  i: z.number().int().nonnegative(),
 });
 
 interface StreamChunkEvent {

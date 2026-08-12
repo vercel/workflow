@@ -1,11 +1,12 @@
 import { EventEmitter } from 'node:events';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import type {
-  GetChunksOptions,
-  StreamChunksResponse,
-  Streamer,
-  StreamInfoResponse,
+import {
+  type GetChunksOptions,
+  type StreamChunksResponse,
+  StreamCursorPositionSchema,
+  type Streamer,
+  type StreamInfoResponse,
 } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
 import { z } from 'zod';
@@ -349,10 +350,9 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
         let startIndex = 0;
         if (options?.cursor) {
           try {
-            const decoded = JSON.parse(
-              Buffer.from(options.cursor, 'base64').toString('utf-8')
-            );
-            startIndex = decoded.i;
+            startIndex = StreamCursorPositionSchema.parse(
+              JSON.parse(Buffer.from(options.cursor, 'base64').toString())
+            ).i;
           } catch {
             startIndex = 0;
           }
@@ -391,6 +391,16 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
             index: startIndex + resultChunks.length,
             data: Uint8Array.from(chunk.chunk),
           });
+        }
+
+        if (!streamDone && startIndex >= chunkFiles.length) {
+          const file = chunkFiles.at(-1);
+          if (file) {
+            const ext = fileExtMap.get(file) ?? '.bin';
+            streamDone = isEofByte(
+              await readFirstByte(path.join(chunksDir, `${file}${ext}`))
+            );
+          }
         }
 
         return {

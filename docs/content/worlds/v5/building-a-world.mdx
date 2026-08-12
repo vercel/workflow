@@ -242,7 +242,7 @@ interface Streamer {
 Streams are identified by a combination of `runId` and `name`. Each workflow run can have multiple named streams.
 `writeMulti()` is an optional optimization for batching multiple writes.
 
-`getChunks` returns a paginated snapshot of currently available chunks (unlike `get` which returns a live `ReadableStream` that waits for new chunks). `getInfo` returns the tail index (last chunk index, 0-based, or `-1` when empty) and whether the stream is complete — useful for resolving negative `startIndex` values into absolute positions.
+`getChunks` returns a paginated snapshot of currently available chunks (unlike `get` which returns a live `ReadableStream` that waits for new chunks). `hasMore` is true only when another page of already-written chunks exists. Every non-empty page from an open stream returns a cursor positioned immediately after its last chunk, including the current tail where `hasMore` is false. Empty pages and completed final pages return `cursor: null`. A request with a cursor must not return chunks before that position. `getInfo` returns the tail index (last chunk index, 0-based, or `-1` when empty) and whether the stream is complete — useful for resolving negative `startIndex` values into absolute positions.
 
 ## Reference Implementations
 
