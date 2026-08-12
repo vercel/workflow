@@ -96,8 +96,7 @@ export function isTerminalStepEventType(
  *
  * Types that share a class are the mutually exclusive outcomes of one
  * decision, so the log records the class once and the first event of it is the
- * one that counts: a step either completes or fails, a run either completes,
- * fails, or is cancelled.
+ * one that counts: a step either completes or fails.
  *
  * Classes are independent of each other. A step whose result is in the log has
  * still recorded exactly one `step_created`, and can still record another
@@ -106,9 +105,14 @@ export function isTerminalStepEventType(
  * it already recorded for that entity and which no consumer wants (see
  * `EventsConsumer`), and only then.
  *
- * Note the omissions. `hook_received` and `hook_conflict` are deliveries whose
- * consumer subscribes lazily, `attr_set` is written on every attribute write,
- * and `run_created` precedes every replay.
+ * Note the omissions, all of them types a mapping would be dead weight for.
+ * `hook_received` and `hook_conflict` are deliveries whose consumer subscribes
+ * lazily, `attr_set` is written on every attribute write, and `run_created`
+ * precedes every replay. The terminal run types are absent for a different
+ * reason: recording a class requires a consumer to take an event of it, and no
+ * consumer takes `run_completed` / `run_failed` / `run_cancelled` — the runtime
+ * exits before replaying the body once the log holds one, so they never reach a
+ * consumer at all. An entry for them could never match.
  */
 const ENTITY_EVENT_CLASS_BY_TYPE = {
   step_created: 'step_created',
@@ -121,9 +125,6 @@ const ENTITY_EVENT_CLASS_BY_TYPE = {
   hook_created: 'hook_created',
   hook_disposed: 'hook_disposed',
   run_started: 'run_started',
-  run_completed: 'run_terminal',
-  run_failed: 'run_terminal',
-  run_cancelled: 'run_terminal',
 } as const satisfies Partial<Record<EventType, string>>;
 
 export type EntityEventClass =

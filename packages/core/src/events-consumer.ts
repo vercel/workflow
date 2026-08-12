@@ -147,10 +147,14 @@ export interface EventsConsumerOptions {
   onUnconsumedEvent: (event: Event) => void;
   /**
    * Callback invoked when an event is skipped because it repeats an event
-   * class the log already records for the same entity. Diagnostics only:
-   * skipping is a normal outcome, not an error.
+   * class the walk already consumed for the same entity. `firstEventType` is
+   * the type that recorded the class, which is the one the workflow observed.
+   * Diagnostics only: skipping is a normal outcome, not an error — though a
+   * `firstEventType` differing from `event.eventType` says the two writers
+   * decided the entity's outcome differently, which is worth more than an
+   * info log.
    */
-  onDuplicateEvent?: (event: Event) => void;
+  onDuplicateEvent?: (event: Event, firstEventType: Event['eventType']) => void;
   /**
    * Returns the current promise queue. The unconsumed event check is chained
    * onto this queue so it only fires after all pending async work (e.g.,
@@ -196,12 +200,18 @@ export class EventsConsumer {
   private readonly resolved = new Set<string>();
   /**
    * `<class>:<correlationId>` for every event class the walk has already
-   * consumed. See {@link EventsConsumer.isDuplicateEvent}.
+   * consumed, mapped to the event type that recorded it. The type is kept so a
+   * repeat that decided the same class *differently* (a `step_failed` behind a
+   * `step_completed`) can be reported as more than a re-commit. See
+   * {@link EventsConsumer.firstEventTypeOfClass}.
    */
-  private readonly seenEventClasses = new Set<string>();
+  private readonly seenEventClasses = new Map<string, Event['eventType']>();
   private onConsumedEvent?: (event: Event) => void;
   private onUnconsumedEvent: (event: Event) => void;
-  private onDuplicateEvent?: (event: Event) => void;
+  private onDuplicateEvent?: (
+    event: Event,
+    firstType: Event['eventType']
+  ) => void;
   private getPromiseQueue: () => Promise<void>;
   private isDeliveryIdle: () => boolean;
   private pendingUnconsumedCheck: Promise<void> | null = null;
@@ -338,6 +348,15 @@ export class EventsConsumer {
         return;
       }
       if (!consumed) {
+        // Nobody wanted it. If it repeats a class this walk already consumed
+        // for the same entity it is a straggler from a concurrent replay:
+        // step over it in this pass rather than paying the deferred window for
+        // a consumer that cannot come (see `firstEventTypeOfClass`).
+        const firstType = this.firstEventTypeOfClass(currentEvent);
+        if (firstType !== undefined) {
+          this.skipDuplicateEvent(currentEvent, firstType);
+          continue;
+        }
         this.scheduleUnconsumedCheck(currentEvent, true);
         return;
       }
@@ -461,18 +480,23 @@ export class EventsConsumer {
       : `${eventClass}:${event.correlationId}`;
   }
 
-  /** Remembers the class `event` belongs to, if it belongs to one. */
+  /**
+   * Remembers that `event`'s class is now decided for its entity, if the type
+   * belongs to a class. First writer wins: the recorded type is the one the
+   * workflow observed, and a later repeat is measured against it.
+   */
   private recordEventClass(event: Event) {
     const key = this.eventClassKey(event);
-    if (key !== undefined) {
-      this.seenEventClasses.add(key);
+    if (key !== undefined && !this.seenEventClasses.has(key)) {
+      this.seenEventClasses.set(key, event.eventType);
     }
   }
 
   /**
-   * Whether `event` repeats a class the walk already consumed for the same
-   * entity: a second `step_created` for one step, a second terminal outcome, a
-   * second `step_started` after the step's result is already in the log.
+   * The type that already decided `event`'s class for the same entity, or
+   * `undefined` when nothing has: a second `step_created` for one step, a
+   * second terminal outcome, a second `step_started` after the step's result is
+   * already in the log.
    *
    * Such an event is committed but inert. Concurrent replays write into one
    * log without a currency guard, so a replay working from a prefix that
@@ -486,31 +510,38 @@ export class EventsConsumer {
    * A step whose result is in the log still reaches its `step_created` and
    * `step_started` consumers if it has yet to see those classes.
    *
-   * Consulted from the deferred check only, once every registered callback has
-   * declined the event and the delivery gate says the VM is not mid-reaction,
-   * so it can never take an event a consumer wanted or one a consumer is still
-   * on its way to wanting. A retry's `step_started` is claimed by the step's
-   * live consumer and counts as an attempt exactly as before; only the copies
-   * nobody claims are skipped. It cannot starve a consumer that has yet to
-   * register either: a consumer claims its entity's events in log order from
-   * the moment the body creates it, so a class the walk already consumed was
-   * consumed with that consumer registered, and correlation ids are minted
-   * monotonically, so no future consumer claims this id.
+   * Consulted only after every registered callback has declined the event, so
+   * it can never take an event a consumer wanted. A retry's `step_started` is
+   * claimed by the step's live consumer and counts as an attempt exactly as
+   * before, and a second `step_created` reaching a step that has not finished
+   * is likewise consumed rather than skipped; only the copies nobody claims are
+   * skipped.
    *
-   * Checked ahead of {@link park} rather than after it. The two mapped types
-   * that are also parkable would otherwise be handled inconsistently: a
-   * repeated `wait_completed` is declined by park anyway (its {@link resolved}
-   * guard asks the same question for one-shot types), but a repeated
-   * `run_cancelled` would be parked, and a parked event nothing claims strands
-   * the walk into the divergence this skip exists to avoid.
+   * Unlike the divergence report, this does *not* wait out the deferred window
+   * first, and it does not need to. The window buys time for a consumer that
+   * has yet to register, and no such consumer can want this event: the class
+   * was recorded by a consumption in this same replay, which means the entity's
+   * consumer was registered and took an event of this class, and correlation
+   * ids are minted from a monotonic ULID per body position, so nothing later in
+   * the body registers a second consumer under this id. Waiting would cost
+   * `getDeferredCheckDelayMs()` per straggler per replay for information that
+   * cannot arrive — 0.75% of production runs carry at least one straggler, and
+   * the p99 among those carries 155.
+   *
+   * The invariant to preserve if hook identity ever becomes caller-supplied
+   * (an idempotency key rather than a minted id): two `createHook` calls in one
+   * body could then share a correlation id, and the second consumer's
+   * `hook_created` would be a repeat of a class this replay already recorded.
+   * That would make skipping wrong for `hook_created`, and is the reason the
+   * class map lives next to the event types rather than being inferred.
    */
-  private isDuplicateEvent(event: Event): boolean {
+  private firstEventTypeOfClass(event: Event): Event['eventType'] | undefined {
     const key = this.eventClassKey(event);
-    return key !== undefined && this.seenEventClasses.has(key);
+    return key === undefined ? undefined : this.seenEventClasses.get(key);
   }
 
   /** Steps the walk over a repeat of an already-consumed class. */
-  private skipDuplicateEvent(event: Event) {
+  private skipDuplicateEvent(event: Event, firstType: Event['eventType']) {
     this.eventIndex++;
     // Deliberately not routed through `notifyConsumedEvent`: the deterministic
     // clock advances only on events the workflow actually observed. A skipped
@@ -521,11 +552,12 @@ export class EventsConsumer {
       {
         eventId: event.eventId,
         eventType: event.eventType,
+        firstEventType: firstType,
         correlationId: event.correlationId,
       }
     );
     try {
-      this.onDuplicateEvent?.(event);
+      this.onDuplicateEvent?.(event, firstType);
     } catch (error) {
       eventsLogger.error('onDuplicateEvent callback threw an error', {
         error,
@@ -608,19 +640,21 @@ export class EventsConsumer {
    *
    * `mayPark` is false only for the end-of-log recheck of an event {@link park}
    * already holds. Nothing in the first branch applies to one of those: it is
-   * not the event at the cursor, so neither the identity guard nor a skip
-   * (which steps the cursor) is meaningful, and it is parked already.
+   * not the event at the cursor, so the identity guard is not meaningful, and
+   * it is parked already.
+   *
+   * A duplicate class never arrives here. {@link consume} steps over one in the
+   * pass that offered it, before this check is ever scheduled, and a class
+   * recorded while the check was in flight can only have been recorded by a
+   * consumption inside {@link consume}, whose next pass re-offers this event
+   * and steps over it there — leaving the identity guard above to drop the
+   * in-flight check.
    */
   private resolveUnconsumedEvent(currentEvent: Event, mayPark: boolean) {
     if (mayPark) {
       if (this.events[this.eventIndex] !== currentEvent) {
         // An append() drain claimed it while the check was in flight.
         // Only subscribe() cancels the check, so this is reachable.
-        return;
-      }
-      if (this.isDuplicateEvent(currentEvent)) {
-        this.skipDuplicateEvent(currentEvent);
-        this.consume();
         return;
       }
       if (this.park(currentEvent)) {
