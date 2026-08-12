@@ -1,6 +1,6 @@
 ---
 title: HookConflictError
-description: Thrown when creating a hook with a token that is already in use by another workflow run.
+description: Thrown when creating or atomically starting with a Hook token that is already in use by another workflow run.
 type: reference
 summary: Catch HookConflictError when a hook token is already claimed by another active workflow run.
 related:
@@ -9,7 +9,9 @@ related:
   - /docs/errors/hook-conflict
 ---
 
-`HookConflictError` is thrown when creating a hook with a token that is already in use by another active workflow run. Hook tokens must be unique across all running workflows — see the [hook-conflict](/docs/errors/hook-conflict) error guide for resolution strategies.
+`HookConflictError` is thrown when creating a Hook or calling `start({ hook })` with a token that another workflow run owns. See the [hook-conflict](/docs/errors/hook-conflict) error guide for resolution strategies.
+
+Atomic `start({ hook })` conflicts always include `conflictingRunId`. It remains optional on the general error type because old persisted Hook conflicts may not contain the owner's run ID.
 
 ```typescript lineNumbers
 import { HookConflictError } from "workflow/errors"
