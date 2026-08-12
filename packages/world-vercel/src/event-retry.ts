@@ -182,10 +182,10 @@ export const MAX_EVENT_POST_RETRIES = 2;
  * event POST. Bounds the "no attempt tracking" failure mode: a server that
  * keeps 429ing cannot pin the invocation — once the budget cannot cover the
  * next `retryAfter`, the ThrottleError surfaces and the queue's (delivery-
- * counted, backed-off) redelivery takes over. Sized to ride out the
- * transaction-conflict shape workflow-server produces (a jittered Retry-After
- * on the order of ~10s, so a couple of attempts fit) while staying well inside
- * a flow invocation's duration limit.
+ * counted, backed-off) redelivery takes over. Sized so a couple of attempts
+ * fit at the Retry-After magnitudes the backend sends under write contention
+ * (on the order of ~10s) while staying well inside a flow invocation's
+ * duration limit.
  */
 export const THROTTLE_RETRY_BUDGET_MS = 30_000;
 /** Backoff when a 429 carries no usable Retry-After. */
