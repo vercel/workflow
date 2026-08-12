@@ -222,8 +222,13 @@ else
   # went on using `.next/workflow-data`. Both halves are therefore set here, as
   # an absolute path so the app's cwd does not enter into it. `setupWorld`
   # recomputes the same path for the harness process.
+  # Substring matches, not prefixes: `setupWorld` selects on
+  # `appName.includes('nextjs') || appName.includes('next-')`, so an app named
+  # `example-nextjs` has to land on the same branch here. A prefix glob would
+  # send the app to `.workflow-data` and the harness to `.next/workflow-data`,
+  # which is the split-brain this block exists to prevent.
   case "$APP_NAME" in
-    nextjs*|next-*) DATA_DIR_NAME=".next/workflow-data" ;;
+    *nextjs*|*next-*) DATA_DIR_NAME=".next/workflow-data" ;;
     *) DATA_DIR_NAME=".workflow-data" ;;
   esac
   DATA_DIR="$REPO_ROOT/$APP_DIR/$DATA_DIR_NAME"

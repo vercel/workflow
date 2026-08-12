@@ -2753,11 +2753,13 @@ export function createEventsStorage(
             );
             const staged = await writeExclusive(stagedPath, serializedEvent);
             if (!staged) {
-              // A nonced path cannot already exist. Surfacing rather than
-              // retrying keeps a filesystem fault from looking like a
-              // publish that did not happen.
-              throw new EntityConflictError(
-                `Event "${eventId}" already exists for run "${effectiveRunId}"`
+              // A nonced path cannot already exist, so this is a filesystem
+              // fault rather than a lost race. It is deliberately NOT an
+              // `EntityConflictError`: the runtime reads that as a benign
+              // duplicate publish and carries on, which would absorb infra
+              // trouble as "someone else already wrote it".
+              throw new WorkflowWorldError(
+                `Failed to stage event "${eventId}" for run "${effectiveRunId}": staging path already exists`
               );
             }
             try {
@@ -2790,6 +2792,45 @@ export function createEventsStorage(
             notePublishedSlot(effectiveRunId, eventId);
             break;
           }
+          // Losing this publish to THIS SAME resume is the convergence the
+          // claim exists to force, and it has to be answered before the bump
+          // rather than after the loop, because only one of the two takers of
+          // a claim is pinned. The taker that wrote the claim keeps its own
+          // (unpinned) id, since a slot is a position another instance hands
+          // out for unrelated events too; the taker that adopts the claim is
+          // pinned to the claimed position. So whichever one loses the
+          // promote, the loser may be the unpinned owner, and bumping it
+          // publishes a SECOND hook_received for one resumeId: the log stays
+          // dense, and replay delivers the resume twice.
+          //
+          // `converge` above already answers this case with the committed
+          // event — it just could not see it yet, because the other taker had
+          // not published when this attempt read. Answer it the same way. An
+          // occupant that is NOT this resume is the unrelated-event collision
+          // the bump is for, and still bumps (or conflicts, when pinned).
+          if (data.eventType === 'hook_received' && params?.resumeId) {
+            const occupant = await readJSONWithFallback(
+              basedir,
+              'events',
+              `${effectiveRunId}-${eventId}`,
+              EventSchema,
+              tag
+            );
+            if (
+              occupant &&
+              isResumeEvent(occupant, {
+                runId: effectiveRunId,
+                resumeId: params.resumeId,
+                hookId: data.correlationId,
+                eventId,
+              })
+            ) {
+              // The claim already names this position, so there is no claim
+              // rewrite to do: the resume is committed, exactly once, and
+              // both writers return that one event.
+              return { event: occupant };
+            }
+          }
           if (!(await bumpEventSlot(attempt))) {
             break;
           }
@@ -2816,36 +2857,10 @@ export function createEventsStorage(
               tag
             );
           }
-          // For a resume, losing this publish is the convergence the pinned
-          // id exists to force: both takers of one resume adopt the claim's
-          // position, so the event now at it is this same resume, written by
-          // the other taker. That is the case `converge` above already
-          // answers with the committed event — it just could not see it yet,
-          // because the other taker had not published when this attempt
-          // read. Answer it the same way rather than reporting a conflict
-          // the caller cannot act on: the resume IS committed, exactly once,
-          // and the dedup contract is that both writers return that event.
-          if (eventIdPinned && data.eventType === 'hook_received') {
-            const occupant = await readJSONWithFallback(
-              basedir,
-              'events',
-              `${effectiveRunId}-${eventId}`,
-              EventSchema,
-              tag
-            );
-            if (
-              occupant &&
-              params?.resumeId &&
-              isResumeEvent(occupant, {
-                runId: effectiveRunId,
-                resumeId: params.resumeId,
-                hookId: data.correlationId,
-                eventId,
-              })
-            ) {
-              return { event: occupant };
-            }
-          }
+          // A resume that lost its publish to its own committed event already
+          // returned it from inside the loop above, so reaching here means the
+          // occupant is an unrelated event and this is a duplicate publish the
+          // runtime's concurrent-replay catch path handles.
           throw new EntityConflictError(
             `Event "${eventId}" already exists for run "${effectiveRunId}"`
           );

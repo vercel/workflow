@@ -7,10 +7,42 @@ import {
   SPEC_VERSION_CURRENT,
   type Storage,
 } from '@workflow/world';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createHook, createRun } from '../test-helpers.js';
 import { hookResumeClaimPath, pendingHookEventPath } from './helpers.js';
 import { createStorage } from './index.js';
+
+// Holds the FIRST caller to reach the promote until a LATER one has linked,
+// which is the interleaving that decides which taker of a resume claim wins
+// the position. Disarmed by default so every other test runs unmocked.
+const promoteGate: {
+  armed: boolean;
+  releaseFirst: (() => void) | null;
+  firstParked: Promise<void> | null;
+} = { armed: false, releaseFirst: null, firstParked: null };
+
+vi.mock('../fs.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../fs.js')>();
+  return {
+    ...actual,
+    promoteExclusive: async (stagedPath: string, filePath: string) => {
+      if (!promoteGate.armed) {
+        return actual.promoteExclusive(stagedPath, filePath);
+      }
+      if (promoteGate.firstParked === null) {
+        promoteGate.firstParked = new Promise<void>((resolve) => {
+          promoteGate.releaseFirst = resolve;
+        });
+        await promoteGate.firstParked;
+        return actual.promoteExclusive(stagedPath, filePath);
+      }
+      const result = await actual.promoteExclusive(stagedPath, filePath);
+      promoteGate.armed = false;
+      promoteGate.releaseFirst?.();
+      return result;
+    },
+  };
+});
 
 // `hook_received` is the one event that does not publish straight into
 // `events/`: it stages the file under `.locks` first, so a terminal
@@ -26,6 +58,9 @@ describe('world-local hook_received staging and slot density', () => {
   beforeEach(async () => {
     testDir = await fs.mkdtemp(path.join(os.tmpdir(), 'hook-staging-test-'));
     storage = createStorage(testDir);
+    promoteGate.armed = false;
+    promoteGate.releaseFirst = null;
+    promoteGate.firstParked = null;
   });
 
   afterEach(async () => {
@@ -148,11 +183,59 @@ describe('world-local hook_received staging and slot density', () => {
     expect(data.filter((e) => e.eventType === 'hook_received')).toHaveLength(1);
   });
 
-  it('keeps the log dense when two instances resume the same hook at once', async () => {
+  it('writes one event when the claim owner loses the position to an adopter', async () => {
     const { runId, hook } = await setup();
-    // A second instance over the same directory is the configuration this
-    // backend supports for the CLI plus the app. Its allocator watermark is
-    // its own, so both instances hand out the same candidate position.
+    const other = createStorage(testDir);
+
+    // Only one of the two takers of a claim is pinned. The taker that WRITES
+    // the claim keeps its own id, unpinned, because a slot is a position that
+    // another instance also hands out for unrelated events, and refusing to
+    // move would fail this resume's append outright. The taker that ADOPTS an
+    // existing claim is pinned to the claimed position.
+    //
+    // So the loser of the promote can be the unpinned owner, and a loser that
+    // bumps publishes a second `hook_received` for one resumeId. Nothing in
+    // the log looks wrong afterwards (it stays dense, both callers report
+    // success) but the resume is delivered twice on replay.
+    //
+    // The gate parks whichever caller reaches the promote first until the
+    // other has linked. The owner gets there first on its own: the adopter
+    // reads the claim and scans for a committed event before it stages.
+    promoteGate.armed = true;
+    const results = await Promise.all([
+      resume(runId, hook, 'resume_1', new Uint8Array([1])),
+      other.events.create(
+        runId,
+        {
+          eventType: 'hook_received',
+          specVersion: SPEC_VERSION_CURRENT,
+          correlationId: hook.hookId,
+          eventData: { token: hook.token, payload: new Uint8Array([1]) },
+        },
+        { resumeId: 'resume_1', resumePayloadDigest: 'resume_1' }
+      ),
+    ]);
+
+    const { data } = await storage.events.list({ runId });
+    expect(data.filter((e) => e.eventType === 'hook_received')).toHaveLength(1);
+    // Both takers answer with the one committed event, which is the dedup
+    // contract the caller relies on to treat a redelivery as a no-op.
+    expect(results[1].event.eventId).toBe(results[0].event.eventId);
+  });
+
+  it('keeps the log dense under live contention on one position', async () => {
+    const { runId, hook } = await setup();
+    // Density here is not a regression guard: with two LIVE stagers and no
+    // terminal transition, the pre-fix code also ended dense, because the
+    // writer it bumped off the position was the one that went on to publish
+    // it. The hole needs the stager to be rejected or killed, which is what
+    // the crashed-attempt test above stages.
+    //
+    // What this does cover is that arbitrating at the promote (rather than at
+    // the staging write) still resolves two instances drawing one position,
+    // which is the configuration this backend supports for the CLI plus the
+    // app: each instance's allocator watermark is its own, so both hand out
+    // the same candidate.
     const other = createStorage(testDir);
 
     await Promise.all([
