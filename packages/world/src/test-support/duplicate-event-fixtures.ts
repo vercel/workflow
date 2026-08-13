@@ -100,6 +100,17 @@ export const DUPLICATE_EVENT_FIXTURES: readonly DuplicateEventFixture[] = [
     ignoredIndices: [],
   },
   {
+    name: 'repeat of a class the log has not recorded yet',
+    why: 'The run stops on the first trailing start and never reads the second, so neither side may present it as a repeat the run passed over.',
+    events: [
+      { eventType: 'step_created', entity: 'step_a' },
+      { eventType: 'step_completed', entity: 'step_a' },
+      { eventType: 'step_started', entity: 'step_a' },
+      { eventType: 'step_started', entity: 'step_a' },
+    ],
+    ignoredIndices: [],
+  },
+  {
     name: 'sleep recreated after it elapsed',
     why: 'Waits close on completion the way steps close on their outcome.',
     events: [

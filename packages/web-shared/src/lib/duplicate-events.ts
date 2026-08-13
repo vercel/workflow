@@ -2,6 +2,7 @@ import {
   type EntityEventClass,
   type Event,
   entityEventClass,
+  isSlotEventId,
 } from '@workflow/world';
 
 /**
@@ -55,47 +56,70 @@ export const DUPLICATE_EVENT_MESSAGE =
   'Written by a concurrent replay after an event of the same kind was already recorded and acted on. The run follows the earlier one.';
 
 /**
- * Log order.
+ * Candidate log order, by event ID.
  *
  * Event IDs are fixed-width and monotonic within a run under both the ULID and
- * the slot scheme, so comparing them orders the log even where timestamps do
- * not: a writer stamps `createdAt` on entry but takes its log position at
- * publish time, and `occurredAt` is measured on the client. Length is compared
- * first so a shorter ID never sorts after a longer one on a fixture or a log
- * that mixes widths.
+ * the slot scheme. Length is compared first so a shorter ID never sorts after
+ * a longer one on a log that mixes widths.
+ *
+ * Whether this *is* the log order depends on the ID scheme, which is why
+ * {@link hasKnowableLogOrder} gates the fold. See its doc.
  */
-function compareLogPosition(a: Event, b: Event): number {
+function compareEventId(a: Event, b: Event): number {
   if (a.eventId.length !== b.eventId.length) {
     return a.eventId.length - b.eventId.length;
   }
   return a.eventId < b.eventId ? -1 : a.eventId > b.eventId ? 1 : 0;
 }
 
-/**
- * The IDs of the events in `events` that repeat a class the log already
- * records for the same entity, after that entity finished.
- *
- * `isCompleteHistory` must be false whenever the caller holds a subset of the
- * run's log: one page of a paginated list, or the result of a search. Which
- * occurrence of a class came first is a property of the whole log, so on a
- * subset the earlier event may simply be missing, and the fold would report
- * the surviving one. Nothing is classified in that case.
- */
-export function findDuplicateEventIds(
-  events: readonly Event[],
-  { isCompleteHistory }: { isCompleteHistory: boolean }
-): Set<string> {
-  const duplicates = new Set<string>();
-  if (!isCompleteHistory || events.length < 2) return duplicates;
+function createdAtMs(event: Event): number {
+  const createdAt = event.createdAt;
+  return createdAt instanceof Date
+    ? createdAt.getTime()
+    : new Date(createdAt as unknown as string).getTime();
+}
 
+/**
+ * Whether the order the run consumed its log in can be recovered from the
+ * events alone.
+ *
+ * Which occurrence of a class came first is the whole question here, so the
+ * fold needs the log's order, not an order. The backends do not agree on how
+ * to recover it for every ID scheme:
+ *
+ * - A **slot-numbered** run carries its position in the ID. The slot is drawn
+ *   at the publish, which is the linearization point, so slot order is log
+ *   order everywhere and the ID alone settles it.
+ * - A **ULID-numbered** run does not. One backend returns such a log in
+ *   `(createdAt, eventId)` order while another returns it keyed on the ID, and
+ *   `createdAt` is stamped when the write request arrives rather than when it
+ *   commits. Concurrent writers can therefore produce opposite timestamp and
+ *   ID orders, and the run consumed whichever its own backend served.
+ *
+ * So a ULID log is only knowable where the two orders agree. Where they
+ * contradict, the fold could name the surviving event and pass over the one
+ * the run acted on, which is worse than saying nothing.
+ */
+function hasKnowableLogOrder(orderedById: readonly Event[]): boolean {
+  if (orderedById.every((event) => isSlotEventId(event.eventId))) return true;
+
+  for (let index = 1; index < orderedById.length; index++) {
+    const previous = createdAtMs(orderedById[index - 1]);
+    const current = createdAtMs(orderedById[index]);
+    // A missing or unparseable timestamp leaves nothing to corroborate the ID
+    // order with, which is the same position as a contradiction.
+    if (Number.isNaN(previous) || Number.isNaN(current)) return false;
+    if (current < previous) return false;
+  }
+
+  return true;
+}
+
+/** The fold itself, over a log whose order is known. */
+function foldDuplicates(ordered: readonly Event[]): Set<string> {
+  const duplicates = new Set<string>();
   const seenClasses = new Set<string>();
   const closedEntities = new Set<string>();
-
-  // Dropped before the sort, not during the fold: an event with no ID has no
-  // log position to order on, and the caller could not match it either.
-  const ordered = events
-    .filter((event) => Boolean(event.eventId))
-    .sort(compareLogPosition);
 
   for (const event of ordered) {
     const eventClass = entityEventClass(event.eventType);
@@ -111,18 +135,54 @@ export function findDuplicateEventIds(
     }
 
     if (!repeatsClass) {
+      // First of its class, but the entity already finished: no consumer is
+      // left to take it and it repeats nothing, so the runtime reports
+      // divergence here and exits. Everything past this point went unread, so
+      // the fold stops with it rather than recording the class and presenting
+      // a later event of it as a repeat the run passed over.
+      if (entityWasClosed) break;
       seenClasses.add(classKey);
       continue;
     }
 
     // The entity is still open, so a consumer is registered for it and takes
     // this event: another attempt, not a repeat read past.
-    if (!entityWasClosed && !SINGLETON_EVENT_CLASSES.has(eventClass)) {
-      continue;
+    if (entityWasClosed || SINGLETON_EVENT_CLASSES.has(eventClass)) {
+      duplicates.add(event.eventId);
     }
-
-    duplicates.add(event.eventId);
   }
 
   return duplicates;
+}
+
+/**
+ * The IDs of the events in `events` that repeat a class the log already
+ * records for the same entity, after that entity finished.
+ *
+ * `isCompleteHistory` must be false whenever the caller holds a subset of the
+ * run's log: one page of a paginated list, or the result of a search. Which
+ * occurrence of a class came first is a property of the whole log, so on a
+ * subset the earlier event may simply be missing, and the fold would report
+ * the surviving one. Nothing is classified in that case.
+ *
+ * Two other things make the answer unknowable and yield the same empty result:
+ * a log whose order cannot be recovered from the events (see
+ * {@link hasKnowableLogOrder}), and everything past the point the run
+ * diverged, since the run exited there and read no further.
+ */
+export function findDuplicateEventIds(
+  events: readonly Event[],
+  { isCompleteHistory }: { isCompleteHistory: boolean }
+): Set<string> {
+  if (!isCompleteHistory || events.length < 2) return new Set();
+
+  // Dropped before the sort, not during the fold: an event with no ID has no
+  // log position to order on, and the caller could not match it either.
+  const ordered = events
+    .filter((event) => Boolean(event.eventId))
+    .sort(compareEventId);
+
+  if (!hasKnowableLogOrder(ordered)) return new Set();
+
+  return foldDuplicates(ordered);
 }

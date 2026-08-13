@@ -37,6 +37,20 @@ function event(
   } as unknown as Event;
 }
 
+/**
+ * The same event under the older ID scheme, whose IDs are ULIDs rather than
+ * slots. A backend serving such a log may order it by `(createdAt, eventId)`
+ * instead of by ID, so the ID alone does not fix the log position.
+ */
+function ulidEvent(...args: Parameters<typeof event>): Event {
+  const slotEvent = event(...args);
+  const slot = slotEvent.eventId.slice('evnt_'.length).replace(/^0+/, '');
+  return {
+    ...slotEvent,
+    eventId: `evnt_01K${slot.padStart(23, '0')}`,
+  } as Event;
+}
+
 describe('findDuplicateEventIds', () => {
   it('returns nothing for a log with no repeats', () => {
     const events = [
@@ -222,6 +236,55 @@ describe('findDuplicateEventIds', () => {
 
     expect(ascending).toEqual(new Set([events[2].eventId]));
     expect(descending).toEqual(ascending);
+  });
+
+  it('classifies a ULID log whose timestamps corroborate its ids', () => {
+    const created = ulidEvent('wait_created', { correlationId: 'wait_a' });
+    const completed = ulidEvent('wait_completed', { correlationId: 'wait_a' });
+    const createdAgain = ulidEvent('wait_created', { correlationId: 'wait_a' });
+
+    expect(
+      findDuplicateEventIds([created, completed, createdAgain], COMPLETE)
+    ).toEqual(new Set([createdAgain.eventId]));
+  });
+
+  it('classifies nothing on a ULID log whose timestamps contradict its ids', () => {
+    // A ULID carries no log position: one backend returns such a log in
+    // createdAt order and another in id order, and createdAt is stamped when
+    // the write arrives rather than when it commits. With the two orders
+    // disagreeing, which wait_created the run acted on depends on the backend,
+    // so naming either would be a guess.
+    const created = ulidEvent('wait_created', { correlationId: 'wait_a' });
+    const completed = ulidEvent('wait_completed', { correlationId: 'wait_a' });
+    const createdAgain = ulidEvent('wait_created', {
+      correlationId: 'wait_a',
+      at: -60,
+    });
+
+    expect(
+      findDuplicateEventIds([created, completed, createdAgain], COMPLETE)
+    ).toEqual(new Set());
+  });
+
+  it('classifies nothing past the point the run diverged', () => {
+    // The step finished without a step_started, so the runtime reports
+    // divergence on the first trailing start and exits. The second start and
+    // the wait's repeat after it went unread, and neither is a repeat the run
+    // passed over. The wait's repeat before it still is.
+    const events = [
+      event('wait_created', { correlationId: 'wait_a' }),
+      event('wait_completed', { correlationId: 'wait_a' }),
+      event('wait_created', { correlationId: 'wait_a' }),
+      event('step_created', { correlationId: 'step_a' }),
+      event('step_completed', { correlationId: 'step_a' }),
+      event('step_started', { correlationId: 'step_a' }),
+      event('step_started', { correlationId: 'step_a' }),
+      event('wait_created', { correlationId: 'wait_a' }),
+    ];
+
+    expect(findDuplicateEventIds(events, COMPLETE)).toEqual(
+      new Set([events[2].eventId])
+    );
   });
 
   it('classifies nothing when the caller holds part of the log', () => {
