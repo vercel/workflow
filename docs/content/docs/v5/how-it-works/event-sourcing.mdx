@@ -259,6 +259,8 @@ The remaining event types belong to no class and are never skipped:
 
 Duplicates are visible in the run's logs. A repeat of the same event type is logged at `info`. A repeat that decides a class differently — a `step_failed` behind a `step_completed`, or the reverse — is logged at `error`. Ignoring it is still correct and still deterministic, but unlike a re-commit of the same outcome there is no reading in which both writers were right, so the discarded outcome is worth surfacing.
 
+The observability UI greys out the events it can identify this way, which is a narrower set than the runtime's. It reads the log without consumer state, and a consumer for an entity that is still open legitimately claims a repeat — each retry of a step writes another `step_started`. So it marks a repeat only once a terminal event for the same entity sits earlier in the log, which is the point past which no consumer remains.
+
 ## Event Correlation
 
 Events use a `correlationId` to link related events together. For step, hook, and wait events, the correlation ID identifies the specific entity instance:
