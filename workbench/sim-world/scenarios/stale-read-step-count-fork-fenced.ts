@@ -5,8 +5,8 @@ export const scenario: ScenarioSpec = {
   name: 'corrupt: same shape, with the optimistic-concurrency fence armed',
   description:
     'Identical to the count: fork scenario but with preconditionGuard on, so ' +
-    'the World rejects a replay-context write whose stateUpdatedAt snapshot ' +
-    'predates the newest out-of-band event. Does the 412 fence stop it? It ' +
+    'the World rejects a replay-context write whose snapshot predates the ' +
+    'newest out-of-band event. Does the 412 fence stop it? It ' +
     'does: every rejected write is traced as a `!!` line, and the run ' +
     'reconciles instead of diverging.',
   workflow: 'stepCountForkWorkflow',

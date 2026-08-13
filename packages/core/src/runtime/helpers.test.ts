@@ -18,15 +18,14 @@ import {
   handleHealthCheckMessage,
   healthCheck,
   insertEventByEventId,
-  latestEventStateUpdatedAt,
   loadWorkflowRunEvents,
   maxEventSlot,
   memoizeEncryptionKey,
   mergeReportedEvents,
   preconditionEventDelta,
-  preconditionSnapshotParams,
   SLOT_GAP_RECHECK_ATTEMPTS,
   settleEventSlotGap,
+  slotSnapshotParams,
 } from './helpers.js';
 
 // Mock the logger to suppress output during tests
@@ -599,135 +598,11 @@ const makeUlidEvent = (time: number): Event =>
     createdAt: new Date(time),
   }) as unknown as Event;
 
-describe('latestEventStateUpdatedAt', () => {
-  it('returns undefined for an empty event list', () => {
-    expect(latestEventStateUpdatedAt([])).toBeUndefined();
-  });
-
-  it('decodes the ULID time of the newest event, stripping the prefix', () => {
-    const time = 1_700_000_000_000;
-    // ULID time resolution is whole milliseconds.
-    expect(
-      latestEventStateUpdatedAt([
-        makeUlidEvent(time - 1000),
-        makeUlidEvent(time),
-      ])
-    ).toBe(time);
-  });
-
-  it('reports the maximum, not the tail, when the log is not id-ordered', () => {
-    // A World's canonical order need not be event-id order (world-local orders
-    // by `(createdAt, eventId)`), so the watermark cannot be read off the tail.
-    const time = 1_700_000_002_000;
-
-    expect(
-      latestEventStateUpdatedAt([
-        makeUlidEvent(time),
-        makeUlidEvent(1_700_000_000_000),
-        makeUlidEvent(1_700_000_001_000),
-      ])
-    ).toBe(time);
-  });
-
-  it('returns undefined when the newest event id is not a decodable ULID', () => {
-    expect(
-      latestEventStateUpdatedAt([makeEvent('evnt_not-a-ulid')])
-    ).toBeUndefined();
-  });
-});
-
-describe('preconditionSnapshotParams', () => {
-  let originalGuard: string | undefined;
-
-  beforeEach(() => {
-    originalGuard = process.env.WORKFLOW_PRECONDITION_GUARD;
-    process.env.WORKFLOW_PRECONDITION_GUARD = '1';
-  });
-
-  afterEach(() => {
-    if (originalGuard !== undefined) {
-      process.env.WORKFLOW_PRECONDITION_GUARD = originalGuard;
-    } else {
-      delete process.env.WORKFLOW_PRECONDITION_GUARD;
-    }
-  });
-
-  it('sends the watermark, the count and the cursor together', () => {
-    const time = 1_700_000_000_000;
-    const events = [makeUlidEvent(time - 1000), makeUlidEvent(time)];
-
-    expect(preconditionSnapshotParams(events, 'eid:abc')).toEqual({
-      stateUpdatedAt: time,
-      stateEventCount: events.length,
-      stateCursor: 'eid:abc',
-    });
-  });
-
-  it('sends the count without a cursor when the caller has none', () => {
-    const time = 1_700_000_000_000;
-
-    expect(preconditionSnapshotParams([makeUlidEvent(time)], null)).toEqual({
-      stateUpdatedAt: time,
-      stateEventCount: 1,
-    });
-  });
-
-  it('sends the snapshot by default (guard is on unless disabled)', () => {
-    delete process.env.WORKFLOW_PRECONDITION_GUARD;
-    const time = 1_700_000_000_000;
-
-    expect(
-      preconditionSnapshotParams([makeUlidEvent(time)], 'eid:abc')
-    ).toEqual({
-      stateUpdatedAt: time,
-      stateEventCount: 1,
-      stateCursor: 'eid:abc',
-    });
-  });
-
-  it('omits every field when the guard is disabled', () => {
-    process.env.WORKFLOW_PRECONDITION_GUARD = '0';
-
-    expect(
-      preconditionSnapshotParams([makeUlidEvent(1_700_000_000_000)], 'eid:abc')
-    ).toEqual({});
-  });
-
-  it('omits every field on an empty log', () => {
-    expect(preconditionSnapshotParams([], 'eid:abc')).toEqual({});
-  });
-
-  it('omits every field when the latest event id is not a decodable ULID', () => {
-    // A count without a watermark would be meaningless to the backend, so the
-    // three fields have to fail open together.
-    expect(
-      preconditionSnapshotParams([makeEvent('evnt_not-a-ulid')], 'eid:abc')
-    ).toEqual({});
-  });
-});
-
-describe('preconditionSnapshotParams on a slot-numbered run', () => {
-  let originalGuard: string | undefined;
-
-  beforeEach(() => {
-    originalGuard = process.env.WORKFLOW_PRECONDITION_GUARD;
-    process.env.WORKFLOW_PRECONDITION_GUARD = '1';
-  });
-
-  afterEach(() => {
-    if (originalGuard !== undefined) {
-      process.env.WORKFLOW_PRECONDITION_GUARD = originalGuard;
-    } else {
-      delete process.env.WORKFLOW_PRECONDITION_GUARD;
-    }
-  });
-
-  it('sends eventCount instead of the ULID triple', () => {
+describe('slotSnapshotParams', () => {
+  it('sends the highest slot the loaded log occupies', () => {
     const events = [1, 2, 3].map((slot) => makeEvent(slotToEventId(slot)));
 
-    expect(preconditionSnapshotParams(events, 'eid:abc')).toEqual({
-      eventCount: 3,
-    });
+    expect(slotSnapshotParams(events)).toEqual({ eventCount: 3 });
   });
 
   it('reports the highest slot, not the number of events', () => {
@@ -737,37 +612,35 @@ describe('preconditionSnapshotParams on a slot-numbered run', () => {
     // on every single create.
     const events = [1, 2, 5].map((slot) => makeEvent(slotToEventId(slot)));
 
-    expect(preconditionSnapshotParams(events, 'eid:abc')).toEqual({
-      eventCount: 5,
-    });
+    expect(slotSnapshotParams(events)).toEqual({ eventCount: 5 });
   });
 
   it('is invariant under the order the World returned the log in', () => {
     const forward = [1, 2, 3].map((slot) => makeEvent(slotToEventId(slot)));
 
-    expect(preconditionSnapshotParams([...forward].reverse(), null)).toEqual(
-      preconditionSnapshotParams(forward, null)
+    expect(slotSnapshotParams([...forward].reverse())).toEqual(
+      slotSnapshotParams(forward)
     );
   });
 
-  it('omits eventCount when the guard is disabled', () => {
-    process.env.WORKFLOW_PRECONDITION_GUARD = '0';
-
-    expect(
-      preconditionSnapshotParams([makeEvent(slotToEventId(1))], null)
-    ).toEqual({});
+  it('sends nothing on an empty log', () => {
+    expect(slotSnapshotParams([])).toEqual({});
   });
 
-  it('falls back to the ULID triple when one event is not a slot', () => {
-    // A log may not mix the two schemes. If it somehow does, the slot reading
-    // is meaningless, so the run is treated as ULID-numbered.
-    const time = 1_700_000_000_000;
-    const events = [makeEvent(slotToEventId(1)), makeUlidEvent(time)];
+  it('sends nothing for a run whose events are not slot-numbered', () => {
+    expect(slotSnapshotParams([makeUlidEvent(1_700_000_000_000)])).toEqual({});
+  });
 
-    expect(preconditionSnapshotParams(events, null)).toEqual({
-      stateUpdatedAt: time,
-      stateEventCount: 2,
-    });
+  it('sends nothing when one event of the log is not a slot', () => {
+    // A log may not mix the two schemes. If it somehow does, the slot reading
+    // is meaningless, and a count derived from part of the log would understate
+    // the writer's position in a way the World cannot detect.
+    const events = [
+      makeEvent(slotToEventId(1)),
+      makeUlidEvent(1_700_000_000_000),
+    ];
+
+    expect(slotSnapshotParams(events)).toEqual({});
   });
 });
 
@@ -1014,21 +887,16 @@ describe('appendUniqueEvents', () => {
     expect(target.map((e) => e.eventId)).toEqual([b.eventId, a.eventId]);
   });
 
-  it('leaves the watermark correct even when the merge is not id-ordered', () => {
-    // Why the merge needs no sort: the snapshot reads the maximum ULID time
-    // across the log rather than the tail, so an out-of-order tail costs nothing
-    // and every loaded event stays at or below the watermark.
-    const time = 1_700_000_002_000;
-    const target = [makeUlidEvent(1_700_000_000_000), makeUlidEvent(time)];
+  it('leaves the snapshot correct even when the merge is not id-ordered', () => {
+    // Why the merge needs no sort of its own: the snapshot reads the maximum
+    // slot across the log rather than the tail, so an out-of-order tail costs
+    // nothing.
+    const target = [makeEvent(slotToEventId(1)), makeEvent(slotToEventId(3))];
 
-    appendUniqueEvents(target, [makeUlidEvent(1_700_000_001_000)]);
+    appendUniqueEvents(target, [makeEvent(slotToEventId(2))]);
 
-    expect(latestEventStateUpdatedAt(target)).toBe(time);
-    expect(preconditionSnapshotParams(target, 'eid:abc')).toEqual({
-      stateUpdatedAt: time,
-      stateEventCount: 3,
-      stateCursor: 'eid:abc',
-    });
+    expect(target.at(-1)?.eventId).toBe(slotToEventId(2));
+    expect(slotSnapshotParams(target)).toEqual({ eventCount: 3 });
   });
 });
 

@@ -424,9 +424,12 @@ describe('sim store', () => {
       });
 
       guarded.tick(10);
-      const snapshot = guarded.nowMs();
+      const snapshot = {
+        updatedAt: guarded.nowMs(),
+        count: guarded.store.allEvents(RUN).length,
+      };
       guarded.tick(10);
-      // An out-of-band resume: no stateUpdatedAt, so it advances the marker.
+      // An out-of-band resume: no snapshot, so it advances the marker.
       await guarded.store.events.create(RUN, {
         eventType: 'hook_received',
         specVersion: SPEC,
@@ -443,7 +446,7 @@ describe('sim store', () => {
             correlationId: 'step_1',
             eventData: { stepName: 'step//./w//s', input: new Uint8Array() },
           },
-          { stateUpdatedAt: snapshot }
+          { snapshot }
         )
       ).rejects.toThrow(/out of band/);
 
@@ -457,7 +460,12 @@ describe('sim store', () => {
             correlationId: 'step_1',
             eventData: { stepName: 'step//./w//s', input: new Uint8Array() },
           },
-          { stateUpdatedAt: guarded.nowMs() }
+          {
+            snapshot: {
+              updatedAt: guarded.nowMs(),
+              count: guarded.store.allEvents(RUN).length,
+            },
+          }
         )
       ).resolves.toBeTruthy();
     });
