@@ -121,10 +121,11 @@ export interface HookOptions {
    * explicit token is not accepted — one is always generated for you.
    *
    * Generated webhook tokens are drawn from the run's deterministic sequence,
-   * so they stay stable across replays and across concurrent invocations of
-   * the same run. That stability is required: the webhook URL is handed to an
-   * external caller and must not change when the run replays. Because of
-   * that, prefer authenticating webhook requests themselves — a signature
+   * based on the run ID, the workflow name, and the deployment ID, which are not
+   * trivial to guess but should not be considered secure. This is done so URLs stay
+   * stable across replays and across concurrent invocations of the same run.
+   * 
+   * We recommend authenticating webhook requests themselves — a signature
    * header, a shared secret, or an auth check inside the handler — rather
    * than relying on URL secrecy alone.
    *
