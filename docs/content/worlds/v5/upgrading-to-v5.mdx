@@ -58,23 +58,34 @@ These do not change any signature, so an implementation ported by types alone wi
 
 **Capabilities fail closed.** The optional `capabilities` object advertises behavior the runtime otherwise assumes is absent. An unadvertised capability costs performance, never correctness, so a partial World stays correct while it catches up. The reverse is not true: advertising something you do not enforce removes a guard the runtime was relying on. Only set a flag once the behavior is implemented.
 
+**A stale replay no longer has to be refused.** v5 shipped with a `preconditionGuard` capability for a World that rejected an event creation whose snapshot was behind the log. It is gone, and nothing replaced it: allocating positions at the commit means a reader's log is a prefix rather than a prefix with a hole, replay is deterministic on a prefix, and a write reports the events it was pushed past — so a stale replay costs a merge instead of a rejection. If you implemented the guard, you can delete it. `PreconditionFailedError` and the runtime's handling of it remain for a World that allocates positions away from the commit (see [Event ID allocation](#event-id-allocation)); no World in the SDK throws it.
+
 **Event creation can return a delta.** `events.create()` may return events alongside the one it created, in `events` with a matching `cursor` and `hasMore`. The runtime uses this to skip a follow-up `events.list` round trip on `run_started`, on step-terminal writes that carried a `sinceCursor`, and on `hook_received` writes that carried `preloadEvents`. All three are advisory: a World that returns only the created event stays correct and pays one more round trip.
 
 ## Event ID allocation
 
 This is the largest change for a World implementation, and it is required.
 
-In v4 an event ID was a ULID your World minted however it liked. In v5 an event ID is its **slot**: `evnt_` followed by the event's 1-based position in that run's log, zero-padded to 26 characters, so a run's first event is `evnt_00000000000000000000000001`. Format one with `slotToEventId()` from `@workflow/world`, and declare `capabilities.slotEventIds`.
+In v4 an event ID was a ULID your World minted however it liked. In v5 an event ID is its **slot**: `evnt_` followed by the event's 1-based position in that run's log, zero-padded to 26 characters, so a run's first event is `evnt_00000000000000000000000001`. Format one with `slotToEventId()` from `@workflow/world`.
+
+There is no capability to declare and no fallback path. The runtime reads a position out of every ID it loads and fails the run when it cannot, so a World whose IDs are not positions cannot replay a single workflow — it will pass a type check, start runs, and fail on the first replay with `Event id is not slot-numbered`.
 
 The scheme exists for what a reader can conclude from a log it just fetched: positions are dense, so a truncated log is distinguishable from a complete one by its length alone. The runtime relies on that, and it fails a run with [`CORRUPTED_EVENT_LOG`](/docs/errors/corrupted-event-log) rather than replay across a hole, so three rules bind an implementation:
 
 - **Uniqueness.** Settle a race for a position where the store settles it, with a unique constraint on `(runId, eventId)` or a conditional write, not by reading the maximum in your own process and adding one.
 - **Density.** Positions run from 1 with no holes. A writer that loses a race re-derives its position from the store instead of incrementing a local number, which would leave a permanent hole.
 - **Bump and report.** `events.create()` params carry `eventCount`, so the expected position is `eventCount + 1`. When it is taken, do not reject the write: commit at the next free position and return the events you skipped on the success response. A stale count is the normal case for a parallel fan-out, and rejecting it would serialize writes the runtime deliberately issues concurrently.
+- **Allocate at the commit.** Take the position in the same operation that appends the event, not earlier. This is what makes a reader's log a prefix of the run's log rather than a prefix with a hole in it: nothing can land behind a position a reader has already passed. A World that mints a position in a request handler and commits later breaks the property every replay depends on, and is the only kind that still has a use for a stale-write rejection.
 
 [Event ID Allocation](/worlds/building-a-world#event-id-allocation) carries the full rules, and [Event IDs](/docs/how-it-works/event-sourcing#event-ids) covers what the format means for anything that reads an ID back.
 
-Two consequences are specific to an upgrade. `eventCount` supersedes the `stateUpdatedAt` / `stateEventCount` / `stateCursor` triple used by the [precondition guard](/worlds/building-a-world#optional-the-event-creation-precondition-guard), which a complete-but-stale snapshot passes and a dense position does not. And runs already in your store are unaffected: a run's scheme is pinned by the run rather than by the capability flag, and it is readable off the shape of its own first event ID, so a World that switches slots on keeps replaying its existing ULID-numbered runs unchanged. `capabilities.slotEventIds` states what *new* runs get.
+Two consequences are specific to an upgrade, and the second is the one to plan around.
+
+`eventCount` supersedes the `stateUpdatedAt` / `stateEventCount` / `stateCursor` triple used by the [stale-write rejection](/worlds/building-a-world#optional-rejecting-a-stale-write), which a complete-but-stale snapshot passes and a dense position does not.
+
+<Callout type="warn">
+  **Runs already in your store cannot be replayed by the new code.** A ULID-numbered run is not readable as positions, and the runtime refuses it rather than guessing, so there is no mixed-scheme mode and no per-run fallback. Drain those runs on your 4.x build before deploying a v5 World, or accept that the ones still in flight will fail. On a platform where a run executes on the deployment that created it — Vercel, for instance — this resolves itself: those runs finish on the build that started them and never meet the new code. Anywhere a single deployment serves every run, sequencing matters.
+</Callout>
 
 ## New optional surface
 
@@ -82,7 +93,7 @@ None of this is required. Each entry is a hook the runtime uses if your World pr
 
 | Member | What it buys |
 | --- | --- |
-| `capabilities` | Advertises `hookRetention.active`, `preconditionGuard`, `hookResumeDedup`, `deploymentAffinity`, and `maxConcurrency`. See the contract note above about failing closed. (`slotEventIds` also lives here, but it is not optional — see [Event ID allocation](#event-id-allocation).) |
+| `capabilities` | Advertises `hookRetention.active`, `hookResumeDedup`, `deploymentAffinity`, and `maxConcurrency`. See the contract note above about failing closed. Event ID allocation is *not* in here: it is a requirement, not a capability. |
 | `analytics` | A metadata-only read namespace for observability surfaces. Payload-bearing reads stay on `runs`, `steps`, `events`, and `hooks`. |
 | `runs.experimentalSetAttributes` | Backs `setAttributes()` from application code. Without it, run attributes are unavailable. |
 | `runs.cancelMany` | Bulk cancellation: up to 500 unique run IDs per request (`BULK_CANCEL_MAX_RUN_IDS`), an optional `cancelReason` of at most 512 characters, and a per-run outcome for every ID. Without it, the runtime falls back to bounded-concurrency individual cancels. |
@@ -121,4 +132,6 @@ The cases worth covering explicitly:
 - A stream written and read back, including a stream closed before the reader attaches.
 - A run created under an older spec version, if your World has any, read back by the new code.
 
-The first-party implementations in `packages/world-local` and `packages/world-postgres` are the reference for all of the above, and their test suites are the closest thing to a conformance suite while the compatibility tests are being rebuilt.
+`@workflow/world-testing` is the shared suite the first-party Worlds run, and it now covers event ID allocation directly: `numbers events by position` fails a World whose IDs do not decode to slots, whose run is not dense from 1, or whose IDs are not in canonical form — a World padding to a different width sorts its own log wrongly past ten events. Run it against your World before the end-to-end cases above; it turns the failure that would otherwise appear on a first replay into one line of test output.
+
+The first-party implementations in `packages/world-local` and `packages/world-postgres` are the reference for everything else, and their test suites are the closest thing to full conformance while the compatibility tests are being rebuilt.

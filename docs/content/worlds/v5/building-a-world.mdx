@@ -41,8 +41,6 @@ interface WorldCapabilities {
   hookRetention?: {
     active: boolean;
   };
-  slotEventIds?: boolean;
-  preconditionGuard?: boolean;
   maxConcurrency?: boolean;
 }
 
@@ -62,7 +60,9 @@ interface World extends Storage, Queue, Streamer {
 
 The required `specVersion` declares which Workflow protocol spec version the World implements. The runtime accepts the range from its own `SPEC_VERSION_CURRENT` up to `SPEC_VERSION_MAX_SUPPORTED` and refuses to create or replay runs outside it, so import the constant from `@workflow/world` rather than hardcoding a number, and re-check it on SDK upgrades.
 
-The optional `capabilities` object advertises additional behavior, and every capability **fails closed**: a missing member means "unsupported", and the runtime keeps its conservative behavior. Set `hookRetention.active` to `true` only when the World implements Hook token retention. Set `slotEventIds` when the World allocates [slot-numbered event IDs](#event-id-allocation), which a v5 World is required to do. Set `preconditionGuard` only when the World actually rejects event creations carrying a stale `stateUpdatedAt` snapshot with a `PreconditionFailedError` — advertising it without the fence enables runtime optimizations with nothing behind them. Set `maxConcurrency` only when the World's queue supports `maxConcurrency`-limited consumption (used by `WORKFLOW_SEQUENTIAL_REPLAYS=1`).
+The optional `capabilities` object advertises additional behavior, and every capability **fails closed**: a missing member means "unsupported", and the runtime keeps its conservative behavior. Set `hookRetention.active` to `true` only when the World implements Hook token retention. Set `maxConcurrency` only when the World's queue supports `maxConcurrency`-limited consumption (used by `WORKFLOW_SEQUENTIAL_REPLAYS=1`).
+
+Note what is deliberately *not* in there. [Slot-numbered event IDs](#event-id-allocation) are a requirement of this contract rather than a capability, so there is no flag to set and no fallback path if you skip them.
 
 The remaining optional members:
 
@@ -135,20 +135,34 @@ Keep the owning Run available for at least as long as its token remains unavaila
 
 ### Event ID Allocation
 
-Your World assigns every event ID. An ID is `evnt_` followed by the event's 1-based position in that run's log, zero-padded to 26 characters, so the run's first event is `evnt_00000000000000000000000001`. Use `slotToEventId()` from `@workflow/world` to format one, and declare `capabilities.slotEventIds`.
+<Callout type="warn">
+  **Required.** Your World assigns every event ID, and every ID must be a position in its run's log. The runtime reads a position out of every ID it loads and fails the run when it cannot, so a World whose IDs are anything else — a ULID, a UUID, a database sequence shared across runs — cannot replay a single workflow. There is no capability flag and no fallback path.
+</Callout>
+
+An ID is `evnt_` followed by the event's 1-based position in that run's log, zero-padded to 26 characters, so the run's first event is `evnt_00000000000000000000000001`. Use `slotToEventId()` from `@workflow/world` to format one.
 
 Two properties have to hold, and both are about what a reader can conclude from the log:
 
 - **Uniqueness.** Two writers racing to append must not both take a position. Settle it where the store settles it, with a unique constraint on `(runId, eventId)` or a conditional write, rather than reading the maximum and adding one in your own process.
 - **Density.** Positions run from 1 with no holes, which is what lets a reader tell a complete log from a truncated one by its length alone. A writer that loses a race must re-derive its position from the store and take the next free one. Incrementing a local number after a loss leaves a permanent hole, and the runtime treats a hole as a log it cannot safely replay across.
 
+Allocate the position **at the commit**, in the same operation that appends the event. That is what makes a reader's log a *prefix* of the run's log rather than a prefix with a hole in it: nothing can land behind a position a reader has already passed. Handing a position out earlier — in a request handler, say — and committing later breaks the property every replay depends on, and is the one case where you may still want [a stale-write rejection](#optional-rejecting-a-stale-write) to compensate.
+
 `events.create()` params carry `eventCount`: how many events the writer held in the log it replayed from, which is the position it expects to land on minus one. Attempt `eventCount + 1`. When that position is taken, **do not reject the write**. Advance to the next free position, commit there, and return the events occupying the positions you skipped over on the success response, in `events` with a matching `cursor` and `hasMore`. The writer merges them into its own log and replays once, rather than paying a second round trip to discover it was behind. A caller with a stale count is the normal case for a fan-out, and rejecting it would serialize writes the runtime issues in parallel.
 
-`eventCount` supersedes the `stateUpdatedAt` / `stateEventCount` / `stateCursor` triple below for a World that allocates positions. The triple approximates a position with a timestamp watermark plus a count of events at or below it, which a complete-but-stale snapshot passes: every event the writer holds is at or below its own watermark, so the count matches and no fence fires. A dense position has no such blind spot.
+`eventCount` supersedes the `stateUpdatedAt` / `stateEventCount` / `stateCursor` triple below. The triple approximates a position with a timestamp watermark plus a count of events at or below it, which a complete-but-stale snapshot passes: every event the writer holds is at or below its own watermark, so the count matches and no fence fires. A dense position has no such blind spot.
 
-### Optional: The Event Creation Precondition Guard
+### Optional: Rejecting a Stale Write
 
-A replay writes events derived from the event log it loaded, so a write made from an event log that no longer matches the store can commit events no correct replay would produce. To let a World fence those writes, `events.create()` params may carry a description of the snapshot the caller replayed from:
+**No World in this repository does this, and a v5 World should not need to.** A replay whose log is out of date is not dangerous, for three reasons that hold together once positions are allocated at the commit:
+
+- A reader's log is a **prefix** of the run's log rather than a prefix with a hole in it. Nothing lands behind a position it has already passed.
+- Replay is **deterministic on a prefix**. The same prefix always yields the same decisions, so a shorter log means a run that has not caught up, never a run that will decide differently.
+- Every write **reports what it missed**. It names the position it was derived from, and you return the events it was pushed past. The replay merges those and continues, correcting itself on the write rather than on a read.
+
+That is why the `preconditionGuard` capability no longer exists: the need for a guard was removed rather than made universal. The rest of this section is for the one case that still wants it — a store that allocates positions somewhere other than the commit, and therefore cannot report a skipped span reliably.
+
+`events.create()` params may carry a description of the snapshot the caller replayed from:
 
 - `stateUpdatedAt` — the timestamp encoded in the latest loaded event's ID.
 - `stateEventCount` — how many events the caller loaded. Only sent together with `stateUpdatedAt`; ignore a count that arrives without one.
@@ -166,7 +180,7 @@ Two rules make this safe:
 
 A rejection may optionally carry the events the caller was missing, as `{ events, cursor }` on the error's `details`. Only include them when you can prove the set is complete — that those events fully account for the discrepancy and are not truncated — and that every one of them belongs to the run being written. The runtime merges them straight into the replay's event log, so anything else there is worse than no delta at all. Otherwise omit them, and the runtime performs a full reload instead.
 
-A World that enforces the guard should declare `capabilities.preconditionGuard`, which the runtime also reads to keep event-log delta optimizations enabled. A World that ignores these params must not declare it.
+The runtime handles a rejection wherever it can arrive: it restarts the replay in-process from a corrected log, and re-invokes with a fresh replay once that budget is spent. It never retries the rejected write as-is, because a replay working from a corrected log derives different events. Nothing has to be declared for that to work — there is no capability, and the runtime no longer keys any optimization on whether you fence.
 
 ## Queue Interface
 
