@@ -1,4 +1,9 @@
-import { type Event, entityEventClass, envNumber } from '@workflow/world';
+import {
+  type Event,
+  entityEventClass,
+  envNumber,
+  isStepEventType,
+} from '@workflow/world';
 import { eventsLogger } from './logger.js';
 
 /**
@@ -352,7 +357,9 @@ export class EventsConsumer {
         // for the same entity it is a straggler from a concurrent replay:
         // step over it in this pass rather than paying the deferred window for
         // a consumer that cannot come (see `firstEventTypeOfClass`).
-        const firstType = this.firstEventTypeOfClass(currentEvent);
+        const firstType =
+          this.firstEventTypeOfClass(currentEvent) ??
+          this.outcomeAlreadyDecided(currentEvent);
         if (firstType !== undefined) {
           this.skipDuplicateEvent(currentEvent, firstType);
           continue;
@@ -538,6 +545,49 @@ export class EventsConsumer {
   private firstEventTypeOfClass(event: Event): Event['eventType'] | undefined {
     const key = this.eventClassKey(event);
     return key === undefined ? undefined : this.seenEventClasses.get(key);
+  }
+
+  /**
+   * The terminal event that already settled this step, for a step-lifecycle
+   * event that arrives behind it.
+   *
+   * {@link firstEventTypeOfClass} catches a straggler that repeats a class,
+   * which covers a second `step_created` or a second `step_started`. It cannot
+   * catch the first `step_retrying` of a step whose result is already
+   * recorded, because that event repeats no class: nothing consumed a
+   * `step_retrying` for this step, so the class was never recorded, and no
+   * consumer will ever want one — the step is over.
+   *
+   * That event exists whenever a losing attempt outlives the winning one. Two
+   * invocations run the same step, one commits `step_completed`, the other's
+   * body then fails and records the retry it would have taken.
+   *
+   * A step claimed inline has exactly one owner, so that pair cannot arise
+   * there — the World tells one writer it created the step and the other that
+   * it did not. A queue-dispatched step has no claim to lose: its message can
+   * be delivered twice, both deliveries start a step that exists, and nothing
+   * before the fact can decide between two attempts that are both legitimate.
+   * A World that settles the step in the same write as the event refuses the
+   * loser's *terminal* write, which is enough when the completion is visible;
+   * one that stores only the log can refuse only what the writer skipped over,
+   * and the completion is invisible to a writer whose own start already sits
+   * above it. Measured: with the inline claim fenced and this skip reverted,
+   * `event-log-race-repro` still corrupts 12 of 12 storm runs.
+   *
+   * Skipping is as deterministic as the class rule it extends, and for the
+   * same reason: the outcome was decided at a fixed position that every replay
+   * reads, and correlation ids are per body position, so no consumer can
+   * appear later wanting this. What the skip protects is the difference
+   * between a run that reports its own corruption and a run that finishes.
+   */
+  private outcomeAlreadyDecided(event: Event): Event['eventType'] | undefined {
+    if (!isStepEventType(event.eventType)) return undefined;
+    if (entityEventClass(event.eventType) === 'step_terminal') {
+      // A second outcome is a repeat of the class, which the caller already
+      // checked. Reaching here means it is the first, and it is wanted.
+      return undefined;
+    }
+    return this.seenEventClasses.get(`step_terminal:${event.correlationId}`);
   }
 
   /** Steps the walk over a repeat of an already-consumed class. */

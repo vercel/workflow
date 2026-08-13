@@ -120,6 +120,27 @@ async function fetchV4(
 const EVENT_ID_HEADER = 'x-wf-event-id';
 const MAX_EVENTS_HEADER = 'x-wf-max-events';
 
+/**
+ * The route version every event request in this file is sent to.
+ *
+ * Distinct from the *frame* version, which is still v4 and is what the rest of
+ * this file is named after: `/v5` serves the same wire format, validated by the
+ * same schemas, so nothing about encoding or decoding changes with it. What
+ * changes is the backend's own bookkeeping behind the route. Under `/v4` an
+ * event write also writes the Step or Wait row that arbitrated it, and the
+ * write's atomicity came from a conditional update on that row; under `/v5` the
+ * event's position in its run's log is the arbitration (see
+ * `SPEC_VERSION_SUPPORTS_SLOT_IDENTITY`), so the row is no longer on the write
+ * path.
+ *
+ * The consequence a reader of this file should know: rows are still the backend's
+ * read model for `steps.list`, and `/v5` stops filling them. A run created by
+ * this adapter reports its steps through the event log, which is what the
+ * runtime replays from, and reports nothing through the row projection that
+ * `wf inspect` and the dashboard read.
+ */
+const EVENTS_ROUTE_VERSION = 'v5';
+
 interface CreateEventV4InputBase {
   // runId is required even for run_created, because the payload is keyed under the runId
   runId: string;
@@ -639,7 +660,7 @@ export function throwForErrorResponse(
 }
 
 /**
- * POST /api/v4/runs/:runId/events/:eventType
+ * POST /api/v5/runs/:runId/events/:eventType
  *
  * Sends the full request as a single v4 frame and validates the materialized
  * CBOR response.
@@ -670,7 +691,7 @@ async function postWorkflowRunEventV4(
     input.payload ?? new Uint8Array(0)
   );
 
-  const url = `${baseUrl}/v4/runs/${encodeURIComponent(input.runId)}/events/${encodeURIComponent(input.eventType)}`;
+  const url = `${baseUrl}/${EVENTS_ROUTE_VERSION}/runs/${encodeURIComponent(input.runId)}/events/${encodeURIComponent(input.eventType)}`;
   return fetchV4(
     url,
     { method: 'POST', headers, body: frame },
@@ -917,7 +938,7 @@ export type HookReceivedPreloadV4Result =
     };
 
 /**
- * POST /api/v4/runs/:runId/events/hook_received with the v4-frame `Accept`,
+ * POST /api/v5/runs/:runId/events/hook_received with the v4-frame `Accept`,
  * consuming either response mode.
  *
  * A server that supports the lazy-hook replay stream answers the consumer's
@@ -970,7 +991,7 @@ function readHeader(
 }
 
 /**
- * GET /api/v4/runs/:runId/events/:eventId
+ * GET /api/v5/runs/:runId/events/:eventId
  *
  * Returns one validated event. The wire format is identical to a single LIST
  * frame so the server can stream the payload back without buffering.
@@ -984,7 +1005,7 @@ export async function getEventV4(
   const { baseUrl, headers } = await getHttpConfig(config);
 
   const url =
-    `${baseUrl}/v4/runs/${encodeURIComponent(runId)}/events/${encodeURIComponent(eventId)}` +
+    `${baseUrl}/${EVENTS_ROUTE_VERSION}/runs/${encodeURIComponent(runId)}/events/${encodeURIComponent(eventId)}` +
     `?remoteRefBehavior=${remoteRefBehavior}`;
   const response = await fetchV4(
     url,
@@ -1113,7 +1134,7 @@ function paginationToQuery(params: ListEventsV4Params): string {
 }
 
 /**
- * GET /api/v4/runs/:runId/events
+ * GET /api/v5/runs/:runId/events
  *
  * Parses the binary-frame stream into validated events plus the pagination
  * cursor from the sentinel frame.
@@ -1133,7 +1154,7 @@ export async function getWorkflowRunEventsV4(
 
   while (true) {
     const url =
-      `${baseUrl}/v4/runs/${encodeURIComponent(runId)}/events` +
+      `${baseUrl}/${EVENTS_ROUTE_VERSION}/runs/${encodeURIComponent(runId)}/events` +
       paginationToQuery({ ...params, cursor });
     try {
       const page = await consumeListFrameStream(
@@ -1159,7 +1180,7 @@ export async function getWorkflowRunEventsV4(
 }
 
 /**
- * GET /api/v4/events?correlationId=...&runId=...
+ * GET /api/v5/events?correlationId=...&runId=...
  *
  * Same frame stream as getWorkflowRunEventsV4 but selected by correlation id
  * instead of run id alone. Used by the storage adapter's
@@ -1183,7 +1204,7 @@ export async function getEventsByCorrelationIdV4(
   sp.set('correlationId', correlationId);
   sp.set('runId', runId);
   appendListParams(sp, params);
-  const url = `${baseUrl}/v4/events?${sp.toString()}`;
+  const url = `${baseUrl}/${EVENTS_ROUTE_VERSION}/events?${sp.toString()}`;
   const events: Event[] = [];
   const page = await consumeListFrameStream(
     url,

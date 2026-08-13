@@ -132,6 +132,16 @@ interface ReproRunResult {
   /** Diagnostics from the driver: how much racing pressure the attempt actually
    *  applied. A run that corrupts with `stragglers: 0` in every round would mean
    *  the step-count amplifier was not the trigger. */
+  /**
+   * The tail of the run's event log, for an attempt that did not complete.
+   *
+   * Without it this job is signature-blind: `errorCode` says
+   * `CORRUPTED_EVENT_LOG` and the message the runtime failed on does not
+   * survive into the run row, so a reader is left inferring which two writes
+   * collided from the shape of the code. The corruption is always an ordering
+   * between events, so the ordering is the evidence.
+   */
+  timeline?: string[];
   pressure?: {
     resumesSent: number;
     resumesFailed: number;
@@ -392,6 +402,50 @@ function validateStormReturn(value: unknown): {
   return { stragglers };
 }
 
+/**
+ * The last {@link TIMELINE_TAIL} events of a run, as `slot type corr#short`.
+ *
+ * Correlation ids are shortened to their last six characters: the corruption
+ * is about which events share one, and the full ULID makes a timeline
+ * unreadable at a glance without telling the reader anything more.
+ *
+ * Best-effort. This runs only for an attempt that already failed, so a listing
+ * error must not replace the outcome being reported with a transport one.
+ */
+const TIMELINE_TAIL = 40;
+
+async function readTimeline(
+  world: Awaited<ReturnType<typeof getWorld>>,
+  runId: string
+): Promise<string[] | undefined> {
+  try {
+    const events: string[] = [];
+    let cursor: string | null | undefined;
+    do {
+      const page = await world.events.list({
+        runId,
+        pagination: { cursor: cursor ?? undefined, sortOrder: 'asc' },
+      });
+      for (const event of page.data) {
+        const corr = event.correlationId;
+        events.push(
+          `${event.eventId.replace(/^evnt_0*/, '')} ${event.eventType}` +
+            (corr ? ` ${corr.slice(-6)}` : '')
+        );
+      }
+      cursor = page.hasMore ? page.cursor : undefined;
+    } while (cursor);
+    return events.length > TIMELINE_TAIL
+      ? [
+          `… ${events.length - TIMELINE_TAIL} earlier`,
+          ...events.slice(-TIMELINE_TAIL),
+        ]
+      : events;
+  } catch {
+    return undefined;
+  }
+}
+
 async function pollTerminalRun(
   run: Run<unknown>,
   startedAt: number,
@@ -439,6 +493,7 @@ async function pollTerminalRun(
         errorMessage: failure.error?.message,
         errorName: failure.error?.name,
         durationMs: Date.now() - startedAt,
+        timeline: await readTimeline(world, run.runId),
       };
     }
 
@@ -460,6 +515,7 @@ async function pollTerminalRun(
     outcome: 'stuck',
     status: lastStatus,
     durationMs: Date.now() - startedAt,
+    timeline: await readTimeline(world, run.runId),
   };
 }
 

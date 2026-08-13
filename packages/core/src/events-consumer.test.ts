@@ -841,6 +841,90 @@ describe('EventsConsumer', () => {
       expect(onDuplicateEvent).toHaveBeenCalledWith(events[3], 'step_started');
     });
 
+    it('skips a step_retrying written behind the step result', async () => {
+      // The straggler that repeats no class: a losing attempt outlived the
+      // winning one, so its retry is the step's FIRST `step_retrying` and it
+      // lands after the completion. No consumer can want it — the step is
+      // over — and treating it as divergence fails a run that finished.
+      const corr = 'step_R';
+      const events = [
+        realEvent('step_created', corr),
+        realEvent('step_started', corr),
+        realEvent('step_completed', corr),
+        realEvent('step_retrying', corr),
+      ];
+      const onUnconsumedEvent = vi.fn();
+      const onDuplicateEvent = vi.fn();
+      const consumer = consumerFor(events, {
+        onUnconsumedEvent,
+        onDuplicateEvent,
+      });
+
+      consumer.subscribe(entityConsumer(corr, 'step_completed'));
+      await waitPastDeferredCheck();
+
+      expect(consumer.eventIndex).toBe(events.length);
+      expect(onUnconsumedEvent).not.toHaveBeenCalled();
+      expect(onDuplicateEvent).toHaveBeenCalledWith(
+        events[3],
+        'step_completed'
+      );
+    });
+
+    it('skips a step_retrying written behind a step failure', async () => {
+      const corr = 'step_RF';
+      const events = [
+        realEvent('step_created', corr),
+        realEvent('step_started', corr),
+        realEvent('step_failed', corr),
+        realEvent('step_retrying', corr),
+      ];
+      const onUnconsumedEvent = vi.fn();
+      const onDuplicateEvent = vi.fn();
+      const consumer = consumerFor(events, {
+        onUnconsumedEvent,
+        onDuplicateEvent,
+      });
+
+      consumer.subscribe(entityConsumer(corr, 'step_failed'));
+      await waitPastDeferredCheck();
+
+      expect(onUnconsumedEvent).not.toHaveBeenCalled();
+      expect(onDuplicateEvent).toHaveBeenCalledWith(events[3], 'step_failed');
+    });
+
+    it('still reports an unconsumed step_retrying for a step with no result', async () => {
+      // The rule keys on the outcome being decided, not on the type. A retry
+      // nobody wants for a step still running is the divergence it always was.
+      const corr = 'step_LIVE';
+      const events = [
+        realEvent('step_created', 'step_OTHER'),
+        realEvent('step_retrying', corr),
+      ];
+      const onUnconsumedEvent = vi.fn();
+      const consumer = consumerFor(events, { onUnconsumedEvent });
+
+      consumer.subscribe(entityConsumer('step_OTHER', 'step_completed'));
+      await vi.waitFor(() => expect(onUnconsumedEvent).toHaveBeenCalled());
+      expect(onUnconsumedEvent).toHaveBeenCalledWith(events[1]);
+    });
+
+    it('does not let one step result silence a straggler for another step', async () => {
+      const corr = 'step_ONE';
+      const events = [
+        realEvent('step_created', corr),
+        realEvent('step_started', corr),
+        realEvent('step_completed', corr),
+        realEvent('step_retrying', 'step_TWO'),
+      ];
+      const onUnconsumedEvent = vi.fn();
+      const consumer = consumerFor(events, { onUnconsumedEvent });
+
+      consumer.subscribe(entityConsumer(corr, 'step_completed'));
+      await vi.waitFor(() => expect(onUnconsumedEvent).toHaveBeenCalled());
+      expect(onUnconsumedEvent).toHaveBeenCalledWith(events[3]);
+    });
+
     it('skips a step_created that repeats a class already in the log', async () => {
       // Classes are tracked independently, so a completed step still has a
       // recorded step_created and a second one is ignorable.
@@ -952,10 +1036,12 @@ describe('EventsConsumer', () => {
       });
     });
 
-    it('does not let one class suppress another for the same entity', async () => {
-      // The step's outcome is in the log but its first attempt never wrote a
-      // step_started, so this one is not a repeat of anything and divergence
-      // is the right answer.
+    it('skips a start behind the result even when it repeats no class', async () => {
+      // The step's outcome is in the log and this start repeats nothing, so
+      // the class rule alone would call it divergence. It is not: an attempt
+      // that began while another was finishing writes exactly this, and
+      // neither writer was wrong. What settles it is that the outcome is
+      // already decided, which no later event for this step can change.
       const corr = 'step_A';
       const events = [
         realEvent('step_created', corr),
@@ -972,11 +1058,12 @@ describe('EventsConsumer', () => {
       consumer.subscribe(entityConsumer(corr, 'step_completed'));
       await waitPastDeferredCheck();
 
-      expect(consumer.eventIndex).toBe(2);
-      expect(onDuplicateEvent).not.toHaveBeenCalled();
-      await vi.waitFor(() => {
-        expect(onUnconsumedEvent).toHaveBeenCalledWith(events[2]);
-      });
+      expect(consumer.eventIndex).toBe(events.length);
+      expect(onUnconsumedEvent).not.toHaveBeenCalled();
+      expect(onDuplicateEvent).toHaveBeenCalledWith(
+        events[2],
+        'step_completed'
+      );
     });
 
     it('does not track hook deliveries, whose consumers subscribe lazily', async () => {

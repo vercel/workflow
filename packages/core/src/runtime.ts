@@ -677,6 +677,7 @@ export function workflowEntrypoint(
           runInput,
           hookInput,
           stepInput,
+          stepContext,
           hookResumeTiming,
         } = WorkflowInvokePayloadSchema.parse(message_);
 
@@ -1594,6 +1595,12 @@ export function workflowEntrypoint(
                           ...(await replayMessage()),
                           stepId: incomingStepId,
                           stepName: incomingStepName,
+                          // Carry the dispatcher's input and context verbatim
+                          // — the re-routed delivery still has to hydrate and
+                          // bound retries, and this message's copy is the
+                          // only one it will see.
+                          ...(stepInput !== undefined ? { stepInput } : {}),
+                          ...(stepContext !== undefined ? { stepContext } : {}),
                           // Carry the resume timing verbatim so the re-routed
                           // hop stays inside `step_dispatch` rather than
                           // vanishing from the TTR decomposition.
@@ -1606,18 +1613,27 @@ export function workflowEntrypoint(
                         ? +bgRun.startedAt
                         : Date.now();
 
-                      // Retry ceiling for a backgrounded step. `metadata.attempt`
-                      // (the queue delivery count) is a cheap upper bound, but it
-                      // over-counts: a ThrottleError / TooEarlyError — or any
-                      // redelivery that never ran the body — still advances it, so
-                      // trusting it directly could fail a step as "exceeded max
-                      // retries" before the body ever ran (a user-visible
-                      // regression under transient backend pressure). Use it only
-                      // as a fast gate: while it is at or under the ceiling the
-                      // step cannot be exhausted, so proceed without touching the
-                      // log. Only once it crosses the ceiling do we load the full
-                      // event log and derive the authoritative attempt from the
-                      // recorded `step_started` count — scoped to the lifecycle
+                      // Retry ceiling for a backgrounded step, from the two
+                      // cheap signals a queued delivery carries, verified
+                      // against the log once they say the budget is spent.
+                      //
+                      // `metadata.attempt` (the queue delivery count) is an
+                      // upper bound on THIS message's deliveries, but it
+                      // over-counts within a message — a ThrottleError /
+                      // TooEarlyError redelivery that never ran the body
+                      // still advances it — and it resets to 1 on every
+                      // fresh publish, so it never sees the attempts behind
+                      // a step re-dispatched after `step_retrying`. The
+                      // dispatcher's `stepContext.attempt` covers exactly
+                      // that half: it is the recorded start total in the log
+                      // the re-dispatching replay held, plus one for this
+                      // dispatch. Neither is authoritative alone, so take
+                      // the max as the fast gate: while it is at or under
+                      // the ceiling the step cannot be exhausted, so proceed
+                      // without touching the log. Only once it crosses the
+                      // ceiling do we load the full event log and derive the
+                      // authoritative attempt from the recorded
+                      // `step_started` count — scoped to the lifecycle
                       // attempt total (bare starts plus the largest single
                       // owner's starts): throttle/too-early redeliveries write
                       // no start at all, racing invocations' one-off stamped
@@ -1629,11 +1645,14 @@ export function workflowEntrypoint(
                       // retries trips the combined ceiling. This still bounds
                       // timeouts, which write no error for the post-body guard
                       // to catch.
-                      let bgAuthoritativeAttempt = metadata.attempt;
+                      let bgAuthoritativeAttempt = Math.max(
+                        metadata.attempt,
+                        stepContext?.attempt ?? 1
+                      );
                       const bgMaxRetries =
                         getStepFunction(incomingStepName)?.maxRetries ??
                         DEFAULT_STEP_MAX_RETRIES;
-                      if (metadata.attempt > bgMaxRetries + 1) {
+                      if (bgAuthoritativeAttempt > bgMaxRetries + 1) {
                         const loaded = await loadWorkflowRunEvents(runId);
                         bgAuthoritativeAttempt =
                           countStepStartedEvents(
@@ -1678,10 +1697,30 @@ export function workflowEntrypoint(
                             stepId: incomingStepId,
                             stepName: incomingStepName,
                             runSpecVersion: bgRun.specVersion,
-                            // Retry ceiling: the queue delivery count as a fast
-                            // gate, verified against the recorded step_started
+                            // Retry ceiling: the delivery count and the
+                            // dispatcher's declared attempt as a fast gate,
+                            // verified against the recorded step_started
                             // count once it crosses the ceiling (see above).
                             authoritativeAttempt: bgAuthoritativeAttempt,
+                            // Input fallback for a World whose bare
+                            // step_started response carries none (no step
+                            // rows): the same serialized bytes the
+                            // dispatcher wrote into step_created.
+                            ...(stepInput !== undefined
+                              ? { dispatchedStepInput: stepInput.input }
+                              : {}),
+                            // The dispatcher's log position, so this
+                            // execution's writes name what their scheduling
+                            // was decided against — a bare start naming no
+                            // position gets no duplicate gate from a World
+                            // that reads refusals out of the log.
+                            ...(stepContext?.eventCount !== undefined
+                              ? {
+                                  slotSnapshot: {
+                                    eventCount: stepContext.eventCount,
+                                  },
+                                }
+                              : {}),
                             ...(bgResumeTracking
                               ? { resumeTracking: bgResumeTracking }
                               : {}),
@@ -3539,6 +3578,27 @@ export function workflowEntrypoint(
                             handOffResumeTiming = false;
                             resumeTracking = undefined;
                           }
+                          // What this dispatcher knows and the executing
+                          // invocation cannot cheaply learn: the serialized
+                          // input (a World without step rows answers a bare
+                          // start without one), which attempt this dispatch
+                          // asks for (the queue delivery count resets on
+                          // every fresh publish, so a step re-dispatched
+                          // after step_retrying would report attempt 1
+                          // forever), and this replay's log position (a bare
+                          // start naming no position gets no duplicate gate
+                          // from a World that reads refusals out of the
+                          // log). See StepDispatchContextSchema.
+                          const dispatchInput =
+                            suspensionResult.stepDispatchInputs.get(
+                              step.correlationId
+                            );
+                          const dispatchAttempt =
+                            countStepStartedEvents(
+                              eventLog.events,
+                              step.correlationId,
+                              { type: 'totalAttempts' }
+                            ) + 1;
                           dispatches.push(
                             queueMessage(
                               world,
@@ -3552,6 +3612,13 @@ export function workflowEntrypoint(
                                 ...(stepResumeTiming
                                   ? { hookResumeTiming: stepResumeTiming }
                                   : {}),
+                                ...(dispatchInput
+                                  ? { stepInput: { input: dispatchInput } }
+                                  : {}),
+                                stepContext: {
+                                  attempt: dispatchAttempt,
+                                  ...slotSnapshot(),
+                                },
                               },
                               {
                                 // Step-identity-scoped: dedupes against every
@@ -4048,6 +4115,7 @@ export function workflowEntrypoint(
                         const toRetry: {
                           step: (typeof inlineExecutions)[number];
                           delaySeconds: number;
+                          nextAttempt?: number;
                         }[] = [];
                         let anyPendingOps = false;
                         // A throttled inline step delays redelivery of THIS
@@ -4076,6 +4144,7 @@ export function workflowEntrypoint(
                             toRetry.push({
                               step: s,
                               delaySeconds: r.timeoutSeconds,
+                              nextAttempt: r.nextAttempt,
                             });
                           } else if (r.type === 'throttled') {
                             throttleTimeout = Math.max(
@@ -4118,7 +4187,7 @@ export function workflowEntrypoint(
                         if (toRetry.length > 0) {
                           const retryTraceCarrier = await nextTraceCarrier();
                           await Promise.all(
-                            toRetry.map(({ step, delaySeconds }) =>
+                            toRetry.map(({ step, delaySeconds, nextAttempt }) =>
                               queueMessage(
                                 world,
                                 getWorkflowQueueName(workflowName, namespace),
@@ -4128,6 +4197,20 @@ export function workflowEntrypoint(
                                   stepName: step.stepName,
                                   traceCarrier: retryTraceCarrier,
                                   requestedAt: new Date(),
+                                  // What this dispatcher knows that a fresh
+                                  // delivery cannot learn for itself — see
+                                  // StepDispatchContextSchema. No stepInput:
+                                  // a `retry` result implies the step exists
+                                  // (its start succeeded), so the executor's
+                                  // step_created read-back covers hydration
+                                  // on a World whose bare-start response
+                                  // carries none.
+                                  stepContext: {
+                                    ...(nextAttempt !== undefined
+                                      ? { attempt: nextAttempt }
+                                      : {}),
+                                    ...slotSnapshot(),
+                                  },
                                 },
                                 {
                                   delaySeconds,

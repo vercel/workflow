@@ -247,3 +247,262 @@ describe('executeStep — compute instance stamping', () => {
     }
   });
 });
+
+describe('executeStep — attempt stamping', () => {
+  afterEach(() => {
+    counter += 1;
+  });
+
+  it('states the attempt on step_started', async () => {
+    // A World that stores only the log cannot count attempts for itself: the
+    // number is on no event unless the writer puts it there, and it is the
+    // number the retry ceiling is decided against. See `attemptStamp`.
+    const world = makeWorld();
+    const stepName = uniqueStepName();
+    const { runId, stepId } = await setupRunningStep({
+      world,
+      stepName,
+      onBody: () => {},
+    });
+
+    await executeStep({
+      world,
+      workflowRunId: runId,
+      workflowName: 'wf',
+      workflowStartedAt: Date.now(),
+      stepId,
+      stepName,
+      authoritativeAttempt: 3,
+    });
+
+    const [started] = await eventsFor(world, runId, stepId, 'step_started');
+    expect(
+      (started?.eventData as { attempt?: number } | undefined)?.attempt
+    ).toBe(3);
+  });
+
+  it('states no attempt when the caller supplied none', async () => {
+    // A World that counts for itself must not have its count overwritten by a
+    // guess, so the field is omitted rather than defaulted.
+    const world = makeWorld();
+    const stepName = uniqueStepName();
+    const { runId, stepId } = await setupRunningStep({
+      world,
+      stepName,
+      onBody: () => {},
+    });
+
+    await executeStep({
+      world,
+      workflowRunId: runId,
+      workflowName: 'wf',
+      workflowStartedAt: Date.now(),
+      stepId,
+      stepName,
+    });
+
+    const [started] = await eventsFor(world, runId, stepId, 'step_started');
+    expect(started?.eventData).not.toHaveProperty('attempt');
+  });
+});
+
+// A World that materializes no step rows answers a bare `step_started` from
+// the event just committed, which carries no input — v4's response was the
+// row, whose inputRef was stored at step_created. The executor must then
+// hydrate from the dispatch message's bytes, or failing that, read the
+// step_created event back. Simulated here by stripping `input` from the
+// start response of a materializing world.
+function withInputlessStartResponses(world: World): World {
+  const events: World['events'] = {
+    ...world.events,
+    create: (async (runId, data, params) => {
+      const result = await world.events.create(runId, data as never, params);
+      if (
+        (data as { eventType?: string }).eventType === 'step_started' &&
+        (result as { step?: { input?: unknown } }).step
+      ) {
+        const { input: _input, ...step } = (
+          result as { step: { input?: unknown } & Record<string, unknown> }
+        ).step;
+        return { ...result, step };
+      }
+      return result;
+    }) as World['events']['create'],
+  };
+  return { ...world, events };
+}
+
+async function setupStepWithArg(opts: {
+  world: World;
+  stepName: string;
+  arg: string;
+  onBody: (arg: unknown) => void;
+}): Promise<{ runId: string; stepId: string }> {
+  const { world, stepName, arg, onBody } = opts;
+  const runInput = await dehydrateStepArguments([], 'run', undefined);
+  const created = await world.events.create(null, {
+    eventType: 'run_created',
+    specVersion: SPEC_VERSION_CURRENT,
+    eventData: {
+      deploymentId: 'dpl_test',
+      workflowName: 'wf',
+      input: runInput,
+    },
+  });
+  const runId = created.run!.runId;
+  await world.events.create(runId, {
+    eventType: 'run_started',
+    specVersion: SPEC_VERSION_CURRENT,
+    eventData: {},
+  } as never);
+
+  const stepId = 'step_input_1';
+  const stepInput = await dehydrateStepArguments(
+    { args: [arg], closureVars: undefined, thisVal: undefined },
+    runId,
+    undefined
+  );
+  await world.events.create(runId, {
+    eventType: 'step_created',
+    specVersion: SPEC_VERSION_CURRENT,
+    correlationId: stepId,
+    eventData: { stepName, input: stepInput },
+  });
+
+  registerStepFunction(stepName, async (bodyArg: unknown) => {
+    onBody(bodyArg);
+    return 'ok';
+  });
+
+  return { runId, stepId };
+}
+
+describe('executeStep — step input fallbacks (Worlds without step rows)', () => {
+  afterEach(() => {
+    counter += 1;
+  });
+
+  it('hydrates from the dispatch message when the start response has no input', async () => {
+    const world = withInputlessStartResponses(makeWorld());
+    const stepName = uniqueStepName();
+    const seen: unknown[] = [];
+    const { runId, stepId } = await setupStepWithArg({
+      world,
+      stepName,
+      arg: 'from-message',
+      onBody: (arg) => seen.push(arg),
+    });
+    const dispatchedStepInput = await dehydrateStepArguments(
+      { args: ['from-message'], closureVars: undefined, thisVal: undefined },
+      runId,
+      undefined
+    );
+
+    const listSpy = vi.spyOn(world.events, 'listByCorrelationId');
+    const result = await executeStep({
+      world,
+      workflowRunId: runId,
+      workflowName: 'wf',
+      workflowStartedAt: Date.now(),
+      stepId,
+      stepName,
+      dispatchedStepInput: dispatchedStepInput as never,
+    });
+
+    expect(result.type).toBe('completed');
+    expect(seen).toEqual(['from-message']);
+    // The message bytes answered; no log read-back was needed.
+    expect(listSpy).not.toHaveBeenCalled();
+  });
+
+  it('reads the step_created event back when neither the response nor the message carries input', async () => {
+    const world = withInputlessStartResponses(makeWorld());
+    const stepName = uniqueStepName();
+    const seen: unknown[] = [];
+    const { runId, stepId } = await setupStepWithArg({
+      world,
+      stepName,
+      arg: 'from-log',
+      onBody: (arg) => seen.push(arg),
+    });
+
+    const listSpy = vi.spyOn(world.events, 'listByCorrelationId');
+    const result = await executeStep({
+      world,
+      workflowRunId: runId,
+      workflowName: 'wf',
+      workflowStartedAt: Date.now(),
+      stepId,
+      stepName,
+    });
+
+    expect(result.type).toBe('completed');
+    expect(seen).toEqual(['from-log']);
+    expect(listSpy).toHaveBeenCalled();
+  });
+
+  it('does not run the body when no input source exists at all', async () => {
+    const world = withInputlessStartResponses(makeWorld());
+    const stepName = uniqueStepName();
+    const seen: unknown[] = [];
+    const { runId, stepId } = await setupStepWithArg({
+      world,
+      stepName,
+      arg: 'unreachable',
+      onBody: (arg) => seen.push(arg),
+    });
+
+    // The read-back finds no step_created either (e.g. not yet visible).
+    vi.spyOn(world.events, 'listByCorrelationId').mockResolvedValue({
+      data: [],
+      cursor: null,
+      hasMore: false,
+    });
+
+    const result = await executeStep({
+      world,
+      workflowRunId: runId,
+      workflowName: 'wf',
+      workflowStartedAt: Date.now(),
+      stepId,
+      stepName,
+    });
+
+    // The missing input is an error for the retry path (bounded by the
+    // attempt ceiling), never a body execution with undefined arguments.
+    expect(result.type).toBe('retry');
+    expect(seen).toEqual([]);
+  });
+
+  it('prefers the input the start response carries', async () => {
+    // Worlds with step rows answer the start from the row; the message bytes
+    // must not displace that.
+    const world = makeWorld();
+    const stepName = uniqueStepName();
+    const seen: unknown[] = [];
+    const { runId, stepId } = await setupStepWithArg({
+      world,
+      stepName,
+      arg: 'from-row',
+      onBody: (arg) => seen.push(arg),
+    });
+    const dispatchedStepInput = await dehydrateStepArguments(
+      { args: ['from-message'], closureVars: undefined, thisVal: undefined },
+      runId,
+      undefined
+    );
+
+    const result = await executeStep({
+      world,
+      workflowRunId: runId,
+      workflowName: 'wf',
+      workflowStartedAt: Date.now(),
+      stepId,
+      stepName,
+      dispatchedStepInput: dispatchedStepInput as never,
+    });
+
+    expect(result.type).toBe('completed');
+    expect(seen).toEqual(['from-row']);
+  });
+});

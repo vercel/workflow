@@ -651,9 +651,9 @@ export function resetWsEventsTransportsForTest(): void {
 }
 
 /**
- * Derive the WS endpoint URL for one run from the http(s) base URL used for v4
+ * Derive the WS endpoint URL for one run from the http(s) base URL used for the
  * REST calls. `/websockets/v1/runs/:runId` is versioned independently of the
- * `v4` REST API these frames are forwarded into (server `docs/ws-protocol.md`).
+ * REST API these frames are forwarded into (server `docs/ws-protocol.md`).
  * Scoped to one run because one client instance only ever drives one run, so
  * `runId` belongs on the connection rather than on every frame.
  */

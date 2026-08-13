@@ -32,7 +32,10 @@ import { version } from './version.js';
  * `main` — rewritten by external CI for branch-deployment testing.
  * Prefer `VERCEL_WORKFLOW_SERVER_URL` for deployment-time configuration.
  */
-export const WORKFLOW_SERVER_URL_OVERRIDE = '';
+// TEMPORARY — must be reverted to '' before this PR merges. The /v5 event
+// routes this adapter now calls only exist on the backend branch below.
+export const WORKFLOW_SERVER_URL_OVERRIDE =
+  'https://workflow-server-git-peter-no-step-wait-materialization.vercel.sh';
 
 /**
  * HTTP methods that are safe to transparently re-issue inside the adapter.

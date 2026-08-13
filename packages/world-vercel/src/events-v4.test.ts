@@ -293,7 +293,7 @@ describe('getWorkflowRunEventsV4 over HTTP', () => {
     agent
       .get(origin)
       .intercept({
-        path: '/api/v4/runs/wrun_1/events?returnAll=true',
+        path: '/api/v5/runs/wrun_1/events?returnAll=true',
         method: 'GET',
       })
       .reply(200, frames, {
@@ -327,7 +327,7 @@ describe('getWorkflowRunEventsV4 over HTTP', () => {
     agent
       .get(origin)
       .intercept({
-        path: '/api/v4/runs/wrun_1/events?returnAll=true',
+        path: '/api/v5/runs/wrun_1/events?returnAll=true',
         method: 'GET',
       })
       .reply(
@@ -381,7 +381,7 @@ describe('getWorkflowRunEventsV4 over HTTP', () => {
     agent
       .get(origin)
       .intercept({
-        path: '/api/v4/runs/wrun_1/events?returnAll=true',
+        path: '/api/v5/runs/wrun_1/events?returnAll=true',
         method: 'GET',
       })
       .reply(200, frames, {
@@ -412,7 +412,7 @@ describe('getWorkflowRunEventsV4 over HTTP', () => {
     agent
       .get(origin)
       .intercept({
-        path: '/api/v4/runs/wrun_1/events?returnAll=true',
+        path: '/api/v5/runs/wrun_1/events?returnAll=true',
         method: 'GET',
       })
       .reply(200, frames, {
@@ -455,7 +455,7 @@ describe('getWorkflowRunEventsV4 over HTTP', () => {
     agent
       .get(origin)
       .intercept({
-        path: '/api/v4/runs/wrun_1/events?limit=500',
+        path: '/api/v5/runs/wrun_1/events?limit=500',
         method: 'GET',
       })
       .reply(200, frames, {
@@ -480,7 +480,7 @@ describe('getWorkflowRunEventsV4 over HTTP', () => {
     agent
       .get(origin)
       .intercept({
-        path: '/api/v4/runs/wrun_1/events?returnAll=true',
+        path: '/api/v5/runs/wrun_1/events?returnAll=true',
         method: 'GET',
       })
       .reply(
@@ -504,7 +504,7 @@ describe('getWorkflowRunEventsV4 over HTTP', () => {
     agent
       .get(origin)
       .intercept({
-        path: '/api/v4/runs/wrun_1/events?returnAll=true&cursor=eid%3Aevnt_1',
+        path: '/api/v5/runs/wrun_1/events?returnAll=true&cursor=eid%3Aevnt_1',
         method: 'GET',
       })
       .reply(
@@ -579,7 +579,7 @@ describe('getEventsByCorrelationIdV4 over HTTP', () => {
       .intercept({
         path: (path) => {
           requestedPaths.push(path);
-          return path.startsWith('/api/v4/events?');
+          return path.startsWith('/api/v5/events?');
         },
         method: 'GET',
       })
@@ -643,7 +643,7 @@ describe('getEventV4 over HTTP', () => {
     agent
       .get(origin)
       .intercept({
-        path: '/api/v4/runs/wrun_1/events/evnt_1?remoteRefBehavior=resolve',
+        path: '/api/v5/runs/wrun_1/events/evnt_1?remoteRefBehavior=resolve',
         method: 'GET',
       })
       .reply(200, frames, {
@@ -685,7 +685,7 @@ describe('v4 transport uses global fetch (observability)', () => {
     agent
       .get(origin)
       .intercept({
-        path: '/api/v4/runs/wrun_1/events?returnAll=true',
+        path: '/api/v5/runs/wrun_1/events?returnAll=true',
         method: 'GET',
       })
       .reply(200, encodeFrame({ _end: 1, hasMore: false }, new Uint8Array(0)), {
@@ -704,7 +704,7 @@ describe('v4 transport uses global fetch (observability)', () => {
 
     expect(fetchSpy).toHaveBeenCalledTimes(1);
     const [calledUrl, calledInit] = fetchSpy.mock.calls[0];
-    expect(String(calledUrl)).toContain('/api/v4/runs/wrun_1/events');
+    expect(String(calledUrl)).toContain('/api/v5/runs/wrun_1/events');
     agent.assertNoPendingInterceptors();
 
     // Cache-busting header must be set so Next.js fetch memoization / Data
@@ -727,7 +727,7 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
       .intercept({
         // The event type rides in the URL purely as an observability hint
         // (access logs / traces); the frame meta stays authoritative.
-        path: '/api/v4/runs/wrun_1/events/step_completed',
+        path: '/api/v5/runs/wrun_1/events/step_completed',
         method: 'POST',
       })
       .reply(
@@ -784,7 +784,7 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
     agent
       .get(origin)
       .intercept({
-        path: '/api/v4/runs/wrun_1/events/hook_created',
+        path: '/api/v5/runs/wrun_1/events/hook_created',
         method: 'POST',
       })
       .reply(
@@ -828,7 +828,7 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
     agent
       .get(origin)
       .intercept({
-        path: '/api/v4/runs/wrun_1/events/run_started',
+        path: '/api/v5/runs/wrun_1/events/run_started',
         method: 'POST',
         headers: { accept: V4_FRAME_CONTENT_TYPE },
       })
@@ -899,7 +899,7 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
     agent
       .get(origin)
       .intercept({
-        path: '/api/v4/runs/wrun_1/events/run_started',
+        path: '/api/v5/runs/wrun_1/events/run_started',
         method: 'POST',
         headers: { accept: V4_FRAME_CONTENT_TYPE },
       })
@@ -936,7 +936,7 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
     agent
       .get(origin)
       .intercept({
-        path: '/api/v4/runs/wrun_1/events/run_started',
+        path: '/api/v5/runs/wrun_1/events/run_started',
         method: 'POST',
         headers: (headers) => headers.accept === '*/*',
       })
@@ -995,7 +995,7 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
     agent
       .get(origin)
       .intercept({
-        path: '/api/v4/runs/wrun_1/events/wait_created',
+        path: '/api/v5/runs/wrun_1/events/wait_created',
         method: 'POST',
       })
       .reply(
@@ -1056,7 +1056,7 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
     agent
       .get(origin)
       .intercept({
-        path: '/api/v4/runs/wrun_1/events/wait_created',
+        path: '/api/v5/runs/wrun_1/events/wait_created',
         method: 'POST',
       })
       .reply(
@@ -1108,7 +1108,7 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
     agent
       .get(origin)
       .intercept({
-        path: '/api/v4/runs/wrun_1/events/wait_created',
+        path: '/api/v5/runs/wrun_1/events/wait_created',
         method: 'POST',
       })
       .reply(
@@ -1171,7 +1171,7 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
     agent
       .get(origin)
       .intercept({
-        path: '/api/v4/runs/wrun_1/events/wait_created',
+        path: '/api/v5/runs/wrun_1/events/wait_created',
         method: 'POST',
       })
       .reply(
@@ -1226,7 +1226,7 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
     agent
       .get(origin)
       .intercept({
-        path: '/api/v4/runs/wrun_1/events/wait_created',
+        path: '/api/v5/runs/wrun_1/events/wait_created',
         method: 'POST',
       })
       .reply(
@@ -1283,7 +1283,7 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
     agent
       .get(origin)
       .intercept({
-        path: '/api/v4/runs/wrun_1/events/wait_created',
+        path: '/api/v5/runs/wrun_1/events/wait_created',
         method: 'POST',
       })
       .reply(
@@ -1368,7 +1368,7 @@ describe('v4 POST frame meta forwards every field the splitter produces', () => 
     agent
       .get(origin)
       .intercept({
-        path: `/api/v4/runs/wrun_1/events/${data.eventType}`,
+        path: `/api/v5/runs/wrun_1/events/${data.eventType}`,
         method: 'POST',
       })
       .reply(

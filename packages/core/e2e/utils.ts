@@ -5,7 +5,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { createWorkflowUrl } from '@workflow/utils';
 import { createWorld as createVercelTestWorld } from '@workflow/world-vercel';
-import { onTestFailed } from 'vitest';
+import { expect, onTestFailed } from 'vitest';
 import { getTrustedSourcesHeaders } from '../../../scripts/trusted-sources-headers.mjs';
 import type { Run } from '../src/runtime';
 import { getWorld, setWorld } from '../src/runtime';
@@ -875,4 +875,46 @@ export const cliInspectJsonUntil = async (
     if (satisfied || Date.now() >= deadline) return json;
     await new Promise((resolve) => setTimeout(resolve, intervalMs));
   }
+};
+
+/**
+ * The resolved error payload of the `step_failed` event for the step whose
+ * name contains `stepName`.
+ *
+ * Read from the event log rather than the step listing. A step's error is a
+ * payload, and the metadata-only analytics listing that backs `inspect steps`
+ * does not carry one; against a World that materializes no step rows there is
+ * no second listing to fall back to. The event log holds every payload on
+ * every World, so this is the one place the assertion can be made everywhere.
+ *
+ * Polls, because the write lands slightly after the run settles.
+ */
+export const stepFailedError = async (
+  runId: string,
+  stepName: string
+  // biome-ignore lint/suspicious/noExplicitAny: raw CLI JSON
+): Promise<any> => {
+  // biome-ignore lint/suspicious/noExplicitAny: raw CLI JSON
+  const isMatch = (event: any): boolean =>
+    event.eventType === 'step_failed' &&
+    typeof event.eventData?.stepName === 'string' &&
+    event.eventData.stepName.includes(stepName);
+
+  const events = await cliInspectJsonUntil(
+    `events --run ${runId} --withData`,
+    // biome-ignore lint/suspicious/noExplicitAny: raw CLI JSON
+    (json: any[]) => json.some(isMatch)
+  );
+  // biome-ignore lint/suspicious/noExplicitAny: raw CLI JSON
+  const failed = (events as any[]).find(isMatch);
+  expect(
+    failed,
+    `no step_failed event for a step named "${stepName}"`
+  ).toBeDefined();
+  // Errors thrown from steps are wrapped in `FatalError` by the step executor,
+  // which serializes via the Instance reducer (`{ classId, data }`); the CLI
+  // surfaces unregistered class instances as placeholders carrying the
+  // original `data` payload.
+  const error = failed.eventData.error;
+  return error?.data ?? error;
 };

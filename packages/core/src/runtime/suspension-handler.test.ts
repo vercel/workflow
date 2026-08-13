@@ -7,6 +7,7 @@ import {
 import type { Event } from '@workflow/world';
 import {
   SPEC_VERSION_CURRENT,
+  SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
   slotToEventId,
   type ValidQueueName,
   type WorkflowRun,
@@ -910,5 +911,89 @@ describe('retainedStepInputsSafe (serialization passivity gate)', () => {
     // The step is still prepared for execution as usual (a single uncreated
     // step always lands in the lazy inline slice).
     expect(result.lazyInlineSteps).toHaveLength(1);
+  });
+});
+
+describe('step dispatch inputs', () => {
+  // The serialized input of every eager step created by a pass rides the
+  // caller's dispatch messages (`stepInput`), so an executing invocation can
+  // hydrate the body even when its World's bare `step_started` response
+  // carries no input (no step rows). See
+  // SuspensionHandlerResult.stepDispatchInputs.
+  const pendingStepWithHookAwaiter = () =>
+    new Map<string, unknown>([
+      [
+        'step_eager',
+        {
+          type: 'step' as const,
+          correlationId: 'step_eager',
+          stepName: 'eagerStep',
+          args: ['payload'],
+        },
+      ],
+      // The conflict awaiter suppresses lazy-inline designation, so the step
+      // above gets an eager step_created — the shape whose dispatch message
+      // needs the input.
+      [
+        'hook_awaited',
+        {
+          type: 'hook' as const,
+          correlationId: 'hook_awaited',
+          token: 'claim-token',
+          hasConflictAwaiter: true,
+        },
+      ],
+    ]);
+
+  it('returns the serialized input of each eagerly created step', async () => {
+    const eventsCreate = vi.fn().mockImplementation(async (_runId, event) => ({
+      event,
+    }));
+    const world = createWorld(eventsCreate);
+
+    const result = await handleSuspension({
+      suspension: new WorkflowSuspension(
+        pendingStepWithHookAwaiter() as never,
+        globalThis
+      ),
+      world,
+      run: {
+        ...run,
+        specVersion: SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
+      },
+    });
+
+    const input = result.stepDispatchInputs.get('step_eager');
+    expect(input).toBeInstanceOf(Uint8Array);
+    // The bytes are exactly what the step_created event stored, so a consumer
+    // hydrating from the message sees what a log read-back would return.
+    const createdCall = eventsCreate.mock.calls.find(
+      ([, event]) => event.eventType === 'step_created'
+    );
+    expect(createdCall?.[1]?.eventData?.input).toBe(input);
+  });
+
+  it('returns nothing for a run whose queue transport mangles binary payloads', async () => {
+    const eventsCreate = vi.fn().mockImplementation(async (_runId, event) => ({
+      event,
+    }));
+    const world = createWorld(eventsCreate);
+
+    const result = await handleSuspension({
+      suspension: new WorkflowSuspension(
+        pendingStepWithHookAwaiter() as never,
+        globalThis
+      ),
+      world,
+      run: { ...run, specVersion: 2 },
+    });
+
+    expect(result.stepDispatchInputs.size).toBe(0);
+    // The step_created write itself is unaffected.
+    expect(
+      eventsCreate.mock.calls.some(
+        ([, event]) => event.eventType === 'step_created'
+      )
+    ).toBe(true);
   });
 });
