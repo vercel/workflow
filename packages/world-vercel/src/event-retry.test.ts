@@ -11,6 +11,7 @@ import {
   EVENT_RETRY_ELIGIBILITY,
   isRetryableEventPostError,
   MAX_EVENT_POST_RETRIES,
+  THROTTLE_RETRY_BUDGET_MS,
   withEventPostRetry,
 } from './event-retry.js';
 
@@ -223,5 +224,101 @@ describe('withEventPostRetry', () => {
 
     await expect(withEventPostRetry(fn, 'hook_received')).rejects.toThrow();
     expect(fn).toHaveBeenCalledTimes(1);
+  });
+
+  describe('throttle (429) in-process retry', () => {
+    it('retries a ThrottleError after its retryAfter and returns the result', async () => {
+      let calls = 0;
+      const fn = vi.fn(async () => {
+        calls++;
+        if (calls === 1) throw new ThrottleError('429', { retryAfter: 14 });
+        return 'ok';
+      });
+
+      const p = withEventPostRetry(fn, 'step_completed');
+      // Not yet retried before the server's requested wait has elapsed.
+      await vi.advanceTimersByTimeAsync(13_000);
+      expect(fn).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      await expect(p).resolves.toBe('ok');
+      expect(fn).toHaveBeenCalledTimes(2);
+    });
+
+    it('applies to eligibility-excluded events too (429 is a definitive no-write)', async () => {
+      let calls = 0;
+      const fn = vi.fn(async () => {
+        calls++;
+        if (calls === 1) throw new ThrottleError('429', { retryAfter: 1 });
+        return 'ok';
+      });
+
+      const p = withEventPostRetry(fn, 'step_started');
+      await vi.runAllTimersAsync();
+
+      await expect(p).resolves.toBe('ok');
+      expect(fn).toHaveBeenCalledTimes(2);
+    });
+
+    it('defaults to a 1s wait when the 429 carries no retryAfter', async () => {
+      let calls = 0;
+      const fn = vi.fn(async () => {
+        calls++;
+        if (calls === 1) throw new ThrottleError('429');
+        return 'ok';
+      });
+
+      const p = withEventPostRetry(fn, 'run_started');
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      await expect(p).resolves.toBe('ok');
+      expect(fn).toHaveBeenCalledTimes(2);
+    });
+
+    it('surfaces the ThrottleError once the cumulative wait budget is exhausted', async () => {
+      const fn = vi.fn(async () => {
+        throw new ThrottleError('429', { retryAfter: 14 });
+      });
+
+      const p = withEventPostRetry(fn, 'step_completed').catch((e) => e);
+      await vi.runAllTimersAsync();
+
+      const err = await p;
+      expect(ThrottleError.is(err)).toBe(true);
+      // 14s per attempt against a 30s budget: 14 + 14 fits, a third doesn't.
+      expect(fn).toHaveBeenCalledTimes(3);
+    });
+
+    it('surfaces immediately when retryAfter alone exceeds the budget', async () => {
+      const fn = vi.fn(async () => {
+        throw new ThrottleError('429', {
+          retryAfter: THROTTLE_RETRY_BUDGET_MS / 1000 + 1,
+        });
+      });
+
+      await expect(withEventPostRetry(fn, 'step_completed')).rejects.toThrow(
+        '429'
+      );
+      expect(fn).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not consume the transient retry allowance', async () => {
+      // A throttle wait followed by transient blips: the transient counter
+      // still permits MAX_EVENT_POST_RETRIES retries.
+      let calls = 0;
+      const fn = vi.fn(async () => {
+        calls++;
+        if (calls === 1) throw new ThrottleError('429', { retryAfter: 1 });
+        if (calls <= 1 + MAX_EVENT_POST_RETRIES)
+          throw transportErr('ECONNRESET');
+        return 'ok';
+      });
+
+      const p = withEventPostRetry(fn, 'step_completed');
+      await vi.runAllTimersAsync();
+
+      await expect(p).resolves.toBe('ok');
+      expect(fn).toHaveBeenCalledTimes(2 + MAX_EVENT_POST_RETRIES);
+    });
   });
 });
