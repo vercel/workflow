@@ -291,7 +291,7 @@ describe('getHttpConfig (proxied path)', () => {
 
 describe('makeRequest stream expiry errors', () => {
   it.each([
-    ['/v2/runs/wrun_test/streams/stream-test/chunks'],
+    ['/v3/runs/wrun_test/streams/stream-test/chunks'],
     ['/v2/runs/wrun_test/streams/stream-test/info'],
   ])('preserves stream-expired details from %s', async (endpoint) => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async () =>

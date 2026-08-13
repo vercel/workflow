@@ -51,7 +51,8 @@
     "vitest": "catalog:"
   },
   "peerDependencies": {
-    "@opentelemetry/api": "1"
+    "@opentelemetry/api": "1",
+    "workflow": "workspace:^"
   },
   "peerDependenciesMeta": {
     "@opentelemetry/api": {
