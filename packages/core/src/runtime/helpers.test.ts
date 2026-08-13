@@ -817,8 +817,10 @@ describe('appendUniqueEvents', () => {
 
   it('preserves the order the World returned, never re-sorting by event id', () => {
     // Unlike mergeReportedEvents, this appends a page the World handed back as
-    // a unit. Its order is the World's answer, and a re-sort here would produce
-    // an order no load would return.
+    // a unit. Every source is already in canonical order relative to the tail,
+    // so a sort could only ever be a wasted pass over the log — the reason
+    // helpers.ts gives. Asserting the unsorted order is how a sort creeping in
+    // gets noticed.
     const target = [makeEvent(slotToEventId(1)), makeEvent(slotToEventId(3))];
 
     appendUniqueEvents(target, [makeEvent(slotToEventId(2))]);

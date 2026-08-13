@@ -792,15 +792,16 @@ export interface CreateEventParams {
    * parallelized with the queue publish and may have failed. Only meaningful
    * for `step_created`.
    *
-   * Advisory. The runtime never parallelizes a *guarded* `step_created` with
-   * its publish (see the eligibility gate in the suspension handler), so in
-   * correct operation a re-ensure can only correspond to an unguarded create
-   * — there is no guard verdict for it to bypass. A guard-enforcing backend
-   * MAY nevertheless use this flag as defense-in-depth: refuse the re-ensure
-   * (world-vercel surfaces the backend's 410 as `RunExpiredError`, which the
-   * consumer treats as "nothing left to execute" and acks the message) when
-   * it has recorded a 412 rejection for this correlation id and no step
-   * entity exists — hardening against a misbehaving or future client. Worlds
+   * Advisory. Parallelizing a create with its publish is opt-in and off by
+   * default (`WORKFLOW_RESILIENT_STEP_DISPATCH`), precisely because a create
+   * can come back refused while the message carrying its payload is already
+   * out. A deployment that opts in accepts that window, and a backend MAY use
+   * this flag to narrow it: refuse the re-ensure (world-vercel surfaces the
+   * backend's 410 as `RunExpiredError`, which the consumer treats as "nothing
+   * left to execute" and acks the message) when it has recorded a refusal for
+   * this correlation id and no step entity exists. Best-effort by nature — a
+   * marker written at refusal time cannot be ordered before the redelivery it
+   * is meant to stop — so it hardens, and does not close, the window. Worlds
    * may ignore this flag entirely.
    */
   viaStepDispatch?: boolean;
@@ -816,12 +817,14 @@ export interface CreateEventParams {
   /**
    * How many events the writer held in its loaded log when it decided to write
    * this one — equivalently, the slot it expects to land on minus one. Sent by
-   * every replay-context create; omitted by callers with no loaded log, and by
-   * a run whose events are not slot-numbered (there is no position to name).
+   * every replay-context create; omitted by callers with no loaded log to be
+   * stale against.
    *
    * Only meaningful against a World that declares
-   * `WorldCapabilities.slotEventIds`, where slots are dense and 1-based so a
-   * count and a position are the same number. Such a World attempts
+   * {@link WorldCapabilities.slotEventIds}, where slots are dense and 1-based
+   * so a count and a position are the same number. An id that is not a
+   * position does not produce a count here — it throws, since the runtime
+   * cannot state a snapshot for a log it cannot place. Such a World attempts
    * `eventCount + 1`, and on contention **bumps** to the next free slot and
    * commits there anyway — a stale count never rejects a write. What it does
    * instead is report: when the committed slot is higher than the one asked

@@ -122,7 +122,9 @@ Two properties have to hold, and both are about what a reader can conclude from 
 
 A replay writes events derived from the event log it loaded, so a write made from an event log that no longer matches the store can commit events no correct replay would produce. Rejecting one means answering `events.create()` with a `PreconditionFailedError` when the run's log already holds more events than the caller's `eventCount` says it had loaded.
 
-Check first whether the field can reach you at all. The runtime derives `eventCount` from the highest slot in the log it loaded, and sends nothing when any loaded event ID is not a slot, so a World whose IDs are not positions never receives it and has nothing to fence on. A World that does allocate positions has the better mechanism already: commit above the contention and report the skipped events back, which costs the writer no replay. That leaves this worth implementing in one case — your store allocates positions, but not atomically with the commit, so refusing a stale write is safer than accepting one out of order.
+No World in this repository does. Reporting is the better mechanism, and the reason it is *sufficient* rather than merely cheaper is worth stating, because it is what removed the need to reject at all: a reader's log is a prefix of the run's log rather than a prefix with a hole in it, replay is deterministic on a prefix, and the writer's next write brings back what it missed. A shorter log therefore means a run that has not caught up, never a run that will decide differently.
+
+That leaves rejecting worth implementing in one case — your store allocates positions somewhere other than the commit, so it cannot report the skipped span reliably and refusing a stale write is safer than accepting one out of order.
 
 Two rules make this safe:
 
@@ -131,7 +133,7 @@ Two rules make this safe:
 
 A rejection may optionally carry the events the caller was missing, as `{ events, cursor }` on the error's `details`. Only include them when you can prove the set is complete — that those events fully account for the discrepancy and are not truncated — and that every one of them belongs to the run being written. The runtime merges them straight into the replay's event log, so anything else there is worse than no delta at all. Otherwise omit them, and the runtime performs a full reload instead.
 
-The runtime assumes any World may refuse a write this way, and shapes three behaviors around it: the per-step event-log delta optimization stays enabled while the run has an open hook, an inline step's `step_started` claim is awaited before the body runs, and a `step_created` publish is sequenced after the create on the `node` VM engine. A World that accepts `eventCount` and ignores it pays those costs without the benefit, which is another reason to prefer reporting the skipped events over rejecting.
+The runtime handles a rejection wherever it can arrive: it restarts the replay in-process from a corrected log, and re-invokes with a fresh replay once that budget is spent. It never retries the rejected write as-is, because a replay working from a corrected log derives different events. Nothing has to be declared for that to work — there is no capability to set.
 
 ## Queue Interface
 

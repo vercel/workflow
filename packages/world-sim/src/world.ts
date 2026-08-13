@@ -654,7 +654,18 @@ export function createSimWorld(options: SimWorldOptions = {}): SimWorld {
       if (call === 'events.create') {
         // A reserved position wins: it belongs to a write whose handler was
         // entered earlier and is only now reaching storage.
-        const minted = reservedPosition ?? store.mintEvent(args[0] as string);
+        //
+        // No boundary mint for a `run_created` that names no run
+        // (`events.create(null, …)`, which the Storage contract allows and the
+        // store supports by generating the id). There is no run to allocate
+        // against yet: minting under the null key would hand out slots from a
+        // bucket shared by every such call, and the generated run's own
+        // allocator would then start at 1 and collide. The store mints after it
+        // resolves the id instead. The runtime never takes this path, so this
+        // is about the failure being impossible rather than merely unobserved.
+        const minted =
+          reservedPosition ??
+          (runId === undefined ? undefined : store.mintEvent(runId));
         reservedPosition = undefined;
         const params = (args[2] ?? {}) as Record<string, unknown>;
         callArgs = [
@@ -662,7 +673,7 @@ export function createSimWorld(options: SimWorldOptions = {}): SimWorld {
           args[1],
           {
             ...params,
-            minted,
+            ...(minted ? { minted } : {}),
             // The snapshot the fence reads. Reconstructed rather than taken
             // off the wire, because the wire carries only the writer's highest
             // slot and the count guard also wants how many events it loaded at

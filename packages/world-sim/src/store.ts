@@ -160,13 +160,16 @@ export interface SimStoreOptions {
   now(): number;
   ids: IdFactory;
   /**
-   * Enforce the optimistic-concurrency precondition guard described in
-   * `WorldCapabilities.preconditionGuard`: reject a replay-context write whose
-   * snapshot predates the newest externally-originated event.
+   * Reject a replay-context write whose snapshot predates the newest
+   * externally-originated event, with a `PreconditionFailedError` (412).
    *
-   * Off by default. Turning it on is the point of a simulation — it lets a
-   * scenario check that the runtime recovers from a 412 fence — but it also
-   * changes which runtime fast paths engage, so it is never implicit.
+   * No shipped World does this — the runtime does not need it, since a
+   * reader's log is a prefix and its next write reports what it was pushed
+   * past. The option stays because the sim is where the *reception* path is
+   * exercised: the runtime still handles a 412 (restart in place, then
+   * re-invoke), and a World that allocates positions away from the commit may
+   * still want to refuse rather than report. Off by default, and never
+   * implicit, because arming it changes which runtime fast paths engage.
    */
   preconditionGuard?: boolean;
   /**

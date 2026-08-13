@@ -3683,13 +3683,15 @@ export function workflowEntrypoint(
                         //    siblings queued to background handlers, and no other
                         //    inline step writing its own events out of band).
                         //  - No pending wait timer from THIS suspension, and no
-                        //    open wait in the cumulative log: a concurrent
-                        //    `wait_completed` landing after the delta snapshot
-                        //    does not bump the outside-event marker, so nothing
-                        //    fences a replay from the stale delta.
-                        //  - An open (or this-suspension-created) hook is fine,
-                        //    because a World fences a stale write. The
-                        //    delta snapshots the log at the step_completed
+                        //    open wait in the cumulative log. A `wait_completed`
+                        //    is a resolution the replay is waiting on rather
+                        //    than an event it can observe one iteration late,
+                        //    so consuming a delta that predates it would settle
+                        //    the sleep from a view that does not contain its
+                        //    completion.
+                        //  - An open (or this-suspension-created) hook is
+                        //    fine, and that is the gate this used to carry.
+                        //    The delta snapshots the log at the step_completed
                         //    write but is consumed on the next replay, so an
                         //    out-of-band `hook_received` landing in that window
                         //    is absent from the delta and observed one
@@ -3697,22 +3699,22 @@ export function workflowEntrypoint(
                         //    it. That staleness is qualitatively the same
                         //    read-to-write race the fetch path already has (an
                         //    event can land right after `events.list` returns
-                        //    and before the suspension's writes); it is also
-                        //    fenced: `hook_received` bumps the
-                        //    per-run outside-event marker, so every durable
-                        //    write the stale replay attempts is rejected with
-                        //    412 — its guarded suspension creates (retried over
-                        //    the reloaded log, or exhausted into a queue
-                        //    re-invocation), AND the lazy step_started claim of
-                        //    its next inline step, which carries the snapshot
-                        //    too (threaded below via `slotSnapshot`; on
-                        //    rejection the batch is abandoned and re-invoked for
-                        //    a fresh replay, so a stale view can never commit a
-                        //    step). Hooks created
-                        //    by THIS suspension are inside the delta (their
+                        //    and before the suspension's writes), and it is
+                        //    bounded by the same thing: what a stale replay
+                        //    holds is a *prefix* of the log, never a hole in
+                        //    it, and replaying a prefix twice reaches the same
+                        //    decisions. Its next write is allocated above
+                        //    whatever it missed and comes back carrying it
+                        //    (`reportSkippedSlots` on the local worlds,
+                        //    commit-time allocation on the Vercel one), so the
+                        //    replay corrects itself on the write rather than
+                        //    on a read. A World MAY instead refuse the write as
+                        //    stale (412), which the runtime handles the same
+                        //    way; nothing requires it to. Hooks created by THIS
+                        //    suspension are inside the delta (their
                         //    `hook_created` lands before the step-terminal
                         //    write), so only their `hook_received` responses
-                        //    are subject to the same fenced window.
+                        //    are subject to the same window.
                         //  - With no hook or wait open at all, the only
                         //    out-of-band writer is cancellation, which is safe
                         //    to observe one iteration late. See
@@ -3735,15 +3737,20 @@ export function workflowEntrypoint(
                         // Stale-sensitive batch: a hook is open in the run (or
                         // was created by this suspension, so its hook_received
                         // can land any moment) — an out-of-band event can make
-                        // the view this batch was scheduled from stale. The
-                        // fence rejects a stale claim's durable writes, but it
-                        // cannot un-run a step BODY that optimistic start began
-                        // before the claim settled. Suppress optimistic start
-                        // for these batches (take await-then-run) so a
-                        // 412-fenced step never executes user code at all: the
-                        // fence then covers side effects, not just the event
-                        // log. Costs one claim round-trip per step while a hook
-                        // is open.
+                        // the view this batch was scheduled from stale, which
+                        // is when several invocations race for one step's
+                        // claim. Optimistic start begins the body before the
+                        // claim settles, so the writer that LOSES the claim
+                        // (`EntityConflictError` → `skipped`) has already run
+                        // user code it does not own. Suppress it for these
+                        // batches, so the body runs only after the claim came
+                        // back won. Costs one claim round-trip per step while a
+                        // hook is open, and buys the same thing on every World:
+                        // a step body executes once per claim, not once per
+                        // racer. (A World that refuses the claim as stale (412)
+                        // gets the same protection through the same await;
+                        // none of the shipped ones does that for a
+                        // slot-numbered run.)
                         const suppressOptimisticStart =
                           openHookWaitState.openHook ||
                           err.hookCount > 0 ||

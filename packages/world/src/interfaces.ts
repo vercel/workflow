@@ -173,6 +173,14 @@ export interface Storage {
       ): Promise<(WorkflowRun | WorkflowRunWithoutData | null)[]>;
     };
 
+    /**
+     * Lists canonical workflow storage records.
+     *
+     * @remarks Observability and inspection usage of this method is
+     * deprecated. Use `world.analytics?.runs.list()` for plan-aware
+     * observability queries. This storage API remains available for
+     * operational and payload-bearing callers.
+     */
     list(
       params: ListWorkflowRunsParams & { resolveData: 'none' }
     ): Promise<PaginatedResponse<WorkflowRunWithoutData>>;
@@ -412,10 +420,13 @@ export interface WorldCapabilities {
    *   response (see {@link EventResult.events}). The writer learns its
    *   snapshot was stale without the write being rejected.
    *
-   * A run's scheme is pinned by the run, not by this flag: it is readable off
-   * the shape of the run's own first event id, so a World that turns slots on
-   * keeps replaying its existing ULID-numbered runs unchanged. The capability
-   * only says what *new* runs get.
+   * The capability says what *new* runs get. It is not a migration switch: the
+   * runtime requires every event id it reads to be a position
+   * (`requireEventSlot`), so a World that turns slots on cannot go on
+   * replaying its existing ULID-numbered runs. On a platform where a run
+   * executes on the deployment that created it, those runs finish on the build
+   * that made them and never meet this one; anywhere else they have to be
+   * drained before a build carrying this ships.
    */
   slotEventIds?: boolean;
 }
