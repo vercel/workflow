@@ -73,22 +73,22 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 
 ### `WORKFLOW_RESILIENT_STEP_DISPATCH`
 
-- Default: enabled
+- Default: disabled
 - When a suspension hands newly created steps to the queue, the runtime publishes each step's execution message in parallel with its `step_created` event write instead of sequencing them, cutting a round trip per dispatched step. The message also carries the serialized step input (`stepInput`), so a transient `step_created` write failure (429 / 5xx / transport) still executes the step — the queue consumer idempotently re-ensures the event before running it, converging with the producer's write on the step's correlation ID. This mirrors resilient start (`runInput`) and the lazy hook resume (`hookInput`).
-- The runtime falls back to the sequential create-then-publish dispatch automatically when the step input is too large to inline on the queue message, when the run's queue transport cannot carry binary payloads (pre-CBOR spec versions), or — on the `node` VM engine, whose suspension writes are replay-context writes — when the World can [reject a write as stale](#stale-write-rejection) (`capabilities.preconditionGuard`; the Vercel World declares it): a rejected `step_created` must not be materializable through the queue side-channel, and only sequencing the publish after the create gives the message a happens-after edge over the create's verdict. The `quickjs` engine's suspension writes are not replay-context writes, so it uses resilient dispatch against every World.
+- It is off by default because the publish races the create's verdict. A World that [rejects the `step_created` as stale](#stale-write-rejection) sends the runtime back to replay from a corrected log, but the message carrying the payload is already out, so the consumer can materialize a step the World refused. Nothing orders the create's refusal before the consumer's redelivery re-ensure, so the sequential path is the only one that gives the message a happens-after edge over the create's verdict.
+- Even when enabled, the runtime falls back to the sequential create-then-publish dispatch when the step input is too large to inline on the queue message, or when the run's queue transport cannot carry binary payloads (pre-CBOR spec versions).
 - Producer-side recoveries are reported on the suspension span as `workflow.step.resilient_dispatch_recovered`; a consumer that materialized the event reports `workflow.step.resilient_dispatch_materialized`.
-- Set `0` to force the sequential dispatch as a kill switch.
+- Set `1` to enable it.
 
 ### Stale-write rejection
 
-- Not a variable: this is what a World declaring `capabilities.preconditionGuard` does, and what the runtime does about it.
+- Not a variable: this is what a World that fences on the replayed-from position does, and what the runtime does about it. The runtime assumes any World may.
 - A replay-context event creation names the position it replayed from (`eventCount`, the number of events the replay had loaded), and a World that fences on it rejects the creation with 412 ([`PreconditionFailedError`](/docs/api-reference/workflow-errors/precondition-failed-error)) when the log already held more than that. The position is derived from the run's event IDs, so it is sent only for a run whose World numbers events by position; a run on the older ID scheme, and any caller with no loaded log to be stale against, sends none and is never rejected.
 - On rejection the runtime restarts the replay in the same invocation from a corrected event log, and falls back to a re-invocation with a fresh replay once the restart budget is spent. The rejected write is never retried as-is: a replay working from a corrected log derives different events, so only a fresh replay may write again.
-- Against a fencing World the runtime also keeps the per-step event-log delta optimization (consuming the delta returned by a step's terminal write instead of issuing an extra `events.list` per step) active while the run has an open hook. Without a fence, an open hook disables it.
-- While a hook is open on a fencing World, inline steps take the await-then-run path even when optimistic inline start is enabled: the step's `step_started` claim is awaited before the body runs, so a claim rejected as stale never executes user code.
-- Worlds that do not fence ignore the position and must not declare the capability, so the dependent optimizations stay off against them.
+- The runtime keeps the per-step event-log delta optimization (consuming the delta returned by a step's terminal write instead of issuing an extra `events.list` per step) active while the run has an open hook, because a `hook_received` missed by the delta window is what a fence rejects.
+- While a hook is open, inline steps take the await-then-run path even when optimistic inline start is enabled: the step's `step_started` claim is awaited before the body runs, so a claim rejected as stale never executes user code.
 - A fence only ever rejects on evidence, and fails open in every other case: a World that cannot decide must accept the write. A rejection therefore always means the position really was stale, but the absence of one does not prove it was current.
-- The Vercel World declares the capability. It does not fence a run that uses [slot-numbered event IDs](/docs/how-it-works/event-sourcing#event-ids), because such a run has no position to reject: the World assigns each event its slot at commit time and reports back the slots the write skipped over.
+- The Vercel World does not fence a run that uses [slot-numbered event IDs](/docs/how-it-works/event-sourcing#event-ids), because such a run has no position to reject: the World assigns each event its slot at commit time and reports back the slots the write skipped over.
 
 ### `WORKFLOW_SLOT_GAP_CHECK`
 

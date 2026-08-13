@@ -1,7 +1,6 @@
 import { PreconditionFailedError, WorkflowWorldError } from '@workflow/errors';
 import type { Event, World } from '@workflow/world';
 import { slotToEventId } from '@workflow/world';
-import { ulid } from 'ulid';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { bytesToBase64, deriveRunKeyPair, seal } from '../sealed-box.js';
 import {
@@ -589,14 +588,8 @@ describe('loadWorkflowRunEvents', () => {
   });
 });
 
-const makeUlidEvent = (time: number): Event =>
-  ({
-    eventId: `evnt_${ulid(time)}`,
-    runId: 'wrun_mockidnumber0001',
-    eventType: 'step_created',
-    correlationId: 'step_mock',
-    createdAt: new Date(time),
-  }) as unknown as Event;
+/** An id from the scheme slots replaced: a ULID, which carries no position. */
+const UNPOSITIONED_EVENT_ID = 'evnt_01HF7YATRRC3M0F1K9Q2J8XW5B';
 
 describe('slotSnapshotParams', () => {
   it('sends the highest slot the loaded log occupies', () => {
@@ -627,35 +620,35 @@ describe('slotSnapshotParams', () => {
     expect(slotSnapshotParams([])).toEqual({});
   });
 
-  it('sends nothing for a run whose events are not slot-numbered', () => {
-    expect(slotSnapshotParams([makeUlidEvent(1_700_000_000_000)])).toEqual({});
-  });
-
-  it('sends nothing when one event of the log is not a slot', () => {
-    // A log may not mix the two schemes. If it somehow does, the slot reading
-    // is meaningless, and a count derived from part of the log would understate
-    // the writer's position in a way the World cannot detect.
+  it('throws when any event of the log carries no slot', () => {
+    // Skipping the id instead would understate the writer's position, and the
+    // World cannot tell an understated position from an honest one: it would
+    // hand back the same events on every create for the rest of the run.
     const events = [
       makeEvent(slotToEventId(1)),
-      makeUlidEvent(1_700_000_000_000),
+      makeEvent(UNPOSITIONED_EVENT_ID),
     ];
 
-    expect(slotSnapshotParams(events)).toEqual({});
+    expect(() => slotSnapshotParams(events)).toThrow(UNPOSITIONED_EVENT_ID);
   });
 });
 
 describe('maxEventSlot', () => {
-  it('is undefined for a log with no slot ids', () => {
+  it('is undefined for an empty log', () => {
     expect(maxEventSlot([])).toBeUndefined();
-    expect(maxEventSlot([makeUlidEvent(1_700_000_000_000)])).toBeUndefined();
+  });
+
+  it('throws rather than ignoring an id that carries no slot', () => {
+    expect(() => maxEventSlot([makeEvent(UNPOSITIONED_EVENT_ID)])).toThrow(
+      UNPOSITIONED_EVENT_ID
+    );
   });
 });
 
 /**
  * The hole check a replay runs over its loaded log. It gates whether the run
  * executes at all, so it is one-sided in the opposite direction from the
- * World's density counter: it reports a hole only where the log proves one, and
- * says nothing about a log it cannot read as slots.
+ * World's density counter: it reports a hole only where the log proves one.
  */
 describe('findEventSlotGap', () => {
   const slotLog = (...slots: number[]) =>
@@ -703,20 +696,17 @@ describe('findEventSlotGap', () => {
     });
   });
 
-  it('says nothing about a log it cannot read as slots', () => {
+  it('says nothing about an empty log', () => {
     expect(findEventSlotGap([])).toBeUndefined();
-    expect(
-      findEventSlotGap([makeUlidEvent(1_700_000_000_000)])
-    ).toBeUndefined();
-    // A ULID anywhere disarms it: the run is not slot-numbered, and a mixed
-    // log has no density to measure.
-    expect(
-      findEventSlotGap([
-        ...slotLog(1, 2),
-        makeUlidEvent(1_700_000_000_000),
-        ...slotLog(9),
-      ])
-    ).toBeUndefined();
+  });
+
+  it('throws on a log whose ids carry no position', () => {
+    // The check is entirely positional. An id it cannot read is a log it
+    // cannot judge, and passing the run as dense would be a verdict it never
+    // reached.
+    expect(() =>
+      findEventSlotGap([...slotLog(1, 2), makeEvent(UNPOSITIONED_EVENT_ID)])
+    ).toThrow(UNPOSITIONED_EVENT_ID);
   });
 });
 
@@ -811,80 +801,39 @@ describe('mergeReportedEvents', () => {
     expect(mergeReportedEvents(target, [makeEvent(slotToEventId(2))])).toBe(0);
     expect(target).toHaveLength(2);
   });
-
-  it('leaves a ULID log in receipt order', () => {
-    // Only a slot log has an id order the runtime may impose. A World that
-    // orders by (createdAt, eventId) would be reordered into a log it never
-    // produced.
-    const first = makeUlidEvent(1_700_000_000_000);
-    const second = makeUlidEvent(1_600_000_000_000);
-    const target = [first];
-
-    mergeReportedEvents(target, [second]);
-
-    expect(target.map((e) => e.eventId)).toEqual([
-      first.eventId,
-      second.eventId,
-    ]);
-  });
 });
 
 describe('appendUniqueEvents', () => {
   it('appends in receipt order', () => {
-    const first = makeUlidEvent(1_700_000_000_000);
-    const second = makeUlidEvent(1_700_000_001_000);
-    const third = makeUlidEvent(1_700_000_002_000);
-    const target = [first];
+    const target = [makeEvent(slotToEventId(1))];
 
-    appendUniqueEvents(target, [second, third]);
-
-    expect(target.map((e) => e.eventId)).toEqual([
-      first.eventId,
-      second.eventId,
-      third.eventId,
+    appendUniqueEvents(target, [
+      makeEvent(slotToEventId(2)),
+      makeEvent(slotToEventId(3)),
     ]);
+
+    expect(target.map((e) => e.eventId)).toEqual([1, 2, 3].map(slotToEventId));
   });
 
   it('preserves the order the World returned, never re-sorting by event id', () => {
-    // A World's canonical order is its own: world-local orders by
-    // `(createdAt, eventId)` and re-mints keys so the two diverge, so an
-    // id-ordered re-sort here would produce an order no load would return.
-    const older = makeUlidEvent(1_700_000_000_000);
-    const newer = makeUlidEvent(1_700_000_002_000);
-    const middle = makeUlidEvent(1_700_000_001_000);
-    const target = [older, newer];
+    // Unlike mergeReportedEvents, this appends a page the World handed back as
+    // a unit. Its order is the World's answer, and a re-sort here would produce
+    // an order no load would return.
+    const target = [makeEvent(slotToEventId(1)), makeEvent(slotToEventId(3))];
 
-    appendUniqueEvents(target, [middle]);
+    appendUniqueEvents(target, [makeEvent(slotToEventId(2))]);
 
-    expect(target.map((e) => e.eventId)).toEqual([
-      older.eventId,
-      newer.eventId,
-      middle.eventId,
-    ]);
+    expect(target.map((e) => e.eventId)).toEqual([1, 3, 2].map(slotToEventId));
   });
 
   it('deduplicates by event id', () => {
-    const first = makeUlidEvent(1_700_000_000_000);
-    const second = makeUlidEvent(1_700_000_001_000);
+    const first = makeEvent(slotToEventId(1));
+    const second = makeEvent(slotToEventId(2));
     const target = [first];
 
     appendUniqueEvents(target, [first, second, second]);
 
-    expect(target.map((e) => e.eventId)).toEqual([
-      first.eventId,
-      second.eventId,
-    ]);
-  });
-
-  it('keeps a same-millisecond pair in receipt order', () => {
-    const time = 1_700_000_000_000;
-    const a = makeEvent(`evnt_${ulid(time).slice(0, 10)}AAAAAAAAAAAAAAAA`);
-    const b = makeEvent(`evnt_${ulid(time).slice(0, 10)}ZZZZZZZZZZZZZZZZ`);
-    const target = [b];
-
-    appendUniqueEvents(target, [a]);
-
-    expect(target.map((e) => e.eventId)).toEqual([b.eventId, a.eventId]);
+    expect(target.map((e) => e.eventId)).toEqual([1, 2].map(slotToEventId));
   });
 
   it('leaves the snapshot correct even when the merge is not id-ordered', () => {
@@ -901,7 +850,7 @@ describe('appendUniqueEvents', () => {
 });
 
 describe('preconditionEventDelta', () => {
-  // The run every `makeUlidEvent` belongs to.
+  // The run every fixture event below belongs to.
   const RUN_ID = 'wrun_mockidnumber0001';
   const delta = (details: unknown) =>
     preconditionEventDelta(
@@ -910,7 +859,7 @@ describe('preconditionEventDelta', () => {
     );
 
   it('returns the decoded events and cursor a World attached to the 412', () => {
-    const event = makeUlidEvent(1_700_000_000_000);
+    const event = makeEvent(slotToEventId(1));
 
     expect(delta({ events: [event], cursor: 'eid:next' })).toEqual({
       events: [event],
@@ -919,7 +868,7 @@ describe('preconditionEventDelta', () => {
   });
 
   it('returns a null cursor when the World sent events without one', () => {
-    const event = makeUlidEvent(1_700_000_000_000);
+    const event = makeEvent(slotToEventId(1));
 
     expect(delta({ events: [event] })).toEqual({
       events: [event],
@@ -941,9 +890,9 @@ describe('preconditionEventDelta', () => {
     // The delta is merged straight into the replay's log, so a foreign event
     // there produces a corrupt log rather than a corrected one: the replay
     // consumes a correlation id for an event this run does not have.
-    const mine = makeUlidEvent(1_700_000_000_000);
+    const mine = makeEvent(slotToEventId(1));
     const theirs = {
-      ...makeUlidEvent(1_700_000_001_000),
+      ...makeEvent(slotToEventId(2)),
       runId: 'wrun_someotherrun001',
     } as Event;
 

@@ -1325,14 +1325,13 @@ export function workflowEntrypoint(
                       appendEventLog(eventLog, delta);
                       eventLog = { ...eventLog, type: 'ready' };
                     } else {
-                      // MUST be a full, cursor-less reload. The cursor filters
-                      // by lexicographic event id while a hole is defined by
-                      // ULID *time*: an event in the same millisecond sorts
-                      // either side of the cursor depending on its random
-                      // component, and an event minted in an earlier
-                      // millisecond but committed later always sorts below it.
-                      // An incremental load therefore heals the hole only by
-                      // luck.
+                      // MUST be a full, cursor-less reload. The cursor lists
+                      // forward from the highest event id this replay holds,
+                      // and what a stale snapshot is missing sits below it: a
+                      // slot allocated inside a concurrent commit takes a
+                      // position this replay had already read past. An
+                      // incremental load starts above the hole and never
+                      // returns it.
                       eventLog = { type: 'loadAll' };
                       // The corrected log inserts the missing events BELOW the
                       // length already scanned for payload prewarming, shifting
@@ -3688,9 +3687,8 @@ export function workflowEntrypoint(
                         //    `wait_completed` landing after the delta snapshot
                         //    does not bump the outside-event marker, so nothing
                         //    fences a replay from the stale delta.
-                        //  - No open (or this-suspension-created) hook — UNLESS
-                        //    the World declares it fences stale writes
-                        //    (`capabilities.preconditionGuard`). The
+                        //  - An open (or this-suspension-created) hook is fine,
+                        //    because a World fences a stale write. The
                         //    delta snapshots the log at the step_completed
                         //    write but is consumed on the next replay, so an
                         //    out-of-band `hook_received` landing in that window
@@ -3699,8 +3697,8 @@ export function workflowEntrypoint(
                         //    it. That staleness is qualitatively the same
                         //    read-to-write race the fetch path already has (an
                         //    event can land right after `events.list` returns
-                        //    and before the suspension's writes); on a fencing
-                        //    World it is also fenced: `hook_received` bumps the
+                        //    and before the suspension's writes); it is also
+                        //    fenced: `hook_received` bumps the
                         //    per-run outside-event marker, so every durable
                         //    write the stale replay attempts is rejected with
                         //    412 — its guarded suspension creates (retried over
@@ -3714,9 +3712,7 @@ export function workflowEntrypoint(
                         //    by THIS suspension are inside the delta (their
                         //    `hook_created` lands before the step-terminal
                         //    write), so only their `hook_received` responses
-                        //    are subject to the same fenced window. Without a
-                        //    fencing World there is nothing to reject a stale
-                        //    write, so keep the conservative gate.
+                        //    are subject to the same fenced window.
                         //  - With no hook or wait open at all, the only
                         //    out-of-band writer is cancellation, which is safe
                         //    to observe one iteration late. See
@@ -3726,13 +3722,6 @@ export function workflowEntrypoint(
                         // own events and the per-write delta would be partial, so
                         // the delta is not requested (the gate below is false for
                         // multi-step) and the next iteration does a normal fetch.
-                        // Whether the World fences a stale write. Sending a
-                        // snapshot is not the same as it being enforced: a
-                        // World that does not declare the capability ignores
-                        // what it is sent, so nothing rejects.
-                        const guardEnforced =
-                          world.capabilities?.preconditionGuard === true;
-
                         const requestInlineDelta =
                           typeof eventLog.cursor === 'string' &&
                           err.stepCount === 1 &&
@@ -3741,32 +3730,24 @@ export function workflowEntrypoint(
                           lazyInlineSteps.length === 1 &&
                           ownedRecoverySteps.length === 0 &&
                           !suspensionResult.waitTimeout &&
-                          !openHookWaitState.openWait &&
-                          (guardEnforced ||
-                            (err.hookCount === 0 &&
-                              !openHookWaitState.openHook));
+                          !openHookWaitState.openWait;
 
                         // Stale-sensitive batch: a hook is open in the run (or
                         // was created by this suspension, so its hook_received
                         // can land any moment) — an out-of-band event can make
-                        // the view this batch was scheduled from stale. With
-                        // the guard in force, the fence rejects a stale
-                        // claim's durable writes — but it cannot un-run a step
-                        // BODY that optimistic start began before the claim
-                        // settled. Suppress optimistic start for these batches
-                        // (take await-then-run) so a 412-fenced step never
-                        // executes user code at all: the fence then covers
-                        // side effects, not just the event log. Costs one
-                        // claim round-trip per step while a hook is open, only
-                        // on guard-enforcing deployments. Without the guard
-                        // nothing 412s, so suppression would buy nothing —
-                        // stale-view exposure there is the pre-existing
-                        // optimistic-start contract (idempotent side effects).
+                        // the view this batch was scheduled from stale. The
+                        // fence rejects a stale claim's durable writes, but it
+                        // cannot un-run a step BODY that optimistic start began
+                        // before the claim settled. Suppress optimistic start
+                        // for these batches (take await-then-run) so a
+                        // 412-fenced step never executes user code at all: the
+                        // fence then covers side effects, not just the event
+                        // log. Costs one claim round-trip per step while a hook
+                        // is open.
                         const suppressOptimisticStart =
-                          guardEnforced &&
-                          (openHookWaitState.openHook ||
-                            err.hookCount > 0 ||
-                            suspensionResult.hasHookEvents);
+                          openHookWaitState.openHook ||
+                          err.hookCount > 0 ||
+                          suspensionResult.hasHookEvents;
 
                         // Turbo mode forces optimistic inline start for this
                         // batch — but only while the run is still "clean" (a pure

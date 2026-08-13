@@ -240,11 +240,17 @@ export const MAX_RESILIENT_STEP_INPUT_BYTES = 128 * 1024;
  * event if the direct write failed transiently. Mirrors the resilient start
  * (`runInput`) and resilient hook resume (`hookInput`) patterns.
  *
- * **On by default.** Disable via `WORKFLOW_RESILIENT_STEP_DISPATCH=0` to
- * restore the sequential create-then-queue dispatch.
+ * **Off by default.** Enable via `WORKFLOW_RESILIENT_STEP_DISPATCH=1`.
+ *
+ * The queue publish races the create's verdict. A World that refuses the
+ * `step_created` as stale sends the runtime back to replay from a corrected
+ * log, but the message carrying the payload is already out, so the consumer
+ * can materialize a step the World refused. Nothing orders the create's
+ * refusal before the consumer's redelivery re-ensure, so enabling this trades
+ * that window for the latency the parallel publish saves.
  */
 export function isResilientStepDispatchEnabled(): boolean {
-  return process.env.WORKFLOW_RESILIENT_STEP_DISPATCH !== '0';
+  return process.env.WORKFLOW_RESILIENT_STEP_DISPATCH === '1';
 }
 
 const warnedMaxEventsValues = new Set<string>();

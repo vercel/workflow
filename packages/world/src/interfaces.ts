@@ -173,14 +173,6 @@ export interface Storage {
       ): Promise<(WorkflowRun | WorkflowRunWithoutData | null)[]>;
     };
 
-    /**
-     * Lists canonical workflow storage records.
-     *
-     * @remarks Observability and inspection usage of this method is
-     * deprecated. Use `world.analytics?.runs.list()` for plan-aware
-     * observability queries. This storage API remains available for
-     * operational and payload-bearing callers.
-     */
     list(
       params: ListWorkflowRunsParams & { resolveData: 'none' }
     ): Promise<PaginatedResponse<WorkflowRunWithoutData>>;
@@ -341,24 +333,6 @@ export interface WorldCapabilities {
   hookRetention?: {
     active: boolean;
   };
-
-  /**
-   * The World fences a stale replay-context write: an event creation whose
-   * snapshot is behind what the run has already recorded is rejected with a
-   * `PreconditionFailedError` (412) rather than committed. The runtime's
-   * response is to abandon the write and replay from a corrected log.
-   *
-   * Runtime optimizations that are only safe behind that fence read this
-   * capability, so a World that accepts a snapshot and ignores it must leave
-   * this unset: sending a snapshot is not the same as one being enforced, and
-   * enabling those optimizations with nothing behind them makes a stale replay
-   * commit.
-   *
-   * Orthogonal to {@link slotEventIds}, which never rejects — it commits above
-   * the contention and reports back what the writer missed. A World may
-   * declare either, both, or neither.
-   */
-  preconditionGuard?: boolean;
 
   /**
    * The World's queue supports `maxConcurrency`-limited consumption — in

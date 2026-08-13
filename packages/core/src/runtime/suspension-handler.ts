@@ -677,26 +677,23 @@ export async function handleSuspension({
   //
   //  - The caller provided a dispatch target (`stepDispatch`) — terminal
   //    drains and other create-only callers never queue.
-  //  - The feature is enabled (`WORKFLOW_RESILIENT_STEP_DISPATCH` opt-out).
-  //  - The World does not fence stale writes
-  //    (`capabilities.preconditionGuard`). A guard-enforcing
-  //    backend can reject the step_created as stale (412) and the caller then
-  //    restarts the replay — but a queue message carrying the payload would
-  //    already be out, letting the consumer materialize a step the guard
-  //    rejected. This gate is deliberately NOT liftable by backend-side
-  //    revocation bookkeeping: nothing orders a slow create's eventual 412
-  //    (which is when the backend learns the dispatch is poisoned) before the
-  //    consumer's redelivery re-ensure, and a best-effort marker that fails
-  //    open cannot carry a correctness property. The sequential path is the
-  //    only thing that gives the message a happens-after edge over its
-  //    create's guard verdict.
+  //  - The feature is enabled (`WORKFLOW_RESILIENT_STEP_DISPATCH` opt-in).
+  //    It is off by default because a World may reject the `step_created` as
+  //    stale (412) and the caller then restarts the replay — but a queue
+  //    message carrying the payload would already be out, letting the consumer
+  //    materialize a step the World refused. Nothing orders a slow create's
+  //    eventual 412 (which is when the backend learns the dispatch is
+  //    poisoned) before the consumer's redelivery re-ensure, so no
+  //    backend-side revocation bookkeeping can close that window: a
+  //    best-effort marker that fails open cannot carry a correctness property.
+  //    The sequential path is the only thing that gives the message a
+  //    happens-after edge over its create's verdict.
   //  - The run's queue transport preserves binary payloads (CBOR,
   //    specVersion >= 3): `stepInput.input` is the serialized (possibly
   //    encrypted) input bytes, which the JSON transport would mangle.
   const resilientDispatchEligible =
     stepDispatch !== undefined &&
     isResilientStepDispatchEnabled() &&
-    world.capabilities?.preconditionGuard !== true &&
     (run.specVersion ?? 0) >= SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT;
 
   // The trace carrier for resilient step dispatches, resolved at most once per

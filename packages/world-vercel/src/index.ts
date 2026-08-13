@@ -38,17 +38,6 @@ export function createWorld(config?: APIConfig): World {
     specVersion: SPEC_VERSION_SUPPORTS_SLOT_IDENTITY,
     capabilities: {
       hookRetention: { active: true },
-      // The backend rejects a stale create with 412 (PreconditionFailedError)
-      // rather than committing it.
-      //
-      // No write this adapter now sends can be rejected that way: the backend
-      // evaluates the fence only for a create carrying a ULID-era snapshot,
-      // and this SDK sends none. A run created here is v6, where staleness is
-      // handled by allocating the write above the contention and reporting
-      // back the slots it skipped. The capability is kept because the runtime
-      // reads it as "a write can be refused", and the choices keyed on it stay
-      // the conservative ones while the slot path carries the load.
-      preconditionGuard: true,
       // Vercel Queues supports maxConcurrency-limited consumers, which
       // WORKFLOW_SEQUENTIAL_REPLAYS=1 uses for per-run `maxConcurrency: 1`
       // flow topics (see queue.ts and @workflow/builders).

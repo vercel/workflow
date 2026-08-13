@@ -26,6 +26,7 @@ import {
   type CreateEventRequest,
   type Event,
   SPEC_VERSION_CURRENT,
+  slotToEventId,
   type WorkflowRun,
   type World,
 } from '@workflow/world';
@@ -182,7 +183,6 @@ async function runResumeConsumerScenario(options: {
     updatedAt: startedAt,
   };
 
-  const hostUlid = monotonicFactory();
   let eventIndex = 0;
   const event = (data: CreateEventRequest): Event => {
     const t = +startedAt + ++eventIndex * 100;
@@ -190,7 +190,7 @@ async function runResumeConsumerScenario(options: {
       ...data,
       specVersion: data.specVersion ?? SPEC_VERSION_CURRENT,
       runId,
-      eventId: `evnt_${hostUlid(t)}`,
+      eventId: slotToEventId(eventIndex),
       createdAt: new Date(t),
     } as Event;
   };

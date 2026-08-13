@@ -17,14 +17,19 @@ export const scenario: ScenarioSpec = {
     '`@workflow/core` puts on every replay-context create; what differs is ' +
     'what a World does with it. This sim rejects on it, which is why the flag ' +
     'below is the default and the twin above has to switch it off. ' +
-    'Under an append-only log the 412 still fires and now saves nothing: the ' +
-    'count is taken at or below the caller’s watermark, and the watermark ' +
-    'is a millisecond, so a hook that commits after the timeout inside the ' +
-    'same virtual millisecond still counts as "at or below" it. The reload ' +
-    'sees the hook behind the timeout in log order, re-decides the same way, ' +
-    'and settles — a restart with nothing to correct. That is what the ' +
-    'fence costs once the log is append-only: false positives at millisecond ' +
-    'granularity, in exchange for a hole that can no longer open.',
+    'Which half fires is no longer the point, though, and that is what slot ' +
+    'positions changed. A watermark used to be a millisecond, so two writes ' +
+    'inside one virtual millisecond compared equal and only the count could ' +
+    'separate them; a watermark that is a slot is strictly ordered, so the ' +
+    'watermark half now rejects this on its own. What the scenario still ' +
+    'asserts is that the fence fires at all. ' +
+    'Under an append-only log the 412 still fires and saves nothing: the ' +
+    'reload sees the hook behind the timeout in log order, re-decides the ' +
+    'same way, and settles — a restart with nothing to correct. ' +
+    'Mint-ordered there is no fence to reach: the receiver holds a position ' +
+    'ahead of everything the orchestrator writes, so the log has a hole in it ' +
+    'while the write is in flight, and the next replay refuses the log ' +
+    'outright rather than following it into the wrong branch.',
   workflow: 'stepCountForkWorkflow',
   input: ['doc-30'],
   preconditionGuard: true,
@@ -39,23 +44,25 @@ export const scenario: ScenarioSpec = {
     await hook.commit();
     await wf.release();
 
-    // The point of the scenario, and the part that is true in both worlds: the
-    // count half of the fence fires where the watermark half did not. What the
-    // reload then decides is a different question and belongs to the world —
-    // mint-ordered it corrects the branch, append-only it re-confirms it — so
-    // that half is left to the trace. Asserting it here is what forced this
-    // scenario to carry two expectations, and it was never what distinguished
-    // it from its uncounted twin.
-    // Matched on the count half's own message, not on "something was
-    // rejected". The twin rejects too — its writes hit `RunExpiredError` once
-    // the corrupted branch has run — so a bare `rejections().length > 0` would
-    // hold there as well and assert nothing about the guard.
-    sim.check(
-      'the count guard fenced the write the watermark let through',
-      sim.world
-        .rejections()
-        .some((r) => r.message.includes('at or below the caller'))
-    );
+    // Matched on the error, not on "something was rejected". The twin rejects
+    // too — its writes hit `RunExpiredError` once the corrupted branch has run
+    // — so a bare `rejections().length > 0` would hold there as well and
+    // assert nothing about the fence.
+    //
+    // Only asserted under an append-only log, because only there does the
+    // write reach the fence. Mint-ordered, the receiver's reserved position is
+    // binding, so the log carries a hole for as long as the write is in
+    // flight, and the replay that reads it refuses the log before any write of
+    // its own is checked. That refusal is the violation the trace reports; a
+    // check here would restate it as a second failure.
+    if (sim.appendOnlyLog) {
+      sim.check(
+        'the fence rejected the write',
+        sim.world
+          .rejections()
+          .some((r) => r.errorName === 'PreconditionFailedError')
+      );
+    }
   },
   // The rejection and the reload show up in the trace as `!!` lines. Whichever
   // branch the reload lands on, it is the one the durable log implies — so
