@@ -133,7 +133,10 @@ const result = await world.events.listByCorrelationId({ // [!code highlight]
 
 ## world.runs
 
-Materialized from run events. Use it to list and inspect workflow runs.
+Materialized from run events. Use it for canonical operational reads, including
+reads that require workflow input or output data. For observability dashboards,
+inspection tools, and historical listings, use
+[`world.analytics.runs.list()`](/docs/api-reference/workflow-runtime/world/analytics#runslist).
 
 ### runs.get()
 
@@ -162,6 +165,14 @@ const result = await world.runs.list({ // [!code highlight]
 | `params.resolveData` | `'all' \| 'none'` | Whether to include input/output data |
 
 **Returns:** `{ data: WorkflowRun[], cursor?: string }`
+
+<Callout type="warn">
+  Observability and inspection usage of `world.runs.list()` is deprecated. Use
+  [`world.analytics.runs.list()`](/docs/api-reference/workflow-runtime/world/analytics#runslist)
+  for metadata-only, plan-aware queries backed by the observability pipeline.
+  `world.runs.list()` remains supported for operational and payload-bearing
+  reads.
+</Callout>
 
 ### Cancelling Runs
 

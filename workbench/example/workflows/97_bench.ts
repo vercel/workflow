@@ -10,7 +10,9 @@
 // - Every step records `start`/`end` (`Date.now()` at body entry/exit) and the
 //   workflow returns the collected timings. The runner combines them with the
 //   in-deployment `clientStart` to compute time-to-first-step (TTFS),
-//   step-to-step overhead (STSO), and workflow overhead (WO).
+//   step-to-step overhead (STSO), workflow overhead (WO), and — on the fan-out
+//   scenario — the first/last step completion of a `Promise.all` (Fan-out
+//   TTFS/TTLS).
 // - `benchSlWorkflow` measures stream latency (SL) entirely on the deployment:
 //   a reader step and a writer step run in parallel on a dedicated namespaced
 //   stream, and the workflow returns both the writer's `writtenAt` and the
@@ -202,6 +204,28 @@ export async function benchSequentialStepsWorkflow(count: number): Promise<{
     steps.push(await timedNoopStep(i));
   }
   return { steps };
+}
+
+/**
+ * Fan-out scenario: `count` trivial steps started together in one
+ * `Promise.all`.
+ *
+ * Every step is dispatched from the same suspension, so the run's step
+ * timings describe how the runtime spreads a fan-out: the earliest step body
+ * to finish is the first branch a caller could observe, the latest is when
+ * the whole fan-out is joinable. The runner turns those into Fan-out
+ * TTFS/TTLS. Steps are the same no-op bodies the sequential scenario uses, so
+ * the spread is dispatch and concurrency cost, not body work.
+ */
+export async function benchFanOutStepsWorkflow(count: number): Promise<{
+  steps: BenchStepTiming[];
+}> {
+  'use workflow';
+  const pending: Promise<BenchStepTiming>[] = [];
+  for (let i = 0; i < count; i++) {
+    pending.push(timedNoopStep(i));
+  }
+  return { steps: await Promise.all(pending) };
 }
 
 /**
