@@ -6,4 +6,4 @@
 'workflow': patch
 ---
 
-Return a checkpoint cursor after every non-empty open-stream chunk page, use the versioned Vercel API contract, and require matching Workflow and World package versions.
+Return a checkpoint cursor after every non-empty open-stream chunk page, use the versioned Vercel API contract, and release matching Workflow and World package versions.

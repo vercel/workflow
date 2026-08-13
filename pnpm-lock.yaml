@@ -1324,9 +1324,6 @@ importers:
       '@workflow/world-local':
         specifier: workspace:^
         version: link:../world-local
-      '@workflow/world-postgres':
-        specifier: workspace:^
-        version: link:../world-postgres
       '@workflow/world-vercel':
         specifier: workspace:^
         version: link:../world-vercel
@@ -1392,9 +1389,6 @@ importers:
       undici:
         specifier: 'catalog:'
         version: 7.29.0
-      workflow:
-        specifier: workspace:^
-        version: link:../workflow
       zod:
         specifier: 'catalog:'
         version: 4.3.6
@@ -1594,9 +1588,6 @@ importers:
       undici:
         specifier: 'catalog:'
         version: 7.29.0
-      workflow:
-        specifier: workspace:^
-        version: link:../workflow
       ws:
         specifier: ^8.20.0
         version: 8.20.0
