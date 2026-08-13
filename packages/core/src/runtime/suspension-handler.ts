@@ -58,12 +58,13 @@ export interface SuspensionHandlerParams {
   requestId?: string;
   /**
    * The runtime's loaded event log. Every event creation this suspension makes
-   * is sent with the precondition snapshot derived from it, so a backend that
-   * has recorded an event the replay did not see rejects the write with a 412
-   * instead of accepting a divergent event. The rejection is not retried here:
-   * the event's correlation id was minted by *this* replay's seeded sequence,
-   * so re-committing it against a corrected log would persist an event no
-   * correct replay produces. The caller restarts the replay instead.
+   * names the position it was derived from, so a backend that has recorded
+   * events the replay did not see can report them back on the write — or, if
+   * it would rather refuse than report, reject it with a 412. A rejection is
+   * not retried here: the event's correlation id was minted by *this* replay's
+   * seeded sequence, so re-committing it against a corrected log would persist
+   * an event no correct replay produces. The caller restarts the replay
+   * instead.
    */
   eventLog?: LoadedEventLog;
   /**
@@ -677,26 +678,23 @@ export async function handleSuspension({
   //
   //  - The caller provided a dispatch target (`stepDispatch`) — terminal
   //    drains and other create-only callers never queue.
-  //  - The feature is enabled (`WORKFLOW_RESILIENT_STEP_DISPATCH` opt-out).
-  //  - The World does not fence stale writes
-  //    (`capabilities.preconditionGuard`). A guard-enforcing
-  //    backend can reject the step_created as stale (412) and the caller then
-  //    restarts the replay — but a queue message carrying the payload would
-  //    already be out, letting the consumer materialize a step the guard
-  //    rejected. This gate is deliberately NOT liftable by backend-side
-  //    revocation bookkeeping: nothing orders a slow create's eventual 412
-  //    (which is when the backend learns the dispatch is poisoned) before the
-  //    consumer's redelivery re-ensure, and a best-effort marker that fails
-  //    open cannot carry a correctness property. The sequential path is the
-  //    only thing that gives the message a happens-after edge over its
-  //    create's guard verdict.
+  //  - The feature is enabled (`WORKFLOW_RESILIENT_STEP_DISPATCH` opt-in).
+  //    It is off by default because the publish races the create's verdict,
+  //    and a create can come back refused: as a duplicate the replay should
+  //    stop pursuing, or — on a World that would rather refuse a stale write
+  //    than report what it missed — as a 412. Either way the queue message
+  //    carrying the payload is already out, and the consumer can materialize a
+  //    step whose create was refused. Nothing orders that verdict before the
+  //    consumer's redelivery re-ensure, so no backend-side revocation
+  //    bookkeeping can close the window: a best-effort marker that fails open
+  //    cannot carry a correctness property. The sequential path is the only
+  //    thing that gives the message a happens-after edge over the verdict.
   //  - The run's queue transport preserves binary payloads (CBOR,
   //    specVersion >= 3): `stepInput.input` is the serialized (possibly
   //    encrypted) input bytes, which the JSON transport would mangle.
   const resilientDispatchEligible =
     stepDispatch !== undefined &&
     isResilientStepDispatchEnabled() &&
-    world.capabilities?.preconditionGuard !== true &&
     (run.specVersion ?? 0) >= SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT;
 
   // The trace carrier for resilient step dispatches, resolved at most once per

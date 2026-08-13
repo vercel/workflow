@@ -30,6 +30,7 @@ import {
   type Event,
   type HookResumeTiming,
   SPEC_VERSION_CURRENT,
+  slotToEventId,
   type WorkflowInvokePayload,
   type WorkflowRun,
   type World,
@@ -342,7 +343,6 @@ async function runScenario(options: ScenarioOptions = {}) {
     updatedAt: startedAt,
   };
 
-  const hostUlid = monotonicFactory();
   let eventIndex = 0;
   const event = (data: CreateEventRequest): Event => {
     const t = +startedAt + ++eventIndex * 100;
@@ -350,7 +350,7 @@ async function runScenario(options: ScenarioOptions = {}) {
       ...data,
       specVersion: data.specVersion ?? SPEC_VERSION_CURRENT,
       runId,
-      eventId: `evnt_${hostUlid(t)}`,
+      eventId: slotToEventId(eventIndex),
       createdAt: new Date(t),
     } as Event;
   };
@@ -1060,7 +1060,6 @@ async function runScenarioWithoutPreload() {
     updatedAt: startedAt,
   };
 
-  const hostUlid = monotonicFactory();
   let eventIndex = 0;
   const event = (data: CreateEventRequest): Event => {
     const t = +startedAt + ++eventIndex * 100;
@@ -1068,7 +1067,7 @@ async function runScenarioWithoutPreload() {
       ...data,
       specVersion: data.specVersion ?? SPEC_VERSION_CURRENT,
       runId,
-      eventId: `evnt_${hostUlid(t)}`,
+      eventId: slotToEventId(eventIndex),
       createdAt: new Date(t),
     } as Event;
   };
