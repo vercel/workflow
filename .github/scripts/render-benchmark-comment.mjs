@@ -248,7 +248,9 @@ export function loadResults(resultsDir) {
 
 function formatMs(value) {
   if (typeof value !== 'number' || !Number.isFinite(value)) return '—';
-  return `${Math.abs(value) >= 100 ? Math.round(value) : value}`;
+  // Round to one decimal below 100 (and trim float artifacts like
+  // 54.650000000000006 from upstream averaging), integers above.
+  return `${Math.abs(value) >= 100 ? Math.round(value) : Math.round(value * 10) / 10}`;
 }
 
 /**

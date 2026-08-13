@@ -619,9 +619,13 @@ function medianOf(values: readonly (number | undefined)[]): number | undefined {
   if (present.length === 0) return undefined;
   const sorted = [...present].sort((a, b) => a - b);
   const mid = sorted.length / 2;
-  return sorted.length % 2 === 1
-    ? sorted[Math.floor(mid)]
-    : (sorted[mid - 1] + sorted[mid]) / 2;
+  const median =
+    sorted.length % 2 === 1
+      ? sorted[Math.floor(mid)]
+      : (sorted[mid - 1] + sorted[mid]) / 2;
+  // Inputs carry one decimal; averaging two of them yields float artifacts
+  // (54.650000000000006) that leak into the table and artifacts unrounded.
+  return Math.round(median * 100) / 100;
 }
 
 /**
