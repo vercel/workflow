@@ -38,8 +38,16 @@ import {
   vi,
 } from 'vitest';
 import { withEventPostRetry } from './event-retry.js';
-import { createWorkflowRunEventV4 } from './events-v4.js';
-import { type DecodedFrame, decodeFrames, encodeFrame } from './frames.js';
+import {
+  createWorkflowRunEventV4,
+  getEventV4,
+} from './events-v4.js';
+import {
+  type DecodedFrame,
+  decodeFrames,
+  encodeFrame,
+  V4_FRAME_CONTENT_TYPE,
+} from './frames.js';
 import { WORKFLOW_SERVER_URL_OVERRIDE } from './utils.js';
 
 vi.mock('@vercel/oidc', () => ({
@@ -448,6 +456,47 @@ describe('connection span', () => {
 });
 
 describe('transport parity', () => {
+  it('does not tag an HTTP event read as an event-write transport', async () => {
+    delete process.env.WORKFLOW_EVENTS_TRANSPORT;
+    const agent = new MockAgent();
+    agent.disableNetConnect();
+    agent
+      .get(ORIGIN)
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events/evnt_1?remoteRefBehavior=resolve',
+        method: 'GET',
+      })
+      .reply(
+        200,
+        encodeFrame(
+          {
+            eventId: 'evnt_1',
+            runId: 'wrun_1',
+            eventType: 'run_created',
+            createdAt: CREATED_AT,
+            eventData: {
+              deploymentId: 'dpl_1',
+              workflowName: 'workflow',
+              input: null,
+            },
+          },
+          new Uint8Array()
+        ),
+        { headers: { 'content-type': V4_FRAME_CONTENT_TYPE } }
+      );
+
+    await getEventV4('wrun_1', 'evnt_1', 'resolve', {
+      token: 'test-token',
+      dispatcher: agent,
+    });
+
+    const spans = spansNamed('http GET');
+    expect(spans).toHaveLength(1);
+    expect(spans[0].attributes['workflow.events.transport']).toBeUndefined();
+    expect(spans[0].attributes['workflow.event.type']).toBeUndefined();
+    agent.assertNoPendingInterceptors();
+  });
+
   it('emits the same span name and url.full on HTTP as on ws', async () => {
     delete process.env.WORKFLOW_EVENTS_TRANSPORT;
     const agent = new MockAgent();

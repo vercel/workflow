@@ -108,10 +108,7 @@ async function fetchV4(
     headers: init.headers,
     body: init.body,
     dispatcher,
-    // Named on both transports so a trace or a latency dashboard can tell which
-    // one served a write — they are otherwise deliberately indistinguishable,
-    // right down to the span name and `url.full`. See `postEventFrameOverWs`.
-    attributes: { ...WorkflowEventsTransport('http'), ...attributes },
+    attributes,
     // Repeated transport failures retire the shared events pool and the next
     // request builds a fresh one. undici keeps a black-holed HTTP/2 session in
     // service indefinitely, so without this every request routed onto it fails
@@ -709,7 +706,10 @@ async function postWorkflowRunEventV4(
     { method: 'POST', headers, body: frame },
     config,
     'createEvent',
-    WorkflowEventType(input.eventType)
+    {
+      ...WorkflowEventsTransport('http'),
+      ...WorkflowEventType(input.eventType),
+    }
   );
 }
 
