@@ -123,6 +123,20 @@ export interface StepExecutorParams {
    */
   lazyStepInput?: SerializedData;
   /**
+   * The step's serialized input as carried on the queue message that
+   * dispatched this execution (`stepInput.input`) — the same bytes the
+   * dispatcher wrote into the step's `step_created` event. Used ONLY as a
+   * local hydration source when the `step_started` response returns a step
+   * without `input`: a World that materializes no step rows has no row to
+   * answer a bare start from, and the start event itself carries no payload.
+   * Never sent on the wire by this executor — a `step_started` carrying an
+   * input is a create-claim (see {@link lazyStepInput}), which a bare start
+   * of an existing step must not become. When neither the response nor this
+   * field has the input, the executor falls back to reading the step's
+   * `step_created` event from the log.
+   */
+  dispatchedStepInput?: SerializedData;
+  /**
    * Inline step ownership: the queue message ID of the invocation this
    * executeStep call runs in (from the queue handler's meta). When set, the
    * `step_started` this call sends is stamped with it — on the lazy paths
@@ -260,7 +274,19 @@ export type StepExecutionResult =
       inlineDelta?: InlineEventDelta;
     }
   | { type: 'failed' }
-  | { type: 'retry'; timeoutSeconds: number }
+  | {
+      type: 'retry';
+      timeoutSeconds: number;
+      /**
+       * The attempt number the retry dispatch should ask for
+       * (`stepContext.attempt` on the queue message): the attempt that just
+       * burned plus one, or the same attempt again when the body never ran
+       * (a `TooEarly` start rejection). Undefined when this executor was not
+       * told which attempt it ran — the dispatch then carries none and the
+       * consumer falls back to the delivery count.
+       */
+      nextAttempt?: number;
+    }
   | { type: 'skipped' }
   | { type: 'gone' }
   | { type: 'throttled'; timeoutSeconds: number };
@@ -272,6 +298,46 @@ export type StepExecutionResult =
  * Does NOT queue workflow continuation messages — the caller decides what to do next.
  * Used by the combined workflow handler for step execution.
  */
+/**
+ * The step's serialized input, read back from its `step_created` event.
+ *
+ * Last-resort input source for a bare start against a World that
+ * materializes no step rows: the `step_started` response has no row to
+ * answer from, and the dispatch message may not have carried the bytes (an
+ * old producer, an oversized or non-binary input, an owned-recovery re-run,
+ * a JSON queue transport). The `step_created` event holds the input on every
+ * World, and it is the earliest event of its correlation id, so the first
+ * ascending page almost always answers; the loop covers a correlation id
+ * whose page one is retry churn.
+ *
+ * Returns `undefined` when no `step_created` exists (the caller decides what
+ * that means). Transient read failures propagate — the queue redelivers and
+ * a later attempt converges, the same policy as every other pre-body read.
+ */
+async function fetchStepCreatedInput(
+  world: World,
+  runId: string,
+  stepId: string
+): Promise<unknown> {
+  let cursor: string | undefined;
+  for (;;) {
+    const page = await world.events.listByCorrelationId({
+      runId,
+      correlationId: stepId,
+      resolveData: 'all',
+      pagination: { sortOrder: 'asc', ...(cursor ? { cursor } : {}) },
+    });
+    const created = page.data.find((e) => e.eventType === 'step_created');
+    if (created) {
+      return 'eventData' in created
+        ? (created.eventData as { input?: unknown } | undefined)?.input
+        : undefined;
+    }
+    if (!page.hasMore || !page.cursor) return undefined;
+    cursor = page.cursor;
+  }
+}
+
 export async function executeStep(
   params: StepExecutorParams
 ): Promise<StepExecutionResult> {
@@ -564,7 +630,12 @@ export async function executeStep(
           stepId,
           timeoutSeconds,
         });
-        return { type: 'retry', timeoutSeconds };
+        // The body never ran, so the re-dispatch asks for this same attempt.
+        return {
+          type: 'retry',
+          timeoutSeconds,
+          nextAttempt: params.authoritativeAttempt,
+        };
       }
       return undefined;
     };
@@ -890,13 +961,36 @@ export async function executeStep(
       // Use the provided encryption key when available, otherwise resolve
       // through the memoized accessor declared at the top of this trace.
       const encryptionKey = params.encryptionKey ?? (await getEncryptionKey());
+      // The bytes the body's arguments hydrate from. A World with step rows
+      // answers the start from the row, which carries the input stored at
+      // `step_created`; one that stores only the log answers a bare start
+      // with no input at all. The dispatch message is the first fallback
+      // (the same bytes the dispatcher wrote into `step_created`), and a
+      // message that carried none reads that event back from the log.
+      let stepInputSource: unknown = step.input;
+      if (stepInputSource === undefined) {
+        stepInputSource = params.dispatchedStepInput;
+      }
+      if (stepInputSource === undefined) {
+        stepInputSource = await trace('step.fetch_input', {}, () =>
+          fetchStepCreatedInput(world, workflowRunId, stepId)
+        );
+      }
+      if (stepInputSource === undefined) {
+        // Without this, the undefined falls through to the deserializer,
+        // which reports it as an opaque "Invalid input".
+        throw new WorkflowRuntimeError(
+          `Step "${stepId}" has no input: the step_started response, the ` +
+            'dispatch message, and the step_created event all carried none'
+        );
+      }
       const hydratedInput = await trace(
         'step.hydrate',
         {},
         async (hydrateSpan) => {
           const startTime = Date.now();
           const hydrated = await hydrateStepArguments(
-            step.input,
+            stepInputSource,
             workflowRunId,
             encryptionKey,
             ops,
@@ -1402,7 +1496,8 @@ export async function executeStep(
         ...Attribute.StepRetryWillRetry(true),
       });
 
-      return { type: 'retry', timeoutSeconds };
+      // This attempt burned, so the retry dispatch asks for the next one.
+      return { type: 'retry', timeoutSeconds, nextAttempt: step.attempt + 1 };
     }
 
     // Create step_completed event outside the step execution failure path:

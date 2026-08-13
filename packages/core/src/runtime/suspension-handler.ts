@@ -152,6 +152,21 @@ export interface SuspensionHandlerResult {
     dehydratedInput: SerializedData;
   }>;
   /**
+   * The serialized input of each step whose `step_created` this pass wrote
+   * (eager, non-lazy steps only), for the caller to attach to that step's
+   * execution queue message as `stepInput`. The executing invocation hydrates
+   * the step body's arguments from it when the World's `step_started`
+   * response carries no input — a World that materializes no step rows has no
+   * row to answer from, and the event a bare start commits holds none.
+   *
+   * Only inputs the queue message can carry: binary (the JSON transport would
+   * mangle the bytes; requires the run's CBOR transport) and at most
+   * `MAX_RESILIENT_STEP_INPUT_BYTES` (the same inline-cost bound as resilient
+   * dispatch). A step missing from this map is dispatched without input and
+   * the executor falls back to reading its `step_created` event.
+   */
+  stepDispatchInputs: Map<string, Uint8Array>;
+  /**
    * The soonest pending wait, if any: seconds until it elapses and the
    * correlationId of the wait that produced that timeout. The
    * correlationId seeds the idempotency key for the wait-continuation
@@ -672,6 +687,17 @@ export async function handleSuspension({
   // write). Reported to the caller so its dispatch pass skips them.
   const queuedStepCorrelationIds = new Set<string>();
 
+  // Serialized inputs of the eager steps created this pass, for the caller's
+  // dispatch pass to carry on each step's queue message. See
+  // SuspensionHandlerResult.stepDispatchInputs.
+  const stepDispatchInputs = new Map<string, Uint8Array>();
+
+  // Whether the run's queue transport preserves binary payloads (CBOR,
+  // specVersion >= 3). `stepInput.input` is the serialized (possibly
+  // encrypted) input bytes, which the JSON transport would mangle.
+  const queueTransportPreservesBinary =
+    (run.specVersion ?? 0) >= SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT;
+
   // Resilient step dispatch eligibility, shared by every step op below (the
   // per-step input-size check is applied inside the op). All must hold:
   //
@@ -688,13 +714,12 @@ export async function handleSuspension({
   //    best-effort marker that fails open cannot carry a correctness property.
   //    The sequential path is the only thing that gives the message a
   //    happens-after edge over its create's verdict.
-  //  - The run's queue transport preserves binary payloads (CBOR,
-  //    specVersion >= 3): `stepInput.input` is the serialized (possibly
-  //    encrypted) input bytes, which the JSON transport would mangle.
+  //  - The run's queue transport preserves binary payloads
+  //    (`queueTransportPreservesBinary` above).
   const resilientDispatchEligible =
     stepDispatch !== undefined &&
     isResilientStepDispatchEnabled() &&
-    (run.specVersion ?? 0) >= SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT;
+    queueTransportPreservesBinary;
 
   // The trace carrier for resilient step dispatches, resolved at most once per
   // suspension (the per-step ops run concurrently and share it).
@@ -748,6 +773,16 @@ export async function handleSuspension({
             });
             return;
           }
+          // Keep the bytes for the caller's dispatch pass when the queue
+          // message can carry them — see
+          // SuspensionHandlerResult.stepDispatchInputs.
+          if (
+            queueTransportPreservesBinary &&
+            dehydratedInput instanceof Uint8Array &&
+            dehydratedInput.byteLength <= MAX_RESILIENT_STEP_INPUT_BYTES
+          ) {
+            stepDispatchInputs.set(queueItem.correlationId, dehydratedInput);
+          }
           const stepEvent: CreateEventRequest = {
             eventType: 'step_created' as const,
             specVersion: SPEC_VERSION_CURRENT,
@@ -786,6 +821,13 @@ export async function handleSuspension({
                   traceCarrier,
                   requestedAt: new Date(),
                   stepInput: { input: dehydratedInput },
+                  // A step created this pass is brand-new, so this dispatch
+                  // asks for its first attempt; the position is this
+                  // suspension's own snapshot. See StepDispatchContextSchema.
+                  stepContext: {
+                    attempt: 1,
+                    ...(eventLog ? slotSnapshotParams(eventLog.events) : {}),
+                  },
                 },
                 // Same key as the caller's dispatch pass and any concurrent
                 // handler's — redundant publishes for this step dedupe. The
@@ -1020,6 +1062,7 @@ export async function handleSuspension({
     pendingSteps: stepItems,
     createdStepCorrelationIds,
     queuedStepCorrelationIds,
+    stepDispatchInputs,
     lazyInlineSteps,
     // On hook conflict the caller re-invokes immediately and never reads
     // the wait timeout, so don't report one.

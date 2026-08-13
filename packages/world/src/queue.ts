@@ -263,6 +263,48 @@ export const HookResumeTimingSchema = z.object({
 });
 export type HookResumeTiming = z.infer<typeof HookResumeTimingSchema>;
 
+/**
+ * What the dispatcher knew about a step when it published its execution
+ * message ({@link WorkflowInvokePayload.stepId}).
+ *
+ * The Step row used to answer both questions at execution time: its counter
+ * was the attempt number, and its conditional write refused a start behind
+ * the step's outcome. A World that materializes no step rows has neither,
+ * and the executing invocation cannot answer them for itself — it runs from
+ * a queued delivery without loading the log, and the queue's own delivery
+ * count resets on every fresh publish, so a step re-dispatched after
+ * `step_retrying` would report attempt 1 forever. The dispatcher is a replay
+ * that HAS the log, so it states what it saw.
+ *
+ * Both fields are advisory and the object is optional: an old producer omits
+ * it (the consumer falls back to the delivery count, today's behavior), an
+ * old consumer ignores it, and workflow-server never reads it. A stale
+ * dispatcher understates both — safe in both cases: an understated `attempt`
+ * grants a retry too many (the ceiling still verifies against the log before
+ * failing the step), an understated `eventCount` only widens the span the
+ * World reports back.
+ */
+export const StepDispatchContextSchema = z.object({
+  /**
+   * Which attempt the dispatched execution is, 1-based: the step's recorded
+   * `step_started` total in the dispatcher's replayed log, plus one for the
+   * attempt this message asks for. The consumer takes the max of this and
+   * the queue delivery count as its retry-ceiling input.
+   */
+  attempt: z.number().int().positive().optional(),
+  /**
+   * The highest slot the dispatcher's loaded log occupied when it published
+   * this message — the same snapshot its own writes carry (see
+   * `CreateEventParams.eventCount`). Seeds the executor's writes so a World
+   * that gates duplicates from the log can see what this execution's claim
+   * skipped over, and refuse a start behind the step's recorded outcome.
+   * Omitted when the dispatcher had nothing loaded or the run's events are
+   * not slot-numbered.
+   */
+  eventCount: z.number().int().positive().optional(),
+});
+export type StepDispatchContext = z.infer<typeof StepDispatchContextSchema>;
+
 export const WorkflowInvokePayloadSchema = z.object({
   runId: z.string(),
   traceCarrier: TraceCarrierSchema.optional(),
@@ -306,6 +348,13 @@ export const WorkflowInvokePayloadSchema = z.object({
    * `step_created` event exists (keyed by `stepId`) before executing the step.
    */
   stepInput: StepDispatchInputSchema.optional(),
+  /**
+   * Dispatcher-known step context, only present alongside `stepId`: the
+   * attempt number this dispatch asks for and the dispatcher's log position.
+   * See {@link StepDispatchContextSchema} for why the executing invocation
+   * cannot derive either for itself on a World without step rows.
+   */
+  stepContext: StepDispatchContextSchema.optional(),
   /**
    * Hook-resume TTR timing. Present on both `resumeHook()` dispatch paths
    * (unlike `hookInput`, which only rides the parallel fast path), and
