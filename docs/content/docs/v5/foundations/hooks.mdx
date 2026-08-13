@@ -116,7 +116,7 @@ Calling `createHook()` on its own does not register the hook — registration is
 
 ### Custom Tokens for Deterministic Hooks
 
-By default, hooks generate a random token. However, you often want to use a **custom token** that external systems can reconstruct. This is especially useful for long-running workflows where the same workflow instance should handle multiple events.
+By default, hooks generate their own token. However, you often want to use a **custom token** that external systems can reconstruct. This is especially useful for long-running workflows where the same workflow instance should handle multiple events.
 
 For example, imagine a Slack bot where each channel should have its own workflow instance:
 
@@ -480,7 +480,7 @@ This pattern is especially valuable in larger applications where the workflow an
 
 ### Token Design
 
-Custom tokens are available for `createHook()` with server-side `resumeHook()` only. Webhooks (`createWebhook()`) always use randomly generated tokens to prevent unauthorized access to public webhook endpoints.
+Custom tokens are available for `createHook()` with server-side `resumeHook()` only. Webhooks (`createWebhook()`) always generate their own token, drawn from the run's deterministic sequence so the URL stays stable across replays and across concurrent invocations of the same run. A generated token is not trivial to guess, but it is not a secret either: authenticate webhook requests themselves with a signature header, a shared secret, or a check inside the handler rather than relying on URL secrecy.
 
 When using custom tokens with `createHook()`:
 
