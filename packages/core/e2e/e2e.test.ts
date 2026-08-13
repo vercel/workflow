@@ -4188,7 +4188,11 @@ describe('e2e', () => {
 
   test(
     'distributedAbortController - TTL expiration triggers signal',
-    { timeout: 30_000 },
+    // Same budget as the sibling distributedAbortController tests: the 3s
+    // TTL is trivial, but cold starts plus queue backlog on a fresh prod
+    // deployment routinely pushed run start + stream delivery past the
+    // tighter 30s this test used to get.
+    { timeout: 60_000 },
     async () => {
       const controllerId = `test-expire-${Math.random().toString(36).slice(2)}`;
 
