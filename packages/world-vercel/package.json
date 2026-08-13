@@ -46,8 +46,7 @@
     "zod": "catalog:"
   },
   "peerDependencies": {
-    "@opentelemetry/api": "1",
-    "workflow": "workspace:^"
+    "@opentelemetry/api": "1"
   },
   "peerDependenciesMeta": {
     "@opentelemetry/api": {

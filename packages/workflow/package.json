@@ -90,7 +90,6 @@
   "peerDependencies": {
     "@opentelemetry/api": "1",
     "@workflow/world-local": "workspace:^",
-    "@workflow/world-postgres": "workspace:^",
     "@workflow/world-vercel": "workspace:^"
   },
   "peerDependenciesMeta": {
@@ -98,9 +97,6 @@
       "optional": true
     },
     "@workflow/world-local": {
-      "optional": true
-    },
-    "@workflow/world-postgres": {
       "optional": true
     },
     "@workflow/world-vercel": {
