@@ -45,11 +45,6 @@ export function createWorld(config?: APIConfig): World {
       // Vercel deployments are atomic and immutable, so a deployment id names
       // one fixed build for its whole lifetime.
       deploymentAffinity: true,
-      // New runs get dense per-run slot event ids. Runs created before the
-      // backend adopted them keep their ULIDs; the scheme is pinned by the
-      // spec version stamped on each run, not by this flag, which only says
-      // what new runs get.
-      slotEventIds: true,
       // NOTE: the backend half of resumeHook()'s parallel fast path — that
       // the server enforces the `(runId, resumeId)` dedup constraint — is
       // NO LONGER a static world capability here. It is attested per-lookup by

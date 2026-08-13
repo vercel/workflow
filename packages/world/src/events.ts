@@ -820,11 +820,10 @@ export interface CreateEventParams {
    * every replay-context create; omitted by callers with no loaded log to be
    * stale against.
    *
-   * Only meaningful against a World that declares
-   * {@link WorldCapabilities.slotEventIds}, where slots are dense and 1-based
-   * so a count and a position are the same number. An id that is not a
-   * position does not produce a count here — it throws, since the runtime
-   * cannot state a snapshot for a log it cannot place. Such a World attempts
+   * A World's slots are dense and 1-based (see `Storage.events`), so a count
+   * and a position are the same number. An id that is not a position does not
+   * produce a count here — it throws, since the runtime cannot state a
+   * snapshot for a log it cannot place. Such a World attempts
    * `eventCount + 1`, and on contention **bumps** to the next free slot and
    * commits there anyway — a stale count never rejects a write. What it does
    * instead is report: when the committed slot is higher than the one asked
@@ -991,9 +990,8 @@ export type EventResult<T extends EventType = EventType> = {
        *   log through the canonical `hook_received`, so the lazy hook queue
        *   consumer can skip both the `run_started` write and the initial
        *   `events.list`.
-       * - On any response from a slot-allocating World (see
-       *   `WorldCapabilities.slotEventIds`) whose committed slot came out
-       *   higher than the one {@link CreateEventParams.eventCount} asked for:
+       * - On any response whose committed slot came out higher than the one
+       *   {@link CreateEventParams.eventCount} asked for:
        *   the events occupying the slots that were skipped over, in slot
        *   order. This is the "report" half of bump-and-report — the write
        *   succeeded, and these are the events the writer had not seen when it

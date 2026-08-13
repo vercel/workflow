@@ -36,7 +36,6 @@ interface WorldCapabilities {
   hookRetention?: {
     active: boolean;
   };
-  slotEventIds?: boolean;
 }
 
 interface World extends Storage, Queue, Streamer {
@@ -48,7 +47,7 @@ interface World extends Storage, Queue, Streamer {
 }
 ```
 
-The optional `capabilities` object advertises additional behavior. Set `hookRetention.active` to `true` only when the World implements Hook token retention, and `slotEventIds` when it allocates [slot-numbered event IDs](#event-id-allocation). The optional `start()` method initializes background tasks (for example, queue polling). The optional `close()` method releases resources like connection pools and listeners. The optional `getEncryptionKeyForRun()` method returns the AES-256 key used to encrypt data for a run; if it is not implemented, encryption is disabled.
+The optional `capabilities` object advertises additional behavior. Set `hookRetention.active` to `true` only when the World implements Hook token retention. Note what is *not* in there: [slot-numbered event IDs](#event-id-allocation) are a requirement of this contract, not a capability to opt into. The optional `start()` method initializes background tasks (for example, queue polling). The optional `close()` method releases resources like connection pools and listeners. The optional `getEncryptionKeyForRun()` method returns the AES-256 key used to encrypt data for a run; if it is not implemented, encryption is disabled.
 
 ## The Event Log Model
 
@@ -109,12 +108,18 @@ Keep the owning Run available for at least as long as its token remains unavaila
 
 ### Event ID Allocation
 
-Your World assigns every event ID. An ID is `evnt_` followed by the event's 1-based position in that run's log, zero-padded to 26 characters, so the run's first event is `evnt_00000000000000000000000001`. Use `slotToEventId()` from `@workflow/world` to format one, and declare `capabilities.slotEventIds`.
+<Callout type="warn">
+  **Required.** Your World assigns every event ID, and every ID must be a position in its run's log. The runtime reads a position out of every ID it loads and fails the run when it cannot, so a World whose IDs are anything else — a ULID, a UUID, a database sequence shared across runs — cannot replay a single workflow. There is no capability flag and no fallback path.
+</Callout>
+
+An ID is `evnt_` followed by the event's 1-based position in that run's log, zero-padded to 26 characters, so the run's first event is `evnt_00000000000000000000000001`. Use `slotToEventId()` from `@workflow/world` to format one.
 
 Two properties have to hold, and both are about what a reader can conclude from the log:
 
 - **Uniqueness.** Two writers racing to append must not both take a position. Settle it where the store settles it, with a unique constraint on `(runId, eventId)` or a conditional write, rather than reading the maximum and adding one in your own process.
 - **Density.** Positions run from 1 with no holes, which is what lets a reader tell a complete log from a truncated one by its length alone. A writer that loses a race must re-derive its position from the store and take the next free one. Incrementing a local number after a loss leaves a permanent hole, and the runtime treats a hole as a log it cannot safely replay across.
+
+Allocate the position **at the commit**, in the same operation that appends the event. That is what makes a reader's log a *prefix* of the run's log rather than a prefix with a hole in it: nothing can land behind a position a reader has already passed. Handing a position out earlier — in a request handler, say — and committing later breaks the property every replay depends on, and is the one case where you may need [a stale-write rejection](#optional-rejecting-a-stale-write) to compensate.
 
 `events.create()` params carry `eventCount`: how many events the writer held in the log it replayed from, which is the position it expects to land on minus one. Attempt `eventCount + 1`. When that position is taken, **do not reject the write**. Advance to the next free position, commit there, and return the events occupying the positions you skipped over on the success response, in `events` with a matching `cursor` and `hasMore`. The writer merges them into its own log and replays once, rather than paying a second round trip to discover it was behind. A caller with a stale count is the normal case for a fan-out, and rejecting it would serialize writes the runtime issues in parallel.
 

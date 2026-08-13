@@ -263,6 +263,35 @@ export interface Storage {
     ): Promise<PaginatedResponse<Step | StepWithoutData>>;
   };
 
+  /**
+   * The event log, and the one part of this interface with a requirement the
+   * types cannot express: **the World allocates every event id, and every id
+   * is a slot** — `evnt_` followed by the event's dense, 1-based position in
+   * its run's log, zero-padded to 26 characters. Use `slotToEventId()` to
+   * format one.
+   *
+   * Not a capability to opt into. The runtime reads a position out of every id
+   * it loads (`requireEventSlot`) and fails the run if it cannot, so a World
+   * whose ids are not positions cannot replay anything at all. Two properties
+   * are what the runtime actually relies on:
+   *
+   * - **Density.** A run's slots are contiguous from 1, so the number of
+   *   events a reader holds *is* the position of the last one. That is what
+   *   makes {@link CreateEventParams.eventCount} a complete statement of the
+   *   writer's snapshot in a single integer, and what lets a reader tell a
+   *   complete log from a truncated one by its length.
+   * - **Bump and report.** A create never fails because its requested slot is
+   *   taken. The World advances to the next free slot, commits there, and
+   *   returns the events occupying the slots it skipped over on the success
+   *   response (see {@link EventResult.events}). The writer learns its
+   *   snapshot was stale without the write being rejected — which is why no
+   *   World needs a precondition guard.
+   *
+   * Allocating at the commit is what makes a reader's log a *prefix* of the
+   * run's log rather than a prefix with a hole in it. A World that hands a
+   * position out earlier, and can therefore let an event land behind one a
+   * reader has already passed, breaks the property every replay depends on.
+   */
   events: {
     /**
      * Create a run_created event to start a new workflow run.
@@ -403,32 +432,6 @@ export interface WorldCapabilities {
    * fail ordinary runs after a version bump.
    */
   deploymentAffinity?: boolean;
-
-  /**
-   * The World allocates **slot-numbered** event ids: `evnt_` plus the event's
-   * dense, 1-based position in its run's log, zero-padded to 26 characters
-   * (see `slot-identity.ts`). Two guarantees come with it, and the runtime
-   * relies on both:
-   *
-   * - **Density.** A run's slots are contiguous from 1, so the number of
-   *   events a reader holds *is* the position of the last one. That is what
-   *   makes {@link CreateEventParams.eventCount} a complete statement of the
-   *   writer's snapshot in a single integer.
-   * - **Bump and report.** A create never fails because its requested slot is
-   *   taken. The World advances to the next free slot, commits there, and
-   *   returns the events occupying the slots it skipped over on the success
-   *   response (see {@link EventResult.events}). The writer learns its
-   *   snapshot was stale without the write being rejected.
-   *
-   * The capability says what *new* runs get. It is not a migration switch: the
-   * runtime requires every event id it reads to be a position
-   * (`requireEventSlot`), so a World that turns slots on cannot go on
-   * replaying its existing ULID-numbered runs. On a platform where a run
-   * executes on the deployment that created it, those runs finish on the build
-   * that made them and never meet this one; anywhere else they have to be
-   * drained before a build carrying this ships.
-   */
-  slotEventIds?: boolean;
 }
 
 /**
