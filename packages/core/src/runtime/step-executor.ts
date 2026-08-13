@@ -603,6 +603,24 @@ export async function executeStep(
     const startEventParams: CreateEventParams = {
       computeInstanceId: COMPUTE_INSTANCE_ID,
     };
+    // Which attempt this start is, stated by the writer.
+    //
+    // A World that keeps a step row can own this itself, by incrementing a
+    // counter as it applies the start, and one that stores only the log
+    // cannot: the attempt is not on any event unless someone puts it there,
+    // and the run's log is not a cheap thing to count on a step's hot path.
+    // So the writer states it. It already knows the number — the retry
+    // ceiling below is enforced against exactly this value before the body
+    // runs (see StepExecutorParams.authoritativeAttempt) — and stating it
+    // costs one integer on a frame that is already being sent.
+    //
+    // Omitted rather than defaulted when the caller did not supply one: a
+    // World that counts for itself must not have its own count overwritten
+    // by a guess, and one that does not read back `1` anyway.
+    const attemptStamp =
+      params.authoritativeAttempt !== undefined
+        ? { attempt: params.authoritativeAttempt }
+        : {};
     // `Date.now()` taken immediately before the `step_started` create is
     // issued (either path below) — anchors RSFS's end point. See
     // StepLatencyEventData.rsfs and the call sites below.
@@ -658,6 +676,7 @@ export async function executeStep(
                 stepName,
                 workflowName,
                 input: params.lazyStepInput,
+                ...attemptStamp,
                 // Inline-ownership stamp — see StepExecutorParams.ownerMessageId.
                 ...(params.ownerMessageId !== undefined
                   ? { ownerMessageId: params.ownerMessageId }
@@ -720,9 +739,10 @@ export async function executeStep(
                     stepName,
                     workflowName,
                     input: params.lazyStepInput,
+                    ...attemptStamp,
                     ...ownershipStamp,
                   }
-                : { stepName, ...ownershipStamp },
+                : { stepName, ...attemptStamp, ...ownershipStamp },
           },
           // Guard the claim — see StepExecutorParams.slotSnapshot. A
           // stale (412) rejection is intentionally NOT translated by

@@ -247,3 +247,61 @@ describe('executeStep — compute instance stamping', () => {
     }
   });
 });
+
+describe('executeStep — attempt stamping', () => {
+  afterEach(() => {
+    counter += 1;
+  });
+
+  it('states the attempt on step_started', async () => {
+    // A World that stores only the log cannot count attempts for itself: the
+    // number is on no event unless the writer puts it there, and it is the
+    // number the retry ceiling is decided against. See `attemptStamp`.
+    const world = makeWorld();
+    const stepName = uniqueStepName();
+    const { runId, stepId } = await setupRunningStep({
+      world,
+      stepName,
+      onBody: () => {},
+    });
+
+    await executeStep({
+      world,
+      workflowRunId: runId,
+      workflowName: 'wf',
+      workflowStartedAt: Date.now(),
+      stepId,
+      stepName,
+      authoritativeAttempt: 3,
+    });
+
+    const [started] = await eventsFor(world, runId, stepId, 'step_started');
+    expect(
+      (started?.eventData as { attempt?: number } | undefined)?.attempt
+    ).toBe(3);
+  });
+
+  it('states no attempt when the caller supplied none', async () => {
+    // A World that counts for itself must not have its count overwritten by a
+    // guess, so the field is omitted rather than defaulted.
+    const world = makeWorld();
+    const stepName = uniqueStepName();
+    const { runId, stepId } = await setupRunningStep({
+      world,
+      stepName,
+      onBody: () => {},
+    });
+
+    await executeStep({
+      world,
+      workflowRunId: runId,
+      workflowName: 'wf',
+      workflowStartedAt: Date.now(),
+      stepId,
+      stepName,
+    });
+
+    const [started] = await eventsFor(world, runId, stepId, 'step_started');
+    expect(started?.eventData).not.toHaveProperty('attempt');
+  });
+});

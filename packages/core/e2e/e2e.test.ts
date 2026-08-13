@@ -45,6 +45,7 @@ import {
   isLocalDeployment,
   setupRunTracking,
   setupWorld,
+  stepFailedError,
   trackRun,
   writeDiagnosticsSidecar,
 } from './utils';
@@ -1314,20 +1315,10 @@ describe('e2e', () => {
               expect(result.stack).not.toContain('99_e2e.ts');
             }
 
-            // Verify step failed via CLI (--withData needed to resolve errorRef)
-            const { json: steps } = await cliInspectJson(
-              `steps --runId ${run.runId} --withData`
-            );
-            const failedStep = steps.find((s: any) =>
-              s.stepName.includes('errorStepFn')
-            );
-            expect(failedStep.status).toBe('failed');
-            // The CLI hydrates `step.error` from the serialization pipeline.
-            // Errors thrown from steps are wrapped in `FatalError` by the
-            // step executor, which serializes via the Instance reducer
-            // (`{ classId, data }`); the CLI surfaces unregistered class
-            // instances as placeholders with the original `data` payload.
-            const errorData = failedStep.error.data ?? failedStep.error;
+            // Verify the step failed, and that its error survived the write.
+            // The error comes from the event log rather than the step listing
+            // — see `stepFailedError`.
+            const errorData = await stepFailedError(run.runId, 'errorStepFn');
             expect(errorData.message).toContain('Step error message');
 
             // Step error stack should contain the original step function name
@@ -1376,17 +1367,11 @@ describe('e2e', () => {
               expect(result.stack).not.toContain('helpers.ts');
             }
 
-            // Verify step failed via CLI - same stack info available there too (--withData needed to resolve errorRef)
-            const { json: steps } = await cliInspectJson(
-              `steps --runId ${run.runId} --withData`
+            // Same stack info is available on the durable event too.
+            const errorData = await stepFailedError(
+              run.runId,
+              'stepThatThrowsFromHelper'
             );
-            const failedStep = steps.find((s: any) =>
-              s.stepName.includes('stepThatThrowsFromHelper')
-            );
-            expect(failedStep.status).toBe('failed');
-            // See note above: serialized step errors arrive as Instance refs
-            // when the FatalError class isn't registered in this process.
-            const errorData = failedStep.error.data ?? failedStep.error;
             if (hasNestedStepStackFrames()) {
               expect(errorData.stack).toContain('throwErrorFromStep');
             }
@@ -1418,12 +1403,11 @@ describe('e2e', () => {
 
           expect(result.finalAttempt).toBe(3);
 
-          // --withData forces the storage-backed listing: the analytics
-          // listing may omit the attempt column entirely (it is optional in
-          // the analytics schema), so only the durable step entity can be
-          // asserted on. Poll because rows for a just-finished run can lag.
+          // The analytics listing reports `attempt` as the number of starts
+          // the log holds, which is the number the step row's counter held.
+          // Poll because rows for a just-finished run can lag.
           const steps = await cliInspectJsonUntil(
-            `steps --runId ${run.runId} --withData`,
+            `steps --runId ${run.runId}`,
             (json) =>
               json.some(
                 (s: any) =>
@@ -1455,10 +1439,8 @@ describe('e2e', () => {
           // (which inspect the value inside the SWC-instrumented workflow).
           // Here we only assert step lifecycle behavior.
 
-          // --withData forces the storage-backed listing — see the
-          // retry-success test above.
           const steps = await cliInspectJsonUntil(
-            `steps --runId ${run.runId} --withData`,
+            `steps --runId ${run.runId}`,
             (json) =>
               json.some(
                 (s: any) =>
