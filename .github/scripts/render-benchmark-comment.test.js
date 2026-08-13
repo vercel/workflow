@@ -197,6 +197,101 @@ test('renders both SO payload-shape rows under one metric', async () => {
   assert.match(body, /Targets \(p75\/p90\/p99, ms\) — SO 250\/500\/1000/);
 });
 
+test('renders the fan-out scenario as one Fan-out TTFS row and one Fan-out TTLS row', async () => {
+  const { renderComment } = await loadModule();
+  const fanOutRow = (metric, overrides) => ({
+    metric,
+    scenario: 'Promise.all(100 steps)',
+    unit: 'ms',
+    best: 300,
+    avg: 420,
+    p75: 450,
+    p90: 520,
+    p99: 700,
+    samples: 10,
+    ...overrides,
+  });
+  const result = sampleResult({
+    scenarios: [
+      {
+        name: 'Promise.all(100 steps)',
+        description: '100 trivial no-op steps started together',
+      },
+    ],
+    metrics: [
+      // Deliberately out of display order: the table sorts by METRIC_ORDER.
+      fanOutRow('fanout-ttls', { best: 900, p75: 1400, p90: 1800, p99: 2600 }),
+      fanOutRow('fanout-ttfs'),
+      sampleResult().metrics[0],
+    ],
+  });
+  const body = renderComment({
+    status: 'completed',
+    results: [result],
+    history: [],
+    commit: 'abcdef1234567890',
+  });
+
+  assert.match(
+    body,
+    /\| \*\*Fan-out TTFS\*\* \| Promise\.all\(100 steps\) \| 300 \|/
+  );
+  assert.match(
+    body,
+    /\| \*\*Fan-out TTLS\*\* \| Promise\.all\(100 steps\) \| 900 \|/
+  );
+  // Neither row falls back to the raw metric id.
+  assert.doesNotMatch(body, /\| fanout-ttfs \|/);
+  assert.doesNotMatch(body, /\| fanout-ttls \|/);
+  // Display order: single-step TTFS, then the fan-out pair with first before last.
+  const order = ['**TTFS**', '**Fan-out TTFS**', '**Fan-out TTLS**'].map(
+    (name) => body.indexOf(name)
+  );
+  assert.ok(
+    order.every((index, i) => index > -1 && (i === 0 || index > order[i - 1])),
+    `unexpected row order: ${JSON.stringify(order)}`
+  );
+  // Both metrics are defined in the collapsed footer.
+  assert.match(body, /\*\*Fan-out TTFS\*\*: fan-out time to first step/);
+  assert.match(body, /\*\*Fan-out TTLS\*\*: fan-out time to last step/);
+  // No targets on the fan-out rows, so they contribute nothing to the targets
+  // legend and carry no 🔴 marks.
+  assert.doesNotMatch(body, /Targets \(p75\/p90\/p99, ms\) —[^<]*Fan-out/);
+  assert.doesNotMatch(body, /\| \*\*Fan-out TT[FL]S\*\* \|[^\n]*🔴/);
+});
+
+test('diffs fan-out rows against a baseline keyed on their own metric ids', async () => {
+  const { renderComment } = await loadModule();
+  const fanOutRow = (metric, best) => ({
+    metric,
+    scenario: 'Promise.all(100 steps)',
+    unit: 'ms',
+    best,
+    avg: best,
+    p75: best,
+    p90: best,
+    p99: best,
+    samples: 10,
+  });
+  const metricsFor = (ttfsBest, ttlsBest) => [
+    fanOutRow('fanout-ttfs', ttfsBest),
+    fanOutRow('fanout-ttls', ttlsBest),
+  ];
+  const body = renderComment({
+    status: 'completed',
+    // First branch lands as fast as on main; the tail is 50% slower.
+    results: [sampleResult({ metrics: metricsFor(300, 1500) })],
+    baseline: [sampleResult({ metrics: metricsFor(300, 1000) })],
+    history: [],
+    commit: 'abcdef1234567890',
+  });
+
+  // TTFS unchanged, TTLS regressed — the two rows carry independent deltas,
+  // which is the point of splitting them.
+  assert.match(body, /\| \*\*Fan-out TTFS\*\* \|[^\n]*300 \(±0%\)/);
+  assert.match(body, /\| \*\*Fan-out TTLS\*\* \|[^\n]*1500 \(\+50%\) 🔻/);
+});
+
 test('renders best/p75/p90/p99 deltas with 🔻/💚 threshold marks and embeds them', async () => {
   const { renderComment, extractHistory } = await loadModule();
   const baseline = sampleResult({

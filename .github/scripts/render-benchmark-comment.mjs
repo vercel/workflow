@@ -33,6 +33,16 @@ const METRIC_LABELS = {
     description:
       'time to first step body (in-deployment start() → first step body, deployment clocks)',
   },
+  'fanout-ttfs': {
+    name: 'Fan-out TTFS',
+    description:
+      'fan-out time to first step (in-deployment start() → first of the parallel step bodies to complete)',
+  },
+  'fanout-ttls': {
+    name: 'Fan-out TTLS',
+    description:
+      'fan-out time to last step (in-deployment start() → last of the parallel step bodies to complete, i.e. when the Promise.all resolves)',
+  },
   stso: {
     name: 'STSO',
     description: 'step-to-step overhead (gap between consecutive step bodies)',
@@ -53,7 +63,15 @@ const METRIC_LABELS = {
       'stream overhead (end-to-end write+consume time beyond the modelled generation window)',
   },
 };
-const METRIC_ORDER = ['ttfs', 'stso', 'wo', 'sl', 'so'];
+const METRIC_ORDER = [
+  'ttfs',
+  'fanout-ttfs',
+  'fanout-ttls',
+  'stso',
+  'wo',
+  'sl',
+  'so',
+];
 
 export function parseArgs(argv) {
   const args = {
@@ -655,7 +673,7 @@ function renderFooter(entries) {
         ]
       : []),
     '',
-    '<sub>All metrics are measured from deployment-side timestamps only. Runs are triggered by an in-deployment route that stamps the anchor (`clientStart`) right before `start()`, so the CI runner’s request and its path through api.vercel.com sit outside every measured window. TTFS = in-deployment `start()` → first step body (turbo uses the in-process fast path, non-turbo the dispatch path), and includes the VQS dispatch hop plus any `/flow` cold start. STSO/WO are measured between step bodies on the deployment. SL is measured inside the workflow (parallel reader/writer steps), so it no longer includes the api.vercel.com read path.</sub>',
+    '<sub>All metrics are measured from deployment-side timestamps only. Runs are triggered by an in-deployment route that stamps the anchor (`clientStart`) right before `start()`, so the CI runner’s request and its path through api.vercel.com sit outside every measured window. TTFS = in-deployment `start()` → first step body (turbo uses the in-process fast path, non-turbo the dispatch path), and includes the VQS dispatch hop plus any `/flow` cold start. Fan-out TTFS/TTLS are the first and last step completions of a single `Promise.all` over trivial steps, from the same anchor, so the gap between the two rows is the spread the runtime adds across the fan-out. STSO/WO are measured between step bodies on the deployment. SL is measured inside the workflow (parallel reader/writer steps), so it no longer includes the api.vercel.com read path.</sub>',
     '',
     '<sub>Cold starts are kept in the numbers on purpose — they are part of real bursty-workload latency. The workbench deployment cold-starts the `/flow` invocation for a large fraction of runs, inflating P75+; the **Best** column shows the fastest (warm-start) sample for comparison.</sub>',
   ];
