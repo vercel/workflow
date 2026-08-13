@@ -43,6 +43,10 @@ workbench/nextjs-*/public/.well-known/workflow
 workbench/sveltekit/static/.well-known/workflow
 
 
+# E2E diagnostics sidecar files (written to the repo root by writeDiagnosticsSidecar()
+# in packages/core/e2e/utils.ts during e2e runs)
+e2e-diagnostics-*.json
+
 # Event log race repro output (written to the repo root by the harness and by
 # scripts/event-log-race-repro-local.sh)
 event-log-race-repro-results.json

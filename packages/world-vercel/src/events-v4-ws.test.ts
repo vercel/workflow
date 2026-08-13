@@ -129,7 +129,7 @@ describe('transport gate', () => {
     agent
       .get(origin)
       .intercept({
-        path: '/api/v4/runs/wrun_1/events/step_completed',
+        path: '/api/v5/runs/wrun_1/events/step_completed',
         method: 'POST',
       })
       .reply(200, materializedBody(), {
@@ -183,7 +183,7 @@ describe('createWorkflowRunEventV4 over ws', () => {
     agent
       .get(origin)
       .intercept({
-        path: '/api/v4/runs/wrun_1/events/step_completed',
+        path: '/api/v5/runs/wrun_1/events/step_completed',
         method: 'POST',
       })
       .reply(200, materializedBody(), {

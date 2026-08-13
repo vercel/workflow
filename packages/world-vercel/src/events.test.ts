@@ -193,7 +193,7 @@ describe('createWorkflowRunEvent slot snapshot wire fields', () => {
     agent
       .get(ORIGIN)
       .intercept({
-        path: '/api/v4/runs/wrun_1/events/run_started',
+        path: '/api/v5/runs/wrun_1/events/run_started',
         method: 'POST',
       })
       .reply(
@@ -235,7 +235,7 @@ describe('createWorkflowRunEvent slot snapshot wire fields', () => {
     agent
       .get(ORIGIN)
       .intercept({
-        path: '/api/v4/runs/wrun_1/events/run_started',
+        path: '/api/v5/runs/wrun_1/events/run_started',
         method: 'POST',
       })
       .reply(
@@ -354,7 +354,7 @@ describe('createWorkflowRunEvent result contract', () => {
     agent
       .get(ORIGIN)
       .intercept({
-        path: `/api/v4/runs/wrun_1/events/${eventType}`,
+        path: `/api/v5/runs/wrun_1/events/${eventType}`,
         method: 'POST',
       })
       .reply(200, createEventBody(data as AnyEventRequest, response), {
@@ -385,7 +385,7 @@ async function postStepStartedMeta(
   agent
     .get(ORIGIN)
     .intercept({
-      path: '/api/v4/runs/wrun_1/events/step_started',
+      path: '/api/v5/runs/wrun_1/events/step_started',
       method: 'POST',
     })
     .reply(
@@ -469,7 +469,7 @@ describe('createWorkflowRunEvent replayDivergenceCount wire field', () => {
     agent
       .get(ORIGIN)
       .intercept({
-        path: '/api/v4/runs/wrun_1/events/run_completed',
+        path: '/api/v5/runs/wrun_1/events/run_completed',
         method: 'POST',
       })
       .reply(
@@ -784,7 +784,7 @@ describe('createWorkflowRunEvent response coercion', () => {
     agent
       .get(ORIGIN)
       .intercept({
-        path: `/api/v4/runs/${taggedRunId}/events/run_created`,
+        path: `/api/v5/runs/${taggedRunId}/events/run_created`,
         method: 'POST',
       })
       .reply(
@@ -847,7 +847,7 @@ describe('createWorkflowRunEvent response coercion', () => {
     agent
       .get(ORIGIN)
       .intercept({
-        path: '/api/v4/runs/wrun_1/events/run_started',
+        path: '/api/v5/runs/wrun_1/events/run_started',
         method: 'POST',
       })
       .reply(
@@ -892,7 +892,7 @@ describe('createWorkflowRunEvent response coercion', () => {
     agent
       .get(ORIGIN)
       .intercept({
-        path: '/api/v4/runs/wrun_1/events/run_started',
+        path: '/api/v5/runs/wrun_1/events/run_started',
         method: 'POST',
       })
       .reply(
@@ -956,7 +956,7 @@ describe('createWorkflowRunEvent response coercion', () => {
     agent
       .get(ORIGIN)
       .intercept({
-        path: '/api/v4/runs/wrun_1/events/run_started',
+        path: '/api/v5/runs/wrun_1/events/run_started',
         method: 'POST',
         headers: { accept: V4_FRAME_CONTENT_TYPE },
       })
@@ -1051,7 +1051,7 @@ describe('createWorkflowRunEvent response coercion', () => {
     agent
       .get(ORIGIN)
       .intercept({
-        path: '/api/v4/runs/wrun_1/events/wait_created',
+        path: '/api/v5/runs/wrun_1/events/wait_created',
         method: 'POST',
       })
       .reply(
@@ -1109,7 +1109,7 @@ describe('createWorkflowRunEvent resolveData', () => {
     agent
       .get(ORIGIN)
       .intercept({
-        path: '/api/v4/runs/wrun_1/events/step_completed',
+        path: '/api/v5/runs/wrun_1/events/step_completed',
         method: 'POST',
       })
       .reply(
@@ -1193,7 +1193,7 @@ describe('getWorkflowRunEvents remoteRefBehavior mapping', () => {
     agent
       .get(ORIGIN)
       .intercept({
-        path: '/api/v4/runs/wrun_1/events',
+        path: '/api/v5/runs/wrun_1/events',
         method: 'GET',
         query: { returnAll: 'true', remoteRefBehavior: 'lazy' },
       })
@@ -1227,7 +1227,7 @@ describe('getWorkflowRunEvents remoteRefBehavior mapping', () => {
     agent
       .get(ORIGIN)
       .intercept({
-        path: '/api/v4/runs/wrun_1/events',
+        path: '/api/v5/runs/wrun_1/events',
         method: 'GET',
         query: { returnAll: 'true', remoteRefBehavior: 'resolve' },
       })
@@ -1253,7 +1253,7 @@ describe('getWorkflowRunEvents remoteRefBehavior mapping', () => {
     agent
       .get(ORIGIN)
       .intercept({
-        path: '/api/v4/runs/wrun_1/events',
+        path: '/api/v5/runs/wrun_1/events',
         method: 'GET',
         query: { returnAll: 'true', remoteRefBehavior: 'resolve' },
       })
@@ -1288,7 +1288,7 @@ describe('getWorkflowRunEvents remoteRefBehavior mapping', () => {
     agent
       .get(ORIGIN)
       .intercept({
-        path: '/api/v4/runs/wrun_1/events',
+        path: '/api/v5/runs/wrun_1/events',
         method: 'GET',
         query: { returnAll: 'true', remoteRefBehavior: 'resolve' },
       })
@@ -1341,7 +1341,7 @@ describe('getWorkflowRunEvents legacy structured-error compatibility', () => {
     agent
       .get(ORIGIN)
       .intercept({
-        path: '/api/v4/runs/wrun_1/events',
+        path: '/api/v5/runs/wrun_1/events',
         method: 'GET',
         query: { returnAll: 'true', remoteRefBehavior: 'resolve' },
       })
@@ -1410,7 +1410,7 @@ describe('getWorkflowRunEvents hasMore mapping', () => {
     agent
       .get(ORIGIN)
       .intercept({
-        path: '/api/v4/runs/wrun_1/events',
+        path: '/api/v5/runs/wrun_1/events',
         method: 'GET',
         // These tests omit the limit and use the default resolveData
         // ('all' → resolve); match both translated query params.
@@ -1499,7 +1499,7 @@ describe('getWorkflowRunEvents by correlation id is scoped to the run', () => {
     agent
       .get(ORIGIN)
       .intercept({
-        path: '/api/v4/events',
+        path: '/api/v5/events',
         method: 'GET',
         query: {
           correlationId: 'step_001',
@@ -1625,7 +1625,7 @@ describe('createWorkflowRunEvent hook_received replay preload', () => {
       .intercept({
         // The headers matcher proves the frame Accept was sent — an
         // unmatched request would leave the interceptor pending.
-        path: '/api/v4/runs/wrun_1/events/hook_received',
+        path: '/api/v5/runs/wrun_1/events/hook_received',
         method: 'POST',
         headers: { accept: V4_FRAME_CONTENT_TYPE },
       })
@@ -1699,7 +1699,7 @@ describe('createWorkflowRunEvent hook_received replay preload', () => {
     agent
       .get(ORIGIN)
       .intercept({
-        path: '/api/v4/runs/wrun_1/events/hook_received',
+        path: '/api/v5/runs/wrun_1/events/hook_received',
         method: 'POST',
         headers: { accept: V4_FRAME_CONTENT_TYPE },
       })
@@ -1761,7 +1761,7 @@ describe('createWorkflowRunEvent hook_received replay preload', () => {
     agent
       .get(ORIGIN)
       .intercept({
-        path: '/api/v4/runs/wrun_1/events/hook_received',
+        path: '/api/v5/runs/wrun_1/events/hook_received',
         method: 'POST',
         headers: { accept: V4_FRAME_CONTENT_TYPE },
       })
@@ -1769,7 +1769,7 @@ describe('createWorkflowRunEvent hook_received replay preload', () => {
     agent
       .get(ORIGIN)
       .intercept({
-        path: '/api/v4/runs/wrun_1/events/hook_received',
+        path: '/api/v5/runs/wrun_1/events/hook_received',
         method: 'POST',
         headers: { accept: V4_FRAME_CONTENT_TYPE },
       })
@@ -1800,7 +1800,7 @@ describe('createWorkflowRunEvent hook_received replay preload', () => {
     agent
       .get(ORIGIN)
       .intercept({
-        path: '/api/v4/runs/wrun_1/events/hook_received',
+        path: '/api/v5/runs/wrun_1/events/hook_received',
         method: 'POST',
         headers: { accept: V4_FRAME_CONTENT_TYPE },
       })
@@ -1847,7 +1847,7 @@ describe('createWorkflowRunEvent hook_received replay preload', () => {
     agent
       .get(ORIGIN)
       .intercept({
-        path: '/api/v4/runs/wrun_1/events/hook_received',
+        path: '/api/v5/runs/wrun_1/events/hook_received',
         method: 'POST',
         headers: { accept: V4_FRAME_CONTENT_TYPE },
       })
@@ -1884,7 +1884,7 @@ describe('createWorkflowRunEvent hook_received replay preload', () => {
     agent
       .get(ORIGIN)
       .intercept({
-        path: '/api/v4/runs/wrun_1/events/hook_received',
+        path: '/api/v5/runs/wrun_1/events/hook_received',
         method: 'POST',
       })
       .reply(

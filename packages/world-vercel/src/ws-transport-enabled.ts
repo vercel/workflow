@@ -13,6 +13,13 @@
  * streamed, sentinel-terminated multi-frame response doesn't map onto a single
  * WS message.
  *
+ * The socket carries the same frames to the same route as the HTTP branch. Its
+ * endpoint is versioned on its own (`/websockets/v1`, see `toEventsWsUrl`), and
+ * each frame is forwarded into the newest events route — the one
+ * `EVENTS_ROUTE_VERSION` in `events-v4.ts` names for the HTTP branch. Which
+ * route is not a thing the client picks per transport, and should not become
+ * one: a run may write over either and must get the same semantics from both.
+ *
  * **Known gap: WS writes open no client span.** The upgrade carries W3C trace
  * context (see `resolveUpgradeHeaders`), so server spans still join the caller's
  * trace, but the HTTP branch's `instrumentedFetch` also opens an OTEL CLIENT

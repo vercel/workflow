@@ -155,7 +155,7 @@ describe('v4 event requests (fetchV4) trace propagation', () => {
     agent
       .get(origin)
       .intercept({
-        path: '/api/v4/runs/wrun_1/events?returnAll=true',
+        path: '/api/v5/runs/wrun_1/events?returnAll=true',
         method: 'GET',
       })
       .reply(200, encodeFrame({ _end: 1, hasMore: false }, new Uint8Array(0)), {
@@ -213,7 +213,7 @@ describe('v4 event requests (fetchV4) trace propagation', () => {
     agent
       .get(origin)
       .intercept({
-        path: '/api/v4/runs/wrun_1/events/hook_received',
+        path: '/api/v5/runs/wrun_1/events/hook_received',
         method: 'POST',
       })
       .reply(200, encodeFrame({ _end: 1, hasMore: false }, new Uint8Array(0)), {
