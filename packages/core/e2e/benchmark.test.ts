@@ -752,7 +752,10 @@ function datadogRunSearchUrl(runId: string): string {
   return `https://app.datadoghq.com/apm/traces?query=${query}`;
 }
 
-describe('workflow benchmarks', () => {
+// A benchmark failure is a measurement, not a flake — opt out of the CI-wide
+// e2e retry (vitest.config.ts) so a regression isn't papered over by a
+// second, luckier sample (and scenario runtime isn't doubled).
+describe('workflow benchmarks', { retry: 0 }, () => {
   // Preflight: prove the deployment executes workflows (and the trigger route
   // works) before any scenario spends its attempt budget. Without this, a
   // target that accepts run creation but never executes runs (e.g. queue not
