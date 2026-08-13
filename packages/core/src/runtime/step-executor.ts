@@ -108,6 +108,19 @@ const stepTracingChannel = tracingChannel<unknown, StepTracingContext>(
   'workflow.step'
 );
 
+function hasStepTracingSubscribers(): boolean {
+  // Check the constituent channels instead of TracingChannel.hasSubscribers,
+  // which is not available across the full Node.js version range we support.
+  // This also detects stores registered with bindStore().
+  return (
+    stepTracingChannel.start.hasSubscribers ||
+    stepTracingChannel.end.hasSubscribers ||
+    stepTracingChannel.asyncStart.hasSubscribers ||
+    stepTracingChannel.asyncEnd.hasSubscribers ||
+    stepTracingChannel.error.hasSubscribers
+  );
+}
+
 /**
  * Extract the inline delta from a step-terminal `events.create` result,
  * if the World populated one. A delta is only meaningful when the caller
@@ -915,31 +928,37 @@ export async function executeStep(
         });
       }
       const stepBody = stepFn;
-      const tracingContext: StepTracingContext = {
-        runId: workflowRunId,
-        stepId,
-        stepName,
-        workflowName,
-        attempt,
-      };
       try {
-        // The traced fn resolves `undefined` on purpose: TracingChannel
-        // copies a promise's resolved value onto `context.result`, and step
-        // return values must never reach subscribers (see
-        // StepTracingContext). The real result is captured into `result`
-        // directly.
-        await stepTracingChannel.tracePromise(async () => {
-          try {
-            result = await runStepUserCode();
-          } catch (err) {
-            tracingContext.classification = FatalError.is(
-              promoteAbortErrorToFatal(err)
-            )
-              ? 'fatal'
-              : 'retryable';
-            throw err;
-          }
-        }, tracingContext);
+        if (!hasStepTracingSubscribers()) {
+          // Match Undici's diagnostics-channel fast path: do not allocate a
+          // context or enter the tracing wrapper when no channel is observed.
+          result = await runStepUserCode();
+        } else {
+          const tracingContext: StepTracingContext = {
+            runId: workflowRunId,
+            stepId,
+            stepName,
+            workflowName,
+            attempt,
+          };
+          // The traced fn resolves `undefined` on purpose: TracingChannel
+          // copies a promise's resolved value onto `context.result`, and step
+          // return values must never reach subscribers (see
+          // StepTracingContext). The real result is captured into `result`
+          // directly.
+          await stepTracingChannel.tracePromise(async () => {
+            try {
+              result = await runStepUserCode();
+            } catch (err) {
+              tracingContext.classification = FatalError.is(
+                promoteAbortErrorToFatal(err)
+              )
+                ? 'fatal'
+                : 'retryable';
+              throw err;
+            }
+          }, tracingContext);
+        }
       } catch (err) {
         userCodeError = err;
         userCodeFailed = true;

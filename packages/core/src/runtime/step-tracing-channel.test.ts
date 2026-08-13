@@ -19,10 +19,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   type Context,
+  type ContextManager,
   context as otelContext,
   trace as otelTrace,
+  ROOT_CONTEXT,
 } from '@opentelemetry/api';
-import { AsyncLocalStorageContextManager } from '@opentelemetry/context-async-hooks';
 import { UndiciInstrumentation } from '@opentelemetry/instrumentation-undici';
 import {
   BasicTracerProvider,
@@ -40,6 +41,43 @@ import { dehydrateStepArguments } from '../serialization.js';
 import { executeStep, type StepTracingContext } from './step-executor.js';
 
 const channel = tracingChannel<unknown, StepTracingContext>('workflow.step');
+
+class TestContextManager implements ContextManager {
+  constructor(private readonly storage: AsyncLocalStorage<Context>) {}
+
+  active(): Context {
+    return this.storage.getStore() ?? ROOT_CONTEXT;
+  }
+
+  with<A extends unknown[], F extends (...args: A) => ReturnType<F>>(
+    context: Context,
+    fn: F,
+    thisArg?: ThisParameterType<F>,
+    ...args: A
+  ): ReturnType<F> {
+    const callback = thisArg == null ? fn : fn.bind(thisArg);
+    return this.storage.run(context, callback, ...args);
+  }
+
+  bind<T>(context: Context, target: T): T {
+    if (typeof target !== 'function') return target;
+
+    const manager = this;
+    const fn = target as (...args: unknown[]) => unknown;
+    return function (this: unknown, ...args: unknown[]) {
+      return manager.with(context, fn, this, ...args);
+    } as T;
+  }
+
+  enable(): this {
+    return this;
+  }
+
+  disable(): this {
+    this.storage.disable();
+    return this;
+  }
+}
 
 let counter = 0;
 function uniqueStepName(): string {
@@ -139,6 +177,27 @@ afterEach(() => {
 });
 
 describe('workflow.step channel — payload and sequencing', () => {
+  it('executes normally when none of the constituent channels are observed', async () => {
+    expect([
+      channel.start.hasSubscribers,
+      channel.end.hasSubscribers,
+      channel.asyncStart.hasSubscribers,
+      channel.asyncEnd.hasSubscribers,
+      channel.error.hasSubscribers,
+    ]).toEqual([false, false, false, false, false]);
+
+    const world = makeWorld();
+    const stepName = uniqueStepName();
+    const { runId, stepId } = await setupRunningStep({
+      world,
+      stepName,
+      body: async () => 'fast-path-result',
+    });
+
+    const result = await runStep(world, runId, stepId, stepName);
+    expect(result.type).toBe('completed');
+  });
+
   it('publishes start/end/asyncStart/asyncEnd with full metadata payload on success', async () => {
     const { events, cleanup } = recordEvents();
     cleanups.push(cleanup);
@@ -327,7 +386,8 @@ describe('workflow.step channel — OTel subscriber end to end', () => {
     const exporter = new InMemorySpanExporter();
     const provider = new BasicTracerProvider();
     provider.addSpanProcessor(new SimpleSpanProcessor(exporter));
-    const contextManager = new AsyncLocalStorageContextManager();
+    const otelAls = new AsyncLocalStorage<Context>();
+    const contextManager = new TestContextManager(otelAls);
     contextManager.enable();
     otelContext.setGlobalContextManager(contextManager);
     otelTrace.setGlobalTracerProvider(provider);
@@ -342,14 +402,9 @@ describe('workflow.step channel — OTel subscriber end to end', () => {
     });
 
     const tracer = provider.getTracer('workflow-step-subscriber');
-    // Bind the context manager's underlying storage to the channel's start
-    // event: the attempt span becomes the active context for the entire step
-    // body, so any auto-instrumentation parents under it.
-    const otelAls = (
-      contextManager as unknown as {
-        _asyncLocalStorage: AsyncLocalStorage<Context>;
-      }
-    )._asyncLocalStorage;
+    // Bind the test context manager's storage to the channel's start event: the
+    // attempt span becomes the active context for the entire step body, so any
+    // auto-instrumentation parents under it.
     const spansByStepId = new Map<
       string,
       ReturnType<typeof tracer.startSpan>
