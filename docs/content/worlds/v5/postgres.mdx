@@ -86,10 +86,10 @@ To subscribe to the graphile-worker queue, your workflow app needs to start the 
 
 <Callout type="warn">
 This step is specific to worlds that run a background worker, such as Postgres
-World. Do not copy it into an app deployed to Vercel: the Vercel world has no
-`start()`, so the call is a no-op, and importing `workflow/runtime` from a
-server-startup hook pulls the whole runtime into the cold-start path before the
-first request is served.
+World. Worlds whose queue delivers work over HTTP, including the Vercel world,
+have no worker to subscribe, so `start()` does nothing there while the import
+still costs you: pulling in `workflow/runtime` from a server-startup hook puts
+the whole runtime into the cold-start path before the first request is served.
 </Callout>
 
 <Tabs items={["Next.js", "SvelteKit", "Nitro"]}>
