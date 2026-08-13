@@ -121,6 +121,7 @@ export {
   isSlotBody,
   isSlotEventId,
   MAX_EVENT_SLOT,
+  requireEventSlot,
   slotToEventId,
 } from './slot-identity.js';
 export type { SpecVersion } from './spec-version.js';

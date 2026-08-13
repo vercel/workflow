@@ -117,7 +117,11 @@ const app = new Hono()
   .get('/runs/:runId/events', async (ctx) => {
     const runId = ctx.req.param('runId');
     const world = await getWorld();
-    const allEvents: { eventType: string; correlationId?: string }[] = [];
+    const allEvents: {
+      eventId: string;
+      eventType: string;
+      correlationId?: string;
+    }[] = [];
     let cursor: string | undefined;
     while (true) {
       const page = await world.events.list({
@@ -126,6 +130,7 @@ const app = new Hono()
       });
       for (const e of page.data) {
         allEvents.push({
+          eventId: e.eventId,
           eventType: e.eventType,
           correlationId: e.correlationId,
         });
