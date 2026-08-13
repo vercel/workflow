@@ -117,13 +117,21 @@ export interface HookOptions {
    * the token with the information it has available.
    *
    * Deterministic tokens are intended for use with `createHook()` and
-   * server-side `resumeHook()` only. For webhooks (`createWebhook()`),
-   * tokens are always randomly generated to prevent unauthorized access
-   * to the public webhook endpoint.
+   * server-side `resumeHook()` only. For webhooks (`createWebhook()`), an
+   * explicit token is not accepted — one is always generated for you.
+   *
+   * Generated webhook tokens are drawn from the run's deterministic sequence,
+   * based on the run ID, the workflow name, and the deployment ID, which are not
+   * trivial to guess but should not be considered secure. This is done so URLs stay
+   * stable across replays and across concurrent invocations of the same run.
+   *
+   * We recommend authenticating webhook requests themselves — a signature
+   * header, a shared secret, or an auth check inside the handler — rather
+   * than relying on URL secrecy alone.
    *
    * If provided, the token must be a non-empty string; passing an empty
-   * string throws. If not provided (or `undefined`), a randomly generated
-   * token will be assigned.
+   * string throws. If not provided (or `undefined`), a token is generated
+   * for you.
    *
    * @example
    *
