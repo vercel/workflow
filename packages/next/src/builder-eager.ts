@@ -22,6 +22,7 @@ import {
   createSourceSnapshot,
   type FileChanges,
   getRelevantFiles,
+  pinBaselinesAcrossFullRebuild,
   replaceSourceSnapshots,
   type SourceSnapshot,
 } from './watch-rebuild.js';
@@ -250,33 +251,48 @@ export async function getNextBuilderEager(
           await writeManifest(mergeCombinedManifest(stepsManifest));
         };
 
-        const fullRebuild = async () => {
-          this.clearDiscoveredEntriesCache();
-          const newInputFiles = await this.getInputFiles();
-          options.inputFiles = newInputFiles;
+        // The pin helper owns the capture-before-build / restore-after-
+        // refresh ordering (including that the capture reads the CURRENT
+        // discovered entries and input files, before the rebuild replaces
+        // them), so an edit landing while the multi-second rebuild runs still
+        // diffs against what the rebuild consumed instead of being absorbed
+        // into the refreshed baseline. See `pinBaselinesAcrossFullRebuild`
+        // for the full reasoning.
+        const fullRebuild = () =>
+          pinBaselinesAcrossFullRebuild({
+            discoveredEntries,
+            inputFiles: options.inputFiles,
+            normalizePath,
+            readSnapshot: readSourceSnapshot,
+            sourceSnapshots,
+            rebuild: async () => {
+              this.clearDiscoveredEntriesCache();
+              const newInputFiles = await this.getInputFiles();
+              options.inputFiles = newInputFiles;
 
-          await stepsCtx?.dispose();
-          await workflowsCtx.interimBundleCtx.dispose();
+              await stepsCtx?.dispose();
+              await workflowsCtx.interimBundleCtx.dispose();
 
-          const newCombined = await this.buildCombinedFunction(options);
-          stepsCtx = newCombined.stepsContext;
-          discoveredEntries = newCombined.discoveredEntries;
-          stepsManifest = newCombined.stepsManifest;
-          workflowsManifest = newCombined.workflowsManifest;
+              const newCombined = await this.buildCombinedFunction(options);
+              stepsCtx = newCombined.stepsContext;
+              discoveredEntries = newCombined.discoveredEntries;
+              stepsManifest = newCombined.stepsManifest;
+              workflowsManifest = newCombined.workflowsManifest;
 
-          if (!newCombined?.interimBundleCtx || !newCombined?.bundleFinal) {
-            throw new Error(
-              'Invariant: expected workflows bundle context after rebuild'
-            );
-          }
-          workflowsCtx = {
-            interimBundleCtx: newCombined.interimBundleCtx,
-            bundleFinal: newCombined.bundleFinal,
-          };
+              if (!newCombined?.interimBundleCtx || !newCombined?.bundleFinal) {
+                throw new Error(
+                  'Invariant: expected workflows bundle context after rebuild'
+                );
+              }
+              workflowsCtx = {
+                interimBundleCtx: newCombined.interimBundleCtx,
+                bundleFinal: newCombined.bundleFinal,
+              };
 
-          await writeManifest(newCombined.manifest);
-          await refreshSourceSnapshots();
-        };
+              await writeManifest(newCombined.manifest);
+              await refreshSourceSnapshots();
+            },
+          });
 
         const isWatchableFile = (path: string) =>
           watchableExtensions.has(extname(path));
@@ -410,6 +426,13 @@ export async function getNextBuilderEager(
           }
         };
 
+        // Known gap: the initial build has the same two-read shape (the
+        // combined build above consumed sources, and this refresh re-reads
+        // them), but no pinning — and the watcher below attaches with
+        // `ignoreInitial: true`, so an edit landing inside the startup window
+        // is absorbed with no straggler event to recover it. Bounded by dev
+        // server startup rather than recurring per rebuild; knowingly out of
+        // scope for the mid-rebuild pinning above.
         await refreshSourceSnapshots();
         let {
           files: knownFiles,
