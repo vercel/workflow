@@ -179,6 +179,12 @@ vi.mock('./utils.js', () => ({
     baseUrl: 'https://test.example.com',
     headers: new Headers(),
   }),
+  makeRequest: vi.fn().mockResolvedValue({
+    data: [],
+    cursor: null,
+    hasMore: false,
+    done: true,
+  }),
 }));
 
 describe('streams.get', () => {
@@ -206,6 +212,23 @@ describe('streams.get', () => {
     // v3, not v2: the reconnecting reader relies on the server erroring the
     // body on a max-duration timeout rather than closing it cleanly.
     expect(url.pathname).toBe('/v3/runs/run-123/stream/my-stream');
+  });
+
+  it('reads chunk pages from the v3 endpoint', async () => {
+    const { makeRequest } = await import('./utils.js');
+    const streamer = await getStreamer();
+
+    await streamer.streams.getChunks('run-123', 'my-stream', {
+      limit: 500,
+      cursor: 'next',
+    });
+
+    expect(makeRequest).toHaveBeenCalledWith(
+      expect.objectContaining({
+        endpoint:
+          '/v3/runs/run-123/streams/my-stream/chunks?limit=500&cursor=next',
+      })
+    );
   });
 
   it('throws a typed terminal error with the retention details on 410', async () => {
