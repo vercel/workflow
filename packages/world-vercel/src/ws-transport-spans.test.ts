@@ -38,10 +38,7 @@ import {
   vi,
 } from 'vitest';
 import { withEventPostRetry } from './event-retry.js';
-import {
-  createWorkflowRunEventV4,
-  getEventV4,
-} from './events-v4.js';
+import { createWorkflowRunEventV4, getEventV4 } from './events-v4.js';
 import {
   type DecodedFrame,
   decodeFrames,
