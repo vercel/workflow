@@ -181,3 +181,131 @@ jobs:
       - name: Fail on corrupted, failed, or stuck runs
         if: always()
         run: node .github/scripts/render-event-log-race-repro-results.js event-log-race-repro-results.json --check
+
+  # The same harness against the self-hosted Worlds, one parallel job per World.
+  # `scripts/event-log-race-repro-local.sh` owns the whole lifecycle: it builds
+  # the packages and the workbench app with WORKFLOW_TARGET_WORLD and
+  # WORKFLOW_PUBLIC_MANIFEST=1 set at *build* time (both are build-time inputs),
+  # brings up Postgres and applies migrations for `--world postgres`, starts the
+  # app, runs the harness, and tears the server down.
+  #
+  # Unlike the Vercel lane above, these lanes publish numbers instead of a
+  # verdict. The local storms bite much harder than the Vercel preview does —
+  # the world-postgres step-storm has red baselines at the default scale (see
+  # "Event Log Race Repro" in CLAUDE.md) — so a gate here would be red on PRs
+  # that changed nothing, and a gate that is always red is a gate everyone
+  # learns to ignore. Each lane posts its own sticky PR comment
+  # (`world-local` / `world-postgres` suffixed markers, so the three lanes'
+  # histories never mix), and the number to watch is in the comment. The only
+  # thing that fails these jobs is plumbing: a harness that produced no result
+  # file at all.
+  #
+  # A soak dispatch that raises `budget_ms` has to raise `timeout-minutes` here
+  # too, same as the Vercel lane.
+  event-log-race-repro-local-worlds:
+    name: Event Log Race Repro (world-${{ matrix.world }})
+    runs-on: ubuntu-latest
+    # The Vercel lane's 25 minutes, plus room for what it never pays for:
+    # pnpm build, the app build, and (postgres) container startup + migrations.
+    timeout-minutes: 45
+    if: ${{ github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'event-log-race-repro') }}
+    strategy:
+      fail-fast: false
+      matrix:
+        world: [local, postgres]
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+    env:
+      TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
+      TURBO_TEAM: ${{ vars.TURBO_TEAM }}
+
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Setup environment
+        uses: ./.github/actions/setup-workflow-dev
+        with:
+          # The script runs its own `pnpm build` so the packages are built in
+          # the same environment as the app.
+          build-packages: 'false'
+
+      - name: Run event log race repro (world-${{ matrix.world }})
+        id: repro
+        # The script exits with the harness' own status, which fails on any
+        # regression outcome — expected on some baselines, see the job comment.
+        continue-on-error: true
+        run: ./scripts/event-log-race-repro-local.sh --world ${{ matrix.world }}
+        env:
+          # Deliberately unguarded pass-through: on a `pull_request` event every
+          # `inputs.*` is empty, and the harness reads an empty variable as unset
+          # and falls back to its own default. See the note on the inputs above.
+          EVENT_LOG_RACE_REPRO_STEP_STORM_ATTEMPTS: ${{ inputs.step_storm_attempts }}
+          EVENT_LOG_RACE_REPRO_HOOK_STORM_ATTEMPTS: ${{ inputs.hook_storm_attempts }}
+          EVENT_LOG_RACE_REPRO_ATTEMPTS: ${{ inputs.attempts }}
+          EVENT_LOG_RACE_REPRO_CONCURRENCY: ${{ inputs.concurrency }}
+          EVENT_LOG_RACE_REPRO_ROUNDS: ${{ inputs.rounds }}
+          EVENT_LOG_RACE_REPRO_WIDTH: ${{ inputs.width }}
+          EVENT_LOG_RACE_REPRO_WATCHDOG_MS: ${{ inputs.watchdog_ms }}
+          EVENT_LOG_RACE_REPRO_STEP_DELAY_MS: ${{ inputs.step_delay_ms }}
+          EVENT_LOG_RACE_REPRO_HOOK_RESUME_STAGGER_MS: ${{ inputs.hook_resume_stagger_ms }}
+          EVENT_LOG_RACE_REPRO_POKE_INTERVAL_MS: ${{ inputs.poke_interval_ms }}
+          EVENT_LOG_RACE_REPRO_RUN_TIMEOUT_MS: ${{ inputs.run_timeout_ms }}
+          EVENT_LOG_RACE_REPRO_BUDGET_MS: ${{ inputs.budget_ms }}
+
+      - name: Fetch previous repro comment (world-${{ matrix.world }})
+        if: always() && github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api \
+            "repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/comments?per_page=100" \
+            --jq '[.[] | select(.body | contains("<!-- event-log-race-repro-results-world-${{ matrix.world }} -->"))][-1].body // ""' \
+            > event-log-race-repro-previous-comment.md
+
+      - name: Render repro summary
+        if: always()
+        run: |
+          previous_comment_args=()
+          if [ -f event-log-race-repro-previous-comment.md ]; then
+            previous_comment_args=(--previous-comment event-log-race-repro-previous-comment.md)
+          fi
+
+          node .github/scripts/render-event-log-race-repro-results.js \
+            event-log-race-repro-results.json \
+            --label "world-${{ matrix.world }}" \
+            --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            --run-attempt "${{ github.run_attempt }}" \
+            --timestamp "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
+            "${previous_comment_args[@]}" \
+            | tee event-log-race-repro-summary.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Update PR comment
+        if: always() && github.event_name == 'pull_request'
+        uses: marocchino/sticky-pull-request-comment@773744901bac0e8cbb5a0dc842800d45e9b2b405 # v2.9.4
+        with:
+          header: event-log-race-repro-results-world-${{ matrix.world }}
+          path: event-log-race-repro-summary.md
+
+      - name: Upload repro results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: event-log-race-repro-results-world-${{ matrix.world }}
+          path: |
+            event-log-race-repro-results.json
+            event-log-race-repro-summary.md
+            event-log-race-repro-server.log
+          retention-days: 7
+          if-no-files-found: ignore
+
+      # Plumbing gate only: regressions are reported, not gated (see the job
+      # comment), but a run that produced no result file at all is a broken
+      # lane, and a broken lane that stays green never gets fixed.
+      - name: Fail if the harness produced no results
+        if: always()
+        run: test -f event-log-race-repro-results.json

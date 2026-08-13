@@ -263,6 +263,35 @@ export interface Storage {
     ): Promise<PaginatedResponse<Step | StepWithoutData>>;
   };
 
+  /**
+   * The event log, and the one part of this interface with a requirement the
+   * types cannot express: **the World allocates every event id, and every id
+   * is a slot** — `evnt_` followed by the event's dense, 1-based position in
+   * its run's log, zero-padded to 26 characters. Use `slotToEventId()` to
+   * format one.
+   *
+   * Not a capability to opt into. The runtime reads a position out of every id
+   * it loads (`requireEventSlot`) and fails the run if it cannot, so a World
+   * whose ids are not positions cannot replay anything at all. Two properties
+   * are what the runtime actually relies on:
+   *
+   * - **Density.** A run's slots are contiguous from 1, so the number of
+   *   events a reader holds *is* the position of the last one. That is what
+   *   makes {@link CreateEventParams.eventCount} a complete statement of the
+   *   writer's snapshot in a single integer, and what lets a reader tell a
+   *   complete log from a truncated one by its length.
+   * - **Bump and report.** A create never fails because its requested slot is
+   *   taken. The World advances to the next free slot, commits there, and
+   *   returns the events occupying the slots it skipped over on the success
+   *   response (see {@link EventResult.events}). The writer learns its
+   *   snapshot was stale without the write being rejected — which is why no
+   *   World needs a precondition guard.
+   *
+   * Allocating at the commit is what makes a reader's log a *prefix* of the
+   * run's log rather than a prefix with a hole in it. A World that hands a
+   * position out earlier, and can therefore let an event land behind one a
+   * reader has already passed, breaks the property every replay depends on.
+   */
   events: {
     /**
      * Create a run_created event to start a new workflow run.
@@ -343,24 +372,6 @@ export interface WorldCapabilities {
   };
 
   /**
-   * The World fences a stale replay-context write: an event creation whose
-   * snapshot is behind what the run has already recorded is rejected with a
-   * `PreconditionFailedError` (412) rather than committed. The runtime's
-   * response is to abandon the write and replay from a corrected log.
-   *
-   * Runtime optimizations that are only safe behind that fence read this
-   * capability, so a World that accepts a snapshot and ignores it must leave
-   * this unset: sending a snapshot is not the same as one being enforced, and
-   * enabling those optimizations with nothing behind them makes a stale replay
-   * commit.
-   *
-   * Orthogonal to {@link slotEventIds}, which never rejects — it commits above
-   * the contention and reports back what the writer missed. A World may
-   * declare either, both, or neither.
-   */
-  preconditionGuard?: boolean;
-
-  /**
    * The World's queue supports `maxConcurrency`-limited consumption — in
    * particular the per-run flow topics consumed with `maxConcurrency: 1`
    * that `WORKFLOW_SEQUENTIAL_REPLAYS=1` uses to serialize a run's
@@ -421,29 +432,6 @@ export interface WorldCapabilities {
    * fail ordinary runs after a version bump.
    */
   deploymentAffinity?: boolean;
-
-  /**
-   * The World allocates **slot-numbered** event ids: `evnt_` plus the event's
-   * dense, 1-based position in its run's log, zero-padded to 26 characters
-   * (see `slot-identity.ts`). Two guarantees come with it, and the runtime
-   * relies on both:
-   *
-   * - **Density.** A run's slots are contiguous from 1, so the number of
-   *   events a reader holds *is* the position of the last one. That is what
-   *   makes {@link CreateEventParams.eventCount} a complete statement of the
-   *   writer's snapshot in a single integer.
-   * - **Bump and report.** A create never fails because its requested slot is
-   *   taken. The World advances to the next free slot, commits there, and
-   *   returns the events occupying the slots it skipped over on the success
-   *   response (see {@link EventResult.events}). The writer learns its
-   *   snapshot was stale without the write being rejected.
-   *
-   * A run's scheme is pinned by the run, not by this flag: it is readable off
-   * the shape of the run's own first event id, so a World that turns slots on
-   * keeps replaying its existing ULID-numbered runs unchanged. The capability
-   * only says what *new* runs get.
-   */
-  slotEventIds?: boolean;
 }
 
 /**

@@ -9,6 +9,15 @@ let previousCommentPath = '';
 let timestamp = new Date().toISOString();
 let runAttempt = '';
 let check = false;
+// Which lane this run belongs to (e.g. `world-local`, `world-postgres`).
+// Suffixes the results marker and the heading so each lane owns its own sticky
+// comment: the lanes run as parallel jobs, and a shared marker would make one
+// lane's "previous comment" fetch pick up another lane's history. The Vercel
+// lane passes no label and keeps the original marker, so its comment history
+// survives this flag's introduction. Marker matching is exact-substring
+// (`<!-- event-log-race-repro-results -->` does not match the `-world-local`
+// variant because of the closing ` -->`), which is what keeps the lanes apart.
+let label = '';
 
 for (let index = 0; index < args.length; index += 1) {
   const arg = args[index];
@@ -23,6 +32,9 @@ for (let index = 0; index < args.length; index += 1) {
     index += 1;
   } else if (arg === '--run-attempt' && args[index + 1]) {
     runAttempt = args[index + 1];
+    index += 1;
+  } else if (arg === '--label' && args[index + 1]) {
+    label = args[index + 1];
     index += 1;
   } else if (arg === '--check') {
     check = true;
@@ -432,8 +444,10 @@ function render(resultsFile, previousComment) {
       '. Rates are still comparable; totals are not.'
     : '';
 
-  console.log('<!-- event-log-race-repro-results -->');
-  console.log('## Event Log Race Repro\n');
+  console.log(
+    `<!-- event-log-race-repro-results${label ? `-${label}` : ''} -->`
+  );
+  console.log(`## Event Log Race Repro${label ? ` (${label})` : ''}\n`);
   console.log(
     latest.missingResults
       ? 'No result file was produced by the latest repro job.'

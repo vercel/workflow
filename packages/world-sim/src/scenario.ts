@@ -324,7 +324,7 @@ export async function runScenario(
       // It has to be an out-of-band writer. An inline step's `step_completed`
       // held the same way would stall the orchestrator that should misread the
       // log, because the runtime awaits its promise before deciding anything.
-      const position = world.reservePosition();
+      const position = world.reservePosition(runId);
       return {
         eventId: position.eventId,
         async commit() {
