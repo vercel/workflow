@@ -750,14 +750,21 @@ describe('EventsConsumer', () => {
       vi.unstubAllEnvs();
     });
 
-    // Waits long enough for a deferred check that was not cancelled to have
-    // fired. Assertions that a check DID fire should poll instead: the window
-    // is a lower bound on when the timer is eligible to run, and a loaded
-    // runner with a coarse timer can take considerably longer to get there.
-    function waitPastDeferredCheck(): Promise<void> {
-      return new Promise((resolve) =>
-        setTimeout(resolve, MIN_DEFERRED_CHECK_DELAY_MS * 4)
-      );
+    // Polls until the outcome of a deferred check holds. The check is not on a
+    // fixed schedule: it first waits for delivery to go idle, which is its own
+    // poll loop, and only then arms a `getDeferredCheckDelayMs()` timer. So a
+    // sleep of any multiple of that delay is a lower bound on when the timer
+    // becomes eligible, not a guarantee it has run, and on a loaded runner
+    // with a coarse timer it is not even close.
+    //
+    // Pass the whole assertion block. The positive assertions gate the poll,
+    // and the negatives alongside them are then evaluated at the moment the
+    // check is known to have fired, which is what the assertions mean.
+    function afterDeferredCheck(assertions: () => void): Promise<void> {
+      return vi.waitFor(assertions, {
+        timeout: MIN_DEFERRED_CHECK_DELAY_MS * 200,
+        interval: MIN_DEFERRED_CHECK_DELAY_MS,
+      });
     }
 
     // Unlike createMockEvent above, this builds the real `Event` shape, which
@@ -833,12 +840,15 @@ describe('EventsConsumer', () => {
       });
 
       consumer.subscribe(entityConsumer(corr, 'step_completed'));
-      await waitPastDeferredCheck();
-
-      expect(consumer.eventIndex).toBe(events.length);
-      expect(onUnconsumedEvent).not.toHaveBeenCalled();
-      expect(onDuplicateEvent).toHaveBeenCalledTimes(1);
-      expect(onDuplicateEvent).toHaveBeenCalledWith(events[3], 'step_started');
+      await afterDeferredCheck(() => {
+        expect(consumer.eventIndex).toBe(events.length);
+        expect(onUnconsumedEvent).not.toHaveBeenCalled();
+        expect(onDuplicateEvent).toHaveBeenCalledTimes(1);
+        expect(onDuplicateEvent).toHaveBeenCalledWith(
+          events[3],
+          'step_started'
+        );
+      });
     });
 
     it('skips a step_created that repeats a class already in the log', async () => {
@@ -858,11 +868,14 @@ describe('EventsConsumer', () => {
       });
 
       consumer.subscribe(entityConsumer(corr, 'step_completed'));
-      await waitPastDeferredCheck();
-
-      expect(consumer.eventIndex).toBe(events.length);
-      expect(onUnconsumedEvent).not.toHaveBeenCalled();
-      expect(onDuplicateEvent).toHaveBeenCalledWith(events[2], 'step_created');
+      await afterDeferredCheck(() => {
+        expect(consumer.eventIndex).toBe(events.length);
+        expect(onUnconsumedEvent).not.toHaveBeenCalled();
+        expect(onDuplicateEvent).toHaveBeenCalledWith(
+          events[2],
+          'step_created'
+        );
+      });
     });
 
     it('skips a duplicate wait_completed ahead of parking it', async () => {
@@ -882,15 +895,15 @@ describe('EventsConsumer', () => {
       });
 
       consumer.subscribe(entityConsumer(corr, 'wait_completed'));
-      await waitPastDeferredCheck();
-
-      expect(consumer.eventIndex).toBe(events.length);
-      expect(consumer.parkedSummary).toBeUndefined();
-      expect(onUnconsumedEvent).not.toHaveBeenCalled();
-      expect(onDuplicateEvent).toHaveBeenCalledWith(
-        events[2],
-        'wait_completed'
-      );
+      await afterDeferredCheck(() => {
+        expect(consumer.eventIndex).toBe(events.length);
+        expect(consumer.parkedSummary).toBeUndefined();
+        expect(onUnconsumedEvent).not.toHaveBeenCalled();
+        expect(onDuplicateEvent).toHaveBeenCalledWith(
+          events[2],
+          'wait_completed'
+        );
+      });
     });
 
     it('skips a duplicate run_started, which carries no correlation id', async () => {
@@ -918,12 +931,12 @@ describe('EventsConsumer', () => {
         consumedRunStarted = true;
         return EventConsumerResult.Consumed;
       });
-      await waitPastDeferredCheck();
-
-      expect(consumer.eventIndex).toBe(events.length);
-      expect(onUnconsumedEvent).not.toHaveBeenCalled();
-      expect(onDuplicateEvent).toHaveBeenCalledWith(events[1], 'run_started');
-      expect(onConsumedEvent).toHaveBeenCalledTimes(1);
+      await afterDeferredCheck(() => {
+        expect(consumer.eventIndex).toBe(events.length);
+        expect(onUnconsumedEvent).not.toHaveBeenCalled();
+        expect(onDuplicateEvent).toHaveBeenCalledWith(events[1], 'run_started');
+        expect(onConsumedEvent).toHaveBeenCalledTimes(1);
+      });
     });
 
     it('still reports an unconsumed event for a correlation id the log has nothing for', async () => {
@@ -943,10 +956,11 @@ describe('EventsConsumer', () => {
       });
 
       consumer.subscribe(entityConsumer('step_A', 'step_completed'));
-      await waitPastDeferredCheck();
+      await afterDeferredCheck(() => {
+        expect(consumer.eventIndex).toBe(3);
+        expect(onDuplicateEvent).not.toHaveBeenCalled();
+      });
 
-      expect(consumer.eventIndex).toBe(3);
-      expect(onDuplicateEvent).not.toHaveBeenCalled();
       await vi.waitFor(() => {
         expect(onUnconsumedEvent).toHaveBeenCalledWith(events[3]);
       });
@@ -970,10 +984,11 @@ describe('EventsConsumer', () => {
       });
 
       consumer.subscribe(entityConsumer(corr, 'step_completed'));
-      await waitPastDeferredCheck();
+      await afterDeferredCheck(() => {
+        expect(consumer.eventIndex).toBe(2);
+        expect(onDuplicateEvent).not.toHaveBeenCalled();
+      });
 
-      expect(consumer.eventIndex).toBe(2);
-      expect(onDuplicateEvent).not.toHaveBeenCalled();
       await vi.waitFor(() => {
         expect(onUnconsumedEvent).toHaveBeenCalledWith(events[2]);
       });
@@ -998,11 +1013,11 @@ describe('EventsConsumer', () => {
 
       // Takes the create and the first delivery, then deregisters.
       consumer.subscribe(entityConsumer(corr, 'hook_received'));
-      await waitPastDeferredCheck();
-
-      expect(onDuplicateEvent).not.toHaveBeenCalled();
-      expect(onUnconsumedEvent).not.toHaveBeenCalled();
-      expect(consumer.strandedEvent).toEqual(events[2]);
+      await afterDeferredCheck(() => {
+        expect(onDuplicateEvent).not.toHaveBeenCalled();
+        expect(onUnconsumedEvent).not.toHaveBeenCalled();
+        expect(consumer.strandedEvent).toEqual(events[2]);
+      });
     });
 
     it('never takes an event a registered callback still wants', async () => {
@@ -1029,12 +1044,12 @@ describe('EventsConsumer', () => {
           : EventConsumerResult.Consumed
       );
       consumer.subscribe(callback);
-      await waitPastDeferredCheck();
-
-      expect(consumer.eventIndex).toBe(events.length);
-      expect(callback).toHaveBeenCalledWith(events[3]);
-      expect(onDuplicateEvent).not.toHaveBeenCalled();
-      expect(onUnconsumedEvent).not.toHaveBeenCalled();
+      await afterDeferredCheck(() => {
+        expect(consumer.eventIndex).toBe(events.length);
+        expect(callback).toHaveBeenCalledWith(events[3]);
+        expect(onDuplicateEvent).not.toHaveBeenCalled();
+        expect(onUnconsumedEvent).not.toHaveBeenCalled();
+      });
     });
 
     it('steps over a straggler without waiting out the deferred window', async () => {
@@ -1086,13 +1101,13 @@ describe('EventsConsumer', () => {
       const consumer = consumerFor(events, { onDuplicateEvent });
 
       consumer.subscribe(entityConsumer(corr, 'step_completed'));
-      await waitPastDeferredCheck();
-
-      expect(consumer.eventIndex).toBe(events.length);
-      expect(onDuplicateEvent).toHaveBeenCalledWith(
-        events[2],
-        'step_completed'
-      );
+      await afterDeferredCheck(() => {
+        expect(consumer.eventIndex).toBe(events.length);
+        expect(onDuplicateEvent).toHaveBeenCalledWith(
+          events[2],
+          'step_completed'
+        );
+      });
     });
 
     it('leaves a duplicate run_cancelled to the parking path', async () => {
@@ -1117,10 +1132,10 @@ describe('EventsConsumer', () => {
         consumedRunStarted = true;
         return EventConsumerResult.Consumed;
       });
-      await waitPastDeferredCheck();
-
-      expect(onDuplicateEvent).not.toHaveBeenCalled();
-      expect(consumer.parkedSummary?.eventType).toBe('run_cancelled');
+      await afterDeferredCheck(() => {
+        expect(onDuplicateEvent).not.toHaveBeenCalled();
+        expect(consumer.parkedSummary?.eventType).toBe('run_cancelled');
+      });
     });
 
     it('does not advance the deterministic clock for a skipped event', async () => {
@@ -1134,13 +1149,13 @@ describe('EventsConsumer', () => {
       const consumer = consumerFor(events, { onConsumedEvent });
 
       consumer.subscribe(entityConsumer(corr, 'step_completed'));
-      await waitPastDeferredCheck();
-
-      expect(consumer.eventIndex).toBe(events.length);
-      // The workflow body never observed the straggler, so a log containing it
-      // must produce the same timestamps as a log that does not.
-      expect(onConsumedEvent).toHaveBeenCalledTimes(2);
-      expect(onConsumedEvent).not.toHaveBeenCalledWith(events[2]);
+      await afterDeferredCheck(() => {
+        expect(consumer.eventIndex).toBe(events.length);
+        // The workflow body never observed the straggler, so a log containing it
+        // must produce the same timestamps as a log that does not.
+        expect(onConsumedEvent).toHaveBeenCalledTimes(2);
+        expect(onConsumedEvent).not.toHaveBeenCalledWith(events[2]);
+      });
     });
   });
 });
