@@ -55,6 +55,7 @@ function useSelectedSpanInfo(): SelectedSpanInfo | null {
       resource,
       spanId: activeSpan.spanId,
       rawEvents,
+      duplicateEventIds: sidebar.duplicateEventIds,
     };
   }, [activeSpan, sidebar]);
 }

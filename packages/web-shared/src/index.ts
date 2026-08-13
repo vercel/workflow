@@ -10,6 +10,10 @@ export {
   stepEventsToStepEntity,
   waitEventsToWaitEntity,
 } from './components/workflow-traces/trace-span-construction';
+export {
+  DUPLICATE_EVENT_MESSAGE,
+  findDuplicateEventIds,
+} from './lib/duplicate-events';
 export type { EventAnalysis } from './lib/event-analysis';
 export {
   analyzeEvents,

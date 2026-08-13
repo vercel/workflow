@@ -38,6 +38,15 @@
  *          the two have very different cost profiles and averaging them
  *          together hides that. The workflow itself tags each step's kind
  *          (see workflows/97_bench.ts's `stepKind`).
+ * - Fan-out TTFS/TTLS: the two ends of a single `Promise.all` over many trivial
+ *          steps, both anchored on the same in-deployment `clientStart`. TTFS is
+ *          the earliest step body to *finish* (`min(step.end) - clientStart`) —
+ *          the first branch a caller could observe — and TTLS the latest
+ *          (`max(step.end) - clientStart`), when the whole fan-out is joinable.
+ *          The step bodies are no-ops, so TTLS - TTFS is the spread the runtime
+ *          adds across the fan-out (dispatch + concurrency), not body work.
+ *          Reported as separate rows so a change that speeds up the first
+ *          branch while stretching the tail is visible instead of averaged out.
  * - WO    (workflow overhead): total time the run spends outside of step
  *          bodies over the whole sequential run, from the in-deployment
  *          `clientStart` to the end of the last step body:
@@ -69,8 +78,10 @@
  * 2. benchStreamWorkflow          — 1 streaming step, turbo mode → TTFS (turbo)
  * 3. benchHookStreamWorkflow      — hook + 1 step, non-turbo → TTFS (non-turbo)
  * 4. benchSequentialStepsWorkflow — 1020 trivial sequential steps → STSO + WO
- * 5. benchSlWorkflow              — parallel reader/writer steps → SL
- * 6. benchSoWorkflow              — paced LLM-shaped stream, drained → SO
+ * 5. benchFanOutStepsWorkflow     — Promise.all over 100 trivial steps
+ *                                   → Fan-out TTFS + Fan-out TTLS
+ * 6. benchSlWorkflow              — parallel reader/writer steps → SL
+ * 7. benchSoWorkflow              — paced LLM-shaped stream, drained → SO
  *                                   (run in text and structured payload modes)
  *
  * Each scenario runs many iterations (env-tunable, see BENCH_* below) so the
@@ -120,6 +131,12 @@ const SL_ITERATIONS = envInt('BENCH_SL_ITERATIONS', STREAM_ITERATIONS);
 const SO_ITERATIONS = envInt('BENCH_SO_ITERATIONS', STREAM_ITERATIONS);
 const SEQUENTIAL_ITERATIONS = envInt('BENCH_SEQUENTIAL_ITERATIONS', 1);
 const SEQUENTIAL_STEP_COUNT = envInt('BENCH_SEQUENTIAL_STEP_COUNT', 1020);
+// The fan-out scenario yields exactly one TTFS and one TTLS sample per
+// iteration (they are whole-run properties), so it needs several iterations for
+// percentiles — but each iteration executes FANOUT_STEP_COUNT steps, so it gets
+// fewer than the single-step scenarios to keep the job's wall time bounded.
+const FANOUT_ITERATIONS = envInt('BENCH_FANOUT_ITERATIONS', 10);
+const FANOUT_STEP_COUNT = envInt('BENCH_FANOUT_STEP_COUNT', 100);
 const WARMUP_ITERATIONS = envInt('BENCH_WARMUP_ITERATIONS', 2, 0);
 
 // Methodology version — bump whenever the measurement window changes in a way
@@ -152,6 +169,10 @@ const SO_TARGETS = { p75: 250, p90: 500, p99: 1000 };
 
 // Guard timeouts so a single stuck run fails fast instead of eating the job.
 const RUN_TIMEOUT_MS = envInt('BENCH_RUN_TIMEOUT_MS', 120_000);
+// Extra guard time granted per step for the multi-step scenarios (sequential and
+// fan-out), on top of RUN_TIMEOUT_MS. Deliberately loose: it exists to kill a
+// stuck run, not to assert a per-step budget.
+const PER_STEP_TIMEOUT_ALLOWANCE_MS = 2_000;
 // Preflight guard: a trivial 1-step run must complete within this window
 // before any scenario spends its attempt budget (see beforeAll below).
 const PREFLIGHT_TIMEOUT_MS = envInt('BENCH_PREFLIGHT_TIMEOUT_MS', 180_000);
@@ -205,6 +226,18 @@ interface SequentialIterationResult {
   stsoQueueHopMs: number[];
   /** Whole-run workflow overhead, anchored on the in-deployment clientStart. */
   woMs: number;
+}
+
+interface FanOutIterationResult {
+  runId: string;
+  /** Datadog trace id for the `/api/bench` request that started this run, when
+   * the deployment's route reports one. */
+  traceId?: string;
+  /** `min(step.end) - clientStart`: the first of the parallel steps to finish. */
+  fanOutTtfsMs: number;
+  /** `max(step.end) - clientStart`: the last of them, i.e. when the whole
+   * `Promise.all` is joinable. */
+  fanOutTtlsMs: number;
 }
 
 interface SlIterationResult {
@@ -358,7 +391,7 @@ async function runSequentialIteration(
   try {
     const returnValue = await withTimeout(
       getReturnValue(runId),
-      RUN_TIMEOUT_MS + stepCount * 2_000,
+      RUN_TIMEOUT_MS + stepCount * PER_STEP_TIMEOUT_ALLOWANCE_MS,
       `benchSequentialStepsWorkflow returnValue (run ${runId})`
     );
     const steps = timingsFromReturnValue(returnValue, runId);
@@ -381,6 +414,49 @@ async function runSequentialIteration(
       stsoInlineMs,
       stsoQueueHopMs,
       woMs: workflowOverheadMs(clientStart, steps),
+    };
+  } catch (error) {
+    (error as Error).message += ` (run ${runId})`;
+    throw error;
+  }
+}
+
+async function runFanOutIteration(
+  stepCount: number
+): Promise<FanOutIterationResult> {
+  const { runId, clientStart, traceId } = await triggerBenchRun(
+    'benchFanOutStepsWorkflow',
+    [stepCount]
+  );
+  try {
+    const returnValue = await withTimeout(
+      getReturnValue(runId),
+      RUN_TIMEOUT_MS + stepCount * PER_STEP_TIMEOUT_ALLOWANCE_MS,
+      `benchFanOutStepsWorkflow returnValue (run ${runId})`
+    );
+    const steps = timingsFromReturnValue(returnValue, runId);
+    if (steps.length !== stepCount) {
+      throw new Error(
+        `Run ${runId} returned ${steps.length} step timings, expected ${stepCount}`
+      );
+    }
+    // Both ends of the fan-out come off step-body exit timestamps, so a run
+    // whose first branch lands early but whose tail drags reports two different
+    // numbers rather than one blended average. Reduced rather than spread into
+    // Math.min/max: the step count is env-tunable, and a large fan-out would
+    // overflow the argument limit.
+    let firstEnd = Number.POSITIVE_INFINITY;
+    let lastEnd = Number.NEGATIVE_INFINITY;
+    for (const { end } of steps) {
+      if (end < firstEnd) firstEnd = end;
+      if (end > lastEnd) lastEnd = end;
+    }
+    return {
+      runId,
+      traceId,
+      // Deployment-side clocks on both sides; clamp to absorb tiny skew.
+      fanOutTtfsMs: Math.max(0, firstEnd - clientStart),
+      fanOutTtlsMs: Math.max(0, lastEnd - clientStart),
     };
   } catch (error) {
     (error as Error).message += ` (run ${runId})`;
@@ -562,7 +638,7 @@ function computeStats(samples: number[]): MetricStats {
 }
 
 interface MetricRow extends MetricStats {
-  /** Short metric id: ttfs | stso | wo | sl */
+  /** Short metric id: ttfs | fanout-ttfs | fanout-ttls | stso | wo | sl | so */
   metric: string;
   /** Short scenario label; explained via scenario descriptions in the output */
   scenario: string;
@@ -606,6 +682,7 @@ const SCENARIO_STEP = 'step';
 const SCENARIO_TURBO_STREAM = 'stream';
 const SCENARIO_HOOK_STREAM = 'hook + stream';
 const SCENARIO_SEQUENTIAL = `${SEQUENTIAL_STEP_COUNT} steps`;
+const SCENARIO_FANOUT = `Promise.all(${FANOUT_STEP_COUNT} steps)`;
 const SCENARIO_STREAM_LATENCY = 'stream latency';
 // Two SO scenarios differing only in payload shape. The labels are distinct
 // from the pre-existing 'stream overhead' baseline key, so the payload change
@@ -632,6 +709,10 @@ const SCENARIO_DESCRIPTIONS = [
   {
     name: SCENARIO_SEQUENTIAL,
     description: `${SEQUENTIAL_STEP_COUNT} trivial sequential steps; STSO is measured between consecutive steps in the given step ranges, and WO is the whole-run overhead outside step bodies`,
+  },
+  {
+    name: SCENARIO_FANOUT,
+    description: `${FANOUT_STEP_COUNT} trivial no-op steps started together in a single Promise.all; Fan-out TTFS is the first of them to complete and Fan-out TTLS the last, both from the in-deployment clientStart, so their gap is the spread the runtime adds across the fan-out`,
   },
   {
     name: SCENARIO_STREAM_LATENCY,
@@ -796,6 +877,42 @@ describe('workflow benchmarks', () => {
     }
   );
 
+  test('scenario: fan-out steps', { timeout: 60 * 60_000 }, async () => {
+    const results = await runScenario(
+      SCENARIO_FANOUT,
+      FANOUT_ITERATIONS,
+      () => runFanOutIteration(FANOUT_STEP_COUNT),
+      {
+        // No warmup: a warmup iteration costs a whole fan-out run, the earlier
+        // scenarios already warmed the client and the world, and cold starts
+        // are kept in these numbers on purpose (see the file header).
+        warmupIterations: 0,
+      }
+    );
+    // Same reason the sequential scenario logs its runs: when a percentile
+    // moves, the investigation starts in APM, and the run ids behind these
+    // samples are only available here.
+    for (const { runId, traceId } of results) {
+      console.log(
+        `[bench] ${SCENARIO_FANOUT} run ${runId}` +
+          (traceId ? ` — trace ${DATADOG_TRACE_URL}${traceId}` : '') +
+          ` — spans ${datadogRunSearchUrl(runId)}`
+      );
+    }
+    // No targets: fan-out latency under contention is a new population, and the
+    // single-step TTFS targets describe a different shape of run.
+    recordMetric(
+      'fanout-ttfs',
+      SCENARIO_FANOUT,
+      results.map((r) => r.fanOutTtfsMs)
+    );
+    recordMetric(
+      'fanout-ttls',
+      SCENARIO_FANOUT,
+      results.map((r) => r.fanOutTtlsMs)
+    );
+  });
+
   test('scenario: sequential steps', { timeout: 60 * 60_000 }, async () => {
     const results = await runScenario(
       SCENARIO_SEQUENTIAL,
@@ -882,6 +999,8 @@ describe('workflow benchmarks', () => {
         soDurationSeconds: SO_DURATION_SECONDS,
         sequentialIterations: SEQUENTIAL_ITERATIONS,
         sequentialStepCount: SEQUENTIAL_STEP_COUNT,
+        fanoutIterations: FANOUT_ITERATIONS,
+        fanoutStepCount: FANOUT_STEP_COUNT,
         warmupIterations: WARMUP_ITERATIONS,
       },
       scenarios: SCENARIO_DESCRIPTIONS,
