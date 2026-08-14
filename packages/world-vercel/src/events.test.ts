@@ -1887,7 +1887,7 @@ describe('createWorkflowRunEvent hook_received replay preload', () => {
     agent
       .get(ORIGIN)
       .intercept({
-        path: '/api/v4/runs/wrun_1/events?returnAll=true&cursor=eid%3Aevnt_4',
+        path: '/api/v4/runs/wrun_1/events?cursor=eid%3Aevnt_4&remoteRefBehavior=resolve&returnAll=true',
         method: 'GET',
       })
       .reply(

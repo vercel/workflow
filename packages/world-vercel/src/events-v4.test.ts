@@ -294,7 +294,7 @@ describe('getWorkflowRunEventsV4 over HTTP', () => {
     agent
       .get(origin)
       .intercept({
-        path: '/api/v4/runs/wrun_1/events?returnAll=true',
+        path: '/api/v4/runs/wrun_1/events?remoteRefBehavior=resolve&returnAll=true',
         method: 'GET',
       })
       .reply(200, frames, {
@@ -302,13 +302,12 @@ describe('getWorkflowRunEventsV4 over HTTP', () => {
       });
 
     const result = await getWorkflowRunEventsV4(
-      'wrun_1',
-      {},
+      { runId: 'wrun_1' },
       { token: 'test-token', dispatcher: agent }
     );
 
-    expect(result.events).toHaveLength(1);
-    expect(result.events[0]).toMatchObject({
+    expect(result.data).toHaveLength(1);
+    expect(result.data[0]).toMatchObject({
       eventId: 'evnt_1',
       eventData: { input: body },
     });
@@ -325,7 +324,7 @@ describe('getWorkflowRunEventsV4 over HTTP', () => {
     agent
       .get(origin)
       .intercept({
-        path: '/api/v4/runs/wrun_1/events?returnAll=true',
+        path: '/api/v4/runs/wrun_1/events?remoteRefBehavior=resolve&returnAll=true',
         method: 'GET',
       })
       .reply(
@@ -353,8 +352,8 @@ describe('getWorkflowRunEventsV4 over HTTP', () => {
     });
     await expect(
       getWorkflowRunEventsV4(
-        'wrun_1',
         {
+          runId: 'wrun_1',
           onEvent: () => {
             throw observerError;
           },
@@ -377,7 +376,7 @@ describe('getWorkflowRunEventsV4 over HTTP', () => {
     agent
       .get(origin)
       .intercept({
-        path: '/api/v4/runs/wrun_1/events?returnAll=true',
+        path: '/api/v4/runs/wrun_1/events?remoteRefBehavior=resolve&returnAll=true',
         method: 'GET',
       })
       .reply(
@@ -391,8 +390,7 @@ describe('getWorkflowRunEventsV4 over HTTP', () => {
 
     await expect(
       getWorkflowRunEventsV4(
-        'wrun_1',
-        {},
+        { runId: 'wrun_1' },
         { token: 'test-token', dispatcher: agent }
       )
     ).rejects.toThrow();
@@ -431,7 +429,7 @@ describe('getWorkflowRunEventsV4 over HTTP', () => {
     agent
       .get(origin)
       .intercept({
-        path: '/api/v4/runs/wrun_1/events?returnAll=true',
+        path: '/api/v4/runs/wrun_1/events?remoteRefBehavior=resolve&returnAll=true',
         method: 'GET',
       })
       .reply(200, frames, {
@@ -439,8 +437,7 @@ describe('getWorkflowRunEventsV4 over HTTP', () => {
       });
 
     const result = await getWorkflowRunEventsV4(
-      'wrun_1',
-      {},
+      { runId: 'wrun_1' },
       { token: 'test-token', dispatcher: agent }
     );
 
@@ -462,7 +459,7 @@ describe('getWorkflowRunEventsV4 over HTTP', () => {
     agent
       .get(origin)
       .intercept({
-        path: '/api/v4/runs/wrun_1/events?returnAll=true',
+        path: '/api/v4/runs/wrun_1/events?remoteRefBehavior=resolve&returnAll=true',
         method: 'GET',
       })
       .reply(200, frames, {
@@ -471,8 +468,7 @@ describe('getWorkflowRunEventsV4 over HTTP', () => {
 
     await expect(
       getWorkflowRunEventsV4(
-        'wrun_1',
-        {},
+        { runId: 'wrun_1' },
         { token: 'test-token', dispatcher: agent }
       )
     ).rejects.toThrow();
@@ -505,7 +501,7 @@ describe('getWorkflowRunEventsV4 over HTTP', () => {
     agent
       .get(origin)
       .intercept({
-        path: '/api/v4/runs/wrun_1/events?limit=500',
+        path: '/api/v4/runs/wrun_1/events?limit=500&remoteRefBehavior=resolve',
         method: 'GET',
       })
       .reply(200, frames, {
@@ -514,8 +510,7 @@ describe('getWorkflowRunEventsV4 over HTTP', () => {
 
     await expect(
       getWorkflowRunEventsV4(
-        'wrun_1',
-        { limit: 500 },
+        { runId: 'wrun_1', pagination: { limit: 500 } },
         { token: 'test-token', dispatcher: agent }
       )
     ).rejects.toThrow(/end-of-stream sentinel/);
@@ -530,7 +525,7 @@ describe('getWorkflowRunEventsV4 over HTTP', () => {
     agent
       .get(origin)
       .intercept({
-        path: '/api/v4/runs/wrun_1/events?returnAll=true',
+        path: '/api/v4/runs/wrun_1/events?remoteRefBehavior=resolve&returnAll=true',
         method: 'GET',
       })
       .reply(
@@ -554,7 +549,7 @@ describe('getWorkflowRunEventsV4 over HTTP', () => {
     agent
       .get(origin)
       .intercept({
-        path: '/api/v4/runs/wrun_1/events?returnAll=true&cursor=eid%3Aevnt_1',
+        path: '/api/v4/runs/wrun_1/events?cursor=eid%3Aevnt_1&remoteRefBehavior=resolve&returnAll=true',
         method: 'GET',
       })
       .reply(
@@ -578,12 +573,11 @@ describe('getWorkflowRunEventsV4 over HTTP', () => {
       );
 
     const result = await getWorkflowRunEventsV4(
-      'wrun_1',
-      {},
+      { runId: 'wrun_1' },
       { token: 'test-token', dispatcher: agent }
     );
 
-    expect(result.events.map((event) => event.eventId)).toEqual([
+    expect(result.data.map((event) => event.eventId)).toEqual([
       'evnt_1',
       'evnt_2',
     ]);
@@ -638,9 +632,11 @@ describe('getEventsByCorrelationIdV4 over HTTP', () => {
       });
 
     const result = await getEventsByCorrelationIdV4(
-      'step_001',
-      'wrun_1',
-      { limit: 10 },
+      {
+        correlationId: 'step_001',
+        runId: 'wrun_1',
+        pagination: { limit: 10 },
+      },
       { token: 'test-token', dispatcher: agent }
     );
 
@@ -652,8 +648,8 @@ describe('getEventsByCorrelationIdV4 over HTTP', () => {
       expect(query.get('limit')).toBe('10');
     }
 
-    expect(result.events).toHaveLength(1);
-    expect(result.events[0].runId).toBe('wrun_1');
+    expect(result.data).toHaveLength(1);
+    expect(result.data[0].runId).toBe('wrun_1');
     agent.assertNoPendingInterceptors();
   });
 });
@@ -735,7 +731,7 @@ describe('v4 transport uses global fetch (observability)', () => {
     agent
       .get(origin)
       .intercept({
-        path: '/api/v4/runs/wrun_1/events?returnAll=true',
+        path: '/api/v4/runs/wrun_1/events?remoteRefBehavior=resolve&returnAll=true',
         method: 'GET',
       })
       .reply(200, encodeFrame({ _end: 1, hasMore: false }, new Uint8Array(0)), {
@@ -747,8 +743,7 @@ describe('v4 transport uses global fetch (observability)', () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch');
 
     await getWorkflowRunEventsV4(
-      'wrun_1',
-      {},
+      { runId: 'wrun_1' },
       { token: 'test-token', dispatcher: agent }
     );
 
@@ -980,7 +975,7 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
     agent
       .get(origin)
       .intercept({
-        path: '/api/v4/runs/wrun_1/events?returnAll=true&cursor=eid%3Aevnt_1',
+        path: '/api/v4/runs/wrun_1/events?cursor=eid%3Aevnt_1&remoteRefBehavior=resolve&returnAll=true',
         method: 'GET',
       })
       .reply(
@@ -1121,7 +1116,7 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
     agent
       .get(origin)
       .intercept({
-        path: '/api/v4/runs/wrun_1/events?returnAll=true&cursor=eid%3Aevnt_1',
+        path: '/api/v4/runs/wrun_1/events?cursor=eid%3Aevnt_1&remoteRefBehavior=resolve&returnAll=true',
         method: 'GET',
       })
       .reply(
@@ -1804,7 +1799,7 @@ describe('v4 transport reports failures to the events recycler', () => {
 
     for (let i = 0; i < EVENTS_RECYCLE_AFTER_CONSECUTIVE_FAILURES; i++) {
       await expect(
-        getWorkflowRunEventsV4('wrun_1', {}, { token: 'test-token' })
+        getWorkflowRunEventsV4({ runId: 'wrun_1' }, { token: 'test-token' })
       ).rejects.toThrow();
       // Still the same pool until the threshold is reached.
       if (i < EVENTS_RECYCLE_AFTER_CONSECUTIVE_FAILURES - 1) {

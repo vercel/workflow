@@ -166,7 +166,7 @@ describe('v4 event requests (fetchV4) trace propagation', () => {
     agent
       .get(origin)
       .intercept({
-        path: '/api/v4/runs/wrun_1/events?returnAll=true',
+        path: '/api/v4/runs/wrun_1/events?remoteRefBehavior=resolve&returnAll=true',
         method: 'GET',
       })
       .reply(200, encodeFrame({ _end: 1, hasMore: false }, new Uint8Array(0)), {
@@ -184,8 +184,7 @@ describe('v4 event requests (fetchV4) trace propagation', () => {
       traceId = span.spanContext().traceId;
       spanId = span.spanContext().spanId;
       await getWorkflowRunEventsV4(
-        'wrun_1',
-        {},
+        { runId: 'wrun_1' },
         { token: 'test-token', dispatcher: agent }
       );
       span.end();
