@@ -6,7 +6,11 @@
  */
 
 import { inspect } from 'node:util';
-import { decrypt, getCommonRevivers } from '@workflow/core/serialization';
+import {
+  decrypt,
+  type DecryptionKey,
+  getCommonRevivers,
+} from '@workflow/core/serialization';
 import {
   ClassInstanceRef,
   extractClassName,
@@ -24,7 +28,7 @@ import chalk from 'chalk';
 
 async function decryptPayload(
   value: unknown,
-  key: Parameters<typeof decrypt>[1]
+  key: DecryptionKey | undefined
 ): Promise<unknown> {
   return value instanceof Uint8Array ? decrypt(value, key) : value;
 }
