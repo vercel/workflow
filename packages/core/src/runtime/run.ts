@@ -5,13 +5,9 @@ import {
   WorkflowRunNotFoundError,
 } from '@workflow/errors';
 import { WORKFLOW_DESERIALIZE, WORKFLOW_SERIALIZE } from '@workflow/serde';
-import {
-  envNumber,
-  SPEC_VERSION_CURRENT,
-  type WorkflowRun,
-  type WorkflowRunStatus,
-  type World,
-} from '@workflow/world';
+import type { WorkflowRun, WorkflowRunStatus, World } from '@workflow/world';
+import { envNumber } from '@workflow/world/env-config';
+import { SPEC_VERSION_CURRENT } from '@workflow/world/spec-version';
 import {
   deriveRunPayloadKeys,
   type PayloadKey,

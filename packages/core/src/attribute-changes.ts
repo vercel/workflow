@@ -3,7 +3,7 @@ import {
   type AttributeChange,
   AttributeValidationError,
   validateAttributeChanges,
-} from '@workflow/world';
+} from '@workflow/world/attributes-validation';
 
 interface AttributeChangeOptions {
   allowReservedAttributes?: boolean;

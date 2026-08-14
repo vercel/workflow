@@ -1,11 +1,14 @@
 import { z } from 'zod';
 import { AttributeChangesSchema } from './attributes.js';
+import { getEventDataRefFields } from './event-metadata.js';
 import type { Hook } from './hooks.js';
 import type { StartedWorkflowRun, WorkflowRun } from './runs.js';
 import { SerializedDataSchema } from './serialization.js';
 import type { PaginationOptions, ResolveData } from './shared.js';
 import type { StartedStep, Step } from './steps.js';
 import type { Wait } from './waits.js';
+
+export * from './event-metadata.js';
 
 // Event type enum
 export const EventTypeSchema = z.enum([
@@ -93,59 +96,6 @@ export function isTerminalStepEventType(
   return TERMINAL_STEP_EVENT_TYPES.includes(eventType as TerminalStepEventType);
 }
 
-/**
- * Groups event types into the classes a replay tracks per entity: the entity
- * named by the event's `correlationId`, or the run itself for run events,
- * which carry none.
- *
- * Types that share a class are the mutually exclusive outcomes of one
- * decision, so the log records the class once and the first event of it is the
- * one that counts: a step either completes or fails.
- *
- * Classes are independent of each other. A step whose result is in the log has
- * still recorded exactly one `step_created`, and can still record another
- * `step_started` if an attempt is running somewhere. What a class bounds is
- * which events can be *ignored*: a replay may pass over an event whose class
- * it already recorded for that entity and which no consumer wants (see
- * `EventsConsumer`), and only then.
- *
- * Note the omissions, all of them types a mapping would be dead weight for.
- * `hook_received` and `hook_conflict` are deliveries whose consumer subscribes
- * lazily, `attr_set` is written on every attribute write, and `run_created`
- * precedes every replay. The terminal run types are absent for a different
- * reason: recording a class requires a consumer to take an event of it, and no
- * consumer takes `run_completed` / `run_failed` / `run_cancelled`: the runtime
- * exits before replaying the body once the log holds one, so they never reach a
- * consumer at all. An entry for them could never match.
- */
-const ENTITY_EVENT_CLASS_BY_TYPE = {
-  step_created: 'step_created',
-  step_started: 'step_started',
-  step_retrying: 'step_retrying',
-  step_completed: 'step_terminal',
-  step_failed: 'step_terminal',
-  wait_created: 'wait_created',
-  wait_completed: 'wait_completed',
-  hook_created: 'hook_created',
-  hook_disposed: 'hook_disposed',
-  run_started: 'run_started',
-} as const satisfies Partial<Record<EventType, string>>;
-
-export type EntityEventClass =
-  (typeof ENTITY_EVENT_CLASS_BY_TYPE)[keyof typeof ENTITY_EVENT_CLASS_BY_TYPE];
-
-/**
- * The per-entity class `eventType` belongs to, or `undefined` when it belongs
- * to none. See {@link ENTITY_EVENT_CLASS_BY_TYPE}.
- */
-export function entityEventClass(
-  eventType: string
-): EntityEventClass | undefined {
-  return (
-    ENTITY_EVENT_CLASS_BY_TYPE as Record<string, EntityEventClass | undefined>
-  )[eventType];
-}
-
 const HookLifecycleEventTypeSchema = EventTypeSchema.extract([
   'hook_created',
   'hook_received',
@@ -227,53 +177,6 @@ export function isChildEntityCreationEventType(
   return CHILD_ENTITY_CREATION_EVENT_TYPES.includes(
     eventType as ChildEntityCreationEventType
   );
-}
-
-/**
- * Field within eventData that carries the opaque user payload for event types
- * that have one. V4 worlds split this field into the wire body while keeping
- * the remaining eventData fields in metadata.
- */
-export const EVENT_DATA_PAYLOAD_FIELD_BY_EVENT_TYPE = {
-  run_created: 'input',
-  run_started: 'input',
-  run_completed: 'output',
-  run_failed: 'error',
-  step_created: 'input',
-  step_started: 'input',
-  step_completed: 'result',
-  step_failed: 'error',
-  step_retrying: 'error',
-  hook_created: 'metadata',
-  hook_received: 'payload',
-} as const satisfies Partial<Record<EventType, string>>;
-
-export type EventDataPayloadField =
-  (typeof EVENT_DATA_PAYLOAD_FIELD_BY_EVENT_TYPE)[keyof typeof EVENT_DATA_PAYLOAD_FIELD_BY_EVENT_TYPE];
-
-/**
- * Fields within eventData that hold ref/payload data per event type.
- * When resolveData is 'none', only these fields are stripped, and all other
- * metadata (stepName, workflowName, etc.) is preserved.
- */
-export const EVENT_DATA_REF_FIELDS = Object.fromEntries(
-  Object.entries(EVENT_DATA_PAYLOAD_FIELD_BY_EVENT_TYPE).map(
-    ([eventType, field]) => [eventType, [field]]
-  )
-) as Record<string, readonly EventDataPayloadField[]>;
-
-export function getEventDataRefFields(eventType: string): readonly string[] {
-  return EVENT_DATA_REF_FIELDS[eventType] ?? [];
-}
-
-export function getEventDataPayloadField(
-  eventType: string
-): EventDataPayloadField | undefined {
-  return (
-    EVENT_DATA_PAYLOAD_FIELD_BY_EVENT_TYPE as Partial<
-      Record<string, EventDataPayloadField>
-    >
-  )[eventType];
 }
 
 /**
