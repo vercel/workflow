@@ -7,8 +7,8 @@
 
 import { inspect } from 'node:util';
 import {
-  decrypt,
   type DecryptionKey,
+  decrypt,
   getCommonRevivers,
 } from '@workflow/core/serialization';
 import {
