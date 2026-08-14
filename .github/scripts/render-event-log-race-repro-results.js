@@ -3,21 +3,25 @@
 const fs = require('node:fs');
 
 const args = process.argv.slice(2);
-let resultsPath = 'event-log-race-repro-results.json';
+let resultsPath = '';
 let runUrl = '';
 let previousCommentPath = '';
 let timestamp = new Date().toISOString();
 let runAttempt = '';
 let check = false;
-// Which lane this run belongs to (e.g. `world-local`, `world-postgres`).
-// Suffixes the results marker and the heading so each lane owns its own sticky
-// comment: the lanes run as parallel jobs, and a shared marker would make one
-// lane's "previous comment" fetch pick up another lane's history. The Vercel
-// lane passes no label and keeps the original marker, so its comment history
-// survives this flag's introduction. Marker matching is exact-substring
-// (`<!-- event-log-race-repro-results -->` does not match the `-world-local`
-// variant because of the closing ` -->`), which is what keeps the lanes apart.
+// Which lane a single-file render belongs to (e.g. `world-local`,
+// `world-postgres`). It only names the heading and the lane's history bucket;
+// the Vercel lane passes no label. The CI comment is rendered once for all
+// lanes at a time (see `--lane` below), so this is now the per-job step summary
+// and the local runner's path.
 let label = '';
+// Lanes to render together, as `--lane <name>=<results.json>` pairs, in display
+// order. This is how the aggregating job turns three parallel jobs into one PR
+// comment: one comment means one history, so the trend for all three worlds
+// lines up on the same rows instead of living in three separate sticky
+// comments. A lane whose file is missing still gets a row — a lane that
+// produced nothing is a fact worth showing, not a gap.
+const laneArgs = [];
 
 for (let index = 0; index < args.length; index += 1) {
   const arg = args[index];
@@ -36,6 +40,16 @@ for (let index = 0; index < args.length; index += 1) {
   } else if (arg === '--label' && args[index + 1]) {
     label = args[index + 1];
     index += 1;
+  } else if (arg === '--lane' && args[index + 1]) {
+    const value = args[index + 1];
+    const separator = value.indexOf('=');
+    if (separator > 0) {
+      laneArgs.push({
+        name: value.slice(0, separator),
+        path: value.slice(separator + 1),
+      });
+    }
+    index += 1;
   } else if (arg === '--check') {
     check = true;
   } else if (!arg.startsWith('--')) {
@@ -43,8 +57,23 @@ for (let index = 0; index < args.length; index += 1) {
   }
 }
 
+if (!resultsPath) {
+  resultsPath = 'event-log-race-repro-results.json';
+}
+
 const historyMarkerStart = '<!-- event-log-race-repro-history';
 const historyMarkerEnd = 'event-log-race-repro-history -->';
+
+// How many runs the history table keeps. The table is one row per lane per run,
+// so this is the dial that keeps a long-lived PR's comment readable: 5 runs is
+// the trend, and the rest is in the artifacts of the older jobs.
+const maxHistoryRuns = 5;
+// Non-completed runs listed per lane, regressions first.
+const maxFailingRows = 10;
+// A soak can produce four figures of `infra` rows, all carrying the same one or
+// two error codes. The verdict line already reports the count, so the table only
+// keeps enough of them to name the code.
+const maxInfraRows = 3;
 
 const orderedOutcomes = [
   'completed',
@@ -65,15 +94,43 @@ const gatingOutcomes = orderedOutcomes.filter(
   (outcome) => outcome !== 'completed' && outcome !== 'infra'
 );
 
+// The history table's columns. Deliberately five: the question it answers is
+// "did this run trip the storms", and every outcome that is not corruption or a
+// stuck run is rare enough that a shared bucket is honest. `infra` sits in
+// `Other` so the four count columns always sum to `Total`; the verdict lines
+// above the table break out whatever is actually non-zero, including infra.
+const summaryColumns = [
+  { header: 'Complete', outcomes: ['completed'] },
+  { header: 'Corrupt', outcomes: ['CORRUPTED_EVENT_LOG'] },
+  { header: 'Stuck', outcomes: ['stuck'] },
+  {
+    header: 'Other',
+    outcomes: ['USER_ERROR', 'RUNTIME_ERROR', 'other', 'infra'],
+  },
+];
+
+// Short names for the verdict lines, so `6 corrupt, 1 stuck` reads at a glance.
+const outcomeShortNames = {
+  CORRUPTED_EVENT_LOG: 'corrupt',
+  USER_ERROR: 'user error',
+  RUNTIME_ERROR: 'runtime error',
+  stuck: 'stuck',
+  other: 'other',
+};
+
 function emptyDistribution() {
   return Object.fromEntries(orderedOutcomes.map((outcome) => [outcome, 0]));
 }
 
-function loadResults() {
-  if (!fs.existsSync(resultsPath)) {
+function laneNameFromLabel(value) {
+  return value.replace(/^world-/, '') || 'vercel';
+}
+
+function loadResults(path = resultsPath) {
+  if (!path || !fs.existsSync(path)) {
     return null;
   }
-  return JSON.parse(fs.readFileSync(resultsPath, 'utf8'));
+  return JSON.parse(fs.readFileSync(path, 'utf8'));
 }
 
 function loadPreviousComment() {
@@ -83,7 +140,11 @@ function loadPreviousComment() {
   return fs.readFileSync(previousCommentPath, 'utf8');
 }
 
-function loadHistory(previousComment) {
+// History is stored as `{ runs: [{ timestamp, runAttempt, runUrl, lanes }] }`.
+// Comments written before the lanes shared one comment stored a bare array of
+// single-lane entries; those are read as this comment's own lane, which is what
+// they were.
+function loadHistory(previousComment, fallbackLaneName) {
   if (!previousComment) {
     return [];
   }
@@ -96,12 +157,23 @@ function loadHistory(previousComment) {
     return [];
   }
 
+  let parsed;
   try {
-    const history = JSON.parse(match[1]);
-    return Array.isArray(history) ? history : [];
+    parsed = JSON.parse(match[1]);
   } catch {
     return [];
   }
+
+  if (Array.isArray(parsed)) {
+    return parsed.map((entry) => ({
+      timestamp: entry.timestamp,
+      runAttempt: entry.runAttempt,
+      runUrl: entry.runUrl,
+      lanes: { [fallbackLaneName]: entry },
+    }));
+  }
+
+  return Array.isArray(parsed?.runs) ? parsed.runs : [];
 }
 
 function summarize(results) {
@@ -110,17 +182,6 @@ function summarize(results) {
     distribution[result.outcome] = (distribution[result.outcome] ?? 0) + 1;
   }
   return distribution;
-}
-
-function summarizeByScenario(results) {
-  const byScenario = {};
-  for (const result of results) {
-    const scenario = result.scenario ?? 'unknown';
-    byScenario[scenario] ??= emptyDistribution();
-    byScenario[scenario][result.outcome] =
-      (byScenario[scenario][result.outcome] ?? 0) + 1;
-  }
-  return byScenario;
 }
 
 // Count of regression-class outcomes — the number the job gates on.
@@ -135,74 +196,109 @@ function infraCount(distribution) {
   return distribution.infra ?? 0;
 }
 
+function countColumn(distribution = {}, column) {
+  return column.outcomes.reduce(
+    (sum, outcome) => sum + (distribution[outcome] ?? 0),
+    0
+  );
+}
+
 function compactTimestamp(value) {
   const parsed = Date.parse(value);
   if (Number.isNaN(parsed)) {
     return value;
   }
-  return `${new Date(parsed).toISOString().replace('T', ' ').slice(0, 16)} UTC`;
+  // `08-14 17:08` — the year and the seconds never distinguish two rows of the
+  // same PR, and the column is narrow enough to sit next to five numbers.
+  return new Date(parsed).toISOString().replace('T', ' ').slice(5, 16);
 }
 
-function markdownLink(label, href) {
-  return href ? `[${label}](${href})` : label;
+function markdownLink(text, href) {
+  return href ? `[${text}](${href})` : text;
 }
 
-function renderRunHeader(entry) {
-  const links = [
-    entry.runUrl ? markdownLink('logs', entry.runUrl) : '',
-    entry.deploymentUrl ? markdownLink('deploy', entry.deploymentUrl) : '',
-  ].filter(Boolean);
-  const attemptSuffix = entry.runAttempt ? ` #${entry.runAttempt}` : '';
-  return `${compactTimestamp(entry.timestamp)}${attemptSuffix}<br>${links.join(' / ')}`;
+function renderRunCell(run) {
+  const attemptSuffix =
+    run.runAttempt && Number(run.runAttempt) > 1 ? ` #${run.runAttempt}` : '';
+  return `${markdownLink(compactTimestamp(run.timestamp), run.runUrl)}${attemptSuffix}`;
 }
 
-function renderCount(value) {
-  return String(value ?? 0);
+// The lane cell doubles as the deployment link, which is the only per-lane URL
+// worth a click. Local worlds report `http://localhost:3000`, which is not one.
+function renderLaneCell(laneName, entry) {
+  const deploymentUrl = entry?.deploymentUrl ?? '';
+  const linkable =
+    /^https?:\/\//.test(deploymentUrl) && !deploymentUrl.includes('localhost');
+  return linkable ? markdownLink(laneName, deploymentUrl) : laneName;
 }
 
-function renderResult(entry) {
-  if (entry.missingResults) {
-    return 'missing result file';
+function renderOutcomeBreakdown(entry) {
+  const distribution = entry.distribution ?? {};
+  const parts = gatingOutcomes
+    .filter((outcome) => (distribution[outcome] ?? 0) > 0)
+    .map(
+      (outcome) =>
+        `${distribution[outcome]} ${outcomeShortNames[outcome] ?? outcome}`
+    );
+  const infra = entry.infraCount ?? infraCount(distribution);
+  if (infra > 0) {
+    parts.push(`${infra} infra`);
   }
-  const infra = entry.infraCount ?? infraCount(entry.distribution ?? {});
-  const infraSuffix = infra > 0 ? ` (+${infra} infra)` : '';
-  // A partial run's rates are still meaningful but its totals are not
-  // comparable to a full run's, so the row says so rather than letting a
-  // short run read as a clean one.
-  const partialSuffix = entry.partial
-    ? ` — partial${entry.plannedAttempts ? ` (${entry.total} of ${entry.plannedAttempts} planned)` : ''}`
-    : '';
-  return entry.failedCount === 0
-    ? `no regressions${infraSuffix}${partialSuffix}`
-    : `${entry.failedCount}/${entry.total} regressions${infraSuffix}${partialSuffix}`;
+  return parts.join(', ');
 }
 
-function renderConfig(entry) {
-  const config = entry.config ?? {};
-  const attempts = config.attempts ? `${config.attempts} runs` : '';
+// One line per lane: verdict, then the counts behind it. A partial run's rates
+// are still meaningful but its totals are not comparable to a full run's, so
+// the line says so rather than letting a short run read as a clean one.
+function renderLaneVerdict(laneName, entry, multiLane) {
+  // The heading already names the lane when there is only one of them.
+  const prefix = multiLane ? `\`${laneName}\` ` : '';
+  if (entry.missingResults) {
+    return `${prefix}no result file — the harness died before its first checkpoint`;
+  }
+
+  const verdict =
+    entry.failedCount === 0
+      ? `clean, ${entry.total} run${entry.total === 1 ? '' : 's'}`
+      : `**${entry.failedCount}/${entry.total} regressions**`;
+  const breakdown = renderOutcomeBreakdown(entry);
+  const partial = entry.partial
+    ? `partial: ${entry.total} of ${entry.plannedAttempts || 'the'} planned runs${
+        entry.budgetExhausted ? ', launch budget spent' : ', job ended first'
+      }`
+    : '';
+  return [`${prefix}${verdict}`, breakdown, partial]
+    .filter(Boolean)
+    .join(' — ');
+}
+
+function renderConfigScale(config) {
   const scenarios = [
     config.stepStormAttempts ? `step-storm ${config.stepStormAttempts}` : '',
     config.hookStormAttempts ? `hook-storm ${config.hookStormAttempts}` : '',
     config.hookSleepAttempts ? `hook-sleep ${config.hookSleepAttempts}` : '',
     // Historical entries from the pre-storm harness, kept so an old sticky
-    // comment still renders its own configuration rather than a blank cell.
+    // comment still renders its own configuration rather than a blank line.
     config.stepFanoutAttempts ? `fanout ${config.stepFanoutAttempts}` : '',
     config.stepSleepRaceAttempts ? `race ${config.stepSleepRaceAttempts}` : '',
   ]
     .filter(Boolean)
     .join(', ');
-  const concurrency = config.concurrency ? `c${config.concurrency}` : '';
   const shape =
     config.rounds && config.width
       ? `${config.rounds}x${config.width}`
       : config.stepFanoutRounds && config.stepFanoutWidth
         ? `${config.stepFanoutRounds}x${config.stepFanoutWidth}`
         : '';
-  return [attempts, scenarios, concurrency, shape].filter(Boolean).join(' / ');
+  return [
+    config.attempts ? `${config.attempts} runs` : '',
+    scenarios,
+    config.concurrency ? `c${config.concurrency}` : '',
+    shape,
+  ].filter(Boolean);
 }
 
-function renderTiming(entry) {
-  const config = entry.config ?? {};
+function renderConfigTiming(config) {
   return [
     config.watchdogMs ? `watchdog ${config.watchdogMs}ms` : '',
     config.stepDelayMs
@@ -211,9 +307,14 @@ function renderTiming(entry) {
     config.hookResumeStaggerMs ? `stagger ${config.hookResumeStaggerMs}ms` : '',
     config.pokeIntervalMs ? `poke ${config.pokeIntervalMs}ms` : '',
     config.runTimeoutMs ? `timeout ${config.runTimeoutMs}ms` : '',
-  ]
-    .filter(Boolean)
-    .join(' / ');
+  ].filter(Boolean);
+}
+
+function renderConfig(entry) {
+  const config = entry.config ?? {};
+  return [...renderConfigScale(config), ...renderConfigTiming(config)].join(
+    ' / '
+  );
 }
 
 function compactConfig(config = {}) {
@@ -242,35 +343,43 @@ function compactConfig(config = {}) {
   };
 }
 
-function compactHistoryEntry(entry, keepFailures = false) {
+// Only the latest run keeps its per-run detail (`config`, `failing`): nothing
+// renders an older run's failures or configuration, and the stored JSON counts
+// against the comment's own size limit.
+function compactHistoryEntry(entry, keepDetail = false) {
   return {
-    timestamp: entry.timestamp,
-    runAttempt: entry.runAttempt,
-    runUrl: entry.runUrl,
     deploymentUrl: entry.deploymentUrl,
     missingResults: entry.missingResults,
     partial: entry.partial ?? false,
     budgetExhausted: entry.budgetExhausted ?? false,
     plannedAttempts: entry.plannedAttempts ?? 0,
     distribution: entry.distribution ?? emptyDistribution(),
-    scenarioDistribution: entry.scenarioDistribution ?? {},
     failedCount: entry.failedCount ?? 0,
     infraCount: entry.infraCount ?? infraCount(entry.distribution ?? {}),
     total: entry.total ?? 0,
-    config: compactConfig(entry.config),
-    failing: keepFailures ? (entry.failing ?? []) : [],
-    truncatedFailingCount: keepFailures
-      ? (entry.truncatedFailingCount ?? 0)
-      : 0,
+    config: keepDetail ? compactConfig(entry.config) : undefined,
+    failing: keepDetail ? (entry.failing ?? []) : [],
+    truncatedFailingCount: keepDetail ? (entry.truncatedFailingCount ?? 0) : 0,
+  };
+}
+
+function compactHistoryRun(run, keepDetail = false) {
+  return {
+    timestamp: run.timestamp,
+    runAttempt: run.runAttempt,
+    runUrl: run.runUrl,
+    lanes: Object.fromEntries(
+      Object.entries(run.lanes ?? {}).map(([laneName, entry]) => [
+        laneName,
+        compactHistoryEntry(entry, keepDetail),
+      ])
+    ),
   };
 }
 
 function buildEntry(resultsFile) {
   if (!resultsFile) {
     return {
-      timestamp,
-      runAttempt,
-      runUrl,
       deploymentUrl: '',
       missingResults: true,
       partial: false,
@@ -278,44 +387,45 @@ function buildEntry(resultsFile) {
       plannedAttempts: 0,
       distribution: emptyDistribution(),
       failedCount: 1,
+      infraCount: 0,
       total: 0,
       config: {},
-      scenarioDistribution: {},
       failing: [],
+      truncatedFailingCount: 0,
     };
   }
 
   const results = resultsFile.results ?? [];
   const distribution = resultsFile.distribution ?? summarize(results);
-  const scenarioDistribution =
-    resultsFile.scenarioDistribution ?? summarizeByScenario(results);
   const failedCount = regressionCount(distribution);
   const infra = infraCount(distribution);
   const total = orderedOutcomes.reduce(
     (sum, outcome) => sum + (distribution[outcome] ?? 0),
     0
   );
-  // Surface regressions before infra so the 20-row cap never hides a real
-  // failure behind a flood of harness-timing `infra` rows.
-  const nonCompleted = results
-    .filter((result) => result.outcome !== 'completed')
-    .sort(
-      (a, b) => Number(a.outcome === 'infra') - Number(b.outcome === 'infra')
-    );
-  const failing = nonCompleted.slice(0, 20).map((result) => ({
+  // Regressions first and capped separately from `infra`, so a flood of
+  // harness-timing rows can never crowd a real failure out of the table.
+  const nonCompleted = results.filter(
+    (result) => result.outcome !== 'completed'
+  );
+  const listed = [
+    ...nonCompleted
+      .filter((result) => result.outcome !== 'infra')
+      .slice(0, maxFailingRows),
+    ...nonCompleted
+      .filter((result) => result.outcome === 'infra')
+      .slice(0, maxInfraRows),
+  ];
+  const failing = listed.map((result) => ({
     attempt: result.attempt,
     scenario: result.scenario,
     outcome: result.outcome,
-    status: result.status,
     errorCode: result.errorCode,
     runId: result.runId,
     dashboardUrl: result.dashboardUrl,
   }));
 
   return {
-    timestamp,
-    runAttempt,
-    runUrl,
     deploymentUrl: resultsFile.deploymentUrl,
     missingResults: false,
     // The harness checkpoints the file as it goes and only stamps
@@ -325,163 +435,249 @@ function buildEntry(resultsFile) {
     budgetExhausted: resultsFile.budgetExhausted ?? false,
     plannedAttempts: resultsFile.plannedAttempts ?? 0,
     distribution,
-    scenarioDistribution,
     failedCount,
     infraCount: infra,
     total,
     config: compactConfig(resultsFile.config),
     failing,
-    truncatedFailingCount: Math.max(0, nonCompleted.length - failing.length),
+    truncatedFailingCount: Math.max(0, nonCompleted.length - listed.length),
   };
 }
 
-function appendHistory(history, entry) {
-  const key = `${entry.runUrl || entry.timestamp}#${entry.runAttempt}`;
+function buildRun(lanes) {
+  return {
+    timestamp,
+    runAttempt,
+    runUrl,
+    lanes: Object.fromEntries(
+      lanes.map((lane) => [lane.name, buildEntry(loadResults(lane.path))])
+    ),
+  };
+}
+
+function appendHistory(history, run) {
+  const key = `${run.runUrl || run.timestamp}#${run.runAttempt}`;
   const nextHistory = history
     .filter(
-      (historyEntry) =>
-        `${historyEntry.runUrl || historyEntry.timestamp}#${historyEntry.runAttempt}` !==
+      (historyRun) =>
+        `${historyRun.runUrl || historyRun.timestamp}#${historyRun.runAttempt}` !==
         key
     )
-    .map((historyEntry) => compactHistoryEntry(historyEntry));
-  nextHistory.push(compactHistoryEntry(entry, true));
-  return nextHistory;
+    .map((historyRun) => compactHistoryRun(historyRun));
+  nextHistory.push(compactHistoryRun(run, true));
+  return nextHistory.slice(-maxHistoryRuns);
 }
 
-function renderHistoryTable(history) {
+// Lanes in the order they were passed on the command line, plus any lane that
+// only exists in the stored history (a lane that was removed, or a comment
+// written before this lane was added) so its rows keep rendering.
+function laneOrder(history, lanes) {
+  const names = lanes.map((lane) => lane.name);
+  for (const run of history) {
+    for (const laneName of Object.keys(run.lanes ?? {})) {
+      if (!names.includes(laneName)) {
+        names.push(laneName);
+      }
+    }
+  }
+  return names;
+}
+
+function renderHistoryTable(history, laneNames) {
+  const multiLane = laneNames.length > 1;
+  const headers = [
+    'Run',
+    ...(multiLane ? ['Lane'] : []),
+    'Total',
+    ...summaryColumns.map((column) => column.header),
+  ];
+  // Counts right-align, the Run and Lane labels do not.
+  const alignments = headers.map((_, index) =>
+    index === 0 || (multiLane && index === 1) ? ':--' : '--:'
+  );
+
   console.log('### Run History\n');
-  console.log(`| Metric | ${history.map(renderRunHeader).join(' | ')} |`);
-  console.log(`|:--|${history.map(() => ':--').join('|')}|`);
-  console.log(`| Result | ${history.map(renderResult).join(' | ')} |`);
-  console.log(`| Total | ${history.map((entry) => entry.total).join(' | ')} |`);
-  for (const outcome of orderedOutcomes) {
-    console.log(
-      `| ${outcome} | ${history
-        .map((entry) => renderCount(entry.distribution?.[outcome]))
-        .join(' | ')} |`
-    );
-  }
-  console.log(`| Config | ${history.map(renderConfig).join(' | ')} |`);
-  console.log(`| Timing | ${history.map(renderTiming).join(' | ')} |`);
-  console.log('');
-}
+  console.log(`| ${headers.join(' | ')} |`);
+  console.log(`|${alignments.join('|')}|`);
 
-function renderLatestScenarioBreakdown(entry) {
-  if (entry.missingResults) {
-    return;
-  }
-
-  const scenarioEntries = Object.entries(entry.scenarioDistribution ?? {});
-  if (scenarioEntries.length === 0) {
-    return;
-  }
-
-  console.log('### Latest Scenario Breakdown\n');
-  console.log(`| Scenario | Total | ${orderedOutcomes.join(' | ')} |`);
-  console.log(`|:--|--:|${orderedOutcomes.map(() => '--:').join('|')}|`);
-  for (const [scenario, distribution] of scenarioEntries) {
-    const total = orderedOutcomes.reduce(
-      (sum, outcome) => sum + (distribution[outcome] ?? 0),
-      0
-    );
-    console.log(
-      `| ${scenario} | ${total} | ${orderedOutcomes
-        .map((outcome) => renderCount(distribution[outcome]))
-        .join(' | ')} |`
-    );
+  for (const run of history) {
+    let runCell = renderRunCell(run);
+    for (const laneName of laneNames) {
+      const entry = run.lanes?.[laneName];
+      if (!entry) {
+        continue;
+      }
+      const counts = entry.missingResults
+        ? ['–', ...summaryColumns.map(() => '–')]
+        : [
+            String(entry.total),
+            ...summaryColumns.map((column) =>
+              String(countColumn(entry.distribution, column))
+            ),
+          ];
+      const cells = [
+        runCell,
+        ...(multiLane ? [renderLaneCell(laneName, entry)] : []),
+        ...counts,
+      ];
+      console.log(`| ${cells.join(' | ')} |`);
+      // One run spans several lane rows; only the first of them is stamped, so
+      // the run reads as one block.
+      runCell = '';
+    }
   }
   console.log('');
 }
 
-function renderLatestFailures(entry) {
-  if (entry.missingResults) {
+function renderFailingRow(laneName, result, multiLane) {
+  const runLink =
+    result.dashboardUrl && result.runId
+      ? markdownLink(result.runId, result.dashboardUrl)
+      : (result.runId ?? '');
+  // `outcome` and `errorCode` are the same string for the corruption-class
+  // outcomes; the code is only worth naming when it says something the outcome
+  // does not (`infra` / `HOOK_RESUME_FAILED`).
+  const outcome =
+    result.errorCode && result.errorCode !== result.outcome
+      ? `${result.outcome} (${result.errorCode})`
+      : result.outcome;
+  const cells = [
+    ...(multiLane ? [laneName] : []),
+    result.scenario ?? '',
+    result.attempt,
+    outcome,
+    runLink,
+  ];
+  return `| ${cells.join(' | ')} |`;
+}
+
+function renderLatestFailures(run, laneNames) {
+  const multiLane = laneNames.length > 1;
+  const lanes = laneNames
+    .map((laneName) => ({ laneName, entry: run.lanes?.[laneName] }))
+    .filter(({ entry }) => entry && !entry.missingResults);
+  const rows = lanes.flatMap(({ laneName, entry }) =>
+    (entry.failing ?? []).map((result) => ({ laneName, result }))
+  );
+  const truncated = lanes.reduce(
+    (sum, { entry }) => sum + (entry.truncatedFailingCount ?? 0),
+    0
+  );
+
+  if (rows.length === 0) {
     return;
   }
 
-  if (entry.failing.length === 0) {
-    return;
-  }
-
+  const headers = [
+    ...(multiLane ? ['Lane'] : []),
+    'Scenario',
+    'Attempt',
+    'Outcome',
+    'Run',
+  ];
   console.log('### Latest Non-Completed Runs\n');
-  console.log('| Scenario | Attempt | Outcome | Status | Error code | Run |');
-  console.log('|:--|--:|:--|:--|:--|:--|');
-  for (const result of entry.failing) {
-    const run =
-      result.dashboardUrl && result.runId
-        ? `[${result.runId}](${result.dashboardUrl})`
-        : (result.runId ?? '');
-    console.log(
-      `| ${result.scenario ?? ''} | ${result.attempt} | ${result.outcome} | ${result.status ?? ''} | ${result.errorCode ?? ''} | ${run} |`
-    );
+  console.log(`| ${headers.join(' | ')} |`);
+  console.log(`|${multiLane ? ':--|' : ''}:--|--:|:--|:--|`);
+  for (const { laneName, result } of rows) {
+    console.log(renderFailingRow(laneName, result, multiLane));
   }
-  if (entry.truncatedFailingCount > 0) {
+  if (truncated > 0) {
     console.log(
-      `\nShowing 20 of ${entry.failing.length + entry.truncatedFailingCount} non-completed runs.`
+      `\n${rows.length} of ${rows.length + truncated} non-completed runs shown.`
     );
   }
   console.log('');
 }
 
-function render(resultsFile, previousComment) {
+// Scale is identical across lanes on a normal run (one set of
+// `EVENT_LOG_RACE_REPRO_*` inputs feeds every job), so identical configurations
+// collapse to one line and only a dispatch that somehow differs prints two.
+function renderConfigDetails(run, laneNames, collapsible) {
+  const byConfig = new Map();
+  for (const laneName of laneNames) {
+    const entry = run.lanes?.[laneName];
+    if (!entry || entry.missingResults) {
+      continue;
+    }
+    const rendered = renderConfig(entry);
+    if (!rendered) {
+      continue;
+    }
+    byConfig.set(rendered, [...(byConfig.get(rendered) ?? []), laneName]);
+  }
+
+  if (byConfig.size === 0) {
+    return;
+  }
+
+  // Collapsed in the comment, plain text in a terminal.
+  console.log(
+    collapsible ? '<details><summary>Config</summary>\n' : 'Config\n'
+  );
+  for (const [rendered, lanes] of byConfig) {
+    const prefix = byConfig.size > 1 ? `\`${lanes.join('`, `')}\`: ` : '';
+    console.log(`${prefix}${rendered}\n`);
+  }
+  if (collapsible) {
+    console.log('</details>\n');
+  }
+}
+
+function render(lanes, previousComment) {
+  const fallbackLaneName = laneNameFromLabel(label);
   const history = appendHistory(
-    loadHistory(previousComment),
-    buildEntry(resultsFile)
+    loadHistory(previousComment, fallbackLaneName),
+    buildRun(lanes)
   );
   const latest = history[history.length - 1];
+  const laneNames = laneOrder(history, lanes);
+  const latestLaneNames = laneNames.filter((name) => latest.lanes?.[name]);
 
-  const latestInfra =
-    latest.infraCount ?? infraCount(latest.distribution ?? {});
-  const infraNote =
-    latestInfra > 0
-      ? ` ${latestInfra} run${latestInfra === 1 ? '' : 's'} hit harness-side ` +
-        '`infra` outcomes (hook-resume timing races / transport errors); ' +
-        'these are reported but do not fail the job.'
-      : '';
-
-  const partialNote = latest.partial
-    ? ` Results are **partial**: ${latest.total} of ${latest.plannedAttempts || 'the'} planned runs completed` +
-      `${latest.budgetExhausted ? ', because the launch budget was spent' : ', because the job ended before the harness finished'}` +
-      '. Rates are still comparable; totals are not.'
-    : '';
-
-  console.log(
-    `<!-- event-log-race-repro-results${label ? `-${label}` : ''} -->`
-  );
+  // The sticky-comment marker and the stored history are for the PR comment
+  // only. A local run has no `--run-url`, and there they would be two blocks of
+  // JSON and HTML in a terminal.
+  const forComment = Boolean(runUrl);
+  if (forComment) {
+    console.log(
+      `<!-- event-log-race-repro-results${label ? `-${label}` : ''} -->`
+    );
+  }
   console.log(`## Event Log Race Repro${label ? ` (${label})` : ''}\n`);
-  console.log(
-    latest.missingResults
-      ? 'No result file was produced by the latest repro job.'
-      : latest.failedCount === 0
-        ? `No event-log regressions in the latest repro job.${partialNote}${infraNote}`
-        : `${latest.failedCount} of ${latest.total} latest repro runs hit event-log regressions.${partialNote}${infraNote}`
-  );
+  const multiLane = latestLaneNames.length > 1;
+  for (const laneName of latestLaneNames) {
+    console.log(
+      `- ${renderLaneVerdict(laneName, latest.lanes[laneName], multiLane)}`
+    );
+  }
   console.log('');
-  console.log(historyMarkerStart);
-  console.log(JSON.stringify(history));
-  console.log(historyMarkerEnd);
-  console.log('');
+  if (forComment) {
+    console.log(historyMarkerStart);
+    console.log(JSON.stringify({ runs: history }));
+    console.log(historyMarkerEnd);
+    console.log('');
+  }
 
-  renderHistoryTable(history);
-  renderLatestScenarioBreakdown(latest);
-  renderLatestFailures(latest);
+  renderHistoryTable(history, laneNames);
+  renderLatestFailures(latest, latestLaneNames);
+  renderConfigDetails(latest, latestLaneNames, forComment);
 }
 
 function main() {
-  const resultsFile = loadResults();
-  const previousComment = loadPreviousComment();
-
-  if (!resultsFile) {
-    if (!check) {
-      render(null, previousComment);
-    }
-    process.exit(check ? 1 : 0);
-  }
+  const lanes = laneArgs.length
+    ? laneArgs
+    : [{ name: laneNameFromLabel(label), path: resultsPath }];
 
   if (!check) {
-    render(resultsFile, previousComment);
+    render(lanes, loadPreviousComment());
     process.exit(0);
   }
 
+  // `--check` is the gate, and it only ever looks at one lane's file: the lane
+  // that gates (Vercel) runs it in its own job, on its own results.
+  const resultsFile = loadResults();
+  if (!resultsFile) {
+    process.exit(1);
+  }
   const distribution =
     resultsFile.distribution ?? summarize(resultsFile.results ?? []);
   process.exit(regressionCount(distribution) > 0 ? 1 : 0);
@@ -492,11 +688,14 @@ function main() {
 module.exports = {
   orderedOutcomes,
   gatingOutcomes,
+  summaryColumns,
   summarize,
-  summarizeByScenario,
   regressionCount,
   infraCount,
+  countColumn,
   buildEntry,
+  maxFailingRows,
+  maxHistoryRuns,
 };
 
 if (require.main === module) {

@@ -210,14 +210,19 @@ showing up.
 In CI the same harness runs from `.github/workflows/event-log-race-repro.yml`,
 triggered by adding the `event-log-race-repro` label to a PR (or by
 `workflow_dispatch`, whose inputs are the soak dial — raise `timeout-minutes` in
-that dispatch's branch if you raise `budget_ms`). Results land in a sticky PR
-comment that keeps a history of previous runs and their configs. Alongside the
-Vercel lane, the workflow runs the local script against world-local and
-world-postgres as parallel lanes, each with its own sticky comment. Those two
-lanes are report-only — the local storms have red baselines at the default
-scale (see above), so they publish numbers rather than a verdict and fail only
-when the harness produced no result file at all; the Vercel lane remains the
-gate.
+that dispatch's branch if you raise `budget_ms`). Alongside the Vercel lane, the
+workflow runs the local script against world-local and world-postgres as
+parallel lanes. Those two lanes are report-only — the local storms have red
+baselines at the default scale (see above), so they publish numbers rather than a
+verdict and fail only when the harness produced no result file at all; the Vercel
+lane remains the gate.
+
+All three lanes land in one sticky PR comment, rendered from their artifacts by
+the `event-log-race-repro-comment` job: a verdict line per lane, then a history
+table of one row per lane per run (total / complete / corrupt / stuck / other),
+then the latest run's non-completed runs with links. Each lane's own job summary
+carries the same tables for that lane alone. The comment keeps the last few runs;
+older ones stay in the jobs' artifacts, which hold the full results JSON.
 
 To poke at a run afterwards, the CLI reads the same world from the environment:
 

@@ -458,8 +458,8 @@ fi
 if [ -f "$RESULTS_FILE" ]; then
   log "Summary"
   # Same renderer the CI job uses for its sticky comment; with no --run-url it
-  # just prints the tables.
-  node "$RENDERER" "$RESULTS_FILE"
+  # prints the tables without the comment marker or the stored history.
+  node "$RENDERER" "$RESULTS_FILE" --label "world-$WORLD"
   log "Full results: $RESULTS_FILE / app log: $SERVER_LOG"
 else
   log "No $RESULTS_FILE was written — the harness died before its first checkpoint."
