@@ -132,11 +132,18 @@ already exported is passed through untouched:
   EVENT_LOG_RACE_REPRO_RUN_TIMEOUT_MS        EVENT_LOG_RACE_REPRO_POKE_MAX
                                              EVENT_LOG_RACE_REPRO_HOOK_RESUME_STAGGER_MS
 
-This script deliberately sets none of them. Their defaults — and the full list —
-live in packages/core/e2e/event-log-race-repro.test.ts, which is the single
-source of truth the CI workflow also defers to.
+This script sets exactly one of them, `EVENT_LOG_RACE_REPRO_RUN_TIMEOUT_MS`,
+and only because that knob does not mean the same thing here as it does on the
+Vercel lane. The same storm takes ~2x as long against a local World — one Node
+process serves every replay of every run, where Vercel spreads them across Fluid
+instances — so `step-storm` lands at ~200s against the harness' 240s default,
+i.e. 83% of its own timeout, and one slow runner turns a lane that reproduces
+into a lane full of `stuck`. It is raised to 480000 here, and anything you export
+wins. Every other default — and the full list — lives in
+packages/core/e2e/event-log-race-repro.test.ts, which is the single source of
+truth the CI workflow also defers to.
 
-The one knob this script does set is the backend's replay concurrency, which
+The other knob this script sets is the backend's replay concurrency, which
 caps how many replays the app and the harness each run at once. Both backends
 default it far too high for one Next.js process on one machine (50 for
 world-postgres, i.e. ~100 replays in flight; 1000 for world-local), which on a
@@ -206,6 +213,13 @@ case "$WORLD" in
 esac
 
 export WORKFLOW_PUBLIC_MANIFEST="1"
+
+# See the note in usage: a local lane runs the same storm ~2x slower than the
+# Vercel lane, so the harness' own 240000 leaves `step-storm` at ~83% of its
+# timeout and one slow runner turns "reproduces" into "stuck". Measured on
+# GitHub's 4-core runners at the default scale: world-local `step-storm`
+# 194-203s, world-postgres 168-175s, against Vercel's 85-100s.
+export EVENT_LOG_RACE_REPRO_RUN_TIMEOUT_MS="${EVENT_LOG_RACE_REPRO_RUN_TIMEOUT_MS:-480000}"
 
 if [ "$WORLD" = "postgres" ]; then
   export WORKFLOW_POSTGRES_URL="${WORKFLOW_POSTGRES_URL:-$DEFAULT_POSTGRES_URL}"

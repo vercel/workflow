@@ -218,6 +218,15 @@ now bounded — if you change either, know what you are giving up:
   and never created a hook for the driver to resume, so the scenario measured
   nothing about hooks at all.
 
+The local script also raises `EVENT_LOG_RACE_REPRO_RUN_TIMEOUT_MS` to 480000
+(export your own to override). A local lane runs the same storm about twice as
+slowly as the Vercel lane — measured on 4-core runners at the default scale,
+`step-storm` takes 194-203s on world-local and 168-175s on world-postgres against
+Vercel's 85-100s — so the harness' 240000 default left the local lanes at ~83% of
+their own timeout, close enough that a slow runner turns a lane that reproduces
+into a lane full of `stuck`. It is the one scale knob the script sets, because it
+is the one whose meaning depends on everything sharing a process.
+
 One thing about a local run is unlike CI and is worth knowing before you read a
 result: in CI each replay gets its own Fluid invocation, while here every replay
 of every run shares one Next.js process. world-postgres gives that process (and
