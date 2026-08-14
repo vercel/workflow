@@ -26,6 +26,7 @@ import {
   type CreateEventRequest,
   type Event,
   SPEC_VERSION_CURRENT,
+  slotToEventId,
   type WorkflowRun,
   type World,
 } from '@workflow/world';
@@ -44,7 +45,6 @@ import {
   dehydrateStepReturnValue,
   dehydrateWorkflowArguments,
 } from '../serialization.js';
-import { pinSharedCorrelationIds } from '../test-support/correlation-id-scheme.js';
 import { createContext } from '../vm/index.js';
 import { setWorld } from './world.js';
 
@@ -183,7 +183,6 @@ async function runResumeConsumerScenario(options: {
     updatedAt: startedAt,
   };
 
-  const hostUlid = monotonicFactory();
   let eventIndex = 0;
   const event = (data: CreateEventRequest): Event => {
     const t = +startedAt + ++eventIndex * 100;
@@ -191,7 +190,7 @@ async function runResumeConsumerScenario(options: {
       ...data,
       specVersion: data.specVersion ?? SPEC_VERSION_CURRENT,
       runId,
-      eventId: `evnt_${hostUlid(t)}`,
+      eventId: slotToEventId(eventIndex),
       createdAt: new Date(t),
     } as Event;
   };
@@ -408,8 +407,6 @@ async function runResumeConsumerScenario(options: {
     handlerError,
   };
 }
-
-pinSharedCorrelationIds();
 
 describe('lazy hook resume consumer preload', () => {
   afterEach(() => {

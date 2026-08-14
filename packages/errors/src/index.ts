@@ -790,6 +790,29 @@ export class RunExpiredError extends WorkflowWorldError {
 }
 
 /**
+ * Thrown when a stream is no longer readable because its owning run passed its
+ * storage-retention boundary. This is terminal: retrying cannot restore data.
+ *
+ * Unlike {@link RunExpiredError}, this identifies the failed stream read and
+ * exposes the server's authoritative expiry timestamp for user-facing errors.
+ */
+export class StreamExpiredError extends WorkflowWorldError {
+  constructor(
+    message: string,
+    readonly runId?: string,
+    readonly streamId?: string,
+    readonly expiredAt?: Date
+  ) {
+    super(message, { status: 410, code: 'stream-expired' });
+    this.name = 'StreamExpiredError';
+  }
+
+  static is(value: unknown): value is StreamExpiredError {
+    return isError(value) && value.name === 'StreamExpiredError';
+  }
+}
+
+/**
  * Thrown when an operation cannot proceed because a required timestamp
  * (e.g. retryAfter) has not been reached yet.
  *
@@ -846,8 +869,10 @@ export class ThrottleError extends WorkflowWorldError {
  *   does not read this field.
  * @property details - Optional rejection detail supplied by the World. A World
  *   MAY attach the events the client's snapshot was missing so the client can
- *   correct its log without a follow-up fetch; see the `stateCursor` contract
- *   on `CreateEventParams`. Typed `unknown` because this package cannot depend
+ *   correct its log without a follow-up fetch. The attached set must account
+ *   for the whole discrepancy the rejection reported or be omitted entirely; a
+ *   client that receives nothing does the authoritative full reload, which is
+ *   always correct. Typed `unknown` because this package cannot depend
  *   on the event type — consumers narrow it themselves and must treat a
  *   missing or malformed value as "no detail" (a full reload is always
  *   correct).

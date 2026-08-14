@@ -215,6 +215,45 @@ export function getMaxInlineSteps(): number {
   return parsed;
 }
 
+/**
+ * Upper bound on the serialized step input that resilient step dispatch will
+ * inline into the queue message's `stepInput`.
+ *
+ * Vercel Queues has no hard message-size cap (bodies above its ~256 KB
+ * inline threshold transparently spill to S3-backed storage), so this bound
+ * is a cost/latency choice, not a rejection guard: the message also carries
+ * the runId, stepId, stepName, and trace carrier alongside CBOR framing
+ * overhead, and staying under the queue's inline threshold keeps step
+ * messages on its fast inline path instead of paying an S3 store+fetch
+ * double-hop for bytes that already live in the event log. Above this size
+ * the dispatch falls back to the sequential path (`step_created` write, then
+ * a payload-less queue message). Matches `MAX_INLINE_RESUME_PAYLOAD_BYTES`
+ * on the resilient hook resume path.
+ */
+export const MAX_RESILIENT_STEP_INPUT_BYTES = 128 * 1024;
+
+/**
+ * Whether resilient step dispatch is enabled: the suspension handler
+ * parallelizes each newly created step's `step_created` event write with its
+ * step-execution queue publish, carrying the serialized step input in the
+ * queue message (`stepInput`) so the consumer can idempotently re-ensure the
+ * event if the direct write failed transiently. Mirrors the resilient start
+ * (`runInput`) and resilient hook resume (`hookInput`) patterns.
+ *
+ * **Off by default.** Enable via `WORKFLOW_RESILIENT_STEP_DISPATCH=1`.
+ *
+ * The queue publish races the create's verdict, and a create can come back
+ * refused — as a duplicate this replay should stop pursuing, or as a stale
+ * write on a World that refuses rather than reports. Either way the message
+ * carrying the payload is already out, so the consumer can materialize a step
+ * whose create was refused, and nothing orders the verdict before the
+ * consumer's redelivery re-ensure. Enabling this trades that window for the
+ * latency the parallel publish saves.
+ */
+export function isResilientStepDispatchEnabled(): boolean {
+  return process.env.WORKFLOW_RESILIENT_STEP_DISPATCH === '1';
+}
+
 const warnedMaxEventsValues = new Set<string>();
 
 /**

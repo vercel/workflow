@@ -5,8 +5,8 @@ import {
   encodeSnapshotEnvelope,
 } from '@workflow/world';
 import { request as undiciRequest } from 'undici';
-import { HTTP_DEBUG_ENABLED } from './http-core.js';
 import { getDispatcher } from './http-client.js';
+import { HTTP_DEBUG_ENABLED } from './http-core.js';
 import { injectTraceContextIntoHeaders } from './telemetry.js';
 import { type APIConfig, getHttpConfig } from './utils.js';
 

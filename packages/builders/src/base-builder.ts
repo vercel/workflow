@@ -1159,6 +1159,7 @@ export const __steps_registered = true;
           projectRoot: this.transformProjectRoot,
           moduleSpecifierRoot: this.moduleSpecifierRoot,
           workflowManifest,
+          onAfterTransform: this.config.onAfterTransform,
           bundleTransitiveLocalStepDependencies,
           rewriteTsExtensions,
           sideEffectEntries: normalizedSideEffectEntries,
@@ -1392,6 +1393,7 @@ export const __steps_registered = true;
           projectRoot: this.transformProjectRoot,
           moduleSpecifierRoot: this.moduleSpecifierRoot,
           workflowManifest,
+          onAfterTransform: this.config.onAfterTransform,
           sideEffectEntries: normalizedWorkflowSideEffectEntries,
         }),
         // This plugin must run after the swc plugin to ensure dead code elimination
@@ -1940,6 +1942,7 @@ ${createWorkflowRouteHandlersCode(`workflowEntrypoint(workflowCode${workflowEntr
           mode: 'step',
           projectRoot: this.transformProjectRoot,
           moduleSpecifierRoot: this.moduleSpecifierRoot,
+          onAfterTransform: this.config.onAfterTransform,
           sideEffectEntries: normalizedClientSideEffectEntries,
         }),
       ],
