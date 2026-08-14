@@ -3,7 +3,7 @@ name: migrating-workflow-v4-to-v5
 description: Upgrades an app from Workflow SDK 4.x to 5.0. Use when bumping the `workflow` / `@workflow/*` dependencies to v5, or when hitting removed v4 APIs — `runStep`, `stepEntrypoint`, `workflow/internal/private`, `@workflow/core/private`, `writeToStream` / `closeStream` / `readFromStream` on a World, `world.steps.get` without a runId, `hook.getConflict()` returning `{ runId }`, `experimental_setAttributes`, `createLocalWorld` / `createVercelWorld`, `NestLocalBuilder` imported from `@workflow/nest`, or an SWC transform invoked with `mode: 'client'`.
 metadata:
   author: Vercel Inc.
-  version: '0.2.8'
+  version: '0.2.9'
 ---
 
 # Migrating Workflow SDK 4.x to 5.0
@@ -195,7 +195,7 @@ import { NestLocalBuilder } from 'workflow/nest/builder';
 These are not code edits. Report each one that applies, and do not "fix" them silently.
 
 - **Tracing defaults to `linked`.** Each workflow and step invocation is its own trace root with span links to the enqueue site and the run origin, instead of one trace per run. If the app has dashboards, saved queries, or alerts keyed on a single trace ID per run, either move them to the `workflow.run.id` attribute or set `WORKFLOW_TRACE_MODE=continuous` to restore the 4.x shape.
-- **Event creation is guarded by default.** Replay-context writes carry a `stateUpdatedAt` snapshot and a supporting backend can reject stale writes with `PreconditionFailedError`. Backends without guard support ignore the snapshot. `WORKFLOW_PRECONDITION_GUARD=0` opts out.
+- **The event-creation precondition guard is gone.** `WORKFLOW_PRECONDITION_GUARD` no longer exists; remove it from the app's environment and deployment config if it is set. No World in the SDK rejects a write for a stale snapshot any more — a replay that is behind learns what it missed from the write it makes next.
 - **Turbo mode is on by default.** The first invocation of a run backgrounds `run_started` and skips the initial event-log load. `WORKFLOW_TURBO=0` disables it.
 - **Errors keep their type.** `WorkflowRunFailedError.cause` now preserves the original class identity and cause chain. Code that pattern-matched on `error.message` because the class was flattened in 4.x can use `instanceof` — but flag it rather than rewriting error handling unprompted.
 - **Event IDs are slot numbers, not ULIDs.** An event ID is now its 1-based position in the run's log (`evnt_00000000000000000000000042`), unique only within a run and carrying no timestamp. Report any app code that uses an event ID as a global key (pair it with the `runId`) or decodes a time out of one (read `createdAt` off the event). Other entity IDs are unchanged.
@@ -210,7 +210,9 @@ These are not code edits. Report each one that applies, and do not "fix" them si
 
 ## Step 4 — custom `World` implementations
 
-Only if the app implements `World` itself. Beyond the stream and step signatures above, the interface gained:
+Only if the app implements `World` itself. **Use the `migrating-world-v4-to-v5` skill for this part** (`npx skills add https://github.com/vercel/workflow --skill migrating-world-v4-to-v5`); it carries the full World migration, including the event ID allocation work summarized below. What follows is enough to scope the job and to know when it has not been done.
+
+Beyond the stream and step signatures above, the interface gained:
 
 - `streams` as a namespace (see the table in step 2).
 - `analytics` — metadata-only listings for runs, steps, events, hooks, waits, and attributes.
@@ -229,7 +231,7 @@ Four contract changes affect existing implementations. The first is required and
 - **Step queue topics are retired.** The `'step'` queue kind no longer exists: queued steps travel on the workflow topic (carrying `stepId`/`stepName` in the payload) and execute in the combined flow handler. A World that provisioned or routed separate `__wkf_step_*` topics can drop them.
 - **World resolution happens at build time.** Worlds are statically injected into host bundles rather than selected dynamically at runtime, and first-party World packages expose a `createWorld()` factory. A custom or community World must be resolvable by the build; verify the app still boots against it rather than assuming a runtime lookup.
 
-Optional methods may be omitted; the runtime falls back. Point the user at the "Upgrading a World to v5" guide, which carries the full v4-to-v5 interface delta and the contract changes above, rather than inventing method bodies.
+Optional methods may be omitted; the runtime falls back. Point the user at the `migrating-world-v4-to-v5` skill and the "Upgrading a World to v5" guide, which carry the full interface delta and the contract changes above, rather than inventing method bodies.
 
 ## Required output shape
 

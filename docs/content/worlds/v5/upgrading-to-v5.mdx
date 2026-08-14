@@ -18,7 +18,17 @@ Three things are required to be a v5 World: the [interface changes](#interface-c
 
 If your application runs on the [Vercel](/worlds/vercel), [Local](/worlds/local), or [Postgres](/worlds/postgres) World, you need nothing from this page. Those implementations ship with the SDK and are already on the v5 spec. For the application-facing changes, see [What's new in v5](/docs/whats-new).
 
-The fastest way to start is to hand the diff to an agent:
+The fastest way to start is to install the World migration skill and hand the job to an agent:
+
+```bash
+npx skills add https://github.com/vercel/workflow --skill migrating-world-v4-to-v5
+```
+
+<CopyPrompt text="Upgrade this custom Workflow SDK World from the v4 spec to v5 using the migrating-world-v4-to-v5 skill. Start with event ID allocation, which is required and is not visible from the type signatures, then apply the interface and contract changes. Wire up the @workflow/world-testing conformance suite and report its output, along with anything the skill flags as a decision rather than an edit." />
+
+This is a different skill from `migrating-workflow-v4-to-v5`, which upgrades the application code. If the same repository does both, run the application one first.
+
+If you would rather work from the diff directly:
 
 <CopyPrompt text="My app uses a custom Workflow SDK World. Help me upgrade it from the v4 World spec to v5. Clone https://github.com/vercel/workflow and, on the main branch, study packages/world (the World interface and types) plus the first-party implementations in packages/world-vercel and packages/world-postgres. Run git diff stable...workflow@<the 5.x version I am upgrading to> -- packages/world packages/world-vercel packages/world-postgres (release tags are named like workflow@5.0.0; fall back to main if the tag does not exist) to see exactly what changed since the 4.x line, and use those diffs to identify the spec and implementation changes. Then port the same changes into my custom World and verify it by running a workflow end to end against it. Pay particular attention to event id allocation, which is required and is not visible from the type signatures: a v5 World assigns each event a dense, 1-based slot within its run, must settle races on a slot in the store rather than in process, and must never reject a create for a taken slot — it advances to the next free slot and returns the events it skipped." />
 
@@ -26,13 +36,27 @@ We're working on bringing back World compatibility tests and reporting on the [W
 
 ## Spec versions
 
-A World declares the protocol version it speaks on `specVersion`. In v4 the runtime required that number to equal its own current version exactly. In v5 it accepts a range, from the current version up to the highest version the SDK can read, so a World may declare a version above the default without the runtime refusing it.
+A World declares the protocol version it speaks on `specVersion`, and that number is stamped on every run it creates. Declare `SPEC_VERSION_CURRENT` from `@workflow/world`, not a literal:
 
-Declare `SPEC_VERSION_CURRENT`, which is `5`. Import it from `@workflow/world` rather than hardcoding a number, so a later bump doesn't silently strand your implementation.
+{/* @skip-typecheck - partial World, the other members are elided */}
+```typescript
+import { SPEC_VERSION_CURRENT } from '@workflow/world';
 
-`SPEC_VERSION_SUPPORTS_SLOT_IDENTITY`, which is `6`, is narrower than it looks. It is not "the version with the new event IDs" — every v5 World allocates those, including `@workflow/world-local` and `@workflow/world-postgres`, which both stay on `5`. It exists for a World that cannot tell from its own storage which ID scheme a given run started under, because the ID is minted by a remote allocator deciding per request. `@workflow/world-vercel` is that case, and the version stamped on `run_created` is what carries the choice for the life of the run. If your World owns the counter that mints its IDs, you already know each run's scheme and you do not need this version.
+export function createWorld(): World {
+  return {
+    specVersion: SPEC_VERSION_CURRENT,
+    // ...
+  };
+}
+```
 
-Runs carry a spec version too, and a run created before your World adopted a newer scheme keeps its own version for its whole life. Read the stamped version off the run rather than assuming every run matches what your World declares today.
+In v4 the runtime required that number to equal its own current version exactly. In v5 it checks the declaration against a range, `[SPEC_VERSION_CURRENT, SPEC_VERSION_MAX_SUPPORTED]`, before it creates or replays anything, and refuses a World outside it with an error naming both the range and what your World declared.
+
+The two bounds are the same version today, so exactly one is accepted. That is a consequence of [event ID allocation](#event-id-allocation) being a requirement rather than an option: a World declaring anything lower allocates IDs the runtime cannot read positions out of, and admitting it would only move the failure from startup into the middle of a run. The check is written as a range because the constants answer different questions and come apart while a version bump is staged — the ceiling rises when the runtime learns to read the next version, the floor when that version becomes the one Worlds stamp.
+
+Using the constant is what keeps the check passing across upgrades. It moves with the `@workflow/world` version your package resolves, so a bump raises your declaration and the runtime's floor together, while a hard-coded number leaves your World a version behind the next bump and gets it rejected by the runtime it ships alongside. This is worth re-checking if you followed earlier guidance: `SPEC_VERSION_SUPPORTS_SLOT_IDENTITY` names the version that introduced slot-numbered IDs and is equal to `SPEC_VERSION_CURRENT` today, but declaring it pins you to a literal by another name. `@workflow/world-vercel` declared it and now declares the current version instead. Keep `@workflow/world` in the same release channel as the `workflow` version your users install.
+
+Runs carry a spec version too, and a run keeps the version it was created under for its whole life. Read the stamped version off the run rather than assuming every run matches what your World declares today. Bumping the constant does not reach runs already in your store: their version is persisted, every version test in the runtime is a lower bound, and a run's event ID scheme is resolved from what is stored.
 
 ## Interface changes
 
@@ -79,9 +103,7 @@ The scheme exists for what a reader can conclude from a log it just fetched: pos
 
 [Event ID Allocation](/worlds/building-a-world#event-id-allocation) carries the full rules, and [Event IDs](/docs/how-it-works/event-sourcing#event-ids) covers what the format means for anything that reads an ID back.
 
-Two consequences are specific to an upgrade, and the second is the one to plan around.
-
-`eventCount` supersedes the `stateUpdatedAt` / `stateEventCount` / `stateCursor` triple used by the [stale-write rejection](/worlds/building-a-world#optional-rejecting-a-stale-write), which a complete-but-stale snapshot passes and a dense position does not.
+One consequence is specific to an upgrade, and it is the thing to plan around.
 
 <Callout type="warn">
   **Runs already in your store cannot be replayed by the new code.** A ULID-numbered run is not readable as positions, and the runtime refuses it rather than guessing, so there is no mixed-scheme mode and no per-run fallback. Drain those runs on your 4.x build before deploying a v5 World, or accept that the ones still in flight will fail. On a platform where a run executes on the deployment that created it — Vercel, for instance — this resolves itself: those runs finish on the build that started them and never meet the new code. Anywhere a single deployment serves every run, sequencing matters.
