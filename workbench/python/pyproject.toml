@@ -4,18 +4,26 @@ version = "0.0.0"
 description = "Python conformance target for the @workflow/core e2e suite"
 requires-python = ">=3.10"
 dependencies = [
-  # The `encryption` extra is not optional here. On Vercel the run input is
-  # written by the TypeScript driver, and `@workflow/world-vercel` encrypts it
-  # whenever it can resolve a per-run key — which on a deployment it always
-  # can, with no opt-out. Reading that `encr` envelope needs AES-GCM, which
-  # vercel-py takes from `cryptography` behind this extra; without it every
-  # run fails at the first hydration of its input. `world-local` never
-  # encrypts, so this only bites the deployed lane.
-  "vercel[encryption]",
-  # A transitive dependency of `vercel`, declared here only so the git pin in
-  # `[tool.uv.sources]` below applies to it — a source is ignored for anything
-  # this project does not require directly. See the note there.
-  "vercel-queue",
+  # The only thing imported here is `vercel.workflow`, which as of vercel-py#299
+  # is its own `vercel-workflow` distribution — but depending on *that* directly
+  # is what takes the Vercel lane down. `@vercel/python` picks queue mode over
+  # workers mode by looking for the literal name `vercel` in this list
+  # (`hasExplicitVercelSdkDependency`) and then probing
+  # `importlib.metadata.version("vercel")`; neither has heard of the split, up
+  # to and including 6.56.2. With no match it silently serves workflows through
+  # vercel-workers: the trigger becomes `__wkf_*` / consumer `app_registry`
+  # instead of `__wkf_workflow_*` / consumer `default`, so nothing the
+  # TypeScript driver enqueues is ever delivered and every run times out having
+  # logged zero requests. Depend on the umbrella package and let it pull the
+  # runtime (it requires `vercel-workflow>=0.9.0,<1.1.0`) until the builder
+  # learns the new name.
+  #
+  # `cryptography` now comes along outright rather than behind the `encryption`
+  # extra this app used to have to ask for. It is not optional either way: on
+  # Vercel the run input is written by the TypeScript driver and
+  # `@workflow/world-vercel` encrypts it whenever it can resolve a per-run key,
+  # which on a deployment it always can, with no opt-out.
+  "vercel",
   # vercel-py carries uvicorn as a dev-only dependency, so declare it here.
   "uvicorn>=0.30",
 ]
@@ -27,38 +35,37 @@ dependencies = [
 # `subdirectory` is required — the vercel-py repo root is a uv workspace whose
 # build backend raises, so only the leaf packages are installable on their own.
 #
-# Two entries, not one, and the second is what makes the first mean anything. A
-# `[tool.uv.sources]` entry applies only to a package this project requires
-# *directly*, so pinning `vercel` alone left every sibling — `vercel-queue`
-# included — resolving from PyPI at whatever the last release was. Naming
-# `vercel-queue` here (and in `dependencies` above) drags the whole vercel-py
-# workspace out of the checkout instead. That matters because the CBOR queue
-# transport spans both: `vercel` attaches the codec to a `Topic` /
-# `TopicPattern` (vercel-py#265), and those types only learned to carry one in
-# `vercel-queue` (vercel-py#266), so a `vercel`-only bump raises at import.
+# One entry, and note what it does *not* cover. A `[tool.uv.sources]` entry
+# applies only to a package this project requires directly, so every sibling —
+# `vercel-workflow` included, which is where all the code this app exercises
+# now lives — resolves from PyPI at whatever the last release was, regardless
+# of the rev above. At this rev that is harmless: PyPI's `vercel-workflow`
+# 0.9.0 is byte-identical to `src/vercel-workflow` at `4814d61f`, because #299
+# created the package and the release was cut from it. It will stop being
+# harmless the moment main moves ahead of the release.
 #
-# To bump the rev:
+# So when bumping the rev, diff the runtime you actually got against the rev
+# you asked for, and git-pin `vercel-workflow` here *and* in `dependencies`
+# above if they differ — a source alone does nothing:
 #
-#   rm uv.lock && uv lock --no-config   # twice — see below
-#   grep -c 'source = { git' uv.lock    # must be 8
+#   rm uv.lock && uv lock --no-config
+#   grep -c 'source = { git' uv.lock    # 1 per git-pinned package
+#   uv sync --locked --no-config
+#   git -C <vercel-py> archive <rev>:src/vercel-workflow/vercel | tar x -C /tmp/wf
+#   diff -rq /tmp/wf .venv/lib/python*/site-packages/vercel | grep -v '^Only in .venv'
 #
-# Three traps, each of which fails quietly:
+# Two traps, each of which fails quietly:
 #
-#   - Relocking *in place* keeps the old lock as preferences, and the siblings
-#     no source names directly fall back to PyPI at unchanged version numbers.
-#     Hence the `rm`.
-#   - The first relock after a bump can still yield two git sources, because
-#     uv has not finished populating its cache with the new checkout and cannot
-#     yet see the siblings as workspace members. Do it once more — with another
-#     `rm` first, since `uv lock` on a self-consistent lock is a no-op
-#     ("Resolved 34 packages in 5ms") and will leave the bad lock in place.
+#   - Relocking *in place* keeps the old lock as preferences and can hold a
+#     package at its old version. Hence the `rm`. `uv lock` on a
+#     self-consistent lock is also a no-op ("Resolved 34 packages in 5ms"), so
+#     without the `rm` a bad lock survives untouched.
 #   - `--no-config` keeps a personal `~/.config/uv/uv.toml` (an `exclude-newer`,
 #     say) from being recorded as an `[options]` block that CI and the Vercel
 #     builder then reject under `--locked`. `uv run` re-locks too, which is why
 #     the `dev` script passes it as well.
 [tool.uv.sources]
-vercel = { git = "https://github.com/vercel/vercel-py", rev = "02173de39c4146611176fd9e8197a85f9f2d7124", subdirectory = "src/vercel" }
-vercel-queue = { git = "https://github.com/vercel/vercel-py", rev = "02173de39c4146611176fd9e8197a85f9f2d7124", subdirectory = "src/vercel-queue" }
+vercel = { git = "https://github.com/vercel/vercel-py", rev = "4814d61fa2ac1074ea5d67aede8f159ba1daae9b", subdirectory = "src/vercel" }
 
 # How `@vercel/python` builds this app. Reached only because `vercel.json`
 # declares `pyproject.toml` as the build src, which puts the builder in

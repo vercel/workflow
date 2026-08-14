@@ -2680,10 +2680,11 @@ describe('e2e', () => {
   // For production use on Vercel with Deployment Protection enabled, use the
   // queue-based `healthCheck(world, options)` function instead, which
   // bypasses protection by sending messages through the Queue infrastructure.
-  // JS-only for now: health check is protocol-level and ought to travel, but no
-  // other SDK implements it yet — vercel-py defines `HealthCheckPayload` and
-  // nothing consumes it. Move all three health-check tests out of js-only
-  // together, once one does.
+  // JS-only for now, though no longer for want of a second implementation:
+  // vercel-py answers both probes as of vercel-py#292. What it omits is
+  // `workflowCoreVersion`, asserted below, on the grounds that it names a
+  // JavaScript package's version. Moving all three health-check tests out of
+  // js-only together means settling what a non-JS SDK reports there.
   testJsOnly.skipIf(!isLocalDeployment())(
     'health check endpoint (HTTP) - workflow endpoint responds to __health query parameter',
     { timeout: 30_000 },

@@ -15,8 +15,5 @@
     "promiseAllWorkflow",
     "sleepInLoopWorkflow",
     "sleepingWorkflow"
-  ],
-  "unsupported": {
-    "resilient start: addTenWorkflow completes when run_created returns 500": "vercel-py's workflow handler reads the run row before replaying (runtime.py:569 `world.runs_get`) and 500s when it is absent. The TypeScript runtime instead bootstraps from `run_started` using the `runInput` the queue message carries. This test injects the missing row deliberately, but `start()` writes `run_created` and pushes the queue message in parallel, so any run can hit it — see the README."
-  }
+  ]
 }

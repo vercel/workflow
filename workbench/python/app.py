@@ -3,9 +3,11 @@ TypeScript e2e suite drives.
 
 The Python SDK has no `.well-known/workflow/v1` HTTP surface: deployed Python is
 invoked by platform queue triggers on `/_py_workflows/<name>`, so it ships no
-manifest generator, no `/flow` route, and no concrete `HTTPRequest`. This file
+manifest generator, no route table, and no concrete `HTTPRequest`. This file
 supplies all three. They live here rather than in the SDK because they implement
-a contract the SDK does not claim to serve.
+a contract the SDK does not claim to serve. What the SDK does own is the flow
+route's *behaviour*: `workflow_entrypoint` knows the path it belongs on
+(`runtime.FLOW_ROUTE`) and answers the `?__health` probe itself.
 
 What it does *not* do is translate any protocol. `LocalWorld.create_queue_handler`
 already reads exactly the headers `@workflow/world-local` sends and answers
@@ -24,8 +26,8 @@ import json
 from typing import Any, AsyncIterator, Callable
 
 import httpx
-from vercel._internal.workflow import world as w
-from vercel._internal.workflow.runtime import workflow_entrypoint
+from vercel.workflow._internal import world as w
+from vercel.workflow._internal.runtime import FLOW_ROUTE, workflow_entrypoint
 
 # The fixture module is named to match `workbench/example/workflows/99_e2e.ts`,
 # which a plain `import` statement cannot express — a module name may not start
@@ -40,7 +42,9 @@ registry = fixtures.app
 # to that topic, which is how in-process dispatch gets delivered.
 flow_handler = workflow_entrypoint(registry)
 
-ROUTE_BASE = "/.well-known/workflow/v1"
+# The SDK's own constant, so the two agree by construction. Everything else this
+# app serves is a sibling of it.
+ROUTE_BASE = FLOW_ROUTE.rsplit("/", 1)[0]
 MANIFEST_VERSION = "1.0.0"
 
 
@@ -82,13 +86,26 @@ def build_manifest() -> dict[str, Any]:
 
 
 class AsgiRequest(w.HTTPRequest):
-    """The `HTTPRequest` the SDK's queue handler expects, over an ASGI scope."""
+    """The `HTTPRequest` the SDK's flow handler expects, over an ASGI scope."""
 
     def __init__(self, scope: dict[str, Any], receive: Callable) -> None:
+        self._scope = scope
         self._headers = httpx.Headers(
             [(k.decode("latin-1"), v.decode("latin-1")) for k, v in scope["headers"]]
         )
         self._receive = receive
+
+    @property
+    def method(self) -> str:
+        return self._scope["method"]
+
+    @property
+    def url(self) -> str:
+        # The request target as it arrived, which is what the health branch
+        # splits: it reports `endpoint` from the path, so an origin here would
+        # make this app claim a path it does not serve.
+        query = self._scope.get("query_string", b"").decode("latin-1")
+        return self._scope["path"] + (f"?{query}" if query else "")
 
     @property
     def headers(self) -> httpx.Headers:
@@ -143,27 +160,27 @@ async def app(scope: dict[str, Any], receive: Callable, send: Callable) -> None:
         await _send_json(send, 200, build_manifest())
         return
 
-    if path == f"{ROUTE_BASE}/flow":
-        # Port discovery probes this to decide whether a port is serving a
-        # workflow app. It is not the stream-based `healthCheck()` protocol from
-        # `@workflow/core`, which the Python SDK does not implement.
-        if "__health" in query and method in ("GET", "HEAD"):
-            await _send_json(send, 200, {"status": "ok"})
-            return
-
-        if method == "POST":
-            response = await flow_handler(AsgiRequest(scope, receive))
-            await send(
-                {
-                    "type": "http.response.start",
-                    "status": response.status,
-                    "headers": [
-                        (k.encode(), v.encode()) for k, v in response.headers.items()
-                    ]
-                    + [(b"content-length", str(len(response.body)).encode())],
-                }
-            )
-            await send({"type": "http.response.body", "body": response.body})
-            return
+    # Two things share this route, and the handler tells them apart itself:
+    # a queue delivery (POST) and the `?__health` probe that dev-server port
+    # discovery sends to decide whether a port is serving a workflow app
+    # (HEAD, reading only the status). Since vercel-py #292 the probe is the
+    # SDK's, matching `withHealthCheck` in `@workflow/core` down to the CORS
+    # headers, so this app only routes. The other, stream-based `healthCheck()`
+    # protocol needs nothing here at all: it arrives as a queue delivery, and
+    # `workflow_handler` answers it before it looks for a run.
+    if path == FLOW_ROUTE and (method == "POST" or "__health" in query):
+        response = await flow_handler(AsgiRequest(scope, receive))
+        await send(
+            {
+                "type": "http.response.start",
+                "status": response.status,
+                "headers": [
+                    (k.encode(), v.encode()) for k, v in response.headers.items()
+                ]
+                + [(b"content-length", str(len(response.body)).encode())],
+            }
+        )
+        await send({"type": "http.response.body", "body": response.body})
+        return
 
     await _send_json(send, 404, {"error": f"No route for {method} {path}"})

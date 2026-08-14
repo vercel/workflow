@@ -6,9 +6,16 @@ TypeScript — one source of truth for what the protocol is — and this app is 
 second implementation it drives.
 
 Built on [vercel-py](https://github.com/vercel/vercel-py), pinned by commit in
-`pyproject.toml` — two entries at the same `rev`, `vercel` and `vercel-queue`,
-which is what drags the whole vercel-py workspace out of the checkout instead of
-PyPI. Bump both together, deliberately, and re-run the suite when you do.
+`pyproject.toml`: one `[tool.uv.sources]` entry for the umbrella `vercel`
+package. The only code this app imports is `vercel.workflow`, which since
+vercel-py#299 is its own `vercel-workflow` distribution — but depending on that
+name directly puts `@vercel/python` in workers mode and silently unsubscribes
+the deployment from the queue, so the umbrella stays until the builder learns
+the split — the note above the dependency has the detail. Everything but
+`vercel` itself therefore resolves from PyPI, the runtime
+included; the note above the source entry says how to check that what you got
+matches the rev you asked for. Bump the rev deliberately, and re-run the suite
+when you do.
 
 ## Running it
 
@@ -88,8 +95,18 @@ with no Python meaning). What makes the build work:
   writes for the TypeScript SDK on the same topics, which is what makes the
   platform deliver to a Python consumer at all. Getting there needed
   vercel/vercel#17236 (`@vercel/python` 6.54.0), which replaced a consumer name
-  derived from the output path with the introspected one, and it requires the
-  installed `vercel` package to be >= 0.8.0.
+  derived from the output path with the introspected one.
+
+  Reaching queue mode at all has a second, blunter condition: the builder looks
+  for the literal name `vercel` in `[project].dependencies` and then reads
+  `importlib.metadata.version("vercel")`, requiring >= 0.8.0. Both halves name
+  the umbrella distribution, so declaring only `vercel-workflow` — the package
+  that actually holds the runtime since vercel-py#299 — drops the build back to
+  workers mode. That failure is quieter than the 6.53.0 one above: the trigger
+  is written for consumer `app_registry` on `__wkf_*` rather than `default` on
+  `__wkf_workflow_*`, so deliveries do not 500, they never arrive. Every run
+  times out with zero requests logged against it. No released builder knows the
+  new name (checked through 6.56.2).
 
 `.python-version` pins 3.14 so the deployed interpreter matches the local venv;
 the builder would otherwise default to 3.12.
@@ -100,7 +117,7 @@ The project also needs a `VERCEL_WORKFLOW_SERVER_URL` env var scoped to
 (`tests.yml:484`); without the matching variable on the project the deployed app
 keeps writing to production `vercel-workflow.com`, and the two sides end up on
 different primary stores. vercel-py reads it in
-`_internal/workflow/worlds/vercel.py`. Production runs need nothing: the secret
+`vercel/workflow/_internal/worlds/vercel.py`. Production runs need nothing: the secret
 resolves to `''` on `main`, so both sides use `vercel-workflow.com`.
 
 That variable is about the *app* reaching the right store, and pointing it at the
@@ -160,10 +177,11 @@ consumer path. Nothing in this repo could override either side without pinning
 the lane to a legacy spec version, which would have made the one lane testing
 the current protocol the one lane not testing it.
 
-vercel-py fixed it in two parts, which is why the pin reaches for two
-packages: `vercel-py#265` attaches a CBOR-with-JSON-fallback transport to the
-workflow topic, and `vercel-py#266` taught `Topic` / `TopicPattern` to carry a
-codec in the first place. Attaching it to the *subscription* rather than to a
+vercel-py fixed it in two parts, spanning two packages: `vercel-py#265` attaches
+a CBOR-with-JSON-fallback transport to the workflow topic, and `vercel-py#266`
+taught `Topic` / `TopicPattern` to carry a codec in the first place. That is why
+the pin briefly needed a second `[tool.uv.sources]` entry — `vercel-queue` 0.8.0
+carries #266, so PyPI is enough again. Attaching it to the *subscription* rather than to a
 client is what makes it work when deployed — the function that receives a push
 delivery is the builder-generated `_vc_queue_handlers/<name>.py`, whose
 `vercel.queue.asgi_app()` constructs its own `QueueClient` with no arguments, so
@@ -176,8 +194,8 @@ above became visible at all — it is the next call the handler makes.
 `world-local` was never affected — Python is producer and consumer there, so
 JSON on both ends is self-consistent.
 
-Behind that sat one more, and it is why `dependencies` asks for
-`vercel[encryption]` rather than plain `vercel`. On Vercel the run input is
+Behind that sat one more, and it is why `cryptography` has to be installed. On
+Vercel the run input is
 written by the *driver*, and `@workflow/world-vercel` encrypts every payload it
 can resolve a per-run key for — which on a deployment is all of them, with no
 opt-out env var or config flag. Each run therefore arrived as an `encr`
@@ -194,15 +212,16 @@ deployment secret (32 zero salt bytes, `info = "<projectId>|<runId>"`) to
 derive the per-run key, then AES-256-GCM over `[nonce 12][ciphertext+tag]`.
 The plaintext carries its own format prefix, so it re-enters `hydrate` as the
 `devl` payload it would have been. AES-GCM comes from `cryptography`, which
-vercel-py keeps behind the `encryption` extra — omit the extra and the failure
-is the same shape, just with a message naming what to install.
+`vercel-workflow` now requires outright; while the runtime lived in `vercel` it
+sat behind an `encryption` extra this app had to remember to ask for, and
+forgetting it produced the same failure with a message naming what to install.
 
 Reading is all this app needs. Python still writes plain `devl`, and the
 TypeScript reader passes non-`encr` payloads through untouched
 (`maybeDecrypt`, `packages/core/src/serialization/encryption.ts:284`), so the
 two sides interoperate without Python ever encrypting anything. `encp`, the
-X25519 sealed-box format one run uses to write to another, is still reported as
-unsupported; nothing in the suite produces one.
+X25519 sealed-box format one run uses to write to another, became readable in
+`vercel-py#297`; nothing in the suite produces one either way.
 
 Again `world-local` is exempt — no deployment key, nothing to derive from, so
 the local lane could never have caught this. It is the clearest case so far of
@@ -223,18 +242,43 @@ decimal digits, which every ULID validator already accepts and which sorts the
 same way. The one thing that breaks is decoding a timestamp out of an event id,
 and vercel-py never does — it mints ids only for `world-local`.
 
+The last one only ever showed up here, and it read as flakiness for two rounds
+before it read as a bug: one arbitrary run per suite died with `WorkflowWorldError:
+workflow run wrun_… not found` about 400ms after `start()`, the queue did not
+redeliver, and the driver sat out its 60-second timeout. A different fixture each
+time, which is what made it look random. It is not: `start()`
+(`packages/core/src/runtime/start.ts:577`) issues `run_created` and the queue push
+**in parallel**, deliberately — "if events.create fails with 429/5xx, the run was
+still accepted via the queue" — so a consumer that finds no run row has found a
+normal state, not an error one. The TypeScript consumer never reads the row at
+all: it writes `run_started`, which is idempotent and creates the run when
+`run_created` was never seen, and takes the run entity out of that response.
+vercel-py had it the other way round (`runs_get`, then `run_started` only if
+`status == "pending"`) and 500'd on the 404, and it dropped the `runInput` the
+message carries for exactly this purpose — input, deployment id, workflow name,
+spec version, attribute seed. `vercel-py#282` carries `runInput` through,
+`#284` bootstraps from `run_started`, and `#283` gives `world-local` the same
+resilient start. Which is also what retired this app's last `unsupported` entry,
+the deterministic version of the same defect: *resilient start: addTenWorkflow
+completes when run_created returns 500* deletes the row on purpose.
+
+`world-local` did have the race, and could never lose it: both writes are local
+files in one process while the queue delivery takes an HTTP round trip, so
+`run_created` always won.
+
 ## Conformance baseline
 
-What the suite runs here is declared in `e2e-conformance.json` — the ported
-fixtures, plus the one test whose failure is a runtime gap rather than a missing
-fixture. Both axes are ratchets: a claim that stops being true fails the run
-instead of quietly skipping, so growing the file is the only way to move.
+What the suite runs here is declared in `e2e-conformance.json`: the ported
+fixtures, and — when there is one — an `unsupported` map naming individual tests
+whose failure is a runtime gap rather than a missing fixture. There is none right
+now. Both axes are ratchets: a claim that stops being true fails the run instead
+of quietly skipping, so growing the file is the only way to move.
 `ConformanceConfig` in `packages/core/e2e/utils.ts` spells out each direction.
 
-Current baseline: **8 passing, 129 skipped, of 137** on `world-local`, and
-**7 of 156** on Vercel. It is one baseline, not two — the extra 19 collected on
+Current baseline: **9 passing, 128 skipped, of 137** on `world-local`, and
+**8 of 156** on Vercel. It is one baseline, not two — the extra 19 collected on
 Vercel are `e2e-agent.test.ts`, which that lane also picks up and skips whole,
-and the eighth pass is `deploymentId: 'latest' is a no-op in non-Vercel worlds`,
+and the ninth pass is `deploymentId: 'latest' is a no-op in non-Vercel worlds`,
 which is local by definition.
 
 ## What is missing
@@ -244,35 +288,24 @@ This app is honest about being early. In rough order of how much it costs:
 - **Most fixtures are simply not ported yet** — 66 tests across 52 fixtures.
   They are not blocked on one thing anymore: the largest blocks are hooks (19
   tests, where vercel-py's `BaseHook.wait()` has a different shape than the
-  async-iterable hook the fixtures use), streams (11), `setAttributes` (9, no
-  Python equivalent), and `FatalError` / `RetryableError` (7, not exported by
-  `vercel.workflow.errors`).
-- **A run whose row is not readable yet never starts.** `runtime.py:569` reads
-  the run with `world.runs_get` before replaying and 500s when it is absent,
-  where the TypeScript runtime bootstraps from `run_started` using the
-  `runInput` the queue message already carries — input, deployment id, workflow
-  name, spec version, attribute seed. That field exists for exactly this
-  purpose, because `start()` in `packages/core/src/runtime/start.ts:577` issues
-  `run_created` and the queue push **in parallel**, deliberately: "If
-  events.create fails with 429/5xx, the run was still accepted via the queue."
-
-  So a missing run row is a normal state on Vercel, not an error one, and the
-  consumer is required to tolerate it. This is the one test recorded under
-  `unsupported` — but it is not confined to that test. Whenever the Python
-  consumer wins the parallel race, whichever run drew the short straw dies with
-  `WorkflowWorldError: workflow run … not found`, the queue does not redeliver,
-  and the test times out. On the Vercel lane that has been costing roughly one
-  arbitrary run per suite; the fixture it lands on differs run to run, which
-  makes it look like flakiness and is not. It needs `runInput` honoured
-  upstream.
+  async-iterable hook the fixtures use), streams (11, where vercel-py now has
+  `read_stream` / `get_writable` and nothing here uses them yet),
+  `setAttributes` (9, no Python equivalent), and `FatalError` /
+  `RetryableError` (7 — `FatalError` is exported now, `RetryableError` has no
+  Python counterpart at all).
 - **The `.well-known/workflow/v1` surface lives in `app.py`, not the SDK**, and
-  reaching it needs two `vercel._internal` imports (`workflow_entrypoint` and the
-  `HTTPRequest` base), neither of which has a public equivalent. The module
-  docstring explains why that surface belongs in the app.
-- **No health check.** vercel-py defines `HealthCheckPayload` and nothing consumes
-  it, so the three health-check tests are marked JS-only. `GET flow?__health`
-  here answers `{"status": "ok"}` for port discovery only — it is not the
-  `healthCheck()` protocol from `@workflow/core`.
+  reaching it needs three `vercel.workflow._internal` imports
+  (`workflow_entrypoint`, `FLOW_ROUTE`, and the `HTTPRequest` base), none of
+  which has a public equivalent. The module docstring explains why that surface
+  belongs in the app.
+- **The health-check tests stay JS-only, but no longer for want of an
+  implementation.** vercel-py answers both probes as of `vercel-py#292` — the
+  `?__health` one inside `workflow_entrypoint` (so `app.py` only routes to it)
+  and the queue-based one in `workflow_handler`. What the driver additionally
+  asserts is a `workflowCoreVersion` string, which Python deliberately omits
+  because it names a JavaScript package's version and the reader feeds it to
+  that package's capability tables. Moving the three tests across means deciding
+  what a non-JS SDK should report there.
 - **No webhook route and no app-specific API routes**, so the webhook and
   direct-step-call tests are JS-only too.
 
