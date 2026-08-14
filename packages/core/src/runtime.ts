@@ -11,6 +11,7 @@ import {
   RUN_ERROR_CODES,
   type RunErrorCode,
   RunExpiredError,
+  WorkflowNotRegisteredError,
   WorkflowRuntimeError,
   WorkflowWorldError,
 } from '@workflow/errors';
@@ -625,11 +626,25 @@ async function getMaxInlineDurationMs(
  * The handler loops: replay workflow → execute step inline → replay → ...
  * until the workflow completes, times out, or encounters non-step suspensions.
  *
- * @param workflowCode - The workflow bundle code containing all workflow functions
+ * @param workflowCode - A legacy workflow bundle or lazy loaders keyed by workflow ID
  * @returns A function that can be used as a Vercel API route
  */
+export type WorkflowCode =
+  | string
+  | Readonly<Record<string, () => Promise<string>>>;
+
+async function loadWorkflowCode(
+  workflowCode: WorkflowCode,
+  workflowName: string
+): Promise<string> {
+  if (typeof workflowCode === 'string') return workflowCode;
+  const load = workflowCode[workflowName];
+  if (!load) throw new WorkflowNotRegisteredError(workflowName);
+  return load();
+}
+
 export function workflowEntrypoint(
-  workflowCode: string,
+  workflowCode: WorkflowCode,
   options?: {
     namespace?: string;
     routeModuleBodyStartedAt?: number;
@@ -824,6 +839,20 @@ export function workflowEntrypoint(
           return await withWorkflowBaggage(
             { workflowRunId: runId, workflowName },
             async () => {
+              let loadedWorkflowCode: string | undefined;
+              let workflowCodeLoad: Promise<string> | undefined;
+              const startWorkflowCodeLoad = (): Promise<string> => {
+                workflowCodeLoad ??= trace('workflow.bundle.load', () =>
+                  loadWorkflowCode(workflowCode, workflowName)
+                ).then((code) => {
+                  loadedWorkflowCode = code;
+                  return code;
+                });
+                void workflowCodeLoad.catch(() => {});
+                return workflowCodeLoad;
+              };
+              if (incomingStepId === undefined) startWorkflowCodeLoad();
+
               const world = await trace('workflow.route.get_world', async () =>
                 getWorld()
               );
@@ -1864,6 +1893,11 @@ export function workflowEntrypoint(
                     }
                   }
 
+                  // Queue-only step deliveries usually return above and never
+                  // replay. Start loading only once this invocation is known to
+                  // need the workflow VM, while run/event setup is still ahead.
+                  const workflowCodePromise = startWorkflowCodeLoad();
+
                   // Deployment-affinity pre-check for the lazy hook fast
                   // path below. New lazy-resume messages carry the run's
                   // pinned deployment (`hookInput.deploymentId`), so a
@@ -2679,7 +2713,7 @@ export function workflowEntrypoint(
                           './runtime/quickjs-entrypoint.js'
                         );
                         const quickjsResult = await runWorkflowWithQuickJS({
-                          workflowCode,
+                          workflowCode: await workflowCodePromise,
                           workflowName,
                           workflowRun,
                           preloadedEvents:
@@ -2997,7 +3031,7 @@ export function workflowEntrypoint(
                       if (workflowResult.type === 'replay') {
                         retainedSession = null;
                         workflowResult = await replayWorkflow({
-                          workflowCode,
+                          workflowCode: await workflowCodePromise,
                           workflowRun,
                           events: eventLog.events,
                           encryptionKey,
@@ -4555,14 +4589,14 @@ export function workflowEntrypoint(
                         let errorStack =
                           normalizedError.stack || getErrorStack(terminalError);
 
-                        if (errorStack) {
+                        if (errorStack && loadedWorkflowCode) {
                           const parsedName = parseWorkflowName(workflowName);
                           const filename =
                             parsedName?.moduleSpecifier || workflowName;
                           errorStack = remapErrorStack(
                             errorStack,
                             filename,
-                            workflowCode
+                            loadedWorkflowCode
                           );
                         }
 

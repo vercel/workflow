@@ -1,8 +1,24 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import assert from 'node:assert/strict';
+import {
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs';
 import { join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import { BaseBuilder, type DiscoveredEntries } from './base-builder.js';
 import type { StandaloneConfig } from './types.js';
+import {
+  deserializeWorkflowBundle,
+  serializeWorkflowBundle,
+} from './workflow-bundle-module.js';
+import { extractWorkflowGraphs } from './workflows-extractor.js';
 
 class TestBuilder extends BaseBuilder {
   async build(): Promise<void> {}
@@ -15,11 +31,82 @@ class TestBuilder extends BaseBuilder {
     return this.createWorkflowsBundle({
       inputFiles: [inputFile],
       outfile,
-      bundleFinalOutput: false,
       includeMetafile: true,
       discoveredEntries,
     });
   }
+
+  createCombinedWorkflowBundle(
+    inputFiles: string[],
+    stepsOutfile: string,
+    flowOutfile: string,
+    discoveredEntries: DiscoveredEntries
+  ) {
+    return this.createCombinedBundle({
+      inputFiles,
+      stepsOutfile,
+      flowOutfile,
+      bundleFinalOutput: true,
+      discoveredEntries,
+    });
+  }
+}
+
+function createConfig(
+  repoRoot: string,
+  workingDir: string,
+  outputDir: string,
+  watch: boolean
+): StandaloneConfig {
+  return {
+    buildTarget: 'standalone',
+    workingDir,
+    projectRoot: repoRoot,
+    moduleSpecifierRoot: repoRoot,
+    dirs: ['.'],
+    stepsBundlePath: join(outputDir, 'steps.js'),
+    workflowsBundlePath: join(outputDir, 'flow.js'),
+    webhookBundlePath: join(outputDir, 'webhook.js'),
+    sourcemap: false,
+    watch,
+  };
+}
+
+function writeWorkflowBuiltinsFixture(root: string): void {
+  const packageDir = join(root, 'node_modules/workflow');
+  const serdePackageDir = join(root, 'node_modules/@workflow/serde');
+  mkdirSync(join(packageDir, 'internal'), { recursive: true });
+  mkdirSync(serdePackageDir, { recursive: true });
+  writeFileSync(
+    join(packageDir, 'package.json'),
+    JSON.stringify({
+      name: 'workflow',
+      version: '0.0.0-test',
+      exports: {
+        './internal/builtins': './internal/builtins.js',
+        './runtime': './runtime.js',
+      },
+    })
+  );
+  writeFileSync(join(packageDir, 'internal/builtins.js'), 'export {};\n');
+  writeFileSync(
+    join(packageDir, 'runtime.js'),
+    'export const workflowEntrypoint = () => async () => {};\n'
+  );
+  writeFileSync(
+    join(serdePackageDir, 'package.json'),
+    JSON.stringify({
+      name: '@workflow/serde',
+      version: '0.0.0-test',
+      type: 'module',
+      exports: './index.js',
+    })
+  );
+  writeFileSync(
+    join(serdePackageDir, 'index.js'),
+    `export const WORKFLOW_SERIALIZE = Symbol.for('workflow.serialize');
+export const WORKFLOW_DESERIALIZE = Symbol.for('workflow.deserialize');\n`
+  );
 }
 
 describe('workflow bundle boundary', () => {
@@ -32,6 +119,18 @@ describe('workflow bundle boundary', () => {
     }
   });
 
+  it('round-trips VM source without exposing nested template syntax', () => {
+    const code =
+      'const value = `hello $' + '{name}`;\u2028const done = true;\u2029';
+    const moduleCode = serializeWorkflowBundle(code);
+
+    expect(moduleCode).not.toContain('`');
+    expect(moduleCode).not.toContain('${');
+    expect(moduleCode).not.toContain('\u2028');
+    expect(moduleCode).not.toContain('\u2029');
+    expect(deserializeWorkflowBundle(moduleCode)).toBe(code);
+  });
+
   async function getWorkflowBundleInputs(source: string): Promise<string[]> {
     // Keep the fixture beneath this package so its workspace dependencies are
     // resolved exactly as they are for a real consumer workflow.
@@ -42,24 +141,14 @@ describe('workflow bundle boundary', () => {
     const inputFile = join(outputDir, 'workflow.ts');
     writeFileSync(inputFile, source);
 
-    const config: StandaloneConfig = {
-      buildTarget: 'standalone',
-      workingDir: outputDir,
-      projectRoot: repoRoot,
-      moduleSpecifierRoot: repoRoot,
-      dirs: ['.'],
-      stepsBundlePath: join(outputDir, 'steps.js'),
-      workflowsBundlePath: join(outputDir, 'workflow.js'),
-      webhookBundlePath: join(outputDir, 'webhook.js'),
-      sourcemap: false,
-    };
+    const config = createConfig(repoRoot, outputDir, outputDir, false);
     const discoveredEntries: DiscoveredEntries = {
       discoveredSteps: new Set(),
       discoveredWorkflows: new Set([inputFile]),
       discoveredSerdeFiles: new Set(),
     };
 
-    const { interimBundleMetafile } = await new TestBuilder(
+    const { workflowBundles, interimBundleMetafile } = await new TestBuilder(
       config
     ).createWorkflowBundle(
       inputFile,
@@ -67,6 +156,7 @@ describe('workflow bundle boundary', () => {
       discoveredEntries
     );
 
+    expect(workflowBundles).toHaveLength(1);
     expect(interimBundleMetafile).toBeDefined();
     return Object.keys(interimBundleMetafile?.inputs ?? {}).map((input) =>
       input.replaceAll('\\', '/')
@@ -105,5 +195,153 @@ describe('workflow bundle boundary', () => {
     `);
 
     expectNoZodInputs(inputs);
+  });
+
+  it('emits one lazy VM bundle per workflow source', async () => {
+    const repoRoot = resolve(import.meta.dirname, '../../..');
+    const workingDir = join(repoRoot, 'workbench/nextjs-turbopack');
+    const outputDir = mkdtempSync(join(workingDir, '.workflow-sources-'));
+    outputDirs.push(outputDir);
+    const first = join(outputDir, 'first.ts');
+    const second = join(outputDir, 'second.ts');
+    writeFileSync(
+      first,
+      `import { WORKFLOW_DESERIALIZE, WORKFLOW_SERIALIZE } from '@workflow/serde';
+export class HybridSerde {
+  static [WORKFLOW_SERIALIZE](value) { return { value: value.value }; }
+  static [WORKFLOW_DESERIALIZE](data) { return new HybridSerde(data.value); }
+  constructor(value) { this.value = value; }
+}
+export async function first() { "use workflow"; return "lazy-first-marker"; }
+export async function alsoFirst() { "use workflow"; return 2; }`
+    );
+    writeFileSync(
+      second,
+      `export async function second() { "use workflow"; return "lazy-second-marker"; }`
+    );
+
+    const config = createConfig(repoRoot, outputDir, outputDir, false);
+    const discoveredEntries: DiscoveredEntries = {
+      discoveredSteps: new Set(),
+      discoveredWorkflows: new Set([second, first]),
+      discoveredSerdeFiles: new Set([first]),
+    };
+    const workflowBundleDir = join(outputDir, 'workflow-bundles');
+    writeWorkflowBuiltinsFixture(outputDir);
+    mkdirSync(workflowBundleDir);
+    writeFileSync(join(workflowBundleDir, 'keep.txt'), 'user-owned');
+
+    await new TestBuilder(config).createCombinedWorkflowBundle(
+      [first, second],
+      config.stepsBundlePath,
+      config.workflowsBundlePath,
+      discoveredEntries
+    );
+
+    const bundleFiles = readdirSync(workflowBundleDir)
+      .filter((file) => file.endsWith('.mjs'))
+      .sort();
+    expect(bundleFiles).toHaveLength(2);
+    expect(
+      bundleFiles.every((file) => /^\d+-[a-f0-9]{16}\.mjs$/.test(file))
+    ).toBe(true);
+    expect(readFileSync(join(workflowBundleDir, 'keep.txt'), 'utf8')).toBe(
+      'user-owned'
+    );
+    const route = readFileSync(config.workflowsBundlePath, 'utf8');
+    expect(route).toContain(`workflow-bundles/${bundleFiles[0]}`);
+    expect(route).toContain(`workflow-bundles/${bundleFiles[1]}`);
+    expect(route.match(/: loadWorkflowBundle0,/g)).toHaveLength(2);
+    expect(route.match(/: loadWorkflowBundle1/g)).toHaveLength(1);
+    expect(route).not.toContain('lazy-first-marker');
+    const firstBundle = await import(
+      `${pathToFileURL(join(workflowBundleDir, bundleFiles[0])).href}?test`
+    );
+    const secondBundle = await import(
+      `${pathToFileURL(join(workflowBundleDir, bundleFiles[1])).href}?test`
+    );
+    const firstCode = Buffer.from(firstBundle.default, 'base64').toString();
+    const secondCode = Buffer.from(secondBundle.default, 'base64').toString();
+    expect(firstCode).toContain('lazy-first-marker');
+    expect(firstCode).not.toContain('lazy-second-marker');
+    expect(secondCode).toContain('HybridSerde');
+  });
+
+  it('changes the lazy module URL after a watch rebuild', async () => {
+    const repoRoot = resolve(import.meta.dirname, '../../..');
+    const workingDir = join(repoRoot, 'workbench/nextjs-turbopack');
+    const outputDir = mkdtempSync(join(workingDir, '.workflow-watch-'));
+    outputDirs.push(outputDir);
+    const workflowFile = join(outputDir, 'watched.ts');
+    writeFileSync(
+      workflowFile,
+      `export async function watched() { "use workflow"; return "before-watch"; }
+export async function removedAfterWatch() { "use workflow"; return "remove-me"; }`
+    );
+    const config = createConfig(repoRoot, outputDir, outputDir, true);
+    writeWorkflowBuiltinsFixture(outputDir);
+    const discoveredEntries: DiscoveredEntries = {
+      discoveredSteps: new Set(),
+      discoveredWorkflows: new Set([workflowFile]),
+      discoveredSerdeFiles: new Set(),
+    };
+    const result = await new TestBuilder(config).createCombinedWorkflowBundle(
+      [workflowFile],
+      config.stepsBundlePath,
+      config.workflowsBundlePath,
+      discoveredEntries
+    );
+    assert(result.interimBundleCtx);
+    assert(result.stepsContext);
+    assert(result.bundleFinal);
+
+    try {
+      const workflowBundleDir = join(outputDir, 'workflow-bundles');
+      const oldFile = readdirSync(workflowBundleDir).find((file) =>
+        file.endsWith('.mjs')
+      );
+      assert(oldFile);
+      const oldStats = statSync(workflowFile);
+      writeFileSync(
+        workflowFile,
+        `export async function watched() { "use workflow"; return "after--watch"; }
+export async function renamedAfterWatch() { "use workflow"; return "rename-me"; }`
+      );
+      // Reproduce a coalesced watcher update that is indistinguishable to the
+      // legacy size/mtime manifest cache while esbuild rebuilds new code.
+      utimesSync(workflowFile, oldStats.atime, oldStats.mtime);
+
+      const rebuild = await result.interimBundleCtx.rebuild();
+      await result.bundleFinal(rebuild);
+
+      const route = readFileSync(config.workflowsBundlePath, 'utf8');
+      const currentFiles = readdirSync(workflowBundleDir).filter((file) =>
+        file.endsWith('.mjs')
+      );
+      expect(currentFiles).toHaveLength(1);
+      const currentFile = currentFiles[0];
+      assert(currentFile);
+      expect(currentFile).not.toBe(oldFile);
+      expect(route).toContain(`workflow-bundles/${currentFile}`);
+      expect(route).toContain('Promise.resolve');
+      expect(route).toContain('renamedAfterWatch');
+      expect(route).not.toContain('removedAfterWatch');
+      expect(route).not.toContain('after--watch');
+      const currentBundle = await import(
+        pathToFileURL(join(workflowBundleDir, currentFile)).href
+      );
+      expect(Buffer.from(currentBundle.default, 'base64').toString()).toContain(
+        'after--watch'
+      );
+      const graphs = await extractWorkflowGraphs(config.workflowsBundlePath);
+      expect(JSON.stringify(graphs)).toContain('watched');
+      expect(JSON.stringify(graphs)).toContain('renamedAfterWatch');
+      expect(JSON.stringify(graphs)).not.toContain('removedAfterWatch');
+    } finally {
+      await Promise.all([
+        result.interimBundleCtx.dispose(),
+        result.stepsContext.dispose(),
+      ]);
+    }
   });
 });

@@ -1,5 +1,5 @@
 import { runInContext } from 'node:vm';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createContext } from './index.js';
 import {
   clearWorkflowScriptCache,
@@ -40,6 +40,7 @@ function buildBundle(marker: string, workflowCount = 12): string {
 describe('script-cache', () => {
   afterEach(() => {
     clearWorkflowScriptCache();
+    vi.unstubAllEnvs();
   });
 
   it('returns the same compiled Script for identical (code, filename)', () => {
@@ -133,6 +134,14 @@ describe('script-cache', () => {
     expect(getCachedWorkflowScript(latest, filename)).toBe(
       getCachedWorkflowScript(latest, filename)
     );
+  });
+
+  it('retains every immutable source bundle in production', () => {
+    vi.stubEnv('NODE_ENV', 'production');
+    for (let i = 0; i < 12; i++) {
+      getCachedWorkflowScript(buildBundle(`source-${i}`), `source-${i}.ts`);
+    }
+    expect(workflowScriptCacheSize()).toBe(12);
   });
 
   it('keeps the most-recently-used bundle and evicts the stale one', () => {

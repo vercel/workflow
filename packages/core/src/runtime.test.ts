@@ -20,7 +20,7 @@ import {
   REPLAY_DIVERGENCE_MAX_RETRIES,
 } from './runtime/constants.js';
 import { setWorld } from './runtime/world.js';
-import { workflowEntrypoint } from './runtime.js';
+import { type WorkflowCode, workflowEntrypoint } from './runtime.js';
 import {
   dehydrateStepArguments,
   dehydrateStepReturnValue,
@@ -62,7 +62,7 @@ type QueueCall = {
 };
 
 async function runWorkflowHandlerWithEvents(
-  workflowCode: string,
+  workflowCode: WorkflowCode,
   workflowRun: WorkflowRun,
   events: Event[],
   options: {
@@ -216,6 +216,46 @@ describe('workflowEntrypoint replay guards', () => {
   const mustNotRun = `async function workflow() {
         throw new Error('workflow code must not execute');
       }${getWorkflowTransformCode('workflow')}`;
+
+  it('loads only the bundle for the delivered workflow', async () => {
+    const workflowRun = await misroutedRun();
+    const loadWorkflow = vi.fn(
+      async () => `async function workflow() {
+      return 'done';
+    }${getWorkflowTransformCode('workflow')}`
+    );
+    const loadOtherWorkflow = vi.fn(async () => '');
+
+    const createdEvents = await runWorkflowHandlerWithEvents(
+      {
+        workflow: loadWorkflow,
+        otherWorkflow: loadOtherWorkflow,
+      },
+      workflowRun,
+      []
+    );
+
+    expect(loadWorkflow).toHaveBeenCalledOnce();
+    expect(loadOtherWorkflow).not.toHaveBeenCalled();
+    expect(createdEvents).toContainEqual(
+      expect.objectContaining({ eventType: 'run_completed' })
+    );
+  });
+
+  it('records a lazy bundle load failure on the run', async () => {
+    const workflowRun = await misroutedRun();
+    const loadError = new Error('missing workflow chunk');
+
+    const createdEvents = await runWorkflowHandlerWithEvents(
+      { workflow: async () => Promise.reject(loadError) },
+      workflowRun,
+      []
+    );
+
+    expect(createdEvents).toContainEqual(
+      expect.objectContaining({ eventType: 'run_failed' })
+    );
+  });
 
   it('re-routes a flow replay delivered to a different deployment', async () => {
     const workflowRun = await misroutedRun();
@@ -1975,21 +2015,34 @@ describe('workflowEntrypoint resilient step consumption (stepInput re-ensure)', 
       getEncryptionKeyForRun: vi.fn(async () => undefined),
     } as any);
 
-    const handler = workflowEntrypoint(resilientWorkflow);
+    const loadWorkflow = vi.fn(async () => resilientWorkflow);
+    const handler = workflowEntrypoint({ workflow: loadWorkflow });
     const response = (await handler(
       new Request('https://example.test')
     )) as Response;
-    return { response, createdEvents, createdEventParams, dehydratedInput };
+    return {
+      response,
+      createdEvents,
+      createdEventParams,
+      dehydratedInput,
+      loadWorkflow,
+    };
   }
 
   it('materializes step_created from stepInput on a redelivery before executing', async () => {
-    const { response, createdEvents, createdEventParams, dehydratedInput } =
-      await driveStepMessage({
-        runId: 'wrun_resilient_step_materialize',
-        attempt: 2,
-      });
+    const {
+      response,
+      createdEvents,
+      createdEventParams,
+      dehydratedInput,
+      loadWorkflow,
+    } = await driveStepMessage({
+      runId: 'wrun_resilient_step_materialize',
+      attempt: 2,
+    });
 
     expect(response.status).toBe(204);
+    expect(loadWorkflow).not.toHaveBeenCalled();
     // The re-ensure wrote the step_created with the message's payload…
     expect(createdEvents).toContainEqual(
       expect.objectContaining({

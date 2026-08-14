@@ -1,7 +1,8 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { serializeWorkflowBundle } from './workflow-bundle-module.js';
 import { extractWorkflowGraphs } from './workflows-extractor.js';
 
 describe('extractWorkflowGraphs', () => {
@@ -77,6 +78,43 @@ describe('extractWorkflowGraphs', () => {
               }),
             ]),
           }),
+        }),
+      },
+    });
+  });
+
+  it('extracts each lazy workflow source independently', async () => {
+    tempDir = await mkdtemp(join(tmpdir(), 'workflow-builders-'));
+    const bundlePath = join(tempDir, 'workflow-bundle.js');
+    const bundlesDir = join(tempDir, 'workflow-bundles');
+    await mkdir(bundlesDir);
+    await writeFile(
+      bundlePath,
+      `const first = import('./workflow-bundles/0.mjs');
+const second = import('./workflow-bundles/1.mjs');
+const unrelated = './workflow-bundles/9.mjs';`
+    );
+
+    const bundle = (file: string, name: string) =>
+      `function ${name}() { return ${JSON.stringify(file)}; }\n${name}.workflowId = "workflow//${file}//${name}";`;
+    await Promise.all(
+      ['./first.ts', './second.ts'].map((file, index) =>
+        writeFile(
+          join(bundlesDir, `${index}.mjs`),
+          serializeWorkflowBundle(bundle(file, `workflow${index}`))
+        )
+      )
+    );
+
+    await expect(extractWorkflowGraphs(bundlePath)).resolves.toEqual({
+      './first.ts': {
+        workflow0: expect.objectContaining({
+          workflowId: 'workflow//./first.ts//workflow0',
+        }),
+      },
+      './second.ts': {
+        workflow1: expect.objectContaining({
+          workflowId: 'workflow//./second.ts//workflow1',
         }),
       },
     });
