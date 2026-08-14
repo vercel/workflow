@@ -6097,7 +6097,7 @@ describe('serialized payload encryption', () => {
     expect(decrypted).toEqual(data);
   });
 
-  it('should pass through unencrypted Uint8Array in maybeDecrypt', async () => {
+  it('should pass through an unencrypted Uint8Array', async () => {
     // Data with 'devl' prefix (not encrypted)
     const prefix = new TextEncoder().encode('devl');
     const payload = new TextEncoder().encode('test');

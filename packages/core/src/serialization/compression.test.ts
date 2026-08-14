@@ -325,20 +325,24 @@ describe('codec selection (zstd preferred, gzip fallback)', () => {
       textEncoder.encode(JSON.stringify(makeCompressibleValue()))
     ) as Uint8Array;
     const stats: CompressionStats = {};
-    const compressed = await compress(original, true, stats);
+    const compression = compress(original, true, stats);
+    expect(compression).not.toBeInstanceOf(Promise);
+    const compressed = await compression;
     expect(isCompressed(compressed)).toBe(true);
     expect(peekFormatPrefix(compressed)).toBe(SerializationFormat.ZSTD);
     expect(stats.codec).toBe('zstd');
   });
 
-  it('WORKFLOW_COMPRESSION_CODEC=gzip forces the portable codec', async () => {
+  it('WORKFLOW_COMPRESSION_CODEC=gzip forces gzip', async () => {
     process.env.WORKFLOW_COMPRESSION_CODEC = 'gzip';
     const original = encodeWithFormatPrefix(
       SerializationFormat.DEVALUE_V1,
       textEncoder.encode(JSON.stringify(makeCompressibleValue()))
     ) as Uint8Array;
     const stats: CompressionStats = {};
-    const compressed = await compress(original, true, stats);
+    const compression = compress(original, true, stats);
+    expect(compression).not.toBeInstanceOf(Promise);
+    const compressed = await compression;
     expect(peekFormatPrefix(compressed)).toBe(SerializationFormat.GZIP);
     expect(stats.codec).toBe('gzip');
 

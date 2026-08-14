@@ -27,8 +27,10 @@ export type CryptoKey = import('node:crypto').webcrypto.CryptoKey;
  *
  * Node's synchronous cipher API needs a native key handle. Creating it while
  * the raw bytes are already available avoids trying to convert a deliberately
- * non-extractable `CryptoKey` later. Browser/edge callers never populate or
- * consult this map.
+ * non-extractable `CryptoKey` later. Passing the `CryptoKey` directly to
+ * `createDecipheriv`, or converting it later with `KeyObject.from`, is
+ * deprecated by Node for non-extractable keys. Browser/edge callers never
+ * populate or consult this map.
  */
 const nodeKeys = new WeakMap<CryptoKey, import('node:crypto').KeyObject>();
 

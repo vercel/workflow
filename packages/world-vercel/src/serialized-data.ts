@@ -1,35 +1,25 @@
 import { WorkflowWorldError } from '@workflow/errors';
 
 const FORMAT_PREFIX_LENGTH = 4;
-const DEVALUE_FORMAT_PREFIX = 'devl';
-const ENCRYPTED_FORMAT_PREFIX = 'encr';
 const GZIP_FORMAT_PREFIX = 'gzip';
 const ZSTD_FORMAT_PREFIX = 'zstd';
 const formatDecoder = new TextDecoder();
 
 const SERIALIZED_DATA_FORMAT_PREFIXES = new Set([
-  DEVALUE_FORMAT_PREFIX,
-  ENCRYPTED_FORMAT_PREFIX,
+  'devl',
+  'encr',
+  'encp',
   GZIP_FORMAT_PREFIX,
   ZSTD_FORMAT_PREFIX,
 ]);
 
-interface NodeZlibDecode {
-  gunzipSync?: (data: Uint8Array) => Uint8Array;
-  zstdDecompressSync?: (data: Uint8Array) => Uint8Array;
-}
-
-function getNodeZlib(): NodeZlibDecode | undefined {
+const nodeZlib = (() => {
   try {
-    return (
-      globalThis as {
-        process?: { getBuiltinModule?: (id: string) => NodeZlibDecode };
-      }
-    ).process?.getBuiltinModule?.('node:zlib');
+    return process.getBuiltinModule('node:zlib');
   } catch {
     return undefined;
   }
-}
+})();
 
 function peekFormatPrefix(value: unknown): string | null {
   if (
@@ -47,9 +37,10 @@ export function hasSerializedDataFormatPrefix(value: unknown): boolean {
 }
 
 function decompress(format: string, payload: Uint8Array): Uint8Array {
-  const zlib = getNodeZlib();
   const decompress =
-    format === ZSTD_FORMAT_PREFIX ? zlib?.zstdDecompressSync : zlib?.gunzipSync;
+    format === ZSTD_FORMAT_PREFIX
+      ? nodeZlib?.zstdDecompressSync
+      : nodeZlib?.gunzipSync;
 
   if (!decompress) {
     throw new WorkflowWorldError(

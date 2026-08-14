@@ -8,15 +8,10 @@
 import { SerializationError } from '@workflow/errors';
 import type { CodecOptions } from './codec.js';
 import { devalueCodec } from './codec-devalue.js';
-import { compress, decompress } from './compression.js';
-import {
-  type DecryptionKey,
-  decrypt as decryptData,
-  encrypt as encryptData,
-  type PayloadKey,
-} from './encryption.js';
+import type { DecryptionKey, PayloadKey } from './encryption.js';
 import { formatSerializationError, rethrowIfRuntimeError } from './errors.js';
 import { decodeFormatPrefix, encodeWithFormatPrefix } from './format.js';
+import { decodePayload, encodePayload } from './payload.js';
 import { SerializationFormat } from './types.js';
 
 /**
@@ -33,13 +28,12 @@ export async function serialize(
       SerializationFormat.DEVALUE_V1,
       payload
     );
-    // Compress before encrypting — encrypted bytes don't compress.
-    const compressed = await compress(
+    return await encodePayload(
       prefixed,
-      options?.compression === true,
+      encryptionKey,
+      options?.compression ?? false,
       options?.compressionStats
     );
-    return encryptData(compressed, encryptionKey);
   } catch (error) {
     rethrowIfRuntimeError(error);
     const { message, hint } = formatSerializationError('step value', error);
@@ -64,8 +58,11 @@ export async function deserialize(
     );
   }
 
-  const decrypted = await decryptData(data, encryptionKey);
-  const prepared = await decompress(decrypted, options?.compressionStats);
+  const prepared = await decodePayload(
+    data,
+    encryptionKey,
+    options?.compressionStats
+  );
   const { format, payload } = decodeFormatPrefix(prepared);
 
   if (format === SerializationFormat.DEVALUE_V1) {
