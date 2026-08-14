@@ -51,7 +51,7 @@ interface NodeCrypto {
 }
 
 /** Resolve node:crypto without a static import, preserving browser bundles. */
-function getNodeCrypto(): NodeCrypto | undefined {
+const nodeCrypto = (() => {
   try {
     return (
       globalThis as {
@@ -61,7 +61,7 @@ function getNodeCrypto(): NodeCrypto | undefined {
   } catch {
     return undefined;
   }
-}
+})();
 
 /** AES-GCM nonce length in bytes. */
 export const NONCE_LENGTH = 12;
@@ -125,7 +125,6 @@ export function decryptSync(
   aad?: Uint8Array
 ): Uint8Array | undefined {
   const material = importedKeyMaterial.get(key);
-  const nodeCrypto = getNodeCrypto();
   if (!material || !nodeCrypto) return undefined;
   if (!key.usages.includes('decrypt')) {
     throw new RuntimeDecryptionError(
