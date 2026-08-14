@@ -1122,16 +1122,19 @@ export interface GetEventParams {
   resolveData?: ResolveData;
 }
 
-export interface ListEventsParams {
-  runId: string;
+export interface ListEventsOptions {
   /** Omit `limit` to return every remaining event. */
   pagination?: PaginationOptions;
   resolveData?: ResolveData;
+}
+
+export interface ListEventsParams extends ListEventsOptions {
+  runId: string;
   /** Observe events as a streaming World decodes them. */
   onEvent?: EventStreamObserver;
 }
 
-export interface ListEventsByCorrelationIdParams {
+export interface ListEventsByCorrelationIdParams extends ListEventsOptions {
   correlationId: string;
   /**
    * The run the correlation id belongs to. A correlation id is unique per
@@ -1142,6 +1145,4 @@ export interface ListEventsByCorrelationIdParams {
    * event id alone is not.
    */
   runId: string;
-  pagination?: PaginationOptions;
-  resolveData?: ResolveData;
 }

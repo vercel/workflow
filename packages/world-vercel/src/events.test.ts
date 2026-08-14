@@ -8,6 +8,7 @@ import { describe, expect, it } from 'vitest';
 import {
   createWorkflowRunEvent,
   getWorkflowRunEvents,
+  getWorkflowRunEventsByCorrelationId,
   splitEventDataForV4,
 } from './events.js';
 import { encodeFrame, V4_FRAME_CONTENT_TYPE } from './frames.js';
@@ -1520,7 +1521,7 @@ describe('getWorkflowRunEvents by correlation id is scoped to the run', () => {
         headers: { 'content-type': V4_FRAME_CONTENT_TYPE },
       });
 
-    const result = await getWorkflowRunEvents(
+    const result = await getWorkflowRunEventsByCorrelationId(
       { correlationId: 'step_001', runId: 'wrun_1' },
       { token: 'test-token', dispatcher: agent }
     );

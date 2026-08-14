@@ -8,6 +8,7 @@ import {
   createWorkflowRunEventBatch,
   getEvent,
   getWorkflowRunEvents,
+  getWorkflowRunEventsByCorrelationId,
 } from './events.js';
 import { getHook, getHookByToken, listHooks } from './hooks.js';
 import { instrumentObject } from './instrumentObject.js';
@@ -53,7 +54,8 @@ export function createStorage(config?: APIConfig): Storage {
         createWorkflowRunEventBatch(runId, events, params, config),
       get: (runId, eventId, params) => getEvent(runId, eventId, params, config),
       list: (params) => getWorkflowRunEvents(params, config),
-      listByCorrelationId: (params) => getWorkflowRunEvents(params, config),
+      listByCorrelationId: (params) =>
+        getWorkflowRunEventsByCorrelationId(params, config),
     },
     hooks: {
       get: (hookId, params) => getHook(hookId, params, config),

@@ -1355,8 +1355,25 @@ export interface ListEventsV4Result {
   hasMore: boolean;
 }
 
-function isTransportError(error: unknown): error is WorkflowWorldError {
-  return WorkflowWorldError.is(error) && error.code === 'TRANSPORT';
+class PartialEventStreamError extends WorkflowWorldError {
+  constructor(message: string, cause?: unknown) {
+    super(message, { code: 'TRANSPORT', cause });
+  }
+}
+
+async function* readEventFrames(
+  chunks: AsyncIterable<Uint8Array>,
+  opName: string,
+  events: readonly Event[]
+): AsyncGenerator<DecodedFrame> {
+  try {
+    yield* decodeFrames(chunks);
+  } catch (cause) {
+    throw new PartialEventStreamError(
+      `v4 ${opName}: event frame stream failed after ${events.length} events`,
+      cause
+    );
+  }
 }
 
 async function consumeEventFrameStream(
@@ -1373,44 +1390,25 @@ async function consumeEventFrameStream(
   }
 
   const chunks = response.body as unknown as AsyncIterable<Uint8Array>;
-  const frames = decodeFrames(chunks)[Symbol.asyncIterator]();
 
-  try {
-    for (;;) {
-      let next: IteratorResult<DecodedFrame>;
-      try {
-        next = await frames.next();
-      } catch (cause) {
-        throw new WorkflowWorldError(
-          `v4 ${opName}: event frame stream failed after ${events.length} events`,
-          { code: 'TRANSPORT', cause }
-        );
-      }
-      if (next.done) break;
-
-      const frame = next.value;
-      if (frame.meta._end === 1) {
-        const end = EventStreamEndSchema.parse(frame.meta);
-        return { cursor: end.next ?? null, hasMore: end.hasMore };
-      }
-      if (Object.keys(frame.meta).some((key) => key.startsWith('_'))) {
-        throw new Error(`v4 ${opName}: unexpected control frame`);
-      }
-      const event = decodeEventFrame(frame);
-      events.push(event);
-      // Deliberately outside the stream-read catch above: observer/application
-      // failures are not truncation and must never advance recovery past this
-      // event.
-      onEvent?.(event);
+  for await (const frame of readEventFrames(chunks, opName, events)) {
+    if (frame.meta._end === 1) {
+      const end = EventStreamEndSchema.parse(frame.meta);
+      return { cursor: end.next ?? null, hasMore: end.hasMore };
     }
-  } finally {
-    await frames.return?.(undefined);
+    if (Object.keys(frame.meta).some((key) => key.startsWith('_'))) {
+      throw new Error(`v4 ${opName}: unexpected control frame`);
+    }
+    const event = decodeEventFrame(frame);
+    events.push(event);
+    // Observer/application failures remain outside the frame reader, so they
+    // are not mistaken for truncation or skipped by partial-stream recovery.
+    onEvent?.(event);
   }
 
-  throw new WorkflowWorldError(
+  throw new PartialEventStreamError(
     `v4 ${opName}: frame stream ended without the end-of-stream sentinel ` +
-      `(${events.length} events read) — truncated response?`,
-    { code: 'TRANSPORT' }
+      `(${events.length} events read) — truncated response?`
   );
 }
 
@@ -1439,7 +1437,7 @@ async function consumeReplayLogResponse({
   try {
     page = await consumeEventFrameStream(response, opName, events, onEvent);
   } catch (error) {
-    if (!isTransportError(error)) throw error;
+    if (!(error instanceof PartialEventStreamError)) throw error;
     const lastEvent = events.at(-1);
     if (!lastEvent) throw error;
     page = { cursor: `eid:${lastEvent.eventId}`, hasMore: true };
@@ -1548,7 +1546,7 @@ export async function getWorkflowRunEventsV4(
       }
       return { events, ...page };
     } catch (error) {
-      if (!isTransportError(error)) throw error;
+      if (!(error instanceof PartialEventStreamError)) throw error;
       const lastEvent = events.at(-1);
       if (
         params.limit !== undefined ||
