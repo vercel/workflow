@@ -4,17 +4,6 @@ export interface AttributeChange {
   value: string | null;
 }
 
-export interface AttributeValidationContext {
-  /** Existing keys make the post-merge count exact. */
-  existingKeys?: Iterable<string>;
-  /** Reserved `$` keys are only available to framework code. */
-  allowReservedAttributes?: boolean;
-}
-
-export interface AttributeKeyValidationOptions {
-  allowReservedAttributes?: boolean;
-}
-
 export const RESERVED_ATTRIBUTE_KEY_PREFIX = '$';
 export const ROOT_RUN_ID_ATTRIBUTE = `${RESERVED_ATTRIBUTE_KEY_PREFIX}rootRunId`;
 export const PARENT_RUN_ID_ATTRIBUTE = `${RESERVED_ATTRIBUTE_KEY_PREFIX}parentRunId`;
@@ -32,7 +21,7 @@ export class AttributeValidationError extends Error {
 
 export function validateAttributeKey(
   key: string,
-  options: AttributeKeyValidationOptions = {}
+  options: { allowReservedAttributes?: boolean } = {}
 ): AttributeValidationError | null {
   if (typeof key !== 'string') {
     return new AttributeValidationError(
@@ -107,7 +96,12 @@ function attributeCountDelta(
 
 export function validateAttributeChanges(
   changes: AttributeChange[],
-  context: AttributeValidationContext = {}
+  context: {
+    /** Existing keys make the post-merge count exact. */
+    existingKeys?: Iterable<string>;
+    /** Reserved `$` keys are only available to framework code. */
+    allowReservedAttributes?: boolean;
+  } = {}
 ): void {
   const seenKeys = new Set<string>();
   const existingKeys =

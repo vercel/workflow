@@ -5,13 +5,9 @@ import {
   validateAttributeChanges,
 } from '@workflow/world/attributes-validation';
 
-interface AttributeChangeOptions {
-  allowReservedAttributes?: boolean;
-}
-
 export function normalizeAttributeChanges(
   attrs: Record<string, string | undefined>,
-  options: AttributeChangeOptions = {}
+  options: { allowReservedAttributes?: boolean } = {}
 ): AttributeChange[] {
   if (attrs === null || typeof attrs !== 'object' || Array.isArray(attrs)) {
     throw new FatalError(
