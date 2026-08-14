@@ -1674,6 +1674,7 @@ export function workflowEntrypoint(
                             workflowDeploymentId: bgRun.deploymentId,
                             workflowName,
                             workflowStartedAt: bgStartedAt,
+                            requestId,
                             rootRunId: rootRunIdFrom(bgRun.attributes, runId),
                             stepId: incomingStepId,
                             stepName: incomingStepName,
@@ -2696,6 +2697,7 @@ export function workflowEntrypoint(
                           // requeueing the step.
                           deliveryAttempt: metadata.attempt,
                           ownerMessageId: metadata.messageId,
+                          requestId,
                         });
                         if (quickjsResult?.timeoutSeconds !== undefined) {
                           // Use `reinvoke` rather than returning
@@ -3879,6 +3881,7 @@ export function workflowEntrypoint(
                                 workflowDeploymentId: workflowRun.deploymentId,
                                 workflowName,
                                 workflowStartedAt,
+                                requestId,
                                 rootRunId: rootRunIdFrom(
                                   workflowRun.attributes,
                                   runId

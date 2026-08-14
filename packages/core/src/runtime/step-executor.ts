@@ -99,6 +99,8 @@ export interface StepExecutorParams {
   workflowDeploymentId?: string;
   workflowName: string;
   workflowStartedAt: number;
+  /** Request ID of the invocation executing this step, when provided by its queue. */
+  requestId?: string;
   /** Root run id of this run's lineage, carried into the step context. */
   rootRunId?: string;
   stepId: string;
@@ -347,6 +349,15 @@ export async function executeStep(
     return result;
   };
 
+  // `step_started` identifies the invocation that performed this attempt.
+  // Keep request and compute provenance independent: world-vercel serializes
+  // requestId as analytics `vercelId`, while computeInstanceId identifies the
+  // worker that executed the step.
+  const stepStartedEventParams: CreateEventParams = {
+    computeInstanceId: COMPUTE_INSTANCE_ID,
+    ...(params.requestId ? { requestId: params.requestId } : {}),
+  };
+
   const spanName = `step.execute ${stepDisplayName(stepName)}`;
   return trace(spanName, {}, async (span) => {
     span?.setAttributes({
@@ -410,7 +421,7 @@ export async function executeStep(
                   : {}),
               },
             },
-            { computeInstanceId: COMPUTE_INSTANCE_ID }
+            stepStartedEventParams
           );
         } catch (startErr) {
           if (EntityConflictError.is(startErr)) {
@@ -600,9 +611,7 @@ export async function executeStep(
     // Params for the `step_started` create on either path below. The slot
     // snapshot is not spread here: `createEvent` attaches it to every write,
     // this one included.
-    const startEventParams: CreateEventParams = {
-      computeInstanceId: COMPUTE_INSTANCE_ID,
-    };
+    const startEventParams = stepStartedEventParams;
     // `Date.now()` taken immediately before the `step_started` create is
     // issued (either path below) — anchors RSFS's end point. See
     // StepLatencyEventData.rsfs and the call sites below.
