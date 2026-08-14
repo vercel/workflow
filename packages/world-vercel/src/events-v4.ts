@@ -62,12 +62,16 @@ import { deserializeStep, StepWireSchema } from './steps.js';
 import {
   ErrorType,
   NetworkProtocolName,
+  StepLatencyOptimizations,
+  StepStsoMs,
+  WorkflowClientVersion,
   WorkflowEventsTransport,
   WorkflowEventType,
   WorkflowWsRequestId,
   WorkflowWsUrl,
 } from './telemetry.js';
 import { type APIConfig, getHttpConfig, getHttpUrl } from './utils.js';
+import { version } from './version.js';
 import type { WsFrameReply } from './ws-transport.js';
 import { isWsEventsTransportEnabled } from './ws-transport-enabled.js';
 
@@ -99,7 +103,7 @@ async function fetchV4(
   init: { method: string; headers: Headers; body?: Uint8Array },
   config: APIConfig | undefined,
   opName: string,
-  attributes?: Record<string, string | number>
+  attributes?: Record<string, string | number | string[]>
 ): Promise<Response> {
   const dispatcher = getEventsDispatcher(config);
   return instrumentedFetch({
@@ -709,6 +713,11 @@ async function postWorkflowRunEventV4(
     {
       ...WorkflowEventsTransport('http'),
       ...WorkflowEventType(input.eventType),
+      ...WorkflowClientVersion(`@workflow/world-vercel/${version}`),
+      ...(input.stso !== undefined ? StepStsoMs(input.stso) : {}),
+      ...(input.optimizations !== undefined
+        ? StepLatencyOptimizations(input.optimizations)
+        : {}),
     }
   );
 }
@@ -930,6 +939,11 @@ async function postEventFrameOverWs(
       attributes: {
         ...WorkflowEventsTransport('ws'),
         ...WorkflowEventType(input.eventType),
+        ...WorkflowClientVersion(`@workflow/world-vercel/${version}`),
+        ...(input.stso !== undefined ? StepStsoMs(input.stso) : {}),
+        ...(input.optimizations !== undefined
+          ? StepLatencyOptimizations(input.optimizations)
+          : {}),
         ...NetworkProtocolName('websocket'),
         ...WorkflowWsUrl(wsUrl),
       },
