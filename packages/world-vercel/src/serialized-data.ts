@@ -48,7 +48,8 @@ function decompress(format: string, payload: Uint8Array): Uint8Array {
     );
   }
 
-  return new Uint8Array(decompress(payload));
+  const result = decompress(payload);
+  return new Uint8Array(result.buffer, result.byteOffset, result.byteLength);
 }
 
 export function normalizeSerializedData(value: unknown): unknown {
