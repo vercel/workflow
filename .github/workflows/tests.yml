@@ -495,6 +495,7 @@ jobs:
             e2e-vercel-prod-${{ matrix.app.name }}-${{ matrix.vm }}.json
             e2e-metadata-${{ matrix.app.name }}-vercel.json
             e2e-failures-${{ matrix.app.name }}-vercel.json
+            e2e-flaky-${{ matrix.app.name }}-vercel.json
             e2e-diagnostics-${{ matrix.app.name }}-vercel.json
             e2e-runtime-logs-${{ matrix.app.name }}-vercel.json
           retention-days: 7
@@ -599,6 +600,7 @@ jobs:
             e2e-vercel-multi-region-nextjs-turbopack.json
             e2e-metadata-nextjs-turbopack-vercel.json
             e2e-failures-nextjs-turbopack-vercel.json
+            e2e-flaky-nextjs-turbopack-vercel.json
             e2e-diagnostics-nextjs-turbopack-vercel.json
             e2e-runtime-logs-nextjs-turbopack-vercel.json
           retention-days: 7
@@ -778,6 +780,7 @@ jobs:
             e2e-vercel-ws-transport-${{ matrix.app.name }}.json
             e2e-metadata-${{ matrix.app.name }}-vercel.json
             e2e-failures-${{ matrix.app.name }}-vercel.json
+            e2e-flaky-${{ matrix.app.name }}-vercel.json
             e2e-diagnostics-${{ matrix.app.name }}-vercel.json
             e2e-runtime-logs-${{ matrix.app.name }}-vercel.json
           retention-days: 7
@@ -892,7 +895,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: e2e-results-local-dev-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}
-          path: e2e-local-dev-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}.json
+          path: |
+            e2e-local-dev-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}.json
+            e2e-flaky-${{ matrix.app.name }}-local.json
           retention-days: 7
           if-no-files-found: ignore
 
@@ -981,7 +986,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: e2e-results-local-prod-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}
-          path: e2e-local-prod-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}.json
+          path: |
+            e2e-local-prod-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}.json
+            e2e-flaky-${{ matrix.app.name }}-local.json
           retention-days: 7
           if-no-files-found: ignore
 
@@ -1090,7 +1097,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: e2e-results-local-postgres-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}
-          path: e2e-local-postgres-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}.json
+          path: |
+            e2e-local-postgres-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}.json
+            e2e-flaky-${{ matrix.app.name }}-local.json
           retention-days: 7
           if-no-files-found: ignore
 
@@ -1244,7 +1253,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: e2e-results-windows-nextjs-turbopack-${{ matrix.vm }}
-          path: e2e-windows-nextjs-turbopack-${{ matrix.vm }}.json
+          path: |
+            e2e-windows-nextjs-turbopack-${{ matrix.vm }}.json
+            e2e-flaky-nextjs-turbopack-local.json
           retention-days: 7
           if-no-files-found: ignore
 
