@@ -10,6 +10,7 @@ import type { CodecOptions } from './codec.js';
 import { devalueCodec } from './codec-devalue.js';
 import { compress, decompress } from './compression.js';
 import {
+  type DecryptionKey,
   decrypt as decryptData,
   encrypt as encryptData,
   type PayloadKey,
@@ -25,13 +26,13 @@ export async function serialize(
   value: unknown,
   encryptionKey?: PayloadKey,
   options?: CodecOptions
-): Promise<Uint8Array | unknown> {
+): Promise<Uint8Array> {
   try {
     const payload = devalueCodec.serialize(value, 'step', options);
     const prefixed = encodeWithFormatPrefix(
       SerializationFormat.DEVALUE_V1,
       payload
-    ) as Uint8Array;
+    );
     // Compress before encrypting — encrypted bytes don't compress.
     const compressed = await compress(
       prefixed,
@@ -50,21 +51,20 @@ export async function serialize(
  * Deserialize a value for the step execution environment.
  */
 export async function deserialize(
-  data: Uint8Array | unknown,
-  encryptionKey?: PayloadKey,
+  data: unknown,
+  encryptionKey?: DecryptionKey,
   options?: CodecOptions
 ): Promise<unknown> {
-  const decrypted = await decryptData(data, encryptionKey);
-
-  if (!(decrypted instanceof Uint8Array)) {
+  if (!(data instanceof Uint8Array)) {
     if (devalueCodec.deserializeLegacy) {
-      return devalueCodec.deserializeLegacy(decrypted, 'step', options);
+      return devalueCodec.deserializeLegacy(data, 'step', options);
     }
     throw new Error(
       'Cannot deserialize non-binary data without legacy support'
     );
   }
 
+  const decrypted = await decryptData(data, encryptionKey);
   const prepared = await decompress(decrypted, options?.compressionStats);
   const { format, payload } = decodeFormatPrefix(prepared);
 

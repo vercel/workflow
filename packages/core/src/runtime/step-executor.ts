@@ -31,7 +31,7 @@ import {
 } from '@workflow/world';
 import { runtimeLogger, stepLogger } from '../logger.js';
 import { getStepFunction } from '../private.js';
-import type { PayloadKey } from '../serialization/encryption.js';
+import type { DecryptionKey } from '../serialization/encryption.js';
 import { formatSerializationError } from '../serialization/errors.js';
 import {
   cancelAbortReaders,
@@ -109,7 +109,7 @@ export interface StepExecutorParams {
   rootRunId?: string;
   stepId: string;
   stepName: string;
-  encryptionKey?: PayloadKey;
+  encryptionKey?: DecryptionKey;
   /**
    * The workflow run's specVersion, used to gate payload compression.
    * Step outputs/errors are only compressed when the run is marked as

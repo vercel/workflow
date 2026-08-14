@@ -43,7 +43,6 @@ import {
   dehydrateStepArguments,
   dehydrateStepError,
   hydrateRunError,
-  maybeEncrypt,
 } from '../serialization.js';
 import { remapErrorStack, stripInlineSourceMap } from '../source-map.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
@@ -345,6 +344,12 @@ async function dispatchPendingOps(params: {
       // EntityConflictError, which we swallow below. This drops one
       // network round-trip per pending hook.
       try {
+        if (
+          hook.metadata !== undefined &&
+          !(hook.metadata instanceof Uint8Array)
+        ) {
+          throw new TypeError('QuickJS hook metadata must be binary');
+        }
         const encryptedMetadata =
           typeof hook.metadata === 'undefined'
             ? undefined
@@ -2036,10 +2041,10 @@ export async function runWorkflowWithQuickJS(params: {
             message: (rehydrateErr as Error)?.message,
           }
         );
-        dehydratedError = (await maybeEncrypt(
+        dehydratedError = await encryptSerializedData(
           result.failed.valueBytes,
           encryptionKey
-        )) as Uint8Array;
+        );
       }
     } else {
       if (errorStack) {

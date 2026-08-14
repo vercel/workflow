@@ -49,7 +49,7 @@ export function serialize(value: unknown): Uint8Array {
  * @param data - Uint8Array with format prefix, or legacy non-binary data
  * @returns The deserialized value
  */
-export function deserialize(data: Uint8Array | unknown): unknown {
+export function deserialize(data: unknown): unknown {
   // Legacy: non-binary data
   if (!(data instanceof Uint8Array)) {
     if (devalueVmCodec.deserializeLegacy) {

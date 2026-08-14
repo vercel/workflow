@@ -163,12 +163,6 @@ describe('CompressionStats telemetry sink', () => {
     expect(stats.storedBytes).toBe(original.length);
   });
 
-  it('does not record for non-binary (legacy) data', async () => {
-    const stats: CompressionStats = {};
-    await compress({ not: 'binary' }, true, stats);
-    expect(stats.recorded).toBeFalsy();
-  });
-
   it('records the inflate on the read path', async () => {
     const original = devlBytes(JSON.stringify(makeCompressibleValue()));
     const compressed = (await compress(original, true)) as Uint8Array;
@@ -350,7 +344,9 @@ describe('codec selection (zstd preferred, gzip fallback)', () => {
 
     // Read path still inflates gzip and reports the codec.
     const readStats: CompressionStats = {};
-    const inflated = (await decompress(compressed, readStats)) as Uint8Array;
+    const result = decompress(compressed, readStats);
+    expect(result).not.toBeInstanceOf(Promise);
+    const inflated = await result;
     expect(inflated).toEqual(original);
     expect(readStats.codec).toBe('gzip');
   });

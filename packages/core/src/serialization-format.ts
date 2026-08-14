@@ -8,6 +8,12 @@
 
 import { getEventDataRefFields } from '@workflow/world';
 import { parse, unflatten } from 'devalue';
+import {
+  decodeFormatPrefix as decodePrefix,
+  encodeWithFormatPrefix,
+  peekFormatPrefix,
+} from './serialization/format.js';
+import { SerializationFormat } from './serialization/types.js';
 
 // ---------------------------------------------------------------------------
 // Key material (browser-safe re-exports)
@@ -40,93 +46,29 @@ export {
 // Format prefix constants and encoding/decoding
 // ---------------------------------------------------------------------------
 
-export const SerializationFormat = {
-  /** devalue stringify/parse with TextEncoder/TextDecoder */
-  DEVALUE_V1: 'devl',
-  /** Encrypted payload (inner payload has its own format prefix after decryption) */
-  ENCRYPTED: 'encr',
-  /**
-   * Sealed payload — asymmetrically encrypted to a run's X25519 public key
-   * (inner payload has its own format prefix after opening).
-   *
-   * Written by cross-run writers that hold only the recipient run's public
-   * key. Opening it requires the run's private scalar rather than the
-   * symmetric per-run key, so o11y display treats it as ciphertext via
-   * {@link isEncryptedData} but {@link hydrateDataWithKey} does not attempt
-   * an AES-GCM decrypt on it.
-   */
-  SEALED: 'encp',
-  /** Gzip-compressed payload (inner payload has its own format prefix after decompression) */
-  GZIP: 'gzip',
-  /** Zstandard-compressed payload (inner payload has its own format prefix after decompression) */
-  ZSTD: 'zstd',
-} as const;
+export { encodeWithFormatPrefix, SerializationFormat };
 
 export type SerializationFormatType =
   (typeof SerializationFormat)[keyof typeof SerializationFormat];
 
-/** Length of the format prefix in bytes */
-const FORMAT_PREFIX_LENGTH = 4;
-
-const formatEncoder = new TextEncoder();
-const formatDecoder = new TextDecoder();
-
-/**
- * Encode a payload with a format prefix.
- */
-export function encodeWithFormatPrefix(
-  format: SerializationFormatType,
-  payload: Uint8Array | unknown
-): Uint8Array | unknown {
-  if (!(payload instanceof Uint8Array)) {
-    return payload;
-  }
-
-  const prefixBytes = formatEncoder.encode(format);
-  if (prefixBytes.length !== FORMAT_PREFIX_LENGTH) {
-    throw new Error(
-      `Format identifier must be exactly ${FORMAT_PREFIX_LENGTH} ASCII characters, got "${format}" (${prefixBytes.length} bytes)`
-    );
-  }
-
-  const result = new Uint8Array(FORMAT_PREFIX_LENGTH + payload.length);
-  result.set(prefixBytes, 0);
-  result.set(payload, FORMAT_PREFIX_LENGTH);
-  return result;
-}
-
 /**
  * Decode a format-prefixed payload.
  */
-export function decodeFormatPrefix(data: Uint8Array | unknown): {
+export function decodeFormatPrefix(data: Uint8Array): {
   format: SerializationFormatType;
   payload: Uint8Array;
 } {
-  if (!(data instanceof Uint8Array)) {
-    return {
-      format: SerializationFormat.DEVALUE_V1,
-      payload: new TextEncoder().encode(JSON.stringify(data)),
-    };
-  }
-
-  if (data.length < FORMAT_PREFIX_LENGTH) {
+  const decoded = decodePrefix(data);
+  const knownFormats = Object.values(SerializationFormat);
+  if (!knownFormats.includes(decoded.format as SerializationFormatType)) {
     throw new Error(
-      `Data too short to contain format prefix: expected at least ${FORMAT_PREFIX_LENGTH} bytes, got ${data.length}`
+      `Unknown serialization format: "${decoded.format}". Known formats: ${knownFormats.join(', ')}`
     );
   }
-
-  const prefixBytes = data.subarray(0, FORMAT_PREFIX_LENGTH);
-  const format = formatDecoder.decode(prefixBytes);
-
-  const knownFormats = Object.values(SerializationFormat) as string[];
-  if (!knownFormats.includes(format)) {
-    throw new Error(
-      `Unknown serialization format: "${format}". Known formats: ${knownFormats.join(', ')}`
-    );
-  }
-
-  const payload = data.subarray(FORMAT_PREFIX_LENGTH);
-  return { format: format as SerializationFormatType, payload };
+  return decoded as {
+    format: SerializationFormatType;
+    payload: Uint8Array;
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -190,10 +132,8 @@ export function isExpiredStub(data: unknown): boolean {
  * Browser-safe — does not depend on the full serialization module.
  */
 export function isEncryptedData(data: unknown): boolean {
-  if (!(data instanceof Uint8Array) || data.length < FORMAT_PREFIX_LENGTH) {
-    return false;
-  }
-  const prefix = formatDecoder.decode(data.subarray(0, FORMAT_PREFIX_LENGTH));
+  if (!(data instanceof Uint8Array)) return false;
+  const prefix = peekFormatPrefix(data);
   return (
     prefix === SerializationFormat.ENCRYPTED ||
     prefix === SerializationFormat.SEALED
@@ -207,11 +147,10 @@ export function isEncryptedData(data: unknown): boolean {
  * Browser-safe — does not depend on the full serialization module.
  */
 export function isSealedData(data: unknown): boolean {
-  if (!(data instanceof Uint8Array) || data.length < FORMAT_PREFIX_LENGTH) {
-    return false;
-  }
-  const prefix = formatDecoder.decode(data.subarray(0, FORMAT_PREFIX_LENGTH));
-  return prefix === SerializationFormat.SEALED;
+  return (
+    data instanceof Uint8Array &&
+    peekFormatPrefix(data) === SerializationFormat.SEALED
+  );
 }
 
 /**
@@ -219,31 +158,22 @@ export function isSealedData(data: unknown): boolean {
  * Browser-safe — does not depend on the full serialization module.
  */
 export function isCompressedData(data: unknown): boolean {
-  if (!(data instanceof Uint8Array) || data.length < FORMAT_PREFIX_LENGTH) {
-    return false;
-  }
-  const prefix = formatDecoder.decode(data.subarray(0, FORMAT_PREFIX_LENGTH));
+  if (!(data instanceof Uint8Array)) return false;
+  const prefix = peekFormatPrefix(data);
   return (
     prefix === SerializationFormat.GZIP || prefix === SerializationFormat.ZSTD
   );
-}
-
-interface NodeZlibDecode {
-  gunzipSync?: (data: Uint8Array) => Uint8Array;
-  zstdDecompressSync?: (data: Uint8Array) => Uint8Array;
 }
 
 /**
  * Resolve `node:zlib` via `process.getBuiltinModule` — no static Node
  * dependency, invisible to browser bundlers. Returns undefined off Node.
  */
-function getNodeZlib(): NodeZlibDecode | undefined {
+function getNodeZlib() {
   try {
-    return (
-      globalThis as {
-        process?: { getBuiltinModule?: (id: string) => NodeZlibDecode };
-      }
-    ).process?.getBuiltinModule?.('node:zlib');
+    return typeof process === 'undefined'
+      ? undefined
+      : process.getBuiltinModule('node:zlib');
   } catch {
     return undefined;
   }

@@ -27,10 +27,7 @@ import { SerializationFormat } from './types.js';
 export function serialize(value: unknown, options?: CodecOptions): Uint8Array {
   try {
     const payload = devalueCodec.serialize(value, 'workflow', options);
-    return encodeWithFormatPrefix(
-      SerializationFormat.DEVALUE_V1,
-      payload
-    ) as Uint8Array;
+    return encodeWithFormatPrefix(SerializationFormat.DEVALUE_V1, payload);
   } catch (error) {
     const { message, hint } = formatSerializationError('workflow value', error);
     throw new SerializationError(message, { hint, cause: error });
@@ -44,10 +41,7 @@ export function serialize(value: unknown, options?: CodecOptions): Uint8Array {
  * @param options - Optional global, extra revivers for VM-context deserialization
  * @returns The deserialized value
  */
-export function deserialize(
-  data: Uint8Array | unknown,
-  options?: CodecOptions
-): unknown {
+export function deserialize(data: unknown, options?: CodecOptions): unknown {
   if (!(data instanceof Uint8Array)) {
     if (devalueCodec.deserializeLegacy) {
       return devalueCodec.deserializeLegacy(data, 'workflow', options);

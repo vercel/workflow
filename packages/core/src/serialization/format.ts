@@ -36,12 +36,8 @@ const formatDecoder = new TextDecoder();
  */
 export function encodeWithFormatPrefix(
   format: FormatPrefix,
-  payload: Uint8Array | unknown
-): Uint8Array | unknown {
-  if (!(payload instanceof Uint8Array)) {
-    return payload;
-  }
-
+  payload: Uint8Array
+): Uint8Array {
   const prefixBytes = formatEncoder.encode(format);
   const result = new Uint8Array(FORMAT_PREFIX_LENGTH + payload.length);
   result.set(prefixBytes, 0);
@@ -59,10 +55,8 @@ export function encodeWithFormatPrefix(
  * @param data - The format-prefixed data
  * @returns The format prefix, or null
  */
-export function peekFormatPrefix(
-  data: Uint8Array | unknown
-): FormatPrefix | null {
-  if (!(data instanceof Uint8Array) || data.length < FORMAT_PREFIX_LENGTH) {
+export function peekFormatPrefix(data: Uint8Array): FormatPrefix | null {
+  if (data.length < FORMAT_PREFIX_LENGTH) {
     return null;
   }
   const prefixBytes = data.subarray(0, FORMAT_PREFIX_LENGTH);
@@ -73,8 +67,11 @@ export function peekFormatPrefix(
 /**
  * Check if data is encrypted (has 'encr' format prefix).
  */
-export function isEncrypted(data: Uint8Array | unknown): boolean {
-  return peekFormatPrefix(data) === SerializationFormat.ENCRYPTED;
+export function isEncrypted(data: unknown): boolean {
+  return (
+    data instanceof Uint8Array &&
+    peekFormatPrefix(data) === SerializationFormat.ENCRYPTED
+  );
 }
 
 /**
@@ -92,18 +89,10 @@ export function isEncrypted(data: Uint8Array | unknown): boolean {
  * @returns An object with the format prefix and payload
  * @throws Error if the data is too short or has an invalid prefix
  */
-export function decodeFormatPrefix(data: Uint8Array | unknown): {
+export function decodeFormatPrefix(data: Uint8Array): {
   format: FormatPrefix;
   payload: Uint8Array;
 } {
-  // Compat for legacy specVersion 1 runs that don't have a format prefix
-  if (!(data instanceof Uint8Array)) {
-    return {
-      format: SerializationFormat.DEVALUE_V1,
-      payload: new TextEncoder().encode(JSON.stringify(data)),
-    };
-  }
-
   if (data.length < FORMAT_PREFIX_LENGTH) {
     throw new Error(
       `Data too short to contain format prefix: expected at least ${FORMAT_PREFIX_LENGTH} bytes, got ${data.length}`

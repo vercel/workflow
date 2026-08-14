@@ -208,10 +208,10 @@ export async function resolveEncryptionKey(
  * @returns The encrypted data with its format prefix, or the original data if no key
  */
 export async function encrypt(
-  data: Uint8Array | unknown,
+  data: Uint8Array,
   key: PayloadKey | undefined
-): Promise<Uint8Array | unknown> {
-  if (!key || !(data instanceof Uint8Array)) return data;
+): Promise<Uint8Array> {
+  if (!key) return data;
 
   if (isSealTarget(key)) {
     const sealed = await sealToPublicKey(key.recipientPublicKey, data, key.aad);
@@ -243,7 +243,7 @@ export async function encrypt(
  */
 async function openSealedEnvelope(
   data: Uint8Array,
-  key: PayloadKey | undefined
+  key: DecryptionKey | undefined
 ): Promise<Uint8Array> {
   // Sealed payloads need the private scalar. Anything else — no key, a bare
   // symmetric key, or a write-only seal target — cannot open them.
@@ -272,7 +272,7 @@ async function openSealedEnvelope(
 
 function requireAesDecryptionKey(
   data: Uint8Array,
-  key: PayloadKey | undefined
+  key: DecryptionKey | undefined
 ): CryptoKey {
   const aesKey = aesKeyOf(key);
   if (aesKey) return aesKey;
@@ -290,21 +290,10 @@ function requireAesDecryptionKey(
   );
 }
 
-export function decrypt(
-  data: Uint8Array,
-  key: PayloadKey | undefined
-): Promise<Uint8Array>;
-export function decrypt(
-  data: unknown,
-  key: PayloadKey | undefined
-): Promise<unknown>;
 export async function decrypt(
-  data: Uint8Array | unknown,
-  key: PayloadKey | undefined
-): Promise<Uint8Array | unknown> {
-  // Non-binary data is returned as-is.
-  if (!(data instanceof Uint8Array)) return data;
-
+  data: Uint8Array,
+  key: DecryptionKey | undefined
+): Promise<Uint8Array> {
   const format = peekFormatPrefix(data);
 
   if (format === SerializationFormat.SEALED) {
@@ -340,7 +329,7 @@ function addFormatPrefix(error: unknown, format: string): unknown {
  */
 export function decryptReplayPayload(
   data: Uint8Array,
-  key: PayloadKey | undefined
+  key: DecryptionKey | undefined
 ): Uint8Array {
   const format = peekFormatPrefix(data);
   if (format === SerializationFormat.SEALED) {

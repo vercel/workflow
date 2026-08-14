@@ -117,7 +117,7 @@ describe('encodeWithFormatPrefix', () => {
     const encoded = encodeWithFormatPrefix(
       SerializationFormat.DEVALUE_V1,
       payload
-    ) as Uint8Array;
+    );
 
     expect(encoded.length).toBe(4 + 3);
     // First 4 bytes should be 'devl'
@@ -126,28 +126,12 @@ describe('encodeWithFormatPrefix', () => {
     expect(Array.from(encoded.subarray(4))).toEqual([1, 2, 3]);
   });
 
-  it('should return non-Uint8Array values unchanged', () => {
-    const str = 'hello';
-    expect(encodeWithFormatPrefix(SerializationFormat.DEVALUE_V1, str)).toBe(
-      str
-    );
-
-    const num = 42;
-    expect(encodeWithFormatPrefix(SerializationFormat.DEVALUE_V1, num)).toBe(
-      num
-    );
-
-    expect(
-      encodeWithFormatPrefix(SerializationFormat.DEVALUE_V1, null)
-    ).toBeNull();
-  });
-
   it('should handle empty payload', () => {
     const payload = new Uint8Array(0);
     const encoded = encodeWithFormatPrefix(
       SerializationFormat.DEVALUE_V1,
       payload
-    ) as Uint8Array;
+    );
     expect(encoded.length).toBe(4);
   });
 
@@ -157,7 +141,7 @@ describe('encodeWithFormatPrefix', () => {
     const encoded = encodeWithFormatPrefix(
       SerializationFormat.DEVALUE_V1,
       payload
-    ) as Uint8Array;
+    );
     expect(encoded.length).toBe(4 + 100000);
   });
 });
@@ -168,20 +152,11 @@ describe('decodeFormatPrefix', () => {
     const encoded = encodeWithFormatPrefix(
       SerializationFormat.DEVALUE_V1,
       payload
-    ) as Uint8Array;
+    );
 
     const decoded = decodeFormatPrefix(encoded);
     expect(decoded.format).toBe('devl');
     expect(decoded.payload).toEqual(new Uint8Array([1, 2, 3]));
-  });
-
-  it('should handle legacy non-binary data', () => {
-    const legacyData = [1, 'hello', { a: 2 }];
-    const decoded = decodeFormatPrefix(legacyData);
-    expect(decoded.format).toBe('devl');
-    expect(decoded.payload).toEqual(
-      new TextEncoder().encode(JSON.stringify(legacyData))
-    );
   });
 
   it('should throw for data too short', () => {
@@ -204,7 +179,7 @@ describe('decodeFormatPrefix', () => {
     const encoded = encodeWithFormatPrefix(
       SerializationFormat.ENCRYPTED,
       payload
-    ) as Uint8Array;
+    );
 
     const decoded = decodeFormatPrefix(encoded);
     expect(decoded.format).toBe('encr');
@@ -221,13 +196,6 @@ describe('peekFormatPrefix', () => {
     ) as Uint8Array;
 
     expect(peekFormatPrefix(encoded)).toBe('devl');
-  });
-
-  it('should return null for non-binary data', () => {
-    expect(peekFormatPrefix('not binary')).toBeNull();
-    expect(peekFormatPrefix(42)).toBeNull();
-    expect(peekFormatPrefix(null)).toBeNull();
-    expect(peekFormatPrefix(undefined)).toBeNull();
   });
 
   it('should return null for data too short', () => {
@@ -287,19 +255,12 @@ describe('encrypt', () => {
     expect(result).toBe(data);
   });
 
-  it('should return non-Uint8Array data unchanged even with key', async () => {
-    const key = await makeKey();
-    const data = 'string data';
-    const result = await encrypt(data, key);
-    expect(result).toBe(data);
-  });
-
   it('should encrypt and add encr prefix when key provided', async () => {
     const key = await makeKey();
     const data = encodeWithFormatPrefix(
       SerializationFormat.DEVALUE_V1,
       new Uint8Array([1, 2, 3])
-    ) as Uint8Array;
+    );
 
     const encrypted = await encrypt(data, key);
     expect(encrypted).toBeInstanceOf(Uint8Array);

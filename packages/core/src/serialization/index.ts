@@ -20,6 +20,7 @@ export {
 // Re-export composable encryption
 export {
   type CryptoKey,
+  type DecryptionKey,
   decrypt,
   type EncryptionKeyParam,
   encrypt,

@@ -13,8 +13,8 @@ import {
   type World,
 } from '@workflow/world';
 import {
+  type DecryptionKey,
   deriveRunPayloadKeys,
-  type PayloadKey,
 } from '../serialization/encryption.js';
 import {
   getExternalRevivers,
@@ -193,7 +193,7 @@ export class Run<TResult> {
    * reused for returnValue, getReadable(), etc.
    * @internal
    */
-  #encryptionKeyPromise: Promise<PayloadKey | undefined> | null = null;
+  #encryptionKeyPromise: Promise<DecryptionKey | undefined> | null = null;
 
   /**
    * When true, run_created failed and the run may not exist yet (the
@@ -215,7 +215,7 @@ export class Run<TResult> {
    * to be resolved once.
    * @internal
    */
-  #getEncryptionKey(run?: WorkflowRun): Promise<PayloadKey | undefined> {
+  #getEncryptionKey(run?: WorkflowRun): Promise<DecryptionKey | undefined> {
     if (!this.#encryptionKeyPromise) {
       this.#encryptionKeyPromise = (async () => {
         const world = await this.#lazyWorldPromise;
@@ -233,7 +233,7 @@ export class Run<TResult> {
    * unobserved run lookup.
    * @internal
    */
-  #getEncryptionKeyLazily(): () => Promise<PayloadKey | undefined> {
+  #getEncryptionKeyLazily(): () => Promise<DecryptionKey | undefined> {
     return () => this.#getEncryptionKey();
   }
 
