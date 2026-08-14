@@ -480,7 +480,7 @@ This pattern is especially valuable in larger applications where the workflow an
 
 ### Token Design
 
-Custom tokens are available for `createHook()` with server-side `resumeHook()` only. Webhooks (`createWebhook()`) always generate their own token, drawn from the run's deterministic sequence so the URL stays stable across replays and across concurrent invocations of the same run. A generated token is not trivial to guess, but it is not a secret either: authenticate webhook requests themselves with a signature header, a shared secret, or a check inside the handler rather than relying on URL secrecy.
+Custom tokens are available for `createHook()` with server-side `resumeHook()` only. Webhooks (`createWebhook()`) always generate their own unique tokens A generated token is not trivial to guess, but it is not a strong security contract either - which allows attackers to invoke unintended webhook resumptions. To completely prevent unauthenticated run resumptions, prefer using **hook** over the **webhook** convenience and implement your own authentication on the route that calls `resumeHook`.
 
 When using custom tokens with `createHook()`:
 

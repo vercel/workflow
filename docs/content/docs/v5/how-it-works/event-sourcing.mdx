@@ -229,7 +229,7 @@ That guard sits on the write path. A duplicate the write path does permit — a 
 
 ## Duplicate Events
 
-Concurrent invocations replaying the same run share one event log and _may_ append to the log _before_ verifying that the transition is valid, in certain cases. We recommend validating transitions atomically with event inserts, otherwise duplicate events might be recorded in the log.
+Concurrent invocations replaying the same run share one event log. An invocation working from a stale prefix — one that predates another invocation's write — can commit its own `step_created`, `step_started`, or `wait_created` for an entity the log already records one of. These writes pass the terminal-state guard above, so the write path commits them even when a backend validates transitions atomically with the insert.
 
 Those duplicates are committed but inert. The outcome was decided by the first event of its kind at a lower position in the log, and every replay reads that same event at that same position, so a later copy cannot change what the workflow observes.
 
@@ -252,14 +252,14 @@ Types that share a class are the mutually exclusive outcomes of one decision: a 
 The remaining event types belong to no class and are never skipped:
 
 - `hook_received`: a hook legitimately receives many payloads under one ID, so a second `hook_received` is not a repeat of anything.
-- `hook_conflict`: hook creation must be idempotent, so getting a `hook_conflict` at any position indicates a failure to acquire the hook and can't come after `hook_created` for the same hook
+- `hook_conflict`: records a failed acquisition of the hook's token. Acquisition is idempotent — a run re-creating a hook it already owns converges on the existing `hook_created` rather than conflicting — so a `hook_conflict` cannot follow a `hook_created` for the same hook.
 - `attr_set` is written on every attribute write.
 - `run_created` precedes every replay and is always consumed.
 - `run_completed`, `run_failed`, and `run_cancelled` never reach the check. The runtime exits before replaying the workflow body once the log holds one of them, so no consumer ever takes one and no class is ever recorded for them.
 
 Duplicates are visible in the run's logs. A repeat of the same event type is logged at `info`. A repeat that decides a class differently — a `step_failed` behind a `step_completed`, or the reverse — is logged at `error`. Ignoring it is still correct and still deterministic, but unlike a re-commit of the same outcome there is no reading in which both writers were right, so the discarded outcome is worth surfacing.
 
-The observability UI greys out the events it can identify this way, which is a narrower set than the runtime's. It reads the log without consumer state, and a consumer for an entity that is still open legitimately claims a repeat — each retry of a step writes another `step_started`. So it marks a repeat only once a terminal event for the same entity sits earlier in the log, which is the point past which no consumer remains.
+The observability UI greys out the events it can identify this way, which is a narrower set than the runtime's. It reads the log without consumer state, and a consumer for an entity that is still open legitimately claims a repeat — each retry of a step writes another `step_started`. So it marks a repeat only once no consumer can remain for it: past a terminal event for the same entity, or a second `run_started`, of which the log records one per run. On a partial view of the log — one page of a paginated list, or search results — it marks nothing, since which copy came first is a property of the whole log.
 
 ## Event Correlation
 
