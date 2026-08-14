@@ -1393,7 +1393,14 @@ describe('getWorkflowRunEvents legacy structured-error compatibility', () => {
  * fallback preserves their (correct, if slower) behavior.
  */
 describe('getWorkflowRunEvents hasMore mapping', () => {
-  function mockListResponse(agent: MockAgent, sentinelMeta: object) {
+  function mockListResponse(
+    agent: MockAgent,
+    sentinelMeta: object,
+    query: Record<string, string> = {
+      returnAll: 'true',
+      remoteRefBehavior: 'resolve',
+    }
+  ) {
     const frames = Buffer.concat([
       encodeFrame(
         {
@@ -1412,9 +1419,7 @@ describe('getWorkflowRunEvents hasMore mapping', () => {
       .intercept({
         path: '/api/v4/runs/wrun_1/events',
         method: 'GET',
-        // These tests omit the limit and use the default resolveData
-        // ('all' → resolve); match both translated query params.
-        query: { returnAll: 'true', remoteRefBehavior: 'resolve' },
+        query,
       })
       .reply(200, frames, {
         headers: { 'content-type': V4_FRAME_CONTENT_TYPE },
@@ -1439,10 +1444,14 @@ describe('getWorkflowRunEvents hasMore mapping', () => {
 
   it('maps an explicit hasMore:true through', async () => {
     const agent = mockAgent();
-    mockListResponse(agent, { _end: 1, next: 'cursor-2', hasMore: true });
+    mockListResponse(
+      agent,
+      { _end: 1, next: 'cursor-2', hasMore: true },
+      { limit: '500', remoteRefBehavior: 'resolve' }
+    );
 
     const result = await getWorkflowRunEvents(
-      { runId: 'wrun_1' },
+      { runId: 'wrun_1', pagination: { limit: 500 } },
       { token: 'test-token', dispatcher: agent }
     );
 
@@ -1842,7 +1851,7 @@ describe('createWorkflowRunEvent hook_received replay preload', () => {
     agent.assertNoPendingInterceptors();
   });
 
-  it('rejects a truncated preload stream (no end sentinel)', async () => {
+  it('continues a truncated preload stream after its last event', async () => {
     const agent = mockAgent();
     agent
       .get(ORIGIN)
@@ -1866,15 +1875,43 @@ describe('createWorkflowRunEvent hook_received replay preload', () => {
           },
           PAYLOAD
         ),
+        {
+          headers: {
+            'content-type': V4_FRAME_CONTENT_TYPE,
+            'x-wf-event-id': 'evnt_4',
+          },
+        }
+      );
+
+    agent
+      .get(ORIGIN)
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events?returnAll=true&cursor=eid%3Aevnt_4',
+        method: 'GET',
+      })
+      .reply(
+        200,
+        encodeFrame(
+          { _end: 1, next: 'eid:evnt_4', hasMore: false },
+          new Uint8Array()
+        ),
         { headers: { 'content-type': V4_FRAME_CONTENT_TYPE } }
       );
 
-    await expect(
-      createWorkflowRunEvent('wrun_1', hookReceivedRequest(), preloadParams, {
+    const result = await createWorkflowRunEvent(
+      'wrun_1',
+      hookReceivedRequest(),
+      preloadParams,
+      {
         token: 'test-token',
         dispatcher: agent,
-      })
-    ).rejects.toThrow(/end-of-stream sentinel/);
+      }
+    );
+
+    expect(result.event?.eventId).toBe('evnt_4');
+    expect(result.events).toHaveLength(1);
+    expect(result.cursor).toBe('eid:evnt_4');
+    expect(result.hasMore).toBe(false);
     agent.assertNoPendingInterceptors();
   });
 

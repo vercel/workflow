@@ -27,6 +27,7 @@ import {
   type Event,
   type EventResult,
   EventSchema,
+  type EventStreamObserver,
   type EventType,
   EventTypeSchema,
   getEventDataPayloadField,
@@ -779,7 +780,8 @@ async function decodeCreateEventResponse<T extends EventType>(
 
 export async function createWorkflowRunStartedEventV4(
   input: CreateEventV4InputBase,
-  config?: APIConfig
+  config?: APIConfig,
+  onEvent?: EventStreamObserver
 ) {
   const response = await postWorkflowRunEventV4(
     { ...input, eventType: 'run_started' },
@@ -787,7 +789,14 @@ export async function createWorkflowRunStartedEventV4(
     config
   );
   const events: Event[] = [];
-  const page = await consumeEventFrameStream(response, 'createEvent', events);
+  const page = await consumeReplayLogResponse({
+    response,
+    runId: input.runId,
+    opName: 'createEvent',
+    events,
+    config,
+    onEvent,
+  });
   assert(page.cursor, 'v4 createEvent: event stream missing cursor');
   const maxEvents = MaxEventsHeaderSchema.safeParse(
     response.headers.get(MAX_EVENTS_HEADER)
@@ -1225,13 +1234,14 @@ export type HookReceivedPreloadV4Result =
  * A server that supports the lazy-hook replay stream answers the consumer's
  * idempotent re-ensure with the run's complete replay log as v4 frames —
  * the same event-frame sequence LIST uses, ending with the `_end` sentinel.
- * A truncated stream (EOF without the sentinel) throws; the write is
- * deduplicated by the server's `(runId, resumeId)` constraint, so retrying
- * the whole request is safe and converges on the same canonical event.
+ * A truncated stream resumes with a GET after its last validated event. If it
+ * fails before producing any event, the outer POST retry remains safe because
+ * the server deduplicates `(runId, resumeId)` and returns the canonical event.
  */
 export async function createHookReceivedPreloadEventV4(
   input: CreateEventV4InputBase,
-  config?: APIConfig
+  config?: APIConfig,
+  onEvent?: EventStreamObserver
 ): Promise<HookReceivedPreloadV4Result> {
   const response = await postWorkflowRunEventV4(
     { ...input, eventType: 'hook_received' },
@@ -1248,7 +1258,14 @@ export async function createHookReceivedPreloadEventV4(
   }
 
   const events: Event[] = [];
-  const page = await consumeEventFrameStream(response, 'createEvent', events);
+  const page = await consumeReplayLogResponse({
+    response,
+    runId: input.runId,
+    opName: 'createEvent',
+    events,
+    config,
+    onEvent,
+  });
   const maxEvents = MaxEventsHeaderSchema.safeParse(
     response.headers.get(MAX_EVENTS_HEADER)
   );
@@ -1326,6 +1343,8 @@ export interface ListEventsV4Params extends PaginationOptions {
    * it.
    */
   remoteRefBehavior?: 'resolve' | 'lazy';
+  /** Called synchronously after each event frame validates. */
+  onEvent?: EventStreamObserver;
 }
 
 export interface ListEventsV4Result {
@@ -1339,7 +1358,8 @@ export interface ListEventsV4Result {
 async function consumeEventFrameStream(
   response: Response,
   opName: string,
-  events: Event[]
+  events: Event[],
+  onEvent?: EventStreamObserver
 ): Promise<Pick<ListEventsV4Result, 'cursor' | 'hasMore'>> {
   const contentType = response.headers.get('content-type');
   if (!contentType?.startsWith(V4_FRAME_CONTENT_TYPE)) {
@@ -1349,22 +1369,89 @@ async function consumeEventFrameStream(
   }
 
   const chunks = response.body as unknown as AsyncIterable<Uint8Array>;
+  const frames = decodeFrames(chunks)[Symbol.asyncIterator]();
 
-  for await (const frame of decodeFrames(chunks)) {
-    if (frame.meta._end === 1) {
-      const end = EventStreamEndSchema.parse(frame.meta);
-      return { cursor: end.next ?? null, hasMore: end.hasMore };
+  try {
+    for (;;) {
+      let next: IteratorResult<DecodedFrame>;
+      try {
+        next = await frames.next();
+      } catch (cause) {
+        throw new WorkflowWorldError(
+          `v4 ${opName}: event frame stream failed after ${events.length} events`,
+          { code: 'TRANSPORT', cause }
+        );
+      }
+      if (next.done) break;
+
+      const frame = next.value;
+      if (frame.meta._end === 1) {
+        const end = EventStreamEndSchema.parse(frame.meta);
+        return { cursor: end.next ?? null, hasMore: end.hasMore };
+      }
+      if (Object.keys(frame.meta).some((key) => key.startsWith('_'))) {
+        throw new Error(`v4 ${opName}: unexpected control frame`);
+      }
+      const event = decodeEventFrame(frame);
+      events.push(event);
+      // Deliberately outside the stream-read catch above: observer/application
+      // failures are not truncation and must never advance recovery past this
+      // event.
+      onEvent?.(event);
     }
-    if (Object.keys(frame.meta).some((key) => key.startsWith('_'))) {
-      throw new Error(`v4 ${opName}: unexpected control frame`);
-    }
-    events.push(decodeEventFrame(frame));
+  } finally {
+    await frames.return?.(undefined);
   }
 
-  throw new Error(
+  throw new WorkflowWorldError(
     `v4 ${opName}: frame stream ended without the end-of-stream sentinel ` +
-      `(${events.length} events read) — truncated response?`
+      `(${events.length} events read) — truncated response?`,
+    { code: 'TRANSPORT' }
   );
+}
+
+/**
+ * Finish a replay-log response, reusing every validated prefix. A graceful
+ * `hasMore` sentinel and an interrupted body now converge on the same GET
+ * continuation instead of making run_started download its accepted prefix
+ * again.
+ */
+async function consumeReplayLogResponse({
+  response,
+  runId,
+  opName,
+  events,
+  config,
+  onEvent,
+}: {
+  response: Response;
+  runId: string;
+  opName: string;
+  events: Event[];
+  config?: APIConfig;
+  onEvent?: EventStreamObserver;
+}): Promise<Pick<ListEventsV4Result, 'cursor' | 'hasMore'>> {
+  let page: Pick<ListEventsV4Result, 'cursor' | 'hasMore'>;
+  try {
+    page = await consumeEventFrameStream(response, opName, events, onEvent);
+  } catch (error) {
+    if (!WorkflowWorldError.is(error) || error.code !== 'TRANSPORT') {
+      throw error;
+    }
+    const lastEvent = events.at(-1);
+    if (!lastEvent) throw error;
+    page = { cursor: `eid:${lastEvent.eventId}`, hasMore: true };
+  }
+
+  if (!page.hasMore) return page;
+  assert(page.cursor, `v4 ${opName}: partial event stream missing cursor`);
+  const suffix = await getWorkflowRunEventsV4(
+    runId,
+    { cursor: page.cursor, onEvent },
+    config
+  );
+  events.push(...suffix.events);
+  return { cursor: suffix.cursor, hasMore: suffix.hasMore };
 }
 
 /**
@@ -1381,7 +1468,8 @@ async function consumeListFrameStream(
   headers: Headers,
   config: APIConfig | undefined,
   opName: string,
-  events: Event[]
+  events: Event[],
+  onEvent?: EventStreamObserver
 ): Promise<Pick<ListEventsV4Result, 'cursor' | 'hasMore'>> {
   const response = await fetchV4(
     url,
@@ -1389,7 +1477,7 @@ async function consumeListFrameStream(
     config,
     opName
   );
-  return consumeEventFrameStream(response, opName, events);
+  return consumeEventFrameStream(response, opName, events, onEvent);
 }
 
 /**
@@ -1443,8 +1531,19 @@ export async function getWorkflowRunEventsV4(
         headers,
         config,
         'listEvents',
-        events
+        events,
+        params.onEvent
       );
+      if (params.limit === undefined && page.hasMore) {
+        if (!page.cursor || page.cursor === cursor) {
+          throw new WorkflowWorldError(
+            `v4 listEvents: partial event stream made no cursor progress for run ${runId}`,
+            { code: 'SCHEMA_VALIDATION' }
+          );
+        }
+        cursor = page.cursor;
+        continue;
+      }
       return { events, ...page };
     } catch (error) {
       const lastEvent = events.at(-1);
@@ -1492,7 +1591,8 @@ export async function getEventsByCorrelationIdV4(
     headers,
     config,
     'listEventsByCorrelationId',
-    events
+    events,
+    params.onEvent
   );
   return { events, ...page };
 }

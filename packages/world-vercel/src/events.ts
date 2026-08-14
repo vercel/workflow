@@ -446,6 +446,9 @@ export async function getWorkflowRunEvents(
   const listParams: ListEventsV4Params = {
     ...pagination,
     remoteRefBehavior: resolveData === 'none' ? 'lazy' : 'resolve',
+    ...('onEvent' in params && params.onEvent
+      ? { onEvent: params.onEvent }
+      : {}),
   };
 
   const result = await ('correlationId' in params
@@ -744,7 +747,11 @@ async function createWorkflowRunEventInner(
   };
 
   if (data.eventType === 'run_started' && !params?.skipPreload) {
-    const result = await createWorkflowRunStartedEventV4(input, config);
+    const result = await createWorkflowRunStartedEventV4(
+      input,
+      config,
+      params?.onEvent
+    );
     const runCreated = result.events.find(
       (event) => event.eventType === 'run_created'
     );
@@ -811,7 +818,8 @@ async function createWorkflowRunEventInner(
     // an S3-backed hook payload the runtime would discard anyway.
     const outcome = await createHookReceivedPreloadEventV4(
       { ...input, remoteRefBehavior: 'lazy' },
-      config
+      config,
+      params.onEvent
     );
     if (outcome.kind === 'materialized') {
       // Older server (or optimization declined): the write still succeeded
