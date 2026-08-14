@@ -449,10 +449,15 @@ export interface World extends Queue, Streamer, Storage {
   analytics?: Analytics;
 
   /**
-   * The Workflow protocol spec version this World implements.
+   * The Workflow protocol spec version this World implements, and the version
+   * stamped on every run it creates.
    *
-   * Current runtimes require this to exactly match their
-   * `SPEC_VERSION_CURRENT` before they create or replay runs.
+   * Declare `SPEC_VERSION_CURRENT` rather than a literal. The runtime checks
+   * this against `[SPEC_VERSION_CURRENT, SPEC_VERSION_MAX_SUPPORTED]` before it
+   * creates or replays anything, and refuses a World outside that range: below
+   * the floor the World allocates event ids the runtime cannot read positions
+   * out of (see the event log contract above), above the ceiling it speaks a
+   * spec this runtime has not learned.
    */
   specVersion: number;
 
