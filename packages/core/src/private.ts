@@ -614,6 +614,14 @@ function ensureBarrierSafetyNet(ctx: WorkflowOrchestratorContext): void {
   const rearm = () => {
     setTimeout(check, 0);
   };
+  // A rejected promiseQueue settles immediately and forever, so re-arming
+  // through it at the normal cadence would degenerate into a busy loop on an
+  // abandoned context. Back off instead: correctness only needs the dispenser
+  // to still exist, since the registry gates suspension via isDeliveryIdle
+  // and a dead dispenser would wedge the run.
+  const rearmAfterRejection = () => {
+    setTimeout(check, 50);
+  };
   const check = () => {
     if (barriers.size === 0) {
       // Dormant. The next registerDeliveryBarrier re-arms.
@@ -623,10 +631,8 @@ function ensureBarrierSafetyNet(ctx: WorkflowOrchestratorContext): void {
     if (!canRetireAbandonedBarriers(ctx)) {
       // A delivery is hydrating or committed-but-parked on its deferral; let
       // the queue drain and re-check a tick later (same cadence as
-      // scheduleWhenIdle). Re-arm on rejection too: a poisoned promiseQueue
-      // must not silently kill the dispenser — the registry gates suspension
-      // via isDeliveryIdle, so a dead dispenser would wedge the run.
-      ctx.promiseQueue.then(rearm, rearm);
+      // scheduleWhenIdle).
+      ctx.promiseQueue.then(rearm, rearmAfterRejection);
       return;
     }
     // Idle with entries left: nothing remaining delivers on its own, so
