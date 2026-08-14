@@ -1252,6 +1252,7 @@ export function hmrFuzzWorkflowHelper(value: HmrFuzzBox) {
                   : undefined,
             });
           }
+          await expectHmrLogCounts(logCursor, testCase.expectedLogCounts);
         }
 
         const fullCases = [
