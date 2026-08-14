@@ -42,10 +42,14 @@ import {
   WORKFLOW_USE_STEP,
 } from './symbols.js';
 import * as Attribute from './telemetry/semantic-conventions.js';
-import { applyWorkflowSuspensionToSpan, trace } from './telemetry.js';
+import {
+  applyWorkflowSuspensionToSpan,
+  recordElapsedSpan,
+  trace,
+} from './telemetry.js';
 import { getWorkflowRunStreamId } from './util.js';
 import { createContext } from './vm/index.js';
-import { runCachedWorkflowScript } from './vm/script-cache.js';
+import { getCachedWorkflowScriptWithStatus } from './vm/script-cache.js';
 import {
   createAbortSignalStatics,
   createCreateAbortController,
@@ -345,6 +349,11 @@ async function createWorkflowSession({
       : `http://localhost:${(await getPortLazy()) ?? 3000}`
   );
 
+  // Include both node:vm's context creation and the host-side sandbox wiring
+  // below. Most of the bootstrap lives in this function (EventsConsumer,
+  // workflow globals, Web API shims), so tracing createContext() alone would
+  // materially under-report VM startup.
+  const vmBootstrapStartedAt = Date.now();
   const {
     context,
     globalThis: vmGlobalThis,
@@ -1071,22 +1080,43 @@ async function createWorkflowSession({
   vmGlobalThis[SYMBOL_FOR_REQ_CONTEXT] = (globalThis as any)[
     SYMBOL_FOR_REQ_CONTEXT
   ];
+  await recordElapsedSpan('workflow.vm.create_context', vmBootstrapStartedAt);
 
   // Get a reference to the user-defined workflow function.
   // The filename parameter ensures stack traces show a meaningful name
   // (e.g., "example/workflows/99_e2e.ts") instead of "evalmachine.<anonymous>".
   const parsedName = parseWorkflowName(workflowRun.workflowName);
   const filename = parsedName?.moduleSpecifier || workflowRun.workflowName;
+  const workflowLookupCode = `globalThis.__private_workflows?.get(${JSON.stringify(workflowRun.workflowName)})`;
 
   // Reuse compiled scripts by `(code, filename)`: compilation is deterministic
   // and the filename preserves workflow source attribution in stack traces.
   // The bundle registers workflows on `globalThis.__private_workflows`.
-  runCachedWorkflowScript(workflowCode, filename, context);
-  const workflowFn = runCachedWorkflowScript(
-    `globalThis.__private_workflows?.get(${JSON.stringify(workflowRun.workflowName)})`,
-    filename,
-    context
+  const { bundleScript, workflowLookupScript } = await trace(
+    'workflow.bundle.compile',
+    async (span) => {
+      const bundle = getCachedWorkflowScriptWithStatus(workflowCode, filename);
+      const lookup = getCachedWorkflowScriptWithStatus(
+        workflowLookupCode,
+        filename
+      );
+      span?.setAttributes({
+        // This attribute intentionally describes the workflow bundle. The
+        // tiny workflow-name lookup script has its own cache entry and may
+        // miss when another workflow from the same source file runs, but that
+        // does not mean V8 recompiled the application bundle.
+        ...Attribute.WorkflowBundleCompileCacheHit(bundle.cacheHit),
+      });
+      return {
+        bundleScript: bundle.script,
+        workflowLookupScript: lookup.script,
+      };
+    }
   );
+  const workflowFn = await trace('workflow.bundle.evaluate', async () => {
+    bundleScript.runInContext(context);
+    return workflowLookupScript.runInContext(context);
+  });
 
   if (typeof workflowFn !== 'function') {
     throw new WorkflowNotRegisteredError(workflowRun.workflowName);
@@ -1098,24 +1128,27 @@ async function createWorkflowSession({
   // workflow function subscribing its first step callbacks.
   let args: unknown[] = [];
   workflowContext.promiseQueue = workflowContext.promiseQueue.then(async () => {
-    const prepared = await replayPayloadCache.prepareWorkflowInput(workflowRun);
-    args = await hydrateWorkflowArguments(
-      workflowRun.input,
-      workflowRun.runId,
-      encryptionKey,
-      vmGlobalThis,
-      {},
-      prepared
-    );
+    // Include any residual preparation that did not finish while the event log
+    // was streaming, plus VM-local deserialization, in the blocking boundary.
+    args = await trace('workflow.input.hydrate', async () => {
+      const prepared =
+        await replayPayloadCache.prepareWorkflowInput(workflowRun);
+      return hydrateWorkflowArguments(
+        workflowRun.input,
+        workflowRun.runId,
+        encryptionKey,
+        vmGlobalThis,
+        {},
+        prepared
+      );
+    });
   });
   await workflowContext.promiseQueue;
 
   // The user function's promise. It may stay pending across many resumes
   // (each parked step promise holds it up) and is raced against the current
   // attempt's interruption in waitForExecution.
-  const workflowBody = (async (): Promise<unknown> => {
-    return await workflowFn(...args);
-  })();
+  let workflowBody: Promise<unknown>;
 
   const failWorkflow = async (error: unknown): Promise<never> => {
     // Control-flow signals are handled by the runtime and do not mean the
@@ -1244,8 +1277,20 @@ async function createWorkflowSession({
     },
   };
 
+  // Start the user function inside the span, rather than wrapping the already
+  // running promise: an async workflow executes synchronously until its first
+  // await, and that work is part of replay. The span ends at the first
+  // suspension/completion; later retained resumes get their own workflow.run
+  // span and do not leave this replay span open while the VM is parked.
+  const execution = trace('workflow.replay.execute', async () => {
+    workflowBody = (async (): Promise<unknown> => {
+      return await workflowFn(...args);
+    })();
+    return waitForExecution(initialInterruption);
+  });
+
   return {
     session,
-    execution: waitForExecution(initialInterruption),
+    execution,
   };
 }
