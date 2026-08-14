@@ -181,8 +181,9 @@ export function aesKeyOf(key: PayloadKey | undefined): CryptoKey | undefined {
 }
 
 /**
- * Encryption key parameter type. Accepts a resolved key, undefined (no encryption),
- * a promise, or a resolver that can defer fetching the key until data needs it.
+ * A stream may receive a resolved key, an in-flight lookup, or a lazy lookup
+ * that should not start until the first frame arrives. It resolves this input
+ * only once.
  */
 export type EncryptionKeyParam =
   | PayloadKey
@@ -225,18 +226,6 @@ export async function encrypt(
   return encodeWithFormatPrefix(SerializationFormat.ENCRYPTED, encrypted);
 }
 
-/**
- * Decrypt a format-prefixed payload if it's encrypted or sealed.
- *
- * Strips the `encr`/`encp` format prefix and recovers the inner payload.
- * Opening a sealed (`encp`) payload requires the run's X25519 keypair, so the
- * caller must supply {@link RunPayloadKeys} — a bare symmetric key cannot do
- * it, and neither can a {@link SealTarget} (which is write-only by design).
- *
- * @param data - The potentially encrypted data
- * @param key - Encryption key (undefined to skip decryption)
- * @returns The decrypted inner payload, or the original data if not encrypted
- */
 /**
  * Open a sealed (`encp`) envelope. Split out from {@link decrypt} to keep
  * each scheme's error handling readable on its own.
@@ -290,6 +279,10 @@ function requireAesDecryptionKey(
   );
 }
 
+/**
+ * Decrypt a format-prefixed payload if it is encrypted or sealed.
+ * Sealed payloads require the owning run's X25519 keypair.
+ */
 export async function decrypt(
   data: Uint8Array,
   key: DecryptionKey | undefined

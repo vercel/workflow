@@ -282,12 +282,6 @@ describe('decrypt', () => {
     expect(decrypted).toEqual(data);
   });
 
-  it('should return non-binary data unchanged', async () => {
-    const data = [1, 2, 3];
-    const result = await decrypt(data, undefined);
-    expect(result).toBe(data);
-  });
-
   it('should return non-encrypted binary data unchanged', async () => {
     const data = encodeWithFormatPrefix(
       SerializationFormat.DEVALUE_V1,

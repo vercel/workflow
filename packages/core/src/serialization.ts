@@ -34,16 +34,11 @@ import {
   decodeRunPublicKey,
 } from './sealed-box.js';
 import * as clientModule from './serialization/client.js';
-import {
-  type CompressionStats,
-  compress,
-  decompress,
-} from './serialization/compression.js';
+import type { CompressionStats } from './serialization/compression.js';
 import {
   aesKeyOf,
   type DecryptionKey,
   decrypt,
-  decryptReplayPayload,
   deriveRunPayloadKeys,
   type EncryptionKeyParam,
   encrypt,
@@ -71,6 +66,7 @@ import {
   isInstanceOfPrototype,
   readProperty,
 } from './serialization/hardened.js';
+import { decodePayload, encodePayload } from './serialization/payload.js';
 import {
   getClassReducers,
   getClassRevivers,
@@ -84,6 +80,10 @@ import {
   getStepFunctionReducer,
   getStepFunctionReviver,
 } from './serialization/reducers/step-function.js';
+import {
+  type PreparedReplayPayload,
+  prepareReplayPayload,
+} from './serialization/replay.js';
 import * as stepModule from './serialization/step.js';
 import {
   type FormatPrefix,
@@ -125,8 +125,6 @@ export {
   isEncrypted,
   encrypt,
   decrypt,
-  compress,
-  decompress,
   type EncryptionKeyParam,
   // Sealed-box ('encp') key variants — see serialization/encryption.ts.
   type DecryptionKey,
@@ -140,6 +138,8 @@ export {
   isRunPayloadKeys,
   aesKeyOf,
 };
+
+export { compress, decompress } from './serialization/compression.js';
 
 // Re-export the legacy SerializationFormatType for backwards compatibility.
 // New code should use FormatPrefix from './serialization/types.js'.
@@ -3379,78 +3379,20 @@ function getStepRevivers(
   };
 }
 
-/**
- * Replay hydration has two stages:
- *
- * 1. Host-side preparation decrypts and decompresses persisted data. That work
- *    is independent of a workflow VM and can be cached across replay VMs.
- * 2. Deserialization revives the prepared representation against the current
- *    VM's globals. It must run again for every VM to produce fresh object graphs
- *    and correctly scoped Workflow objects.
- *
- * `data` is the boundary between those stages. For current-format payloads it
- * is still format-prefixed serialized bytes, not a live JavaScript value.
- */
-export interface PreparedReplayPayload {
-  readonly data: unknown;
-}
-
-/**
- * Swappable implementation of the host-side preparation stage. Supporting
- * both direct and promised results covers synchronous Node AES/zstd as well as
- * the portable Web Crypto and sealed-envelope fallbacks.
- */
-export type ReplayPayloadPreparer = (
-  value: Uint8Array,
-  key: DecryptionKey | undefined
-) => PreparedReplayPayload | Promise<PreparedReplayPayload>;
-
-/**
- * Decrypt and decompress persisted data without parsing it into JavaScript.
- * Legacy non-binary values are handled before this binary preparation boundary.
- */
-function prepareReplayPayloadWithStats(
-  value: Uint8Array,
-  key: DecryptionKey | undefined,
-  compressionStats?: CompressionStats
-): PreparedReplayPayload | Promise<PreparedReplayPayload> {
-  const finish = (prepared: Uint8Array): PreparedReplayPayload => ({
-    data: prepared,
-  });
-  const decompressPrepared = (
-    decrypted: Uint8Array
-  ): PreparedReplayPayload | Promise<PreparedReplayPayload> => {
-    const prepared = decompress(decrypted, compressionStats);
-    return prepared instanceof Promise
-      ? prepared.then(finish)
-      : finish(prepared);
-  };
-
-  if (peekFormatPrefix(value) === SerializationFormat.SEALED) {
-    return decrypt(value, key).then(decompressPrepared);
-  }
-  return decompressPrepared(decryptReplayPayload(value, key));
-}
-
-// Replay preparation is event-at-a-time and may run inside the response
-// decoder. Per-payload compression attributes would add a detached O(N)
-// microtask tail and repeatedly overwrite one span, so the replay fast path
-// records only its aggregate preparation span.
-export const prepareReplayPayload: ReplayPayloadPreparer = (value, key) =>
-  prepareReplayPayloadWithStats(value, key);
+export {
+  type PreparedReplayPayload,
+  prepareReplayPayload,
+  type ReplayPayloadPreparer,
+} from './serialization/replay.js';
 
 async function prepareReplayPayloadWithTelemetry(
   value: unknown,
   key: DecryptionKey | undefined
 ): Promise<PreparedReplayPayload> {
-  if (!(value instanceof Uint8Array)) return { data: value };
+  if (!(value instanceof Uint8Array)) return { legacy: value };
 
   const compressionStats: CompressionStats = {};
-  const prepared = await prepareReplayPayloadWithStats(
-    value,
-    key,
-    compressionStats
-  );
+  const prepared = await prepareReplayPayload(value, key, compressionStats);
   await recordCompression(compressionStats, 'deserialize');
   return prepared;
 }
@@ -3465,7 +3407,8 @@ export function deserializePreparedReplayPayload(
   global: Record<string, any> = globalThis,
   extraRevivers: Record<string, (value: any) => any> = {}
 ): any {
-  return workflowModule.deserialize(prepared.data, {
+  const data = prepared instanceof Uint8Array ? prepared : prepared.legacy;
+  return workflowModule.deserialize(data, {
     global,
     extraRevivers: {
       ...getStreamAndRequestRevivers(getWorkflowRevivers(global)),
@@ -3483,7 +3426,7 @@ export function deserializePreparedStepError(
   global: Record<string, any> = globalThis,
   extraRevivers: Record<string, (value: any) => any> = {}
 ): unknown {
-  const { data } = prepared;
+  const data = prepared instanceof Uint8Array ? prepared : prepared.legacy;
   if (!(data instanceof Uint8Array)) {
     return unflatten(data as any[], {
       ...getWorkflowRevivers(global),
@@ -3571,18 +3514,19 @@ export async function dehydrateWorkflowArguments(
  * arguments from the database at the start of workflow execution. A prepared
  * payload skips host-side decrypt/decompress but always performs VM revival.
  */
-export async function hydrateWorkflowArguments(
+export function hydrateWorkflowArguments(
   value: unknown,
   _runId: string,
   key: DecryptionKey | undefined,
   global: Record<string, any> = globalThis,
   extraRevivers: Record<string, (value: any) => any> = {},
   prepared?: PreparedReplayPayload
-): Promise<any> {
-  return deserializePreparedReplayPayload(
-    prepared ?? (await prepareReplayPayloadWithTelemetry(value, key)),
-    global,
-    extraRevivers
+): any | Promise<any> {
+  if (prepared) {
+    return deserializePreparedReplayPayload(prepared, global, extraRevivers);
+  }
+  return prepareReplayPayloadWithTelemetry(value, key).then((payload) =>
+    deserializePreparedReplayPayload(payload, global, extraRevivers)
   );
 }
 
@@ -3835,14 +3779,13 @@ export async function dehydrateStepError(
       SerializationFormat.DEVALUE_V1,
       payload
     );
-    // Compress before encrypting — encrypted bytes don't compress.
     const compressionStats: CompressionStats = {};
-    const compressed = await compress(
+    const encrypted = await encodePayload(
       serialized,
+      key,
       compression,
       compressionStats
     );
-    const encrypted = await encrypt(compressed, key);
     await recordCompression(compressionStats, 'serialize');
     return encrypted;
   } catch (error) {
@@ -3865,18 +3808,19 @@ export async function dehydrateStepError(
  * @param prepared - Optional cached decrypt/decompress result
  * @returns The hydrated thrown value, ready to reject the step promise
  */
-export async function hydrateStepError(
+export function hydrateStepError(
   value: unknown,
   _runId: string,
   key: DecryptionKey | undefined,
   global: Record<string, any> = globalThis,
   extraRevivers: Record<string, (value: any) => any> = {},
   prepared?: PreparedReplayPayload
-): Promise<unknown> {
-  return deserializePreparedStepError(
-    prepared ?? (await prepareReplayPayloadWithTelemetry(value, key)),
-    global,
-    extraRevivers
+): unknown | Promise<unknown> {
+  if (prepared) {
+    return deserializePreparedStepError(prepared, global, extraRevivers);
+  }
+  return prepareReplayPayloadWithTelemetry(value, key).then((payload) =>
+    deserializePreparedStepError(payload, global, extraRevivers)
   );
 }
 
@@ -3905,14 +3849,13 @@ export async function dehydrateRunError(
       SerializationFormat.DEVALUE_V1,
       payload
     );
-    // Compress before encrypting — encrypted bytes don't compress.
     const compressionStats: CompressionStats = {};
-    const compressed = await compress(
+    const encrypted = await encodePayload(
       serialized,
+      key,
       compression,
       compressionStats
     );
-    const encrypted = await encrypt(compressed, key);
     await recordCompression(compressionStats, 'serialize');
     return encrypted;
   } catch (error) {
@@ -3950,9 +3893,7 @@ export async function hydrateRunError(
   }
 
   const compressionStats: CompressionStats = {};
-  const decrypted = await decrypt(value, key);
-
-  const prepared = await decompress(decrypted, compressionStats);
+  const prepared = await decodePayload(value, key, compressionStats);
   await recordCompression(compressionStats, 'deserialize');
   const { format, payload } = decodeFormatPrefix(prepared);
 
@@ -3980,18 +3921,19 @@ export async function hydrateRunError(
  * Called from the workflow handler when replaying the event log
  * of a `step_completed` event.
  */
-export async function hydrateStepReturnValue(
+export function hydrateStepReturnValue(
   value: unknown,
   _runId: string,
   key: DecryptionKey | undefined,
   global: Record<string, any> = globalThis,
   extraRevivers: Record<string, (value: any) => any> = {},
   prepared?: PreparedReplayPayload
-): Promise<any> {
-  return deserializePreparedReplayPayload(
-    prepared ?? (await prepareReplayPayloadWithTelemetry(value, key)),
-    global,
-    extraRevivers
+): any | Promise<any> {
+  if (prepared) {
+    return deserializePreparedReplayPayload(prepared, global, extraRevivers);
+  }
+  return prepareReplayPayloadWithTelemetry(value, key).then((payload) =>
+    deserializePreparedReplayPayload(payload, global, extraRevivers)
   );
 }
 
