@@ -1,18 +1,8 @@
 import { type CompressionStats, decompress } from './compression.js';
 import { type DecryptionKey, decrypt } from './encryption.js';
 
-/** Legacy payloads need no byte preparation but still share the hydrate API. */
-export interface LegacyReplayPayload {
-  readonly legacy: unknown;
-}
-
 /** Host-owned bytes, or a tagged legacy value from before binary envelopes. */
-export type PreparedReplayPayload = Uint8Array | LegacyReplayPayload;
-
-export type ReplayPayloadPreparer = (
-  value: Uint8Array,
-  key: DecryptionKey | undefined
-) => Uint8Array | Promise<Uint8Array>;
+export type PreparedReplayPayload = Uint8Array | { readonly legacy: unknown };
 
 /**
  * Decrypt and decompress persisted bytes without creating VM-owned values.
