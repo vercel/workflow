@@ -3,20 +3,20 @@ name: World Sim
 # Plays the deterministic scenario book (`workbench/sim-world`) against the
 # runtime in this commit, once per log world, and publishes the two summaries.
 #
-# This lane never blocks a merge, by design. Six scenarios in the book fail on
+# This lane never blocks a merge, by design. Three scenarios in the book fail on
 # purpose: each one is a reproduction of a corruption the runtime can still
 # produce, stating the outcome its own durable log implies, and staying red
 # until the runtime gets there. A gate that goes red on every PR is a gate
 # everyone learns to ignore, so the job publishes numbers instead of verdicts —
 # and the number to watch is in the comment, not the check mark.
 #
-#   mint-ordered (production):  35 passed, 6 failed, 6 violations
+#   mint-ordered (production):  38 passed, 3 failed, 3 violations
 #   append-only:                41 passed, 0 failed, 0 violations
 #
-# A seventh red is a regression. Five means something got fixed and a scenario
+# A fourth red is a regression. Two means something got fixed and a scenario
 # is ready to retire. The append-only column is the measurement the pair exists
-# for: it says which of the six would close if event positions were assigned at
-# commit instead of at the handler's mint.
+# for: it says which of the three would close if event positions were assigned
+# at commit instead of at the handler's mint.
 
 on:
   push:

@@ -9,13 +9,12 @@
  * against each other, and the World API exposes no primitive that could — at
  * most an optimistic fence, which is two checks and not isolation:
  *
- * - `stateUpdatedAt` is a high-water mark on one class of write ("is there an
+ * - a watermark is a high-water mark on one class of write ("is there an
  *   out-of-band event newer than my snapshot?"). It sees a log truncated at the
  *   end; it cannot see a hole in the middle.
  * - a count of the events the caller loaded at or below that mark closes the
  *   hole, but only for events already committed when the write is checked, and
- *   only within a bounded window of the log's tail. It is also dark in
- *   production, since no client sends the count (`countGuard` arms it).
+ *   only within a bounded window of the log's tail.
  *
  * So a hole in the middle is what the step-vs-step scenarios exploit, and a hole
  * that opens *after* the write it should have fenced is beyond either check.

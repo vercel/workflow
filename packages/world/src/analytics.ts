@@ -194,6 +194,9 @@ export interface AnalyticsListEventsByCorrelationIdParams {
   pagination?: PaginationOptions;
 }
 
+/** Maximum number of event IDs accepted by one analytics batch lookup. */
+export const ANALYTICS_EVENTS_GET_MANY_LIMIT = 100;
+
 export interface AnalyticsListHooksParams {
   runId: string;
   pagination?: PaginationOptions;
@@ -228,6 +231,16 @@ export interface Analytics {
   };
   events: {
     get(runId: string, eventId: string): Promise<AnalyticsEvent>;
+    /**
+     * Retrieves the analytics rows present for a bounded set of event IDs in
+     * one run. Missing rows are omitted because analytics ingestion may lag
+     * canonical storage. Duplicate IDs are looked up once; result ordering is
+     * not guaranteed.
+     */
+    getMany(
+      runId: string,
+      eventIds: readonly string[]
+    ): Promise<AnalyticsEvent[]>;
     list(
       params: AnalyticsListEventsParams
     ): Promise<PaginatedResponse<AnalyticsEvent>>;

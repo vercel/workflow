@@ -38,11 +38,6 @@ export function createWorld(config?: APIConfig): World {
     specVersion: SPEC_VERSION_SUPPORTS_SLOT_IDENTITY,
     capabilities: {
       hookRetention: { active: true },
-      // workflow-server enforces the `stateUpdatedAt` optimistic-concurrency
-      // guard: creations carrying a stale snapshot are rejected with 412
-      // (PreconditionFailedError) when the run's outside-event marker is
-      // newer. See vercel/workflow-server#484.
-      preconditionGuard: true,
       // Vercel Queues supports maxConcurrency-limited consumers, which
       // WORKFLOW_SEQUENTIAL_REPLAYS=1 uses for per-run `maxConcurrency: 1`
       // flow topics (see queue.ts and @workflow/builders).
@@ -50,11 +45,6 @@ export function createWorld(config?: APIConfig): World {
       // Vercel deployments are atomic and immutable, so a deployment id names
       // one fixed build for its whole lifetime.
       deploymentAffinity: true,
-      // New runs get dense per-run slot event ids. Runs created before the
-      // backend adopted them keep their ULIDs; the scheme is pinned by the
-      // spec version stamped on each run, not by this flag, which only says
-      // what new runs get.
-      slotEventIds: true,
       // NOTE: the backend half of resumeHook()'s parallel fast path — that
       // the server enforces the `(runId, resumeId)` dedup constraint — is
       // NO LONGER a static world capability here. It is attested per-lookup by

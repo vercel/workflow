@@ -133,11 +133,9 @@ export interface ScenarioSpec {
    * Also enforce the count half of the fence: reject a write whose caller loaded
    * fewer events at or below its watermark than the log now holds.
    *
-   * Defaults to `preconditionGuard`, because that is production: since #3145
-   * `@workflow/core` sends `stateEventCount` on every replay-context create and
-   * workflow-server's count guard is on by default, so a fence is a fence with
-   * both halves. Set it to `false` alongside `preconditionGuard: true` to model
-   * the watermark alone.
+   * Defaults to `preconditionGuard`, because that is production: a world that
+   * fences at all fences with both halves. Set it to `false` alongside
+   * `preconditionGuard: true` to model the watermark alone.
    */
   countGuard?: boolean;
   /**
@@ -326,7 +324,7 @@ export async function runScenario(
       // It has to be an out-of-band writer. An inline step's `step_completed`
       // held the same way would stall the orchestrator that should misread the
       // log, because the runtime awaits its promise before deciding anything.
-      const position = world.reservePosition();
+      const position = world.reservePosition(runId);
       return {
         eventId: position.eventId,
         async commit() {

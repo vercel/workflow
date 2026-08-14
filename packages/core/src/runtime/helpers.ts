@@ -14,15 +14,14 @@ import type {
   World,
 } from '@workflow/world';
 import {
-  eventIdToSlot,
   FIRST_EVENT_SLOT,
   getQueueTopicPrefix,
   HealthCheckPayloadSchema,
   HOOK_RESUME_INPUT_VERSION,
+  requireEventSlot,
   resolveQueueNamespace,
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_LEGACY,
-  ulidToDate,
 } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
 import { runtimeLogger } from '../logger.js';
@@ -490,13 +489,11 @@ function recordRequestedEventCursor(
  * same array. The set is updated alongside `target`.
  *
  * Events are appended in the order the World returned them, and are not
- * re-sorted: a World's canonical order is its own, and the runtime cannot
- * reproduce it from event ids alone. `world-vercel` orders by event id, while
- * `world-local` orders by `(createdAt, eventId)` and deliberately re-mints keys
- * so that the two diverge. Every append source is already in canonical order
- * relative to the tail (a cursor-delimited page, or a write-response delta), so
- * receipt order is the order to keep. Nothing downstream may assume the tail is
- * the newest event — see {@link latestEventStateUpdatedAt}.
+ * re-sorted. Every append source is already in canonical order relative to the
+ * tail (a cursor-delimited page, or a write-response delta), so receipt order is
+ * the order to keep, and re-sorting here would only cost a pass over the log.
+ * Nothing downstream may assume the tail is the newest event — see
+ * {@link maxEventSlot}.
  */
 export function appendUniqueEvents(
   target: Event[],
@@ -525,8 +522,12 @@ export function appendUniqueEvents(
  * `preloadedEvents` is loaded `sortOrder: 'asc'` and is never re-sorted
  * client-side, so a `hook_received` spliced in by the lazy-resume consumer must
  * land in `eventId` order — a plain `push` would place a late-committing
- * earlier event after events that sort before it, corrupting replay. Event IDs
- * are ULIDs, so lexicographic string order matches commit order.
+ * earlier event after events that sort before it, corrupting replay.
+ *
+ * Lexicographic string order is the log's order: a slot id is a fixed-width
+ * zero-padded position, so comparing the strings compares the positions. This
+ * needs no parse of its own for that reason, and the comparison is exact rather
+ * than a reconstruction.
  */
 export function insertEventByEventId(target: Event[], event: Event): void {
   // Linear scan from the end: the spliced event is almost always the newest
@@ -711,85 +712,54 @@ export interface LoadedEventLog {
 }
 
 /**
- * Whether the optimistic-concurrency guard for event creation is enabled.
- * **On by default** where the runtime executes: replay-context creates send a
- * `stateUpdatedAt` snapshot (and can be rejected with 412 by a supporting
- * backend) unless `WORKFLOW_PRECONDITION_GUARD` is set to `0`. Backends without
- * guard support ignore the snapshot, so enabling by default is
- * backward-compatible.
- */
-export function isPreconditionGuardEnabled(): boolean {
-  return process.env.WORKFLOW_PRECONDITION_GUARD !== '0';
-}
-
-/**
  * Whether a replay refuses to run over a log with a hole in it (see
  * {@link findEventSlotGap}). **On by default**; set
  * `WORKFLOW_SLOT_GAP_CHECK=0` to replay across holes instead.
  *
- * The switch exists because the check trades one failure for another. A hole is
- * a position claimed by a write that then failed, so most of them stand for an
- * event that never happened and replaying past one is correct. But a hole
- * standing for an event that *did* happen is indistinguishable from that, and
- * replaying past that one produces a run whose result is wrong with nothing to
- * show for it. Failing loudly is the recoverable side of the trade, and this is
- * the way back out if a fleet turns out to carry benign holes.
+ * A World that allocates a position at the moment it commits leaves no hole
+ * behind when a write fails, so density is a property the log has by
+ * construction rather than one this check maintains. What the check is for is
+ * the reads and the Worlds where that does not hold, and by the time it runs
+ * the benign explanations are spent: a position missing because a concurrent
+ * commit is not visible yet clears on a re-read, which is what
+ * {@link settleEventSlotGap} does first.
+ *
+ * What is left is a hole that persists, and its two causes are
+ * indistinguishable from the log. Either a World allocated the position outside
+ * the commit and lost the write, in which case nothing happened there and
+ * replaying past it is correct, or an event that did happen is missing, in
+ * which case replaying past it decides a branch on absence and produces a wrong
+ * result with nothing to show for it. Failing is the recoverable side of that
+ * trade, and this is the way back out if a fleet turns out to carry holes of
+ * the first kind.
  */
 export function isSlotGapCheckEnabled(): boolean {
   return process.env.WORKFLOW_SLOT_GAP_CHECK !== '0';
 }
 
-/**
- * The `stateUpdatedAt` value to send with a replay-context event creation: the
- * *maximum* ULID time (epoch ms) over the events the runtime has loaded. Returns
- * `undefined` when there are no events or that id is not a decodable ULID.
+/*
+ * Merging into a log a replay is midway through reading.
  *
- * It is the maximum rather than the tail's because the loaded log is in the
- * World's canonical order, which is not necessarily event-id order (see
- * {@link appendUniqueEvents}). The maximum is what lets the count sent alongside
- * it be read as "events at or below this watermark": every loaded event is at or
- * below it, so the count is exactly `events.length`. Reading the tail instead
- * would understate the watermark on a World whose order is not id-ordered, which
- * is safe (it can only weaken detection) but needlessly imprecise.
+ * Three paths add events to a loaded log after the replay has started: a
+ * bump-and-report write hands back the slots it skipped ({@link
+ * mergeReportedEvents}), an inline delta extends the tail (`absorbCreateDelta`
+ * in `runtime.ts`), and a listed page appends ({@link appendUniqueEvents}).
+ * They look alarming — the replay is reading an array while something else
+ * writes to it — and they are safe for one reason worth stating plainly, since
+ * every correctness argument in this file leans on it.
  *
- * The maximum is found by lexicographic id comparison, decoding only once: the
- * 26-character Crockford ULID encodes its timestamp in the leading 10
- * characters, so the greatest id also carries the greatest time.
+ * **An event in the log is a fact, and a longer log cannot retract one.** The
+ * log is append-only and positions are never reused, so a replay that produced
+ * event E from the prefix it had loaded has made E true for every replay that
+ * follows. A later replay reading a fuller log does not get to decide E should
+ * not be there; it consumes E and reconciles to it, which is what the events
+ * consumer does when it walks a log holding writes from a replay that raced it.
  *
- * Granularity: snapshots are epoch-milliseconds, and the backend allows an
- * equal-timestamp snapshot (an up-to-date client must not be rejected). Two
- * out-of-band events landing in the same millisecond where only the first was
- * loaded therefore pass this half of the guard undetected — that is exactly
- * the hole `stateEventCount` closes, since the count of events at or below the
- * watermark differs even when the watermarks are equal.
+ * Merging is therefore monotone: it can only add facts this replay has yet to
+ * reconcile to, never remove one it already has. That is why absorbing is
+ * always optional and never wrong to decline — an unabsorbed event is one the
+ * next read returns — and why the guards below can afford to be strict.
  */
-export function latestEventStateUpdatedAt(events: Event[]): number | undefined {
-  let latest: string | undefined;
-  for (const event of events) {
-    if (latest === undefined || event.eventId > latest) {
-      latest = event.eventId;
-    }
-  }
-  if (latest === undefined) {
-    return undefined;
-  }
-  // Event IDs are prefixed ULIDs (e.g. `evnt_01ARYZ...`); ulidToDate only
-  // decodes the bare 26-char ULID, so strip the prefix first.
-  const eventId = latest;
-  const underscore = eventId.lastIndexOf('_');
-  const rawUlid = underscore === -1 ? eventId : eventId.slice(underscore + 1);
-  const time = ulidToDate(rawUlid)?.getTime();
-  if (time === undefined) {
-    // Fail open: a non-decodable id disarms the guard for this create (no
-    // snapshot sent). Log so a fleet-wide silent disarm is diagnosable.
-    runtimeLogger.debug(
-      'Precondition guard: latest event id is not a decodable ULID; sending no snapshot',
-      { eventId }
-    );
-    return undefined;
-  }
-  return time;
-}
 
 /**
  * Merge the events a bump-and-report write handed back into the log it was
@@ -797,10 +767,8 @@ export function latestEventStateUpdatedAt(events: Event[]): number | undefined {
  *
  * Unlike {@link appendUniqueEvents}, this re-sorts. The reported events occupy
  * slots *below* the write that reported them, so appending them would put them
- * after events they precede — and on a slot-numbered run the id order is the
- * World's canonical order, so restoring it is well defined rather than a guess.
- * A run that is not slot-numbered cannot produce this report in the first
- * place; the sort is skipped rather than applied to ids it cannot order.
+ * after events they precede. Sorting by id restores the World's canonical order
+ * rather than guessing at it: a slot id is that order, written down.
  */
 export function mergeReportedEvents(
   target: Event[],
@@ -809,7 +777,7 @@ export function mergeReportedEvents(
   const before = target.length;
   appendUniqueEvents(target, events);
   const added = target.length - before;
-  if (added > 0 && maxEventSlot(target) !== undefined) {
+  if (added > 0) {
     target.sort((a, b) =>
       a.eventId < b.eventId ? -1 : a.eventId > b.eventId ? 1 : 0
     );
@@ -817,10 +785,58 @@ export function mergeReportedEvents(
   return added;
 }
 
+/** What {@link absorbSkippedSlotReport} did with a write's report. */
+export interface SkippedSlotReport {
+  /** How many of the reported events were new to the log. Zero if dropped. */
+  added: number;
+  /** How many events the report offered, whether or not they were taken. */
+  offered: number;
+  /** The report was truncated, so it was dropped whole instead of merged. */
+  truncated: boolean;
+}
+
 /**
- * The highest slot the loaded log occupies, or `undefined` when the run is not
- * slot-numbered. A run keeps the id scheme it was created under, so one event
- * settles it for the whole log.
+ * Apply a write's skipped-slot report to the log it was derived from, deciding
+ * whether the report may be taken at all.
+ *
+ * Every replay-context write can come back carrying the events on the slots it
+ * skipped over, and every caller wants the same thing from them: fold them in
+ * so the writes that follow name a position above them, and so the replay
+ * resuming from this log sees them without a reload.
+ *
+ * The one policy is that a **truncated report is dropped whole**. It covers a
+ * span of positions but carries only some of the events on them, so merging it
+ * would raise the log's highest position past a position whose event is
+ * missing. Later writes read that maximum to say what they have seen, so each
+ * would claim a position it never saw, and the World only reports the span a
+ * write skips — it would never send the missing one. Dropping costs one more
+ * round of the same events on the next write and keeps the log a prefix of the
+ * truth, which the note above {@link mergeReportedEvents} explains is always an
+ * available answer.
+ *
+ * Callers that log do so from the returned counts; the decision is not theirs
+ * to re-derive.
+ */
+export function absorbSkippedSlotReport(
+  target: Event[],
+  result: { events?: readonly Event[]; hasMore?: boolean }
+): SkippedSlotReport {
+  const offered = result.events?.length ?? 0;
+  if (offered === 0) {
+    return { added: 0, offered: 0, truncated: false };
+  }
+  if (result.hasMore === true) {
+    return { added: 0, offered, truncated: true };
+  }
+  return {
+    added: mergeReportedEvents(target, result.events ?? []),
+    offered,
+    truncated: false,
+  };
+}
+
+/**
+ * The highest slot the loaded log occupies, or `undefined` for an empty log.
  *
  * The maximum, not the count, and the two are not interchangeable even though
  * a healthy log makes them equal. A World hands a position to the insert that
@@ -833,14 +849,16 @@ export function mergeReportedEvents(
  *
  * A hole below the maximum is therefore a property of the read, not of the log,
  * which is what lets {@link settleEventSlotGap} re-read instead of giving up.
+ *
+ * @throws if any event id carries no slot. Every World the runtime replays
+ * against numbers events by slot, so an id that does not is a broken log rather
+ * than an older one, and a maximum derived by skipping it would understate the
+ * log to every write that reads it.
  */
-export function maxEventSlot(events: Event[]): number | undefined {
+export function maxEventSlot(events: readonly Event[]): number | undefined {
   let max: number | undefined;
   for (const event of events) {
-    const slot = eventIdToSlot(event.eventId);
-    if (slot === null) {
-      return undefined;
-    }
+    const slot = requireEventSlot(event.eventId);
     if (max === undefined || slot > max) {
       max = slot;
     }
@@ -861,8 +879,8 @@ export interface EventSlotGap {
 /**
  * The hole in a loaded log, or `undefined` when there is none to find.
  *
- * On a slot-numbered run the World allocates every position, so a log that
- * holds `n` events below slot `n` is missing one. That matters before a replay
+ * The World allocates every position, so a log that holds `n` events below slot
+ * `n` is missing one. That matters before a replay
  * and nowhere else: the replay reads the log as the complete record of what has
  * happened, and an absent position is indistinguishable from an event that
  * never occurred. The branch it would have decided gets decided the other way,
@@ -879,8 +897,10 @@ export interface EventSlotGap {
  * legitimately begins at the second slot and fills in on its own. Every replay
  * that races a run's own start would otherwise report a hole.
  *
- * Returns `undefined` for a log this cannot read as slots at all: an empty one,
- * or a run numbered by ULID, where positions carry no density to check.
+ * Returns `undefined` for an empty log, which has no density to check.
+ *
+ * @throws if any event id carries no slot, for the reason {@link maxEventSlot}
+ * gives.
  */
 export function findEventSlotGap(
   events: readonly Event[]
@@ -888,10 +908,7 @@ export function findEventSlotGap(
   const occupied = new Set<number>();
   let maxSlot = 0;
   for (const event of events) {
-    const slot = eventIdToSlot(event.eventId);
-    if (slot === null) {
-      return undefined;
-    }
+    const slot = requireEventSlot(event.eventId);
     occupied.add(slot);
     if (slot > maxSlot) {
       maxSlot = slot;
@@ -971,66 +988,44 @@ export async function settleEventSlotGap(
 }
 
 /**
- * The precondition snapshot a replay-context event creation sends, describing
- * the event log the replay derived the event from.
+ * How much of its run's log a replay-context event creation had loaded when it
+ * decided to write, as the highest slot that log occupies.
  *
- * On a slot-numbered run this is `eventCount`, optionally with the set of
- * correlation ids the writer is blocked on. On a ULID-numbered run it is the
- * `stateUpdatedAt` / `stateEventCount` / `stateCursor` triple, whose three
- * fields are one indivisible unit: the backend reads the count only relative to
- * the watermark, and returns its inline delta only relative to the cursor.
- * Passing them as a single object is what keeps them from drifting apart at a
- * call site.
+ * One integer says it because the World keeps its positions dense: a writer
+ * that names slot N is claiming to hold every event from 1 to N and nothing
+ * above. The World answers by numbering the write above whatever the log has
+ * actually reached and handing back the events on the slots in between — the
+ * ones this writer decided without.
+ *
+ * Density is the World's invariant, not a claim about this particular read. A
+ * reader that is short of a position it holds no event for names a lower N,
+ * which understates what it has seen and only costs it a wider report. Naming
+ * a position it cannot account for is the direction that is unsafe, which is
+ * why {@link slotSnapshotParams} takes the maximum rather than the count.
+ *
+ * Its own object rather than a bare number so a call site cannot half-send it,
+ * and so the empty case spreads to nothing.
  */
-export interface PreconditionSnapshotParams {
-  stateUpdatedAt?: number;
-  stateEventCount?: number;
-  stateCursor?: string;
+export interface SlotSnapshotParams {
   eventCount?: number;
 }
 
 /**
- * Build the precondition snapshot to attach to a replay-context event creation.
+ * Build the slot snapshot to attach to a replay-context event creation.
  *
- * Returns an empty object — no guard, backend behaves as before — when the
- * guard is disabled or the watermark is not derivable. All three fields fail
- * open together: a count without a watermark is meaningless to the backend, and
- * a cursor without either would invite a delta nobody asked for.
+ * Empty for an empty log, which is the state a `run_created` write is issued
+ * from: there is no position held yet to name.
  *
- * `stateEventCount` is `events.length` because the watermark is the log's
- * *maximum* ULID time, so every loaded event is at or below it regardless of the
- * order the World returned them in.
- *
- * Both fields are therefore invariant under permutation of the log: a maximum is
- * order-independent, and the length is set cardinality once `appendUniqueEvents`
- * has deduped by event id. Two replays that consume the same events in different
- * orders send an identical snapshot, so this guard detects that a log is missing
- * an event and can never detect that a replay consumed one in a different order.
+ * The maximum rather than the length, for the reason {@link maxEventSlot}
+ * gives: a partially-read log holds fewer events than its highest position, and
+ * counting those would make the write claim to have seen less than it has, so
+ * the World would report the same events back on every attempt.
  */
-export function preconditionSnapshotParams(
-  events: Event[],
-  cursor?: string | null
-): PreconditionSnapshotParams {
-  if (!isPreconditionGuardEnabled()) {
-    return {};
-  }
-  // A slot-numbered run says with one integer everything the triple was
-  // approximating, so the two are alternatives rather than a pair. Sending the
-  // triple here would also be futile: a slot id carries no time, so
-  // `latestEventStateUpdatedAt` would fail open on every single write.
+export function slotSnapshotParams(
+  events: readonly Event[]
+): SlotSnapshotParams {
   const eventCount = maxEventSlot(events);
-  if (eventCount !== undefined) {
-    return { eventCount };
-  }
-  const stateUpdatedAt = latestEventStateUpdatedAt(events);
-  if (stateUpdatedAt === undefined) {
-    return {};
-  }
-  return {
-    stateUpdatedAt,
-    stateEventCount: events.length,
-    ...(cursor ? { stateCursor: cursor } : {}),
-  };
+  return eventCount === undefined ? {} : { eventCount };
 }
 
 /**
@@ -1131,6 +1126,45 @@ export function withHealthCheck(
     }
     return await handler(req);
   };
+}
+
+/** FNV-1a 32-bit hash of a string, as 8 hex chars. Tiny, deterministic, and
+ *  dependency-free — used only to scope idempotency keys, not for security. */
+function fnv1a32Hex(value: string): string {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < value.length; i++) {
+    hash ^= value.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16).padStart(8, '0');
+}
+
+/**
+ * Idempotency key for a step's background-dispatch queue message, scoped to
+ * the step's IDENTITY — correlation id plus (hashed) step name — rather than
+ * the bare correlation id.
+ *
+ * The scoping matters for resilient step dispatch under the precondition
+ * guard: a guard-rejected `step_created` leaves its (revoked) step message in
+ * flight, and the corrected replay may re-derive the same correlation id for
+ * a DIFFERENT step. Under a bare-correlationId key the corrected replay's
+ * dispatch would silently dedupe against the revoked in-flight message —
+ * which then resolves `skipped` against the re-created entity (the server's
+ * stepName fence rejects its bare start) — and the legitimate step would
+ * never be executed. Scoping by step name keeps every dedup property that
+ * matters (crash recovery re-dispatch, concurrent handlers, the delayed
+ * retry sharing the suspension re-dispatch's key — all name the same step)
+ * while letting the corrected schedule's dispatch through.
+ *
+ * Every producer of a step-dispatch (or step-retry) message must use this
+ * key. Cross-version mixing is not a concern: queue messages are pinned to
+ * the deployment that produced them, so one run never sees two key schemes.
+ */
+export function stepDispatchIdempotencyKey(
+  correlationId: string,
+  stepName: string
+): string {
+  return `${correlationId}:${fnv1a32Hex(stepName)}`;
 }
 
 /**

@@ -471,6 +471,115 @@ export const HookResumeSetupSource = SemanticConvention<string>(
   'workflow.resume_setup_source'
 );
 
+/**
+ * Producer-side signal (on the suspension span) counting steps whose direct
+ * `step_created` write failed transiently while their `stepInput`-carrying
+ * queue publish succeeded, so step creation is recovered via the consumer's
+ * re-ensure. Mirrors {@link HookResilientResume}.
+ */
+export const StepResilientDispatchRecovered = SemanticConvention<number>(
+  'workflow.step.resilient_dispatch_recovered'
+);
+
+/**
+ * Consumer-side signal (on the workflow execution span) that this delivery
+ * materialized the `step_created` event from the queue message's `stepInput`
+ * because the producer's direct write had not landed — the completion of the
+ * recovery path {@link StepResilientDispatchRecovered} began.
+ */
+export const StepResilientDispatchMaterialized = SemanticConvention<boolean>(
+  'workflow.step.resilient_dispatch_materialized'
+);
+
+// Hook-triggered time-to-resume (TTR) attributes
+//
+// Set on the `step.execute <name>` span of the FIRST durable step following a
+// hook resume, and only there: one resumption produces exactly one sample, so
+// a later step in the same invocation, a retry, or a redelivery never
+// re-reports it. The phases are non-overlapping and sum exactly to
+// {@link ResumeTotalMs} — see runtime/resume-latency.ts for the boundary
+// definitions and the emission gate.
+//
+// Deliberately carries no `resumeId`, run ID, or token: the metric is meant to
+// be aggregated across every resume, and high-cardinality keys would make that
+// prohibitive. Existing trace-correlation fields on the same span are
+// unchanged and still identify the individual run.
+
+/** Total TTR: entry into `resumeHook()` → immediately before `stepFn.apply()`. */
+export const ResumeTotalMs = SemanticConvention<number>(
+  'workflow.resume.total_ms'
+);
+
+/** Phase: `resumeHook()` entry → the queue publish being requested. */
+export const ResumeProducerPrepMs = SemanticConvention<number>(
+  'workflow.resume.phase.producer_prep_ms'
+);
+
+/** Phase: queue publish requested → the final consumer's handler being entered. */
+export const ResumeQueueDeliveryMs = SemanticConvention<number>(
+  'workflow.resume.phase.queue_delivery_ms'
+);
+
+/** Phase: consumer entry → replay beginning. */
+export const ResumeSetupMs = SemanticConvention<number>(
+  'workflow.resume.phase.resume_setup_ms'
+);
+
+/** Phase: replay beginning → the next durable step being encountered. */
+export const ResumeReplayMs = SemanticConvention<number>(
+  'workflow.resume.phase.replay_ms'
+);
+
+/** Phase: step encountered → the `step_started` request beginning. */
+export const ResumeStepDispatchMs = SemanticConvention<number>(
+  'workflow.resume.phase.step_dispatch_ms'
+);
+
+/**
+ * Phase: `step_started` request beginning → its response returning. Omitted
+ * under optimistic inline start, where the claim is not awaited before the
+ * body runs and therefore has no completion instant at that point; the time
+ * is then reported entirely as {@link ResumeStepPrepareMs}.
+ */
+export const ResumeStepClaimMs = SemanticConvention<number>(
+  'workflow.resume.phase.step_claim_ms'
+);
+
+/**
+ * Phase: claim returning → immediately before `stepFn.apply()`. Deliberately
+ * includes encryption-key resolution, argument hydration, and step-context
+ * setup; `workflow.queue.deserialize_time_ms` still isolates hydration.
+ */
+export const ResumeStepPrepareMs = SemanticConvention<number>(
+  'workflow.resume.phase.step_prepare_ms'
+);
+
+/** What triggered the measured resumption. */
+export const ResumeTrigger = SemanticConvention<'hook'>(
+  'workflow.resume.trigger'
+);
+
+/** Which `resumeHook()` dispatch path produced this resume. */
+export const ResumeStrategy = SemanticConvention<'parallel' | 'sequential'>(
+  'workflow.resume.strategy'
+);
+
+/**
+ * How the consuming invocation initialized replay state. Distinct from the
+ * pre-existing {@link HookResumeSetupSource} (`workflow.resume_setup_source`,
+ * on the workflow execution span), which reports the finer-grained
+ * hoisted-write outcome; this one is the TTR dimension and shares the metric's
+ * three-value vocabulary.
+ */
+export const ResumeSetupSource = SemanticConvention<
+  'hook_preload' | 'run_started' | 'event_load'
+>('workflow.resume.setup_source');
+
+/** Whether the measured step ran in the resuming invocation or a queued one. */
+export const ResumeStepExecution = SemanticConvention<'inline' | 'dispatched'>(
+  'workflow.resume.step_execution'
+);
+
 // Webhook attributes
 
 /** Number of webhook handlers triggered */

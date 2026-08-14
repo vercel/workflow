@@ -10,7 +10,11 @@ import {
   getStreamCloseDispatcher,
   getStreamDispatcher,
 } from './http-client.js';
-import { getVercelDiagnostics, instrumentedFetch } from './http-core.js';
+import {
+  errorForResponse,
+  getVercelDiagnostics,
+  instrumentedFetch,
+} from './http-core.js';
 import {
   WorkflowRunId,
   WorkflowStreamName,
@@ -99,6 +103,26 @@ function streamSpanAttributes(args: {
       ? WorkflowStreamStartIndex(args.startIndex)
       : {}),
   };
+}
+
+async function createStreamReadError(response: Response): Promise<Error> {
+  const fallback = `Failed to fetch stream: ${response.status}`;
+  if (response.status !== 410) return new Error(fallback);
+
+  try {
+    const body = (await response.json()) as {
+      error?: string;
+      message?: string;
+      details?: unknown;
+    };
+    return errorForResponse(
+      response.status,
+      typeof body.message === 'string' ? body.message : fallback,
+      { code: body.error, details: body.details }
+    );
+  } catch {
+    return new Error(fallback);
+  }
 }
 
 function createStreamRequestError(
@@ -297,6 +321,11 @@ export function createStreamer(config?: APIConfig): Streamer {
 
       async get(runId: string, name: string, startIndex?: number) {
         const httpConfig = await getHttpConfig(config);
+        // Stream bytes themselves are untyped binary, but any pre-header error
+        // is a JSON envelope. Asking explicitly avoids a CBOR 410 that this
+        // binary response path cannot decode while leaving successful stream
+        // bodies unchanged.
+        httpConfig.headers.set('Accept', 'application/json');
         const url = getStreamReadUrl(name, runId, httpConfig);
         if (typeof startIndex === 'number') {
           url.searchParams.set('startIndex', String(startIndex));
@@ -322,8 +351,7 @@ export function createStreamer(config?: APIConfig): Streamer {
             operation: 'read',
             startIndex,
           }),
-          buildError: (res) =>
-            new Error(`Failed to fetch stream: ${res.status}`),
+          buildError: createStreamReadError,
         });
         if (!response.body) {
           throw new Error('No response body for stream');

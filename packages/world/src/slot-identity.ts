@@ -98,3 +98,27 @@ export function eventIdToSlot(eventId: string): number | null {
   const slot = Number(body);
   return Number.isSafeInteger(slot) && slot >= FIRST_EVENT_SLOT ? slot : null;
 }
+
+/**
+ * Reads the slot out of an event id, for a caller that has no answer without
+ * one.
+ *
+ * Separate from {@link eventIdToSlot} because the two failures are different
+ * problems. A caller that can act on either scheme asks the question and takes
+ * `null` as an answer; a caller whose whole computation is positional (a
+ * precondition snapshot, a density audit) has no correct behaviour to fall back
+ * on, and silently skipping the id would make it report a position it never
+ * verified. Throwing names the id instead.
+ *
+ * @throws if the id is not slot-numbered, i.e. the World minting it does not
+ * allocate slots.
+ */
+export function requireEventSlot(eventId: string): number {
+  const slot = eventIdToSlot(eventId);
+  if (slot === null) {
+    throw new Error(
+      `Event id is not slot-numbered: ${eventId}. This World allocates event positions the runtime cannot read.`
+    );
+  }
+  return slot;
+}

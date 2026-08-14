@@ -13,10 +13,11 @@ export const scenario: ScenarioSpec = {
     'The receiver commits while the orchestrator is held at the produced ' +
     'point of C, so by the time C is checked the hole has closed and the log ' +
     'holds an event the writer never loaded. The watermark guard is on and ' +
-    'passes anyway, by construction: the marker moves to the ULID time of the ' +
-    "hook, which sorts at or below the writer's own snapshot, so " +
-    '`stateUpdatedAt < marker` is false. It corrupts — the same corruption as ' +
-    'the doc-23 pair, reached without a stale read. ' +
+    'never gets to speak: the log has a hole in it from the moment the ' +
+    'receiver takes its position, so the next replay refuses the log before ' +
+    'any write of its own is checked. What the fence would have caught, the ' +
+    'gap audit catches earlier and more bluntly — the run fails rather than ' +
+    'following a log it cannot follow into the wrong branch. ' +
     'Under an append-only log there is no position to be spoken for: the hook ' +
     'commits after the timeout and therefore sorts after it, the log says the ' +
     'timeout won, and the settle branch the run took is the one the log ' +

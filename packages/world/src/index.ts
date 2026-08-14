@@ -1,5 +1,6 @@
 export type * from './analytics.js';
 export {
+  ANALYTICS_EVENTS_GET_MANY_LIMIT,
   AnalyticsAttributeKeySchema,
   AnalyticsEventSchema,
   AnalyticsHookSchema,
@@ -38,6 +39,7 @@ export {
   EVENT_DATA_REF_FIELDS,
   EventSchema,
   EventTypeSchema,
+  entityEventClass,
   getEventDataPayloadField,
   getEventDataRefFields,
   HOOK_EVENTS_REQUIRING_EXISTENCE,
@@ -119,6 +121,7 @@ export {
   isSlotBody,
   isSlotEventId,
   MAX_EVENT_SLOT,
+  requireEventSlot,
   slotToEventId,
 } from './slot-identity.js';
 export type { SpecVersion } from './spec-version.js';
