@@ -844,8 +844,8 @@ jobs:
         env:
           APP_NAME: ${{ matrix.app.name }}
         run: |
-          cat packages/next/package.json | jq '.dependencies.next|="16.3.0-canary.2"' > packages/next/package.json.new && mv packages/next/package.json.new packages/next/package.json
-          cat "workbench/$APP_NAME/package.json" | jq '.dependencies.next|="16.3.0-canary.2"' > "workbench/$APP_NAME/package.json.new" && mv "workbench/$APP_NAME/package.json.new" "workbench/$APP_NAME/package.json"
+          cat packages/next/package.json | jq '.dependencies.next|="16.3.1-canary.17"' > packages/next/package.json.new && mv packages/next/package.json.new packages/next/package.json
+          cat "workbench/$APP_NAME/package.json" | jq '.dependencies.next|="16.3.1-canary.17"' > "workbench/$APP_NAME/package.json.new" && mv "workbench/$APP_NAME/package.json.new" "workbench/$APP_NAME/package.json"
           pnpm install --no-frozen-lockfile
 
       - name: Install Dependencies
@@ -933,8 +933,8 @@ jobs:
         env:
           APP_NAME: ${{ matrix.app.name }}
         run: |
-          cat packages/next/package.json | jq '.dependencies.next|="16.3.0-canary.2"' > packages/next/package.json.new && mv packages/next/package.json.new packages/next/package.json
-          cat "workbench/$APP_NAME/package.json" | jq '.dependencies.next|="16.3.0-canary.2"' > "workbench/$APP_NAME/package.json.new" && mv "workbench/$APP_NAME/package.json.new" "workbench/$APP_NAME/package.json"
+          cat packages/next/package.json | jq '.dependencies.next|="16.3.1-canary.17"' > packages/next/package.json.new && mv packages/next/package.json.new packages/next/package.json
+          cat "workbench/$APP_NAME/package.json" | jq '.dependencies.next|="16.3.1-canary.17"' > "workbench/$APP_NAME/package.json.new" && mv "workbench/$APP_NAME/package.json.new" "workbench/$APP_NAME/package.json"
           pnpm install --no-frozen-lockfile
 
       - name: Install Dependencies
@@ -1041,8 +1041,8 @@ jobs:
         env:
           APP_NAME: ${{ matrix.app.name }}
         run: |
-          cat packages/next/package.json | jq '.dependencies.next|="16.3.0-canary.2"' > packages/next/package.json.new && mv packages/next/package.json.new packages/next/package.json
-          cat "workbench/$APP_NAME/package.json" | jq '.dependencies.next|="16.3.0-canary.2"' > "workbench/$APP_NAME/package.json.new" && mv "workbench/$APP_NAME/package.json.new" "workbench/$APP_NAME/package.json"
+          cat packages/next/package.json | jq '.dependencies.next|="16.3.1-canary.17"' > packages/next/package.json.new && mv packages/next/package.json.new packages/next/package.json
+          cat "workbench/$APP_NAME/package.json" | jq '.dependencies.next|="16.3.1-canary.17"' > "workbench/$APP_NAME/package.json.new" && mv "workbench/$APP_NAME/package.json.new" "workbench/$APP_NAME/package.json"
           pnpm install --no-frozen-lockfile
 
       - name: Install Dependencies

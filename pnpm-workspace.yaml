@@ -56,3 +56,9 @@ minimumReleaseAgeExclude:
   - 'esbuild'
   - '@esbuild/*'
   - 'quickjs-wasi'
+  # The CI canary lanes pin `next` to a fresh canary at install time
+  # (see "Setup canary" in .github/workflows/tests.yml); canaries are
+  # usually younger than the 48h gate, and next and its @next/* companion
+  # packages (published in lockstep) are Vercel-published.
+  - 'next'
+  - '@next/*'
