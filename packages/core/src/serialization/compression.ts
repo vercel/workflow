@@ -103,6 +103,11 @@ const nodeZlib = (() => {
   }
 })();
 
+/** Return a plain Uint8Array view without copying a Node Buffer's bytes. */
+function asUint8Array(data: Uint8Array): Uint8Array {
+  return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+}
+
 let zstdBrowserDecoder:
   | ((payload: Uint8Array) => Promise<Uint8Array>)
   | undefined;
@@ -171,7 +176,7 @@ function gzipBytes(data: Uint8Array): Promise<Uint8Array> {
 
 function gzip(data: Uint8Array): Uint8Array | Promise<Uint8Array> {
   return nodeZlib?.gzipSync
-    ? new Uint8Array(nodeZlib.gzipSync(data))
+    ? asUint8Array(nodeZlib.gzipSync(data))
     : gzipBytes(data);
 }
 
@@ -187,12 +192,12 @@ function zstdBytes(data: Uint8Array): Uint8Array {
   const level = nodeZlib?.constants?.ZSTD_c_compressionLevel;
   const opts =
     level !== undefined ? { params: { [level]: ZSTD_LEVEL } } : undefined;
-  return new Uint8Array(compress(data, opts));
+  return asUint8Array(compress(data, opts));
 }
 
 function decompressZstd(payload: Uint8Array): Uint8Array | Promise<Uint8Array> {
   if (nodeZlib?.zstdDecompressSync) {
-    return new Uint8Array(nodeZlib.zstdDecompressSync(payload));
+    return asUint8Array(nodeZlib.zstdDecompressSync(payload));
   }
   if (zstdBrowserDecoder) return zstdBrowserDecoder(payload);
   throw new Error(
@@ -204,7 +209,7 @@ function decompressZstd(payload: Uint8Array): Uint8Array | Promise<Uint8Array> {
 
 function decompressGzip(payload: Uint8Array): Uint8Array | Promise<Uint8Array> {
   if (nodeZlib?.gunzipSync) {
-    return new Uint8Array(nodeZlib.gunzipSync(payload));
+    return asUint8Array(nodeZlib.gunzipSync(payload));
   }
   if (typeof DecompressionStream === 'function') return gunzipBytes(payload);
   throw new Error(
@@ -364,13 +369,13 @@ export function decompressSync(data: Uint8Array): Uint8Array | undefined {
   if (prefix === SerializationFormat.ZSTD) {
     const decompress = nodeZlib?.zstdDecompressSync;
     return decompress
-      ? new Uint8Array(decompress(decodeFormatPrefix(data).payload))
+      ? asUint8Array(decompress(decodeFormatPrefix(data).payload))
       : undefined;
   }
   if (prefix === SerializationFormat.GZIP) {
     const decompress = nodeZlib?.gunzipSync;
     return decompress
-      ? new Uint8Array(decompress(decodeFormatPrefix(data).payload))
+      ? asUint8Array(decompress(decodeFormatPrefix(data).payload))
       : undefined;
   }
   return data;
