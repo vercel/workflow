@@ -56,6 +56,11 @@ function findResultFiles(dir) {
     'e2e-flaky-',
     'e2e-diagnostics-',
     'e2e-runtime-logs-',
+    // Not a report: the per-app cross-language conformance declaration
+    // (`workbench/*/e2e-conformance.json` and its `.example` sibling). The
+    // trailing dot matters — the Python lane's report is
+    // `e2e-conformance-python.json` and must keep matching.
+    'e2e-conformance.',
   ]);
 }
 
@@ -334,6 +339,7 @@ function parseJobInfo(filename) {
           'mongodb',
           'redis',
           'starter',
+          'python',
           'nest',
           'tanstack',
         ].some((app) => p.startsWith(app))
@@ -496,6 +502,7 @@ const categoryNames = {
   'local-prod': '📦 Local Production',
   'local-postgres': '🐘 Local Postgres',
   windows: '🪟 Windows',
+  conformance: '🌐 Cross-language Conformance',
   community: '🌍 Community Worlds',
   other: '📋 Other',
 };
@@ -507,6 +514,7 @@ const categoryOrder = [
   'local-prod',
   'local-postgres',
   'windows',
+  'conformance',
   'community',
   'other',
 ];
