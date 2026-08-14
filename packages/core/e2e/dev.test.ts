@@ -1223,10 +1223,22 @@ export function hmrFuzzWorkflowHelper(value: HmrFuzzBox) {
           const logCursor = await readDevServerLogCursor();
           await fs.writeFile(testCase.file, testCase.source(iteration));
 
+          await expectHmrLogCounts(logCursor, testCase.expectedLogCounts);
+          snapshot = await waitForGeneratedArtifactStability();
+          if (testCase.kind === 'workflow') {
+            expect(snapshot.stepMtimeMs).toBe(previousSnapshot.stepMtimeMs);
+          } else if (testCase.kind !== 'none') {
+            expect(snapshot.stepMtimeMs).toBeGreaterThanOrEqual(
+              previousSnapshot.stepMtimeMs
+            );
+          }
+
           // Next canary can keep executing a stale workflow bundle after the
           // workflow hot-rebuild completed. Stable still covers execution
           // correctness; canary keeps covering classification/log/artifact
-          // behavior for these changes.
+          // behavior for these changes. Wait for the rebuild above before
+          // starting runs so a slow dev compiler does not turn polling into a
+          // burst of concurrent workflow executions.
           if (!(finalConfig.canary && testCase.kind === 'workflow')) {
             await expectWorkflowResult({
               description: `${testCase.kind} HMR update to affect workflow execution`,
@@ -1240,22 +1252,6 @@ export function hmrFuzzWorkflowHelper(value: HmrFuzzBox) {
                   : undefined,
             });
           }
-
-          if (testCase.kind === 'none') {
-            await expectHmrLogCounts(logCursor, testCase.expectedLogCounts);
-            snapshot = await waitForGeneratedArtifactStability();
-            continue;
-          }
-
-          snapshot = await waitForGeneratedArtifactStability();
-          if (testCase.kind === 'workflow') {
-            expect(snapshot.stepMtimeMs).toBe(previousSnapshot.stepMtimeMs);
-          } else {
-            expect(snapshot.stepMtimeMs).toBeGreaterThanOrEqual(
-              previousSnapshot.stepMtimeMs
-            );
-          }
-          await expectHmrLogCounts(logCursor, testCase.expectedLogCounts);
         }
 
         const fullCases = [
