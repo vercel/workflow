@@ -48,6 +48,7 @@ import {
   getEventDataPayloadField,
   isHookEventRequiringExistence,
   type ListEventsByCorrelationIdParams,
+  type ListEventsOptions,
   type ListEventsParams,
   type PaginatedResponse,
   validateUlidTimestamp,
@@ -435,30 +436,46 @@ export async function getEvent(
   );
 }
 
-export async function getWorkflowRunEvents(
-  params: ListEventsParams | ListEventsByCorrelationIdParams,
-  config?: APIConfig
-): Promise<PaginatedResponse<Event>> {
+function getListEventsV4Params(params: ListEventsOptions): ListEventsV4Params {
   const { pagination, resolveData = DEFAULT_RESOLVE_DATA_OPTION } = params;
   // `resolveData: 'none'` leaves payload refs unresolved, so the backend can
   // skip reading and streaming their contents. The validated lazy descriptors
   // remain on the returned events.
-  const listParams: ListEventsV4Params = {
+  return {
     ...pagination,
     remoteRefBehavior: resolveData === 'none' ? 'lazy' : 'resolve',
-    ...('onEvent' in params && params.onEvent
-      ? { onEvent: params.onEvent }
-      : {}),
   };
+}
 
-  const result = await ('correlationId' in params
-    ? getEventsByCorrelationIdV4(
-        params.correlationId,
-        params.runId,
-        listParams,
-        config
-      )
-    : getWorkflowRunEventsV4(params.runId, listParams, config));
+export async function getWorkflowRunEvents(
+  params: ListEventsParams,
+  config?: APIConfig
+): Promise<PaginatedResponse<Event>> {
+  const result = await getWorkflowRunEventsV4(
+    params.runId,
+    { ...getListEventsV4Params(params), onEvent: params.onEvent },
+    config
+  );
+
+  return {
+    data: result.events,
+    // The cursor is present even on the final page because it is also the
+    // incremental-load resume point. `hasMore` is the pagination signal.
+    cursor: result.cursor,
+    hasMore: result.hasMore,
+  };
+}
+
+export async function getWorkflowRunEventsByCorrelationId(
+  params: ListEventsByCorrelationIdParams,
+  config?: APIConfig
+): Promise<PaginatedResponse<Event>> {
+  const result = await getEventsByCorrelationIdV4(
+    params.correlationId,
+    params.runId,
+    getListEventsV4Params(params),
+    config
+  );
 
   // A correlation id is unique per run, not globally — a slot-numbered run
   // numbers its own steps, so `step_…001` names the first step of every such
@@ -467,10 +484,7 @@ export async function getWorkflowRunEvents(
   // `hasMore`/`cursor` stay the backend's, so a page that filters down to
   // nothing is still followed by the next one.
   return {
-    data:
-      'correlationId' in params
-        ? result.events.filter((event) => event.runId === params.runId)
-        : result.events,
+    data: result.events.filter((event) => event.runId === params.runId),
     // The cursor is present even on the final page because it is also the
     // incremental-load resume point. `hasMore` is the pagination signal.
     cursor: result.cursor,

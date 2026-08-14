@@ -348,17 +348,20 @@ describe('getWorkflowRunEventsV4 over HTTP', () => {
         { headers: { 'content-type': V4_FRAME_CONTENT_TYPE } }
       );
 
+    const observerError = new WorkflowWorldError('observer failed', {
+      code: 'TRANSPORT',
+    });
     await expect(
       getWorkflowRunEventsV4(
         'wrun_1',
         {
           onEvent: () => {
-            throw new Error('observer failed');
+            throw observerError;
           },
         },
         { token: 'test-token', dispatcher: agent }
       )
-    ).rejects.toThrow('observer failed');
+    ).rejects.toBe(observerError);
     agent.assertNoPendingInterceptors();
   });
 
@@ -1058,15 +1061,18 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
         }
       );
 
+    const observerError = new WorkflowWorldError('observer failed', {
+      code: 'TRANSPORT',
+    });
     await expect(
       createWorkflowRunStartedEventV4(
         { runId: 'wrun_1', specVersion: 5 },
         { token: 'test-token', dispatcher: agent },
         () => {
-          throw new Error('observer failed');
+          throw observerError;
         }
       )
-    ).rejects.toThrow('observer failed');
+    ).rejects.toBe(observerError);
     agent.assertNoPendingInterceptors();
   });
 
