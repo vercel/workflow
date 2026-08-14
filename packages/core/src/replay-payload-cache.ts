@@ -1,5 +1,5 @@
 import type { Event, WorkflowRun } from '@workflow/world';
-import type { PayloadKey } from './serialization/encryption.js';
+import type { DecryptionKey } from './serialization/encryption.js';
 import {
   type PreparedReplayPayload,
   prepareReplayPayload,
@@ -43,7 +43,7 @@ export class ReplayPayloadCache {
   private nextUnscannedEventIndex = 0;
 
   constructor(
-    private readonly encryptionKey: PayloadKey | undefined,
+    private readonly encryptionKey: DecryptionKey | undefined,
     private readonly preparer: ReplayPayloadPreparer = prepareReplayPayload
   ) {}
 

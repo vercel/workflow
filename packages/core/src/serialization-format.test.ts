@@ -62,7 +62,7 @@ describe('encodeWithFormatPrefix', () => {
     const encoded = encodeWithFormatPrefix(
       SerializationFormat.DEVALUE_V1,
       payload
-    ) as Uint8Array;
+    );
 
     expect(encoded).toBeInstanceOf(Uint8Array);
     expect(encoded.length).toBe(4 + 3); // "devl" (4 bytes) + payload (3 bytes)
@@ -70,14 +70,6 @@ describe('encodeWithFormatPrefix', () => {
     const prefix = new TextDecoder().decode(encoded.subarray(0, 4));
     expect(prefix).toBe('devl');
     expect(Array.from(encoded.subarray(4))).toEqual([1, 2, 3]);
-  });
-
-  it('should pass through non-Uint8Array values', () => {
-    const result = encodeWithFormatPrefix(
-      SerializationFormat.DEVALUE_V1,
-      'hello'
-    );
-    expect(result).toBe('hello');
   });
 });
 
@@ -87,7 +79,7 @@ describe('decodeFormatPrefix', () => {
     const encoded = encodeWithFormatPrefix(
       SerializationFormat.DEVALUE_V1,
       payload
-    ) as Uint8Array;
+    );
 
     const { format, payload: decoded } = decodeFormatPrefix(encoded);
     expect(format).toBe('devl');

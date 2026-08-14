@@ -41,6 +41,7 @@ import {
 } from './serialization/compression.js';
 import {
   aesKeyOf,
+  type DecryptionKey,
   decrypt,
   decryptReplayPayload,
   deriveRunPayloadKeys,
@@ -128,6 +129,7 @@ export {
   decompress,
   type EncryptionKeyParam,
   // Sealed-box ('encp') key variants — see serialization/encryption.ts.
+  type DecryptionKey,
   type PayloadKey,
   type RunPayloadKeys,
   type SealTarget,
@@ -303,7 +305,7 @@ export function getSerializeStream(
         let prefixed = encodeWithFormatPrefix(
           SerializationFormat.DEVALUE_V1,
           payload
-        ) as Uint8Array;
+        );
 
         // Encrypt the frame payload if a key is provided.
         // The length header remains in the clear so the deserializer can
@@ -323,9 +325,9 @@ export function getSerializeStream(
           prefixed = encodeWithFormatPrefix(
             SerializationFormat.SEALED,
             await sealSession.seal(prefixed)
-          ) as Uint8Array;
+          );
         } else if (keyState.key) {
-          prefixed = (await encrypt(prefixed, keyState.key)) as Uint8Array;
+          prefixed = await encrypt(prefixed, keyState.key);
         }
 
         // Write length-prefixed frame: [4-byte length][prefixed data]
@@ -420,10 +422,8 @@ export function getDeserializeStream(
         // A sealed frame needs the run's keypair; a symmetric frame needs an
         // AES key. Report the shortfall precisely — "no key at all" and "the
         // wrong kind of key" have very different causes.
-        const usable = sealed
-          ? isRunPayloadKeys(keyState.key)
-          : aesKeyOf(keyState.key) !== undefined;
-        if (!usable) {
+        const aesKey = aesKeyOf(keyState.key);
+        if (sealed ? !isRunPayloadKeys(keyState.key) : !aesKey) {
           controller.error(
             new RuntimeDecryptionError(
               sealed
@@ -450,7 +450,7 @@ export function getDeserializeStream(
           // with the one-shot path.
           decrypted = sealed
             ? await openSession!.open(decodeFormatPrefix(frameData).payload)
-            : ((await decrypt(frameData, keyState.key)) as Uint8Array);
+            : await decrypt(frameData, aesKey);
         } catch (error) {
           // The low-level crypto layer only sees the stripped payload, so it
           // cannot record the outer envelope prefix. We peeked it here, so
@@ -3379,37 +3379,6 @@ function getStepRevivers(
   };
 }
 
-// ============================================================================
-// Encryption Helpers
-// ============================================================================
-// These delegate to the modular `encrypt`/`decrypt` from `./serialization/encryption.js`
-// but are kept as named exports for backwards compatibility with existing consumers.
-
-/**
- * Encrypt data if the world supports encryption.
- * Returns original data if encryption is not available.
- *
- * @deprecated Use `encrypt` from `./serialization/encryption.js` instead.
- */
-export async function maybeEncrypt(
-  data: Uint8Array,
-  key: PayloadKey | undefined
-): Promise<Uint8Array> {
-  return (await encrypt(data, key)) as Uint8Array;
-}
-
-/**
- * Decrypt data if it has the 'encr' prefix.
- *
- * @deprecated Use `decrypt` from `./serialization/encryption.js` instead.
- */
-export async function maybeDecrypt(
-  data: Uint8Array | unknown,
-  key: PayloadKey | undefined
-): Promise<Uint8Array | unknown> {
-  return decrypt(data, key);
-}
-
 /**
  * Replay hydration has two stages:
  *
@@ -3433,7 +3402,7 @@ export interface PreparedReplayPayload {
  */
 export type ReplayPayloadPreparer = (
   value: Uint8Array,
-  key: PayloadKey | undefined
+  key: DecryptionKey | undefined
 ) => PreparedReplayPayload | Promise<PreparedReplayPayload>;
 
 /**
@@ -3442,7 +3411,7 @@ export type ReplayPayloadPreparer = (
  */
 function prepareReplayPayloadWithStats(
   value: Uint8Array,
-  key: PayloadKey | undefined,
+  key: DecryptionKey | undefined,
   compressionStats?: CompressionStats
 ): PreparedReplayPayload | Promise<PreparedReplayPayload> {
   const finish = (prepared: Uint8Array): PreparedReplayPayload => ({
@@ -3472,7 +3441,7 @@ export const prepareReplayPayload: ReplayPayloadPreparer = (value, key) =>
 
 async function prepareReplayPayloadWithTelemetry(
   value: unknown,
-  key: PayloadKey | undefined
+  key: DecryptionKey | undefined
 ): Promise<PreparedReplayPayload> {
   if (!(value instanceof Uint8Array)) return { data: value };
 
@@ -3567,7 +3536,7 @@ export async function dehydrateWorkflowArguments(
   v1Compat = false,
   framedByteStreams = false,
   compression = false
-): Promise<Uint8Array | unknown> {
+): Promise<unknown> {
   if (v1Compat) {
     const str = stringify(
       value,
@@ -3603,9 +3572,9 @@ export async function dehydrateWorkflowArguments(
  * payload skips host-side decrypt/decompress but always performs VM revival.
  */
 export async function hydrateWorkflowArguments(
-  value: Uint8Array | unknown,
+  value: unknown,
   _runId: string,
-  key: PayloadKey | undefined,
+  key: DecryptionKey | undefined,
   global: Record<string, any> = globalThis,
   extraRevivers: Record<string, (value: any) => any> = {},
   prepared?: PreparedReplayPayload
@@ -3636,7 +3605,7 @@ export async function dehydrateWorkflowReturnValue(
    * runtime/suspension-handler.ts passes one for step-input dehydration.
    */
   guestCodeStatsOut?: GuestCodeStats
-): Promise<Uint8Array | unknown> {
+): Promise<unknown> {
   if (v1Compat) {
     const str = stringify(value, getWorkflowReducers(global));
     return revive(str);
@@ -3671,9 +3640,9 @@ export async function dehydrateWorkflowReturnValue(
  * of a completed workflow run.
  */
 export async function hydrateWorkflowReturnValue(
-  value: Uint8Array | unknown,
+  value: unknown,
   runId: string,
-  key: PayloadKey | undefined,
+  key: DecryptionKey | undefined,
   ops: Promise<void>[] = [],
   global: Record<string, any> = globalThis,
   extraRevivers: Record<string, (value: any) => any> = {}
@@ -3706,7 +3675,7 @@ export async function dehydrateStepArguments(
   compression = false,
   /** See `dehydrateWorkflowReturnValue`. */
   guestCodeStatsOut?: GuestCodeStats
-): Promise<Uint8Array | unknown> {
+): Promise<unknown> {
   if (v1Compat) {
     const str = stringify(value, getWorkflowReducers(global));
     return revive(str);
@@ -3738,9 +3707,9 @@ export async function dehydrateStepArguments(
  * from the database at the start of the step execution.
  */
 export async function hydrateStepArguments(
-  value: Uint8Array | unknown,
+  value: unknown,
   runId: string,
-  key: PayloadKey | undefined,
+  key: DecryptionKey | undefined,
   ops: Promise<any>[] = [],
   global: Record<string, any> = globalThis,
   extraRevivers: Record<string, (value: any) => any> = {},
@@ -3791,7 +3760,7 @@ export async function dehydrateStepReturnValue(
   // the backgrounded `run_started`. Threaded into the step reducers' stream
   // sink. Undefined outside turbo / on the await path.
   runReadyBarrier?: Promise<unknown>
-): Promise<Uint8Array | unknown> {
+): Promise<unknown> {
   if (v1Compat) {
     const str = stringify(
       value,
@@ -3865,7 +3834,7 @@ export async function dehydrateStepError(
     const serialized = encodeWithFormatPrefix(
       SerializationFormat.DEVALUE_V1,
       payload
-    ) as Uint8Array;
+    );
     // Compress before encrypting — encrypted bytes don't compress.
     const compressionStats: CompressionStats = {};
     const compressed = await compress(
@@ -3873,10 +3842,7 @@ export async function dehydrateStepError(
       compression,
       compressionStats
     );
-    const encrypted = (await maybeEncrypt(
-      compressed as Uint8Array,
-      key
-    )) as Uint8Array;
+    const encrypted = await encrypt(compressed, key);
     await recordCompression(compressionStats, 'serialize');
     return encrypted;
   } catch (error) {
@@ -3900,9 +3866,9 @@ export async function dehydrateStepError(
  * @returns The hydrated thrown value, ready to reject the step promise
  */
 export async function hydrateStepError(
-  value: Uint8Array | unknown,
+  value: unknown,
   _runId: string,
-  key: PayloadKey | undefined,
+  key: DecryptionKey | undefined,
   global: Record<string, any> = globalThis,
   extraRevivers: Record<string, (value: any) => any> = {},
   prepared?: PreparedReplayPayload
@@ -3938,7 +3904,7 @@ export async function dehydrateRunError(
     const serialized = encodeWithFormatPrefix(
       SerializationFormat.DEVALUE_V1,
       payload
-    ) as Uint8Array;
+    );
     // Compress before encrypting — encrypted bytes don't compress.
     const compressionStats: CompressionStats = {};
     const compressed = await compress(
@@ -3946,10 +3912,7 @@ export async function dehydrateRunError(
       compression,
       compressionStats
     );
-    const encrypted = (await maybeEncrypt(
-      compressed as Uint8Array,
-      key
-    )) as Uint8Array;
+    const encrypted = await encrypt(compressed, key);
     await recordCompression(compressionStats, 'serialize');
     return encrypted;
   } catch (error) {
@@ -3972,27 +3935,22 @@ export async function dehydrateRunError(
  * @returns The hydrated thrown value, ready to be consumed by the client
  */
 export async function hydrateRunError(
-  value: Uint8Array | unknown,
+  value: unknown,
   runId: string,
-  key: PayloadKey | undefined,
+  key: DecryptionKey | undefined,
   ops: Promise<void>[] = [],
   global: Record<string, any> = globalThis,
   extraRevivers: Record<string, (value: any) => any> = {}
 ): Promise<unknown> {
-  const compressionStats: CompressionStats = {};
-  const decrypted = await decrypt(value, key);
-
-  if (!(decrypted instanceof Uint8Array)) {
-    // See the matching note in `hydrateStepError`: this branch is for
-    // devalue flattened arrays from legacy callers; current SDK versions
-    // always emit a Uint8Array, and a misshapen value here intentionally
-    // throws via `unflatten` so the surrounding try/catch in o11y helpers
-    // surfaces the issue rather than masking it.
-    return unflatten(decrypted as any[], {
+  if (!(value instanceof Uint8Array)) {
+    return unflatten(value as any[], {
       ...getExternalRevivers(global, ops, runId, key),
       ...extraRevivers,
     });
   }
+
+  const compressionStats: CompressionStats = {};
+  const decrypted = await decrypt(value, key);
 
   const prepared = await decompress(decrypted, compressionStats);
   await recordCompression(compressionStats, 'deserialize');
@@ -4023,9 +3981,9 @@ export async function hydrateRunError(
  * of a `step_completed` event.
  */
 export async function hydrateStepReturnValue(
-  value: Uint8Array | unknown,
+  value: unknown,
   _runId: string,
-  key: PayloadKey | undefined,
+  key: DecryptionKey | undefined,
   global: Record<string, any> = globalThis,
   extraRevivers: Record<string, (value: any) => any> = {},
   prepared?: PreparedReplayPayload

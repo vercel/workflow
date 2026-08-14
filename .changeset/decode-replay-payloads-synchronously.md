@@ -1,5 +1,6 @@
 ---
 "@workflow/core": patch
+"@workflow/cli": patch
 ---
 
-Decode replay payloads synchronously with Node AES-GCM and zstd when the runtime supports it.
+Simplify payload codecs and decode replay payloads synchronously with Node AES-GCM and zstd.

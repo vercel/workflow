@@ -6,7 +6,7 @@
  */
 
 import { inspect } from 'node:util';
-import { getCommonRevivers, maybeDecrypt } from '@workflow/core/serialization';
+import { decrypt, getCommonRevivers } from '@workflow/core/serialization';
 import {
   ClassInstanceRef,
   extractClassName,
@@ -30,6 +30,13 @@ import chalk from 'chalk';
 export type EncryptionKeyResolver =
   | ((runId: string) => Promise<Uint8Array | undefined>)
   | null;
+
+async function decryptPayload(
+  value: unknown,
+  key: Parameters<typeof decrypt>[1]
+): Promise<unknown> {
+  return value instanceof Uint8Array ? decrypt(value, key) : value;
+}
 
 // Re-export types and utilities that consumers need
 export {
@@ -313,8 +320,8 @@ function getRevivers(): Revivers {
  * Pre-process a resource's data fields: if the resolver is provided and
  * the field is encrypted, decrypt it before generic hydration.
  *
- * Uses core's `maybeDecrypt()` which handles the 'encr' prefix stripping
- * and AES-GCM decryption transparently.
+ * Binary envelopes go through the core decryptor; legacy values remain
+ * unchanged for the generic hydrator.
  *
  * When the resolver is null (no --decrypt flag), encrypted fields pass
  * through as Uint8Array and are replaced with EncryptedDataRef in post-processing.
@@ -347,18 +354,18 @@ async function maybeDecryptFields<
     const k = rawKey ? await deriveRunPayloadKeys(rawKey) : undefined;
 
     // Decrypt input/output/error fields (WorkflowRun, Step)
-    result.input = await maybeDecrypt(result.input, k);
-    result.output = await maybeDecrypt(result.output, k);
-    (result as any).error = await maybeDecrypt((result as any).error, k);
+    result.input = await decryptPayload(result.input, k);
+    result.output = await decryptPayload(result.output, k);
+    (result as any).error = await decryptPayload((result as any).error, k);
 
     // Decrypt metadata field (Hook)
-    result.metadata = await maybeDecrypt(result.metadata, k);
+    result.metadata = await decryptPayload(result.metadata, k);
 
     // Decrypt eventData fields (Event)
     if (result.eventData && typeof result.eventData === 'object') {
       const eventData = { ...result.eventData };
       for (const field of getEventDataRefFields(result.eventType ?? '')) {
-        eventData[field] = await maybeDecrypt(eventData[field], k);
+        eventData[field] = await decryptPayload(eventData[field], k);
       }
       result.eventData = eventData;
     }

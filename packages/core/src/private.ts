@@ -8,7 +8,7 @@ import type { EventsConsumer } from './events-consumer.js';
 import type { QueueItem } from './global.js';
 import type { ReplayPayloadCache } from './replay-payload-cache.js';
 import type { Serializable } from './schemas.js';
-import type { PayloadKey } from './serialization/encryption.js';
+import type { DecryptionKey } from './serialization/encryption.js';
 
 export type StepFunction<
   Args extends Serializable[] = any[],
@@ -132,7 +132,7 @@ export function getStepFunction(stepId: string): StepFunction | undefined {
 
 export interface WorkflowOrchestratorContext {
   runId: string;
-  encryptionKey: PayloadKey | undefined;
+  encryptionKey: DecryptionKey | undefined;
   worldCapabilities?: WorldCapabilities;
   globalThis: typeof globalThis;
   /**

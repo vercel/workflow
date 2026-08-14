@@ -14,6 +14,7 @@ import { getStepFunction, registerStepFunction } from './private.js';
 import { bytesToBase64, deriveRunKeyPair } from './sealed-box.js';
 import {
   decrypt as decryptEnvelope,
+  encrypt as encryptEnvelope,
   runPayloadKeys,
   sealTo,
 } from './serialization/encryption.js';
@@ -38,8 +39,6 @@ import {
   hydrateWorkflowArguments,
   hydrateWorkflowReturnValue,
   isEncrypted,
-  maybeDecrypt,
-  maybeEncrypt,
   SerializationFormat,
 } from './serialization.js';
 import { hydrateData } from './serialization-format.js';
@@ -4892,42 +4891,7 @@ describe('format prefix system', () => {
   });
 });
 
-describe('decodeFormatPrefix legacy compatibility', () => {
-  it('should handle legacy object data (non-Uint8Array)', () => {
-    const legacyData = { message: 'hello', count: 42 };
-    const result = decodeFormatPrefix(legacyData);
-
-    expect(result.format).toBe(SerializationFormat.DEVALUE_V1);
-    expect(result.payload).toBeInstanceOf(Uint8Array);
-
-    // The payload should be JSON-encoded
-    const decoded = new TextDecoder().decode(result.payload);
-    expect(JSON.parse(decoded)).toEqual(legacyData);
-  });
-
-  it('should handle legacy array data (non-Uint8Array)', () => {
-    const legacyData = [1, 2, 'three', { nested: true }];
-    const result = decodeFormatPrefix(legacyData);
-
-    expect(result.format).toBe(SerializationFormat.DEVALUE_V1);
-    expect(result.payload).toBeInstanceOf(Uint8Array);
-
-    const decoded = new TextDecoder().decode(result.payload);
-    expect(JSON.parse(decoded)).toEqual(legacyData);
-  });
-
-  it('should handle legacy undefined data (non-Uint8Array)', () => {
-    const legacyData = undefined;
-    const result = decodeFormatPrefix(legacyData);
-
-    expect(result.format).toBe(SerializationFormat.DEVALUE_V1);
-    expect(result.payload).toBeInstanceOf(Uint8Array);
-
-    // JSON.stringify(undefined) returns undefined (not a string),
-    // which when encoded produces an empty Uint8Array
-    expect(result.payload.length).toBe(0);
-  });
-
+describe('decodeFormatPrefix', () => {
   it('should still correctly handle v2 Uint8Array data', () => {
     // Create valid v2 data with 'devl' prefix
     const payload = new TextEncoder().encode('["test"]');
@@ -6102,7 +6066,7 @@ describe('encrypt/decrypt primitives', () => {
   });
 });
 
-describe('maybeEncrypt / maybeDecrypt', () => {
+describe('serialized payload encryption', () => {
   const testKeyRaw = new Uint8Array([
     0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b,
     0x0c, 0x0d, 0x0e, 0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
@@ -6115,28 +6079,22 @@ describe('maybeEncrypt / maybeDecrypt', () => {
 
   it('should pass through data unchanged when key is undefined', async () => {
     const data = new Uint8Array([1, 2, 3, 4]);
-    const result = await maybeEncrypt(data, undefined);
+    const result = await encryptEnvelope(data, undefined);
     expect(result).toBe(data); // Same reference
   });
 
   it('should encrypt and add "encr" prefix when key is provided', async () => {
     const data = new Uint8Array([1, 2, 3, 4]);
-    const result = await maybeEncrypt(data, testKey);
+    const result = await encryptEnvelope(data, testKey);
     expect(result).not.toBe(data);
     expect(isEncrypted(result)).toBe(true);
   });
 
-  it('should round-trip through maybeEncrypt/maybeDecrypt', async () => {
+  it('should round-trip through encrypt/decrypt', async () => {
     const data = new Uint8Array([10, 20, 30, 40, 50]);
-    const encrypted = await maybeEncrypt(data, testKey);
-    const decrypted = await maybeDecrypt(encrypted, testKey);
+    const encrypted = await encryptEnvelope(data, testKey);
+    const decrypted = await decryptEnvelope(encrypted, testKey);
     expect(decrypted).toEqual(data);
-  });
-
-  it('should pass through non-Uint8Array values in maybeDecrypt', async () => {
-    const legacyData = [1, 'hello', { key: 'value' }];
-    const result = await maybeDecrypt(legacyData, testKey);
-    expect(result).toBe(legacyData); // Same reference
   });
 
   it('should pass through unencrypted Uint8Array in maybeDecrypt', async () => {
@@ -6147,14 +6105,14 @@ describe('maybeEncrypt / maybeDecrypt', () => {
     data.set(prefix, 0);
     data.set(payload, prefix.length);
 
-    const result = await maybeDecrypt(data, testKey);
+    const result = await decryptEnvelope(data, testKey);
     expect(result).toBe(data); // Same reference — not encrypted, passed through
   });
 
   it('should throw when encrypted data has no key', async () => {
     const data = new Uint8Array([1, 2, 3]);
-    const encrypted = await maybeEncrypt(data, testKey);
-    await expect(maybeDecrypt(encrypted, undefined)).rejects.toThrow(
+    const encrypted = await encryptEnvelope(data, testKey);
+    await expect(decryptEnvelope(encrypted, undefined)).rejects.toThrow(
       'Encrypted data encountered but no encryption key'
     );
   });

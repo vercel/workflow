@@ -24,14 +24,20 @@ export function isFormatPrefix(value: string): value is FormatPrefix {
   return value.length === 4 && /^[a-z0-9]{4}$/.test(value);
 }
 
+function formatPrefix<const Value extends string>(
+  value: Value
+): Value & FormatPrefix {
+  return value as Value & FormatPrefix;
+}
+
 /**
  * Well-known format prefix constants. Codecs may define additional ones.
  */
 export const SerializationFormat = {
   /** devalue stringify/parse with TextEncoder/TextDecoder */
-  DEVALUE_V1: 'devl' as FormatPrefix,
+  DEVALUE_V1: formatPrefix('devl'),
   /** Encrypted payload (inner payload has its own format prefix) */
-  ENCRYPTED: 'encr' as FormatPrefix,
+  ENCRYPTED: formatPrefix('encr'),
   /**
    * Sealed payload — asymmetrically encrypted to a run's X25519 public key
    * (inner payload has its own format prefix).
@@ -41,11 +47,11 @@ export const SerializationFormat = {
    * cannot decrypt. A run's own payloads continue to use {@link ENCRYPTED}.
    * See `sealed-box.ts` for the construction.
    */
-  SEALED: 'encp' as FormatPrefix,
+  SEALED: formatPrefix('encp'),
   /** Gzip-compressed payload (inner payload has its own format prefix) */
-  GZIP: 'gzip' as FormatPrefix,
+  GZIP: formatPrefix('gzip'),
   /** Zstandard-compressed payload (inner payload has its own format prefix) */
-  ZSTD: 'zstd' as FormatPrefix,
+  ZSTD: formatPrefix('zstd'),
 } as const;
 
 // ---- Serializable Types ----

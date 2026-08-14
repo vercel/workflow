@@ -26,7 +26,7 @@ import { getPortLazy } from './runtime/get-port-lazy.js';
 import { runIdCreatedAt } from './runtime/run-id-time.js';
 import { handleSuspension } from './runtime/suspension-handler.js';
 import { getWorld } from './runtime/world.js';
-import type { PayloadKey } from './serialization/encryption.js';
+import type { DecryptionKey } from './serialization/encryption.js';
 import {
   dehydrateWorkflowReturnValue,
   hydrateWorkflowArguments,
@@ -123,7 +123,7 @@ interface WorkflowSessionOptions {
   readonly workflowCode: string;
   readonly workflowRun: WorkflowRun;
   readonly events: Event[];
-  readonly encryptionKey: PayloadKey | undefined;
+  readonly encryptionKey: DecryptionKey | undefined;
   readonly replayPayloadCache: ReplayPayloadCache;
   readonly runReadyBarrier?: Promise<unknown>;
   readonly worldCapabilities?: WorldCapabilities;
@@ -271,7 +271,7 @@ export async function runWorkflow(
   workflowCode: string,
   workflowRun: WorkflowRun,
   events: Event[],
-  encryptionKey: PayloadKey | undefined,
+  encryptionKey: DecryptionKey | undefined,
   /**
    * Optional per-run cache for replay payload preparation and immutable final
    * values. Owned by the inline execution loop for this invocation.
@@ -291,7 +291,7 @@ export async function runWorkflow(
    * capabilities are treated as unsupported.
    */
   worldCapabilities?: WorldCapabilities
-): Promise<Uint8Array | unknown> {
+): Promise<unknown> {
   const result = await replayWorkflow({
     workflowCode,
     workflowRun,

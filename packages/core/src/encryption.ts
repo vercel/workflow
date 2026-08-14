@@ -13,9 +13,8 @@ import { RuntimeDecryptionError, WorkflowRuntimeError } from '@workflow/errors';
  * operations within the same run. This avoids repeated `importKey()`
  * calls on every encrypt/decrypt invocation.
  *
- * Wire format: `[nonce (12 bytes)][ciphertext + auth tag]`
- * The `encr` format prefix is NOT part of this module — it's added/stripped
- * by the serialization layer in `maybeEncrypt`/`maybeDecrypt`.
+ * Wire format: `[nonce (12 bytes)][ciphertext + auth tag]`. The serialization
+ * encryption module owns the outer `encr` format prefix.
  */
 
 // CryptoKey is a global type in browsers and Node.js 20+, but TypeScript's
@@ -24,15 +23,14 @@ import { RuntimeDecryptionError, WorkflowRuntimeError } from '@workflow/errors';
 export type CryptoKey = import('node:crypto').webcrypto.CryptoKey;
 
 /**
- * Raw key material retained alongside keys imported by this module.
+ * Node key handles retained alongside keys imported by this module.
  *
- * Node's synchronous cipher API cannot consume a Web Crypto `CryptoKey`, and
- * our keys are deliberately non-extractable. Keeping the original bytes in a
- * WeakMap gives the Node replay path access to the same key without making it
- * extractable or extending its lifetime beyond the `CryptoKey`. Browser/edge
- * callers continue to use Web Crypto and never consult this map.
+ * Node's synchronous cipher API needs a native key handle. Creating it while
+ * the raw bytes are already available avoids trying to convert a deliberately
+ * non-extractable `CryptoKey` later. Browser/edge callers never populate or
+ * consult this map.
  */
-const importedKeyMaterial = new WeakMap<CryptoKey, Uint8Array>();
+const nodeKeys = new WeakMap<CryptoKey, import('node:crypto').KeyObject>();
 
 /** Resolve node:crypto without a static import, preserving browser bundles. */
 const nodeCrypto = (() => {
@@ -87,10 +85,32 @@ export async function importKey(
     // a strict subset of `KeyUsage[]`, so this cast is sound.
     usages as ('encrypt' | 'decrypt')[]
   );
-  // Copy the caller's bytes: a caller may reuse/mutate its input buffer after
-  // importKey(), while a CryptoKey's material is immutable.
-  importedKeyMaterial.set(key, raw.slice());
+  if (nodeCrypto) {
+    nodeKeys.set(key, nodeCrypto.createSecretKey(raw));
+  }
   return key;
+}
+
+function assertValidAesGcmEnvelope(data: Uint8Array): void {
+  const minLength = NONCE_LENGTH + TAG_BYTES;
+  if (data.byteLength < minLength) {
+    throw new RuntimeDecryptionError(
+      `Encrypted data too short: expected at least ${minLength} bytes, got ${data.byteLength}`,
+      {
+        context: { operation: 'decrypt', byteLength: data.byteLength },
+      }
+    );
+  }
+}
+
+function wrapDecryptionError(cause: unknown, byteLength: number): never {
+  throw new RuntimeDecryptionError(
+    `AES-256-GCM decryption failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+    {
+      cause,
+      context: { operation: 'decrypt', byteLength },
+    }
+  );
 }
 
 /**
@@ -106,8 +126,8 @@ export function decryptSync(
   data: Uint8Array,
   aad?: Uint8Array
 ): Uint8Array {
-  const material = importedKeyMaterial.get(key);
-  if (!material) {
+  const nodeKey = nodeKeys.get(key);
+  if (!nodeKey) {
     throw new WorkflowRuntimeError(
       'Synchronous AES-256-GCM decryption requires a key created by importKey()'
     );
@@ -126,27 +146,15 @@ export function decryptSync(
     );
   }
 
-  const minLength = NONCE_LENGTH + TAG_BYTES;
-  if (data.byteLength < minLength) {
-    throw new RuntimeDecryptionError(
-      `Encrypted data too short: expected at least ${minLength} bytes, got ${data.byteLength}`,
-      {
-        context: {
-          operation: 'decrypt',
-          byteLength: data.byteLength,
-        },
-      }
-    );
-  }
-
-  const nonce = data.subarray(0, NONCE_LENGTH);
+  assertValidAesGcmEnvelope(data);
   const ciphertextEnd = data.byteLength - TAG_BYTES;
+  const nonce = data.subarray(0, NONCE_LENGTH);
   const ciphertext = data.subarray(NONCE_LENGTH, ciphertextEnd);
   const authTag = data.subarray(ciphertextEnd);
   try {
     const decipher = nodeCrypto.createDecipheriv(
       'aes-256-gcm',
-      material,
+      nodeKey,
       nonce,
       { authTagLength: TAG_BYTES }
     );
@@ -162,16 +170,7 @@ export function decryptSync(
     plaintext.set(tail, head.byteLength);
     return plaintext;
   } catch (cause) {
-    throw new RuntimeDecryptionError(
-      `AES-256-GCM decryption failed: ${cause instanceof Error ? cause.message : String(cause)}`,
-      {
-        cause,
-        context: {
-          operation: 'decrypt',
-          byteLength: data.byteLength,
-        },
-      }
-    );
+    wrapDecryptionError(cause, data.byteLength);
   }
 }
 
@@ -255,20 +254,9 @@ export async function decrypt(
   data: Uint8Array,
   aad?: Uint8Array
 ): Promise<Uint8Array> {
-  const minLength = NONCE_LENGTH + TAG_LENGTH / 8; // nonce + auth tag
-  if (data.byteLength < minLength) {
-    throw new RuntimeDecryptionError(
-      `Encrypted data too short: expected at least ${minLength} bytes, got ${data.byteLength}`,
-      {
-        context: {
-          operation: 'decrypt',
-          byteLength: data.byteLength,
-        },
-      }
-    );
-  }
+  assertValidAesGcmEnvelope(data);
   const nonce = data.subarray(0, NONCE_LENGTH);
-  const ciphertext = data.subarray(NONCE_LENGTH);
+  const ciphertextAndTag = data.subarray(NONCE_LENGTH);
   let plaintext: ArrayBuffer;
   try {
     plaintext = await globalThis.crypto.subtle.decrypt(
@@ -279,26 +267,10 @@ export async function decrypt(
         ...(aad ? { additionalData: aad } : {}),
       },
       key,
-      ciphertext
+      ciphertextAndTag
     );
   } catch (cause) {
-    // The most common shape we see in the wild is a DOMException with
-    // `name: 'OperationError'` and message "The operation failed for
-    // an operation-specific reason" — this is what Web Crypto throws
-    // when the GCM auth tag does not verify. Re-throw as
-    // RuntimeDecryptionError, attaching diagnostic context (byte length)
-    // that the bare DOMException lacks.
-    const causeMsg = cause instanceof Error ? cause.message : String(cause);
-    throw new RuntimeDecryptionError(
-      `AES-256-GCM decryption failed: ${causeMsg}`,
-      {
-        cause,
-        context: {
-          operation: 'decrypt',
-          byteLength: data.byteLength,
-        },
-      }
-    );
+    wrapDecryptionError(cause, data.byteLength);
   }
   return new Uint8Array(plaintext);
 }
