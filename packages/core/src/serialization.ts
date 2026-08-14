@@ -38,7 +38,6 @@ import {
   type CompressionStats,
   compress,
   decompress,
-  decompressReplayPayload,
 } from './serialization/compression.js';
 import {
   aesKeyOf,
@@ -3433,35 +3432,35 @@ export interface PreparedReplayPayload {
  * the portable Web Crypto and sealed-envelope fallbacks.
  */
 export type ReplayPayloadPreparer = (
-  value: unknown,
+  value: Uint8Array,
   key: PayloadKey | undefined
 ) => PreparedReplayPayload | Promise<PreparedReplayPayload>;
 
 /**
  * Decrypt and decompress persisted data without parsing it into JavaScript.
- * Legacy non-binary values pass through unchanged for their consumer to revive.
+ * Legacy non-binary values are handled before this binary preparation boundary.
  */
 function prepareReplayPayloadWithStats(
-  value: unknown,
+  value: Uint8Array,
   key: PayloadKey | undefined,
   compressionStats?: CompressionStats
 ): PreparedReplayPayload | Promise<PreparedReplayPayload> {
-  const finish = (prepared: unknown): PreparedReplayPayload => ({
+  const finish = (prepared: Uint8Array): PreparedReplayPayload => ({
     data: prepared,
   });
   const decompressPrepared = (
-    decrypted: unknown
+    decrypted: Uint8Array
   ): PreparedReplayPayload | Promise<PreparedReplayPayload> => {
-    const prepared = decompressReplayPayload(decrypted, compressionStats);
+    const prepared = decompress(decrypted, compressionStats);
     return prepared instanceof Promise
       ? prepared.then(finish)
       : finish(prepared);
   };
 
-  const decrypted = decryptReplayPayload(value, key);
-  return decrypted instanceof Promise
-    ? decrypted.then(decompressPrepared)
-    : decompressPrepared(decrypted);
+  if (peekFormatPrefix(value) === SerializationFormat.SEALED) {
+    return decrypt(value, key).then(decompressPrepared);
+  }
+  return decompressPrepared(decryptReplayPayload(value, key));
 }
 
 // Replay preparation is event-at-a-time and may run inside the response
@@ -3475,6 +3474,8 @@ async function prepareReplayPayloadWithTelemetry(
   value: unknown,
   key: PayloadKey | undefined
 ): Promise<PreparedReplayPayload> {
+  if (!(value instanceof Uint8Array)) return { data: value };
+
   const compressionStats: CompressionStats = {};
   const prepared = await prepareReplayPayloadWithStats(
     value,
@@ -3979,11 +3980,7 @@ export async function hydrateRunError(
   extraRevivers: Record<string, (value: any) => any> = {}
 ): Promise<unknown> {
   const compressionStats: CompressionStats = {};
-  const decrypted = await decompress(
-    await decrypt(value, key),
-    compressionStats
-  );
-  await recordCompression(compressionStats, 'deserialize');
+  const decrypted = await decrypt(value, key);
 
   if (!(decrypted instanceof Uint8Array)) {
     // See the matching note in `hydrateStepError`: this branch is for
@@ -3997,7 +3994,9 @@ export async function hydrateRunError(
     });
   }
 
-  const { format, payload } = decodeFormatPrefix(decrypted);
+  const prepared = await decompress(decrypted, compressionStats);
+  await recordCompression(compressionStats, 'deserialize');
+  const { format, payload } = decodeFormatPrefix(prepared);
 
   if (format === SerializationFormat.DEVALUE_V1) {
     const str = new TextDecoder().decode(payload);

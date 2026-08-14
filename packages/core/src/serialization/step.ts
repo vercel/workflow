@@ -54,10 +54,7 @@ export async function deserialize(
   encryptionKey?: PayloadKey,
   options?: CodecOptions
 ): Promise<unknown> {
-  const decrypted = await decompress(
-    await decryptData(data, encryptionKey),
-    options?.compressionStats
-  );
+  const decrypted = await decryptData(data, encryptionKey);
 
   if (!(decrypted instanceof Uint8Array)) {
     if (devalueCodec.deserializeLegacy) {
@@ -68,7 +65,8 @@ export async function deserialize(
     );
   }
 
-  const { format, payload } = decodeFormatPrefix(decrypted);
+  const prepared = await decompress(decrypted, options?.compressionStats);
+  const { format, payload } = decodeFormatPrefix(prepared);
 
   if (format === SerializationFormat.DEVALUE_V1) {
     return devalueCodec.deserialize(payload, 'step', options);

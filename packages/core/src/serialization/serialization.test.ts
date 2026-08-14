@@ -9,6 +9,7 @@ import { devalueCodec } from './codec-devalue.js';
 import {
   aesKeyOf,
   decrypt,
+  decryptReplayPayload,
   encrypt,
   isRunPayloadKeys,
   isSealTarget,
@@ -307,6 +308,19 @@ describe('encrypt', () => {
 });
 
 describe('decrypt', () => {
+  it('decrypts replay payloads synchronously', async () => {
+    const key = await makeKey();
+    const data = encodeWithFormatPrefix(
+      SerializationFormat.DEVALUE_V1,
+      new Uint8Array([1, 2, 3])
+    ) as Uint8Array;
+    const encrypted = (await encrypt(data, key)) as Uint8Array;
+
+    const decrypted = decryptReplayPayload(encrypted, key);
+    expect(decrypted).toBeInstanceOf(Uint8Array);
+    expect(decrypted).toEqual(data);
+  });
+
   it('should return non-binary data unchanged', async () => {
     const data = [1, 2, 3];
     const result = await decrypt(data, undefined);

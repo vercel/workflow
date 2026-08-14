@@ -186,12 +186,12 @@ describe('ReplayPayloadCache', () => {
 
     await cache.prepareEventPayload('evnt_legacy', 'result', legacy);
     await cache.prepareEventPayload('evnt_legacy', 'result', legacy);
-    expect(preparer).toHaveBeenCalledTimes(2);
+    expect(preparer).not.toHaveBeenCalled();
 
     const events = makeEvents([legacy, legacy, legacy]);
     events[2] = { ...events[2], eventData: undefined } as unknown as Event;
     await cache.prewarm(makeRun(legacy), events);
-    expect(preparer).toHaveBeenCalledTimes(2);
+    expect(preparer).not.toHaveBeenCalled();
   });
 
   it('memoizes primitive step results, including undefined', async () => {

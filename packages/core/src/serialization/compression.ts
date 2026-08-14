@@ -303,14 +303,12 @@ export async function compress(
  * Dispatches on the prefix ('zstd' or 'gzip') and inflates the inner
  * payload (which carries its own format prefix, e.g. 'devl').
  *
- * Non-compressed data (including non-binary legacy data) is returned
- * unchanged, so this is safe to apply unconditionally on read paths.
+ * Non-compressed data is returned unchanged.
  */
-export function decompressReplayPayload(
-  data: Uint8Array | unknown,
+export function decompress(
+  data: Uint8Array,
   stats?: CompressionStats
-): Uint8Array | unknown | Promise<Uint8Array> {
-  if (!(data instanceof Uint8Array)) return data;
+): Uint8Array | Promise<Uint8Array> {
   const prefix = peekFormatPrefix(data);
 
   if (prefix === SerializationFormat.ZSTD) {
@@ -337,14 +335,6 @@ export function decompressReplayPayload(
 
   recordStats(stats, 'none', data.length, data.length);
   return data;
-}
-
-/** Portable always-Promise facade retained for existing callers. */
-export async function decompress(
-  data: Uint8Array | unknown,
-  stats?: CompressionStats
-): Promise<Uint8Array | unknown> {
-  return decompressReplayPayload(data, stats);
 }
 
 /**

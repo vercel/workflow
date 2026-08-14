@@ -270,6 +270,34 @@ async function openSealedEnvelope(
   }
 }
 
+function requireAesDecryptionKey(
+  data: Uint8Array,
+  key: PayloadKey | undefined
+): CryptoKey {
+  const aesKey = aesKeyOf(key);
+  if (aesKey) return aesKey;
+
+  throw new RuntimeDecryptionError(
+    'Encrypted data encountered but no encryption key is available. ' +
+      'Encryption is not configured or no key was provided for this run.',
+    {
+      context: {
+        operation: 'decrypt',
+        byteLength: data.byteLength,
+        formatPrefix: 'encr',
+      },
+    }
+  );
+}
+
+export function decrypt(
+  data: Uint8Array,
+  key: PayloadKey | undefined
+): Promise<Uint8Array>;
+export function decrypt(
+  data: unknown,
+  key: PayloadKey | undefined
+): Promise<unknown>;
 export async function decrypt(
   data: Uint8Array | unknown,
   key: PayloadKey | undefined
@@ -286,21 +314,7 @@ export async function decrypt(
   // If the data is not encrypted, return it unchanged.
   if (format !== SerializationFormat.ENCRYPTED) return data;
 
-  // If the data is encrypted but no symmetric key is available, fail fast.
-  const aesKey = aesKeyOf(key);
-  if (!aesKey) {
-    throw new RuntimeDecryptionError(
-      'Encrypted data encountered but no encryption key is available. ' +
-        'Encryption is not configured or no key was provided for this run.',
-      {
-        context: {
-          operation: 'decrypt',
-          byteLength: data.byteLength,
-          formatPrefix: 'encr',
-        },
-      }
-    );
-  }
+  const aesKey = requireAesDecryptionKey(data, key);
 
   const { payload } = decodeFormatPrefix(data);
   try {
@@ -320,33 +334,24 @@ function addFormatPrefix(error: unknown, format: string): unknown {
 /**
  * Replay-specialized decrypt path.
  *
- * Symmetric payloads use Node's synchronous AES-GCM implementation when the
- * runtime owns the imported key material, avoiding one Web Crypto job and
- * promise settlement per event. Sealed envelopes and portable runtimes retain
- * the asynchronous implementation. The union is intentional: callers that
- * care about the common synchronous path can avoid wrapping it in an async
- * function, while existing callers may continue to `await` either shape.
+ * This byte-only function handles plaintext and symmetric envelopes without a
+ * promise. The replay preparation boundary dispatches sealed envelopes to the
+ * asynchronous X25519 decryptor before calling this function.
  */
 export function decryptReplayPayload(
-  data: Uint8Array | unknown,
+  data: Uint8Array,
   key: PayloadKey | undefined
-): Uint8Array | unknown | Promise<Uint8Array> {
-  if (!(data instanceof Uint8Array)) return data;
-
+): Uint8Array {
   const format = peekFormatPrefix(data);
   if (format === SerializationFormat.SEALED) {
-    return decrypt(data, key);
+    throw new Error('Sealed replay payloads require asynchronous decryption');
   }
   if (format !== SerializationFormat.ENCRYPTED) return data;
 
-  const aesKey = aesKeyOf(key);
-  if (!aesKey) return decrypt(data, key);
-
+  const aesKey = requireAesDecryptionKey(data, key);
   const { payload } = decodeFormatPrefix(data);
   try {
-    const syncResult = aesGcmDecryptSync(aesKey, payload);
-    if (syncResult) return syncResult;
-    return decrypt(data, key);
+    return aesGcmDecryptSync(aesKey, payload);
   } catch (error) {
     throw addFormatPrefix(error, format);
   }
