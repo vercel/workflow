@@ -414,7 +414,7 @@ describe('loadWorkflowRunEvents', () => {
       hasMore: false,
     });
 
-    const result = await loadWorkflowRunEvents('wrun_test');
+    const result = await loadWorkflowRunEvents({ runId: 'wrun_test' });
 
     expect(result.events).toHaveLength(2);
     expect(result.cursor).toBe('eid:evnt_b');
@@ -447,7 +447,7 @@ describe('loadWorkflowRunEvents', () => {
       hasMore: false,
     });
 
-    const result = await loadWorkflowRunEvents('wrun_test');
+    const result = await loadWorkflowRunEvents({ runId: 'wrun_test' });
 
     expect(result.events).toHaveLength(2);
     expect(result.cursor).toBe('eid:evnt_b');
@@ -461,7 +461,7 @@ describe('loadWorkflowRunEvents', () => {
       hasMore: false,
     });
 
-    const result = await loadWorkflowRunEvents('wrun_test');
+    const result = await loadWorkflowRunEvents({ runId: 'wrun_test' });
 
     expect(result.events).toHaveLength(0);
     expect(result.cursor).toBeNull();
@@ -484,7 +484,7 @@ describe('loadWorkflowRunEvents', () => {
       hasMore: false,
     });
 
-    const result = await loadWorkflowRunEvents('wrun_test');
+    const result = await loadWorkflowRunEvents({ runId: 'wrun_test' });
 
     expect(result.events.map((e) => e.eventId)).toEqual([
       'evnt_a',
@@ -501,7 +501,10 @@ describe('loadWorkflowRunEvents', () => {
       hasMore: false,
     });
 
-    const result = await loadWorkflowRunEvents('wrun_test', 'eid:evnt_z');
+    const result = await loadWorkflowRunEvents({
+      runId: 'wrun_test',
+      afterCursor: 'eid:evnt_z',
+    });
 
     expect(result.events).toHaveLength(0);
     // Preserving the input cursor avoids the runtime treating "no new events
@@ -521,7 +524,7 @@ describe('loadWorkflowRunEvents', () => {
       hasMore: false,
     });
 
-    const result = await loadWorkflowRunEvents('wrun_test');
+    const result = await loadWorkflowRunEvents({ runId: 'wrun_test' });
 
     expect(result.events.map((event) => event.eventId)).toEqual([
       'evnt_a',
@@ -540,7 +543,10 @@ describe('loadWorkflowRunEvents', () => {
       hasMore: false,
     });
 
-    const result = await loadWorkflowRunEvents('wrun_test', 'opaque-cursor');
+    const result = await loadWorkflowRunEvents({
+      runId: 'wrun_test',
+      afterCursor: 'opaque-cursor',
+    });
 
     expect(result.events.map((event) => event.eventId)).toEqual([
       'evnt_a',
@@ -568,7 +574,9 @@ describe('loadWorkflowRunEvents', () => {
       hasMore: true,
     });
 
-    await expect(loadWorkflowRunEvents('wrun_test')).rejects.toMatchObject({
+    await expect(
+      loadWorkflowRunEvents({ runId: 'wrun_test' })
+    ).rejects.toMatchObject({
       code: 'WORLD_CONTRACT_ERROR',
     });
     expect(eventsListMock).toHaveBeenCalledTimes(2);
@@ -581,7 +589,9 @@ describe('loadWorkflowRunEvents', () => {
       hasMore: true,
     });
 
-    await expect(loadWorkflowRunEvents('wrun_test')).rejects.toMatchObject({
+    await expect(
+      loadWorkflowRunEvents({ runId: 'wrun_test' })
+    ).rejects.toMatchObject({
       code: 'WORLD_CONTRACT_ERROR',
     });
     expect(eventsListMock).toHaveBeenCalledTimes(1);

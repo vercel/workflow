@@ -8,7 +8,6 @@ import type {
   CreateEventRequest,
   Event,
   EventResult,
-  EventStreamObserver,
   HealthCheckPayload,
   ValidQueueName,
   WorkflowRun,
@@ -593,11 +592,15 @@ function shouldRetryWithoutEventCursor(
  *   The returned cursor can be passed back in on a subsequent call for
  *   incremental loading.
  */
-export async function loadWorkflowRunEvents(
-  runId: string,
-  afterCursor?: string,
-  onEvent?: EventStreamObserver
-): Promise<LoadedEventLog> {
+export async function loadWorkflowRunEvents({
+  runId,
+  afterCursor,
+  onEvent,
+}: {
+  runId: string;
+  afterCursor?: string;
+  onEvent?: (event: Event) => void;
+}): Promise<LoadedEventLog> {
   const incremental = afterCursor !== undefined;
   return trace(
     incremental ? 'workflow.loadNewEvents' : 'workflow.loadEvents',
@@ -984,7 +987,7 @@ export async function settleEventSlotGap(
     await new Promise((resolve) =>
       setTimeout(resolve, SLOT_GAP_RECHECK_BASE_DELAY_MS * 2 ** attempt)
     );
-    log = await loadWorkflowRunEvents(runId);
+    log = await loadWorkflowRunEvents({ runId });
     gap = findEventSlotGap(log.events);
   }
   return { log, gap };
