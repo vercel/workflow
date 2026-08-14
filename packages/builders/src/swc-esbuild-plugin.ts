@@ -15,6 +15,19 @@ import {
 import { resolveModuleSpecifier } from './module-specifier.js';
 import { resolveWorkflowAliasRelativePath } from './workflow-alias.js';
 
+export interface WorkflowTransformResult {
+  readonly mode: 'step' | 'workflow';
+  readonly filename: string;
+  readonly absolutePath: string;
+  readonly source: string;
+  readonly code: string;
+  readonly workflowManifest: WorkflowManifest;
+}
+
+export type WorkflowAfterTransformHook = (
+  result: WorkflowTransformResult
+) => void | Promise<void>;
+
 export interface SwcPluginOptions {
   mode: 'step' | 'workflow';
   entriesToBundle?: string[];
@@ -22,6 +35,13 @@ export interface SwcPluginOptions {
   projectRoot?: string;
   moduleSpecifierRoot?: string;
   workflowManifest?: WorkflowManifest;
+  /**
+   * Optional observer invoked after a transform's manifest entries have been
+   * accepted. A file may be observed multiple times across modes, bundles, and
+   * watch rebuilds. The observer is awaited, cannot replace the generated code,
+   * and aborts the build if it throws.
+   */
+  onAfterTransform?: WorkflowAfterTransformHook;
   /**
    * Rewrite TypeScript extensions (.ts, .tsx, .mts, .cts) to their JS
    * equivalents (.js, .mjs, .cjs) in externalized import paths.
@@ -515,6 +535,15 @@ export function createSwcPlugin(options: SwcPluginOptions): Plugin {
             stepIdsForCurrentBuild,
             workflowIdsForCurrentBuild
           );
+
+          await options.onAfterTransform?.({
+            mode: options.mode,
+            filename: relativeFilepath,
+            absolutePath: args.path,
+            source: normalizedSource,
+            code: transformedCode,
+            workflowManifest,
+          });
 
           return {
             contents: transformedCode,

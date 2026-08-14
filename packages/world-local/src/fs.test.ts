@@ -976,6 +976,86 @@ describe('fs utilities', () => {
         }
       });
     });
+
+    describe('sort-key cursors', () => {
+      // Slot-numbered events: the file id carries the sort key, and the
+      // stored `createdAt` deliberately runs backwards relative to it, the
+      // way a writer that loses a slot race and bumps produces a higher slot
+      // with an older timestamp.
+      const RUN_PREFIX = 'run1-';
+      const SLOT_COUNT = 12;
+      const slotId = (slot: number) => `evnt_${String(slot).padStart(26, '0')}`;
+
+      beforeEach(async () => {
+        const baseTime = new Date('2024-01-01T00:00:00.000Z').getTime();
+        const files: Record<string, object> = {};
+        for (let slot = 1; slot <= SLOT_COUNT; slot++) {
+          const id = slotId(slot);
+          files[`${RUN_PREFIX}${id}`] = {
+            id,
+            name: `event-${slot}`,
+            createdAt: new Date(baseTime - ms(`${slot}m`)),
+          };
+        }
+        await createFilesystem(testDir, files);
+      });
+
+      const query = (cursor?: string) =>
+        paginatedFileSystemQuery({
+          directory: testDir,
+          schema: TestItemSchema,
+          filePrefix: RUN_PREFIX,
+          getCreatedAt: () => null,
+          getId: (item: TestItem) => item.id,
+          getSortKey: (item: TestItem) => item.id,
+          getSortKeyFromFileId: (fileId: string) =>
+            fileId.slice(RUN_PREFIX.length),
+          sortOrder: 'asc',
+          limit: 5,
+          cursor,
+        });
+
+      it('pages through the whole log in slot order', async () => {
+        const seen: string[] = [];
+        let cursor: string | undefined;
+        let hasMore = true;
+
+        while (hasMore) {
+          const page: PaginatedResponse<TestItem> = await query(cursor);
+          seen.push(...page.data.map((item) => item.id));
+          cursor = page.cursor ?? undefined;
+          hasMore = page.hasMore;
+        }
+
+        expect(seen).toEqual(
+          Array.from({ length: SLOT_COUNT }, (_, index) => slotId(index + 1))
+        );
+      });
+
+      it('does not read files the cursor has already passed', async () => {
+        const firstPage = await query();
+        assert(firstPage.cursor, 'expected first page cursor to be defined');
+
+        const readFile = vi.spyOn(fs, 'readFile');
+        const secondPage = await query(firstPage.cursor);
+        const readIds = readFile.mock.calls.map((call) =>
+          path.basename(String(call[0]), '.json')
+        );
+        readFile.mockRestore();
+
+        // Only the tail past the cursor is opened. Without the filename-level
+        // prefilter every page reads every file for the run, which makes
+        // walking a long event log quadratic.
+        expect(readIds).toEqual(
+          Array.from(
+            { length: SLOT_COUNT - firstPage.data.length },
+            (_, index) =>
+              `${RUN_PREFIX}${slotId(firstPage.data.length + index + 1)}`
+          )
+        );
+        expect(secondPage.data).toHaveLength(5);
+      });
+    });
   });
 
   describe('concurrent writes', () => {

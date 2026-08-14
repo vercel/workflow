@@ -4,8 +4,7 @@ import type { Event } from '@workflow/world';
 import * as nanoid from 'nanoid';
 import { monotonicFactory } from 'ulid';
 import { describe, expect, it, vi } from 'vitest';
-import { createCorrelationIdGenerator } from '../correlation-id.js';
-import { EventsConsumer } from '../events-consumer.js';
+import { DEFERRED_CHECK_DELAY_MS, EventsConsumer } from '../events-consumer.js';
 import { WorkflowSuspension } from '../global.js';
 import type { WorkflowOrchestratorContext } from '../private.js';
 import { ReplayPayloadCache } from '../replay-payload-cache.js';
@@ -28,6 +27,8 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
     globalThis: context.globalThis,
     // ctx.onWorkflowError is accessed via closure — it's defined below on the same object
     eventsConsumer: new EventsConsumer(events, {
+      // Fake context: no deliveries are modeled, so the gate is a no-op here.
+      isDeliveryIdle: () => true,
       onUnconsumedEvent: (event) => {
         ctx.onWorkflowError(
           new ReplayDivergenceError(
@@ -39,14 +40,7 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
       getPromiseQueue: () => Promise.resolve(),
     }),
     invocationsQueue: new Map(),
-    generateCorrelationId: createCorrelationIdGenerator({
-      seed: 'test',
-      fixedTimestamp: workflowStartedAt,
-      positional: () => ulid(workflowStartedAt),
-      // The event logs in this file hardcode correlation ids the run-wide
-      // shared sequence minted, so replay only matches under that scheme.
-      perKind: false,
-    }),
+    generateUlid: () => ulid(workflowStartedAt),
     generateNanoid: nanoid.customRandom(nanoid.urlAlphabet, 21, (size) =>
       new Uint8Array(size).map(() => 256 * context.globalThis.Math.random())
     ),
@@ -374,11 +368,11 @@ describe('createSleep', () => {
     expect(ctx.onWorkflowError).not.toHaveBeenCalled();
   });
 
-  it('should raise ReplayDivergenceError when duplicate wait_completed events cannot be consumed', async () => {
-    // When the event log has 2 wait_completed for a single wait_created,
-    // the first wait_completed removes the callback (Finished), but the second
-    // wait_completed has no consumer. The onUnconsumedEvent callback should
-    // trigger a ReplayDivergenceError via onWorkflowError.
+  it('should ignore a duplicate wait_completed rather than reporting divergence', async () => {
+    // When the event log has 2 wait_completed for a single wait_created, the
+    // first one removes the callback (Finished) and the second has no consumer
+    // left. That is not divergence: the wait's outcome was already decided by
+    // the first, so the duplicate is committed but inert and replay skips it.
     const ctx = setupWorkflowContext([
       {
         eventId: 'evnt_0',
@@ -412,16 +406,18 @@ describe('createSleep', () => {
       },
     ]);
 
-    const errorReceived = withResolvers<Error>();
-    ctx.onWorkflowError = errorReceived.resolve;
-
     const sleep = createSleep(ctx);
     await sleep('1s');
 
-    // The duplicate wait_completed at index 2 is orphaned and triggers the error
-    const workflowError = await errorReceived.promise;
-    expect(workflowError).toBeInstanceOf(ReplayDivergenceError);
-    expect(workflowError?.message).toContain('evnt_2');
+    // Wait past the deferred unconsumed-event window so a check that was not
+    // skipped would have fired by now.
+    await new Promise((resolve) =>
+      setTimeout(resolve, DEFERRED_CHECK_DELAY_MS * 2)
+    );
+
+    expect(ctx.onWorkflowError).not.toHaveBeenCalled();
+    // The cursor moved past the duplicate instead of stalling on it.
+    expect(ctx.eventsConsumer.eventIndex).toBe(3);
   });
 
   it('should resolve with void when wait_completed', async () => {
