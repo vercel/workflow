@@ -27,12 +27,13 @@ import {
   type Event,
   type EventResult,
   EventSchema,
-  type EventStreamObserver,
   type EventType,
   EventTypeSchema,
   getEventDataPayloadField,
   HookSchema,
-  type PaginationOptions,
+  type ListEventsByCorrelationIdParams,
+  type ListEventsParams,
+  type PaginatedResponse,
   StructuredErrorSchema,
   WaitSchema,
   WorkflowRunSchema,
@@ -781,7 +782,7 @@ async function decodeCreateEventResponse<T extends EventType>(
 export async function createWorkflowRunStartedEventV4(
   input: CreateEventV4InputBase,
   config?: APIConfig,
-  onEvent?: EventStreamObserver
+  onEvent?: (event: Event) => void
 ) {
   const response = await postWorkflowRunEventV4(
     { ...input, eventType: 'run_started' },
@@ -1205,8 +1206,11 @@ async function postEventFrameOverWs(
  */
 export type HookReceivedPreloadV4Result =
   /** The server streamed the replay log back as v4 frames. */
-  | (ListEventsV4Result & {
+  | {
       kind: 'stream';
+      events: Event[];
+      cursor: string | null;
+      hasMore: boolean;
       /**
        * The canonical event this write created or converged on (the resume
        * claim winner's — ours or the producer's), named by the
@@ -1215,7 +1219,7 @@ export type HookReceivedPreloadV4Result =
       canonicalEventId: string | undefined;
       /** Per-run event ceiling from the response header, when present. */
       maxEvents: number | undefined;
-    })
+    }
   /**
    * The server answered with the normal materialized CBOR body instead —
    * an older server, or one that declined the optimization. The
@@ -1241,7 +1245,7 @@ export type HookReceivedPreloadV4Result =
 export async function createHookReceivedPreloadEventV4(
   input: CreateEventV4InputBase,
   config?: APIConfig,
-  onEvent?: EventStreamObserver
+  onEvent?: (event: Event) => void
 ): Promise<HookReceivedPreloadV4Result> {
   const response = await postWorkflowRunEventV4(
     { ...input, eventType: 'hook_received' },
@@ -1334,27 +1338,6 @@ export async function getEventV4(
   throw new Error(`v4 getEvent: empty frame stream for ${eventId}`);
 }
 
-export interface ListEventsV4Params extends PaginationOptions {
-  /**
-   * Whether the backend resolves payload bytes into each frame body.
-   * `resolve` (default) streams the bytes; `lazy` emits empty-body frames
-   * (the ref descriptor stays in the frame meta) — for metadata-only
-   * listings that would otherwise download every payload just to discard
-   * it.
-   */
-  remoteRefBehavior?: 'resolve' | 'lazy';
-  /** Called synchronously after each event frame validates. */
-  onEvent?: EventStreamObserver;
-}
-
-export interface ListEventsV4Result {
-  events: Event[];
-  /** Trailing event-log cursor, or null when the stream contained no events. */
-  cursor: string | null;
-  /** Explicit "another page of results exists" flag from the sentinel. */
-  hasMore: boolean;
-}
-
 class PartialEventStreamError extends WorkflowWorldError {
   constructor(message: string, cause?: unknown) {
     super(message, { code: 'TRANSPORT', cause });
@@ -1380,8 +1363,8 @@ async function consumeEventFrameStream(
   response: Response,
   opName: string,
   events: Event[],
-  onEvent?: EventStreamObserver
-): Promise<Pick<ListEventsV4Result, 'cursor' | 'hasMore'>> {
+  onEvent?: (event: Event) => void
+): Promise<{ cursor: string | null; hasMore: boolean }> {
   const contentType = response.headers.get('content-type');
   if (!contentType?.startsWith(V4_FRAME_CONTENT_TYPE)) {
     throw new Error(
@@ -1431,9 +1414,9 @@ async function consumeReplayLogResponse({
   opName: string;
   events: Event[];
   config?: APIConfig;
-  onEvent?: EventStreamObserver;
-}): Promise<Pick<ListEventsV4Result, 'cursor' | 'hasMore'>> {
-  let page: Pick<ListEventsV4Result, 'cursor' | 'hasMore'>;
+  onEvent?: (event: Event) => void;
+}): Promise<{ cursor: string | null; hasMore: boolean }> {
+  let page: { cursor: string | null; hasMore: boolean };
   try {
     page = await consumeEventFrameStream(response, opName, events, onEvent);
   } catch (error) {
@@ -1446,11 +1429,14 @@ async function consumeReplayLogResponse({
   if (!page.hasMore) return page;
   assert(page.cursor, `v4 ${opName}: partial event stream missing cursor`);
   const suffix = await getWorkflowRunEventsV4(
-    runId,
-    { cursor: page.cursor, onEvent },
+    {
+      runId,
+      pagination: { cursor: page.cursor },
+      onEvent,
+    },
     config
   );
-  events.push(...suffix.events);
+  events.push(...suffix.data);
   return { cursor: suffix.cursor, hasMore: suffix.hasMore };
 }
 
@@ -1469,8 +1455,8 @@ async function consumeListFrameStream(
   config: APIConfig | undefined,
   opName: string,
   events: Event[],
-  onEvent?: EventStreamObserver
-): Promise<Pick<ListEventsV4Result, 'cursor' | 'hasMore'>> {
+  onEvent?: (event: Event) => void
+): Promise<{ cursor: string | null; hasMore: boolean }> {
   const response = await fetchV4(
     url,
     { method: 'GET', headers },
@@ -1485,20 +1471,26 @@ async function consumeListFrameStream(
  * Shared by the runId and correlationId list query builders so both send
  * `remoteRefBehavior` identically.
  */
-function appendListParams(sp: URLSearchParams, params: ListEventsV4Params) {
-  if (params.cursor) sp.set('cursor', params.cursor);
-  if (params.limit !== undefined) sp.set('limit', String(params.limit));
-  if (params.sortOrder) sp.set('sortOrder', params.sortOrder);
-  if (params.remoteRefBehavior) {
-    sp.set('remoteRefBehavior', params.remoteRefBehavior);
-  }
+function appendListParams(
+  sp: URLSearchParams,
+  params: ListEventsParams | ListEventsByCorrelationIdParams,
+  cursor = params.pagination?.cursor
+) {
+  const { limit, sortOrder } = params.pagination ?? {};
+  if (cursor) sp.set('cursor', cursor);
+  if (limit !== undefined) sp.set('limit', String(limit));
+  if (sortOrder) sp.set('sortOrder', sortOrder);
+  sp.set(
+    'remoteRefBehavior',
+    params.resolveData === 'none' ? 'lazy' : 'resolve'
+  );
 }
 
-function paginationToQuery(params: ListEventsV4Params): string {
+function paginationToQuery(params: ListEventsParams, cursor?: string): string {
   const sp = new URLSearchParams();
   // The World API uses an omitted limit for a complete event log.
-  if (params.limit === undefined) sp.set('returnAll', 'true');
-  appendListParams(sp, params);
+  if (params.pagination?.limit === undefined) sp.set('returnAll', 'true');
+  appendListParams(sp, params, cursor);
   return `?${sp.toString()}`;
 }
 
@@ -1513,18 +1505,17 @@ function paginationToQuery(params: ListEventsV4Params): string {
  * after its last validated event instead of downloading accepted frames again.
  */
 export async function getWorkflowRunEventsV4(
-  runId: string,
-  params: ListEventsV4Params = {},
+  params: ListEventsParams,
   config?: APIConfig
-): Promise<ListEventsV4Result> {
+): Promise<PaginatedResponse<Event>> {
   const { baseUrl, headers } = await getHttpConfig(config);
   const events: Event[] = [];
-  let cursor = params.cursor;
+  let cursor = params.pagination?.cursor;
 
   while (true) {
     const url =
-      `${baseUrl}/v4/runs/${encodeURIComponent(runId)}/events` +
-      paginationToQuery({ ...params, cursor });
+      `${baseUrl}/v4/runs/${encodeURIComponent(params.runId)}/events` +
+      paginationToQuery(params, cursor);
     try {
       const page = await consumeListFrameStream(
         url,
@@ -1534,22 +1525,22 @@ export async function getWorkflowRunEventsV4(
         events,
         params.onEvent
       );
-      if (params.limit === undefined && page.hasMore) {
+      if (params.pagination?.limit === undefined && page.hasMore) {
         if (!page.cursor || page.cursor === cursor) {
           throw new WorkflowWorldError(
-            `v4 listEvents: partial event stream made no cursor progress for run ${runId}`,
+            `v4 listEvents: partial event stream made no cursor progress for run ${params.runId}`,
             { code: 'SCHEMA_VALIDATION' }
           );
         }
         cursor = page.cursor;
         continue;
       }
-      return { events, ...page };
+      return { data: events, ...page };
     } catch (error) {
       if (!(error instanceof PartialEventStreamError)) throw error;
       const lastEvent = events.at(-1);
       if (
-        params.limit !== undefined ||
+        params.pagination?.limit !== undefined ||
         !lastEvent ||
         `eid:${lastEvent.eventId}` === cursor
       ) {
@@ -1575,15 +1566,13 @@ export async function getWorkflowRunEventsV4(
  * the page by run id.
  */
 export async function getEventsByCorrelationIdV4(
-  correlationId: string,
-  runId: string,
-  params: ListEventsV4Params = {},
+  params: ListEventsByCorrelationIdParams,
   config?: APIConfig
-): Promise<ListEventsV4Result> {
+): Promise<PaginatedResponse<Event>> {
   const { baseUrl, headers } = await getHttpConfig(config);
   const sp = new URLSearchParams();
-  sp.set('correlationId', correlationId);
-  sp.set('runId', runId);
+  sp.set('correlationId', params.correlationId);
+  sp.set('runId', params.runId);
   appendListParams(sp, params);
   const url = `${baseUrl}/v4/events?${sp.toString()}`;
   const events: Event[] = [];
@@ -1592,8 +1581,7 @@ export async function getEventsByCorrelationIdV4(
     headers,
     config,
     'listEventsByCorrelationId',
-    events,
-    params.onEvent
+    events
   );
-  return { events, ...page };
+  return { data: events, ...page };
 }

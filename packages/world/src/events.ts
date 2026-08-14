@@ -725,15 +725,6 @@ export type HookReceivedEvent = z.infer<typeof HookReceivedEventSchema>;
 export type HookConflictEvent = z.infer<typeof HookConflictEventSchema>;
 
 /**
- * Local observer invoked as each event is decoded from a streamed response.
- * Worlds without a streaming implementation may ignore it. The callback runs
- * synchronously, so its work intentionally applies response-stream backpressure.
- * Keep it bounded to the event just decoded; large payloads may proportionally
- * delay the next frame.
- */
-export type EventStreamObserver = (event: Event) => void;
-
-/**
  * Union of all possible event request types.
  * @internal Use CreateEventRequest or RunCreatedEventRequest instead.
  */
@@ -954,7 +945,7 @@ export interface CreateEventParams {
    * Observe replay-preload events as their frames are decoded. This is a
    * client-side delivery hook only; it is never serialized to a backend.
    */
-  onEvent?: EventStreamObserver;
+  onEvent?: (event: Event) => void;
 }
 
 /**
@@ -1122,19 +1113,19 @@ export interface GetEventParams {
   resolveData?: ResolveData;
 }
 
-export interface ListEventsOptions {
+export interface ListEventsParams {
+  runId: string;
   /** Omit `limit` to return every remaining event. */
   pagination?: PaginationOptions;
   resolveData?: ResolveData;
+  /**
+   * Observe events as a streaming World decodes them. The callback runs
+   * synchronously and therefore applies response-stream backpressure.
+   */
+  onEvent?: (event: Event) => void;
 }
 
-export interface ListEventsParams extends ListEventsOptions {
-  runId: string;
-  /** Observe events as a streaming World decodes them. */
-  onEvent?: EventStreamObserver;
-}
-
-export interface ListEventsByCorrelationIdParams extends ListEventsOptions {
+export interface ListEventsByCorrelationIdParams {
   correlationId: string;
   /**
    * The run the correlation id belongs to. A correlation id is unique per
@@ -1145,4 +1136,7 @@ export interface ListEventsByCorrelationIdParams extends ListEventsOptions {
    * event id alone is not.
    */
   runId: string;
+  /** Omit `limit` to return every remaining event. */
+  pagination?: PaginationOptions;
+  resolveData?: ResolveData;
 }
