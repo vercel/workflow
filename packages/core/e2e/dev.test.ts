@@ -1111,7 +1111,11 @@ ${apiFileContent}`
           {
             file: files.step,
             kind: 'none',
-            expectedLogCounts: { skip: 1 },
+            expectedLogCounts: {
+              skip: { min: 1 },
+              hot: { max: 0 },
+              full: { max: 0 },
+            },
             expectedStepValue: (iteration: number) => `step-only-${iteration}`,
             source: (
               iteration: number
@@ -1127,7 +1131,11 @@ export async function hmrFuzzStep() {
           {
             file: files.stepHelper,
             kind: 'none',
-            expectedLogCounts: { skip: 1 },
+            expectedLogCounts: {
+              skip: { min: 1 },
+              hot: { max: 0 },
+              full: { max: 0 },
+            },
             expectedStepValue: (iteration: number) =>
               `step-helper-only-${iteration}`,
             source: (
