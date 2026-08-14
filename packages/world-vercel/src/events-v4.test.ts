@@ -315,6 +315,52 @@ describe('getWorkflowRunEventsV4 over HTTP', () => {
     agent.assertNoPendingInterceptors();
   });
 
+  it('does not resume past a GET observer failure', async () => {
+    const origin =
+      WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
+    const agent = new MockAgent();
+    agent.disableNetConnect();
+
+    agent
+      .get(origin)
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events?returnAll=true',
+        method: 'GET',
+      })
+      .reply(
+        200,
+        Buffer.concat([
+          encodeFrame(
+            {
+              eventId: 'evnt_1',
+              runId: 'wrun_1',
+              eventType: 'run_started',
+              createdAt: CREATED_AT,
+            },
+            new Uint8Array()
+          ),
+          encodeFrame(
+            { _end: 1, next: 'eid:evnt_1', hasMore: false },
+            new Uint8Array()
+          ),
+        ]),
+        { headers: { 'content-type': V4_FRAME_CONTENT_TYPE } }
+      );
+
+    await expect(
+      getWorkflowRunEventsV4(
+        'wrun_1',
+        {
+          onEvent: () => {
+            throw new Error('observer failed');
+          },
+        },
+        { token: 'test-token', dispatcher: agent }
+      )
+    ).rejects.toThrow('observer failed');
+    agent.assertNoPendingInterceptors();
+  });
+
   it.each([
     ['an unknown event type', { eventType: 'future_event', eventData: {} }],
     ['invalid event metadata', { eventType: 'run_created', eventData: {} }],

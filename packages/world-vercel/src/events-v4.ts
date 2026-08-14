@@ -1355,6 +1355,10 @@ export interface ListEventsV4Result {
   hasMore: boolean;
 }
 
+function isTransportError(error: unknown): error is WorkflowWorldError {
+  return WorkflowWorldError.is(error) && error.code === 'TRANSPORT';
+}
+
 async function consumeEventFrameStream(
   response: Response,
   opName: string,
@@ -1435,9 +1439,7 @@ async function consumeReplayLogResponse({
   try {
     page = await consumeEventFrameStream(response, opName, events, onEvent);
   } catch (error) {
-    if (!WorkflowWorldError.is(error) || error.code !== 'TRANSPORT') {
-      throw error;
-    }
+    if (!isTransportError(error)) throw error;
     const lastEvent = events.at(-1);
     if (!lastEvent) throw error;
     page = { cursor: `eid:${lastEvent.eventId}`, hasMore: true };
@@ -1546,6 +1548,7 @@ export async function getWorkflowRunEventsV4(
       }
       return { events, ...page };
     } catch (error) {
+      if (!isTransportError(error)) throw error;
       const lastEvent = events.at(-1);
       if (
         params.limit !== undefined ||
