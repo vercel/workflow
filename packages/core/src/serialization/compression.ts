@@ -309,10 +309,10 @@ export async function compress(
  * Non-compressed data (including non-binary legacy data) is returned
  * unchanged, so this is safe to apply unconditionally on read paths.
  */
-export async function decompress(
+export function decompressReplayPayload(
   data: Uint8Array | unknown,
   stats?: CompressionStats
-): Promise<Uint8Array | unknown> {
+): Uint8Array | unknown | Promise<Uint8Array> {
   if (!(data instanceof Uint8Array)) return data;
   const prefix = peekFormatPrefix(data);
 
@@ -332,13 +332,22 @@ export async function decompress(
       );
     }
     const { payload } = decodeFormatPrefix(data);
-    const inflated = await gunzipBytes(payload);
-    recordStats(stats, 'gzip', inflated.length, data.length);
-    return inflated;
+    return gunzipBytes(payload).then((inflated) => {
+      recordStats(stats, 'gzip', inflated.length, data.length);
+      return inflated;
+    });
   }
 
   recordStats(stats, 'none', data.length, data.length);
   return data;
+}
+
+/** Portable always-Promise facade retained for existing callers. */
+export async function decompress(
+  data: Uint8Array | unknown,
+  stats?: CompressionStats
+): Promise<Uint8Array | unknown> {
+  return decompressReplayPayload(data, stats);
 }
 
 /**

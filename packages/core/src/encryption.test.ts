@@ -1,6 +1,12 @@
 import { RuntimeDecryptionError } from '@workflow/errors';
 import { describe, expect, it } from 'vitest';
-import { type CryptoKey, decrypt, encrypt, importKey } from './encryption.js';
+import {
+  type CryptoKey,
+  decrypt,
+  decryptSync,
+  encrypt,
+  importKey,
+} from './encryption.js';
 
 const RAW_KEY = new Uint8Array(32).fill(7);
 const OTHER_RAW_KEY = new Uint8Array(32).fill(8);
@@ -26,6 +32,16 @@ describe('encryption', () => {
 
       const decoded = await decrypt(key, ciphertext);
       expect(new TextDecoder().decode(decoded)).toBe('hello, workflow');
+    });
+
+    it('decryptSync() returns the plaintext without a promise', async () => {
+      const key = await getKey();
+      const plaintext = new TextEncoder().encode('synchronous replay');
+      const ciphertext = await encrypt(key, plaintext);
+
+      const decoded = decryptSync(key, ciphertext);
+      expect(decoded).toBeInstanceOf(Uint8Array);
+      expect(new TextDecoder().decode(decoded)).toBe('synchronous replay');
     });
   });
 
@@ -90,6 +106,19 @@ describe('encryption', () => {
       // Wrong key → auth tag mismatch → same OperationError as ciphertext corruption.
       const cause = error.cause as { name?: string };
       expect(cause?.name).toBe('OperationError');
+    });
+
+    it('keeps RuntimeDecryptionError on synchronous auth failure', async () => {
+      const key = await getKey();
+      const ciphertext = await encrypt(
+        key,
+        new TextEncoder().encode('tamper me')
+      );
+      ciphertext[ciphertext.length - 1] ^= 0xff;
+
+      expect(() => decryptSync(key, ciphertext)).toThrowError(
+        RuntimeDecryptionError
+      );
     });
 
     it('does not record a formatPrefix at the low-level layer', async () => {
