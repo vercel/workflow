@@ -269,44 +269,83 @@ describe('replaying the corrupted production storm log', () => {
   const maxRank = Math.max(...fixture.map((f) => f.r));
   const ulids = generateUlidSequence(maxRank + 8);
 
-  it('full log: diverges at the slot-630 equivalent (WZ bound to finalizeStep vs releaseStep consumer)', async () => {
-    const events = await buildEvents(fixture, ulids);
-    const { error } = await replay(events);
-    // Committed bindings are mutually inconsistent, so a faithful replay
-    // must reject SOME event. Print exactly which one for analysis.
-    // eslint-disable-next-line no-console
-    console.log(
-      'FULL-LOG replay outcome:',
-      error?.constructor?.name,
-      error?.message?.slice(0, 300)
-    );
-    expect(error).toBeDefined();
-    expect(WorkflowSuspension.is(error)).toBe(false);
-  });
-
-  it("writer B's 610-event prefix: report what a faithful replay draws", async () => {
-    const prefix = fixture.filter((f) => f.s <= 610);
+  /** Pending-step bindings by ULID rank after replaying `len` slots. */
+  async function bindingsAtLength(
+    len: number
+  ): Promise<{ error: any; byRank: Map<number, string> }> {
+    const prefix = fixture.filter((f) => f.s <= len);
     const events = await buildEvents(prefix, ulids);
     const { error, ctx } = await replay(events);
-    const pending = [...ctx.invocationsQueue.values()]
-      .filter((i) => i.type === 'step')
-      .map((i) => ({
-        correlationId: i.correlationId,
-        rank: ulids.indexOf(i.correlationId.split('_', 2)[1]),
-        stepName: (i as any).stepName,
-        hasCreatedEvent: (i as any).hasCreatedEvent ?? false,
-      }));
-    // eslint-disable-next-line no-console
-    console.log(
-      'PREFIX-610 replay outcome:',
-      error?.constructor?.name,
-      error?.message?.slice(0, 200)
-    );
-    // eslint-disable-next-line no-console
-    console.log('PREFIX-610 pending steps:', JSON.stringify(pending, null, 1));
-    // Rank 198 is WZ. Writer B committed step_created WZ = finalizeStep from
-    // exactly this prefix. A faithful replay must therefore have a pending
-    // finalizeStep create at rank 198 for B's write to be prefix-determined.
+    const byRank = new Map<number, string>();
+    for (const item of ctx.invocationsQueue.values()) {
+      if (item.type !== 'step') continue;
+      const rank = ulids.indexOf(item.correlationId.split('_', 2)[1]);
+      byRank.set(rank, item.stepName);
+    }
+    return { error, byRank };
+  }
+
+  it('full log: still diverges — the committed log holds bindings from two incompatible trajectories', async () => {
+    // The production writers created the SAME logical finalize step under two
+    // correlation ids (ranks 198 and 199, slots 630 and 631) from
+    // different-length prefixes under the pre-fix scheduler. No single
+    // deterministic trajectory can satisfy both creates, so a faithful replay
+    // of the full log must reject one of them. What the fix guarantees is not
+    // that this log becomes readable, but that new logs cannot acquire this
+    // shape: writers holding different-length prefixes now draw identical
+    // bindings (the tests below).
+    const events = await buildEvents(fixture, ulids);
+    const { error } = await replay(events);
+    expect(error).toBeDefined();
+    expect(WorkflowSuspension.is(error)).toBe(false);
+    expect(String(error?.message)).toContain('Replay divergence');
+  });
+
+  it("writer B's exact 610-event prefix reproduces writer B's committed binding", async () => {
+    // Rank 198 is `step_…QMWZ`, which the writer holding this exact prefix
+    // (eventCount: 610 in its runtime logs) committed as finalizeStep at slot
+    // 630. A faithful replay of its prefix must derive the same pending
+    // create, or the writer was never prefix-determined and replay itself is
+    // nondeterministic.
+    const { error, byRank } = await bindingsAtLength(610);
     expect(WorkflowSuspension.is(error)).toBe(true);
+    expect(byRank.get(197)).toContain('releaseStep');
+    expect(byRank.get(198)).toContain('finalizeStep');
+  });
+
+  it('draw bindings are stable under log extension', async () => {
+    // THE regression assertion for the ordered safety-net dispenser
+    // (ensureBarrierSafetyNet): pending-step bindings derived from a prefix
+    // must never change when the same replay code is handed MORE of the same
+    // log. Before the fix, extending this log from 611 to 612 slots moved
+    // rank 198 from finalizeStep to releaseStep — two honest replayers with
+    // different-length snapshots then committed conflicting creates, which is
+    // the residual slot-mode CORRUPTED_EVENT_LOG mechanism
+    // (wrun_41KZYJ92TP0GYBNDKW3FJBWQ3Y).
+    //
+    // 630 is the longest clean prefix: 631 holds the second of the two
+    // incompatible committed creates, past which replay rightly diverges.
+    const lengths = [610, 611, 612, 619, 630];
+    const results = new Map<number, Map<number, string>>();
+    for (const len of lengths) {
+      const { error, byRank } = await bindingsAtLength(len);
+      expect(WorkflowSuspension.is(error)).toBe(true);
+      results.set(len, byRank);
+    }
+    for (let i = 1; i < lengths.length; i++) {
+      const shorter = results.get(lengths[i - 1])!;
+      const longer = results.get(lengths[i])!;
+      for (const [rank, name] of shorter) {
+        const extended = longer.get(rank);
+        // A rank absent from the longer replay was consumed by its (matching)
+        // created event arriving in the extension — only disagreement fails.
+        if (extended !== undefined) {
+          expect(
+            `${lengths[i]}:r${rank}=${extended}`,
+            `rank ${rank} rebound between len ${lengths[i - 1]} and ${lengths[i]}`
+          ).toBe(`${lengths[i]}:r${rank}=${name}`);
+        }
+      }
+    }
   });
 });

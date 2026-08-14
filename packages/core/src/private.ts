@@ -239,6 +239,13 @@ interface DeliveryBarrierEntry {
    * once a consumer takes the payload.
    */
   armed: boolean;
+  /**
+   * Retire this entry: resolve `delivered` and remove it from the registry,
+   * exactly as `markDelivered` would. Called only by the context's safety-net
+   * dispenser ({@link ensureBarrierSafetyNet}), and only on the lowest-index
+   * entry at delivery idle. Idempotent.
+   */
+  retire: () => void;
 }
 
 /**
@@ -412,18 +419,18 @@ function computeResolvesOnItsOwn(
  * in log order; {@link hasParkedCommittedDelivery} deliberately reports such a
  * step as not self-resolving so that idle stays reachable.
  *
- * "The whole chain then delivers in log order" rests on the PAYLOAD's safety
- * net observing idle before the net of the wait parked behind it. If the
- * wait's net fired first, the step's gate would open while the wait was still
- * parked on the payload barrier and the inversion above would reappear. Within
- * one drain window that order is structural, and carried by FIFO of the
- * safety-net polls: nets arm via `setTimeout` in log order during synchronous
- * consumption, each polling round re-arms through `promiseQueue.then(...)` in
- * the order the checks ran, and each net that fires flips
- * {@link hasParkedCommittedDelivery} back to true, re-blocking the rest until
- * the released delivery completes. Replay — where divergence manifests —
- * always consumes the log in one window. Do not "optimize" the net scheduling
- * in a way that breaks that per-window FIFO.
+ * "The whole chain then delivers in log order" rests on the PAYLOAD's barrier
+ * being retired before that of anything parked behind it. That order is
+ * structural: safety-net retirements go through one per-context dispenser that
+ * only ever retires the lowest-index entry at delivery idle, and every
+ * retirement that wakes a chain flips {@link hasParkedCommittedDelivery} back
+ * to true, re-blocking the dispenser until the chain has drained — see
+ * {@link ensureBarrierSafetyNet}. (This used to rest on the FIFO of one idle
+ * poll per barrier, which held for a single parked segment but decayed to
+ * timing noise with several — the release order, and therefore the ULIDs
+ * drawn by the woken branches, then depended on how much log the replay had
+ * loaded. storm-log-replay.test.ts replays a production log corrupted exactly
+ * that way.)
  */
 export async function awaitEarlierDeliveries(
   ctx: WorkflowOrchestratorContext,
@@ -518,12 +525,6 @@ export function registerDeliveryBarrier(
 
   let done = false;
   const { promise, resolve } = withResolvers<void>();
-  const entry: DeliveryBarrierEntry = {
-    kind,
-    delivered: promise,
-    armed: options.armed ?? true,
-  };
-  barriers.set(eventIndex, entry);
 
   const finish = () => {
     if (done) {
@@ -536,12 +537,23 @@ export function registerDeliveryBarrier(
     resolve();
   };
 
+  const entry: DeliveryBarrierEntry = {
+    kind,
+    delivered: promise,
+    armed: options.armed ?? true,
+    retire: finish,
+  };
+  barriers.set(eventIndex, entry);
+
   // Safety net: if this delivery is never delivered to the workflow (its
   // branch was not taken / the run is suspending, or a buffered hook payload
   // is only claimed after a later delivery the workflow is still waiting on),
-  // resolve at idle so a later delivery gated on it cannot deadlock and the
-  // registry cannot leak an entry per abandoned delivery.
-  scheduleWhenIdle(ctx, finish);
+  // it is retired at idle so a later delivery gated on it cannot deadlock and
+  // the registry cannot leak an entry per abandoned delivery. Retirement goes
+  // through the context's single ordered dispenser rather than a per-barrier
+  // idle poll — see {@link ensureBarrierSafetyNet} for why the ORDER of these
+  // retirements is load-bearing.
+  ensureBarrierSafetyNet(ctx);
 
   return {
     markDelivered: finish,
@@ -549,6 +561,87 @@ export function registerDeliveryBarrier(
       entry.armed = true;
     },
   };
+}
+
+/**
+ * Contexts whose barrier safety-net dispenser is currently armed. Module-level
+ * so the context interface (constructed literally by many test harnesses)
+ * needs no new field; entries drop with the context.
+ */
+const activeBarrierSafetyNets = new WeakSet<WorkflowOrchestratorContext>();
+
+/**
+ * The barrier registry's safety net: ONE idle-gated dispenser per context that
+ * retires, at each observation of delivery idle, only the LOWEST-index entry
+ * still registered, then yields so the chain it released can run before the
+ * next retirement is considered.
+ *
+ * Why one ordered dispenser and not a poll per barrier (which is what this
+ * replaced): the order of safety-net retirements decides the delivery order of
+ * every chain parked behind an unclaimed buffered hook payload — a hook the
+ * workflow never reads (a fire-and-forget `createHook`) parks every later
+ * armed wait/hook behind a barrier that only this net can retire. Per-barrier
+ * polls fire in whatever order their re-arm cycles land, and each re-arm
+ * attaches to a `promiseQueue` that grows between checks, so with several
+ * parked segments the release order decays to timing noise. Draws (`useStep`
+ * correlation ids) then depend on which segment happened to release first —
+ * concretely, on how MUCH log the replay loaded, since that decides what is in
+ * the registry. That is the mechanism behind slot-mode CORRUPTED_EVENT_LOG on
+ * storm-shaped runs (see storm-log-replay.test.ts, built from a production
+ * log): two replays of the same run holding different-length prefixes bound
+ * the same correlation ordinal to different steps.
+ *
+ * Retiring lowest-first is not merely tidy, it is the only order that cannot
+ * invert the log: every gate points from a higher index to a strictly lower
+ * one, so at delivery idle the lowest undelivered entry gates on nothing
+ * still registered — it is the head of every parked chain (in practice, the
+ * unclaimed payload itself). Releasing it lets the chain above deliver
+ * through the ordinary barrier order; anything the release wakes flips
+ * {@link hasParkedCommittedDelivery} back to true, which re-blocks this
+ * dispenser until the chain has fully drained. A higher entry must never be
+ * retired while a lower one is registered — that is exactly the inversion
+ * described on {@link awaitEarlierDeliveries}.
+ *
+ * The dispenser goes dormant when the registry empties and is re-armed by the
+ * next registration, so an idle context holds no live timer.
+ */
+function ensureBarrierSafetyNet(ctx: WorkflowOrchestratorContext): void {
+  const barriers = ctx.pendingDeliveryBarriers;
+  if (!barriers || activeBarrierSafetyNets.has(ctx)) {
+    return;
+  }
+  activeBarrierSafetyNets.add(ctx);
+  const check = () => {
+    if (barriers.size === 0) {
+      // Dormant. The next registerDeliveryBarrier re-arms.
+      activeBarrierSafetyNets.delete(ctx);
+      return;
+    }
+    if (!isDeliveryIdle(ctx)) {
+      // A delivery is hydrating or committed-but-parked on its deferral; let
+      // the queue drain and re-check a tick later (same cadence as
+      // scheduleWhenIdle).
+      ctx.promiseQueue.then(() => {
+        setTimeout(check, 0);
+      });
+      return;
+    }
+    // Idle with entries left: nothing remaining delivers on its own, so
+    // release the head of the parked chain — the lowest index — and nothing
+    // else. The macrotask before the next check gives the released chain time
+    // to wake and re-block idle.
+    let lowestIndex: number | undefined;
+    let lowestEntry: DeliveryBarrierEntry | undefined;
+    for (const [index, entry] of barriers) {
+      if (lowestIndex === undefined || index < lowestIndex) {
+        lowestIndex = index;
+        lowestEntry = entry;
+      }
+    }
+    lowestEntry?.retire();
+    setTimeout(check, 0);
+  };
+  setTimeout(check, 0);
 }
 
 /**
