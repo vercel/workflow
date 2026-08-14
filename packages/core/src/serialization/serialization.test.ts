@@ -9,7 +9,6 @@ import { devalueCodec } from './codec-devalue.js';
 import {
   aesKeyOf,
   decrypt,
-  decryptReplayPayload,
   encrypt,
   isRunPayloadKeys,
   isSealTarget,
@@ -269,7 +268,7 @@ describe('encrypt', () => {
 });
 
 describe('decrypt', () => {
-  it('decrypts replay payloads synchronously', async () => {
+  it('decrypts AES envelopes synchronously on Node', async () => {
     const key = await makeKey();
     const data = encodeWithFormatPrefix(
       SerializationFormat.DEVALUE_V1,
@@ -277,7 +276,8 @@ describe('decrypt', () => {
     ) as Uint8Array;
     const encrypted = (await encrypt(data, key)) as Uint8Array;
 
-    const decrypted = decryptReplayPayload(encrypted, key);
+    const decrypted = decrypt(encrypted, key);
+    expect(decrypted).not.toBeInstanceOf(Promise);
     expect(decrypted).toBeInstanceOf(Uint8Array);
     expect(decrypted).toEqual(data);
   });
@@ -300,7 +300,7 @@ describe('decrypt', () => {
     ) as Uint8Array;
     const encrypted = await encrypt(data, key);
 
-    await expect(decrypt(encrypted, undefined)).rejects.toThrow(
+    expect(() => decrypt(encrypted, undefined)).toThrow(
       /Encrypted data encountered but no encryption key/
     );
   });
@@ -333,7 +333,9 @@ describe('decrypt', () => {
     const tampered = new Uint8Array(encrypted);
     tampered[tampered.length - 1] ^= 0xff;
 
-    const error = await decrypt(tampered, key).catch((e) => e);
+    const error = await Promise.resolve()
+      .then(() => decrypt(tampered, key))
+      .catch((caught) => caught);
     expect(RuntimeDecryptionError.is(error)).toBe(true);
     expect(error.context).toMatchObject({
       operation: 'decrypt',
@@ -423,7 +425,9 @@ describe('sealed envelopes', () => {
       // A bare CryptoKey is the legacy "symmetric only" shape. It has no
       // scalar, so it cannot open a sealed payload — and must say so clearly
       // rather than failing an auth tag somewhere deeper.
-      const error = await decrypt(sealed, aes).catch((e) => e);
+      const error = await Promise.resolve(decrypt(sealed, aes)).catch(
+        (caught) => caught
+      );
       expect(RuntimeDecryptionError.is(error)).toBe(true);
       expect(error.message).toMatch(/no run keypair is available/);
       expect(error.context).toMatchObject({
@@ -456,9 +460,9 @@ describe('sealed envelopes', () => {
 
       // A seal target carries no symmetric capability, so it must be treated
       // exactly like "no key" rather than silently coerced.
-      const error = await decrypt(encrypted, sealTo(keyPair.publicKey)).catch(
-        (e) => e
-      );
+      const error = await Promise.resolve()
+        .then(() => decrypt(encrypted, sealTo(keyPair.publicKey)))
+        .catch((caught) => caught);
       expect(RuntimeDecryptionError.is(error)).toBe(true);
       expect(error.message).toMatch(/no encryption key is available/);
     });

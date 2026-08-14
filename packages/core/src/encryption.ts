@@ -1,11 +1,11 @@
 import { RuntimeDecryptionError, WorkflowRuntimeError } from '@workflow/errors';
 
 /**
- * Browser-compatible AES-256-GCM encryption module.
+ * Portable AES-256-GCM encryption with a synchronous Node decrypt path.
  *
- * Uses the Web Crypto API (`globalThis.crypto.subtle`) which works in
- * both modern browsers and Node.js 20+. This module is intentionally
- * free of Node.js-specific imports so it can be bundled for the browser.
+ * Key import, encryption, and the browser fallback use Web Crypto. On Node,
+ * importKey also retains a native key handle so decrypt can call OpenSSL
+ * synchronously without making the module unsafe to bundle for browsers.
  *
  * The World interface (`getEncryptionKeyForRun`) returns a raw 32-byte
  * AES-256 key. Callers should use `importKey()` once to convert it to a
@@ -115,51 +115,20 @@ function wrapDecryptionError(cause: unknown, byteLength: number): never {
   );
 }
 
-/**
- * Decrypt AES-256-GCM synchronously when running on Node and the key was
- * imported by this module.
- *
- * The key must have been created by this module's {@link importKey}, and the
- * Node synchronous crypto API must be available. Authentication failures throw
- * the same RuntimeDecryptionError shape as {@link decrypt}.
- */
-export function decryptSync(
-  key: CryptoKey,
+function decryptWithNode(
+  crypto: typeof import('node:crypto'),
+  nodeKey: import('node:crypto').KeyObject,
   data: Uint8Array,
   aad?: Uint8Array
 ): Uint8Array {
-  const nodeKey = nodeKeys.get(key);
-  if (!nodeKey) {
-    throw new WorkflowRuntimeError(
-      'Synchronous AES-256-GCM decryption requires a key created by importKey()'
-    );
-  }
-  if (!nodeCrypto) {
-    throw new WorkflowRuntimeError(
-      'Synchronous AES-256-GCM decryption requires the Node.js crypto module'
-    );
-  }
-  if (!key.usages.includes('decrypt')) {
-    throw new RuntimeDecryptionError(
-      'AES-256-GCM decryption failed: CryptoKey does not support decrypt',
-      {
-        context: { operation: 'decrypt', byteLength: data.byteLength },
-      }
-    );
-  }
-
-  assertValidAesGcmEnvelope(data);
   const ciphertextEnd = data.byteLength - TAG_BYTES;
   const nonce = data.subarray(0, NONCE_LENGTH);
   const ciphertext = data.subarray(NONCE_LENGTH, ciphertextEnd);
   const authTag = data.subarray(ciphertextEnd);
   try {
-    const decipher = nodeCrypto.createDecipheriv(
-      'aes-256-gcm',
-      nodeKey,
-      nonce,
-      { authTagLength: TAG_BYTES }
-    );
+    const decipher = crypto.createDecipheriv('aes-256-gcm', nodeKey, nonce, {
+      authTagLength: TAG_BYTES,
+    });
     if (aad) decipher.setAAD(aad);
     decipher.setAuthTag(authTag);
     const head = decipher.update(ciphertext);
@@ -171,6 +140,30 @@ export function decryptSync(
     plaintext.set(head, 0);
     plaintext.set(tail, head.byteLength);
     return plaintext;
+  } catch (cause) {
+    wrapDecryptionError(cause, data.byteLength);
+  }
+}
+
+async function decryptWithWebCrypto(
+  key: CryptoKey,
+  data: Uint8Array,
+  aad?: Uint8Array
+): Promise<Uint8Array> {
+  const nonce = data.subarray(0, NONCE_LENGTH);
+  const ciphertextAndTag = data.subarray(NONCE_LENGTH);
+  try {
+    const plaintext = await globalThis.crypto.subtle.decrypt(
+      {
+        name: 'AES-GCM',
+        iv: nonce,
+        tagLength: TAG_LENGTH,
+        ...(aad ? { additionalData: aad } : {}),
+      },
+      key,
+      ciphertextAndTag
+    );
+    return new Uint8Array(plaintext);
   } catch (cause) {
     wrapDecryptionError(cause, data.byteLength);
   }
@@ -249,30 +242,26 @@ export async function encrypt(
  * @param aad - Optional additional authenticated data. Must match the bytes
  *   passed to {@link encrypt} exactly, otherwise the GCM tag fails to verify
  *   and a {@link RuntimeDecryptionError} is thrown.
- * @returns Decrypted plaintext
+ * @returns Plaintext directly on Node, or a Promise from the Web Crypto
+ * fallback.
  */
-export async function decrypt(
+export function decrypt(
   key: CryptoKey,
   data: Uint8Array,
   aad?: Uint8Array
-): Promise<Uint8Array> {
+): Uint8Array | Promise<Uint8Array> {
   assertValidAesGcmEnvelope(data);
-  const nonce = data.subarray(0, NONCE_LENGTH);
-  const ciphertextAndTag = data.subarray(NONCE_LENGTH);
-  let plaintext: ArrayBuffer;
-  try {
-    plaintext = await globalThis.crypto.subtle.decrypt(
+  if (!key.usages.includes('decrypt')) {
+    throw new RuntimeDecryptionError(
+      'AES-256-GCM decryption failed: CryptoKey does not support decrypt',
       {
-        name: 'AES-GCM',
-        iv: nonce,
-        tagLength: TAG_LENGTH,
-        ...(aad ? { additionalData: aad } : {}),
-      },
-      key,
-      ciphertextAndTag
+        context: { operation: 'decrypt', byteLength: data.byteLength },
+      }
     );
-  } catch (cause) {
-    wrapDecryptionError(cause, data.byteLength);
   }
-  return new Uint8Array(plaintext);
+
+  const nodeKey = nodeKeys.get(key);
+  return nodeCrypto && nodeKey
+    ? decryptWithNode(nodeCrypto, nodeKey, data, aad)
+    : decryptWithWebCrypto(key, data, aad);
 }

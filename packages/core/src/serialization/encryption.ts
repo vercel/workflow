@@ -10,7 +10,6 @@
 import { RuntimeDecryptionError } from '@workflow/errors';
 import {
   decrypt as aesGcmDecrypt,
-  decryptSync as aesGcmDecryptSync,
   encrypt as aesGcmEncrypt,
   type CryptoKey,
   importKey as importAesKey,
@@ -281,12 +280,13 @@ function requireAesDecryptionKey(
 
 /**
  * Decrypt a format-prefixed payload if it is encrypted or sealed.
- * Sealed payloads require the owning run's X25519 keypair.
+ * Node AES decrypts synchronously. Sealed payloads and portable Web Crypto
+ * fallbacks return a Promise.
  */
-export async function decrypt(
+export function decrypt(
   data: Uint8Array,
   key: DecryptionKey | undefined
-): Promise<Uint8Array> {
+): Uint8Array | Promise<Uint8Array> {
   const format = peekFormatPrefix(data);
 
   if (format === SerializationFormat.SEALED) {
@@ -300,7 +300,12 @@ export async function decrypt(
 
   const { payload } = decodeFormatPrefix(data);
   try {
-    return await aesGcmDecrypt(aesKey, payload);
+    const decrypted = aesGcmDecrypt(aesKey, payload);
+    return decrypted instanceof Promise
+      ? decrypted.catch((error) => {
+          throw addFormatPrefix(error, format);
+        })
+      : decrypted;
   } catch (error) {
     throw addFormatPrefix(error, format);
   }
@@ -311,30 +316,4 @@ function addFormatPrefix(error: unknown, format: string): unknown {
     error.context.formatPrefix = format;
   }
   return error;
-}
-
-/**
- * Replay-specialized decrypt path.
- *
- * This byte-only function handles plaintext and symmetric envelopes without a
- * promise. The replay preparation boundary dispatches sealed envelopes to the
- * asynchronous X25519 decryptor before calling this function.
- */
-export function decryptReplayPayload(
-  data: Uint8Array,
-  key: DecryptionKey | undefined
-): Uint8Array {
-  const format = peekFormatPrefix(data);
-  if (format === SerializationFormat.SEALED) {
-    throw new Error('Sealed replay payloads require asynchronous decryption');
-  }
-  if (format !== SerializationFormat.ENCRYPTED) return data;
-
-  const aesKey = requireAesDecryptionKey(data, key);
-  const { payload } = decodeFormatPrefix(data);
-  try {
-    return aesGcmDecryptSync(aesKey, payload);
-  } catch (error) {
-    throw addFormatPrefix(error, format);
-  }
 }
