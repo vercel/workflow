@@ -266,12 +266,7 @@ async function openSealedEnvelope(
   try {
     return await openSealed(key.keyPair, payload, key.aad);
   } catch (error) {
-    // The sealed-box layer only sees the stripped payload, so it cannot
-    // record the outer envelope prefix. Enrich it here before rethrowing.
-    if (RuntimeDecryptionError.is(error) && error.context) {
-      error.context.formatPrefix = SerializationFormat.SEALED;
-    }
-    throw error;
+    throw addFormatPrefix(error, SerializationFormat.SEALED);
   }
 }
 
@@ -311,15 +306,15 @@ export async function decrypt(
   try {
     return await aesGcmDecrypt(aesKey, payload);
   } catch (error) {
-    // The low-level AES layer only sees the stripped payload, so it cannot
-    // record the outer envelope prefix. This layer peeked it (`encr`), so
-    // enrich the diagnostic context with the real format prefix before
-    // rethrowing.
-    if (RuntimeDecryptionError.is(error) && error.context) {
-      error.context.formatPrefix = format;
-    }
-    throw error;
+    throw addFormatPrefix(error, format);
   }
+}
+
+function addFormatPrefix(error: unknown, format: string): unknown {
+  if (RuntimeDecryptionError.is(error) && error.context) {
+    error.context.formatPrefix = format;
+  }
+  return error;
 }
 
 /**
@@ -340,39 +335,19 @@ export function decryptReplayPayload(
 
   const format = peekFormatPrefix(data);
   if (format === SerializationFormat.SEALED) {
-    return openSealedEnvelope(data, key);
+    return decrypt(data, key);
   }
   if (format !== SerializationFormat.ENCRYPTED) return data;
 
   const aesKey = aesKeyOf(key);
-  if (!aesKey) {
-    throw new RuntimeDecryptionError(
-      'Encrypted data encountered but no encryption key is available. ' +
-        'Encryption is not configured or no key was provided for this run.',
-      {
-        context: {
-          operation: 'decrypt',
-          byteLength: data.byteLength,
-          formatPrefix: 'encr',
-        },
-      }
-    );
-  }
+  if (!aesKey) return decrypt(data, key);
 
   const { payload } = decodeFormatPrefix(data);
   try {
     const syncResult = aesGcmDecryptSync(aesKey, payload);
     if (syncResult) return syncResult;
-    return aesGcmDecrypt(aesKey, payload).catch((error) => {
-      if (RuntimeDecryptionError.is(error) && error.context) {
-        error.context.formatPrefix = format;
-      }
-      throw error;
-    });
+    return decrypt(data, key);
   } catch (error) {
-    if (RuntimeDecryptionError.is(error) && error.context) {
-      error.context.formatPrefix = format;
-    }
-    throw error;
+    throw addFormatPrefix(error, format);
   }
 }

@@ -101,7 +101,7 @@ interface NodeZlib {
  * this module stays bundler-safe for browser/edge targets (where it returns
  * undefined and we fall back to gzip).
  */
-function getNodeZlib(): NodeZlib | undefined {
+const nodeZlib = (() => {
   try {
     return (
       globalThis as {
@@ -111,13 +111,12 @@ function getNodeZlib(): NodeZlib | undefined {
   } catch {
     return undefined;
   }
-}
+})();
 
 function isZstdAvailable(): boolean {
-  const z = getNodeZlib();
   return (
-    typeof z?.zstdCompressSync === 'function' &&
-    typeof z?.zstdDecompressSync === 'function'
+    typeof nodeZlib?.zstdCompressSync === 'function' &&
+    typeof nodeZlib?.zstdDecompressSync === 'function'
   );
 }
 
@@ -177,17 +176,15 @@ async function gunzipBytes(data: Uint8Array): Promise<Uint8Array> {
 }
 
 function zstdBytes(data: Uint8Array): Uint8Array {
-  const z = getNodeZlib();
-  const level = z?.constants?.ZSTD_c_compressionLevel;
+  const level = nodeZlib?.constants?.ZSTD_c_compressionLevel;
   const opts =
     level !== undefined ? { params: { [level]: ZSTD_LEVEL } } : undefined;
   // biome-ignore lint/style/noNonNullAssertion: guarded by isZstdAvailable()
-  return new Uint8Array(z!.zstdCompressSync!(data, opts));
+  return new Uint8Array(nodeZlib!.zstdCompressSync!(data, opts));
 }
 
 function unzstdBytes(data: Uint8Array): Uint8Array {
-  const z = getNodeZlib();
-  if (!z?.zstdDecompressSync) {
+  if (!nodeZlib?.zstdDecompressSync) {
     throw new Error(
       'Compressed (zstd) workflow data encountered but node:zlib zstd ' +
         'support is not available in this runtime (requires Node.js 22.15+). ' +
@@ -195,7 +192,7 @@ function unzstdBytes(data: Uint8Array): Uint8Array {
         '(serialization-format.ts).'
     );
   }
-  return new Uint8Array(z.zstdDecompressSync(data));
+  return new Uint8Array(nodeZlib.zstdDecompressSync(data));
 }
 
 /**
