@@ -109,6 +109,40 @@ describe('world-local lazy hook resume: producer/consumer convergence', () => {
     expect(await countHookReceived(runId)).toBe(1);
   });
 
+  it('restart redelivery re-ensures the same active-abort receipt exactly once', async () => {
+    const { runId, hook } = await setup();
+    const payload = new Uint8Array([97, 98, 111, 114, 116]);
+
+    // The producer commits, then dies before it can observe its response or
+    // own the queue delivery. A fresh storage instance models the consumer
+    // process after restart/redelivery; it must recover the canonical claim,
+    // not append a second receipt.
+    const producer = await write(
+      runId,
+      hook,
+      hook.hookId,
+      'abort_digest',
+      payload
+    );
+    const restarted = createStorage(testDir);
+    const consumer = await restarted.events.create(
+      runId,
+      {
+        eventType: 'hook_received',
+        specVersion: SPEC_VERSION_CURRENT,
+        correlationId: hook.hookId,
+        eventData: { token: hook.token, payload },
+      },
+      { resumeId: hook.hookId, resumePayloadDigest: 'abort_digest' }
+    );
+
+    expect(consumer.event?.eventId).toBe(producer.event?.eventId);
+    const { data } = await restarted.events.list({ runId });
+    expect(
+      data.filter((event) => event.eventType === 'hook_received')
+    ).toHaveLength(1);
+  });
+
   it('concurrent race: producer and consumer fire simultaneously and still commit exactly one event', async () => {
     const { runId, hook } = await setup();
     const payload = new Uint8Array([7, 8, 9]);
