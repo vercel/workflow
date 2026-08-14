@@ -62,7 +62,7 @@ export const SPEC_VERSION_SUPPORTS_SLOT_IDENTITY = 6 as SpecVersion;
  * runs it produces.
  */
 export const SPEC_VERSION_CURRENT =
-  SPEC_VERSION_SUPPORTS_COMPRESSION as SpecVersion;
+  SPEC_VERSION_SUPPORTS_SLOT_IDENTITY as SpecVersion;
 
 /**
  * The highest spec version this SDK can read.
