@@ -14,7 +14,7 @@ import * as nanoid from 'nanoid';
 import { monotonicFactory } from 'ulid';
 import { describe, it } from 'vitest';
 import { EventsConsumer } from './events-consumer.js';
-import type { WorkflowOrchestratorContext } from './private.js';
+import { isDeliveryIdle, type WorkflowOrchestratorContext } from './private.js';
 import { ReplayPayloadCache } from './replay-payload-cache.js';
 import { dehydrateStepReturnValue } from './serialization.js';
 import { createUseStep } from './step.js';
@@ -45,7 +45,8 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
     replayPayloadCache: new ReplayPayloadCache(undefined),
     globalThis: context.globalThis,
     eventsConsumer: new EventsConsumer(events, {
-      isDeliveryIdle: () => true,
+      isDeliveryIdle: () =>
+        ctxRef.current ? isDeliveryIdle(ctxRef.current) : true,
       onUnconsumedEvent: (event) => {
         ctxRef.current?.onWorkflowError(
           new WorkflowRuntimeError(

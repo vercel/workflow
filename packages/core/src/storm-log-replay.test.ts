@@ -34,7 +34,7 @@ import { monotonicFactory } from 'ulid';
 import { describe, expect, it } from 'vitest';
 import { EventsConsumer } from './events-consumer.js';
 import { WorkflowSuspension } from './global.js';
-import type { WorkflowOrchestratorContext } from './private.js';
+import { isDeliveryIdle, type WorkflowOrchestratorContext } from './private.js';
 import { ReplayPayloadCache } from './replay-payload-cache.js';
 import { dehydrateStepReturnValue } from './serialization.js';
 import { createUseStep } from './step.js';
@@ -69,7 +69,8 @@ function setupWorkflowContext(
     replayPayloadCache,
     globalThis: context.globalThis,
     eventsConsumer: new EventsConsumer(events, {
-      isDeliveryIdle: () => true,
+      isDeliveryIdle: () =>
+        ctxRef.current ? isDeliveryIdle(ctxRef.current) : true,
       onUnconsumedEvent: (event) => {
         ctxRef.current?.onWorkflowError(
           new WorkflowRuntimeError(
@@ -329,7 +330,12 @@ describe('replaying the corrupted production storm log', () => {
     const results = new Map<number, Map<number, string>>();
     for (const len of lengths) {
       const { error, byRank } = await bindingsAtLength(len);
-      expect(WorkflowSuspension.is(error)).toBe(true);
+      if (!WorkflowSuspension.is(error)) {
+        throw new Error(
+          `prefix len ${len} did not suspend: ${error?.constructor?.name}: ${error?.message}`,
+          { cause: error }
+        );
+      }
       results.set(len, byRank);
     }
     for (let i = 1; i < lengths.length; i++) {
