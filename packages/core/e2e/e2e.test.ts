@@ -48,8 +48,10 @@ import {
   requireFixture,
   setupRunTracking,
   setupWorld,
+  startTracked,
   trackRun,
   writeDiagnosticsSidecar,
+  writeInfraSidecar,
 } from './utils';
 
 const deploymentUrl = process.env.DEPLOYMENT_URL;
@@ -75,14 +77,13 @@ function expectElapsedAtLeast(
 
 /**
  * Tracked wrapper around start() that automatically registers runs
- * for diagnostics on test failure and observability metadata collection.
+ * for diagnostics on test failure and observability metadata collection,
+ * and replaces runs the queue never picks up (see startTracked in utils).
  */
 async function start<T>(
   ...args: Parameters<typeof rawStart<T>>
 ): Promise<Run<T>> {
-  const run = await rawStart<T>(...args);
-  trackRun(run);
-  return run;
+  return startTracked<T>(...args);
 }
 
 function getE2EMetadataPath() {
@@ -337,6 +338,7 @@ describe('e2e', () => {
   afterAll(() => {
     writeE2EMetadata();
     writeDiagnosticsSidecar();
+    writeInfraSidecar();
     // Last, so a stale exemption is reported without costing the diagnostics.
     assertUnsupportedTestsExist();
   });
@@ -4148,9 +4150,15 @@ describe('e2e', () => {
         },
       };
 
-      const run = await start(await e2e('addTenWorkflow'), [123], {
-        world: stubbedWorld,
-      });
+      // Bypass the pickup watchdog (startTracked): this run deliberately
+      // has no run_created event, so no run row exists to poll until the
+      // queue delivers — the watchdog would misread that as a pickup stall
+      // and its replacement start would bump createCallCount.
+      const run = trackRun(
+        await rawStart(await e2e('addTenWorkflow'), [123], {
+          world: stubbedWorld,
+        })
+      );
 
       // Verify the stub intercepted the run_created call (only call
       // through the stubbed world — the server-side runtime uses its

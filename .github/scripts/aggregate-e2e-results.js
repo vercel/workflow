@@ -54,6 +54,7 @@ function findResultFiles(dir) {
     'e2e-metadata-',
     'e2e-failures-',
     'e2e-flaky-',
+    'e2e-infra-',
     'e2e-diagnostics-',
     'e2e-runtime-logs-',
     // Not a report: the per-app cross-language conformance declaration
@@ -193,6 +194,67 @@ function loadFlaky(dir) {
   }
 
   return [...flaky.values()];
+}
+
+// Load infra-event sidecar files (platform anomalies the harness observed
+// and absorbed, e.g. runs the queue never picked up — written by the e2e
+// suites' pickup watchdog). Kept separate from flaky tests: a cluster of
+// infra events in one time window is backend signal, not test signal.
+function loadInfra(dir) {
+  const events = [];
+  const files = findJsonFiles(dir, 'e2e-infra-');
+
+  for (const file of files) {
+    const basename = path.basename(file, '.json');
+    const match = basename.match(/^e2e-infra-(.+)-(?:vercel|local)$/);
+    const app = match ? match[1] : 'unknown';
+    try {
+      const entries = JSON.parse(fs.readFileSync(file, 'utf-8'));
+      for (const entry of entries) {
+        if (!entry.kind) continue;
+        events.push({ ...entry, app });
+      }
+    } catch (_e) {
+      // Skip invalid files
+    }
+  }
+
+  return events.sort((a, b) =>
+    (a.timestamp || '').localeCompare(b.timestamp || '')
+  );
+}
+
+// Render the infra-events section shared by the PR comment and the per-job
+// step summary. Several events inside one narrow time window across
+// different apps read as the platform blip they are, rather than as
+// unrelated flaky tests.
+function renderInfraSection(infraEvents) {
+  if (infraEvents.length === 0) return;
+
+  console.log('### \ud83d\udee0 Infra Events (absorbed by the harness)\n');
+  console.log(
+    '_Platform anomalies the e2e harness detected and worked around (e.g. a run the queue never picked up, replaced by a fresh run). Clustered timestamps indicate a backend blip; a steady drip indicates a platform issue worth escalating._\n'
+  );
+
+  const collapse = infraEvents.length >= 10;
+  if (collapse) {
+    console.log('<details>');
+    console.log(`<summary>${infraEvents.length} infra events</summary>\n`);
+  }
+  for (const event of infraEvents) {
+    const time = (event.timestamp || '').slice(11, 19);
+    const parts = [
+      `\`${event.kind}\``,
+      `${event.testName} (${event.app})`,
+      time ? `at ${time}Z` : null,
+      event.runId ? `abandoned \`${event.runId}\`` : null,
+    ].filter(Boolean);
+    console.log(`- ${parts.join(' · ')}`);
+  }
+  console.log('');
+  if (collapse) {
+    console.log('</details>\n');
+  }
 }
 
 // Render the flaky-tests section shared by the PR comment and the per-job
@@ -438,7 +500,7 @@ function aggregateByCategory(files) {
 }
 
 // Render markdown summary for single job (step summary)
-function renderSingleJobSummary(summary, flakyTests = []) {
+function renderSingleJobSummary(summary, flakyTests = [], infraEvents = []) {
   const total =
     summary.totalPassed + summary.totalFailed + summary.totalSkipped;
   const statusEmoji = summary.totalFailed > 0 ? '❌' : '✅';
@@ -478,6 +540,7 @@ function renderSingleJobSummary(summary, flakyTests = []) {
   }
 
   renderFlakySection(flakyTests);
+  renderInfraSection(infraEvents);
 
   // Results by file
   if (summary.fileResults.length > 1) {
@@ -531,7 +594,8 @@ function renderAggregatedSummary(
   metadata,
   diagnostics,
   failures,
-  flakyTests
+  flakyTests,
+  infraEvents
 ) {
   const total =
     overallSummary.totalPassed +
@@ -642,6 +706,7 @@ function renderAggregatedSummary(
   }
 
   renderFlakySection(flakyTests);
+  renderInfraSection(infraEvents);
 
   // Everything else lives under one collapsible summary section.
   console.log('### E2E Test Summary\n');
@@ -712,6 +777,7 @@ if (mode === 'aggregate') {
   const diagnostics = loadDiagnostics(resultsDir);
   const failures = loadFailures(resultsDir);
   const flakyTests = loadFlaky(resultsDir);
+  const infraEvents = loadInfra(resultsDir);
   enrichFailedTestMessages(overallSummary.allFailedTests, failures);
   renderAggregatedSummary(
     categories,
@@ -719,7 +785,8 @@ if (mode === 'aggregate') {
     metadata,
     diagnostics,
     failures,
-    flakyTests
+    flakyTests,
+    infraEvents
   );
 
   // Exit with non-zero if any tests failed
@@ -729,7 +796,7 @@ if (mode === 'aggregate') {
 } else {
   const summary = aggregateResults(resultFiles);
   enrichFailedTestMessages(summary.allFailedTests, loadFailures(resultsDir));
-  renderSingleJobSummary(summary, loadFlaky(resultsDir));
+  renderSingleJobSummary(summary, loadFlaky(resultsDir), loadInfra(resultsDir));
 
   // Exit with non-zero if any tests failed
   if (summary.totalFailed > 0) {

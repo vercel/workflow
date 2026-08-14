@@ -512,6 +512,7 @@ jobs:
             e2e-metadata-${{ matrix.app.name }}-vercel.json
             e2e-failures-${{ matrix.app.name }}-vercel.json
             e2e-flaky-${{ matrix.app.name }}-vercel.json
+            e2e-infra-${{ matrix.app.name }}-vercel.json
             e2e-diagnostics-${{ matrix.app.name }}-vercel.json
             e2e-runtime-logs-${{ matrix.app.name }}-vercel.json
           retention-days: 7
@@ -617,6 +618,7 @@ jobs:
             e2e-metadata-nextjs-turbopack-vercel.json
             e2e-failures-nextjs-turbopack-vercel.json
             e2e-flaky-nextjs-turbopack-vercel.json
+            e2e-infra-nextjs-turbopack-vercel.json
             e2e-diagnostics-nextjs-turbopack-vercel.json
             e2e-runtime-logs-nextjs-turbopack-vercel.json
           retention-days: 7
@@ -797,6 +799,7 @@ jobs:
             e2e-metadata-${{ matrix.app.name }}-vercel.json
             e2e-failures-${{ matrix.app.name }}-vercel.json
             e2e-flaky-${{ matrix.app.name }}-vercel.json
+            e2e-infra-${{ matrix.app.name }}-vercel.json
             e2e-diagnostics-${{ matrix.app.name }}-vercel.json
             e2e-runtime-logs-${{ matrix.app.name }}-vercel.json
           retention-days: 7
@@ -914,6 +917,7 @@ jobs:
           path: |
             e2e-local-dev-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}.json
             e2e-flaky-${{ matrix.app.name }}-local.json
+            e2e-infra-${{ matrix.app.name }}-local.json
           retention-days: 7
           if-no-files-found: ignore
 
@@ -1005,6 +1009,7 @@ jobs:
           path: |
             e2e-local-prod-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}.json
             e2e-flaky-${{ matrix.app.name }}-local.json
+            e2e-infra-${{ matrix.app.name }}-local.json
           retention-days: 7
           if-no-files-found: ignore
 
@@ -1116,6 +1121,7 @@ jobs:
           path: |
             e2e-local-postgres-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}.json
             e2e-flaky-${{ matrix.app.name }}-local.json
+            e2e-infra-${{ matrix.app.name }}-local.json
           retention-days: 7
           if-no-files-found: ignore
 
@@ -1225,6 +1231,8 @@ jobs:
           name: e2e-results-conformance-python
           path: |
             e2e-conformance-python.json
+            e2e-flaky-python-local.json
+            e2e-infra-python-local.json
             e2e-diagnostics-python-local.json
           retention-days: 7
           if-no-files-found: ignore
@@ -1382,6 +1390,7 @@ jobs:
           path: |
             e2e-windows-nextjs-turbopack-${{ matrix.vm }}.json
             e2e-flaky-nextjs-turbopack-local.json
+            e2e-infra-nextjs-turbopack-local.json
           retention-days: 7
           if-no-files-found: ignore
 
