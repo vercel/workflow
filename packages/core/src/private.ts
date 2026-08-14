@@ -611,19 +611,22 @@ function ensureBarrierSafetyNet(ctx: WorkflowOrchestratorContext): void {
     return;
   }
   activeBarrierSafetyNets.add(ctx);
+  const rearm = () => {
+    setTimeout(check, 0);
+  };
   const check = () => {
     if (barriers.size === 0) {
       // Dormant. The next registerDeliveryBarrier re-arms.
       activeBarrierSafetyNets.delete(ctx);
       return;
     }
-    if (!isDeliveryIdle(ctx)) {
+    if (!canRetireAbandonedBarriers(ctx)) {
       // A delivery is hydrating or committed-but-parked on its deferral; let
       // the queue drain and re-check a tick later (same cadence as
-      // scheduleWhenIdle).
-      ctx.promiseQueue.then(() => {
-        setTimeout(check, 0);
-      });
+      // scheduleWhenIdle). Re-arm on rejection too: a poisoned promiseQueue
+      // must not silently kill the dispenser — the registry gates suspension
+      // via isDeliveryIdle, so a dead dispenser would wedge the run.
+      ctx.promiseQueue.then(rearm, rearm);
       return;
     }
     // Idle with entries left: nothing remaining delivers on its own, so
@@ -637,7 +640,7 @@ function ensureBarrierSafetyNet(ctx: WorkflowOrchestratorContext): void {
     // observation — pacing them one per timer tick would hold consumed-but-
     // undelivered events hostage long enough to trip the events consumer's
     // unconsumed-event deadline and fail healthy replays.
-    while (barriers.size > 0 && isDeliveryIdle(ctx)) {
+    while (barriers.size > 0 && canRetireAbandonedBarriers(ctx)) {
       let lowestIndex: number | undefined;
       let lowestEntry: DeliveryBarrierEntry | undefined;
       for (const [index, entry] of barriers) {
@@ -651,6 +654,17 @@ function ensureBarrierSafetyNet(ctx: WorkflowOrchestratorContext): void {
     setTimeout(check, 0);
   };
   setTimeout(check, 0);
+}
+
+/**
+ * Whether the safety-net dispenser may retire abandoned barriers right now:
+ * no hydration in flight and no committed delivery still working through its
+ * detached deferral. This is deliberately WEAKER than {@link isDeliveryIdle}:
+ * the dispenser is what empties the registry, so gating it on registry
+ * emptiness would gate its own work.
+ */
+function canRetireAbandonedBarriers(ctx: WorkflowOrchestratorContext): boolean {
+  return ctx.pendingDeliveries === 0 && !hasParkedCommittedDelivery(ctx);
 }
 
 /**
@@ -715,9 +729,24 @@ export function hasParkedCommittedDelivery(
  * what it has and has not done yet says nothing about the run. Two callers
  * read it, for the two such decisions: {@link scheduleWhenIdle} for the
  * suspension, and the events consumer's unconsumed-event check for divergence.
+ *
+ * A non-empty barrier registry counts as in flight, even when every remaining
+ * entry is parked behind an unclaimed buffered payload. Those entries only
+ * move when the safety-net dispenser retires them (lowest-first, see
+ * {@link ensureBarrierSafetyNet}), and the deliveries they release are real
+ * workflow reactions — a suspension raised before they run would be computed
+ * from a VM that has not seen them, scheduling none of their follow-up work
+ * and leaving the run dormant (the vercel/workflow#3183 shape). The dispenser
+ * itself is gated on {@link canRetireAbandonedBarriers}, the weaker predicate
+ * without the registry term, precisely so it can do the draining that this
+ * predicate waits for; registry size strictly decreases at each retirement,
+ * so idle is always reached.
  */
 export function isDeliveryIdle(ctx: WorkflowOrchestratorContext): boolean {
-  return ctx.pendingDeliveries === 0 && !hasParkedCommittedDelivery(ctx);
+  return (
+    ctx.pendingDeliveries === 0 &&
+    (!ctx.pendingDeliveryBarriers || ctx.pendingDeliveryBarriers.size === 0)
+  );
 }
 
 /**
