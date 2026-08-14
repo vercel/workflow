@@ -2,7 +2,10 @@
  * Custom vitest reporter that emits GitHub Actions annotations for failed tests.
  *
  * When running in CI, failed e2e tests produce `::error` workflow commands that
- * surface as annotations in the GitHub Actions UI and on PR file diffs.
+ * surface as annotations in the GitHub Actions UI and on PR file diffs. Tests
+ * that only passed after a retry (see `retry` in vitest.config.ts) produce
+ * `::warning` annotations and a `e2e-flaky-*.json` sidecar, so the retry that
+ * keeps a racy test from failing the job does not also hide the race.
  *
  * Also writes an enriched JSON sidecar file (`e2e-failures-*.json`) with
  * per-test failure details including run IDs and dashboard links, which the
@@ -37,8 +40,16 @@ interface DiagnosticsEntry {
   timestamp: string;
 }
 
+interface FlakyTestInfo {
+  testName: string;
+  fullName: string;
+  file: string;
+  retryCount: number;
+}
+
 export default class GithubAnnotationReporter implements Reporter {
   private failedTests: FailedTestInfo[] = [];
+  private flakyTests: FlakyTestInfo[] = [];
 
   onTestRunEnd(testModules: ReadonlyArray<TestModule>) {
     for (const module of testModules) {
@@ -49,18 +60,36 @@ export default class GithubAnnotationReporter implements Reporter {
       // Enrich failures with diagnostics sidecar data (run IDs, dashboard URLs)
       this.enrichFromDiagnosticsSidecar();
       this.writeFailuresSidecar();
+    }
 
-      // Emit GitHub Actions annotations — this runs after vitest's own
-      // output is done, so ::error commands won't be mangled by ANSI codes.
-      if (process.env.CI) {
-        this.emitAnnotations();
-      }
+    if (this.flakyTests.length > 0) {
+      this.writeFlakySidecar();
+    }
+
+    // Emit GitHub Actions annotations — this runs after vitest's own
+    // output is done, so ::error commands won't be mangled by ANSI codes.
+    if (process.env.CI) {
+      this.emitAnnotations();
     }
   }
 
   private collectFailures(module: TestModule) {
     for (const test of module.children.allTests()) {
       const result = test.result();
+
+      if (result.state === 'passed') {
+        const retryCount = test.diagnostic()?.retryCount ?? 0;
+        if (retryCount > 0) {
+          this.flakyTests.push({
+            testName: test.name,
+            fullName: test.fullName,
+            file: module.moduleId,
+            retryCount,
+          });
+        }
+        continue;
+      }
+
       if (result.state !== 'failed') continue;
 
       const errors = result.errors || [];
@@ -127,6 +156,17 @@ export default class GithubAnnotationReporter implements Reporter {
    * rather than the workflow source file (which may be a symlink).
    */
   private emitAnnotations() {
+    for (const test of this.flakyTests) {
+      const title = `E2E flaky: ${test.testName}`;
+      const body = `Passed only after ${test.retryCount} retr${
+        test.retryCount === 1 ? 'y' : 'ies'
+      } — this test lost a race on its first attempt.`;
+      const relFile = path.relative(process.cwd(), test.file);
+      process.stdout.write(
+        `\n::warning file=${relFile},title=${title}::${body}\n`
+      );
+    }
+
     for (const test of this.failedTests) {
       const parts = [test.errorMessage.split('\n')[0].slice(0, 150)];
       if (test.runId) parts.push(`Run: ${test.runId}`);
@@ -154,5 +194,17 @@ export default class GithubAnnotationReporter implements Reporter {
     );
 
     fs.writeFileSync(filePath, JSON.stringify(this.failedTests, null, 2));
+  }
+
+  private writeFlakySidecar() {
+    const appName = process.env.APP_NAME || 'unknown';
+    const isVercel = !!process.env.WORKFLOW_VERCEL_ENV;
+    const backend = isVercel ? 'vercel' : 'local';
+    const filePath = path.resolve(
+      process.cwd(),
+      `e2e-flaky-${appName}-${backend}.json`
+    );
+
+    fs.writeFileSync(filePath, JSON.stringify(this.flakyTests, null, 2));
   }
 }

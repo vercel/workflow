@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path, { dirname } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
+import { getCurrentTest } from '@vitest/runner';
 import { createWorkflowUrl } from '@workflow/utils';
 import { createWorld as createVercelTestWorld } from '@workflow/world-vercel';
 import { onTestFailed } from 'vitest';
@@ -117,6 +118,200 @@ export function isLocalDeployment(): boolean {
 
   const localHosts = ['localhost', '127.0.0.1'];
   return localHosts.some((host) => deploymentUrl.includes(host));
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Cross-language conformance
+// ───────────────────────────────────────────────────────────────────────────
+
+/**
+ * Per-app conformance declaration, read from `e2e-conformance.json` in the
+ * workbench app's directory.
+ *
+ * Most of the e2e suite only talks to the app over the two documented HTTP
+ * routes (`manifest.json` and `flow`) plus the world, so it is language
+ * agnostic by construction. A minority of it is not: some tests assert
+ * JavaScript value semantics, some assert bundler or source-map behavior. An
+ * app written in another language needs a way to say which half applies to it,
+ * and which fixtures it has ported so far.
+ *
+ * This file is that declaration. `workbench/python` is the only app that ships
+ * one; when it is absent every predicate below reports "JavaScript app, all
+ * fixtures present", so the gating is a no-op for the JS workbench apps.
+ */
+export interface ConformanceConfig {
+  /**
+   * Implementation language of the app. Anything other than `javascript`
+   * disables the tests marked JS-only in the suite.
+   */
+  language: string;
+  /**
+   * Names of the `workflows/99_e2e` fixtures this app implements — the
+   * conformance baseline. It is a ratchet in both directions:
+   *
+   * - listed, and present in the deployed manifest → the test runs
+   * - not listed, and absent from the manifest → the test skips
+   * - listed, but absent from the manifest → **hard failure**
+   *
+   * Without that third case a renamed or unregistered fixture would silently
+   * turn into a skip, and a green run would stop meaning anything.
+   */
+  fixtures: string[];
+  /**
+   * Tests to skip even though their fixture is listed, mapping the test's exact
+   * name to why. The second axis exists because `fixtures` answers "did you port
+   * this workflow", and some tests fail on a different question: whether the
+   * app's *runtime* implements a protocol behavior the fixture happens to
+   * exercise. `addTenWorkflow` is the case that forced it — the fixture is
+   * ported and its own test passes, but a separate test drives the same fixture
+   * through a simulated `run_created` outage and expects the runtime to bootstrap
+   * the run from `run_started`.
+   *
+   * Ratcheted the same way as `fixtures`, in the direction that can rot: a name
+   * here that matches no test in the suite is a **hard failure**, so a renamed
+   * test cannot leave a stale exemption behind that silently covers nothing.
+   */
+  unsupported?: Record<string, string>;
+}
+
+export const CONFORMANCE_CONFIG_FILENAME = 'e2e-conformance.json';
+
+let conformanceConfigCache: ConformanceConfig | null | undefined;
+
+/** Loads the app's conformance declaration, or `null` when it has none. */
+export function getConformanceConfig(): ConformanceConfig | null {
+  if (conformanceConfigCache !== undefined) return conformanceConfigCache;
+
+  let configPath: string;
+  try {
+    configPath = path.join(getWorkbenchAppPath(), CONFORMANCE_CONFIG_FILENAME);
+  } catch {
+    // No APP_NAME (e.g. utils' own unit tests). Nothing to declare.
+    conformanceConfigCache = null;
+    return conformanceConfigCache;
+  }
+
+  if (!fs.existsSync(configPath)) {
+    conformanceConfigCache = null;
+    return conformanceConfigCache;
+  }
+
+  const raw = fs.readFileSync(configPath, 'utf8');
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    throw new Error(
+      `${configPath} is not valid JSON: ${(error as Error).message}`
+    );
+  }
+
+  const { language, fixtures, unsupported } = (parsed ??
+    {}) as Partial<ConformanceConfig>;
+  if (typeof language !== 'string' || !Array.isArray(fixtures)) {
+    throw new Error(
+      `${configPath} must be an object with a string "language" and a "fixtures" array`
+    );
+  }
+  if (
+    unsupported !== undefined &&
+    (typeof unsupported !== 'object' ||
+      unsupported === null ||
+      Array.isArray(unsupported) ||
+      Object.values(unsupported).some((v) => typeof v !== 'string'))
+  ) {
+    throw new Error(
+      `${configPath}: "unsupported" must be an object mapping a test name to the reason it is skipped`
+    );
+  }
+
+  conformanceConfigCache = { language, fixtures, unsupported };
+  return conformanceConfigCache;
+}
+
+/**
+ * Whether the app under test is implemented in JavaScript/TypeScript.
+ *
+ * Gates the tests whose subject is the JS implementation rather than the
+ * workflow protocol — value semantics (`this`, `.call()`, class methods,
+ * `WORKFLOW_SERIALIZE`, throwing a non-Error), and the toolchain (source maps,
+ * `import.meta.url`, tsconfig path aliases). Those can never pass against
+ * another language, so they are skipped rather than reported as gaps.
+ */
+export function isJsApp(): boolean {
+  const config = getConformanceConfig();
+  return !config || config.language === 'javascript';
+}
+
+/**
+ * Whether the app declares the given `workflows/99_e2e` fixture.
+ *
+ * Always `true` for an app with no conformance declaration, so the existing
+ * workbench apps are unaffected.
+ */
+export function hasFixture(fixtureName: string): boolean {
+  const config = getConformanceConfig();
+  return !config || config.fixtures.includes(fixtureName);
+}
+
+/**
+ * Skips the running test when the app does not declare `fixtureName`.
+ *
+ * Called from the `e2e()` helper in the suite, so the gate reads the fixture
+ * name the test already names and no per-test annotation is needed. Marks the
+ * test skipped rather than failed: a fixture that is absent from the baseline is
+ * "not implemented yet", which is a gap to close, not a regression. (The
+ * opposite case — declared in the baseline but missing from the deployed
+ * manifest — is the hard failure raised by `getWorkflowMetadata`.)
+ *
+ * No-op for an app with no conformance declaration.
+ */
+export function requireFixture(fixtureName: string): void {
+  if (hasFixture(fixtureName)) return;
+  getCurrentTest()?.context.skip(
+    `"${fixtureName}" is not listed in ${CONFORMANCE_CONFIG_FILENAME}`
+  );
+}
+
+// Names matched against `unsupported` so far, so `assertUnsupportedTestsExist`
+// can tell a live exemption from one whose test was renamed away.
+const seenTestNames = new Set<string>();
+
+/**
+ * Skips the running test when the app declares it unsupported.
+ *
+ * Called from `setupRunTracking`, which every test in the suite already runs
+ * through, so this needs no per-test annotation either. Unlike a missing
+ * fixture, the reason is the app's own words — the config carries it.
+ *
+ * No-op for an app with no conformance declaration.
+ */
+export function requireSupported(testName: string): void {
+  seenTestNames.add(testName);
+  const reason = getConformanceConfig()?.unsupported?.[testName];
+  if (!reason) return;
+  getCurrentTest()?.context.skip(
+    `${CONFORMANCE_CONFIG_FILENAME} declares this unsupported: ${reason}`
+  );
+}
+
+/**
+ * Fails when the app exempts a test name the suite never ran.
+ *
+ * The mirror of `getWorkflowMetadata`'s "declared but not in the manifest"
+ * failure, for the other axis: an exemption is a claim about a specific test,
+ * and a rename must break it loudly rather than leave it silently covering
+ * nothing. Call from `afterAll` — it needs the whole file to have run.
+ */
+export function assertUnsupportedTestsExist(): void {
+  const unsupported = getConformanceConfig()?.unsupported;
+  if (!unsupported) return;
+  const stale = Object.keys(unsupported).filter((n) => !seenTestNames.has(n));
+  if (stale.length === 0) return;
+  throw new Error(
+    `${CONFORMANCE_CONFIG_FILENAME} lists "unsupported" tests that do not exist ` +
+      `in this suite (renamed or removed?): ${stale.map((n) => `"${n}"`).join(', ')}`
+  );
 }
 
 /**
@@ -393,6 +588,12 @@ export async function fetchManifest(
   return cachedManifest;
 }
 
+/**
+ * Source extensions a workflow file may carry, across the languages the suite
+ * can be pointed at.
+ */
+const SOURCE_EXTENSION_RE = /\.(tsx?|py)$/;
+
 export function findWorkflowMetadataInManifest(
   manifest: WorkflowManifest,
   workflowFile: string,
@@ -410,9 +611,16 @@ export function findWorkflowMetadataInManifest(
     }
   }
 
-  const fileWithoutExt = workflowFile.replace(/\.tsx?$/, '');
+  // Strip a non-JS extension too, so an app in another language can key its
+  // manifest by its own source file. The suite always looks fixtures up by the
+  // TypeScript path (`workflows/99_e2e.ts`); matching on the stem is what lets
+  // `workflows/99_e2e.py` answer for it.
+  const fileWithoutExt = workflowFile.replace(SOURCE_EXTENSION_RE, '');
   for (const [manifestFile, functions] of Object.entries(manifest.workflows)) {
-    const manifestFileWithoutExt = manifestFile.replace(/\.tsx?$/, '');
+    const manifestFileWithoutExt = manifestFile.replace(
+      SOURCE_EXTENSION_RE,
+      ''
+    );
     if (
       manifestFileWithoutExt.endsWith(fileWithoutExt) ||
       fileWithoutExt.endsWith(manifestFileWithoutExt)
@@ -474,6 +682,20 @@ export async function getWorkflowMetadata(
       return metadata;
     }
     await sleep(manifestRetryIntervalMs);
+  }
+
+  // An app that declares a conformance baseline gets no fallback. Reaching
+  // here means the fixture is in its `fixtures` list but missing from the
+  // deployed manifest — the third state of the ratchet, and a regression. Fail
+  // now rather than synthesize an ID that no handler will claim, which only
+  // surfaces ~60s later as a test timeout.
+  if (getConformanceConfig()) {
+    throw new Error(
+      `Workflow "${workflowFn}" is declared in ${CONFORMANCE_CONFIG_FILENAME} ` +
+        `but is not in the deployed manifest for "${workflowFile}" after ` +
+        `${manifestRetryTimeoutMs}ms. Either the app stopped registering it, or ` +
+        `it should be removed from the "fixtures" list.`
+    );
   }
 
   // Manifest publication can lag in staged/out-of-monorepo tests. Fall back to
@@ -739,6 +961,11 @@ function emitGitHubAnnotation(
 export function setupRunTracking(testName: string) {
   currentTestName = testName;
   trackedRuns = [];
+
+  // Second conformance gate. Sited here because every test in the suite calls
+  // setupRunTracking from `beforeEach`, which makes this the one place that
+  // sees a test's name without the test having to declare anything.
+  requireSupported(testName);
 
   // Heartbeat: announce the test the moment it starts, written straight to
   // stdout to bypass vitest's per-file console buffering. Without this, a
