@@ -174,7 +174,7 @@ export class ReplayPayloadCache {
     value: unknown
   ): Promise<PreparedReplayPayload> {
     if (!(value instanceof Uint8Array)) {
-      return Promise.resolve({ data: value });
+      return Promise.resolve({ legacy: value });
     }
 
     const preparation = this.ensurePreparation(cacheKey, value);
