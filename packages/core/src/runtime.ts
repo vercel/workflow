@@ -125,7 +125,10 @@ import {
   withWorkflowBaggage,
 } from './telemetry.js';
 import { getErrorName, getErrorStack, normalizeUnknownError } from './types.js';
-import { buildWorkflowSuspensionMessage } from './util.js';
+import {
+  buildWorkflowSuspensionMessage,
+  getAbortStreamIdFromToken,
+} from './util.js';
 import {
   replayWorkflow,
   resumeWorkflow,
@@ -1743,6 +1746,32 @@ export function workflowEntrypoint(
                           preloadEvents: true,
                         }
                       );
+                      if (hookResumeInput.token.startsWith('abrt_')) {
+                        const receipt = result.event;
+                        if (
+                          receipt?.eventType !== 'hook_received' ||
+                          receipt.correlationId !== hookResumeInput.hookId ||
+                          receipt.resumeId !== hookResumeInput.resumeId ||
+                          receipt.eventData.token !== hookResumeInput.token
+                        ) {
+                          throw new WorkflowRuntimeError(
+                            'System abort hook receipt was not canonical'
+                          );
+                        }
+                        if (!(hookResumeInput.payload instanceof Uint8Array)) {
+                          throw new WorkflowRuntimeError(
+                            'System abort hook payload must be bytes'
+                          );
+                        }
+                        // Queue redelivery is the durable retry owner. The
+                        // step reader treats its first packet as terminal, so
+                        // no writer-side close or retry state is needed.
+                        await world.streams.write(
+                          runId,
+                          getAbortStreamIdFromToken(hookResumeInput.token),
+                          hookResumeInput.payload
+                        );
+                      }
                       hookEnsured = true;
                       // Note: unlike the re-ensure below, this hoisted write
                       // does NOT set HookResilientResumeMaterialized — it

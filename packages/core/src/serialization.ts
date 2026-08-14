@@ -2395,16 +2395,9 @@ function setupAbortStreamReader(
           }),
         ]);
         if (result.value && !result.done) {
-          // An abort packet arrived: propagate it as fast as possible. Release
-          // the lock (synchronous) rather than cancelling here — on a
-          // service-backed World `reader.cancel()` can do a network round-trip,
-          // and awaiting it before `controller.abort()` would delay (or, if it
-          // hangs, drop) real-time abort delivery to the in-flight step.
-          try {
-            reader.releaseLock();
-          } catch {
-            // Reader may already be released; ignore.
-          }
+          // The first packet owns cancellation. Abort the step, then tear down
+          // the reader without making real-time delivery wait on a remote
+          // stream-cancel round trip.
           try {
             // Hydrate via the same machinery the writer used so the reason
             // round-trips with full type fidelity. Encryption key (if any)
@@ -2421,6 +2414,7 @@ function setupAbortStreamReader(
           } catch {
             controller.abort();
           }
+          void reader.cancel().catch(() => {});
         } else {
           // The step finished (or the reader was cancelled) without an abort.
           // Cancel — not just release — so the underlying World stream is torn

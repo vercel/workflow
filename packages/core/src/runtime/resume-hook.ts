@@ -532,60 +532,95 @@ async function resumeHookImpl<T = any>(
           RunExpiredError.is(err);
 
         if (hook.isSystem && hook.token.startsWith('abrt_')) {
-          if (!(dehydratedPayload instanceof Uint8Array)) {
+          // Active-step cancellation requires the same durable re-ensure
+          // contract as a resilient resume. Older consumers cannot prove an
+          // abort receipt survived a producer loss, so fail closed.
+          if (!useParallelResume) {
             throw new WorkflowRuntimeError(
-              'System abort hook payload must serialize to bytes'
+              `System abort hook requires resilient resume support (${fallbackReason})`
             );
           }
 
-          // A live stream is only an acceleration path. The receipt comes
-          // first, so a stream failure can never leave an aborted provider
-          // without the replay fact that prevents a stale terminal. A retry
-          // sees the existing receipt as convergence and retries delivery.
-          try {
-            await world.events.create(
-              hook.runId,
-              {
-                eventType: 'hook_received',
-                specVersion: SPEC_VERSION_CURRENT,
-                correlationId: hook.hookId,
-                eventData,
-              },
-              { v1Compat }
-            );
-          } catch (err) {
-            if (!EntityConflictError.is(err)) {
-              if (isHookGoneError(err)) {
-                throw new HookNotFoundError(hook.token);
+          const resumeId = hook.hookId;
+          const payloadDigest = await computeResumePayloadDigest(
+            dehydratedPayload as Uint8Array
+          );
+          const hookInput = {
+            resumeId,
+            hookId: hook.hookId,
+            token: hook.token,
+            payload: dehydratedPayload,
+            payloadDigest,
+            deploymentId: resumeContext.deploymentId,
+          };
+
+          // A transport can lose the response after the World has committed
+          // the receipt. Repeating this stable claim is safe; a bare conflict
+          // is never evidence that it is our receipt.
+          let receiptVerified = false;
+          let lastError: unknown;
+          for (let attempt = 0; attempt < 3 && !receiptVerified; attempt++) {
+            try {
+              const result = await world.events.create(
+                hook.runId,
+                {
+                  eventType: 'hook_received',
+                  specVersion: SPEC_VERSION_CURRENT,
+                  correlationId: hook.hookId,
+                  eventData,
+                },
+                {
+                  v1Compat,
+                  resumeId,
+                  resumePayloadDigest: payloadDigest,
+                }
+              );
+              const event = result.event;
+              receiptVerified =
+                event?.eventType === 'hook_received' &&
+                event.correlationId === hook.hookId &&
+                event.resumeId === resumeId &&
+                event.eventData.token === hook.token;
+              if (!receiptVerified) {
+                throw new WorkflowRuntimeError(
+                  'System abort hook receipt was not canonical'
+                );
               }
-              throw err;
+            } catch (err) {
+              lastError = err;
+              if (!isRetryableWorldError(err)) {
+                if (HookNotFoundError.is(err) || RunExpiredError.is(err)) {
+                  throw new HookNotFoundError(hook.token);
+                }
+                throw err;
+              }
             }
           }
+          if (!receiptVerified) throw lastError;
 
-          const streamName = getAbortStreamIdFromToken(hook.token);
-          let streamError: unknown;
-          try {
-            await world.streams.write(
-              hook.runId,
-              streamName,
-              dehydratedPayload
-            );
-            await world.streams.close(hook.runId, streamName);
-          } catch (err) {
-            streamError = err;
-          }
-
+          // Persist the replay owner before accelerating the in-flight step.
+          // The queue retains the exact packet and re-ensures this claim before
+          // replaying after a producer crash or redelivery.
           await world.queue(
             queueName,
             {
               runId: hook.runId,
               traceCarrier: resumeContext.traceCarrier ?? undefined,
+              hookInput,
             } satisfies WorkflowInvokePayload,
             queueOptions
           );
 
-          if (streamError !== undefined) {
-            throw streamError;
+          try {
+            await world.streams.write(
+              hook.runId,
+              getAbortStreamIdFromToken(hook.token),
+              dehydratedPayload as Uint8Array
+            );
+          } catch (err) {
+            // The receipt and wake are durable; surface the acceleration
+            // failure without retrying a terminal writer stream.
+            throw err;
           }
           return hook;
         }
