@@ -1437,7 +1437,6 @@ ${apiFileContent}`
           const fullCase = fullCases[index];
           const logCursor = await readDevServerLogCursor();
           await fullCase.write(index + 1);
-          await fullCase.assert(index + 1);
           await expectHmrLogCounts(
             logCursor,
             'expectedLogCounts' in fullCase
@@ -1445,6 +1444,7 @@ ${apiFileContent}`
               : { full: 1 }
           );
           snapshot = await waitForGeneratedArtifactStability();
+          await fullCase.assert(index + 1);
         }
 
         const unrelatedLogCursor = await readDevServerLogCursor();
