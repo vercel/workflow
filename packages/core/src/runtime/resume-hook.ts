@@ -420,20 +420,6 @@ async function resumeHookImpl<T = any>(
           payload: dehydratedPayload,
         };
 
-        // A system abort hook has a stream-backed signal in the workflow VM.
-        // Write its packet before recording the durable hook receipt so an
-        // in-flight step sees cancellation without waiting for replay.
-        if (hook.isSystem && hook.token.startsWith('abrt_')) {
-          if (!(dehydratedPayload instanceof Uint8Array)) {
-            throw new WorkflowRuntimeError(
-              'System abort hook payload must serialize to bytes'
-            );
-          }
-          const streamName = getAbortStreamIdFromToken(hook.token);
-          await world.streams.write(hook.runId, streamName, dehydratedPayload);
-          await world.streams.close(hook.runId, streamName);
-        }
-
         const queueName = getWorkflowQueueName(resumeContext.workflowName);
         const queueOptions = {
           deploymentId: resumeContext.deploymentId,
@@ -544,6 +530,65 @@ async function resumeHookImpl<T = any>(
           HookNotFoundError.is(err) ||
           EntityConflictError.is(err) ||
           RunExpiredError.is(err);
+
+        if (hook.isSystem && hook.token.startsWith('abrt_')) {
+          if (!(dehydratedPayload instanceof Uint8Array)) {
+            throw new WorkflowRuntimeError(
+              'System abort hook payload must serialize to bytes'
+            );
+          }
+
+          // A live stream is only an acceleration path. The receipt comes
+          // first, so a stream failure can never leave an aborted provider
+          // without the replay fact that prevents a stale terminal. A retry
+          // sees the existing receipt as convergence and retries delivery.
+          try {
+            await world.events.create(
+              hook.runId,
+              {
+                eventType: 'hook_received',
+                specVersion: SPEC_VERSION_CURRENT,
+                correlationId: hook.hookId,
+                eventData,
+              },
+              { v1Compat }
+            );
+          } catch (err) {
+            if (!EntityConflictError.is(err)) {
+              if (isHookGoneError(err)) {
+                throw new HookNotFoundError(hook.token);
+              }
+              throw err;
+            }
+          }
+
+          const streamName = getAbortStreamIdFromToken(hook.token);
+          let streamError: unknown;
+          try {
+            await world.streams.write(
+              hook.runId,
+              streamName,
+              dehydratedPayload
+            );
+            await world.streams.close(hook.runId, streamName);
+          } catch (err) {
+            streamError = err;
+          }
+
+          await world.queue(
+            queueName,
+            {
+              runId: hook.runId,
+              traceCarrier: resumeContext.traceCarrier ?? undefined,
+            } satisfies WorkflowInvokePayload,
+            queueOptions
+          );
+
+          if (streamError !== undefined) {
+            throw streamError;
+          }
+          return hook;
+        }
 
         if (!useParallelResume) {
           // Sequential path: create a hook_received event, then re-trigger.

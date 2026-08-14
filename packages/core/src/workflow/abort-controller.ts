@@ -9,6 +9,31 @@ import { hydrateStepReturnValue } from '../serialization.js';
 import { ABORT_HOOK_TOKEN, ABORT_STREAM_NAME } from '../symbols.js';
 import { getAbortStreamId, getAbortStreamIdFromToken } from '../util.js';
 
+// A workflow context represents one deterministic execution. Keep claims on
+// that context so a replay reconstructs its original controller, while a
+// second controller in the same execution cannot alias its live abort stream.
+const claimedAbortTokens = new WeakMap<
+  WorkflowOrchestratorContext,
+  Set<string>
+>();
+
+function claimAbortToken(
+  ctx: WorkflowOrchestratorContext,
+  token: string
+): void {
+  let claims = claimedAbortTokens.get(ctx);
+  if (!claims) {
+    claims = new Set();
+    claimedAbortTokens.set(ctx, claims);
+  }
+  if (claims.has(token)) {
+    throw new Error(
+      `Abort token "${token}" already belongs to this workflow session`
+    );
+  }
+  claims.add(token);
+}
+
 export interface WorkflowAbortControllerOptions {
   /**
    * A deterministic internal abort-hook token. The caller must use the
@@ -126,6 +151,10 @@ export function createCreateAbortController(ctx: WorkflowOrchestratorContext) {
       const streamName = options?.token
         ? getAbortStreamIdFromToken(hookToken)
         : getAbortStreamId(id);
+
+      if (options?.token) {
+        claimAbortToken(ctx, hookToken);
+      }
 
       this[ABORT_STREAM_NAME] = streamName;
       this[ABORT_HOOK_TOKEN] = hookToken;

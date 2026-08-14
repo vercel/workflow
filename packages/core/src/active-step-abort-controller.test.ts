@@ -34,4 +34,10 @@ describe('createActiveStepAbortController', () => {
       workflow.createActiveStepAbortController({ token: 'turn_control' })
     ).toThrow('beginning with "abrt_"');
   });
+
+  it('rejects non-canonical abort tokens before they can alias a stream name', () => {
+    expect(() =>
+      workflow.createActiveStepAbortController({ token: 'abrt_turn:0' })
+    ).toThrow('canonical');
+  });
 });

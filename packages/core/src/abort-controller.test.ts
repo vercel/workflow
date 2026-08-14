@@ -411,6 +411,35 @@ describe('AbortController in workflow VM', () => {
   });
 
   describe('hook integration', () => {
+    it('rejects a second controller that claims the same deterministic abort token in one workflow session', () => {
+      ctx = setupWorkflowContext([]);
+      const AbortController = createCreateAbortController(ctx);
+
+      new AbortController({ token: 'abrt_turn_0' });
+
+      expect(() => new AbortController({ token: 'abrt_turn_0' })).toThrow(
+        'already belongs to this workflow session'
+      );
+    });
+
+    it('keeps a claimed abort token reserved after disposal but permits a different token', () => {
+      ctx = setupWorkflowContext([]);
+      const AbortController = createCreateAbortController(ctx);
+      const first = new AbortController({ token: 'abrt_turn_0' });
+      const other = new AbortController({ token: 'abrt_turn_1' });
+
+      first.dispose();
+
+      expect(
+        [...ctx.invocationsQueue.values()]
+          .filter((item) => item.type === 'hook')
+          .map((item) => item.token)
+      ).toEqual(['abrt_turn_0', 'abrt_turn_1']);
+      expect(() => new AbortController({ token: 'abrt_turn_0' })).toThrow(
+        'already belongs to this workflow session'
+      );
+    });
+
     it('new AbortController() creates a hook entry in invocations queue', () => {
       ctx = setupWorkflowContext([]);
       const AbortController = createCreateAbortController(ctx);

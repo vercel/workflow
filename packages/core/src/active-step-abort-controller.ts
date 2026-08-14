@@ -25,9 +25,9 @@ type ActiveStepAbortControllerFactory = (
 export function createActiveStepAbortController(
   options: ActiveStepAbortControllerOptions
 ): ActiveStepAbortController {
-  if (!options.token.startsWith('abrt_') || options.token.length === 5) {
+  if (!/^abrt_[A-Za-z0-9_-]+$/.test(options.token)) {
     throw new Error(
-      'createActiveStepAbortController() requires a non-empty token beginning with "abrt_"'
+      'createActiveStepAbortController() requires a non-empty canonical token beginning with "abrt_"'
     );
   }
   const factory = (globalThis as Record<PropertyKey, unknown>)[

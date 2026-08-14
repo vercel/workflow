@@ -84,9 +84,9 @@ const ABORT_TOKEN_PREFIX = 'abrt_';
  * `strm_{id}_system_abort`.
  */
 export function getAbortStreamIdFromToken(hookToken: string): string {
-  if (!hookToken.startsWith(ABORT_TOKEN_PREFIX)) {
+  if (!/^abrt_[A-Za-z0-9_-]+$/.test(hookToken)) {
     throw new Error(
-      `Invalid abort hook token format: expected "abrt_" prefix, got "${hookToken}"`
+      `Invalid abort hook token format: expected a canonical "abrt_" token, got "${hookToken}"`
     );
   }
   return getAbortStreamId(hookToken.slice(ABORT_TOKEN_PREFIX.length));
