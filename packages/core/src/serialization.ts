@@ -38,10 +38,12 @@ import {
   type CompressionStats,
   compress,
   decompress,
+  decompressReplayPayload,
 } from './serialization/compression.js';
 import {
   aesKeyOf,
   decrypt,
+  decryptReplayPayload,
   deriveRunPayloadKeys,
   type EncryptionKeyParam,
   encrypt,
@@ -3427,8 +3429,8 @@ export interface PreparedReplayPayload {
 
 /**
  * Swappable implementation of the host-side preparation stage. Supporting
- * both direct and promised results lets a future synchronous Node decryptor use
- * the same cache contract as today's asynchronous Web Crypto implementation.
+ * both direct and promised results covers synchronous Node AES/zstd as well as
+ * the portable Web Crypto and sealed-envelope fallbacks.
  */
 export type ReplayPayloadPreparer = (
   value: unknown,
@@ -3439,18 +3441,49 @@ export type ReplayPayloadPreparer = (
  * Decrypt and decompress persisted data without parsing it into JavaScript.
  * Legacy non-binary values pass through unchanged for their consumer to revive.
  */
-export const prepareReplayPayload: ReplayPayloadPreparer = async (
-  value,
-  key
-) => {
+function prepareReplayPayloadWithStats(
+  value: unknown,
+  key: PayloadKey | undefined,
+  compressionStats?: CompressionStats
+): PreparedReplayPayload | Promise<PreparedReplayPayload> {
+  const finish = (prepared: unknown): PreparedReplayPayload => ({
+    data: prepared,
+  });
+  const decompressPrepared = (
+    decrypted: unknown
+  ): PreparedReplayPayload | Promise<PreparedReplayPayload> => {
+    const prepared = decompressReplayPayload(decrypted, compressionStats);
+    return prepared instanceof Promise
+      ? prepared.then(finish)
+      : finish(prepared);
+  };
+
+  const decrypted = decryptReplayPayload(value, key);
+  return decrypted instanceof Promise
+    ? decrypted.then(decompressPrepared)
+    : decompressPrepared(decrypted);
+}
+
+// Replay preparation is event-at-a-time and may run inside the response
+// decoder. Per-payload compression attributes would add a detached O(N)
+// microtask tail and repeatedly overwrite one span, so the replay fast path
+// records only its aggregate preparation span.
+export const prepareReplayPayload: ReplayPayloadPreparer = (value, key) =>
+  prepareReplayPayloadWithStats(value, key);
+
+async function prepareReplayPayloadWithTelemetry(
+  value: unknown,
+  key: PayloadKey | undefined
+): Promise<PreparedReplayPayload> {
   const compressionStats: CompressionStats = {};
-  const prepared = await decompress(
-    await decrypt(value, key),
+  const prepared = await prepareReplayPayloadWithStats(
+    value,
+    key,
     compressionStats
   );
   await recordCompression(compressionStats, 'deserialize');
-  return { data: prepared };
-};
+  return prepared;
+}
 
 /**
  * Parse a prepared workflow argument or successful step/hook payload using the
@@ -3577,7 +3610,7 @@ export async function hydrateWorkflowArguments(
   prepared?: PreparedReplayPayload
 ): Promise<any> {
   return deserializePreparedReplayPayload(
-    prepared ?? (await prepareReplayPayload(value, key)),
+    prepared ?? (await prepareReplayPayloadWithTelemetry(value, key)),
     global,
     extraRevivers
   );
@@ -3874,7 +3907,7 @@ export async function hydrateStepError(
   prepared?: PreparedReplayPayload
 ): Promise<unknown> {
   return deserializePreparedStepError(
-    prepared ?? (await prepareReplayPayload(value, key)),
+    prepared ?? (await prepareReplayPayloadWithTelemetry(value, key)),
     global,
     extraRevivers
   );
@@ -3999,7 +4032,7 @@ export async function hydrateStepReturnValue(
   prepared?: PreparedReplayPayload
 ): Promise<any> {
   return deserializePreparedReplayPayload(
-    prepared ?? (await prepareReplayPayload(value, key)),
+    prepared ?? (await prepareReplayPayloadWithTelemetry(value, key)),
     global,
     extraRevivers
   );

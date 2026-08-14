@@ -10,6 +10,7 @@
 import { RuntimeDecryptionError } from '@workflow/errors';
 import {
   decrypt as aesGcmDecrypt,
+  decryptSync as aesGcmDecryptSync,
   encrypt as aesGcmEncrypt,
   type CryptoKey,
   importKey as importAesKey,
@@ -314,6 +315,61 @@ export async function decrypt(
     // record the outer envelope prefix. This layer peeked it (`encr`), so
     // enrich the diagnostic context with the real format prefix before
     // rethrowing.
+    if (RuntimeDecryptionError.is(error) && error.context) {
+      error.context.formatPrefix = format;
+    }
+    throw error;
+  }
+}
+
+/**
+ * Replay-specialized decrypt path.
+ *
+ * Symmetric payloads use Node's synchronous AES-GCM implementation when the
+ * runtime owns the imported key material, avoiding one Web Crypto job and
+ * promise settlement per event. Sealed envelopes and portable runtimes retain
+ * the asynchronous implementation. The union is intentional: callers that
+ * care about the common synchronous path can avoid wrapping it in an async
+ * function, while existing callers may continue to `await` either shape.
+ */
+export function decryptReplayPayload(
+  data: Uint8Array | unknown,
+  key: PayloadKey | undefined
+): Uint8Array | unknown | Promise<Uint8Array> {
+  if (!(data instanceof Uint8Array)) return data;
+
+  const format = peekFormatPrefix(data);
+  if (format === SerializationFormat.SEALED) {
+    return openSealedEnvelope(data, key);
+  }
+  if (format !== SerializationFormat.ENCRYPTED) return data;
+
+  const aesKey = aesKeyOf(key);
+  if (!aesKey) {
+    throw new RuntimeDecryptionError(
+      'Encrypted data encountered but no encryption key is available. ' +
+        'Encryption is not configured or no key was provided for this run.',
+      {
+        context: {
+          operation: 'decrypt',
+          byteLength: data.byteLength,
+          formatPrefix: 'encr',
+        },
+      }
+    );
+  }
+
+  const { payload } = decodeFormatPrefix(data);
+  try {
+    const syncResult = aesGcmDecryptSync(aesKey, payload);
+    if (syncResult) return syncResult;
+    return aesGcmDecrypt(aesKey, payload).catch((error) => {
+      if (RuntimeDecryptionError.is(error) && error.context) {
+        error.context.formatPrefix = format;
+      }
+      throw error;
+    });
+  } catch (error) {
     if (RuntimeDecryptionError.is(error) && error.context) {
       error.context.formatPrefix = format;
     }

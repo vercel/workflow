@@ -23,6 +23,46 @@ import { RuntimeDecryptionError, WorkflowRuntimeError } from '@workflow/errors';
 // so consumers can reference it without adding `dom` lib.
 export type CryptoKey = import('node:crypto').webcrypto.CryptoKey;
 
+/**
+ * Raw key material retained alongside keys imported by this module.
+ *
+ * Node's synchronous cipher API cannot consume a Web Crypto `CryptoKey`, and
+ * our keys are deliberately non-extractable. Keeping the original bytes in a
+ * WeakMap gives the Node replay path access to the same key without making it
+ * extractable or extending its lifetime beyond the `CryptoKey`. Browser/edge
+ * callers continue to use Web Crypto and never consult this map.
+ */
+const importedKeyMaterial = new WeakMap<CryptoKey, Uint8Array>();
+
+interface NodeDecipher {
+  setAAD(data: Uint8Array): NodeDecipher;
+  setAuthTag(tag: Uint8Array): NodeDecipher;
+  update(data: Uint8Array): Uint8Array;
+  final(): Uint8Array;
+}
+
+interface NodeCrypto {
+  createDecipheriv(
+    algorithm: string,
+    key: Uint8Array,
+    iv: Uint8Array,
+    options?: { authTagLength?: number }
+  ): NodeDecipher;
+}
+
+/** Resolve node:crypto without a static import, preserving browser bundles. */
+function getNodeCrypto(): NodeCrypto | undefined {
+  try {
+    return (
+      globalThis as {
+        process?: { getBuiltinModule?: (id: string) => NodeCrypto };
+      }
+    ).process?.getBuiltinModule?.('node:crypto');
+  } catch {
+    return undefined;
+  }
+}
+
 /** AES-GCM nonce length in bytes. */
 export const NONCE_LENGTH = 12;
 /** AES-GCM authentication tag length in bits. */
@@ -55,7 +95,7 @@ export async function importKey(
       `Encryption key must be exactly ${KEY_LENGTH} bytes, got ${raw.byteLength}`
     );
   }
-  return globalThis.crypto.subtle.importKey(
+  const key = await globalThis.crypto.subtle.importKey(
     'raw',
     raw,
     'AES-GCM',
@@ -65,6 +105,82 @@ export async function importKey(
     // a strict subset of `KeyUsage[]`, so this cast is sound.
     usages as ('encrypt' | 'decrypt')[]
   );
+  // Copy the caller's bytes: a caller may reuse/mutate its input buffer after
+  // importKey(), while a CryptoKey's material is immutable.
+  importedKeyMaterial.set(key, raw.slice());
+  return key;
+}
+
+/**
+ * Decrypt AES-256-GCM synchronously when running on Node and the key was
+ * imported by this module.
+ *
+ * Returns `undefined` when the portable Web Crypto fallback is required (for
+ * example in a browser, or for an externally-created CryptoKey). Authentication
+ * failures throw the same RuntimeDecryptionError shape as {@link decrypt}.
+ */
+export function decryptSync(
+  key: CryptoKey,
+  data: Uint8Array,
+  aad?: Uint8Array
+): Uint8Array | undefined {
+  const material = importedKeyMaterial.get(key);
+  const nodeCrypto = getNodeCrypto();
+  if (!material || !nodeCrypto) return undefined;
+  if (!key.usages.includes('decrypt')) {
+    throw new RuntimeDecryptionError(
+      'AES-256-GCM decryption failed: CryptoKey does not support decrypt',
+      {
+        context: { operation: 'decrypt', byteLength: data.byteLength },
+      }
+    );
+  }
+
+  const minLength = NONCE_LENGTH + TAG_BYTES;
+  if (data.byteLength < minLength) {
+    throw new RuntimeDecryptionError(
+      `Encrypted data too short: expected at least ${minLength} bytes, got ${data.byteLength}`,
+      {
+        context: {
+          operation: 'decrypt',
+          byteLength: data.byteLength,
+        },
+      }
+    );
+  }
+
+  const nonce = data.subarray(0, NONCE_LENGTH);
+  const ciphertextEnd = data.byteLength - TAG_BYTES;
+  const ciphertext = data.subarray(NONCE_LENGTH, ciphertextEnd);
+  const authTag = data.subarray(ciphertextEnd);
+  try {
+    const decipher = nodeCrypto.createDecipheriv(
+      'aes-256-gcm',
+      material,
+      nonce,
+      { authTagLength: TAG_BYTES }
+    );
+    if (aad) decipher.setAAD(aad);
+    decipher.setAuthTag(authTag);
+    const head = decipher.update(ciphertext);
+    const tail = decipher.final();
+    if (tail.byteLength === 0) return head;
+    const plaintext = new Uint8Array(head.byteLength + tail.byteLength);
+    plaintext.set(head, 0);
+    plaintext.set(tail, head.byteLength);
+    return plaintext;
+  } catch (cause) {
+    throw new RuntimeDecryptionError(
+      `AES-256-GCM decryption failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+      {
+        cause,
+        context: {
+          operation: 'decrypt',
+          byteLength: data.byteLength,
+        },
+      }
+    );
+  }
 }
 
 /**
