@@ -46,6 +46,9 @@ on:
       poke_interval_ms:
         description: 'step-storm: cadence of out-of-band resumes to the never-read poke hook'
         required: false
+      poke_max:
+        description: 'step-storm: ceiling on poke resumes per run, so a slow run cannot collect unbounded out-of-band writes. Raise it with budget_ms when soaking'
+        required: false
       run_timeout_ms:
         description: 'Per-run timeout before classifying as stuck'
         required: false
@@ -131,6 +134,7 @@ jobs:
           EVENT_LOG_RACE_REPRO_STEP_DELAY_MS: ${{ inputs.step_delay_ms }}
           EVENT_LOG_RACE_REPRO_HOOK_RESUME_STAGGER_MS: ${{ inputs.hook_resume_stagger_ms }}
           EVENT_LOG_RACE_REPRO_POKE_INTERVAL_MS: ${{ inputs.poke_interval_ms }}
+          EVENT_LOG_RACE_REPRO_POKE_MAX: ${{ inputs.poke_max }}
           EVENT_LOG_RACE_REPRO_RUN_TIMEOUT_MS: ${{ inputs.run_timeout_ms }}
           EVENT_LOG_RACE_REPRO_BUDGET_MS: ${{ inputs.budget_ms }}
 
@@ -232,6 +236,7 @@ jobs:
           EVENT_LOG_RACE_REPRO_STEP_DELAY_MS: ${{ inputs.step_delay_ms }}
           EVENT_LOG_RACE_REPRO_HOOK_RESUME_STAGGER_MS: ${{ inputs.hook_resume_stagger_ms }}
           EVENT_LOG_RACE_REPRO_POKE_INTERVAL_MS: ${{ inputs.poke_interval_ms }}
+          EVENT_LOG_RACE_REPRO_POKE_MAX: ${{ inputs.poke_max }}
           EVENT_LOG_RACE_REPRO_RUN_TIMEOUT_MS: ${{ inputs.run_timeout_ms }}
           EVENT_LOG_RACE_REPRO_BUDGET_MS: ${{ inputs.budget_ms }}
 

@@ -5,6 +5,7 @@ import { WorkflowRunFailedError } from '@workflow/errors';
 import { beforeAll, describe, expect, test } from 'vitest';
 import type { Run } from '../src/runtime';
 import {
+  cancelRun,
   getHookByToken,
   getWorld,
   start as rawStart,
@@ -102,6 +103,17 @@ interface ReproConfig {
    *  an out-of-band `hook_received` write plus an extra invocation. */
   pokeIntervalMs: number;
   pokeJitterMs: number;
+  /** `step-storm`: ceiling on poke resumes per run.
+   *
+   *  The pump is a wall-clock cadence, so without a ceiling a run accumulates
+   *  pressure in proportion to how long it takes rather than to the work it
+   *  does — and the pressure is not free to carry: every poke appends a
+   *  `hook_received` that each of the run's ~N remaining replays re-reads and
+   *  re-buffers, so slow runs get more pokes, which makes them slower. On a
+   *  4-core CI runner with the default cadence that ran away to ~270 pokes per
+   *  run and none of the six concurrent runs ever finished; a healthy 6-round
+   *  run on an unloaded machine sends 35-41. This clips only the runaway. */
+  pokeMax: number;
   /** `hook-storm`: per-index delay between resumes inside a round's burst. Set
    *  so the burst straddles `watchdogMs` and the straggler count varies. */
   hookResumeStaggerMs: number;
@@ -136,6 +148,18 @@ interface ReproRunResult {
     resumesSent: number;
     resumesFailed: number;
     stragglers?: number;
+  };
+  /** How far a `stuck` run actually got, read off its event log when the
+   *  harness gave up on it. This is the difference between "the run is
+   *  progressing, just slower than `runTimeoutMs`" (hundreds of events, a
+   *  `step_started` or `hook_received` last) and "the run is dormant" (a
+   *  handful of events, nothing recent), and reading a lane without it is
+   *  guesswork — the shape that produced this field had six runs reported
+   *  `stuck` where the actual fault was the previous scenario starving them. */
+  progress?: {
+    events: number;
+    lastEventType?: string;
+    truncated?: boolean;
   };
 }
 
@@ -192,6 +216,7 @@ const config: ReproConfig = {
   attrWrites: envNumber('EVENT_LOG_RACE_REPRO_ATTR_WRITES', 1),
   pokeIntervalMs: envNumber('EVENT_LOG_RACE_REPRO_POKE_INTERVAL_MS', 750),
   pokeJitterMs: envNumber('EVENT_LOG_RACE_REPRO_POKE_JITTER_MS', 250),
+  pokeMax: envNumber('EVENT_LOG_RACE_REPRO_POKE_MAX', 64),
   hookResumeStaggerMs: envNumber(
     'EVENT_LOG_RACE_REPRO_HOOK_RESUME_STAGGER_MS',
     400
@@ -455,11 +480,53 @@ async function pollTerminalRun(
     await sleep(1000);
   }
 
+  // Read how far it got before anything is cancelled, so the artifact says
+  // whether this was a slow run or a dormant one. `resolveData: 'none'` keeps
+  // it to event metadata: the count and the last type are the whole point, and
+  // hydrating payloads for a 300-event storm log is exactly the load this run
+  // is already losing to.
+  let progress: ReproRunResult['progress'];
+  try {
+    const events = await world.events.list({
+      runId: run.runId,
+      resolveData: 'none',
+    });
+    progress = {
+      events: events.data.length,
+      lastEventType: events.data.at(-1)?.eventType,
+      ...(events.hasMore ? { truncated: true } : {}),
+    };
+  } catch {
+    // Diagnostics only: a run whose log cannot be read is still `stuck`.
+  }
+
+  // The harness has given up on this run; the backend has not. Its branches go
+  // on waking and replaying, and on the local lanes every replay of every run
+  // shares ONE app process, so an abandoned storm keeps consuming the queue for
+  // the rest of the job and starves whatever scenario comes next — measured on
+  // world-local, where six abandoned `step-storm` runs left the following
+  // `hook-storm` unable to create a single hook inside its 60s discovery
+  // window, so all six of its runs reported `stuck` having received no hook
+  // payload at all. Cancelling makes later replays find a terminal run and
+  // stop, so the next scenario starts against an idle backend.
+  //
+  // Best-effort: a cancel that fails leaves the same starvation this is meant
+  // to avoid, which the next scenario's numbers will show. It must not turn a
+  // `stuck` classification into a harness error.
+  try {
+    await cancelRun(world, run.runId, {
+      cancelReason: 'event-log-race-repro: abandoned at runTimeoutMs',
+    });
+  } catch {
+    // Ignored by design — see above.
+  }
+
   return {
     ...base,
     outcome: 'stuck',
     status: lastStatus,
     durationMs: Date.now() - startedAt,
+    ...(progress ? { progress } : {}),
   };
 }
 
@@ -586,7 +653,7 @@ async function runStepStormAttempt(attempt: number): Promise<ReproRunResult> {
       scenario,
       async (driverState) => {
         const hook = await waitForHook(`${token}:poke`, run.runId, driverState);
-        while (!driverState.done) {
+        while (!driverState.done && driverState.resumesSent < config.pokeMax) {
           await tryResume(driverState, hook, {
             index: -1,
             round: -1,

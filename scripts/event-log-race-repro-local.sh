@@ -129,7 +129,8 @@ already exported is passed through untouched:
   EVENT_LOG_RACE_REPRO_ATTEMPTS              EVENT_LOG_RACE_REPRO_WATCHDOG_MS
   EVENT_LOG_RACE_REPRO_CONCURRENCY           EVENT_LOG_RACE_REPRO_STEP_DELAY_MS
   EVENT_LOG_RACE_REPRO_BUDGET_MS             EVENT_LOG_RACE_REPRO_POKE_INTERVAL_MS
-  EVENT_LOG_RACE_REPRO_RUN_TIMEOUT_MS        EVENT_LOG_RACE_REPRO_HOOK_RESUME_STAGGER_MS
+  EVENT_LOG_RACE_REPRO_RUN_TIMEOUT_MS        EVENT_LOG_RACE_REPRO_POKE_MAX
+                                             EVENT_LOG_RACE_REPRO_HOOK_RESUME_STAGGER_MS
 
 This script deliberately sets none of them. Their defaults — and the full list —
 live in packages/core/e2e/event-log-race-repro.test.ts, which is the single

@@ -310,6 +310,11 @@ function renderConfigTiming(config) {
       : '',
     config.hookResumeStaggerMs ? `stagger ${config.hookResumeStaggerMs}ms` : '',
     config.pokeIntervalMs ? `poke ${config.pokeIntervalMs}ms` : '',
+    // The cap belongs next to the cadence it bounds: it BINDS on the local
+    // lanes (every step-storm run there reaches it), so a config line that
+    // showed only the cadence would read as far more sustained out-of-band
+    // pressure than the run actually received.
+    config.pokeMax ? `poke max ${config.pokeMax}` : '',
     config.runTimeoutMs ? `timeout ${config.runTimeoutMs}ms` : '',
   ].filter(Boolean);
 }
@@ -336,6 +341,7 @@ function compactConfig(config = {}) {
     reconcileBase: config.reconcileBase,
     attrWrites: config.attrWrites,
     pokeIntervalMs: config.pokeIntervalMs,
+    pokeMax: config.pokeMax,
     hookResumeStaggerMs: config.hookResumeStaggerMs,
     runTimeoutMs: config.runTimeoutMs,
     // Pre-storm harness keys, retained so history rows recorded by an older
