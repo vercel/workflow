@@ -173,6 +173,14 @@ export interface Storage {
       ): Promise<(WorkflowRun | WorkflowRunWithoutData | null)[]>;
     };
 
+    /**
+     * Lists canonical workflow storage records.
+     *
+     * @remarks Observability and inspection usage of this method is
+     * deprecated. Use `world.analytics?.runs.list()` for plan-aware
+     * observability queries. This storage API remains available for
+     * operational and payload-bearing callers.
+     */
     list(
       params: ListWorkflowRunsParams & { resolveData: 'none' }
     ): Promise<PaginatedResponse<WorkflowRunWithoutData>>;
@@ -255,6 +263,35 @@ export interface Storage {
     ): Promise<PaginatedResponse<Step | StepWithoutData>>;
   };
 
+  /**
+   * The event log, and the one part of this interface with a requirement the
+   * types cannot express: **the World allocates every event id, and every id
+   * is a slot** — `evnt_` followed by the event's dense, 1-based position in
+   * its run's log, zero-padded to 26 characters. Use `slotToEventId()` to
+   * format one.
+   *
+   * Not a capability to opt into. The runtime reads a position out of every id
+   * it loads (`requireEventSlot`) and fails the run if it cannot, so a World
+   * whose ids are not positions cannot replay anything at all. Two properties
+   * are what the runtime actually relies on:
+   *
+   * - **Density.** A run's slots are contiguous from 1, so the number of
+   *   events a reader holds *is* the position of the last one. That is what
+   *   makes {@link CreateEventParams.eventCount} a complete statement of the
+   *   writer's snapshot in a single integer, and what lets a reader tell a
+   *   complete log from a truncated one by its length.
+   * - **Bump and report.** A create never fails because its requested slot is
+   *   taken. The World advances to the next free slot, commits there, and
+   *   returns the events occupying the slots it skipped over on the success
+   *   response (see {@link EventResult.events}). The writer learns its
+   *   snapshot was stale without the write being rejected — which is why no
+   *   World needs a precondition guard.
+   *
+   * Allocating at the commit is what makes a reader's log a *prefix* of the
+   * run's log rather than a prefix with a hole in it. A World that hands a
+   * position out earlier, and can therefore let an event land behind one a
+   * reader has already passed, breaks the property every replay depends on.
+   */
   events: {
     /**
      * Create a run_created event to start a new workflow run.
@@ -335,26 +372,6 @@ export interface WorldCapabilities {
   };
 
   /**
-   * The World enforces the optimistic-concurrency precondition guard: an
-   * event creation carrying a `stateUpdatedAt` snapshot is rejected with a
-   * `PreconditionFailedError` (412) when a newer out-of-band event (e.g. a
-   * received hook) was recorded after that snapshot. Worlds that accept but
-   * ignore `stateUpdatedAt` must leave this unset so runtime optimizations
-   * that rely on the 412 fence (see `WORKFLOW_PRECONDITION_GUARD`) are not
-   * enabled without an actual fence behind them.
-   *
-   * A World declaring this should honour the whole snapshot the runtime sends,
-   * not just the watermark: `stateUpdatedAt`, `stateEventCount` (the count
-   * fence, which catches an event missing at or below the watermark — the case
-   * the watermark provably cannot see) and, optionally, `stateCursor` (return
-   * the missing events on the 412 to save the client a reload). See
-   * `CreateEventParams` for each field's contract. The runtime does not branch
-   * on which halves are implemented; a World that ignores the count simply
-   * fences less.
-   */
-  preconditionGuard?: boolean;
-
-  /**
    * The World's queue supports `maxConcurrency`-limited consumption — in
    * particular the per-run flow topics consumed with `maxConcurrency: 1`
    * that `WORKFLOW_SEQUENTIAL_REPLAYS=1` uses to serialize a run's
@@ -415,30 +432,6 @@ export interface WorldCapabilities {
    * fail ordinary runs after a version bump.
    */
   deploymentAffinity?: boolean;
-
-  /**
-   * The World allocates **slot-numbered** event ids: `evnt_` plus the event's
-   * dense, 1-based position in its run's log, zero-padded to 26 characters
-   * (see `slot-identity.ts`). Two guarantees come with it, and the runtime
-   * relies on both:
-   *
-   * - **Density.** A run's slots are contiguous from 1, so the number of
-   *   events a reader holds *is* the position of the last one. That is what
-   *   makes {@link CreateEventParams.eventCount} a complete statement of the
-   *   writer's snapshot, where the `stateUpdatedAt` / `stateEventCount`
-   *   watermark pair could only approximate it.
-   * - **Bump and report.** A create never fails because its requested slot is
-   *   taken. The World advances to the next free slot, commits there, and
-   *   returns the events occupying the slots it skipped over on the success
-   *   response (see {@link EventResult.events}). The writer learns its
-   *   snapshot was stale without the write being rejected.
-   *
-   * A run's scheme is pinned by the run, not by this flag: it is readable off
-   * the shape of the run's own first event id, so a World that turns slots on
-   * keeps replaying its existing ULID-numbered runs unchanged. The capability
-   * only says what *new* runs get.
-   */
-  slotEventIds?: boolean;
 }
 
 /**

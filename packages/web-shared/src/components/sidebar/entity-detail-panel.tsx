@@ -47,6 +47,11 @@ export interface SelectedSpanInfo {
   spanId?: string;
   /** Raw correlated events from the store (NOT from the trace worker pipeline) */
   rawEvents?: Event[];
+  /**
+   * Events every replay reads past as repeats, computed from the whole log.
+   * `rawEvents` is one entity's slice, which cannot answer that on its own.
+   */
+  duplicateEventIds?: ReadonlySet<string>;
 }
 
 /**
@@ -402,6 +407,7 @@ export function EntityDetailPanel({
               showSeparateEventOccurrenceTimestamps={
                 showSeparateEventOccurrenceTimestamps
               }
+              duplicateEventIds={selectedSpan?.duplicateEventIds}
             />
           )}
         </div>

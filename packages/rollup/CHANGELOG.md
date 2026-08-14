@@ -1,5 +1,14 @@
 # @workflow/rollup
 
+## 5.0.0-beta.41
+
+### Patch Changes
+
+- [#3084](https://github.com/vercel/workflow/pull/3084) [`264ddff`](https://github.com/vercel/workflow/commit/264ddff67b3cfceea24235ee6d865c48e7982727) Thanks [@shalabhc](https://github.com/shalabhc)! - Add an opt-in WebSocket transport for event writes during step execution, enabled with `WORKFLOW_EVENTS_TRANSPORT=ws`. Defaults to HTTP; no behavior change unless explicitly enabled.
+
+- Updated dependencies [[`4ec7aca`](https://github.com/vercel/workflow/commit/4ec7acaa7196a6f2f5025a65f05d5bdaaf5705ba), [`264ddff`](https://github.com/vercel/workflow/commit/264ddff67b3cfceea24235ee6d865c48e7982727)]:
+  - @workflow/builders@5.0.0-beta.41
+
 ## 5.0.0-beta.40
 
 ### Patch Changes

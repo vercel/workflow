@@ -146,41 +146,26 @@ Two properties have to hold, and both are about what a reader can conclude from 
 - **Uniqueness.** Two writers racing to append must not both take a position. Settle it where the store settles it, with a unique constraint on `(runId, eventId)` or a conditional write, rather than reading the maximum and adding one in your own process.
 - **Density.** Positions run from 1 with no holes, which is what lets a reader tell a complete log from a truncated one by its length alone. A writer that loses a race must re-derive its position from the store and take the next free one. Incrementing a local number after a loss leaves a permanent hole, and the runtime treats a hole as a log it cannot safely replay across.
 
-Allocate the position **at the commit**, in the same operation that appends the event. That is what makes a reader's log a *prefix* of the run's log rather than a prefix with a hole in it: nothing can land behind a position a reader has already passed. Handing a position out earlier — in a request handler, say — and committing later breaks the property every replay depends on, and is the one case where you may still want [a stale-write rejection](#optional-rejecting-a-stale-write) to compensate.
+Allocate the position **at the commit**, in the same operation that appends the event. That is what makes a reader's log a *prefix* of the run's log rather than a prefix with a hole in it: nothing can land behind a position a reader has already passed. Handing a position out earlier — in a request handler, say — and committing later breaks the property every replay depends on, and is the one case where you may need [a stale-write rejection](#optional-rejecting-a-stale-write) to compensate.
 
 `events.create()` params carry `eventCount`: how many events the writer held in the log it replayed from, which is the position it expects to land on minus one. Attempt `eventCount + 1`. When that position is taken, **do not reject the write**. Advance to the next free position, commit there, and return the events occupying the positions you skipped over on the success response, in `events` with a matching `cursor` and `hasMore`. The writer merges them into its own log and replays once, rather than paying a second round trip to discover it was behind. A caller with a stale count is the normal case for a fan-out, and rejecting it would serialize writes the runtime issues in parallel.
 
-`eventCount` supersedes the `stateUpdatedAt` / `stateEventCount` / `stateCursor` triple below. The triple approximates a position with a timestamp watermark plus a count of events at or below it, which a complete-but-stale snapshot passes: every event the writer holds is at or below its own watermark, so the count matches and no fence fires. A dense position has no such blind spot.
-
 ### Optional: Rejecting a Stale Write
 
-**No World in this repository does this, and a v5 World should not need to.** A replay whose log is out of date is not dangerous, for three reasons that hold together once positions are allocated at the commit:
+A replay writes events derived from the event log it loaded, so a write made from an event log that no longer matches the store can commit events no correct replay would produce. Rejecting one means answering `events.create()` with a `PreconditionFailedError` when the run's log already holds more events than the caller's `eventCount` says it had loaded.
 
-- A reader's log is a **prefix** of the run's log rather than a prefix with a hole in it. Nothing lands behind a position it has already passed.
-- Replay is **deterministic on a prefix**. The same prefix always yields the same decisions, so a shorter log means a run that has not caught up, never a run that will decide differently.
-- Every write **reports what it missed**. It names the position it was derived from, and you return the events it was pushed past. The replay merges those and continues, correcting itself on the write rather than on a read.
+No World in this repository does. Reporting is the better mechanism, and the reason it is *sufficient* rather than merely cheaper is worth stating, because it is what removed the need to reject at all: a reader's log is a prefix of the run's log rather than a prefix with a hole in it, replay is deterministic on a prefix, and the writer's next write brings back what it missed. A shorter log therefore means a run that has not caught up, never a run that will decide differently.
 
-That is why the `preconditionGuard` capability no longer exists: the need for a guard was removed rather than made universal. The rest of this section is for the one case that still wants it — a store that allocates positions somewhere other than the commit, and therefore cannot report a skipped span reliably.
-
-`events.create()` params may carry a description of the snapshot the caller replayed from:
-
-- `stateUpdatedAt` — the timestamp encoded in the latest loaded event's ID.
-- `stateEventCount` — how many events the caller loaded. Only sent together with `stateUpdatedAt`; ignore a count that arrives without one.
-- `stateCursor` — the caller's event-log cursor. Advisory, and only meaningful on the reject path (see below).
-
-Enforcing the guard means rejecting the creation with a `PreconditionFailedError` when either holds:
-
-1. An event was recorded after `stateUpdatedAt` that the caller could not have loaded.
-2. More events were recorded at or before `stateUpdatedAt` than `stateEventCount` — the caller's snapshot is missing one.
+That leaves rejecting worth implementing in one case — your store allocates positions somewhere other than the commit, so it cannot report the skipped span reliably and refusing a stale write is safer than accepting one out of order.
 
 Two rules make this safe:
 
-- **Compare at or below `stateUpdatedAt`, not strictly below.** Events routinely share a millisecond with the caller's latest event, and a strict comparison misses exactly those.
-- **Every uncertainty must allow the write.** If your record of a run's events is incomplete, expired, or cannot answer the question, accept the creation. A rejection must always mean a real discrepancy, because the runtime responds to one by discarding a replay.
+- **Only reject on evidence.** If your record of a run's events is incomplete, expired, or cannot answer the question, accept the creation. A rejection must always mean a real discrepancy, because the runtime responds to one by discarding a replay.
+- **Accept a creation that carries no `eventCount`.** It came from a caller with no loaded log to be stale (a queued step body, an out-of-band writer), not from a caller claiming the log is empty.
 
 A rejection may optionally carry the events the caller was missing, as `{ events, cursor }` on the error's `details`. Only include them when you can prove the set is complete — that those events fully account for the discrepancy and are not truncated — and that every one of them belongs to the run being written. The runtime merges them straight into the replay's event log, so anything else there is worse than no delta at all. Otherwise omit them, and the runtime performs a full reload instead.
 
-The runtime handles a rejection wherever it can arrive: it restarts the replay in-process from a corrected log, and re-invokes with a fresh replay once that budget is spent. It never retries the rejected write as-is, because a replay working from a corrected log derives different events. Nothing has to be declared for that to work — there is no capability, and the runtime no longer keys any optimization on whether you fence.
+The runtime handles a rejection wherever it can arrive: it restarts the replay in-process from a corrected log, and re-invokes with a fresh replay once that budget is spent. It never retries the rejected write as-is, because a replay working from a corrected log derives different events. Nothing has to be declared for that to work — there is no capability to set.
 
 ## Queue Interface
 

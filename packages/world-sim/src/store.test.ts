@@ -3,11 +3,12 @@ import {
   HookNotFoundError,
   RunExpiredError,
 } from '@workflow/errors';
-import { SPEC_VERSION_CURRENT } from '@workflow/world';
+import { requireEventSlot, SPEC_VERSION_CURRENT } from '@workflow/world';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { createIdFactory } from './ids.js';
 import {
   createSimStore,
+  type LoadedSnapshot,
   type MintedEvent,
   type SimStore,
   type SimStoreOptions,
@@ -15,6 +16,18 @@ import {
 } from './store.js';
 
 const SPEC = SPEC_VERSION_CURRENT;
+
+/**
+ * The snapshot of a caller that loaded the run's whole log. The store is driven
+ * directly here, so there is no facade tracking reads to derive one from.
+ */
+function loadedAll(store: SimStore): LoadedSnapshot {
+  const events = store.allEvents(RUN);
+  return {
+    maxSlot: Math.max(...events.map((e) => requireEventSlot(e.eventId))),
+    count: events.length,
+  };
+}
 
 function setup(options?: Omit<SimStoreOptions, 'now' | 'ids'>) {
   let now = 1_704_067_200_000;
@@ -424,9 +437,9 @@ describe('sim store', () => {
       });
 
       guarded.tick(10);
-      const snapshot = guarded.nowMs();
+      const snapshot = loadedAll(guarded.store);
       guarded.tick(10);
-      // An out-of-band resume: no stateUpdatedAt, so it advances the marker.
+      // An out-of-band resume: no snapshot, so it advances the marker.
       await guarded.store.events.create(RUN, {
         eventType: 'hook_received',
         specVersion: SPEC,
@@ -443,11 +456,11 @@ describe('sim store', () => {
             correlationId: 'step_1',
             eventData: { stepName: 'step//./w//s', input: new Uint8Array() },
           },
-          { stateUpdatedAt: snapshot }
+          { snapshot }
         )
       ).rejects.toThrow(/out of band/);
 
-      // An up-to-date snapshot passes — an equal timestamp must not livelock.
+      // An up-to-date snapshot passes — an equal watermark must not livelock.
       await expect(
         guarded.store.events.create(
           RUN,
@@ -457,7 +470,7 @@ describe('sim store', () => {
             correlationId: 'step_1',
             eventData: { stepName: 'step//./w//s', input: new Uint8Array() },
           },
-          { stateUpdatedAt: guarded.nowMs() }
+          { snapshot: loadedAll(guarded.store) }
         )
       ).resolves.toBeTruthy();
     });
@@ -480,7 +493,7 @@ describe('sim store', () => {
     it('is off by default: a held write lands behind one committed sooner', async () => {
       await createRun(store, RUN);
       // The handler boundary takes a position; the write is then held.
-      const minted = store.mintEvent();
+      const minted = store.mintEvent(RUN);
       tick(10);
       const overtook = await store.events.create(RUN, hook);
       const held = await store.events.create(RUN, step, heldAt(minted));
@@ -497,7 +510,7 @@ describe('sim store', () => {
     it('re-mints a write that was overtaken while it was held', async () => {
       const world = setup({ appendOnlyLog: true });
       await createRun(world.store, RUN);
-      const minted = world.store.mintEvent();
+      const minted = world.store.mintEvent(RUN);
       world.tick(10);
       const overtook = await world.store.events.create(RUN, hook);
       const held = await world.store.events.create(RUN, step, heldAt(minted));
@@ -515,7 +528,7 @@ describe('sim store', () => {
     it('leaves an uncontended write at the position it minted', async () => {
       const world = setup({ appendOnlyLog: true });
       await createRun(world.store, RUN);
-      const minted = world.store.mintEvent();
+      const minted = world.store.mintEvent(RUN);
       world.tick(10);
       const uncontended = await world.store.events.create(
         RUN,

@@ -66,10 +66,6 @@ export function createWorld(
     specVersion: SPEC_VERSION_CURRENT,
     capabilities: {
       hookRetention: { active: true },
-      // New runs get dense per-run slot event ids. Runs created before this
-      // keep their ULIDs; the scheme is pinned by whether the run owns a slot
-      // counter, not by this flag, which only says what new runs get.
-      slotEventIds: true,
     },
     ...storage,
     ...streamer,

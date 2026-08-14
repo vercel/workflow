@@ -4,7 +4,7 @@ import { describeError } from '../describe-error.js';
 import { runtimeLogger } from '../logger.js';
 import { dehydrateRunError } from '../serialization.js';
 import { getReplayTimeoutMaxRetries, getReplayTimeoutMs } from './constants.js';
-import { memoizeEncryptionKey } from './helpers.js';
+import { memoizeEncryptionKey, type SlotSnapshotParams } from './helpers.js';
 import { getWorld } from './world.js';
 
 /**
@@ -119,8 +119,16 @@ export async function handleReplayBudgetExhausted(args: {
   requestId: string | undefined;
   attempt: number;
   limitMs: number;
+  /**
+   * How much of the log the replay that ran out of budget had loaded. Carried
+   * onto the terminal write for the same reason every other write from that
+   * replay carries it: the run is being failed on a view of the log, and the
+   * World should be told which view.
+   */
+  slotSnapshot?: SlotSnapshotParams;
 }): Promise<void> {
-  const { runId, workflowName, requestId, attempt, limitMs } = args;
+  const { runId, workflowName, requestId, attempt, limitMs, slotSnapshot } =
+    args;
   const runLogger = runtimeLogger.forRun(runId, workflowName);
 
   const maxRetries = getReplayTimeoutMaxRetries();
@@ -170,6 +178,6 @@ export async function handleReplayBudgetExhausted(args: {
         errorCode: RUN_ERROR_CODES.REPLAY_TIMEOUT,
       },
     },
-    { requestId }
+    { requestId, ...slotSnapshot }
   );
 }

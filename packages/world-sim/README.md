@@ -149,15 +149,22 @@ which is why `StaleRead` reports `{ eventId, hidden, truncated }` and the trace
 distinguishes a lagging read from a stale one.
 
 **Precondition fence** (`preconditionGuard: true`) — rejects a write whose
-`stateUpdatedAt` snapshot is strictly older than the newest externally
-originated event. It is a high-water mark, so it sees a log truncated at the end
-and is blind to a hole in the middle.
+snapshot is strictly older than the newest externally originated event. It is a
+high-water mark, so it sees a log truncated at the end and is blind to a hole in
+the middle.
 
 **Count guard** (`countGuard: true`) — adds the other half: how many events the
-log holds at or below `stateUpdatedAt`, against how many the caller loaded. It
-closes the hole a watermark cannot see, and requires the caller to send
-`stateEventCount`. It is evaluated inside the fence's predicate, so it is only
-live when the fence is.
+log holds at or below that watermark, against how many the caller loaded. It
+closes the hole a watermark cannot see. It is evaluated inside the fence's
+predicate, so it is only live when the fence is.
+
+Both halves read one snapshot, and the sim reconstructs it rather than reading
+it off the wire: a client on slot-numbered event IDs sends a slot count, the sim
+mints ULIDs, so the facade derives `{ updatedAt, count }` from the pages the
+writer actually read, within the delivery that read them. The derivation is the
+client's own — newest loaded position, and how many loaded events sit at or
+below it. A write the facade attached no snapshot to did not come from a replay
+context and is never fenced.
 
 Each is a spec field, and `RunScenarioOptions` carries a run-wide override —
 `pnpm sim --append-only`, `--fence` / `--no-fence` — where `undefined` leaves

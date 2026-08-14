@@ -25,8 +25,18 @@
 import { getVercelOidcToken } from '@vercel/oidc';
 import { WebSocket } from 'ws';
 import { type DecodedFrame, decodeFrames } from './frames.js';
-import { getRequestTimeoutMs, headersToRecord } from './http-core.js';
-import { injectTraceContextIntoHeaders } from './telemetry.js';
+import {
+  getRequestTimeoutMs,
+  headersToRecord,
+  withHttpClientSpan,
+} from './http-core.js';
+import {
+  ErrorType,
+  injectTraceContextIntoHeaders,
+  NetworkProtocolName,
+  WorkflowEventsTransport,
+  WorkflowWsReconnectAttempt,
+} from './telemetry.js';
 import { type APIConfig, getHttpConfig, getHttpUrl } from './utils.js';
 import { isWsEventsTransportEnabled } from './ws-transport-enabled.js';
 
@@ -295,7 +305,7 @@ class WsEventsTransport {
     // Clearing the slot here rather than from the socket handlers keeps the
     // bookkeeping in one place, and stops a stale socket's late `close` from
     // nulling out a newer connect that has since taken the slot.
-    this.connecting ??= this.connect().finally(() => {
+    this.connecting ??= this.connectWithSpan().finally(() => {
       this.connecting = null;
     });
     return this.connecting;
@@ -351,6 +361,46 @@ class WsEventsTransport {
     const reason = this.lastDrainReason;
     this.lastDrainReason = null;
     if (reason === 'auth_expiry') this.needsFreshToken = true;
+  }
+
+  /**
+   * The handshake, wrapped in its own CLIENT span.
+   *
+   * The upgrade is the one genuinely-HTTP request this transport makes, and
+   * until it had a span it was the invisible half of every WS write's latency:
+   * a write that waits on a handshake shows the wait inside its own span with
+   * nothing to attribute it to, and an eager reconnect between two writes shows
+   * up nowhere at all. Named for the operation rather than `http GET` so it
+   * doesn't land in the same bucket as the event writes it enables.
+   *
+   * It also puts `resolveUpgradeHeaders`' trace-context injection inside a
+   * client span, matching `makeRequest`'s contract (CLAUDE.md): the server's
+   * per-event spans parent to *this* span rather than directly to whichever
+   * invocation happened to open the socket, so the handshake and everything the
+   * server does over the connection hang together.
+   */
+  private connectWithSpan(): Promise<Connection> {
+    return withHttpClientSpan(
+      {
+        method: 'GET',
+        url: this.wsUrl,
+        spanName: 'workflow.events.ws.connect',
+        attributes: {
+          ...WorkflowEventsTransport('ws'),
+          ...NetworkProtocolName('websocket'),
+          ...WorkflowWsReconnectAttempt(this.reconnectAttempts),
+        },
+      },
+      async (span) => {
+        try {
+          return await this.connect();
+        } catch (err) {
+          span?.setAttributes({ ...ErrorType('TRANSPORT') });
+          if (err instanceof Error) span?.recordException?.(err);
+          throw err;
+        }
+      }
+    );
   }
 
   private connect(): Promise<Connection> {

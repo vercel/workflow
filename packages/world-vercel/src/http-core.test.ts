@@ -1,6 +1,7 @@
 import {
   EntityConflictError,
   RunExpiredError,
+  StreamExpiredError,
   ThrottleError,
   TooEarlyError,
   WorkflowWorldError,
@@ -26,8 +27,27 @@ describe('errorForResponse', () => {
     expect(errorForResponse(409, 'boom')).toBeInstanceOf(EntityConflictError);
   });
 
-  it('maps 410 to RunExpiredError', () => {
+  it('maps an unstructured 410 to RunExpiredError', () => {
     expect(errorForResponse(410, 'boom')).toBeInstanceOf(RunExpiredError);
+  });
+
+  it('maps a stream-expired 410 to StreamExpiredError with its details', () => {
+    const err = errorForResponse(410, 'stream expired', {
+      code: 'stream-expired',
+      details: {
+        runId: 'wrun_test',
+        streamId: 'stream-test',
+        expiredAt: '2026-08-10T14:40:00.000Z',
+      },
+    });
+
+    expect(err).toMatchObject({
+      name: 'StreamExpiredError',
+      runId: 'wrun_test',
+      streamId: 'stream-test',
+      expiredAt: new Date('2026-08-10T14:40:00.000Z'),
+    });
+    expect(err).toBeInstanceOf(StreamExpiredError);
   });
 
   it('maps 425 to TooEarlyError carrying retryAfter', () => {

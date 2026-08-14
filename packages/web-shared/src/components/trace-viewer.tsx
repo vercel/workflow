@@ -30,16 +30,28 @@ const TraceViewer = ({
     if (!run?.runId) {
       return undefined;
     }
-    return buildTrace(run, events, new Date());
+    // `hasMore` is the only place that knows whether more of the log is still
+    // to be fetched, and a repeat can only be told apart from the event it
+    // repeats with the whole log in hand.
+    return buildTrace(run, events, new Date(), {
+      isCompleteHistory: !hasMore,
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `new Date()` is intentionally not a dep
-  }, [run, events]);
+  }, [run, events, hasMore]);
+
+  // The sidebar shows one entity's slice of the log, so it takes the trace's
+  // answer rather than recomputing one from the slice.
+  const sidebarValue = useMemo(
+    () => ({ ...sidebarData, duplicateEventIds: trace?.duplicateEventIds }),
+    [sidebarData, trace]
+  );
 
   if (!trace || (loading && events.length === 0)) {
     return <TraceViewerSkeleton />;
   }
 
   return (
-    <SidebarDataProvider value={sidebarData}>
+    <SidebarDataProvider value={sidebarValue}>
       <div className="relative w-full h-full flex">
         <TraceViewerComponent
           trace={trace}
