@@ -132,6 +132,26 @@ export const DUPLICATE_EVENT_FIXTURES: readonly DuplicateEventFixture[] = [
     ignoredIndices: [],
   },
   {
+    name: 'second disposal of one hook',
+    why: 'A hook closes on disposal, and both writers of a concurrent teardown can reach it. The write path rejects the second one, so the class entry is what covers a log that holds it anyway.',
+    events: [
+      { eventType: 'hook_created', entity: 'hook_a' },
+      { eventType: 'hook_disposed', entity: 'hook_a' },
+      { eventType: 'hook_disposed', entity: 'hook_a' },
+    ],
+    ignoredIndices: [2],
+  },
+  {
+    name: 'hook recreated after it was disposed',
+    why: 'Creation has a class of its own, so a stale replay re-creating a hook whose scope already exited is read past rather than treated as a new hook.',
+    events: [
+      { eventType: 'hook_created', entity: 'hook_a' },
+      { eventType: 'hook_disposed', entity: 'hook_a' },
+      { eventType: 'hook_created', entity: 'hook_a' },
+    ],
+    ignoredIndices: [2],
+  },
+  {
     name: 'two steps in flight',
     why: 'Classes are tracked per entity, so sibling steps running the same shape never collide.',
     events: [
