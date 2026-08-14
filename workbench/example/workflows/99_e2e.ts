@@ -2,6 +2,7 @@
 /** biome-ignore-all lint/complexity/noStaticOnlyClass: <explanation> */
 import { pathsAliasHelper } from '@repo/lib/steps/paths-alias-test';
 import {
+  createActiveStepAbortController,
   createHook,
   createWebhook,
   FatalError,
@@ -2068,6 +2069,39 @@ async function checkSignalState(signal: AbortSignal): Promise<{
 }> {
   'use step';
   return { aborted: signal.aborted, reason: signal.reason };
+}
+
+async function waitForActiveStepAbort(signal: AbortSignal): Promise<{
+  aborted: boolean;
+  reason: unknown;
+}> {
+  'use step';
+  return await new Promise((resolve) => {
+    const onAbort = () => {
+      signal.removeEventListener('abort', onAbort);
+      resolve({ aborted: signal.aborted, reason: signal.reason });
+    };
+    signal.addEventListener('abort', onAbort);
+  });
+}
+
+/**
+ * E2E: An external exact-token resume aborts an already-running step, then
+ * the replayed workflow serializes the reconstructed signal into its next
+ * step. The e2e test owns receipt ordering and terminal/residue assertions.
+ */
+export async function activeStepAbortControllerWorkflow(token: string) {
+  'use workflow';
+
+  const controller = createActiveStepAbortController({ token });
+  try {
+    const activeStep = await waitForActiveStepAbort(controller.signal);
+    const replayedStep = await checkSignalState(controller.signal);
+
+    return { activeStep, replayedStep };
+  } finally {
+    controller.dispose();
+  }
 }
 
 /**

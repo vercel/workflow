@@ -1,0 +1,54 @@
+---
+title: createActiveStepAbortController
+description: Create a workflow-owned signal that a matching hook resume can abort while a step is active.
+type: reference
+summary: Use createActiveStepAbortController for durable, externally initiated cancellation of work that is already running in a step.
+related:
+  - /docs/api-reference/workflow-api/resume-hook
+  - /docs/foundations/hooks
+---
+
+`createActiveStepAbortController()` is available only inside a function marked `"use workflow"`. It creates a disposable controller whose `signal` can be passed to a step that supports `AbortSignal`.
+
+```ts lineNumbers
+import { createActiveStepAbortController } from "workflow";
+
+async function fetchWithCancellation(jobId: string) {
+  "use workflow";
+
+  const controller = createActiveStepAbortController({
+    token: `abrt_job_${jobId}`,
+  });
+
+  try {
+    return await fetchJob(controller.signal);
+  } finally {
+    controller.dispose();
+  }
+}
+
+async function fetchJob(signal: AbortSignal) {
+  "use step";
+  return await fetch("https://example.com/job", { signal });
+}
+```
+
+The token must be deterministic and use the canonical `abrt_` namespace: `abrt_` followed by one or more letters, numbers, `_`, or `-`. A workflow execution can own a token through one controller only; call `dispose()` in `finally` to clean up its hook. Disposing it does not make the token available to a second controller in that same execution.
+
+From an API route or other external server context, resume that exact hook token with [`resumeHook()`](/docs/api-reference/workflow-api/resume-hook). The payload becomes the signal's `reason`:
+
+```ts lineNumbers
+import { resumeHook } from "workflow/api";
+
+await resumeHook("abrt_job_123", { reason: "cancelled by user" });
+```
+
+The resume is durably recorded before its live cancellation packet is delivered. A running step can observe the abort immediately; replay reconstructs the aborted signal and its reason from that receipt. Cancellation remains cooperative: the step must observe and honor its `AbortSignal`.
+
+## API Signature
+
+<TSDoc
+definition={`
+import { createActiveStepAbortController } from "workflow";
+export default createActiveStepAbortController;`}
+/>

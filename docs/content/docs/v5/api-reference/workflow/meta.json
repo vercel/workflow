@@ -1,3 +1,8 @@
 {
-  "pages": ["...", "fatal-error", "retryable-error"]
+  "pages": [
+    "...",
+    "active-step-abort-controller",
+    "fatal-error",
+    "retryable-error"
+  ]
 }

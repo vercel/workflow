@@ -10,6 +10,11 @@ export {
   type RetryableErrorOptions,
 } from '@workflow/errors';
 export type { Hook, HookOptions } from '../create-hook.js';
+export {
+  createActiveStepAbortController,
+  type ActiveStepAbortController,
+  type ActiveStepAbortControllerOptions,
+} from '../active-step-abort-controller.js';
 export { sleep } from '../sleep.js';
 export { createHook, createWebhook } from './create-hook.js';
 export { defineHook } from './define-hook.js';

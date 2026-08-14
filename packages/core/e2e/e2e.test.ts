@@ -3592,6 +3592,59 @@ describe('e2e', () => {
     );
 
     test(
+      'activeStepAbortControllerWorkflow: durable receipt gates an active-step abort and replay restores its reason',
+      { timeout: 60_000 },
+      async () => {
+        const token = `abrt_e2e_${Math.random().toString(36).slice(2)}`;
+        const reason = 'e2e active-step cancellation';
+        const run = await start(
+          await e2e('activeStepAbortControllerWorkflow'),
+          [token]
+        );
+        const hook = await waitForHook(token, { runId: run.runId });
+
+        await resumeHook(hook, { reason });
+
+        const returnValue = await run.returnValue;
+        expect(returnValue.activeStep).toEqual({ aborted: true, reason });
+        expect(returnValue.replayedStep).toEqual({ aborted: true, reason });
+
+        const world = await getWorld();
+        const { data: events } = await world.events.list({ runId: run.runId });
+        const receiptIndexes = events
+          .map((event, index) =>
+            event.eventType === 'hook_received' &&
+            event.correlationId === hook.hookId &&
+            event.eventData.token === token
+              ? index
+              : -1
+          )
+          .filter((index) => index >= 0);
+        expect(receiptIndexes).toEqual([expect.any(Number)]);
+
+        const receiptIndex = receiptIndexes[0]!;
+        expect(
+          events
+            .slice(0, receiptIndex)
+            .some(
+              (event) =>
+                event.eventType === 'step_completed' ||
+                event.eventType === 'step_failed'
+            )
+        ).toBe(false);
+        expect(events.some((event) => event.eventType === 'step_failed')).toBe(
+          false
+        );
+
+        expect((await world.runs.get(run.runId)).status).toBe('completed');
+        const { data: hooks } = await world.hooks.list({ runId: run.runId });
+        expect(hooks.some((candidate) => candidate.token === token)).toBe(
+          false
+        );
+      }
+    );
+
+    test(
       'abortAlreadyAbortedWorkflow: pre-aborted signal seen by step',
       { timeout: 60_000 },
       async () => {

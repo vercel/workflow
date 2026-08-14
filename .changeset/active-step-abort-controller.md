@@ -1,5 +1,6 @@
 ---
 "@workflow/core": patch
+"workflow": patch
 ---
 
-Add a workflow-only active-step abort controller that lets a deterministic system hook abort an in-flight step signal before durable replay resumes the workflow.
+Expose the workflow-only active-step abort controller through the authored `workflow` facade.

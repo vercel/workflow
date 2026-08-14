@@ -1,4 +1,9 @@
 import * as workflow from './index.js';
+import * as workflowCatalog from './workflow/index.js';
+import type {
+  ActiveStepAbortController,
+  ActiveStepAbortControllerOptions,
+} from './workflow/index.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const factorySymbol = Symbol.for(
@@ -10,6 +15,22 @@ afterEach(() => {
 });
 
 describe('createActiveStepAbortController', () => {
+  it('exports the active-step controller and its public types through the workflow catalog', () => {
+    expect(workflowCatalog.createActiveStepAbortController).toBeTypeOf(
+      'function'
+    );
+
+    const options: ActiveStepAbortControllerOptions = {
+      token: 'abrt_turn_control',
+    };
+    const controller: ActiveStepAbortController = {
+      dispose() {},
+      signal: new AbortController().signal,
+      token: options.token,
+    };
+    expect(controller.token).toBe(options.token);
+  });
+
   it('exposes the workflow-only controller that a driver can resume during an active step', () => {
     expect(workflow).toHaveProperty('createActiveStepAbortController');
   });
