@@ -5,204 +5,311 @@ import {
   prepareReplayPayload,
 } from './serialization/replay.js';
 
-const MAX_MEMOIZED_PRIMITIVE_LENGTH = 4096;
 type ReplayPayloadField = 'result' | 'error' | 'payload';
 
-function isMemoizablePrimitive(value: unknown): boolean {
-  if (value === null) return true;
-  const type = typeof value;
-  if (type === 'object' || type === 'function') return false;
-  if (type === 'string') {
-    return (value as string).length <= MAX_MEMOIZED_PRIMITIVE_LENGTH;
-  }
-  if (type === 'bigint') {
-    return (value as bigint).toString().length <= MAX_MEMOIZED_PRIMITIVE_LENGTH;
-  }
-  return true;
+type KeyState =
+  | { state: 'pending'; promise: Promise<DecryptionKey | undefined> }
+  | { state: 'ready'; value: DecryptionKey | undefined }
+  | { state: 'failed'; error: unknown };
+
+type Preparation =
+  | { state: 'waiting'; value: Uint8Array }
+  | { state: 'ready'; value: PreparedReplayPayload }
+  | { state: 'pending'; promise: Promise<PreparedReplayPayload> }
+  | { state: 'failed'; error: unknown };
+
+function isPrimitive(value: unknown): boolean {
+  return value === null || !['object', 'function'].includes(typeof value);
 }
 
 /**
  * Invocation-scoped cache for replay payload hydration.
  *
- * A workflow invocation may replay the same event log through several fresh
- * VMs. This cache keeps the VM-independent decrypt/decompress result across
- * those replays. Deserialization still runs against each VM's globals so every
- * replay receives fresh object graphs and correctly revived Workflow objects.
- *
- * Successful prepared plaintext remains resident for the invocation lifetime.
- * Its memory cost is the sum of decrypted and decompressed payload sizes, but
- * it never crosses workflow runs or queue deliveries.
+ * The cache retains VM-independent decrypt/decompress output across fresh VMs.
+ * Deserialization still runs against each VM's globals so object graphs and
+ * Workflow objects remain realm-local. Primitive final values are safe to
+ * share and skip that repeated deserialization entirely.
  */
 export class ReplayPayloadCache {
-  private readonly preparedPayloads = new Map<
-    string,
+  private readonly preparations = new Map<string, Preparation>();
+  private readonly pendingPreparations = new Set<
     Promise<PreparedReplayPayload>
   >();
-  private readonly primitiveStepResults = new Map<string, unknown>();
+  private readonly primitiveValues = new Map<string, unknown>();
   private nextUnscannedEventIndex = 0;
 
-  constructor(
-    private readonly encryptionKey: DecryptionKey | undefined,
+  private constructor(
+    private key: KeyState,
     private readonly preparer: typeof prepareReplayPayload = prepareReplayPayload
-  ) {}
+  ) {
+    if (key.state === 'pending') {
+      void key.promise.then(
+        (value) => this.resolveKey(value),
+        (error) => this.rejectKey(error)
+      );
+    }
+  }
+
+  static unencrypted(
+    preparer: typeof prepareReplayPayload = prepareReplayPayload
+  ): ReplayPayloadCache {
+    return new ReplayPayloadCache(
+      { state: 'ready', value: undefined },
+      preparer
+    );
+  }
+
+  static withKey(
+    key: DecryptionKey,
+    preparer: typeof prepareReplayPayload = prepareReplayPayload
+  ): ReplayPayloadCache {
+    return new ReplayPayloadCache({ state: 'ready', value: key }, preparer);
+  }
+
+  static waitingForKey(
+    key: Promise<DecryptionKey | undefined>,
+    preparer: typeof prepareReplayPayload = prepareReplayPayload
+  ): ReplayPayloadCache {
+    return new ReplayPayloadCache({ state: 'pending', promise: key }, preparer);
+  }
+
+  /** Start preparing an event as soon as its frame has been decoded. */
+  observeEvent(event: Event, onPreparationStart?: () => void): void {
+    switch (event.eventType) {
+      case 'run_created':
+        this.start(
+          this.workflowInputKey(event.runId),
+          event.eventData.input,
+          onPreparationStart
+        );
+        break;
+      case 'run_started':
+        this.start(
+          this.workflowInputKey(event.runId),
+          event.eventData?.input,
+          onPreparationStart
+        );
+        break;
+      case 'step_completed':
+        this.start(
+          this.eventPayloadKey(event.eventId, 'result'),
+          event.eventData?.result,
+          onPreparationStart
+        );
+        break;
+      case 'step_failed':
+        this.start(
+          this.eventPayloadKey(event.eventId, 'error'),
+          event.eventData?.error,
+          onPreparationStart
+        );
+        break;
+      case 'hook_received':
+        this.start(
+          this.eventPayloadKey(event.eventId, 'payload'),
+          event.eventData?.payload,
+          onPreparationStart
+        );
+    }
+  }
 
   /**
-   * Start every missing binary preparation before workflow execution. Failures
-   * are intentionally retained: the ordered event consumer must observe the
-   * original rejection before that entry becomes retryable.
+   * Start every preparation not already observed from the event stream.
+   * Returns a Promise only when a sealed or portable codec is still running.
    */
-  async prewarm(workflowRun: WorkflowRun, events: Event[]): Promise<void> {
-    const preparations: Promise<PreparedReplayPayload>[] = [];
-    const start = (cacheKey: string, value: unknown): void => {
-      // Legacy flattened values may be mutated by devalue's unflatten and are
-      // therefore prepared only by their eventual consumer, never cached.
-      if (!(value instanceof Uint8Array)) return;
-
-      // Each replay scans the full event log, so awaiting cached promises here
-      // would add O(N^2) promise reactions over an N-step invocation. Only wait
-      // for preparations first discovered by this prewarm pass.
-      if (this.preparedPayloads.has(cacheKey)) return;
-      preparations.push(this.ensurePreparation(cacheKey, value));
-    };
-
-    start(this.workflowInputKey(workflowRun.runId), workflowRun.input);
-    // This cache is scoped to one invocation. Incremental loads and write
-    // response deltas only ever append, so the scanned length locates the
-    // events added since the previous replay. A reload that can insert events
-    // BELOW that length — a stale-snapshot restart replacing the log with a
-    // corrected one — must call `resetScan()` first, or the inserted events are
-    // never scanned. Prepared entries stay valid across that: they are keyed by
-    // event id, not by position.
+  prewarm(workflowRun: WorkflowRun, events: Event[]): void | Promise<void> {
+    this.start(
+      this.workflowInputKey(workflowRun.runId),
+      workflowRun.input
+    );
     for (
       let index = this.nextUnscannedEventIndex;
       index < events.length;
       index++
     ) {
-      const event = events[index];
-      switch (event.eventType) {
-        case 'step_completed':
-          start(
-            this.eventPayloadKey(event.eventId, 'result'),
-            event.eventData?.result
-          );
-          break;
-        case 'step_failed':
-          start(
-            this.eventPayloadKey(event.eventId, 'error'),
-            event.eventData?.error
-          );
-          break;
-        case 'hook_received':
-          start(
-            this.eventPayloadKey(event.eventId, 'payload'),
-            event.eventData?.payload
-          );
-          break;
-      }
+      this.observeEvent(events[index]);
     }
     this.nextUnscannedEventIndex = events.length;
-
-    // Prewarming is speculative and must not fail replay before the matching
-    // event is consumed. allSettled also attaches rejection handlers eagerly.
-    await Promise.allSettled(preparations);
+    return this.waitForPending();
   }
 
-  /**
-   * Forget how much of the event log has been scanned, so the next
-   * {@link prewarm} walks it from the start again.
-   *
-   * Required before a replay whose event log was reloaded rather than extended:
-   * a corrected log inserts the events the previous load was missing, which
-   * shifts every later position, so a positional resume would skip exactly the
-   * events the reload was for. Already-prepared payloads are kept — they are
-   * keyed by event id, so re-scanning re-observes them for free.
-   */
+  /** A corrected reload may insert events before the previous scan position. */
   resetScan(): void {
     this.nextUnscannedEventIndex = 0;
   }
 
-  /** Return the workflow input after shared host-side preparation. */
   prepareWorkflowInput(
     workflowRun: WorkflowRun
-  ): Promise<PreparedReplayPayload> {
-    return this.consumePreparation(
+  ): PreparedReplayPayload | Promise<PreparedReplayPayload> {
+    return this.consume(
       this.workflowInputKey(workflowRun.runId),
       workflowRun.input
     );
   }
 
-  /**
-   * Return an event payload after shared host-side preparation. A rejected
-   * preparation is evicted only after this ordered consumer requests it, so a
-   * later replay can retry without hiding the original failure.
-   */
   prepareEventPayload(
     eventId: string,
     field: ReplayPayloadField,
     value: unknown
-  ): Promise<PreparedReplayPayload> {
-    return this.consumePreparation(this.eventPayloadKey(eventId, field), value);
+  ): PreparedReplayPayload | Promise<PreparedReplayPayload> {
+    return this.consume(this.eventPayloadKey(eventId, field), value);
   }
 
-  /**
-   * Reuse final step values only when sharing them across VMs is unobservable.
-   * Objects and large strings/bigints always run `hydrate` again, producing a
-   * fresh VM-specific value from the separately cached prepared payload.
-   */
-  async getStepResult(
+  getEventValue(
     eventId: string,
-    hydrate: () => Promise<unknown>
-  ): Promise<unknown> {
-    if (this.primitiveStepResults.has(eventId)) {
-      return this.primitiveStepResults.get(eventId);
+    field: ReplayPayloadField,
+    serializedValue: unknown,
+    hydrate: (prepared: PreparedReplayPayload) => unknown | Promise<unknown>
+  ): unknown | Promise<unknown> {
+    const cacheKey = this.eventPayloadKey(eventId, field);
+    if (this.primitiveValues.has(cacheKey)) {
+      return this.primitiveValues.get(cacheKey);
     }
 
-    const value = await hydrate();
-    if (isMemoizablePrimitive(value)) {
-      this.primitiveStepResults.set(eventId, value);
-    }
+    const prepared = this.prepareEventPayload(
+      eventId,
+      field,
+      serializedValue
+    );
+    const hydrateAndCache = (payload: PreparedReplayPayload) => {
+      const hydrated = hydrate(payload);
+      return hydrated instanceof Promise
+        ? hydrated.then((value) => this.cachePrimitive(cacheKey, value))
+        : this.cachePrimitive(cacheKey, hydrated);
+    };
+    return prepared instanceof Promise
+      ? prepared.then(hydrateAndCache)
+      : hydrateAndCache(prepared);
+  }
+
+  private cachePrimitive(cacheKey: string, value: unknown): unknown {
+    if (isPrimitive(value)) this.primitiveValues.set(cacheKey, value);
     return value;
   }
 
-  /**
-   * Consumer-facing lookup. Binary payloads share preparation; legacy values
-   * bypass the cache because their flattened representation may be mutated.
-   */
-  private consumePreparation(
+  private start(
     cacheKey: string,
-    value: unknown
-  ): Promise<PreparedReplayPayload> {
-    if (!(value instanceof Uint8Array)) {
-      return Promise.resolve({ legacy: value });
+    value: unknown,
+    onPreparationStart?: () => void
+  ): void {
+    if (!(value instanceof Uint8Array) || this.preparations.has(cacheKey)) {
+      return;
     }
 
-    const preparation = this.ensurePreparation(cacheKey, value);
-    void preparation.catch(() => {
-      if (this.preparedPayloads.get(cacheKey) === preparation) {
-        this.preparedPayloads.delete(cacheKey);
-      }
-    });
-    return preparation;
+    onPreparationStart?.();
+    switch (this.key.state) {
+      case 'pending':
+        this.preparations.set(cacheKey, { state: 'waiting', value });
+        break;
+      case 'ready':
+        this.prepare(cacheKey, value, this.key.value);
+        break;
+      case 'failed':
+        this.preparations.set(cacheKey, {
+          state: 'failed',
+          error: this.key.error,
+        });
+        break;
+    }
   }
 
-  /** Start preparation once and share the exact in-flight promise. */
-  private ensurePreparation(
+  private prepare(
     cacheKey: string,
-    value: Uint8Array
-  ): Promise<PreparedReplayPayload> {
-    const cached = this.preparedPayloads.get(cacheKey);
-    if (cached) return cached;
+    value: Uint8Array,
+    key: DecryptionKey | undefined
+  ): void {
+    try {
+      const result = this.preparer(value, key);
+      if (!(result instanceof Promise)) {
+        this.preparations.set(cacheKey, { state: 'ready', value: result });
+        return;
+      }
 
-    const preparation = this.runPreparation(value);
-    this.preparedPayloads.set(cacheKey, preparation);
-    return preparation;
+      this.preparations.set(cacheKey, { state: 'pending', promise: result });
+      this.pendingPreparations.add(result);
+      void result.then(
+        (prepared) => {
+          this.pendingPreparations.delete(result);
+          const current = this.preparations.get(cacheKey);
+          if (current?.state === 'pending' && current.promise === result) {
+            this.preparations.set(cacheKey, {
+              state: 'ready',
+              value: prepared,
+            });
+          }
+        },
+        (error) => {
+          this.pendingPreparations.delete(result);
+          const current = this.preparations.get(cacheKey);
+          if (current?.state === 'pending' && current.promise === result) {
+            this.preparations.set(cacheKey, { state: 'failed', error });
+          }
+        }
+      );
+    } catch (error) {
+      this.preparations.set(cacheKey, { state: 'failed', error });
+    }
   }
 
-  /** Normalize synchronous and asynchronous preparers to one promise contract. */
-  private async runPreparation(
-    value: Uint8Array
-  ): Promise<PreparedReplayPayload> {
-    return this.preparer(value, this.encryptionKey);
+  private consume(
+    cacheKey: string,
+    value: unknown
+  ): PreparedReplayPayload | Promise<PreparedReplayPayload> {
+    if (!(value instanceof Uint8Array)) return { legacy: value };
+
+    this.start(cacheKey, value);
+    const preparation = this.preparations.get(cacheKey);
+    if (!preparation) {
+      throw new Error(`Replay payload preparation was not started: ${cacheKey}`);
+    }
+
+    switch (preparation.state) {
+      case 'ready':
+        return preparation.value;
+      case 'pending':
+        return preparation.promise;
+      case 'failed':
+        this.preparations.delete(cacheKey);
+        throw preparation.error;
+      case 'waiting':
+        if (this.key.state !== 'pending') {
+          throw new Error(`Replay payload key was not resolved: ${cacheKey}`);
+        }
+        return this.key.promise.then(() => this.consume(cacheKey, value));
+    }
+  }
+
+  private waitForPending(): void | Promise<void> {
+    if (
+      this.key.state === 'pending' &&
+      [...this.preparations.values()].some(
+        (preparation) => preparation.state === 'waiting'
+      )
+    ) {
+      return this.key.promise.then(() => this.waitForPending());
+    }
+    if (this.pendingPreparations.size === 0) return;
+    return Promise.allSettled([...this.pendingPreparations]).then(() => {});
+  }
+
+  private resolveKey(value: DecryptionKey | undefined): void {
+    if (this.key.state !== 'pending') return;
+    this.key = { state: 'ready', value };
+    for (const [cacheKey, preparation] of this.preparations) {
+      if (preparation.state === 'waiting') {
+        this.prepare(cacheKey, preparation.value, value);
+      }
+    }
+  }
+
+  private rejectKey(error: unknown): void {
+    if (this.key.state !== 'pending') return;
+    this.key = { state: 'failed', error };
+    for (const [cacheKey, preparation] of this.preparations) {
+      if (preparation.state === 'waiting') {
+        this.preparations.set(cacheKey, { state: 'failed', error });
+      }
+    }
   }
 
   private workflowInputKey(runId: string): string {

@@ -116,6 +116,7 @@ describe('QuickJS partial run_started preload', () => {
     expect(listEvents).toHaveBeenCalledWith({
       runId,
       pagination: { sortOrder: 'asc', cursor: preloadCursor },
+      onEvent: expect.any(Function),
     });
     expect(runWorkflowWithQuickJS).toHaveBeenCalledWith(
       expect.objectContaining({

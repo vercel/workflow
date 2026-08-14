@@ -971,6 +971,18 @@ describe('memoizeEncryptionKey', () => {
     expect(spy).toHaveBeenCalledTimes(1);
   });
 
+  it('passes deployment context when resolving before the run is materialized', async () => {
+    const spy = vi.fn().mockResolvedValue(MATERIAL);
+    const getKey = memoizeEncryptionKey(worldWithKey(spy), 'wrun_1', {
+      deploymentId: 'dpl_streamed',
+    });
+
+    await getKey();
+    expect(spy).toHaveBeenCalledWith('wrun_1', {
+      deploymentId: 'dpl_streamed',
+    });
+  });
+
   it('resolves undefined when encryption is not configured', async () => {
     const getKey = memoizeEncryptionKey(worldWithKey(undefined), 'wrun_1');
     await expect(getKey()).resolves.toBeUndefined();

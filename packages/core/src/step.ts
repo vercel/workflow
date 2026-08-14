@@ -190,18 +190,25 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
           ctx.pendingDeliveries++;
           ctx.promiseQueue = ctx.promiseQueue.then(async () => {
             try {
-              const prepared = await ctx.replayPayloadCache.prepareEventPayload(
+              rejection = await ctx.replayPayloadCache.getPrimitiveValue(
                 event.eventId,
                 'error',
-                event.eventData.error
-              );
-              rejection = await hydrateStepError(
-                event.eventData.error,
-                ctx.runId,
-                ctx.encryptionKey,
-                ctx.globalThis,
-                {},
-                prepared
+                async () => {
+                  const prepared =
+                    await ctx.replayPayloadCache.prepareEventPayload(
+                      event.eventId,
+                      'error',
+                      event.eventData.error
+                    );
+                  return hydrateStepError(
+                    event.eventData.error,
+                    ctx.runId,
+                    ctx.encryptionKey,
+                    ctx.globalThis,
+                    {},
+                    prepared
+                  );
+                }
               );
             } catch (hydrateErr) {
               // If hydration fails for any reason, fall back to a generic
@@ -301,25 +308,27 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
           ctx.pendingDeliveries++;
           ctx.promiseQueue = ctx.promiseQueue.then(async () => {
             try {
-              const hydratedResult = await ctx.replayPayloadCache.getStepResult(
-                completedEventId,
-                async () => {
-                  const prepared =
-                    await ctx.replayPayloadCache.prepareEventPayload(
-                      completedEventId,
-                      'result',
-                      serializedResult
+              const hydratedResult =
+                await ctx.replayPayloadCache.getPrimitiveValue(
+                  completedEventId,
+                  'result',
+                  async () => {
+                    const prepared =
+                      await ctx.replayPayloadCache.prepareEventPayload(
+                        completedEventId,
+                        'result',
+                        serializedResult
+                      );
+                    return await hydrateStepReturnValue(
+                      serializedResult,
+                      ctx.runId,
+                      ctx.encryptionKey,
+                      ctx.globalThis,
+                      {},
+                      prepared
                     );
-                  return await hydrateStepReturnValue(
-                    serializedResult,
-                    ctx.runId,
-                    ctx.encryptionKey,
-                    ctx.globalThis,
-                    {},
-                    prepared
-                  );
-                }
-              );
+                  }
+                );
               outcome = { ok: true, value: hydratedResult as Result };
             } catch (error) {
               outcome = { ok: false, error };

@@ -41,7 +41,7 @@ import { createSleep } from './workflow/sleep.js';
  * - `wait_completed` resolves through a detached chain with a fixed, small
  *   microtask-hop count (`workflow/sleep.ts`). A `step_completed` instead
  *   resolves inside a serial `ctx.promiseQueue` slot that first hydrates the
- *   payload via `ReplayPayloadCache.getStepResult(...)`. That hop count is not
+ *   payload via `ReplayPayloadCache.getPrimitiveValue(...)`. That hop count is not
  *   fixed: the first hydration pays async decrypt/deserialize, while a later
  *   replay sharing the same `ReplayPayloadCache` hits the
  *   `primitiveStepResults` memo for small primitive results and resolves in
