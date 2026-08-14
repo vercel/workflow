@@ -1,5 +1,16 @@
 # @workflow/sveltekit
 
+## 4.0.18
+
+### Patch Changes
+
+- [#3474](https://github.com/vercel/workflow/pull/3474) [`598d712`](https://github.com/vercel/workflow/commit/598d712173ff3bb7f5d0f98d1c1a560a2ed0b308) Thanks [@dummdidumm](https://github.com/dummdidumm)! - Load SvelteKit route configuration through `@sveltejs/load-config`, including projects that configure SvelteKit exclusively in `vite.config`.
+
+- Updated dependencies []:
+  - @workflow/builders@4.1.8
+  - @workflow/rollup@4.0.18
+  - @workflow/vite@4.0.18
+
 ## 4.0.17
 
 ### Patch Changes
