@@ -9,7 +9,7 @@ import { createWorld as createVercelTestWorld } from '@workflow/world-vercel';
 import { onTestFailed } from 'vitest';
 import { getTrustedSourcesHeaders } from '../../../scripts/trusted-sources-headers.mjs';
 import type { Run } from '../src/runtime';
-import { getWorld, setWorld } from '../src/runtime';
+import { getWorld, start as runtimeStart, setWorld } from '../src/runtime';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const defaultCliTimeoutMs = Number(
@@ -802,6 +802,150 @@ export function trackRun<T>(
     timestamp: new Date().toISOString(),
   });
   return run;
+}
+
+// ---------------------------------------------------------------------------
+// Infra events
+//
+// Platform-level anomalies the harness observed and absorbed (e.g. a run the
+// queue never picked up). These are backend signal, not test-flake signal:
+// they are recorded to a sidecar (`e2e-infra-*.json`) that the aggregation
+// script surfaces separately from test failures and flaky retries, so a
+// cluster of events in one time window reads as the platform blip it is.
+// ---------------------------------------------------------------------------
+
+interface InfraEvent {
+  kind: 'run-pickup-stall';
+  testName: string;
+  /** The run that was abandoned. */
+  runId: string;
+  /** The run started in its place. */
+  replacementRunId: string;
+  waitedMs: number;
+  timestamp: string;
+}
+
+const infraEvents: InfraEvent[] = [];
+
+export function recordInfraEvent(
+  event: Omit<InfraEvent, 'testName' | 'timestamp'> & { testName?: string }
+) {
+  infraEvents.push({
+    ...event,
+    testName: event.testName ?? currentTestName,
+    timestamp: new Date().toISOString(),
+  });
+}
+
+/**
+ * Write recorded infra events to `e2e-infra-{app}-{backend}.json`.
+ *
+ * Merges with any existing file contents: the e2e suites run in separate
+ * vitest workers with separate module state, so each worker appends its own
+ * events rather than clobbering the other's. (Two workers writing in the
+ * same instant could still drop events; afterAll hooks make that window
+ * negligible and the sidecar is observability, not correctness.)
+ */
+export function writeInfraSidecar() {
+  if (infraEvents.length === 0) return;
+
+  const appName = process.env.APP_NAME || 'unknown';
+  const isVercel = !!process.env.WORKFLOW_VERCEL_ENV;
+  const backend = isVercel ? 'vercel' : 'local';
+  const filePath = path.resolve(
+    process.cwd(),
+    `e2e-infra-${appName}-${backend}.json`
+  );
+
+  let existing: InfraEvent[] = [];
+  try {
+    existing = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+  } catch {}
+
+  fs.writeFileSync(
+    filePath,
+    JSON.stringify([...existing, ...infraEvents], null, 2)
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Run pickup guard
+// ---------------------------------------------------------------------------
+
+/**
+ * How long a freshly started run may sit in `pending` before the harness
+ * treats it as never-picked-up. Healthy pickup is sub-second (observed
+ * ~160ms on Vercel preview deployments); the budget only has to sit safely
+ * above tail latency, and well below the 30–60s test timeouts so the
+ * replacement run still has budget to finish in.
+ */
+const PICKUP_BUDGET_MS = Number(
+  process.env.WORKFLOW_E2E_PICKUP_BUDGET_MS ?? '15000'
+);
+
+/**
+ * Poll until the run leaves `pending` (picked up — any other status counts,
+ * including terminal ones). Returns false if it is still `pending` after
+ * `budgetMs`. The common path costs a single status read.
+ */
+export async function waitForRunPickup(
+  run: Run<unknown>,
+  budgetMs: number = PICKUP_BUDGET_MS
+): Promise<boolean> {
+  const deadline = Date.now() + budgetMs;
+  let interval = 500;
+
+  for (;;) {
+    try {
+      if ((await run.status) !== 'pending') return true;
+    } catch {
+      // Transient status-read failure: keep polling until the budget ends.
+    }
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) return false;
+    await sleep(Math.min(interval, remaining));
+    interval = Math.min(interval * 2, 5_000);
+  }
+}
+
+/**
+ * `start()` + `trackRun()` with a pickup watchdog.
+ *
+ * A run that is still `pending` after {@link PICKUP_BUDGET_MS} was never
+ * invoked: queue delivery to the deployment stalled (observed as clusters of
+ * runs stuck at `run_created` across apps during backend blips). No workflow
+ * code has executed — no hooks registered, no steps run — so abandoning the
+ * run and starting a replacement is side-effect-free, unlike retrying a
+ * whole test. One replacement, recorded loudly as an infra event; if the
+ * replacement stalls too, the test fails on its own timeouts and the
+ * CI-level retry remains the backstop.
+ */
+export async function startTracked<T>(
+  ...args: Parameters<typeof runtimeStart<T>>
+): Promise<Run<T>> {
+  const run = await runtimeStart<T>(...args);
+  trackRun(run);
+  if (await waitForRunPickup(run)) {
+    return run;
+  }
+
+  const replacement = await runtimeStart<T>(...args);
+  trackRun(replacement);
+  recordInfraEvent({
+    kind: 'run-pickup-stall',
+    runId: run.runId,
+    replacementRunId: replacement.runId,
+    waitedMs: PICKUP_BUDGET_MS,
+  });
+  console.warn(
+    `[e2e] run ${run.runId} was never picked up (pending > ${PICKUP_BUDGET_MS}ms); ` +
+      `replaced with ${replacement.runId} (infra event, not a test failure)`
+  );
+  // Best-effort: keep the zombie from executing if the queue delivers late.
+  void run
+    .cancel({ cancelReason: 'e2e: stuck pending, replaced by watchdog' })
+    .catch(() => {});
+  return replacement;
 }
 
 /**
