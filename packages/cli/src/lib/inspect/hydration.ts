@@ -22,15 +22,6 @@ import { parseClassName } from '@workflow/utils/parse-name';
 import { getEventDataRefFields } from '@workflow/world';
 import chalk from 'chalk';
 
-/**
- * A function that resolves an encryption key for a run, or null to skip
- * decryption. Accepts a runId — the resolver is responsible for looking
- * up the WorkflowRun internally (with caching) if the World needs it.
- */
-export type EncryptionKeyResolver =
-  | ((runId: string) => Promise<Uint8Array | undefined>)
-  | null;
-
 async function decryptPayload(
   value: unknown,
   key: Parameters<typeof decrypt>[1]
@@ -323,28 +314,22 @@ function getRevivers(): Revivers {
  * Binary envelopes go through the core decryptor; legacy values remain
  * unchanged for the generic hydrator.
  *
- * When the resolver is null (no --decrypt flag), encrypted fields pass
+ * Without a resolver (no --decrypt flag), encrypted fields pass
  * through as Uint8Array and are replaced with EncryptedDataRef in post-processing.
  */
-async function maybeDecryptFields<
-  T extends {
-    runId?: string;
-    input?: any;
-    output?: any;
-    metadata?: any;
-    eventType?: string;
-    eventData?: any;
-  },
->(resource: T, resolver: EncryptionKeyResolver): Promise<T> {
-  if (!resolver) return resource;
+async function maybeDecryptFields<T>(
+  resource: T,
+  resolveKey?: (runId: string) => Promise<Uint8Array | undefined>
+): Promise<T> {
+  if (!resolveKey || !resource || typeof resource !== 'object') return resource;
 
-  const runId = (resource as any).runId as string | undefined;
-  if (!runId) return resource;
+  const source = resource as Record<string, unknown>;
+  if (typeof source.runId !== 'string') return resource;
 
-  const result = { ...resource };
+  const result = { ...source };
 
   try {
-    const rawKey = await resolver(runId);
+    const rawKey = await resolveKey(source.runId);
     // Resolve the full key capability so `--decrypt` can open sealed
     // ('encp') payloads that other runs wrote to this one, not just the
     // run's own symmetric ('encr') payloads.
@@ -356,15 +341,19 @@ async function maybeDecryptFields<
     // Decrypt input/output/error fields (WorkflowRun, Step)
     result.input = await decryptPayload(result.input, k);
     result.output = await decryptPayload(result.output, k);
-    (result as any).error = await decryptPayload((result as any).error, k);
+    result.error = await decryptPayload(result.error, k);
 
     // Decrypt metadata field (Hook)
     result.metadata = await decryptPayload(result.metadata, k);
 
     // Decrypt eventData fields (Event)
     if (result.eventData && typeof result.eventData === 'object') {
-      const eventData = { ...result.eventData };
-      for (const field of getEventDataRefFields(result.eventType ?? '')) {
+      const eventData = {
+        ...(result.eventData as Record<string, unknown>),
+      };
+      const eventType =
+        typeof result.eventType === 'string' ? result.eventType : '';
+      for (const field of getEventDataRefFields(eventType)) {
         eventData[field] = await decryptPayload(eventData[field], k);
       }
       result.eventData = eventData;
@@ -382,10 +371,10 @@ async function maybeDecryptFields<
     // Decryption failed (bad key, corrupted ciphertext, etc.) — fall back
     // to showing encrypted placeholders instead of crashing the CLI.
     const { logger } = await import('../config/log.js');
-    logger.warn(`Decryption failed for resource ${runId}: ${message}`);
+    logger.warn(`Decryption failed for resource ${source.runId}: ${message}`);
   }
 
-  return result;
+  return result as T;
 }
 
 // ---------------------------------------------------------------------------
@@ -428,21 +417,30 @@ function replaceEncryptedAndExpiredWithRef<T>(resource: T): T {
 /**
  * Hydrate the serialized data fields of a resource for CLI display.
  *
- * When `encryptorResolver` is null (default / no --decrypt flag), encrypted
+ * Without `resolveKey` (the default / no --decrypt flag), encrypted
  * fields are shown as styled "🔒 Encrypted" placeholders via EncryptedDataRef.
  *
- * When `encryptorResolver` is provided (--decrypt flag), encrypted fields
+ * When `resolveKey` is provided (--decrypt flag), encrypted fields
  * are decrypted before hydration so the actual user data is displayed.
  */
-export async function hydrateResourceIO<T>(
+export async function hydrateResourceIO<
+  T extends {
+    stepId?: string;
+    hookId?: string;
+    eventId?: string;
+    eventType?: string;
+    input?: unknown;
+    output?: unknown;
+    metadata?: unknown;
+    eventData?: unknown;
+    executionContext?: unknown;
+  },
+>(
   resource: T,
-  keyResolver?: EncryptionKeyResolver
+  resolveKey?: (runId: string) => Promise<Uint8Array | undefined>
 ): Promise<T> {
   // Pre-process: decrypt any encrypted fields when a resolver is provided
-  const preprocessed = await maybeDecryptFields(
-    resource as any,
-    keyResolver ?? null
-  );
+  const preprocessed = await maybeDecryptFields(resource, resolveKey);
   const hydrated = hydrateResourceIOGeneric(preprocessed, getRevivers()) as T;
   // Post-process: swap encrypted Uint8Arrays and expired stubs for CLI-styled objects
   return replaceEncryptedAndExpiredWithRef(hydrated);
