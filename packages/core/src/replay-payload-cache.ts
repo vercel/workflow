@@ -8,14 +8,14 @@ import {
 type ReplayPayloadField = 'result' | 'error' | 'payload';
 
 type KeyState =
-  | { state: 'pending'; promise: Promise<DecryptionKey | undefined> }
+  | { state: 'loading'; promise: Promise<DecryptionKey | undefined> }
   | { state: 'ready'; value: DecryptionKey | undefined }
   | { state: 'failed'; error: unknown };
 
 type Preparation =
-  | { state: 'waiting'; value: Uint8Array }
+  | { state: 'waitingForKey'; value: Uint8Array }
   | { state: 'ready'; value: PreparedReplayPayload }
-  | { state: 'pending'; promise: Promise<PreparedReplayPayload> }
+  | { state: 'preparing'; promise: Promise<PreparedReplayPayload> }
   | { state: 'failed'; error: unknown };
 
 function isCacheablePrimitive(value: unknown): boolean {
@@ -52,7 +52,7 @@ export class ReplayPayloadCache {
     preparer: typeof prepareReplayPayload = prepareReplayPayload
   ): ReplayPayloadCache {
     const cache = new ReplayPayloadCache(undefined, preparer);
-    cache.key = { state: 'pending', promise: key };
+    cache.key = { state: 'loading', promise: key };
     void key.then(
       (value) => cache.resolveKey(value),
       (error) => cache.rejectKey(error)
@@ -64,35 +64,35 @@ export class ReplayPayloadCache {
   observeEvent(event: Event, onPreparationStart?: () => void): void {
     switch (event.eventType) {
       case 'run_created':
-        this.start(
+        this.startPreparation(
           this.workflowInputKey(event.runId),
           event.eventData.input,
           onPreparationStart
         );
         break;
       case 'run_started':
-        this.start(
+        this.startPreparation(
           this.workflowInputKey(event.runId),
           event.eventData?.input,
           onPreparationStart
         );
         break;
       case 'step_completed':
-        this.start(
+        this.startPreparation(
           this.eventPayloadKey(event.eventId, 'result'),
           event.eventData?.result,
           onPreparationStart
         );
         break;
       case 'step_failed':
-        this.start(
+        this.startPreparation(
           this.eventPayloadKey(event.eventId, 'error'),
           event.eventData?.error,
           onPreparationStart
         );
         break;
       case 'hook_received':
-        this.start(
+        this.startPreparation(
           this.eventPayloadKey(event.eventId, 'payload'),
           event.eventData?.payload,
           onPreparationStart
@@ -105,7 +105,10 @@ export class ReplayPayloadCache {
    * Consumers await the few codecs that cannot complete synchronously.
    */
   prewarm(workflowRun: WorkflowRun, events: Event[]): void {
-    this.start(this.workflowInputKey(workflowRun.runId), workflowRun.input);
+    this.startPreparation(
+      this.workflowInputKey(workflowRun.runId),
+      workflowRun.input
+    );
     for (
       let index = this.nextUnscannedEventIndex;
       index < events.length;
@@ -124,7 +127,7 @@ export class ReplayPayloadCache {
   prepareWorkflowInput(
     workflowRun: WorkflowRun
   ): PreparedReplayPayload | Promise<PreparedReplayPayload> {
-    return this.consume(
+    return this.getPreparedPayload(
       this.workflowInputKey(workflowRun.runId),
       workflowRun.input
     );
@@ -135,7 +138,7 @@ export class ReplayPayloadCache {
     field: ReplayPayloadField,
     value: unknown
   ): PreparedReplayPayload | Promise<PreparedReplayPayload> {
-    return this.consume(this.eventPayloadKey(eventId, field), value);
+    return this.getPreparedPayload(this.eventPayloadKey(eventId, field), value);
   }
 
   getEventValue(
@@ -166,7 +169,7 @@ export class ReplayPayloadCache {
     return value;
   }
 
-  private start(
+  private startPreparation(
     cacheKey: string,
     value: unknown,
     onPreparationStart?: () => void
@@ -177,11 +180,11 @@ export class ReplayPayloadCache {
 
     onPreparationStart?.();
     switch (this.key.state) {
-      case 'pending':
-        this.preparations.set(cacheKey, { state: 'waiting', value });
+      case 'loading':
+        this.preparations.set(cacheKey, { state: 'waitingForKey', value });
         break;
       case 'ready':
-        this.prepare(cacheKey, value, this.key.value);
+        this.runPreparation(cacheKey, value, this.key.value);
         break;
       case 'failed':
         this.preparations.set(cacheKey, {
@@ -192,7 +195,7 @@ export class ReplayPayloadCache {
     }
   }
 
-  private prepare(
+  private runPreparation(
     cacheKey: string,
     value: Uint8Array,
     key: DecryptionKey | undefined
@@ -204,11 +207,11 @@ export class ReplayPayloadCache {
         return;
       }
 
-      this.preparations.set(cacheKey, { state: 'pending', promise: result });
+      this.preparations.set(cacheKey, { state: 'preparing', promise: result });
       void result.then(
         (prepared) => {
           const current = this.preparations.get(cacheKey);
-          if (current?.state === 'pending' && current.promise === result) {
+          if (current?.state === 'preparing' && current.promise === result) {
             this.preparations.set(cacheKey, {
               state: 'ready',
               value: prepared,
@@ -217,7 +220,7 @@ export class ReplayPayloadCache {
         },
         (error) => {
           const current = this.preparations.get(cacheKey);
-          if (current?.state === 'pending' && current.promise === result) {
+          if (current?.state === 'preparing' && current.promise === result) {
             this.preparations.set(cacheKey, { state: 'failed', error });
           }
         }
@@ -227,13 +230,13 @@ export class ReplayPayloadCache {
     }
   }
 
-  private consume(
+  private getPreparedPayload(
     cacheKey: string,
     value: unknown
   ): PreparedReplayPayload | Promise<PreparedReplayPayload> {
     if (!(value instanceof Uint8Array)) return { legacy: value };
 
-    this.start(cacheKey, value);
+    this.startPreparation(cacheKey, value);
     const preparation = this.preparations.get(cacheKey);
     if (!preparation) {
       throw new Error(
@@ -244,12 +247,12 @@ export class ReplayPayloadCache {
     switch (preparation.state) {
       case 'ready':
         return preparation.value;
-      case 'pending':
+      case 'preparing':
         return preparation.promise.catch((error) => {
           const current = this.preparations.get(cacheKey);
           if (
             current?.state === 'failed' ||
-            (current?.state === 'pending' &&
+            (current?.state === 'preparing' &&
               current.promise === preparation.promise)
           ) {
             this.preparations.delete(cacheKey);
@@ -259,29 +262,31 @@ export class ReplayPayloadCache {
       case 'failed':
         this.preparations.delete(cacheKey);
         throw preparation.error;
-      case 'waiting':
-        if (this.key.state !== 'pending') {
+      case 'waitingForKey':
+        if (this.key.state !== 'loading') {
           throw new Error(`Replay payload key was not resolved: ${cacheKey}`);
         }
-        return this.key.promise.then(() => this.consume(cacheKey, value));
+        return this.key.promise.then(() =>
+          this.getPreparedPayload(cacheKey, value)
+        );
     }
   }
 
   private resolveKey(value: DecryptionKey | undefined): void {
-    if (this.key.state !== 'pending') return;
+    if (this.key.state !== 'loading') return;
     this.key = { state: 'ready', value };
     for (const [cacheKey, preparation] of this.preparations) {
-      if (preparation.state === 'waiting') {
-        this.prepare(cacheKey, preparation.value, value);
+      if (preparation.state === 'waitingForKey') {
+        this.runPreparation(cacheKey, preparation.value, value);
       }
     }
   }
 
   private rejectKey(error: unknown): void {
-    if (this.key.state !== 'pending') return;
+    if (this.key.state !== 'loading') return;
     this.key = { state: 'failed', error };
     for (const [cacheKey, preparation] of this.preparations) {
-      if (preparation.state === 'waiting') {
+      if (preparation.state === 'waitingForKey') {
         this.preparations.set(cacheKey, { state: 'failed', error });
       }
     }
