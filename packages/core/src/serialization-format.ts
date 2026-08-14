@@ -14,6 +14,11 @@ import {
   registerZstdDecoder,
 } from './serialization/compression.js';
 import {
+  type DecryptionKey,
+  decrypt,
+  isRunPayloadKeys,
+} from './serialization/encryption.js';
+import {
   decodeFormatPrefix as decodePrefix,
   encodeWithFormatPrefix,
   peekFormatPrefix,
@@ -34,11 +39,8 @@ import { SerializationFormat } from './serialization/types.js';
  * `encryption.ts` and `sealed-box.ts` are all free of Node dependencies.
  */
 export {
-  type DecryptionKey,
-  decrypt as decryptEnvelope,
   deriveRunPayloadKeys,
   encrypt as encryptEnvelope,
-  isRunPayloadKeys,
   isSealTarget,
   type PayloadKey,
   type RunPayloadKeys,
@@ -46,6 +48,7 @@ export {
   type SealTarget,
   sealTo,
 } from './serialization/encryption.js';
+export { type DecryptionKey, decrypt as decryptEnvelope, isRunPayloadKeys };
 
 // ---------------------------------------------------------------------------
 // Format prefix constants and encoding/decoding
@@ -259,16 +262,13 @@ export function hydrateData(value: unknown, revivers: Revivers): unknown {
 export async function hydrateDataWithKey(
   value: unknown,
   revivers: Revivers,
-  key: import('./serialization/encryption.js').DecryptionKey | undefined
+  key: DecryptionKey | undefined
 ): Promise<unknown> {
   let data = value;
   if (data instanceof Uint8Array && isEncryptedData(data) && key) {
     // Envelope-aware decrypt: handles both `encr` (AES-GCM under the run's
     // symmetric key) and `encp` (sealed to the run's X25519 public key by
     // some other run), dispatching on the format prefix.
-    const { decrypt, isRunPayloadKeys } = await import(
-      './serialization/encryption.js'
-    );
     // Opening a sealed payload needs the run's private scalar. If the caller
     // supplied only a symmetric key, leave the bytes as ciphertext so the UI
     // keeps showing its "Encrypted" affordance, rather than surfacing a
