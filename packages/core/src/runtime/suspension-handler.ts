@@ -1,5 +1,6 @@
 import type { Span } from '@opentelemetry/api';
 import {
+  CorruptedEventLogError,
   EntityConflictError,
   FatalError,
   HookNotFoundError,
@@ -49,6 +50,12 @@ import {
   stepDispatchIdempotencyKey,
 } from './helpers.js';
 import { ReplayRecoveryReporter } from './replay-recovery-reporter.js';
+import {
+  decodeWaitScheduledAtMs,
+  getWaitWedgeFailAfterSeconds,
+  isWaitCreatedRowReadable,
+  waitWedgeErrorMessage,
+} from './wait-wedge.js';
 
 export interface SuspensionHandlerParams {
   suspension: WorkflowSuspension;
@@ -886,6 +893,64 @@ export async function handleSuspension({
             await createGuarded(waitEvent, { requestId });
           } catch (err) {
             if (EntityConflictError.is(err)) {
+              // This create only runs because the replayed log has no
+              // wait_created row for this wait (hasCreatedEvent was false),
+              // so a conflict means the wait entity exists while its row was
+              // not readable. Usually that is the concurrent-suspension race
+              // (another handler's write landed after this replay's
+              // snapshot) and stays silent, as always. But a wait whose
+              // entity committed WITHOUT its event row conflicts here on
+              // every replay forever — the elapsed-wait pass can only
+              // complete waits whose wait_created row it can see, so the run
+              // wake-loops on it. The wait's correlation id is replay-stable
+              // (seeded RNG + replay clock), so the ULID timestamp inside it
+              // is the one anchor the loop cannot reset: once the same wait
+              // id has been conflicting for longer than the threshold,
+              // verify with a fresh log read and fail the run as
+              // CORRUPTED_EVENT_LOG rather than loop (see
+              // runtime/wait-wedge.ts; the caller routes this error to its
+              // terminal path instead of redelivering). resumeAt cannot be
+              // the anchor here: an uncreated wait recomputes it from the
+              // live clock on every replay.
+              const nowMs = Date.now();
+              const scheduledAtMs = decodeWaitScheduledAtMs(
+                queueItem.correlationId
+              );
+              const thresholdMs = getWaitWedgeFailAfterSeconds() * 1000;
+              const suspectWedge =
+                scheduledAtMs !== undefined &&
+                nowMs - scheduledAtMs > thresholdMs &&
+                !(await isWaitCreatedRowReadable(
+                  world,
+                  runId,
+                  queueItem.correlationId
+                ));
+              if (suspectWedge) {
+                span?.setAttributes(Attribute.WorkflowWaitWedgeSuspected(1));
+                runtimeLogger.error(
+                  'Wait creation has been conflicting past the wedge threshold and no wait_created row is readable; failing the run',
+                  {
+                    workflowRunId: runId,
+                    correlationId: queueItem.correlationId,
+                    scheduledAt: new Date(scheduledAtMs).toISOString(),
+                    secondsSinceScheduled: Math.round(
+                      (nowMs - scheduledAtMs) / 1000
+                    ),
+                    message: err.message,
+                  }
+                );
+                throw new CorruptedEventLogError(
+                  waitWedgeErrorMessage({
+                    runId,
+                    correlationId: queueItem.correlationId,
+                    eventType: 'wait_created',
+                    anchor: 'scheduledAt',
+                    anchorMs: scheduledAtMs,
+                    nowMs,
+                  }),
+                  { cause: err }
+                );
+              }
               runtimeLogger.info('Wait already exists, continuing', {
                 workflowRunId: runId,
                 correlationId: queueItem.correlationId,

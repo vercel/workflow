@@ -113,6 +113,10 @@ import { handleSuspension } from './runtime/suspension-handler.js';
 import { useQuickJSVm } from './runtime/vm-mode.js';
 import { getWaitContinuationDispatch } from './runtime/wait-continuation.js';
 import {
+  classifyWaitWedgeObservation,
+  waitWedgeErrorMessage,
+} from './runtime/wait-wedge.js';
+import {
   getWorld,
   getWorldHandlers,
   type WorldHandlers,
@@ -2768,6 +2772,17 @@ export function workflowEntrypoint(
                           },
                         }));
 
+                      // Completions the World refused as duplicates (409).
+                      // Usually a concurrent handler's write, whose row the
+                      // fetch below observes — but when no reload can produce
+                      // the row, the wait is wedged (entity committed, event
+                      // row lost) and this map feeds the detection after the
+                      // fetch. Keyed by correlationId, valued by the wait's
+                      // resumeAt for the stateless time-based escalation.
+                      const conflictedWaitCompletions = new Map<
+                        string,
+                        number
+                      >();
                       for (const waitEvent of waitsToComplete) {
                         try {
                           const created = await createEvent(waitEvent, {
@@ -2794,6 +2809,10 @@ export function workflowEntrypoint(
                                 workflowRunId: runId,
                                 correlationId: waitEvent.correlationId,
                               }
+                            );
+                            conflictedWaitCompletions.set(
+                              waitEvent.correlationId,
+                              (waitEvent.eventData.resumeAt as Date).getTime()
                             );
                             continue;
                           }
@@ -2863,6 +2882,81 @@ export function workflowEntrypoint(
                             ...(await loadWorkflowRunEvents(runId)),
                             type: 'ready',
                           };
+                        }
+                      }
+
+                      // Wait-wedge detection. A completion the World refused
+                      // as a duplicate normally shows up in the fetch above (a
+                      // concurrent handler wrote it). When it does NOT — the
+                      // World attests the event exists while no read can
+                      // produce it — the wait is wedged between its entity
+                      // write and its event-log row, and without intervention
+                      // the run wake-loops on it forever (see
+                      // runtime/wait-wedge.ts). Warn while the contradiction
+                      // is young enough to be read staleness or an in-flight
+                      // insert; past the threshold, fail the run as
+                      // CORRUPTED_EVENT_LOG (the throw lands in the terminal
+                      // catch below, like the slot-gap check's). Skipped when
+                      // the run already recorded a terminal event — the check
+                      // right below consumes the delivery in that case.
+                      if (
+                        conflictedWaitCompletions.size > 0 &&
+                        !hasRecordedTerminalRunEvent(eventLog.events, runId)
+                      ) {
+                        const readableWaitCompletions = new Set(
+                          eventLog.events
+                            .filter((e) => e.eventType === 'wait_completed')
+                            .map((e) => e.correlationId)
+                        );
+                        let wedgesSuspected = 0;
+                        for (const [
+                          correlationId,
+                          resumeAtMs,
+                        ] of conflictedWaitCompletions) {
+                          if (readableWaitCompletions.has(correlationId)) {
+                            // The benign race: the conflicting write is in the
+                            // log. Nothing to do, and nothing to log.
+                            continue;
+                          }
+                          wedgesSuspected++;
+                          const observation = classifyWaitWedgeObservation({
+                            resumeAtMs,
+                            nowMs: now,
+                          });
+                          const message = waitWedgeErrorMessage({
+                            runId,
+                            correlationId,
+                            eventType: 'wait_completed',
+                            anchor: 'resumeAt',
+                            anchorMs: resumeAtMs,
+                            nowMs: now,
+                          });
+                          if (observation === 'fail') {
+                            span?.setAttributes(
+                              Attribute.WorkflowWaitWedgeSuspected(
+                                wedgesSuspected
+                              )
+                            );
+                            throw new CorruptedEventLogError(message);
+                          }
+                          runtimeLogger.warn(
+                            'Wait completion conflicted but no wait_completed row is readable; suspecting a wedged wait',
+                            {
+                              workflowRunId: runId,
+                              correlationId,
+                              resumeAt: new Date(resumeAtMs).toISOString(),
+                              secondsPastResume: Math.round(
+                                (now - resumeAtMs) / 1000
+                              ),
+                            }
+                          );
+                        }
+                        if (wedgesSuspected > 0) {
+                          span?.setAttributes(
+                            Attribute.WorkflowWaitWedgeSuspected(
+                              wedgesSuspected
+                            )
+                          );
                         }
                       }
 
@@ -3154,7 +3248,16 @@ export function workflowEntrypoint(
                             // hand it back to the queue to spin again.
                             throw escalation.error;
                           }
-                          if (!FatalError.is(suspensionError)) {
+                          if (
+                            !FatalError.is(suspensionError) &&
+                            // A wedged wait detected while committing this
+                            // suspension's wait_created (see
+                            // runtime/wait-wedge.ts): redelivery would replay
+                            // into the same conflict forever, so it takes the
+                            // terminal path below and fails the run as
+                            // CORRUPTED_EVENT_LOG.
+                            !CorruptedEventLogError.is(suspensionError)
+                          ) {
                             // Transient failures propagate to the queue
                             // handler so the message is redelivered.
                             throw suspensionError;

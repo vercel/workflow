@@ -197,6 +197,18 @@ export const WorkflowWaitsCreated = SemanticConvention<number>(
 );
 
 /**
+ * Number of waits whose event write the World refused as a duplicate (409)
+ * while no matching wait event row could be read back from the log — the
+ * signature of a wait wedged between its entity write and its event-log row
+ * (see runtime/wait-wedge.ts). Set on the invocation that observed the
+ * contradiction; past the escalation threshold the run fails as
+ * CORRUPTED_EVENT_LOG.
+ */
+export const WorkflowWaitWedgeSuspected = SemanticConvention<number>(
+  'workflow.wait.wedge_suspected'
+);
+
+/**
  * Number of inline-owned steps this invocation re-executed because it is a
  * redelivery of their owning queue message (crash recovery for inline
  * steps — see the inline step ownership changelog, workflow#2780).
