@@ -536,16 +536,14 @@ async function resumeHookImpl<T = any>(
         //   - a terminal run on world-local / world-postgres rejects with
         //     RunExpiredError.
         //
-        // On the SEQUENTIAL path an EntityConflictError (HTTP 409) is also
-        // treated as "hook gone" for historical / conflict-shaped-rejection
-        // compatibility: there is no queue message in flight, so a conflict has
-        // no re-ensuring consumer to converge on. The PARALLEL path handles 409
-        // differently (see below) — it published the queue message before the
-        // conflict, so the consumer will converge the event.
+        // An EntityConflictError (HTTP 409) is deliberately NOT in this set: a
+        // conflict-shaped rejection means a `hook_received` for this hook
+        // already COMMITTED durably, which is not proof the hook is gone. The
+        // sequential path disambiguates it via the run's status below; the
+        // PARALLEL path published the queue message before the conflict, so
+        // its re-ensuring consumer converges the event (see below).
         const isHookGoneError = (err: unknown): boolean =>
-          HookNotFoundError.is(err) ||
-          EntityConflictError.is(err) ||
-          RunExpiredError.is(err);
+          HookNotFoundError.is(err) || RunExpiredError.is(err);
 
         if (!useParallelResume) {
           // Sequential path: create a hook_received event, then re-trigger.
@@ -564,7 +562,62 @@ async function resumeHookImpl<T = any>(
             if (isHookGoneError(err)) {
               throw new HookNotFoundError(hook.token);
             }
-            throw err;
+            if (!EntityConflictError.is(err)) {
+              throw err;
+            }
+            // Conflict-shaped (HTTP 409) rejection. Historically this was
+            // treated as "hook gone", but a conflict means the World REFUSED a
+            // duplicate — i.e. some `hook_received` for this hook is already
+            // committed. Throwing HookNotFoundError here would be a lost
+            // resume: the payload is durable, no queue message is in flight to
+            // wake the run (unlike the parallel path), and the caller is told
+            // the token is invalid so it stops retrying. Disambiguate via the
+            // run's live status:
+            //   - terminal run → preserve the historical contract and throw
+            //     HookNotFoundError (nothing left to wake);
+            //   - live run → converge on the committed event: publish the wake
+            //     below and report success, exactly as if this write had won.
+            //   - status unknown (the read itself failed) → still publish. The
+            //     wake is idempotent and a consumer no-ops on a terminal run,
+            //     so a spurious publish is harmless, while throwing
+            //     HookNotFoundError on a live run loses the resume — fail open
+            //     toward waking.
+            let runIsTerminal = false;
+            try {
+              const run = await world.runs.get(hook.runId, {
+                resolveData: 'none',
+              });
+              runIsTerminal = isTerminalWorkflowRunStatus(run.status);
+            } catch (statusErr) {
+              runtimeLogger.warn(
+                'Hook resume conflict: run status check failed; publishing the wake anyway',
+                {
+                  workflowRunId: hook.runId,
+                  hookId: hook.hookId,
+                  error:
+                    statusErr instanceof Error
+                      ? statusErr.message
+                      : String(statusErr),
+                }
+              );
+            }
+            if (runIsTerminal) {
+              throw new HookNotFoundError(hook.token);
+            }
+            span?.setAttributes({
+              ...Attribute.HookResumeConflictConverged(true),
+            });
+            runtimeLogger.warn(
+              'Hook resume event write was rejected as a duplicate while the ' +
+                'run is still live; converging on the committed hook_received ' +
+                'and re-triggering the run.',
+              {
+                workflowRunId: hook.runId,
+                hookId: hook.hookId,
+                error: err instanceof Error ? err.message : String(err),
+              }
+            );
+            // Fall through to the queue publish below.
           }
 
           // T1 of the TTR window. Stamped immediately before the publish so

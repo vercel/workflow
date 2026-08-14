@@ -446,6 +446,17 @@ export const HookResilientResumeMaterialized = SemanticConvention<boolean>(
 );
 
 /**
+ * Producer-side signal (on the `hook.resume` span) that the SEQUENTIAL path's
+ * `hook_received` write was rejected as a conflict (HTTP 409) while the run
+ * was still live — some receive for this hook had already committed — so the
+ * resume converged on the committed event: the wake message was published and
+ * the caller's resume reported success instead of HookNotFoundError.
+ */
+export const HookResumeConflictConverged = SemanticConvention<boolean>(
+  'workflow.hook.resume_conflict_converged'
+);
+
+/**
  * Consumer-side signal (on the workflow execution span) of how a lazy hook
  * resume initialized its replay state:
  *

@@ -163,26 +163,77 @@ describe('resumeHook (resumeContext fast path)', () => {
     expect(queue).not.toHaveBeenCalled();
   });
 
-  it('re-keys an EntityConflictError (compat / conflict-shaped rejection) from events.create to HookNotFoundError(token)', async () => {
-    // Current Vercel behavior returns 404 for a terminal run (mapped to
-    // HookNotFoundError, covered above). EntityConflictError is kept for
-    // compatibility with older / conflict-shaped (HTTP 409) rejection
-    // behavior. On the fast path it surfaces from events.create and must be
-    // re-keyed to HookNotFoundError(token), matching the pre-fast-path
-    // contract where resumeHook threw HookNotFoundError.
+  it('converges an EntityConflictError from events.create when the run is live: publishes the wake and succeeds', async () => {
+    // A conflict-shaped (HTTP 409) rejection means a hook_received for this
+    // hook already COMMITTED — it is not proof the hook is gone. On a live
+    // run, throwing HookNotFoundError without publishing would be a lost
+    // resume (durable payload, no wake in flight, caller told the token is
+    // invalid). The sequential path must instead publish the wake and report
+    // success, exactly as if its own write had won — mirroring how the
+    // parallel path converges a 409 via its already-published queue message.
+    const hook = { ...baseHook, resumeContext } satisfies Hook;
+    const createEvent = vi
+      .fn()
+      .mockRejectedValue(new EntityConflictError('duplicate hook_received'));
+    const runsGet = vi.fn().mockResolvedValue({
+      runId: hook.runId,
+      status: 'running',
+    } as unknown as WorkflowRun);
+    const { queue } = makeWorld(hook, { createEvent, runsGet });
+
+    const resumed = await resumeHook(hook.token, { foo: 'bar' });
+
+    expect(resumed.token).toBe(hook.token);
+    expect(runsGet).toHaveBeenCalledWith(hook.runId, { resolveData: 'none' });
+    expect(queue).toHaveBeenCalledTimes(1);
+    expect(queue).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        runId: hook.runId,
+        hookResumeTiming: expect.objectContaining({ strategy: 'sequential' }),
+      }),
+      expect.objectContaining({ deploymentId: resumeContext.deploymentId })
+    );
+  });
+
+  it('re-keys an EntityConflictError to HookNotFoundError(token) when the run is terminal (no re-trigger)', async () => {
+    // The historical contract survives where it is correct: a conflict against
+    // a run that has ended means there is nothing left to wake, so the caller
+    // still gets HookNotFoundError and no queue message is published.
     const hook = { ...baseHook, resumeContext } satisfies Hook;
     const createEvent = vi
       .fn()
       .mockRejectedValue(new EntityConflictError('run has already ended'));
-    const { runsGet, queue } = makeWorld(hook, { createEvent });
+    const runsGet = vi.fn().mockResolvedValue({
+      runId: hook.runId,
+      status: 'completed',
+    } as unknown as WorkflowRun);
+    const { queue } = makeWorld(hook, { createEvent, runsGet });
 
     await expect(resumeHook(hook.token, { foo: 'bar' })).rejects.toSatisfy(
       (err: unknown) =>
         HookNotFoundError.is(err) &&
         (err as HookNotFoundError).token === hook.token
     );
-    expect(runsGet).not.toHaveBeenCalled();
+    expect(runsGet).toHaveBeenCalledWith(hook.runId, { resolveData: 'none' });
     expect(queue).not.toHaveBeenCalled();
+  });
+
+  it('fails open to publishing the wake when the conflict status check itself fails', async () => {
+    // If the run's status cannot be read, publishing is the safe direction: a
+    // spurious wake no-ops on a terminal run, while throwing HookNotFoundError
+    // on a live run loses a durably-committed resume.
+    const hook = { ...baseHook, resumeContext } satisfies Hook;
+    const createEvent = vi
+      .fn()
+      .mockRejectedValue(new EntityConflictError('duplicate hook_received'));
+    const runsGet = vi.fn().mockRejectedValue(new Error('status read failed'));
+    const { queue } = makeWorld(hook, { createEvent, runsGet });
+
+    const resumed = await resumeHook(hook.token, { foo: 'bar' });
+
+    expect(resumed.token).toBe(hook.token);
+    expect(queue).toHaveBeenCalledTimes(1);
   });
 
   it('re-keys a RunExpiredError (world-local / world-postgres terminal run) from events.create to HookNotFoundError(token)', async () => {
