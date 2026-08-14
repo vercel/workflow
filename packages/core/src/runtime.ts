@@ -2928,33 +2928,6 @@ export function workflowEntrypoint(
                           e.eventType === 'attr_set'
                       );
 
-                      // DIAGNOSTIC (peter/race-repro-diagnostics): the events
-                      // consumer wakes branches in ARRAY order, and every
-                      // correctness argument assumes array order == eventId
-                      // order. The gap check above proves density, not order.
-                      // If this ever fires, a dense-but-unordered array is the
-                      // mechanism behind non-canonical correlation-id draws.
-                      for (let i = 1; i < eventLog.events.length; i++) {
-                        if (
-                          eventLog.events[i - 1].eventId >=
-                          eventLog.events[i].eventId
-                        ) {
-                          runtimeLogger.error(
-                            'DIAG: event log array out of eventId order before replay pass',
-                            {
-                              workflowRunId: runId,
-                              loopIteration,
-                              positionInArray: i,
-                              prevEventId: eventLog.events[i - 1].eventId,
-                              nextEventId: eventLog.events[i].eventId,
-                              arrayOrder: eventLog.events
-                                .map((e) => e.eventId.replace(/^evnt_0*/, ''))
-                                .join(','),
-                            }
-                          );
-                          break;
-                        }
-                      }
                       runtimeLogger.debug('Starting workflow execution', {
                         workflowRunId: runId,
                         loopIteration,
@@ -3302,21 +3275,6 @@ export function workflowEntrypoint(
                         ) {
                           preStepBlockingBeforeAttrMs = preStepBlockingMs;
                         }
-                        // DIAGNOSTIC (peter/race-repro-diagnostics): record the
-                        // correlation-id draws this pass made and the prefix it
-                        // made them against, so cross-invocation draw drift is
-                        // reconstructable from logs alone.
-                        runtimeLogger.warn('DIAG: suspension draw bindings', {
-                          workflowRunId: runId,
-                          loopIteration,
-                          prefixMaxEventId: eventLog.events.reduce(
-                            (max, e) => (e.eventId > max ? e.eventId : max),
-                            ''
-                          ),
-                          bindings: suspensionResult.pendingSteps
-                            .map((s) => `${s.correlationId}=${s.stepName}`)
-                            .join(','),
-                        });
                         runtimeLogger.debug('Suspension handled', {
                           workflowRunId: runId,
                           suspensionMs: Date.now() - suspensionStart,
@@ -4321,34 +4279,6 @@ export function workflowEntrypoint(
 
                         let replayDivergenceCountForFailure: number | undefined;
                         if (ReplayDivergenceError.is(err)) {
-                          // DIAGNOSTIC (peter/race-repro-diagnostics): capture
-                          // the exact array order this replay woke branches in,
-                          // so a divergence can be checked against canonical
-                          // slot order without guessing.
-                          runtimeLogger.error(
-                            'DIAG: replay divergence detail',
-                            {
-                              workflowRunId: runId,
-                              loopIteration,
-                              divergenceEventId: err.eventId,
-                              errorMessage: err.message,
-                              executionMode: retainedSession
-                                ? 'retained'
-                                : 'replay',
-                              eventCount:
-                                eventLog.type === 'loadAll'
-                                  ? -1
-                                  : eventLog.events.length,
-                              arrayOrder:
-                                eventLog.type === 'loadAll'
-                                  ? ''
-                                  : eventLog.events
-                                      .map((e) =>
-                                        e.eventId.replace(/^evnt_0*/, '')
-                                      )
-                                      .join(','),
-                            }
-                          );
                           const divergenceCount =
                             (replayDivergence?.count ?? 0) + 1;
                           const maxRecoveryReplays =
