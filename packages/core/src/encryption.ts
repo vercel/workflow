@@ -34,30 +34,12 @@ export type CryptoKey = import('node:crypto').webcrypto.CryptoKey;
  */
 const importedKeyMaterial = new WeakMap<CryptoKey, Uint8Array>();
 
-interface NodeDecipher {
-  setAAD(data: Uint8Array): NodeDecipher;
-  setAuthTag(tag: Uint8Array): NodeDecipher;
-  update(data: Uint8Array): Uint8Array;
-  final(): Uint8Array;
-}
-
-interface NodeCrypto {
-  createDecipheriv(
-    algorithm: string,
-    key: Uint8Array,
-    iv: Uint8Array,
-    options?: { authTagLength?: number }
-  ): NodeDecipher;
-}
-
 /** Resolve node:crypto without a static import, preserving browser bundles. */
 const nodeCrypto = (() => {
   try {
-    return (
-      globalThis as {
-        process?: { getBuiltinModule?: (id: string) => NodeCrypto };
-      }
-    ).process?.getBuiltinModule?.('node:crypto');
+    return typeof process === 'undefined'
+      ? undefined
+      : process.getBuiltinModule('node:crypto');
   } catch {
     return undefined;
   }
@@ -115,17 +97,26 @@ export async function importKey(
  * Decrypt AES-256-GCM synchronously when running on Node and the key was
  * imported by this module.
  *
- * Returns `undefined` when the portable Web Crypto fallback is required (for
- * example in a browser, or for an externally-created CryptoKey). Authentication
- * failures throw the same RuntimeDecryptionError shape as {@link decrypt}.
+ * The key must have been created by this module's {@link importKey}, and the
+ * Node synchronous crypto API must be available. Authentication failures throw
+ * the same RuntimeDecryptionError shape as {@link decrypt}.
  */
 export function decryptSync(
   key: CryptoKey,
   data: Uint8Array,
   aad?: Uint8Array
-): Uint8Array | undefined {
+): Uint8Array {
   const material = importedKeyMaterial.get(key);
-  if (!material || !nodeCrypto) return undefined;
+  if (!material) {
+    throw new WorkflowRuntimeError(
+      'Synchronous AES-256-GCM decryption requires a key created by importKey()'
+    );
+  }
+  if (!nodeCrypto) {
+    throw new WorkflowRuntimeError(
+      'Synchronous AES-256-GCM decryption requires the Node.js crypto module'
+    );
+  }
   if (!key.usages.includes('decrypt')) {
     throw new RuntimeDecryptionError(
       'AES-256-GCM decryption failed: CryptoKey does not support decrypt',
@@ -163,7 +154,9 @@ export function decryptSync(
     decipher.setAuthTag(authTag);
     const head = decipher.update(ciphertext);
     const tail = decipher.final();
-    if (tail.byteLength === 0) return head;
+    if (tail.byteLength === 0) {
+      return new Uint8Array(head.buffer, head.byteOffset, head.byteLength);
+    }
     const plaintext = new Uint8Array(head.byteLength + tail.byteLength);
     plaintext.set(head, 0);
     plaintext.set(tail, head.byteLength);

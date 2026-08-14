@@ -173,7 +173,9 @@ export class ReplayPayloadCache {
     cacheKey: string,
     value: unknown
   ): Promise<PreparedReplayPayload> {
-    if (!(value instanceof Uint8Array)) return this.runPreparation(value);
+    if (!(value instanceof Uint8Array)) {
+      return Promise.resolve({ data: value });
+    }
 
     const preparation = this.ensurePreparation(cacheKey, value);
     void preparation.catch(() => {
@@ -198,7 +200,9 @@ export class ReplayPayloadCache {
   }
 
   /** Normalize synchronous and asynchronous preparers to one promise contract. */
-  private async runPreparation(value: unknown): Promise<PreparedReplayPayload> {
+  private async runPreparation(
+    value: Uint8Array
+  ): Promise<PreparedReplayPayload> {
     return this.preparer(value, this.encryptionKey);
   }
 

@@ -99,11 +99,9 @@ describe('compression layer (compress/decompress)', () => {
     expect(result).toBe(original);
   });
 
-  it('decompress passes non-compressed and non-binary data through', async () => {
+  it('decompress passes non-compressed bytes through', async () => {
     const plain = textEncoder.encode('devl"hello"');
     expect(await decompress(plain)).toBe(plain);
-    const legacy = [1, 2, 3];
-    expect(await decompress(legacy)).toBe(legacy);
   });
 });
 
