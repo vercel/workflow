@@ -464,10 +464,10 @@ export async function getNextBuilderEager(
             return;
           }
           if (decision.kind === 'full') {
-            logDevHmr('workflow dev hmr: full rediscovery');
             try {
               await fullRebuild();
               await refreshKnownFiles();
+              logDevHmr('workflow dev hmr: full rediscovery');
             } finally {
               // Lets a log reader tell "quiet" from "rebuild in flight".
               // The e2e HMR tests drain-to-quiet before counting lines.
@@ -476,14 +476,14 @@ export async function getNextBuilderEager(
             return;
           }
 
-          logDevHmr(
-            `workflow dev hmr: hot rebuild${decision.refreshStepRegistrations ? ' with step registration refresh' : ''}`
-          );
           try {
             await hotRebuild(decision.refreshStepRegistrations);
             for (const [file, snapshot] of decision.snapshots) {
               sourceSnapshots.set(file, snapshot);
             }
+            logDevHmr(
+              `workflow dev hmr: hot rebuild${decision.refreshStepRegistrations ? ' with step registration refresh' : ''}`
+            );
           } finally {
             // See the matching line on the full path above.
             logDevHmr('workflow dev hmr: rebuild complete');
