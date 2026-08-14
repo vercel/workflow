@@ -144,7 +144,7 @@ describe('sealed-box', () => {
       const encrypted = await aesGcmEncrypt(contentKey, plaintext());
       // Even holding the very content key it just used, the writer cannot
       // reverse the operation: the CryptoKey carries no 'decrypt' usage.
-      await expect(aesGcmDecrypt(contentKey, encrypted)).rejects.toThrow(
+      expect(() => aesGcmDecrypt(contentKey, encrypted)).toThrow(
         RuntimeDecryptionError
       );
     });

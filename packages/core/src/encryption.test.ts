@@ -1,12 +1,6 @@
 import { RuntimeDecryptionError } from '@workflow/errors';
 import { describe, expect, it } from 'vitest';
-import {
-  type CryptoKey,
-  decrypt,
-  decryptSync,
-  encrypt,
-  importKey,
-} from './encryption.js';
+import { type CryptoKey, decrypt, encrypt, importKey } from './encryption.js';
 
 const RAW_KEY = new Uint8Array(32).fill(7);
 const OTHER_RAW_KEY = new Uint8Array(32).fill(8);
@@ -20,9 +14,18 @@ async function getOtherKey(): Promise<CryptoKey> {
   return importKey(OTHER_RAW_KEY);
 }
 
+async function captureError(action: () => unknown): Promise<unknown> {
+  try {
+    await action();
+  } catch (error) {
+    return error;
+  }
+  throw new Error('Expected operation to fail');
+}
+
 describe('encryption', () => {
   describe('round-trip', () => {
-    it('encrypt() + decrypt() returns the original plaintext', async () => {
+    it('decrypts synchronously on Node', async () => {
       const key = await getKey();
       const plaintext = new TextEncoder().encode('hello, workflow');
       const ciphertext = await encrypt(key, plaintext);
@@ -30,18 +33,12 @@ describe('encryption', () => {
       // Ciphertext is longer than plaintext: 12-byte nonce + 16-byte GCM tag.
       expect(ciphertext.byteLength).toBe(plaintext.byteLength + 12 + 16);
 
-      const decoded = await decrypt(key, ciphertext);
-      expect(new TextDecoder().decode(decoded)).toBe('hello, workflow');
-    });
-
-    it('decryptSync() returns the plaintext without a promise', async () => {
-      const key = await getKey();
-      const plaintext = new TextEncoder().encode('synchronous replay');
-      const ciphertext = await encrypt(key, plaintext);
-
-      const decoded = decryptSync(key, ciphertext);
+      const decoded = decrypt(key, ciphertext);
+      expect(decoded).not.toBeInstanceOf(Promise);
       expect(decoded).toBeInstanceOf(Uint8Array);
-      expect(new TextDecoder().decode(decoded)).toBe('synchronous replay');
+      expect(new TextDecoder().decode(decoded as Uint8Array)).toBe(
+        'hello, workflow'
+      );
     });
   });
 
@@ -58,20 +55,15 @@ describe('encryption', () => {
       const key = await getKey();
       // 12-byte nonce + 16-byte tag = 28 bytes minimum. 10 bytes is too short.
       const tooShort = new Uint8Array(10).fill(0);
-      const error = await decrypt(key, tooShort).catch((e) => e);
+      const error = await captureError(() => decrypt(key, tooShort));
       expect(RuntimeDecryptionError.is(error)).toBe(true);
-      expect(error.message).toMatch(/Encrypted data too short/);
-      expect(error.context).toMatchObject({
-        operation: 'decrypt',
-        byteLength: 10,
+      expect(error).toMatchObject({
+        message: expect.stringMatching(/Encrypted data too short/),
+        context: { operation: 'decrypt', byteLength: 10 },
       });
     });
 
     it('throws RuntimeDecryptionError (not a bare OperationError) on auth-tag failure', async () => {
-      // GCM auth-tag verification failure surfaces from Node's Web
-      // Crypto API as `OperationError: The operation failed for an
-      // operation-specific reason at AESCipherJob.onDone`. The
-      // encryption module must rewrap this as a RuntimeDecryptionError.
       const key = await getKey();
       const plaintext = new TextEncoder().encode('hello, workflow');
       const ciphertext = await encrypt(key, plaintext);
@@ -80,16 +72,14 @@ describe('encryption', () => {
       const tampered = new Uint8Array(ciphertext);
       tampered[tampered.length - 1] ^= 0xff;
 
-      const error = await decrypt(key, tampered).catch((e) => e);
+      const error = await captureError(() => decrypt(key, tampered));
       expect(RuntimeDecryptionError.is(error)).toBe(true);
-      expect(error.cause).toBeDefined();
-      // The original DOMException carries name OperationError on Node 20+,
-      // which is what the wrapping is meant to capture as cause.
-      const cause = error.cause as { name?: string };
-      expect(cause?.name).toBe('OperationError');
-      expect(error.context).toMatchObject({
-        operation: 'decrypt',
-        byteLength: tampered.byteLength,
+      expect(error).toMatchObject({
+        cause: expect.anything(),
+        context: {
+          operation: 'decrypt',
+          byteLength: tampered.byteLength,
+        },
       });
     });
 
@@ -101,11 +91,9 @@ describe('encryption', () => {
         new TextEncoder().encode('secret')
       );
 
-      const error = await decrypt(readerKey, ciphertext).catch((e) => e);
+      const error = await captureError(() => decrypt(readerKey, ciphertext));
       expect(RuntimeDecryptionError.is(error)).toBe(true);
-      // Wrong key → auth tag mismatch → same OperationError as ciphertext corruption.
-      const cause = error.cause as { name?: string };
-      expect(cause?.name).toBe('OperationError');
+      expect(error).toMatchObject({ cause: expect.anything() });
     });
 
     it('keeps RuntimeDecryptionError on synchronous auth failure', async () => {
@@ -116,7 +104,7 @@ describe('encryption', () => {
       );
       ciphertext[ciphertext.length - 1] ^= 0xff;
 
-      expect(() => decryptSync(key, ciphertext)).toThrowError(
+      expect(() => decrypt(key, ciphertext)).toThrowError(
         RuntimeDecryptionError
       );
     });
@@ -129,13 +117,14 @@ describe('encryption', () => {
       // The serialization layer attaches the real envelope prefix.
       const key = await getKey();
       const bogus = new Uint8Array(28).fill(0x41); // 28 bytes, passes length check
-      const error = await decrypt(key, bogus).catch((e) => e);
+      const error = await captureError(() => decrypt(key, bogus));
       expect(RuntimeDecryptionError.is(error)).toBe(true);
-      expect(error.context).toMatchObject({
-        operation: 'decrypt',
-        byteLength: 28,
+      expect(error).toMatchObject({
+        context: { operation: 'decrypt', byteLength: 28 },
       });
-      expect(error.context.formatPrefix).toBeUndefined();
+      expect(error).not.toMatchObject({
+        context: { formatPrefix: expect.anything() },
+      });
     });
   });
 

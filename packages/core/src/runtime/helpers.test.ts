@@ -941,7 +941,7 @@ describe('memoizeEncryptionKey', () => {
       sealed
     ) as Uint8Array;
 
-    await expect(decrypt(prefixed, resolved)).resolves.toEqual(
+    expect(await decrypt(prefixed, resolved)).toEqual(
       new TextEncoder().encode('"hi"')
     );
   });
@@ -955,7 +955,7 @@ describe('memoizeEncryptionKey', () => {
 
     const encrypted = await encrypt(new TextEncoder().encode('"hi"'), resolved);
     expect(peekFormatPrefix(encrypted)).toBe(SerializationFormat.ENCRYPTED);
-    await expect(decrypt(encrypted, resolved)).resolves.toEqual(
+    expect(await decrypt(encrypted, resolved)).toEqual(
       new TextEncoder().encode('"hi"')
     );
   });

@@ -1,11 +1,5 @@
 import { type CompressionStats, decompress } from './compression.js';
-import {
-  type DecryptionKey,
-  decrypt,
-  decryptReplayPayload,
-} from './encryption.js';
-import { peekFormatPrefix } from './format.js';
-import { SerializationFormat } from './types.js';
+import { type DecryptionKey, decrypt } from './encryption.js';
 
 /** Legacy payloads need no byte preparation but still share the hydrate API. */
 export interface LegacyReplayPayload {
@@ -33,8 +27,8 @@ export function prepareReplayPayload(
 ): Uint8Array | Promise<Uint8Array> {
   const decompressPayload = (decrypted: Uint8Array) =>
     decompress(decrypted, compressionStats);
-
-  return peekFormatPrefix(value) === SerializationFormat.SEALED
-    ? decrypt(value, key).then(decompressPayload)
-    : decompressPayload(decryptReplayPayload(value, key));
+  const decrypted = decrypt(value, key);
+  return decrypted instanceof Promise
+    ? decrypted.then(decompressPayload)
+    : decompressPayload(decrypted);
 }
