@@ -264,13 +264,15 @@ export function isResilientStepDispatchEnabled(): boolean {
  * no resilient step dispatch — everything else keeps the single-event path
  * byte-for-byte.
  *
- * **Off by default.** Enable via `WORKFLOW_BATCH_TRANSITIONS=1`. Staged like
- * resilient step dispatch: opt-in for burn-in against the batch-tagged
- * slot-conflict and throttle metrics, then default-on with this variable
- * retained as the kill switch.
+ * Reads `process.env.WORKFLOW_BATCH_TRANSITIONS` lazily. Default **ON**;
+ * disabled only by an explicit `'0'` / `'false'` (case-insensitive) — the
+ * operator escape hatch that restores the exact prior one-write-per-event
+ * path, mirroring `WORKFLOW_TURBO`'s kill-switch shape.
  */
 export function isBatchTransitionsEnabled(): boolean {
-  return process.env.WORKFLOW_BATCH_TRANSITIONS === '1';
+  const raw = process.env.WORKFLOW_BATCH_TRANSITIONS;
+  if (raw === undefined || raw === '') return true;
+  return !(raw === '0' || raw.toLowerCase() === 'false');
 }
 
 /**

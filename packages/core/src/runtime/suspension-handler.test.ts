@@ -958,7 +958,9 @@ describe('handleSuspension batched fan-out', () => {
   }
 
   beforeEach(() => {
-    vi.stubEnv('WORKFLOW_BATCH_TRANSITIONS', '1');
+    // No WORKFLOW_BATCH_TRANSITIONS stub: the fold is DEFAULT ON, so these
+    // tests exercising it with an unset env prove the default engages. The
+    // kill switch has its own test below.
     // Cap lazy-inline deferral at 1 so only the first step defers its
     // step_created and the rest take the eager path where the fold engages;
     // the cap interaction has its own test below.
@@ -1055,7 +1057,7 @@ describe('handleSuspension batched fan-out', () => {
     ).rejects.toMatchObject({ status: 410 });
   });
 
-  it('keeps the single path when the flag is off', async () => {
+  it('keeps the single path when the kill switch disables batching', async () => {
     vi.stubEnv('WORKFLOW_BATCH_TRANSITIONS', '0');
     const eventsCreate = vi.fn().mockImplementation(async (_runId, event) => ({
       event,

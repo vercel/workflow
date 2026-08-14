@@ -60,11 +60,11 @@ The contract:
 
 ## The runtime integration (suspension fan-out fold)
 
-With `WORKFLOW_BATCH_TRANSITIONS=1`, the suspension handler folds a **clean fan-out** — the suspension's eager `step_created` and `wait_created` writes — into `createBatch` calls of at most 32 events (mirroring the server's transaction budgets). The fold only engages when the World implements `createBatch`, the run is on slot identity, and the suspension carries no attribute writes, no hook writes, and no resilient step dispatch; everything else keeps the single-event path byte-for-byte. Lazy-inline steps keep deferring their `step_created` to the lazy start exactly as before.
+**On by default.** The suspension handler folds a **clean fan-out** — the suspension's eager `step_created` and `wait_created` writes — into `createBatch` calls of at most 32 events (mirroring the server's transaction budgets). The fold only engages when the World implements `createBatch`, the run is on slot identity, and the suspension carries no attribute writes, no hook writes, and no resilient step dispatch; everything else keeps the single-event path byte-for-byte. Lazy-inline steps keep deferring their `step_created` to the lazy start exactly as before.
 
 Per-event `409`s are tolerated the same way the single path tolerates `EntityConflictError` (a concurrent delivery already created the entity); any other per-event failure fails the suspension write the way a single-path rejection would.
 
-**Off by default** during burn-in; the variable is retained as the kill switch once it defaults on.
+**Escape hatch:** set `WORKFLOW_BATCH_TRANSITIONS=0` (or `false`) to disable batching and restore the exact prior one-write-per-event path — see [`WORKFLOW_BATCH_TRANSITIONS`](/docs/configuration/worlds#workflow_batch_transitions).
 
 ## Follow-up
 
