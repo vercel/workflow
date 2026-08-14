@@ -190,25 +190,19 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
           ctx.pendingDeliveries++;
           ctx.promiseQueue = ctx.promiseQueue.then(async () => {
             try {
-              rejection = await ctx.replayPayloadCache.getPrimitiveValue(
+              rejection = await ctx.replayPayloadCache.getEventValue(
                 event.eventId,
                 'error',
-                async () => {
-                  const prepared =
-                    await ctx.replayPayloadCache.prepareEventPayload(
-                      event.eventId,
-                      'error',
-                      event.eventData.error
-                    );
-                  return hydrateStepError(
+                event.eventData.error,
+                (prepared) =>
+                  hydrateStepError(
                     event.eventData.error,
                     ctx.runId,
                     ctx.encryptionKey,
                     ctx.globalThis,
                     {},
                     prepared
-                  );
-                }
+                  )
               );
             } catch (hydrateErr) {
               // If hydration fails for any reason, fall back to a generic
@@ -308,27 +302,20 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
           ctx.pendingDeliveries++;
           ctx.promiseQueue = ctx.promiseQueue.then(async () => {
             try {
-              const hydratedResult =
-                await ctx.replayPayloadCache.getPrimitiveValue(
-                  completedEventId,
-                  'result',
-                  async () => {
-                    const prepared =
-                      await ctx.replayPayloadCache.prepareEventPayload(
-                        completedEventId,
-                        'result',
-                        serializedResult
-                      );
-                    return await hydrateStepReturnValue(
-                      serializedResult,
-                      ctx.runId,
-                      ctx.encryptionKey,
-                      ctx.globalThis,
-                      {},
-                      prepared
-                    );
-                  }
-                );
+              const hydratedResult = await ctx.replayPayloadCache.getEventValue(
+                completedEventId,
+                'result',
+                serializedResult,
+                (prepared) =>
+                  hydrateStepReturnValue(
+                    serializedResult,
+                    ctx.runId,
+                    ctx.encryptionKey,
+                    ctx.globalThis,
+                    {},
+                    prepared
+                  )
+              );
               outcome = { ok: true, value: hydratedResult as Result };
             } catch (error) {
               outcome = { ok: false, error };
