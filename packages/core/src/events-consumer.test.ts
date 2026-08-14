@@ -736,7 +736,12 @@ describe('EventsConsumer', () => {
     });
   });
 
-  describe('duplicate event classes', () => {
+  // The deferred check reaches its outcome through a multi-stage timer chain
+  // (promise queue → setTimeout(0) → idle poll → delay timer), and loaded CI
+  // runners with coarse timers — Windows especially — can starve that chain
+  // for whole seconds. The polls below return as soon as their assertions
+  // hold, so a generous test budget costs healthy runs nothing.
+  describe('duplicate event classes', { timeout: 30_000 }, () => {
     // Nothing here waits on the window for its result — a duplicate is stepped
     // over in the pass that offers it — so run at the shortest legal delay and
     // let the assertions that a check did NOT fire be cheap.
@@ -761,8 +766,11 @@ describe('EventsConsumer', () => {
     // and the negatives alongside them are then evaluated at the moment the
     // check is known to have fired, which is what the assertions mean.
     function afterDeferredCheck(assertions: () => void): Promise<void> {
+      // The timeout bounds a stalled runner, not the expected path: a healthy
+      // run satisfies the assertions within a few windows. 2s (the previous
+      // bound) was regularly starved through on Windows CI runners.
       return vi.waitFor(assertions, {
-        timeout: MIN_DEFERRED_CHECK_DELAY_MS * 200,
+        timeout: 15_000,
         interval: MIN_DEFERRED_CHECK_DELAY_MS,
       });
     }
@@ -961,7 +969,7 @@ describe('EventsConsumer', () => {
         expect(onDuplicateEvent).not.toHaveBeenCalled();
       });
 
-      await vi.waitFor(() => {
+      await afterDeferredCheck(() => {
         expect(onUnconsumedEvent).toHaveBeenCalledWith(events[3]);
       });
     });
@@ -989,7 +997,7 @@ describe('EventsConsumer', () => {
         expect(onDuplicateEvent).not.toHaveBeenCalled();
       });
 
-      await vi.waitFor(() => {
+      await afterDeferredCheck(() => {
         expect(onUnconsumedEvent).toHaveBeenCalledWith(events[2]);
       });
     });

@@ -364,7 +364,7 @@ export interface HttpClientSpanOptions {
    */
   spanName?: string;
   /** Extra attributes merged on top of the standard HTTP attributes. */
-  attributes?: Record<string, string | number>;
+  attributes?: Record<string, string | number | string[]>;
 }
 
 /**

@@ -105,7 +105,7 @@ async function runWorkflowHandlerWithEvents(
       }
 
       const event = {
-        eventId: `event-${createdEvents.length}`,
+        eventId: slotToEventId(createdEvents.length),
         runId: workflowRun.runId,
         createdAt: new Date(),
         ...data,
@@ -393,7 +393,7 @@ describe('workflowEntrypoint replay guards', () => {
       createdEvents.push(data);
       return {
         event: {
-          eventId: `event-${createdEvents.length}`,
+          eventId: slotToEventId(createdEvents.length),
           runId: 'wrun_schema_validation',
           createdAt: new Date(),
           ...data,
@@ -492,7 +492,7 @@ describe('workflowEntrypoint replay guards', () => {
         ? { run: workflowRun }
         : {
             event: {
-              eventId: `event-${createdEvents.length}`,
+              eventId: slotToEventId(createdEvents.length),
               runId: workflowRun.runId,
               createdAt: new Date(),
               ...data,
@@ -590,7 +590,7 @@ describe('workflowEntrypoint replay guards', () => {
         ? { run: workflowRun }
         : {
             event: {
-              eventId: `event-${createdEvents.length}`,
+              eventId: slotToEventId(createdEvents.length),
               runId: workflowRun.runId,
               createdAt: new Date(),
               ...data,
@@ -670,7 +670,7 @@ describe('workflowEntrypoint replay guards', () => {
       createdEvents.push(data);
       return {
         event: {
-          eventId: `event-${createdEvents.length}`,
+          eventId: slotToEventId(createdEvents.length),
           runId: 'wrun_parse',
           createdAt: new Date(),
           ...data,
@@ -755,7 +755,7 @@ describe('workflowEntrypoint replay guards', () => {
     };
     const events: Event[] = [
       {
-        eventId: 'event-foreign-failed',
+        eventId: slotToEventId(1),
         runId: 'wrun_other',
         eventType: 'run_failed',
         eventData: {
@@ -798,7 +798,7 @@ describe('workflowEntrypoint replay guards', () => {
 
     const events: Event[] = [
       {
-        eventId: 'event-0',
+        eventId: slotToEventId(1),
         runId: workflowRun.runId,
         eventType: 'wait_created',
         correlationId: 'wait_01HK153X00VFKAJV9XFN9JXXRS',
@@ -808,7 +808,7 @@ describe('workflowEntrypoint replay guards', () => {
         createdAt: new Date('2024-01-01T00:00:00.000Z'),
       },
       {
-        eventId: 'event-1',
+        eventId: slotToEventId(2),
         runId: workflowRun.runId,
         eventType: 'wait_completed',
         correlationId: 'wait_01HK153X00VFKAJV9XFN9JXXRS',
@@ -841,7 +841,7 @@ describe('workflowEntrypoint replay guards', () => {
     expect(queueCalls.map((c) => c.message)).toContainEqual(
       expect.objectContaining({
         replayDivergence: {
-          eventId: 'event-0',
+          eventId: slotToEventId(1),
           count: 1,
         },
       })
@@ -958,7 +958,7 @@ describe('workflowEntrypoint replay guards', () => {
     // matches no hook' below).
     const events: Event[] = [
       {
-        eventId: 'event-0',
+        eventId: slotToEventId(1),
         runId: workflowRun.runId,
         eventType: 'hook_created',
         correlationId: 'hook_01HK153X00VFKAJV9XFN9JXXRS',
@@ -989,7 +989,7 @@ describe('workflowEntrypoint replay guards', () => {
     );
     expect(queueCalls.map((c) => c.message)).toContainEqual(
       expect.objectContaining({
-        replayDivergence: { eventId: 'event-0', count: 1 },
+        replayDivergence: { eventId: slotToEventId(1), count: 1 },
       })
     );
   });
@@ -1018,7 +1018,7 @@ describe('workflowEntrypoint replay guards', () => {
     // the run.
     const events: Event[] = [
       {
-        eventId: 'event-0',
+        eventId: slotToEventId(1),
         runId: workflowRun.runId,
         eventType: 'hook_received',
         correlationId: 'hook_01HK153X00VFKAJV9XFN9JXXRS',
@@ -1166,7 +1166,7 @@ describe('workflowEntrypoint replay guards', () => {
       createdEvents.push(data);
       return {
         event: {
-          eventId: `event-${createdEvents.length}`,
+          eventId: slotToEventId(createdEvents.length),
           runId: workflowRun.runId,
           createdAt: new Date(),
           ...data,
@@ -1276,7 +1276,7 @@ describe('workflowEntrypoint replay guards', () => {
       createdEvents.push(data);
       return {
         event: {
-          eventId: `event-${createdEvents.length}`,
+          eventId: slotToEventId(createdEvents.length),
           runId: workflowRun.runId,
           createdAt: new Date(),
           ...data,
@@ -1441,7 +1441,7 @@ describe('workflowEntrypoint step-dispatch ack ordering', () => {
     const recordEvent = (data: any): Event => {
       eventSeq += 1;
       const created = {
-        eventId: `event-${eventSeq}`,
+        eventId: slotToEventId(eventSeq),
         runId: workflowRun.runId,
         createdAt: new Date(),
         ...data,
@@ -1699,7 +1699,7 @@ describe('workflowEntrypoint step-dispatch ack ordering', () => {
     const rec = (data: any): Event => {
       seq += 1;
       const e = {
-        eventId: `e-${seq}`,
+        eventId: slotToEventId(seq),
         runId: workflowRun.runId,
         createdAt: new Date(),
         ...data,
@@ -1851,12 +1851,13 @@ describe('workflowEntrypoint resilient step consumption (stepInput re-ensure)', 
       deploymentId: 'test-deployment',
     };
 
-    let eventSeq = 0;
+    // Slot 1 is taken by the seeded event below, so recorded events start at 2.
+    let eventSeq = 1;
     const durableEvents: Event[] = [
       // An unrelated pending step: keeps the run un-replayable so the handler
       // returns right after the background step completes.
       {
-        eventId: 'event-other',
+        eventId: slotToEventId(1),
         runId: opts.runId,
         createdAt: new Date(),
         eventType: 'step_created',
@@ -1868,7 +1869,7 @@ describe('workflowEntrypoint resilient step consumption (stepInput re-ensure)', 
     const recordEvent = (data: any): Event => {
       eventSeq += 1;
       const created = {
-        eventId: `event-${eventSeq}`,
+        eventId: slotToEventId(eventSeq),
         runId: opts.runId,
         createdAt: new Date(),
         ...data,
@@ -2203,7 +2204,7 @@ describe('workflowEntrypoint turbo mode', () => {
     const rec = (data: any): Event => {
       seq += 1;
       const e = {
-        eventId: `e-${seq}`,
+        eventId: slotToEventId(seq),
         runId,
         createdAt: new Date(),
         ...data,
@@ -2512,7 +2513,7 @@ describe('workflowEntrypoint inline-delta gate with open hooks', () => {
        * World capabilities to declare. Absent by default — capability-gated
        * fast paths must fail closed without them.
        */
-      capabilities?: { preconditionGuard?: boolean; maxConcurrency?: boolean };
+      capabilities?: { maxConcurrency?: boolean };
       /** Workflow source to run (defaults to hookAndStepWorkflow). */
       source?: string;
       /**
@@ -2653,15 +2654,14 @@ describe('workflowEntrypoint inline-delta gate with open hooks', () => {
     return call?.[2] as { sinceCursor?: string } | undefined;
   }
 
-  it('requests the inline delta despite the open hook when the World enforces the precondition guard', async () => {
+  it('requests the inline delta despite the open hook', async () => {
     const { res, eventsCreate } = await driveDeltaGate(
-      'wrun_delta_gate_guard_on',
-      { capabilities: { preconditionGuard: true } }
+      'wrun_delta_gate_guard_on'
     );
     expect(res.status).toBe(204);
-    // The suspension created a hook (left open) and one lazy inline step —
-    // with an enforced guard, a hook_received missed by the delta window is
-    // fenced by the outside-event marker, so the fast path stays active.
+    // The suspension created a hook (left open) and one lazy inline step. A
+    // hook_received missed by the delta window is fenced by the outside-event
+    // marker, so the fast path stays active.
     expect(stepCompletedParams(eventsCreate)?.sinceCursor).toBe(
       'cursor_delta_gate'
     );
@@ -2672,16 +2672,6 @@ describe('workflowEntrypoint inline-delta gate with open hooks', () => {
     );
   });
 
-  it('does not request the inline delta with an open hook when no World fence exists', async () => {
-    const { res, eventsCreate } = await driveDeltaGate(
-      'wrun_delta_gate_guard_off'
-    );
-    expect(res.status).toBe(204);
-    // Without the guard there is no fence for a hook_received landing in the
-    // delta window, so the conservative gate keeps the fetch path.
-    expect(stepCompletedParams(eventsCreate)?.sinceCursor).toBeUndefined();
-  });
-
   it('restarts the replay in-process and still completes the run when a stale lazy claim is rejected by the guard (interleaved hook_received)', async () => {
     // Simulates the interleaving the fence exists for: after step A's
     // terminal write, an out-of-band hook_received bumps the run's marker;
@@ -2690,7 +2680,6 @@ describe('workflowEntrypoint inline-delta gate with open hooks', () => {
     const { res, eventsCreate, queueMock } = await driveDeltaGate(
       'wrun_delta_gate_stale_claim',
       {
-        capabilities: { preconditionGuard: true },
         source: hookAndTwoStepWorkflow,
         rejectClaimOnce: {
           stepName: 'deltaGateStepB',
@@ -2752,7 +2741,6 @@ describe('workflowEntrypoint inline-delta gate with open hooks', () => {
     const { res, eventsCreate } = await driveDeltaGate(
       'wrun_delta_gate_stale_claim_optimistic',
       {
-        capabilities: { preconditionGuard: true },
         source: hookAndTwoStepWorkflow,
         rejectClaimOnce: {
           stepName: 'deltaGateStepB',
@@ -2838,7 +2826,7 @@ describe('workflowEntrypoint latency telemetry (ttfs / stso)', () => {
     const rec = (data: any): Event => {
       seq += 1;
       const e = {
-        eventId: `e-${seq}`,
+        eventId: slotToEventId(seq),
         runId,
         createdAt: new Date(),
         ...data,
@@ -3122,7 +3110,7 @@ describe('workflowEntrypoint latency telemetry (ttfs / stso)', () => {
     const attrOccurredAt = new Date(runCreatedAtMs + 7_000);
     const attrEvent = {
       ...attrCreates[0],
-      eventId: 'e-attr-1',
+      eventId: slotToEventId(1),
       runId,
       createdAt: attrOccurredAt,
       occurredAt: attrOccurredAt,

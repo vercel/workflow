@@ -1,5 +1,43 @@
 # @workflow/core
 
+## 5.0.0-beta.42
+
+### Minor Changes
+
+- [#3365](https://github.com/vercel/workflow/pull/3365) [`7683130`](https://github.com/vercel/workflow/commit/7683130461a1a3de16c13be52d8aee96590b3814) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Resilient step dispatch: newly created steps are published to the queue in parallel with their `step_created` event write, with the serialized input carried on the message (`stepInput`) so the consumer re-ensures the event if the direct write failed transiently — mirroring resilient start (`runInput`) and resilient hook resume (`hookInput`). Worlds that enforce the precondition guard keep the sequential create-then-publish dispatch (only sequencing gives the message a happens-after edge over the create's guard verdict); step-dispatch idempotency keys are now step-identity-scoped. Disable via `WORKFLOW_RESILIENT_STEP_DISPATCH=0`.
+
+### Patch Changes
+
+- [#3462](https://github.com/vercel/workflow/pull/3462) [`9add9d7`](https://github.com/vercel/workflow/commit/9add9d782d0cbf41ce447175c7b9fe47846d794d) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Reject compact sparse-array payloads with logical lengths above 100,000 during hydration.
+
+- [#3519](https://github.com/vercel/workflow/pull/3519) [`dc85865`](https://github.com/vercel/workflow/commit/dc85865718fdf5e4abdb5ad8edf715ec956bf07d) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Remove the `preconditionGuard` World capability. A stale replay-context write no longer needs to be rejected: a reader holds a prefix of the log, replay is deterministic on a prefix, and the writer's next write reports the events it was pushed past.
+
+- [#3381](https://github.com/vercel/workflow/pull/3381) [`efbc408`](https://github.com/vercel/workflow/commit/efbc408c4e98178dc8c8151764f308e9e4b6fd58) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Ignore duplicate events that a concurrent replay wrote for an entity the event log already records, instead of failing the run with a corrupted event log
+
+- [#3530](https://github.com/vercel/workflow/pull/3530) [`c041d3d`](https://github.com/vercel/workflow/commit/c041d3d231f8a75236311df56a68bd4ca104be22) Thanks [@alangenfeld](https://github.com/alangenfeld)! - Retry e2e tests once in CI and surface retried-then-passed tests as flaky in annotations and the PR results comment.
+
+- [#3531](https://github.com/vercel/workflow/pull/3531) [`60dd206`](https://github.com/vercel/workflow/commit/60dd2065f368f10ba5c0b1ae98240749c1d29dc3) Thanks [@alangenfeld](https://github.com/alangenfeld)! - Fix flaky timing-sensitive tests: stall-proof budgets for the events-consumer deferred-check tests and a sibling-matched budget for the TTL-expiration abort e2e test.
+
+- [#3437](https://github.com/vercel/workflow/pull/3437) [`a0ccfe0`](https://github.com/vercel/workflow/commit/a0ccfe0f50df1e6726b033e91c41257065e20edd) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Add OTEL telemetry for hook-triggered time-to-resume: `workflow.resume.total_ms` plus a non-overlapping phase breakdown, on the first durable step after a resume.
+
+- [#3552](https://github.com/vercel/workflow/pull/3552) [`3560218`](https://github.com/vercel/workflow/commit/3560218937ab76cf631ffe200489f337ba843a40) Thanks [@AndrewBarba](https://github.com/AndrewBarba)! - Preserve event-log order when adjacent hook payloads resume independent workflow branches.
+
+- [#3542](https://github.com/vercel/workflow/pull/3542) [`de2a86c`](https://github.com/vercel/workflow/commit/de2a86c61c843a04c292e54e9c439553b3da02c5) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - **Breaking**: New runs are created at spec version 6, and a World that declares an older spec version is now rejected before the first run rather than failing partway through one.
+
+- [#3519](https://github.com/vercel/workflow/pull/3519) [`dc85865`](https://github.com/vercel/workflow/commit/dc85865718fdf5e4abdb5ad8edf715ec956bf07d) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Require every event id the runtime reads to be a log position. `requireEventSlot` replaces the lenient decode that returned "no position" for an id that is not a slot.
+
+- [#3519](https://github.com/vercel/workflow/pull/3519) [`dc85865`](https://github.com/vercel/workflow/commit/dc85865718fdf5e4abdb5ad8edf715ec956bf07d) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Turn resilient step dispatch off by default. Set `WORKFLOW_RESILIENT_STEP_DISPATCH=1` to opt back in.
+
+- [#3479](https://github.com/vercel/workflow/pull/3479) [`b589460`](https://github.com/vercel/workflow/commit/b589460ce873bad3ddd7bda4a9bff147ddccac49) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Replay-context event writes now always report the log position they replayed from, and the `WORKFLOW_PRECONDITION_GUARD` flag is removed.
+
+- [#3410](https://github.com/vercel/workflow/pull/3410) [`c1a5c74`](https://github.com/vercel/workflow/commit/c1a5c74edb2fad84eb5bbc2036bf73cbd16ca28d) Thanks [@alangenfeld](https://github.com/alangenfeld)! - Surface typed terminal errors when stream retention expires.
+
+- Updated dependencies [[`600b096`](https://github.com/vercel/workflow/commit/600b096d2fa5423b742683fcd047010a1f1bfcd6), [`dc85865`](https://github.com/vercel/workflow/commit/dc85865718fdf5e4abdb5ad8edf715ec956bf07d), [`efbc408`](https://github.com/vercel/workflow/commit/efbc408c4e98178dc8c8151764f308e9e4b6fd58), [`63cc09e`](https://github.com/vercel/workflow/commit/63cc09e24f41ea0f691d6190309cfd92fb8de94e), [`a0ccfe0`](https://github.com/vercel/workflow/commit/a0ccfe0f50df1e6726b033e91c41257065e20edd), [`de2a86c`](https://github.com/vercel/workflow/commit/de2a86c61c843a04c292e54e9c439553b3da02c5), [`dc85865`](https://github.com/vercel/workflow/commit/dc85865718fdf5e4abdb5ad8edf715ec956bf07d), [`7683130`](https://github.com/vercel/workflow/commit/7683130461a1a3de16c13be52d8aee96590b3814), [`dc85865`](https://github.com/vercel/workflow/commit/dc85865718fdf5e4abdb5ad8edf715ec956bf07d), [`b589460`](https://github.com/vercel/workflow/commit/b589460ce873bad3ddd7bda4a9bff147ddccac49), [`c1a5c74`](https://github.com/vercel/workflow/commit/c1a5c74edb2fad84eb5bbc2036bf73cbd16ca28d), [`8d8b7b3`](https://github.com/vercel/workflow/commit/8d8b7b38459edaaadd0ee82a6d5b07b2847ff5d7), [`0f4b35f`](https://github.com/vercel/workflow/commit/0f4b35f62945327417013060f6e5de5111fe6ff1), [`01991ed`](https://github.com/vercel/workflow/commit/01991edeebe15b3b5c38801a5ac1cf2962805e33)]:
+  - @workflow/world@5.0.0-beta.27
+  - @workflow/world-vercel@5.0.0-beta.38
+  - @workflow/world-local@5.0.0-beta.36
+  - @workflow/errors@5.0.0-beta.17
+
 ## 5.0.0-beta.41
 
 ### Patch Changes

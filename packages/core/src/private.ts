@@ -245,8 +245,7 @@ interface DeliveryBarrierEntry {
  * Which earlier kinds each delivery kind defers behind. Chosen so that no kind
  * blocks on a peer it does not need to:
  *
- *  - a hook defers behind earlier WAITS and STEPS — not earlier hooks, which
- *    are sequential same-entity payloads and must not block one another;
+ *  - a hook defers behind earlier HOOKS, WAITS and STEPS;
  *  - a wait defers behind earlier HOOKS and STEPS — not earlier waits, since a
  *    wait never needs to queue behind another wait;
  *  - a step defers behind earlier WAITS, HOOKS and STEPS.
@@ -269,7 +268,7 @@ interface DeliveryBarrierEntry {
  * wait-for graph can never contain a cycle.
  */
 const DEFER_BEHIND: Record<DeliveryKind, readonly DeliveryKind[]> = {
-  hook: ['wait', 'step'],
+  hook: ['hook', 'wait', 'step'],
   wait: ['hook', 'step'],
   step: ['wait', 'hook', 'step'],
 };

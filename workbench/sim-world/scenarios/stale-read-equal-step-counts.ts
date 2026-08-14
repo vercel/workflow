@@ -2,9 +2,9 @@ import type { ScenarioSpec } from '@workflow/world-sim';
 
 export const scenario: ScenarioSpec = {
   id: 'stale-read-equal-step-counts',
-  name: 'corrupt: stale event load with EQUAL step counts (is the amplifier needed?)',
+  name: 'stale event load with EQUAL step counts (is the amplifier needed?)',
   description:
-    'Identical fault to the scenario above, but on the fork whose branches ' +
+    'Green since slot-numbered event ids: a read missing an event the log already holds is a gap in a numbered sequence, so the runtime re-reads and decides the fork the way the log records it. Kept as the regression test for that. Identical fault to the scenario above, but on the fork whose branches ' +
     'each emit exactly one step. If this corrupts too then step-count ' +
     'divergence raises the rate rather than being required.',
   workflow: 'hookTimeoutForkWorkflow',

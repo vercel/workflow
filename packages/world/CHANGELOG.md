@@ -1,5 +1,29 @@
 # @workflow/world
 
+## 5.0.0-beta.27
+
+### Minor Changes
+
+- [#3390](https://github.com/vercel/workflow/pull/3390) [`600b096`](https://github.com/vercel/workflow/commit/600b096d2fa5423b742683fcd047010a1f1bfcd6) Thanks [@alangenfeld](https://github.com/alangenfeld)! - Add a bounded batch analytics event lookup for enriching canonical event pages.
+
+- [#3365](https://github.com/vercel/workflow/pull/3365) [`7683130`](https://github.com/vercel/workflow/commit/7683130461a1a3de16c13be52d8aee96590b3814) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Resilient step dispatch: newly created steps are published to the queue in parallel with their `step_created` event write, with the serialized input carried on the message (`stepInput`) so the consumer re-ensures the event if the direct write failed transiently — mirroring resilient start (`runInput`) and resilient hook resume (`hookInput`). Worlds that enforce the precondition guard keep the sequential create-then-publish dispatch (only sequencing gives the message a happens-after edge over the create's guard verdict); step-dispatch idempotency keys are now step-identity-scoped. Disable via `WORKFLOW_RESILIENT_STEP_DISPATCH=0`.
+
+### Patch Changes
+
+- [#3519](https://github.com/vercel/workflow/pull/3519) [`dc85865`](https://github.com/vercel/workflow/commit/dc85865718fdf5e4abdb5ad8edf715ec956bf07d) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Remove the `preconditionGuard` World capability. A stale replay-context write no longer needs to be rejected: a reader holds a prefix of the log, replay is deterministic on a prefix, and the writer's next write reports the events it was pushed past.
+
+- [#3381](https://github.com/vercel/workflow/pull/3381) [`efbc408`](https://github.com/vercel/workflow/commit/efbc408c4e98178dc8c8151764f308e9e4b6fd58) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Ignore duplicate events that a concurrent replay wrote for an entity the event log already records, instead of failing the run with a corrupted event log
+
+- [#3437](https://github.com/vercel/workflow/pull/3437) [`a0ccfe0`](https://github.com/vercel/workflow/commit/a0ccfe0f50df1e6726b033e91c41257065e20edd) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Add OTEL telemetry for hook-triggered time-to-resume: `workflow.resume.total_ms` plus a non-overlapping phase breakdown, on the first durable step after a resume.
+
+- [#3542](https://github.com/vercel/workflow/pull/3542) [`de2a86c`](https://github.com/vercel/workflow/commit/de2a86c61c843a04c292e54e9c439553b3da02c5) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - **Breaking**: New runs are created at spec version 6, and a World that declares an older spec version is now rejected before the first run rather than failing partway through one.
+
+- [#3519](https://github.com/vercel/workflow/pull/3519) [`dc85865`](https://github.com/vercel/workflow/commit/dc85865718fdf5e4abdb5ad8edf715ec956bf07d) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Require every event id the runtime reads to be a log position. `requireEventSlot` replaces the lenient decode that returned "no position" for an id that is not a slot.
+
+- [#3519](https://github.com/vercel/workflow/pull/3519) [`dc85865`](https://github.com/vercel/workflow/commit/dc85865718fdf5e4abdb5ad8edf715ec956bf07d) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Slot-numbered event ids are a requirement of the World contract, not a capability. The `slotEventIds` flag is gone, and the conformance suite now fails a World whose event ids are not positions.
+
+- [#3479](https://github.com/vercel/workflow/pull/3479) [`b589460`](https://github.com/vercel/workflow/commit/b589460ce873bad3ddd7bda4a9bff147ddccac49) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Replay-context event writes now always report the log position they replayed from, and the `WORKFLOW_PRECONDITION_GUARD` flag is removed.
+
 ## 5.0.0-beta.26
 
 ### Minor Changes

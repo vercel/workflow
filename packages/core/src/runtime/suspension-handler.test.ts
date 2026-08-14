@@ -12,7 +12,7 @@ import {
   type WorkflowRun,
   type World,
 } from '@workflow/world';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { WorkflowSuspension } from '../global.js';
 import { maxEventSlot, stepDispatchIdempotencyKey } from './helpers.js';
 import { ReplayRecoveryReporter } from './replay-recovery-reporter.js';
@@ -631,6 +631,21 @@ describe('handleSuspension', () => {
 describe('resilient step dispatch', () => {
   const queueName = '__wkf_workflow_test-workflow' as ValidQueueName;
 
+  // Opt-in feature, so every test that expects a publish has to ask for it.
+  // The default-off case is covered by its own test below, which unsets this.
+  let previousFlag: string | undefined;
+  beforeEach(() => {
+    previousFlag = process.env.WORKFLOW_RESILIENT_STEP_DISPATCH;
+    process.env.WORKFLOW_RESILIENT_STEP_DISPATCH = '1';
+  });
+  afterEach(() => {
+    if (previousFlag === undefined) {
+      delete process.env.WORKFLOW_RESILIENT_STEP_DISPATCH;
+    } else {
+      process.env.WORKFLOW_RESILIENT_STEP_DISPATCH = previousFlag;
+    }
+  });
+
   /** A run whose queue transport supports binary payloads (CBOR). */
   const cborRun: WorkflowRun = { ...run, specVersion: SPEC_VERSION_CURRENT };
 
@@ -774,58 +789,6 @@ describe('resilient step dispatch', () => {
     ).rejects.toThrow('bad request');
   });
 
-  it('falls back to create-only when the world enforces the precondition guard', async () => {
-    const { world, eventsCreate, queue } = createQueueWorld({
-      capabilities: { preconditionGuard: true },
-    });
-
-    const result = await handleSuspension({
-      suspension: new WorkflowSuspension(fourStepsPending(), globalThis),
-      world,
-      run: cborRun,
-      stepDispatch: stepDispatch(),
-    });
-
-    // The guarded create can be 412-rejected; a payload-carrying message
-    // would let the consumer materialize the rejected step. Sequential path:
-    // create here, caller dispatches.
-    expect(queue).not.toHaveBeenCalled();
-    expect(eventsCreate).toHaveBeenCalledWith(
-      run.runId,
-      expect.objectContaining({
-        eventType: 'step_created',
-        correlationId: 's4',
-      }),
-      expect.anything()
-    );
-    expect(result.queuedStepCorrelationIds.size).toBe(0);
-    expect(result.createdStepCorrelationIds).toContain('s4');
-  });
-
-  it('stays sequential under an enforced guard regardless of other capabilities', async () => {
-    // The guard gate is deliberately not liftable by backend-side revocation
-    // bookkeeping: nothing orders a slow guarded create's eventual 412 before
-    // the consumer's redelivery re-ensure, so no capability may re-enable the
-    // payload-carrying publish while creates are guarded.
-    const { world, queue } = createQueueWorld({
-      capabilities: {
-        preconditionGuard: true,
-        // Unknown/extra capability flags must not lift the gate.
-        ...({ resilientStepDispatch: true } as Record<string, boolean>),
-      } as World['capabilities'],
-    });
-
-    const result = await handleSuspension({
-      suspension: new WorkflowSuspension(fourStepsPending(), globalThis),
-      world,
-      run: cborRun,
-      stepDispatch: stepDispatch(),
-    });
-
-    expect(queue).not.toHaveBeenCalled();
-    expect(result.queuedStepCorrelationIds.size).toBe(0);
-  });
-
   it('falls back to create-only when the run predates the CBOR queue transport', async () => {
     const { world, queue } = createQueueWorld();
 
@@ -840,28 +803,19 @@ describe('resilient step dispatch', () => {
     expect(result.queuedStepCorrelationIds.size).toBe(0);
   });
 
-  it('falls back to create-only when WORKFLOW_RESILIENT_STEP_DISPATCH=0', async () => {
-    const prev = process.env.WORKFLOW_RESILIENT_STEP_DISPATCH;
-    process.env.WORKFLOW_RESILIENT_STEP_DISPATCH = '0';
-    try {
-      const { world, queue } = createQueueWorld();
+  it('falls back to create-only when WORKFLOW_RESILIENT_STEP_DISPATCH is unset', async () => {
+    delete process.env.WORKFLOW_RESILIENT_STEP_DISPATCH;
+    const { world, queue } = createQueueWorld();
 
-      const result = await handleSuspension({
-        suspension: new WorkflowSuspension(fourStepsPending(), globalThis),
-        world,
-        run: cborRun,
-        stepDispatch: stepDispatch(),
-      });
+    const result = await handleSuspension({
+      suspension: new WorkflowSuspension(fourStepsPending(), globalThis),
+      world,
+      run: cborRun,
+      stepDispatch: stepDispatch(),
+    });
 
-      expect(queue).not.toHaveBeenCalled();
-      expect(result.queuedStepCorrelationIds.size).toBe(0);
-    } finally {
-      if (prev === undefined) {
-        delete process.env.WORKFLOW_RESILIENT_STEP_DISPATCH;
-      } else {
-        process.env.WORKFLOW_RESILIENT_STEP_DISPATCH = prev;
-      }
-    }
+    expect(queue).not.toHaveBeenCalled();
+    expect(result.queuedStepCorrelationIds.size).toBe(0);
   });
 
   it('never queues from here when no stepDispatch is provided (terminal drain)', async () => {

@@ -165,20 +165,18 @@ Two of these are measurements rather than conveniences.
 **`--append-only`** moves every event's position from its handler's mint to its
 commit, which is the one change that makes a stale read impossible: the log can
 be behind, never wrong. Running with and without it is how you tell which of
-the reds that change would actually close. Today: **35 pass / 6 violations**
+the reds that change would actually close. Today: **38 pass / 3 violations**
 mint-ordered, **41 pass / 0 violations** append-only.
 
-The one red it does *not* close is `unclaimed-payload-under-fork`, and that is
-the point of it: no log position is wrong there, the runtime hands two
-resolutions to the workflow in the order the log did not record. It is the only
-scenario in the book that is red in both worlds.
+It closes all three, and by construction rather than by catching anything: with
+nothing reserving a position ahead of a commit, no read can see a hole.
 
 **`--no-fence`** turns the fence off everywhere, asking whether anything relies
 on it. It is a diagnostic, not a world — **read the violation count, not the
 pass count**, because a scenario whose whole point is that the guard fired
 asserts exactly that and fails by design when you disarm it
 (`in-flight-before-decision-counted` is the one that does this today).
-Measured: **6 → 8** violations mint-ordered, so it is load-bearing there;
+Measured: **3 → 5** violations mint-ordered, so it is load-bearing there;
 **0 → 0** append-only, so it is dead weight once positions are assigned at
 commit.
 
