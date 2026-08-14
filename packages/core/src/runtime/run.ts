@@ -41,6 +41,46 @@ export function getReturnValuePollIntervalMs(): number {
 }
 
 /**
+ * How long a single `runs.waitForTerminalStatus` call may block while waiting
+ * for a run to finish. The wait is re-issued until the run is terminal, so
+ * this is a per-call budget rather than a limit on total wait time — its only
+ * job is to bound one request so a stalled connection cannot hold the awaiting
+ * side forever.
+ *
+ * 25s keeps a Vercel long poll comfortably inside `world-vercel`'s 60s
+ * per-request HTTP timeout, so the wait budget is always observed as a
+ * *response* (a non-terminal snapshot) rather than as a client-side timeout.
+ */
+const RETURN_VALUE_WAIT_TIMEOUT_MS = 25_000;
+
+/** @internal */
+export function getReturnValueWaitTimeoutMs(): number {
+  return envNumber(
+    'WORKFLOW_RETURN_VALUE_WAIT_MS',
+    RETURN_VALUE_WAIT_TIMEOUT_MS,
+    { integer: true, min: 1 }
+  );
+}
+
+/**
+ * Whether `await run.returnValue` may use the World's long poll
+ * (`runs.waitForTerminalStatus`) instead of interval-polling `runs.get`.
+ *
+ * Default **ON** wherever the World implements the method — a World that does
+ * not is already on the interval path with nothing to switch off. Reads
+ * `process.env.WORKFLOW_RETURN_VALUE_LONG_POLL` lazily; an explicit `'0'` /
+ * `'false'` is the kill switch, restoring the fixed-interval poll exactly as
+ * it behaved before the fast path existed.
+ *
+ * @internal
+ */
+export function isReturnValueLongPollEnabled(): boolean {
+  const raw = process.env.WORKFLOW_RETURN_VALUE_LONG_POLL;
+  if (raw === undefined || raw === '') return true;
+  return !(raw === '0' || raw.toLowerCase() === 'false');
+}
+
+/**
  * A `ReadableStream` extended with workflow-specific helpers.
  */
 export type WorkflowReadableStream<R = any> = ReadableStream<R> & {
@@ -335,6 +375,17 @@ export class Run<TResult> {
     const NOT_FOUND_MAX_RETRIES = this.#resilientStart ? 3 : 0;
     const NOT_FOUND_DELAYS = [1_000, 3_000, 6_000];
 
+    // Prefer the World's long poll: one read that the backend holds open
+    // until the run finishes, instead of asking again every second and
+    // paying up to a full interval of quantization on a run that already
+    // ended. Worlds that cannot wait simply do not implement it (see
+    // `Storage['runs'].waitForTerminalStatus`) and this stays the exact
+    // fixed-interval poll it has always been — as does an operator who
+    // throws the `WORKFLOW_RETURN_VALUE_LONG_POLL=0` kill switch.
+    const waitForTerminalStatus = isReturnValueLongPollEnabled()
+      ? world.runs.waitForTerminalStatus?.bind(world.runs)
+      : undefined;
+
     // NOTE: when this poll runs inside a step (e.g. the step that a parent
     // workflow uses to await a child workflow's `returnValue`), it blocks
     // a queue worker slot for as long as the child run takes to finish.
@@ -343,8 +394,13 @@ export class Run<TResult> {
     // default on the Postgres world and the notes in the eager-processing
     // changelog for details.
     while (true) {
+      const iterationStartedAt = Date.now();
       try {
-        const run = await world.runs.get(this.runId);
+        const run = waitForTerminalStatus
+          ? await waitForTerminalStatus(this.runId, {
+              timeoutMs: getReturnValueWaitTimeoutMs(),
+            })
+          : await world.runs.get(this.runId);
 
         if (run.status === 'completed') {
           const encryptionKey = await this.#getEncryptionKey();
@@ -386,9 +442,19 @@ export class Run<TResult> {
         throw new WorkflowRunNotCompletedError(this.runId, run.status);
       } catch (error) {
         if (WorkflowRunNotCompletedError.is(error)) {
-          await new Promise((resolve) =>
-            setTimeout(resolve, getReturnValuePollIntervalMs())
-          );
+          // Space consecutive non-terminal observations at least one poll
+          // interval apart. On the plain-poll path that is the familiar fixed
+          // sleep; on the long-poll path the wait has usually already
+          // outlasted the interval and this is a no-op — but it also means a
+          // World whose wait returns early (a backend with no long poll, a
+          // clamped budget) degrades to interval polling instead of spinning.
+          const remainingIntervalMs =
+            getReturnValuePollIntervalMs() - (Date.now() - iterationStartedAt);
+          if (remainingIntervalMs > 0) {
+            await new Promise((resolve) =>
+              setTimeout(resolve, remainingIntervalMs)
+            );
+          }
           continue;
         }
         if (

@@ -76,6 +76,11 @@ import {
 import { monotonicFactory } from 'ulid';
 import { type Drizzle, Schema } from './drizzle/index.js';
 import type { SerializedContent } from './drizzle/schema.js';
+import {
+  getRunStatusPollIntervalMs,
+  notifyRunTerminal,
+  type RunStatusListener,
+} from './run-status.js';
 import { compact } from './util.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -373,7 +378,15 @@ function deserializeStepError(step: any): Step {
   } as Step;
 }
 
-export function createRunsStorage(drizzle: Drizzle): Storage['runs'] {
+export function createRunsStorage(
+  drizzle: Drizzle,
+  /**
+   * Shared `LISTEN` subscription used by `waitForTerminalStatus`. Omit it and
+   * the wait still works, purely on its backstop re-read — which is what a
+   * direct caller constructing storage without a pool gets.
+   */
+  runStatusListener?: RunStatusListener
+): Storage['runs'] {
   const { runs } = Schema;
   const get = drizzle
     .select()
@@ -382,21 +395,50 @@ export function createRunsStorage(drizzle: Drizzle): Storage['runs'] {
     .limit(1)
     .prepare('workflow_runs_get');
 
+  const getRun = (async (id, params) => {
+    const [value] = await get.execute({ id });
+    if (!value) {
+      throw new WorkflowRunNotFoundError(id);
+    }
+    value.output ||= value.outputJson;
+    value.input ||= value.inputJson;
+    value.executionContext ||= value.executionContextJson;
+    value.error ||= parseErrorJson(value.errorJson);
+    const deserialized = deserializeRunError(compact(value));
+    const parsed = WorkflowRunSchema.parse(deserialized);
+    const resolveData = params?.resolveData ?? 'all';
+    return filterRunData(parsed, resolveData);
+  }) as Storage['runs']['get'];
+
   return {
-    get: (async (id, params) => {
-      const [value] = await get.execute({ id });
-      if (!value) {
-        throw new WorkflowRunNotFoundError(id);
+    get: getRun,
+
+    /**
+     * Long poll for a terminal run status — see
+     * `Storage['runs'].waitForTerminalStatus`.
+     *
+     * Reads the run, and while it is non-terminal parks on the run-terminal
+     * `NOTIFY` (bounded by the backstop re-read interval) before reading
+     * again. Returns the latest snapshot once `timeoutMs` is up, whatever its
+     * status, and propagates `WorkflowRunNotFoundError` exactly as `get` does.
+     */
+    waitForTerminalStatus: (async (id, params) => {
+      const deadline = Date.now() + (params?.timeoutMs ?? 0);
+      while (true) {
+        const run = await getRun(id, params);
+        if (isTerminalWorkflowRunStatus(run.status)) return run;
+
+        const remainingMs = deadline - Date.now();
+        if (remainingMs <= 0 || params?.signal?.aborted) return run;
+
+        const waitMs = Math.min(remainingMs, getRunStatusPollIntervalMs());
+        if (runStatusListener) {
+          await runStatusListener.wait(id, waitMs, params?.signal);
+        } else {
+          await new Promise((resolve) => setTimeout(resolve, waitMs));
+        }
       }
-      value.output ||= value.outputJson;
-      value.input ||= value.inputJson;
-      value.executionContext ||= value.executionContextJson;
-      value.error ||= parseErrorJson(value.errorJson);
-      const deserialized = deserializeRunError(compact(value));
-      const parsed = WorkflowRunSchema.parse(deserialized);
-      const resolveData = params?.resolveData ?? 'all';
-      return filterRunData(parsed, resolveData);
-    }) as Storage['runs']['get'],
+    }) as NonNullable<Storage['runs']['waitForTerminalStatus']>,
     getMany: (async (ids, params) => {
       const uniqueIds = [...new Set(ids)];
       if (uniqueIds.length === 0) {
@@ -2210,6 +2252,16 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
           cursor: data.at(-1)?.eventId ?? null,
           hasMore: deltaRows.length > limit,
         };
+      }
+
+      // Wake `runs.waitForTerminalStatus` waiters. Every run-terminal
+      // transition in this world happens on the way to here (run_completed /
+      // run_failed / run_cancelled all update the row above), and the update
+      // has committed by now, so a woken waiter re-reads a terminal run. The
+      // early-return paths above are the idempotent ones — a run that was
+      // *already* terminal, whose original transition announced itself.
+      if (run && isTerminalWorkflowRunStatus(run.status)) {
+        await notifyRunTerminal(drizzle, effectiveRunId);
       }
 
       const eventResult: EventResult = {

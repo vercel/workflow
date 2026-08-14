@@ -12,6 +12,7 @@ import type {
 import {
   AttributeValidationError,
   applyAttributeChanges,
+  isTerminalWorkflowRunStatus,
   validateAttributeChanges,
   WorkflowRunSchema,
 } from '@workflow/world';
@@ -25,6 +26,10 @@ import {
 } from '../fs.js';
 import { filterRunData } from './filters.js';
 import { getObjectCreatedAt } from './helpers.js';
+import {
+  getRunStatusPollIntervalMs,
+  waitForRunTerminalSignal,
+} from './run-status-signal.js';
 
 /**
  * Internal extension of `ListWorkflowRunsParams` that adds a `fileIdFilter`
@@ -38,6 +43,7 @@ export interface LocalListWorkflowRunsParams extends ListWorkflowRunsParams {
 
 export interface LocalRunsStorage {
   get: Storage['runs']['get'];
+  waitForTerminalStatus: NonNullable<Storage['runs']['waitForTerminalStatus']>;
   getMany: NonNullable<Storage['runs']['getMany']>;
   list: {
     (
@@ -120,6 +126,33 @@ export function createRunsStorage(
 
   return {
     get,
+
+    /**
+     * Long poll for a terminal run status — see
+     * `Storage['runs'].waitForTerminalStatus`.
+     *
+     * Reads the run, and while it is non-terminal waits for either an
+     * in-process terminal signal or the short backstop interval before
+     * reading again (see `run-status-signal.ts` for why both). Returns the
+     * latest snapshot once `timeoutMs` is up, whatever its status, and
+     * propagates `WorkflowRunNotFoundError` exactly as `get` does.
+     */
+    waitForTerminalStatus: (async (id: string, params?: any) => {
+      const deadline = Date.now() + (params?.timeoutMs ?? 0);
+      while (true) {
+        const run = await get(id, params);
+        if (isTerminalWorkflowRunStatus(run.status)) return run;
+
+        const remainingMs = deadline - Date.now();
+        if (remainingMs <= 0 || params?.signal?.aborted) return run;
+
+        await waitForRunTerminalSignal(
+          id,
+          Math.min(remainingMs, getRunStatusPollIntervalMs()),
+          params?.signal
+        );
+      }
+    }) as NonNullable<Storage['runs']['waitForTerminalStatus']>,
 
     getMany: (async (ids: readonly string[], params?: any) => {
       const uniqueIds = [...new Set(ids)];

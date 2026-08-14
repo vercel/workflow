@@ -13,11 +13,13 @@ import {
   type PaginatedResponse,
   PaginatedResponseSchema,
   SerializedDataSchema,
+  type WaitForTerminalRunStatusParams,
   type WorkflowRun,
   WorkflowRunBaseSchema,
   type WorkflowRunWithoutData,
 } from '@workflow/world';
 import { z } from 'zod';
+import { getRequestTimeoutMs } from './http-core.js';
 import { normalizeWorkflowRunData } from './serialized-data.js';
 import type { APIConfig } from './utils.js';
 import {
@@ -198,31 +200,164 @@ export async function getWorkflowRun(
   config?: APIConfig
 ): Promise<WorkflowRun | WorkflowRunWithoutData> {
   const resolveData = params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
-  const remoteRefBehavior = resolveData === 'none' ? 'lazy' : 'resolve';
-
-  const searchParams = new URLSearchParams();
-  searchParams.set('remoteRefBehavior', remoteRefBehavior);
-
-  const queryString = searchParams.toString();
-  const endpoint = `/v2/runs/${encodeURIComponent(id)}${queryString ? `?${queryString}` : ''}`;
 
   try {
-    const run = await makeRequest({
-      endpoint,
-      options: { method: 'GET' },
-      config,
-      retryConnectTimeout: true,
-      schema: (remoteRefBehavior === 'lazy'
-        ? WorkflowRunWireWithRefsSchema
-        : WorkflowRunWireSchema) as any,
-    });
-
-    return filterRunData(run, resolveData);
+    return await readRun(id, { resolveData }, config);
   } catch (error) {
     if (error instanceof WorkflowWorldError && error.status === 404) {
       throw new WorkflowRunNotFoundError(id);
     }
     throw error;
+  }
+}
+
+/**
+ * Issue one run read against workflow-server and normalize it into the World's
+ * `WorkflowRun` shape.
+ *
+ * `waitMs`, when set, targets the long-pollable `GET /v2/runs/:runId/status`
+ * route instead of the plain read: same entity, same errors, but the server
+ * holds the request open until the run reaches a terminal status or the budget
+ * expires. Shared by `getWorkflowRun` and `waitForWorkflowRunTerminalStatus` so
+ * the two can never drift in how they parse or filter a run.
+ */
+async function readRun(
+  id: string,
+  params: {
+    resolveData: 'none' | 'all';
+    waitMs?: number;
+    signal?: AbortSignal;
+  },
+  config?: APIConfig
+): Promise<WorkflowRun | WorkflowRunWithoutData> {
+  const { resolveData, waitMs, signal } = params;
+  const remoteRefBehavior = resolveData === 'none' ? 'lazy' : 'resolve';
+
+  const searchParams = new URLSearchParams();
+  searchParams.set('remoteRefBehavior', remoteRefBehavior);
+  if (waitMs !== undefined) searchParams.set('waitMs', String(waitMs));
+
+  const path = waitMs === undefined ? '' : '/status';
+  const queryString = searchParams.toString();
+  const endpoint = `/v2/runs/${encodeURIComponent(id)}${path}${queryString ? `?${queryString}` : ''}`;
+
+  const run = await makeRequest({
+    endpoint,
+    options: { method: 'GET', ...(signal ? { signal } : {}) },
+    config,
+    retryConnectTimeout: true,
+    schema: (remoteRefBehavior === 'lazy'
+      ? WorkflowRunWireWithRefsSchema
+      : WorkflowRunWireSchema) as any,
+  });
+
+  return filterRunData(run, resolveData);
+}
+
+/**
+ * Headroom kept between the wait budget we ask the server to hold and the
+ * adapter's own per-request HTTP timeout. The budget must always expire as a
+ * *response* (a non-terminal run) rather than as a client-side timeout: a
+ * timeout is indistinguishable from a broken backend and would turn a healthy
+ * wait into retry noise.
+ */
+const WAIT_TIMEOUT_HEADROOM_MS = 10_000;
+
+/**
+ * How long a `404`/`405`/`501` on the long-poll route suppresses further
+ * attempts before the next one re-probes.
+ *
+ * A miss means this deployment's workflow-server predates the route (or has it
+ * rolled back), which is a property of the *server*, not of the run — so it is
+ * cached process-wide rather than re-learned per call. It expires so a client
+ * that outlives a server roll-forward picks the fast path back up on its own.
+ */
+const LONG_POLL_UNSUPPORTED_TTL_MS = 5 * 60 * 1000;
+
+let longPollUnsupportedUntil = 0;
+
+/** Test-only: forget that the long-poll route was unavailable. @internal */
+export function _resetRunStatusLongPollSupportForTests(): void {
+  longPollUnsupportedUntil = 0;
+}
+
+/**
+ * Wait for a run to reach a terminal status, using workflow-server's
+ * long-pollable `GET /v2/runs/:runId/status` route.
+ *
+ * Implements `Storage['runs'].waitForTerminalStatus`: resolves as soon as the
+ * run is terminal, and otherwise with the latest snapshot once the budget
+ * expires. Never throws on a timeout — a still-running run is an answer.
+ *
+ * Degrades in two places, because the adapter can outlive the server version
+ * it was built against:
+ *
+ * - **Budget.** Clamped to leave {@link WAIT_TIMEOUT_HEADROOM_MS} under the
+ *   adapter's per-request timeout, and the server clamps again to its own
+ *   ceiling. A budget that clamps to zero is just a plain read.
+ * - **Missing route.** A `404` is ambiguous — the run may not exist, or this
+ *   server may not have the route — so it is resolved by falling back to the
+ *   plain read, which is the answer we want either way: it raises
+ *   `WorkflowRunNotFoundError` for a missing run, and returns the run when the
+ *   *route* was what was missing. Only the latter (proof that the run exists
+ *   and the route does not) marks the fast path unsupported, so one bad run ID
+ *   can never disable long polling for the process.
+ */
+export async function waitForWorkflowRunTerminalStatus(
+  id: string,
+  params: WaitForTerminalRunStatusParams & { resolveData: 'none' },
+  config?: APIConfig
+): Promise<WorkflowRunWithoutData>;
+export async function waitForWorkflowRunTerminalStatus(
+  id: string,
+  params?: WaitForTerminalRunStatusParams & { resolveData?: 'all' },
+  config?: APIConfig
+): Promise<WorkflowRun>;
+export async function waitForWorkflowRunTerminalStatus(
+  id: string,
+  params?: WaitForTerminalRunStatusParams,
+  config?: APIConfig
+): Promise<WorkflowRun | WorkflowRunWithoutData>;
+export async function waitForWorkflowRunTerminalStatus(
+  id: string,
+  params?: WaitForTerminalRunStatusParams,
+  config?: APIConfig
+): Promise<WorkflowRun | WorkflowRunWithoutData> {
+  const resolveData = params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
+  const waitMs = Math.max(
+    0,
+    Math.min(
+      params?.timeoutMs ?? 0,
+      getRequestTimeoutMs() - WAIT_TIMEOUT_HEADROOM_MS
+    )
+  );
+
+  if (waitMs === 0 || Date.now() < longPollUnsupportedUntil) {
+    return getWorkflowRun(id, { resolveData }, config);
+  }
+
+  try {
+    return await readRun(
+      id,
+      {
+        resolveData,
+        waitMs,
+        ...(params?.signal ? { signal: params.signal } : {}),
+      },
+      config
+    );
+  } catch (error) {
+    if (
+      !(error instanceof WorkflowWorldError) ||
+      !(error.status === 404 || error.status === 405 || error.status === 501)
+    ) {
+      throw error;
+    }
+
+    // Throws WorkflowRunNotFoundError when the run is what was missing.
+    const run = await getWorkflowRun(id, { resolveData }, config);
+    longPollUnsupportedUntil = Date.now() + LONG_POLL_UNSUPPORTED_TTL_MS;
+    return run;
   }
 }
 

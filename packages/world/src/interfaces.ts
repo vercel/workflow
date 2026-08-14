@@ -20,6 +20,7 @@ import type {
   BulkCancelWorkflowRunsResult,
   GetWorkflowRunParams,
   ListWorkflowRunsParams,
+  WaitForTerminalRunStatusParams,
   WorkflowRun,
   WorkflowRunWithoutData,
 } from './runs.js';
@@ -153,6 +154,63 @@ export interface Storage {
       id: string,
       params?: GetWorkflowRunParams
     ): Promise<WorkflowRun | WorkflowRunWithoutData>;
+
+    /**
+     * Long poll for a run to reach a terminal status (`completed`, `failed`,
+     * or `cancelled`), returning the same entity `get` returns.
+     *
+     * This is how a caller awaiting a run's outcome — `await run.returnValue`
+     * — avoids paying interval-poll quantization for it: instead of asking
+     * "is it done yet?" every second, it asks once and the World answers the
+     * moment the run finishes.
+     *
+     * The contract:
+     *
+     * - **Resolve as soon as the run is terminal**, with the run entity in
+     *   the shape `params.resolveData` asks for.
+     * - **Resolve no later than roughly `params.timeoutMs`** with the latest
+     *   snapshot, whatever its status. A timeout is a normal return, never an
+     *   error: a run that is still running is a legitimate answer.
+     * - **`timeoutMs` is an upper bound, not a lower one.** An
+     *   implementation MAY resolve earlier with a non-terminal snapshot —
+     *   e.g. `@workflow/world-vercel` does when the backend it is talking to
+     *   has no long-poll route and it degrades to a plain read. Callers must
+     *   therefore pace their own retries rather than assume one call per
+     *   `timeoutMs` (the runtime's `Run#pollReturnValue` keeps consecutive
+     *   non-terminal observations at least one poll interval apart).
+     * - **Fail exactly like `get`.** A missing run throws
+     *   `WorkflowRunNotFoundError`; transport failures surface as they would
+     *   on any other read.
+     *
+     * OPTIONAL. Omit it entirely when the World has no way to wait — a
+     * deterministic simulator, a store with no change notification — and the
+     * runtime keeps interval-polling `get` on
+     * `WORKFLOW_RETURN_VALUE_POLL_INTERVAL_MS`. There is nothing to declare
+     * beyond the method's presence, and no behavior degrades when it is
+     * absent: the fast path is strictly additive.
+     *
+     * Implementations are free to satisfy this however their backend allows —
+     * a server-side long poll (`world-vercel` holds
+     * `GET /v2/runs/:runId/status` open), a change notification
+     * (`world-postgres` uses `LISTEN`/`NOTIFY`, `world-local` an in-process
+     * emitter), or a tight internal poll — as long as a lost or missing
+     * notification degrades to returning a snapshot rather than hanging past
+     * the budget.
+     */
+    waitForTerminalStatus?: {
+      (
+        id: string,
+        params: WaitForTerminalRunStatusParams & { resolveData: 'none' }
+      ): Promise<WorkflowRunWithoutData>;
+      (
+        id: string,
+        params?: WaitForTerminalRunStatusParams & { resolveData?: 'all' }
+      ): Promise<WorkflowRun>;
+      (
+        id: string,
+        params?: WaitForTerminalRunStatusParams
+      ): Promise<WorkflowRun | WorkflowRunWithoutData>;
+    };
 
     /**
      * Retrieves several runs as one snapshot. The result preserves the input

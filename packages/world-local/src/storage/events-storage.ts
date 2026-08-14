@@ -104,6 +104,7 @@ import {
   rebuildLiveHookByTokenFromEventLog,
 } from './hooks-storage.js';
 import { handleLegacyEvent } from './legacy.js';
+import { signalRunTerminal } from './run-status-signal.js';
 import { withRunFileLock } from './runs-storage.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -561,6 +562,12 @@ async function writeRunUnderLifecycleLock<T extends WorkflowRun>(
     await writeJSON(taggedPath(basedir, 'runs', runId, tag), next, {
       overwrite: true,
     });
+    // Wake `runs.waitForTerminalStatus` waiters in this process. Emitted after
+    // the file is on disk so a woken waiter re-reads a terminal run, and from
+    // here because every run-lifecycle write funnels through this helper.
+    if (isTerminalWorkflowRunStatus(next.status)) {
+      signalRunTerminal(runId);
+    }
     return next;
   });
 }
