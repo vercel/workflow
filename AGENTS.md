@@ -186,6 +186,32 @@ setup, and it is why the local runner is the fast signal while a fix is in
 flight — at 14 runs a green CI job means "the storms did not trip it", nowhere
 near "the rate is below X".
 
+That is a *laptop* result, and the distinction matters: `CORRUPTED_EVENT_LOG`
+means the run finished the race, while `stuck` usually means it never got to
+run one. Two dispatches of the local lanes against unmodified `main` on GitHub's
+4-core runners scored, at the default scale, world-postgres 5-6 of 6 `step-storm`
+runs `stuck` at `runTimeoutMs` in both, and world-local 6 and 12 of 14 `stuck` —
+the *same* lane, the same commit, "6/14" and "12/14" one dispatch apart. Read a
+single local-lane number as a verdict on a PR and it will mislead you; read
+`pressure.resumesSent` and `progress.events` in the results JSON instead, which
+say whether the run was racing or starving.
+
+Two properties of the harness made that starvation self-sustaining, and both are
+now bounded — if you change either, know what you are giving up:
+
+* **The poke pump is capped** (`EVENT_LOG_RACE_REPRO_POKE_MAX`, default 64).
+  `step-storm`'s pressure is a wall-clock cadence, so a slow run collected *more*
+  out-of-band writes per unit of progress than a fast one, and each one appends a
+  `hook_received` that every later replay re-reads. Unbounded on a 4-core runner
+  that reached ~270 pokes per run and no run ever finished; a healthy 6-round run
+  sends 35-41, so the cap clips runaways only.
+* **Runs abandoned at `runTimeoutMs` are cancelled.** They used to keep replaying
+  in the same app process for the rest of the job. That is how world-local's
+  `hook-storm` came to report six `stuck` runs with `resumesSent: 0` — every one
+  of them starved behind the previous scenario's six abandoned `step-storm` runs
+  and never created a hook for the driver to resume, so the scenario measured
+  nothing about hooks at all.
+
 One thing about a local run is unlike CI and is worth knowing before you read a
 result: in CI each replay gets its own Fluid invocation, while here every replay
 of every run shares one Next.js process. world-postgres gives that process (and
