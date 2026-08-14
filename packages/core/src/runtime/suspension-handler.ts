@@ -16,6 +16,7 @@ import {
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
   SPEC_VERSION_SUPPORTS_COMPRESSION,
+  SPEC_VERSION_SUPPORTS_SLOT_IDENTITY,
   type TraceCarrier,
   type ValidQueueName,
   type WorkflowRun,
@@ -37,13 +38,16 @@ import * as Attribute from '../telemetry/semantic-conventions.js';
 import { getAbortStreamIdFromToken } from '../util.js';
 import {
   getMaxInlineSteps,
+  isBatchTransitionsEnabled,
   isResilientStepDispatchEnabled,
+  MAX_BATCH_FANOUT_EVENTS,
   MAX_RESILIENT_STEP_INPUT_BYTES,
 } from './constants.js';
 import {
   absorbSkippedSlotReport,
   type EventCreator,
   type LoadedEventLog,
+  maxEventSlot,
   queueMessage,
   slotSnapshotParams,
   stepDispatchIdempotencyKey,
@@ -697,6 +701,35 @@ export async function handleSuspension({
     isResilientStepDispatchEnabled() &&
     (run.specVersion ?? 0) >= SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT;
 
+  // Batched fan-out: fold this suspension's step_created + wait_created
+  // writes into one `events.createBatch` call (one durable write, per-event
+  // outcomes) instead of one write per event. Engages only for a CLEAN
+  // fan-out — no attribute writes, no hook writes, no resilient dispatch
+  // (whose creates are each paired with a queue publish) — on a World that
+  // implements the optional method and a run whose events are slot-numbered.
+  // Everything outside the gate keeps the single-event path byte-for-byte.
+  const batchFanoutEligible =
+    isBatchTransitionsEnabled() &&
+    typeof world.events.createBatch === 'function' &&
+    (run.specVersion ?? 0) >= SPEC_VERSION_SUPPORTS_SLOT_IDENTITY &&
+    !resilientDispatchEligible &&
+    allHookItems.length === 0 &&
+    attributeItems.length === 0;
+  /**
+   * The fold's collection, in scheduling order (steps in stepItems order,
+   * then waits). Step entries are enqueued by their prep promises (input
+   * dehydration runs concurrently, so entries are ordered by `order`, not by
+   * completion); the single flush op below awaits every prep, sorts, and
+   * commits the whole set through `createBatch`.
+   */
+  const batchQueue: {
+    order: number;
+    kind: 'step' | 'wait';
+    correlationId: string;
+    event: CreateEventRequest;
+  }[] = [];
+  const batchPreps: Promise<void>[] = [];
+
   // The trace carrier for resilient step dispatches, resolved at most once per
   // suspension (the per-step ops run concurrently and share it).
   let stepDispatchTraceCarrier: Promise<TraceCarrier> | undefined;
@@ -713,174 +746,209 @@ export async function handleSuspension({
   // to caller — EXCEPT on the resilient dispatch path, which parallelizes the
   // create with the step's queue publish and reports it in
   // `queuedStepCorrelationIds`).
+  let batchOrderCounter = 0;
   for (const queueItem of stepItems) {
     if (stepsNeedingCreation.has(queueItem.correlationId)) {
-      ops.push(
-        (async () => {
-          // Per-step sink, merged below: the dehydrate wrapper emits span
-          // attributes from the sink it is handed, so sharing one across
-          // steps would re-emit (and misattribute) earlier steps' entries.
-          const stepGuestCode: GuestCodeStats = { executions: [] };
-          const dehydratedInput = await dehydrateStepArguments(
-            {
-              args: queueItem.args,
-              closureVars: queueItem.closureVars,
-              thisVal: queueItem.thisVal,
-            },
-            runId,
-            encryptionKey,
-            suspension.globalThis,
-            false,
-            compression,
-            stepGuestCode
-          );
-          guestCodeStats.executions.push(...stepGuestCode.executions);
-          // Deferred (lazy) inline step: skip the step_created write — the
-          // caller's inline executeStep will send a lazy step_started carrying
-          // this input, and the world creates the step (entity + synthetic
-          // step_created event) atomically. We do NOT add it to
-          // createdStepCorrelationIds; ownership is decided by that lazy
-          // step_started's atomic create-claim instead.
-          if (lazyInlineCorrelationIds.has(queueItem.correlationId)) {
-            lazyInlineByCorrelationId.set(queueItem.correlationId, {
-              correlationId: queueItem.correlationId,
-              stepName: queueItem.stepName,
-              dehydratedInput: dehydratedInput as SerializedData,
-            });
-            return;
-          }
-          const stepEvent: CreateEventRequest = {
-            eventType: 'step_created' as const,
-            specVersion: SPEC_VERSION_CURRENT,
+      // Deterministic position in the batched fold (assigned in stepItems
+      // order, before the concurrent dehydration runs).
+      const stepOrder = batchOrderCounter++;
+      const stepOp = (async () => {
+        // Per-step sink, merged below: the dehydrate wrapper emits span
+        // attributes from the sink it is handed, so sharing one across
+        // steps would re-emit (and misattribute) earlier steps' entries.
+        const stepGuestCode: GuestCodeStats = { executions: [] };
+        const dehydratedInput = await dehydrateStepArguments(
+          {
+            args: queueItem.args,
+            closureVars: queueItem.closureVars,
+            thisVal: queueItem.thisVal,
+          },
+          runId,
+          encryptionKey,
+          suspension.globalThis,
+          false,
+          compression,
+          stepGuestCode
+        );
+        guestCodeStats.executions.push(...stepGuestCode.executions);
+        // Deferred (lazy) inline step: skip the step_created write — the
+        // caller's inline executeStep will send a lazy step_started carrying
+        // this input, and the world creates the step (entity + synthetic
+        // step_created event) atomically. We do NOT add it to
+        // createdStepCorrelationIds; ownership is decided by that lazy
+        // step_started's atomic create-claim instead.
+        if (lazyInlineCorrelationIds.has(queueItem.correlationId)) {
+          lazyInlineByCorrelationId.set(queueItem.correlationId, {
             correlationId: queueItem.correlationId,
-            eventData: {
-              stepName: queueItem.stepName,
-              workflowName: run.workflowName,
-              input: dehydratedInput as SerializedData,
-            },
-          };
+            stepName: queueItem.stepName,
+            dehydratedInput: dehydratedInput as SerializedData,
+          });
+          return;
+        }
+        const stepEvent: CreateEventRequest = {
+          eventType: 'step_created' as const,
+          specVersion: SPEC_VERSION_CURRENT,
+          correlationId: queueItem.correlationId,
+          eventData: {
+            stepName: queueItem.stepName,
+            workflowName: run.workflowName,
+            input: dehydratedInput as SerializedData,
+          },
+        };
 
-          // Resilient step dispatch: fire the step_created write and the
-          // step-execution queue publish in parallel — the message carries the
-          // same serialized input (`stepInput`) so the consumer can
-          // idempotently re-ensure the event if the direct write failed
-          // transiently. Mirrors the resilient start (`runInput`) and
-          // resilient hook resume (`hookInput`) patterns. Only for inputs the
-          // queue message can safely carry (binary, under the VQS size cap).
-          if (
-            resilientDispatchEligible &&
-            dehydratedInput instanceof Uint8Array &&
-            dehydratedInput.byteLength <= MAX_RESILIENT_STEP_INPUT_BYTES
-          ) {
-            await ensureRunReady();
-            const traceCarrier = await getStepDispatchTraceCarrier();
-            const [createResult, queueResult] = await Promise.allSettled([
-              createGuarded(stepEvent, { requestId }),
-              queueMessage(
-                world,
-                // biome-ignore lint/style/noNonNullAssertion: implied by resilientDispatchEligible
-                stepDispatch!.queueName,
-                {
-                  runId,
-                  stepId: queueItem.correlationId,
-                  stepName: queueItem.stepName,
-                  traceCarrier,
-                  requestedAt: new Date(),
-                  stepInput: { input: dehydratedInput },
-                },
-                // Same key as the caller's dispatch pass and any concurrent
-                // handler's — redundant publishes for this step dedupe. The
-                // key is step-identity-scoped so a revoked message for a
-                // reassigned correlation id cannot absorb the corrected
-                // schedule's dispatch — see stepDispatchIdempotencyKey.
-                {
-                  idempotencyKey: stepDispatchIdempotencyKey(
-                    queueItem.correlationId,
-                    queueItem.stepName
-                  ),
-                }
-              ),
-            ]);
-            // Queue failure is always fatal for this suspension pass: without
-            // the message the step would rely on the create alone, and if the
-            // create ALSO failed there would be no durable record at all.
-            // Propagating redelivers the orchestrator message, which
-            // re-creates the (idempotent) step_created and re-dispatches —
-            // the same recovery as the sequential path.
-            if (queueResult.status === 'rejected') {
-              throw queueResult.reason;
-            }
-            queuedStepCorrelationIds.add(queueItem.correlationId);
-            if (createResult.status === 'rejected') {
-              const err = createResult.reason;
-              if (EntityConflictError.is(err)) {
-                // Concurrent handler wrote it first — same as the sequential
-                // path. The step message is already out; a duplicate publish
-                // by that handler dedupes on the shared idempotency key.
-                runtimeLogger.info('Step already exists, continuing', {
-                  workflowRunId: runId,
-                  correlationId: queueItem.correlationId,
-                  message: err.message,
-                });
-              } else if (isRetryableWorldError(err)) {
-                // Resilient: the write failed transiently (429 / 5xx /
-                // transport) but the step message — carrying the same
-                // serialized input — was published, so the consumer
-                // idempotently re-ensures the step_created before executing.
-                resilientDispatchRecovered++;
-                runtimeLogger.warn(
-                  'Step creation event write failed, but the step was ' +
-                    'dispatched via the queue. The step_created event will ' +
-                    'be ensured by the queue consumer.',
-                  {
-                    workflowRunId: runId,
-                    correlationId: queueItem.correlationId,
-                    stepName: queueItem.stepName,
-                    error: err instanceof Error ? err.message : String(err),
-                  }
-                );
-              } else {
-                throw err;
+        // Resilient step dispatch: fire the step_created write and the
+        // step-execution queue publish in parallel — the message carries the
+        // same serialized input (`stepInput`) so the consumer can
+        // idempotently re-ensure the event if the direct write failed
+        // transiently. Mirrors the resilient start (`runInput`) and
+        // resilient hook resume (`hookInput`) patterns. Only for inputs the
+        // queue message can safely carry (binary, under the VQS size cap).
+        if (
+          resilientDispatchEligible &&
+          dehydratedInput instanceof Uint8Array &&
+          dehydratedInput.byteLength <= MAX_RESILIENT_STEP_INPUT_BYTES
+        ) {
+          await ensureRunReady();
+          const traceCarrier = await getStepDispatchTraceCarrier();
+          const [createResult, queueResult] = await Promise.allSettled([
+            createGuarded(stepEvent, { requestId }),
+            queueMessage(
+              world,
+              // biome-ignore lint/style/noNonNullAssertion: implied by resilientDispatchEligible
+              stepDispatch!.queueName,
+              {
+                runId,
+                stepId: queueItem.correlationId,
+                stepName: queueItem.stepName,
+                traceCarrier,
+                requestedAt: new Date(),
+                stepInput: { input: dehydratedInput },
+              },
+              // Same key as the caller's dispatch pass and any concurrent
+              // handler's — redundant publishes for this step dedupe. The
+              // key is step-identity-scoped so a revoked message for a
+              // reassigned correlation id cannot absorb the corrected
+              // schedule's dispatch — see stepDispatchIdempotencyKey.
+              {
+                idempotencyKey: stepDispatchIdempotencyKey(
+                  queueItem.correlationId,
+                  queueItem.stepName
+                ),
               }
-            } else {
-              createdStepCorrelationIds.add(queueItem.correlationId);
-            }
-            return;
+            ),
+          ]);
+          // Queue failure is always fatal for this suspension pass: without
+          // the message the step would rely on the create alone, and if the
+          // create ALSO failed there would be no durable record at all.
+          // Propagating redelivers the orchestrator message, which
+          // re-creates the (idempotent) step_created and re-dispatches —
+          // the same recovery as the sequential path.
+          if (queueResult.status === 'rejected') {
+            throw queueResult.reason;
           }
-
-          try {
-            await ensureRunReady();
-            await createGuarded(stepEvent, { requestId });
-            createdStepCorrelationIds.add(queueItem.correlationId);
-          } catch (err) {
+          queuedStepCorrelationIds.add(queueItem.correlationId);
+          if (createResult.status === 'rejected') {
+            const err = createResult.reason;
             if (EntityConflictError.is(err)) {
+              // Concurrent handler wrote it first — same as the sequential
+              // path. The step message is already out; a duplicate publish
+              // by that handler dedupes on the shared idempotency key.
               runtimeLogger.info('Step already exists, continuing', {
                 workflowRunId: runId,
                 correlationId: queueItem.correlationId,
                 message: err.message,
               });
+            } else if (isRetryableWorldError(err)) {
+              // Resilient: the write failed transiently (429 / 5xx /
+              // transport) but the step message — carrying the same
+              // serialized input — was published, so the consumer
+              // idempotently re-ensures the step_created before executing.
+              resilientDispatchRecovered++;
+              runtimeLogger.warn(
+                'Step creation event write failed, but the step was ' +
+                  'dispatched via the queue. The step_created event will ' +
+                  'be ensured by the queue consumer.',
+                {
+                  workflowRunId: runId,
+                  correlationId: queueItem.correlationId,
+                  stepName: queueItem.stepName,
+                  error: err instanceof Error ? err.message : String(err),
+                }
+              );
             } else {
               throw err;
             }
+          } else {
+            createdStepCorrelationIds.add(queueItem.correlationId);
           }
-        })()
-      );
+          return;
+        }
+
+        if (batchFanoutEligible) {
+          // Fold into the batch instead of writing here. The enclosing
+          // promise joins `batchPreps` (see the loop below), so the flush
+          // op cannot run before this step's input finished dehydrating.
+          batchQueue.push({
+            order: stepOrder,
+            kind: 'step',
+            correlationId: queueItem.correlationId,
+            event: stepEvent,
+          });
+          return;
+        }
+
+        try {
+          await ensureRunReady();
+          await createGuarded(stepEvent, { requestId });
+          createdStepCorrelationIds.add(queueItem.correlationId);
+        } catch (err) {
+          if (EntityConflictError.is(err)) {
+            runtimeLogger.info('Step already exists, continuing', {
+              workflowRunId: runId,
+              correlationId: queueItem.correlationId,
+              message: err.message,
+            });
+          } else {
+            throw err;
+          }
+        }
+      })();
+      ops.push(stepOp);
+      if (batchFanoutEligible) {
+        // The flush op waits for every prep before committing; a prep that
+        // rejected already surfaces through `ops`, so the flush's own wait
+        // swallows it and commits whatever was successfully enqueued —
+        // preserving today's per-op independence.
+        batchPreps.push(stepOp.catch(() => {}));
+      }
     }
   }
 
   // Create wait events (same as V1)
   for (const queueItem of waitItems) {
     if (!queueItem.hasCreatedEvent) {
+      const waitEvent: CreateEventRequest = {
+        eventType: 'wait_created' as const,
+        specVersion: SPEC_VERSION_CURRENT,
+        correlationId: queueItem.correlationId,
+        eventData: {
+          resumeAt: queueItem.resumeAt,
+        },
+      };
+      if (batchFanoutEligible) {
+        // Waits need no dehydration, so they enqueue synchronously — after
+        // every step's order slot, preserving steps-then-waits scheduling
+        // order in the log.
+        batchQueue.push({
+          order: batchOrderCounter++,
+          kind: 'wait',
+          correlationId: queueItem.correlationId,
+          event: waitEvent,
+        });
+        continue;
+      }
       ops.push(
         (async () => {
-          const waitEvent: CreateEventRequest = {
-            eventType: 'wait_created' as const,
-            specVersion: SPEC_VERSION_CURRENT,
-            correlationId: queueItem.correlationId,
-            eventData: {
-              resumeAt: queueItem.resumeAt,
-            },
-          };
           try {
             await ensureRunReady();
             await createGuarded(waitEvent, { requestId });
@@ -898,6 +966,94 @@ export async function handleSuspension({
         })()
       );
     }
+  }
+
+  // The batched fold's flush: ONE durable write for the whole clean fan-out
+  // (chunked at MAX_BATCH_FANOUT_EVENTS), joining `ops` like the per-event
+  // writes it replaces so settlePhase semantics are unchanged. Each event
+  // reports the outcome its own single create would have had: a 409 is the
+  // same already-exists tolerance as the single path, anything else fails
+  // the op the way a single-path rejection would.
+  if (batchFanoutEligible) {
+    ops.push(
+      (async () => {
+        // Preps that rejected already surface through their own `ops`
+        // entries; the fold commits whatever was successfully enqueued,
+        // preserving today's per-op independence.
+        await Promise.all(batchPreps);
+        if (batchQueue.length === 0) {
+          return;
+        }
+        const entries = [...batchQueue].sort((a, b) => a.order - b.order);
+        await ensureRunReady();
+        for (
+          let start = 0;
+          start < entries.length;
+          start += MAX_BATCH_FANOUT_EVENTS
+        ) {
+          const chunk = entries.slice(start, start + MAX_BATCH_FANOUT_EVENTS);
+          const expectedFirstSlot = eventLog
+            ? (maxEventSlot(eventLog.events) ?? 0) + 1
+            : undefined;
+          // biome-ignore lint/style/noNonNullAssertion: batchFanoutEligible implies presence
+          const { results } = await world.events.createBatch!(
+            runId,
+            chunk.map((entry) => ({ event: entry.event }))
+          );
+          for (const [index, item] of results.entries()) {
+            const entry = chunk[index];
+            if (item.error === undefined) {
+              if (entry.kind === 'step') {
+                createdStepCorrelationIds.add(entry.correlationId);
+              }
+              continue;
+            }
+            if (item.status === 409) {
+              // Same tolerance as the single path's EntityConflictError: a
+              // concurrent or earlier delivery already created it.
+              runtimeLogger.info(
+                entry.kind === 'step'
+                  ? 'Step already exists, continuing'
+                  : 'Wait already exists, continuing',
+                {
+                  workflowRunId: runId,
+                  correlationId: entry.correlationId,
+                  message: item.message,
+                }
+              );
+              continue;
+            }
+            throw new WorkflowWorldError(
+              `batched ${entry.event.eventType} for ${entry.correlationId} ` +
+                `failed: ${item.error}: ${item.message}`,
+              { status: item.status }
+            );
+          }
+          // Slot-bump visibility: the batch endpoint has no bump-and-report,
+          // so a foreign event landing between our snapshot and the commit
+          // pushes the whole batch to higher slots WITHOUT handing us the
+          // skipped events. That is the same accepted exposure as a dropped
+          // truncated report on the single path (absorbSkippedSlotReport
+          // drops those whole): the local log continues without the foreign
+          // events and the next reload sees them. Logged so a bump is
+          // diagnosable rather than silent.
+          const firstCommitted = results.find(
+            (item) => item.error === undefined
+          )?.event;
+          if (expectedFirstSlot !== undefined && firstCommitted) {
+            const firstSlot = maxEventSlot([firstCommitted]);
+            if (firstSlot !== undefined && firstSlot > expectedFirstSlot) {
+              runtimeLogger.debug('Batched fan-out committed above snapshot', {
+                workflowRunId: runId,
+                expectedFirstSlot,
+                firstSlot,
+                skipped: firstSlot - expectedFirstSlot,
+              });
+            }
+          }
+        }
+      })()
+    );
   }
 
   for (const queueItem of attributeItems) {
