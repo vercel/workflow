@@ -284,8 +284,9 @@ export async function getNextBuilderEager(
                 bundleFinal: newCombined.bundleFinal,
               };
 
-              await writeManifest(newCombined.manifest);
               await refreshSourceSnapshots();
+              await refreshKnownFiles();
+              await writeManifest(newCombined.manifest);
             },
           });
 
@@ -466,7 +467,6 @@ export async function getNextBuilderEager(
           if (decision.kind === 'full') {
             try {
               await fullRebuild();
-              await refreshKnownFiles();
               logDevHmr('workflow dev hmr: full rediscovery');
             } finally {
               // Lets a log reader tell "quiet" from "rebuild in flight".
