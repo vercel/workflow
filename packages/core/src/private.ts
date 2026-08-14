@@ -627,18 +627,27 @@ function ensureBarrierSafetyNet(ctx: WorkflowOrchestratorContext): void {
       return;
     }
     // Idle with entries left: nothing remaining delivers on its own, so
-    // release the head of the parked chain — the lowest index — and nothing
-    // else. The macrotask before the next check gives the released chain time
-    // to wake and re-block idle.
-    let lowestIndex: number | undefined;
-    let lowestEntry: DeliveryBarrierEntry | undefined;
-    for (const [index, entry] of barriers) {
-      if (lowestIndex === undefined || index < lowestIndex) {
-        lowestIndex = index;
-        lowestEntry = entry;
+    // release parked chains from the head — lowest index first, one at a
+    // time, re-reading idle between retirements. A retirement that wakes a
+    // chain flips {@link hasParkedCommittedDelivery} synchronously (it is
+    // computed from the registry this loop just mutated), which stops the
+    // sweep so the chain delivers before anything above it is released. A
+    // retirement that wakes nothing (a stale payload no delivery gates on)
+    // keeps the sweep going, so a backlog of those drains in ONE idle
+    // observation — pacing them one per timer tick would hold consumed-but-
+    // undelivered events hostage long enough to trip the events consumer's
+    // unconsumed-event deadline and fail healthy replays.
+    while (barriers.size > 0 && isDeliveryIdle(ctx)) {
+      let lowestIndex: number | undefined;
+      let lowestEntry: DeliveryBarrierEntry | undefined;
+      for (const [index, entry] of barriers) {
+        if (lowestIndex === undefined || index < lowestIndex) {
+          lowestIndex = index;
+          lowestEntry = entry;
+        }
       }
+      lowestEntry?.retire();
     }
-    lowestEntry?.retire();
     setTimeout(check, 0);
   };
   setTimeout(check, 0);
