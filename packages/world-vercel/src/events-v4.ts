@@ -841,9 +841,22 @@ const BatchItemFailureSchema = z.object({
  * write with per-event outcomes. The body is the events' single-POST frames
  * back-to-back (byte-identical framing, no batch-level meta); the response is
  * HTTP 200 CBOR `{ results }` whenever the batch was processed, one entry per
- * frame in request order. Slot-identity runs only — an older server 404s the
- * route and a pre-slot run is rejected with a 400, both of which callers
- * treat as "fall back to single-event posts".
+ * frame in request order.
+ *
+ * Slot-identity runs only — an older server 404s the route and a pre-slot
+ * run is rejected with a 400. There is NO automatic fallback to single-event
+ * posts on either: the runtime never sends a batch for a pre-slot run (it
+ * gates on the run's spec version), and against a backend without the route
+ * the batch fails and the suspension redelivers until the operator disables
+ * batching via `WORKFLOW_BATCH_TRANSITIONS=0`. Ambiguous failures (timeouts,
+ * resets, 5xx, malformed responses) never convert to single posts either —
+ * the wrapper either re-sends the SAME batch (only when its shape is
+ * retry-convergent; see `createWorkflowRunEventBatch`) or surfaces the error
+ * for queue redelivery, whose replay re-derives an idempotent batch.
+ *
+ * HTTP-only by design: the WS event transport streams one frame per message
+ * and has no batch framing, so a WS-configured deployment still sends
+ * batches over HTTP (single-event writes keep their configured transport).
  */
 export async function createWorkflowRunEventsBatchV4(
   input: CreateEventBatchV4Input,
@@ -868,6 +881,13 @@ export async function createWorkflowRunEventsBatchV4(
     offset += frame.byteLength;
   }
 
+  // Per-type shape for the span, so mixed batches classify as what they
+  // carry rather than as their first event's type alone.
+  const typeCounts = new Map<string, number>();
+  for (const event of input.events) {
+    typeCounts.set(event.eventType, (typeCounts.get(event.eventType) ?? 0) + 1);
+  }
+
   const url = `${baseUrl}/v4/runs/${encodeURIComponent(input.runId)}/events/batch`;
   const response = await fetchV4(
     url,
@@ -878,6 +898,10 @@ export async function createWorkflowRunEventsBatchV4(
       ...WorkflowEventsTransport('http'),
       ...WorkflowEventType(input.events[0].eventType),
       'workflow.batch.size': input.events.length,
+      'workflow.batch.shape': [...typeCounts]
+        .map(([type, count]) => `${type}:${count}`)
+        .join(','),
+      'workflow.batch.bytes': body.byteLength,
     }
   );
 
@@ -910,6 +934,16 @@ export async function createWorkflowRunEventsBatchV4(
       if (failure.success && failure.data.status !== 200) {
         return failure.data;
       }
+      // Success requires the LITERAL 200: an item with a non-200 status that
+      // failed the failure schema (e.g. missing error/message) must not fall
+      // through and be re-labeled a success by the body parse below.
+      if ((raw as { status?: unknown } | null)?.status !== 200) {
+        throw new WorkflowWorldError(
+          `v4 createEventBatch: result at index ${index} is neither a ` +
+            'success (status 200) nor a well-formed failure',
+          { code: 'SCHEMA_VALIDATION' }
+        );
+      }
       // Success items validate against the SAME per-type schema the single
       // POST uses, so a batched write and its single-path twin return
       // byte-equivalent bodies to the caller.
@@ -919,6 +953,16 @@ export async function createWorkflowRunEventsBatchV4(
         throw new WorkflowWorldError(
           `v4 createEventBatch: invalid result body at index ${index} (${eventType})`,
           { code: 'SCHEMA_VALIDATION', cause: parsed.error }
+        );
+      }
+      // Results are consumed positionally; an item whose committed event is
+      // of a different type than the frame submitted at this index is a
+      // server protocol violation, same as a wrong-length results array.
+      if (parsed.data.event.eventType !== eventType) {
+        throw new WorkflowWorldError(
+          `v4 createEventBatch: result at index ${index} carries a ` +
+            `${parsed.data.event.eventType} event, expected ${eventType}`,
+          { code: 'SCHEMA_VALIDATION' }
         );
       }
       return { status: 200, ...parsed.data };

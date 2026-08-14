@@ -1036,6 +1036,13 @@ export interface BatchEventRequest {
 /** Per-batch parameters for {@link Storage.events.createBatch}. */
 export interface CreateEventBatchParams {
   resolveData?: ResolveData;
+  /**
+   * Request id for per-write attribution, same as the single create's
+   * {@link CreateEventParams.requestId}: stamped on every event in the batch
+   * so a batched write's usage facts and telemetry carry the same request
+   * attribution its single-path twin would.
+   */
+  requestId?: string;
 }
 
 /**
@@ -1049,10 +1056,27 @@ export interface CreateEventBatchParams {
  *   materialized entity the single create returns (`step` for step events,
  *   `wait` for wait events, `run` for run terminals);
  * - rejection → the status code and error code the single create would have
- *   failed with (e.g. `409`/`conflict` for an event an earlier delivery
- *   already applied), so callers reuse their single-path conflict handling
- *   per event. A transport retry of a fully committed batch converges to
- *   all-409s with nothing written twice.
+ *   failed with, so callers reuse their single-path conflict handling per
+ *   event. A `409`/`conflict` means the entity was not in the prior state
+ *   the event requires — most commonly because an earlier delivery already
+ *   applied the same event, but possibly because the entity reached a
+ *   DIFFERENT state (e.g. `step_completed` conflicting because the step
+ *   failed). A 409 alone does not prove the equivalent effect was applied;
+ *   a caller that needs effect-equivalence consults the entity (returned on
+ *   sibling successes, or reloaded).
+ *
+ * The batch is atomic per attempt, not all-or-nothing across the submitted
+ * set: a World may drop rejected events and commit the survivors, so a batch
+ * can return a mix of 200s and 409s from one call.
+ *
+ * Retry semantics: a transport retry of a committed batch converges to
+ * per-event 409s ONLY for entity-conditioned events — creates, terminal
+ * transitions, and the born-running `step_created`+`step_started` pair
+ * (fenced by the pair's create). A standalone bare `step_started` or a
+ * `step_retrying` re-patches its step on every attempt and does NOT
+ * converge, and `hook_received` appends a new row per attempt —
+ * `world-vercel` rejects `hook_received` in a batch outright and only
+ * auto-retries batches whose every event is retry-convergent.
  */
 export type BatchEventItemResult =
   | {

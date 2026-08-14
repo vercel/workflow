@@ -332,15 +332,20 @@ export interface EventPostRetryOptions {
    */
   idempotentHookResume?: boolean;
   /**
-   * Batch POST override: a `createBatch` request is idempotent-on-retry as a
-   * WHOLE regardless of the event types it carries, because every batchable
-   * event is guarded by its own entity condition — a retry of a batch that
-   * committed (or partially committed) converges to per-event 409 results
-   * with nothing written twice, which the caller already handles per event.
-   * The per-type eligibility matrix guards SINGLE posts, where e.g. a
-   * retried `step_started` would increment `attempt` unconditionally; in a
-   * batch that same start is fenced by the step create-claim, so the matrix
-   * does not apply. Definitive 4xx responses stay non-retryable regardless.
+   * Batch POST retry verdict, set by `createWorkflowRunEventBatch` from the
+   * batch's CONTENTS. `true` means every event in the batch converges on a
+   * retry of a committed attempt — entity-conditioned events (creates,
+   * terminal transitions) re-reject with 409, and a `step_started` is fenced
+   * by its born-running pair's create-claim — so the whole POST gets the
+   * standard transient retry policy and a re-send converges to per-event
+   * 409s with nothing written twice. `false` means at least one event does
+   * NOT converge (a standalone bare `step_started` re-increments `attempt`,
+   * a `step_retrying` re-patches its step), so the batch runs
+   * single-attempt and recovery is left to queue redelivery. When set (a
+   * batch call), this verdict REPLACES the per-type matrix entirely — the
+   * matrix classifies single posts and its entry for any one type says
+   * nothing about a mixed batch. Definitive 4xx responses stay
+   * non-retryable regardless.
    */
   batchIdempotent?: boolean;
 }
@@ -387,8 +392,13 @@ function isEligibleForTransientRetry(
   eventType: WorkflowEventType,
   options?: EventPostRetryOptions
 ): boolean {
+  // A batch call always carries an explicit verdict derived from every event
+  // it contains; the per-type matrix (keyed on the batch's FIRST event) must
+  // not override it in either direction.
+  if (options?.batchIdempotent !== undefined) {
+    return options.batchIdempotent;
+  }
   return (
-    options?.batchIdempotent === true ||
     (eventType === 'hook_received' && options?.idempotentHookResume === true) ||
     (EVENT_RETRY_ELIGIBILITY[eventType]?.retryable ?? false)
   );

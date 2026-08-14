@@ -488,12 +488,26 @@ export async function getWorkflowRunEvents(
 export async function createWorkflowRunEventBatch(
   runId: string,
   events: BatchEventRequest[],
-  _params?: CreateEventBatchParams,
+  params?: CreateEventBatchParams,
   config?: APIConfig
 ): Promise<EventBatchResult> {
   if (events.length === 0) {
     throw new WorkflowWorldError(
       'world-vercel: createBatch requires at least one event',
+      { status: 400 }
+    );
+  }
+  // Advisory `hook_received` has no entity condition: the server appends a
+  // fresh row on every attempt, so a retried batch would deliver the hook
+  // payload twice — and the atomic lazy-resume shape (the one dedupable
+  // form) is rejected by the batch route anyway. Nothing batches hook
+  // deliveries today; reject them here so the retry contract below stays
+  // honest instead of silently double-appending.
+  if (events.some(({ event }) => event.eventType === 'hook_received')) {
+    throw new WorkflowWorldError(
+      'world-vercel: hook_received cannot be batched (it has no entity ' +
+        'condition, so a batch retry would append the delivery twice); ' +
+        'send it through the single-event path',
       { status: 400 }
     );
   }
@@ -508,17 +522,44 @@ export async function createWorkflowRunEventBatch(
       // the caller's logical time is what every replay observes.
       occurredAt: occurredAt ?? new Date(),
       // Batch responses carry entities for bookkeeping, not payload reads —
-      // the caller just produced every payload in this batch itself.
-      remoteRefBehavior: 'lazy' as const,
+      // default to lazy refs unless the caller explicitly asks for resolved
+      // data (the same `resolveData` mapping the read paths use).
+      remoteRefBehavior:
+        params?.resolveData === 'all'
+          ? ('resolve' as const)
+          : ('lazy' as const),
+      // Per-write request attribution, exactly like the single POST's
+      // `params.requestId` → `vercelId` threading — stamped per frame so
+      // batched usage facts carry the same attribution.
+      ...(params?.requestId ? { vercelId: params.requestId } : {}),
       payload,
       ...meta,
     };
   });
 
+  // In-process transient retry is safe only when EVERY event in the batch
+  // converges on a retry of a committed attempt: entity-conditioned events
+  // (creates, terminal transitions) re-reject with 409, and a step_started
+  // converges only as the second half of a born-running pair, where the
+  // pair's create-claim fences it. A standalone bare step_started re-patches
+  // a running step (attempt++) and step_retrying re-patches a pending one —
+  // a batch carrying either runs single-attempt and leaves transient-failure
+  // recovery to queue redelivery, exactly like their single POSTs.
+  const retryConvergent = events.every(({ event }, index) => {
+    if (event.eventType === 'step_started') {
+      const previous = events[index - 1]?.event;
+      return (
+        previous?.eventType === 'step_created' &&
+        previous.correlationId === event.correlationId
+      );
+    }
+    return event.eventType !== 'step_retrying';
+  });
+
   const wire = await withEventPostRetry(
     () => createWorkflowRunEventsBatchV4({ runId, events: inputs }, config),
     events[0].event.eventType,
-    { batchIdempotent: true }
+    { batchIdempotent: retryConvergent }
   );
 
   return {

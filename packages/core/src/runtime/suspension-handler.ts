@@ -1016,19 +1016,26 @@ export async function handleSuspension({
           }
           return;
         }
+        // Expected next slot for the bump diagnostic below: seeded once from
+        // the caller's view and advanced past each chunk's own committed
+        // events, so chunk 2+ of a multi-chunk fan-out does not misread this
+        // fold's earlier chunks as foreign skips.
+        let expectedFirstSlot = eventLog
+          ? (maxEventSlot(eventLog.events) ?? 0) + 1
+          : undefined;
         for (
           let start = 0;
           start < entries.length;
           start += MAX_BATCH_FANOUT_EVENTS
         ) {
           const chunk = entries.slice(start, start + MAX_BATCH_FANOUT_EVENTS);
-          const expectedFirstSlot = eventLog
-            ? (maxEventSlot(eventLog.events) ?? 0) + 1
-            : undefined;
           // biome-ignore lint/style/noNonNullAssertion: batchFanoutEligible implies presence
           const { results } = await world.events.createBatch!(
             runId,
-            chunk.map((entry) => ({ event: entry.event }))
+            chunk.map((entry) => ({ event: entry.event })),
+            // Per-write request attribution, same as the single path's
+            // createGuarded(…, { requestId }).
+            { requestId }
           );
           for (const [index, item] of results.entries()) {
             const entry = chunk[index];
@@ -1080,6 +1087,20 @@ export async function handleSuspension({
                 skipped: firstSlot - expectedFirstSlot,
               });
             }
+          }
+          // Advance the expectation past this chunk's committed events so the
+          // next chunk's diagnostic measures only foreign interleaving.
+          const chunkMaxSlot = maxEventSlot(
+            results.flatMap((item) =>
+              item.error === undefined && item.event ? [item.event] : []
+            )
+          );
+          if (
+            expectedFirstSlot !== undefined &&
+            chunkMaxSlot !== undefined &&
+            chunkMaxSlot >= expectedFirstSlot
+          ) {
+            expectedFirstSlot = chunkMaxSlot + 1;
           }
         }
       })()

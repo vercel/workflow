@@ -383,3 +383,185 @@ describe('createWorkflowRunEventBatch', () => {
     ).rejects.toMatchObject({ status: 400 });
   });
 });
+
+describe('createWorkflowRunEventBatch — retry-convergence and attribution', () => {
+  it('rejects hook_received without touching the network', async () => {
+    await expect(
+      createWorkflowRunEventBatch(
+        RUN_ID,
+        [
+          {
+            event: {
+              eventType: 'hook_received',
+              specVersion: 6,
+              correlationId: 'hook_1',
+              eventData: { payload: utf8('"delivery"') },
+            },
+          },
+        ],
+        undefined,
+        { token: 'test-token', dispatcher: mockAgent() }
+      )
+    ).rejects.toMatchObject({ status: 400 });
+  });
+
+  it('threads requestId to per-frame vercelId and honors resolveData', async () => {
+    const agent = mockAgent();
+    let requestBody: Uint8Array | undefined;
+    agent
+      .get(ORIGIN)
+      .intercept({
+        path: `/api/v4/runs/${RUN_ID}/events/batch`,
+        method: 'POST',
+        body: (raw) => {
+          requestBody = new Uint8Array(Buffer.from(raw, 'binary'));
+          return true;
+        },
+      })
+      .reply(200, fullSuccessBody(), {
+        headers: { 'content-type': 'application/cbor' },
+      });
+
+    await createWorkflowRunEventBatch(
+      RUN_ID,
+      transitionEvents(),
+      { requestId: 'req_attrib_1', resolveData: 'all' },
+      { token: 'test-token', dispatcher: agent }
+    );
+
+    // biome-ignore lint/style/noNonNullAssertion: interceptor ran
+    const frames = decodeBatchFrames(requestBody!);
+    for (const frame of frames) {
+      expect(frame.meta.vercelId).toBe('req_attrib_1');
+      expect(frame.meta.remoteRefBehavior).toBe('resolve');
+    }
+    agent.assertNoPendingInterceptors();
+  });
+
+  it('does NOT retry a transient 5xx when the batch carries a bare step_started', async () => {
+    const agent = mockAgent();
+    agent
+      .get(ORIGIN)
+      .intercept({
+        path: `/api/v4/runs/${RUN_ID}/events/batch`,
+        method: 'POST',
+      })
+      .reply(503, JSON.stringify({ message: 'unavailable' }), {
+        headers: { 'content-type': 'application/json' },
+      });
+
+    // started(step_b) does NOT follow its own step_created — a bare claim
+    // whose retry would re-increment attempt, so the POST is single-attempt.
+    const events: BatchEventRequest[] = [
+      {
+        event: {
+          eventType: 'step_created',
+          specVersion: 6,
+          correlationId: 'step_a',
+          eventData: {
+            stepName: 'step-a',
+            workflowName: 'wf',
+            input: utf8('"a-input"'),
+          },
+        },
+      },
+      {
+        event: {
+          eventType: 'step_started',
+          specVersion: 6,
+          correlationId: 'step_b',
+          eventData: { stepName: 'step-b' },
+        },
+      },
+    ];
+
+    await expect(
+      createWorkflowRunEventBatch(RUN_ID, events, undefined, {
+        token: 'test-token',
+        dispatcher: agent,
+      })
+    ).rejects.toMatchObject({ status: 503 });
+    // The single interceptor was consumed exactly once — no in-process retry.
+    agent.assertNoPendingInterceptors();
+  });
+
+  it('fails loudly when a success item is not literal status 200', async () => {
+    const agent = mockAgent();
+    agent
+      .get(ORIGIN)
+      .intercept({
+        path: `/api/v4/runs/${RUN_ID}/events/batch`,
+        method: 'POST',
+      })
+      .reply(
+        200,
+        encode({
+          results: [
+            { status: 200, event: completedEvent, step: stepA },
+            // Non-200 without error/message: neither a well-formed failure
+            // nor a success — must not be re-labeled a 200 by the body parse.
+            { status: 500, event: createdEvent, step: { ...stepB } },
+            { status: 200, event: startedEvent, step: { ...stepB } },
+          ],
+        }),
+        { headers: { 'content-type': 'application/cbor' } }
+      );
+
+    await expect(
+      createWorkflowRunEventBatch(RUN_ID, transitionEvents(), undefined, {
+        token: 'test-token',
+        dispatcher: agent,
+      })
+    ).rejects.toMatchObject({
+      code: 'SCHEMA_VALIDATION',
+      message: expect.stringContaining('index 1'),
+    });
+  });
+
+  it('fails loudly when a result carries a different event type than submitted', async () => {
+    const agent = mockAgent();
+    agent
+      .get(ORIGIN)
+      .intercept({
+        path: `/api/v4/runs/${RUN_ID}/events/batch`,
+        method: 'POST',
+      })
+      .reply(
+        200,
+        encode({
+          results: [
+            { status: 200, event: completedEvent, step: stepA },
+            // A wait_created event answering the step_created frame.
+            {
+              status: 200,
+              event: {
+                eventId: slotEventId(9),
+                runId: RUN_ID,
+                eventType: 'wait_created',
+                correlationId: 'step_b',
+                createdAt: CREATED_AT,
+                eventData: { resumeAt: CREATED_AT },
+              },
+              wait: {
+                runId: RUN_ID,
+                waitId: 'step_b',
+                status: 'pending',
+                resumeAt: CREATED_AT,
+                createdAt: CREATED_AT,
+                updatedAt: CREATED_AT,
+              },
+            },
+            { status: 200, event: startedEvent, step: { ...stepB } },
+          ],
+        }),
+        { headers: { 'content-type': 'application/cbor' } }
+      );
+
+    await expect(
+      createWorkflowRunEventBatch(RUN_ID, transitionEvents(), undefined, {
+        token: 'test-token',
+        dispatcher: agent,
+      })
+    ).rejects.toMatchObject({ code: 'SCHEMA_VALIDATION' });
+  });
+});

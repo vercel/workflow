@@ -330,8 +330,13 @@ export interface Storage {
      * OPTIONAL batch write — append an ordered list of events to the run's
      * log in one durable, atomic-per-attempt write, with a per-event outcome
      * for each (see {@link BatchEventItemResult}). The events land in request
-     * order at consecutive slots (subject to bump-and-report semantics: a
-     * concurrent writer may push the whole batch to higher slots).
+     * order at consecutive slots. A concurrent writer may push the whole
+     * batch to slots above the caller's view of the log; no skipped-event
+     * report accompanies the result, so a position-tracking caller compares
+     * the committed slots against its expectation and reloads the log to
+     * observe what landed in between. Its local view stays a strict PREFIX
+     * of the log — never a hole — so replaying it stays correct and the
+     * next reload self-corrects.
      *
      * Presence of the method IS the capability declaration: the core runtime
      * batches only when the World implements it (and the run's spec version
@@ -340,12 +345,22 @@ export interface Storage {
      * atomicity per attempt — a lost race must leave nothing behind — or not
      * implement it at all.
      *
+     * Size limits are the caller's problem: Worlds enforce their own caps
+     * (world-vercel enforces an event-count cap and a byte budget over frame
+     * meta plus inline-bound payloads) and reject an oversized batch with a
+     * request-level error. The core fold sizes its chunks accordingly.
+     *
      * Not expressible in a batch (Worlds reject the whole batch with a
      * request-level error): `run_created`, `run_started`, `run_cancelled`,
      * `hook_created`, `hook_disposed`, `attr_set`, and more events targeting
      * one entity than a single write can express (the one legal combination
      * is `step_created` followed by `step_started` for the same step, which
-     * creates the step born-running).
+     * creates the step born-running — the step's input MUST ride the
+     * `step_created`; a `step_started` carrying a payload rejects the whole
+     * batch). Events outside this list keep their own ordering requirements:
+     * a caller mixing a batch with single writes (hook or attribute events)
+     * owns those barriers itself — the core runtime simply never batches a
+     * suspension that carries hook or attribute writes.
      */
     createBatch?(
       runId: string,
