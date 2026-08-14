@@ -103,17 +103,27 @@ interface ReproConfig {
    *  an out-of-band `hook_received` write plus an extra invocation. */
   pokeIntervalMs: number;
   pokeJitterMs: number;
-  /** `step-storm`: ceiling on poke resumes per run.
+  /** `step-storm`: how many pokes run at the full {@link pokeIntervalMs}
+   *  cadence before the pump decays to `pokeIntervalMs * pokeDecayFactor`.
    *
-   *  The pump is a wall-clock cadence, so without a ceiling a run accumulates
+   *  Unbounded, the pump is a pure wall-clock cadence, so a run accumulates
    *  pressure in proportion to how long it takes rather than to the work it
-   *  does — and the pressure is not free to carry: every poke appends a
-   *  `hook_received` that each of the run's ~N remaining replays re-reads and
-   *  re-buffers, so slow runs get more pokes, which makes them slower. On a
-   *  4-core CI runner with the default cadence that ran away to ~270 pokes per
-   *  run and none of the six concurrent runs ever finished; a healthy 6-round
-   *  run on an unloaded machine sends 35-41. This clips only the runaway. */
+   *  does — and that pressure is not free to carry: every poke appends a
+   *  `hook_received` that each of the run's remaining replays re-reads and
+   *  re-buffers, so a slow run earns more pokes, which makes it slower. On a
+   *  4-core CI runner that ran away to ~270 pokes per run and none of the six
+   *  concurrent runs ever finished.
+   *
+   *  Decaying rather than stopping keeps the loop gain below 1 without leaving
+   *  a slow run's later rounds unpressured — a hard stop at this count left the
+   *  back half of a 160s CI run with no out-of-band writes at all. The budget is
+   *  sized so a healthy 6-round run (35-41 pokes) never reaches it, and the
+   *  decayed rate lands a saturated CI run near the ~2.3s effective cadence the
+   *  Vercel lane already runs at, where each resume pays a network round trip. */
   pokeMax: number;
+  /** Multiplier applied to {@link pokeIntervalMs} once {@link pokeMax} pokes
+   *  have been sent. 1 disables the decay and restores the runaway. */
+  pokeDecayFactor: number;
   /** `hook-storm`: per-index delay between resumes inside a round's burst. Set
    *  so the burst straddles `watchdogMs` and the straggler count varies. */
   hookResumeStaggerMs: number;
@@ -217,6 +227,7 @@ const config: ReproConfig = {
   pokeIntervalMs: envNumber('EVENT_LOG_RACE_REPRO_POKE_INTERVAL_MS', 750),
   pokeJitterMs: envNumber('EVENT_LOG_RACE_REPRO_POKE_JITTER_MS', 250),
   pokeMax: envNumber('EVENT_LOG_RACE_REPRO_POKE_MAX', 64),
+  pokeDecayFactor: envNumber('EVENT_LOG_RACE_REPRO_POKE_DECAY_FACTOR', 8),
   hookResumeStaggerMs: envNumber(
     'EVENT_LOG_RACE_REPRO_HOOK_RESUME_STAGGER_MS',
     400
@@ -653,17 +664,25 @@ async function runStepStormAttempt(attempt: number): Promise<ReproRunResult> {
       scenario,
       async (driverState) => {
         const hook = await waitForHook(`${token}:poke`, run.runId, driverState);
-        while (!driverState.done && driverState.resumesSent < config.pokeMax) {
+        while (!driverState.done) {
           await tryResume(driverState, hook, {
             index: -1,
             round: -1,
             sentAt: Date.now(),
           });
+          // Full cadence until the budget is spent, a slower one after — see
+          // `pokeMax`. The pump never stops while the run is alive, so a run
+          // that outlives its budget still gets out-of-band writes in its
+          // later rounds; it just stops being able to bury itself in them.
+          const interval =
+            driverState.resumesSent >= config.pokeMax
+              ? config.pokeIntervalMs * config.pokeDecayFactor
+              : config.pokeIntervalMs;
           const jitter =
             config.pokeJitterMs > 0
               ? Math.floor(Math.random() * config.pokeJitterMs)
               : 0;
-          await sleep(config.pokeIntervalMs + jitter);
+          await sleep(interval + jitter);
         }
       }
     );
