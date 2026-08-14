@@ -7,7 +7,15 @@ import {
 } from '../private.js';
 import { hydrateStepReturnValue } from '../serialization.js';
 import { ABORT_HOOK_TOKEN, ABORT_STREAM_NAME } from '../symbols.js';
-import { getAbortStreamId } from '../util.js';
+import { getAbortStreamId, getAbortStreamIdFromToken } from '../util.js';
+
+export interface WorkflowAbortControllerOptions {
+  /**
+   * A deterministic internal abort-hook token. The caller must use the
+   * `abrt_` namespace so its backing stream can be derived safely.
+   */
+  token?: string;
+}
 
 /**
  * A lightweight AbortSignal implementation for the workflow VM context.
@@ -110,10 +118,14 @@ export function createCreateAbortController(ctx: WorkflowOrchestratorContext) {
     readonly [ABORT_STREAM_NAME]: string;
     readonly [ABORT_HOOK_TOKEN]: string;
 
-    constructor() {
+    readonly correlationId: string;
+
+    constructor(options?: WorkflowAbortControllerOptions) {
       const id = ctx.generateUlid();
-      const streamName = getAbortStreamId(id);
-      const hookToken = `abrt_${id}`;
+      const hookToken = options?.token ?? `abrt_${id}`;
+      const streamName = options?.token
+        ? getAbortStreamIdFromToken(hookToken)
+        : getAbortStreamId(id);
 
       this[ABORT_STREAM_NAME] = streamName;
       this[ABORT_HOOK_TOKEN] = hookToken;
@@ -121,10 +133,10 @@ export function createCreateAbortController(ctx: WorkflowOrchestratorContext) {
 
       // Register an internal system hook in the invocations queue.
       // isSystem prevents token namespace conflicts with user hooks.
-      const correlationId = `hook_${ctx.generateUlid()}`;
-      ctx.invocationsQueue.set(correlationId, {
+      this.correlationId = `hook_${ctx.generateUlid()}`;
+      ctx.invocationsQueue.set(this.correlationId, {
         type: 'hook',
-        correlationId,
+        correlationId: this.correlationId,
         token: hookToken,
         isWebhook: false,
         isSystem: true,
@@ -136,7 +148,7 @@ export function createCreateAbortController(ctx: WorkflowOrchestratorContext) {
           return EventConsumerResult.NotConsumed;
         }
 
-        if (event.correlationId !== correlationId) {
+        if (event.correlationId !== this.correlationId) {
           return EventConsumerResult.NotConsumed;
         }
 
@@ -152,7 +164,7 @@ export function createCreateAbortController(ctx: WorkflowOrchestratorContext) {
           ctx.promiseQueue = ctx.promiseQueue.then(() => {
             ctx.onWorkflowError(
               new ReplayDivergenceError(
-                `Replay divergence: abort hook event ${event.eventType} for ${correlationId} belongs to token "${eventToken}", but the current abort hook expects "${this[ABORT_HOOK_TOKEN]}"`,
+                `Replay divergence: abort hook event ${event.eventType} for ${this.correlationId} belongs to token "${eventToken}", but the current abort hook expects "${this[ABORT_HOOK_TOKEN]}"`,
                 { eventId: event.eventId }
               )
             );
@@ -161,7 +173,7 @@ export function createCreateAbortController(ctx: WorkflowOrchestratorContext) {
         }
 
         if (event.eventType === 'hook_created') {
-          const queueItem = ctx.invocationsQueue.get(correlationId);
+          const queueItem = ctx.invocationsQueue.get(this.correlationId);
           if (queueItem && queueItem.type === 'hook') {
             queueItem.hasCreatedEvent = true;
           }
@@ -270,7 +282,7 @@ export function createCreateAbortController(ctx: WorkflowOrchestratorContext) {
             });
           });
 
-          ctx.invocationsQueue.delete(correlationId);
+          ctx.invocationsQueue.delete(this.correlationId);
           // Multiple handlers can observe the same pending abort request and
           // durably record it before replay removes the queue item. Abort is
           // idempotent, so consume later matching receipts as no-ops instead
@@ -279,7 +291,7 @@ export function createCreateAbortController(ctx: WorkflowOrchestratorContext) {
         }
 
         if (event.eventType === 'hook_disposed') {
-          ctx.invocationsQueue.delete(correlationId);
+          ctx.invocationsQueue.delete(this.correlationId);
           return EventConsumerResult.Finished;
         }
 
@@ -301,6 +313,13 @@ export function createCreateAbortController(ctx: WorkflowOrchestratorContext) {
           item.abortReason = reason;
           break;
         }
+      }
+    }
+
+    dispose(): void {
+      const queueItem = ctx.invocationsQueue.get(this.correlationId);
+      if (queueItem?.type === 'hook') {
+        queueItem.disposed = true;
       }
     }
   };

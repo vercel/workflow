@@ -34,6 +34,7 @@ import {
   sealTo,
 } from '../serialization.js';
 import { WEBHOOK_RESPONSE_WRITABLE } from '../symbols.js';
+import { getAbortStreamIdFromToken } from '../util.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { linkToTraceCarrier, trace } from '../telemetry.js';
 import { getWorldLazy } from './get-world-lazy.js';
@@ -418,6 +419,20 @@ async function resumeHookImpl<T = any>(
           ...(v1Compat ? {} : { token: hook.token }),
           payload: dehydratedPayload,
         };
+
+        // A system abort hook has a stream-backed signal in the workflow VM.
+        // Write its packet before recording the durable hook receipt so an
+        // in-flight step sees cancellation without waiting for replay.
+        if (hook.isSystem && hook.token.startsWith('abrt_')) {
+          if (!(dehydratedPayload instanceof Uint8Array)) {
+            throw new WorkflowRuntimeError(
+              'System abort hook payload must serialize to bytes'
+            );
+          }
+          const streamName = getAbortStreamIdFromToken(hook.token);
+          await world.streams.write(hook.runId, streamName, dehydratedPayload);
+          await world.streams.close(hook.runId, streamName);
+        }
 
         const queueName = getWorkflowQueueName(resumeContext.workflowName);
         const queueOptions = {

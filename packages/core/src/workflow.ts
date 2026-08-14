@@ -35,6 +35,7 @@ import { createUseStep } from './step.js';
 import {
   BODY_INIT_SYMBOL,
   STABLE_ULID,
+  WORKFLOW_CREATE_ACTIVE_STEP_ABORT_CONTROLLER,
   WORKFLOW_CREATE_HOOK,
   WORKFLOW_GET_STREAM_ID,
   WORKFLOW_SET_ATTRIBUTES,
@@ -492,6 +493,7 @@ async function createWorkflowSession({
 
   const useStep = createUseStep(workflowContext);
   const createHook = createCreateHook(workflowContext);
+  const createAbortController = createCreateAbortController(workflowContext);
   const sleep = createSleep(workflowContext);
   const setAttributes = createSetAttributes(workflowContext);
 
@@ -501,6 +503,17 @@ async function createWorkflowSession({
   vmGlobalThis[WORKFLOW_SET_ATTRIBUTES] = setAttributes;
   // @ts-expect-error - `@types/node` says symbol is not valid, but it does work
   vmGlobalThis[WORKFLOW_CREATE_HOOK] = createHook;
+  // @ts-expect-error - `@types/node` says symbol is not valid, but it does work
+  vmGlobalThis[WORKFLOW_CREATE_ACTIVE_STEP_ABORT_CONTROLLER] = (options: {
+    token: string;
+  }) => {
+    const controller = new createAbortController(options);
+    return {
+      signal: controller.signal,
+      token: options.token,
+      dispose: () => controller.dispose(),
+    };
+  };
   // @ts-expect-error - `@types/node` says symbol is not valid, but it does work
   vmGlobalThis[WORKFLOW_SLEEP] = sleep;
   // @ts-expect-error - `@types/node` says symbol is not valid, but it does work
@@ -574,8 +587,7 @@ async function createWorkflowSession({
   // `AbortController` and `AbortSignal` in the workflow VM are hook-backed
   // for deterministic replay. The controller's abort() queues a hook resumption,
   // and signal.aborted is updated when the hook event is processed during replay.
-  (vmGlobalThis as any).AbortController =
-    createCreateAbortController(workflowContext);
+  (vmGlobalThis as any).AbortController = createAbortController;
   const abortSignalStatics = createAbortSignalStatics();
   (vmGlobalThis as any).AbortSignal = {
     abort: abortSignalStatics.abort,

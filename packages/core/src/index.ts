@@ -26,6 +26,11 @@ export {
 } from './create-hook.js';
 export { defineHook, type TypedHook } from './define-hook.js';
 export {
+  createActiveStepAbortController,
+  type ActiveStepAbortController,
+  type ActiveStepAbortControllerOptions,
+} from './active-step-abort-controller.js';
+export {
   type SetAttributesOptions,
   setAttributes,
 } from './set-attributes.js';
