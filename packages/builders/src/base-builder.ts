@@ -43,9 +43,37 @@ import { createSwcPlugin } from './swc-esbuild-plugin.js';
 import { detectWorkflowPatterns } from './transform-utils.js';
 import type { SourcemapMode, WorkflowConfig } from './types.js';
 import { extractWorkflowGraphs } from './workflows-extractor.js';
+import { hasSameContent, writeFileIfChanged } from './write-if-changed.js';
 
 const enhancedResolve = promisify(enhancedResolveOriginal);
 const require = createRequire(import.meta.url);
+
+/**
+ * Order the per-file manifest sections deterministically.
+ *
+ * Entry discovery runs concurrently, so the insertion order of these maps
+ * varies between otherwise identical builds and the serialized manifest comes
+ * out byte-different every time. Sorting makes the manifest reproducible, and
+ * lets the unchanged-write guard in `writeFileIfChanged` actually fire for it.
+ *
+ * Compared by code unit rather than `localeCompare`, whose result depends on
+ * the host locale.
+ */
+function sortManifestEntries<T>(
+  section: Record<string, Record<string, T>>
+): Record<string, Record<string, T>> {
+  const byKey = ([a]: [string, unknown], [b]: [string, unknown]) =>
+    a < b ? -1 : a > b ? 1 : 0;
+
+  return Object.fromEntries(
+    Object.entries(section)
+      .sort(byKey)
+      .map(([file, entries]) => [
+        file,
+        Object.fromEntries(Object.entries(entries).sort(byKey)),
+      ])
+  );
+}
 
 export type { DiscoveredEntries } from './fast-discovery.js';
 
@@ -584,15 +612,39 @@ export abstract class BaseBuilder {
   }
 
   /**
+   * Whether a generated write may be skipped when it would not change the
+   * file. Defaults to `true`: the generated routes live inside the directory
+   * the dev server watches, so rewriting identical bytes still invalidates its
+   * watcher and forces a recompile of everything downstream.
+   *
+   * Targets whose consumers treat the mtime of a generated file as a change
+   * signal must override this to `false`, otherwise skipping the write also
+   * suppresses the signal.
+   */
+  protected get skipsUnchangedGeneratedWrites(): boolean {
+    return true;
+  }
+
+  /**
    * Writes generated files atomically where possible. On Windows, Next.js can
    * briefly hold generated route files open while compiling them, which makes
    * rename-over-existing fail with EPERM/EACCES. In that case, fall back to a
    * direct overwrite so watch rebuilds can still make progress.
+   *
+   * Skips writes that would not change the file, unless the target opts out
+   * via {@link skipsUnchangedGeneratedWrites}.
    */
-  private async writeGeneratedFile(
+  protected async writeGeneratedFile(
     targetPath: string,
     content: string
   ): Promise<void> {
+    if (
+      this.skipsUnchangedGeneratedWrites &&
+      (await hasSameContent(targetPath, content))
+    ) {
+      return;
+    }
+
     const tempPath = `${targetPath}.${randomUUID()}.tmp`;
     await writeFile(tempPath, content);
     try {
@@ -2005,7 +2057,7 @@ export const OPTIONS = handler;`;
 
     if (!bundle) {
       // For Next.js, just write the unbundled file
-      await writeFile(outfile, routeContent);
+      await writeFileIfChanged(outfile, routeContent);
       return;
     }
 
@@ -2305,16 +2357,24 @@ export const OPTIONS = handler;`;
       );
       const classes = this.convertClassesManifest(manifest.classes);
 
-      const output = { version: '1.0.0', steps, workflows, classes };
+      const output = {
+        version: '1.0.0',
+        steps: sortManifestEntries(steps),
+        workflows: sortManifestEntries(workflows),
+        classes: sortManifestEntries(classes),
+      };
       const manifestJson = JSON.stringify(output, null, 2);
 
       await mkdir(manifestDir, { recursive: true });
-      await writeFile(join(manifestDir, 'manifest.json'), manifestJson);
+      await writeFileIfChanged(
+        join(manifestDir, 'manifest.json'),
+        manifestJson
+      );
 
       const diagnosticsManifestPath = this.getDiagnosticsManifestPath();
       if (diagnosticsManifestPath) {
         await this.ensureDirectory(diagnosticsManifestPath);
-        await writeFile(diagnosticsManifestPath, manifestJson);
+        await writeFileIfChanged(diagnosticsManifestPath, manifestJson);
       }
 
       const stepCount = Object.values(steps).reduce(
