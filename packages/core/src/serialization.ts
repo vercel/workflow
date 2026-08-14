@@ -3382,7 +3382,6 @@ function getStepRevivers(
 export {
   type PreparedReplayPayload,
   prepareReplayPayload,
-  type ReplayPayloadPreparer,
 } from './serialization/replay.js';
 
 async function prepareReplayPayloadWithTelemetry(

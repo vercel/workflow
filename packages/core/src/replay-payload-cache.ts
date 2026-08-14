@@ -3,7 +3,6 @@ import type { DecryptionKey } from './serialization/encryption.js';
 import {
   type PreparedReplayPayload,
   prepareReplayPayload,
-  type ReplayPayloadPreparer,
 } from './serialization.js';
 
 const MAX_MEMOIZED_PRIMITIVE_LENGTH = 4096;
@@ -44,7 +43,7 @@ export class ReplayPayloadCache {
 
   constructor(
     private readonly encryptionKey: DecryptionKey | undefined,
-    private readonly preparer: ReplayPayloadPreparer = prepareReplayPayload
+    private readonly preparer: typeof prepareReplayPayload = prepareReplayPayload
   ) {}
 
   /**
