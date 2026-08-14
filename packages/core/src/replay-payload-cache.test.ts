@@ -54,7 +54,7 @@ function makeEvents(payloads: unknown[]): Event[] {
 }
 
 describe('ReplayPayloadCache', () => {
-  it('deduplicates preparation and accepts a synchronous preparer', async () => {
+  it('deduplicates synchronous preparation without creating a promise', () => {
     const payload = new Uint8Array([1]);
     const preparer = vi.fn<typeof prepareReplayPayload>((value) => value);
     const cache = new ReplayPayloadCache(undefined, preparer);
@@ -63,8 +63,22 @@ describe('ReplayPayloadCache', () => {
     const second = cache.prepareEventPayload('evnt_one', 'result', payload);
 
     expect(first).toBe(second);
-    await expect(first).resolves.toBe(payload);
+    expect(first).toEqual(payload);
     expect(preparer).toHaveBeenCalledOnce();
+  });
+
+  it('hydrates and memoizes a primitive without creating a promise', () => {
+    const payload = new Uint8Array([1]);
+    const hydrate = vi.fn(() => 42);
+    const cache = new ReplayPayloadCache(undefined, (value) => value);
+
+    expect(cache.getEventValue('evnt_one', 'result', payload, hydrate)).toBe(
+      42
+    );
+    expect(cache.getEventValue('evnt_one', 'result', payload, hydrate)).toBe(
+      42
+    );
+    expect(hydrate).toHaveBeenCalledOnce();
   });
 
   it('keeps a failed prewarm until its consumer observes it, then retries', async () => {
@@ -76,13 +90,12 @@ describe('ReplayPayloadCache', () => {
       .mockReturnValueOnce(payload);
     const cache = new ReplayPayloadCache(undefined, preparer);
 
-    await cache.prewarm(run, []);
-    await expect(cache.prepareWorkflowInput(run)).rejects.toThrow(
-      'decrypt failed'
-    );
+    cache.prewarm(run, []);
+    await Promise.resolve();
+    expect(() => cache.prepareWorkflowInput(run)).toThrow('decrypt failed');
     expect(preparer).toHaveBeenCalledOnce();
 
-    await expect(cache.prepareWorkflowInput(run)).resolves.toBe(payload);
+    expect(cache.prepareWorkflowInput(run)).toEqual(payload);
     expect(preparer).toHaveBeenCalledTimes(2);
   });
 
@@ -99,30 +112,52 @@ describe('ReplayPayloadCache', () => {
     const run = makeRun(payloads[0]);
     const events = makeEvents(payloads.slice(1));
 
-    const warming = cache.prewarm(run, events);
+    cache.prewarm(run, events);
     expect(preparer).toHaveBeenCalledTimes(4);
     for (const resolve of resolvers.reverse()) resolve();
-    await warming;
+    await Promise.all([
+      cache.prepareWorkflowInput(run),
+      ...events.map((event) => {
+        switch (event.eventType) {
+          case 'step_completed':
+            return cache.prepareEventPayload(
+              event.eventId,
+              'result',
+              event.eventData?.result
+            );
+          case 'step_failed':
+            return cache.prepareEventPayload(
+              event.eventId,
+              'error',
+              event.eventData?.error
+            );
+          case 'hook_received':
+            return cache.prepareEventPayload(
+              event.eventId,
+              'payload',
+              event.eventData?.payload
+            );
+          default:
+            throw new Error(`Unexpected event: ${event.eventType}`);
+        }
+      }),
+    ]);
 
-    const allSettled = vi.spyOn(Promise, 'allSettled');
-    await cache.prewarm(run, events);
+    cache.prewarm(run, events);
     expect(preparer).toHaveBeenCalledTimes(4);
-    expect(allSettled).toHaveBeenLastCalledWith([]);
-    allSettled.mockRestore();
   });
 
   it('prepares streamed events synchronously inside the decoder callback', async () => {
     const payload = new Uint8Array([1]);
     const order: string[] = [];
-    const preparer = vi.fn<ReplayPayloadPreparer>((value) => {
+    const preparer = vi.fn<typeof prepareReplayPayload>((value) => {
       order.push('prepare');
-      return { data: value };
+      return value;
     });
     const cache = new ReplayPayloadCache(undefined, preparer);
     const [event] = makeEvents([payload]);
 
-    const preparation = cache.observeEvent(event, () => order.push('start'));
-    expect(preparation).toBeDefined();
+    cache.observeEvent(event, () => order.push('start'));
     expect(preparer).toHaveBeenCalledOnce();
     expect(order).toEqual(['start', 'prepare']);
 
@@ -130,25 +165,31 @@ describe('ReplayPayloadCache', () => {
     cache.observeEvent(event, () => order.push('cached-start'));
     expect(order).toEqual(['start', 'prepare']);
 
-    await expect(preparation).resolves.toEqual({ data: payload });
+    expect(cache.prepareEventPayload(event.eventId, 'result', payload)).toEqual(
+      payload
+    );
   });
 
   it('prepares queued stream events as soon as the run key resolves', async () => {
     const payload = new Uint8Array([1]);
-    const preparer = vi.fn<ReplayPayloadPreparer>((value) => ({ data: value }));
+    const preparer = vi.fn<typeof prepareReplayPayload>((value) => value);
     let resolveKey!: (key: undefined) => void;
     const key = new Promise<undefined>((resolve) => {
       resolveKey = resolve;
     });
-    const cache = new ReplayPayloadCache(key, preparer);
+    const cache = ReplayPayloadCache.waitingForKey(key, preparer);
     const [event] = makeEvents([payload]);
 
-    const preparation = cache.observeEvent(event);
-    expect(preparation).toBeDefined();
+    cache.observeEvent(event);
     expect(preparer).not.toHaveBeenCalled();
+    const preparation = cache.prepareEventPayload(
+      event.eventId,
+      'result',
+      payload
+    );
 
     resolveKey(undefined);
-    await expect(preparation).resolves.toEqual({ data: payload });
+    await expect(preparation).resolves.toEqual(payload);
     expect(preparer).toHaveBeenCalledOnce();
   });
 
@@ -238,74 +279,81 @@ describe('ReplayPayloadCache', () => {
 
   it('memoizes primitive step results, including undefined', async () => {
     for (const value of [0, false, '', null, undefined]) {
-      const cache = new ReplayPayloadCache(undefined);
+      const cache = new ReplayPayloadCache();
       const hydrate = vi.fn().mockResolvedValue(value);
 
       expect(
-        await cache.getPrimitiveValue('evnt_result', 'result', hydrate)
+        await cache.getEventValue('evnt_result', 'result', undefined, hydrate)
       ).toBe(value);
       expect(
-        await cache.getPrimitiveValue('evnt_result', 'result', hydrate)
+        await cache.getEventValue('evnt_result', 'result', undefined, hydrate)
       ).toBe(value);
       expect(hydrate).toHaveBeenCalledOnce();
     }
   });
 
   it('isolates primitive values by event payload field', async () => {
-    const cache = new ReplayPayloadCache(undefined);
+    const cache = new ReplayPayloadCache();
     const result = vi.fn().mockResolvedValue('result');
     const error = vi.fn().mockResolvedValue('error');
 
     await expect(
-      cache.getPrimitiveValue('evnt_shared', 'result', result)
+      cache.getEventValue('evnt_shared', 'result', undefined, result)
     ).resolves.toBe('result');
     await expect(
-      cache.getPrimitiveValue('evnt_shared', 'error', error)
+      cache.getEventValue('evnt_shared', 'error', undefined, error)
     ).resolves.toBe('error');
-    await expect(
-      cache.getPrimitiveValue('evnt_shared', 'result', result)
-    ).resolves.toBe('result');
+    expect(
+      cache.getEventValue('evnt_shared', 'result', undefined, result)
+    ).toBe('result');
     expect(result).toHaveBeenCalledOnce();
     expect(error).toHaveBeenCalledOnce();
   });
 
-  it('rehydrates mutable and oversized step results', async () => {
+  it('rehydrates mutable results and memoizes primitives of any size', async () => {
     const oversized = 'x'.repeat(4097);
     for (const value of [{ count: 0 }, oversized]) {
-      const cache = new ReplayPayloadCache(undefined);
+      const cache = new ReplayPayloadCache();
       const hydrate = vi
         .fn()
         .mockImplementation(async () =>
           typeof value === 'object' ? { ...value } : value
         );
 
-      const first = await cache.getPrimitiveValue(
+      const first = await cache.getEventValue(
         'evnt_result',
         'result',
+        undefined,
         hydrate
       );
-      const second = await cache.getPrimitiveValue(
+      const second = await cache.getEventValue(
         'evnt_result',
         'result',
+        undefined,
         hydrate
       );
-      expect(hydrate).toHaveBeenCalledTimes(2);
-      if (typeof value === 'object') expect(second).not.toBe(first);
+      if (typeof value === 'object') {
+        expect(hydrate).toHaveBeenCalledTimes(2);
+        expect(second).not.toBe(first);
+      } else {
+        expect(hydrate).toHaveBeenCalledOnce();
+        expect(second).toBe(first);
+      }
     }
   });
 
   it('does not memoize failed step hydration', async () => {
-    const cache = new ReplayPayloadCache(undefined);
+    const cache = new ReplayPayloadCache();
     const hydrate = vi
       .fn()
       .mockRejectedValueOnce(new Error('boom'))
       .mockResolvedValueOnce('ok');
 
     await expect(
-      cache.getPrimitiveValue('evnt_result', 'result', hydrate)
+      cache.getEventValue('evnt_result', 'result', undefined, hydrate)
     ).rejects.toThrow('boom');
     await expect(
-      cache.getPrimitiveValue('evnt_result', 'result', hydrate)
+      cache.getEventValue('evnt_result', 'result', undefined, hydrate)
     ).resolves.toBe('ok');
     expect(hydrate).toHaveBeenCalledTimes(2);
   });

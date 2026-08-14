@@ -41,7 +41,7 @@ import { createSleep } from './workflow/sleep.js';
  * - `wait_completed` resolves through a detached chain with a fixed, small
  *   microtask-hop count (`workflow/sleep.ts`). A `step_completed` instead
  *   resolves inside a serial `ctx.promiseQueue` slot that first hydrates the
- *   payload via `ReplayPayloadCache.getPrimitiveValue(...)`. That hop count is not
+ *   payload via `ReplayPayloadCache.getEventValue(...)`. That hop count is not
  *   fixed: the first hydration pays async decrypt/deserialize, while a later
  *   replay sharing the same `ReplayPayloadCache` hits the
  *   `primitiveStepResults` memo for small primitive results and resolves in
@@ -91,7 +91,7 @@ import { createSleep } from './workflow/sleep.js';
  */
 function setupWorkflowContext(
   events: Event[],
-  replayPayloadCache: ReplayPayloadCache = new ReplayPayloadCache(undefined)
+  replayPayloadCache: ReplayPayloadCache = new ReplayPayloadCache()
 ): WorkflowOrchestratorContext {
   const context = createContext({
     seed: 'test',
@@ -340,7 +340,7 @@ describe('step result delivery ordering across replays', () => {
 
       // One cache for both replays: production shares a single
       // `ReplayPayloadCache` across every replay of one queue delivery.
-      const sharedCache = new ReplayPayloadCache(undefined);
+      const sharedCache = new ReplayPayloadCache();
 
       const firstCtx = setupWorkflowContext(events, sharedCache);
       const first = await runWithDiscontinuation(
@@ -532,7 +532,7 @@ describe('step result delivery ordering across replays', () => {
       const hydration = delayHydration();
       spy = await hydration.install();
       const events = await buildEventLog();
-      const sharedCache = new ReplayPayloadCache(undefined);
+      const sharedCache = new ReplayPayloadCache();
 
       const firstCtx = setupWorkflowContext(events, sharedCache);
       const first = await runWithDiscontinuation(
@@ -578,7 +578,7 @@ describe('step result delivery ordering across replays', () => {
       const hydration = delayHydration();
       spy = await hydration.install();
       const events = await buildEventLog();
-      const sharedCache = new ReplayPayloadCache(undefined);
+      const sharedCache = new ReplayPayloadCache();
 
       for (const replay of [1, 2]) {
         const ctx = setupWorkflowContext(events, sharedCache);

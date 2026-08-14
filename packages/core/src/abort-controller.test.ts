@@ -35,7 +35,7 @@ function setupWorkflowContext(
   return {
     runId: 'wrun_test',
     encryptionKey: undefined,
-    replayPayloadCache: new ReplayPayloadCache(undefined),
+    replayPayloadCache: new ReplayPayloadCache(),
     globalThis: context.globalThis,
     eventsConsumer: new EventsConsumer(events, {
       // Fake context: no deliveries are modeled, so the gate is a no-op here.

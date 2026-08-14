@@ -25,7 +25,7 @@ import { createContext } from './vm/index.js';
 // the inline loop threads one cache across replay iterations.
 function setupWorkflowContext(
   events: Event[],
-  replayPayloadCache = new ReplayPayloadCache(undefined)
+  replayPayloadCache = new ReplayPayloadCache()
 ): WorkflowOrchestratorContext {
   const context = createContext({
     seed: 'test',
@@ -90,7 +90,7 @@ describe('step hydration memoization through the step consumer', () => {
 
   it('skips re-hydration of primitive step results on a second replay sharing the cache', async () => {
     const events = await makeStepEvents();
-    const cache = new ReplayPayloadCache(undefined);
+    const cache = new ReplayPayloadCache();
 
     const serialization = await import('./serialization.js');
     const hydrateSpy = vi.spyOn(serialization, 'hydrateStepReturnValue');
@@ -122,7 +122,7 @@ describe('step hydration memoization through the step consumer', () => {
 
   it('preserves event-log resolution order on cache hits even with variable timing', async () => {
     const events = await makeStepEvents();
-    const cache = new ReplayPayloadCache(undefined);
+    const cache = new ReplayPayloadCache();
 
     // Replay 1: populate the cache (no timing games needed).
     const ctx1 = setupWorkflowContext(events, cache);
@@ -168,7 +168,7 @@ describe('step hydration memoization through the step consumer', () => {
         createdAt: new Date(),
       },
     ];
-    const cache = new ReplayPayloadCache(undefined);
+    const cache = new ReplayPayloadCache();
 
     // Replay 1: hydrate the object, then mutate it (as workflow code might).
     const ctx1 = setupWorkflowContext(events, cache);

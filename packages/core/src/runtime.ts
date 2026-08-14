@@ -1062,9 +1062,8 @@ export function workflowEntrypoint(
                     ({ runOrId, context }) =>
                       memoizeEncryptionKey(world, runOrId, context)()
                   );
-                  const replayPayloadCache = new ReplayPayloadCache(
-                    encryptionKeyPromise
-                  );
+                  const replayPayloadCache =
+                    ReplayPayloadCache.waitingForKey(encryptionKeyPromise);
                   const observeReplayEvent = createReplayEventObserver({
                     runId,
                     cache: replayPayloadCache,
@@ -3015,14 +3014,7 @@ export function workflowEntrypoint(
                       // appended-event consumption on resume; consumers still
                       // deserialize and resolve in event order.
                       const replayEvents = eventLog.events;
-                      const payloadPrewarm = replayPayloadCache.prewarm(
-                        workflowRun,
-                        replayEvents
-                      );
-                      // Consumers await their own prepared payloads in event
-                      // order. Do not delay a suspension on speculative work
-                      // for payloads this replay never touched.
-                      void payloadPrewarm.catch(() => {});
+                      replayPayloadCache.prewarm(workflowRun, replayEvents);
                       let workflowResult: WorkflowResumeResult = retainedSession
                         ? await resumeWorkflow(retainedSession, eventLog.events)
                         : { type: 'replay' };

@@ -44,7 +44,7 @@ import { createSleep } from './workflow/sleep.js';
 
 function setupWorkflowContext(
   events: Event[],
-  replayPayloadCache: ReplayPayloadCache = new ReplayPayloadCache(undefined)
+  replayPayloadCache: ReplayPayloadCache = new ReplayPayloadCache()
 ): WorkflowOrchestratorContext {
   const context = createContext({
     seed: 'test',
@@ -229,7 +229,7 @@ describe('step delivery ordering is independent of consumer hop count: hook payl
       const spy = await slowHydration();
       try {
         const events = await buildEventLog();
-        const cache = new ReplayPayloadCache(undefined);
+        const cache = new ReplayPayloadCache();
         const c1 = setupWorkflowContext(events, cache);
         const r1 = await runWithDiscontinuation(c1, body(c1, extraHops));
         if (!WorkflowSuspension.is(r1.error)) {
@@ -346,7 +346,7 @@ describe('step delivery ordering is independent of consumer hop count: wait comp
       const spy = await slowHydration();
       try {
         const events = await buildWaitEventLog();
-        const cache = new ReplayPayloadCache(undefined);
+        const cache = new ReplayPayloadCache();
         const c1 = setupWorkflowContext(events, cache);
         const r1 = await runWithDiscontinuation(c1, waitBody(c1, extraHops));
         if (!WorkflowSuspension.is(r1.error))
@@ -472,7 +472,7 @@ describe('step delivery ordering is independent of consumer hop count: step fail
       const spy = await slowHydration();
       try {
         const events = await buildFailedEventLog();
-        const cache = new ReplayPayloadCache(undefined);
+        const cache = new ReplayPayloadCache();
         const c1 = setupWorkflowContext(events, cache);
         const r1 = await runWithDiscontinuation(c1, failedBody(c1, extraHops));
         if (!WorkflowSuspension.is(r1.error)) {

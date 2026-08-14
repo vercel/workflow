@@ -23,7 +23,7 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
     suspensionGeneration: 0,
     runId: 'wrun_test',
     encryptionKey: undefined,
-    replayPayloadCache: new ReplayPayloadCache(undefined),
+    replayPayloadCache: new ReplayPayloadCache(),
     globalThis: context.globalThis,
     // ctx.onWorkflowError is accessed via closure — it's defined below on the same object
     eventsConsumer: new EventsConsumer(events, {
