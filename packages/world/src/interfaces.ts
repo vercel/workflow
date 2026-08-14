@@ -4,9 +4,12 @@ import type {
   ExperimentalSetAttributesResult,
 } from './attributes.js';
 import type {
+  BatchEventRequest,
+  CreateEventBatchParams,
   CreateEventParams,
   CreateEventRequest,
   Event,
+  EventBatchResult,
   EventResult,
   GetEventParams,
   ListEventsByCorrelationIdParams,
@@ -322,6 +325,33 @@ export interface Storage {
       data: T,
       params?: CreateEventParams
     ): Promise<EventResult<T['eventType']>>;
+
+    /**
+     * OPTIONAL batch write — append an ordered list of events to the run's
+     * log in one durable, atomic-per-attempt write, with a per-event outcome
+     * for each (see {@link BatchEventItemResult}). The events land in request
+     * order at consecutive slots (subject to bump-and-report semantics: a
+     * concurrent writer may push the whole batch to higher slots).
+     *
+     * Presence of the method IS the capability declaration: the core runtime
+     * batches only when the World implements it (and the run's spec version
+     * supports slot identity); absent, every write takes the single-event
+     * `create` path unchanged. A World must implement it with real
+     * atomicity per attempt — a lost race must leave nothing behind — or not
+     * implement it at all.
+     *
+     * Not expressible in a batch (Worlds reject the whole batch with a
+     * request-level error): `run_created`, `run_started`, `run_cancelled`,
+     * `hook_created`, `hook_disposed`, `attr_set`, and more events targeting
+     * one entity than a single write can express (the one legal combination
+     * is `step_created` followed by `step_started` for the same step, which
+     * creates the step born-running).
+     */
+    createBatch?(
+      runId: string,
+      events: BatchEventRequest[],
+      params?: CreateEventBatchParams
+    ): Promise<EventBatchResult>;
 
     get(
       runId: string,

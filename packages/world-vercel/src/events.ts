@@ -35,8 +35,12 @@ import { HookNotFoundError, WorkflowWorldError } from '@workflow/errors';
 import {
   type AnyEventRequest,
   applyAttributeChanges,
+  type BatchEventItemResult,
+  type BatchEventRequest,
+  type CreateEventBatchParams,
   type CreateEventParams,
   type Event,
+  type EventBatchResult,
   type EventDataPayloadField,
   type EventResult,
   EventSchema,
@@ -52,6 +56,7 @@ import {
 import { withEventPostRetry } from './event-retry.js';
 import {
   createHookReceivedPreloadEventV4,
+  createWorkflowRunEventsBatchV4,
   createWorkflowRunEventV4,
   createWorkflowRunStartedEventV4,
   getEventsByCorrelationIdV4,
@@ -467,6 +472,72 @@ export async function getWorkflowRunEvents(
     // incremental-load resume point. `hasMore` is the pagination signal.
     cursor: result.cursor,
     hasMore: result.hasMore,
+  };
+}
+
+/**
+ * Batch write: append an ordered list of events to the run's log in one
+ * request with per-event outcomes — the world-vercel implementation of
+ * `Storage['events']['createBatch']`.
+ *
+ * The whole POST retries transient transport failures and 429s like a single
+ * event write does, and is safe to: every batchable event is guarded by its
+ * own entity condition server-side, so a retry of a batch that (partially)
+ * committed converges to per-event 409 results with nothing written twice.
+ */
+export async function createWorkflowRunEventBatch(
+  runId: string,
+  events: BatchEventRequest[],
+  _params?: CreateEventBatchParams,
+  config?: APIConfig
+): Promise<EventBatchResult> {
+  if (events.length === 0) {
+    throw new WorkflowWorldError(
+      'world-vercel: createBatch requires at least one event',
+      { status: 400 }
+    );
+  }
+  const inputs = events.map(({ event, occurredAt }) => {
+    const { payload, meta } = splitEventDataForV4(event);
+    return {
+      runId,
+      eventType: event.eventType,
+      specVersion: event.specVersion ?? 2,
+      ...(event.correlationId ? { correlationId: event.correlationId } : {}),
+      // Under slot identity this is the source of the durable createdAt, so
+      // the caller's logical time is what every replay observes.
+      occurredAt: occurredAt ?? new Date(),
+      // Batch responses carry entities for bookkeeping, not payload reads —
+      // the caller just produced every payload in this batch itself.
+      remoteRefBehavior: 'lazy' as const,
+      payload,
+      ...meta,
+    };
+  });
+
+  const wire = await withEventPostRetry(
+    () => createWorkflowRunEventsBatchV4({ runId, events: inputs }, config),
+    events[0].event.eventType,
+    { batchIdempotent: true }
+  );
+
+  return {
+    results: wire.results.map((item): BatchEventItemResult => {
+      if (item.error !== undefined) {
+        return {
+          status: item.status,
+          error: item.error,
+          message: item.message,
+        };
+      }
+      return {
+        status: 200,
+        event: item.event,
+        ...(item.run ? { run: item.run } : {}),
+        ...(item.step ? { step: item.step } : {}),
+        ...(item.wait ? { wait: item.wait } : {}),
+      };
+    }),
   };
 }
 

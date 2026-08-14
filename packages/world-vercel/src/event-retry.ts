@@ -331,6 +331,18 @@ export interface EventPostRetryOptions {
    * responses stay non-retryable regardless.
    */
   idempotentHookResume?: boolean;
+  /**
+   * Batch POST override: a `createBatch` request is idempotent-on-retry as a
+   * WHOLE regardless of the event types it carries, because every batchable
+   * event is guarded by its own entity condition — a retry of a batch that
+   * committed (or partially committed) converges to per-event 409 results
+   * with nothing written twice, which the caller already handles per event.
+   * The per-type eligibility matrix guards SINGLE posts, where e.g. a
+   * retried `step_started` would increment `attempt` unconditionally; in a
+   * batch that same start is fenced by the step create-claim, so the matrix
+   * does not apply. Definitive 4xx responses stay non-retryable regardless.
+   */
+  batchIdempotent?: boolean;
 }
 
 /**
@@ -376,6 +388,7 @@ function isEligibleForTransientRetry(
   options?: EventPostRetryOptions
 ): boolean {
   return (
+    options?.batchIdempotent === true ||
     (eventType === 'hook_received' && options?.idempotentHookResume === true) ||
     (EVENT_RETRY_ELIGIBILITY[eventType]?.retryable ?? false)
   );

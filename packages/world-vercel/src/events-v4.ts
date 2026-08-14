@@ -793,6 +793,132 @@ export async function createWorkflowRunStartedEventV4(
   return { events, ...page, maxEvents: maxEvents.data };
 }
 
+/** One event of a v4 batch POST, index-aligned with the response results. */
+export type CreateEventBatchV4Event = CreateEventV4InputBase & {
+  eventType: EventType;
+};
+
+export interface CreateEventBatchV4Input {
+  runId: string;
+  /** Events in request order — the order they land in the run's log. */
+  events: CreateEventBatchV4Event[];
+}
+
+/**
+ * One event's outcome in a batch response. `error === undefined`
+ * discriminates success; a success item carries the same materialized body
+ * its single-event POST would have returned (validated against the same
+ * per-type schema).
+ */
+export type CreateEventBatchV4ItemResult =
+  | ({ status: 200; error?: undefined; message?: undefined } & EventResult &
+      Record<'event', Event>)
+  | { status: number; error: string; message: string; event?: undefined };
+
+export interface CreateEventBatchV4Result {
+  results: CreateEventBatchV4ItemResult[];
+}
+
+const BatchItemFailureSchema = z.object({
+  status: z.number().int(),
+  error: z.string(),
+  message: z.string(),
+});
+
+/**
+ * POST /api/v4/runs/:runId/events/batch
+ *
+ * Appends an ordered batch of events to one run's log in a single durable
+ * write with per-event outcomes. The body is the events' single-POST frames
+ * back-to-back (byte-identical framing, no batch-level meta); the response is
+ * HTTP 200 CBOR `{ results }` whenever the batch was processed, one entry per
+ * frame in request order. Slot-identity runs only — an older server 404s the
+ * route and a pre-slot run is rejected with a 400, both of which callers
+ * treat as "fall back to single-event posts".
+ */
+export async function createWorkflowRunEventsBatchV4(
+  input: CreateEventBatchV4Input,
+  config?: APIConfig
+): Promise<CreateEventBatchV4Result> {
+  assert(input.events.length > 0, 'v4 createEventBatch: empty batch');
+  const { baseUrl, headers: baseHeaders } = await getHttpConfig(config);
+  const headers = new Headers(baseHeaders);
+  // Match the single-event POST content type — the batch route runs on the
+  // same authed + v4 middleware chain and the frame bytes are identical.
+  headers.set('Content-Type', 'application/octet-stream');
+
+  const frames = input.events.map((event) =>
+    encodeFrame(buildPostFrameMeta(event), event.payload ?? new Uint8Array(0))
+  );
+  let total = 0;
+  for (const frame of frames) total += frame.byteLength;
+  const body = new Uint8Array(total);
+  let offset = 0;
+  for (const frame of frames) {
+    body.set(frame, offset);
+    offset += frame.byteLength;
+  }
+
+  const url = `${baseUrl}/v4/runs/${encodeURIComponent(input.runId)}/events/batch`;
+  const response = await fetchV4(
+    url,
+    { method: 'POST', headers, body },
+    config,
+    'createEventBatch',
+    {
+      ...WorkflowEventsTransport('http'),
+      ...WorkflowEventType(input.events[0].eventType),
+      'workflow.batch.size': input.events.length,
+    }
+  );
+
+  const bodyBytes = new Uint8Array(await response.arrayBuffer());
+  const decoded =
+    bodyBytes.byteLength > 0
+      ? (decode(bodyBytes) as { results?: unknown[] })
+      : {};
+  // A 200 MUST carry exactly one outcome per submitted frame, in request
+  // order — callers index `results` positionally. A missing / non-array /
+  // short `results` is a server protocol violation; silently coercing it
+  // would masquerade as per-event failures and hide the server bug. The
+  // batch POST is idempotent-on-retry (per-event entity conditions), so
+  // failing loudly here is safe for the retry wrapper to re-send.
+  if (
+    !Array.isArray(decoded.results) ||
+    decoded.results.length !== input.events.length
+  ) {
+    throw new WorkflowWorldError(
+      `v4 createEventBatch: response \`results\` length ` +
+        `(${Array.isArray(decoded.results) ? decoded.results.length : 'non-array'}) ` +
+        `!= ${input.events.length} submitted frames`,
+      { code: 'SCHEMA_VALIDATION' }
+    );
+  }
+
+  const results = decoded.results.map(
+    (raw, index): CreateEventBatchV4ItemResult => {
+      const failure = BatchItemFailureSchema.safeParse(raw);
+      if (failure.success && failure.data.status !== 200) {
+        return failure.data;
+      }
+      // Success items validate against the SAME per-type schema the single
+      // POST uses, so a batched write and its single-path twin return
+      // byte-equivalent bodies to the caller.
+      const eventType = input.events[index].eventType;
+      const parsed = CreateEventV4BodySchemas[eventType].safeParse(raw);
+      if (!parsed.success) {
+        throw new WorkflowWorldError(
+          `v4 createEventBatch: invalid result body at index ${index} (${eventType})`,
+          { code: 'SCHEMA_VALIDATION', cause: parsed.error }
+        );
+      }
+      return { status: 200, ...parsed.data };
+    }
+  );
+
+  return { results };
+}
+
 /** The only two members a decoded transport result is read for. `fetch`'s
  *  `Response` satisfies it structurally, so the HTTP branch returns one
  *  unchanged and the WS branch synthesizes the same shape. */
