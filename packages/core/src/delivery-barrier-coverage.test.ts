@@ -20,16 +20,20 @@
  *     its barrier. They then skipped both the gate and
  *     `awaitEarlierDeliveries`' macrotask yield.
  *
- *  3. ABORT deliveries. `_setAborted` fires the signal's listeners, and a
+ *  3. HOOK behind HOOK. Adjacent payloads for independently awaited hooks
+ *     must reach their consumers in log order even when the earlier consumer
+ *     takes more microtask hops to act on its value.
+ *
+ *  4. ABORT deliveries. `_setAborted` fires the signal's listeners, and a
  *     listener may invoke a step and draw a ULID, so an abort is as
  *     branch-deciding as any other delivery — but it resolved straight off its
  *     `promiseQueue` slot and registered no barrier.
  *
- * Cases 1-3 assert the same thing: the replay allocates its follow-up step
+ * Cases 1-4 assert the same thing: the replay allocates its follow-up step
  * ULIDs in the order the committed log recorded. A regression surfaces as the
  * production `ReplayDivergenceError`.
  *
- * Section 4 asserts the registry's other job directly, over a registry built
+ * Section 5 asserts the registry's other job directly, over a registry built
  * by hand rather than by a replay: which entries an idle check may ignore. Get
  * that wrong in one direction and a chain parked on an unclaimed hook payload
  * deadlocks; wrong in the other and a suspension preempts a batch of parked
@@ -406,7 +410,75 @@ describe('hook payload delivery ordering against an earlier step result', () => 
   }
 });
 
-// ─── 3. abort deliveries ───────────────────────────────────────────────────
+// ─── 3. hook behind hook, across different consumer shapes ─────────────────
+describe('hook payload delivery ordering against an earlier hook payload', () => {
+  it('keeps the recorded ULID allocation when the earlier hook uses an async iterator', async () => {
+    const ops: Promise<unknown>[] = [];
+    const [firstPayload, secondPayload] = await Promise.all([
+      dehydrateStepReturnValue({ v: 1 }, 'wrun_test', undefined, ops),
+      dehydrateStepReturnValue({ v: 2 }, 'wrun_test', undefined, ops),
+    ]);
+
+    const events: Event[] = [
+      event('evnt_0', 'hook_created', `hook_${ULIDS[0]}`, {
+        token: 'first',
+        isWebhook: false,
+      }),
+      event('evnt_1', 'hook_created', `hook_${ULIDS[1]}`, {
+        token: 'second',
+        isWebhook: false,
+      }),
+      event('evnt_2', 'hook_received', `hook_${ULIDS[0]}`, {
+        token: 'first',
+        payload: firstPayload,
+      }),
+      event('evnt_3', 'hook_received', `hook_${ULIDS[1]}`, {
+        token: 'second',
+        payload: secondPayload,
+      }),
+      event('evnt_4', 'step_created', `step_${ULIDS[2]}`, {
+        stepName: 'afterFirst',
+      }),
+      event('evnt_5', 'step_created', `step_${ULIDS[3]}`, {
+        stepName: 'afterSecond',
+      }),
+    ];
+
+    const ctx = setupWorkflowContext(events);
+    const useStep = createUseStep(ctx);
+    const createHook = createCreateHook(ctx);
+
+    const error = await replay(ctx, async () => {
+      const first = createHook<{ v: number }>({ token: 'first' });
+      const second = createHook<{ v: number }>({ token: 'second' });
+      const afterFirst = useStep('afterFirst');
+      const afterSecond = useStep('afterSecond');
+
+      await Promise.all([
+        (async () => {
+          for await (const payload of first) {
+            void payload;
+            // Model a layered hook consumer such as an async inbox merger:
+            // the delivery order must survive its continuation depth.
+            for (let i = 0; i < 16; i++) {
+              await Promise.resolve();
+            }
+            await afterFirst();
+            break;
+          }
+        })(),
+        (async () => {
+          await second;
+          await afterSecond();
+        })(),
+      ]);
+    });
+
+    expectSuspendedWithPendingSteps(ctx, error, ['afterFirst', 'afterSecond']);
+  });
+});
+
+// ─── 4. abort deliveries ───────────────────────────────────────────────────
 //
 //   evnt_4  wait_completed          ← makes the step result defer
 //   evnt_5  step_completed stepA    ← deferred behind the wait
@@ -491,7 +563,7 @@ describe('abort delivery ordering against an earlier step result', () => {
   });
 });
 
-// ─── 4. idle reachability over the barrier registry ────────────────────────
+// ─── 5. idle reachability over the barrier registry ────────────────────────
 //
 // `hasParkedCommittedDelivery` decides whether an idle check may observe idle,
 // and it is the only remaining caller of the recursive `resolvesOnItsOwn`
@@ -609,7 +681,7 @@ describe('delivery-barrier idle reachability', () => {
   });
 });
 
-// ─── 5. suspension timing: idle must wait out parked deliveries ────────────
+// ─── 6. suspension timing: idle must wait out parked deliveries ────────────
 //
 // Field shape from vercel/workflow#3183: a fire-and-forget `sleep()` (a
 // watchdog — never awaited, never completing in-run) plus a parallel batch of
