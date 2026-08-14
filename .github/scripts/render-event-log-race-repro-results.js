@@ -254,7 +254,11 @@ function renderLaneVerdict(laneName, entry, multiLane) {
   // The heading already names the lane when there is only one of them.
   const prefix = multiLane ? `\`${laneName}\` ` : '';
   if (entry.missingResults) {
-    return `${prefix}no result file — the harness died before its first checkpoint`;
+    // Only that the file is absent is known here. The lane may have died before
+    // the harness ran at all (a failed build, or Postgres never coming up), and
+    // naming a cause the renderer cannot see sends the reader to the wrong
+    // place — its job log is where the reason actually is.
+    return `${prefix}no results — the lane wrote no result file, see its job log`;
   }
 
   const verdict =

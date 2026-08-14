@@ -303,7 +303,10 @@ test('a lane with no result file gets a row instead of breaking the render', () 
   const rows = tableRows(output, 'Run History');
   assert.strictEqual(rows.length, 2);
   assert.match(rows[0], /\| vercel \| – \| – \| – \| – \| – \|$/);
-  assert.ok(output.includes('- `vercel` no result file'));
+  // A missing file says only that: the lane may have died before the harness
+  // ever ran, so the line must not claim the harness did anything.
+  assert.ok(output.includes('- `vercel` no results'));
+  assert.ok(!output.includes('harness died'));
 });
 
 test('history accumulates per lane across runs and stays capped', () => {
