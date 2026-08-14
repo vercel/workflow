@@ -986,6 +986,36 @@ export async function handleSuspension({
         }
         const entries = [...batchQueue].sort((a, b) => a.order - b.order);
         await ensureRunReady();
+        // A batch of ONE gains nothing over the single write (same round
+        // trip) and loses the slot-snapshot params + bump-and-report that
+        // createGuarded provides — so a lone eager event takes the ordinary
+        // single path, with the same conflict tolerance and ownership
+        // bookkeeping it would have had without the fold.
+        if (entries.length === 1) {
+          const [entry] = entries;
+          try {
+            await createGuarded(entry.event, { requestId });
+            if (entry.kind === 'step') {
+              createdStepCorrelationIds.add(entry.correlationId);
+            }
+          } catch (err) {
+            if (EntityConflictError.is(err)) {
+              runtimeLogger.info(
+                entry.kind === 'step'
+                  ? 'Step already exists, continuing'
+                  : 'Wait already exists, continuing',
+                {
+                  workflowRunId: runId,
+                  correlationId: entry.correlationId,
+                  message: err.message,
+                }
+              );
+            } else {
+              throw err;
+            }
+          }
+          return;
+        }
         for (
           let start = 0;
           start < entries.length;

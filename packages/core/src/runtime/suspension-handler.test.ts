@@ -1048,7 +1048,8 @@ describe('handleSuspension batched fan-out', () => {
     await expect(
       handleSuspension({
         suspension: new WorkflowSuspension(
-          stepsAndWait(['s1', 's2']),
+          // s1 defers; s2 + s3 form a real (multi-event) batch.
+          stepsAndWait(['s1', 's2', 's3']),
           globalThis
         ),
         world,
@@ -1143,6 +1144,36 @@ describe('handleSuspension batched fan-out', () => {
     expect(createBatch).not.toHaveBeenCalled();
   });
 
+  it('routes a lone eager event through the single path, never a batch of one', async () => {
+    const eventsCreate = vi.fn().mockImplementation(async (_runId, event) => ({
+      event,
+    }));
+    const createBatch = successfulCreateBatch();
+    const world = createBatchWorld(eventsCreate, createBatch);
+
+    // Two steps: s1 lazy-defers (cap 1), leaving exactly one eager create.
+    const result = await handleSuspension({
+      suspension: new WorkflowSuspension(
+        stepsAndWait(['s1', 's2']),
+        globalThis
+      ),
+      world,
+      run: slotRun,
+    });
+
+    expect(createBatch).not.toHaveBeenCalled();
+    expect(eventsCreate).toHaveBeenCalledTimes(1);
+    expect(eventsCreate).toHaveBeenCalledWith(
+      slotRun.runId,
+      expect.objectContaining({
+        eventType: 'step_created',
+        correlationId: 's2',
+      }),
+      expect.anything()
+    );
+    expect([...result.createdStepCorrelationIds]).toEqual(['s2']);
+  });
+
   it('chunks a fan-out past MAX_BATCH_FANOUT_EVENTS', async () => {
     const createBatch = successfulCreateBatch();
     const world = createBatchWorld(vi.fn(), createBatch);
@@ -1163,14 +1194,14 @@ describe('handleSuspension batched fan-out', () => {
 
   it('leaves lazy-inline deferred steps out of the batch', async () => {
     // Default inline cap (3): s1..s3 defer their step_created for the lazy
-    // start; only s4 eager-creates, so the batch carries exactly one event.
+    // start; s4 + s5 eager-create, so the batch carries exactly those two.
     vi.stubEnv('WORKFLOW_MAX_INLINE_STEPS', '3');
     const createBatch = successfulCreateBatch();
     const world = createBatchWorld(vi.fn(), createBatch);
 
     const result = await handleSuspension({
       suspension: new WorkflowSuspension(
-        stepsAndWait(['s1', 's2', 's3', 's4']),
+        stepsAndWait(['s1', 's2', 's3', 's4', 's5']),
         globalThis
       ),
       world,
@@ -1183,8 +1214,12 @@ describe('handleSuspension batched fan-out', () => {
       's3',
     ]);
     expect(createBatch).toHaveBeenCalledTimes(1);
-    expect(createBatch.mock.calls[0][1]).toHaveLength(1);
-    expect(createBatch.mock.calls[0][1][0].event.correlationId).toBe('s4');
-    expect([...result.createdStepCorrelationIds]).toEqual(['s4']);
+    expect(createBatch.mock.calls[0][1]).toHaveLength(2);
+    expect(
+      createBatch.mock.calls[0][1].map(
+        (e: { event: { correlationId: string } }) => e.event.correlationId
+      )
+    ).toEqual(['s4', 's5']);
+    expect([...result.createdStepCorrelationIds].sort()).toEqual(['s4', 's5']);
   });
 });
