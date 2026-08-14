@@ -290,6 +290,11 @@ export const WorkflowClientVersion = SemanticConvention<string>(
 /** Client-measured step-to-step overhead in milliseconds. */
 export const StepStsoMs = SemanticConvention<number>('step.stso_ms');
 
+/** Runtime optimizations active for the step latency measurement. */
+export const StepLatencyOptimizations = SemanticConvention<string[]>(
+  'step.latency_optimizations'
+);
+
 /**
  * The socket a WS event write actually travelled over
  * (workflow.events.ws.url). `url.full` names the v4 REST endpoint the frame is

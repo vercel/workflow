@@ -150,6 +150,7 @@ const input = {
   specVersion: 2,
   correlationId: 'step_1',
   stso: 468,
+  optimizations: ['lazyStepStart'],
 } as const;
 
 /** The materialized CBOR body a `step_completed` write answers with. */
@@ -290,6 +291,9 @@ describe('per-write client span', () => {
       `@workflow/world-vercel/${version}`
     );
     expect(span.attributes['step.stso_ms']).toBe(468);
+    expect(span.attributes['step.latency_optimizations']).toEqual([
+      'lazyStepStart',
+    ]);
   });
 
   it('carries the reqId that joins it to the server log line for the same frame', async () => {
@@ -531,6 +535,9 @@ describe('transport parity', () => {
       `@workflow/world-vercel/${version}`
     );
     expect(span.attributes['step.stso_ms']).toBe(468);
+    expect(span.attributes['step.latency_optimizations']).toEqual([
+      'lazyStepStart',
+    ]);
     expect(span.attributes['network.protocol.name']).toBeUndefined();
     agent.assertNoPendingInterceptors();
   });
