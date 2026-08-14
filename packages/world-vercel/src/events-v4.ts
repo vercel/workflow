@@ -62,12 +62,15 @@ import { deserializeStep, StepWireSchema } from './steps.js';
 import {
   ErrorType,
   NetworkProtocolName,
+  StepStsoMs,
+  WorkflowClientVersion,
   WorkflowEventsTransport,
   WorkflowEventType,
   WorkflowWsRequestId,
   WorkflowWsUrl,
 } from './telemetry.js';
 import { type APIConfig, getHttpConfig, getHttpUrl } from './utils.js';
+import { version } from './version.js';
 import type { WsFrameReply } from './ws-transport.js';
 import { isWsEventsTransportEnabled } from './ws-transport-enabled.js';
 
@@ -709,6 +712,8 @@ async function postWorkflowRunEventV4(
     {
       ...WorkflowEventsTransport('http'),
       ...WorkflowEventType(input.eventType),
+      ...WorkflowClientVersion(`@workflow/world-vercel/${version}`),
+      ...(input.stso !== undefined ? StepStsoMs(input.stso) : {}),
     }
   );
 }
@@ -930,6 +935,8 @@ async function postEventFrameOverWs(
       attributes: {
         ...WorkflowEventsTransport('ws'),
         ...WorkflowEventType(input.eventType),
+        ...WorkflowClientVersion(`@workflow/world-vercel/${version}`),
+        ...(input.stso !== undefined ? StepStsoMs(input.stso) : {}),
         ...NetworkProtocolName('websocket'),
         ...WorkflowWsUrl(wsUrl),
       },

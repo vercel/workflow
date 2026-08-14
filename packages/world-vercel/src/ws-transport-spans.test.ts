@@ -46,6 +46,7 @@ import {
   V4_FRAME_CONTENT_TYPE,
 } from './frames.js';
 import { WORKFLOW_SERVER_URL_OVERRIDE } from './utils.js';
+import { version } from './version.js';
 
 vi.mock('@vercel/oidc', () => ({
   getVercelOidcToken: vi.fn().mockRejectedValue(new Error('no OIDC')),
@@ -148,6 +149,7 @@ const input = {
   eventType: 'step_completed',
   specVersion: 2,
   correlationId: 'step_1',
+  stso: 468,
 } as const;
 
 /** The materialized CBOR body a `step_completed` write answers with. */
@@ -284,6 +286,10 @@ describe('per-write client span', () => {
     expect(span.attributes['network.protocol.name']).toBe('websocket');
     expect(span.attributes['workflow.events.ws.url']).toBe(WS_URL);
     expect(span.attributes['workflow.event.type']).toBe('step_completed');
+    expect(span.attributes['workflow.client.version']).toBe(
+      `@workflow/world-vercel/${version}`
+    );
+    expect(span.attributes['step.stso_ms']).toBe(468);
   });
 
   it('carries the reqId that joins it to the server log line for the same frame', async () => {
@@ -521,6 +527,10 @@ describe('transport parity', () => {
     expect(span.attributes['http.request.method']).toBe('POST');
     expect(span.attributes['workflow.event.type']).toBe('step_completed');
     expect(span.attributes['workflow.events.transport']).toBe('http');
+    expect(span.attributes['workflow.client.version']).toBe(
+      `@workflow/world-vercel/${version}`
+    );
+    expect(span.attributes['step.stso_ms']).toBe(468);
     expect(span.attributes['network.protocol.name']).toBeUndefined();
     agent.assertNoPendingInterceptors();
   });

@@ -282,6 +282,14 @@ export const WorkflowEventType = SemanticConvention<string>(
   'workflow.event.type'
 );
 
+/** Version of the Workflow client package issuing the request. */
+export const WorkflowClientVersion = SemanticConvention<string>(
+  'workflow.client.version'
+);
+
+/** Client-measured step-to-step overhead in milliseconds. */
+export const StepStsoMs = SemanticConvention<number>('step.stso_ms');
+
 /**
  * The socket a WS event write actually travelled over
  * (workflow.events.ws.url). `url.full` names the v4 REST endpoint the frame is
