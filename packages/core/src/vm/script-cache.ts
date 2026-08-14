@@ -98,10 +98,10 @@ function touchBundle(code: string): Map<string, Script> | undefined {
  * equivalent to `vm.runInContext(code, context, { filename })` but skips the
  * recompile.
  */
-export function getCachedWorkflowScript(
+export function getCachedWorkflowScriptWithStatus(
   code: string,
   filename: string
-): Script {
+): { script: Script; cacheHit: boolean } {
   let byFilename = touchBundle(code);
   if (byFilename === undefined) {
     byFilename = new Map<string, Script>();
@@ -117,11 +117,24 @@ export function getCachedWorkflowScript(
     }
   }
   let script = byFilename.get(filename);
+  const cacheHit = script !== undefined;
   if (script === undefined) {
     script = new Script(code, { filename });
     byFilename.set(filename, script);
   }
-  return script;
+  return { script, cacheHit };
+}
+
+/**
+ * Returns a compiled workflow script, hiding cache metadata from callers that
+ * only need to evaluate it. Replay tracing uses the status-bearing variant to
+ * distinguish actual V8 compilation from a cache lookup.
+ */
+export function getCachedWorkflowScript(
+  code: string,
+  filename: string
+): Script {
+  return getCachedWorkflowScriptWithStatus(code, filename).script;
 }
 
 /**

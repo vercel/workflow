@@ -4,6 +4,7 @@ import { createContext } from './index.js';
 import {
   clearWorkflowScriptCache,
   getCachedWorkflowScript,
+  getCachedWorkflowScriptWithStatus,
   runCachedWorkflowScript,
   workflowScriptCacheSize,
 } from './script-cache.js';
@@ -46,6 +47,21 @@ describe('script-cache', () => {
     const a = getCachedWorkflowScript(SAMPLE_BUNDLE, 'workflows/a.ts');
     const b = getCachedWorkflowScript(SAMPLE_BUNDLE, 'workflows/a.ts');
     expect(a).toBe(b);
+  });
+
+  it('reports whether compilation was served from cache', () => {
+    const first = getCachedWorkflowScriptWithStatus(
+      SAMPLE_BUNDLE,
+      'workflows/a.ts'
+    );
+    const second = getCachedWorkflowScriptWithStatus(
+      SAMPLE_BUNDLE,
+      'workflows/a.ts'
+    );
+
+    expect(first.cacheHit).toBe(false);
+    expect(second.cacheHit).toBe(true);
+    expect(second.script).toBe(first.script);
   });
 
   it('returns distinct Scripts for the same code under different filenames', () => {

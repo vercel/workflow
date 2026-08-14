@@ -82,6 +82,11 @@ export const WorkflowExecutionMode = SemanticConvention<'replay' | 'retained'>(
   'workflow.execution.mode'
 );
 
+/** Whether every script needed for workflow bundle evaluation was cached. */
+export const WorkflowBundleCompileCacheHit = SemanticConvention<boolean>(
+  'workflow.bundle.compile.cache_hit'
+);
+
 /**
  * Events the replay walked past that no consumer claimed, still held when the
  * replay stopped.
