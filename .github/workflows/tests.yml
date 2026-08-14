@@ -324,6 +324,7 @@ jobs:
             e2e-vercel-prod-${{ matrix.app.name }}.json
             e2e-metadata-${{ matrix.app.name }}-vercel.json
             e2e-failures-${{ matrix.app.name }}-vercel.json
+            e2e-flaky-${{ matrix.app.name }}-vercel.json
             e2e-diagnostics-${{ matrix.app.name }}-vercel.json
           retention-days: 7
           if-no-files-found: ignore
@@ -420,7 +421,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: e2e-results-local-dev-${{ matrix.app.name }}-${{ matrix.app.canary && 'canary' || 'stable' }}
-          path: e2e-local-dev-${{ matrix.app.name }}-${{ matrix.app.canary && 'canary' || 'stable' }}.json
+          path: |
+            e2e-local-dev-${{ matrix.app.name }}-${{ matrix.app.canary && 'canary' || 'stable' }}.json
+            e2e-flaky-${{ matrix.app.name }}-local.json
           retention-days: 7
           if-no-files-found: ignore
 
@@ -498,7 +501,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: e2e-results-local-prod-${{ matrix.app.name }}-${{ matrix.app.canary && 'canary' || 'stable' }}
-          path: e2e-local-prod-${{ matrix.app.name }}-${{ matrix.app.canary && 'canary' || 'stable' }}.json
+          path: |
+            e2e-local-prod-${{ matrix.app.name }}-${{ matrix.app.canary && 'canary' || 'stable' }}.json
+            e2e-flaky-${{ matrix.app.name }}-local.json
           retention-days: 7
           if-no-files-found: ignore
 
@@ -596,7 +601,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: e2e-results-local-postgres-${{ matrix.app.name }}-${{ matrix.app.canary && 'canary' || 'stable' }}
-          path: e2e-local-postgres-${{ matrix.app.name }}-${{ matrix.app.canary && 'canary' || 'stable' }}.json
+          path: |
+            e2e-local-postgres-${{ matrix.app.name }}-${{ matrix.app.canary && 'canary' || 'stable' }}.json
+            e2e-flaky-${{ matrix.app.name }}-local.json
           retention-days: 7
           if-no-files-found: ignore
 
@@ -678,7 +685,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: e2e-results-windows-nextjs-turbopack
-          path: e2e-windows-nextjs-turbopack.json
+          path: |
+            e2e-windows-nextjs-turbopack.json
+            e2e-flaky-nextjs-turbopack-local.json
           retention-days: 7
           if-no-files-found: ignore
 

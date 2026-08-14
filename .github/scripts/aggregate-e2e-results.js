@@ -53,6 +53,7 @@ function findResultFiles(dir) {
   return findJsonFiles(dir, 'e2e-', [
     'e2e-metadata-',
     'e2e-failures-',
+    'e2e-flaky-',
     'e2e-diagnostics-',
   ]);
 }
@@ -144,6 +145,79 @@ function loadFailures(dir) {
   }
 
   return failures;
+}
+
+// Load flaky-test sidecar files (tests that passed only after a retry,
+// written by github-reporter). Grouped per app; the same test flaking in
+// several jobs for one app is collapsed into a single entry with an
+// occurrence count so the section stays scannable.
+function loadFlaky(dir) {
+  // Map of `${app}\u0000${testName}` -> { app, testName, retryCount, occurrences }
+  const flaky = new Map();
+  const files = findJsonFiles(dir, 'e2e-flaky-');
+
+  for (const file of files) {
+    const basename = path.basename(file, '.json');
+    const match = basename.match(/^e2e-flaky-(.+)-(?:vercel|local)$/);
+    const app = match ? match[1] : 'unknown';
+    try {
+      const entries = JSON.parse(fs.readFileSync(file, 'utf-8'));
+      for (const entry of entries) {
+        if (!entry.testName) continue;
+        const key = `${app}\u0000${entry.testName}`;
+        const existing = flaky.get(key);
+        if (existing) {
+          existing.occurrences++;
+          existing.retryCount = Math.max(
+            existing.retryCount,
+            entry.retryCount || 1
+          );
+        } else {
+          flaky.set(key, {
+            app,
+            testName: entry.testName,
+            retryCount: entry.retryCount || 1,
+            occurrences: 1,
+          });
+        }
+      }
+    } catch (_e) {
+      // Skip invalid files
+    }
+  }
+
+  return [...flaky.values()];
+}
+
+// Render the flaky-tests section shared by the PR comment and the per-job
+// step summary. Retried-to-green tests would otherwise be invisible — the
+// job is green — so this is the only place a recurring race stays visible.
+function renderFlakySection(flakyTests) {
+  if (flakyTests.length === 0) return;
+
+  console.log('### ⚠️ Flaky E2E Tests (passed on retry)\n');
+  console.log(
+    '_These tests failed at least once and passed on a retry. A recurring entry here is a real race worth investigating._\n'
+  );
+
+  const sorted = [...flakyTests].sort(
+    (a, b) =>
+      b.occurrences - a.occurrences || a.testName.localeCompare(b.testName)
+  );
+  const collapse = sorted.length >= 10;
+  if (collapse) {
+    console.log('<details>');
+    console.log(`<summary>${sorted.length} flaky tests</summary>\n`);
+  }
+  for (const test of sorted) {
+    const jobs =
+      test.occurrences > 1 ? ` — flaked in ${test.occurrences} jobs` : '';
+    console.log(`- \`${test.testName}\` (${test.app})${jobs}`);
+  }
+  console.log('');
+  if (collapse) {
+    console.log('</details>\n');
+  }
 }
 
 // vitest's JSON reporter serializes only error stacks. For test timeouts the
@@ -355,7 +429,7 @@ function aggregateByCategory(files) {
 }
 
 // Render markdown summary for single job (step summary)
-function renderSingleJobSummary(summary) {
+function renderSingleJobSummary(summary, flakyTests = []) {
   const total =
     summary.totalPassed + summary.totalFailed + summary.totalSkipped;
   const statusEmoji = summary.totalFailed > 0 ? '❌' : '✅';
@@ -393,6 +467,8 @@ function renderSingleJobSummary(summary) {
       console.log('</details>\n');
     }
   }
+
+  renderFlakySection(flakyTests);
 
   // Results by file
   if (summary.fileResults.length > 1) {
@@ -438,7 +514,8 @@ function renderAggregatedSummary(
   overallSummary,
   metadata,
   diagnostics,
-  failures
+  failures,
+  flakyTests
 ) {
   const total =
     overallSummary.totalPassed +
@@ -557,6 +634,8 @@ function renderAggregatedSummary(
     }
   }
 
+  renderFlakySection(flakyTests);
+
   // Detailed breakdown by category
   console.log('### Details by Category\n');
 
@@ -605,13 +684,15 @@ if (mode === 'aggregate') {
   const metadata = loadMetadata(resultsDir);
   const diagnostics = loadDiagnostics(resultsDir);
   const failures = loadFailures(resultsDir);
+  const flakyTests = loadFlaky(resultsDir);
   enrichFailedTestMessages(overallSummary.allFailedTests, failures);
   renderAggregatedSummary(
     categories,
     overallSummary,
     metadata,
     diagnostics,
-    failures
+    failures,
+    flakyTests
   );
 
   // Exit with non-zero if any tests failed
@@ -621,7 +702,7 @@ if (mode === 'aggregate') {
 } else {
   const summary = aggregateResults(resultFiles);
   enrichFailedTestMessages(summary.allFailedTests, loadFailures(resultsDir));
-  renderSingleJobSummary(summary);
+  renderSingleJobSummary(summary, loadFlaky(resultsDir));
 
   // Exit with non-zero if any tests failed
   if (summary.totalFailed > 0) {

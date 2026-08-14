@@ -995,7 +995,10 @@ const testTimeoutMs =
   config.stuckGraceMs +
   60_000;
 
-describe('event log race repro', () => {
+// This harness's failures ARE the signal it exists to produce, and a single
+// pass runs for the whole configured budget — never let the CI-wide e2e
+// retry (vitest.config.ts) re-run it.
+describe('event log race repro', { retry: 0 }, () => {
   beforeAll(() => {
     setupWorld(deploymentUrl);
 
