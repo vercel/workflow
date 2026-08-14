@@ -233,7 +233,6 @@ export function createCreateAbortController(ctx: WorkflowOrchestratorContext) {
                   const prepared =
                     await ctx.replayPayloadCache.prepareEventPayload(
                       event.eventId,
-                      'payload',
                       rawPayload
                     );
                   const hydrated = (await hydrateStepReturnValue(

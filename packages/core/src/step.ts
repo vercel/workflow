@@ -192,7 +192,6 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
             try {
               rejection = await ctx.replayPayloadCache.getEventValue(
                 event.eventId,
-                'error',
                 event.eventData.error,
                 (prepared) =>
                   hydrateStepError(
@@ -304,7 +303,6 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
             try {
               const hydratedResult = await ctx.replayPayloadCache.getEventValue(
                 completedEventId,
-                'result',
                 serializedResult,
                 (prepared) =>
                   hydrateStepReturnValue(

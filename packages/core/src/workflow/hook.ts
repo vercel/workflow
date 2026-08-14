@@ -354,7 +354,6 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
               try {
                 const payload = await ctx.replayPayloadCache.getEventValue(
                   event.eventId,
-                  'payload',
                   event.eventData.payload,
                   (prepared) =>
                     hydrateStepReturnValue(
@@ -427,7 +426,6 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
             try {
               const payload = await ctx.replayPayloadCache.getEventValue(
                 event.eventId,
-                'payload',
                 event.eventData.payload,
                 (prepared) =>
                   hydrateStepReturnValue(

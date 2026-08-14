@@ -5,7 +5,7 @@ import {
   prepareReplayPayload,
 } from './serialization/replay.js';
 
-type ReplayPayloadField = 'result' | 'error' | 'payload';
+const WORKFLOW_INPUT_CACHE_KEY = 'workflow-input';
 
 type KeyState =
   | { state: 'loading'; promise: Promise<DecryptionKey | undefined> }
@@ -65,35 +65,35 @@ export class ReplayPayloadCache {
     switch (event.eventType) {
       case 'run_created':
         this.startPreparation(
-          this.workflowInputKey(event.runId),
+          WORKFLOW_INPUT_CACHE_KEY,
           event.eventData.input,
           onPreparationStart
         );
         break;
       case 'run_started':
         this.startPreparation(
-          this.workflowInputKey(event.runId),
+          WORKFLOW_INPUT_CACHE_KEY,
           event.eventData?.input,
           onPreparationStart
         );
         break;
       case 'step_completed':
         this.startPreparation(
-          this.eventPayloadKey(event.eventId, 'result'),
+          this.eventPayloadKey(event.eventId),
           event.eventData?.result,
           onPreparationStart
         );
         break;
       case 'step_failed':
         this.startPreparation(
-          this.eventPayloadKey(event.eventId, 'error'),
+          this.eventPayloadKey(event.eventId),
           event.eventData?.error,
           onPreparationStart
         );
         break;
       case 'hook_received':
         this.startPreparation(
-          this.eventPayloadKey(event.eventId, 'payload'),
+          this.eventPayloadKey(event.eventId),
           event.eventData?.payload,
           onPreparationStart
         );
@@ -105,10 +105,7 @@ export class ReplayPayloadCache {
    * Consumers await the few codecs that cannot complete synchronously.
    */
   prewarm(workflowRun: WorkflowRun, events: Event[]): void {
-    this.startPreparation(
-      this.workflowInputKey(workflowRun.runId),
-      workflowRun.input
-    );
+    this.startPreparation(WORKFLOW_INPUT_CACHE_KEY, workflowRun.input);
     for (
       let index = this.nextUnscannedEventIndex;
       index < events.length;
@@ -127,32 +124,27 @@ export class ReplayPayloadCache {
   prepareWorkflowInput(
     workflowRun: WorkflowRun
   ): PreparedReplayPayload | Promise<PreparedReplayPayload> {
-    return this.getPreparedPayload(
-      this.workflowInputKey(workflowRun.runId),
-      workflowRun.input
-    );
+    return this.getPreparedPayload(WORKFLOW_INPUT_CACHE_KEY, workflowRun.input);
   }
 
   prepareEventPayload(
     eventId: string,
-    field: ReplayPayloadField,
     value: unknown
   ): PreparedReplayPayload | Promise<PreparedReplayPayload> {
-    return this.getPreparedPayload(this.eventPayloadKey(eventId, field), value);
+    return this.getPreparedPayload(this.eventPayloadKey(eventId), value);
   }
 
   getEventValue(
     eventId: string,
-    field: ReplayPayloadField,
     serializedValue: unknown,
     hydrate: (prepared: PreparedReplayPayload) => unknown | Promise<unknown>
   ): unknown | Promise<unknown> {
-    const cacheKey = this.eventPayloadKey(eventId, field);
+    const cacheKey = this.eventPayloadKey(eventId);
     if (this.primitiveValues.has(cacheKey)) {
       return this.primitiveValues.get(cacheKey);
     }
 
-    const prepared = this.prepareEventPayload(eventId, field, serializedValue);
+    const prepared = this.prepareEventPayload(eventId, serializedValue);
     const hydrateAndCache = (payload: PreparedReplayPayload) => {
       const hydrated = hydrate(payload);
       return hydrated instanceof Promise
@@ -292,11 +284,7 @@ export class ReplayPayloadCache {
     }
   }
 
-  private workflowInputKey(runId: string): string {
-    return `run:${runId}:input`;
-  }
-
-  private eventPayloadKey(eventId: string, field: ReplayPayloadField): string {
-    return `event:${eventId}:${field}`;
+  private eventPayloadKey(eventId: string): string {
+    return `event:${eventId}`;
   }
 }
