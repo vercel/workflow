@@ -201,7 +201,6 @@ async function driveHandler(opts: {
   const getWorldSpan = exporter
     .getFinishedSpans()
     .find((s) => s.name === 'workflow.route.get_world');
-
   return {
     workflowSpan,
     routeSpan,
@@ -287,7 +286,6 @@ describe('workflowEntrypoint trace modes', () => {
     );
     expect(getWorldSpan).toBeDefined();
     expect(getWorldSpan?.parentSpanId).toBe(routeSpan?.spanContext().spanId);
-
     expect(workflowSpan).toBeDefined();
     // Child of the local /flow route span — same trace, so one
     // invocation is a single bounded trace rather than a new root.
