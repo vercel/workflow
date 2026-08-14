@@ -300,13 +300,21 @@ elif [ "$USE_DOCKER" = "1" ]; then
   docker compose -f "$COMPOSE_FILE" up -d
 
   log "Waiting for Postgres to accept connections"
+  # Probe over TCP, not the unix socket. The image's entrypoint runs a temporary
+  # server for initdb with `listen_addresses=''`, so a socket probe can answer
+  # "ready" during initialization and then answer "not ready" a moment later,
+  # while that server is being swapped for the real one. TCP is only open once
+  # the real server is up, and it is what the app connects over anyway.
+  postgres_ready=0
   for _ in $(seq 1 60); do
-    if docker compose -f "$COMPOSE_FILE" exec -T postgres pg_isready -U world -d world >/dev/null 2>&1; then
+    if docker compose -f "$COMPOSE_FILE" exec -T postgres \
+      pg_isready -h 127.0.0.1 -U world -d world >/dev/null 2>&1; then
+      postgres_ready=1
       break
     fi
     sleep 1
   done
-  docker compose -f "$COMPOSE_FILE" exec -T postgres pg_isready -U world -d world >/dev/null 2>&1 ||
+  [ "$postgres_ready" = "1" ] ||
     die "Postgres did not become ready. Check: docker compose -f $COMPOSE_FILE logs postgres"
 else
   log "Using the Postgres at WORKFLOW_POSTGRES_URL (not managed by this script)"
@@ -458,8 +466,8 @@ fi
 if [ -f "$RESULTS_FILE" ]; then
   log "Summary"
   # Same renderer the CI job uses for its sticky comment; with no --run-url it
-  # just prints the tables.
-  node "$RENDERER" "$RESULTS_FILE"
+  # prints the tables without the comment marker or the stored history.
+  node "$RENDERER" "$RESULTS_FILE" --label "world-$WORLD"
   log "Full results: $RESULTS_FILE / app log: $SERVER_LOG"
 else
   log "No $RESULTS_FILE was written — the harness died before its first checkpoint."
