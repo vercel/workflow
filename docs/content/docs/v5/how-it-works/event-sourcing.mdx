@@ -249,17 +249,19 @@ To keep an inert copy from failing an otherwise healthy run, the runtime groups 
 
 Types that share a class are the mutually exclusive outcomes of one decision: a step either completes or fails, and the first outcome recorded is the one that counts. Classes are independent of one another, so passing over one does not suppress another. A step whose result is already in the log has still recorded exactly one `step_created`, which is what makes a second one ignorable on its own terms.
 
+The two hook classes cover the same shape of duplicate, and replay reaches them less often because the write path resolves most hook duplicates before they reach the log: a run re-creating a hook it already owns converges on the existing `hook_created` rather than appending a second one, and a second `hook_disposed` for the same hook is refused as an idempotent no-op. A log that holds either anyway is read past like any other repeat.
+
 The remaining event types belong to no class and are never skipped:
 
 - `hook_received`: a hook legitimately receives many payloads under one ID, so a second `hook_received` is not a repeat of anything.
-- `hook_conflict`: records a failed acquisition of the hook's token. Acquisition is idempotent — a run re-creating a hook it already owns converges on the existing `hook_created` rather than conflicting — so a `hook_conflict` cannot follow a `hook_created` for the same hook.
-- `attr_set` is written on every attribute write.
+- `hook_conflict`: records a failed acquisition of a hook's token, which the same run can hit repeatedly over its lifetime as other runs take and release that token. The hook's own consumer stays registered and claims every copy it is offered, so a repeat is consumed rather than reaching the class check.
+- `attr_set`: written on every [`setAttributes()`](/docs/api-reference/workflow/set-attributes) call, so a second write of the same key is a new fact rather than a repeat.
 - `run_created` precedes every replay and is always consumed.
 - `run_completed`, `run_failed`, and `run_cancelled` never reach the check. The runtime exits before replaying the workflow body once the log holds one of them, so no consumer ever takes one and no class is ever recorded for them.
 
-Duplicates are visible in the run's logs. A repeat of the same event type is logged at `info`. A repeat that decides a class differently — a `step_failed` behind a `step_completed`, or the reverse — is logged at `error`. Ignoring it is still correct and still deterministic, but unlike a re-commit of the same outcome there is no reading in which both writers were right, so the discarded outcome is worth surfacing.
+Both kinds of skip are logged at `debug`, so neither reaches the console unless you run with `DEBUG=workflow:runtime:*`. A duplicate is a permanent feature of the log: every later replay re-reads it and lands on the same check, so anything printed unconditionally would print once per replay for the life of the run, and there is nothing to act on either way. A repeat that decides a class differently — a `step_failed` behind a `step_completed`, or the reverse — gets its own message, because unlike a re-commit of the same outcome there is no reading in which both writers were right.
 
-The observability UI greys out the events it can identify this way, which is a narrower set than the runtime's. It reads the log without consumer state, and a consumer for an entity that is still open legitimately claims a repeat — each retry of a step writes another `step_started`. So it marks a repeat only once no consumer can remain for it: past a terminal event for the same entity, or a second `run_started`, of which the log records one per run. On a partial view of the log — one page of a paginated list, or search results — it marks nothing, since which copy came first is a property of the whole log.
+The observability UI greys out the events it can identify this way, with the reason on hover. Its set is narrower than the runtime's: it reads the log without consumer state, and a consumer for an entity that is still open legitimately claims a repeat — each retry of a step writes another `step_started`. So it marks a repeat only once no consumer can remain for it: past a terminal event for the same entity, or a second `run_started`, of which the log records one per run. On a partial view of the log — one page of a paginated list, or search results — it marks nothing, since which copy came first is a property of the whole log.
 
 ## Event Correlation
 

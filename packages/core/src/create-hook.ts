@@ -120,15 +120,10 @@ export interface HookOptions {
    * server-side `resumeHook()` only. For webhooks (`createWebhook()`), an
    * explicit token is not accepted — one is always generated for you.
    *
-   * Generated webhook tokens are drawn from the run's deterministic sequence,
-   * seeded on the run ID, the workflow name, and the deployment ID. The
-   * resulting tokens are not trivial to guess, but should not be treated as
-   * secret. This is done so URLs stay
-   * stable across replays and across concurrent invocations of the same run.
-   *
-   * We recommend authenticating webhook requests themselves — a signature
-   * header, a shared secret, or an auth check inside the handler — rather
-   * than relying on URL secrecy alone.
+   * A generated token is not trivial to guess but is not a security
+   * contract, so authenticate webhook requests themselves rather than
+   * relying on URL secrecy:
+   * https://workflow-sdk.dev/docs/foundations/hooks#token-design
    *
    * If provided, the token must be a non-empty string; passing an empty
    * string throws. If not provided (or `undefined`), a token is generated
