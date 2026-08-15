@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { lock } from 'proper-lockfile';
 import type {
   GetChunksOptions,
   KeyedStreamAppendRequest,
@@ -19,7 +20,6 @@ import {
   readJSONWithFallback,
   taggedPath,
   write,
-  writeExclusive,
   writeJSON,
 } from './fs.js';
 
@@ -54,8 +54,112 @@ interface KeyedReceipt {
   canonicalChunk: string;
 }
 
+interface KeyedRecord extends KeyedReceipt {
+  physicalId: string;
+}
+
+interface KeyedLedger {
+  version: 1;
+  runId: string;
+  streamName: string;
+  records: KeyedRecord[];
+}
+
+const KeyedLedgerSchema = z.object({
+  version: z.literal(1),
+  runId: z.string(),
+  streamName: z.string(),
+  records: z.array(
+    z.object({
+      idempotencyKey: z.string(),
+      semanticDigest: z.string(),
+      chunkId: z.string(),
+      index: z.number().int().nonnegative(),
+      canonicalChunk: z.string(),
+      physicalId: z.string(),
+    })
+  ),
+});
+
 function keyedFileId(key: string): string {
   return createHash('sha256').update(key).digest('hex');
+}
+
+function keyedLedgerPath(
+  basedir: string,
+  runId: string,
+  streamName: string,
+  tag?: string
+): string {
+  return path.join(
+    basedir,
+    'streams',
+    'keyed-v1',
+    keyedFileId(runId),
+    `${keyedFileId(streamName)}${tag ? `.${tag}` : ''}.json`
+  );
+}
+
+async function readKeyedLedger(
+  basedir: string,
+  runId: string,
+  streamName: string,
+  tag?: string
+): Promise<KeyedLedger | null> {
+  try {
+    const parsed = KeyedLedgerSchema.parse(
+      JSON.parse(
+        await fs.readFile(
+          keyedLedgerPath(basedir, runId, streamName, tag),
+          'utf8'
+        )
+      )
+    );
+    if (parsed.runId !== runId || parsed.streamName !== streamName) {
+      throw new Error('corrupt keyed stream ledger');
+    }
+    if (parsed.records.some((record, index) => record.index !== index)) {
+      throw new Error('corrupt keyed stream ledger');
+    }
+    return parsed;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw error;
+  }
+}
+
+async function withKeyedLedger<T>(
+  basedir: string,
+  runId: string,
+  streamName: string,
+  tag: string | undefined,
+  fn: (file: string, ledger: KeyedLedger | null) => Promise<T>
+): Promise<T> {
+  const file = keyedLedgerPath(basedir, runId, streamName, tag);
+  await fs.mkdir(path.dirname(file), { recursive: true });
+  const release = await lock(file, {
+    realpath: false,
+    stale: 30_000,
+    update: 1_000,
+    retries: { retries: 300, factor: 1, minTimeout: 10, maxTimeout: 10 },
+  });
+  try {
+    return await fn(
+      file,
+      await readKeyedLedger(basedir, runId, streamName, tag)
+    );
+  } finally {
+    await release();
+  }
+}
+
+async function writeKeyedLedger(
+  file: string,
+  ledger: KeyedLedger
+): Promise<void> {
+  const temporary = `${file}.${process.pid}.${monotonicUlid()}.tmp`;
+  await fs.writeFile(temporary, JSON.stringify(ledger));
+  await fs.rename(temporary, file);
 }
 
 function isEofByte(byte: number | undefined): boolean {
@@ -156,6 +260,7 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
   const streamEmitter = new EventEmitter<{
     [key: `chunk:${string}`]: [
       {
+        runId: string;
         streamName: string;
         chunkData: Uint8Array;
         chunkId: string;
@@ -170,7 +275,6 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
 
   // Track which streams have already been registered for a run (in-memory cache)
   const registeredStreams = new Set<string>();
-  let keyedAppend = Promise.resolve();
 
   // Helper to record the runId <> streamId association
   async function registerStreamForRun(
@@ -221,129 +325,81 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
     name: string,
     request: KeyedStreamAppendRequest
   ): Promise<KeyedStreamAppendResult> => {
-    const previous = keyedAppend;
-    let release!: () => void;
-    keyedAppend = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    await previous;
-    try {
-      const keyId = keyedFileId(request.idempotencyKey);
-      const receiptPath = path.join(
-        basedir,
-        'streams',
-        'keyed',
-        name,
-        `${keyId}${tagSuffix}.json`
+    assertSafeEntityId('runId', runId);
+    assertSafeEntityId('streamName', name);
+    const materialize = async (record: KeyedRecord): Promise<Uint8Array> => {
+      const canonicalChunk = Uint8Array.from(
+        Buffer.from(record.canonicalChunk, 'base64')
       );
-      const chunk = toBuffer(request.chunk);
-      const receiptSchema = z.object({
-        idempotencyKey: z.string(),
-        semanticDigest: z.string(),
-        chunkId: z.string(),
-        index: z.number(),
-        canonicalChunk: z.string(),
-      });
-      const existing = await readJSONWithFallback(
-        basedir,
-        path.join('streams', 'keyed', name),
-        keyId,
-        receiptSchema,
-        tag
-      );
-      if (existing) {
-        if (
-          existing.idempotencyKey !== request.idempotencyKey ||
-          existing.semanticDigest !== request.semanticDigest
-        ) {
-          throw new Error(
-            'Keyed stream append retried with a different digest'
-          );
-        }
-        const canonicalChunk = Uint8Array.from(
-          Buffer.from(existing.canonicalChunk, 'base64')
-        );
-        // The receipt is the atomic keyed fact. A process lost between receipt
-        // publication and the physical file is repaired from its exact bytes.
-        await write(
-          path.join(
-            chunkDirForStream(path.join(basedir, 'streams', 'chunks'), name),
-            `${existing.chunkId}${tagSuffix}.bin`
-          ),
-          serializeChunk({ chunk: Buffer.from(canonicalChunk), eof: false }),
-          { overwrite: true }
-        );
-        return { inserted: false, canonicalChunk, index: existing.index };
-      }
-      await registerStreamForRun(runId, name);
-      const index = (
-        await listChunkFilesForStream(
-          path.join(basedir, 'streams', 'chunks'),
-          name,
-          tag
-        )
-      ).files.length;
-      const chunkId = `chnk_${monotonicUlid()}`;
       const chunkPath = path.join(
         chunkDirForStream(path.join(basedir, 'streams', 'chunks'), name),
-        `${chunkId}${tagSuffix}.bin`
+        `${record.physicalId}${tagSuffix}.bin`
       );
-      const receipt: KeyedReceipt = {
-        idempotencyKey: request.idempotencyKey,
-        semanticDigest: request.semanticDigest,
-        chunkId,
-        index,
-        canonicalChunk: chunk.toString('base64'),
-      };
-      const inserted = await writeExclusive(
-        receiptPath,
-        JSON.stringify(receipt)
+      const expected = serializeChunk({
+        chunk: Buffer.from(canonicalChunk),
+        eof: false,
+      });
+      try {
+        const actual = await readBuffer(chunkPath);
+        if (!actual.equals(expected))
+          throw new Error('corrupt keyed stream chunk');
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+        // The ledger lock owns this physical identity; the fs existence cache
+        // may outlive a crash/cleanup, so repair must not consult it as authority.
+        await write(chunkPath, expected, { overwrite: true });
+      }
+      return canonicalChunk;
+    };
+
+    return withKeyedLedger(basedir, runId, name, tag, async (file, current) => {
+      const existing = current?.records.find(
+        (record) => record.idempotencyKey === request.idempotencyKey
       );
-      if (!inserted) {
-        const canonical = await readJSONWithFallback(
-          basedir,
-          path.join('streams', 'keyed', name),
-          keyId,
-          receiptSchema,
-          tag
-        );
-        if (
-          !canonical ||
-          canonical.idempotencyKey !== request.idempotencyKey ||
-          canonical.semanticDigest !== request.semanticDigest
-        ) {
+      if (existing) {
+        if (existing.semanticDigest !== request.semanticDigest) {
           throw new Error(
             'Keyed stream append retried with a different digest'
           );
         }
-        const canonicalChunk = Uint8Array.from(
-          Buffer.from(canonical.canonicalChunk, 'base64')
-        );
-        await write(
-          path.join(
-            chunkDirForStream(path.join(basedir, 'streams', 'chunks'), name),
-            `${canonical.chunkId}${tagSuffix}.bin`
-          ),
-          serializeChunk({ chunk: Buffer.from(canonicalChunk), eof: false }),
-          { overwrite: true }
-        );
-        return { inserted: false, canonicalChunk, index: canonical.index };
+        return {
+          inserted: false,
+          canonicalChunk: await materialize(existing),
+          index: existing.index,
+        };
       }
-      await write(chunkPath, serializeChunk({ chunk, eof: false }), {
-        overwrite: true,
-      });
-      streamEmitter.emit(`chunk:${name}` as const, {
+
+      await registerStreamForRun(runId, name);
+      const chunk = toBuffer(request.chunk);
+      const index = current?.records.length ?? 0;
+      const record: KeyedRecord = {
+        idempotencyKey: request.idempotencyKey,
+        semanticDigest: request.semanticDigest,
+        chunkId: `chnk_${monotonicUlid()}`,
+        index,
+        canonicalChunk: chunk.toString('base64'),
+        // The padded ledger index is the physical order for cross-process tailers.
+        physicalId: `keyed_${keyedFileId(runId).slice(0, 16)}_${String(index).padStart(12, '0')}`,
+      };
+      await writeKeyedLedger(file, {
+        version: 1,
+        runId,
         streamName: name,
-        chunkData: Uint8Array.from(chunk),
-        chunkId,
+        records: [...(current?.records ?? []), record],
       });
-      return { inserted: true, canonicalChunk: Uint8Array.from(chunk), index };
-    } finally {
-      release();
-    }
+      const canonicalChunk = await materialize(record);
+      streamEmitter.emit(`chunk:${name}` as const, {
+        runId,
+        streamName: name,
+        chunkData: canonicalChunk,
+        chunkId: record.physicalId,
+      });
+      return { inserted: true, canonicalChunk, index };
+    });
   };
 
   return {
+    keyedStreamAppendVersion: 1,
     streams: {
       appendKeyed,
       async write(
@@ -381,6 +437,7 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
         const chunkData = Uint8Array.from(chunkBuffer);
 
         streamEmitter.emit(`chunk:${name}` as const, {
+          runId,
           streamName: name,
           chunkData,
           chunkId,
@@ -436,6 +493,7 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
           const { chunkId, chunkData } = await writePromise;
 
           streamEmitter.emit(`chunk:${name}` as const, {
+            runId,
             streamName: name,
             chunkData,
             chunkId,
@@ -478,11 +536,40 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
       },
 
       async getChunks(
-        _runId: string,
+        runId: string,
         name: string,
         options?: GetChunksOptions
       ): Promise<StreamChunksResponse> {
         const limit = options?.limit ?? 100;
+        const keyed = await readKeyedLedger(basedir, runId, name, tag);
+        if (keyed) {
+          let startIndex = 0;
+          if (options?.cursor) {
+            try {
+              startIndex = JSON.parse(
+                Buffer.from(options.cursor, 'base64').toString('utf-8')
+              ).i;
+            } catch {
+              startIndex = 0;
+            }
+          }
+          const records = keyed.records.slice(startIndex, startIndex + limit);
+          const nextIndex = startIndex + records.length;
+          const hasMore = nextIndex < keyed.records.length;
+          return {
+            data: records.map((record) => ({
+              index: record.index,
+              data: Uint8Array.from(
+                Buffer.from(record.canonicalChunk, 'base64')
+              ),
+            })),
+            cursor: hasMore
+              ? Buffer.from(JSON.stringify({ i: nextIndex })).toString('base64')
+              : null,
+            hasMore,
+            done: false,
+          };
+        }
         const chunksBaseDir = path.join(basedir, 'streams', 'chunks');
         const {
           files: chunkFiles,
@@ -563,7 +650,9 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
         };
       },
 
-      async getInfo(_runId: string, name: string): Promise<StreamInfoResponse> {
+      async getInfo(runId: string, name: string): Promise<StreamInfoResponse> {
+        const keyed = await readKeyedLedger(basedir, runId, name, tag);
+        if (keyed) return { tailIndex: keyed.records.length - 1, done: false };
         const chunksBaseDir = path.join(basedir, 'streams', 'chunks');
         const {
           files: chunkFiles,
@@ -590,7 +679,62 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
         return { tailIndex: dataCount - 1, done: streamDone };
       },
 
-      async get(_runId: string, name: string, startIndex = 0) {
+      async get(runId: string, name: string, startIndex = 0) {
+        const keyedAtOpen = await readKeyedLedger(basedir, runId, name, tag);
+        if (keyedAtOpen) {
+          // Keyed v1 readers consume the ledger, not directory enumeration:
+          // the ledger is the sole authority for run-scoped order and bytes.
+          let teardown = () => {};
+          return new ReadableStream<Uint8Array>({
+            async start(controller) {
+              let next =
+                startIndex < 0
+                  ? Math.max(0, keyedAtOpen.records.length + startIndex)
+                  : startIndex;
+              let flushing = false;
+              const flush = async () => {
+                if (flushing) return;
+                flushing = true;
+                try {
+                  const ledger = await readKeyedLedger(
+                    basedir,
+                    runId,
+                    name,
+                    tag
+                  );
+                  if (!ledger) throw new Error('missing keyed stream ledger');
+                  for (; next < ledger.records.length; next++) {
+                    controller.enqueue(
+                      Uint8Array.from(
+                        Buffer.from(
+                          ledger.records[next].canonicalChunk,
+                          'base64'
+                        )
+                      )
+                    );
+                  }
+                } catch (error) {
+                  controller.error(error);
+                } finally {
+                  flushing = false;
+                }
+              };
+              const listener = (event: { runId: string }) => {
+                if (event.runId === runId) void flush();
+              };
+              streamEmitter.on(`chunk:${name}` as const, listener);
+              const interval = setInterval(() => void flush(), 100);
+              await flush();
+              teardown = () => {
+                clearInterval(interval);
+                streamEmitter.off(`chunk:${name}` as const, listener);
+              };
+            },
+            cancel() {
+              teardown();
+            },
+          });
+        }
         const chunksBaseDir = path.join(basedir, 'streams', 'chunks');
         // Tears down everything the reader holds open: both emitter listeners
         // and the filesystem poll interval. Assigned once listeners are wired

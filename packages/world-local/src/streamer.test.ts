@@ -1,4 +1,5 @@
 import { promises as fs } from 'node:fs';
+import { spawn } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import { decodeTime } from 'ulid';
@@ -10,6 +11,25 @@ import {
 } from './streamer.js';
 
 const TEST_RUN_ID = 'wrun_test12345678901234';
+const childDir = process.env.WORKFLOW_LOCAL_KEYED_STREAM_CHILD_DIR;
+const childMarker = process.env.WORKFLOW_LOCAL_KEYED_STREAM_CHILD_MARKER;
+
+if (childDir && childMarker) {
+  describe('keyed stream child writer', () => {
+    it('writes through an independent process', async () => {
+      const result = await createStreamer(childDir).streams.appendKeyed!(
+        TEST_RUN_ID,
+        'strm_keyed_child_process',
+        {
+          idempotencyKey: 'child-key',
+          semanticDigest: 'child-digest',
+          chunk: new TextEncoder().encode('child'),
+        }
+      );
+      await fs.writeFile(childMarker, JSON.stringify(result));
+    });
+  });
+}
 
 describe('streamer', () => {
   describe('serializeChunk and deserializeChunk', () => {
@@ -152,10 +172,232 @@ describe('streamer', () => {
       };
     }
 
-    it('does not advertise keyed append v1 before cross-process ordering is available', async () => {
+    it('advertises keyed append v1 after the durable local ledger is available', async () => {
       const { streamer } = await setupStreamer();
 
-      expect(streamer.keyedStreamAppendVersion).toBeUndefined();
+      expect(streamer.keyedStreamAppendVersion).toBe(1);
+    });
+
+    it('serializes different keyed writers from independent streamers by run and stream', async () => {
+      const { testDir } = await setupStreamer();
+      const first = createStreamer(testDir);
+      const second = createStreamer(testDir);
+      const streamName = 'strm_keyed_two_writers';
+      const results = await Promise.all(
+        Array.from({ length: 20 }, (_, index) =>
+          (index % 2 === 0 ? first : second).streams.appendKeyed!(
+            TEST_RUN_ID,
+            streamName,
+            {
+              idempotencyKey: `key-${index}`,
+              semanticDigest: `digest-${index}`,
+              chunk: new TextEncoder().encode(String(index)),
+            }
+          )
+        )
+      );
+
+      expect(
+        [...results.map((result) => result.index)].sort((a, b) => a - b)
+      ).toEqual(Array.from({ length: 20 }, (_, index) => index));
+      expect(
+        (await first.streams.getChunks(TEST_RUN_ID, streamName)).data.map(
+          ({ data }) => new TextDecoder().decode(data)
+        )
+      ).toEqual(
+        results
+          .sort((a, b) => a.index - b.index)
+          .map((result) => new TextDecoder().decode(result.canonicalChunk))
+      );
+    });
+
+    it('converges equal keys and rejects divergent keys across independent streamers', async () => {
+      const { testDir } = await setupStreamer();
+      const first = createStreamer(testDir);
+      const second = createStreamer(testDir);
+      const request = {
+        idempotencyKey: 'same-key',
+        semanticDigest: 'same-digest',
+        chunk: new TextEncoder().encode('canonical'),
+      };
+      const [left, right] = await Promise.all([
+        first.streams.appendKeyed!(TEST_RUN_ID, 'strm_keyed_converge', request),
+        second.streams.appendKeyed!(
+          TEST_RUN_ID,
+          'strm_keyed_converge',
+          request
+        ),
+      ]);
+      expect([left, right].filter(({ inserted }) => inserted)).toHaveLength(1);
+      expect(left.index).toBe(0);
+      expect(right.index).toBe(0);
+      await expect(
+        second.streams.appendKeyed!(TEST_RUN_ID, 'strm_keyed_converge', {
+          ...request,
+          semanticDigest: 'different-digest',
+        })
+      ).rejects.toThrow('different digest');
+    });
+
+    it('delivers a live keyed append from another streamer through filesystem polling', async () => {
+      const { testDir } = await setupStreamer();
+      const reader = (
+        await createStreamer(testDir).streams.get(
+          TEST_RUN_ID,
+          'strm_keyed_live'
+        )
+      ).getReader();
+      const reading = reader.read();
+      await createStreamer(testDir).streams.appendKeyed!(
+        TEST_RUN_ID,
+        'strm_keyed_live',
+        {
+          idempotencyKey: 'live-key',
+          semanticDigest: 'live-digest',
+          chunk: new TextEncoder().encode('live'),
+        }
+      );
+      await expect(reading).resolves.toMatchObject({
+        done: false,
+        value: new TextEncoder().encode('live'),
+      });
+      await reader.cancel();
+    });
+
+    it('keeps keyed receipts isolated for distinct runs sharing stream and key', async () => {
+      const { streamer } = await setupStreamer();
+      const streamName = 'strm_keyed_run_isolation';
+      const first = await streamer.streams.appendKeyed!(
+        TEST_RUN_ID,
+        streamName,
+        {
+          idempotencyKey: 'same-key',
+          semanticDigest: 'first',
+          chunk: new TextEncoder().encode('first'),
+        }
+      );
+      const second = await streamer.streams.appendKeyed!(
+        'wrun_other1234567890123',
+        streamName,
+        {
+          idempotencyKey: 'same-key',
+          semanticDigest: 'second',
+          chunk: new TextEncoder().encode('second'),
+        }
+      );
+
+      expect(first).toMatchObject({ inserted: true, index: 0 });
+      expect(second).toMatchObject({ inserted: true, index: 0 });
+      expect(
+        (
+          await streamer.streams.getChunks(
+            'wrun_other1234567890123',
+            streamName
+          )
+        ).data
+      ).toEqual([{ index: 0, data: new TextEncoder().encode('second') }]);
+    });
+
+    it('orders a real second-process writer with the local writer', async () => {
+      const { testDir, streamer } = await setupStreamer();
+      const marker = path.join(testDir, 'child-result.json');
+      const child = spawn(
+        process.execPath,
+        [
+          'node_modules/vitest/vitest.mjs',
+          'run',
+          'packages/world-local/src/streamer.test.ts',
+          '--testNamePattern',
+          'writes through an independent process',
+        ],
+        {
+          cwd: process.cwd(),
+          env: {
+            ...process.env,
+            WORKFLOW_LOCAL_KEYED_STREAM_CHILD_DIR: testDir,
+            WORKFLOW_LOCAL_KEYED_STREAM_CHILD_MARKER: marker,
+          },
+          stdio: 'ignore',
+        }
+      );
+      const parent = streamer.streams.appendKeyed!(
+        TEST_RUN_ID,
+        'strm_keyed_child_process',
+        {
+          idempotencyKey: 'parent-key',
+          semanticDigest: 'parent-digest',
+          chunk: new TextEncoder().encode('parent'),
+        }
+      );
+      await new Promise<void>((resolve, reject) =>
+        child.once('exit', (code) =>
+          code === 0 ? resolve() : reject(new Error(`child exited ${code}`))
+        )
+      );
+      await parent;
+      expect(JSON.parse(await fs.readFile(marker, 'utf8')).index).toBeTypeOf(
+        'number'
+      );
+      expect(
+        (
+          await streamer.streams.getChunks(
+            TEST_RUN_ID,
+            'strm_keyed_child_process'
+          )
+        ).data
+          .map(({ data }) => new TextDecoder().decode(data))
+          .sort()
+      ).toEqual(['child', 'parent']);
+    }, 20_000);
+
+    it('repairs a missing physical chunk only from its canonical ledger record', async () => {
+      const { testDir, streamer } = await setupStreamer();
+      const streamName = 'strm_keyed_repair';
+      const first = await streamer.streams.appendKeyed!(
+        TEST_RUN_ID,
+        streamName,
+        {
+          idempotencyKey: 'repair-key',
+          semanticDigest: 'repair-digest',
+          chunk: new TextEncoder().encode('canonical'),
+        }
+      );
+      const [file] = await fs.readdir(
+        path.join(testDir, 'streams', 'chunks', streamName)
+      );
+      await fs.unlink(
+        path.join(testDir, 'streams', 'chunks', streamName, file)
+      );
+      await expect(
+        createStreamer(testDir).streams.appendKeyed!(TEST_RUN_ID, streamName, {
+          idempotencyKey: 'repair-key',
+          semanticDigest: 'repair-digest',
+          chunk: new TextEncoder().encode('replacement'),
+        })
+      ).resolves.toEqual({
+        inserted: false,
+        canonicalChunk: new TextEncoder().encode('canonical'),
+        index: first.index,
+      });
+    });
+
+    it('fails closed on a corrupt keyed ledger', async () => {
+      const { testDir, streamer } = await setupStreamer();
+      await streamer.streams.appendKeyed!(TEST_RUN_ID, 'strm_keyed_corrupt', {
+        idempotencyKey: 'key',
+        semanticDigest: 'digest',
+        chunk: new Uint8Array([1]),
+      });
+      const runDir = path.join(testDir, 'streams', 'keyed-v1');
+      const [run] = await fs.readdir(runDir);
+      const [ledger] = await fs.readdir(path.join(runDir, run));
+      await fs.writeFile(
+        path.join(runDir, run, ledger),
+        '{"version":1,"records":[]}'
+      );
+      await expect(
+        streamer.streams.getChunks(TEST_RUN_ID, 'strm_keyed_corrupt')
+      ).rejects.toThrow();
     });
 
     it('returns the original keyed receipt after a response-loss retry without another chunk', async () => {
