@@ -89,7 +89,8 @@ interface Ledger {
     queuePayload: unknown;
     queueOptions: unknown;
     messageId: string;
-    dispatchState: 'pending' | 'acknowledged';
+    dispatchState: 'pending' | 'dispatching' | 'acknowledged';
+    dispatchOwner?: string;
     projection: RunCreatedProjection & { state: 'pending' | 'complete' };
   };
 }
@@ -116,7 +117,10 @@ function assertLedger(value: unknown): asserts value is Ledger {
         typeof finalized.queueName !== 'string' ||
         typeof finalized.messageId !== 'string' ||
         (finalized.dispatchState !== 'pending' &&
+          finalized.dispatchState !== 'dispatching' &&
           finalized.dispatchState !== 'acknowledged') ||
+        (finalized.dispatchState === 'dispatching' &&
+          typeof finalized.dispatchOwner !== 'string') ||
         finalized.projection.version !== 1 ||
         typeof finalized.projection.runBytes !== 'string' ||
         typeof finalized.projection.eventBytes !== 'string' ||
@@ -187,6 +191,119 @@ export function createRunStartsStorage(
   basedir: string,
   drivers?: RunStartDrivers
 ) {
+  const entryFor = (ledger: Ledger): PendingRunStartDispatch | null => {
+    const finalization = ledger.finalization;
+    if (!finalization) return null;
+    return {
+      runId: ledger.runId,
+      messageId: finalization.messageId,
+      envelope: finalization.envelope,
+      queueName: finalization.queueName,
+      queuePayload: finalization.queuePayload,
+      queueOptions: finalization.queueOptions,
+      projection: finalization.projection,
+    };
+  };
+
+  const findLedgerFile = async (messageId: string): Promise<string> => {
+    const directory = path.join(basedir, 'run-starts');
+    const names = await fs.readdir(directory).catch((error) => {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+      throw error;
+    });
+    for (const name of names.filter((entry) => entry.endsWith('.json'))) {
+      const file = path.join(directory, name);
+      const ledger = JSON.parse(await fs.readFile(file, 'utf8')) as Ledger;
+      assertLedger(ledger);
+      if (ledger.finalization?.messageId === messageId) return file;
+    }
+    throw new WorkflowWorldError('Unknown run-start dispatch');
+  };
+
+  const takeDispatch = async (
+    messageId: string
+  ): Promise<
+    | {
+        entry: PendingRunStartDispatch;
+        owner: string;
+        release: () => Promise<void>;
+      }
+    | undefined
+  > => {
+    const file = await findLedgerFile(messageId);
+    let release: (() => Promise<void>) | undefined;
+    try {
+      release = await lock(`${file}.dispatch`, {
+        realpath: false,
+        stale: 10_000,
+        update: 1_000,
+        retries: { retries: 0 },
+      });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ELOCKED') {
+        const ledger = JSON.parse(await fs.readFile(file, 'utf8')) as Ledger;
+        assertLedger(ledger);
+        const owner = ledger.finalization?.dispatchOwner;
+        const pid = owner?.match(/^dsp_(\d+)_/)?.[1];
+        if (pid) {
+          try {
+            process.kill(Number(pid), 0);
+            return;
+          } catch (probe) {
+            if ((probe as NodeJS.ErrnoException).code !== 'ESRCH') throw probe;
+            // The owner process is gone. Reclaim only its exact lock sidecar;
+            // an active process is never reset merely because another World starts.
+            await fs.rmdir(`${file}.dispatch.lock`).catch((removeError) => {
+              if ((removeError as NodeJS.ErrnoException).code !== 'ENOENT') {
+                throw removeError;
+              }
+            });
+            release = await lock(`${file}.dispatch`, {
+              realpath: false,
+              stale: 10_000,
+              update: 1_000,
+              retries: { retries: 0 },
+            });
+          }
+        } else {
+          return;
+        }
+      } else {
+        throw error;
+      }
+    }
+    try {
+      const taken = await withLedgerFile(file, async (ledgerFile, current) => {
+        const finalization = current?.finalization;
+        if (
+          !current ||
+          !finalization ||
+          finalization.messageId !== messageId ||
+          finalization.dispatchState === 'acknowledged'
+        ) {
+          return undefined;
+        }
+        // Holding this separate, process-owned lock proves that a persisted
+        // dispatching record was abandoned before it is reclaimed.
+        const owner = `dsp_${process.pid}_${ulid()}`;
+        finalization.dispatchState = 'dispatching';
+        finalization.dispatchOwner = owner;
+        await writeLedger(ledgerFile, current);
+        const entry = entryFor(current);
+        if (!entry) throw new WorkflowWorldError('Unknown run-start dispatch');
+        return { entry, owner };
+      });
+      if (!taken) {
+        await release();
+        return;
+      }
+      return { ...taken, release };
+    } catch (error) {
+      await release();
+      throw error;
+    }
+  };
+
   return {
     reserveOrAdoptRunStart: async (
       request: ReserveRunStartRequest
@@ -270,7 +387,9 @@ export function createRunStartsStorage(
             envelopeIntegrityDigest:
               current.finalization.envelopeIntegrityDigest,
             messageId: current.finalization.messageId,
-            dispatchState: current.finalization.dispatchState,
+            dispatchState: current.finalization.dispatchState as
+              | 'pending'
+              | 'acknowledged',
           };
         }
         const base = {
@@ -304,7 +423,9 @@ export function createRunStartsStorage(
           semanticDigest: current.finalization.semanticDigest,
           envelopeIntegrityDigest: current.finalization.envelopeIntegrityDigest,
           messageId: current.finalization.messageId,
-          dispatchState: current.finalization.dispatchState,
+          dispatchState: current.finalization.dispatchState as
+            | 'pending'
+            | 'acknowledged',
         };
       });
     },
@@ -331,7 +452,7 @@ export function createRunStartsStorage(
       );
       return ledgers.flatMap((ledger) => {
         const finalization = ledger.finalization;
-        if (!finalization || finalization.dispatchState !== 'pending')
+        if (!finalization || finalization.dispatchState === 'acknowledged')
           return [];
         return [
           {
@@ -347,31 +468,43 @@ export function createRunStartsStorage(
       });
     },
 
-    acknowledgeDispatch: async (messageId: string): Promise<void> => {
-      const directory = path.join(basedir, 'run-starts');
-      const names = await fs.readdir(directory).catch((error) => {
-        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
-        throw error;
+    acknowledgeDispatch: async (
+      messageId: string,
+      owner: string
+    ): Promise<void> => {
+      const file = await findLedgerFile(messageId);
+      await withLedgerFile(file, async (ledgerFile, current) => {
+        const finalization = current?.finalization;
+        if (
+          !finalization ||
+          finalization.messageId !== messageId ||
+          finalization.dispatchState !== 'dispatching' ||
+          finalization.dispatchOwner !== owner
+        ) {
+          throw conflict('stale run-start dispatch acknowledgement');
+        }
+        finalization.dispatchState = 'acknowledged';
+        delete finalization.dispatchOwner;
+        await writeLedger(ledgerFile, current);
       });
-      for (const name of names.filter((entry) => entry.endsWith('.json'))) {
-        const file = path.join(directory, name);
-        const initial = JSON.parse(await fs.readFile(file, 'utf8')) as Ledger;
-        assertLedger(initial);
-        if (initial.finalization?.messageId !== messageId) continue;
-        await withLedgerFile(file, async (ledgerFile, current) => {
-          if (
-            !current?.finalization ||
-            current.finalization.messageId !== messageId
-          ) {
-            return;
-          }
-          if (current.finalization.dispatchState === 'acknowledged') return;
-          current.finalization.dispatchState = 'acknowledged';
-          await writeLedger(ledgerFile, current);
-        });
-        return;
-      }
-      throw new WorkflowWorldError('Unknown run-start dispatch');
+    },
+
+    returnDispatch: async (messageId: string, owner: string): Promise<void> => {
+      const file = await findLedgerFile(messageId);
+      await withLedgerFile(file, async (ledgerFile, current) => {
+        const finalization = current?.finalization;
+        if (
+          !finalization ||
+          finalization.messageId !== messageId ||
+          finalization.dispatchState !== 'dispatching' ||
+          finalization.dispatchOwner !== owner
+        ) {
+          throw conflict('stale run-start dispatch return');
+        }
+        finalization.dispatchState = 'pending';
+        delete finalization.dispatchOwner;
+        await writeLedger(ledgerFile, current);
+      });
     },
 
     completeProjection: async (messageId: string): Promise<void> => {
@@ -417,19 +550,11 @@ export function createRunStartsStorage(
           );
           return ledgers.flatMap((ledger) => {
             const finalization = ledger.finalization;
-            return finalization?.dispatchState === 'pending'
-              ? [
-                  {
-                    runId: ledger.runId,
-                    messageId: finalization.messageId,
-                    envelope: finalization.envelope,
-                    queueName: finalization.queueName,
-                    queuePayload: finalization.queuePayload,
-                    queueOptions: finalization.queueOptions,
-                    projection: finalization.projection,
-                  },
-                ]
-              : [];
+            return finalization?.dispatchState === 'acknowledged'
+              ? []
+              : [entryFor(ledger)].filter(
+                  (value): value is PendingRunStartDispatch => value !== null
+                );
           });
         } catch (error) {
           if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
@@ -440,9 +565,33 @@ export function createRunStartsStorage(
         await createRunStartsStorage(basedir).completeProjection(
           entry.messageId
         );
-        await drivers.dispatch(entry, () =>
-          createRunStartsStorage(basedir).acknowledgeDispatch(entry.messageId)
-        );
+        const taken = await takeDispatch(entry.messageId);
+        if (!taken) continue;
+        try {
+          let accepted = false;
+          await drivers.dispatch(taken.entry, async () => {
+            await createRunStartsStorage(basedir).acknowledgeDispatch(
+              taken.entry.messageId,
+              taken.owner
+            );
+            accepted = true;
+          });
+          // A private queue driver returns only when a delivery became
+          // terminal. Returning without acceptance is a failed attempt.
+          if (!accepted) {
+            await createRunStartsStorage(basedir).returnDispatch(
+              taken.entry.messageId,
+              taken.owner
+            );
+          }
+        } catch (error) {
+          await createRunStartsStorage(basedir)
+            .returnDispatch(taken.entry.messageId, taken.owner)
+            .catch(() => {});
+          throw error;
+        } finally {
+          await taken.release();
+        }
       }
     },
   };

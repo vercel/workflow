@@ -63,6 +63,7 @@ interface KeyedLedger {
   runId: string;
   streamName: string;
   records: KeyedRecord[];
+  closed?: boolean;
 }
 
 const KeyedLedgerSchema = z.object({
@@ -79,6 +80,7 @@ const KeyedLedgerSchema = z.object({
       physicalId: z.string(),
     })
   ),
+  closed: z.boolean().optional(),
 });
 
 function keyedFileId(key: string): string {
@@ -242,12 +244,20 @@ async function listChunkFilesForStream(
     entries,
     '.bin',
     '.bin',
-    tag ? (file) => !file.endsWith(`.${tag}`) : undefined
+    tag
+      ? (file) => !file.endsWith(`.${tag}`) && !file.startsWith('keyed_')
+      : (file) => !file.startsWith('keyed_')
   );
 
   if (tag) {
     const taggedExtension = `.${tag}.bin`;
-    addChunkFilesByExtension(extMap, entries, taggedExtension);
+    addChunkFilesByExtension(
+      extMap,
+      entries,
+      taggedExtension,
+      taggedExtension,
+      (file) => !file.startsWith('keyed_')
+    );
   }
 
   const files = [...extMap.keys()].sort();
@@ -268,6 +278,7 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
     ];
     [key: `close:${string}`]: [
       {
+        runId: string;
         streamName: string;
       },
     ];
@@ -369,6 +380,20 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
         };
       }
 
+      if (current?.closed) {
+        throw new Error('closed keyed stream');
+      }
+      if (!current) {
+        const ordinary = await listChunkFilesForStream(
+          path.join(basedir, 'streams', 'chunks'),
+          name,
+          tag
+        );
+        if (ordinary.files.length > 0) {
+          throw new Error('mixed keyed/unkeyed stream data');
+        }
+      }
+
       await registerStreamForRun(runId, name);
       const chunk = toBuffer(request.chunk);
       const index = current?.records.length ?? 0;
@@ -386,6 +411,7 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
         runId,
         streamName: name,
         records: [...(current?.records ?? []), record],
+        closed: false,
       });
       const canonicalChunk = await materialize(record);
       streamEmitter.emit(`chunk:${name}` as const, {
@@ -414,6 +440,10 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
 
         // Await runId if it's a promise to ensure proper flushing
         const runId = await _runId;
+
+        if (await readKeyedLedger(basedir, runId, name, tag)) {
+          throw new Error('mixed keyed/unkeyed stream data');
+        }
 
         // Register this stream for the run
         await registerStreamForRun(runId, name);
@@ -457,6 +487,10 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
 
         // Await runId if it's a promise
         const runId = await _runId;
+
+        if (await readKeyedLedger(basedir, runId, name, tag)) {
+          throw new Error('mixed keyed/unkeyed stream data');
+        }
 
         // Register this stream for the run
         await registerStreamForRun(runId, name);
@@ -508,6 +542,27 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
         // Await runId if it's a promise to ensure proper flushing
         const runId = await _runId;
 
+        const closedKeyed = await withKeyedLedger(
+          basedir,
+          runId,
+          name,
+          tag,
+          async (file, keyed) => {
+            if (!keyed) return false;
+            if (!keyed.closed) {
+              await writeKeyedLedger(file, { ...keyed, closed: true });
+            }
+            return true;
+          }
+        );
+        if (closedKeyed) {
+          streamEmitter.emit(`close:${name}` as const, {
+            runId,
+            streamName: name,
+          });
+          return;
+        }
+
         // Register this stream for the run (in case write wasn't called)
         await registerStreamForRun(runId, name);
         const chunkPath = path.join(
@@ -520,7 +575,10 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
           serializeChunk({ chunk: Buffer.from([]), eof: true })
         );
 
-        streamEmitter.emit(`close:${name}` as const, { streamName: name });
+        streamEmitter.emit(`close:${name}` as const, {
+          runId,
+          streamName: name,
+        });
       },
 
       async list(runId: string) {
@@ -567,7 +625,7 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
               ? Buffer.from(JSON.stringify({ i: nextIndex })).toString('base64')
               : null,
             hasMore,
-            done: false,
+            done: keyed.closed === true,
           };
         }
         const chunksBaseDir = path.join(basedir, 'streams', 'chunks');
@@ -652,7 +710,11 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
 
       async getInfo(runId: string, name: string): Promise<StreamInfoResponse> {
         const keyed = await readKeyedLedger(basedir, runId, name, tag);
-        if (keyed) return { tailIndex: keyed.records.length - 1, done: false };
+        if (keyed)
+          return {
+            tailIndex: keyed.records.length - 1,
+            done: keyed.closed === true,
+          };
         const chunksBaseDir = path.join(basedir, 'streams', 'chunks');
         const {
           files: chunkFiles,
@@ -713,6 +775,10 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
                       )
                     );
                   }
+                  if (ledger.closed) {
+                    teardown();
+                    controller.close();
+                  }
                 } catch (error) {
                   controller.error(error);
                 } finally {
@@ -722,13 +788,18 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
               const listener = (event: { runId: string }) => {
                 if (event.runId === runId) void flush();
               };
+              const closeListener = (event: { runId: string }) => {
+                if (event.runId === runId) void flush();
+              };
               streamEmitter.on(`chunk:${name}` as const, listener);
+              streamEmitter.on(`close:${name}` as const, closeListener);
               const interval = setInterval(() => void flush(), 100);
-              await flush();
               teardown = () => {
                 clearInterval(interval);
                 streamEmitter.off(`chunk:${name}` as const, listener);
+                streamEmitter.off(`close:${name}` as const, closeListener);
               };
+              await flush();
             },
             cancel() {
               teardown();
@@ -763,10 +834,12 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
             let pendingClose = false;
 
             const chunkListener = (event: {
+              runId: string;
               streamName: string;
               chunkData: Uint8Array;
               chunkId: string;
             }) => {
+              if (event.runId !== runId) return;
               // Skip empty chunks to maintain consistency with disk reading behavior
               if (event.chunkData.byteLength === 0) {
                 deliveredChunkIds.add(event.chunkId);
@@ -791,7 +864,8 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
               }
             };
 
-            const closeListener = () => {
+            const closeListener = (event: { runId: string }) => {
+              if (event.runId !== runId) return;
               // Buffer close event if disk reading is still in progress
               if (isReadingFromDisk) {
                 pendingClose = true;
@@ -946,6 +1020,26 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
               if (isPolling) return;
               isPolling = true;
               try {
+                const keyed = await readKeyedLedger(basedir, runId, name, tag);
+                if (keyed) {
+                  for (const record of keyed.records) {
+                    if (deliveredChunkIds.has(record.physicalId)) continue;
+                    deliveredChunkIds.add(record.physicalId);
+                    if (!streamClosed) {
+                      controller.enqueue(
+                        Uint8Array.from(
+                          Buffer.from(record.canonicalChunk, 'base64')
+                        )
+                      );
+                    }
+                  }
+                  if (keyed.closed) {
+                    streamClosed = true;
+                    teardown();
+                    controller.close();
+                  }
+                  return;
+                }
                 const { files: currentFiles, extMap: currentExtMap } =
                   await listChunkFilesForStream(chunksBaseDir, name, tag);
 

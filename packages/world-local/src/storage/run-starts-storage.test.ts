@@ -138,7 +138,7 @@ describe('world-local idempotent run-start ledger', () => {
         messageId: receipt.messageId,
       }),
     ]);
-    await recovered.acknowledgeDispatch(receipt.messageId);
+    await recovered.drain();
     expect(
       await createRunStartsStorage(basedir, drivers).pendingDispatches()
     ).toEqual([]);
@@ -174,6 +174,54 @@ describe('world-local idempotent run-start ledger', () => {
       expect.any(Function)
     );
     expect(await starts.pendingDispatches()).toEqual([]);
+  });
+
+  it('atomically leases one pending outbox record to one concurrent drainer', async () => {
+    let accept!: () => Promise<void>;
+    let active = 0;
+    let peak = 0;
+    const dispatch = vi.fn(async (_entry, accepted) => {
+      active++;
+      peak = Math.max(peak, active);
+      accept = async () => {
+        active--;
+        await accepted();
+      };
+      await new Promise<void>((resolve) => {
+        const previous = accept;
+        accept = async () => {
+          await previous();
+          resolve();
+        };
+      });
+    });
+    const first = createRunStartsStorage(basedir, { ...drivers, dispatch });
+    const reservation = await first.reserveOrAdoptRunStart(request());
+    const receipt = await first.finalizeOrAdoptRunStart({
+      reservationId: reservation.reservationId,
+      runId: reservation.runId,
+      semanticDigest: 'semantic-a',
+      envelopeIntegrityDigest: 'envelope-a',
+      envelope: { event: 'run_created' },
+      queueName: '__wkf_workflow_child',
+      queuePayload: { runId: reservation.runId },
+      queueOptions: {},
+    });
+
+    const draining = first.drain();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const competing = createRunStartsStorage(basedir, {
+      ...drivers,
+      dispatch,
+    }).drain();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(dispatch).toHaveBeenCalledTimes(1);
+    expect(peak).toBe(1);
+    await accept();
+    await Promise.all([draining, competing]);
+    expect(await first.pendingDispatches()).toEqual([]);
+    expect(receipt.messageId).toMatch(/^msg_/);
   });
 
   it('fails closed on a corrupt durable reservation', async () => {

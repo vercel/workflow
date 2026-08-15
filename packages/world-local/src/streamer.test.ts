@@ -178,6 +178,53 @@ describe('streamer', () => {
       expect(streamer.keyedStreamAppendVersion).toBe(1);
     });
 
+    it('rejects converting ordinary stream data to keyed mode', async () => {
+      const { streamer } = await setupStreamer();
+      await streamer.streams.write(TEST_RUN_ID, 'strm_keyed_mixed', 'ordinary');
+
+      await expect(
+        streamer.streams.appendKeyed!(TEST_RUN_ID, 'strm_keyed_mixed', {
+          idempotencyKey: 'key-1',
+          semanticDigest: 'digest-1',
+          chunk: 'keyed',
+        })
+      ).rejects.toThrow('mixed keyed/unkeyed');
+    });
+
+    it('rejects ordinary writes after keyed mode is established', async () => {
+      const { streamer } = await setupStreamer();
+      await streamer.streams.appendKeyed!(TEST_RUN_ID, 'strm_keyed_mixed', {
+        idempotencyKey: 'key-1',
+        semanticDigest: 'digest-1',
+        chunk: 'keyed',
+      });
+
+      await expect(
+        streamer.streams.write(TEST_RUN_ID, 'strm_keyed_mixed', 'ordinary')
+      ).rejects.toThrow('mixed keyed/unkeyed');
+    });
+
+    it('persists keyed EOF and rejects append after close', async () => {
+      const { streamer } = await setupStreamer();
+      await streamer.streams.appendKeyed!(TEST_RUN_ID, 'strm_keyed_eof', {
+        idempotencyKey: 'key-1',
+        semanticDigest: 'digest-1',
+        chunk: 'keyed',
+      });
+      await streamer.streams.close(TEST_RUN_ID, 'strm_keyed_eof');
+
+      await expect(
+        streamer.streams.appendKeyed!(TEST_RUN_ID, 'strm_keyed_eof', {
+          idempotencyKey: 'key-2',
+          semanticDigest: 'digest-2',
+          chunk: 'late',
+        })
+      ).rejects.toThrow('closed keyed stream');
+      expect(
+        await streamer.streams.getInfo(TEST_RUN_ID, 'strm_keyed_eof')
+      ).toEqual({ tailIndex: 0, done: true });
+    });
+
     it('serializes different keyed writers from independent streamers by run and stream', async () => {
       const { testDir } = await setupStreamer();
       const first = createStreamer(testDir);

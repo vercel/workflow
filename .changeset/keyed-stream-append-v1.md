@@ -5,4 +5,4 @@
 '@workflow/world-postgres': patch
 ---
 
-Keep canonical keyed stream append unavailable for local and Postgres Worlds until their backend ordering proofs are complete.
+Expose canonical keyed stream append for world-local after its per-run ledger proves cross-process ordering, no mixed keyed/unkeyed data, and durable EOF. Keep Postgres unavailable until its service-backed ordering proof is complete.

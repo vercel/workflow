@@ -89,15 +89,27 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
       );
     },
     async dispatch(entry, accepted) {
-      await queue.queue(
-        entry.queueName as never,
-        entry.queuePayload as never,
-        {
-          ...(entry.queueOptions as object),
-          messageId: entry.messageId as never,
-          onAccepted: accepted,
-        } as any
-      );
+      await new Promise<void>((resolve, reject) => {
+        void queue
+          .queue(
+            entry.queueName as never,
+            entry.queuePayload as never,
+            {
+              ...(entry.queueOptions as object),
+              messageId: entry.messageId as never,
+              onAccepted: async () => {
+                try {
+                  await accepted();
+                  resolve();
+                } catch (error) {
+                  reject(error);
+                }
+              },
+              onAbandoned: reject,
+            } as any
+          )
+          .catch(reject);
+      });
     },
   });
   const hookResumes = createHookResumesStorage(mergedConfig.dataDir, {

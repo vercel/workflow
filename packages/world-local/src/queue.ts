@@ -260,6 +260,7 @@ export function createQueue(config: Partial<Config>): LocalQueue {
               name === 'AbortError' ||
               name === 'ResponseAborted'
             ) {
+              await (opts as any)?.onAbandoned?.(err);
               return;
             }
             if (isDetachedArrayBufferQueueError(err)) throw err;
@@ -328,11 +329,15 @@ export function createQueue(config: Partial<Config>): LocalQueue {
             ...(stepId && { stepId }),
           }
         );
+        await (opts as any)?.onAbandoned?.(
+          new Error('world-local queue delivery exhausted safety limit')
+        );
       } finally {
         semaphore.release();
       }
     })()
       .catch((err) => {
+        void (opts as any)?.onAbandoned?.(err);
         // Silently ignore client disconnect errors (e.g., browser refresh during streaming)
         // These are expected and should not cause unhandled rejection warnings
         const isAbortError =
