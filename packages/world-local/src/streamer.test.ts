@@ -461,6 +461,73 @@ describe('streamer', () => {
       ).toEqual(['other']);
     }, 30_000);
 
+    it('fails closed for ambiguous legacy chunks and assigns a uniquely registered legacy stream to one run', async () => {
+      const { testDir } = await setupStreamer();
+      const streamName = 'strm_legacy_run_owner';
+      const ownerRun = TEST_RUN_ID;
+      const otherRun = 'wrun_legacy_other123456789';
+      const chunksDir = path.join(testDir, 'streams', 'chunks', streamName);
+      const runsDir = path.join(testDir, 'streams', 'runs');
+      await fs.mkdir(chunksDir, { recursive: true });
+      await fs.mkdir(runsDir, { recursive: true });
+      await Promise.all([
+        fs.writeFile(
+          path.join(chunksDir, 'chnk_01ARZ3NDEKTSV4RRFFQ69G5FAV.bin'),
+          serializeChunk({ eof: false, chunk: Buffer.from('legacy') })
+        ),
+        fs.writeFile(
+          path.join(chunksDir, 'chnk_01ARZ3NDEKTSV4RRFFQ69G5FAW.bin'),
+          serializeChunk({ eof: true, chunk: Buffer.alloc(0) })
+        ),
+        fs.writeFile(
+          path.join(runsDir, `${ownerRun}.json`),
+          JSON.stringify({ streams: [streamName] })
+        ),
+        fs.writeFile(
+          path.join(runsDir, `${otherRun}.json`),
+          JSON.stringify({ streams: [streamName] })
+        ),
+      ]);
+
+      await expect(
+        createStreamer(testDir).streams.getChunks(ownerRun, streamName)
+      ).rejects.toThrow('ambiguous legacy stream owner');
+
+      await fs.rm(path.join(runsDir, `${otherRun}.json`));
+      expect(
+        (
+          await createStreamer(testDir).streams.getChunks(ownerRun, streamName)
+        ).data.map(({ data }) => Buffer.from(data).toString())
+      ).toEqual(['legacy']);
+      expect(
+        await createStreamer(testDir).streams.getChunks(otherRun, streamName)
+      ).toMatchObject({ data: [], done: false });
+    });
+
+    it('re-reads a remote write when local close arrives during initial disk reading', async () => {
+      const { testDir } = await setupStreamer();
+      const streamName = 'strm_initial_close_race';
+      const readerOwner = createStreamer(testDir);
+      const remoteWriter = createStreamer(testDir);
+      for (let index = 0; index < 400; index++) {
+        await remoteWriter.streams.write(
+          TEST_RUN_ID,
+          streamName,
+          `seed-${String(index).padStart(3, '0')}`
+        );
+      }
+
+      const liveRead = readAll(readerOwner, streamName);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      await remoteWriter.streams.write(TEST_RUN_ID, streamName, 'remote');
+      await readerOwner.streams.close(TEST_RUN_ID, streamName);
+
+      expect(await liveRead).toContain('remote');
+      expect(await readAll(createStreamer(testDir), streamName)).toContain(
+        'remote'
+      );
+    }, 30_000);
+
     it('admits one mode in ordinary/keyed first-write and close/append races', async () => {
       const { testDir } = await setupStreamer();
       const first = createStreamer(testDir);
@@ -1306,6 +1373,13 @@ describe('streamer', () => {
 
         const streamer = createStreamer(testDir);
         const streamName = 'poll-test';
+        await fs.mkdir(path.join(testDir, 'streams', 'runs'), {
+          recursive: true,
+        });
+        await fs.writeFile(
+          path.join(testDir, 'streams', 'runs', `${TEST_RUN_ID}.json`),
+          JSON.stringify({ streams: [streamName] })
+        );
         // Simulate a cross-process writer landing chunks straight on disk in
         // the stream's sharded directory.
         const chunksDir = path.join(testDir, 'streams', 'chunks', streamName);
@@ -1735,6 +1809,13 @@ describe('streamer', () => {
         const { testDir } = await setupStreamer();
         const streamName = 'mixed-format-stream';
         const taggedStreamer = createStreamer(testDir, 'vitest-0');
+        await fs.mkdir(path.join(testDir, 'streams', 'runs'), {
+          recursive: true,
+        });
+        await fs.writeFile(
+          path.join(testDir, 'streams', 'runs', `${TEST_RUN_ID}.vitest-0.json`),
+          JSON.stringify({ streams: [streamName] })
+        );
         // Chunks live in the stream's sharded directory; the filename is just
         // the chunk id plus its format/tag suffix (no stream-name prefix).
         const chunksDir = path.join(testDir, 'streams', 'chunks', streamName);

@@ -73,10 +73,21 @@ interface StreamModeLedger {
   ordinaryTerminal?: { chunkId: string };
 }
 
+/** Durable owner selected when a pre-v1 ordinary stream has no run suffix. */
+interface LegacyStreamOwner {
+  version: 1;
+  runId: string;
+}
+
 const StreamModeLedgerSchema = z.object({
   version: z.literal(1),
   mode: z.enum(['keyed', 'ordinary']),
   ordinaryTerminal: z.object({ chunkId: z.string() }).optional(),
+});
+
+const LegacyStreamOwnerSchema = z.object({
+  version: z.literal(1),
+  runId: z.string(),
 });
 
 const KeyedLedgerSchema = z.object({
@@ -128,6 +139,91 @@ function streamModePath(
     keyedFileId(runId),
     `${keyedFileId(streamName)}${tag ? `.${tag}` : ''}.json`
   );
+}
+
+function legacyStreamOwnerPath(
+  basedir: string,
+  streamName: string,
+  tag?: string
+): string {
+  return path.join(
+    basedir,
+    'streams',
+    'legacy-owners-v1',
+    `${keyedFileId(streamName)}${tag ? `.${tag}` : ''}.json`
+  );
+}
+
+function isRunScopedChunkId(file: string): boolean {
+  return /^chnk_[0-9A-HJKMNP-TV-Z]{26}_[a-f0-9]{16}$/.test(file);
+}
+
+async function legacyOwnerCandidates(
+  basedir: string,
+  streamName: string,
+  tag?: string
+): Promise<string[]> {
+  const runsDir = path.join(basedir, 'streams', 'runs');
+  let entries: string[];
+  try {
+    entries = await fs.readdir(runsDir);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+    throw error;
+  }
+  const suffix = tag ? `.${tag}.json` : '.json';
+  const candidates: string[] = [];
+  for (const entry of entries) {
+    if (!entry.endsWith(suffix)) continue;
+    const runId = entry.slice(0, -suffix.length);
+    if (!runId || (!tag && runId.includes('.'))) continue;
+    const registration = RunStreamsSchema.parse(
+      JSON.parse(await fs.readFile(path.join(runsDir, entry), 'utf8'))
+    );
+    if (registration.streams.includes(streamName)) candidates.push(runId);
+  }
+  return candidates.sort();
+}
+
+/**
+ * Pre-v1 ordinary files have no run identity. Select their only registered
+ * owner once, or fail instead of exposing one run's bytes to another.
+ */
+async function isLegacyOwner(
+  basedir: string,
+  runId: string,
+  streamName: string,
+  tag?: string
+): Promise<boolean> {
+  const file = legacyStreamOwnerPath(basedir, streamName, tag);
+  await fs.mkdir(path.dirname(file), { recursive: true });
+  const release = await lock(file, {
+    realpath: false,
+    stale: 30_000,
+    update: 1_000,
+    retries: { retries: 300, factor: 1, minTimeout: 10, maxTimeout: 10 },
+  });
+  try {
+    let owner: LegacyStreamOwner | undefined;
+    try {
+      owner = LegacyStreamOwnerSchema.parse(
+        JSON.parse(await fs.readFile(file, 'utf8'))
+      );
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+    if (!owner) {
+      const candidates = await legacyOwnerCandidates(basedir, streamName, tag);
+      if (candidates.length !== 1) {
+        throw new Error('ambiguous legacy stream owner');
+      }
+      owner = { version: 1, runId: candidates[0] };
+      await fs.writeFile(file, JSON.stringify(owner));
+    }
+    return owner.runId === runId;
+  } finally {
+    await release();
+  }
 }
 
 async function withStreamMode<T>(
@@ -326,9 +422,7 @@ async function listChunkFilesForStream(
   const extMap = new Map<string, string>();
   const runSuffix = runId ? `_${keyedFileId(runId).slice(0, 16)}` : null;
   const belongsToRun = (file: string) =>
-    !runSuffix || !/^chnk_[0-9A-HJKMNP-TV-Z]{26}_[a-f0-9]{16}$/.test(file)
-      ? true
-      : file.endsWith(runSuffix);
+    !runSuffix || !isRunScopedChunkId(file) ? true : file.endsWith(runSuffix);
   addChunkFilesByExtension(extMap, entries, '.json', '.json', belongsToRun);
   addChunkFilesByExtension(
     extMap,
@@ -352,6 +446,21 @@ async function listChunkFilesForStream(
       taggedExtension,
       (file) => belongsToRun(file) && !file.startsWith('keyed_')
     );
+  }
+
+  if (runId && [...extMap.keys()].some((file) => !isRunScopedChunkId(file))) {
+    if (
+      !(await isLegacyOwner(
+        path.dirname(path.dirname(chunksBaseDir)),
+        runId,
+        name,
+        tag
+      ))
+    ) {
+      for (const file of extMap.keys()) {
+        if (!isRunScopedChunkId(file)) extMap.delete(file);
+      }
+    }
   }
 
   const files = [...extMap.keys()].sort();
@@ -997,6 +1106,49 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
             let pendingClose = false;
             let closeRequested = false;
 
+            const finishFromDurableClose = async () => {
+              try {
+                const keyed = await readKeyedLedger(basedir, runId, name, tag);
+                if (keyed) {
+                  for (const record of keyed.records) {
+                    if (deliveredChunkIds.has(record.physicalId)) continue;
+                    deliveredChunkIds.add(record.physicalId);
+                    controller.enqueue(
+                      Uint8Array.from(
+                        Buffer.from(record.canonicalChunk, 'base64')
+                      )
+                    );
+                  }
+                } else {
+                  const { files, extMap, dir } = await listChunkFilesForStream(
+                    chunksBaseDir,
+                    name,
+                    tag,
+                    runId
+                  );
+                  for (const file of files) {
+                    if (deliveredChunkIds.has(file)) continue;
+                    const ext = extMap.get(file) ?? '.bin';
+                    const chunk = deserializeChunk(
+                      await readBuffer(path.join(dir, `${file}${ext}`))
+                    );
+                    deliveredChunkIds.add(file);
+                    if (chunk.eof) break;
+                    if (chunk.chunk.byteLength) {
+                      controller.enqueue(Uint8Array.from(chunk.chunk));
+                    }
+                  }
+                }
+                streamClosed = true;
+                teardown();
+                controller.close();
+              } catch (error) {
+                streamClosed = true;
+                teardown();
+                controller.error(error);
+              }
+            };
+
             const chunkListener = (event: {
               runId: string;
               streamName: string;
@@ -1037,42 +1189,7 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
               }
               if (closeRequested) return;
               closeRequested = true;
-              void (async () => {
-                const keyed = await readKeyedLedger(basedir, runId, name, tag);
-                if (keyed) {
-                  for (const record of keyed.records) {
-                    if (deliveredChunkIds.has(record.physicalId)) continue;
-                    deliveredChunkIds.add(record.physicalId);
-                    controller.enqueue(
-                      Uint8Array.from(
-                        Buffer.from(record.canonicalChunk, 'base64')
-                      )
-                    );
-                  }
-                } else {
-                  const { files, extMap, dir } = await listChunkFilesForStream(
-                    chunksBaseDir,
-                    name,
-                    tag,
-                    runId
-                  );
-                  for (const file of files) {
-                    if (deliveredChunkIds.has(file)) continue;
-                    const ext = extMap.get(file) ?? '.bin';
-                    const chunk = deserializeChunk(
-                      await readBuffer(path.join(dir, `${file}${ext}`))
-                    );
-                    deliveredChunkIds.add(file);
-                    if (chunk.eof) break;
-                    if (chunk.chunk.byteLength) {
-                      controller.enqueue(Uint8Array.from(chunk.chunk));
-                    }
-                  }
-                }
-                streamClosed = true;
-                teardown();
-                controller.close();
-              })().catch((error) => controller.error(error));
+              void finishFromDurableClose();
             };
             // Tear down listeners and the poll unconditionally. Unlike
             // closeListener this never defers on isReadingFromDisk, so cancel()
@@ -1163,6 +1280,12 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
               controller.enqueue(Uint8Array.from(buffered.chunkData));
             }
 
+            if (pendingClose) {
+              closeRequested = true;
+              await finishFromDurableClose();
+              return;
+            }
+
             if (isComplete) {
               streamClosed = true;
               teardown();
@@ -1170,18 +1293,6 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
                 controller.close();
               } catch {
                 // Ignore if controller is already closed (e.g., from closeListener event)
-              }
-              return;
-            }
-
-            // Process any pending close event that arrived during disk reading
-            if (pendingClose) {
-              streamClosed = true;
-              teardown();
-              try {
-                controller.close();
-              } catch {
-                // Ignore if controller is already closed
               }
               return;
             }

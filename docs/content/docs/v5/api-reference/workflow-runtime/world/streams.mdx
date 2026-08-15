@@ -72,11 +72,11 @@ await world.streams.writeMulti?.(runId, "default", [chunk1, chunk2]); // [!code 
 
 ### Exact keyed append availability
 
-`keyedStreamAppendVersion === 1` enables the internal exact keyed-append receipt used by recoverable public-event publishers. It is not a fallback for `write()` or `writeMulti()`: when absent, the publisher must fail before writing.
+`keyedStreamAppendVersion === 1` enables the internal exact keyed-append receipt used by recoverable public-event publishers. An execution admitted to exact recovery fails before writing when it is absent. A separately authorized normal compatibility execution may use its ordinary writer only after a typed pre-commit unavailable result and only after that writer fulfills; arbitrary errors and possibly committed keyed appends never fall back.
 
 | World | Keyed append v1 |
 |-------|-----------------|
-| `world-local` | Unavailable; fails closed pending the cross-process canonical-EOF matrix |
+| `world-local` | Available; canonical terminal and run ownership are durable |
 | `world-postgres` | Unavailable; fails closed pending service-backed ordering proof |
 | `world-sim` | Available for deterministic tests |
 | `world-vercel` | Unavailable; fails closed |
