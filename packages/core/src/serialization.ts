@@ -1680,6 +1680,9 @@ type AbortInternals = {
   [ABORT_READER_CANCEL]?: AbortController;
 };
 
+const abortReaderCleanups = new WeakMap<AbortController, Promise<void>>();
+export const ABORT_READER_CLEANUP_TIMEOUT_MS = 250;
+
 type AbortSignalLike = AbortInternals & {
   aborted: boolean;
   reason?: unknown;
@@ -1687,6 +1690,12 @@ type AbortSignalLike = AbortInternals & {
 };
 
 type AbortHolder = AbortInternals & { signal?: AbortInternals };
+
+class AbortReaderCleanupError extends Error {
+  constructor(cause: unknown) {
+    super('Abort stream reader cleanup failed', { cause });
+  }
+}
 
 /**
  * Shared logic for AbortController/AbortSignal reducers in external and step
@@ -2318,13 +2327,16 @@ function getStepReducers(
  * (success or failure) to prevent reader promises from keeping the serverless
  * function alive indefinitely.
  */
-export function cancelAbortReaders(...values: unknown[]): void {
+export function cancelAbortReaders(...values: unknown[]): Promise<void> {
   const visited = new WeakSet();
+  const cleanups = new Set<Promise<void>>();
   function cancelIfPresent(val: AbortInternals): void {
     const cancel = val[ABORT_READER_CANCEL];
     if (cancel && !cancel.signal.aborted) {
       cancel.abort();
     }
+    const cleanup = cancel && abortReaderCleanups.get(cancel);
+    if (cleanup) cleanups.add(cleanup);
   }
   function walk(val: unknown): void {
     if (val == null || typeof val !== 'object') return;
@@ -2360,6 +2372,29 @@ export function cancelAbortReaders(...values: unknown[]): void {
     for (const v of Object.values(val as Record<string, unknown>)) walk(v);
   }
   for (const v of values) walk(v);
+  return Promise.all([...cleanups]).then(() => undefined);
+}
+
+export function waitForAbortReaderCleanup(
+  cleanup: Promise<void>,
+  timeoutMs = ABORT_READER_CLEANUP_TIMEOUT_MS
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(
+      () => reject(new Error('Abort stream reader cleanup timed out')),
+      timeoutMs
+    );
+    cleanup.then(
+      () => {
+        clearTimeout(timeout);
+        resolve();
+      },
+      (error) => {
+        clearTimeout(timeout);
+        reject(error);
+      }
+    );
+  });
 }
 
 /**
@@ -2375,63 +2410,69 @@ function setupAbortStreamReader(
 ): AbortController {
   const readerCancel = new AbortController();
 
-  ops.push(
-    (async () => {
-      try {
-        const readable = new WorkflowServerReadableStream(runId, streamName);
-        const reader = readable.getReader();
-        const result = await Promise.race([
-          reader.read(),
-          new Promise<{ value: undefined; done: true }>((resolve) => {
-            if (readerCancel.signal.aborted) {
-              resolve({ value: undefined, done: true });
-              return;
-            }
-            readerCancel.signal.addEventListener(
-              'abort',
-              () => resolve({ value: undefined, done: true }),
-              { once: true }
-            );
-          }),
-        ]);
-        if (result.value && !result.done) {
-          // The first packet owns cancellation. Abort the step, then tear down
-          // the reader without making real-time delivery wait on a remote
-          // stream-cancel round trip.
-          try {
-            // Hydrate via the same machinery the writer used so the reason
-            // round-trips with full type fidelity. Encryption key (if any)
-            // comes from the step context — set up by the step executor before
-            // this reader runs. Fallback to undefined for external-context
-            // revives (the hydrate path is encryption-key-tolerant).
-            const ctxForKey = contextStorage.getStore();
-            const data = (await hydrateStepArguments(
-              result.value,
-              runId,
-              ctxForKey?.encryptionKey
-            )) as { reason?: unknown } | undefined;
-            controller.abort(data?.reason);
-          } catch {
-            controller.abort();
+  const cleanup = (async () => {
+    try {
+      const readable = new WorkflowServerReadableStream(runId, streamName);
+      const reader = readable.getReader();
+      let removeCancelListener = () => {};
+      const cancelled = new Promise<{ value: undefined; done: true }>(
+        (resolve) => {
+          if (readerCancel.signal.aborted) {
+            resolve({ value: undefined, done: true });
+            return;
           }
-          void reader.cancel().catch(() => {});
-        } else {
-          // The step finished (or the reader was cancelled) without an abort.
-          // Cancel — not just release — so the underlying World stream is torn
-          // down: a polling World (e.g. world-local) otherwise leaks a tail
-          // reader (a 100ms filesystem poll plus emitter listeners) per step
-          // invocation for the life of the process, since a signal-bearing step
-          // opens one of these on every revival and usually never aborts. Fire
-          // and forget: a service-backed World's cancel may hit the network,
-          // and this path must not block the step's ops-settle window.
-          void reader.cancel().catch(() => {});
+          const onCancel = () => resolve({ value: undefined, done: true });
+          removeCancelListener = () =>
+            readerCancel.signal.removeEventListener('abort', onCancel);
+          readerCancel.signal.addEventListener('abort', onCancel, {
+            once: true,
+          });
         }
-      } catch {
-        // Stream read failed — signal won't propagate in real-time,
-        // but hook-based propagation on next replay provides fallback
+      );
+      const result = await (async () => {
+        try {
+          return await Promise.race([reader.read(), cancelled]);
+        } finally {
+          removeCancelListener();
+        }
+      })();
+      if (result.value && !result.done) {
+        // The first packet owns cancellation. Abort the step, then tear down
+        // the reader without making real-time delivery wait on a remote
+        // stream-cancel round trip.
+        try {
+          // Hydrate via the same machinery the writer used so the reason
+          // round-trips with full type fidelity. Encryption key (if any)
+          // comes from the step context — set up by the step executor before
+          // this reader runs. Fallback to undefined for external-context
+          // revives (the hydrate path is encryption-key-tolerant).
+          const ctxForKey = contextStorage.getStore();
+          const data = (await hydrateStepArguments(
+            result.value,
+            runId,
+            ctxForKey?.encryptionKey
+          )) as { reason?: unknown } | undefined;
+          controller.abort(data?.reason);
+        } catch {
+          controller.abort();
+        }
       }
-    })()
-  );
+      // The reader owns live backend resources. Do not detach its cleanup:
+      // the surrounding operation remains pending until cancellation has
+      // acknowledged teardown, so step settlement cannot outrun a listener.
+      try {
+        await reader.cancel();
+      } catch (error) {
+        throw new AbortReaderCleanupError(error);
+      }
+    } catch (error) {
+      if (error instanceof AbortReaderCleanupError) throw error;
+      // Stream read failed — signal won't propagate in real-time,
+      // but hook-based propagation on next replay provides fallback
+    }
+  })();
+  abortReaderCleanups.set(readerCancel, cleanup);
+  ops.push(cleanup);
 
   return readerCancel;
 }

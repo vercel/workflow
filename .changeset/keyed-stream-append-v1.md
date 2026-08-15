@@ -5,4 +5,4 @@
 '@workflow/world-postgres': patch
 ---
 
-Add capability-gated canonical keyed stream append receipts for local and Postgres Worlds.
+Keep canonical keyed stream append unavailable for local and Postgres Worlds until their backend ordering proofs are complete.

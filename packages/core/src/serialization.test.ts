@@ -41,6 +41,7 @@ import {
   maybeDecrypt,
   maybeEncrypt,
   SerializationFormat,
+  waitForAbortReaderCleanup,
 } from './serialization.js';
 import { hydrateData } from './serialization-format.js';
 import {
@@ -6615,6 +6616,94 @@ describe('AbortController serialization', () => {
 
       vmGlobalThis.AbortController = origAC;
       vmGlobalThis.AbortSignal = origAS;
+    });
+
+    it('joins abort-reader cancellation after promptly aborting the signal', async () => {
+      const { getWorld } = await import('./runtime/world.js');
+      const { getWorldLazy } = await import('./runtime/get-world-lazy.js');
+      const abortPayload = (await dehydrateStepArguments(
+        { aborted: true, reason: 'stream-abort-reason' },
+        mockRunId,
+        noEncryptionKey
+      )) as Uint8Array;
+      let finishCancel!: () => void;
+      const cancellation = new Promise<void>((resolve) => {
+        finishCancel = resolve;
+      });
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(abortPayload);
+        },
+        cancel: () => cancellation,
+      });
+      const world = {
+        streams: {
+          write: vi.fn(),
+          writeMulti: vi.fn(),
+          close: vi.fn(),
+          get: vi.fn().mockResolvedValue(stream),
+          list: vi.fn(),
+          getInfo: vi.fn(),
+        },
+      } as any;
+      vi.mocked(getWorld).mockReturnValueOnce(world);
+      vi.mocked(getWorldLazy).mockReturnValueOnce(world);
+
+      const controller: any = {};
+      controller[ABORT_STREAM_NAME] = 'strm_01ABORT0000000000JOIN_system_abort';
+      controller[ABORT_HOOK_TOKEN] = 'abrt_01ABORT0000000000JOIN';
+      const signal: any = {};
+      signal[ABORT_STREAM_NAME] = controller[ABORT_STREAM_NAME];
+      signal[ABORT_HOOK_TOKEN] = controller[ABORT_HOOK_TOKEN];
+      controller.signal = signal;
+      const origAC = vmGlobalThis.AbortController;
+      const origAS = vmGlobalThis.AbortSignal;
+      function FakeAC() {}
+      function FakeAS() {}
+      Object.setPrototypeOf(controller, FakeAC.prototype);
+      Object.setPrototypeOf(signal, FakeAS.prototype);
+      vmGlobalThis.AbortController = FakeAC;
+      vmGlobalThis.AbortSignal = FakeAS;
+
+      try {
+        const serialized = await dehydrateStepArguments(
+          controller,
+          mockRunId,
+          noEncryptionKey,
+          vmGlobalThis
+        );
+        const ops: Promise<void>[] = [];
+        const hydrated = await hydrateStepArguments(
+          serialized,
+          mockRunId,
+          noEncryptionKey,
+          ops
+        );
+        await vi.waitFor(() => expect(hydrated.signal.aborted).toBe(true));
+
+        const cleanup = cancelAbortReaders(hydrated);
+        await expect(
+          Promise.race([
+            cleanup.then(() => 'settled'),
+            new Promise<'waiting'>((resolve) =>
+              setTimeout(() => resolve('waiting'), 20)
+            ),
+          ])
+        ).resolves.toBe('waiting');
+
+        finishCancel();
+        await cleanup;
+        await Promise.all(ops);
+      } finally {
+        vmGlobalThis.AbortController = origAC;
+        vmGlobalThis.AbortSignal = origAS;
+      }
+    });
+
+    it('fails closed when abort-reader cleanup cannot finish within its bound', async () => {
+      await expect(
+        waitForAbortReaderCleanup(new Promise<void>(() => {}), 1)
+      ).rejects.toThrow('Abort stream reader cleanup timed out');
     });
 
     it('aborting the original signal after serialization fires the listener and writes the abort packet', async () => {

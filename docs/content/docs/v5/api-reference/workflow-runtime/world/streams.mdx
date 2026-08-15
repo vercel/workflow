@@ -76,8 +76,8 @@ await world.streams.writeMulti?.(runId, "default", [chunk1, chunk2]); // [!code 
 
 | World | Keyed append v1 |
 |-------|-----------------|
-| `world-local` | Available |
-| `world-postgres` | Available after migration `0020_add_keyed_stream_append` |
+| `world-local` | Unavailable; fails closed pending cross-process ordering authority |
+| `world-postgres` | Unavailable; fails closed pending service-backed ordering proof |
 | `world-sim` | Available for deterministic tests |
 | `world-vercel` | Unavailable; fails closed |
 

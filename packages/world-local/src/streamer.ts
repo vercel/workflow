@@ -344,7 +344,6 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
   };
 
   return {
-    keyedStreamAppendVersion: 1,
     streams: {
       appendKeyed,
       async write(

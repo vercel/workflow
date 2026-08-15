@@ -144,7 +144,6 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
     !Buffer.isBuffer(chunk) ? Buffer.from(chunk) : chunk;
 
   return {
-    keyedStreamAppendVersion: 1,
     streams: {
       async appendKeyed(
         _runId: string | Promise<string>,

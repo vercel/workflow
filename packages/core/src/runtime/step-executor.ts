@@ -35,6 +35,7 @@ import {
   dehydrateStepReturnValue,
   hydrateStepArguments,
   hydrateStepError,
+  waitForAbortReaderCleanup,
 } from '../serialization.js';
 import { contextStorage } from '../step/context-storage.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
@@ -919,7 +920,9 @@ export async function executeStep(
       // continuation and paying a full round-trip per signal-bearing step.
       // Runs unconditionally (success or failure) so a throwing step doesn't
       // leak the reader.
-      cancelAbortReaders(...args, thisVal, hydratedInput.closureVars);
+      await waitForAbortReaderCleanup(
+        cancelAbortReaders(...args, thisVal, hydratedInput.closureVars)
+      );
 
       // Re-raise a user-code failure now that cleanup has run; the outer
       // catch maps it to step_failed/step_retrying.

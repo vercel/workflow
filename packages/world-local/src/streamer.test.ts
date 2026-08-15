@@ -152,6 +152,12 @@ describe('streamer', () => {
       };
     }
 
+    it('does not advertise keyed append v1 before cross-process ordering is available', async () => {
+      const { streamer } = await setupStreamer();
+
+      expect(streamer.keyedStreamAppendVersion).toBeUndefined();
+    });
+
     it('returns the original keyed receipt after a response-loss retry without another chunk', async () => {
       const { streamer } = await setupStreamer();
       const first = await streamer.streams.appendKeyed!(
