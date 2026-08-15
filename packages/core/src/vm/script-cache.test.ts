@@ -1,11 +1,9 @@
-import { runInContext } from 'node:vm';
+import { type Context, runInContext } from 'node:vm';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createContext } from './index.js';
 import {
   clearWorkflowScriptCache,
   getCachedWorkflowScript,
-  getCachedWorkflowScriptWithStatus,
-  runCachedWorkflowScript,
   workflowScriptCacheSize,
 } from './script-cache.js';
 
@@ -38,26 +36,28 @@ function buildBundle(marker: string, workflowCount = 12): string {
   return `globalThis.__private_workflows = new Map();\n${defs.join('\n')}\n`;
 }
 
+function getScript(code: string, filename: string) {
+  return getCachedWorkflowScript(code, filename).script;
+}
+
+function runScript(code: string, filename: string, context: Context) {
+  return getScript(code, filename).runInContext(context);
+}
+
 describe('script-cache', () => {
   afterEach(() => {
     clearWorkflowScriptCache();
   });
 
   it('returns the same compiled Script for identical (code, filename)', () => {
-    const a = getCachedWorkflowScript(SAMPLE_BUNDLE, 'workflows/a.ts');
-    const b = getCachedWorkflowScript(SAMPLE_BUNDLE, 'workflows/a.ts');
+    const a = getScript(SAMPLE_BUNDLE, 'workflows/a.ts');
+    const b = getScript(SAMPLE_BUNDLE, 'workflows/a.ts');
     expect(a).toBe(b);
   });
 
   it('reports whether compilation was served from cache', () => {
-    const first = getCachedWorkflowScriptWithStatus(
-      SAMPLE_BUNDLE,
-      'workflows/a.ts'
-    );
-    const second = getCachedWorkflowScriptWithStatus(
-      SAMPLE_BUNDLE,
-      'workflows/a.ts'
-    );
+    const first = getCachedWorkflowScript(SAMPLE_BUNDLE, 'workflows/a.ts');
+    const second = getCachedWorkflowScript(SAMPLE_BUNDLE, 'workflows/a.ts');
 
     expect(first.cacheHit).toBe(false);
     expect(second.cacheHit).toBe(true);
@@ -65,14 +65,14 @@ describe('script-cache', () => {
   });
 
   it('returns distinct Scripts for the same code under different filenames', () => {
-    const a = getCachedWorkflowScript(SAMPLE_BUNDLE, 'workflows/a.ts');
-    const b = getCachedWorkflowScript(SAMPLE_BUNDLE, 'workflows/b.ts');
+    const a = getScript(SAMPLE_BUNDLE, 'workflows/a.ts');
+    const b = getScript(SAMPLE_BUNDLE, 'workflows/b.ts');
     expect(a).not.toBe(b);
   });
 
   it('returns distinct Scripts for different code under the same filename', () => {
-    const a = getCachedWorkflowScript('1 + 1', 'workflows/a.ts');
-    const b = getCachedWorkflowScript('2 + 2', 'workflows/a.ts');
+    const a = getScript('1 + 1', 'workflows/a.ts');
+    const b = getScript('2 + 2', 'workflows/a.ts');
     expect(a).not.toBe(b);
   });
 
@@ -80,8 +80,8 @@ describe('script-cache', () => {
     // Cached path: run the bundle then look up the workflow, mirroring
     // runWorkflow's two-step evaluation.
     const { context: cachedCtx } = createContext({ seed, fixedTimestamp });
-    runCachedWorkflowScript(SAMPLE_BUNDLE, 'workflows/a.ts', cachedCtx);
-    const cachedFn = runCachedWorkflowScript(
+    runScript(SAMPLE_BUNDLE, 'workflows/a.ts', cachedCtx);
+    const cachedFn = runScript(
       `globalThis.__private_workflows?.get('my/workflow')`,
       'workflows/a.ts',
       cachedCtx
@@ -106,16 +106,14 @@ describe('script-cache', () => {
   });
 
   it('reuses the compiled Script across multiple runs against fresh contexts', async () => {
-    const script = getCachedWorkflowScript(SAMPLE_BUNDLE, 'workflows/a.ts');
+    const script = getScript(SAMPLE_BUNDLE, 'workflows/a.ts');
 
     const results: string[] = [];
     for (let i = 0; i < 3; i++) {
       const { context } = createContext({ seed, fixedTimestamp });
-      runCachedWorkflowScript(SAMPLE_BUNDLE, 'workflows/a.ts', context);
+      runScript(SAMPLE_BUNDLE, 'workflows/a.ts', context);
       // The same cached Script object is used every iteration.
-      expect(getCachedWorkflowScript(SAMPLE_BUNDLE, 'workflows/a.ts')).toBe(
-        script
-      );
+      expect(getScript(SAMPLE_BUNDLE, 'workflows/a.ts')).toBe(script);
       const fn = runInContext(
         `globalThis.__private_workflows?.get('my/workflow')`,
         context
@@ -135,7 +133,7 @@ describe('script-cache', () => {
     const editCount = 100;
     const filename = 'workflows/a.ts';
     for (let i = 0; i < editCount; i++) {
-      getCachedWorkflowScript(buildBundle(`edit-${i}`), filename);
+      getScript(buildBundle(`edit-${i}`), filename);
     }
 
     const size = workflowScriptCacheSize();
@@ -146,9 +144,7 @@ describe('script-cache', () => {
     // The cache still serves correctly after heavy churn: the most-recently
     // inserted bundle is retained and repeated lookups return the same Script.
     const latest = buildBundle(`edit-${editCount - 1}`);
-    expect(getCachedWorkflowScript(latest, filename)).toBe(
-      getCachedWorkflowScript(latest, filename)
-    );
+    expect(getScript(latest, filename)).toBe(getScript(latest, filename));
   });
 
   it('keeps the most-recently-used bundle and evicts the stale one', () => {
@@ -157,18 +153,18 @@ describe('script-cache', () => {
     // unrelated bundles churn through. LRU must NOT evict the bundle we keep
     // using, even though it was inserted first.
     const hot = buildBundle('hot');
-    const hotScript = getCachedWorkflowScript(hot, filename);
+    const hotScript = getScript(hot, filename);
 
     for (let i = 0; i < 50; i++) {
-      getCachedWorkflowScript(buildBundle(`cold-${i}`), filename);
+      getScript(buildBundle(`cold-${i}`), filename);
       // Re-access the hot bundle so it stays most-recently-used.
-      expect(getCachedWorkflowScript(hot, filename)).toBe(hotScript);
+      expect(getScript(hot, filename)).toBe(hotScript);
     }
 
     // After all that churn the hot bundle is still the *same* cached Script —
     // proving LRU recency (touch-on-access), not mere insertion order, governs
     // eviction.
-    expect(getCachedWorkflowScript(hot, filename)).toBe(hotScript);
+    expect(getScript(hot, filename)).toBe(hotScript);
   });
 
   it('never returns the wrong Script across realistic multi-workflow bundles', async () => {
@@ -181,10 +177,10 @@ describe('script-cache', () => {
     const fileA = 'workflows/a.ts';
     const fileB = 'workflows/b.ts';
 
-    const xa = getCachedWorkflowScript(bundleX, fileA);
-    const xb = getCachedWorkflowScript(bundleX, fileB);
-    const ya = getCachedWorkflowScript(bundleY, fileA);
-    const yb = getCachedWorkflowScript(bundleY, fileB);
+    const xa = getScript(bundleX, fileA);
+    const xb = getScript(bundleX, fileB);
+    const ya = getScript(bundleY, fileA);
+    const yb = getScript(bundleY, fileB);
 
     // All four (code, filename) combinations are distinct Script objects.
     const scripts = [xa, xb, ya, yb];
@@ -195,12 +191,12 @@ describe('script-cache', () => {
     }
 
     // Same (code, filename) is stable across lookups.
-    expect(getCachedWorkflowScript(bundleX, fileA)).toBe(xa);
-    expect(getCachedWorkflowScript(bundleY, fileB)).toBe(yb);
+    expect(getScript(bundleX, fileA)).toBe(xa);
+    expect(getScript(bundleY, fileB)).toBe(yb);
 
     // Running each bundle yields its OWN marker, confirming no cross-wiring.
     const { context: ctxX } = createContext({ seed, fixedTimestamp });
-    runCachedWorkflowScript(bundleX, fileA, ctxX);
+    runScript(bundleX, fileA, ctxX);
     const fnX = runInContext(
       `globalThis.__private_workflows?.get('app/workflow-3')`,
       ctxX
@@ -208,7 +204,7 @@ describe('script-cache', () => {
     expect(await fnX('z')).toContain('bundle-X:3:z');
 
     const { context: ctxY } = createContext({ seed, fixedTimestamp });
-    runCachedWorkflowScript(bundleY, fileA, ctxY);
+    runScript(bundleY, fileA, ctxY);
     const fnY = runInContext(
       `globalThis.__private_workflows?.get('app/workflow-3')`,
       ctxY

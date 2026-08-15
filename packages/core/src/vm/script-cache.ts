@@ -1,4 +1,4 @@
-import { type Context, Script } from 'node:vm';
+import { Script } from 'node:vm';
 import { globalSingleton } from '@workflow/utils';
 
 /**
@@ -104,7 +104,7 @@ function touchBundle(code: string): Map<string, Script> | undefined {
  * equivalent to `vm.runInContext(code, context, { filename })` but skips the
  * recompile.
  */
-export function getCachedWorkflowScriptWithStatus(
+export function getCachedWorkflowScript(
   code: string,
   filename: string
 ): { script: Script; cacheHit: boolean } {
@@ -129,30 +129,6 @@ export function getCachedWorkflowScriptWithStatus(
     byFilename.set(filename, script);
   }
   return { script, cacheHit };
-}
-
-/**
- * Returns a compiled workflow script, hiding cache metadata from callers that
- * only need to evaluate it. Replay tracing uses the status-bearing variant to
- * distinguish actual V8 compilation from a cache lookup.
- */
-export function getCachedWorkflowScript(
-  code: string,
-  filename: string
-): Script {
-  return getCachedWorkflowScriptWithStatus(code, filename).script;
-}
-
-/**
- * Runs the cached workflow-bundle `Script` against `context`. Compiles and
- * caches the `Script` on first use for the given `(code, filename)`.
- */
-export function runCachedWorkflowScript(
-  code: string,
-  filename: string,
-  context: Context
-): unknown {
-  return getCachedWorkflowScript(code, filename).runInContext(context);
 }
 
 /**
