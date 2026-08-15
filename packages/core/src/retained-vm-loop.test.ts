@@ -5,7 +5,15 @@ import {
   slotToEventId,
   type WorkflowRun,
 } from '@workflow/world';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  afterEach,
+  assert,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vitest';
 
 // Spy on VM-context construction while preserving the real implementation, so
 // we can prove the retained path builds ONE VM for a whole run instead of one
@@ -21,9 +29,11 @@ const { registerSerializationClass } = await import('./class-serialization.js');
 const { registerStepFunction } = await import('./private.js');
 const { setWorld } = await import('./runtime/world.js');
 const { workflowEntrypoint } = await import('./runtime.js');
-const { dehydrateWorkflowArguments, hydrateWorkflowReturnValue } = await import(
-  './serialization.js'
-);
+const {
+  dehydrateStepReturnValue,
+  dehydrateWorkflowArguments,
+  hydrateWorkflowReturnValue,
+} = await import('./serialization.js');
 
 vi.mock('@vercel/functions', () => ({
   waitUntil: vi.fn((p: Promise<unknown>) => {
@@ -98,6 +108,39 @@ const parallelBatchWorkflow = `const s1 = globalThis[Symbol.for("WORKFLOW_USE_ST
   async function workflow() {
     const [a, b] = await Promise.all([s1(1), s2(2)]);
     return a + b;
+  }
+  globalThis.__private_workflows = new Map([["workflow", workflow]]);`;
+
+// An open hook and a step both signal the first suspension. The step wins the
+// Promise.race, then a second step advances the same inline replay loop. A
+// retained session must absorb the losing hook's same-generation suspension
+// signal and keep the one VM alive across both step completions.
+const openHookRaceWorkflow = `const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
+  const s1 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("r_s1");
+  const s2 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("r_s2");
+  async function workflow() {
+    const hook = createHook({ token: "retained-hook" });
+    const a = await Promise.race([hook.then(() => 999), s1()]);
+    const b = await s2();
+    return a + b;
+  }
+  globalThis.__private_workflows = new Map([["workflow", workflow]]);`;
+
+// Hook metadata is serialized at the same suspension boundary as step input.
+// A getter mutating workflow state must demote the retained VM just like an
+// unsafe step argument, because a cold replay skips serialization after the
+// hook_created event exists.
+const impureHookMetadataWorkflow = `const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
+  const s1 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("r_s1");
+  const echo = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("r_echo");
+  async function workflow() {
+    let counter = 0;
+    createHook({
+      token: "unsafe-retained-hook",
+      metadata: { get value() { counter++; return 1; } },
+    });
+    await s1();
+    return await echo(counter);
   }
   globalThis.__private_workflows = new Map([["workflow", workflow]]);`;
 
@@ -196,12 +239,17 @@ registerStepFunction('r_echo', async (value) => value);
 // Drive the full workflow handler over a stateful (dynamic) event log so the
 // inline loop makes real progress across its own writes, exactly like a World.
 // Non-turbo (no runInput, attempt 2) to keep the path simple and deterministic.
+type DriveMode =
+  | { type: 'normal' }
+  | { type: 'fail-event'; eventType: Event['eventType'] }
+  | { type: 'inject-hook' };
+
 async function drive(
   runId: string,
   workflowCode = twoStepWorkflow,
-  options: { failEventTypeOnce?: string } = {}
+  initialMode: DriveMode = { type: 'normal' }
 ) {
-  let { failEventTypeOnce } = options;
+  let mode = initialMode;
   const run: WorkflowRun = {
     runId,
     workflowName: 'workflow',
@@ -217,8 +265,8 @@ async function drive(
   let seq = 0;
 
   const eventsCreate = vi.fn(async (_runId: string, data: any) => {
-    if (data.eventType === failEventTypeOnce) {
-      failEventTypeOnce = undefined;
+    if (mode.type === 'fail-event' && data.eventType === mode.eventType) {
+      mode = { type: 'normal' };
       throw new PreconditionFailedError('stale snapshot (test-injected)');
     }
     createdEvents.push(data);
@@ -232,6 +280,29 @@ async function drive(
       ...data,
     } as Event;
     events.push(event);
+    if (data.eventType === 'step_started' && mode.type === 'inject-hook') {
+      mode = { type: 'normal' };
+      const hookCreated = events.find(
+        (candidate) => candidate.eventType === 'hook_created'
+      );
+      assert(hookCreated, 'expected hook_created before step');
+      events.push({
+        eventId: slotToEventId(++seq),
+        runId,
+        eventType: 'hook_received',
+        specVersion: SPEC_VERSION_CURRENT,
+        correlationId: hookCreated.correlationId,
+        eventData: {
+          token: hookCreated.eventData.token,
+          payload: await dehydrateStepReturnValue(
+            { source: 'external-hook' },
+            runId,
+            undefined
+          ),
+        },
+        createdAt: new Date(),
+      });
+    }
     // step_started returns a running step entity so executeStep proceeds to
     // run the body and write step_completed.
     if (data.eventType === 'step_started') {
@@ -358,6 +429,36 @@ describe('retained VM through the inline replay loop', () => {
     expect(vmBuilds).toBe(1);
   });
 
+  it('retains when hook_received extends the log between step_started and step_completed', async () => {
+    const { vmBuilds, result } = await drive(
+      'wrun_retained_hook_between_step_events',
+      openHookRaceWorkflow,
+      { type: 'inject-hook' }
+    );
+    // The hook event precedes step_completed in the durable log, so it wins
+    // the race on resume while the already-started step still completes.
+    expect(result).toBe(1019);
+    expect(vmBuilds).toBe(1);
+  });
+
+  it('matches cold replay when hook metadata serialization mutates workflow state', async () => {
+    process.env.WORKFLOW_RETAINED_VM = '0';
+    const off = await drive(
+      'wrun_impure_hook_metadata_off',
+      impureHookMetadataWorkflow
+    );
+    createContextSpy.mockClear();
+    delete process.env.WORKFLOW_RETAINED_VM;
+
+    const on = await drive(
+      'wrun_impure_hook_metadata_on',
+      impureHookMetadataWorkflow
+    );
+    expect(off.result).toBe(0);
+    expect(on.result).toBe(0);
+    expect(on.vmBuilds).toBeGreaterThan(1);
+  });
+
   it('demotes retention when any input in a parallel batch is unsafe', async () => {
     const { vmBuilds, result } = await drive(
       'wrun_retained_mixed_batch',
@@ -376,7 +477,7 @@ describe('retained VM through the inline replay loop', () => {
     const { vmBuilds, result } = await drive(
       'wrun_retained_412_restart',
       twoStepWorkflow,
-      { failEventTypeOnce: 'run_completed' }
+      { type: 'fail-event', eventType: 'run_completed' }
     );
     expect(result).toBe(30);
     expect(vmBuilds).toBeGreaterThan(1);
