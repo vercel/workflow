@@ -1,4 +1,5 @@
 import assert from 'node:assert';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import {
@@ -105,6 +106,7 @@ import {
 } from './hooks-storage.js';
 import { handleLegacyEvent } from './legacy.js';
 import { withRunFileLock } from './runs-storage.js';
+import type { RunCreatedProjection } from './run-starts-storage.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -563,11 +565,19 @@ async function writeRunUnderLifecycleLock<T extends WorkflowRun>(
  */
 export type LocalEventsStorage = Storage['events'] & {
   clearCache(): void;
+  prepareRunCreatedProjection(input: {
+    runId: string;
+    envelope: unknown;
+  }): Promise<RunCreatedProjection>;
+  materializeOrAdoptRunCreatedProjection(
+    projection: RunCreatedProjection
+  ): Promise<void>;
 };
 
 export function createEventsStorage(
   basedir: string,
-  tag?: string
+  tag?: string,
+  projectionCheckpoint?: (stage: 'after-run' | 'after-event') => Promise<void>
 ): LocalEventsStorage {
   const hookRetentionLimitMs = getHookRetentionLimitMs();
   // Events are append-only. Keep a bounded window of locally persisted events
@@ -820,6 +830,65 @@ export function createEventsStorage(
     }
   }
 
+  function projectionDigest(projection: Omit<RunCreatedProjection, 'digest'>) {
+    return createHash('sha256')
+      .update(
+        JSON.stringify({
+          eventBytes: projection.eventBytes,
+          eventId: projection.eventId,
+          runBytes: projection.runBytes,
+          version: projection.version,
+        })
+      )
+      .digest('hex');
+  }
+
+  function parseProjection(projection: RunCreatedProjection): {
+    run: WorkflowRun;
+    event: Event;
+  } {
+    if (
+      projection.version !== 1 ||
+      projection.digest !==
+        projectionDigest({
+          version: projection.version,
+          runBytes: projection.runBytes,
+          eventBytes: projection.eventBytes,
+          eventId: projection.eventId,
+        })
+    ) {
+      throw new WorkflowWorldError('corrupt run-start projection');
+    }
+    const run = WorkflowRunSchema.parse(
+      JSON.parse(projection.runBytes, jsonReviver)
+    );
+    const event = EventSchema.parse(
+      JSON.parse(projection.eventBytes, jsonReviver)
+    );
+    if (
+      event.eventType !== 'run_created' ||
+      event.eventId !== projection.eventId ||
+      event.runId !== run.runId
+    ) {
+      throw new WorkflowWorldError('corrupt run-start projection');
+    }
+    return { run, event };
+  }
+
+  async function compareOrCreate(
+    pathname: string,
+    bytes: string
+  ): Promise<boolean> {
+    if (await writeExclusive(pathname, bytes)) return true;
+    const existing = await fs.readFile(pathname, 'utf8');
+    if (existing !== bytes) {
+      throw new WorkflowWorldError(
+        'idempotency_conflict: run-start projection differs'
+      );
+    }
+    return false;
+  }
+
   /**
    * Publishes a synthetic event (one this call writes in addition to the
    * event it was asked for) and returns it under the id it actually landed
@@ -899,6 +968,131 @@ export function createEventsStorage(
 
   const storage: LocalEventsStorage = {
     clearCache,
+    async prepareRunCreatedProjection({ runId, envelope }) {
+      const source = envelope as {
+        runCreated?: {
+          eventType?: unknown;
+          specVersion?: unknown;
+          eventData?: {
+            deploymentId?: unknown;
+            workflowName?: unknown;
+            input?: unknown;
+            executionContext?: unknown;
+            attributes?: unknown;
+            allowReservedAttributes?: unknown;
+            encryptionPublicKey?: unknown;
+          };
+        };
+      };
+      const created = source.runCreated;
+      if (
+        created?.eventType !== 'run_created' ||
+        typeof created.specVersion !== 'number' ||
+        !created.eventData ||
+        typeof created.eventData.deploymentId !== 'string' ||
+        typeof created.eventData.workflowName !== 'string'
+      ) {
+        throw new WorkflowWorldError('corrupt run-start envelope');
+      }
+      const data = created.eventData as {
+        deploymentId: string;
+        workflowName: string;
+        input?: unknown;
+        executionContext?: unknown;
+        attributes?: unknown;
+        allowReservedAttributes?: unknown;
+        encryptionPublicKey?: unknown;
+      };
+      validateAttributeChanges(
+        Object.entries(
+          (data.attributes as Record<string, string> | undefined) ?? {}
+        ).map(([key, value]) => ({ key, value })),
+        { allowReservedAttributes: data.allowReservedAttributes === true }
+      );
+      const createdAt = new Date();
+      const eventId = slotToEventId(FIRST_EVENT_SLOT);
+      const run: WorkflowRun = {
+        runId,
+        deploymentId: data.deploymentId,
+        status: 'pending',
+        workflowName: data.workflowName,
+        specVersion: created.specVersion,
+        executionContext: data.executionContext as
+          | Record<string, any>
+          | undefined,
+        input: data.input as SerializedData,
+        output: undefined,
+        error: undefined,
+        startedAt: undefined,
+        completedAt: undefined,
+        attributes:
+          (data.attributes as Record<string, string> | undefined) ?? {},
+        encryptionPublicKey: data.encryptionPublicKey as string | undefined,
+        createdAt,
+        updatedAt: createdAt,
+      };
+      const event: Event = {
+        eventType: 'run_created',
+        runId,
+        eventId,
+        createdAt,
+        specVersion: created.specVersion,
+        eventData: {
+          deploymentId: data.deploymentId,
+          workflowName: data.workflowName,
+          input: data.input as SerializedData,
+          executionContext: data.executionContext as
+            | Record<string, any>
+            | undefined,
+          attributes: data.attributes as Record<string, string> | undefined,
+          allowReservedAttributes:
+            data.allowReservedAttributes === true ? true : undefined,
+          encryptionPublicKey: data.encryptionPublicKey as string | undefined,
+        },
+      };
+      const base = {
+        version: 1 as const,
+        runBytes: JSON.stringify(run, jsonReplacer, 2),
+        eventBytes: JSON.stringify(event, jsonReplacer, 2),
+        eventId,
+      };
+      return { ...base, digest: projectionDigest(base) };
+    },
+    async materializeOrAdoptRunCreatedProjection(projection) {
+      const { run, event } = parseProjection(projection);
+      const runPath = taggedPath(basedir, 'runs', run.runId, tag);
+      const eventPath = taggedPath(
+        basedir,
+        'events',
+        `${run.runId}-${event.eventId}`,
+        tag
+      );
+      const eventExists = await fs
+        .stat(eventPath)
+        .then(() => true)
+        .catch((error) => {
+          if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+          throw error;
+        });
+      const runExists = await fs
+        .stat(runPath)
+        .then(() => true)
+        .catch((error) => {
+          if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+          throw error;
+        });
+      if (eventExists && !runExists) {
+        throw new WorkflowWorldError(
+          'corrupt run-start projection: event without run'
+        );
+      }
+      await compareOrCreate(runPath, projection.runBytes);
+      await projectionCheckpoint?.('after-run');
+      await compareOrCreate(eventPath, projection.eventBytes);
+      await projectionCheckpoint?.('after-event');
+      notePublishedSlot(run.runId, event.eventId);
+      rememberStoredEvent(event, eventPath, projection.eventBytes);
+    },
     async create(
       runId: string | null,
       data: AnyEventRequest,

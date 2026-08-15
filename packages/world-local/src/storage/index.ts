@@ -1,6 +1,9 @@
 import type { Storage } from '@workflow/world';
 import { instrumentObject } from '../instrumentObject.js';
-import { createEventsStorage } from './events-storage.js';
+import {
+  createEventsStorage,
+  type LocalEventsStorage,
+} from './events-storage.js';
 import { createHooksStorage } from './hooks-storage.js';
 import { createRunsStorage, type LocalRunsStorage } from './runs-storage.js';
 import { createStepsStorage } from './steps-storage.js';
@@ -10,8 +13,9 @@ import { createStepsStorage } from './steps-storage.js';
  * exposes the internal `fileIdFilter` option on `list()`. Structurally
  * assignable to `Storage` at public boundaries (e.g., `reenqueueActiveRuns`).
  */
-export type LocalStorage = Omit<Storage, 'runs'> & {
+export type LocalStorage = Omit<Storage, 'runs' | 'events'> & {
   runs: LocalRunsStorage;
+  events: LocalEventsStorage;
   clearCache(): void;
 };
 

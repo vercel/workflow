@@ -24,9 +24,25 @@ describe('world-local idempotent run-start ledger', () => {
     ...overrides,
   });
 
+  const drivers = {
+    prepareProjection: async (entry: { runId: string }) => ({
+      version: 1 as const,
+      runBytes: JSON.stringify({ runId: entry.runId }),
+      eventBytes: JSON.stringify({
+        eventType: 'run_created',
+        runId: entry.runId,
+      }),
+      eventId: 'evnt_00000000000000000000000001',
+      digest: 'projection-a',
+    }),
+    materialize: async () => {},
+    dispatch: async (_entry: unknown, accepted: () => Promise<void>) =>
+      accepted(),
+  };
+
   it('adopts one durable reservation across independently created storage instances', async () => {
-    const first = createRunStartsStorage(basedir);
-    const second = createRunStartsStorage(basedir);
+    const first = createRunStartsStorage(basedir, drivers);
+    const second = createRunStartsStorage(basedir, drivers);
 
     const [a, b] = await Promise.all([
       first.reserveOrAdoptRunStart(request()),
@@ -40,7 +56,7 @@ describe('world-local idempotent run-start ledger', () => {
   });
 
   it('rejects divergent reservation input without allocating another run', async () => {
-    const starts = createRunStartsStorage(basedir);
+    const starts = createRunStartsStorage(basedir, drivers);
     const first = await starts.reserveOrAdoptRunStart(request());
 
     await expect(
@@ -54,7 +70,7 @@ describe('world-local idempotent run-start ledger', () => {
   });
 
   it('finalizes once and adopts the original stable dispatch receipt', async () => {
-    const first = createRunStartsStorage(basedir);
+    const first = createRunStartsStorage(basedir, drivers);
     const reservation = await first.reserveOrAdoptRunStart(request());
     const finalize = {
       reservationId: reservation.reservationId,
@@ -68,15 +84,17 @@ describe('world-local idempotent run-start ledger', () => {
     };
 
     const winner = await first.finalizeOrAdoptRunStart(finalize);
-    const adopted =
-      await createRunStartsStorage(basedir).finalizeOrAdoptRunStart(finalize);
+    const adopted = await createRunStartsStorage(
+      basedir,
+      drivers
+    ).finalizeOrAdoptRunStart(finalize);
 
     expect(winner.messageId).toMatch(/^msg_/);
     expect(adopted).toEqual({ ...winner, inserted: false });
   });
 
   it('rejects a divergent finalization without replacing the winner', async () => {
-    const starts = createRunStartsStorage(basedir);
+    const starts = createRunStartsStorage(basedir, drivers);
     const reservation = await starts.reserveOrAdoptRunStart(request());
     const base = {
       reservationId: reservation.reservationId,
@@ -100,7 +118,7 @@ describe('world-local idempotent run-start ledger', () => {
   });
 
   it('keeps a stable pending outbox message through restart until acknowledged', async () => {
-    const starts = createRunStartsStorage(basedir);
+    const starts = createRunStartsStorage(basedir, drivers);
     const reservation = await starts.reserveOrAdoptRunStart(request());
     const receipt = await starts.finalizeOrAdoptRunStart({
       reservationId: reservation.reservationId,
@@ -113,7 +131,7 @@ describe('world-local idempotent run-start ledger', () => {
       queueOptions: {},
     });
 
-    const recovered = createRunStartsStorage(basedir);
+    const recovered = createRunStartsStorage(basedir, drivers);
     expect(await recovered.pendingDispatches()).toEqual([
       expect.objectContaining({
         runId: reservation.runId,
@@ -121,9 +139,9 @@ describe('world-local idempotent run-start ledger', () => {
       }),
     ]);
     await recovered.acknowledgeDispatch(receipt.messageId);
-    expect(await createRunStartsStorage(basedir).pendingDispatches()).toEqual(
-      []
-    );
+    expect(
+      await createRunStartsStorage(basedir, drivers).pendingDispatches()
+    ).toEqual([]);
   });
 
   it('projects and drains one canonical finalized start, then acknowledges only after acceptance', async () => {
@@ -131,7 +149,11 @@ describe('world-local idempotent run-start ledger', () => {
     const dispatch = vi.fn().mockImplementation(async (_entry, accepted) => {
       await accepted();
     });
-    const starts = createRunStartsStorage(basedir, { materialize, dispatch });
+    const starts = createRunStartsStorage(basedir, {
+      ...drivers,
+      materialize,
+      dispatch,
+    });
     const reservation = await starts.reserveOrAdoptRunStart(request());
     const receipt = await starts.finalizeOrAdoptRunStart({
       reservationId: reservation.reservationId,
@@ -155,7 +177,7 @@ describe('world-local idempotent run-start ledger', () => {
   });
 
   it('fails closed on a corrupt durable reservation', async () => {
-    const starts = createRunStartsStorage(basedir);
+    const starts = createRunStartsStorage(basedir, drivers);
     await starts.reserveOrAdoptRunStart(request());
     const [name] = await fs.readdir(path.join(basedir, 'run-starts'));
     await fs.writeFile(
@@ -164,7 +186,7 @@ describe('world-local idempotent run-start ledger', () => {
     );
 
     await expect(
-      createRunStartsStorage(basedir).reserveOrAdoptRunStart(request())
+      createRunStartsStorage(basedir, drivers).reserveOrAdoptRunStart(request())
     ).rejects.toThrow('corrupt run-start ledger');
   });
 });

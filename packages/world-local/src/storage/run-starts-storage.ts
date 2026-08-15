@@ -49,9 +49,25 @@ export interface PendingRunStartDispatch {
   queueName: string;
   queuePayload: unknown;
   queueOptions: unknown;
+  projection: RunCreatedProjection;
+}
+
+export interface RunCreatedProjection {
+  version: 1;
+  runBytes: string;
+  eventBytes: string;
+  eventId: string;
+  digest: string;
 }
 
 export interface RunStartDrivers {
+  prepareProjection(entry: {
+    runId: string;
+    envelope: unknown;
+    queueName: string;
+    queuePayload: unknown;
+    queueOptions: unknown;
+  }): Promise<RunCreatedProjection>;
   materialize(entry: PendingRunStartDispatch): Promise<void>;
   dispatch(
     entry: PendingRunStartDispatch,
@@ -74,6 +90,7 @@ interface Ledger {
     queueOptions: unknown;
     messageId: string;
     dispatchState: 'pending' | 'acknowledged';
+    projection: RunCreatedProjection & { state: 'pending' | 'complete' };
   };
 }
 
@@ -99,7 +116,14 @@ function assertLedger(value: unknown): asserts value is Ledger {
         typeof finalized.queueName !== 'string' ||
         typeof finalized.messageId !== 'string' ||
         (finalized.dispatchState !== 'pending' &&
-          finalized.dispatchState !== 'acknowledged')))
+          finalized.dispatchState !== 'acknowledged') ||
+        finalized.projection.version !== 1 ||
+        typeof finalized.projection.runBytes !== 'string' ||
+        typeof finalized.projection.eventBytes !== 'string' ||
+        typeof finalized.projection.eventId !== 'string' ||
+        typeof finalized.projection.digest !== 'string' ||
+        (finalized.projection.state !== 'pending' &&
+          finalized.projection.state !== 'complete')))
   ) {
     throw new WorkflowWorldError('corrupt run-start ledger');
   }
@@ -249,6 +273,19 @@ export function createRunStartsStorage(
             dispatchState: current.finalization.dispatchState,
           };
         }
+        const base = {
+          runId: current.runId,
+          envelope: request.envelope,
+          queueName: request.queueName,
+          queuePayload: request.queuePayload,
+          queueOptions: request.queueOptions,
+        };
+        if (!drivers) {
+          throw new WorkflowWorldError(
+            'run-start projection driver unavailable'
+          );
+        }
+        const projection = await drivers.prepareProjection(base);
         current.finalization = {
           semanticDigest: request.semanticDigest,
           envelopeIntegrityDigest: request.envelopeIntegrityDigest,
@@ -258,6 +295,7 @@ export function createRunStartsStorage(
           queueOptions: request.queueOptions,
           messageId: `msg_${ulid()}`,
           dispatchState: 'pending',
+          projection: { ...projection, state: 'pending' },
         };
         await writeLedger(ledgerFile, current);
         return {
@@ -303,6 +341,7 @@ export function createRunStartsStorage(
             queueName: finalization.queueName,
             queuePayload: finalization.queuePayload,
             queueOptions: finalization.queueOptions,
+            projection: finalization.projection,
           },
         ];
       });
@@ -328,6 +367,30 @@ export function createRunStartsStorage(
           }
           if (current.finalization.dispatchState === 'acknowledged') return;
           current.finalization.dispatchState = 'acknowledged';
+          await writeLedger(ledgerFile, current);
+        });
+        return;
+      }
+      throw new WorkflowWorldError('Unknown run-start dispatch');
+    },
+
+    completeProjection: async (messageId: string): Promise<void> => {
+      const directory = path.join(basedir, 'run-starts');
+      const names = await fs.readdir(directory).catch((error) => {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+        throw error;
+      });
+      for (const name of names.filter((entry) => entry.endsWith('.json'))) {
+        const file = path.join(directory, name);
+        const initial = JSON.parse(await fs.readFile(file, 'utf8')) as Ledger;
+        assertLedger(initial);
+        if (initial.finalization?.messageId !== messageId) continue;
+        await withLedgerFile(file, async (ledgerFile, current) => {
+          if (current?.finalization?.messageId !== messageId) {
+            throw new WorkflowWorldError('Unknown run-start dispatch');
+          }
+          if (current.finalization.projection.state === 'complete') return;
+          current.finalization.projection.state = 'complete';
           await writeLedger(ledgerFile, current);
         });
         return;
@@ -363,6 +426,7 @@ export function createRunStartsStorage(
                     queueName: finalization.queueName,
                     queuePayload: finalization.queuePayload,
                     queueOptions: finalization.queueOptions,
+                    projection: finalization.projection,
                   },
                 ]
               : [];
@@ -373,6 +437,9 @@ export function createRunStartsStorage(
         }
       })()) {
         await drivers.materialize(entry);
+        await createRunStartsStorage(basedir).completeProjection(
+          entry.messageId
+        );
         await drivers.dispatch(entry, () =>
           createRunStartsStorage(basedir).acknowledgeDispatch(entry.messageId)
         );

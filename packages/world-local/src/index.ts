@@ -74,29 +74,15 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
     tag
   );
   const runStarts = createRunStartsStorage(mergedConfig.dataDir, {
+    async prepareProjection(entry) {
+      return storage.events.prepareRunCreatedProjection({
+        runId: entry.runId,
+        envelope: entry.envelope,
+      });
+    },
     async materialize(entry) {
-      const envelope = entry.envelope as {
-        runCreated?: {
-          eventData?: unknown;
-          eventType?: unknown;
-          specVersion?: unknown;
-          v1Compat?: unknown;
-        };
-      };
-      if (
-        envelope.runCreated?.eventType !== 'run_created' ||
-        typeof envelope.runCreated.specVersion !== 'number'
-      ) {
-        throw new Error('corrupt run-start envelope');
-      }
-      await storage.events.create(
-        entry.runId,
-        {
-          eventType: 'run_created',
-          specVersion: envelope.runCreated.specVersion,
-          eventData: envelope.runCreated.eventData as never,
-        },
-        { v1Compat: envelope.runCreated.v1Compat === true }
+      await storage.events.materializeOrAdoptRunCreatedProjection(
+        entry.projection
       );
     },
     async dispatch(entry, accepted) {
@@ -121,6 +107,7 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
       // events-storage.ts `claimHookResume`), so resumeHook()'s parallel fast
       // path converges on one event in dev exactly as it does on Vercel.
       hookResumeDedup: true,
+      idempotentRunStartVersion: 1,
       // New runs get dense per-run slot event ids. Runs created before this
       // keep their ULIDs; the scheme is pinned by a run's own first event id,
       // not by this flag, which only says what new runs get.
