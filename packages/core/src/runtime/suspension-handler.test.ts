@@ -14,6 +14,7 @@ import {
 } from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { WorkflowSuspension } from '../global.js';
+import { COMPUTE_INSTANCE_ID } from './compute-instance.js';
 import { maxEventSlot, stepDispatchIdempotencyKey } from './helpers.js';
 import { ReplayRecoveryReporter } from './replay-recovery-reporter.js';
 import { handleSuspension } from './suspension-handler.js';
@@ -1221,5 +1222,286 @@ describe('handleSuspension batched fan-out', () => {
       )
     ).toEqual(['s4', 's5']);
     expect([...result.createdStepCorrelationIds].sort()).toEqual(['s4', 's5']);
+  });
+
+  describe('pre-claimed inline pairs', () => {
+    it('folds each inline step as a created+started pair, stamped and claimed', async () => {
+      vi.stubEnv('WORKFLOW_MAX_INLINE_STEPS', '2');
+      const eventsCreate = vi.fn();
+      const createBatch = successfulCreateBatch();
+      const world = createBatchWorld(eventsCreate, createBatch);
+
+      const result = await handleSuspension({
+        suspension: new WorkflowSuspension(
+          stepsAndWait(['s1', 's2', 's3'], 'wait_1'),
+          globalThis
+        ),
+        world,
+        run: slotRun,
+        ownerMessageId: 'msg_owner_1',
+      });
+
+      expect(createBatch).toHaveBeenCalledTimes(1);
+      const events = createBatch.mock.calls[0][1];
+      // s1/s2 are inline: their pairs lead, adjacent; then s3's eager create
+      // and the wait — scheduling order preserved.
+      expect(
+        events.map((e: { event: { eventType: string } }) => e.event.eventType)
+      ).toEqual([
+        'step_created',
+        'step_started',
+        'step_created',
+        'step_started',
+        'step_created',
+        'wait_created',
+      ]);
+      expect(
+        events.map(
+          (e: { event: { correlationId: string } }) => e.event.correlationId
+        )
+      ).toEqual(['s1', 's1', 's2', 's2', 's3', 'wait_1']);
+      // The created rows carry the input; the started rows are bare claims
+      // stamped with this invocation's ownership and compute instance.
+      const s1Created = events[0].event;
+      const s1Started = events[1].event;
+      expect(s1Created.eventData.input).toBeDefined();
+      expect(s1Started.eventData.input).toBeUndefined();
+      expect(s1Started.eventData.ownerMessageId).toBe('msg_owner_1');
+      expect(events[1].computeInstanceId).toBe(COMPUTE_INSTANCE_ID);
+      expect(events[0].computeInstanceId).toBeUndefined();
+      // Claims: both inline steps owned, running attempt 1, input attached
+      // (batch responses return refs lazily — the body hydrates local bytes).
+      expect(result.inlineClaims.size).toBe(2);
+      for (const id of ['s1', 's2']) {
+        const claim = result.inlineClaims.get(id);
+        expect(claim?.owned).toBe(true);
+        if (claim?.owned) {
+          expect(claim.step.status).toBe('running');
+          expect(claim.step.attempt).toBe(1);
+          expect(claim.step.input).toBeDefined();
+          expect(claim.batchPostSentAtMs).toBeTypeOf('number');
+          expect(claim.claimCompletedAtMs).toBeTypeOf('number');
+        }
+      }
+      // Inline steps stay OUT of createdStepCorrelationIds — the started
+      // row's verdict (the claim) is their ownership, and the caller's
+      // dispatch pass skips inline ids regardless.
+      expect([...result.createdStepCorrelationIds]).toEqual(['s3']);
+      // The deferral list is unchanged; the caller keys claims off it.
+      expect(result.lazyInlineSteps.map((s) => s.correlationId)).toEqual([
+        's1',
+        's2',
+      ]);
+      // 6 events at slots 10..15.
+      expect(result.batchCommittedSlotCeiling).toBe(15);
+      expect(eventsCreate).not.toHaveBeenCalled();
+    });
+
+    it('does not fold pairs without the caller ownership stamp', async () => {
+      vi.stubEnv('WORKFLOW_MAX_INLINE_STEPS', '2');
+      const createBatch = successfulCreateBatch();
+      const world = createBatchWorld(vi.fn(), createBatch);
+
+      const result = await handleSuspension({
+        suspension: new WorkflowSuspension(
+          stepsAndWait(['s1', 's2', 's3', 's4']),
+          globalThis
+        ),
+        world,
+        run: slotRun,
+      });
+
+      // s1/s2 defer to the lazy path; only the eager creates batch.
+      expect(
+        createBatch.mock.calls[0][1].map(
+          (e: { event: { correlationId: string } }) => e.event.correlationId
+        )
+      ).toEqual(['s3', 's4']);
+      expect(result.inlineClaims.size).toBe(0);
+      expect(result.lazyInlineSteps.map((s) => s.correlationId)).toEqual([
+        's1',
+        's2',
+      ]);
+    });
+
+    it('records a lost pair as owned:false and keeps the batch alive', async () => {
+      vi.stubEnv('WORKFLOW_MAX_INLINE_STEPS', '2');
+      let slot = 20;
+      const createBatch = vi
+        .fn()
+        .mockImplementation(async (_runId, events) => ({
+          results: events.map(
+            ({ event }: { event: { correlationId: string } }, index: number) =>
+              event.correlationId === 's1'
+                ? {
+                    status: 409,
+                    error: 'conflict',
+                    message: `row ${index}: already claimed`,
+                  }
+                : {
+                    status: 200,
+                    event: { ...event, eventId: slotToEventId(slot++) },
+                  }
+          ),
+        }));
+      const world = createBatchWorld(vi.fn(), createBatch);
+
+      const result = await handleSuspension({
+        suspension: new WorkflowSuspension(
+          stepsAndWait(['s1', 's2', 's3']),
+          globalThis
+        ),
+        world,
+        run: slotRun,
+        ownerMessageId: 'msg_owner_1',
+      });
+
+      expect(result.inlineClaims.get('s1')).toEqual({ owned: false });
+      expect(result.inlineClaims.get('s2')?.owned).toBe(true);
+      expect([...result.createdStepCorrelationIds]).toEqual(['s3']);
+    });
+
+    it('keeps the lone inline step on the lazy path (nothing to batch with)', async () => {
+      const eventsCreate = vi.fn();
+      const createBatch = successfulCreateBatch();
+      const world = createBatchWorld(eventsCreate, createBatch);
+
+      const result = await handleSuspension({
+        suspension: new WorkflowSuspension(stepsAndWait(['s1']), globalThis),
+        world,
+        run: slotRun,
+        ownerMessageId: 'msg_owner_1',
+      });
+
+      // A pair-only batch is the same round trip as the single lazy claim
+      // but gives up the optimistic claim/body overlap — so nothing is
+      // written at all here; the deferral stands.
+      expect(createBatch).not.toHaveBeenCalled();
+      expect(eventsCreate).not.toHaveBeenCalled();
+      expect(result.inlineClaims.size).toBe(0);
+      expect(result.lazyInlineSteps.map((s) => s.correlationId)).toEqual([
+        's1',
+      ]);
+    });
+
+    it('folds a lone inline pair when an eager sibling already batches', async () => {
+      const createBatch = successfulCreateBatch();
+      const world = createBatchWorld(vi.fn(), createBatch);
+
+      const result = await handleSuspension({
+        suspension: new WorkflowSuspension(
+          stepsAndWait(['s1', 's2']),
+          globalThis
+        ),
+        world,
+        run: slotRun,
+        ownerMessageId: 'msg_owner_1',
+      });
+
+      expect(
+        createBatch.mock.calls[0][1].map(
+          (e: { event: { eventType: string; correlationId: string } }) =>
+            `${e.event.eventType}:${e.event.correlationId}`
+        )
+      ).toEqual(['step_created:s1', 'step_started:s1', 'step_created:s2']);
+      expect(result.inlineClaims.get('s1')?.owned).toBe(true);
+      expect([...result.createdStepCorrelationIds]).toEqual(['s2']);
+    });
+
+    it('keeps pairs whole at the chunk boundary (max inline cap)', async () => {
+      // The inline cap clamps at 16, so 16 pairs = exactly 32 rows — one full
+      // chunk, pairs adjacent throughout — and the eager overflow spills into
+      // the next call. (Pairs always occupy the head rows, so with cap*2 ==
+      // MAX_BATCH_FANOUT_EVENTS a straddle is structurally unreachable; the
+      // chunker still refuses to split one should those constants diverge.)
+      vi.stubEnv('WORKFLOW_MAX_INLINE_STEPS', '16');
+      const createBatch = successfulCreateBatch();
+      const world = createBatchWorld(vi.fn(), createBatch);
+      const stepIds = Array.from({ length: 17 }, (_, i) => `s${i + 1}`);
+
+      const result = await handleSuspension({
+        suspension: new WorkflowSuspension(stepsAndWait(stepIds), globalThis),
+        world,
+        run: slotRun,
+        ownerMessageId: 'msg_owner_1',
+      });
+
+      expect(createBatch).toHaveBeenCalledTimes(2);
+      const head = createBatch.mock.calls[0][1];
+      expect(head).toHaveLength(32);
+      // 16 adjacent created+started pairs, in step order.
+      for (let pair = 0; pair < 16; pair++) {
+        expect(head[2 * pair].event.eventType).toBe('step_created');
+        expect(head[2 * pair + 1].event.eventType).toBe('step_started');
+        expect(head[2 * pair + 1].event.correlationId).toBe(
+          head[2 * pair].event.correlationId
+        );
+      }
+      const tail = createBatch.mock.calls[1][1];
+      expect(
+        tail.map(
+          (e: { event: { eventType: string; correlationId: string } }) =>
+            `${e.event.eventType}:${e.event.correlationId}`
+        )
+      ).toEqual(['step_created:s17']);
+      expect(result.inlineClaims.size).toBe(16);
+      for (const claim of result.inlineClaims.values()) {
+        expect(claim.owned).toBe(true);
+      }
+      expect([...result.createdStepCorrelationIds]).toEqual(['s17']);
+    });
+
+    it('prefers the readback step entity when the World returns one', async () => {
+      vi.stubEnv('WORKFLOW_MAX_INLINE_STEPS', '1');
+      const serverStartedAt = new Date('2026-08-14T01:02:03.000Z');
+      let slot = 30;
+      const createBatch = vi
+        .fn()
+        .mockImplementation(async (_runId, events) => ({
+          results: events.map(
+            ({
+              event,
+            }: {
+              event: { eventType: string; correlationId: string };
+            }) => ({
+              status: 200,
+              event: { ...event, eventId: slotToEventId(slot++) },
+              ...(event.eventType === 'step_started'
+                ? {
+                    step: {
+                      runId: slotRun.runId,
+                      stepId: event.correlationId,
+                      stepName: event.correlationId,
+                      status: 'running',
+                      attempt: 1,
+                      createdAt: serverStartedAt,
+                      updatedAt: serverStartedAt,
+                      startedAt: serverStartedAt,
+                    },
+                  }
+                : {}),
+            })
+          ),
+        }));
+      const world = createBatchWorld(vi.fn(), createBatch);
+
+      const result = await handleSuspension({
+        suspension: new WorkflowSuspension(
+          stepsAndWait(['s1', 's2']),
+          globalThis
+        ),
+        world,
+        run: slotRun,
+        ownerMessageId: 'msg_owner_1',
+      });
+
+      const claim = result.inlineClaims.get('s1');
+      expect(claim?.owned).toBe(true);
+      if (claim?.owned) {
+        expect(claim.step.startedAt).toEqual(serverStartedAt);
+        // Input is still re-attached locally over the readback entity.
+        expect(claim.step.input).toBeDefined();
+      }
+    });
   });
 });

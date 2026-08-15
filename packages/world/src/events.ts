@@ -1031,6 +1031,13 @@ export interface BatchEventRequest {
    * instant the event logically occurred.
    */
   occurredAt?: Date;
+  /**
+   * Compute-instance attribution for this event, same as the single create's
+   * {@link CreateEventParams.computeInstanceId}. Set on the `step_started`
+   * half of a pre-claimed inline pair so a batched claim attributes the
+   * executing instance exactly like the lazy claim it replaces.
+   */
+  computeInstanceId?: string;
 }
 
 /** Per-batch parameters for {@link Storage.events.createBatch}. */

@@ -125,6 +125,17 @@ export interface StepExecutorParams {
    */
   lazyStepInput?: SerializedData;
   /**
+   * Pre-claimed inline start: the suspension handler committed (or lost) this
+   * step's `step_created` + `step_started` pair inside its batched fan-out
+   * write, so the start this executor would otherwise send has already been
+   * decided. `owned: false` returns `{ type: 'skipped' }` before any write —
+   * the same outcome as losing the lazy claim's atomic create. `owned: true`
+   * skips both start paths (no start write at all) and runs the body against
+   * the claimed step. Mutually exclusive with `lazyStepInput`: the input
+   * already rode the pair's `step_created`, and the claimed step carries it.
+   */
+  preclaimedStart?: PreclaimedInlineStart;
+  /**
    * Inline step ownership: the queue message ID of the invocation this
    * executeStep call runs in (from the queue handler's meta). When set, the
    * `step_started` this call sends is stamped with it — on the lazy paths
@@ -229,6 +240,44 @@ export interface StepExecutorParams {
   /** One-shot recovery telemetry activated by the orchestrator replay. */
   replayRecoveryReporter?: ReplayRecoveryReporter;
 }
+
+/**
+ * The settled outcome of a `step_created` + `step_started` pair the
+ * suspension handler folded into its batched fan-out write (see
+ * `SuspensionHandlerResult.inlineClaims`). Handed to executeStep as
+ * {@link StepExecutorParams.preclaimedStart} so the executor runs (or skips)
+ * the body off the batch's verdict instead of sending a start of its own.
+ */
+export type PreclaimedInlineStart =
+  | {
+      /** The pair committed: this execution owns the step and runs the body. */
+      owned: true;
+      /**
+       * The started step entity from the batch result, with the locally
+       * dehydrated input attached by the suspension handler (batch responses
+       * return refs lazily; the body's hydration wants the same bytes the
+       * pair's `step_created` carried).
+       */
+      step: StartedStep;
+      /**
+       * `Date.now()` taken right before the batch POST that carried the pair
+       * — the claim's "start POST sent" instant, anchoring RSFS exactly like
+       * the lazy claim's own POST would.
+       */
+      batchPostSentAtMs?: number;
+      /**
+       * `Date.now()` taken right after that batch POST returned — the
+       * claim's completion instant (T6 of the hook-resume TTR window).
+       */
+      claimCompletedAtMs?: number;
+    }
+  | {
+      /**
+       * The pair lost its atomic create-claim (per-event 409): a concurrent
+       * writer owns the step, so the body must not run here.
+       */
+      owned: false;
+    };
 
 /**
  * Inline-delta returned by a step-terminal write when the caller passed
@@ -366,6 +415,24 @@ export async function executeStep(
       ...Attribute.WorkflowRunId(workflowRunId),
       ...Attribute.StepId(stepId),
     });
+
+    // A pre-claimed start that LOST the batched pair's atomic create-claim: a
+    // concurrent writer owns this step. Same outcome as losing the lazy
+    // claim (EntityConflictError → skipped), decided before ANY write — the
+    // unregistered-step fallback below included, since a step this handler
+    // does not own is not its to fail.
+    if (params.preclaimedStart && params.preclaimedStart.owned === false) {
+      runtimeLogger.debug('Pre-claimed step start lost, skipping', {
+        stepName,
+        stepId,
+        workflowRunId,
+      });
+      span?.setAttributes({
+        ...Attribute.StepSkipped(true),
+        ...Attribute.StepSkipReason('completed'),
+      });
+      return { type: 'skipped' };
+    }
 
     // Memoized accessor for the per-run encryption key. The first caller
     // (input hydration on the success path, or one of the early-return
@@ -598,6 +665,10 @@ export async function executeStep(
     // confirmed, which is exactly the property an operator opts out of with that
     // flag, so an explicit opt-out wins over turbo's force.
     const optimisticStart =
+      // A pre-claimed start already settled its claim in the suspension
+      // batch; there is nothing to fire optimistically (lazyStepInput is
+      // also absent on that path — this term is documentation).
+      params.preclaimedStart === undefined &&
       params.lazyStepInput !== undefined &&
       // Stale-sensitive guarded batches await the claim so the 412 fence
       // covers the body, not just durable writes — see
@@ -646,7 +717,18 @@ export async function executeStep(
       return mapped;
     };
 
-    if (optimisticStart) {
+    if (params.preclaimedStart?.owned) {
+      // Pre-claimed inline start: the suspension handler's batched fan-out
+      // already committed this step's `step_created` + `step_started` pair,
+      // so this execution owns a started attempt-1 step without sending a
+      // start of its own — the body begins straight off the batch commit and
+      // the terminal write below has no in-flight claim to reconcile. The
+      // batch timestamps stand in for the claim's: the POST instant anchors
+      // RSFS, the response instant is TTR's claim completion (T6).
+      step = params.preclaimedStart.step;
+      stepStartPostSentAtMs = params.preclaimedStart.batchPostSentAtMs;
+      stepClaimCompletedAtMs = params.preclaimedStart.claimCompletedAtMs;
+    } else if (optimisticStart) {
       // Chain the lazy `step_started` on the run-ready barrier (turbo mode):
       // the step can't be created before its run exists, but the body below
       // runs immediately against synthesized state, so the `run_started`
@@ -927,6 +1009,7 @@ export async function executeStep(
         attempt,
         lazyStepStart: params.lazyStepInput !== undefined,
         optimisticStart,
+        preclaimedStart: params.preclaimedStart !== undefined,
         stepStartPostSentAtMs,
       });
       if (latencyEventData) {

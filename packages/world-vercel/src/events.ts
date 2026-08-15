@@ -511,7 +511,7 @@ export async function createWorkflowRunEventBatch(
       { status: 400 }
     );
   }
-  const inputs = events.map(({ event, occurredAt }) => {
+  const inputs = events.map(({ event, occurredAt, computeInstanceId }) => {
     const { payload, meta } = splitEventDataForV4(event);
     return {
       runId,
@@ -521,6 +521,9 @@ export async function createWorkflowRunEventBatch(
       // Under slot identity this is the source of the durable createdAt, so
       // the caller's logical time is what every replay observes.
       occurredAt: occurredAt ?? new Date(),
+      // Per-event compute attribution (pre-claimed inline starts) — rides the
+      // frame meta exactly like the single POST's CreateEventParams field.
+      ...(computeInstanceId !== undefined ? { computeInstanceId } : {}),
       // Batch responses carry entities for bookkeeping, not payload reads —
       // default to lazy refs unless the caller explicitly asks for resolved
       // data (the same `resolveData` mapping the read paths use).

@@ -17,6 +17,7 @@ import {
   SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
   SPEC_VERSION_SUPPORTS_COMPRESSION,
   SPEC_VERSION_SUPPORTS_SLOT_IDENTITY,
+  type StartedStep,
   type TraceCarrier,
   type ValidQueueName,
   type WorkflowRun,
@@ -36,6 +37,7 @@ import type { GuestCodeStats } from '../serialization/hardened.js';
 import { dehydrateStepArguments } from '../serialization.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { getAbortStreamIdFromToken } from '../util.js';
+import { COMPUTE_INSTANCE_ID } from './compute-instance.js';
 import {
   getMaxInlineSteps,
   isBatchTransitionsEnabled,
@@ -53,6 +55,7 @@ import {
   stepDispatchIdempotencyKey,
 } from './helpers.js';
 import { ReplayRecoveryReporter } from './replay-recovery-reporter.js';
+import type { PreclaimedInlineStart } from './step-executor.js';
 
 export interface SuspensionHandlerParams {
   suspension: WorkflowSuspension;
@@ -103,6 +106,18 @@ export interface SuspensionHandlerParams {
      */
     getTraceCarrier: () => Promise<TraceCarrier>;
   };
+  /**
+   * Inline step ownership: the queue message ID of the invocation this
+   * suspension runs in (the queue handler's meta). When present AND the
+   * batched fan-out engages, the lazy-inline steps' deferred writes are
+   * folded into the batch as `step_created` + `step_started` pairs — the
+   * started row stamped with this ID, exactly like the lazy claim it
+   * replaces — pre-claiming the steps the caller is about to run inline. See
+   * {@link SuspensionHandlerResult.inlineClaims}. Callers that never
+   * inline-execute (terminal drain) omit it, keeping their lazy steps on the
+   * plain deferred path.
+   */
+  ownerMessageId?: string;
 }
 
 /**
@@ -156,6 +171,35 @@ export interface SuspensionHandlerResult {
     stepName: string;
     dehydratedInput: SerializedData;
   }>;
+  /**
+   * Pre-claimed inline starts, by correlation id: the per-step verdicts of
+   * the `step_created` + `step_started` pairs the batched fan-out committed
+   * for the lazy-inline steps. A step with an entry here is passed to
+   * `executeStep` as `preclaimedStart` INSTEAD of `lazyStepInput` — its
+   * input already rode the pair, and the claim is settled: `owned: true`
+   * carries the started attempt-1 entity (input re-attached) so the body
+   * runs straight off the batch commit with no start write of its own;
+   * `owned: false` lost the pair's atomic create-claim to a concurrent
+   * writer, and executeStep returns `skipped` without running the body —
+   * the same outcome as losing the lazy claim. Empty whenever the fold did
+   * not engage (batching off, no `ownerMessageId`, or the lone-inline case,
+   * which keeps the optimistic lazy path and its claim/body overlap).
+   *
+   * Crash window: the pair commits before the caller runs the body, so a
+   * crash between them leaves a started step stamped with this message's
+   * ID. Redelivery of the same message re-executes it via the owned-recovery
+   * path — the exact machinery the lazy claim's crash window already uses.
+   */
+  inlineClaims: Map<string, PreclaimedInlineStart>;
+  /**
+   * The highest slot the batched fan-out committed, when it ran. The batch's
+   * own events are not in the caller's loaded log (the next reload picks
+   * them up), so the caller folds this ceiling into the slot snapshot it
+   * hands the inline executions — otherwise every inline terminal write
+   * would name a pre-batch position and be answered with a skipped-slot
+   * report echoing the events this suspension just wrote.
+   */
+  batchCommittedSlotCeiling?: number;
   /**
    * The soonest pending wait, if any: seconds until it elapses and the
    * correlationId of the wait that produced that timeout. The
@@ -288,6 +332,7 @@ export async function handleSuspension({
   runReadyBarrier,
   replayRecoveryReporter,
   stepDispatch,
+  ownerMessageId,
 }: SuspensionHandlerParams): Promise<SuspensionHandlerResult> {
   const runId = run.runId;
 
@@ -724,11 +769,38 @@ export async function handleSuspension({
    */
   const batchQueue: {
     order: number;
-    kind: 'step' | 'wait';
+    kind: 'step' | 'wait' | 'inline-created' | 'inline-started';
     correlationId: string;
     event: CreateEventRequest;
   }[] = [];
   const batchPreps: Promise<void>[] = [];
+
+  // Pre-claimed inline pairs: fold each lazy-inline step's deferred
+  // `step_created` (carrying its input) AND its `step_started` claim (bare,
+  // ownership-stamped) into the batch, so the whole fan-out — the inline
+  // steps' claims included — commits in the one durable write and the caller
+  // starts the bodies straight off that commit instead of posting one claim
+  // per inline step. The lone-inline case (nothing else to batch with) is
+  // excluded: a pair-only batch costs the same round trip as the single lazy
+  // claim while giving up the optimistic claim/body overlap and the
+  // bump-and-report that `createGuarded` provides, so it stays on the lazy
+  // path. Requires the caller's `ownerMessageId` — the started row must
+  // stamp ownership exactly like the lazy claim it replaces (and a caller
+  // that does not inline-execute never provides one).
+  const uncreatedWaitCount = waitItems.filter(
+    (item) => !item.hasCreatedEvent
+  ).length;
+  const inlinePairFoldEligible =
+    batchFanoutEligible &&
+    ownerMessageId !== undefined &&
+    lazyInlineCorrelationIds.size > 0 &&
+    (lazyInlineCorrelationIds.size >= 2 ||
+      stepsNeedingCreation.size -
+        lazyInlineCorrelationIds.size +
+        uncreatedWaitCount >=
+        1);
+  const inlineClaims: SuspensionHandlerResult['inlineClaims'] = new Map();
+  let batchCommittedSlotCeiling: number | undefined;
 
   // The trace carrier for resilient step dispatches, resolved at most once per
   // suspension (the per-step ops run concurrently and share it).
@@ -750,8 +822,15 @@ export async function handleSuspension({
   for (const queueItem of stepItems) {
     if (stepsNeedingCreation.has(queueItem.correlationId)) {
       // Deterministic position in the batched fold (assigned in stepItems
-      // order, before the concurrent dehydration runs).
-      const stepOrder = batchOrderCounter++;
+      // order, before the concurrent dehydration runs). A pair-folded inline
+      // step occupies two consecutive positions — created row then started
+      // row — which the flush keeps adjacent and never splits across chunks,
+      // so a World can fold them into one born-running create.
+      const pairFolded =
+        inlinePairFoldEligible &&
+        lazyInlineCorrelationIds.has(queueItem.correlationId);
+      const stepOrder = batchOrderCounter;
+      batchOrderCounter += pairFolded ? 2 : 1;
       const stepOp = (async () => {
         // Per-step sink, merged below: the dehydrate wrapper emits span
         // attributes from the sink it is handed, so sharing one across
@@ -783,6 +862,44 @@ export async function handleSuspension({
             stepName: queueItem.stepName,
             dehydratedInput: dehydratedInput as SerializedData,
           });
+          if (pairFolded) {
+            // Enqueue the pair the deferral would otherwise leave to the
+            // caller's lazy `step_started`: the created row carries the
+            // input (payloads ride creates in a batch), the started row is
+            // bare and stamps this invocation's ownership — the same claim
+            // shape the lazy start would have sent, settled by the batch.
+            batchQueue.push({
+              order: stepOrder,
+              kind: 'inline-created',
+              correlationId: queueItem.correlationId,
+              event: {
+                eventType: 'step_created',
+                specVersion: SPEC_VERSION_CURRENT,
+                correlationId: queueItem.correlationId,
+                eventData: {
+                  stepName: queueItem.stepName,
+                  workflowName: run.workflowName,
+                  input: dehydratedInput as SerializedData,
+                },
+              },
+            });
+            batchQueue.push({
+              order: stepOrder + 1,
+              kind: 'inline-started',
+              correlationId: queueItem.correlationId,
+              event: {
+                eventType: 'step_started',
+                specVersion: SPEC_VERSION_CURRENT,
+                correlationId: queueItem.correlationId,
+                eventData: {
+                  stepName: queueItem.stepName,
+                  // Checked by inlinePairFoldEligible; spread keeps the
+                  // narrow-through-closure problem away from the type.
+                  ...(ownerMessageId !== undefined ? { ownerMessageId } : {}),
+                },
+              },
+            });
+          }
           return;
         }
         const stepEvent: CreateEventRequest = {
@@ -1023,29 +1140,137 @@ export async function handleSuspension({
         let expectedFirstSlot = eventLog
           ? (maxEventSlot(eventLog.events) ?? 0) + 1
           : undefined;
-        for (
-          let start = 0;
-          start < entries.length;
-          start += MAX_BATCH_FANOUT_EVENTS
-        ) {
-          const chunk = entries.slice(start, start + MAX_BATCH_FANOUT_EVENTS);
+        // Pair-aware chunking: a pre-claimed pair's two rows must land in
+        // the same createBatch call — adjacent, so a World can fold them
+        // into one born-running create — and never straddle a chunk
+        // boundary, which would turn the started row into a standalone
+        // claim racing its own create's commit.
+        const chunks: (typeof entries)[] = [];
+        {
+          let current: typeof entries = [];
+          for (let index = 0; index < entries.length; index++) {
+            const entry = entries[index];
+            const next = entries[index + 1];
+            const pairLead =
+              entry.kind === 'inline-created' &&
+              next?.kind === 'inline-started' &&
+              next.correlationId === entry.correlationId;
+            const take = pairLead ? 2 : 1;
+            if (
+              current.length > 0 &&
+              current.length + take > MAX_BATCH_FANOUT_EVENTS
+            ) {
+              chunks.push(current);
+              current = [];
+            }
+            current.push(entry);
+            if (pairLead) {
+              current.push(next);
+              index++;
+            }
+          }
+          if (current.length > 0) chunks.push(current);
+        }
+        for (const chunk of chunks) {
+          // Anchors for the pre-claimed steps' telemetry: the POST instant
+          // is the claim's "start POST sent" (RSFS's end), the return is the
+          // claim's completion (TTR's T6) — the same two instants the lazy
+          // claim's own POST would have produced.
+          const batchPostSentAtMs = Date.now();
           // biome-ignore lint/style/noNonNullAssertion: batchFanoutEligible implies presence
           const { results } = await world.events.createBatch!(
             runId,
-            chunk.map((entry) => ({ event: entry.event })),
+            chunk.map((entry) => ({
+              event: entry.event,
+              // The started row is the step's executing claim, so it carries
+              // the compute-instance attribution the single claim sends via
+              // CreateEventParams.
+              ...(entry.kind === 'inline-started'
+                ? { computeInstanceId: COMPUTE_INSTANCE_ID }
+                : {}),
+            })),
             // Per-write request attribution, same as the single path's
             // createGuarded(…, { requestId }).
             { requestId }
           );
+          const claimCompletedAtMs = Date.now();
           for (const [index, item] of results.entries()) {
             const entry = chunk[index];
             if (item.error === undefined) {
               if (entry.kind === 'step') {
                 createdStepCorrelationIds.add(entry.correlationId);
+              } else if (entry.kind === 'inline-started') {
+                // The pair committed: this invocation owns the step and the
+                // caller runs the body with no claim of its own. The
+                // readback entity is authoritative where present; a World
+                // that omitted it gets the same locally synthesized running
+                // attempt-1 the optimistic path executes against. Either
+                // way the input is re-attached locally — batch responses
+                // return refs lazily, and the body's hydration wants the
+                // exact bytes the pair's created row carried. (The created
+                // row's success is deliberately NOT membership in
+                // createdStepCorrelationIds: for inline steps ownership is
+                // the started row's verdict, and the caller's dispatch pass
+                // skips inline correlation ids regardless.)
+                const dehydrated = lazyInlineByCorrelationId.get(
+                  entry.correlationId
+                );
+                if (dehydrated === undefined) {
+                  // Unreachable: the same prep op that enqueued the pair set
+                  // this entry, and the flush awaited every prep above.
+                  throw new WorkflowWorldError(
+                    `no dehydrated input for pre-claimed step ${entry.correlationId}`,
+                    { status: 500 }
+                  );
+                }
+                const now = new Date();
+                const startedStep: StartedStep = item.step?.startedAt
+                  ? { ...item.step, startedAt: item.step.startedAt }
+                  : {
+                      runId,
+                      stepId: entry.correlationId,
+                      stepName: dehydrated.stepName,
+                      status: 'running',
+                      attempt: 1,
+                      createdAt: now,
+                      updatedAt: now,
+                      startedAt: now,
+                    };
+                inlineClaims.set(entry.correlationId, {
+                  owned: true,
+                  step: {
+                    ...startedStep,
+                    input: dehydrated.dehydratedInput,
+                  },
+                  batchPostSentAtMs,
+                  claimCompletedAtMs,
+                });
               }
               continue;
             }
             if (item.status === 409) {
+              if (
+                entry.kind === 'inline-created' ||
+                entry.kind === 'inline-started'
+              ) {
+                // The pair lost its atomic create-claim: a concurrent writer
+                // already owns this step (an earlier delivery's create, or a
+                // racing handler's claim). Recorded as a lost claim — the
+                // caller's executeStep returns `skipped` without running the
+                // body, the same outcome as losing the lazy claim. A World
+                // that folds the pair reports the 409 on both rows (set
+                // twice, harmless); one that evaluates rows independently
+                // has the started row — processed second — decide, which is
+                // exactly the single path's semantics (create lost + claim
+                // won still runs the body; create won + claim lost skips).
+                inlineClaims.set(entry.correlationId, { owned: false });
+                runtimeLogger.info('Inline step pre-claim lost, continuing', {
+                  workflowRunId: runId,
+                  correlationId: entry.correlationId,
+                  message: item.message,
+                });
+                continue;
+              }
               // Same tolerance as the single path's EntityConflictError: a
               // concurrent or earlier delivery already created it.
               runtimeLogger.info(
@@ -1065,6 +1290,22 @@ export async function handleSuspension({
                 `failed: ${item.error}: ${item.message}`,
               { status: item.status }
             );
+          }
+          // Highest slot this chunk committed: it is both the ceiling the
+          // caller folds into the inline executions' slot snapshot (see
+          // SuspensionHandlerResult.batchCommittedSlotCeiling) and what the
+          // bump expectation advances past below.
+          const chunkMaxSlot = maxEventSlot(
+            results.flatMap((item) =>
+              item.error === undefined && item.event ? [item.event] : []
+            )
+          );
+          if (
+            chunkMaxSlot !== undefined &&
+            (batchCommittedSlotCeiling === undefined ||
+              chunkMaxSlot > batchCommittedSlotCeiling)
+          ) {
+            batchCommittedSlotCeiling = chunkMaxSlot;
           }
           // Slot-bump visibility: the batch endpoint has no bump-and-report,
           // so a foreign event landing between our snapshot and the commit
@@ -1090,11 +1331,6 @@ export async function handleSuspension({
           }
           // Advance the expectation past this chunk's committed events so the
           // next chunk's diagnostic measures only foreign interleaving.
-          const chunkMaxSlot = maxEventSlot(
-            results.flatMap((item) =>
-              item.error === undefined && item.event ? [item.event] : []
-            )
-          );
           if (
             expectedFirstSlot !== undefined &&
             chunkMaxSlot !== undefined &&
@@ -1229,6 +1465,8 @@ export async function handleSuspension({
     createdStepCorrelationIds,
     queuedStepCorrelationIds,
     lazyInlineSteps,
+    inlineClaims,
+    batchCommittedSlotCeiling,
     // On hook conflict the caller re-invokes immediately and never reads
     // the wait timeout, so don't report one.
     waitTimeout: hasHookConflict ? undefined : soonestWait,
