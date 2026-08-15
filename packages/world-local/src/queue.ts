@@ -407,9 +407,10 @@ export function createQueue(config: Partial<Config>): LocalQueue {
       }
 
       const body = await new TypedJsonTransport().deserialize(req.body);
+      let receiverAttempt: string | undefined;
       try {
         if (receiverOwner) {
-          await createRunStartsStorage(
+          receiverAttempt = await createRunStartsStorage(
             (config as Config).dataDir
           ).receiverStarted(messageId, receiverOwner, process.pid);
         }
@@ -431,9 +432,14 @@ export function createQueue(config: Partial<Config>): LocalQueue {
       } catch (error) {
         return Response.json(String(error), { status: 500 });
       } finally {
-        if (receiverOwner) {
+        if (receiverOwner && receiverAttempt) {
           await createRunStartsStorage((config as Config).dataDir)
-            .receiverTerminated(messageId, receiverOwner, process.pid)
+            .receiverTerminated(
+              messageId,
+              receiverOwner,
+              process.pid,
+              receiverAttempt
+            )
             .catch(() => {});
         }
       }

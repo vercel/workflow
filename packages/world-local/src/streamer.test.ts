@@ -172,10 +172,10 @@ describe('streamer', () => {
       };
     }
 
-    it('advertises keyed append v1 after the durable local ledger is available', async () => {
+    it('keeps keyed append v1 unavailable until the complete terminal matrix is proven', async () => {
       const { streamer } = await setupStreamer();
 
-      expect(streamer.keyedStreamAppendVersion).toBe(1);
+      expect(streamer).not.toHaveProperty('keyedStreamAppendVersion');
     });
 
     it('rejects converting ordinary stream data to keyed mode', async () => {
@@ -250,6 +250,43 @@ describe('streamer', () => {
       expect(
         await streamer.streams.getInfo(TEST_RUN_ID, 'strm_keyed_eof')
       ).toEqual({ tailIndex: 0, done: true });
+    });
+
+    it('adopts one ordinary EOF when independent streamers close concurrently', async () => {
+      const { testDir } = await setupStreamer();
+      const name = 'strm_ordinary_single_eof';
+      const first = createStreamer(testDir);
+      const second = createStreamer(testDir);
+      await first.streams.write(TEST_RUN_ID, name, 'data');
+
+      await Promise.all([
+        first.streams.close(TEST_RUN_ID, name),
+        second.streams.close(TEST_RUN_ID, name),
+      ]);
+
+      const chunkDir = path.join(testDir, 'streams', 'chunks', name);
+      const chunks = await Promise.all(
+        (await fs.readdir(chunkDir)).map(async (file) =>
+          deserializeChunk(await fs.readFile(path.join(chunkDir, file)))
+        )
+      );
+      expect(chunks.filter((chunk) => chunk.eof)).toHaveLength(1);
+      expect(
+        await createStreamer(testDir).streams.getChunks(TEST_RUN_ID, name)
+      ).toMatchObject({
+        done: true,
+        data: [{ data: new TextEncoder().encode('data'), index: 0 }],
+      });
+    });
+
+    it('rejects ordinary writes after its canonical close', async () => {
+      const { streamer } = await setupStreamer();
+      const name = 'strm_ordinary_closed';
+      await streamer.streams.close(TEST_RUN_ID, name);
+
+      await expect(
+        streamer.streams.write(TEST_RUN_ID, name, 'late')
+      ).rejects.toThrow('closed ordinary stream');
     });
 
     it('serializes different keyed writers from independent streamers by run and stream', async () => {

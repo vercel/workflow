@@ -239,12 +239,103 @@ describe('world-local idempotent run-start ledger', () => {
       queueOptions: {},
     });
 
-    await starts.receiverStarted(receipt.messageId, 'dsp_test', process.pid);
+    const receiverAttempt = await starts.receiverStarted(
+      receipt.messageId,
+      'dsp_test',
+      process.pid
+    );
     await expect(
       starts.returnDispatch(receipt.messageId, 'dsp_test')
     ).resolves.toBeUndefined();
     expect(await starts.pendingDispatches()).toHaveLength(1);
-    await starts.receiverTerminated(receipt.messageId, 'dsp_test', process.pid);
+    await starts.receiverTerminated(
+      receipt.messageId,
+      'dsp_test',
+      process.pid,
+      receiverAttempt
+    );
+  });
+
+  it('rejects a second receiver entry even when it reuses the dispatch owner', async () => {
+    const starts = createRunStartsStorage(basedir, drivers);
+    const reservation = await starts.reserveOrAdoptRunStart(request());
+    const receipt = await starts.finalizeOrAdoptRunStart({
+      reservationId: reservation.reservationId,
+      runId: reservation.runId,
+      semanticDigest: 'semantic-a',
+      envelopeIntegrityDigest: 'envelope-a',
+      envelope: { event: 'run_created' },
+      queueName: '__wkf_workflow_child',
+      queuePayload: { runId: reservation.runId },
+      queueOptions: {},
+    });
+
+    await starts.receiverStarted(receipt.messageId, 'dsp_test', process.pid);
+
+    await expect(
+      starts.receiverStarted(receipt.messageId, 'dsp_test', process.pid)
+    ).rejects.toThrow('active run-start receiver');
+  });
+
+  it('does not let a stale receiver termination clear the adopted attempt', async () => {
+    const starts = createRunStartsStorage(basedir, drivers);
+    const reservation = await starts.reserveOrAdoptRunStart(request());
+    const receipt = await starts.finalizeOrAdoptRunStart({
+      reservationId: reservation.reservationId,
+      runId: reservation.runId,
+      semanticDigest: 'semantic-a',
+      envelopeIntegrityDigest: 'envelope-a',
+      envelope: { event: 'run_created' },
+      queueName: '__wkf_workflow_child',
+      queuePayload: { runId: reservation.runId },
+      queueOptions: {},
+    });
+    const attempt = await starts.receiverStarted(
+      receipt.messageId,
+      'dsp_test',
+      process.pid
+    );
+
+    await starts.receiverTerminated(
+      receipt.messageId,
+      'dsp_test',
+      process.pid,
+      'rcv_stale'
+    );
+    await expect(
+      starts.receiverStarted(receipt.messageId, 'dsp_test', process.pid)
+    ).rejects.toThrow('active run-start receiver');
+
+    await starts.receiverTerminated(
+      receipt.messageId,
+      'dsp_test',
+      process.pid,
+      attempt
+    );
+    await expect(
+      starts.receiverStarted(receipt.messageId, 'dsp_test', process.pid)
+    ).resolves.toMatch(/^rcv_/);
+  });
+
+  it('refuses a live receiver after a stale sender lock is acquired', async () => {
+    const dispatch = vi.fn(async (_entry, accepted) => accepted());
+    const starts = createRunStartsStorage(basedir, { ...drivers, dispatch });
+    const reservation = await starts.reserveOrAdoptRunStart(request());
+    const receipt = await starts.finalizeOrAdoptRunStart({
+      reservationId: reservation.reservationId,
+      runId: reservation.runId,
+      semanticDigest: 'semantic-a',
+      envelopeIntegrityDigest: 'envelope-a',
+      envelope: { event: 'run_created' },
+      queueName: '__wkf_workflow_child',
+      queuePayload: { runId: reservation.runId },
+      queueOptions: {},
+    });
+
+    await starts.receiverStarted(receipt.messageId, 'dsp_stale', process.pid);
+    await createRunStartsStorage(basedir, { ...drivers, dispatch }).drain();
+
+    expect(dispatch).not.toHaveBeenCalled();
   });
 
   it('fails closed on a corrupt durable reservation', async () => {

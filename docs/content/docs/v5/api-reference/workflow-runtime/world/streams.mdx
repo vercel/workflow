@@ -76,7 +76,7 @@ await world.streams.writeMulti?.(runId, "default", [chunk1, chunk2]); // [!code 
 
 | World | Keyed append v1 |
 |-------|-----------------|
-| `world-local` | Available; per-run ledgers reject mixed keyed/unkeyed data and own EOF |
+| `world-local` | Unavailable; fails closed pending the cross-process canonical-EOF matrix |
 | `world-postgres` | Unavailable; fails closed pending service-backed ordering proof |
 | `world-sim` | Available for deterministic tests |
 | `world-vercel` | Unavailable; fails closed |

@@ -70,11 +70,13 @@ interface KeyedLedger {
 interface StreamModeLedger {
   version: 1;
   mode: 'keyed' | 'ordinary';
+  ordinaryTerminal?: { chunkId: string };
 }
 
 const StreamModeLedgerSchema = z.object({
   version: z.literal(1),
   mode: z.enum(['keyed', 'ordinary']),
+  ordinaryTerminal: z.object({ chunkId: z.string() }).optional(),
 });
 
 const KeyedLedgerSchema = z.object({
@@ -134,7 +136,11 @@ async function withStreamMode<T>(
   streamName: string,
   tag: string | undefined,
   requested: StreamModeLedger['mode'],
-  fn: (mode: StreamModeLedger['mode']) => Promise<T>
+  fn: (
+    mode: StreamModeLedger['mode'],
+    file: string,
+    state: StreamModeLedger
+  ) => Promise<T>
 ): Promise<T> {
   const file = streamModePath(basedir, runId, streamName, tag);
   await fs.mkdir(path.dirname(file), { recursive: true });
@@ -145,15 +151,15 @@ async function withStreamMode<T>(
     retries: { retries: 300, factor: 1, minTimeout: 10, maxTimeout: 10 },
   });
   try {
-    let mode: StreamModeLedger['mode'] | undefined;
+    let state: StreamModeLedger | undefined;
     try {
-      mode = StreamModeLedgerSchema.parse(
+      state = StreamModeLedgerSchema.parse(
         JSON.parse(await fs.readFile(file, 'utf8'))
-      ).mode;
+      );
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
     }
-    if (!mode) {
+    if (!state) {
       const keyed = await readKeyedLedger(basedir, runId, streamName, tag);
       const ordinary = await listChunkFilesForStream(
         path.join(basedir, 'streams', 'chunks'),
@@ -166,14 +172,15 @@ async function withStreamMode<T>(
       if (keyed && ordinaryFiles.length > 0) {
         throw new Error('mixed keyed/unkeyed stream data');
       }
-      mode = keyed
+      const mode = keyed
         ? 'keyed'
         : ordinaryFiles.length > 0
           ? 'ordinary'
           : requested;
-      await fs.writeFile(file, JSON.stringify({ version: 1, mode }));
+      state = { version: 1, mode };
+      await fs.writeFile(file, JSON.stringify(state));
     }
-    return await fn(mode);
+    return await fn(state.mode, file, state);
   } finally {
     await release();
   }
@@ -500,7 +507,6 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
   };
 
   return {
-    keyedStreamAppendVersion: 1,
     streams: {
       appendKeyed,
       async write(
@@ -522,9 +528,11 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
           name,
           tag,
           'ordinary',
-          async (mode) => {
+          async (mode, _modeFile, state) => {
             if (mode !== 'ordinary')
               throw new Error('mixed keyed/unkeyed stream data');
+            if (state.ordinaryTerminal)
+              throw new Error('closed ordinary stream');
 
             // Register this stream for the run
             await registerStreamForRun(runId, name);
@@ -577,9 +585,11 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
           name,
           tag,
           'ordinary',
-          async (mode) => {
+          async (mode, _modeFile, state) => {
             if (mode !== 'ordinary')
               throw new Error('mixed keyed/unkeyed stream data');
+            if (state.ordinaryTerminal)
+              throw new Error('closed ordinary stream');
 
             // Register this stream for the run
             await registerStreamForRun(runId, name);
@@ -642,7 +652,8 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
           name,
           tag,
           'ordinary',
-          async (mode) => {
+          async (mode, modeFile, state) => {
+            let shouldNotify = false;
             if (mode === 'keyed') {
               await withKeyedLedger(
                 basedir,
@@ -651,28 +662,70 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
                 tag,
                 async (file, keyed) => {
                   if (!keyed) throw new Error('corrupt keyed stream mode');
-                  if (!keyed.closed)
+                  if (!keyed.closed) {
                     await writeKeyedLedger(file, { ...keyed, closed: true });
+                    shouldNotify = true;
+                  }
                 }
               );
             } else {
+              let terminal = state.ordinaryTerminal;
+              if (!terminal) {
+                const existing = await listChunkFilesForStream(
+                  path.join(basedir, 'streams', 'chunks'),
+                  name,
+                  tag
+                );
+                const eofIds = (
+                  await Promise.all(
+                    existing.files.map(async (file) => {
+                      const extension = existing.extMap.get(file);
+                      if (!extension) return undefined;
+                      const chunk = deserializeChunk(
+                        await readBuffer(
+                          path.join(existing.dir, `${file}${extension}`)
+                        )
+                      );
+                      return chunk.eof ? file : undefined;
+                    })
+                  )
+                ).filter((file): file is string => file !== undefined);
+                if (eofIds.length > 1) {
+                  throw new Error('corrupt ordinary stream terminal');
+                }
+                terminal = { chunkId: eofIds[0] ?? chunkId };
+                state.ordinaryTerminal = terminal;
+                await fs.writeFile(modeFile, JSON.stringify(state));
+                shouldNotify = eofIds.length === 0;
+              }
               await registerStreamForRun(runId, name);
               const chunkPath = path.join(
                 chunkDirForStream(
                   path.join(basedir, 'streams', 'chunks'),
                   name
                 ),
-                `${chunkId}${tagSuffix}.bin`
+                `${terminal.chunkId}${tagSuffix}.bin`
               );
-              await write(
-                chunkPath,
-                serializeChunk({ chunk: Buffer.from([]), eof: true })
-              );
+              const expected = serializeChunk({
+                chunk: Buffer.from([]),
+                eof: true,
+              });
+              try {
+                if (!(await readBuffer(chunkPath)).equals(expected)) {
+                  throw new Error('corrupt ordinary stream terminal');
+                }
+              } catch (error) {
+                if ((error as NodeJS.ErrnoException).code !== 'ENOENT')
+                  throw error;
+                await write(chunkPath, expected, { overwrite: true });
+              }
             }
-            streamEmitter.emit(`close:${name}` as const, {
-              runId,
-              streamName: name,
-            });
+            if (shouldNotify) {
+              streamEmitter.emit(`close:${name}` as const, {
+                runId,
+                streamName: name,
+              });
+            }
           }
         );
       },

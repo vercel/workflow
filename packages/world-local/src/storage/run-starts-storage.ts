@@ -92,7 +92,7 @@ interface Ledger {
     messageId: string;
     dispatchState: 'pending' | 'dispatching' | 'acknowledged';
     dispatchOwner?: string;
-    receiver?: { owner: string; pid: number };
+    receiver?: { owner: string; pid: number; attempt: string };
     projection: RunCreatedProjection & { state: 'pending' | 'complete' };
   };
 }
@@ -125,7 +125,8 @@ function assertLedger(value: unknown): asserts value is Ledger {
           typeof finalized.dispatchOwner !== 'string') ||
         (finalized.receiver !== undefined &&
           (typeof finalized.receiver.owner !== 'string' ||
-            !Number.isInteger(finalized.receiver.pid))) ||
+            !Number.isInteger(finalized.receiver.pid) ||
+            typeof finalized.receiver.attempt !== 'string')) ||
         finalized.projection.version !== 1 ||
         typeof finalized.projection.runBytes !== 'string' ||
         typeof finalized.projection.eventBytes !== 'string' ||
@@ -257,7 +258,9 @@ export function createRunStartsStorage(
           } catch (probe) {
             if ((probe as NodeJS.ErrnoException).code !== 'ESRCH') throw probe;
             await withLedgerFile(file, async (ledgerFile, current) => {
-              if (current?.finalization?.receiver?.owner === receiver.owner) {
+              if (
+                current?.finalization?.receiver?.attempt === receiver.attempt
+              ) {
                 delete current.finalization.receiver;
                 await writeLedger(ledgerFile, current);
               }
@@ -303,12 +306,26 @@ export function createRunStartsStorage(
         ) {
           return undefined;
         }
+        // A successful lock acquisition can have reclaimed a stale sender
+        // sidecar. The durable receiver attempt remains authoritative until
+        // this post-lock check proves that its handler is no longer alive.
+        const receiver = finalization.receiver;
+        if (receiver) {
+          try {
+            process.kill(receiver.pid, 0);
+            return undefined;
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
+            if (finalization.receiver?.attempt === receiver.attempt) {
+              delete finalization.receiver;
+            }
+          }
+        }
         // Holding this separate, process-owned lock proves that a persisted
         // dispatching record was abandoned before it is reclaimed.
         const owner = `dsp_${process.pid}_${ulid()}`;
         finalization.dispatchState = 'dispatching';
         finalization.dispatchOwner = owner;
-        delete finalization.receiver;
         await writeLedger(ledgerFile, current);
         const entry = entryFor(current);
         if (!entry) throw new WorkflowWorldError('Unknown run-start dispatch');
@@ -534,9 +551,9 @@ export function createRunStartsStorage(
       messageId: string,
       owner: string,
       pid: number
-    ): Promise<void> => {
+    ): Promise<string> => {
       const file = await findLedgerFile(messageId);
-      await withLedgerFile(file, async (ledgerFile, current) => {
+      return withLedgerFile(file, async (ledgerFile, current) => {
         const finalization = current?.finalization;
         if (!finalization || finalization.messageId !== messageId) {
           throw conflict('unknown run-start receiver');
@@ -551,15 +568,21 @@ export function createRunStartsStorage(
         ) {
           throw conflict('stale run-start receiver');
         }
-        finalization.receiver = { owner, pid };
+        if (finalization.receiver) {
+          throw conflict('active run-start receiver');
+        }
+        const attempt = `rcv_${process.pid}_${ulid()}`;
+        finalization.receiver = { owner, pid, attempt };
         await writeLedger(ledgerFile, current);
+        return attempt;
       });
     },
 
     receiverTerminated: async (
       messageId: string,
       owner: string,
-      pid: number
+      pid: number,
+      attempt: string
     ): Promise<void> => {
       const file = await findLedgerFile(messageId);
       await withLedgerFile(file, async (ledgerFile, current) => {
@@ -568,7 +591,8 @@ export function createRunStartsStorage(
           !finalization ||
           finalization.messageId !== messageId ||
           finalization.receiver?.owner !== owner ||
-          finalization.receiver.pid !== pid
+          finalization.receiver.pid !== pid ||
+          finalization.receiver.attempt !== attempt
         ) {
           return;
         }
