@@ -14,9 +14,8 @@
  *
  * Read side: dispatch on the format prefix, so both 'zstd' and 'gzip'
  * payloads are always decodable regardless of which codec wrote them.
- * (The browser o11y read path decodes zstd via a registered WASM decoder —
- * see `serialization-format.ts`; this module's `decompress` is the Node
- * runtime/replay path and uses `node:zlib`.)
+ * (The browser o11y read path passes a WASM decoder explicitly — see
+ * `serialization-format.ts`; the Node runtime/replay path uses `node:zlib`.)
  *
  * Layering order with encryption: compression is applied BEFORE
  * encryption (encr(zstd(devl))) — encrypted bytes are high-entropy and
@@ -108,15 +107,13 @@ function asUint8Array(data: Uint8Array): Uint8Array {
   return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
 }
 
-let zstdBrowserDecoder:
-  | ((payload: Uint8Array) => Promise<Uint8Array>)
-  | undefined;
+/** Runtime-specific zstd decoder used when native Node support is unavailable. */
+export type ZstdDecoder = (
+  payload: Uint8Array
+) => Uint8Array | Promise<Uint8Array>;
 
-/** Register the zstd decoder used by browser observability clients. */
-export function registerZstdDecoder(
-  decoder: (payload: Uint8Array) => Promise<Uint8Array>
-): void {
-  zstdBrowserDecoder = decoder;
+export interface DecompressionOptions {
+  zstdDecoder?: ZstdDecoder;
 }
 
 function isZstdAvailable(): boolean {
@@ -195,15 +192,18 @@ function zstdBytes(data: Uint8Array): Uint8Array {
   return asUint8Array(compress(data, opts));
 }
 
-function decompressZstd(payload: Uint8Array): Uint8Array | Promise<Uint8Array> {
+function decompressZstd(
+  payload: Uint8Array,
+  decoder?: ZstdDecoder
+): Uint8Array | Promise<Uint8Array> {
   if (nodeZlib?.zstdDecompressSync) {
     return asUint8Array(nodeZlib.zstdDecompressSync(payload));
   }
-  if (zstdBrowserDecoder) return zstdBrowserDecoder(payload);
+  if (decoder) return decoder(payload);
   throw new Error(
     'Compressed (zstd) workflow data encountered but no zstd decoder is ' +
       'available. Node.js 22.15+ decodes natively; in the browser ' +
-      'register one via registerZstdDecoder.'
+      'pass one in DecompressionOptions.'
   );
 }
 
@@ -334,7 +334,8 @@ export function compress(
  */
 export function decompress(
   data: Uint8Array,
-  stats?: CompressionStats
+  stats?: CompressionStats,
+  options?: DecompressionOptions
 ): Uint8Array | Promise<Uint8Array> {
   const prefix = peekFormatPrefix(data);
 
@@ -351,7 +352,9 @@ export function decompress(
 
   const { payload } = decodeFormatPrefix(data);
   const inflated =
-    codec === 'zstd' ? decompressZstd(payload) : decompressGzip(payload);
+    codec === 'zstd'
+      ? decompressZstd(payload, options?.zstdDecoder)
+      : decompressGzip(payload);
   const finish = (value: Uint8Array): Uint8Array => {
     recordStats(stats, codec, value.length, data.length);
     return value;

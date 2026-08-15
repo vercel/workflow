@@ -11,7 +11,7 @@ import { parse, unflatten } from 'devalue';
 import {
   decompress,
   decompressSync,
-  registerZstdDecoder,
+  type ZstdDecoder,
 } from './serialization/compression.js';
 import {
   type DecryptionKey,
@@ -21,6 +21,7 @@ import {
 import {
   decodeFormatPrefix as decodePrefix,
   encodeWithFormatPrefix,
+  isEncrypted,
   peekFormatPrefix,
 } from './serialization/format.js';
 import { SerializationFormat } from './serialization/types.js';
@@ -55,10 +56,17 @@ export { type DecryptionKey, decrypt as decryptEnvelope, isRunPayloadKeys };
 // ---------------------------------------------------------------------------
 
 export { encodeWithFormatPrefix, SerializationFormat };
-export { registerZstdDecoder };
 
 export type SerializationFormatType =
   (typeof SerializationFormat)[keyof typeof SerializationFormat];
+
+export interface HydrateDataOptions {
+  /**
+   * Runtime-specific zstd decoder, such as the browser observability WASM
+   * adapter.
+   */
+  zstdDecoder?: ZstdDecoder;
+}
 
 /**
  * Decode a format-prefixed payload.
@@ -141,12 +149,7 @@ export function isExpiredStub(data: unknown): boolean {
  * Browser-safe — does not depend on the full serialization module.
  */
 export function isEncryptedData(data: unknown): boolean {
-  if (!(data instanceof Uint8Array)) return false;
-  const prefix = peekFormatPrefix(data);
-  return (
-    prefix === SerializationFormat.ENCRYPTED ||
-    prefix === SerializationFormat.SEALED
-  );
+  return isEncrypted(data);
 }
 
 /**
@@ -262,7 +265,8 @@ export function hydrateData(value: unknown, revivers: Revivers): unknown {
 export async function hydrateDataWithKey(
   value: unknown,
   revivers: Revivers,
-  key: DecryptionKey | undefined
+  key: DecryptionKey | undefined,
+  options?: HydrateDataOptions
 ): Promise<unknown> {
   let data = value;
   if (data instanceof Uint8Array && isEncryptedData(data) && key) {
@@ -280,9 +284,9 @@ export async function hydrateDataWithKey(
   if (data instanceof Uint8Array && isCompressedData(data)) {
     // Decompress: strip the codec prefix and inflate. gzip uses the
     // web-standard DecompressionStream (works in browsers); zstd uses
-    // node:zlib on Node or the registered WASM decoder in the browser.
+    // node:zlib on Node or an explicitly supplied WASM decoder in the browser.
     // The inflated bytes carry their own format prefix (e.g. 'devl').
-    data = await decompress(data);
+    data = await decompress(data, undefined, options);
   }
   // Delegate the (decrypted/decompressed) result to sync hydrateData
   return hydrateData(data, revivers);

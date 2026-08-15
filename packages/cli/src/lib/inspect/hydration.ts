@@ -9,6 +9,7 @@ import { inspect } from 'node:util';
 import {
   type DecryptionKey,
   decrypt,
+  deriveRunPayloadKeys,
   getCommonRevivers,
 } from '@workflow/core/serialization';
 import {
@@ -337,9 +338,6 @@ async function maybeDecryptFields<T>(
     // Resolve the full key capability so `--decrypt` can open sealed
     // ('encp') payloads that other runs wrote to this one, not just the
     // run's own symmetric ('encr') payloads.
-    const { deriveRunPayloadKeys } = await import(
-      '@workflow/core/serialization'
-    );
     const k = rawKey ? await deriveRunPayloadKeys(rawKey) : undefined;
 
     // Decrypt input/output/error fields (WorkflowRun, Step)

@@ -2,10 +2,10 @@ import type { Event, WorkflowRun } from '@workflow/world';
 import { describe, expect, it, vi } from 'vitest';
 import { importKey } from './encryption.js';
 import { ReplayPayloadCache } from './replay-payload-cache.js';
+import { prepareReplayPayload } from './serialization/replay.js';
 import {
   dehydrateStepReturnValue,
   deserializePreparedReplayPayload,
-  prepareReplayPayload,
 } from './serialization.js';
 
 function makeRun(input: unknown): WorkflowRun {

@@ -65,12 +65,15 @@ export function peekFormatPrefix(data: Uint8Array): FormatPrefix | null {
 }
 
 /**
- * Check if data is encrypted (has 'encr' format prefix).
+ * Check if data is encrypted, whether symmetrically (`encr`) or sealed to a
+ * run's public key (`encp`). Use the exact prefix when the scheme matters.
  */
 export function isEncrypted(data: unknown): boolean {
+  if (!(data instanceof Uint8Array)) return false;
+  const prefix = peekFormatPrefix(data);
   return (
-    data instanceof Uint8Array &&
-    peekFormatPrefix(data) === SerializationFormat.ENCRYPTED
+    prefix === SerializationFormat.ENCRYPTED ||
+    prefix === SerializationFormat.SEALED
   );
 }
 
