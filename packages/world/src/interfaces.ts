@@ -15,6 +15,7 @@ import type {
 } from './events.js';
 import type { GetHookParams, Hook, ListHooksParams } from './hooks.js';
 import type { Queue } from './queue.js';
+import type { RunStarts } from './run-start.js';
 import type {
   BulkCancelWorkflowRunsRequest,
   BulkCancelWorkflowRunsResult,
@@ -345,6 +346,8 @@ export interface Storage {
  * explicitly declares it.
  */
 export interface WorldCapabilities {
+  /** Backend-attested two-phase idempotent run-start protocol. */
+  idempotentRunStartVersion?: 1;
   /**
    * Supports `experimental_minRetention` for Hooks. Missing or inactive means
    * the runtime rejects retained Hooks before registration.
@@ -464,6 +467,8 @@ export interface WorldCapabilities {
  * The "World" interface represents how Workflows are able to communicate with the outside world.
  */
 export interface World extends Queue, Streamer, Storage {
+  /** Optional backend-owned two-phase idempotent run-start namespace. */
+  runStarts?: RunStarts;
   /**
    * Optional analytics read namespace for observability surfaces.
    *

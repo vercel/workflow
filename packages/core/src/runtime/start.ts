@@ -1,4 +1,5 @@
 import { EntityConflictError, WorkflowRuntimeError } from '@workflow/errors';
+import { createHash } from 'node:crypto';
 import { workflowDisplayName } from '@workflow/utils/parse-name';
 import type { WorkflowInvokePayload, World } from '@workflow/world';
 import {
@@ -92,7 +93,41 @@ export function _resetLatestNoOpWarnForTests(): void {
   hasWarnedLatestNoOp = false;
 }
 
+function stableJson(value: unknown): string {
+  if (
+    value === null ||
+    typeof value === 'boolean' ||
+    typeof value === 'string'
+  ) {
+    return JSON.stringify(value);
+  }
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) throw new TypeError('non-finite number');
+    return JSON.stringify(value);
+  }
+  if (value instanceof Uint8Array) {
+    return JSON.stringify({ bytes: Buffer.from(value).toString('base64') });
+  }
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
+  if (typeof value === 'object') {
+    const object = value as Record<string, unknown>;
+    return `{${Object.keys(object)
+      .sort()
+      .filter((key) => object[key] !== undefined)
+      .map((key) => `${JSON.stringify(key)}:${stableJson(object[key])}`)
+      .join(',')}}`;
+  }
+  throw new TypeError(`unsupported semantic value: ${typeof value}`);
+}
+
+function sha256(value: string): string {
+  return createHash('sha256').update(value).digest('hex');
+}
+
 export interface StartOptionsBase {
+  /** Backend-owned two-phase start receipt key. */
+  idempotencyKey?: string;
+
   /**
    * The world to use for the workflow run creation,
    * by default the world is inferred from the environment variables.
@@ -314,6 +349,60 @@ export async function start<TArgs extends unknown[], TResult>(
         }
       }
 
+      const specVersion = opts.specVersion ?? world.specVersion;
+      const v1Compat = isLegacySpecVersion(specVersion);
+      const runStarts = (
+        world as World & {
+          capabilities?: { idempotentRunStartVersion?: number };
+          runStarts?: {
+            reserveOrAdoptRunStart(request: Record<string, unknown>): Promise<{
+              reservationId: string;
+              runId: string;
+              startShapeDigest: string;
+            }>;
+            finalizeOrAdoptRunStart(request: Record<string, unknown>): Promise<{
+              runId: string;
+            }>;
+            drain(): Promise<void>;
+          };
+        }
+      ).runStarts;
+      if (
+        opts.idempotencyKey !== undefined &&
+        ((world as any).capabilities?.idempotentRunStartVersion !== 1 ||
+          !runStarts?.reserveOrAdoptRunStart ||
+          !runStarts?.finalizeOrAdoptRunStart ||
+          !runStarts?.drain)
+      ) {
+        throw new WorkflowRuntimeError(
+          'backend_unsupported: idempotent run start requires World protocol version 1'
+        );
+      }
+      const reservation =
+        opts.idempotencyKey === undefined
+          ? undefined
+          : await runStarts!.reserveOrAdoptRunStart({
+              idempotencyKey: opts.idempotencyKey,
+              startShapeDigest: createHash('sha256')
+                .update(
+                  JSON.stringify({
+                    deploymentId,
+                    namespace: opts.namespace ?? null,
+                    region: opts.region ?? null,
+                    specVersion,
+                    workflowName,
+                  })
+                )
+                .digest('hex'),
+              deploymentId,
+              ...(opts.namespace !== undefined
+                ? { namespace: opts.namespace }
+                : {}),
+              ...(opts.region !== undefined ? { region: opts.region } : {}),
+              specVersion,
+              workflowName,
+            });
+
       // Decide whether to write byte streams in the framed wire format.
       // For same-deployment starts (the common case) we know the target is
       // running this same SDK version, so framing is safe. For cross-
@@ -332,11 +421,13 @@ export async function start<TArgs extends unknown[], TResult>(
       // metadata (e.g., region) into the ID, forwarding the full options
       // bag so worlds can read whichever fields they recognise; otherwise
       // fall back to a standard monotonic ULID.
-      const runId = `wrun_${
-        world.createRunId
-          ? world.createRunId(opts as Readonly<Record<string, unknown>>)
-          : ulid()
-      }`;
+      const runId =
+        reservation?.runId ??
+        `wrun_${
+          world.createRunId
+            ? world.createRunId(opts as Readonly<Record<string, unknown>>)
+            : ulid()
+        }`;
 
       let framedByteStreams: boolean;
       let targetSupportsCompression: boolean;
@@ -391,10 +482,6 @@ export async function start<TArgs extends unknown[], TResult>(
       // Serialize current trace context to propagate across queue boundary
       const traceCarrier = await serializeTraceCarrier();
 
-      // Default new runs to the configured world's spec version. The world
-      // itself has already been checked against this runtime's spec version.
-      const specVersion = opts.specVersion ?? world.specVersion;
-      const v1Compat = isLegacySpecVersion(specVersion);
       const allowReservedAttributes = opts.allowReservedAttributes === true;
       let attributes: Record<string, string> | undefined;
       if (opts.attributes && Object.keys(opts.attributes).length > 0) {
@@ -570,6 +657,114 @@ export async function start<TArgs extends unknown[], TResult>(
           ? { replayedFromRunId: opts.replayedFromRunId }
           : {}),
       };
+
+      if (reservation) {
+        // The exact path cannot release ordinary background stream writes: a
+        // backend that cannot stage them has not attested this protocol.
+        if (ops.length > 0) {
+          throw new WorkflowRuntimeError(
+            'backend_unsupported: idempotent run start cannot externalize arguments before finalization'
+          );
+        }
+        const queueName = getWorkflowQueueName(workflowName, opts.namespace);
+        const queuePayload = {
+          runId,
+          traceCarrier,
+          ...(specVersion >= SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT
+            ? {
+                runInput: {
+                  input: workflowArguments,
+                  deploymentId,
+                  workflowName,
+                  specVersion,
+                  executionContext,
+                  ...(encryptionPublicKey ? { encryptionPublicKey } : {}),
+                  ...(creatorEnvironment !== undefined
+                    ? { environment: creatorEnvironment }
+                    : {}),
+                  ...attributeSeed,
+                },
+              }
+            : {}),
+        } satisfies WorkflowInvokePayload;
+        const queueOptions = {
+          deploymentId,
+          specVersion,
+          ...(opts.region !== undefined ? { region: opts.region } : {}),
+        };
+        const envelope = {
+          runCreated: {
+            eventType: 'run_created',
+            specVersion,
+            eventData: {
+              deploymentId,
+              workflowName,
+              input: workflowArguments,
+              executionContext,
+              ...(encryptionPublicKey ? { encryptionPublicKey } : {}),
+              ...attributeSeed,
+            },
+            v1Compat,
+          },
+          queue: { queueName, queuePayload, queueOptions },
+        };
+        let semanticDigest: string;
+        try {
+          semanticDigest = sha256(
+            stableJson({
+              version: 1,
+              runId,
+              args,
+              deploymentId,
+              workflowName,
+              namespace: opts.namespace,
+              region: opts.region,
+              specVersion,
+              framedByteStreams,
+              compression,
+              attributes: attributeSeed,
+              creatorEnvironment,
+              executionContext: {
+                workflowCoreVersion,
+                features: { encryption: !!encryptionKey },
+                ...(targetHookResumeInputVersion !== undefined
+                  ? { hookResumeInputVersion: targetHookResumeInputVersion }
+                  : {}),
+                ...(workflowVm ? { workflowVm } : {}),
+                ...(opts.replayedFromRunId
+                  ? { replayedFromRunId: opts.replayedFromRunId }
+                  : {}),
+              },
+            })
+          );
+        } catch {
+          throw new WorkflowRuntimeError(
+            'backend_unsupported: idempotent run start cannot recover these argument semantics'
+          );
+        }
+        const serializedEnvelope = JSON.stringify(envelope);
+        const finalized = await runStarts!.finalizeOrAdoptRunStart({
+          reservationId: reservation.reservationId,
+          runId,
+          semanticDigest,
+          envelopeIntegrityDigest: sha256(serializedEnvelope),
+          envelope,
+          queueName,
+          queuePayload,
+          queueOptions,
+        });
+        if (finalized.runId !== runId) {
+          throw new WorkflowRuntimeError(
+            `idempotency_conflict: backend finalized a different runId: ${finalized.runId}`
+          );
+        }
+        await runStarts!.drain();
+        span?.setAttributes({
+          ...Attribute.WorkflowRunId(runId),
+          ...Attribute.DeploymentId(deploymentId),
+        });
+        return new Run<TResult>(runId);
+      }
 
       // Call events.create (run_created) and queue in parallel.
       // If events.create fails with 429/5xx, the run was still accepted

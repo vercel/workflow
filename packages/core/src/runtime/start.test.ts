@@ -50,6 +50,96 @@ vi.mock('../telemetry.js', () => ({
 
 describe('start', () => {
   describe('error handling', () => {
+    it('reserves and finalizes a keyed start without ordinary event or queue effects', async () => {
+      const eventsCreate = vi.fn();
+      const queue = vi.fn();
+      const runStarts = {
+        reserveOrAdoptRunStart: vi.fn().mockResolvedValue({
+          reservationId: 'rsv_1',
+          runId: 'wrun_01ARZ3NDEKTSV4RRFFQ69G5FAV',
+          startShapeDigest: 'shape',
+          inserted: true,
+        }),
+        finalizeOrAdoptRunStart: vi.fn().mockResolvedValue({
+          inserted: true,
+          runId: 'wrun_01ARZ3NDEKTSV4RRFFQ69G5FAV',
+          semanticDigest: 'semantic',
+          envelopeIntegrityDigest: 'envelope',
+          messageId: 'msg_1',
+          dispatchState: 'pending',
+        }),
+        drain: vi.fn().mockResolvedValue(undefined),
+      };
+      const validWorkflow = Object.assign(() => Promise.resolve('result'), {
+        workflowId: 'test-workflow',
+      });
+      setWorld({
+        specVersion: SPEC_VERSION_CURRENT,
+        capabilities: { idempotentRunStartVersion: 1 },
+        getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
+        events: { create: eventsCreate },
+        queue,
+        runStarts,
+      } as any);
+
+      const run = await start(validWorkflow, [], {
+        idempotencyKey: 'eve:child:1',
+      } as any);
+
+      expect(run.runId).toBe('wrun_01ARZ3NDEKTSV4RRFFQ69G5FAV');
+      expect(runStarts.reserveOrAdoptRunStart).toHaveBeenCalledBefore(
+        runStarts.finalizeOrAdoptRunStart
+      );
+      expect(runStarts.drain).toHaveBeenCalledAfter(
+        runStarts.finalizeOrAdoptRunStart
+      );
+      expect(eventsCreate).not.toHaveBeenCalled();
+      expect(queue).not.toHaveBeenCalled();
+    });
+
+    it('keeps the keyed semantic digest stable when encryption sealing varies', async () => {
+      const finalized = vi.fn().mockResolvedValue({
+        runId: 'wrun_01ARZ3NDEKTSV4RRFFQ69G5FAV',
+      });
+      const runStarts = {
+        reserveOrAdoptRunStart: vi.fn().mockResolvedValue({
+          reservationId: 'rsv_1',
+          runId: 'wrun_01ARZ3NDEKTSV4RRFFQ69G5FAV',
+          startShapeDigest: 'shape',
+        }),
+        finalizeOrAdoptRunStart: finalized,
+        drain: vi.fn().mockResolvedValue(undefined),
+      };
+      const validWorkflow = Object.assign(() => Promise.resolve('result'), {
+        workflowId: 'test-workflow',
+      });
+      setWorld({
+        specVersion: SPEC_VERSION_CURRENT,
+        capabilities: { idempotentRunStartVersion: 1 },
+        getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
+        getEncryptionKeyForRun: vi
+          .fn()
+          .mockResolvedValue(new Uint8Array(32).fill(7)),
+        events: { create: vi.fn() },
+        queue: vi.fn(),
+        runStarts,
+      } as any);
+
+      await start(validWorkflow, ['secret'], {
+        idempotencyKey: 'eve:child:1',
+      } as any);
+      await start(validWorkflow, ['secret'], {
+        idempotencyKey: 'eve:child:1',
+      } as any);
+
+      expect(finalized.mock.calls[1][0].semanticDigest).toBe(
+        finalized.mock.calls[0][0].semanticDigest
+      );
+      expect(finalized.mock.calls[1][0].envelopeIntegrityDigest).not.toBe(
+        finalized.mock.calls[0][0].envelopeIntegrityDigest
+      );
+    });
+
     it('should throw WorkflowRuntimeError when workflow is undefined', async () => {
       await expect(
         // @ts-expect-error - intentionally passing undefined

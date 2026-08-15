@@ -161,7 +161,8 @@ export function createQueue(config: Partial<Config>): LocalQueue {
 
     const body = transport.serialize(message);
     const { prefix } = parseQueueName(queueName);
-    const messageId = MessageId.parse(`msg_${generateId()}`);
+    const messageId =
+      (opts as any)?.messageId ?? MessageId.parse(`msg_${generateId()}`);
 
     // Extract identifiers from the message for structured logging.
     // Combined workflow messages carry `runId` and may include `stepId`.
@@ -296,6 +297,7 @@ export function createQueue(config: Partial<Config>): LocalQueue {
                 continue;
               }
             } catch {}
+            await (opts as any)?.onAccepted?.();
             return;
           }
 

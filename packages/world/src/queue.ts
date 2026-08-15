@@ -286,6 +286,10 @@ export interface QueueOptions {
    * (the pre-regional-routing behaviour).
    */
   region?: string;
+  /** Backend-owned logical delivery identity for durable outboxes. */
+  messageId?: MessageId;
+  /** Backend-owned acknowledgement invoked only after terminal handler acceptance. */
+  onAccepted?: () => Promise<void>;
 }
 
 export interface Queue {

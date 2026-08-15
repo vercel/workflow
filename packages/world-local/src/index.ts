@@ -21,6 +21,7 @@ import { createQueue, type DirectHandler } from './queue.js';
 import { hashToken, hookRecoveryMarkerPath } from './storage/helpers.js';
 import { resetHookIndexEnsureCache } from './storage/hook-index.js';
 import { createStorage } from './storage.js';
+import { createRunStartsStorage } from './storage/run-starts-storage.js';
 import { createStreamer } from './streamer.js';
 
 export { UnwritableDataDirError } from './build-target-mismatch.js';
@@ -37,6 +38,8 @@ export {
 export type { DirectHandler } from './queue.js';
 
 export type LocalWorld = World & {
+  /** Internal two-phase start receipt store; capability remains unadvertised. */
+  runStarts: ReturnType<typeof createRunStartsStorage>;
   /** Register a direct in-process handler for a queue prefix, bypassing HTTP. */
   registerHandler(prefix: QueuePrefix, handler: DirectHandler): void;
   /** Clear all workflow data (runs, steps, events, hooks, streams). */
@@ -70,6 +73,44 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
     mergedConfig.dataDir,
     tag
   );
+  const runStarts = createRunStartsStorage(mergedConfig.dataDir, {
+    async materialize(entry) {
+      const envelope = entry.envelope as {
+        runCreated?: {
+          eventData?: unknown;
+          eventType?: unknown;
+          specVersion?: unknown;
+          v1Compat?: unknown;
+        };
+      };
+      if (
+        envelope.runCreated?.eventType !== 'run_created' ||
+        typeof envelope.runCreated.specVersion !== 'number'
+      ) {
+        throw new Error('corrupt run-start envelope');
+      }
+      await storage.events.create(
+        entry.runId,
+        {
+          eventType: 'run_created',
+          specVersion: envelope.runCreated.specVersion,
+          eventData: envelope.runCreated.eventData as never,
+        },
+        { v1Compat: envelope.runCreated.v1Compat === true }
+      );
+    },
+    async dispatch(entry, accepted) {
+      await queue.queue(
+        entry.queueName as never,
+        entry.queuePayload as never,
+        {
+          ...(entry.queueOptions as object),
+          messageId: entry.messageId as never,
+          onAccepted: accepted,
+        } as any
+      );
+    },
+  });
   const recoverActiveRuns = resolveRecoverActiveRuns(mergedConfig);
   return {
     specVersion: SPEC_VERSION_CURRENT,
@@ -84,8 +125,9 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
       // keep their ULIDs; the scheme is pinned by a run's own first event id,
       // not by this flag, which only says what new runs get.
       slotEventIds: true,
-    },
+    } as any,
     ...queue,
+    runStarts,
     ...storage,
     ...instrumentObject('world.streams', {
       ...createStreamer(mergedConfig.dataDir, tag),
@@ -95,6 +137,7 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
     }),
     async start() {
       await initDataDir(mergedConfig.dataDir);
+      await runStarts.drain();
       if (!recoverActiveRuns) {
         return;
       }
