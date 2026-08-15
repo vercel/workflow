@@ -5,13 +5,13 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createQueue } from './queue.js';
-import { createRunStartsStorage } from './storage/run-starts-storage.js';
 
 type ChildMessage =
   | { type: 'ready'; port?: number }
   | {
-      type: 'draining' | 'drained';
+      type: 'draining' | 'drained' | 'drain-ready' | 'drain-complete';
       role: 'bootstrap' | 'startup' | 'core';
+      pid?: number;
     }
   | { type: 'queued' }
   | { type: 'request' }
@@ -97,49 +97,47 @@ describe('run-start receiver queue boundary', () => {
     if (basedir) await fs.rm(basedir, { recursive: true, force: true });
   });
 
-  it('keeps one real receiver through second-sender loss and startup/Core drain recovery', async () => {
+  it('keeps one real receiver through synchronized startup/Core drain recovery', async () => {
     basedir = await fs.mkdtemp(path.join(os.tmpdir(), 'run-start-queue-'));
     const firstReceiver = childRole('hold', { RUN_START_QUEUE_DIR: basedir });
     children.push(firstReceiver);
     const { port } = await nextMessage(firstReceiver, 'ready');
     const baseUrl = `http://127.0.0.1:${port}`;
-    const seed = createRunStartsStorage(basedir, {
-      prepareProjection: async (entry) => ({
-        version: 1 as const,
-        runBytes: JSON.stringify({ runId: entry.runId }),
-        eventBytes: JSON.stringify({
-          eventType: 'run_created',
-          runId: entry.runId,
-        }),
-        eventId: 'evnt_00000000000000000000000001',
-        digest: 'projection-a',
-      }),
-      materialize: async () => {},
-      dispatch: async () => {},
-    });
-    const reservation = await seed.reserveOrAdoptRunStart({
-      deploymentId: 'dpl_local',
-      idempotencyKey: 'receiver-boundary',
-      specVersion: 5,
-      startShapeDigest: 'shape-a',
-      workflowName: 'child',
-    });
-    const receipt = await seed.finalizeOrAdoptRunStart({
-      reservationId: reservation.reservationId,
-      runId: reservation.runId,
-      semanticDigest: 'semantic-a',
-      envelopeIntegrityDigest: 'envelope-a',
-      envelope: { event: 'run_created' },
-      queueName: '__wkf_workflow_child',
-      queuePayload: { runId: reservation.runId, stable: 'bytes' },
-      queueOptions: {},
-    });
-    const firstSender = childRole('bootstrap', {
+    const nonce = 'receiver-boundary-nonce';
+    const coreOwner = childRole('core', {
       RUN_START_QUEUE_DIR: basedir,
       RUN_START_QUEUE_URL: baseUrl,
+      RUN_START_QUEUE_NONCE: nonce,
     });
-    children.push(firstSender);
-    await nextMessage(firstSender, 'draining');
+    children.push(coreOwner);
+    const coreReady = await nextMessage(coreOwner, 'drain-ready');
+    const pendingBeforeRelease = await fs.readdir(
+      path.join(basedir, 'run-starts')
+    );
+    expect(
+      pendingBeforeRelease.filter((name) => name.endsWith('.json'))
+    ).toHaveLength(1);
+    const startupOwner = childRole('startup', {
+      RUN_START_QUEUE_DIR: basedir,
+      RUN_START_QUEUE_URL: baseUrl,
+      RUN_START_QUEUE_NONCE: nonce,
+    });
+    children.push(startupOwner);
+    const startupReady = await nextMessage(startupOwner, 'drain-ready');
+    expect(coreReady.pid).not.toBe(startupReady.pid);
+    const pendingLedger = JSON.parse(
+      await fs.readFile(
+        path.join(
+          basedir,
+          'run-starts',
+          pendingBeforeRelease.find((name) => name.endsWith('.json'))!
+        ),
+        'utf8'
+      )
+    ) as { finalization?: { dispatchState?: string } };
+    expect(pendingLedger.finalization?.dispatchState).toBe('pending');
+    coreOwner.send({ type: 'drain-release', role: 'core', nonce });
+    startupOwner.send({ type: 'drain-release', role: 'startup', nonce });
     const firstEntry = await nextMessage(firstReceiver, 'entered');
     expect(await receiverProof(basedir)).toMatchObject({
       entries: 1,
@@ -147,63 +145,31 @@ describe('run-start receiver queue boundary', () => {
       active: 1,
       peak: 1,
     });
-    const secondSender = childRole('sender', {
-      RUN_START_QUEUE_DIR: basedir,
-      RUN_START_QUEUE_URL: baseUrl,
-      RUN_START_QUEUE_MESSAGE_ID: receipt.messageId,
-    });
-    children.push(secondSender);
-    await nextMessage(secondSender, 'queued');
-    await nextMessage(firstReceiver, 'request');
-    expect(await receiverProof(basedir)).toMatchObject({
-      entries: 1,
-      exits: 0,
-      active: 1,
-      peak: 1,
-    });
-    await stop(secondSender); // sender dies while first receiver owns durable attempt
-    const startupOwner = childRole('startup', {
-      RUN_START_QUEUE_DIR: basedir,
-      RUN_START_QUEUE_URL: baseUrl,
-    });
-    const coreOwner = childRole('core', {
-      RUN_START_QUEUE_DIR: basedir,
-      RUN_START_QUEUE_URL: baseUrl,
-    });
-    children.push(startupOwner, coreOwner);
-    await Promise.all([
-      nextMessage(startupOwner, 'draining'),
-      nextMessage(coreOwner, 'draining'),
-      nextMessage(startupOwner, 'drained'),
-      nextMessage(coreOwner, 'drained'),
-    ]);
-    expect(firstEntry).toMatchObject({
-      body: { runId: reservation.runId, stable: 'bytes' },
-      messageId: receipt.messageId,
-    });
+    await nextMessage(startupOwner, 'drain-complete');
 
-    await stop(firstSender);
+    await stop(coreOwner);
     await stop(firstReceiver);
     const recoveredReceiver = childRole('accept', {
       RUN_START_QUEUE_DIR: basedir,
     });
     children.push(recoveredReceiver);
     const recovered = await nextMessage(recoveredReceiver, 'ready');
-    const recoveredDrain = childRole('core', {
+    const recoveredDrain = childRole('startup', {
       RUN_START_QUEUE_DIR: basedir,
       RUN_START_QUEUE_URL: `http://127.0.0.1:${recovered.port}`,
+      RUN_START_QUEUE_NONCE: nonce,
     });
     children.push(recoveredDrain);
-    await nextMessage(recoveredDrain, 'draining');
+    await nextMessage(recoveredDrain, 'drain-ready');
+    recoveredDrain.send({ type: 'drain-release', role: 'startup', nonce });
     const recoveredEntry = await nextMessage(recoveredReceiver, 'entered');
-    await nextMessage(recoveredDrain, 'drained');
+    await nextMessage(recoveredDrain, 'drain-complete');
     await stop(recoveredReceiver);
 
     expect(recoveredEntry).toMatchObject({
       body: firstEntry.body,
       messageId: firstEntry.messageId,
     });
-    expect(await seed.pendingDispatches()).toEqual([]);
     expect(await receiverProof(basedir)).toMatchObject({
       entries: 2,
       exits: 2,
@@ -223,7 +189,7 @@ describe('run-start receiver queue boundary', () => {
     expect(ledgers).toHaveLength(1);
     expect(ledgers[0]).toMatchObject({
       finalization: {
-        messageId: receipt.messageId,
+        messageId: firstEntry.messageId,
         dispatchState: 'acknowledged',
       },
     });

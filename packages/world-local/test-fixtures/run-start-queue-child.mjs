@@ -3,13 +3,17 @@ import { promises as fs } from 'node:fs';
 import { Readable } from 'node:stream';
 import { lock } from 'proper-lockfile';
 import { createQueue } from '../dist/queue.js';
+import { createWorld } from '../dist/index.js';
 import { createRunStartsStorage } from '../dist/storage/run-starts-storage.js';
+import { start } from '../../core/dist/runtime/start.js';
+import { setWorld } from '../../core/dist/runtime/world.js';
 
 const {
   RUN_START_QUEUE_DIR: dataDir,
   RUN_START_QUEUE_ROLE: role,
   RUN_START_QUEUE_URL: baseUrl,
   RUN_START_QUEUE_MESSAGE_ID: messageId,
+  RUN_START_QUEUE_NONCE: nonce,
 } = process.env;
 if (!dataDir || !role) throw new Error('missing queue child configuration');
 const send = (message) => process.send?.(message);
@@ -67,7 +71,7 @@ if (role === 'sender') {
   );
   send({ type: 'queued' });
   await new Promise(() => {});
-} else if (role === 'bootstrap' || role === 'startup' || role === 'core') {
+} else if (role === 'bootstrap') {
   const queue = createQueue({ dataDir, baseUrl });
   send({ type: 'draining', role });
   await createRunStartsStorage(dataDir, {
@@ -91,6 +95,55 @@ if (role === 'sender') {
   }).drain();
   await queue.close();
   send({ type: 'drained', role });
+} else if (role === 'startup' || role === 'core') {
+  if (!baseUrl || !nonce) throw new Error('missing owner race configuration');
+  const world = createWorld({
+    dataDir,
+    baseUrl,
+    recoverActiveRuns: false,
+  });
+  const actualDrain = world.runStarts.drain.bind(world.runStarts);
+  world.runStarts.drain = async () => {
+    send({ type: 'drain-ready', role, pid: process.pid });
+    await new Promise((resolve) => {
+      process.once('message', (message) => {
+        if (
+          message?.type === 'drain-release' &&
+          message.role === role &&
+          message.nonce === nonce
+        ) {
+          resolve();
+        }
+      });
+    });
+    try {
+      await actualDrain();
+      send({ type: 'drain-complete', role, pid: process.pid });
+    } catch (error) {
+      send({
+        type: 'drain-failed',
+        role,
+        pid: process.pid,
+        error: String(error),
+      });
+      throw error;
+    }
+  };
+  try {
+    if (role === 'startup') {
+      await world.start();
+    } else {
+      setWorld(world);
+      const workflow = Object.assign(async () => undefined, {
+        workflowId: 'child',
+      });
+      await start(workflow, [], { idempotencyKey: 'receiver-boundary' });
+      setWorld(undefined);
+    }
+  } finally {
+    setWorld(undefined);
+    await world.close();
+  }
 } else {
   const queue = createQueue({ dataDir });
   let release;

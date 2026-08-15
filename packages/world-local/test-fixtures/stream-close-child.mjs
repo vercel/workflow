@@ -7,6 +7,7 @@ const {
   WORKFLOW_LOCAL_STREAM_CHILD_ACTION: action,
   WORKFLOW_LOCAL_STREAM_CHILD_STREAM: streamName,
   WORKFLOW_LOCAL_STREAM_CHILD_RUN_ID: runId,
+  WORKFLOW_LOCAL_STREAM_CHILD_NONCE: nonce,
 } = process.env;
 if (!basedir || !marker || !action || !streamName || !runId)
   throw new Error('missing stream child configuration');
@@ -55,11 +56,20 @@ if (action === 'ordinary-close' || action === 'keyed-close') {
   process.send?.({ type: 'done' });
 } else if (action === 'legacy-read' || action === 'legacy-read-rendezvous') {
   if (action === 'legacy-read-rendezvous') {
-    process.send?.({ type: 'legacy-ready' });
+    if (!nonce) throw new Error('missing legacy rendezvous nonce');
+    process.send?.({ type: 'legacy-ready', pid: process.pid, runId });
     await new Promise((resolve) => {
-      process.once('message', (message) => {
-        if (message?.type === 'legacy-release') resolve();
-      });
+      const onMessage = (message) => {
+        if (
+          message?.type === 'legacy-release' &&
+          message.nonce === nonce &&
+          message.runId === runId
+        ) {
+          process.off('message', onMessage);
+          resolve();
+        }
+      };
+      process.on('message', onMessage);
     });
   }
   try {

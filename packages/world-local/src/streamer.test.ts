@@ -251,9 +251,10 @@ describe('streamer', () => {
     async function startLegacyOwnerCandidate(
       testDir: string,
       streamName: string,
-      runId: string
+      runId: string,
+      nonce: string
     ) {
-      const marker = path.join(testDir, `legacy-race-${runId}.json`);
+      const marker = path.join(testDir, `legacy-race-${runId}-${nonce}.json`);
       const child = fork(
         path.join(
           process.cwd(),
@@ -268,6 +269,7 @@ describe('streamer', () => {
             WORKFLOW_LOCAL_STREAM_CHILD_ACTION: 'legacy-read-rendezvous',
             WORKFLOW_LOCAL_STREAM_CHILD_STREAM: streamName,
             WORKFLOW_LOCAL_STREAM_CHILD_RUN_ID: runId,
+            WORKFLOW_LOCAL_STREAM_CHILD_NONCE: nonce,
           },
           silent: true,
         }
@@ -278,18 +280,24 @@ describe('streamer', () => {
           resolve(JSON.parse(await fs.readFile(marker, 'utf8')));
         });
       });
-      await new Promise<void>((resolve, reject) => {
-        child.once('message', (message) =>
-          message?.type === 'legacy-ready'
-            ? resolve()
-            : reject(new Error('child rendezvous protocol error'))
-        );
-        child.once('exit', (code) =>
-          reject(new Error(`child exited ${code} before rendezvous`))
-        );
-      });
+      const ready = await new Promise<{ pid?: number; runId?: string }>(
+        (resolve, reject) => {
+          child.once('message', (message) =>
+            message?.type === 'legacy-ready'
+              ? resolve(message)
+              : reject(new Error('child rendezvous protocol error'))
+          );
+          child.once('exit', (code) =>
+            reject(new Error(`child exited ${code} before rendezvous`))
+          );
+        }
+      );
+      if (ready.pid === undefined || ready.runId !== runId) {
+        throw new Error('child rendezvous identity missing');
+      }
       return {
-        release: () => child.send({ type: 'legacy-release' }),
+        pid: ready.pid,
+        release: () => child.send({ type: 'legacy-release', nonce, runId }),
         result,
       };
     }
@@ -635,7 +643,7 @@ describe('streamer', () => {
       ).toMatchObject({ data: [], done: false });
     });
 
-    it('converges zero, ambiguous, concurrent, and restarted legacy owner selection', async () => {
+    it('converges zero, synchronized ambiguity, unique ownership, and restart adoption', async () => {
       const { testDir } = await setupStreamer();
       const streamName = 'strm_legacy_process_owner';
       const ownerRun = TEST_RUN_ID;
@@ -674,21 +682,52 @@ describe('streamer', () => {
           JSON.stringify({ streams: [streamName] })
         ),
       ]);
-      const ambiguous = await Promise.all([
-        runChildWriteClose(testDir, 'legacy-read', streamName, ownerRun),
-        runChildWriteClose(testDir, 'legacy-read', streamName, otherRun),
-      ]);
-      expect(ambiguous.map((result) => result.error)).toEqual([
-        expect.stringContaining('ambiguous legacy stream owner'),
-        expect.stringContaining('ambiguous legacy stream owner'),
-      ]);
-      expect(
-        (await fs.readdir(ownerDir)).filter((name) => name.endsWith('.json'))
-      ).toEqual([]);
+      for (const [nonce, releaseOrder] of [
+        ['legacy-owner-first', [ownerRun, otherRun]],
+        ['legacy-other-first', [otherRun, ownerRun]],
+      ] as const) {
+        const candidates = new Map(
+          await Promise.all(
+            [ownerRun, otherRun].map(async (runId) => [
+              runId,
+              await startLegacyOwnerCandidate(
+                testDir,
+                streamName,
+                runId,
+                nonce
+              ),
+            ])
+          )
+        );
+        expect(candidates.get(ownerRun)!.pid).not.toBe(
+          candidates.get(otherRun)!.pid
+        );
+        expect(
+          await fs.stat(path.join(runsDir, `${ownerRun}.json`))
+        ).toBeTruthy();
+        expect(
+          await fs.stat(path.join(runsDir, `${otherRun}.json`))
+        ).toBeTruthy();
+        expect(
+          (await fs.readdir(ownerDir)).filter((name) => name.endsWith('.json'))
+        ).toEqual([]);
+        for (const runId of releaseOrder) candidates.get(runId)!.release();
+        const ambiguous = await Promise.all(
+          [ownerRun, otherRun].map((runId) => candidates.get(runId)!.result)
+        );
+        expect(ambiguous.map((result) => result.error)).toEqual([
+          expect.stringContaining('ambiguous legacy stream owner'),
+          expect.stringContaining('ambiguous legacy stream owner'),
+        ]);
+        expect(
+          (await fs.readdir(ownerDir)).filter((name) => name.endsWith('.json'))
+        ).toEqual([]);
+      }
       await fs.rm(path.join(runsDir, `${otherRun}.json`));
+      const uniqueNonce = 'legacy-unique';
       const [ownerCandidate, otherCandidate] = await Promise.all([
-        startLegacyOwnerCandidate(testDir, streamName, ownerRun),
-        startLegacyOwnerCandidate(testDir, streamName, otherRun),
+        startLegacyOwnerCandidate(testDir, streamName, ownerRun, uniqueNonce),
+        startLegacyOwnerCandidate(testDir, streamName, otherRun, uniqueNonce),
       ]);
       ownerCandidate.release();
       otherCandidate.release();
