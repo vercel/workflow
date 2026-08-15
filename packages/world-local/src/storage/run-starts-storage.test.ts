@@ -1,8 +1,37 @@
 import { promises as fs } from 'node:fs';
+import { spawn } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createRunStartsStorage } from './run-starts-storage.js';
+
+const receiverChildDir = process.env.WORKFLOW_LOCAL_RUN_START_RECEIVER_DIR;
+const receiverChildMessageId = process.env.WORKFLOW_LOCAL_RUN_START_MESSAGE_ID;
+const receiverChildOwner = process.env.WORKFLOW_LOCAL_RUN_START_OWNER;
+const receiverChildMarker = process.env.WORKFLOW_LOCAL_RUN_START_MARKER;
+
+if (
+  receiverChildDir &&
+  receiverChildMessageId &&
+  receiverChildOwner &&
+  receiverChildMarker
+) {
+  describe('run-start receiver child', () => {
+    it('enters a durable receiver attempt and waits for termination', async () => {
+      const starts = createRunStartsStorage(receiverChildDir);
+      const attempt = await starts.receiverStarted(
+        receiverChildMessageId,
+        receiverChildOwner,
+        process.pid
+      );
+      await fs.writeFile(
+        receiverChildMarker,
+        JSON.stringify({ attempt, pid: process.pid })
+      );
+      await new Promise<void>(() => {});
+    });
+  });
+}
 
 describe('world-local idempotent run-start ledger', () => {
   let basedir: string;
@@ -39,6 +68,48 @@ describe('world-local idempotent run-start ledger', () => {
     dispatch: async (_entry: unknown, accepted: () => Promise<void>) =>
       accepted(),
   };
+
+  async function waitForFile(file: string): Promise<void> {
+    for (let attempt = 0; attempt < 100; attempt++) {
+      if (
+        await fs
+          .access(file)
+          .then(() => true)
+          .catch(() => false)
+      )
+        return;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    throw new Error(`timed out waiting for ${file}`);
+  }
+
+  function startReceiverProcess(
+    messageId: string,
+    owner: string,
+    marker: string
+  ) {
+    return spawn(
+      process.execPath,
+      [
+        'node_modules/vitest/vitest.mjs',
+        'run',
+        'packages/world-local/src/storage/run-starts-storage.test.ts',
+        '--testNamePattern',
+        'enters a durable receiver attempt',
+      ],
+      {
+        cwd: process.cwd(),
+        env: {
+          ...process.env,
+          WORKFLOW_LOCAL_RUN_START_RECEIVER_DIR: basedir,
+          WORKFLOW_LOCAL_RUN_START_MESSAGE_ID: messageId,
+          WORKFLOW_LOCAL_RUN_START_OWNER: owner,
+          WORKFLOW_LOCAL_RUN_START_MARKER: marker,
+        },
+        stdio: 'ignore',
+      }
+    );
+  }
 
   it('adopts one durable reservation across independently created storage instances', async () => {
     const first = createRunStartsStorage(basedir, drivers);
@@ -224,6 +295,73 @@ describe('world-local idempotent run-start ledger', () => {
     expect(await first.pendingDispatches()).toEqual([]);
     expect(receipt.messageId).toMatch(/^msg_/);
   });
+
+  it('keeps peak receiver entry at one across sender transport loss and receiver-process recovery', async () => {
+    let receiver: ReturnType<typeof startReceiverProcess> | undefined;
+    const sent: Array<{ messageId: string; bytes: string }> = [];
+    const first = createRunStartsStorage(basedir, {
+      ...drivers,
+      dispatch: async (entry, _accepted, owner) => {
+        sent.push({
+          messageId: entry.messageId,
+          bytes: JSON.stringify(entry.queuePayload),
+        });
+        const marker = path.join(basedir, 'receiver-entered.json');
+        receiver = startReceiverProcess(entry.messageId, owner, marker);
+        await waitForFile(marker);
+        throw new Error(
+          'simulated sender transport abort after receiver entry'
+        );
+      },
+    });
+    const reservation = await first.reserveOrAdoptRunStart(request());
+    const receipt = await first.finalizeOrAdoptRunStart({
+      reservationId: reservation.reservationId,
+      runId: reservation.runId,
+      semanticDigest: 'semantic-a',
+      envelopeIntegrityDigest: 'envelope-a',
+      envelope: { event: 'run_created' },
+      queueName: '__wkf_workflow_child',
+      queuePayload: { runId: reservation.runId, stable: 'bytes' },
+      queueOptions: {},
+    });
+    try {
+      await expect(first.drain()).rejects.toThrow('sender transport abort');
+      const blockedDispatch = vi.fn();
+      await createRunStartsStorage(basedir, {
+        ...drivers,
+        dispatch: blockedDispatch,
+      }).drain();
+      expect(blockedDispatch).not.toHaveBeenCalled();
+      expect(sent).toEqual([
+        {
+          messageId: receipt.messageId,
+          bytes: JSON.stringify({ runId: reservation.runId, stable: 'bytes' }),
+        },
+      ]);
+
+      receiver.kill();
+      await new Promise<void>((resolve) =>
+        receiver!.once('exit', () => resolve())
+      );
+
+      const recovered: Array<{ messageId: string; bytes: string }> = [];
+      await createRunStartsStorage(basedir, {
+        ...drivers,
+        dispatch: async (entry, accepted) => {
+          recovered.push({
+            messageId: entry.messageId,
+            bytes: JSON.stringify(entry.queuePayload),
+          });
+          await accepted();
+        },
+      }).drain();
+      expect(recovered).toEqual(sent);
+      expect(await first.pendingDispatches()).toEqual([]);
+    } finally {
+      receiver?.kill();
+    }
+  }, 30_000);
 
   it('does not reclaim a dead sender while its receiver attempt is active', async () => {
     const starts = createRunStartsStorage(basedir, drivers);
