@@ -27,6 +27,15 @@ import {
 // even when generated within the same millisecond
 const monotonicUlid = monotonicFactory(() => Math.random());
 
+// Test-only rendezvous. It pauses a reader exactly after its first durable
+// directory snapshot, before close handling decides whether EOF is final.
+let afterInitialStreamSnapshot: (() => Promise<void>) | undefined;
+export function setAfterInitialStreamSnapshotForTest(
+  hook: (() => Promise<void>) | undefined
+): void {
+  afterInitialStreamSnapshot = hook;
+}
+
 // Schema for the run-to-streams mapping file
 const RunStreamsSchema = z.object({
   streams: z.array(z.string()),
@@ -1213,6 +1222,7 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
               extMap: fileExtMap,
               dir: chunksDir,
             } = await listChunkFilesForStream(chunksBaseDir, name, tag, runId);
+            await afterInitialStreamSnapshot?.();
 
             // Resolve negative startIndex relative to the number of data chunks
             // (excluding the trailing EOF marker chunk, if present).

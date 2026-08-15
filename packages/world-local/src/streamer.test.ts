@@ -1,5 +1,5 @@
 import { promises as fs } from 'node:fs';
-import { spawn } from 'node:child_process';
+import { fork, spawn } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import { decodeTime } from 'ulid';
@@ -7,38 +7,11 @@ import { describe, expect, it, onTestFinished } from 'vitest';
 import {
   createStreamer,
   deserializeChunk,
+  setAfterInitialStreamSnapshotForTest,
   serializeChunk,
 } from './streamer.js';
 
 const TEST_RUN_ID = 'wrun_test12345678901234';
-const childDir = process.env.WORKFLOW_LOCAL_KEYED_STREAM_CHILD_DIR;
-const childMarker = process.env.WORKFLOW_LOCAL_KEYED_STREAM_CHILD_MARKER;
-const childAction = process.env.WORKFLOW_LOCAL_KEYED_STREAM_CHILD_ACTION;
-const childStream = process.env.WORKFLOW_LOCAL_KEYED_STREAM_CHILD_STREAM;
-
-if (childDir && childMarker) {
-  describe('stream child process', () => {
-    it('performs its independent stream operation', async () => {
-      const streamer = createStreamer(childDir);
-      let result: unknown;
-      if (childAction === 'ordinary-close' || childAction === 'keyed-close') {
-        await streamer.streams.close(TEST_RUN_ID, childStream!);
-        result = { closed: childAction };
-      } else {
-        result = await streamer.streams.appendKeyed!(
-          TEST_RUN_ID,
-          'strm_keyed_child_process',
-          {
-            idempotencyKey: 'child-key',
-            semanticDigest: 'child-digest',
-            chunk: new TextEncoder().encode('child'),
-          }
-        );
-      }
-      await fs.writeFile(childMarker, JSON.stringify(result));
-    });
-  });
-}
 
 describe('streamer', () => {
   describe('serializeChunk and deserializeChunk', () => {
@@ -206,21 +179,16 @@ describe('streamer', () => {
     ) {
       const child = spawn(
         process.execPath,
-        [
-          'node_modules/vitest/vitest.mjs',
-          'run',
-          'packages/world-local/src/streamer.test.ts',
-          '--testNamePattern',
-          'performs its independent stream operation',
-        ],
+        ['packages/world-local/test-fixtures/stream-close-child.mjs'],
         {
           cwd: process.cwd(),
           env: {
             ...process.env,
-            WORKFLOW_LOCAL_KEYED_STREAM_CHILD_DIR: testDir,
-            WORKFLOW_LOCAL_KEYED_STREAM_CHILD_MARKER: marker,
-            WORKFLOW_LOCAL_KEYED_STREAM_CHILD_ACTION: action,
-            WORKFLOW_LOCAL_KEYED_STREAM_CHILD_STREAM: streamName,
+            WORKFLOW_LOCAL_STREAM_CHILD_DIR: testDir,
+            WORKFLOW_LOCAL_STREAM_CHILD_MARKER: marker,
+            WORKFLOW_LOCAL_STREAM_CHILD_ACTION: action,
+            WORKFLOW_LOCAL_STREAM_CHILD_STREAM: streamName,
+            WORKFLOW_LOCAL_STREAM_CHILD_RUN_ID: TEST_RUN_ID,
           },
           stdio: 'ignore',
         }
@@ -231,6 +199,123 @@ describe('streamer', () => {
         )
       );
     }
+
+    async function runChildWriteClose(
+      testDir: string,
+      action:
+        | 'ordinary-write-close'
+        | 'keyed-write-close'
+        | 'ordinary-write-after-close'
+        | 'keyed-write-after-close'
+        | 'legacy-read',
+      streamName: string,
+      runId = TEST_RUN_ID
+    ) {
+      const marker = path.join(testDir, `${action}-${runId}.json`);
+      const child = fork(
+        path.join(
+          process.cwd(),
+          'packages/world-local/test-fixtures/stream-close-child.mjs'
+        ),
+        [],
+        {
+          env: {
+            ...process.env,
+            WORKFLOW_LOCAL_STREAM_CHILD_DIR: testDir,
+            WORKFLOW_LOCAL_STREAM_CHILD_MARKER: marker,
+            WORKFLOW_LOCAL_STREAM_CHILD_ACTION: action,
+            WORKFLOW_LOCAL_STREAM_CHILD_STREAM: streamName,
+            WORKFLOW_LOCAL_STREAM_CHILD_RUN_ID: runId,
+          },
+          silent: true,
+        }
+      );
+      const exited = new Promise<void>((resolve, reject) =>
+        child.once('exit', (code) =>
+          code === 0 ? resolve() : reject(new Error(`child exited ${code}`))
+        )
+      );
+      await new Promise<void>((resolve, reject) => {
+        child.once('message', (message) =>
+          message?.type === 'done'
+            ? resolve()
+            : reject(new Error('child protocol error'))
+        );
+      });
+      await exited;
+      return JSON.parse(await fs.readFile(marker, 'utf8')) as {
+        error?: string;
+      };
+    }
+
+    it('replays exact ordinary and keyed bytes after a cross-process close races the initial snapshot', async () => {
+      for (const [action, name] of [
+        ['ordinary-write-close', 'strm_snapshot_ordinary'],
+        ['keyed-write-close', 'strm_snapshot_keyed'],
+      ] as const) {
+        const { testDir } = await setupStreamer();
+        let arrived!: () => void;
+        let release!: () => void;
+        const atSnapshot = new Promise<void>((resolve) => {
+          arrived = resolve;
+        });
+        const resume = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        setAfterInitialStreamSnapshotForTest(async () => {
+          arrived();
+          await resume;
+        });
+        const live = readAll(createStreamer(testDir), name);
+        await atSnapshot;
+        await runChildWriteClose(testDir, action, name);
+        setAfterInitialStreamSnapshotForTest(undefined);
+        release();
+        expect(await live).toEqual(['remote']);
+        const expected = [
+          { index: 0, data: new TextEncoder().encode('remote') },
+        ];
+        expect(
+          await createStreamer(testDir).streams.getChunks(TEST_RUN_ID, name)
+        ).toMatchObject({ data: expected, done: true, cursor: null });
+        expect(await readAll(createStreamer(testDir), name)).toEqual([
+          'remote',
+        ]);
+      }
+    }, 30_000);
+
+    it('keeps exact ordinary and keyed EOF when close wins before cross-process write visibility', async () => {
+      for (const [action, name] of [
+        ['ordinary-write-after-close', 'strm_close_first_ordinary'],
+        ['keyed-write-after-close', 'strm_close_first_keyed'],
+      ] as const) {
+        const { testDir } = await setupStreamer();
+        let arrived!: () => void;
+        let release!: () => void;
+        const atSnapshot = new Promise<void>((resolve) => {
+          arrived = resolve;
+        });
+        const resume = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        setAfterInitialStreamSnapshotForTest(async () => {
+          arrived();
+          await resume;
+        });
+        const live = readAll(createStreamer(testDir), name);
+        await atSnapshot;
+        await createStreamer(testDir).streams.close(TEST_RUN_ID, name);
+        const result = await runChildWriteClose(testDir, action, name);
+        expect(result.error).toBeTypeOf('string');
+        setAfterInitialStreamSnapshotForTest(undefined);
+        release();
+        expect(await live).toEqual([]);
+        expect(
+          await createStreamer(testDir).streams.getChunks(TEST_RUN_ID, name)
+        ).toMatchObject({ data: [], done: true, cursor: null });
+        expect(await readAll(createStreamer(testDir), name)).toEqual([]);
+      }
+    }, 30_000);
 
     it('advertises keyed append v1 after the terminal matrix is proven', async () => {
       const { streamer } = await setupStreamer();
@@ -504,6 +589,60 @@ describe('streamer', () => {
       ).toMatchObject({ data: [], done: false });
     });
 
+    it('selects one legacy owner across concurrent processes and restart', async () => {
+      const { testDir } = await setupStreamer();
+      const streamName = 'strm_legacy_process_owner';
+      const ownerRun = TEST_RUN_ID;
+      const otherRun = 'wrun_legacy_process_other123';
+      const chunksDir = path.join(testDir, 'streams', 'chunks', streamName);
+      const runsDir = path.join(testDir, 'streams', 'runs');
+      await fs.mkdir(chunksDir, { recursive: true });
+      await fs.mkdir(runsDir, { recursive: true });
+      await Promise.all([
+        fs.writeFile(
+          path.join(chunksDir, 'chnk_01ARZ3NDEKTSV4RRFFQ69G5FAV.bin'),
+          serializeChunk({ eof: false, chunk: Buffer.from('legacy') })
+        ),
+        fs.writeFile(
+          path.join(chunksDir, 'chnk_01ARZ3NDEKTSV4RRFFQ69G5FAW.bin'),
+          serializeChunk({ eof: true, chunk: Buffer.alloc(0) })
+        ),
+        fs.writeFile(
+          path.join(runsDir, `${ownerRun}.json`),
+          JSON.stringify({ streams: [streamName] })
+        ),
+        fs.writeFile(
+          path.join(runsDir, `${otherRun}.json`),
+          JSON.stringify({ streams: [streamName] })
+        ),
+      ]);
+      const ambiguous = await Promise.all([
+        runChildWriteClose(testDir, 'legacy-read', streamName, ownerRun),
+        runChildWriteClose(testDir, 'legacy-read', streamName, otherRun),
+      ]);
+      expect(ambiguous.map((result) => result.error)).toEqual([
+        expect.stringContaining('ambiguous legacy stream owner'),
+        expect.stringContaining('ambiguous legacy stream owner'),
+      ]);
+      await fs.rm(path.join(runsDir, `${otherRun}.json`));
+      const selected = await runChildWriteClose(
+        testDir,
+        'legacy-read',
+        streamName,
+        ownerRun
+      );
+      expect(selected).toMatchObject({
+        data: [{ index: 0, data: Buffer.from('legacy').toString('base64') }],
+        done: true,
+      });
+      expect(
+        await runChildWriteClose(testDir, 'legacy-read', streamName, otherRun)
+      ).toMatchObject({ data: [], done: false });
+      expect(
+        await runChildWriteClose(testDir, 'legacy-read', streamName, ownerRun)
+      ).toMatchObject(selected);
+    }, 30_000);
+
     it('re-reads a remote write when local close arrives during initial disk reading', async () => {
       const { testDir } = await setupStreamer();
       const streamName = 'strm_initial_close_race';
@@ -697,19 +836,16 @@ describe('streamer', () => {
       const marker = path.join(testDir, 'child-result.json');
       const child = spawn(
         process.execPath,
-        [
-          'node_modules/vitest/vitest.mjs',
-          'run',
-          'packages/world-local/src/streamer.test.ts',
-          '--testNamePattern',
-          'performs its independent stream operation',
-        ],
+        ['packages/world-local/test-fixtures/stream-close-child.mjs'],
         {
           cwd: process.cwd(),
           env: {
             ...process.env,
-            WORKFLOW_LOCAL_KEYED_STREAM_CHILD_DIR: testDir,
-            WORKFLOW_LOCAL_KEYED_STREAM_CHILD_MARKER: marker,
+            WORKFLOW_LOCAL_STREAM_CHILD_DIR: testDir,
+            WORKFLOW_LOCAL_STREAM_CHILD_MARKER: marker,
+            WORKFLOW_LOCAL_STREAM_CHILD_ACTION: 'keyed-append',
+            WORKFLOW_LOCAL_STREAM_CHILD_STREAM: 'strm_keyed_child_process',
+            WORKFLOW_LOCAL_STREAM_CHILD_RUN_ID: TEST_RUN_ID,
           },
           stdio: 'ignore',
         }
