@@ -1472,31 +1472,6 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
         storedEventData = undefined;
       }
 
-      // Handle step_created event: create step entity
-      if (data.eventType === 'step_created') {
-        const eventData = (data as any).eventData as {
-          stepName: string;
-          input: any;
-        };
-        const [stepValue] = await drizzle
-          .insert(Schema.steps)
-          .values({
-            runId: effectiveRunId,
-            stepId: data.correlationId!,
-            stepName: eventData.stepName,
-            input: eventData.input as SerializedContent,
-            status: 'pending',
-            attempt: 0,
-            // Propagate specVersion from the event to the step entity
-            specVersion: effectiveSpecVersion,
-          })
-          .onConflictDoNothing()
-          .returning();
-        if (stepValue) {
-          step = deserializeStepError(compact(stepValue));
-        }
-      }
-
       let value: { createdAt: Date } | undefined;
 
       // Handle step_started event: increment attempt and set the step to
@@ -2064,14 +2039,90 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
 
       try {
         if (!value) {
-          const inserted = await insertEventRow(drizzle, {
-            runId: effectiveRunId,
-            eventId: await getEventId(),
-            correlationId: data.correlationId,
-            eventType: data.eventType,
-            eventData: storedEventData,
-            specVersion: effectiveSpecVersion,
-          });
+          let inserted: Awaited<ReturnType<typeof insertEventRow>>;
+          if (data.eventType === 'step_created') {
+            const eventData = data.eventData;
+            const created = await drizzle.transaction(async (tx) => {
+              let [stepValue] = await tx
+                .insert(Schema.steps)
+                .values({
+                  runId: effectiveRunId,
+                  stepId: data.correlationId,
+                  stepName: eventData.stepName,
+                  input: eventData.input as SerializedContent,
+                  status: 'pending',
+                  attempt: 0,
+                  specVersion: effectiveSpecVersion,
+                })
+                .onConflictDoNothing()
+                .returning();
+              if (!stepValue) {
+                const [existingEvent] = await tx
+                  .select({ eventId: Schema.events.eventId })
+                  .from(Schema.events)
+                  .where(
+                    and(
+                      eq(Schema.events.runId, effectiveRunId),
+                      eq(Schema.events.correlationId, data.correlationId),
+                      eq(Schema.events.eventType, 'step_created')
+                    )
+                  )
+                  .limit(1);
+                if (existingEvent) {
+                  throw new EntityConflictError(
+                    `step_created for correlationId "${data.correlationId}" already exists in run "${effectiveRunId}"`
+                  );
+                }
+
+                // A row without its matching event was left by the old
+                // non-transactional path. Keep the row and complete the
+                // missing event inside this transaction so existing orphans
+                // remain recoverable while new partial writes cannot escape.
+                [stepValue] = await tx
+                  .select()
+                  .from(Schema.steps)
+                  .where(
+                    and(
+                      eq(Schema.steps.runId, effectiveRunId),
+                      eq(Schema.steps.stepId, data.correlationId)
+                    )
+                  )
+                  .limit(1);
+                if (!stepValue) {
+                  throw new EntityConflictError(
+                    `step_created for correlationId "${data.correlationId}" already exists in run "${effectiveRunId}"`
+                  );
+                }
+              }
+
+              const eventValue = await insertEventRow(tx, {
+                runId: effectiveRunId,
+                eventId: await getEventId(tx),
+                correlationId: data.correlationId,
+                eventType: data.eventType,
+                eventData: storedEventData,
+                specVersion: effectiveSpecVersion,
+              });
+              if (!eventValue) {
+                throw new EntityConflictError(
+                  `step_created for run "${effectiveRunId}" could not be created`
+                );
+              }
+              return { eventValue, stepValue };
+            }, SLOT_INSERT_TRANSACTION);
+
+            step = deserializeStepError(compact(created.stepValue));
+            inserted = created.eventValue;
+          } else {
+            inserted = await insertEventRow(drizzle, {
+              runId: effectiveRunId,
+              eventId: await getEventId(),
+              correlationId: data.correlationId,
+              eventType: data.eventType,
+              eventData: storedEventData,
+              specVersion: effectiveSpecVersion,
+            });
+          }
           if (inserted) {
             eventId = inserted.eventId;
             value = { createdAt: inserted.createdAt };
