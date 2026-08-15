@@ -25,6 +25,7 @@ import type { APIConfig } from './utils.js';
 import {
   DEFAULT_RESOLVE_DATA_OPTION,
   deserializeError,
+  getHttpUrl,
   makeRequest,
 } from './utils.js';
 
@@ -267,18 +268,26 @@ const WAIT_TIMEOUT_HEADROOM_MS = 10_000;
  * How long a `404`/`405`/`501` on the long-poll route suppresses further
  * attempts before the next one re-probes.
  *
- * A miss means this deployment's workflow-server predates the route (or has it
- * rolled back), which is a property of the *server*, not of the run — so it is
- * cached process-wide rather than re-learned per call. It expires so a client
- * that outlives a server roll-forward picks the fast path back up on its own.
+ * A miss means the backend serving this base URL predates the route (or has it
+ * rolled back), which is a property of the *backend*, not of the run — so it is
+ * cached rather than re-learned per call. It expires so a client that outlives
+ * a server roll-forward picks the fast path back up on its own.
  */
 const LONG_POLL_UNSUPPORTED_TTL_MS = 5 * 60 * 1000;
 
-let longPollUnsupportedUntil = 0;
+/**
+ * Suppression deadline per base URL, because one process can hold worlds
+ * pointed at different backends — the api.vercel.com proxy (with
+ * `projectConfig`) and workflow-server directly resolve to different hosts,
+ * which can be on different versions. A miss against one must not disable the
+ * fast path for the other. Bounded by construction: the key is the resolved
+ * base URL, of which a process has a handful at most.
+ */
+const longPollUnsupportedUntilByBaseUrl = new Map<string, number>();
 
 /** Test-only: forget that the long-poll route was unavailable. @internal */
 export function _resetRunStatusLongPollSupportForTests(): void {
-  longPollUnsupportedUntil = 0;
+  longPollUnsupportedUntilByBaseUrl.clear();
 }
 
 /**
@@ -300,8 +309,9 @@ export function _resetRunStatusLongPollSupportForTests(): void {
  *   plain read, which is the answer we want either way: it raises
  *   `WorkflowRunNotFoundError` for a missing run, and returns the run when the
  *   *route* was what was missing. Only the latter (proof that the run exists
- *   and the route does not) marks the fast path unsupported, so one bad run ID
- *   can never disable long polling for the process.
+ *   and the route does not) suppresses the fast path, and only for the base URL
+ *   that answered, so neither one bad run ID nor one lagging backend can
+ *   disable long polling everywhere.
  */
 export async function waitForWorkflowRunTerminalStatus(
   id: string,
@@ -332,7 +342,10 @@ export async function waitForWorkflowRunTerminalStatus(
     )
   );
 
-  if (waitMs === 0 || Date.now() < longPollUnsupportedUntil) {
+  const { baseUrl } = getHttpUrl(config);
+  const unsupportedUntil = longPollUnsupportedUntilByBaseUrl.get(baseUrl) ?? 0;
+
+  if (waitMs === 0 || Date.now() < unsupportedUntil) {
     return getWorkflowRun(id, { resolveData }, config);
   }
 
@@ -356,7 +369,10 @@ export async function waitForWorkflowRunTerminalStatus(
 
     // Throws WorkflowRunNotFoundError when the run is what was missing.
     const run = await getWorkflowRun(id, { resolveData }, config);
-    longPollUnsupportedUntil = Date.now() + LONG_POLL_UNSUPPORTED_TTL_MS;
+    longPollUnsupportedUntilByBaseUrl.set(
+      baseUrl,
+      Date.now() + LONG_POLL_UNSUPPORTED_TTL_MS
+    );
     return run;
   }
 }

@@ -29,6 +29,15 @@ import { listenChannel } from './streamer.js';
 /** `NOTIFY` channel carrying terminal run ids. */
 export const RUN_STATUS_TOPIC = 'workflow_run_status';
 
+/**
+ * How long to wait before re-attempting the shared `LISTEN` connection after a
+ * failed attempt. Long enough that a database that cannot host the listener at
+ * all costs one connection attempt every few seconds rather than one per
+ * waiting run per poll interval, short enough that a restart is picked back up
+ * well within a single run's wait.
+ */
+const LISTEN_RETRY_BACKOFF_MS = 5_000;
+
 const RUN_STATUS_POLL_INTERVAL_MS = 1_000;
 
 /**
@@ -86,14 +95,26 @@ export function createRunStatusListener(pool: Pool): RunStatusListener {
   let subscription:
     | Promise<{ close: () => Promise<void> } | undefined>
     | undefined;
+  let retrySubscribeAfter = 0;
 
   const ensureSubscribed = () => {
-    subscription ??= listenChannel(pool, RUN_STATUS_TOPIC, async (payload) => {
+    if (subscription) return subscription;
+    // A failed LISTEN must be re-attemptable — a database restart or a brief
+    // network blip at process start would otherwise degrade every wait to
+    // backstop polling for the lifetime of the process. Bounded by a backoff
+    // so that a genuinely unavailable listener does not turn every waiting
+    // run into a connection attempt per poll interval.
+    if (Date.now() < retrySubscribeAfter) return undefined;
+
+    subscription = listenChannel(pool, RUN_STATUS_TOPIC, async (payload) => {
       if (payload) emitter.emit(`run:${payload}`);
     }).catch(() => {
       // No listener connection available (pool options that don't permit a
-      // second client, a database without LISTEN). Waits degrade to the
-      // backstop re-read, which is the behavior of a plain poll.
+      // second client, a database without LISTEN, a restarting server). Waits
+      // degrade to the backstop re-read — the behavior of a plain poll — and
+      // the next wait past the backoff tries again.
+      subscription = undefined;
+      retrySubscribeAfter = Date.now() + LISTEN_RETRY_BACKOFF_MS;
       return undefined;
     });
     return subscription;
@@ -132,6 +153,9 @@ export function createRunStatusListener(pool: Pool): RunStatusListener {
     async close() {
       const pending = subscription;
       subscription = undefined;
+      // Keep a closed listener closed: nothing should re-open it after the
+      // world has been shut down.
+      retrySubscribeAfter = Number.POSITIVE_INFINITY;
       emitter.removeAllListeners();
       const active = await pending?.catch(() => undefined);
       await active?.close().catch(() => undefined);

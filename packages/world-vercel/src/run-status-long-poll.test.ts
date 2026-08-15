@@ -191,6 +191,51 @@ describe('waitForWorkflowRunTerminalStatus', () => {
     agent.assertNoPendingInterceptors();
   });
 
+  it('suppresses the fast path per backend, not process-wide', async () => {
+    // One process can hold worlds pointed at different backends — the
+    // api.vercel.com proxy and workflow-server directly — which can be on
+    // different versions. A miss against one must not disable the other.
+    const agent = mockAgent();
+    const direct = agent.get(ORIGIN);
+    direct
+      .intercept({
+        path: `/api/v2/runs/${RUN_ID}/status?remoteRefBehavior=resolve&waitMs=25000`,
+        method: 'GET',
+      })
+      .reply(404, { error: 'not-found', message: 'No route matches GET …' });
+    direct
+      .intercept({
+        path: `/api/v2/runs/${RUN_ID}?remoteRefBehavior=resolve`,
+        method: 'GET',
+      })
+      .reply(200, runBody('running'));
+    agent
+      .get('https://api.vercel.com')
+      .intercept({
+        path: `/v1/workflow/v2/runs/${RUN_ID}/status?remoteRefBehavior=resolve&waitMs=25000`,
+        method: 'GET',
+      })
+      .reply(200, runBody('completed'));
+
+    await waitForWorkflowRunTerminalStatus(
+      RUN_ID,
+      { timeoutMs: 25_000 },
+      { token: 'test-token', dispatcher: agent }
+    );
+    const viaProxy = await waitForWorkflowRunTerminalStatus(
+      RUN_ID,
+      { timeoutMs: 25_000 },
+      {
+        token: 'test-token',
+        projectConfig: { projectId: 'prj_1', teamId: 'team_1' },
+        dispatcher: agent,
+      }
+    );
+
+    expect(viaProxy.status).toBe('completed');
+    agent.assertNoPendingInterceptors();
+  });
+
   it('reports a missing run as not found, and keeps long polling enabled', async () => {
     const agent = mockAgent();
     agent
