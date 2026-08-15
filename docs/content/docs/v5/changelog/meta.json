@@ -7,7 +7,8 @@
     "resilient-start",
     "lazy-event-creation",
     "turbo-mode",
-    "step-message-ownership"
+    "step-message-ownership",
+    "batched-event-writes"
   ],
   "defaultOpen": false
 }
