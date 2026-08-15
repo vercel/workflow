@@ -1437,7 +1437,7 @@ async function consumeReplayLogResponse({
     config
   );
   events.push(...suffix.data);
-  return { cursor: suffix.cursor, hasMore: suffix.hasMore };
+  return { cursor: suffix.cursor ?? page.cursor, hasMore: suffix.hasMore };
 }
 
 /**
