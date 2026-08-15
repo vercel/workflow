@@ -49,7 +49,7 @@ import {
 } from './telemetry.js';
 import { getWorkflowRunStreamId } from './util.js';
 import { createContext } from './vm/index.js';
-import { getCachedWorkflowScriptWithStatus } from './vm/script-cache.js';
+import { getCachedWorkflowScript } from './vm/script-cache.js';
 import {
   createAbortSignalStatics,
   createCreateAbortController,
@@ -1082,11 +1082,8 @@ async function createWorkflowSession({
   const { bundleScript, workflowLookupScript } = await trace(
     'workflow.bundle.compile',
     async (span) => {
-      const bundle = getCachedWorkflowScriptWithStatus(workflowCode, filename);
-      const lookup = getCachedWorkflowScriptWithStatus(
-        workflowLookupCode,
-        filename
-      );
+      const bundle = getCachedWorkflowScript(workflowCode, filename);
+      const lookup = getCachedWorkflowScript(workflowLookupCode, filename);
       span?.setAttributes({
         // This attribute intentionally describes the workflow bundle. The
         // tiny workflow-name lookup script has its own cache entry and may
