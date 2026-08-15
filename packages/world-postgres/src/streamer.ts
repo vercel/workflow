@@ -4,6 +4,8 @@ import type {
   StreamChunksResponse,
   Streamer,
   StreamInfoResponse,
+  KeyedStreamAppendRequest,
+  KeyedStreamAppendResult,
 } from '@workflow/world';
 import { and, asc, eq, gt, sql } from 'drizzle-orm';
 import { Client, type Pool } from 'pg';
@@ -142,7 +144,98 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
     !Buffer.isBuffer(chunk) ? Buffer.from(chunk) : chunk;
 
   return {
+    keyedStreamAppendVersion: 1,
     streams: {
+      async appendKeyed(
+        _runId: string | Promise<string>,
+        name: string,
+        request: KeyedStreamAppendRequest
+      ): Promise<KeyedStreamAppendResult> {
+        const runId = await _runId;
+        const chunk = toBuffer(request.chunk);
+        const chunkId = genChunkId();
+        // The advisory transaction lock serializes index allocation for this
+        // stream. The partial unique index is the durable receipt authority.
+        const client = await pool.connect();
+        let canonical:
+          | {
+              inserted: boolean;
+              semantic_digest: string;
+              data: Buffer;
+              stream_index: number;
+            }
+          | undefined;
+        try {
+          await client.query('BEGIN');
+          await client.query(
+            `SELECT pg_advisory_xact_lock(hashtext($1 || E'\\000' || $2))`,
+            [runId, name]
+          );
+          const inserted = await client.query<{
+            semantic_digest: string;
+            data: Buffer;
+            stream_index: number;
+          }>(
+            `INSERT INTO workflow.workflow_stream_chunks
+              (id, stream_id, run_id, data, eof, idempotency_key, semantic_digest, stream_index)
+             VALUES ($3, $2, $1, $4, false, $5, $6,
+               COALESCE((SELECT MAX(stream_index) + 1 FROM workflow.workflow_stream_chunks WHERE run_id = $1 AND stream_id = $2 AND stream_index IS NOT NULL), 0))
+             ON CONFLICT (run_id, stream_id, idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING
+             RETURNING semantic_digest, data, stream_index`,
+            [
+              runId,
+              name,
+              chunkId,
+              chunk,
+              request.idempotencyKey,
+              request.semanticDigest,
+            ]
+          );
+          if (inserted.rows[0]) {
+            canonical = { inserted: true, ...inserted.rows[0] };
+          } else {
+            const existing = await client.query<{
+              semantic_digest: string;
+              data: Buffer;
+              stream_index: number;
+            }>(
+              `SELECT semantic_digest, data, stream_index
+               FROM workflow.workflow_stream_chunks
+               WHERE run_id = $1 AND stream_id = $2 AND idempotency_key = $3`,
+              [runId, name, request.idempotencyKey]
+            );
+            if (existing.rows[0])
+              canonical = { inserted: false, ...existing.rows[0] };
+          }
+          await client.query('COMMIT');
+        } catch (error) {
+          await client.query('ROLLBACK').catch(() => {});
+          throw error;
+        } finally {
+          client.release();
+        }
+        if (!canonical)
+          throw new Error(
+            'Keyed stream append did not return a canonical receipt'
+          );
+        if (canonical.semantic_digest !== request.semanticDigest) {
+          throw new Error(
+            'Keyed stream append retried with a different digest'
+          );
+        }
+        if (canonical.inserted) {
+          await notifyStream(
+            JSON.stringify(
+              StreamPublishMessage.encode({ chunkId, streamId: name })
+            )
+          );
+        }
+        return {
+          inserted: canonical.inserted,
+          canonicalChunk: new Uint8Array(canonical.data),
+          index: canonical.stream_index,
+        };
+      },
       async write(
         _runId: string | Promise<string>,
         name: string,

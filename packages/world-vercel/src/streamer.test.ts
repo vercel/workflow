@@ -1,7 +1,16 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { encodeMultiChunks, MAX_CHUNKS_PER_REQUEST } from './streamer.js';
+import {
+  createStreamer,
+  encodeMultiChunks,
+  MAX_CHUNKS_PER_REQUEST,
+} from './streamer.js';
 
 describe('encodeMultiChunks', () => {
+  it('does not advertise keyed append v1 without a matching workflow-server receipt API', () => {
+    const streamer = createStreamer();
+    expect(streamer.keyedStreamAppendVersion).toBeUndefined();
+    expect(streamer.streams.appendKeyed).toBeUndefined();
+  });
   /**
    * Helper to decode length-prefixed chunks back to verify encoding
    */

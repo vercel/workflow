@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import type {
@@ -6,6 +7,8 @@ import type {
   StreamChunksResponse,
   Streamer,
   StreamInfoResponse,
+  KeyedStreamAppendRequest,
+  KeyedStreamAppendResult,
 } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
 import { z } from 'zod';
@@ -16,6 +19,7 @@ import {
   readJSONWithFallback,
   taggedPath,
   write,
+  writeExclusive,
   writeJSON,
 } from './fs.js';
 
@@ -41,6 +45,18 @@ export interface Chunk {
 }
 
 const EOF_MARKER = 1;
+
+interface KeyedReceipt {
+  idempotencyKey: string;
+  semanticDigest: string;
+  chunkId: string;
+  index: number;
+  canonicalChunk: string;
+}
+
+function keyedFileId(key: string): string {
+  return createHash('sha256').update(key).digest('hex');
+}
 
 function isEofByte(byte: number | undefined): boolean {
   return byte === EOF_MARKER;
@@ -154,6 +170,7 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
 
   // Track which streams have already been registered for a run (in-memory cache)
   const registeredStreams = new Set<string>();
+  let keyedAppend = Promise.resolve();
 
   // Helper to record the runId <> streamId association
   async function registerStreamForRun(
@@ -199,8 +216,131 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
     }
   }
 
+  const appendKeyed = async (
+    runId: string,
+    name: string,
+    request: KeyedStreamAppendRequest
+  ): Promise<KeyedStreamAppendResult> => {
+    const previous = keyedAppend;
+    let release!: () => void;
+    keyedAppend = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await previous;
+    try {
+      const keyId = keyedFileId(request.idempotencyKey);
+      const receiptPath = path.join(
+        basedir,
+        'streams',
+        'keyed',
+        name,
+        `${keyId}${tagSuffix}.json`
+      );
+      const chunkId = `chnk_keyed_${keyId}`;
+      const chunkPath = path.join(
+        chunkDirForStream(path.join(basedir, 'streams', 'chunks'), name),
+        `${chunkId}${tagSuffix}.bin`
+      );
+      const chunk = toBuffer(request.chunk);
+      const receiptSchema = z.object({
+        idempotencyKey: z.string(),
+        semanticDigest: z.string(),
+        chunkId: z.string(),
+        index: z.number(),
+        canonicalChunk: z.string(),
+      });
+      const existing = await readJSONWithFallback(
+        basedir,
+        path.join('streams', 'keyed', name),
+        keyId,
+        receiptSchema,
+        tag
+      );
+      if (existing) {
+        if (
+          existing.idempotencyKey !== request.idempotencyKey ||
+          existing.semanticDigest !== request.semanticDigest
+        ) {
+          throw new Error(
+            'Keyed stream append retried with a different digest'
+          );
+        }
+        const canonicalChunk = Uint8Array.from(
+          Buffer.from(existing.canonicalChunk, 'base64')
+        );
+        // The receipt is the atomic keyed fact. A process lost between receipt
+        // publication and the physical file is repaired from its exact bytes.
+        await write(
+          chunkPath,
+          serializeChunk({ chunk: Buffer.from(canonicalChunk), eof: false }),
+          { overwrite: true }
+        );
+        return { inserted: false, canonicalChunk, index: existing.index };
+      }
+      await registerStreamForRun(runId, name);
+      const index = (
+        await listChunkFilesForStream(
+          path.join(basedir, 'streams', 'chunks'),
+          name,
+          tag
+        )
+      ).files.length;
+      const receipt: KeyedReceipt = {
+        idempotencyKey: request.idempotencyKey,
+        semanticDigest: request.semanticDigest,
+        chunkId,
+        index,
+        canonicalChunk: chunk.toString('base64'),
+      };
+      const inserted = await writeExclusive(
+        receiptPath,
+        JSON.stringify(receipt)
+      );
+      if (!inserted) {
+        const canonical = await readJSONWithFallback(
+          basedir,
+          path.join('streams', 'keyed', name),
+          keyId,
+          receiptSchema,
+          tag
+        );
+        if (
+          !canonical ||
+          canonical.idempotencyKey !== request.idempotencyKey ||
+          canonical.semanticDigest !== request.semanticDigest
+        ) {
+          throw new Error(
+            'Keyed stream append retried with a different digest'
+          );
+        }
+        const canonicalChunk = Uint8Array.from(
+          Buffer.from(canonical.canonicalChunk, 'base64')
+        );
+        await write(
+          chunkPath,
+          serializeChunk({ chunk: Buffer.from(canonicalChunk), eof: false }),
+          { overwrite: true }
+        );
+        return { inserted: false, canonicalChunk, index: canonical.index };
+      }
+      await write(chunkPath, serializeChunk({ chunk, eof: false }), {
+        overwrite: true,
+      });
+      streamEmitter.emit(`chunk:${name}` as const, {
+        streamName: name,
+        chunkData: Uint8Array.from(chunk),
+        chunkId,
+      });
+      return { inserted: true, canonicalChunk: Uint8Array.from(chunk), index };
+    } finally {
+      release();
+    }
+  };
+
   return {
+    keyedStreamAppendVersion: 1,
     streams: {
+      appendKeyed,
       async write(
         _runId: string | Promise<string>,
         name: string,

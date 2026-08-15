@@ -152,6 +152,96 @@ describe('streamer', () => {
       };
     }
 
+    it('returns the original keyed receipt after a response-loss retry without another chunk', async () => {
+      const { streamer } = await setupStreamer();
+      const first = await streamer.streams.appendKeyed!(
+        TEST_RUN_ID,
+        'strm_keyed',
+        {
+          idempotencyKey: 'eve-public-event/v1/run/step/0',
+          semanticDigest: 'digest-a',
+          chunk: new Uint8Array([1, 2, 3]),
+        }
+      );
+      const retry = await streamer.streams.appendKeyed!(
+        TEST_RUN_ID,
+        'strm_keyed',
+        {
+          idempotencyKey: 'eve-public-event/v1/run/step/0',
+          semanticDigest: 'digest-a',
+          chunk: new Uint8Array([9]),
+        }
+      );
+
+      expect(first).toEqual({
+        inserted: true,
+        canonicalChunk: new Uint8Array([1, 2, 3]),
+        index: 0,
+      });
+      expect(retry).toEqual({
+        inserted: false,
+        canonicalChunk: new Uint8Array([1, 2, 3]),
+        index: 0,
+      });
+      expect(
+        (await streamer.streams.getChunks(TEST_RUN_ID, 'strm_keyed')).data
+      ).toEqual([{ index: 0, data: new Uint8Array([1, 2, 3]) }]);
+    });
+
+    it('rejects a keyed retry with a different digest', async () => {
+      const { streamer } = await setupStreamer();
+      await streamer.streams.appendKeyed!(TEST_RUN_ID, 'strm_keyed_conflict', {
+        idempotencyKey: 'eve-public-event/v1/run/step/0',
+        semanticDigest: 'digest-a',
+        chunk: new Uint8Array([1]),
+      });
+
+      await expect(
+        streamer.streams.appendKeyed!(TEST_RUN_ID, 'strm_keyed_conflict', {
+          idempotencyKey: 'eve-public-event/v1/run/step/0',
+          semanticDigest: 'digest-b',
+          chunk: new Uint8Array([2]),
+        })
+      ).rejects.toThrow('different digest');
+    });
+
+    it('allocates one indexed chunk under concurrent keyed calls and preserves it after restart', async () => {
+      const { streamer, testDir } = await setupStreamer();
+      const request = {
+        idempotencyKey: 'eve-public-event/v1/run/step/0',
+        semanticDigest: 'digest-a',
+        chunk: new Uint8Array([8]),
+      };
+      const receipts = await Promise.all(
+        Array.from({ length: 8 }, () =>
+          streamer.streams.appendKeyed!(
+            TEST_RUN_ID,
+            'strm_keyed_restart',
+            request
+          )
+        )
+      );
+      expect(receipts.filter((receipt) => receipt.inserted)).toHaveLength(1);
+      expect(receipts.every((receipt) => receipt.index === 0)).toBe(true);
+
+      const restarted = createStreamer(testDir);
+      await expect(
+        restarted.streams.appendKeyed!(
+          TEST_RUN_ID,
+          'strm_keyed_restart',
+          request
+        )
+      ).resolves.toEqual({
+        inserted: false,
+        canonicalChunk: new Uint8Array([8]),
+        index: 0,
+      });
+      expect(
+        (await restarted.streams.getChunks(TEST_RUN_ID, 'strm_keyed_restart'))
+          .data
+      ).toEqual([{ index: 0, data: new Uint8Array([8]) }]);
+    });
+
     describe('streams.write', () => {
       it('should write string chunks to a stream', async () => {
         const { testDir, streamer } = await setupStreamer();

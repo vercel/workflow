@@ -141,6 +141,13 @@
       "when": 1786060800000,
       "tag": "0019_add_event_slots",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1786813200000,
+      "tag": "0020_add_keyed_stream_append",
+      "breakpoints": true
     }
   ]
 }

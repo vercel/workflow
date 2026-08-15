@@ -29,6 +29,18 @@ import type {
   StreamChunksResponse,
   StreamInfoResponse,
 } from './shared.js';
+
+export interface KeyedStreamAppendRequest {
+  idempotencyKey: string;
+  semanticDigest: string;
+  chunk: Uint8Array;
+}
+
+export interface KeyedStreamAppendResult {
+  inserted: boolean;
+  canonicalChunk: Uint8Array;
+  index: number;
+}
 import type {
   GetStepParams,
   ListWorkflowRunStepsParams,
@@ -37,6 +49,8 @@ import type {
 } from './steps.js';
 
 export interface Streamer {
+  /** Exact canonical keyed append support. Absence means unavailable. */
+  keyedStreamAppendVersion?: 1;
   /**
    * Number of milliseconds a stream waits for additional chunks to arrive
    * before flushing to the underlying transport.
@@ -53,6 +67,11 @@ export interface Streamer {
   streamFlushIntervalMs?: number;
 
   streams: {
+    appendKeyed?(
+      runId: string,
+      name: string,
+      request: KeyedStreamAppendRequest
+    ): Promise<KeyedStreamAppendResult>;
     write(
       runId: string,
       name: string,

@@ -47,3 +47,7 @@ export {
   getWritable,
   type WorkflowWritableStreamOptions,
 } from './step/writable-stream.js';
+export {
+  appendKeyedStreamChunk,
+  KeyedStreamAppendUnavailableError,
+} from './keyed-stream-append.js';

@@ -295,6 +295,9 @@ export const streams = schema.table(
     chunkId: varchar('id').$type<`chnk_${string}`>().notNull(),
     streamId: varchar('stream_id').notNull(),
     runId: varchar('run_id'),
+    idempotencyKey: varchar('idempotency_key'),
+    semanticDigest: varchar('semantic_digest'),
+    streamIndex: integer('stream_index'),
     chunkData: bytea('data').notNull(),
     createdAt: timestamp('created_at').defaultNow().notNull(),
     eof: boolean('eof').notNull(),
@@ -302,5 +305,7 @@ export const streams = schema.table(
   (tb) => [
     primaryKey({ columns: [tb.streamId, tb.chunkId] }),
     index().on(tb.runId),
+    uniqueIndex().on(tb.runId, tb.streamId, tb.idempotencyKey),
+    uniqueIndex().on(tb.runId, tb.streamId, tb.streamIndex),
   ]
 );

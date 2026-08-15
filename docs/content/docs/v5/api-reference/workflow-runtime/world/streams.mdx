@@ -70,6 +70,19 @@ await world.streams.writeMulti?.(runId, "default", [chunk1, chunk2]); // [!code 
 | `name` | `string` | The stream name |
 | `chunks` | `(string \| Uint8Array)[]` | Chunks to write, in order |
 
+### Exact keyed append availability
+
+`keyedStreamAppendVersion === 1` enables the internal exact keyed-append receipt used by recoverable public-event publishers. It is not a fallback for `write()` or `writeMulti()`: when absent, the publisher must fail before writing.
+
+| World | Keyed append v1 |
+|-------|-----------------|
+| `world-local` | Available |
+| `world-postgres` | Available after migration `0020_add_keyed_stream_append` |
+| `world-sim` | Available for deterministic tests |
+| `world-vercel` | Unavailable; fails closed |
+
+Ordinary unkeyed stream writes retain their existing batching behavior.
+
 ### get()
 
 Read data from a named stream as a live `ReadableStream` that waits for new chunks in real time.

@@ -19,6 +19,8 @@ import type {
   GetChunksOptions,
   StreamChunksResponse,
   Streamer,
+  KeyedStreamAppendRequest,
+  KeyedStreamAppendResult,
 } from '@workflow/world';
 
 interface StreamState {
@@ -26,6 +28,10 @@ interface StreamState {
   closed: boolean;
   /** Resolvers for readers waiting on more data. */
   waiters: (() => void)[];
+  keyed: Map<
+    string,
+    { semanticDigest: string; chunk: Uint8Array; index: number }
+  >;
 }
 
 export interface SimStreamer extends Streamer {
@@ -51,7 +57,7 @@ export function createSimStreamer(): SimStreamer {
     const k = key(runId, name);
     let state = streams.get(k);
     if (!state) {
-      state = { chunks: [], closed: false, waiters: [] };
+      state = { chunks: [], closed: false, waiters: [], keyed: new Map() };
       streams.set(k, state);
     }
     return state;
@@ -64,7 +70,41 @@ export function createSimStreamer(): SimStreamer {
   }
 
   return {
+    keyedStreamAppendVersion: 1,
     streams: {
+      async appendKeyed(
+        runId: string,
+        name: string,
+        request: KeyedStreamAppendRequest
+      ): Promise<KeyedStreamAppendResult> {
+        const state = stateFor(runId, name);
+        const existing = state.keyed.get(request.idempotencyKey);
+        if (existing) {
+          if (existing.semanticDigest !== request.semanticDigest)
+            throw new Error(
+              'Keyed stream append retried with a different digest'
+            );
+          return {
+            inserted: false,
+            canonicalChunk: Uint8Array.from(existing.chunk),
+            index: existing.index,
+          };
+        }
+        const chunk = Uint8Array.from(request.chunk);
+        const result = {
+          semanticDigest: request.semanticDigest,
+          chunk,
+          index: state.chunks.length,
+        };
+        state.keyed.set(request.idempotencyKey, result);
+        state.chunks.push(chunk);
+        wake(state);
+        return {
+          inserted: true,
+          canonicalChunk: Uint8Array.from(chunk),
+          index: result.index,
+        };
+      },
       async write(runId, name, chunk) {
         const state = stateFor(runId, name);
         state.chunks.push(toBytes(chunk));
