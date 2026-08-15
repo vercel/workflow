@@ -118,8 +118,8 @@ import {
   getWorldHandlers,
   type WorldHandlers,
 } from './runtime/world.js';
-import { dehydrateRunError } from './serialization.js';
 import type { DecryptionKey } from './serialization/encryption.js';
+import { dehydrateRunError } from './serialization.js';
 import { remapErrorStack } from './source-map.js';
 import * as Attribute from './telemetry/semantic-conventions.js';
 import {
