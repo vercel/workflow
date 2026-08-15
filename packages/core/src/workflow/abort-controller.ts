@@ -230,18 +230,18 @@ export function createCreateAbortController(ctx: WorkflowOrchestratorContext) {
             try {
               if (rawPayload !== undefined) {
                 try {
-                  const prepared =
-                    await ctx.replayPayloadCache.prepareEventPayload(
-                      event.eventId,
-                      rawPayload
-                    );
-                  const hydrated = (await hydrateStepReturnValue(
+                  const hydrated = (await ctx.replayPayloadCache.getEventValue(
+                    event.eventId,
                     rawPayload,
-                    ctx.runId,
-                    ctx.encryptionKey,
-                    ctx.globalThis,
-                    {},
-                    prepared
+                    (prepared) =>
+                      hydrateStepReturnValue(
+                        rawPayload,
+                        ctx.runId,
+                        ctx.encryptionKey,
+                        ctx.globalThis,
+                        {},
+                        prepared
+                      )
                   )) as { reason?: unknown } | undefined;
                   if (
                     hydrated &&

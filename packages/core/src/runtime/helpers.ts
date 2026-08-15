@@ -1250,6 +1250,24 @@ export function getQueueOverhead(message: { requestedAt?: Date }) {
  * outer try/catch to log and surface the issue; the queue's redelivery
  * semantics will retry the key fetch on the next attempt.
  */
+export async function resolveRunEncryptionKey(
+  world: World,
+  runOrId: WorkflowRun | string,
+  context?: Record<string, unknown>
+): Promise<DecryptionKey | undefined> {
+  // The `getEncryptionKeyForRun` overload set takes either a `WorkflowRun` or
+  // a `runId: string` (with optional context). Branch here so TypeScript picks
+  // the right overload for each shape.
+  const rawKey =
+    typeof runOrId === 'string'
+      ? await world.getEncryptionKeyForRun?.(runOrId, context)
+      : await world.getEncryptionKeyForRun?.(runOrId);
+  // Resolve the *full* capability, not just the symmetric key: a run reading
+  // its own event log may encounter sealed (`encp`) payloads that another run
+  // wrote to it, and opening those needs the run's X25519 scalar as well.
+  return rawKey ? await deriveRunPayloadKeys(rawKey) : undefined;
+}
+
 export function memoizeEncryptionKey(
   world: World,
   runOrId: WorkflowRun | string,
@@ -1258,20 +1276,7 @@ export function memoizeEncryptionKey(
   let cached: Promise<DecryptionKey | undefined> | undefined;
   return () => {
     if (!cached) {
-      cached = (async () => {
-        // The `getEncryptionKeyForRun` overload set takes either a
-        // `WorkflowRun` or a `runId: string` (with optional context). Branch
-        // here so TypeScript picks the right overload for each shape.
-        const rawKey =
-          typeof runOrId === 'string'
-            ? await world.getEncryptionKeyForRun?.(runOrId, context)
-            : await world.getEncryptionKeyForRun?.(runOrId);
-        // Resolve the *full* capability, not just the symmetric key: a run
-        // reading its own event log may encounter sealed (`encp`) payloads
-        // that another run wrote to it, and opening those needs the run's
-        // X25519 scalar as well.
-        return rawKey ? await deriveRunPayloadKeys(rawKey) : undefined;
-      })();
+      cached = resolveRunEncryptionKey(world, runOrId, context);
     }
     return cached;
   };

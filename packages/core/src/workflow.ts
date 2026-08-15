@@ -1085,7 +1085,7 @@ async function createWorkflowSession({
   // workflow function subscribing its first step callbacks.
   let args: unknown[] = [];
   workflowContext.promiseQueue = workflowContext.promiseQueue.then(async () => {
-    const prepared = await replayPayloadCache.prepareWorkflowInput(workflowRun);
+    const prepared = await replayPayloadCache.getWorkflowInput(workflowRun);
     args = await hydrateWorkflowArguments(
       workflowRun.input,
       workflowRun.runId,

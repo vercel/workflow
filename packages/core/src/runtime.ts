@@ -14,7 +14,7 @@ import {
   WorkflowRuntimeError,
   WorkflowWorldError,
 } from '@workflow/errors';
-import { once, setWorkflowBasePath, withResolvers } from '@workflow/utils';
+import { once, setWorkflowBasePath } from '@workflow/utils';
 import {
   parseWorkflowName,
   workflowDisplayName,
@@ -81,6 +81,7 @@ import {
   parseHealthCheckPayload,
   preconditionEventDelta,
   queueMessage,
+  resolveRunEncryptionKey,
   type SlotSnapshotParams,
   settleEventSlotGap,
   slotSnapshotParams,
@@ -118,6 +119,7 @@ import {
   type WorldHandlers,
 } from './runtime/world.js';
 import { dehydrateRunError } from './serialization.js';
+import type { DecryptionKey } from './serialization/encryption.js';
 import { remapErrorStack } from './source-map.js';
 import * as Attribute from './telemetry/semantic-conventions.js';
 import {
@@ -545,25 +547,6 @@ function replayEventDeploymentId(event: Event): string | undefined {
     return event.eventData?.deploymentId;
   }
   return undefined;
-}
-
-function createReplayEventObserver({
-  runId,
-  cache,
-  resolveKey,
-}: {
-  runId: string;
-  cache: ReplayPayloadCache;
-  resolveKey: (
-    runOrId: WorkflowRun | string,
-    context?: Record<string, unknown>
-  ) => void;
-}): (event: Event) => void {
-  return (event) => {
-    const deploymentId = replayEventDeploymentId(event);
-    if (deploymentId) resolveKey(runId, { deploymentId });
-    cache.observeEvent(event);
-  };
 }
 
 /**
@@ -1045,32 +1028,55 @@ export function workflowEntrypoint(
                   // queue payload. This starts key resolution and payload
                   // preparation before the remainder of the event log arrives,
                   // without guessing the key for a cross-deployment run.
-                  const {
-                    promise: replayKeySource,
-                    resolve: resolveReplayKeySource,
-                  } = withResolvers<{
-                    runOrId: WorkflowRun | string;
-                    context?: Record<string, unknown>;
-                  }>();
-                  const resolveReplayKey = (
+                  let replayEncryptionKey:
+                    | Promise<DecryptionKey | undefined>
+                    | undefined;
+                  let streamedPayloadCache: ReplayPayloadCache | undefined;
+                  const eventsWaitingForKey: Event[] = [];
+                  const activatePayloadCache = (
+                    key: DecryptionKey | undefined
+                  ): ReplayPayloadCache => {
+                    if (!streamedPayloadCache) {
+                      streamedPayloadCache = new ReplayPayloadCache(key);
+                      for (const event of eventsWaitingForKey) {
+                        streamedPayloadCache.prepareEvent(event);
+                      }
+                      eventsWaitingForKey.length = 0;
+                    }
+                    return streamedPayloadCache;
+                  };
+                  const getReplayEncryptionKey = (
                     runOrId: WorkflowRun | string,
                     context?: Record<string, unknown>
-                  ): void => {
-                    resolveReplayKeySource({ runOrId, context });
+                  ): Promise<DecryptionKey | undefined> => {
+                    if (!replayEncryptionKey) {
+                      replayEncryptionKey = resolveRunEncryptionKey(
+                        world,
+                        runOrId,
+                        context
+                      );
+                      void replayEncryptionKey.then(
+                        activatePayloadCache,
+                        () => {}
+                      );
+                    }
+                    return replayEncryptionKey;
                   };
-                  const encryptionKeyPromise = replayKeySource.then(
-                    ({ runOrId, context }) =>
-                      memoizeEncryptionKey(world, runOrId, context)()
-                  );
-                  const replayPayloadCache =
-                    ReplayPayloadCache.waitingForKey(encryptionKeyPromise);
-                  const observeReplayEvent = createReplayEventObserver({
-                    runId,
-                    cache: replayPayloadCache,
-                    resolveKey: resolveReplayKey,
-                  });
+                  const onReplayEvent = (event: Event): void => {
+                    const deploymentId = replayEventDeploymentId(event);
+                    if (deploymentId) {
+                      void getReplayEncryptionKey(runId, {
+                        deploymentId,
+                      });
+                    }
+                    if (streamedPayloadCache) {
+                      streamedPayloadCache.prepareEvent(event);
+                    } else {
+                      eventsWaitingForKey.push(event);
+                    }
+                  };
                   if (runInput?.deploymentId) {
-                    resolveReplayKey(runId, {
+                    void getReplayEncryptionKey(runId, {
                       deploymentId: runInput.deploymentId,
                     });
                   }
@@ -1395,10 +1401,6 @@ export function workflowEntrypoint(
                       // incremental load starts above the hole and never
                       // returns it.
                       eventLog = { type: 'loadAll' };
-                      // The corrected log inserts the missing events BELOW the
-                      // length already scanned for payload prewarming, shifting
-                      // every later position. Only a full rescan sees them.
-                      replayPayloadCache.resetScan();
                     }
                     runtimeLogger.warn(
                       'Event creation rejected as stale; restarting replay in-process',
@@ -2045,7 +2047,7 @@ export function workflowEntrypoint(
                           resumeId: hookResumeInput.resumeId,
                           resumePayloadDigest: hookResumeInput.payloadDigest,
                           preloadEvents: true,
-                          onEvent: observeReplayEvent,
+                          onEvent: onReplayEvent,
                         }
                       );
                       hookEnsured = true;
@@ -2320,7 +2322,7 @@ export function workflowEntrypoint(
                         });
                         const result = await createEvent(runStartedEvent, {
                           requestId,
-                          onEvent: observeReplayEvent,
+                          onEvent: onReplayEvent,
                         });
                         workflowRun = result.run;
                         maxEventsLimit = clampMaxEvents(result.maxEvents);
@@ -2605,7 +2607,7 @@ export function workflowEntrypoint(
                       // do we fall back to reloading the complete log.
                       if (eventLog.type !== 'loadAll' && ensuredEvent) {
                         insertEventByEventId(eventLog.events, ensuredEvent);
-                        observeReplayEvent(ensuredEvent);
+                        onReplayEvent(ensuredEvent);
                       } else {
                         eventLog = { type: 'loadAll' };
                       }
@@ -2615,8 +2617,10 @@ export function workflowEntrypoint(
                   // Worlds that do not implement streamed observation still
                   // resolve from the materialized run. This is also the final
                   // cross-deployment-safe source of truth.
-                  resolveReplayKey(workflowRun);
-                  const encryptionKey = await encryptionKeyPromise;
+                  const encryptionKey =
+                    await getReplayEncryptionKey(workflowRun);
+                  const replayPayloadCache =
+                    activatePayloadCache(encryptionKey);
 
                   // The live VM parked at the previous boundary, when the
                   // retention decision kept it. null → this iteration cold-
@@ -2714,7 +2718,7 @@ export function workflowEntrypoint(
                             await loadWorkflowRunEvents({
                               runId,
                               afterCursor: eventLog.cursor,
-                              onEvent: observeReplayEvent,
+                              onEvent: onReplayEvent,
                             })
                           );
                           eventLog = { ...eventLog, type: 'ready' };
@@ -2773,7 +2777,7 @@ export function workflowEntrypoint(
                             eventLog.type === 'loadAfter'
                               ? eventLog.cursor
                               : undefined,
-                          onEvent: observeReplayEvent,
+                          onEvent: onReplayEvent,
                         });
                         if (eventLog.type === 'loadAfter') {
                           appendEventLog(eventLog, page);
@@ -2894,7 +2898,7 @@ export function workflowEntrypoint(
                           const page = await loadWorkflowRunEvents({
                             runId,
                             afterCursor: eventLog.cursor,
-                            onEvent: observeReplayEvent,
+                            onEvent: onReplayEvent,
                           });
                           const completedWaitIdsAfterCursor = new Set(
                             page.events
@@ -2914,7 +2918,7 @@ export function workflowEntrypoint(
                             eventLog = {
                               ...(await loadWorkflowRunEvents({
                                 runId,
-                                onEvent: observeReplayEvent,
+                                onEvent: onReplayEvent,
                               })),
                               type: 'ready',
                             };
@@ -2923,7 +2927,7 @@ export function workflowEntrypoint(
                           eventLog = {
                             ...(await loadWorkflowRunEvents({
                               runId,
-                              onEvent: observeReplayEvent,
+                              onEvent: onReplayEvent,
                             })),
                             type: 'ready',
                           };
@@ -3013,7 +3017,7 @@ export function workflowEntrypoint(
                       // appended-event consumption on resume; consumers still
                       // deserialize and resolve in event order.
                       const replayEvents = eventLog.events;
-                      replayPayloadCache.prewarm(workflowRun, replayEvents);
+                      replayPayloadCache.prepareAll(workflowRun, replayEvents);
                       let workflowResult: WorkflowResumeResult = retainedSession
                         ? await resumeWorkflow(retainedSession, eventLog.events)
                         : { type: 'replay' };
@@ -3290,12 +3294,10 @@ export function workflowEntrypoint(
                         }
                         if (suspensionResult.reportedEventCount > 0) {
                           // Bump-and-report merged events BELOW the tail and
-                          // re-sorted the array to slot order, shifting every
-                          // position the prewarm scan had already recorded.
+                          // re-sorted the array to slot order.
                           // The cursor is deliberately left alone: the report
                           // is a lower bound on what was skipped, so the next
                           // incremental read still has to cover the same range.
-                          replayPayloadCache.resetScan();
                         }
 
                         // Open hooks/waits in the log as loaded for this
