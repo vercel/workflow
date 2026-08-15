@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -22,7 +22,7 @@ class TestBuilder extends BaseBuilder {
   }
 }
 
-describe('workflow dependency pruning', () => {
+describe('workflow bundle boundary', () => {
   const outputDirs: string[] = [];
 
   afterEach(() => {
@@ -33,14 +33,17 @@ describe('workflow dependency pruning', () => {
 
   it('does not bundle world schemas into a workflow without schemas', async () => {
     const repoRoot = resolve(import.meta.dirname, '../../..');
-    const workingDir = join(repoRoot, 'workbench/nextjs-turbopack');
-    const inputFile = join(workingDir, 'workflows/97_bench.ts');
     const outputDir = mkdtempSync(join(tmpdir(), 'workflow-pruning-'));
     outputDirs.push(outputDir);
+    const inputFile = join(outputDir, 'minimal.ts');
+    writeFileSync(
+      inputFile,
+      `export async function minimal() { "use workflow"; return 1; }`
+    );
 
     const config: StandaloneConfig = {
       buildTarget: 'standalone',
-      workingDir,
+      workingDir: outputDir,
       projectRoot: repoRoot,
       moduleSpecifierRoot: repoRoot,
       dirs: ['.'],

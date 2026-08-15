@@ -11,6 +11,8 @@ export const ATTRIBUTE_KEY_MAX_LENGTH = 256;
 export const ATTRIBUTE_VALUE_MAX_BYTES = 256;
 export const ATTRIBUTE_MAX_PER_RUN = 64;
 
+const textEncoder = new TextEncoder();
+
 /** A validation failure that callers can translate at their API boundary. */
 export class AttributeValidationError extends Error {
   constructor(message: string) {
@@ -19,79 +21,58 @@ export class AttributeValidationError extends Error {
   }
 }
 
-export function validateAttributeKey(
-  key: string,
-  options: { allowReservedAttributes?: boolean } = {}
-): AttributeValidationError | null {
+function assertValidAttributeKey(
+  key: unknown,
+  allowReservedAttributes: boolean
+): asserts key is string {
   if (typeof key !== 'string') {
-    return new AttributeValidationError(
+    throw new AttributeValidationError(
       `Attribute key must be a string, got ${typeof key}`
     );
   }
   if (key.length === 0) {
-    return new AttributeValidationError('Attribute key must not be empty');
+    throw new AttributeValidationError('Attribute key must not be empty');
   }
   if (key.length > ATTRIBUTE_KEY_MAX_LENGTH) {
-    return new AttributeValidationError(
+    throw new AttributeValidationError(
       `Attribute key length ${key.length} exceeds limit ${ATTRIBUTE_KEY_MAX_LENGTH}: ${JSON.stringify(key.slice(0, 32))}…`
     );
   }
   if (
-    !options.allowReservedAttributes &&
+    !allowReservedAttributes &&
     key.startsWith(RESERVED_ATTRIBUTE_KEY_PREFIX)
   ) {
-    return new AttributeValidationError(
+    throw new AttributeValidationError(
       `Attribute key ${JSON.stringify(key)} starts with reserved prefix "${RESERVED_ATTRIBUTE_KEY_PREFIX}" — that namespace is reserved for framework/library code. Set { allowReservedAttributes: true } only if your caller is framework-level.`
     );
   }
-  return null;
 }
 
-export function validateAttributeValue(
-  value: string | null
-): AttributeValidationError | null {
-  if (value === null) return null;
-  if (typeof value !== 'string') {
-    return new AttributeValidationError(
+function assertValidAttributeValue(
+  value: unknown
+): asserts value is string | null {
+  if (value !== null && typeof value !== 'string') {
+    throw new AttributeValidationError(
       `Attribute value must be a string or null, got ${typeof value}`
     );
   }
-  const bytes = new TextEncoder().encode(value).length;
+  if (value === null) return;
+
+  const bytes = textEncoder.encode(value).length;
   if (bytes > ATTRIBUTE_VALUE_MAX_BYTES) {
-    return new AttributeValidationError(
+    throw new AttributeValidationError(
       `Attribute value byte length ${bytes} exceeds limit ${ATTRIBUTE_VALUE_MAX_BYTES}`
     );
   }
-  return null;
-}
-
-function validateChange(
-  change: AttributeChange,
-  seenKeys: Set<string>,
-  allowReservedAttributes: boolean
-): void {
-  const keyError = validateAttributeKey(change.key, {
-    allowReservedAttributes,
-  });
-  if (keyError) throw keyError;
-  const valueError = validateAttributeValue(change.value);
-  if (valueError) throw valueError;
-  if (seenKeys.has(change.key)) {
-    throw new AttributeValidationError(
-      `Attribute key ${JSON.stringify(change.key)} appears more than once in the same batch`
-    );
-  }
-  seenKeys.add(change.key);
 }
 
 function attributeCountDelta(
-  change: AttributeChange,
+  key: string,
+  value: string | null,
   existingKeys: ReadonlySet<string> | undefined
 ): number {
-  if (existingKeys === undefined) return change.value === null ? -1 : 1;
-  const exists = existingKeys.has(change.key);
-  if (change.value === null) return exists ? -1 : 0;
-  return exists ? 0 : 1;
+  if (value === null) return existingKeys?.has(key) ? -1 : 0;
+  return existingKeys === undefined || !existingKeys.has(key) ? 1 : 0;
 }
 
 export function validateAttributeChanges(
@@ -110,15 +91,22 @@ export function validateAttributeChanges(
       : context.existingKeys instanceof Set
         ? context.existingKeys
         : new Set(context.existingKeys);
-  let netChange = 0;
+  let postMergeCount = existingKeys?.size ?? 0;
   for (const change of changes) {
-    validateChange(change, seenKeys, context.allowReservedAttributes === true);
-    netChange += attributeCountDelta(change, existingKeys);
+    const { key, value } = change;
+    assertValidAttributeKey(key, context.allowReservedAttributes === true);
+    assertValidAttributeValue(value);
+    if (seenKeys.has(key)) {
+      throw new AttributeValidationError(
+        `Attribute key ${JSON.stringify(key)} appears more than once in the same batch`
+      );
+    }
+    seenKeys.add(key);
+    postMergeCount += attributeCountDelta(key, value, existingKeys);
   }
-  const postMerge = (existingKeys?.size ?? 0) + netChange;
-  if (postMerge > ATTRIBUTE_MAX_PER_RUN) {
+  if (postMergeCount > ATTRIBUTE_MAX_PER_RUN) {
     throw new AttributeValidationError(
-      `Run attribute count would exceed limit ${ATTRIBUTE_MAX_PER_RUN} (post-merge ${postMerge})`
+      `Run attribute count would exceed limit ${ATTRIBUTE_MAX_PER_RUN} (post-merge ${postMergeCount})`
     );
   }
 }
