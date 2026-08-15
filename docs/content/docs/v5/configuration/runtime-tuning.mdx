@@ -278,9 +278,10 @@ These variables are primarily for tests, debugging, or unusual deployments.
 ### `WORKFLOW_WAIT_WEDGE_FAIL_AFTER_SECONDS`
 
 - Default: `600` (10 minutes)
-- How long the runtime tolerates a wedged wait before failing the run as [`CORRUPTED_EVENT_LOG`](/docs/errors/corrupted-event-log).
-- A wait is wedged when the World rejects its `wait_created` or `wait_completed` event write as a duplicate while no such event can be read back from the event log — the entity state and the log disagree, which can happen if a backend commits the wait entity but loses the paired event row. Without this limit the run would silently wake-loop on the wait forever.
-- The tolerance is measured from the wait's target time for a wedged completion, and from the instant the wait was first scheduled (embedded in its replay-stable ID) for a wedged creation. Within the threshold the runtime logs a warning (and reports `workflow.wait.wedge_suspected` on the invocation span) but keeps retrying, so eventually consistent reads have time to converge; a wedged creation is additionally re-verified against a fresh event-log read before the run is failed. The generous default means read staleness cannot plausibly trigger a failure.
+- How long the runtime tolerates a wedged wait *completion* before failing the run as [`CORRUPTED_EVENT_LOG`](/docs/errors/corrupted-event-log).
+- A wait is wedged when the World rejects its `wait_created` or `wait_completed` event write as a duplicate while no such event can be read back from the event log — the entity state and the log disagree, which can happen if a backend commits the wait entity but loses the paired event row. Without intervention the run would silently wake-loop on the wait forever.
+- For a wedged **completion**, the tolerance is measured from the wait's target time (`resumeAt`, which is durable and identical on every wake). Within the threshold the runtime logs a warning (and reports `workflow.wait.wedge_suspected` on the invocation span) but keeps retrying, so eventually consistent reads have time to converge; past it, the run is failed. The generous default means read staleness cannot plausibly trigger a failure.
+- A wedged **creation** is detected (same warning and span attribute, gated by a fresh event-log read) but never fails the run: an uncreated wait has no replay-stable per-wait timestamp to measure against, so escalation could misfire on a benign write race in a long-lived run. Repairing or terminating a genuinely wedged creation is handled by the backend's wedge recovery instead. The threshold still applies as a pre-filter: runs younger than it skip the detection read entirely.
 
 ### `WORKFLOW_DEFERRED_CHECK_DELAY_MS`
 

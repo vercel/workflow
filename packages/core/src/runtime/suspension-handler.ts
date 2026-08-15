@@ -1,6 +1,5 @@
 import type { Span } from '@opentelemetry/api';
 import {
-  CorruptedEventLogError,
   EntityConflictError,
   FatalError,
   HookNotFoundError,
@@ -51,10 +50,9 @@ import {
 } from './helpers.js';
 import { ReplayRecoveryReporter } from './replay-recovery-reporter.js';
 import {
-  decodeWaitScheduledAtMs,
+  decodeWaitIdRunEpochMs,
   getWaitWedgeFailAfterSeconds,
   isWaitCreatedRowReadable,
-  waitWedgeErrorMessage,
 } from './wait-wedge.js';
 
 export interface SuspensionHandlerParams {
@@ -902,60 +900,49 @@ export async function handleSuspension({
               // entity committed WITHOUT its event row conflicts here on
               // every replay forever — the elapsed-wait pass can only
               // complete waits whose wait_created row it can see, so the run
-              // wake-loops on it. The wait's correlation id is replay-stable
-              // (seeded RNG + replay clock), so the ULID timestamp inside it
-              // is the one anchor the loop cannot reset: once the same wait
-              // id has been conflicting for longer than the threshold,
-              // verify with a fresh log read and fail the run as
-              // CORRUPTED_EVENT_LOG rather than loop (see
-              // runtime/wait-wedge.ts; the caller routes this error to its
-              // terminal path instead of redelivering). resumeAt cannot be
-              // the anchor here: an uncreated wait recomputes it from the
-              // live clock on every replay.
+              // wake-loops on it. Detection is WARN-ONLY at this site: no
+              // per-wait replay-stable time anchor exists for an uncreated
+              // wait (resumeAt is recomputed from the live clock each
+              // replay, and the correlation id's ULID encodes the RUN's
+              // creation epoch, a run-wide constant), so a time-based run
+              // failure here would kill any old-enough run on one benign
+              // race. The run epoch still works as a cheap pre-filter —
+              // young runs skip the verification read entirely — and a
+              // fresh log read gates the warning so a concurrent winner's
+              // late-landing row is not reported as a wedge. Terminating a
+              // genuinely stale wait_created wedge is the backend's job
+              // (wedge backfill / stale-cancel), which sees the entity state
+              // this client cannot. See runtime/wait-wedge.ts.
               const nowMs = Date.now();
-              const scheduledAtMs = decodeWaitScheduledAtMs(
+              const runEpochMs = decodeWaitIdRunEpochMs(
                 queueItem.correlationId
               );
               const thresholdMs = getWaitWedgeFailAfterSeconds() * 1000;
-              const suspectWedge =
-                scheduledAtMs !== undefined &&
-                nowMs - scheduledAtMs > thresholdMs &&
+              if (
+                runEpochMs !== undefined &&
+                nowMs - runEpochMs > thresholdMs &&
                 !(await isWaitCreatedRowReadable(
                   world,
                   runId,
                   queueItem.correlationId
-                ));
-              if (suspectWedge) {
+                ))
+              ) {
                 span?.setAttributes(Attribute.WorkflowWaitWedgeSuspected(1));
-                runtimeLogger.error(
-                  'Wait creation has been conflicting past the wedge threshold and no wait_created row is readable; failing the run',
+                runtimeLogger.warn(
+                  'Wait creation conflicted but no wait_created row is readable; suspecting a wedged wait (backend-side recovery owns repair)',
                   {
                     workflowRunId: runId,
                     correlationId: queueItem.correlationId,
-                    scheduledAt: new Date(scheduledAtMs).toISOString(),
-                    secondsSinceScheduled: Math.round(
-                      (nowMs - scheduledAtMs) / 1000
-                    ),
                     message: err.message,
                   }
                 );
-                throw new CorruptedEventLogError(
-                  waitWedgeErrorMessage({
-                    runId,
-                    correlationId: queueItem.correlationId,
-                    eventType: 'wait_created',
-                    anchor: 'scheduledAt',
-                    anchorMs: scheduledAtMs,
-                    nowMs,
-                  }),
-                  { cause: err }
-                );
+              } else {
+                runtimeLogger.info('Wait already exists, continuing', {
+                  workflowRunId: runId,
+                  correlationId: queueItem.correlationId,
+                  message: err.message,
+                });
               }
-              runtimeLogger.info('Wait already exists, continuing', {
-                workflowRunId: runId,
-                correlationId: queueItem.correlationId,
-                message: err.message,
-              });
             } else {
               throw err;
             }

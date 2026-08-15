@@ -21,29 +21,33 @@
  * Detection has to be STATELESS: every wake of the loop is a fresh queue
  * message, so there is no counter to persist across invocations. What IS
  * derivable on every observation is how long the contradiction has persisted
- * against a replay-stable time anchor. A healthy wait completes within
- * seconds of its target time; read staleness is bounded in seconds too. The
- * anchor differs per site:
+ * against a replay-stable time anchor — and only ONE of the two sites has a
+ * per-wait anchor:
  *
  *  - `wait_completed` (the elapsed-wait pass): the wait's `resumeAt`, adopted
  *    from the durable `wait_created` row, so it is the same on every wake.
  *    Before `resumeAt` nothing is attempted; past it, within the threshold:
  *    warn (visible in logs and as a span attribute) but keep today's
  *    behavior; past the threshold: fail the run as CORRUPTED_EVENT_LOG.
- *  - `wait_created` (the suspension handler): `resumeAt` CANNOT anchor this
- *    site — an uncreated wait's `resumeAt` is recomputed from the live clock
- *    on every replay, so it always sits in the future. The anchor is the
- *    scheduling instant embedded in the wait's replay-stable correlation id
- *    ({@link decodeWaitScheduledAtMs}). Within the threshold: silent, exactly
- *    as today (creation conflicts are the ordinary concurrent-suspension
- *    race). Past it, the contradiction is verified with a fresh log read
- *    ({@link isWaitCreatedRowReadable}) before failing, so a concurrent
- *    writer's row that landed after this replay's snapshot can never be
- *    mistaken for a wedge.
- *
- * Failing beats looping: the entity state and the event log provably
- * disagree, and looping cannot fix it. A failed run is visible and can be
- * re-run; the silent loop is neither.
+ *    Failing beats looping here: the entity state and the event log provably
+ *    disagree, and looping cannot fix it. A failed run is visible and can be
+ *    re-run; the silent loop is neither.
+ *  - `wait_created` (the suspension handler): WARN-ONLY, because no per-wait
+ *    replay-stable time anchor exists for an uncreated wait. Its `resumeAt`
+ *    is recomputed from the live clock on every replay (always in the
+ *    future), and the ULID inside its correlation id encodes the RUN's
+ *    creation epoch, not the wait's scheduling instant — the workflow VM
+ *    mints every correlation id as `ulid(fixedTimestamp)` (see workflow.ts),
+ *    a run-wide constant, precisely so ids are replay-stable. Escalating to
+ *    a run failure on that anchor would kill any sufficiently old run on a
+ *    single benign concurrent-suspension race. The run epoch is still useful
+ *    as a cheap PRE-FILTER ({@link decodeWaitIdRunEpochMs}): a conflict in a
+ *    run younger than the threshold is skipped for free, and only old runs
+ *    pay the fresh-read verification ({@link isWaitCreatedRowReadable}) that
+ *    gates the warning. Terminating a genuinely stale `wait_created` wedge
+ *    is owned by the backend (wedge backfill heals fresh ones; the stale
+ *    tier cancels the run), which can classify the wedge against entity
+ *    state the SDK cannot see.
  */
 
 import { envNumber, type World } from '@workflow/world';
@@ -68,15 +72,15 @@ export const getWaitWedgeFailAfterSeconds = (): number =>
 export type WaitWedgeObservation = 'silent' | 'warn' | 'fail';
 
 /**
- * The replay-stable instant a wait was first scheduled, decoded from the ULID
- * embedded in its correlation id (`wait_<ulid>`). The id is generated from the
- * workflow VM's seeded RNG and replay-stable clock, so every replay of the
- * same wait derives the same id — which makes its timestamp the one time
- * anchor a `wait_created` wedge cannot reset. (The wait's `resumeAt` cannot
- * anchor that site: an uncreated wait's `resumeAt` is recomputed from the live
- * clock on every replay, so it sits in the future on every observation.)
+ * The RUN's creation epoch, decoded from the ULID embedded in a wait's
+ * correlation id (`wait_<ulid>`). The workflow VM mints every correlation id
+ * as `ulid(fixedTimestamp)` — the run's creation time, held constant so ids
+ * are replay-stable — which means this timestamp says nothing about when the
+ * individual wait was scheduled. It is ONLY a lower bound on the run's age,
+ * usable as a cheap pre-filter (a conflict in a young run cannot be an old
+ * wedge), never as a per-wait anchor for escalation.
  */
-export function decodeWaitScheduledAtMs(
+export function decodeWaitIdRunEpochMs(
   correlationId: string
 ): number | undefined {
   if (!correlationId.startsWith('wait_')) return undefined;
@@ -90,13 +94,15 @@ export function decodeWaitScheduledAtMs(
 /**
  * Whether a fresh read of the run's event log can produce a `wait_created`
  * row for the given wait. Called on the suspected-wedge path only (a create
- * conflict whose wait id is older than the escalation threshold), as the
- * fresh-read verification that separates a genuine wedge from a concurrent
- * writer's row landing after the caller's snapshot was taken.
+ * conflict in a run older than the threshold — see
+ * {@link decodeWaitIdRunEpochMs}), as the fresh-read verification that
+ * separates a genuine wedge from a concurrent writer's row landing after the
+ * caller's snapshot was taken. It gates the WARNING only — the
+ * `wait_created` site never fails the run (see the module doc).
  *
  * Fail-open: an unbounded log scan is declined (`true`, "readable") past the
- * page cap, and so is a read error — a spurious run failure is worse than one
- * more loop iteration.
+ * page cap, and so is a read error — a spurious wedge warning is worse than
+ * one more silent loop iteration.
  */
 export async function isWaitCreatedRowReadable(
   world: World,
@@ -151,35 +157,26 @@ export function classifyWaitWedgeObservation(args: {
 }
 
 /**
- * The operator-facing explanation attached to the CorruptedEventLogError both
- * detection sites throw. One string builder so the two sites cannot drift.
- * `anchor` names the time base of the measurement: the wait's target time for
- * a wedged completion, or the wait id's replay-stable scheduling instant for
- * a wedged creation (whose `resumeAt` is recomputed each replay and therefore
- * cannot serve as an anchor).
+ * The operator-facing explanation attached to the CorruptedEventLogError the
+ * `wait_completed` detection site throws. (The `wait_created` site is
+ * warn-only — see the module doc — so this is the one failure text.)
  */
 export function waitWedgeErrorMessage(args: {
   runId: string;
   correlationId: string;
-  eventType: 'wait_created' | 'wait_completed';
-  anchor: 'resumeAt' | 'scheduledAt';
-  anchorMs: number;
+  resumeAtMs: number;
   nowMs: number;
 }): string {
-  const { runId, correlationId, eventType, anchor, anchorMs, nowMs } = args;
-  const secondsPast = Math.round((nowMs - anchorMs) / 1000);
-  const anchorDescription =
-    anchor === 'resumeAt'
-      ? `${secondsPast}s after the wait's resumeAt`
-      : `${secondsPast}s after the wait was first scheduled`;
+  const { runId, correlationId, resumeAtMs, nowMs } = args;
+  const secondsPast = Math.round((nowMs - resumeAtMs) / 1000);
   return (
     `Wait "${correlationId}" of run ${runId} is wedged: the World reports its ` +
-    `${eventType} event already exists (409 conflict), but no ${eventType} row ` +
-    `can be read back from the event log ${anchorDescription}. The wait ` +
-    `entity and the event log disagree, so replay can never observe the wait ` +
-    `and the run would otherwise wake-loop forever. This indicates a ` +
-    `partially committed wait write on the backend (entity persisted, event ` +
-    `row lost); backend-side backfill heals this class of wedge, after which ` +
-    `the run can be re-run from the dashboard.`
+    `wait_completed event already exists (409 conflict), but no wait_completed ` +
+    `row can be read back from the event log ${secondsPast}s after the wait's ` +
+    `resumeAt. The wait entity and the event log disagree, so replay can ` +
+    `never observe the wait and the run would otherwise wake-loop forever. ` +
+    `This indicates a partially committed wait write on the backend (entity ` +
+    `persisted, event row lost); backend-side backfill heals this class of ` +
+    `wedge, after which the run can be re-run from the dashboard.`
   );
 }

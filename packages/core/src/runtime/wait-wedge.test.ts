@@ -3,7 +3,7 @@ import { ulid } from 'ulid';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   classifyWaitWedgeObservation,
-  decodeWaitScheduledAtMs,
+  decodeWaitIdRunEpochMs,
   getWaitWedgeFailAfterSeconds,
   isWaitCreatedRowReadable,
   WAIT_WEDGE_FAIL_AFTER_SECONDS,
@@ -68,13 +68,11 @@ describe('classifyWaitWedgeObservation', () => {
 });
 
 describe('waitWedgeErrorMessage', () => {
-  it('names the wait, the event type, and how long past the anchor it is', () => {
+  it('names the wait, the run, and how long past resumeAt the wedge is', () => {
     const message = waitWedgeErrorMessage({
       runId: 'wrun_test',
       correlationId: 'wait_abc',
-      eventType: 'wait_completed',
-      anchor: 'resumeAt',
-      anchorMs: resumeAtMs,
+      resumeAtMs,
       nowMs: resumeAtMs + 700_000,
     });
     expect(message).toContain('wait_abc');
@@ -82,31 +80,19 @@ describe('waitWedgeErrorMessage', () => {
     expect(message).toContain('wait_completed');
     expect(message).toContain("700s after the wait's resumeAt");
   });
-
-  it('describes the scheduling anchor for a wedged creation', () => {
-    const message = waitWedgeErrorMessage({
-      runId: 'wrun_test',
-      correlationId: 'wait_abc',
-      eventType: 'wait_created',
-      anchor: 'scheduledAt',
-      anchorMs: resumeAtMs,
-      nowMs: resumeAtMs + 700_000,
-    });
-    expect(message).toContain('700s after the wait was first scheduled');
-  });
 });
 
-describe('decodeWaitScheduledAtMs', () => {
-  it('decodes the ULID timestamp from a wait correlation id', () => {
+describe('decodeWaitIdRunEpochMs', () => {
+  it('decodes the ULID timestamp (the run epoch) from a wait correlation id', () => {
     const atMs = Date.parse('2026-05-19T12:00:00.000Z');
-    expect(decodeWaitScheduledAtMs(`wait_${ulid(atMs)}`)).toBe(atMs);
+    expect(decodeWaitIdRunEpochMs(`wait_${ulid(atMs)}`)).toBe(atMs);
   });
 
   it('returns undefined for non-wait ids and malformed ULIDs', () => {
-    expect(decodeWaitScheduledAtMs('step_01ARZ3NDEKTSV4RRFFQ69G5FAV')).toBe(
+    expect(decodeWaitIdRunEpochMs('step_01ARZ3NDEKTSV4RRFFQ69G5FAV')).toBe(
       undefined
     );
-    expect(decodeWaitScheduledAtMs('wait_not-a-ulid')).toBe(undefined);
+    expect(decodeWaitIdRunEpochMs('wait_not-a-ulid')).toBe(undefined);
   });
 });
 

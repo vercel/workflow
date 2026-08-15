@@ -2926,9 +2926,7 @@ export function workflowEntrypoint(
                           const message = waitWedgeErrorMessage({
                             runId,
                             correlationId,
-                            eventType: 'wait_completed',
-                            anchor: 'resumeAt',
-                            anchorMs: resumeAtMs,
+                            resumeAtMs,
                             nowMs: now,
                           });
                           if (observation === 'fail') {
@@ -3248,16 +3246,7 @@ export function workflowEntrypoint(
                             // hand it back to the queue to spin again.
                             throw escalation.error;
                           }
-                          if (
-                            !FatalError.is(suspensionError) &&
-                            // A wedged wait detected while committing this
-                            // suspension's wait_created (see
-                            // runtime/wait-wedge.ts): redelivery would replay
-                            // into the same conflict forever, so it takes the
-                            // terminal path below and fails the run as
-                            // CORRUPTED_EVENT_LOG.
-                            !CorruptedEventLogError.is(suspensionError)
-                          ) {
+                          if (!FatalError.is(suspensionError)) {
                             // Transient failures propagate to the queue
                             // handler so the message is redelivered.
                             throw suspensionError;
