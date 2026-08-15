@@ -284,13 +284,8 @@ export interface SuspensionHandlerResult {
    * durably creating the user's hooks doesn't count as runtime overhead.
    */
   hookCreationMs: number;
-  /**
-   * Whether serializing this suspension's new step inputs was passive (did
-   * not execute workflow-owned code such as getters, proxy traps, or custom
-   * serializers). `false` means the retained VM may have diverged from what
-   * a cold replay would compute, so the caller must demote to replay.
-   */
-  retainedStepInputsSafe: boolean;
+  /** Whether serializing new step and hook data was passive. */
+  serializationWasPassive: boolean;
 }
 
 async function createHookEvent({
@@ -534,6 +529,24 @@ export async function handleSuspension({
   const compression =
     (run.specVersion ?? 0) >= SPEC_VERSION_SUPPORTS_COMPRESSION;
 
+  let serializationWasPassive = true;
+  async function dehydrateInput(value: unknown): Promise<SerializedData> {
+    const stats: GuestCodeStats = { executions: [] };
+    try {
+      return (await dehydrateStepArguments(
+        value,
+        runId,
+        encryptionKey,
+        suspension.globalThis,
+        false,
+        compression,
+        stats
+      )) as SerializedData;
+    } finally {
+      if (stats.executions.length > 0) serializationWasPassive = false;
+    }
+  }
+
   async function disposeHook(
     queueItem: HookInvocationQueueItem
   ): Promise<void> {
@@ -596,17 +609,10 @@ export async function handleSuspension({
           let creationConflicted = false;
 
           if (!queueItem.hasCreatedEvent) {
-            const hookMetadata: SerializedData | undefined =
+            const hookMetadata =
               typeof queueItem.metadata === 'undefined'
                 ? undefined
-                : ((await dehydrateStepArguments(
-                    queueItem.metadata,
-                    runId,
-                    encryptionKey,
-                    suspension.globalThis,
-                    false,
-                    compression
-                  )) as SerializedData);
+                : await dehydrateInput(queueItem.metadata);
             const hookEvent: CreateEventRequest = {
               eventType: 'hook_created' as const,
               specVersion: SPEC_VERSION_CURRENT,
@@ -654,14 +660,10 @@ export async function handleSuspension({
       hooksNeedingAbort.map(async (queueItem) => {
         try {
           // Dehydrate the abort payload for storage
-          const abortPayload = await dehydrateStepArguments(
-            { aborted: true, reason: queueItem.abortReason },
-            runId,
-            encryptionKey,
-            suspension.globalThis,
-            false,
-            compression
-          );
+          const abortPayload = await dehydrateInput({
+            aborted: true,
+            reason: queueItem.abortReason,
+          });
 
           // Create hook_received event with abort payload
           await createGuarded({
@@ -862,18 +864,6 @@ export async function handleSuspension({
     lazyInlineCorrelationIds.delete(queueItem.correlationId);
   };
 
-  // Serialization always runs through the one ordinary path below, so the
-  // durable bytes cannot depend on retention. What retention needs to know is
-  // whether that serialization *executed* workflow code (getters, proxy
-  // traps, custom serializers): side effects a cold replay would not
-  // repeat, since a replay skips dehydration for already-recorded steps.
-  // The hardened serializer records exactly that into this sink (see
-  // ../serialization/hardened.ts); when any input in the batch records an
-  // execution, the caller demotes the session so the side effects land in a
-  // VM that is about to be discarded, exactly like the pre-retention
-  // runtime.
-  const guestCodeStats: GuestCodeStats = { executions: [] };
-
   // Lazy inline start: defer the step_created write for up to
   // `getMaxInlineSteps()` steps the caller will run inline (in parallel). Each
   // step is created on the fly by the lazy `step_started` executeStep sends
@@ -1020,29 +1010,14 @@ export async function handleSuspension({
       const stepOrder = batchOrderCounter;
       batchOrderCounter += pairFolded ? 2 : 1;
       const stepOp = (async () => {
-        // Per-step sink, merged below: the dehydrate wrapper emits span
-        // attributes from the sink it is handed, so sharing one across
-        // steps would re-emit (and misattribute) earlier steps' entries.
-        const stepGuestCode: GuestCodeStats = { executions: [] };
-        let dehydratedInput: Uint8Array | unknown;
+        let dehydratedInput: SerializedData;
         try {
-          dehydratedInput = await dehydrateStepArguments(
-            {
-              args: queueItem.args,
-              closureVars: queueItem.closureVars,
-              thisVal: queueItem.thisVal,
-            },
-            runId,
-            encryptionKey,
-            suspension.globalThis,
-            false,
-            compression,
-            stepGuestCode
-          );
+          dehydratedInput = await dehydrateInput({
+            args: queueItem.args,
+            closureVars: queueItem.closureVars,
+            thisVal: queueItem.thisVal,
+          });
         } catch (err) {
-          // The sink records executions as they happen, so guest code that
-          // ran before the failure still counts against retention.
-          guestCodeStats.executions.push(...stepGuestCode.executions);
           if (!SerializationError.is(err)) {
             // e.g. RuntimeDecryptionError: an SDK fault, not a user value
             // problem. Keep its identity (RUNTIME_ERROR) and current
@@ -1063,8 +1038,7 @@ export async function handleSuspension({
           await finalizeUnserializableStep(queueItem, err);
           return;
         }
-        guestCodeStats.executions.push(...stepGuestCode.executions);
-        // Deferred (lazy) inline step: skip the step_created write; the
+        // Deferred (lazy) inline step: skip the step_created write — the
         // caller's inline executeStep will send a lazy step_started carrying
         // this input, and the world creates the step (entity + synthetic
         // step_created event) atomically. We do NOT add it to
@@ -1074,7 +1048,7 @@ export async function handleSuspension({
           lazyInlineByCorrelationId.set(queueItem.correlationId, {
             correlationId: queueItem.correlationId,
             stepName: queueItem.stepName,
-            dehydratedInput: dehydratedInput as SerializedData,
+            dehydratedInput,
           });
           if (pairFolded) {
             // Enqueue the pair the deferral would otherwise leave to the
@@ -1777,20 +1751,6 @@ export async function handleSuspension({
   // step_created and re-dispatches, and recovers the run instead of orphaning it.
   await settlePhase(ops);
 
-  // The step-input dehydrations above have settled, so the sink is final.
-  const retainedStepInputsSafe = guestCodeStats.executions.length === 0;
-  if (!retainedStepInputsSafe) {
-    runtimeLogger.debug(
-      'Serializing step inputs executed workflow code; falling back to replay instead of retaining the VM',
-      {
-        workflowRunId: runId,
-        executions: guestCodeStats.executions
-          .slice(0, 5)
-          .map((e) => (e.detail ? `${e.kind}(${e.detail})` : e.kind)),
-      }
-    );
-  }
-
   // Rebuild the inline batch in deterministic order. `lazyInlineCorrelationIds`
   // is a Set seeded from the ordered first-N slice, so iterating it preserves
   // stepItems order; every id in it was set by the lazy branch above.
@@ -1847,7 +1807,7 @@ export async function handleSuspension({
     hasAttributeEvents: attributeItems.length > 0,
     hasHookEvents: hooksNeedingCreation.length > 0,
     hookCreationMs,
-    retainedStepInputsSafe,
+    serializationWasPassive,
     reportedEventCount: reportedEvents,
   };
 }

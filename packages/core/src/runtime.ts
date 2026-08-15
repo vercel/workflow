@@ -482,11 +482,8 @@ function rootRunIdFrom(
  * `wait_completed`, which the wait timer can resolve with
  * `wait_completed`).
  *
- * This gates VM retention, the inline-delta fast path, and turbo's forced
- * optimistic start. A terminal-step delta can omit an event appended
- * concurrently after that write. With no open hook or wait, only cancellation
- * can do so, and observing it one replay late is safe because the next entity
- * write is rejected.
+ * Open waits block VM retention and inline deltas. Open hooks and waits block
+ * turbo's optimistic start; hooks also require a `step_started` claim.
  *
  * Step-body `attr_set` writes are NOT a concern: they land before the
  * step's terminal write and are therefore already inside the returned
@@ -536,47 +533,6 @@ function nextEventLogLoad(log: LoadedEventLog): ReplayEventLog {
 function appendEventLog(log: LoadedEventLog, appended: LoadedEventLog): void {
   appendUniqueEvents(log.events, appended.events);
   log.cursor = appended.cursor ?? log.cursor;
-}
-
-/**
- * The whole retention predicate: keep the session only for a pure step
- * boundary (every suspension item is a step: any other item type, present
- * or future, is unretainable by default) whose new step inputs serialized
- * without executing workflow code, with no out-of-band continuation source:
- * attributes require replay; hooks and waits can wake another invocation.
- * `WORKFLOW_RETAINED_VM=0` disables retention entirely.
- *
- * The open hook/wait scan is O(events), so it is taken through a lazy getter
- * and consulted last, after every cheap check has passed.
- *
- * INVARIANT this predicate leans on: every suspension signaler that does NOT
- * carry the step-consumer generation guard (sleep, hook, attribute, see
- * `suspensionGeneration` in private.ts) must be unretainable here, either via
- * a non-step queue item or the open hook/wait scan. A new signaler that
- * satisfies neither would let a stale signal be accepted as a fresh
- * suspension on a resumed session.
- *
- * Quiescence assumes workflow code stays inside the sandbox's determinism
- * contract. Escaping to the host realm (e.g. recovering the host `Function`
- * constructor from an exposed host class to schedule real timers) makes a
- * workflow nondeterministic under ordinary replay too, and is not defended
- * here.
- */
-function canRetainWorkflowSession(
-  suspension: WorkflowSuspension,
-  stepInputsSafe: boolean,
-  openHookWait: { value: ReturnType<typeof openHookAndWaitState> }
-): boolean {
-  if (
-    !isVmRetentionEnabled() ||
-    !stepInputsSafe ||
-    suspension.steps.length === 0 ||
-    !suspension.steps.every((item) => item.type === 'step')
-  ) {
-    return false;
-  }
-  const { openHook, openWait } = openHookWait.value;
-  return !openHook && !openWait;
 }
 
 /**
@@ -3292,32 +3248,37 @@ export function workflowEntrypoint(
                         }
 
                         // Open hooks/waits in the log as loaded for this
-                        // replay. This suspension's own hook/wait writes are
-                        // NOT in it: they never reach retention anyway,
-                        // because a suspension containing a non-step item
-                        // fails canRetainWorkflowSession's type check before
-                        // the scan is consulted. Computed
-                        // lazily, at most once, and shared between the
-                        // retention decision here and the delta/turbo gates
-                        // below, since the attr-detour and hook-conflict paths
-                        // return/continue before the gates and usually
-                        // short-circuit before ever scanning the log.
+                        // replay. Computed lazily, at most once, and shared
+                        // between the retention decision here and the
+                        // delta/turbo gates below — the attr-detour and
+                        // hook-conflict paths return/continue before the
+                        // gates and usually short-circuit before scanning.
                         const openHookWait = once(() => {
                           assert(eventLog.type === 'ready');
                           return openHookAndWaitState(eventLog.events);
                         });
 
-                        // The single retention decision: keep the parked
-                        // session only across a pure step boundary with no
-                        // out-of-band continuation source and provably
-                        // passive step inputs.
                         if (
                           retainedSession &&
-                          !canRetainWorkflowSession(
-                            err,
-                            suspensionResult.retainedStepInputsSafe,
-                            openHookWait
-                          )
+                          (!isVmRetentionEnabled() ||
+                            !suspensionResult.serializationWasPassive ||
+                            err.stepCount === 0 ||
+                            !err.steps.every((item) => {
+                              switch (item.type) {
+                                case 'step':
+                                case 'hook':
+                                  return true;
+                                case 'wait':
+                                case 'attribute':
+                                  return false;
+                                default:
+                                  item satisfies never;
+                                  throw new Error(
+                                    'Unknown workflow suspension item'
+                                  );
+                              }
+                            }) ||
+                            openHookWait.value.openWait)
                         ) {
                           retainedSession = null;
                         }

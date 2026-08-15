@@ -5,7 +5,7 @@
 import { withResolvers } from '@workflow/utils';
 import type { WorldCapabilities } from '@workflow/world';
 import type { EventsConsumer } from './events-consumer.js';
-import type { QueueItem } from './global.js';
+import { type QueueItem, WorkflowSuspension } from './global.js';
 import type { ReplayPayloadCache } from './replay-payload-cache.js';
 import type { Serializable } from './schemas.js';
 import type { PayloadKey } from './serialization/encryption.js';
@@ -137,12 +137,12 @@ export interface WorkflowOrchestratorContext {
   globalThis: typeof globalThis;
   /**
    * Increments when a suspension is accepted and on every retained-session
-   * resume. STEP suspension signals capture it when scheduled and no-op if
-   * it moved (see step.ts), which drops same-boundary sibling signals and
-   * timers queued at boundary N that would fire after the session resumed
-   * into boundary N+1. Sleep/hook/attribute signals are intentionally
-   * unguarded: their presence makes the boundary unretainable, so a late
-   * signal correctly demotes the session (workflow.ts `onWorkflowError`).
+   * resume. Step and hook suspension signals capture it when scheduled and
+   * no-op if it moved, which drops same-boundary sibling signals and timers
+   * queued at boundary N that would fire after the session resumed into
+   * boundary N+1. Sleep and attribute signals are intentionally unguarded:
+   * their presence makes the boundary unretainable, so a late signal correctly
+   * demotes the session (workflow.ts `onWorkflowError`).
    */
   suspensionGeneration: number;
   eventsConsumer: EventsConsumer;
@@ -931,4 +931,17 @@ export function scheduleWhenIdle(
     }
   };
   setTimeout(check, 0);
+}
+
+/** Schedule a generation-guarded suspension after deliveries settle. */
+export function scheduleWorkflowSuspension(
+  ctx: WorkflowOrchestratorContext
+): void {
+  const generation = ctx.suspensionGeneration;
+  scheduleWhenIdle(ctx, () => {
+    if (generation !== ctx.suspensionGeneration) return;
+    ctx.onWorkflowError(
+      new WorkflowSuspension(ctx.invocationsQueue, ctx.globalThis)
+    );
+  });
 }
