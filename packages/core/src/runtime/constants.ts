@@ -245,20 +245,12 @@ export function getMaxEventsOverride(): number | undefined {
 }
 
 /**
- * Whether optimistic inline step start is enabled. When on, the owned-inline
- * path begins running a brand-new step's body *before* its lazy `step_started`
- * network call resolves (the input is already known locally), awaiting the
- * `step_started` only before the terminal write.
+ * Legacy parser for `WORKFLOW_OPTIMISTIC_INLINE_START`.
  *
- * This can run a step body more than once when handlers race for the same
- * step's create-claim — both run the body before one wins. That is unsafe for
- * steps with non-idempotent side effects; in particular, two concurrent runs
- * of a step that writes to the workflow stream (e.g. an AI agent streaming
- * tokens) can interleave and corrupt the stream data. So the optimization is
- * **off by default** and must be explicitly opted into per deployment.
- *
- * Reads `process.env.WORKFLOW_OPTIMISTIC_INLINE_START` lazily. Default OFF;
- * enabled only by an explicit `'1'` / `'true'`.
+ * The executor no longer admits a lazy body before its durable
+ * `step_started` create-claim, so this setting has no execution effect. Keep
+ * the parser temporarily for internal source compatibility while callers are
+ * removed; it must not be used to re-enable pre-claim execution.
  */
 export function isOptimisticInlineStartEnabled(): boolean {
   const raw = process.env.WORKFLOW_OPTIMISTIC_INLINE_START;
@@ -267,13 +259,9 @@ export function isOptimisticInlineStartEnabled(): boolean {
 }
 
 /**
- * Whether an operator has **explicitly disabled** optimistic inline start via
- * `WORKFLOW_OPTIMISTIC_INLINE_START=0` / `=false`. Distinct from "unset": unset
- * leaves the optimization off by default but lets turbo force it on; an explicit
- * `0`/`false` is an operator opt-out that turbo must honor (turbo's forced
- * optimistic start still runs a step body before `step_started`/`run_started` is
- * confirmed, the property such an operator is opting out of), so
- * `forceOptimisticStart` defers to this. Reads the env var lazily.
+ * Legacy parser for an explicit `WORKFLOW_OPTIMISTIC_INLINE_START=0` / `=false`
+ * setting. See {@link isOptimisticInlineStartEnabled}: neither parser can
+ * re-enable a pre-claim body.
  */
 export function isOptimisticInlineStartExplicitlyDisabled(): boolean {
   const raw = process.env.WORKFLOW_OPTIMISTIC_INLINE_START;
@@ -285,15 +273,8 @@ export function isOptimisticInlineStartExplicitlyDisabled(): boolean {
  * Whether "turbo mode" is enabled. Turbo mode fast-paths the *first delivery of
  * the first invocation* of a run (detected by the entrypoint via `runInput`
  * presence + `metadata.attempt === 1`): it backgrounds the `run_started` event
- * creation, skips the initial event-log load (nothing has been written yet),
- * and forces optimistic inline step start for that invocation — independent of
- * `WORKFLOW_OPTIMISTIC_INLINE_START`.
- *
- * Forcing optimistic start is safe here because the first delivery has no
- * concurrent peer handler to race the step create-claim, so a step body runs
- * exactly once. That single-handler guarantee ends as soon as the run creates a
- * hook or wait (which introduce resume/parallel invocations), so the runtime
- * exits turbo at that point.
+ * creation and skips the initial event-log load (nothing has been written yet).
+ * It never permits a step body before its durable `step_started` claim.
  *
  * Reads `process.env.WORKFLOW_TURBO` lazily. Default **ON**; disabled only by an
  * explicit `'0'` / `'false'` (case-insensitive).

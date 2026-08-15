@@ -47,10 +47,6 @@ import {
   promoteAbortErrorToFatal,
 } from '../types.js';
 import { COMPUTE_INSTANCE_ID } from './compute-instance.js';
-import {
-  isOptimisticInlineStartEnabled,
-  isOptimisticInlineStartExplicitlyDisabled,
-} from './constants.js';
 import { getPortLazy } from './get-port-lazy.js';
 import {
   memoizeEncryptionKey,
@@ -157,32 +153,10 @@ export interface StepExecutorParams {
    */
   preconditionSnapshot?: PreconditionSnapshotParams;
   /**
-   * Suppress optimistic inline start for this step regardless of
-   * `WORKFLOW_OPTIMISTIC_INLINE_START` / `forceOptimisticStart`: take the
-   * await-then-run path so the body only runs after the `step_started` claim
-   * succeeds. Set by the runtime for guard-enforced batches that are
-   * stale-sensitive (an open hook means an out-of-band event can make the
-   * scheduling view stale): the guard's 412 fence can reject a stale claim's
-   * durable writes, but it cannot un-run a body that optimistic start began
-   * before the claim settled — awaiting the claim extends the fence to user
-   * code. Wins over `forceOptimisticStart` and the env flag.
-   */
-  suppressOptimisticStart?: boolean;
-  /**
-   * Force optimistic inline start regardless of
-   * `WORKFLOW_OPTIMISTIC_INLINE_START`. Set by turbo mode on the first delivery
-   * of the first invocation, where forcing it is safe: there is no concurrent
-   * peer handler to race the create-claim, so the body runs exactly once. Only
-   * meaningful together with `lazyStepInput` (a brand-new lazy step).
-   */
-  forceOptimisticStart?: boolean;
-  /**
    * Turbo mode only: a promise that resolves once the backgrounded
-   * `run_started` has landed. When set, the lazy/optimistic `step_started` is
-   * chained on it so the step is never created before its run exists. The body
-   * still runs immediately against locally-synthesized state — only the network
-   * write waits — so the `run_started` round-trip overlaps the body. `undefined`
-   * outside turbo, where `run_started` was already awaited up front.
+   * `run_started` has landed. When set, lazy `step_started` is chained on it so
+   * the step is never created before its run exists. `undefined` outside turbo,
+   * where `run_started` was already awaited up front.
    */
   runReadyBarrier?: Promise<unknown>;
   /**
@@ -504,32 +478,14 @@ export async function executeStep(
       return undefined;
     };
 
-    // Optimistic inline start: when we hold the step input locally (lazy inline
-    // path) and the optimization is enabled, fire `step_started` WITHOUT
-    // awaiting and run the body against locally-synthesized state. A lazy step
-    // is always brand-new ⇒ attempt 1, no prior error, started now — so we
-    // don't need the server round-trip to begin. We reconcile the in-flight
-    // `step_started` before any terminal write (`reconcileOptimisticStart`): if
-    // it lost the atomic create-claim (409) or the run is gone/throttled, we
-    // discard the body result. Running the body before confirming ownership can
-    // execute a step more than once when handlers race — inline step bodies
-    // must be idempotent; disable via WORKFLOW_OPTIMISTIC_INLINE_START=0.
+    // A lazy step's first durable event is its `step_started` create-claim.
+    // Never run its body before that claim settles: a process loss in that
+    // window can commit a user side effect without recording the correlation
+    // ID that owns it, so recovery would manufacture a new logical step.
     //
-    // Turbo mode passes `forceOptimisticStart` to enable this regardless of the
-    // env flag (its single-handler guarantee removes the race). But it still
-    // defers to an *explicit* `WORKFLOW_OPTIMISTIC_INLINE_START=0`: forced
-    // optimistic start runs the body before `step_started`/`run_started` is
-    // confirmed, which is exactly the property an operator opts out of with that
-    // flag, so an explicit opt-out wins over turbo's force.
-    const optimisticStart =
-      params.lazyStepInput !== undefined &&
-      // Stale-sensitive guarded batches await the claim so the 412 fence
-      // covers the body, not just durable writes — see
-      // StepExecutorParams.suppressOptimisticStart.
-      params.suppressOptimisticStart !== true &&
-      (isOptimisticInlineStartEnabled() ||
-        (params.forceOptimisticStart === true &&
-          !isOptimisticInlineStartExplicitlyDisabled()));
+    // This deliberately disables the former opt-in/turbo optimistic path.
+    // The claim is the recovery boundary, not merely a concurrent-race guard.
+    const optimisticStart = false;
 
     let step: StartedStep;
     // Params for the `step_started` create on either path below: the ambient

@@ -1966,7 +1966,7 @@ describe('workflowEntrypoint turbo mode', () => {
     return { handlerPromise, order, eventsCreate };
   }
 
-  it('backgrounds run_started and forces optimistic start on the first delivery', async () => {
+  it('backgrounds run_started but durably claims the first lazy step before its body', async () => {
     let release!: () => void;
     const gate = new Promise<void>((r) => {
       release = r;
@@ -1979,26 +1979,24 @@ describe('workflowEntrypoint turbo mode', () => {
       runStartedGate: gate,
     });
 
-    // The body runs while run_started is still in flight — proving run_started
-    // was backgrounded AND optimistic start was forced (the env flag is off).
-    // The full VM replay leading up to the body can exceed vi.waitFor's default
-    // 1s timeout on slow CI runners (notably Windows), so widen it.
+    // The body runs while run_started is still in flight, but only after the
+    // lazy step claim is durable. The full VM replay leading up to the body can
+    // exceed vi.waitFor's default 1s timeout on slow CI runners (notably
+    // Windows), so widen it.
     await vi.waitFor(() => expect(order).toContain('body'), {
       timeout: 15_000,
     });
     expect(order).not.toContain('run_started_resolved');
-    // The lazy step_started is chained on the run-ready barrier, so it is not
-    // even issued until run_started lands.
-    expect(order).not.toContain('step_started_called');
+    expect(order).toContain('step_started_called');
+    expect(order.indexOf('step_started_called')).toBeLessThan(
+      order.indexOf('body')
+    );
 
     release();
     const res = await handlerPromise;
     expect(res.status).toBe(204);
-    // After release: step_started fires, ordered strictly after run_started.
+    // Release the backgrounded run-start write before acknowledging.
     expect(order).toContain('step_started_called');
-    expect(order.indexOf('run_started_resolved')).toBeLessThan(
-      order.indexOf('step_started_called')
-    );
     // run_started was created exactly once (idempotent first write).
     const runStartedCreates = eventsCreate.mock.calls.filter(
       (c) => (c[1] as any).eventType === 'run_started'
@@ -2658,11 +2656,7 @@ describe('workflowEntrypoint latency telemetry (ttfs / stso)', () => {
     expect(first.eventData.ttfs).toBeGreaterThanOrEqual(backdateMs);
     expect(first.eventData.ttfs).toBeLessThanOrEqual(backdateMs + elapsed);
     expect(first.eventData.stso).toBeUndefined();
-    expect(first.eventData.optimizations).toEqual([
-      'turbo',
-      'lazyStepStart',
-      'optimisticStart',
-    ]);
+    expect(first.eventData.optimizations).toEqual(['turbo', 'lazyStepStart']);
 
     // RSFS/finalSchedulingReplay: under turbo, rsfsAnchorMs is stamped at local run
     // synthesis (well after the backdated run-id timestamp), so unlike ttfs
@@ -2680,11 +2674,7 @@ describe('workflowEntrypoint latency telemetry (ttfs / stso)', () => {
     expect(second.eventData.stso).toBeLessThanOrEqual(elapsed);
     expect(second.eventData.stepCount).toBe(1);
     expect(second.eventData.eventCount).toBeGreaterThan(0);
-    expect(second.eventData.optimizations).toEqual([
-      'turbo',
-      'lazyStepStart',
-      'optimisticStart',
-    ]);
+    expect(second.eventData.optimizations).toEqual(['turbo', 'lazyStepStart']);
     // STSO-only steps never qualify for RSFS (it shares TTFS eligibility).
     expect(second.eventData.rsfs).toBeUndefined();
     expect(second.eventData.finalSchedulingReplay).toBeUndefined();
@@ -2772,13 +2762,8 @@ describe('workflowEntrypoint latency telemetry (ttfs / stso)', () => {
     expect(ttfs).toBeGreaterThanOrEqual(backdateMs);
     expect(ttfs).toBeLessThanOrEqual(backdateMs + elapsed);
     expect(stso).toBeUndefined();
-    // The attr detour does not end turbo: no resume invocation source
-    // exists, so the forced-optimistic fast path stays engaged.
-    expect(optimizations).toEqual([
-      'turbo',
-      'lazyStepStart',
-      'optimisticStart',
-    ]);
+    // The attr detour does not end turbo: no resume invocation source exists.
+    expect(optimizations).toEqual(['turbo', 'lazyStepStart']);
   });
 
   it('reports ttfs when a redelivery lands after a committed pre-step attr_set, ending the measurement at the attr write', async () => {

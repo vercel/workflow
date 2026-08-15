@@ -210,3 +210,90 @@ describe('executeStep — compute instance stamping', () => {
     expect(started[0]?.[2]).toMatchObject(preconditionSnapshot);
   });
 });
+
+describe('executeStep — durable lazy ownership', () => {
+  const originalOptimisticInlineStart =
+    process.env.WORKFLOW_OPTIMISTIC_INLINE_START;
+
+  afterEach(() => {
+    if (originalOptimisticInlineStart === undefined) {
+      delete process.env.WORKFLOW_OPTIMISTIC_INLINE_START;
+    } else {
+      process.env.WORKFLOW_OPTIMISTIC_INLINE_START =
+        originalOptimisticInlineStart;
+    }
+    counter += 1;
+  });
+
+  it('does not admit a lazy step body before its durable step_started claim', async () => {
+    process.env.WORKFLOW_OPTIMISTIC_INLINE_START = '1';
+
+    const world = makeWorld();
+    const stepName = uniqueStepName();
+    const runInput = await dehydrateStepArguments([], 'run', undefined);
+    const created = await world.events.create(null, {
+      eventType: 'run_created',
+      specVersion: SPEC_VERSION_CURRENT,
+      eventData: {
+        deploymentId: 'dpl_test',
+        workflowName: 'wf',
+        input: runInput,
+      },
+    });
+    const runId = created.run!.runId;
+    await world.events.create(runId, {
+      eventType: 'run_started',
+      specVersion: SPEC_VERSION_CURRENT,
+      eventData: {},
+    } as never);
+
+    let bodyRuns = 0;
+    registerStepFunction(stepName, async () => {
+      bodyRuns += 1;
+      return 'ok';
+    });
+
+    let releaseStart!: () => void;
+    const startGate = new Promise<void>((resolve) => {
+      releaseStart = resolve;
+    });
+    const create = vi.fn(
+      async (...args: Parameters<World['events']['create']>) => {
+        const [, event] = args;
+        if (event.eventType === 'step_started') {
+          await startGate;
+        }
+        return world.events.create(...args);
+      }
+    );
+    const delayedWorld = {
+      ...world,
+      events: { ...world.events, create },
+    } as World;
+    const stepInput = await dehydrateStepArguments(
+      { args: ['input'] },
+      runId,
+      undefined
+    );
+
+    const execution = executeStep({
+      world: delayedWorld,
+      workflowRunId: runId,
+      workflowName: 'wf',
+      workflowStartedAt: Date.now(),
+      stepId: 'step_claim_before_body',
+      stepName,
+      lazyStepInput: stepInput,
+    });
+
+    await vi.waitFor(() => expect(create).toHaveBeenCalledTimes(1));
+    // The delayed start has reached the world. A pre-claim admission would
+    // run the body during this interval.
+    await new Promise<void>((resolve) => setTimeout(resolve, 100));
+    expect(bodyRuns).toBe(0);
+
+    releaseStart();
+    await execution;
+    expect(bodyRuns).toBe(1);
+  });
+});

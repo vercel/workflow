@@ -962,10 +962,9 @@ export function workflowEntrypoint(
                   let preStepBlockingBeforeAttrMs: number | undefined;
 
                   // Turbo mode fast-paths the very first delivery of the very
-                  // first invocation, where it is provably safe to: background
-                  // `run_started`, skip the initial event-log load (nothing has
-                  // been written yet), and force optimistic inline start (no
-                  // concurrent peer handler exists to race the create-claim).
+                  // first invocation, where it is safe to background
+                  // `run_started` and skip the initial event-log load (nothing
+                  // has been written yet).
                   // `runInput` is only present on the start()-enqueued message,
                   // and `attempt === 1` (1-based) means this is the first
                   // delivery; `incomingStepId` would mark a background-step
@@ -973,7 +972,7 @@ export function workflowEntrypoint(
                   // ineligible. The single-handler guarantee that makes forced
                   // optimistic start safe ends once a hook or wait is created
                   // (they introduce resume invocations), so turbo exits at that
-                  // point (see `forceOptimisticStart`). Workflow attribute
+                  // point. Workflow attribute
                   // writes introduce no such invocation source — they resolve
                   // via an in-process replay and don't end turbo.
                   // NOTE: `metadata.attempt === 1` is also load-bearing for
@@ -3418,76 +3417,6 @@ export function workflowEntrypoint(
                             (err.hookCount === 0 &&
                               !openHookWaitState.openHook));
 
-                        // Stale-sensitive batch: a hook is open in the run (or
-                        // was created by this suspension, so its hook_received
-                        // can land any moment) — an out-of-band event can make
-                        // the view this batch was scheduled from stale. With
-                        // the guard in force, the fence rejects a stale
-                        // claim's durable writes — but it cannot un-run a step
-                        // BODY that optimistic start began before the claim
-                        // settled. Suppress optimistic start for these batches
-                        // (take await-then-run) so a 412-fenced step never
-                        // executes user code at all: the fence then covers
-                        // side effects, not just the event log. Costs one
-                        // claim round-trip per step while a hook is open, only
-                        // on guard-enforcing deployments. Without the guard
-                        // nothing 412s, so suppression would buy nothing —
-                        // stale-view exposure there is the pre-existing
-                        // optimistic-start contract (idempotent side effects).
-                        const suppressOptimisticStart =
-                          guardEnforced &&
-                          (openHookWaitState.openHook ||
-                            err.hookCount > 0 ||
-                            suspensionResult.hasHookEvents);
-
-                        // Turbo mode forces optimistic inline start for this
-                        // batch — but only while the run is still "clean" (a pure
-                        // step suspension). The moment a hook or wait is
-                        // created, later resume/parallel invocations become
-                        // possible, so the single-handler guarantee that makes
-                        // forced optimistic start safe no longer holds — turbo
-                        // exits and the steps take the normal (env-gated)
-                        // await-then-run path. The hook-conflict case already
-                        // returned early above, the attr case continued into a
-                        // fresh replay (so a batch-scheduling suspension never
-                        // carries attr events), and the awaited-hook case
-                        // emptied lazyInlineSteps; the checks below are
-                        // defensive.
-                        //
-                        // The `suspensionResult.*` flags only reflect what THIS
-                        // batch created, so they do not catch a hook/wait opened
-                        // in an earlier iteration of the same delivery (e.g. a
-                        // fire-and-forget `createHook(...)` that doesn't block the
-                        // workflow, letting the replay loop continue to later pure
-                        // step suspensions). Once any hook or wait is open in the
-                        // cumulative log, resume/parallel invocations are possible
-                        // for the rest of the run, so turbo must latch off
-                        // permanently — checked here via `openHookAndWaitState`
-                        // over the cumulative event log.
-                        //
-                        // NOTE: `WORKFLOW_SEQUENTIAL_REPLAYS=1` (per-run flow
-                        // topics consumed with `maxConcurrency: 1`) would in
-                        // principle waive this latch — serialized orchestrator
-                        // invocations restore the single-handler guarantee for
-                        // the whole delivery. The waiver is intentionally NOT
-                        // taken: the env var is a runtime-process setting that
-                        // cannot prove the BUILT flow trigger actually carries
-                        // `maxConcurrency: 1` (it must be set at build time
-                        // too, and some integrations write their own trigger
-                        // config), and `capabilities.maxConcurrency` only
-                        // declares queue support, not deployed configuration.
-                        // Until the build emits a verifiable signal that the
-                        // deployed trigger is serialized, the conservative
-                        // latch stays.
-                        const forceOptimisticStart =
-                          turbo &&
-                          !suspensionResult.hasAttributeEvents &&
-                          !suspensionResult.waitTimeout &&
-                          !suspensionResult.hasHookEvents &&
-                          !suspensionResult.hasAwaitedHookCreation &&
-                          !openHookWaitState.openHook &&
-                          !openHookWaitState.openWait;
-
                         // Execute the inline steps in parallel. The replay
                         // budget is paused for the whole batch — step duration is
                         // bounded by the platform's function maxDuration, not the
@@ -3603,17 +3532,6 @@ export function workflowEntrypoint(
                                 // as in flight here and suppress the
                                 // immediate requeue (workflow#2780).
                                 ownerMessageId: metadata.messageId,
-                                // Turbo: force optimistic start and hold the
-                                // lazy step_started until the backgrounded
-                                // run_started lands (the body still runs
-                                // immediately). Both are undefined/false
-                                // outside turbo.
-                                forceOptimisticStart,
-                                // Guard-enforced batches with an open hook
-                                // await the claim before running the body, so
-                                // a 412-fenced step never executes user code —
-                                // see suppressOptimisticStart above.
-                                suppressOptimisticStart,
                                 runReadyBarrier,
                                 preconditionSnapshot: inlineClaimSnapshot,
                                 ...(stepIndex === 0 &&
