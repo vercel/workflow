@@ -118,6 +118,19 @@ export interface SuspensionHandlerParams {
    * plain deferred path.
    */
   ownerMessageId?: string;
+  /**
+   * Lets the batched fan-out return before every chunk has committed: only
+   * the chunk carrying the pre-claimed inline pairs gates the handler's
+   * return (its claims are what the caller starts bodies from), while the
+   * trailing chunks' commits — and every chunk's in-flush step-message
+   * publishes — ride {@link SuspensionHandlerResult.deferredBatchWork}. A
+   * caller that opts in MUST await that promise before acking its delivery:
+   * the durability contract ("every create durable before ack") moves from
+   * the handler's return to that join, and nothing else re-drives a lost
+   * trailing chunk. Callers that don't opt in (terminal drain, default)
+   * keep the everything-durable-at-return behavior.
+   */
+  allowDeferredBatchWork?: boolean;
 }
 
 /**
@@ -197,9 +210,26 @@ export interface SuspensionHandlerResult {
    * them up), so the caller folds this ceiling into the slot snapshot it
    * hands the inline executions — otherwise every inline terminal write
    * would name a pre-batch position and be answered with a skipped-slot
-   * report echoing the events this suspension just wrote.
+   * report echoing the events this suspension just wrote. Under
+   * {@link SuspensionHandlerParams.allowDeferredBatchWork} this covers the
+   * chunks that had committed by the handler's return (always the pair
+   * chunk); a trailing chunk that commits later is echoed back on the
+   * terminal writes like any foreign event — reports the executor reads for
+   * position and discards.
    */
   batchCommittedSlotCeiling?: number;
+  /**
+   * The batched fan-out's deferred work, present only when the caller opted
+   * in via {@link SuspensionHandlerParams.allowDeferredBatchWork} and
+   * trailing work exists: the commits of every chunk except the pair chunk,
+   * plus every chunk's step-message publishes (each chained on ITS OWN
+   * chunk's commit, so publish-after-create holds per step). The caller
+   * MUST await it before acking — a rejection here is a failed suspension
+   * write and fails the delivery exactly as it would have at the handler's
+   * return. Steps whose messages this work publishes are already in
+   * {@link queuedStepCorrelationIds} at return time.
+   */
+  deferredBatchWork?: Promise<void>;
   /**
    * The soonest pending wait, if any: seconds until it elapses and the
    * correlationId of the wait that produced that timeout. The
@@ -333,6 +363,7 @@ export async function handleSuspension({
   replayRecoveryReporter,
   stepDispatch,
   ownerMessageId,
+  allowDeferredBatchWork,
 }: SuspensionHandlerParams): Promise<SuspensionHandlerResult> {
   const runId = run.runId;
 
@@ -771,6 +802,9 @@ export async function handleSuspension({
     order: number;
     kind: 'step' | 'wait' | 'inline-created' | 'inline-started';
     correlationId: string;
+    /** The step's name, set on step-carrying kinds (the in-flush publishes
+     *  and the dispatch idempotency key need it). */
+    stepName?: string;
     event: CreateEventRequest;
   }[] = [];
   const batchPreps: Promise<void>[] = [];
@@ -1009,6 +1043,7 @@ export async function handleSuspension({
             order: stepOrder,
             kind: 'step',
             correlationId: queueItem.correlationId,
+            stepName: queueItem.stepName,
             event: stepEvent,
           });
           return;
@@ -1085,12 +1120,27 @@ export async function handleSuspension({
     }
   }
 
-  // The batched fold's flush: ONE durable write for the whole clean fan-out
-  // (chunked at MAX_BATCH_FANOUT_EVENTS), joining `ops` like the per-event
-  // writes it replaces so settlePhase semantics are unchanged. Each event
-  // reports the outcome its own single create would have had: a 409 is the
-  // same already-exists tolerance as the single path, anything else fails
-  // the op the way a single-path rejection would.
+  // The batched fold's flush: the clean fan-out commits through
+  // `createBatch` in chunks of MAX_BATCH_FANOUT_EVENTS — all chunks IN
+  // FLIGHT CONCURRENTLY. Slot assignment is the server's, so parallel
+  // chunks race for slot ranges exactly like the pre-fold path's parallel
+  // single writes did; entity conditions, not commit order, carry
+  // correctness (sibling fan-out events have no cross-order the replay
+  // depends on — it matches by correlation id). Each event reports the
+  // outcome its own single create would have had: a 409 is the same
+  // already-exists tolerance as the single path, anything else fails the
+  // delivery the way a single-path rejection would.
+  //
+  // Latency shape: only the chunk carrying the pre-claimed inline pairs
+  // gates the handler's return (the caller starts bodies off its claims).
+  // Every other chunk's commit — and every chunk's step-message publishes,
+  // which fire the moment ITS creates are durable — rides
+  // `deferredBatchWork` when the caller opted in, joined before ack. A slow
+  // sibling chunk therefore delays neither the inline bodies nor another
+  // chunk's queue messages, while publish-after-create still holds per
+  // step: a step's message is only ever sent after the chunk carrying its
+  // create has committed.
+  let deferredBatchWork: Promise<void> | undefined;
   if (batchFanoutEligible) {
     ops.push(
       (async () => {
@@ -1133,11 +1183,14 @@ export async function handleSuspension({
           }
           return;
         }
-        // Expected next slot for the bump diagnostic below: seeded once from
-        // the caller's view and advanced past each chunk's own committed
-        // events, so chunk 2+ of a multi-chunk fan-out does not misread this
-        // fold's earlier chunks as foreign skips.
-        let expectedFirstSlot = eventLog
+        // Seed for the foreign-interleaving diagnostic below. With chunks
+        // committing in parallel there is no per-chunk "expected next slot"
+        // — the whole fold's committed span is compared against the seed
+        // once every chunk has settled: committed slots are dense per the
+        // World's invariant, so any excess of (max committed slot − seed +
+        // 1) over the fold's own committed count is events OTHER writers
+        // landed in between.
+        const expectedFirstSlot = eventLog
           ? (maxEventSlot(eventLog.events) ?? 0) + 1
           : undefined;
         // Pair-aware chunking: a pre-claimed pair's two rows must land in
@@ -1171,7 +1224,27 @@ export async function handleSuspension({
           }
           if (current.length > 0) chunks.push(current);
         }
-        for (const chunk of chunks) {
+        // Steps whose queue messages THIS FLUSH will publish (the eager
+        // creates), recorded before any chunk settles so the caller's
+        // dispatch pass — which runs off the handler's return — skips them.
+        // The sends are guaranteed-or-failed by the trailing work the
+        // caller joins before acking, so "will be published by this flush"
+        // and "already published" are equivalent from the caller's side.
+        const publishEagerSteps = stepDispatch !== undefined;
+        if (publishEagerSteps) {
+          for (const entry of entries) {
+            if (entry.kind === 'step') {
+              queuedStepCorrelationIds.add(entry.correlationId);
+            }
+          }
+        }
+
+        // Tallies for the foreign-interleaving diagnostic, folded across
+        // the concurrent chunks and read once all of them settled.
+        let committedCount = 0;
+        let maxCommittedSlot: number | undefined;
+
+        const commitChunk = async (chunk: typeof entries): Promise<void> => {
           // Anchors for the pre-claimed steps' telemetry: the POST instant
           // is the claim's "start POST sent" (RSFS's end), the return is the
           // claim's completion (TTR's T6) — the same two instants the lazy
@@ -1291,10 +1364,10 @@ export async function handleSuspension({
               { status: item.status }
             );
           }
-          // Highest slot this chunk committed: it is both the ceiling the
-          // caller folds into the inline executions' slot snapshot (see
-          // SuspensionHandlerResult.batchCommittedSlotCeiling) and what the
-          // bump expectation advances past below.
+          // Highest slot this chunk committed: the ceiling the caller folds
+          // into the inline executions' slot snapshot (see
+          // SuspensionHandlerResult.batchCommittedSlotCeiling) and one input
+          // of the interleaving diagnostic.
           const chunkMaxSlot = maxEventSlot(
             results.flatMap((item) =>
               item.error === undefined && item.event ? [item.event] : []
@@ -1307,37 +1380,119 @@ export async function handleSuspension({
           ) {
             batchCommittedSlotCeiling = chunkMaxSlot;
           }
-          // Slot-bump visibility: the batch endpoint has no bump-and-report,
-          // so a foreign event landing between our snapshot and the commit
-          // pushes the whole batch to higher slots WITHOUT handing us the
-          // skipped events. That is the same accepted exposure as a dropped
-          // truncated report on the single path (absorbSkippedSlotReport
-          // drops those whole): the local log continues without the foreign
-          // events and the next reload sees them. Logged so a bump is
-          // diagnosable rather than silent.
-          const firstCommitted = results.find(
+          committedCount += results.filter(
             (item) => item.error === undefined
-          )?.event;
-          if (expectedFirstSlot !== undefined && firstCommitted) {
-            const firstSlot = maxEventSlot([firstCommitted]);
-            if (firstSlot !== undefined && firstSlot > expectedFirstSlot) {
+          ).length;
+          if (
+            chunkMaxSlot !== undefined &&
+            (maxCommittedSlot === undefined || chunkMaxSlot > maxCommittedSlot)
+          ) {
+            maxCommittedSlot = chunkMaxSlot;
+          }
+        };
+
+        // Publish the chunk's eager steps' queue messages the moment ITS
+        // creates are durable — the per-chunk half of publish-after-create.
+        // Same message shape and step-identity-scoped idempotency key as the
+        // caller's dispatch pass, so anything double-published dedupes.
+        const publishChunkSteps = async (
+          chunk: typeof entries
+        ): Promise<void> => {
+          if (!publishEagerSteps) return;
+          const stepEntries = chunk.filter((entry) => entry.kind === 'step');
+          if (stepEntries.length === 0) return;
+          const traceCarrier = await getStepDispatchTraceCarrier();
+          await Promise.all(
+            stepEntries.map((entry) =>
+              queueMessage(
+                world,
+                // biome-ignore lint/style/noNonNullAssertion: publishEagerSteps implies presence
+                stepDispatch!.queueName,
+                {
+                  runId,
+                  stepId: entry.correlationId,
+                  // biome-ignore lint/style/noNonNullAssertion: set on every 'step' entry at enqueue
+                  stepName: entry.stepName!,
+                  traceCarrier,
+                  requestedAt: new Date(),
+                },
+                {
+                  idempotencyKey: stepDispatchIdempotencyKey(
+                    entry.correlationId,
+                    // biome-ignore lint/style/noNonNullAssertion: set on every 'step' entry at enqueue
+                    entry.stepName!
+                  ),
+                }
+              )
+            )
+          );
+        };
+
+        // Launch every chunk's POST now; chain each chunk's publishes on its
+        // OWN commit. A chunk whose commit rejected keeps its messages
+        // unsent (the rejection fails the delivery; redelivery re-creates
+        // and re-dispatches, deduped by the idempotency keys).
+        const commits = chunks.map((chunk) => commitChunk(chunk));
+        const publishes = chunks.map(async (chunk, index) => {
+          await commits[index];
+          await publishChunkSteps(chunk);
+        });
+
+        const trailing = (async () => {
+          // Let every sibling settle before surfacing the first failure: a
+          // chunk that committed must still get its publishes out even when
+          // another chunk failed, and the caller acks only after this
+          // resolves.
+          const settled = await Promise.allSettled([...commits, ...publishes]);
+          // Foreign-interleaving visibility: the batch endpoint has no
+          // bump-and-report, so events other writers landed between the
+          // snapshot and these commits pushed the fold to higher slots
+          // WITHOUT handing us the skipped events. Same accepted exposure
+          // as a dropped truncated report on the single path: the local
+          // log stays a strict prefix and the next reload observes them.
+          // Logged so a bump is diagnosable rather than silent.
+          if (
+            expectedFirstSlot !== undefined &&
+            maxCommittedSlot !== undefined
+          ) {
+            const interleaved =
+              maxCommittedSlot - expectedFirstSlot + 1 - committedCount;
+            if (interleaved > 0) {
               runtimeLogger.debug('Batched fan-out committed above snapshot', {
                 workflowRunId: runId,
                 expectedFirstSlot,
-                firstSlot,
-                skipped: firstSlot - expectedFirstSlot,
+                maxCommittedSlot,
+                committedCount,
+                interleaved,
               });
             }
           }
-          // Advance the expectation past this chunk's committed events so the
-          // next chunk's diagnostic measures only foreign interleaving.
-          if (
-            expectedFirstSlot !== undefined &&
-            chunkMaxSlot !== undefined &&
-            chunkMaxSlot >= expectedFirstSlot
-          ) {
-            expectedFirstSlot = chunkMaxSlot + 1;
+          const failure = settled.find(
+            (outcome): outcome is PromiseRejectedResult =>
+              outcome.status === 'rejected'
+          );
+          if (failure) throw failure.reason;
+        })();
+
+        const pairChunkIndex = chunks.findIndex((chunk) =>
+          chunk.some((entry) => entry.kind === 'inline-started')
+        );
+        if (allowDeferredBatchWork) {
+          // The trailing work is the caller's to join before ack. Attach a
+          // handler now so a rejection that races that join (or a foreground
+          // failure that prevents the caller from ever reaching it) is never
+          // an unhandledRejection — awaiting the promise still observes it.
+          trailing.catch(() => {});
+          deferredBatchWork = trailing;
+          // Only the pair chunk gates the return: its claims are what the
+          // caller starts the inline bodies from. With no pairs there is
+          // nothing the caller's post-return work reads from the commits,
+          // so nothing gates.
+          if (pairChunkIndex >= 0) {
+            await commits[pairChunkIndex];
           }
+        } else {
+          await trailing;
         }
       })()
     );
@@ -1467,6 +1622,7 @@ export async function handleSuspension({
     lazyInlineSteps,
     inlineClaims,
     batchCommittedSlotCeiling,
+    deferredBatchWork,
     // On hook conflict the caller re-invokes immediately and never reads
     // the wait timeout, so don't report one.
     waitTimeout: hasHookConflict ? undefined : soonestWait,

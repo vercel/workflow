@@ -3136,6 +3136,14 @@ export function workflowEntrypoint(
                             // the bodies below start straight off it. See
                             // SuspensionHandlerResult.inlineClaims.
                             ownerMessageId: metadata.messageId,
+                            // Let the fold return once the pair chunk has
+                            // committed: trailing chunks and the per-chunk
+                            // step-message publishes ride
+                            // `deferredBatchWork`, which this invocation
+                            // joins before it can ack (below, next to the
+                            // dispatch join) — so the durability contract
+                            // is unchanged while the bodies start earlier.
+                            allowDeferredBatchWork: true,
                           });
                         } catch (suspensionError) {
                           // A suspension create was rejected as stale: re-derive
@@ -3694,9 +3702,13 @@ export function workflowEntrypoint(
                         // the queue drive subsequent replays.
                         if (inlineExecutions.length === 0) {
                           // Nothing runs concurrently with the dispatches on
-                          // this path — join them here so a publish failure
-                          // fails the delivery exactly as it always has.
-                          await dispatchesSettled;
+                          // this path — join them (and the fold's deferred
+                          // chunk commits/publishes) here so a failure fails
+                          // the delivery exactly as it always has.
+                          await Promise.all([
+                            dispatchesSettled,
+                            suspensionResult.deferredBatchWork,
+                          ]);
                           // A `hook.getConflict()` awaiter needs an immediate
                           // re-invocation: the replay consumes the
                           // just-committed hook_created and resolves the
@@ -4055,15 +4067,22 @@ export function workflowEntrypoint(
                           }
                         );
                         try {
-                          // Join the dispatch publishes launched above — the
-                          // bodies are already running in parallel with them.
-                          // A publish failure keeps its old contract (fail
-                          // this delivery so the message redelivers), but the
-                          // in-flight bodies must settle first: an owned body
-                          // left running past this handler would race its own
+                          // Join the dispatch publishes launched above and
+                          // the fold's deferred batch work (trailing chunk
+                          // commits + per-chunk step-message publishes) —
+                          // the bodies are already running in parallel with
+                          // both, and this invocation must not ack before
+                          // every create and publish is durable. A failure
+                          // keeps its old contract (fail this delivery so
+                          // the message redelivers), but the in-flight
+                          // bodies must settle first: an owned body left
+                          // running past this handler would race its own
                           // redelivery.
                           try {
-                            await dispatchesSettled;
+                            await Promise.all([
+                              dispatchesSettled,
+                              suspensionResult.deferredBatchWork,
+                            ]);
                           } catch (dispatchErr) {
                             await Promise.allSettled(stepExecutionPromises);
                             throw dispatchErr;

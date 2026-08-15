@@ -1504,4 +1504,207 @@ describe('handleSuspension batched fan-out', () => {
       }
     });
   });
+
+  describe('parallel chunks, per-chunk publishes, deferred work', () => {
+    const queueName = '__wkf_workflow_test-workflow' as ValidQueueName;
+    const stepDispatch = () => ({
+      queueName,
+      getTraceCarrier: vi.fn().mockResolvedValue({ traceparent: '00-abc' }),
+    });
+
+    /**
+     * A createBatch mock whose calls block until released, so tests control
+     * per-chunk commit timing. Results mirror successfulCreateBatch.
+     */
+    function gatedCreateBatch(firstSlot = 10) {
+      let slot = firstSlot;
+      const releases: (() => void)[] = [];
+      const createBatch = vi.fn().mockImplementation(
+        (_runId, events) =>
+          new Promise((resolve) => {
+            releases.push(() =>
+              resolve({
+                results: events.map(
+                  ({ event }: { event: { eventType: string } }) => ({
+                    status: 200,
+                    event: { ...event, eventId: slotToEventId(slot++) },
+                  })
+                ),
+              })
+            );
+          })
+      );
+      return { createBatch, releases };
+    }
+
+    function queueWorld(
+      createBatch: ReturnType<typeof vi.fn>,
+      queue = vi.fn().mockResolvedValue({ messageId: 'msg_q' })
+    ): { world: World; queue: ReturnType<typeof vi.fn> } {
+      const world = {
+        events: { create: vi.fn(), createBatch },
+        queue,
+        getEncryptionKeyForRun: vi.fn().mockResolvedValue(undefined),
+      } as unknown as World;
+      return { world, queue };
+    }
+
+    const tick = () => new Promise((resolve) => setImmediate(resolve));
+    /** 'pending' | 'settled' without awaiting the probed promise. */
+    const probe = async (p: Promise<unknown> | undefined) => {
+      let state = 'pending';
+      p?.then(
+        () => {
+          state = 'settled';
+        },
+        () => {
+          state = 'settled';
+        }
+      );
+      await tick();
+      return state;
+    };
+
+    it('POSTs every chunk concurrently instead of serially', async () => {
+      // 34 steps, no pairs (no ownerMessageId): s1 defers lazily, 33 eager
+      // creates chunk as 32 + 1 — and BOTH POSTs must be in flight before
+      // either commits.
+      const { createBatch, releases } = gatedCreateBatch();
+      const { world } = queueWorld(createBatch);
+      const stepIds = Array.from({ length: 34 }, (_, i) => `s${i + 1}`);
+
+      const pending = handleSuspension({
+        suspension: new WorkflowSuspension(stepsAndWait(stepIds), globalThis),
+        world,
+        run: slotRun,
+      });
+      await vi.waitFor(() => {
+        expect(createBatch).toHaveBeenCalledTimes(2);
+      });
+      for (const release of releases) release();
+      const result = await pending;
+      expect(result.createdStepCorrelationIds.size).toBe(33);
+    });
+
+    it('returns off the pair chunk; trailing chunks ride deferredBatchWork', async () => {
+      // 34 steps with a pair: chunk 1 = pair + 30 eager (32 rows), chunk 2 =
+      // 3 eager. Releasing only chunk 1 must resolve the handler with the
+      // claims; chunk 2 settles deferredBatchWork later.
+      const { createBatch, releases } = gatedCreateBatch();
+      const { world, queue } = queueWorld(createBatch);
+      const stepIds = Array.from({ length: 34 }, (_, i) => `s${i + 1}`);
+
+      const pending = handleSuspension({
+        suspension: new WorkflowSuspension(stepsAndWait(stepIds), globalThis),
+        world,
+        run: slotRun,
+        ownerMessageId: 'msg_owner_1',
+        stepDispatch: stepDispatch(),
+        allowDeferredBatchWork: true,
+      });
+      await vi.waitFor(() => {
+        expect(createBatch).toHaveBeenCalledTimes(2);
+      });
+      releases[0]();
+      const result = await pending;
+
+      // The handler returned with chunk 2 still uncommitted.
+      expect(result.inlineClaims.get('s1')?.owned).toBe(true);
+      expect(result.deferredBatchWork).toBeDefined();
+      expect(await probe(result.deferredBatchWork)).toBe('pending');
+      // Every eager step is claimed for in-flush publishing up front, so
+      // the caller's dispatch pass skips them all.
+      expect(result.queuedStepCorrelationIds.size).toBe(33);
+
+      // Chunk 1's publishes fire off its own commit — 30 messages — while
+      // chunk 2's three wait for theirs.
+      await vi.waitFor(() => {
+        expect(queue).toHaveBeenCalledTimes(30);
+      });
+      const publishedNow = queue.mock.calls.map((call) => call[1].stepId);
+      expect(publishedNow).not.toContain('s33');
+
+      releases[1]();
+      // biome-ignore lint/style/noNonNullAssertion: asserted defined above
+      await result.deferredBatchWork!;
+      expect(queue).toHaveBeenCalledTimes(33);
+      // Message shape and idempotency key match the caller's dispatch pass.
+      const [calledQueueName, payload, opts] = queue.mock.calls[0];
+      expect(calledQueueName).toBe(queueName);
+      expect(payload).toMatchObject({
+        runId: slotRun.runId,
+        stepName: payload.stepId,
+        traceCarrier: { traceparent: '00-abc' },
+      });
+      expect(opts.idempotencyKey).toBe(
+        stepDispatchIdempotencyKey(payload.stepId, payload.stepName)
+      );
+    });
+
+    it('surfaces a trailing-chunk failure through deferredBatchWork, not the return', async () => {
+      let call = 0;
+      let releaseFailure: (() => void) | undefined;
+      const createBatch = vi.fn().mockImplementation((_runId, events) => {
+        call += 1;
+        if (call === 2) {
+          return new Promise((_resolve, reject) => {
+            releaseFailure = () =>
+              reject(
+                new WorkflowWorldError('trailing chunk exploded', {
+                  status: 500,
+                })
+              );
+          });
+        }
+        let slot = 10;
+        return Promise.resolve({
+          results: events.map(({ event }: { event: object }) => ({
+            status: 200,
+            event: { ...event, eventId: slotToEventId(slot++) },
+          })),
+        });
+      });
+      const { world } = queueWorld(createBatch);
+      const stepIds = Array.from({ length: 34 }, (_, i) => `s${i + 1}`);
+
+      const result = await handleSuspension({
+        suspension: new WorkflowSuspension(stepsAndWait(stepIds), globalThis),
+        world,
+        run: slotRun,
+        ownerMessageId: 'msg_owner_1',
+        stepDispatch: stepDispatch(),
+        allowDeferredBatchWork: true,
+      });
+      expect(result.inlineClaims.get('s1')?.owned).toBe(true);
+      // biome-ignore lint/style/noNonNullAssertion: set by the second call
+      releaseFailure!();
+      await expect(result.deferredBatchWork).rejects.toMatchObject({
+        message: expect.stringContaining('trailing chunk exploded'),
+      });
+    });
+
+    it('awaits everything at return without the opt-in', async () => {
+      const { createBatch, releases } = gatedCreateBatch();
+      const { world } = queueWorld(createBatch);
+      const stepIds = Array.from({ length: 34 }, (_, i) => `s${i + 1}`);
+
+      const pending = handleSuspension({
+        suspension: new WorkflowSuspension(stepsAndWait(stepIds), globalThis),
+        world,
+        run: slotRun,
+        ownerMessageId: 'msg_owner_1',
+        stepDispatch: stepDispatch(),
+      });
+      await vi.waitFor(() => {
+        expect(createBatch).toHaveBeenCalledTimes(2);
+      });
+      releases[0]();
+      // Chunk 2 unreleased: the handler must still be pending.
+      expect(await probe(pending)).toBe('pending');
+      releases[1]();
+      const result = await pending;
+      expect(result.deferredBatchWork).toBeUndefined();
+      expect(result.inlineClaims.get('s1')?.owned).toBe(true);
+    });
+  });
 });
