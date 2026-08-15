@@ -22,7 +22,7 @@ interface Ledger {
   queueOptions: unknown;
   resumePayloadDigest: string;
   resumeId: string;
-  dispatchState: 'pending' | 'acknowledged';
+  dispatchState: 'pending' | 'dispatching' | 'acknowledged';
 }
 
 export interface HookResumeDrivers {
@@ -49,6 +49,7 @@ function assertLedger(value: unknown): asserts value is Ledger {
     typeof ledger.resumePayloadDigest !== 'string' ||
     typeof ledger.resumeId !== 'string' ||
     (ledger.dispatchState !== 'pending' &&
+      ledger.dispatchState !== 'dispatching' &&
       ledger.dispatchState !== 'acknowledged')
   ) {
     throw new WorkflowWorldError('corrupt hook-resume ledger');
@@ -121,9 +122,39 @@ export function createHookResumesStorage(
     });
   }
 
+  async function releaseDispatch(
+    file: string,
+    resumeId: string
+  ): Promise<void> {
+    await withLedger(file, async (ledgerFile, current) => {
+      if (!current || current.resumeId !== resumeId) {
+        throw new WorkflowWorldError('Unknown hook-resume dispatch');
+      }
+      if (current.dispatchState !== 'dispatching') return;
+      current.dispatchState = 'pending';
+      await writeLedger(ledgerFile, current);
+    });
+  }
+
+  async function takeDispatch(file: string): Promise<Ledger | null> {
+    return withLedger(file, async (ledgerFile, current) => {
+      if (!current || current.dispatchState !== 'pending') return null;
+      current.dispatchState = 'dispatching';
+      await writeLedger(ledgerFile, current);
+      return current;
+    });
+  }
+
   async function dispatch(file: string, ledger: Ledger): Promise<void> {
-    if (ledger.dispatchState === 'acknowledged') return;
-    await drivers.dispatch(ledger, () => acknowledge(file, ledger.resumeId));
+    if (ledger.dispatchState !== 'pending') return;
+    const owned = await takeDispatch(file);
+    if (!owned) return;
+    try {
+      await drivers.dispatch(owned, () => acknowledge(file, owned.resumeId));
+    } catch (error) {
+      await releaseDispatch(file, owned.resumeId);
+      throw error;
+    }
   }
 
   async function use(
@@ -189,10 +220,13 @@ export function createHookResumesStorage(
       });
       for (const name of names.filter((entry) => entry.endsWith('.json'))) {
         const file = path.join(directory, name);
-        const current = await withLedger(
-          file,
-          async (_ledgerFile, ledger) => ledger
-        );
+        const current = await withLedger(file, async (ledgerFile, ledger) => {
+          if (ledger?.dispatchState === 'dispatching') {
+            ledger.dispatchState = 'pending';
+            await writeLedger(ledgerFile, ledger);
+          }
+          return ledger;
+        });
         if (current) await dispatch(file, current);
       }
     },
