@@ -66,6 +66,17 @@ interface KeyedLedger {
   closed?: boolean;
 }
 
+/** One durable admission decision for a (run, stream). */
+interface StreamModeLedger {
+  version: 1;
+  mode: 'keyed' | 'ordinary';
+}
+
+const StreamModeLedgerSchema = z.object({
+  version: z.literal(1),
+  mode: z.enum(['keyed', 'ordinary']),
+});
+
 const KeyedLedgerSchema = z.object({
   version: z.literal(1),
   runId: z.string(),
@@ -100,6 +111,72 @@ function keyedLedgerPath(
     keyedFileId(runId),
     `${keyedFileId(streamName)}${tag ? `.${tag}` : ''}.json`
   );
+}
+
+function streamModePath(
+  basedir: string,
+  runId: string,
+  streamName: string,
+  tag?: string
+): string {
+  return path.join(
+    basedir,
+    'streams',
+    'modes-v1',
+    keyedFileId(runId),
+    `${keyedFileId(streamName)}${tag ? `.${tag}` : ''}.json`
+  );
+}
+
+async function withStreamMode<T>(
+  basedir: string,
+  runId: string,
+  streamName: string,
+  tag: string | undefined,
+  requested: StreamModeLedger['mode'],
+  fn: (mode: StreamModeLedger['mode']) => Promise<T>
+): Promise<T> {
+  const file = streamModePath(basedir, runId, streamName, tag);
+  await fs.mkdir(path.dirname(file), { recursive: true });
+  const release = await lock(file, {
+    realpath: false,
+    stale: 30_000,
+    update: 1_000,
+    retries: { retries: 300, factor: 1, minTimeout: 10, maxTimeout: 10 },
+  });
+  try {
+    let mode: StreamModeLedger['mode'] | undefined;
+    try {
+      mode = StreamModeLedgerSchema.parse(
+        JSON.parse(await fs.readFile(file, 'utf8'))
+      ).mode;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+    if (!mode) {
+      const keyed = await readKeyedLedger(basedir, runId, streamName, tag);
+      const ordinary = await listChunkFilesForStream(
+        path.join(basedir, 'streams', 'chunks'),
+        streamName,
+        tag
+      );
+      const ordinaryFiles = ordinary.files.filter(
+        (file) => !file.startsWith('keyed_')
+      );
+      if (keyed && ordinaryFiles.length > 0) {
+        throw new Error('mixed keyed/unkeyed stream data');
+      }
+      mode = keyed
+        ? 'keyed'
+        : ordinaryFiles.length > 0
+          ? 'ordinary'
+          : requested;
+      await fs.writeFile(file, JSON.stringify({ version: 1, mode }));
+    }
+    return await fn(mode);
+  } finally {
+    await release();
+  }
 }
 
 async function readKeyedLedger(
@@ -363,64 +440,62 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
       return canonicalChunk;
     };
 
-    return withKeyedLedger(basedir, runId, name, tag, async (file, current) => {
-      const existing = current?.records.find(
-        (record) => record.idempotencyKey === request.idempotencyKey
-      );
-      if (existing) {
-        if (existing.semanticDigest !== request.semanticDigest) {
-          throw new Error(
-            'Keyed stream append retried with a different digest'
+    return withStreamMode(basedir, runId, name, tag, 'keyed', async (mode) => {
+      if (mode !== 'keyed') throw new Error('mixed keyed/unkeyed stream data');
+      return withKeyedLedger(
+        basedir,
+        runId,
+        name,
+        tag,
+        async (file, current) => {
+          const existing = current?.records.find(
+            (record) => record.idempotencyKey === request.idempotencyKey
           );
-        }
-        return {
-          inserted: false,
-          canonicalChunk: await materialize(existing),
-          index: existing.index,
-        };
-      }
+          if (existing) {
+            if (existing.semanticDigest !== request.semanticDigest) {
+              throw new Error(
+                'Keyed stream append retried with a different digest'
+              );
+            }
+            return {
+              inserted: false,
+              canonicalChunk: await materialize(existing),
+              index: existing.index,
+            };
+          }
 
-      if (current?.closed) {
-        throw new Error('closed keyed stream');
-      }
-      if (!current) {
-        const ordinary = await listChunkFilesForStream(
-          path.join(basedir, 'streams', 'chunks'),
-          name,
-          tag
-        );
-        if (ordinary.files.length > 0) {
-          throw new Error('mixed keyed/unkeyed stream data');
+          if (current?.closed) {
+            throw new Error('closed keyed stream');
+          }
+          await registerStreamForRun(runId, name);
+          const chunk = toBuffer(request.chunk);
+          const index = current?.records.length ?? 0;
+          const record: KeyedRecord = {
+            idempotencyKey: request.idempotencyKey,
+            semanticDigest: request.semanticDigest,
+            chunkId: `chnk_${monotonicUlid()}`,
+            index,
+            canonicalChunk: chunk.toString('base64'),
+            // The padded ledger index is the physical order for cross-process tailers.
+            physicalId: `keyed_${keyedFileId(runId).slice(0, 16)}_${String(index).padStart(12, '0')}`,
+          };
+          await writeKeyedLedger(file, {
+            version: 1,
+            runId,
+            streamName: name,
+            records: [...(current?.records ?? []), record],
+            closed: false,
+          });
+          const canonicalChunk = await materialize(record);
+          streamEmitter.emit(`chunk:${name}` as const, {
+            runId,
+            streamName: name,
+            chunkData: canonicalChunk,
+            chunkId: record.physicalId,
+          });
+          return { inserted: true, canonicalChunk, index };
         }
-      }
-
-      await registerStreamForRun(runId, name);
-      const chunk = toBuffer(request.chunk);
-      const index = current?.records.length ?? 0;
-      const record: KeyedRecord = {
-        idempotencyKey: request.idempotencyKey,
-        semanticDigest: request.semanticDigest,
-        chunkId: `chnk_${monotonicUlid()}`,
-        index,
-        canonicalChunk: chunk.toString('base64'),
-        // The padded ledger index is the physical order for cross-process tailers.
-        physicalId: `keyed_${keyedFileId(runId).slice(0, 16)}_${String(index).padStart(12, '0')}`,
-      };
-      await writeKeyedLedger(file, {
-        version: 1,
-        runId,
-        streamName: name,
-        records: [...(current?.records ?? []), record],
-        closed: false,
-      });
-      const canonicalChunk = await materialize(record);
-      streamEmitter.emit(`chunk:${name}` as const, {
-        runId,
-        streamName: name,
-        chunkData: canonicalChunk,
-        chunkId: record.physicalId,
-      });
-      return { inserted: true, canonicalChunk, index };
+      );
     });
   };
 
@@ -441,37 +516,45 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
         // Await runId if it's a promise to ensure proper flushing
         const runId = await _runId;
 
-        if (await readKeyedLedger(basedir, runId, name, tag)) {
-          throw new Error('mixed keyed/unkeyed stream data');
-        }
-
-        // Register this stream for the run
-        await registerStreamForRun(runId, name);
-
-        // Convert chunk to buffer for serialization
-        const chunkBuffer = toBuffer(chunk);
-
-        const serialized = serializeChunk({
-          chunk: chunkBuffer,
-          eof: false,
-        });
-
-        const chunkPath = path.join(
-          chunkDirForStream(path.join(basedir, 'streams', 'chunks'), name),
-          `${chunkId}${tagSuffix}.bin`
-        );
-
-        await write(chunkPath, serialized);
-
-        // Emit real-time event with Uint8Array (create copy to prevent ArrayBuffer detachment)
-        const chunkData = Uint8Array.from(chunkBuffer);
-
-        streamEmitter.emit(`chunk:${name}` as const, {
+        return withStreamMode(
+          basedir,
           runId,
-          streamName: name,
-          chunkData,
-          chunkId,
-        });
+          name,
+          tag,
+          'ordinary',
+          async (mode) => {
+            if (mode !== 'ordinary')
+              throw new Error('mixed keyed/unkeyed stream data');
+
+            // Register this stream for the run
+            await registerStreamForRun(runId, name);
+
+            // Convert chunk to buffer for serialization
+            const chunkBuffer = toBuffer(chunk);
+
+            const serialized = serializeChunk({
+              chunk: chunkBuffer,
+              eof: false,
+            });
+
+            const chunkPath = path.join(
+              chunkDirForStream(path.join(basedir, 'streams', 'chunks'), name),
+              `${chunkId}${tagSuffix}.bin`
+            );
+
+            await write(chunkPath, serialized);
+
+            // Emit real-time event with Uint8Array (create copy to prevent ArrayBuffer detachment)
+            const chunkData = Uint8Array.from(chunkBuffer);
+
+            streamEmitter.emit(`chunk:${name}` as const, {
+              runId,
+              streamName: name,
+              chunkData,
+              chunkId,
+            });
+          }
+        );
       },
 
       async writeMulti(
@@ -488,51 +571,62 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
         // Await runId if it's a promise
         const runId = await _runId;
 
-        if (await readKeyedLedger(basedir, runId, name, tag)) {
-          throw new Error('mixed keyed/unkeyed stream data');
-        }
+        return withStreamMode(
+          basedir,
+          runId,
+          name,
+          tag,
+          'ordinary',
+          async (mode) => {
+            if (mode !== 'ordinary')
+              throw new Error('mixed keyed/unkeyed stream data');
 
-        // Register this stream for the run
-        await registerStreamForRun(runId, name);
+            // Register this stream for the run
+            await registerStreamForRun(runId, name);
 
-        // Prepare chunk data for parallel writes
-        const chunkBuffers = chunks.map((chunk) => toBuffer(chunk));
+            // Prepare chunk data for parallel writes
+            const chunkBuffers = chunks.map((chunk) => toBuffer(chunk));
 
-        // Write all chunks in parallel for efficiency, but track individual completion
-        const writePromises = chunkBuffers.map(async (chunkBuffer, i) => {
-          const chunkId = chunkIds[i];
+            // Write all chunks in parallel for efficiency, but track individual completion
+            const writePromises = chunkBuffers.map(async (chunkBuffer, i) => {
+              const chunkId = chunkIds[i];
 
-          const serialized = serializeChunk({
-            chunk: chunkBuffer,
-            eof: false,
-          });
+              const serialized = serializeChunk({
+                chunk: chunkBuffer,
+                eof: false,
+              });
 
-          const chunkPath = path.join(
-            chunkDirForStream(path.join(basedir, 'streams', 'chunks'), name),
-            `${chunkId}${tagSuffix}.bin`
-          );
+              const chunkPath = path.join(
+                chunkDirForStream(
+                  path.join(basedir, 'streams', 'chunks'),
+                  name
+                ),
+                `${chunkId}${tagSuffix}.bin`
+              );
 
-          await write(chunkPath, serialized);
+              await write(chunkPath, serialized);
 
-          // Return data needed for event emission
-          return {
-            chunkId,
-            chunkData: Uint8Array.from(chunkBuffer),
-          };
-        });
+              // Return data needed for event emission
+              return {
+                chunkId,
+                chunkData: Uint8Array.from(chunkBuffer),
+              };
+            });
 
-        // Emit events in order, waiting for each chunk's write to complete
-        // This ensures events are emitted in order while writes happen in parallel
-        for (const writePromise of writePromises) {
-          const { chunkId, chunkData } = await writePromise;
+            // Emit events in order, waiting for each chunk's write to complete
+            // This ensures events are emitted in order while writes happen in parallel
+            for (const writePromise of writePromises) {
+              const { chunkId, chunkData } = await writePromise;
 
-          streamEmitter.emit(`chunk:${name}` as const, {
-            runId,
-            streamName: name,
-            chunkData,
-            chunkId,
-          });
-        }
+              streamEmitter.emit(`chunk:${name}` as const, {
+                runId,
+                streamName: name,
+                chunkData,
+                chunkId,
+              });
+            }
+          }
+        );
       },
 
       async close(_runId: string | Promise<string>, name: string) {
@@ -542,43 +636,45 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
         // Await runId if it's a promise to ensure proper flushing
         const runId = await _runId;
 
-        const closedKeyed = await withKeyedLedger(
+        return withStreamMode(
           basedir,
           runId,
           name,
           tag,
-          async (file, keyed) => {
-            if (!keyed) return false;
-            if (!keyed.closed) {
-              await writeKeyedLedger(file, { ...keyed, closed: true });
+          'ordinary',
+          async (mode) => {
+            if (mode === 'keyed') {
+              await withKeyedLedger(
+                basedir,
+                runId,
+                name,
+                tag,
+                async (file, keyed) => {
+                  if (!keyed) throw new Error('corrupt keyed stream mode');
+                  if (!keyed.closed)
+                    await writeKeyedLedger(file, { ...keyed, closed: true });
+                }
+              );
+            } else {
+              await registerStreamForRun(runId, name);
+              const chunkPath = path.join(
+                chunkDirForStream(
+                  path.join(basedir, 'streams', 'chunks'),
+                  name
+                ),
+                `${chunkId}${tagSuffix}.bin`
+              );
+              await write(
+                chunkPath,
+                serializeChunk({ chunk: Buffer.from([]), eof: true })
+              );
             }
-            return true;
+            streamEmitter.emit(`close:${name}` as const, {
+              runId,
+              streamName: name,
+            });
           }
         );
-        if (closedKeyed) {
-          streamEmitter.emit(`close:${name}` as const, {
-            runId,
-            streamName: name,
-          });
-          return;
-        }
-
-        // Register this stream for the run (in case write wasn't called)
-        await registerStreamForRun(runId, name);
-        const chunkPath = path.join(
-          chunkDirForStream(path.join(basedir, 'streams', 'chunks'), name),
-          `${chunkId}${tagSuffix}.bin`
-        );
-
-        await write(
-          chunkPath,
-          serializeChunk({ chunk: Buffer.from([]), eof: true })
-        );
-
-        streamEmitter.emit(`close:${name}` as const, {
-          runId,
-          streamName: name,
-        });
       },
 
       async list(runId: string) {

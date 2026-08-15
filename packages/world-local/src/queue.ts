@@ -16,6 +16,7 @@ import type { Config } from './config.js';
 import { resolveBaseUrl, resolveDirectBaseUrl } from './config.js';
 import { jsonReplacer, jsonReviver } from './fs.js';
 import { getPackageInfo } from './init.js';
+import { createRunStartsStorage } from './storage/run-starts-storage.js';
 
 /**
  * JSON transport that preserves Uint8Array values using the same
@@ -216,6 +217,9 @@ export function createQueue(config: Partial<Config>): LocalQueue {
             'x-vqs-queue-name': queueName,
             'x-vqs-message-id': messageId,
             'x-vqs-message-attempt': String(delivery + 1),
+            ...((opts as any)?.receiverAttempt && {
+              'x-workflow-run-start-owner': (opts as any).receiverAttempt,
+            }),
           };
           const directHandler = directHandlers.get(prefix);
           let response: Response;
@@ -375,6 +379,7 @@ export function createQueue(config: Partial<Config>): LocalQueue {
     'x-vqs-queue-name': ValidQueueName,
     'x-vqs-message-id': MessageId,
     'x-vqs-message-attempt': z.coerce.number(),
+    'x-workflow-run-start-owner': z.string().optional(),
   });
 
   const createQueueHandler: Queue['createQueueHandler'] = (prefix, handler) => {
@@ -395,6 +400,7 @@ export function createQueue(config: Partial<Config>): LocalQueue {
       const queueName = headers.data['x-vqs-queue-name'];
       const messageId = headers.data['x-vqs-message-id'];
       const attempt = headers.data['x-vqs-message-attempt'];
+      const receiverOwner = headers.data['x-workflow-run-start-owner'];
 
       if (!queueName.startsWith(prefix)) {
         return Response.json({ error: 'Unhandled queue' }, { status: 400 });
@@ -402,6 +408,11 @@ export function createQueue(config: Partial<Config>): LocalQueue {
 
       const body = await new TypedJsonTransport().deserialize(req.body);
       try {
+        if (receiverOwner) {
+          await createRunStartsStorage(
+            (config as Config).dataDir
+          ).receiverStarted(messageId, receiverOwner, process.pid);
+        }
         const result = await handler(body, { attempt, queueName, messageId });
 
         let timeoutSeconds: number | null = null;
@@ -419,6 +430,12 @@ export function createQueue(config: Partial<Config>): LocalQueue {
         return Response.json({ ok: true });
       } catch (error) {
         return Response.json(String(error), { status: 500 });
+      } finally {
+        if (receiverOwner) {
+          await createRunStartsStorage((config as Config).dataDir)
+            .receiverTerminated(messageId, receiverOwner, process.pid)
+            .catch(() => {});
+        }
       }
     };
   };

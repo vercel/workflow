@@ -204,6 +204,33 @@ describe('streamer', () => {
       ).rejects.toThrow('mixed keyed/unkeyed');
     });
 
+    it('admits exactly one mode when ordinary and keyed first writes race', async () => {
+      const { testDir } = await setupStreamer();
+      const name = 'strm_keyed_mode_race';
+      const ordinary = createStreamer(testDir);
+      const keyed = createStreamer(testDir);
+
+      const results = await Promise.allSettled([
+        ordinary.streams.write(TEST_RUN_ID, name, 'ordinary'),
+        keyed.streams.appendKeyed!(TEST_RUN_ID, name, {
+          idempotencyKey: 'key-1',
+          semanticDigest: 'digest-1',
+          chunk: 'keyed',
+        }),
+      ]);
+
+      expect(
+        results.filter((result) => result.status === 'fulfilled')
+      ).toHaveLength(1);
+      const restarted = createStreamer(testDir);
+      const chunks = await restarted.streams.getChunks(TEST_RUN_ID, name);
+      expect(chunks.data).toHaveLength(1);
+      await restarted.streams.close(TEST_RUN_ID, name);
+      expect((await restarted.streams.getChunks(TEST_RUN_ID, name)).done).toBe(
+        true
+      );
+    });
+
     it('persists keyed EOF and rejects append after close', async () => {
       const { streamer } = await setupStreamer();
       await streamer.streams.appendKeyed!(TEST_RUN_ID, 'strm_keyed_eof', {

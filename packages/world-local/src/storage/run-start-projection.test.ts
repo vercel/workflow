@@ -313,7 +313,8 @@ describe('world-local run-start projection', () => {
         queueName: pending.queueName,
         queuePayload: pending.queuePayload,
       }),
-      expect.any(Function)
+      expect.any(Function),
+      expect.stringMatching(/^dsp_/)
     );
     expect(await starts.pendingDispatches()).toEqual([]);
   }

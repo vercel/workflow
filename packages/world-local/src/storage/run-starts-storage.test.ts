@@ -171,7 +171,8 @@ describe('world-local idempotent run-start ledger', () => {
     expect(materialize).toHaveBeenCalledTimes(1);
     expect(dispatch).toHaveBeenCalledWith(
       expect.objectContaining({ messageId: receipt.messageId }),
-      expect.any(Function)
+      expect.any(Function),
+      expect.stringMatching(/^dsp_/)
     );
     expect(await starts.pendingDispatches()).toEqual([]);
   });
@@ -222,6 +223,28 @@ describe('world-local idempotent run-start ledger', () => {
     await Promise.all([draining, competing]);
     expect(await first.pendingDispatches()).toEqual([]);
     expect(receipt.messageId).toMatch(/^msg_/);
+  });
+
+  it('does not reclaim a dead sender while its receiver attempt is active', async () => {
+    const starts = createRunStartsStorage(basedir, drivers);
+    const reservation = await starts.reserveOrAdoptRunStart(request());
+    const receipt = await starts.finalizeOrAdoptRunStart({
+      reservationId: reservation.reservationId,
+      runId: reservation.runId,
+      semanticDigest: 'semantic-a',
+      envelopeIntegrityDigest: 'envelope-a',
+      envelope: { event: 'run_created' },
+      queueName: '__wkf_workflow_child',
+      queuePayload: { runId: reservation.runId },
+      queueOptions: {},
+    });
+
+    await starts.receiverStarted(receipt.messageId, 'dsp_test', process.pid);
+    await expect(
+      starts.returnDispatch(receipt.messageId, 'dsp_test')
+    ).resolves.toBeUndefined();
+    expect(await starts.pendingDispatches()).toHaveLength(1);
+    await starts.receiverTerminated(receipt.messageId, 'dsp_test', process.pid);
   });
 
   it('fails closed on a corrupt durable reservation', async () => {

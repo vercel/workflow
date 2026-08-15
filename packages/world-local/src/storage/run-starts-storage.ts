@@ -71,7 +71,8 @@ export interface RunStartDrivers {
   materialize(entry: PendingRunStartDispatch): Promise<void>;
   dispatch(
     entry: PendingRunStartDispatch,
-    accepted: () => Promise<void>
+    accepted: () => Promise<void>,
+    receiverAttempt: string
   ): Promise<void>;
 }
 
@@ -91,6 +92,7 @@ interface Ledger {
     messageId: string;
     dispatchState: 'pending' | 'dispatching' | 'acknowledged';
     dispatchOwner?: string;
+    receiver?: { owner: string; pid: number };
     projection: RunCreatedProjection & { state: 'pending' | 'complete' };
   };
 }
@@ -121,6 +123,9 @@ function assertLedger(value: unknown): asserts value is Ledger {
           finalized.dispatchState !== 'acknowledged') ||
         (finalized.dispatchState === 'dispatching' &&
           typeof finalized.dispatchOwner !== 'string') ||
+        (finalized.receiver !== undefined &&
+          (typeof finalized.receiver.owner !== 'string' ||
+            !Number.isInteger(finalized.receiver.pid))) ||
         finalized.projection.version !== 1 ||
         typeof finalized.projection.runBytes !== 'string' ||
         typeof finalized.projection.eventBytes !== 'string' ||
@@ -244,6 +249,21 @@ export function createRunStartsStorage(
         const ledger = JSON.parse(await fs.readFile(file, 'utf8')) as Ledger;
         assertLedger(ledger);
         const owner = ledger.finalization?.dispatchOwner;
+        const receiver = ledger.finalization?.receiver;
+        if (receiver) {
+          try {
+            process.kill(receiver.pid, 0);
+            return;
+          } catch (probe) {
+            if ((probe as NodeJS.ErrnoException).code !== 'ESRCH') throw probe;
+            await withLedgerFile(file, async (ledgerFile, current) => {
+              if (current?.finalization?.receiver?.owner === receiver.owner) {
+                delete current.finalization.receiver;
+                await writeLedger(ledgerFile, current);
+              }
+            });
+          }
+        }
         const pid = owner?.match(/^dsp_(\d+)_/)?.[1];
         if (pid) {
           try {
@@ -288,6 +308,7 @@ export function createRunStartsStorage(
         const owner = `dsp_${process.pid}_${ulid()}`;
         finalization.dispatchState = 'dispatching';
         finalization.dispatchOwner = owner;
+        delete finalization.receiver;
         await writeLedger(ledgerFile, current);
         const entry = entryFor(current);
         if (!entry) throw new WorkflowWorldError('Unknown run-start dispatch');
@@ -501,8 +522,57 @@ export function createRunStartsStorage(
         ) {
           throw conflict('stale run-start dispatch return');
         }
+        // A transport/sender failure does not prove the receiver stopped.
+        if (finalization.receiver) return;
         finalization.dispatchState = 'pending';
         delete finalization.dispatchOwner;
+        await writeLedger(ledgerFile, current);
+      });
+    },
+
+    receiverStarted: async (
+      messageId: string,
+      owner: string,
+      pid: number
+    ): Promise<void> => {
+      const file = await findLedgerFile(messageId);
+      await withLedgerFile(file, async (ledgerFile, current) => {
+        const finalization = current?.finalization;
+        if (!finalization || finalization.messageId !== messageId) {
+          throw conflict('unknown run-start receiver');
+        }
+        if (finalization.dispatchState === 'pending') {
+          finalization.dispatchState = 'dispatching';
+          finalization.dispatchOwner = owner;
+        }
+        if (
+          finalization.dispatchState !== 'dispatching' ||
+          finalization.dispatchOwner !== owner
+        ) {
+          throw conflict('stale run-start receiver');
+        }
+        finalization.receiver = { owner, pid };
+        await writeLedger(ledgerFile, current);
+      });
+    },
+
+    receiverTerminated: async (
+      messageId: string,
+      owner: string,
+      pid: number
+    ): Promise<void> => {
+      const file = await findLedgerFile(messageId);
+      await withLedgerFile(file, async (ledgerFile, current) => {
+        const finalization = current?.finalization;
+        if (
+          !finalization ||
+          finalization.messageId !== messageId ||
+          finalization.receiver?.owner !== owner ||
+          finalization.receiver.pid !== pid
+        ) {
+          return;
+        }
+        delete finalization.receiver;
         await writeLedger(ledgerFile, current);
       });
     },
@@ -569,13 +639,17 @@ export function createRunStartsStorage(
         if (!taken) continue;
         try {
           let accepted = false;
-          await drivers.dispatch(taken.entry, async () => {
-            await createRunStartsStorage(basedir).acknowledgeDispatch(
-              taken.entry.messageId,
-              taken.owner
-            );
-            accepted = true;
-          });
+          await drivers.dispatch(
+            taken.entry,
+            async () => {
+              await createRunStartsStorage(basedir).acknowledgeDispatch(
+                taken.entry.messageId,
+                taken.owner
+              );
+              accepted = true;
+            },
+            taken.owner
+          );
           // A private queue driver returns only when a delivery became
           // terminal. Returning without acceptance is a failed attempt.
           if (!accepted) {

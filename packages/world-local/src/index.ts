@@ -88,7 +88,7 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
         entry.projection
       );
     },
-    async dispatch(entry, accepted) {
+    async dispatch(entry, accepted, receiverAttempt) {
       await new Promise<void>((resolve, reject) => {
         void queue
           .queue(
@@ -97,6 +97,7 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
             {
               ...(entry.queueOptions as object),
               messageId: entry.messageId as never,
+              receiverAttempt,
               onAccepted: async () => {
                 try {
                   await accepted();
