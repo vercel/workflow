@@ -188,6 +188,85 @@ describe('streamer', () => {
       ).toEqual([{ index: 0, data: new Uint8Array([1, 2, 3]) }]);
     });
 
+    it('delivers a first keyed insertion once to an already-following local reader', async () => {
+      const { streamer } = await setupStreamer();
+      const streamName = 'strm_keyed_follower';
+      const reader = (
+        await streamer.streams.get(TEST_RUN_ID, streamName)
+      ).getReader();
+      const firstRead = reader.read();
+
+      // Let the reader install its local event subscription before publishing.
+      await new Promise((resolve) => setTimeout(resolve, 20));
+
+      await streamer.streams.appendKeyed!(TEST_RUN_ID, streamName, {
+        idempotencyKey: 'eve-public-event/v1/run/step/0',
+        semanticDigest: 'digest-a',
+        chunk: new TextEncoder().encode('first'),
+      });
+      await expect(firstRead).resolves.toMatchObject({
+        done: false,
+        value: new TextEncoder().encode('first'),
+      });
+
+      const secondRead = reader.read();
+      await streamer.streams.appendKeyed!(TEST_RUN_ID, streamName, {
+        idempotencyKey: 'eve-public-event/v1/run/step/0',
+        semanticDigest: 'digest-a',
+        chunk: new TextEncoder().encode('retry payload ignored'),
+      });
+      await expect(
+        streamer.streams.appendKeyed!(TEST_RUN_ID, streamName, {
+          idempotencyKey: 'eve-public-event/v1/run/step/0',
+          semanticDigest: 'digest-mismatch',
+          chunk: new TextEncoder().encode('mismatch'),
+        })
+      ).rejects.toThrow('different digest');
+      await streamer.streams.appendKeyed!(TEST_RUN_ID, streamName, {
+        idempotencyKey: 'eve-public-event/v1/run/step/1',
+        semanticDigest: 'digest-b',
+        chunk: new TextEncoder().encode('second'),
+      });
+      await expect(secondRead).resolves.toMatchObject({
+        done: false,
+        value: new TextEncoder().encode('second'),
+      });
+      await reader.cancel();
+    });
+
+    it('replays keyed chunks to a late local follower in receipt order', async () => {
+      const { streamer } = await setupStreamer();
+      const streamName = 'strm_keyed_replay_order';
+      const encoder = new TextEncoder();
+      const events = [
+        'session.started\n',
+        'turn.started\n',
+        'session.waiting\n',
+      ];
+
+      for (const [index, event] of events.entries()) {
+        await streamer.streams.appendKeyed!(TEST_RUN_ID, streamName, {
+          idempotencyKey: `eve-public-event/v1/run/step/${index}`,
+          semanticDigest: `digest-${index}`,
+          chunk: encoder.encode(event),
+        });
+      }
+
+      const reader = (
+        await streamer.streams.get(TEST_RUN_ID, streamName)
+      ).getReader();
+      const received = await Promise.all([
+        reader.read(),
+        reader.read(),
+        reader.read(),
+      ]);
+      await reader.cancel();
+
+      expect(
+        received.map(({ value }) => new TextDecoder().decode(value))
+      ).toEqual(['session.started\n', 'turn.started\n', 'session.waiting\n']);
+    });
+
     it('rejects a keyed retry with a different digest', async () => {
       const { streamer } = await setupStreamer();
       await streamer.streams.appendKeyed!(TEST_RUN_ID, 'strm_keyed_conflict', {

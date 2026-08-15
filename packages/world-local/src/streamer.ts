@@ -1,14 +1,14 @@
-import { EventEmitter } from 'node:events';
 import { createHash } from 'node:crypto';
+import { EventEmitter } from 'node:events';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import type {
   GetChunksOptions,
+  KeyedStreamAppendRequest,
+  KeyedStreamAppendResult,
   StreamChunksResponse,
   Streamer,
   StreamInfoResponse,
-  KeyedStreamAppendRequest,
-  KeyedStreamAppendResult,
 } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
 import { z } from 'zod';
@@ -236,11 +236,6 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
         name,
         `${keyId}${tagSuffix}.json`
       );
-      const chunkId = `chnk_keyed_${keyId}`;
-      const chunkPath = path.join(
-        chunkDirForStream(path.join(basedir, 'streams', 'chunks'), name),
-        `${chunkId}${tagSuffix}.bin`
-      );
       const chunk = toBuffer(request.chunk);
       const receiptSchema = z.object({
         idempotencyKey: z.string(),
@@ -271,7 +266,10 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
         // The receipt is the atomic keyed fact. A process lost between receipt
         // publication and the physical file is repaired from its exact bytes.
         await write(
-          chunkPath,
+          path.join(
+            chunkDirForStream(path.join(basedir, 'streams', 'chunks'), name),
+            `${existing.chunkId}${tagSuffix}.bin`
+          ),
           serializeChunk({ chunk: Buffer.from(canonicalChunk), eof: false }),
           { overwrite: true }
         );
@@ -285,6 +283,11 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
           tag
         )
       ).files.length;
+      const chunkId = `chnk_${monotonicUlid()}`;
+      const chunkPath = path.join(
+        chunkDirForStream(path.join(basedir, 'streams', 'chunks'), name),
+        `${chunkId}${tagSuffix}.bin`
+      );
       const receipt: KeyedReceipt = {
         idempotencyKey: request.idempotencyKey,
         semanticDigest: request.semanticDigest,
@@ -317,7 +320,10 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
           Buffer.from(canonical.canonicalChunk, 'base64')
         );
         await write(
-          chunkPath,
+          path.join(
+            chunkDirForStream(path.join(basedir, 'streams', 'chunks'), name),
+            `${canonical.chunkId}${tagSuffix}.bin`
+          ),
           serializeChunk({ chunk: Buffer.from(canonicalChunk), eof: false }),
           { overwrite: true }
         );
