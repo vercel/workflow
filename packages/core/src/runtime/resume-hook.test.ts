@@ -26,6 +26,67 @@ vi.mock('../telemetry.js', () => ({
 describe('resumeHook', () => {
   afterEach(() => setWorld(undefined));
 
+  it('fails closed before token lookup when a caller-keyed resume backend is absent', async () => {
+    const getByToken = vi.fn();
+    const createEvent = vi.fn();
+    const queue = vi.fn();
+    setWorld({
+      specVersion: SPEC_VERSION_CURRENT,
+      hooks: { getByToken },
+      events: { create: createEvent },
+      queue,
+      capabilities: {},
+    } as unknown as World);
+
+    await expect(
+      resumeHook('order:1', { approved: true }, undefined, {
+        idempotencyKey: 'eve-continuation/v1/session/step',
+      })
+    ).rejects.toThrow('backend_unsupported');
+
+    expect(getByToken).not.toHaveBeenCalled();
+    expect(createEvent).not.toHaveBeenCalled();
+    expect(queue).not.toHaveBeenCalled();
+  });
+
+  it('adopts a caller-keyed continuation receipt after its hook token rotated', async () => {
+    const hook = {
+      runId: 'wrun_1',
+      hookId: 'hook_1',
+      token: 'rotated-token',
+      ownerId: 'owner_1',
+      projectId: 'project_1',
+      environment: 'production',
+      createdAt: new Date(),
+    } satisfies Hook;
+    const getByToken = vi.fn();
+    const get = vi.fn(async ({ semanticDigest }) => ({
+      inserted: false,
+      semanticDigest,
+      hook,
+    }));
+    const createEvent = vi.fn();
+    const queue = vi.fn();
+    setWorld({
+      specVersion: SPEC_VERSION_CURRENT,
+      capabilities: { idempotentHookResumeVersion: 1 },
+      hookResumes: { get, resumeOrAdopt: vi.fn() },
+      hooks: { getByToken },
+      events: { create: createEvent },
+      queue,
+    } as unknown as World);
+
+    await expect(
+      resumeHook('rotated-token', { approved: true }, undefined, {
+        idempotencyKey: 'eve-continuation/v1/session/step',
+      })
+    ).resolves.toMatchObject({ hookId: hook.hookId });
+
+    expect(getByToken).not.toHaveBeenCalled();
+    expect(createEvent).not.toHaveBeenCalled();
+    expect(queue).not.toHaveBeenCalled();
+  });
+
   it('rejects a retained Hook after its run ends', async () => {
     const hook = {
       runId: 'wrun_1',

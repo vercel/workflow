@@ -61,6 +61,7 @@ export {
   WAIT_EVENT_TYPES,
 } from './events.js';
 export type * from './hooks.js';
+export type * from './hook-resume.js';
 export {
   HOOK_RESUME_DEDUP_VERSION,
   HOOK_RESUME_INPUT_VERSION,

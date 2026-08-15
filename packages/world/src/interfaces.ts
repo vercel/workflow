@@ -14,6 +14,7 @@ import type {
   RunCreatedEventRequest,
 } from './events.js';
 import type { GetHookParams, Hook, ListHooksParams } from './hooks.js';
+import type { HookResumes } from './hook-resume.js';
 import type { Queue } from './queue.js';
 import type { RunStarts } from './run-start.js';
 import type {
@@ -348,6 +349,8 @@ export interface Storage {
 export interface WorldCapabilities {
   /** Backend-attested two-phase idempotent run-start protocol. */
   idempotentRunStartVersion?: 1;
+  /** Backend-attested caller-keyed continuation receipt protocol. */
+  idempotentHookResumeVersion?: 1;
   /**
    * Supports `experimental_minRetention` for Hooks. Missing or inactive means
    * the runtime rejects retained Hooks before registration.
@@ -469,6 +472,8 @@ export interface WorldCapabilities {
 export interface World extends Queue, Streamer, Storage {
   /** Optional backend-owned two-phase idempotent run-start namespace. */
   runStarts?: RunStarts;
+  /** Optional backend-owned caller-keyed continuation receipt namespace. */
+  hookResumes?: HookResumes;
   /**
    * Optional analytics read namespace for observability surfaces.
    *

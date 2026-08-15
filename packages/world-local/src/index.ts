@@ -22,6 +22,7 @@ import { hashToken, hookRecoveryMarkerPath } from './storage/helpers.js';
 import { resetHookIndexEnsureCache } from './storage/hook-index.js';
 import { createStorage } from './storage.js';
 import { createRunStartsStorage } from './storage/run-starts-storage.js';
+import { createHookResumesStorage } from './storage/hook-resumes-storage.js';
 import { createStreamer } from './streamer.js';
 
 export { UnwritableDataDirError } from './build-target-mismatch.js';
@@ -40,6 +41,8 @@ export type { DirectHandler } from './queue.js';
 export type LocalWorld = World & {
   /** Internal two-phase start receipt store; capability remains unadvertised. */
   runStarts: ReturnType<typeof createRunStartsStorage>;
+  /** Internal caller-keyed continuation receipt store. */
+  hookResumes: ReturnType<typeof createHookResumesStorage>;
   /** Register a direct in-process handler for a queue prefix, bypassing HTTP. */
   registerHandler(prefix: QueuePrefix, handler: DirectHandler): void;
   /** Clear all workflow data (runs, steps, events, hooks, streams). */
@@ -97,6 +100,47 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
       );
     },
   });
+  const hookResumes = createHookResumesStorage(mergedConfig.dataDir, {
+    async dispatch(entry, accepted) {
+      const eventData = entry.eventData as {
+        token?: string;
+        payload?: Uint8Array;
+      };
+      await storage.events.create(
+        entry.hook.runId,
+        {
+          eventType: 'hook_received',
+          specVersion: SPEC_VERSION_CURRENT,
+          correlationId: entry.hook.hookId,
+          eventData: entry.eventData as never,
+        },
+        {
+          resumeId: entry.resumeId,
+          resumePayloadDigest: entry.resumePayloadDigest,
+        }
+      );
+      await queue.queue(
+        entry.queueName as never,
+        {
+          ...(entry.queuePayload as object),
+          hookInput: {
+            resumeId: entry.resumeId,
+            hookId: entry.hook.hookId,
+            token: entry.hook.token,
+            payload: eventData.payload,
+            payloadDigest: entry.resumePayloadDigest,
+            deploymentId: entry.hook.resumeContext?.deploymentId,
+          },
+        } as never,
+        {
+          ...(entry.queueOptions as object),
+          messageId: `msg_${entry.resumeId.slice(4)}`,
+          idempotencyKey: entry.resumeId,
+          onAccepted: accepted,
+        } as never
+      );
+    },
+  });
   const recoverActiveRuns = resolveRecoverActiveRuns(mergedConfig);
   return {
     specVersion: SPEC_VERSION_CURRENT,
@@ -107,6 +151,7 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
       // events-storage.ts `claimHookResume`), so resumeHook()'s parallel fast
       // path converges on one event in dev exactly as it does on Vercel.
       hookResumeDedup: true,
+      idempotentHookResumeVersion: 1,
       idempotentRunStartVersion: 1,
       // New runs get dense per-run slot event ids. Runs created before this
       // keep their ULIDs; the scheme is pinned by a run's own first event id,
@@ -115,6 +160,7 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
     } as any,
     ...queue,
     runStarts,
+    hookResumes,
     ...storage,
     ...instrumentObject('world.streams', {
       ...createStreamer(mergedConfig.dataDir, tag),
@@ -125,6 +171,7 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
     async start() {
       await initDataDir(mergedConfig.dataDir);
       await runStarts.drain();
+      await hookResumes.drain();
       if (!recoverActiveRuns) {
         return;
       }

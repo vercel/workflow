@@ -33,6 +33,7 @@ import {
   SerializationFormat,
   sealTo,
 } from '../serialization.js';
+import { serialize as serializeWorkflow } from '../serialization/workflow.js';
 import { WEBHOOK_RESPONSE_WRITABLE } from '../symbols.js';
 import { getAbortStreamIdFromToken } from '../util.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
@@ -72,6 +73,16 @@ async function computeResumePayloadDigest(bytes: Uint8Array): Promise<string> {
     hex += b.toString(16).padStart(2, '0');
   }
   return hex;
+}
+
+/** Stable, unsealed identity for a caller-owned continuation operation. */
+async function computeCallerResumeSemanticDigest(
+  token: string,
+  payload: unknown
+): Promise<string> {
+  return computeResumePayloadDigest(
+    serializeWorkflow({ version: 1, token, payload })
+  );
 }
 
 /**
@@ -220,6 +231,14 @@ export async function getHookByToken(token: string): Promise<Hook> {
 export type ResumedHook = Hook & { resilientResume?: boolean };
 
 /**
+ * Opt-in caller key for an exact continuation receipt.  Omit it to preserve
+ * the historical one-shot hook-resume behavior.
+ */
+export interface ResumeHookOptions {
+  idempotencyKey?: string;
+}
+
+/**
  * Resumes a workflow run by sending a payload to a hook identified by its token.
  *
  * This function is called externally (e.g., from an API route or server action)
@@ -251,8 +270,22 @@ export type ResumedHook = Hook & { resilientResume?: boolean };
 export async function resumeHook<T = any>(
   tokenOrHook: string | Hook,
   payload: T,
-  encryptionKeyOverride?: PayloadKey
+  encryptionKeyOverride?: PayloadKey,
+  options?: ResumeHookOptions
 ): Promise<ResumedHook> {
+  if (options?.idempotencyKey !== undefined) {
+    const world = await getWorldLazy();
+    if (
+      typeof options.idempotencyKey !== 'string' ||
+      options.idempotencyKey.length === 0 ||
+      world.capabilities?.idempotentHookResumeVersion !== 1 ||
+      !world.hookResumes
+    ) {
+      throw new WorkflowRuntimeError(
+        'backend_unsupported: caller-keyed hook resume requires v1 support'
+      );
+    }
+  }
   // Public entry point. It never attests hook freshness, so a Hook object
   // supplied here — which may carry a `resumeCapabilities` cached before a
   // server rollback or kill switch — is ignored by the dynamic-dedup gate and
@@ -261,7 +294,13 @@ export async function resumeHook<T = any>(
   // implementation with the fresh attestation set. Keeping the freshness flag
   // off the exported signature prevents a caller from passing a stale Hook plus
   // `true` and reactivating dynamic dedup against a rolled-back backend.
-  return resumeHookImpl(tokenOrHook, payload, encryptionKeyOverride, false);
+  return resumeHookImpl(
+    tokenOrHook,
+    payload,
+    encryptionKeyOverride,
+    false,
+    options
+  );
 }
 
 /**
@@ -278,13 +317,28 @@ async function resumeHookImpl<T = any>(
   tokenOrHook: string | Hook,
   payload: T,
   encryptionKeyOverride: PayloadKey | undefined,
-  hookFreshlyLookedUp: boolean
+  hookFreshlyLookedUp: boolean,
+  options?: ResumeHookOptions
 ): Promise<ResumedHook> {
   return await waitedUntil(() => {
     return trace('hook.resume', async (span) => {
       const world = await getWorldLazy();
 
       try {
+        const callerKey = options?.idempotencyKey;
+        const callerSemanticDigest = callerKey
+          ? await computeCallerResumeSemanticDigest(
+              typeof tokenOrHook === 'string' ? tokenOrHook : tokenOrHook.token,
+              payload
+            )
+          : undefined;
+        if (callerKey) {
+          const prior = await world.hookResumes!.get({
+            idempotencyKey: callerKey,
+            semanticDigest: callerSemanticDigest!,
+          });
+          if (prior) return prior.hook;
+        }
         const suppliedToken = typeof tokenOrHook === 'string';
         const hook: Hook = suppliedToken
           ? await world.hooks.getByToken(tokenOrHook)
@@ -425,6 +479,37 @@ async function resumeHookImpl<T = any>(
           deploymentId: resumeContext.deploymentId,
           specVersion: resumeContext.runSpecVersion ?? SPEC_VERSION_LEGACY,
         };
+
+        if (callerKey) {
+          if (hook.isSystem && hook.token.startsWith('abrt_')) {
+            throw new WorkflowRuntimeError(
+              'backend_unsupported: system abort hooks cannot use caller-keyed resume'
+            );
+          }
+          if (ops.length > 0) {
+            throw new WorkflowRuntimeError(
+              'backend_unsupported: caller-keyed resume payload has external side effects'
+            );
+          }
+          const resumePayloadDigest =
+            dehydratedPayload instanceof Uint8Array
+              ? await computeResumePayloadDigest(dehydratedPayload)
+              : callerSemanticDigest!;
+          const result = await world.hookResumes!.resumeOrAdopt({
+            idempotencyKey: callerKey,
+            semanticDigest: callerSemanticDigest!,
+            hook,
+            eventData,
+            queueName,
+            queuePayload: {
+              runId: hook.runId,
+              traceCarrier: resumeContext.traceCarrier ?? undefined,
+            } satisfies WorkflowInvokePayload,
+            queueOptions,
+            resumePayloadDigest,
+          });
+          return result.hook;
+        }
 
         // Decide whether to parallelize the `hook_received` write and the queue
         // publish. The fast path is only safe when EVERY precondition holds; the
