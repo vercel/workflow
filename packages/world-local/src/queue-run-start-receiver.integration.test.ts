@@ -9,14 +9,23 @@ import { createRunStartsStorage } from './storage/run-starts-storage.js';
 
 type ChildMessage =
   | { type: 'ready'; port?: number }
-  | { type: 'draining' }
+  | {
+      type: 'draining' | 'drained';
+      role: 'bootstrap' | 'startup' | 'core';
+    }
   | { type: 'queued' }
   | { type: 'request' }
   | { type: 'entered'; body: unknown; messageId: string };
 const inbox = new WeakMap<ChildProcess, ChildMessage[]>();
 
+async function receiverProof(dataDir: string) {
+  return JSON.parse(
+    await fs.readFile(path.join(dataDir, 'receiver-proof-v1.json'), 'utf8')
+  ) as { entries: number; exits: number; active: number; peak: number };
+}
+
 function childRole(
-  role: 'hold' | 'accept' | 'sender' | 'drain',
+  role: 'hold' | 'accept' | 'sender' | 'bootstrap' | 'startup' | 'core',
   env: Record<string, string>
 ) {
   const child = fork(
@@ -125,13 +134,19 @@ describe('run-start receiver queue boundary', () => {
       queuePayload: { runId: reservation.runId, stable: 'bytes' },
       queueOptions: {},
     });
-    const firstSender = childRole('drain', {
+    const firstSender = childRole('bootstrap', {
       RUN_START_QUEUE_DIR: basedir,
       RUN_START_QUEUE_URL: baseUrl,
     });
     children.push(firstSender);
     await nextMessage(firstSender, 'draining');
     const firstEntry = await nextMessage(firstReceiver, 'entered');
+    expect(await receiverProof(basedir)).toMatchObject({
+      entries: 1,
+      exits: 0,
+      active: 1,
+      peak: 1,
+    });
     const secondSender = childRole('sender', {
       RUN_START_QUEUE_DIR: basedir,
       RUN_START_QUEUE_URL: baseUrl,
@@ -140,41 +155,28 @@ describe('run-start receiver queue boundary', () => {
     children.push(secondSender);
     await nextMessage(secondSender, 'queued');
     await nextMessage(firstReceiver, 'request');
+    expect(await receiverProof(basedir)).toMatchObject({
+      entries: 1,
+      exits: 0,
+      active: 1,
+      peak: 1,
+    });
     await stop(secondSender); // sender dies while first receiver owns durable attempt
-    const contender = createQueue({ dataDir: basedir, baseUrl });
-    queues.push(contender);
-    const starts = (queue: ReturnType<typeof createQueue>) =>
-      createRunStartsStorage(basedir, {
-        prepareProjection: async (entry) => ({
-          version: 1 as const,
-          runBytes: JSON.stringify({ runId: entry.runId }),
-          eventBytes: JSON.stringify({
-            eventType: 'run_created',
-            runId: entry.runId,
-          }),
-          eventId: 'evnt_00000000000000000000000001',
-          digest: 'projection-a',
-        }),
-        materialize: async () => {},
-        dispatch: async (entry, accepted, receiverAttempt) =>
-          new Promise<void>((resolve, reject) => {
-            void queue.queue(
-              entry.queueName as never,
-              entry.queuePayload as never,
-              {
-                ...(entry.queueOptions as object),
-                messageId: entry.messageId as never,
-                receiverAttempt,
-                onAccepted: async () => {
-                  await accepted();
-                  resolve();
-                },
-                onAbandoned: reject,
-              } as never
-            );
-          }),
-      });
-    await Promise.all([starts(contender).drain(), starts(contender).drain()]); // startup drain races Core drain
+    const startupOwner = childRole('startup', {
+      RUN_START_QUEUE_DIR: basedir,
+      RUN_START_QUEUE_URL: baseUrl,
+    });
+    const coreOwner = childRole('core', {
+      RUN_START_QUEUE_DIR: basedir,
+      RUN_START_QUEUE_URL: baseUrl,
+    });
+    children.push(startupOwner, coreOwner);
+    await Promise.all([
+      nextMessage(startupOwner, 'draining'),
+      nextMessage(coreOwner, 'draining'),
+      nextMessage(startupOwner, 'drained'),
+      nextMessage(coreOwner, 'drained'),
+    ]);
     expect(firstEntry).toMatchObject({
       body: { runId: reservation.runId, stable: 'bytes' },
       messageId: receipt.messageId,
@@ -187,14 +189,14 @@ describe('run-start receiver queue boundary', () => {
     });
     children.push(recoveredReceiver);
     const recovered = await nextMessage(recoveredReceiver, 'ready');
-    const recoveredSender = createQueue({
-      dataDir: basedir,
-      baseUrl: `http://127.0.0.1:${recovered.port}`,
+    const recoveredDrain = childRole('core', {
+      RUN_START_QUEUE_DIR: basedir,
+      RUN_START_QUEUE_URL: `http://127.0.0.1:${recovered.port}`,
     });
-    queues.push(recoveredSender);
-    const recoveredDrain = starts(recoveredSender).drain();
+    children.push(recoveredDrain);
+    await nextMessage(recoveredDrain, 'draining');
     const recoveredEntry = await nextMessage(recoveredReceiver, 'entered');
-    await recoveredDrain;
+    await nextMessage(recoveredDrain, 'drained');
     await stop(recoveredReceiver);
 
     expect(recoveredEntry).toMatchObject({
@@ -202,5 +204,28 @@ describe('run-start receiver queue boundary', () => {
       messageId: firstEntry.messageId,
     });
     expect(await seed.pendingDispatches()).toEqual([]);
+    expect(await receiverProof(basedir)).toMatchObject({
+      entries: 2,
+      exits: 2,
+      active: 0,
+      peak: 1,
+    });
+    const ledgers = await Promise.all(
+      (await fs.readdir(path.join(basedir, 'run-starts')))
+        .filter((name) => name.endsWith('.json'))
+        .map(
+          async (name) =>
+            JSON.parse(
+              await fs.readFile(path.join(basedir, 'run-starts', name), 'utf8')
+            ) as { finalization?: unknown }
+        )
+    );
+    expect(ledgers).toHaveLength(1);
+    expect(ledgers[0]).toMatchObject({
+      finalization: {
+        messageId: receipt.messageId,
+        dispatchState: 'acknowledged',
+      },
+    });
   }, 30_000);
 });

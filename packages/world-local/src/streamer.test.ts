@@ -248,6 +248,52 @@ describe('streamer', () => {
       };
     }
 
+    async function startLegacyOwnerCandidate(
+      testDir: string,
+      streamName: string,
+      runId: string
+    ) {
+      const marker = path.join(testDir, `legacy-race-${runId}.json`);
+      const child = fork(
+        path.join(
+          process.cwd(),
+          'packages/world-local/test-fixtures/stream-close-child.mjs'
+        ),
+        [],
+        {
+          env: {
+            ...process.env,
+            WORKFLOW_LOCAL_STREAM_CHILD_DIR: testDir,
+            WORKFLOW_LOCAL_STREAM_CHILD_MARKER: marker,
+            WORKFLOW_LOCAL_STREAM_CHILD_ACTION: 'legacy-read-rendezvous',
+            WORKFLOW_LOCAL_STREAM_CHILD_STREAM: streamName,
+            WORKFLOW_LOCAL_STREAM_CHILD_RUN_ID: runId,
+          },
+          silent: true,
+        }
+      );
+      const result = new Promise<{ error?: string }>((resolve, reject) => {
+        child.once('exit', async (code) => {
+          if (code !== 0) return reject(new Error(`child exited ${code}`));
+          resolve(JSON.parse(await fs.readFile(marker, 'utf8')));
+        });
+      });
+      await new Promise<void>((resolve, reject) => {
+        child.once('message', (message) =>
+          message?.type === 'legacy-ready'
+            ? resolve()
+            : reject(new Error('child rendezvous protocol error'))
+        );
+        child.once('exit', (code) =>
+          reject(new Error(`child exited ${code} before rendezvous`))
+        );
+      });
+      return {
+        release: () => child.send({ type: 'legacy-release' }),
+        result,
+      };
+    }
+
     it('replays exact ordinary and keyed bytes after a cross-process close races the initial snapshot', async () => {
       for (const [action, name] of [
         ['ordinary-write-close', 'strm_snapshot_ordinary'],
@@ -589,7 +635,7 @@ describe('streamer', () => {
       ).toMatchObject({ data: [], done: false });
     });
 
-    it('selects one legacy owner across concurrent processes and restart', async () => {
+    it('converges zero, ambiguous, concurrent, and restarted legacy owner selection', async () => {
       const { testDir } = await setupStreamer();
       const streamName = 'strm_legacy_process_owner';
       const ownerRun = TEST_RUN_ID;
@@ -598,6 +644,7 @@ describe('streamer', () => {
       const runsDir = path.join(testDir, 'streams', 'runs');
       await fs.mkdir(chunksDir, { recursive: true });
       await fs.mkdir(runsDir, { recursive: true });
+      const ownerDir = path.join(testDir, 'streams', 'legacy-owners-v1');
       await Promise.all([
         fs.writeFile(
           path.join(chunksDir, 'chnk_01ARZ3NDEKTSV4RRFFQ69G5FAV.bin'),
@@ -607,6 +654,17 @@ describe('streamer', () => {
           path.join(chunksDir, 'chnk_01ARZ3NDEKTSV4RRFFQ69G5FAW.bin'),
           serializeChunk({ eof: true, chunk: Buffer.alloc(0) })
         ),
+      ]);
+      expect(
+        await runChildWriteClose(testDir, 'legacy-read', streamName, ownerRun)
+      ).toMatchObject({
+        error: expect.stringContaining('ambiguous legacy stream owner'),
+      });
+      expect(
+        (await fs.readdir(ownerDir)).filter((name) => name.endsWith('.json'))
+      ).toEqual([]);
+
+      await Promise.all([
         fs.writeFile(
           path.join(runsDir, `${ownerRun}.json`),
           JSON.stringify({ streams: [streamName] })
@@ -624,23 +682,39 @@ describe('streamer', () => {
         expect.stringContaining('ambiguous legacy stream owner'),
         expect.stringContaining('ambiguous legacy stream owner'),
       ]);
+      expect(
+        (await fs.readdir(ownerDir)).filter((name) => name.endsWith('.json'))
+      ).toEqual([]);
       await fs.rm(path.join(runsDir, `${otherRun}.json`));
-      const selected = await runChildWriteClose(
-        testDir,
-        'legacy-read',
-        streamName,
-        ownerRun
-      );
+      const [ownerCandidate, otherCandidate] = await Promise.all([
+        startLegacyOwnerCandidate(testDir, streamName, ownerRun),
+        startLegacyOwnerCandidate(testDir, streamName, otherRun),
+      ]);
+      ownerCandidate.release();
+      otherCandidate.release();
+      const [selected, rejected] = await Promise.all([
+        ownerCandidate.result,
+        otherCandidate.result,
+      ]);
       expect(selected).toMatchObject({
         data: [{ index: 0, data: Buffer.from('legacy').toString('base64') }],
         done: true,
       });
-      expect(
-        await runChildWriteClose(testDir, 'legacy-read', streamName, otherRun)
-      ).toMatchObject({ data: [], done: false });
+      expect(rejected).toMatchObject({ data: [], done: false });
+      const owners = await Promise.all(
+        (await fs.readdir(ownerDir))
+          .filter((name) => name.endsWith('.json'))
+          .map(async (name) =>
+            JSON.parse(await fs.readFile(path.join(ownerDir, name), 'utf8'))
+          )
+      );
+      expect(owners).toEqual([{ version: 1, runId: ownerRun }]);
       expect(
         await runChildWriteClose(testDir, 'legacy-read', streamName, ownerRun)
       ).toMatchObject(selected);
+      expect(
+        await runChildWriteClose(testDir, 'legacy-read', streamName, otherRun)
+      ).toMatchObject(rejected);
     }, 30_000);
 
     it('re-reads a remote write when local close arrives during initial disk reading', async () => {

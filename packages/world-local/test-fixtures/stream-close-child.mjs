@@ -53,7 +53,15 @@ if (action === 'ordinary-close' || action === 'keyed-close') {
     await writeFile(marker, JSON.stringify({ action, error: String(error) }));
   }
   process.send?.({ type: 'done' });
-} else if (action === 'legacy-read') {
+} else if (action === 'legacy-read' || action === 'legacy-read-rendezvous') {
+  if (action === 'legacy-read-rendezvous') {
+    process.send?.({ type: 'legacy-ready' });
+    await new Promise((resolve) => {
+      process.once('message', (message) => {
+        if (message?.type === 'legacy-release') resolve();
+      });
+    });
+  }
   try {
     const page = await streamer.streams.getChunks(runId, streamName);
     await writeFile(
