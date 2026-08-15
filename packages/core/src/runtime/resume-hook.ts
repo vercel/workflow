@@ -546,6 +546,10 @@ async function resumeHookImpl<T = any>(
           HookNotFoundError.is(err) || RunExpiredError.is(err);
 
         if (!useParallelResume) {
+          // Set when a live-run duplicate conflict is being converged (see the
+          // catch below); telemetry for it is emitted only after the wake
+          // publish succeeds.
+          let convergedConflict: unknown;
           // Sequential path: create a hook_received event, then re-trigger.
           try {
             await world.events.create(
@@ -604,19 +608,12 @@ async function resumeHookImpl<T = any>(
             if (runIsTerminal) {
               throw new HookNotFoundError(hook.token);
             }
-            span?.setAttributes({
-              ...Attribute.HookResumeConflictConverged(true),
-            });
-            runtimeLogger.warn(
-              'Hook resume event write was rejected as a duplicate while the ' +
-                'run is still live; converging on the committed hook_received ' +
-                'and re-triggering the run.',
-              {
-                workflowRunId: hook.runId,
-                hookId: hook.hookId,
-                error: err instanceof Error ? err.message : String(err),
-              }
-            );
+            // Convergence is only REAL once the wake publish below succeeds —
+            // record the conflict here and emit the telemetry after the
+            // publish, so a failed publish (which propagates to the caller and
+            // means no wake went out) never leaves a span claiming the run was
+            // re-triggered.
+            convergedConflict = err;
             // Fall through to the queue publish below.
           }
 
@@ -638,6 +635,27 @@ async function resumeHookImpl<T = any>(
             } satisfies WorkflowInvokePayload,
             queueOptions
           );
+
+          if (convergedConflict !== undefined) {
+            // The wake is durably published, so the convergence actually
+            // happened — safe to record it now.
+            span?.setAttributes({
+              ...Attribute.HookResumeConflictConverged(true),
+            });
+            runtimeLogger.warn(
+              'Hook resume event write was rejected as a duplicate while the ' +
+                'run is still live; converged on the committed hook_received ' +
+                'and re-triggered the run.',
+              {
+                workflowRunId: hook.runId,
+                hookId: hook.hookId,
+                error:
+                  convergedConflict instanceof Error
+                    ? convergedConflict.message
+                    : String(convergedConflict),
+              }
+            );
+          }
 
           return hook;
         }

@@ -14,10 +14,26 @@ import { resumeHook, resumeWebhook } from './resume-hook.js';
 import { setWorld } from './world.js';
 
 vi.mock('@vercel/functions', () => ({ waitUntil: vi.fn() }));
+// A recording span so tests can assert which attributes were (not) emitted —
+// notably that convergence telemetry is withheld when the wake publish fails.
+const { mockSpan } = vi.hoisted(() => ({
+  mockSpan: {
+    setAttributes: vi.fn(),
+    addLink: vi.fn(),
+    addEvent: vi.fn(),
+    recordException: vi.fn(),
+  },
+}));
 vi.mock('../telemetry.js', () => ({
   linkToTraceCarrier: vi.fn(),
-  trace: vi.fn((_name, fn) => fn(undefined)),
+  trace: vi.fn((_name, fn) => fn(mockSpan)),
 }));
+
+/** Flattened keys of every setAttributes call recorded on the mock span. */
+const recordedAttributeKeys = () =>
+  mockSpan.setAttributes.mock.calls.flatMap((call) =>
+    Object.keys(call[0] ?? {})
+  );
 // Stub payload (de)serialization so these control-flow tests don't depend on
 // devalue/encryption/Request framing — SerializationFormat is kept real for
 // the capability checks. Byte-level sealing is covered by the sibling
@@ -32,7 +48,10 @@ vi.mock('../serialization.js', async (importActual) => {
 });
 
 describe('resumeHook (resumeContext fast path)', () => {
-  afterEach(() => setWorld(undefined));
+  afterEach(() => {
+    setWorld(undefined);
+    mockSpan.setAttributes.mockClear();
+  });
 
   const baseHook = {
     runId: 'wrun_ctx',
@@ -193,6 +212,35 @@ describe('resumeHook (resumeContext fast path)', () => {
         hookResumeTiming: expect.objectContaining({ strategy: 'sequential' }),
       }),
       expect.objectContaining({ deploymentId: resumeContext.deploymentId })
+    );
+    // The convergence marker is recorded — and only because the publish
+    // succeeded (see the publish-failure test below).
+    expect(recordedAttributeKeys()).toContain(
+      'workflow.hook.resume_conflict_converged'
+    );
+  });
+
+  it('does not record convergence telemetry when the wake publish fails', async () => {
+    // The converged-conflict span attribute claims "the run was re-triggered".
+    // If the queue publish rejects, no wake went out: the publish error must
+    // propagate to the caller (unchanged behavior) and the span must NOT carry
+    // the convergence marker for a re-trigger that never happened.
+    const hook = { ...baseHook, resumeContext } satisfies Hook;
+    const createEvent = vi
+      .fn()
+      .mockRejectedValue(new EntityConflictError('duplicate hook_received'));
+    const runsGet = vi.fn().mockResolvedValue({
+      runId: hook.runId,
+      status: 'running',
+    } as unknown as WorkflowRun);
+    const queue = vi.fn().mockRejectedValue(new Error('queue unavailable'));
+    makeWorld(hook, { createEvent, runsGet, queue });
+
+    await expect(resumeHook(hook.token, { foo: 'bar' })).rejects.toThrow(
+      'queue unavailable'
+    );
+    expect(recordedAttributeKeys()).not.toContain(
+      'workflow.hook.resume_conflict_converged'
     );
   });
 
