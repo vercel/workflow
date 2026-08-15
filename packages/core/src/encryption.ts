@@ -93,7 +93,7 @@ export async function importKey(
   return key;
 }
 
-function assertValidAesGcmEnvelope(data: Uint8Array): void {
+function assertAesGcmEnvelopeLength(data: Uint8Array): void {
   const minLength = NONCE_LENGTH + TAG_BYTES;
   if (data.byteLength < minLength) {
     throw new RuntimeDecryptionError(
@@ -250,7 +250,7 @@ export function decrypt(
   data: Uint8Array,
   aad?: Uint8Array
 ): Uint8Array | Promise<Uint8Array> {
-  assertValidAesGcmEnvelope(data);
+  assertAesGcmEnvelopeLength(data);
   if (!key.usages.includes('decrypt')) {
     throw new RuntimeDecryptionError(
       'AES-256-GCM decryption failed: CryptoKey does not support decrypt',

@@ -3,6 +3,12 @@
  */
 
 import type { RuntimeDecryptionErrorContext } from '@workflow/errors';
+import {
+  SerializationFormat,
+  type SerializationFormatType,
+} from '@workflow/world/serialization-format.js';
+
+export { SerializationFormat };
 
 // ---- Format Prefix ----
 
@@ -13,7 +19,9 @@ import type { RuntimeDecryptionErrorContext } from '@workflow/errors';
  * at runtime. The `SerializationFormat` object provides well-known
  * constants, but codecs may define additional prefixes.
  */
-export type FormatPrefix = string & { readonly __brand: 'FormatPrefix' };
+export type FormatPrefix =
+  | SerializationFormatType
+  | (string & { readonly __brand: 'FormatPrefix' });
 
 /**
  * Runtime type guard for format prefix strings.
@@ -23,36 +31,6 @@ export type FormatPrefix = string & { readonly __brand: 'FormatPrefix' };
 export function isFormatPrefix(value: string): value is FormatPrefix {
   return value.length === 4 && /^[a-z0-9]{4}$/.test(value);
 }
-
-function formatPrefix<const Value extends string>(
-  value: Value
-): Value & FormatPrefix {
-  return value as Value & FormatPrefix;
-}
-
-/**
- * Well-known format prefix constants. Codecs may define additional ones.
- */
-export const SerializationFormat = {
-  /** devalue stringify/parse with TextEncoder/TextDecoder */
-  DEVALUE_V1: formatPrefix('devl'),
-  /** Encrypted payload (inner payload has its own format prefix) */
-  ENCRYPTED: formatPrefix('encr'),
-  /**
-   * Sealed payload — asymmetrically encrypted to a run's X25519 public key
-   * (inner payload has its own format prefix).
-   *
-   * Used for *cross-run* writes (hook payloads, forwarded stream frames),
-   * where the writer holds only the recipient run's public key and therefore
-   * cannot decrypt. A run's own payloads continue to use {@link ENCRYPTED}.
-   * See `sealed-box.ts` for the construction.
-   */
-  SEALED: formatPrefix('encp'),
-  /** Gzip-compressed payload (inner payload has its own format prefix) */
-  GZIP: formatPrefix('gzip'),
-  /** Zstandard-compressed payload (inner payload has its own format prefix) */
-  ZSTD: formatPrefix('zstd'),
-} as const;
 
 // ---- Serializable Types ----
 

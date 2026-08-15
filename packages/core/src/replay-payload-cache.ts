@@ -3,7 +3,7 @@ import type { DecryptionKey } from './serialization/encryption.js';
 import {
   type PreparedReplayPayload,
   prepareReplayPayload,
-} from './serialization.js';
+} from './serialization/replay.js';
 
 const MAX_MEMOIZED_PRIMITIVE_LENGTH = 4096;
 type ReplayPayloadField = 'result' | 'error' | 'payload';

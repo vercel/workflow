@@ -34,6 +34,7 @@ import {
   type ListEventsByCorrelationIdParams,
   type ListEventsParams,
   type PaginatedResponse,
+  peekSerializationFormat,
   StructuredErrorSchema,
   WaitSchema,
   WorkflowRunSchema,
@@ -59,7 +60,6 @@ import {
   recordClientSpanStatus,
   withHttpClientSpan,
 } from './http-core.js';
-import { hasSerializedDataFormatPrefix } from './serialized-data.js';
 import { deserializeStep, StepWireSchema } from './steps.js';
 import {
   ErrorType,
@@ -381,7 +381,7 @@ const legacyStructuredErrorEventTypes = new Set<EventType>([
 ]);
 
 function decodeLegacyStructuredError(payload: Uint8Array): unknown {
-  if (hasSerializedDataFormatPrefix(payload)) return payload;
+  if (peekSerializationFormat(payload) !== null) return payload;
 
   try {
     const parsed = StructuredErrorSchema.safeParse(decode(payload.slice()));

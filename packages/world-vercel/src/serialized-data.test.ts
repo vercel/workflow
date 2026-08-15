@@ -1,8 +1,6 @@
+import { peekSerializationFormat } from '@workflow/world/serialization-format.js';
 import { describe, expect, it } from 'vitest';
-import {
-  hasSerializedDataFormatPrefix,
-  normalizeSerializedData,
-} from './serialized-data.js';
+import { normalizeSerializedData } from './serialized-data.js';
 
 const encoder = new TextEncoder();
 
@@ -21,9 +19,9 @@ describe('serialized data normalization', () => {
     'gzip',
     'zstd',
   ])('recognizes the %s envelope', (format) => {
-    expect(
-      hasSerializedDataFormatPrefix(envelope(format, new Uint8Array()))
-    ).toBe(true);
+    expect(peekSerializationFormat(envelope(format, new Uint8Array()))).toBe(
+      format
+    );
   });
 
   it('leaves non-compressed envelopes untouched', () => {

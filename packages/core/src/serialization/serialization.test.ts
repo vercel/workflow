@@ -374,9 +374,9 @@ describe('sealed envelopes', () => {
     )) as Uint8Array;
 
     expect(peekFormatPrefix(sealed)).toBe(SerializationFormat.SEALED);
-    // Sealed data must not be mistaken for symmetrically encrypted data by
-    // anything dispatching on the prefix.
-    expect(isEncrypted(sealed)).toBe(false);
+    // Both symmetric and sealed envelopes are encrypted. Callers that need to
+    // distinguish the schemes dispatch on the exact prefix.
+    expect(isEncrypted(sealed)).toBe(true);
   });
 
   it('round-trips: cross-run writer seals, owning run opens', async () => {

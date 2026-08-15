@@ -1,6 +1,8 @@
 ---
 "@workflow/core": patch
 "@workflow/cli": patch
+"@workflow/web-shared": patch
+"@workflow/world": patch
 "@workflow/world-vercel": patch
 ---
 

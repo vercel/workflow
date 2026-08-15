@@ -3379,11 +3379,6 @@ function getStepRevivers(
   };
 }
 
-export {
-  type PreparedReplayPayload,
-  prepareReplayPayload,
-} from './serialization/replay.js';
-
 async function prepareReplayPayloadWithTelemetry(
   value: unknown,
   key: DecryptionKey | undefined
