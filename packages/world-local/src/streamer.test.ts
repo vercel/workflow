@@ -13,19 +13,28 @@ import {
 const TEST_RUN_ID = 'wrun_test12345678901234';
 const childDir = process.env.WORKFLOW_LOCAL_KEYED_STREAM_CHILD_DIR;
 const childMarker = process.env.WORKFLOW_LOCAL_KEYED_STREAM_CHILD_MARKER;
+const childAction = process.env.WORKFLOW_LOCAL_KEYED_STREAM_CHILD_ACTION;
+const childStream = process.env.WORKFLOW_LOCAL_KEYED_STREAM_CHILD_STREAM;
 
 if (childDir && childMarker) {
-  describe('keyed stream child writer', () => {
-    it('writes through an independent process', async () => {
-      const result = await createStreamer(childDir).streams.appendKeyed!(
-        TEST_RUN_ID,
-        'strm_keyed_child_process',
-        {
-          idempotencyKey: 'child-key',
-          semanticDigest: 'child-digest',
-          chunk: new TextEncoder().encode('child'),
-        }
-      );
+  describe('stream child process', () => {
+    it('performs its independent stream operation', async () => {
+      const streamer = createStreamer(childDir);
+      let result: unknown;
+      if (childAction === 'ordinary-close' || childAction === 'keyed-close') {
+        await streamer.streams.close(TEST_RUN_ID, childStream!);
+        result = { closed: childAction };
+      } else {
+        result = await streamer.streams.appendKeyed!(
+          TEST_RUN_ID,
+          'strm_keyed_child_process',
+          {
+            idempotencyKey: 'child-key',
+            semanticDigest: 'child-digest',
+            chunk: new TextEncoder().encode('child'),
+          }
+        );
+      }
       await fs.writeFile(childMarker, JSON.stringify(result));
     });
   });
@@ -145,9 +154,10 @@ describe('streamer', () => {
               await fs.readFile(`${chunksPath}/${file}`)
             );
             // Filename is "<chunkId><tagSuffix>.bin"; chunkId is "chnk_ULID".
-            const ulid = String(file.split('/').at(-1))
-              .split('.')[0]
-              .replace('chnk_', '');
+            const ulid = String(file.split('/').at(-1)).match(
+              /chnk_([0-9A-HJKMNP-TV-Z]{26})/
+            )?.[1];
+            if (!ulid) continue;
             const time = decodeTime(ulid);
             const timeDiff = time - lastTime;
             lastTime = time;
@@ -172,10 +182,60 @@ describe('streamer', () => {
       };
     }
 
-    it('keeps keyed append v1 unavailable until the complete terminal matrix is proven', async () => {
+    async function readAll(
+      streamer: ReturnType<typeof createStreamer>,
+      name: string,
+      startIndex = 0
+    ): Promise<string[]> {
+      const reader = (
+        await streamer.streams.get(TEST_RUN_ID, name, startIndex)
+      ).getReader();
+      const chunks: string[] = [];
+      for (;;) {
+        const result = await reader.read();
+        if (result.done) return chunks;
+        chunks.push(new TextDecoder().decode(result.value));
+      }
+    }
+
+    async function runChildClose(
+      testDir: string,
+      marker: string,
+      action: 'ordinary-close' | 'keyed-close',
+      streamName: string
+    ) {
+      const child = spawn(
+        process.execPath,
+        [
+          'node_modules/vitest/vitest.mjs',
+          'run',
+          'packages/world-local/src/streamer.test.ts',
+          '--testNamePattern',
+          'performs its independent stream operation',
+        ],
+        {
+          cwd: process.cwd(),
+          env: {
+            ...process.env,
+            WORKFLOW_LOCAL_KEYED_STREAM_CHILD_DIR: testDir,
+            WORKFLOW_LOCAL_KEYED_STREAM_CHILD_MARKER: marker,
+            WORKFLOW_LOCAL_KEYED_STREAM_CHILD_ACTION: action,
+            WORKFLOW_LOCAL_KEYED_STREAM_CHILD_STREAM: streamName,
+          },
+          stdio: 'ignore',
+        }
+      );
+      await new Promise<void>((resolve, reject) =>
+        child.once('exit', (code) =>
+          code === 0 ? resolve() : reject(new Error(`child exited ${code}`))
+        )
+      );
+    }
+
+    it('advertises keyed append v1 after the terminal matrix is proven', async () => {
       const { streamer } = await setupStreamer();
 
-      expect(streamer).not.toHaveProperty('keyedStreamAppendVersion');
+      expect(streamer).toHaveProperty('keyedStreamAppendVersion', 1);
     });
 
     it('rejects converting ordinary stream data to keyed mode', async () => {
@@ -287,6 +347,162 @@ describe('streamer', () => {
       await expect(
         streamer.streams.write(TEST_RUN_ID, name, 'late')
       ).rejects.toThrow('closed ordinary stream');
+    });
+
+    it('converges ordinary and keyed streams across close, reader, cursor, restart, run, and process races', async () => {
+      const { testDir } = await setupStreamer();
+      const ordinaryName = 'strm_matrix_ordinary';
+      const keyedName = 'strm_matrix_keyed';
+      const first = createStreamer(testDir);
+      const second = createStreamer(testDir);
+
+      const ordinaryLive = readAll(first, ordinaryName);
+      await second.streams.write(TEST_RUN_ID, ordinaryName, 'one');
+      await second.streams.write(TEST_RUN_ID, ordinaryName, 'two');
+      await Promise.all([
+        first.streams.close(TEST_RUN_ID, ordinaryName),
+        second.streams.close(TEST_RUN_ID, ordinaryName),
+        runChildClose(
+          testDir,
+          path.join(testDir, 'ordinary-close.json'),
+          'ordinary-close',
+          ordinaryName
+        ),
+      ]);
+      expect(await ordinaryLive).toEqual(['one', 'two']);
+      expect(await readAll(createStreamer(testDir), ordinaryName)).toEqual([
+        'one',
+        'two',
+      ]);
+      const ordinaryFiles = await fs.readdir(
+        path.join(testDir, 'streams', 'chunks', ordinaryName)
+      );
+      const ordinaryChunks = await Promise.all(
+        ordinaryFiles.map((file) =>
+          fs
+            .readFile(
+              path.join(testDir, 'streams', 'chunks', ordinaryName, file)
+            )
+            .then(deserializeChunk)
+        )
+      );
+      expect(ordinaryChunks.filter((chunk) => chunk.eof)).toHaveLength(1);
+      await expect(
+        first.streams.write(TEST_RUN_ID, ordinaryName, 'late')
+      ).rejects.toThrow('closed ordinary stream');
+
+      const keyedLive = readAll(first, keyedName);
+      for (const [key, value] of [
+        ['key-1', 'one'],
+        ['key-2', 'two'],
+      ]) {
+        await second.streams.appendKeyed!(TEST_RUN_ID, keyedName, {
+          idempotencyKey: key,
+          semanticDigest: `digest-${key}`,
+          chunk: value,
+        });
+      }
+      await Promise.all([
+        first.streams.close(TEST_RUN_ID, keyedName),
+        second.streams.close(TEST_RUN_ID, keyedName),
+        runChildClose(
+          testDir,
+          path.join(testDir, 'keyed-close.json'),
+          'keyed-close',
+          keyedName
+        ),
+      ]);
+      expect(await keyedLive).toEqual(['one', 'two']);
+      expect(await readAll(createStreamer(testDir), keyedName)).toEqual([
+        'one',
+        'two',
+      ]);
+      await expect(
+        first.streams.appendKeyed!(TEST_RUN_ID, keyedName, {
+          idempotencyKey: 'key-3',
+          semanticDigest: 'digest-key-3',
+          chunk: 'late',
+        })
+      ).rejects.toThrow('closed keyed stream');
+
+      const ordinaryPage = await first.streams.getChunks(
+        TEST_RUN_ID,
+        ordinaryName,
+        {
+          limit: 1,
+        }
+      );
+      expect(ordinaryPage).toMatchObject({
+        data: [{ index: 0, data: new TextEncoder().encode('one') }],
+        hasMore: true,
+        done: false,
+      });
+      expect(
+        await first.streams.getChunks(TEST_RUN_ID, ordinaryName, {
+          limit: 1,
+          cursor: ordinaryPage.cursor!,
+        })
+      ).toMatchObject({
+        data: [{ index: 1, data: new TextEncoder().encode('two') }],
+        cursor: null,
+        done: true,
+      });
+      expect(await readAll(first, ordinaryName, -1)).toEqual(['two']);
+      expect(await readAll(first, keyedName, -1)).toEqual(['two']);
+
+      const otherRun = 'wrun_matrix_other123456789';
+      await first.streams.write(otherRun, ordinaryName, 'other');
+      await first.streams.close(otherRun, ordinaryName);
+      expect(await readAll(first, ordinaryName)).toEqual(['one', 'two']);
+      expect(
+        (await first.streams.getChunks(otherRun, ordinaryName)).data.map(
+          ({ data }) => new TextDecoder().decode(data)
+        )
+      ).toEqual(['other']);
+    }, 30_000);
+
+    it('admits one mode in ordinary/keyed first-write and close/append races', async () => {
+      const { testDir } = await setupStreamer();
+      const first = createStreamer(testDir);
+      const second = createStreamer(testDir);
+      const ordinaryName = 'strm_matrix_first_ordinary';
+      const keyedName = 'strm_matrix_first_keyed';
+      for (const race of [
+        () => [
+          first.streams.write(TEST_RUN_ID, ordinaryName, 'ordinary'),
+          second.streams.appendKeyed!(TEST_RUN_ID, ordinaryName, {
+            idempotencyKey: 'key',
+            semanticDigest: 'digest',
+            chunk: 'keyed',
+          }),
+        ],
+        () => [
+          first.streams.appendKeyed!(TEST_RUN_ID, keyedName, {
+            idempotencyKey: 'key',
+            semanticDigest: 'digest',
+            chunk: 'keyed',
+          }),
+          second.streams.write(TEST_RUN_ID, keyedName, 'ordinary'),
+        ],
+      ]) {
+        const settled = await Promise.allSettled(race());
+        expect(
+          settled.filter((result) => result.status === 'fulfilled')
+        ).toHaveLength(1);
+      }
+      const name = 'strm_matrix_close_append';
+      const settled = await Promise.allSettled([
+        first.streams.close(TEST_RUN_ID, name),
+        second.streams.appendKeyed!(TEST_RUN_ID, name, {
+          idempotencyKey: 'key',
+          semanticDigest: 'digest',
+          chunk: 'keyed',
+        }),
+      ]);
+      expect(settled[0].status).toBe('fulfilled');
+      expect((await first.streams.getChunks(TEST_RUN_ID, name)).done).toBe(
+        true
+      );
     });
 
     it('serializes different keyed writers from independent streamers by run and stream', async () => {
@@ -419,7 +635,7 @@ describe('streamer', () => {
           'run',
           'packages/world-local/src/streamer.test.ts',
           '--testNamePattern',
-          'writes through an independent process',
+          'performs its independent stream operation',
         ],
         {
           cwd: process.cwd(),

@@ -5,4 +5,4 @@
 '@workflow/world-postgres': patch
 ---
 
-Keep world-local keyed stream append unavailable until its per-run ledger proves cross-process ordering, no mixed keyed/unkeyed data, and one canonical ordinary EOF across close races. Postgres remains unavailable pending service-backed ordering proof.
+World-local now supports keyed stream append v1. Exact-recovery callers receive canonical keyed receipts; normal streams remain ordinary-only and never mix modes. Duplicate close adopts one canonical EOF, including cross-process readers and same-named streams in different runs. Postgres and Vercel remain unavailable.
