@@ -434,6 +434,57 @@ Use `genversion` to access package version at runtime. See `@workflow/core` and 
 ### Turbo Caching for Generated Files
 When a build step generates files, add them to the package's `turbo.json` outputs array to ensure proper caching.
 
+## Code Review Guidelines
+
+When reviewing PRs in this repo, always check the following areas in addition to general code quality and correctness.
+
+### 1. Changeset Validation
+
+- Verify a changeset is included (every PR requires one).
+- Cross-reference the changeset against the actual diff: every package that was modified must be listed in the changeset. Flag any packages present in the diff but missing from the changeset.
+- Changesets should not include packages that were *not* changed.
+- All changes should be marked as `patch`. Flag any `major` or `minor` bumps unless the author has explicitly justified them.
+- `workflow` and `@workflow/core` use fixed versioning — if one is bumped, both must be.
+- Breaking changes must be called out with **BREAKING CHANGE** in the changeset summary.
+
+### 2. Testing Story
+
+- PRs should include adequate integration and/or e2e test coverage for the changes.
+- Expanding the e2e test suite (`packages/core/e2e/e2e.test.ts`) is always preferred when possible — flag opportunities to add e2e tests even if the author only added unit tests.
+- If the PR modifies runtime behavior (workflow execution, step functions, replay, serialization), there should be corresponding e2e test coverage exercising the change end-to-end.
+- Check that new tests actually assert meaningful behavior and aren't just smoke tests.
+- Verify tests pass locally or in CI before approving.
+
+### 3. Backwards Compatibility
+
+- Flag any changes that could break existing user workflows, especially:
+  - Changes to public API signatures or return types
+  - Changes to serialization format (affects event log replay)
+  - Changes to the SWC plugin transform output
+  - Removal or renaming of exported symbols
+  - Changes to the `"use workflow"` / `"use step"` directive behavior
+  - Changes to the HTTP API routes under `.well-known/workflow/v1/`
+- The reviewer should surface these considerations explicitly so the human author/reviewer can make informed decisions. The AI reviewer should flag, not decide.
+
+### 4. Observability / Telemetry Coverage
+
+- If the PR adds new operations, step types, or failure modes, check whether appropriate OpenTelemetry spans, attributes, or events are emitted.
+- Review `packages/core/src/observability.ts` and related telemetry code to ensure new code paths are instrumented consistently with existing patterns.
+- If `hydrateResourceIO` strips fields, verify that any newly added data that should be visible in the UI is extracted before the stripping occurs.
+
+### 5. Documentation
+
+- A subagent should review the full docs tree (`docs/content/`) to determine if any documentation needs updating in light of the PR's changes. Key areas to check:
+  - **API reference** (`docs/content/docs/api-reference/`): New or changed APIs, function signatures, options, or return types must be reflected.
+  - **Foundations** (`docs/content/docs/foundations/`): Changes to core concepts like serialization, replay, hooks, or workflow/step semantics.
+  - **Getting started guides** (`docs/content/docs/getting-started/`): Changes affecting framework integrations (Next.js, Astro, Nuxt, etc.).
+  - **Error pages** (`docs/content/docs/errors/`): New error types or changed error behavior should have corresponding troubleshooting pages.
+  - **AI docs** (`docs/content/docs/ai/`): Changes to AI-related features (DurableAgent, tool definitions, chat sessions).
+  - **Observability docs** (`docs/content/docs/observability/`): Changes to telemetry or monitoring behavior.
+  - **Changelog** (`docs/content/docs/changelog/`): Significant user-facing changes should be noted.
+- Also check that package-level `README.md` files are updated if the package's functionality or usage changed.
+- If the SWC plugin was modified, verify that `packages/swc-plugin-workflow/spec.md` is updated.
+
 ## Architecture Notes
 
 ### executionContext Field
