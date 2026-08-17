@@ -84,6 +84,34 @@ export async function longSleepWorkflow(input: string) {
 }
 
 /**
+ * A plain sleep, with an open hook nobody awaits.
+ *
+ * The hook is a *bystander*: it exists so a scenario has an out-of-band writer
+ * it can fire at a chosen moment without changing the run's control flow. That
+ * combination is what this workflow is for — every other hook fixture here
+ * races the hook against something, so delivering the payload changes which
+ * branch runs and the sleep stops being written at all.
+ *
+ * What it buys: a scenario can park the orchestrator inside its `wait_created`
+ * write, commit the payload behind it, and release. The parked write's snapshot
+ * now predates a committed event, so the fence rejects it and the replay
+ * restarts — and `sleep()` resolves its duration against the host wall clock on
+ * every pass that has not yet consumed a `wait_created`. One rejected write
+ * means one more reading of the clock.
+ */
+export async function sleepWithBystanderHookWorkflow(documentId: string) {
+  'use workflow';
+
+  using _bystander = createHook<{ ping: boolean }>({
+    token: `bystander:${documentId}`,
+  });
+
+  const prepared = await prepare(documentId);
+  await sleep('30m');
+  return await finalize(prepared);
+}
+
+/**
  * Fails deterministically for its first two attempts, then succeeds.
  *
  * Retry backoff is `delaySeconds` on a queue message, so the retry schedule

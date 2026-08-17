@@ -45,6 +45,8 @@ import { scenario as peekHookBeforeBranch } from './peek-hook-before-branch.ts';
 import { scenario as raceDuplicateDelivery } from './race-duplicate-delivery.ts';
 import { scenario as raceHookAfterProbe } from './race-hook-after-probe.ts';
 import { scenario as raceHookBeforeProbe } from './race-hook-before-probe.ts';
+import { scenario as sleepResumeAtRecomputed } from './sleep-resumeat-recomputed.ts';
+import { scenario as sleepWaitContinuationStranded } from './sleep-wait-continuation-stranded.ts';
 import { scenario as smokeNoSteps } from './smoke-no-steps.ts';
 import { scenario as smokeOneStep } from './smoke-one-step.ts';
 import { scenario as staleReadEqualStepCounts } from './stale-read-equal-step-counts.ts';
@@ -88,6 +90,14 @@ export const scenarios: ScenarioSpec[] = [
   // -------------------------------------------------------------------------
   longSleep,
   hookNeverArrives,
+
+  // -------------------------------------------------------------------------
+  // Where a sleep's deadline comes from. `sleep()` converts a duration to an
+  // instant in host scope, against the host wall clock, at the point the body
+  // reaches the call — so the answer depends on which pass computed it.
+  // -------------------------------------------------------------------------
+  sleepResumeAtRecomputed,
+  sleepWaitContinuationStranded,
 
   // -------------------------------------------------------------------------
   // Step lifecycle.
