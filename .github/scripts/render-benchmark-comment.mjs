@@ -787,9 +787,8 @@ function pairedSortKey(a, b) {
 
 /**
  * The stream-scenario table: one row per stream scenario, with the columns
- * streams actually want — writer-side achieved and reader-side delivered
- * sustained rates (steady window: first/last 10% of chunks trimmed), CRTT
- * percentiles, and the median worst delivery stall (CDV max positive).
+ * streams actually want — CRTT percentiles and the median worst delivery
+ * stall (CDV max positive).
  * Deltas vs main are plain percentages; deliberately NO 🔴/🟢 marks — targets
  * attach in a later PR once a baseline exists. Rates read higher-is-better,
  * latencies lower-is-better, so directional marks would need per-column
@@ -813,14 +812,14 @@ function renderStreamTable(result) {
   const lines = [
     '**Streams**',
     '',
-    '| Scenario | wr c/s | rd c/s | wr KiB/s | rd KiB/s | CRTT 1st | p75 | p90 | p99 | CDV max | iters |',
-    '|----------|-------:|-------:|---------:|---------:|---------:|----:|----:|----:|--------:|------:|',
+    '| Scenario | CRTT 1st | p75 | p90 | p99 | CDV max | iters |',
+    '|----------|---------:|----:|----:|----:|--------:|------:|',
   ];
   for (const row of rows) {
     const s = row.stream;
     const b = row.baselineStream ?? {};
     lines.push(
-      `| ${row.scenario} | ${cell(s.wrCps, b.wrCps)} | ${cell(s.rdCps, b.rdCps)} | ${cell(s.wrKiBps, b.wrKiBps)} | ${cell(s.rdKiBps, b.rdKiBps)} | ${cell(s.firstMs, b.firstMs)} | ${cell(row.p75, row.baselineP75)} | ${cell(row.p90, row.baselineP90)} | ${cell(row.p99, row.baselineP99)} | ${cell(s.cdvMaxMs, b.cdvMaxMs)} | ${s.iterations} |`
+      `| ${row.scenario} | ${cell(s.firstMs, b.firstMs)} | ${cell(row.p75, row.baselineP75)} | ${cell(row.p90, row.baselineP90)} | ${cell(row.p99, row.baselineP99)} | ${cell(s.cdvMaxMs, b.cdvMaxMs)} | ${s.iterations} |`
     );
   }
   return lines.join('\n');
@@ -995,7 +994,7 @@ function renderFooter(entries) {
   const smallprint = [
     ...(hasStreamTable
       ? [
-          '<sub>**Streams**: writer/reader sustained rates (steady window, 10% trimmed each side), first-chunk RTT (the stream-open path, before any buffering/backpressure), CRTT percentiles, and worst delivery stall (CDV max). Cells are medians across iterations; per-run values in the artifacts. No \ud83d\udd34/\ud83d\udfe2 marks until targets attach.</sub>',
+          '<sub>**Streams**: first-chunk RTT (the stream-open path, before any buffering/backpressure), CRTT percentiles, and worst delivery stall (CDV max). Cells are medians across iterations; per-run values in the artifacts. No \ud83d\udd34/\ud83d\udfe2 marks until targets attach.</sub>',
           '',
         ]
       : []),
