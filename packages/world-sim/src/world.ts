@@ -734,11 +734,7 @@ export function createSimWorld(options: SimWorldOptions = {}): SimWorld {
 
   const world: SimWorld = {
     specVersion: SPEC_VERSION_CURRENT,
-    capabilities: {
-      // Only advertise the fence when the store is actually enforcing it — a
-      // runtime fast path gated on this capability must never run without one.
-      ...(options.preconditionGuard ? { preconditionGuard: true } : {}),
-    },
+    capabilities: {},
     getDeploymentId: intercept('getDeploymentId', () =>
       simQueue.getDeploymentId()
     ),
