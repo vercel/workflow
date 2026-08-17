@@ -1,5 +1,10 @@
-import { afterEach, describe, expect, test } from 'vitest';
-import { hasStepSourceMaps, waitForRunPickup } from './utils';
+import { afterEach, describe, expect, test, vi } from 'vitest';
+import {
+  getRecordedInfraEvents,
+  hasStepSourceMaps,
+  waitForRunPickup,
+  warmDeployment,
+} from './utils';
 
 const ORIGINAL_ENV = { ...process.env };
 
@@ -128,5 +133,84 @@ describe('waitForRunPickup', () => {
     };
     // biome-ignore lint/suspicious/noExplicitAny: minimal Run stand-in
     await expect(waitForRunPickup(run as any, 5_000)).resolves.toBe(true);
+  });
+});
+
+describe('warmDeployment', () => {
+  const makeProbe = (id: string, statuses: string[]) => ({
+    runId: id,
+    get status() {
+      return Promise.resolve(
+        statuses.length > 1 ? statuses.shift() : statuses[0]
+      );
+    },
+    cancel: vi.fn(async () => {}),
+  });
+
+  const eventsBefore = () => getRecordedInfraEvents().length;
+
+  test('a probe picked up first try records nothing', async () => {
+    const before = eventsBefore();
+    const probe = makeProbe('wrun_warm_ok', ['running']);
+    // biome-ignore lint/suspicious/noExplicitAny: minimal Run stand-in
+    const startProbe = vi.fn(async () => probe as any);
+    await warmDeployment(startProbe, {
+      pickupBudgetMs: 300,
+      totalBudgetMs: 2_000,
+    });
+    expect(startProbe).toHaveBeenCalledTimes(1);
+    expect(probe.cancel).not.toHaveBeenCalled();
+    expect(getRecordedInfraEvents().length).toBe(before);
+  });
+
+  test('a stalled probe is abandoned and the warmup recorded once', async () => {
+    const before = eventsBefore();
+    const stalled = makeProbe('wrun_warm_stall', ['pending']);
+    const warm = makeProbe('wrun_warm_pickup', ['running']);
+    const probes = [stalled, warm];
+    // biome-ignore lint/suspicious/noExplicitAny: minimal Run stand-in
+    const startProbe = vi.fn(async () => probes.shift() as any);
+    await warmDeployment(startProbe, {
+      pickupBudgetMs: 300,
+      totalBudgetMs: 10_000,
+    });
+    expect(startProbe).toHaveBeenCalledTimes(2);
+    expect(stalled.cancel).toHaveBeenCalledTimes(1);
+    expect(warm.cancel).not.toHaveBeenCalled();
+
+    const events = getRecordedInfraEvents().slice(before);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      kind: 'cold-start-warmup',
+      testName: 'suite warmup',
+      runId: 'wrun_warm_stall',
+      stalledProbeRunIds: ['wrun_warm_stall'],
+      pickedUpRunId: 'wrun_warm_pickup',
+    });
+  });
+
+  test('an exhausted budget records the warmup with no pickup and returns', async () => {
+    const before = eventsBefore();
+    let n = 0;
+    const startProbe = vi.fn(async () => {
+      n++;
+      // biome-ignore lint/suspicious/noExplicitAny: minimal Run stand-in
+      return makeProbe(`wrun_warm_${n}`, ['pending']) as any;
+    });
+    await warmDeployment(startProbe, {
+      pickupBudgetMs: 200,
+      totalBudgetMs: 500,
+    });
+    expect(startProbe.mock.calls.length).toBeGreaterThanOrEqual(1);
+
+    const events = getRecordedInfraEvents().slice(before);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      kind: 'cold-start-warmup',
+      pickedUpRunId: null,
+    });
+    expect(
+      (events[0] as { stalledProbeRunIds: string[] }).stalledProbeRunIds.length
+    ).toBe(startProbe.mock.calls.length);
   });
 });

@@ -814,21 +814,54 @@ export function trackRun<T>(
 // cluster of events in one time window reads as the platform blip it is.
 // ---------------------------------------------------------------------------
 
-interface InfraEvent {
-  kind: 'run-pickup-stall';
+interface InfraEventBase {
   testName: string;
-  /** The run that was abandoned. */
-  runId: string;
-  /** The run started in its place. */
-  replacementRunId: string;
   waitedMs: number;
   timestamp: string;
 }
 
+/** A mid-suite run the queue never picked up; abandoned and replaced. */
+interface RunPickupStallEvent extends InfraEventBase {
+  kind: 'run-pickup-stall';
+  /** The run that was abandoned. */
+  runId: string;
+  /** The run started in its place. */
+  replacementRunId: string;
+}
+
+/**
+ * A fresh deployment needed more than one warmup probe before its queue
+ * consumer picked anything up (see `warmDeployment`). One event per suite,
+ * not per stalled probe.
+ */
+interface ColdStartWarmupEvent extends InfraEventBase {
+  kind: 'cold-start-warmup';
+  /** First abandoned probe (what the aggregation renders). */
+  runId: string;
+  /** Every probe that stalled, in order. */
+  stalledProbeRunIds: string[];
+  /** The probe that was finally picked up, or null if the budget ran out. */
+  pickedUpRunId: string | null;
+}
+
+type InfraEvent = RunPickupStallEvent | ColdStartWarmupEvent;
+
+/** `Omit` that distributes over a union instead of collapsing it. */
+type DistributiveOmit<T, K extends keyof T> = T extends unknown
+  ? Omit<T, K>
+  : never;
+
 const infraEvents: InfraEvent[] = [];
 
+/** Test-only visibility into events recorded so far. */
+export function getRecordedInfraEvents(): readonly InfraEvent[] {
+  return infraEvents;
+}
+
 export function recordInfraEvent(
-  event: Omit<InfraEvent, 'testName' | 'timestamp'> & { testName?: string }
+  event: DistributiveOmit<InfraEvent, 'testName' | 'timestamp'> & {
+    testName?: string;
+  }
 ) {
   infraEvents.push({
     ...event,
@@ -946,6 +979,93 @@ export async function startTracked<T>(
     .cancel({ cancelReason: 'e2e: stuck pending, replaced by watchdog' })
     .catch(() => {});
   return replacement;
+}
+
+/**
+ * Total budget for warming a fresh deployment before the suite runs.
+ */
+const WARMUP_BUDGET_MS = Number(
+  process.env.WORKFLOW_E2E_WARMUP_BUDGET_MS ?? '120000'
+);
+
+/**
+ * Warm a cold target before the first test starts a run.
+ *
+ * A target answers HTTP well before its first run is picked up promptly,
+ * for two reasons with one shape: a fresh Vercel deployment's queue
+ * consumer takes a while to start delivering, and a local dev server pays
+ * its first flow-route compile on the first delivery (observed as the
+ * suite's first test recording a pickup stall on local-dev lanes, `waitedMs`
+ * pegged at the full pickup budget). Either way the stalls the watchdog
+ * absorbs cluster on the suite's first tests, which drowns the infra
+ * telemetry in cold-start noise and leaves those tests one stalled
+ * replacement away from failing.
+ *
+ * Probes follow the watchdog's shape: start a throwaway run, and if it is
+ * still `pending` after `WORKFLOW_E2E_PICKUP_BUDGET_MS`, abandon it
+ * (best-effort cancel) and probe again, until a probe is picked up or
+ * `WORKFLOW_E2E_WARMUP_BUDGET_MS` is spent. A picked-up probe is left to
+ * finish on its own — pickup is what proves the pipeline is awake. A warmup
+ * that needed abandoned probes is recorded as a single `cold-start-warmup`
+ * infra event instead of per-test `run-pickup-stall` noise.
+ *
+ * If the budget runs out the suite proceeds anyway: the per-test watchdog
+ * still guards every start, and test failures carry the run diagnostics a
+ * thrown warmup would not.
+ */
+export async function warmDeployment(
+  startProbe: () => Promise<Run<unknown>>,
+  {
+    pickupBudgetMs = PICKUP_BUDGET_MS,
+    totalBudgetMs = WARMUP_BUDGET_MS,
+  }: { pickupBudgetMs?: number; totalBudgetMs?: number } = {}
+): Promise<void> {
+  const startedAt = Date.now();
+  const deadline = startedAt + totalBudgetMs;
+  const stalledProbeRunIds: string[] = [];
+
+  const record = (pickedUpRunId: string | null) => {
+    if (stalledProbeRunIds.length === 0) return;
+    recordInfraEvent({
+      kind: 'cold-start-warmup',
+      testName: 'suite warmup',
+      runId: stalledProbeRunIds[0],
+      stalledProbeRunIds: [...stalledProbeRunIds],
+      pickedUpRunId,
+      waitedMs: Date.now() - startedAt,
+    });
+  };
+
+  for (;;) {
+    const probe = await startProbe();
+    const remaining = deadline - Date.now();
+    if (await waitForRunPickup(probe, Math.min(pickupBudgetMs, remaining))) {
+      record(probe.runId);
+      if (stalledProbeRunIds.length > 0) {
+        console.warn(
+          `[e2e] deployment warmup: ${stalledProbeRunIds.length} probe(s) ` +
+            `stalled before ${probe.runId} was picked up ` +
+            `(${Date.now() - startedAt}ms; infra event, not a test failure)`
+        );
+      }
+      return;
+    }
+
+    stalledProbeRunIds.push(probe.runId);
+    void probe
+      .cancel({ cancelReason: 'e2e: warmup probe stuck pending, abandoned' })
+      .catch(() => {});
+
+    if (deadline - Date.now() <= 0) {
+      record(null);
+      console.warn(
+        `[e2e] deployment warmup: no probe picked up within ` +
+          `${totalBudgetMs}ms (${stalledProbeRunIds.length} abandoned); ` +
+          `proceeding — the per-test pickup watchdog still guards`
+      );
+      return;
+    }
+  }
 }
 
 /**
