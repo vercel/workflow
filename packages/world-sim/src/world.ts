@@ -29,19 +29,15 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import {
   type Event,
   getQueueTopicPrefix,
-  requireEventSlot,
   type QueuePayload,
+  requireEventSlot,
   SPEC_VERSION_CURRENT,
   type World,
 } from '@workflow/world';
 import { createVirtualClock, type VirtualClock } from './clock.js';
 import { createIdFactory, type IdFactory } from './ids.js';
 import { createSimQueue, type DirectHandler, type SimQueue } from './queue.js';
-import {
-  createSimStore,
-  type LoadedSnapshot,
-  type SimStore,
-} from './store.js';
+import { createSimStore, type LoadedSnapshot, type SimStore } from './store.js';
 import { createSimStreamer, type SimStreamer } from './streams.js';
 import type {
   CallContext,

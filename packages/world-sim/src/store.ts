@@ -45,14 +45,14 @@ import {
   type ResolveData,
   requireEventSlot,
   SPEC_VERSION_CURRENT,
-  slotToEventId,
   type Step,
   type Storage,
+  slotToEventId,
   stripEventDataRefs,
   type Wait,
   type WorkflowRun,
 } from '@workflow/world';
-import { type IdFactory } from './ids.js';
+import type { IdFactory } from './ids.js';
 
 /** Per-run event ceiling reported on run responses, mirroring the other worlds. */
 const MAX_EVENTS_PER_RUN = 25_000;
@@ -373,7 +373,10 @@ export function createSimStore(options: SimStoreOptions): SimStore {
   function committedSlot(runId: string): number {
     return events
       .filter((event) => event.runId === runId)
-      .reduce((max, event) => Math.max(max, requireEventSlot(event.eventId)), 0);
+      .reduce(
+        (max, event) => Math.max(max, requireEventSlot(event.eventId)),
+        0
+      );
   }
 
   function recordInIndex(event: Event): void {
@@ -776,7 +779,7 @@ export function createSimStore(options: SimStoreOptions): SimStore {
       if (options.countGuard) {
         const index = runEventIndex.get(runId);
         const recorded = index
-            ? countRecordedAtOrBelow(index, snapshot.maxSlot)
+          ? countRecordedAtOrBelow(index, snapshot.maxSlot)
           : null;
         if (recorded !== null && recorded > snapshot.count) {
           throw new PreconditionFailedError(
