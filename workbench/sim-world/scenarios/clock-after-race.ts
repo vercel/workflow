@@ -9,7 +9,8 @@ export const scenario: ScenarioSpec = {
     'A step races an out-of-band hook. The live pass receives only the step, ' +
     'reads Date.now(), chooses the before-cutoff branch, and is held while ' +
     'writing that branch’s wait_created. The hook then commits one minute ' +
-    'later, ahead of the held wait in the append-only log. That payload forces ' +
+    'later, ahead of the held wait — event positions are assigned at commit, ' +
+    'so the hook lands ahead of the still-held wait. That payload forces ' +
     'a new pass over the extended log. In the new pass both the step ' +
     'completion and hook payload are already in the log, and ' +
     'EventsConsumer consumes them synchronously before either promise ' +
