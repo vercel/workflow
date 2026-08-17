@@ -541,13 +541,22 @@ export async function makeRequest<T>({
         });
 
         if (!response.ok) {
-          const errorData: { message?: string; code?: string; error?: string } =
-            await parseResponseBody(response)
-              .then(
-                (r) =>
-                  r.data as { message?: string; code?: string; error?: string }
-              )
-              .catch(() => ({}));
+          const errorData: {
+            message?: string;
+            code?: string;
+            error?: string;
+            details?: unknown;
+          } = await parseResponseBody(response)
+            .then(
+              (r) =>
+                r.data as {
+                  message?: string;
+                  code?: string;
+                  error?: string;
+                  details?: unknown;
+                }
+            )
+            .catch(() => ({}));
           const errorCode = errorData.code ?? errorData.error;
           logCurlRepro(method, url, headers);
 
@@ -570,6 +579,7 @@ export async function makeRequest<T>({
             code: errorCode,
             retryAfter,
             mitigated: response.headers.get('x-vercel-mitigated'),
+            details: errorData.details,
           });
           span?.setAttributes({
             ...ErrorType(errorCode || `HTTP ${response.status}`),

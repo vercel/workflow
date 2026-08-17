@@ -64,7 +64,9 @@ export function createWorld(
 
   return {
     specVersion: SPEC_VERSION_CURRENT,
-    capabilities: { hookRetention: { active: true } },
+    capabilities: {
+      hookRetention: { active: true },
+    },
     ...storage,
     ...streamer,
     ...queue,

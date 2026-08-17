@@ -1,22 +1,11 @@
 name: World Sim
 
 # Plays the deterministic scenario book (`workbench/sim-world`) against the
-# runtime in this commit, once per log world, and publishes the two summaries.
+# runtime in this commit and publishes its summary.
 #
-# This lane never blocks a merge, by design. Six scenarios in the book fail on
-# purpose: each one is a reproduction of a corruption the runtime can still
-# produce, stating the outcome its own durable log implies, and staying red
-# until the runtime gets there. A gate that goes red on every PR is a gate
-# everyone learns to ignore, so the job publishes numbers instead of verdicts —
-# and the number to watch is in the comment, not the check mark.
-#
-#   mint-ordered (production):  35 passed, 6 failed, 6 violations
-#   append-only:                41 passed, 0 failed, 0 violations
-#
-# A seventh red is a regression. Five means something got fixed and a scenario
-# is ready to retire. The append-only column is the measurement the pair exists
-# for: it says which of the six would close if event positions were assigned at
-# commit instead of at the handler's mint.
+# This lane never blocks a merge, by design. The job publishes its numbers
+# instead of a verdict, so the comment is the result to watch, not the check
+# mark.
 
 on:
   push:
@@ -49,8 +38,8 @@ jobs:
     # on a PR it has nothing to say about. The step summary and the artifact
     # still carry whatever did happen.
     continue-on-error: true
-    # The book itself is ~11s per world on a laptop. Everything else here is
-    # install and build.
+    # The book itself is ~11s on a laptop. Everything else here is install and
+    # build.
     timeout-minutes: 15
     env:
       TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
@@ -72,35 +61,17 @@ jobs:
       - name: Setup environment
         uses: ./.github/actions/setup-workflow-dev
 
-      # Both worlds run with their real exit codes: `continue-on-error` records
-      # the non-zero without ending the job, so the step's own status still
-      # says whether the book was clean. Paths are absolute because pnpm runs
-      # the script from the package directory, not the workspace root.
-      - name: Play the book (mint-ordered log)
-        id: mint
+      - name: Play the book
+        id: world-sim
         continue-on-error: true
         run: |
           pnpm --filter @workflow/sim-world-workbench sim \
             --no-color \
-            --title 'Mint-ordered log' \
-            --summary-file "${{ github.workspace }}/world-sim-mint.md" \
-            --detail-file "${{ github.workspace }}/world-sim-mint.txt"
+            --summary-file "${{ github.workspace }}/world-sim.md" \
+            --detail-file "${{ github.workspace }}/world-sim.txt"
 
-      - name: Play the book (append-only log)
-        id: append-only
-        continue-on-error: true
-        run: |
-          pnpm --filter @workflow/sim-world-workbench sim \
-            --no-color \
-            --append-only \
-            --title 'Append-only log' \
-            --summary-file "${{ github.workspace }}/world-sim-append-only.md" \
-            --detail-file "${{ github.workspace }}/world-sim-append-only.txt"
-
-      # Four visible lines when collapsed: the heading, one line saying what
-      # this is, and one per world. Everything else is behind a fold. The
-      # comment is reposted on every push to the PR, so what it costs when it
-      # has nothing new to say is the thing to keep small.
+      # The comment is reposted on every push to the PR, so what it costs when
+      # it has nothing new to say is the thing to keep small.
       - name: Render summary
         if: always()
         run: |
@@ -110,22 +81,17 @@ jobs:
             echo
             echo "Simulated world deterministic testing for races. [Traces]($run_url)"
             echo
-            for world in mint append-only; do
-              if [ -f "world-sim-$world.md" ]; then
+            if [ -f world-sim.md ]; then
                 # The summary names its detail file by the path it was given,
                 # which is absolute so that pnpm's package-directory cwd cannot
                 # scatter them. Strip the workspace prefix back off, leaving
                 # the bare name the artifact below actually contains.
-                sed "s|${{ github.workspace }}/||g" "world-sim-$world.md"
-                # Blank line between the two folds. Adjacent HTML blocks with
-                # nothing between them get parsed as one, and the second world
-                # disappears into the first one's fold.
+                sed "s|${{ github.workspace }}/||g" world-sim.md
                 echo
-              else
-                echo "🟠 _The $world run produced no summary — see the job log._"
+            else
+                echo "🟠 _The run produced no summary — see the job log._"
                 echo
-              fi
-            done
+            fi
           } | tee world-sim-summary.md >> "$GITHUB_STEP_SUMMARY"
 
       # Skipped on forks, where `pull_request` grants read-only permissions and
@@ -147,9 +113,7 @@ jobs:
           name: world-sim-traces
           path: |
             world-sim-summary.md
-            world-sim-mint.md
-            world-sim-mint.txt
-            world-sim-append-only.md
-            world-sim-append-only.txt
+            world-sim.md
+            world-sim.txt
           retention-days: 7
           if-no-files-found: ignore

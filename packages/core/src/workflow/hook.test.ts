@@ -12,7 +12,6 @@ import {
   aliasSerializationClass,
   RUN_CLASS_ID,
 } from '../class-serialization.js';
-import { createCorrelationIdGenerator } from '../correlation-id.js';
 import { EventsConsumer } from '../events-consumer.js';
 import { WorkflowSuspension } from '../global.js';
 import type { WorkflowOrchestratorContext } from '../private.js';
@@ -43,18 +42,13 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
     replayPayloadCache: new ReplayPayloadCache(undefined),
     globalThis: context.globalThis,
     eventsConsumer: new EventsConsumer(events, {
+      // Fake context: no deliveries are modeled, so the gate is a no-op here.
+      isDeliveryIdle: () => true,
       onUnconsumedEvent: () => {},
       getPromiseQueue: () => Promise.resolve(),
     }),
     invocationsQueue: new Map(),
-    generateCorrelationId: createCorrelationIdGenerator({
-      seed: 'test',
-      fixedTimestamp: workflowStartedAt,
-      positional: () => ulid(workflowStartedAt),
-      // The event logs in this file hardcode correlation ids the run-wide
-      // shared sequence minted, so replay only matches under that scheme.
-      perKind: false,
-    }),
+    generateUlid: () => ulid(workflowStartedAt),
     generateNanoid: nanoid.customRandom(nanoid.urlAlphabet, 21, (size) =>
       new Uint8Array(size).map(() => 256 * context.globalThis.Math.random())
     ),
@@ -1270,7 +1264,7 @@ describe('createCreateHook', () => {
     const createHook = createCreateHook(ctx);
 
     expect(() => createHook({ token: '' })).toThrow(
-      '`createHook()` was called with an empty string token. Pass a non-empty token, or omit the `token` option to use a randomly generated one.'
+      '`createHook()` was called with an empty string token. Pass a non-empty token, or omit the `token` option to use a generated one.'
     );
 
     // The rejected hook must not be registered in the invocations queue.
@@ -1296,7 +1290,7 @@ describe('createCreateHook', () => {
 describe('createWebhook', () => {
   it('should throw when a token option is passed', () => {
     expect(() => (createWebhook as any)({ token: 'anything' })).toThrow(
-      '`createWebhook()` does not accept a `token` option. Webhook tokens are always randomly generated. Use `createHook()` with `resumeHook()` for deterministic token patterns.'
+      '`createWebhook()` does not accept a `token` option. Webhook tokens are always generated for you. Use `createHook()` with `resumeHook()` for deterministic token patterns.'
     );
   });
 });

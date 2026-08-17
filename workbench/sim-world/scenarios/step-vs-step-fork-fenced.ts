@@ -2,33 +2,31 @@ import type { ScenarioSpec } from '@workflow/world-sim';
 
 export const scenario: ScenarioSpec = {
   id: 'step-vs-step-fork-fenced',
-  name: 'corrupt: two racing STEPS, WITH the precondition fence on',
+  name: 'two racing STEPS, WITH the precondition fence on',
   description:
-    "Tests the fence's predicate. WorldCapabilities.preconditionGuard is " +
-    'documented as rejecting a stale write when a newer OUT-OF-BAND event ' +
-    '(e.g. a received hook) was recorded. So does it fence a write made ' +
-    "stale by one of the run's OWN step_completed events? Same fault as the " +
-    'scenario above, fence enabled. Verified answer: NO — zero ' +
-    'PreconditionFailedError rejections, and it corrupts identically. The ' +
-    'reason is the shape of the predicate, not the event type: the fence ' +
-    'compares the snapshot against a HIGH-WATER MARK of the newest ' +
-    'out-of-band write, and rejects only `stateUpdatedAt < marker`. Here the ' +
-    'newest such write is the one the reader CAN see (`fast`); the withheld ' +
-    "one is older, a hole in the middle of the log, so the reader's snapshot " +
-    'is never strictly older than the mark. Separating the two completions ' +
-    'in virtual time does not change it — the miss is structural, not a ' +
-    'millisecond-granularity tie. Contrast the hook/wait variant above, ' +
-    'where the withheld hook IS the newest out-of-band write and the ' +
-    'orchestrator carries a pre-sleep snapshot: strictly older, so the same ' +
-    'fence rejects twice and the run self-corrects — those rejections show ' +
-    'up in the trace as `!!` lines, unasked for. ' +
+    "Tests the fence's predicate, and is green: a green regression test now " +
+    'rather than an open reproduction. Slot-numbered event ids closed the ' +
+    'fault — a read missing an event the log already holds is a gap in a ' +
+    'numbered sequence, so the runtime re-reads and decides the fork the way ' +
+    'the log records it, without anything having to be refused. ' +
+    'What the scenario still pins is the predicate, which does NOT catch this ' +
+    'shape. The watermark half compares the write against a high-water mark of ' +
+    'the newest out-of-band write, and refuses only a snapshot strictly below ' +
+    'it. Here the newest such write is the one the reader CAN see (`fast`); ' +
+    'the withheld one is older, a hole in the middle of the log, so the ' +
+    "reader's snapshot is never strictly older than the mark. Separating the " +
+    'two completions in virtual time does not change it — the miss is ' +
+    'structural, not a millisecond-granularity tie. Contrast the hook/wait ' +
+    'variant above, where the withheld hook IS the newest out-of-band write ' +
+    'and the orchestrator carries a pre-sleep snapshot. ' +
     'To be precise about which fence: this scenario arms the watermark half ' +
     'ALONE, which is why `countGuard` is switched off below against the ' +
-    'default. The count half is aimed at exactly this hole and does catch it, ' +
-    'and since #3145 it is armed in production too — so what stays red here ' +
-    'is the watermark predicate, not a hole anything real still has. See the ' +
-    'in-flight trio below, where the two halves are separated and tested one ' +
-    'flag apart.',
+    'default. The count half is aimed at exactly this hole and does catch it. ' +
+    'Neither half models a shipped World: none of them refuses a stale write ' +
+    'at all, because a reader holds a prefix rather than a hole and its next ' +
+    'write comes back carrying what it was pushed past. What arming the fence ' +
+    'still buys is coverage of the 412 reception path the runtime keeps for a ' +
+    'World that would rather refuse than report.',
   workflow: 'stepVsStepForkWorkflow',
   input: ['doc-27'],
   preconditionGuard: true,

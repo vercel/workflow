@@ -1,5 +1,6 @@
 export type * from './analytics.js';
 export {
+  ANALYTICS_EVENTS_GET_MANY_LIMIT,
   AnalyticsAttributeKeySchema,
   AnalyticsEventSchema,
   AnalyticsHookSchema,
@@ -39,6 +40,7 @@ export {
   EVENT_DATA_REF_FIELDS,
   EventSchema,
   EventTypeSchema,
+  entityEventClass,
   getEventDataPayloadField,
   getEventDataRefFields,
   HOOK_EVENTS_REQUIRING_EXISTENCE,
@@ -120,16 +122,29 @@ export {
   PaginatedResponseSchema,
   StructuredErrorSchema,
 } from './shared.js';
+export {
+  EVENT_ID_BODY_LENGTH,
+  EVENT_ID_PREFIX,
+  eventIdToSlot,
+  FIRST_EVENT_SLOT,
+  isSlotBody,
+  isSlotEventId,
+  MAX_EVENT_SLOT,
+  requireEventSlot,
+  slotToEventId,
+} from './slot-identity.js';
 export type { SpecVersion } from './spec-version.js';
 export {
   isLegacySpecVersion,
   requiresNewerWorld,
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_LEGACY,
+  SPEC_VERSION_MAX_SUPPORTED,
   SPEC_VERSION_SUPPORTS_ATTRIBUTES,
   SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
   SPEC_VERSION_SUPPORTS_COMPRESSION,
   SPEC_VERSION_SUPPORTS_EVENT_SOURCING,
+  SPEC_VERSION_SUPPORTS_SLOT_IDENTITY,
 } from './spec-version.js';
 export type * from './steps.js';
 export {

@@ -341,7 +341,7 @@ describe('ws events transport upgrade trace propagation', () => {
     resetWsEventsTransportsForTest();
   });
 
-  it('injects traceparent on the upgrade, parented to the invocation span', async () => {
+  it('injects traceparent on the upgrade, from its own connect span under the invocation', async () => {
     const { openWsChannel } = await import('./ws-transport.js');
 
     const tracer = otelTrace.getTracer('test');
@@ -359,15 +359,31 @@ describe('ws events transport upgrade trace propagation', () => {
     // there is no per-frame traceparent to fall back on, so an uninjected
     // upgrade orphans the server's spans for the whole run.
     const traceparent = wsUpgrades[0]?.headers.traceparent;
-    expect(traceparent).toBe(`00-${traceId}-${spanId}-01`);
+    expect(traceparent).toMatch(new RegExp(`^00-${traceId}-[0-9a-f]{16}-01$`));
+
+    // The handshake carries a client span of its own, so what the server
+    // parents to is that span rather than the invocation directly — the same
+    // relationship `makeRequest` establishes, and what makes a write that waits
+    // on a handshake show the wait as a span instead of unattributed time. The
+    // fake socket never opens, so that span is still recording and hasn't been
+    // exported; the injected context is the only view of it here, and it must
+    // not be the invocation's own. `ws-transport-spans.test.ts` asserts the
+    // finished span against a socket that does open.
+    expect(traceparent).not.toBe(`00-${traceId}-${spanId}-01`);
   });
 
-  it('opens the upgrade without traceparent when no span is active', async () => {
+  it('injects traceparent on the upgrade even when no span is active', async () => {
     const { openWsChannel } = await import('./ws-transport.js');
     openWsChannel('wrun_2', { token: 'test-token' });
     await vi.waitFor(() => expect(wsUpgrades).toHaveLength(1));
 
-    expect(wsUpgrades[0]?.headers.traceparent).toBeUndefined();
+    // Parity with every HTTP path: `instrumentedFetch` opens a client span
+    // whether or not one is already active, so the request is always
+    // correlatable. Before the connect span existed this upgrade went out
+    // uninjected and the server's spans for the whole run were orphaned.
+    expect(wsUpgrades[0]?.headers.traceparent).toMatch(
+      /^00-[0-9a-f]{32}-[0-9a-f]{16}-01$/
+    );
     // The rest of the upgrade must survive an absent propagator unchanged.
     expect(wsUpgrades[0]?.headers.authorization).toBe('Bearer test-token');
   });

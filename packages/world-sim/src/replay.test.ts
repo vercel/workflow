@@ -10,6 +10,7 @@ import { getWorld } from '@workflow/core/runtime';
 import {
   type Event,
   SPEC_VERSION_CURRENT,
+  slotToEventId,
   type WorkflowRun,
 } from '@workflow/world';
 import { describe, expect, it } from 'vitest';
@@ -26,7 +27,7 @@ function event(partial: Partial<Event> & Pick<Event, 'eventType'>): Event {
   counter++;
   return {
     runId: RUN,
-    eventId: `evnt_${String(counter).padStart(4, '0')}`,
+    eventId: slotToEventId(counter),
     createdAt: new Date(AT.getTime() + counter),
     specVersion: SPEC_VERSION_CURRENT,
     ...partial,

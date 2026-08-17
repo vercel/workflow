@@ -9,6 +9,7 @@ import { monotonicFactory } from 'ulid';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as fsModule from './fs.js';
 import { promoteExclusive, writeExclusive, writeJSON } from './fs.js';
+import { MAX_CACHED_EVENT_ENTRIES } from './storage/events-storage.js';
 import * as helpers from './storage/helpers.js';
 import {
   hashToken,
@@ -1281,13 +1282,30 @@ describe('Storage', () => {
         expect(fileExists).toBe(true);
       });
 
+      // Sized one event past the event cache so the preload cannot be served
+      // from cached entries alone and has to go back to the JSON files for at
+      // least one of them. Below the ceiling this still passes, and would stop
+      // covering that fallback, so the count tracks the ceiling rather than
+      // restating it.
+      //
+      // Those writes are sequential and each one is a file write, which is the
+      // whole cost of the test: ~1s on a developer machine, but two minutes on
+      // the Windows CI runner, where per-write latency is orders of magnitude
+      // worse. Batching them with `Promise.all` is slower, not faster: writers
+      // then contend for the same event slot and re-probe. Hence the timeout
+      // well past any other test in this file.
       it('returns the complete preload when run_started is retried', async () => {
+        const total = MAX_CACHED_EVENT_ENTRIES + 1;
+
         await storage.events.create(testRunId, {
           eventType: 'run_started',
           specVersion: SPEC_VERSION_CURRENT,
         });
 
-        for (let index = 0; index < 999; index++) {
+        // `run_created` from the fixture and the first `run_started` are
+        // already on the log, and the retry below is idempotent and appends
+        // nothing, so the fill is two short of `total`.
+        for (let index = 0; index < total - 2; index++) {
           await storage.events.create(testRunId, {
             eventType: 'attr_set',
             specVersion: SPEC_VERSION_CURRENT,
@@ -1304,16 +1322,16 @@ describe('Storage', () => {
         });
         assert(preloaded.events);
         assert(preloaded.cursor);
-        expect(preloaded.events).toHaveLength(1001);
+        expect(preloaded.events).toHaveLength(total);
         expect(preloaded.hasMore).toBe(false);
 
         const all = await storage.events.list({
           runId: testRunId,
-          pagination: { sortOrder: 'asc', limit: 2000 },
+          pagination: { sortOrder: 'asc', limit: total * 2 },
         });
 
         expect(preloaded.events).toEqual(all.data);
-      }, 120_000);
+      }, 300_000);
 
       it('returns a resumable partial preload at the event ceiling', async () => {
         await storage.events.create(testRunId, {

@@ -4,14 +4,29 @@ import {
   requiresNewerWorld,
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_LEGACY,
+  SPEC_VERSION_MAX_SUPPORTED,
   SPEC_VERSION_SUPPORTS_ATTRIBUTES,
   SPEC_VERSION_SUPPORTS_COMPRESSION,
+  SPEC_VERSION_SUPPORTS_SLOT_IDENTITY,
 } from './spec-version.js';
 
 describe('spec version constants', () => {
   it('current spec version is the compression version', () => {
     expect(SPEC_VERSION_CURRENT).toBe(SPEC_VERSION_SUPPORTS_COMPRESSION);
     expect(SPEC_VERSION_SUPPORTS_COMPRESSION).toBe(5);
+  });
+
+  it('the readable ceiling is the slot-identity version', () => {
+    // The default a World stamps and the highest version this SDK can read
+    // are separate dials. Slot identity is above the default on purpose: only
+    // a World that actually allocates slots opts into it.
+    expect(SPEC_VERSION_SUPPORTS_SLOT_IDENTITY).toBe(6);
+    expect(SPEC_VERSION_MAX_SUPPORTED).toBe(
+      SPEC_VERSION_SUPPORTS_SLOT_IDENTITY
+    );
+    expect(SPEC_VERSION_MAX_SUPPORTED).toBeGreaterThanOrEqual(
+      SPEC_VERSION_CURRENT
+    );
   });
 });
 
@@ -24,13 +39,20 @@ describe('requiresNewerWorld', () => {
     expect(requiresNewerWorld(null)).toBe(false);
   });
 
-  it('rejects runs newer than the current spec version', () => {
+  it('accepts a slot-identity run even though it is above the default', () => {
+    // world-vercel stamps this version on the runs it creates. Testing
+    // against SPEC_VERSION_CURRENT instead of the ceiling would make this SDK
+    // reject the runs its own adapter just wrote.
+    expect(requiresNewerWorld(SPEC_VERSION_SUPPORTS_SLOT_IDENTITY)).toBe(false);
+  });
+
+  it('rejects runs newer than the highest supported spec version', () => {
     // This is the contract that protects older SDKs from compressed
     // payloads they cannot decode: a spec-5 run read by an SDK whose
-    // SPEC_VERSION_CURRENT is 4 fails this check up front (with
-    // RunNotSupportedError at the storage layer) instead of failing on
-    // individual compressed payloads.
-    expect(requiresNewerWorld(SPEC_VERSION_CURRENT + 1)).toBe(true);
+    // ceiling is 4 fails this check up front (with RunNotSupportedError at
+    // the storage layer) instead of failing on individual compressed
+    // payloads.
+    expect(requiresNewerWorld(SPEC_VERSION_MAX_SUPPORTED + 1)).toBe(true);
   });
 
   it('simulates a v4 reader rejecting a compression-era run', () => {

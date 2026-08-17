@@ -1,5 +1,5 @@
 import type { World } from '@workflow/world';
-import { SPEC_VERSION_SUPPORTS_COMPRESSION } from '@workflow/world';
+import { SPEC_VERSION_CURRENT } from '@workflow/world';
 import { createAnalytics } from './analytics.js';
 import { createRunId, describeRun } from './create-run-id.js';
 import { createGetEncryptionKeyForRun } from './encryption.js';
@@ -30,16 +30,18 @@ export function createWorld(config?: APIConfig): World {
     config?.projectConfig?.projectId || process.env.VERCEL_PROJECT_ID;
 
   return {
-    // Spec v5 adds client-side zstd/gzip payload compression. The server stores
-    // those payloads opaquely, and v5 remains a superset of v4 attributes.
-    specVersion: SPEC_VERSION_SUPPORTS_COMPRESSION,
+    // The version is what tells the backend which id scheme a run uses: it is
+    // stamped on `run_created` and read back on every later write, so a run
+    // created before spec 6 keeps its ULIDs for its whole life even though this
+    // adapter now asks for slot-numbered ids.
+    //
+    // Declared as the runtime's current version rather than as the literal
+    // version that introduced slots: a bump has to move this declaration with
+    // it, or the runtime's compatibility floor rises past the adapter shipped
+    // alongside it and rejects it (see `assertWorldSupportsRuntimeProtocol`).
+    specVersion: SPEC_VERSION_CURRENT,
     capabilities: {
       hookRetention: { active: true },
-      // workflow-server enforces the `stateUpdatedAt` optimistic-concurrency
-      // guard: creations carrying a stale snapshot are rejected with 412
-      // (PreconditionFailedError) when the run's outside-event marker is
-      // newer. See vercel/workflow-server#484.
-      preconditionGuard: true,
       // Vercel Queues supports maxConcurrency-limited consumers, which
       // WORKFLOW_SEQUENTIAL_REPLAYS=1 uses for per-run `maxConcurrency: 1`
       // flow topics (see queue.ts and @workflow/builders).

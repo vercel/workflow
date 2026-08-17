@@ -101,8 +101,11 @@ function filterRunData(
 // Functions
 
 /**
- * This query technically works but should be used sparingly till the backend
- * uses CH to resolve this instead of scanning a dynamo table.
+ * Lists canonical workflow storage records.
+ *
+ * Observability and inspection usage is deprecated: use
+ * `world.analytics.runs.list()` for plan-aware, ClickHouse-backed queries.
+ * This path remains for operational and payload-bearing callers.
  */
 export async function listWorkflowRuns(
   params: ListWorkflowRunsParams & { resolveData: 'none' },

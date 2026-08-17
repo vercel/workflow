@@ -4,7 +4,6 @@
 
 import { withResolvers } from '@workflow/utils';
 import type { WorldCapabilities } from '@workflow/world';
-import type { CorrelationIdGenerator } from './correlation-id.js';
 import type { EventsConsumer } from './events-consumer.js';
 import type { QueueItem } from './global.js';
 import type { ReplayPayloadCache } from './replay-payload-cache.js';
@@ -154,11 +153,11 @@ export interface WorkflowOrchestratorContext {
   invocationsQueue: Map<string, QueueItem>;
   onWorkflowError: (error: Error) => void;
   /**
-   * Mints a correlation id body for one entity family. Every entity a replay
-   * creates draws from here, and the family is what keeps a disagreement about
-   * one family's count from renumbering another's.
+   * Mints the ULID body of a correlation id. Every entity a replay creates
+   * draws from this one monotonic sequence, so an id is an ordinal over the
+   * whole run and both replays of a run must draw in the same order.
    */
-  generateCorrelationId: CorrelationIdGenerator;
+  generateUlid: () => string;
   generateNanoid: () => string;
   /**
    * Sequential promise queue that ensures all event-driven promise resolutions
@@ -246,8 +245,7 @@ interface DeliveryBarrierEntry {
  * Which earlier kinds each delivery kind defers behind. Chosen so that no kind
  * blocks on a peer it does not need to:
  *
- *  - a hook defers behind earlier WAITS and STEPS — not earlier hooks, which
- *    are sequential same-entity payloads and must not block one another;
+ *  - a hook defers behind earlier HOOKS, WAITS and STEPS;
  *  - a wait defers behind earlier HOOKS and STEPS — not earlier waits, since a
  *    wait never needs to queue behind another wait;
  *  - a step defers behind earlier WAITS, HOOKS and STEPS.
@@ -270,7 +268,7 @@ interface DeliveryBarrierEntry {
  * wait-for graph can never contain a cycle.
  */
 const DEFER_BEHIND: Record<DeliveryKind, readonly DeliveryKind[]> = {
-  hook: ['wait', 'step'],
+  hook: ['hook', 'wait', 'step'],
   wait: ['hook', 'step'],
   step: ['wait', 'hook', 'step'],
 };

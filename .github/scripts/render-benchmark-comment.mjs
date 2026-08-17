@@ -31,7 +31,17 @@ const METRIC_LABELS = {
   ttfs: {
     name: 'TTFS',
     description:
-      'time to first step body (in-deployment start() → first step body, deployment clocks)',
+      'time to first step body (in-deployment start() → first step body)',
+  },
+  'fanout-ttfs': {
+    name: 'Fan-out TTFS',
+    description:
+      'fan-out time to first step (in-deployment start() → first of the parallel step bodies to complete)',
+  },
+  'fanout-ttls': {
+    name: 'Fan-out TTLS',
+    description:
+      'fan-out time to last step (in-deployment start() → last of the parallel step bodies to complete, i.e. when the Promise.all resolves)',
   },
   stso: {
     name: 'STSO',
@@ -52,8 +62,39 @@ const METRIC_LABELS = {
     description:
       'stream overhead (end-to-end write+consume time beyond the modelled generation window)',
   },
+  // Name reservations: CTT = future production one-way write→read metric
+  // (cross-clock); TTFC = future consumer-journey start → first-chunk-readable
+  // metric. The 'first chunk (pooled)' row is neither (readAt₀ - writtenAt₀,
+  // a round trip), so it stays under CRTT.
+  crtt: {
+    name: 'CRTT',
+    description:
+      'chunk round-trip time (per-chunk write → read latency, one clock domain: deployment → stream backend → same deployment)',
+  },
+  cdv: {
+    name: 'CDV',
+    description:
+      "chunk delay variation / delivery jitter (inter-arrival gap minus inter-write gap per seq-adjacent pair; skew-free; the row is each run's MAX positive value, so one stall moves it)",
+  },
+  slip: {
+    // Title-case on purpose (a word, not an initialism). Artifact-only.
+    name: 'Slip',
+    description:
+      "write slip (how late each chunk was written vs the writer's open-loop schedule; the row is each run's MAX — the producer-stall guard that RTT and CDV both hide)",
+  },
 };
-const METRIC_ORDER = ['ttfs', 'stso', 'wo', 'sl', 'so'];
+const METRIC_ORDER = [
+  'ttfs',
+  'fanout-ttfs',
+  'fanout-ttls',
+  'stso',
+  'wo',
+  'sl',
+  'so',
+  'crtt',
+  'cdv',
+  'slip',
+];
 
 export function parseArgs(argv) {
   const args = {
@@ -120,17 +161,19 @@ export function extractHistory(body) {
 }
 
 /**
- * Drops the per-metric raw sample arrays before embedding an entry in the
- * comment's data block. The sequential-steps scenario records ~1000 STSO
- * samples per run (plus the baseline's), which would blow past GitHub's
- * comment size limit within a couple of history entries; the percentiles and
- * baseline annotations — everything the history tables render — are kept.
+ * Drops the per-metric raw sample arrays (and the CRTT fixed-bin histograms)
+ * before embedding an entry in the comment's data block. The sequential-steps
+ * scenario records ~1000 STSO samples per run (plus the baseline's), which
+ * would blow past GitHub's comment size limit within a couple of history
+ * entries; the percentiles and baseline annotations — everything the history
+ * tables render — are kept.
  *
- * This does not affect the histogram diff against `main`: that reads its
- * baseline from the artifacts the workflow downloads into --baseline-dir,
- * which keep their raw samples. What it costs is the collapsed "Previous
- * results" entries, re-rendered from this block on a later commit of the same
- * PR — they show their tables but not their histograms.
+ * This does not affect the distribution diffs against `main`: those read
+ * their baselines from the artifacts the workflow downloads into
+ * --baseline-dir, which keep raw samples and histograms. What it costs is the
+ * collapsed "Previous results" entries, re-rendered from this block on a
+ * later commit of the same PR — they show their tables but not their
+ * histograms.
  */
 function stripRawSamples(entries) {
   return entries.map((entry) => ({
@@ -138,7 +181,23 @@ function stripRawSamples(entries) {
     results: (entry.results ?? []).map((result) => ({
       ...result,
       metrics: (result.metrics ?? []).map(
-        ({ raw, baselineRaw, ...row }) => row
+        ({
+          raw,
+          baselineRaw,
+          hist,
+          progressAvgMs,
+          sizeAvgMs,
+          cdvAvgMs,
+          ...row
+        }) => {
+          // Stream rows: keep the median columns for history tables, drop
+          // the per-run arrays.
+          if (row.stream?.runs) {
+            const { runs, ...medians } = row.stream;
+            return { ...row, stream: medians };
+          }
+          return row;
+        }
       ),
     })),
   }));
@@ -189,7 +248,9 @@ export function loadResults(resultsDir) {
 
 function formatMs(value) {
   if (typeof value !== 'number' || !Number.isFinite(value)) return '—';
-  return `${Math.abs(value) >= 100 ? Math.round(value) : value}`;
+  // Round to one decimal below 100 (and trim float artifacts like
+  // 54.650000000000006 from upstream averaging), integers above.
+  return `${Math.abs(value) >= 100 ? Math.round(value) : Math.round(value * 10) / 10}`;
 }
 
 /**
@@ -210,6 +271,10 @@ const BASELINE_FIELDS = [
   { annotation: 'baselineP75', from: (base) => base.p75 },
   { annotation: 'baselineP90', from: (base) => base.p90 },
   { annotation: 'baselineP99', from: (base) => base.p99 },
+  // Not rendered in the main table (no Avg/P50 columns there), but the CRTT
+  // drill-down matrix shows vs-main deltas on both (avg deltas are exact).
+  { annotation: 'baselineAvg', from: (base) => base.avg },
+  { annotation: 'baselineP50', from: (base) => base.p50 },
 ];
 
 export function annotateWithBaseline(results, baseline) {
@@ -235,6 +300,12 @@ export function annotateWithBaseline(results, baseline) {
     // histogram diff below the table — kept separate from BASELINE_FIELDS
     // since it's an array, not a numeric percentile.
     if (Array.isArray(base.raw)) annotated.baselineRaw = base.raw;
+    // Stream rows diff their rate/CDV columns against the baseline's stream
+    // object (per-run arrays dropped — only the medians are compared).
+    if (row.stream && base.stream) {
+      const { runs, ...medians } = base.stream;
+      annotated.baselineStream = medians;
+    }
     return annotated;
   };
   return results.map((result) => ({
@@ -371,8 +442,13 @@ function renderOverlayBar(base, cur, maxCount) {
  * and their delta on the same line (a fenced code block keeps everything
  * aligned in a monospace font). This is the whole histogram diff — the shape
  * of the two distributions and the per-bucket numbers behind it, without a
- * second table restating them. */
-function renderStsoBarChart(buckets, { selfDiff } = {}) {
+ * second table restating them. Shared by the STSO section (buckets = step
+ * counts) and the CRTT section (buckets = chunk counts); `selfLabel` names
+ * the series when there is no baseline to overlay. */
+function renderHistogramBarChart(
+  buckets,
+  { selfDiff, selfLabel = 'steps' } = {}
+) {
   const maxCount = Math.max(1, ...buckets.map((b) => Math.max(b.base, b.cur)));
   const labelWidth = Math.max(...buckets.map((b) => b.label.length));
   const countWidth = Math.max(
@@ -390,7 +466,7 @@ function renderStsoBarChart(buckets, { selfDiff } = {}) {
         : renderOverlayBar(base, cur, maxCount)
     ).padEnd(BAR_CHART_WIDTH);
     const counts = selfDiff
-      ? `steps ${String(cur).padStart(countWidth)}`
+      ? `${selfLabel} ${String(cur).padStart(countWidth)}`
       : `main ${String(base).padStart(countWidth)}  this ${String(cur).padStart(countWidth)}  ${formatDeltaValue(cur - base).padStart(countWidth + 1)}`;
     lines.push(`${label.padStart(labelWidth)} ms  ${bar}  ${counts}`);
   }
@@ -446,7 +522,7 @@ function renderStsoRowDiff(row) {
     );
   }
   if (buckets.length > 0) {
-    lines.push(renderStsoBarChart(buckets, { selfDiff }));
+    lines.push(renderHistogramBarChart(buckets, { selfDiff }));
   }
   return lines.join('\n');
 }
@@ -475,6 +551,166 @@ function renderStsoDiffSection(result) {
     `<summary>📈 STSO distribution${anyBaseline ? ' vs main' : ''} (inline / queue-hop histograms)</summary>`,
     '',
     ...rows.map(renderStsoRowDiff),
+    '',
+    '</details>',
+  ].join('\n');
+}
+
+// ============================================================================
+// CRTT drill-down (per-bucket sparkline matrix, vs main)
+// ============================================================================
+
+const SPARK_LEVELS = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+
+/** One-character-per-bin sparkline over fixed histogram counts, normalized to
+ * the row's own max so every bucket's *shape* is readable regardless of its
+ * sample count. Empty bins render as `·` so the fixed log axis stays visible
+ * and the occupied bins' *position* on it (fast vs slow) is comparable across
+ * lines. */
+function sparkline(counts) {
+  const max = Math.max(1, ...counts);
+  return counts
+    .map((c) =>
+      c === 0
+        ? '·'
+        : SPARK_LEVELS[
+            Math.min(
+              SPARK_LEVELS.length - 1,
+              Math.floor((c / max) * SPARK_LEVELS.length)
+            )
+          ]
+    )
+    .join('');
+}
+
+/**
+ * Renders the CRTT drill-down: ONE line per variant — a sparkline of the
+ * fixed log-bin RTT histogram plus avg/p50/p90/p99 (plain vs-main
+ * percentages when a baseline exists) — followed by the mean-RTT profile
+ * lines. Per-index detail rows are deliberately NOT rendered: three runs
+ * showed them flat and their run-to-run flips are bucket-hopping iteration
+ * noise that invites misreads. They stay in the results JSON (with baseline
+ * annotations), so when a headline delta fires the artifact still localizes
+ * it; the progress line guards position-dependence here with finer
+ * resolution than the buckets did.
+ *
+ * The avg deltas are exact (count-weighted merges on both sides); p50-p99
+ * are cross-iteration percentile-of-percentiles, like the main table.
+ * Collapsed by default, like the STSO section: a drill-down, not the
+ * headline.
+ */
+function renderCrttMatrixSection(result) {
+  const rows = (result.metrics ?? []).filter(
+    (row) => row.stream && !row.detail && Array.isArray(row.hist?.counts)
+  );
+  if (rows.length === 0) return '';
+  const anyBaseline = rows.some((row) => typeof row.baselineAvg === 'number');
+
+  const round1 = (v) => Math.round(v * 10) / 10;
+  const pct = (cur, base) => {
+    if (typeof cur !== 'number' || typeof base !== 'number' || base <= 0) {
+      return '';
+    }
+    const p = ((cur - base) / base) * 100;
+    if (Math.abs(p) < 0.5) return ' (±0%)';
+    return ` (${p > 0 ? '+' : ''}${Math.round(p)}%)`;
+  };
+  const cells = (row) => [
+    row.group ?? row.scenario,
+    sparkline(row.hist.counts),
+    `${round1(row.avg)}${pct(row.avg, row.baselineAvg)}`,
+    `${formatMs(row.p50)}${pct(row.p50, row.baselineP50)}`,
+    `${formatMs(row.p90)}${pct(row.p90, row.baselineP90)}`,
+    `${formatMs(row.p99)}${pct(row.p99, row.baselineP99)}`,
+    String(row.samples),
+  ];
+  const header = ['variant', 'RTT 1ms→5s+', 'avg', 'p50', 'p90', 'p99', 'n'];
+  const table = [header, ...rows.map(cells)];
+  const widths = header.map((_, col) =>
+    Math.max(...table.map((line) => line[col].length))
+  );
+  const renderLine = (line) =>
+    line
+      .map((cell, col) =>
+        // Left-align the label and sparkline columns, right-align numbers.
+        col <= 1 ? cell.padEnd(widths[col]) : cell.padStart(widths[col])
+      )
+      .join('  ')
+      .trimEnd();
+
+  const lines = ['```', renderLine(header)];
+  for (const row of rows) {
+    lines.push(renderLine(cells(row)));
+  }
+  lines.push('```');
+
+  // Mean-RTT profile lines, one per variant that recorded the profile:
+  // - progress (per tenth of the stream): the drift readout — a rising
+  //   staircase means chunks get slower as the stream grows, which fixed
+  //   index buckets can't localize.
+  // - size (per log size bin, sweep only): the size→latency curve — flat
+  //   means chunk size doesn't matter, a knee localizes where it starts to.
+  // Bars are scaled min→max per line so the *shape* stays readable even for
+  // small effects; the ms range alongside is what says whether the shape
+  // matters. Null entries (empty bins) render as `·`.
+  const renderProfileBlock = (title, entries) => {
+    if (entries.length === 0) return;
+    const labelWidth = Math.max(...entries.map((e) => e.label.length));
+    lines.push('', title, '', '```');
+    for (const { label, avgs } of entries) {
+      const present = avgs.filter((v) => typeof v === 'number');
+      if (present.length === 0) continue;
+      const min = Math.min(...present);
+      const max = Math.max(...present);
+      const span = max - min;
+      const bars = avgs
+        .map((v) =>
+          typeof v !== 'number'
+            ? '·'
+            : span <= 0
+              ? SPARK_LEVELS[0]
+              : SPARK_LEVELS[
+                  Math.round(((v - min) / span) * (SPARK_LEVELS.length - 1))
+                ]
+        )
+        .join('');
+      const range = `${Math.round(min)}–${Math.round(max)}ms`;
+      lines.push(`${label.padEnd(labelWidth)}  ${bars}  ${range}`);
+    }
+    lines.push('```');
+  };
+  const profileEntries = (field) =>
+    rows
+      .filter((row) => Array.isArray(row[field]) && row[field].length > 0)
+      .map((row) => ({ label: row.group ?? row.scenario, avgs: row[field] }));
+  renderProfileBlock(
+    'RTT over stream progress (avg per tenth of stream, bars scaled min→max):',
+    profileEntries('progressAvgMs')
+  );
+  renderProfileBlock(
+    'RTT by chunk size (avg per log size bin, ~160B → ~12KB serialized, bars scaled min→max):',
+    profileEntries('sizeAvgMs')
+  );
+  // Where in the stream delivery clumping/stalls concentrate — the CDV
+  // row's per-run max says the worst stall's size; this says where. Flat is
+  // steady-cadence clumping; a hot spot localizes a stall.
+  renderProfileBlock(
+    'Delivery jitter over stream progress (avg positive CDV per tenth of stream, bars scaled min→max):',
+    profileEntries('cdvAvgMs')
+  );
+
+  return [
+    '',
+    '<details>',
+    `<summary>📈 CRTT drill-down${anyBaseline ? ' vs main' : ''} (RTT distributions & profiles)</summary>`,
+    '',
+    ...(anyBaseline
+      ? []
+      : [
+          '<sub>No `main` baseline yet — percentages appear once a run on `main` has recorded CRTT.</sub>',
+          '',
+        ]),
+    lines.join('\n'),
     '',
     '</details>',
   ].join('\n');
@@ -524,9 +760,70 @@ function shortCommit(commit) {
   return commit ? commit.slice(0, 7) : 'unknown';
 }
 
+// CDV (and, in older history entries, Slip) is the companion of CRTT,
+// measured by the same scenario runs (same workload, same iterations). The
+// table pairs each variant's rows — chunk RTT (llm) directly above delivery
+// jitter (llm) — instead of grouping metric by metric.
+const PAIRED_METRICS = { cdv: 'crtt', slip: 'crtt' };
+
 function metricSortKey(row) {
-  const idx = METRIC_ORDER.indexOf(row.metric);
+  const idx = METRIC_ORDER.indexOf(PAIRED_METRICS[row.metric] ?? row.metric);
   return idx === -1 ? METRIC_ORDER.length : idx;
+}
+
+/** Orders rows within a paired-metric family: by variant (`group`, falling
+ * back to scenario for rows recorded before `group` existed), then anchor
+ * metric before companion. Non-family rows keep insertion order (0 preserves
+ * the stable sort). */
+function pairedSortKey(a, b) {
+  const inFamily = (metric) =>
+    metric in PAIRED_METRICS || Object.values(PAIRED_METRICS).includes(metric);
+  if (!inFamily(a.metric) || !inFamily(b.metric)) return 0;
+  return (
+    (a.group ?? a.scenario).localeCompare(b.group ?? b.scenario) ||
+    METRIC_ORDER.indexOf(a.metric) - METRIC_ORDER.indexOf(b.metric)
+  );
+}
+
+/**
+ * The stream-scenario table: one row per stream scenario, with the columns
+ * streams actually want — writer-side achieved and reader-side delivered
+ * sustained rates (steady window: first/last 10% of chunks trimmed), CRTT
+ * percentiles, and the median worst delivery stall (CDV max positive).
+ * Deltas vs main are plain percentages; deliberately NO 🔴/🟢 marks — targets
+ * attach in a later PR once a baseline exists. Rates read higher-is-better,
+ * latencies lower-is-better, so directional marks would need per-column
+ * polarity anyway; numbers + deltas keep it honest until then.
+ */
+function renderStreamTable(result) {
+  const rows = (result.metrics ?? []).filter(
+    (row) => row.stream && !row.detail
+  );
+  if (rows.length === 0) return '';
+  const pct = (cur, base) => {
+    if (typeof cur !== 'number' || typeof base !== 'number' || base <= 0) {
+      return '';
+    }
+    const p = ((cur - base) / base) * 100;
+    if (Math.abs(p) < 0.5) return ' (±0%)';
+    return ` (${p > 0 ? '+' : ''}${Math.round(p)}%)`;
+  };
+  const cell = (value, base) =>
+    typeof value === 'number' ? `${formatMs(value)}${pct(value, base)}` : '—';
+  const lines = [
+    '**Streams**',
+    '',
+    '| Scenario | wr c/s | rd c/s | wr KiB/s | rd KiB/s | CRTT 1st | p75 | p90 | p99 | CDV max | iters |',
+    '|----------|-------:|-------:|---------:|---------:|---------:|----:|----:|----:|--------:|------:|',
+  ];
+  for (const row of rows) {
+    const s = row.stream;
+    const b = row.baselineStream ?? {};
+    lines.push(
+      `| ${row.scenario} | ${cell(s.wrCps, b.wrCps)} | ${cell(s.rdCps, b.rdCps)} | ${cell(s.wrKiBps, b.wrKiBps)} | ${cell(s.rdKiBps, b.rdKiBps)} | ${cell(s.firstMs, b.firstMs)} | ${cell(row.p75, row.baselineP75)} | ${cell(row.p90, row.baselineP90)} | ${cell(row.p99, row.baselineP99)} | ${cell(s.cdvMaxMs, b.cdvMaxMs)} | ${s.iterations} |`
+    );
+  }
+  return lines.join('\n');
 }
 
 function renderResultTable(result) {
@@ -534,9 +831,12 @@ function renderResultTable(result) {
     '| Metric | Scenario | Best (ms) | P75 (ms) | P90 (ms) | P99 (ms) | Samples |',
     '|--------|----------|----------:|---------:|---------:|---------:|--------:|',
   ];
-  const rows = [...result.metrics].sort(
-    (a, b) => metricSortKey(a) - metricSortKey(b)
-  );
+  // Drill-down rows (e.g. CRTT's per-bucket splits) and stream rows (their
+  // own table) stay out of the headline table.
+  const rows = result.metrics
+    .filter((row) => !row.detail && !row.stream)
+    .sort((a, b) => metricSortKey(a) - metricSortKey(b) || pairedSortKey(a, b));
+  if (rows.length === 0) return '';
   for (const row of rows) {
     const label = METRIC_LABELS[row.metric];
     // Abbreviations only — the definitions live in the comment footer.
@@ -568,13 +868,18 @@ function renderEntry(entry, { heading }) {
     } else {
       lines.push(`Backend: \`${result.backend}\` · app: \`${result.app}\``, '');
     }
-    lines.push(renderResultTable(result), '');
-    // Only the latest entry carries raw samples (they are stripped before
-    // being embedded in the comment's data block, see stripRawSamples), so
-    // this renders for the current run and is silently skipped for the
-    // collapsed history entries.
+    const resultTable = renderResultTable(result);
+    if (resultTable) lines.push(resultTable, '');
+    const streamTable = renderStreamTable(result);
+    if (streamTable) lines.push(streamTable, '');
+    // Only the latest entry carries raw samples and histograms (they are
+    // stripped before being embedded in the comment's data block, see
+    // stripRawSamples), so these render for the current run and are silently
+    // skipped for the collapsed history entries.
     const stsoDiff = renderStsoDiffSection(result);
     if (stsoDiff) lines.push(stsoDiff, '');
+    const crttDiff = renderCrttMatrixSection(result);
+    if (crttDiff) lines.push(crttDiff, '');
   }
   return lines.join('\n');
 }
@@ -590,6 +895,25 @@ function buildScenarioLegend(results) {
   return [...scenarios]
     .map(([name, description]) => `**${name}**: ${description}`)
     .join(' · ');
+}
+
+/**
+ * Replay-cadence identity line: capture id + full semantic sha256 (the
+ * cross-system workload fingerprint — durabench computes the same hash over
+ * its copy of the capture; see cadenceSemanticSha256 in benchmark.test.ts).
+ * Rendered as its own line so the full hash is findable and copyable rather
+ * than buried in the scenario prose.
+ */
+function buildCadencesLegend(results) {
+  const cadences = new Map();
+  for (const result of results) {
+    for (const c of result.config?.replayCadences ?? []) {
+      if (c?.id && c?.semanticSha256 && !cadences.has(c.id)) {
+        cadences.set(c.id, c.semanticSha256);
+      }
+    }
+  }
+  return [...cadences].map(([id, sha]) => `**${id}** \`${sha}\``).join(' · ');
 }
 
 /** Targets legend, derived from the per-row targets in the results. */
@@ -612,10 +936,35 @@ function buildTargetsLegend(results) {
 
 function renderFooter(entries) {
   const results = entries.flatMap((entry) => entry.results ?? []);
-  const definitions = METRIC_ORDER.map(
-    (id) => `**${METRIC_LABELS[id].name}**: ${METRIC_LABELS[id].description}`
-  ).join(' · ');
+  // Only define the metrics this comment actually shows — retired metrics
+  // (e.g. SL/SO, superseded by CRTT) stay defined in METRIC_LABELS so older
+  // history entries keep rendering, but they drop out of the legend once the
+  // latest run no longer reports them.
+  // Only rendered rows feed the legend — artifact-only detail rows (e.g.
+  // per-index CRTT splits, slip tails) don't define terms the comment never
+  // shows.
+  const presentMetrics = new Set(
+    results.flatMap((result) =>
+      (result.metrics ?? [])
+        .filter((row) => !row.detail)
+        .map((row) => row.metric)
+    )
+  );
+  // The stream table's columns are CRTT percentiles and CDV max, so those
+  // definitions stay in the legend whenever stream rows render even though
+  // no row carries those metric ids anymore.
+  if (results.some((result) => (result.metrics ?? []).some((r) => r.stream))) {
+    presentMetrics.add('crtt');
+    presentMetrics.add('cdv');
+    presentMetrics.delete('stream');
+  }
+  const definitions = METRIC_ORDER.filter((id) => presentMetrics.has(id))
+    .map(
+      (id) => `**${METRIC_LABELS[id].name}**: ${METRIC_LABELS[id].description}`
+    )
+    .join(' · ');
   const scenarioLegend = buildScenarioLegend(results);
+  const cadencesLegend = buildCadencesLegend(results);
   const targetsLegend = buildTargetsLegend(results);
   const hasBaseline = results.some((result) =>
     (result.metrics ?? []).some(
@@ -633,10 +982,32 @@ function renderFooter(entries) {
     )
   );
 
+  const hasCrttDistribution = results.some((result) =>
+    (result.metrics ?? []).some(
+      (row) => row.stream && Array.isArray(row.hist?.counts)
+    )
+  );
+
+  const hasStreamTable = results.some((result) =>
+    (result.metrics ?? []).some((row) => row.stream)
+  );
+
   const smallprint = [
+    ...(hasStreamTable
+      ? [
+          '<sub>**Streams**: writer/reader sustained rates (steady window, 10% trimmed each side), first-chunk RTT (the stream-open path, before any buffering/backpressure), CRTT percentiles, and worst delivery stall (CDV max). Cells are medians across iterations; per-run values in the artifacts. No \ud83d\udd34/\ud83d\udfe2 marks until targets attach.</sub>',
+          '',
+        ]
+      : []),
     ...(hasStsoDistribution
       ? [
-          '<sub>The collapsed **STSO distribution** section above buckets every step gap of the sequential-steps run (not a sampled window), split by whether the step ending the gap ran **inline** — in the same warm process as the step before it, so the gap is pure framework overhead — or after a **queue-hop** — the first step of a fresh process, which pays queue dispatch, client reinit and event-log replay. Bars overlay the two runs: `█` is `main`, `┃` marks where this run lands, `░` bridges the gap when this run has more samples in a bucket.</sub>',
+          '<sub>The collapsed **STSO distribution** section above buckets every step gap, split **inline** (same warm process — pure framework overhead) vs **queue-hop** (fresh process — dispatch, reinit, replay). `█` = `main`, `┃` = this run, `░` = fill.</sub>',
+          '',
+        ]
+      : []),
+    ...(hasCrttDistribution
+      ? [
+          '<sub>The collapsed **CRTT drill-down**: per-variant RTT histograms (fixed log bins, `·` = empty) and mean RTT/positive-CDV profile lines over stream progress and chunk size. Histograms, avgs, and profiles merge exactly across runs; p50–p99 are percentile-of-percentiles. Per-index rows live in the artifacts.</sub>',
           '',
         ]
       : []),
@@ -648,6 +1019,9 @@ function renderFooter(entries) {
       : []),
     `<sub>Metrics — ${definitions}</sub>`,
     ...(scenarioLegend ? ['', `<sub>Scenarios — ${scenarioLegend}</sub>`] : []),
+    ...(cadencesLegend
+      ? ['', `<sub>Replay cadences (semantic sha256) — ${cadencesLegend}</sub>`]
+      : []),
     ...(targetsLegend
       ? [
           '',
@@ -655,9 +1029,9 @@ function renderFooter(entries) {
         ]
       : []),
     '',
-    '<sub>All metrics are measured from deployment-side timestamps only. Runs are triggered by an in-deployment route that stamps the anchor (`clientStart`) right before `start()`, so the CI runner’s request and its path through api.vercel.com sit outside every measured window. TTFS = in-deployment `start()` → first step body (turbo uses the in-process fast path, non-turbo the dispatch path), and includes the VQS dispatch hop plus any `/flow` cold start. STSO/WO are measured between step bodies on the deployment. SL is measured inside the workflow (parallel reader/writer steps), so it no longer includes the api.vercel.com read path.</sub>',
+    '<sub>All timestamps are deployment-side; runs are triggered in-deployment, so the CI runner and api.vercel.com sit outside every measured window. TTFS = `start()` → first step body (includes dispatch + any cold start); Fan-out TTFS/TTLS = first/last step completion of one `Promise.all` from the same anchor (the gap is the runtime’s fan-out spread); STSO/WO between step bodies; CRTT inside the workflow (excludes the api.vercel.com read path).</sub>',
     '',
-    '<sub>Cold starts are kept in the numbers on purpose — they are part of real bursty-workload latency. The workbench deployment cold-starts the `/flow` invocation for a large fraction of runs, inflating P75+; the **Best** column shows the fastest (warm-start) sample for comparison.</sub>',
+    '<sub>Cold starts stay in the numbers (real bursty-workload latency, inflates P75+); **Best** is the warm floor.</sub>',
   ];
 
   // Keep the definitions/methodology out of the way in a collapsed dropdown,

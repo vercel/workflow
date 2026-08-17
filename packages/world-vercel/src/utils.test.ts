@@ -1,6 +1,6 @@
 import { createServer, type RequestListener, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { PreconditionFailedError } from '@workflow/errors';
+import { PreconditionFailedError, StreamExpiredError } from '@workflow/errors';
 import { NODE_HTTP_ENV_VAR } from '@workflow/world';
 import { encode } from 'cbor-x';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -289,6 +289,50 @@ describe('getHttpConfig (proxied path)', () => {
     // The trusted-sources bypass header is meaningless on the proxied
     // path (api.vercel.com is public) and must NOT be attached.
     expect(headers.get('x-vercel-trusted-oidc-idp-token')).toBeNull();
+  });
+});
+
+describe('makeRequest stream expiry errors', () => {
+  // These drive the response from a stubbed `fetch`, which the node:http
+  // client never calls, so the flag is pinned off for them.
+  beforeEach(() => {
+    vi.stubEnv(NODE_HTTP_ENV_VAR, '0');
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it.each([
+    ['/v2/runs/wrun_test/streams/stream-test/chunks'],
+    ['/v2/runs/wrun_test/streams/stream-test/info'],
+  ])('preserves stream-expired details from %s', async (endpoint) => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async () =>
+      Response.json(
+        {
+          error: 'stream-expired',
+          message: 'The stream reached its storage retention limit',
+          details: {
+            runId: 'wrun_test',
+            streamId: 'stream-test',
+            expiredAt: '2026-08-10T14:40:00.000Z',
+          },
+        },
+        { status: 410 }
+      )
+    );
+
+    const error = await makeRequest({
+      endpoint,
+      schema: z.never(),
+    }).catch((cause: unknown) => cause);
+
+    expect(error).toBeInstanceOf(StreamExpiredError);
+    expect(error).toMatchObject({
+      runId: 'wrun_test',
+      streamId: 'stream-test',
+      expiredAt: new Date('2026-08-10T14:40:00.000Z'),
+    });
   });
 });
 

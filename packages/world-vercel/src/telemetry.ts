@@ -211,6 +211,16 @@ export const HttpResponseStatusCode = SemanticConvention<number>(
 /** Error type when request fails (standard OTEL: error.type) */
 export const ErrorType = SemanticConvention<string>('error.type');
 
+/**
+ * Application-layer protocol the request was carried over (standard OTEL:
+ * network.protocol.name). Only set on the WS events transport, whose client
+ * span is synthesized rather than produced by a real `fetch` — it is the
+ * attribute that keeps such a span honest about what actually went on the wire.
+ */
+export const NetworkProtocolName = SemanticConvention<string>(
+  'network.protocol.name'
+);
+
 /** Format used for parsing response body (cbor or json) */
 export const WorldParseFormat = SemanticConvention<'cbor' | 'json'>(
   'workflow.world.parse.format'
@@ -253,4 +263,60 @@ export const WorkflowStreamOperation = SemanticConvention<string>(
 /** Requested start index for a live stream read (workflow.stream.start_index) */
 export const WorkflowStreamStartIndex = SemanticConvention<number>(
   'workflow.stream.start_index'
+);
+
+/**
+ * Transport an event write was carried over (workflow.events.transport):
+ * `http` | `ws`. Set on BOTH paths, deliberately: the two emit the same
+ * `http POST` client span against the same `url.full`, which is what keeps
+ * per-event traces and latency dashboards working across
+ * `WORKFLOW_EVENTS_TRANSPORT`, and this attribute is then the only way to slice
+ * one against the other.
+ */
+export const WorkflowEventsTransport = SemanticConvention<'http' | 'ws'>(
+  'workflow.events.transport'
+);
+
+/** Event type of a single event write (workflow.event.type), e.g. `step_started`. */
+export const WorkflowEventType = SemanticConvention<string>(
+  'workflow.event.type'
+);
+
+/** Version of the Workflow client package issuing the request. */
+export const WorkflowClientVersion = SemanticConvention<string>(
+  'workflow.client.version'
+);
+
+/** Client-measured step-to-step overhead in milliseconds. */
+export const StepStsoMs = SemanticConvention<number>('step.stso_ms');
+
+/** Runtime optimizations active for the step latency measurement. */
+export const StepLatencyOptimizations = SemanticConvention<string[]>(
+  'step.latency_optimizations'
+);
+
+/**
+ * The socket a WS event write actually travelled over
+ * (workflow.events.ws.url). `url.full` names the v4 REST endpoint the frame is
+ * forwarded into, so this is where the real wire destination is recorded.
+ */
+export const WorkflowWsUrl = SemanticConvention<string>(
+  'workflow.events.ws.url'
+);
+
+/**
+ * Per-connection request id this write was multiplexed under
+ * (workflow.events.ws.req_id). The join key between a client span and the
+ * server's log line for the same frame.
+ */
+export const WorkflowWsRequestId = SemanticConvention<number>(
+  'workflow.events.ws.req_id'
+);
+
+/**
+ * Which eager-reconnect attempt opened this socket
+ * (workflow.events.ws.reconnect_attempt); 0 for the invocation's first connect.
+ */
+export const WorkflowWsReconnectAttempt = SemanticConvention<number>(
+  'workflow.events.ws.reconnect_attempt'
 );

@@ -294,19 +294,23 @@ about nothing interesting.
 The fence is off by default and set per scenario
 (`ScenarioSpec.preconditionGuard`, which flows into `SimWorldOptions`), which is
 how a scenario can be run one flag apart from its neighbour. `countGuard`
-**follows the fence** unless a spec says otherwise, because that is what
-production does — see below.
+**follows the fence** unless a spec says otherwise, because a World that fences
+arms both halves — see below.
 
-**`preconditionGuard`** models `WorldCapabilities.preconditionGuard`: reject a
-replay-context write whose `stateUpdatedAt` snapshot predates the newest
-externally-originated event. In the SDK this is declared by **world-vercel
-only** (`packages/world-vercel/src/index.ts:40`); `world-local` and
-`world-postgres` declare neither it nor `maxConcurrency`.
+**`preconditionGuard`** rejects a replay-context write whose snapshot predates
+the newest externally-originated event. It is a store option here and not a
+World capability: the runtime assumes any World may refuse a stale write, so a
+scenario can change what the store does about one but never what the runtime
+expects. It does not describe what world-vercel does to a run either — a
+slot-identity run has no snapshot to reject, because the World allocates the
+event's position at commit time and reports the positions the write skipped
+over. What the sim's fence covers is the 412 *reception* path the runtime keeps
+for Worlds that do fence, and the predicate itself.
 
 Its predicate is narrower than the bug class, and the reason is its *shape*,
 not the event type it watches. The marker advances on `hook_received` **or**
 `step_completed`, but it is a **high-water mark** — the newest such write — and
-the test is `stateUpdatedAt < marker`, strictly. So it detects a log truncated
+the test is `snapshot.updatedAt < marker`, strictly. So it detects a log truncated
 at the end and is blind to a hole in the middle: when the withheld event is
 *older* than one the reader can see, the reader's snapshot is never strictly
 older than the mark. The hook direction is caught for the mirror-image reason —
@@ -315,25 +319,44 @@ orchestrator's snapshot predates the sleep, so the fence fires and the run
 reconciles.
 
 **`countGuard`** adds the count half: how many events the log holds at or below
-`stateUpdatedAt`, compared against how many the caller loaded. It closes the
-hole the watermark cannot see. It requires the caller to send
-`stateEventCount` — and since #3145 (`1471f252f`) `@workflow/core` sends it on
-every replay-context create, gated only by the `WORKFLOW_PRECONDITION_GUARD`
-kill-switch, with workflow-server's own count guard defaulting on. So both
-halves are armed together in production, and `countGuard` defaults here to
-whatever the fence is set to. A run with the fence on and the count off is a
-world that exists nowhere; the two scenarios that ask for it
-(`step-vs-step-fork-fenced`, `in-flight-before-decision`) do so explicitly,
-because isolating the watermark half is their whole subject.
+the caller's watermark, compared against how many the caller loaded. It closes
+the hole the watermark cannot see. A World that fences arms both halves
+together, so `countGuard` defaults here to whatever the fence is set to; a run
+with the fence on and the count off is a world that exists nowhere, and the two
+scenarios that ask for it (`step-vs-step-fork-fenced`,
+`in-flight-before-decision`) do so explicitly, because isolating the watermark
+half is their whole subject.
 
-Where the runtime sends a count, the sim uses **that** value rather than its own
-reconstruction (`loadedCount()`), so the guard is tested against the number the
-real client computes; the reconstruction is the fallback for writes core does
-not count.
+**Where the snapshot comes from.** Both halves read one
+`SimCreateParams.snapshot`, and the sim **reconstructs** it rather than reading
+it off the wire. `@workflow/core` states its position as a slot count
+(`eventCount`), derived from slot-numbered event IDs; the sim mints ULIDs, so a
+create arrives with nothing the fence can compare against a ULID watermark. The
+world facade therefore derives `{ updatedAt, count }` from the pages the writer
+read: newest loaded position, and how many loaded events sit at or below it.
+That is the same derivation the client used to make, and it is what lets the
+count half see a hole *behind* the watermark at all.
 
-**Two ways the sim's guards are stronger than production's.** Both are
-deliberate, and both mean a fenced green here is a claim about the *predicate*,
-not about production's *deployment* of it:
+Two rules keep that derivation honest, and both were learned by getting them
+wrong. **A read is what starts the set**: a runtime that writes before loading
+anything (a fresh delivery's `run_started`) sends no snapshot, so crediting it
+with its own write would hand the fence a position lower than the log holds and
+reject the next concurrent write on a claim nobody made. **The set lives for one
+delivery**: it is scoped to the queue handler invocation, because a cold-
+starting replay holds nothing until it reads, and inheriting the previous
+delivery's view fences it for a log it never loaded.
+
+One consequence worth holding: the discriminator for "this write did not come
+from a replay context" is now **the facade attached no snapshot**, where it used
+to be "the client sent no watermark". Those differ for a write issued from a
+step body that did load a log. Such a write is fenced here where it previously
+advanced the out-of-band marker instead.
+
+**Two ways the sim's guards are stronger than a deployed fence.** The
+comparison is against the fence as world-vercel ran it for ULID runs, which is
+the only shape it ever ran against. Both differences are deliberate, and both
+mean a fenced green here is a claim about the *predicate*, not about any
+deployment of it:
 
 - The server's retained-id window is a FIFO in **insertion (commit) order** —
   its Lua script prunes with `table.remove(ids, 1)`, oldest-inserted — while
@@ -429,7 +452,7 @@ interface ScenarioSpec {
   verifyReplay?: boolean;       // default on for runs reaching completed/failed
   expect?: { status?: ScenarioOutcome; output?: unknown };  // output: deep equality
   limits?: ScenarioLimits;
-  preconditionGuard?: boolean;  // advertise + enforce the optimistic-concurrency fence
+  preconditionGuard?: boolean;  // enforce the optimistic-concurrency fence
   countGuard?: boolean;         // also enforce its count half
   appendOnlyLog?: boolean;      // position at commit, not at mint; see §5
 }
@@ -632,7 +655,7 @@ Measured on branch `sim-world`.
 **Scenarios** — `pnpm sim` in `workbench/sim-world`:
 
 ```
-41 scenario(s): 35 passed, 6 failed, 6 consistency violation(s)
+41 scenario(s): 38 passed, 3 failed, 3 consistency violation(s)
 ```
 
 And the same book against an append-only log (`pnpm sim --append-only`):
@@ -641,8 +664,8 @@ And the same book against an append-only log (`pnpm sim --append-only`):
 41 scenario(s): 41 passed, 0 failed, 0 consistency violation(s)
 ```
 
-Both numbers are the intended steady state; see "The six" below for which of
-the six violations that second line closes on the merits and which close
+Both numbers are the intended steady state; see "The three" below for which of
+the three violations that second line closes on the merits and which close
 because the correct answer itself changes.
 
 There was a seventh red until recently, `unclaimed-payload-under-fork`, and it
@@ -654,20 +677,20 @@ mistake, and agreed. Only the log disagreeing with itself caught it. #3406
 fixed the delivery-barrier ordering and it is now green in both worlds; the
 scenario stays as that fix's regression test.
 
-With the fence forced off (`pnpm sim --no-fence`), violations go to **8**
+With the fence forced off (`pnpm sim --no-fence`), violations go to **5**
 mint-ordered and stay at **0** append-only — see §5.
 
-Replay verification across the book: **33 `ok`, 6 `MISMATCH`, 2 `skipped`**
+Replay verification across the book: **36 `ok`, 3 `MISMATCH`, 2 `skipped`**
 (skipped where the run did not reach a terminal status).
 
-`run.ts` exits non-zero, and that is the intended steady state. The six
+`run.ts` exits non-zero, and that is the intended steady state. The three
 failures are reproductions of corruptions the runtime can still produce; each
 states the outcome its own durable log implies and fails until the runtime gets
 there, so the failure line names both sides (`expected "afterSlow:doc-26", got
 "afterFast:doc-26"`).
 
-**The number is the thing to watch: six today.** A seventh is a regression;
-five means something got fixed and a scenario is ready to retire.
+**The number is the thing to watch: three today.** A fourth is a regression;
+two means something got fixed and a scenario is ready to retire.
 
 That makes the book a poor plain CI gate, which is what `--report-only` is for:
 it prints every failure and exits 0, so a job can *publish* the book's current
@@ -675,55 +698,48 @@ state rather than block on it. `--summary-file` writes one collapsed
 `<details>` — a visible line carrying the count and a green or orange dot, the
 whole table behind it — for a PR comment or `$GITHUB_STEP_SUMMARY`, and
 `--detail-file` writes the full colour-free trace as an artifact to read when a
-number moves. Deliberately nothing above the fold but the count: six are red on
-purpose, so a comment that leads with the failures leads with the part that is
+number moves. Deliberately nothing above the fold but the count: three are red
+on purpose, so a comment that leads with the failures leads with the part that is
 not news, and grows a wall of text on exactly the PRs that changed nothing. The
 workbench's `pnpm test` is `--report-only --summary-file`, so a recursive
 `pnpm -r test` stays green and still says what happened; `pnpm sim` stays
 strict, so running it by hand fails loudly.
 
-### The six
+### The three
 
-The `fix` column names the specific change that closes the scenario. `shown
-green by` is the stronger claim: a *passing* scenario that is this one with that
-fix armed, same workflow and same tempo, one flag apart. Where it says "none
-yet", the fix is identified by argument but nothing in the book proves it.
-
-| scenario | mechanism | fix | shown green by |
-|---|---|---|---|
-| `stale-read-step-count-fork` (doc-23) | `withholdNextEvent(1)` + `deliverHook`; hook at `#7`, `wait_completed` at `#8`, no-hook branch at `#9` | `preconditionGuard` — the withheld `hook_received` is the newest out-of-band write and the orchestrator's snapshot predates the sleep, so the watermark fires | `stale-read-step-count-fork-fenced` (doc-24) |
-| `stale-read-equal-step-counts` (doc-25) | same fault on a fork whose branches emit one step each | `preconditionGuard`, for the same reason | none yet |
-| `step-vs-step-fork` (doc-26) | two of the run's own `step_completed` events, one delivery | `countGuard`. **Not** `preconditionGuard`: the withheld completion is a hole in the middle of the log, which moves no high-water mark (§5) | none yet |
-| `step-vs-step-fork-fenced` (doc-27) | same, `preconditionGuard: true`, zero rejections | `countGuard`. This row *is* the proof that the watermark half does not fix doc-26 | none yet |
-| `in-flight-before-decision` (doc-29) | `beginHookDelivery`, committed before the decision is written | `countGuard` | `in-flight-before-decision-counted` (doc-30) |
-| `in-flight-after-decision` (doc-31) | `beginHookDelivery`, committed after the decision | none in the SDK. Needs an append-tail fence — `assertSlotAboveTail`, `vercel/workflow-server#692` | — |
+| scenario | mechanism | fix |
+|---|---|---|
+| `in-flight-before-decision` (doc-29) | `beginHookDelivery`, committed before the decision is written | none in the SDK. The hole is a live reservation, so re-reading finds it still empty |
+| `in-flight-before-decision-counted` (doc-30) | same tempo, count half of the fence armed | same. Mint-ordered the write never reaches the fence |
+| `in-flight-after-decision` (doc-31) | `beginHookDelivery`, committed after the decision | none in the SDK. Needs an append-tail fence — `assertSlotAboveTail`, `vercel/workflow-server#692` |
 
 Those handles are `ScenarioSpec.id`, and they select: `pnpm sim
 in-flight-after-decision` plays one row of this table.
 
-So: **two** of the six have their fix demonstrated by a paired green scenario,
-**three** have a fix identified but unproven here, and **one** has no fix at all.
-Writing the three missing pairs is the obvious next increment.
+**There used to be six, and slot-numbered event ids closed half of them.** The
+four that closed — `stale-read-step-count-fork` (doc-23),
+`stale-read-equal-step-counts` (doc-25), `step-vs-step-fork` (doc-26),
+`step-vs-step-fork-fenced` (doc-27) — all staged a *read* that was missing an
+event the log already held. Under ULIDs that read was indistinguishable from a
+complete one, and the fence was the only thing that could have caught it, which
+is why their `fix` column used to name a predicate. Under slot ids a missing
+event is a gap in a numbered sequence, so the runtime sees it without asking
+anyone: it re-reads, gets the full log, and decides the fork the way the log
+records it. The fence never has to fire. Those four are now regression tests for
+the gap audit rather than open reproductions, and doc-24's pairing with doc-23
+is now a pairing between two green scenarios.
 
-Note what the `fix` column does *not* mean. `countGuard` closing doc-29 is a
-statement about the World implementation *and* about production's predicate:
-core has sent `stateEventCount` on every replay-context create since #3145 and
-the server's count guard defaults on (§5). What it is not is a statement about
-production's *deployment* of that predicate, which is region-local, fails open,
-and prunes its window in a different order than this store does — all three
-noted in §5. So the honest reading of the column is: four of the six have a fix
-whose predicate is armed in production today, and whether it fires there depends
-on conditions the sim does not model.
+What is left is the family the audit cannot repair by re-reading, because the
+position really is empty at the moment of the read: a writer has reserved it and
+has not committed. Mint-ordered, doc-29 and doc-30 now fail *loudly* rather than
+silently — the replay refuses a log it cannot follow instead of following it
+into the wrong branch — which is a better outcome than the divergence they used
+to produce, and still a failure.
 
-**The append-only log closes all six, in two different senses — and the split
-is four and two, not three and three.** Four (doc-23, doc-25, doc-26, doc-27)
-close on the merits, with the book asking them exactly what it asked before: the
-reordering was the fault, and once positions are assigned at commit the withheld
-read degrades from a hole to a truncation, which the fence can see. The
-remaining two (doc-29, doc-31) close because the branch the run ends on changes.
-A hook that commits after the timeout genuinely *is* after it when the tail is
-the only place a write can land, so the log records the timeout first and the
-run that settled is the run the log describes.
+**The append-only log closes all three, and by construction rather than by
+catching anything.** Nothing reserves a position, so no read can see a hole, and
+a hook that commits after the timeout genuinely *is* after it. The log records
+the timeout first and the run that settled is the run the log describes.
 
 **No expectation is restated per world, and there is no mechanism to.** The
 first cut of this had one — an `expectAppendOnly` field on three scenarios,
@@ -739,43 +755,44 @@ report the branch in the trace.
 That costs nothing, because the expectations were never what caught the fault.
 The load-bearing assertion is the invariant: **the log a run wrote must be a log
 the runtime can replay back into that same run**. It is world-independent, on by
-default (`verifyReplay`), and it is what all six reds trip. Measured, not
+default (`verifyReplay`), and it is what all three reds trip. Measured, not
 assumed: strip every `expect` in the book and the violation counts do not move
-— 6 mint-ordered, 0 append-only, the same six by name. (Pass/fail does move by
+— 3 mint-ordered, 0 append-only, the same three by name. (Pass/fail does move by
 one, and only for a bookkeeping reason: `hook-never-arrives` expects `stalled`,
 and a stall's reason is reported as a problem unless the scenario said it was
 expecting one.) That also removes
 the one place where the flag's scoreboard rested on a judgement about what the
 right answer *is* rather than on something the harness checks on its own.
 
-doc-30 is worth a line because it was the third `expectAppendOnly` and is *not*
-one of the six — mint-ordered it already passes, since `countGuard` catches
-there what the watermark half misses. Its branch moves under the flag for the
-same reason its uncounted twin's does, so the old pinned output would have
-turned a green scenario red. What made it distinct from doc-29 was never the
-branch anyway; it is that the count half of the fence fires at all. That is now
-asserted directly, matched on the guard's own message and true in both worlds —
-and it fails if `countGuard` is turned off, which is the check that a bare
-`rejections().length > 0` would have missed, since doc-29 rejects too.
+doc-30 is worth a line because it was the third `expectAppendOnly`. Its branch
+moves under the flag for the same reason its uncounted twin's does, so the old
+pinned output would have turned a scenario red for ending on the world's answer
+rather than on a fault. What makes it distinct from doc-29 was never the branch
+anyway; it is that the fence fires at all. That is asserted directly, matched on
+`PreconditionFailedError` rather than on "something was rejected", since doc-29
+rejects too. The assertion is scoped to the append-only world, because
+mint-ordered the write never reaches the fence — the reservation ahead of it
+makes the log unreadable first.
 
 Two details worth keeping:
 
 - Hook delivery participates. `beginHookDelivery` still reserves a position at
   the handler boundary; under the flag the reservation stops being binding and
   the write re-mints at the tail if anything overtook it (`positionAtCommit`).
-- doc-30's 412 still fires, and now saves nothing. The count guard counts events
-  at or below the caller's watermark, the watermark is a millisecond, and a hook
-  committing after the timeout within the same virtual millisecond is still "at
-  or below" it. The reload finds nothing to correct and the run settles anyway.
-  That false positive is the standing cost of the count half of the fence once
-  the log is append-only, and doc-30's trace is where to see it.
+- doc-30's 412 still fires, and now saves nothing. The hook commits after the
+  timeout and therefore sorts after it, so the reload finds nothing to correct
+  and the run settles anyway. That false positive is the standing cost of the
+  fence once the log is append-only, and doc-30's trace is where to see it.
 
-Four of the six are hook-driven and two deliberately are not — the pair proves
-the corruption needs no out-of-band event type. All the pure hook-timing
-scenarios pass: placing a hook precisely is what works. What fails is a hook
-that is durable in the log but absent from the read the live pass decided on.
+All three are hook-driven, and the two that were not (doc-26 and doc-27, two of
+the run's own `step_completed` events) are the ones the gap audit closed — so
+the book no longer holds an open reproduction that needs no out-of-band event
+type. All the pure hook-timing scenarios pass: placing a hook precisely is what
+works. What fails is a hook whose position is spoken for but whose write has not
+landed when the live pass reads.
 
-The last row is the only one with no fix in the SDK: the hole opens *after* the
+doc-31, the last row, is the one that no fence placed anywhere in the write path
+could reach: the hole opens *after* the
 write that should have fenced it, in the quiescent gap between deliveries where
 the run makes no writes and so meets no checks. `assertSlotAboveTail` in
 `vercel/workflow-server#692` is the append-tail fence for it.
@@ -812,7 +829,7 @@ package about hook races.
 
 **Also untested:** turbo / optimistic-inline-start, which skip replays and so
 give a stale branch somewhere to hide; and the fence's same-millisecond
-behaviour, where an equal `stateUpdatedAt` passes by design as anti-livelock.
+behaviour, where an equal snapshot watermark passes by design as anti-livelock.
 
 **Not modelled at all:** the concurrency machinery `world-local` needs and this
 store omits — claim files, per-entity locks, staged/promoted hook events,
