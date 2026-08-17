@@ -43,16 +43,14 @@ import {
   type PaginatedResponse,
   type PaginationOptions,
   type ResolveData,
-  requireEventSlot,
   SPEC_VERSION_CURRENT,
   type Step,
   type Storage,
-  slotToEventId,
   stripEventDataRefs,
   type Wait,
   type WorkflowRun,
 } from '@workflow/world';
-import type { IdFactory } from './ids.js';
+import { type IdFactory, ulidTimeOf } from './ids.js';
 
 /** Per-run event ceiling reported on run responses, mirroring the other worlds. */
 const MAX_EVENTS_PER_RUN = 25_000;
@@ -69,51 +67,22 @@ const DEFAULT_PAGE_LIMIT = 20;
 const RUN_EVENT_INDEX_WINDOW = 16;
 
 /**
- * A log position, taken before the write that will occupy it commits.
- *
- * The event id *is* the position: `evnt_` followed by the event's 1-based slot
- * in its run's log. This store hands the slot out in the request handler rather
- * than at the append, which is the shape a World has whenever it cannot ask
- * storage to allocate — and everything downstream follows from that one fact. A
- * write that takes a slot and then takes a while to commit keeps the earlier
- * slot it was given, so the log can gain an event *behind* a position a reader
- * has already seen. That is the hole no high-water mark can detect, and
- * reproducing it is the reason taking a position is separable from appending.
- *
- * `createdAt` is the mint instant, not the commit instant, matching a World
- * that derives the row's timestamp at the handler boundary. Entity rows
- * (step/run/hook timestamps) still use the commit instant, because those are
- * written by the transaction rather than carried with the position.
- */
-export interface MintedEvent {
-  eventId: string;
-  createdAt: Date;
-}
-
-/**
  * Sim-internal `events.create` params, supplied by the world facade rather than
  * by the runtime under test.
  */
 interface SimCreateParams {
   /**
-   * The position minted for this write at the handler boundary. Absent when the
-   * store is driven directly (unit tests), in which case `create` mints on
-   * entry — the same instant, just without a hold point in between.
-   */
-  minted?: MintedEvent;
-  /**
    * The log this write was decided against, or absent when the write did not
    * come from a replay context at all (an out-of-band writer, or a store driven
    * directly by a unit test).
    *
-   * Reconstructed by the world facade from the pages the writer read rather
-   * than taken off the wire, because the wire carries only half of it: the
-   * runtime states the highest slot it holds, and the fence also wants how many
-   * events it loaded at or below that slot. The reconstruction is the same
-   * derivation the client made — the newest loaded position, and how many
-   * events sit at or below it — which is what lets the fence spot a hole
-   * *behind* the watermark that no comparison against the watermark alone can
-   * see.
+   * Reconstructed by the world facade from the pages the writer read, because
+   * the runtime no longer states it: `@workflow/core` describes its snapshot as
+   * a slot count, and the sim mints ULIDs, so there is nothing on the wire for
+   * the fence to read. The reconstruction is the same derivation the client
+   * used to make — the newest loaded position, and how many events sit at or
+   * below it — which is what lets the fence spot a hole *behind* the watermark
+   * that no comparison against the watermark alone can see.
    *
    * See `SimStoreOptions.preconditionGuard` and `SimWorldOptions.countGuard`.
    */
@@ -122,9 +91,9 @@ interface SimCreateParams {
 
 /** What a replay-context writer had loaded when it decided to write. */
 export interface LoadedSnapshot {
-  /** Slot of the newest loaded event. */
-  maxSlot: number;
-  /** How many loaded events sit at or below {@link maxSlot}. */
+  /** ULID time of the newest loaded event. */
+  updatedAt: number;
+  /** How many loaded events sit at or below {@link updatedAt}. */
   count: number;
 }
 
@@ -146,10 +115,10 @@ interface RunEventIndex {
  */
 function countRecordedAtOrBelow(
   index: RunEventIndex,
-  maxSlot: number
+  updatedAt: number
 ): number | null {
   const above = index.recentEventIds.filter(
-    (id) => requireEventSlot(id) > maxSlot
+    (id) => ulidTimeOf(id) > updatedAt
   ).length;
   const pruned = index.total > index.recentEventIds.length;
   if (pruned && above === index.recentEventIds.length) return null;
@@ -160,16 +129,13 @@ export interface SimStoreOptions {
   now(): number;
   ids: IdFactory;
   /**
-   * Reject a replay-context write whose snapshot predates the newest
-   * externally-originated event, with a `PreconditionFailedError` (412).
+   * Enforce the optimistic-concurrency precondition guard described in
+   * `WorldCapabilities.preconditionGuard`: reject a replay-context write whose
+   * snapshot predates the newest externally-originated event.
    *
-   * No shipped World does this — the runtime does not need it, since a
-   * reader's log is a prefix and its next write reports what it was pushed
-   * past. The option stays because the sim is where the *reception* path is
-   * exercised: the runtime still handles a 412 (restart in place, then
-   * re-invoke), and a World that allocates positions away from the commit may
-   * still want to refuse rather than report. Off by default, and never
-   * implicit, because arming it changes which runtime fast paths engage.
+   * Off by default. Turning it on is the point of a simulation — it lets a
+   * scenario check that the runtime recovers from a 412 fence — but it also
+   * changes which runtime fast paths engage, so it is never implicit.
    */
   preconditionGuard?: boolean;
   /**
@@ -187,40 +153,6 @@ export interface SimStoreOptions {
    * reconstructs; see `SimWorldOptions.countGuard`.
    */
   countGuard?: boolean;
-  /**
-   * Make the log append-only in the strong sense: an event takes its position
-   * when it *commits*, not when its handler minted one.
-   *
-   * Production does the opposite, and for a reason — DynamoDB does not
-   * generate ids, so workflow-server mints the event id at the handler
-   * boundary and that id *is* the log's sort key. A write held between its
-   * mint and its commit therefore lands *behind* events that were minted later
-   * and committed sooner, and the log gains a row in the past. Every read that
-   * happened in between saw a log the log itself went on to contradict. That
-   * one fact is what the six red scenarios in the book are about.
-   *
-   * With this on, a write that was overtaken while it was held gives up its
-   * reserved position and re-mints at the tail. Two consequences follow, and
-   * they are the whole point:
-   *
-   * - Log order is commit order. Nothing is ever inserted behind a row a
-   *   reader has already seen, so no two reads can disagree about the past.
-   * - Every read is a prefix of the final log. A read can be *short* — it may
-   *   miss a write that has not committed yet, or one a lagging replica has
-   *   not caught up to (see `withholdNextEvent`) — but never self-inconsistent.
-   *   Staleness collapses into lag, and lag is what the optimistic-concurrency
-   *   fence can see; a hole is what it cannot.
-   *
-   * What it costs is the property the boundary mint was buying: a write no
-   * longer knows where it will land until it lands. Off by default, because
-   * the simulation's job is to model the world that exists. Turning it on
-   * answers the other question — which of these failures survive if it didn't?
-   *
-   * Uncontended writes are untouched. A mint that is still the newest position
-   * when it commits keeps its id, so a scenario that never holds a write
-   * mid-flight produces a byte-identical log either way.
-   */
-  appendOnlyLog?: boolean;
   /** Invoked after every successful append, before the create call returns. */
   onEvent?(event: Event): void;
   /** Invoked when a read was served an incomplete log. */
@@ -235,8 +167,7 @@ export interface StaleRead {
   hidden: number;
   /**
    * The read was cut short at `eventId` rather than served around it: a
-   * replica that is behind, not one that is wrong. Only `appendOnlyLog`
-   * produces this shape — see there.
+   * replica that is behind, not one that is wrong.
    */
   truncated: boolean;
 }
@@ -253,41 +184,11 @@ export interface SimStore extends Storage {
    */
   seedFromLog(log: readonly Event[]): void;
   /**
-   * Take the run's next log position, without writing anything.
-   *
-   * The world facade calls this at the handler boundary — before any hold can
-   * fire — so a write held mid-flight already owns the position it will
-   * eventually occupy. See {@link MintedEvent}.
-   */
-  mintEvent(runId: string): MintedEvent;
-  /**
    * Hide the *next* event appended from the following `reads` event-log reads.
    *
    * This models one concurrent writer precisely. Under real concurrency two
-   * writers take positions 7 and 8, and a reader can observe 8 while 7 is still
-   * in flight — a *hole*, not a truncated tail. Withholding a suffix instead
-   * would hide the reader's own write too, which is a different (and less
-   * interesting) fault.
-   *
-   * It is the second of the three preconditions for a corrupted event log — a
-   * write derived from an incomplete event load. A strictly serial scheduler
-   * cannot reach it by accident, so a scenario has to ask for it.
-   *
-   * Note which world this models. Hiding an event that is already *committed*
-   * is a stale read, and workflow-server has eliminated those: it pays 2× the
-   * RCU for strongly-consistent reads on every page, so every event committed
-   * before a read started is visible to it. This primitive therefore models an
-   * eventually-consistent backend (or the older split-query world-vercel read
-   * path), and it is the *weaker* fault of the two. The stronger one needs no
-   * withholding at all: hold a write between its mint and its commit and the
-   * reader genuinely cannot see it, because it is not there yet — while its
-   * position, already assigned, sits behind whatever the reader did see. Prefer
-   * a hold when the scenario's point is production behaviour.
-   *
-   * Under `appendOnlyLog` the hole is not expressible, so this degrades to the
-   * honest version of the same lag: the read stops *at* the withheld event
-   * instead of stepping over it. The reader still misses the write; what it no
-   * longer does is miss it while holding proof that something newer exists.
+   * read stops at the withheld event, modeling a lagging replica that has not
+   * caught up yet.
    */
   withholdNextEvent(reads?: number): void;
   /** Every event ever appended, in log order. */
@@ -407,7 +308,6 @@ interface AppliedEntities {
 
 export function createSimStore(options: SimStoreOptions): SimStore {
   const { ids, now: nowMs } = options;
-  const appendOnlyLog = options.appendOnlyLog === true;
 
   const events: Event[] = [];
   const runs = new Map<string, WorkflowRun>();
@@ -421,28 +321,10 @@ export function createSimStore(options: SimStoreOptions): SimStore {
   /** hookIds that have been explicitly disposed; disposal is permanent. */
   const disposedHooks = new Set<string>();
   /**
-   * Per run: slot of the newest externally-originated event. Only read when
-   * `preconditionGuard` is on. See `SimCreateParams.snapshot`.
+   * Per run: ULID time of the newest externally-originated event. Only read
+   * when `preconditionGuard` is on. See `SimCreateParams.snapshot`.
    */
   const externalWriteMarker = new Map<string, number>();
-  /**
-   * Per run: the highest slot handed out, committed or merely spoken for.
-   *
-   * Separate from the committed log because a position is taken at the handler
-   * boundary: between `mintEvent` and the append, the slot exists and belongs
-   * to nobody. A write that never commits gives its slot back (see
-   * `releaseSlot`); a position reserved and then abandoned out of band leaves
-   * it empty for good.
-   */
-  const highestSlot = new Map<string, number>();
-  /**
-   * Per run: positions handed out and given back, still unoccupied.
-   *
-   * Reused before the range grows, so the log stays dense. What makes that
-   * safe is that a slot only lands here once its create has returned: nothing
-   * is still holding it, and nothing ever will.
-   */
-  const freeSlots = new Map<string, number[]>();
   /**
    * Per run: the tail of the log, for the count guard. Records *every* event,
    * replay-origin included — the corruption it guards against is one replay
@@ -459,24 +341,18 @@ export function createSimStore(options: SimStoreOptions): SimStore {
    * Serve a read, minus any event currently being withheld. Reads outside a
    * withhold window get the real log.
    *
-   * Both modes hide the same event and differ only in what they do with the
-   * ones behind it. The default punches a hole — the withheld event vanishes
-   * and its successors stay — which is what an eventually-consistent replica
-   * does and what no watermark can detect. Under `appendOnlyLog` the read is
-   * cut short there instead, leaving a prefix: still short, but no longer
-   * carrying evidence that contradicts itself.
+   * A withheld event cuts the read short there, leaving a prefix of the real
+   * log: short, but never self-contradictory.
    */
   function applyWithhold(source: readonly Event[]): readonly Event[] {
     if (!withheld || withheld.remaining <= 0) return source;
     const { eventId } = withheld;
     withheld.remaining--;
     if (withheld.remaining <= 0) withheld = undefined;
-    const visible = appendOnlyLog
-      ? source.filter((e) => e.eventId < eventId)
-      : source.filter((e) => e.eventId !== eventId);
+    const visible = source.filter((e) => e.eventId < eventId);
     const hidden = source.length - visible.length;
     if (hidden > 0) {
-      options.onStaleRead?.({ eventId, hidden, truncated: appendOnlyLog });
+      options.onStaleRead?.({ eventId, hidden, truncated: true });
     }
     return visible;
   }
@@ -485,69 +361,8 @@ export function createSimStore(options: SimStoreOptions): SimStore {
   const waitKey = (runId: string, correlationId: string) =>
     `${runId}:${correlationId}`;
 
-  /** Highest slot committed to a run's log, or 0 for a log with no events. */
-  function committedSlot(runId: string): number {
-    let max = 0;
-    for (const event of events) {
-      if (event.runId !== runId) continue;
-      const slot = requireEventSlot(event.eventId);
-      if (slot > max) max = slot;
-    }
-    return max;
-  }
-
-  function mintEvent(runId: string): MintedEvent {
-    let slot: number;
-    const free = appendOnlyLog ? undefined : freeSlots.get(runId);
-    if (free?.length) {
-      free.sort((a, b) => a - b);
-      slot = free.shift() as number;
-    } else {
-      slot = (highestSlot.get(runId) ?? 0) + 1;
-      highestSlot.set(runId, slot);
-    }
-    return { eventId: slotToEventId(slot), createdAt: new Date(nowMs()) };
-  }
-
-  /**
-   * Give a slot back when nothing committed at it.
-   *
-   * A hole in the log is corruption as far as the runtime is concerned, so a
-   * create that appends nothing must not consume a position. Two kinds do: one
-   * the store rejects outright, and one it accepts as a no-op (a second
-   * `run_started` for a run already started, say). Production reaches the same
-   * place from the other side, by allocating inside the transaction, after the
-   * validation, so a write it refuses never had a slot to lose. Reproducing
-   * *that* difference is not what this store is for: the fault it stages is
-   * two writes taking positions in one order and committing in another, and a
-   * rejection leaving a permanent hole would sit on top of every one of those
-   * scenarios as a second, unrelated corruption.
-   *
-   * A slot at the top of the range is dropped rather than recycled, because a
-   * range that never grew is not a hole to fill. Anything below it goes on the
-   * free list, since concurrent writers mean the rejected position is not
-   * always the newest one.
-   */
-  function releaseSlot(runId: string, position: MintedEvent): void {
-    // Under `appendOnlyLog` the position is decided at the append, which keeps
-    // the mark on the committed tail; a reservation nothing used was never
-    // counted in the first place.
-    if (appendOnlyLog) return;
-    const occupied = events.some(
-      (e) => e.runId === runId && e.eventId === position.eventId
-    );
-    if (occupied) return;
-    const free = freeSlots.get(runId) ?? [];
-    free.push(requireEventSlot(position.eventId));
-    let highest = highestSlot.get(runId) ?? 0;
-    let index = free.indexOf(highest);
-    while (index !== -1) {
-      free.splice(index, 1);
-      highest--;
-      index = free.indexOf(highest);
-    }
-    highestSlot.set(runId, highest);
-    freeSlots.set(runId, free);
+  function eventPosition(): Pick<Event, 'eventId' | 'createdAt'> {
+    return { eventId: ids.eventId(), createdAt: new Date(nowMs()) };
   }
 
   function recordInIndex(event: Event): void {
@@ -566,41 +381,7 @@ export function createSimStore(options: SimStoreOptions): SimStore {
     runEventIndex.set(event.runId, index);
   }
 
-  /**
-   * The position an event actually commits at.
-   *
-   * Only `appendOnlyLog` can move one, and there it moves every write that is
-   * not already landing on the run's next free slot: the position is whatever
-   * follows the newest *committed* event, decided here rather than at the
-   * boundary. A write that was never overtaken is already there, so uncontended
-   * history is unchanged; one that was overtaken while it was held gives up the
-   * slot it reserved and takes the tail.
-   *
-   * Recomputing rather than comparing also keeps the log dense. A slot the
-   * boundary handed out and nothing committed at is a permanent hole in the
-   * default mode; under `appendOnlyLog` nothing consumes a slot until it
-   * commits, so no reservation can leave one behind.
-   */
-  function positionAtCommit(event: Event): Event {
-    if (!appendOnlyLog) return event;
-    const next = committedSlot(event.runId) + 1;
-    if (requireEventSlot(event.eventId) === next) return event;
-    return {
-      ...event,
-      eventId: slotToEventId(next),
-      createdAt: new Date(nowMs()),
-    };
-  }
-
-  function append(incoming: Event): Event {
-    const event = positionAtCommit(incoming);
-    if (appendOnlyLog) {
-      // The commit decided the position, so the allocator follows the log
-      // rather than the other way round. A write that reserved a slot and
-      // then committed *below* it would otherwise leave the mark above the
-      // tail, and the next mint would skip the difference.
-      highestSlot.set(event.runId, requireEventSlot(event.eventId));
-    }
+  function append(event: Event): Event {
     events.push(event);
     recordInIndex(event);
     if (armedWithhold !== undefined) {
@@ -896,25 +677,17 @@ export function createSimStore(options: SimStoreOptions): SimStore {
     }
   }
 
-  /**
-   * Append one event, or refuse to.
-   *
-   * `held` carries the position this call is holding out to the wrapper below,
-   * which hands it back when the call throws. It is a parameter rather than a
-   * closure variable because two creates can be in flight at once.
-   */
-  async function commitEvent(
+  async function create(
     runIdArg: string | null,
     data: AnyEventRequest,
-    params: CreateEventParams | undefined,
-    held: { runId?: string; position?: MintedEvent }
+    params?: CreateEventParams
   ): Promise<EventResult> {
-    // Commit time, for the entity rows the transaction writes. The *event's*
-    // timestamp comes from its minted position instead — see `MintedEvent`.
+    // Event and entity timestamps are both assigned at commit.
     const now = new Date(nowMs());
     const internal = params as
       | (CreateEventParams & SimCreateParams)
       | undefined;
+    let position = eventPosition();
     const resolveData: ResolveData = params?.resolveData ?? 'all';
     const specVersion = data.specVersion ?? SPEC_VERSION_CURRENT;
 
@@ -926,14 +699,6 @@ export function createSimStore(options: SimStoreOptions): SimStore {
     } else {
       runId = runIdArg;
     }
-
-    // Reassigned only by the two paths that write a *synthetic* event ahead of
-    // the requested one: the synthetic takes the position taken at the
-    // boundary (which is the earlier one, for exactly this ordering) and the
-    // requested event takes a fresh one so it still sorts after.
-    let position = internal?.minted ?? mintEvent(runId);
-    held.runId = runId;
-    held.position = position;
 
     let currentRun = runs.get(runId);
 
@@ -962,10 +727,9 @@ export function createSimStore(options: SimStoreOptions): SimStore {
         } as Event;
         currentRun = applyEvent(synthetic, now).run;
         append(synthetic);
-        // The synthetic took the boundary-minted position, so the `run_started`
-        // row built below needs a fresh one to sort after it.
-        position = mintEvent(runId);
-        held.position = position;
+        // The synthetic is committed first, so the requested row takes the next
+        // position and sorts after it.
+        position = eventPosition();
       }
     }
 
@@ -985,7 +749,7 @@ export function createSimStore(options: SimStoreOptions): SimStore {
     const snapshot = internal?.snapshot;
     if (options.preconditionGuard && snapshot) {
       const marker = externalWriteMarker.get(runId);
-      if (marker !== undefined && snapshot.maxSlot < marker) {
+      if (marker !== undefined && snapshot.updatedAt < marker) {
         throw new PreconditionFailedError(
           `Run "${runId}" changed out of band since the caller's snapshot`
         );
@@ -1001,7 +765,7 @@ export function createSimStore(options: SimStoreOptions): SimStore {
       if (options.countGuard) {
         const index = runEventIndex.get(runId);
         const recorded = index
-          ? countRecordedAtOrBelow(index, snapshot.maxSlot)
+          ? countRecordedAtOrBelow(index, snapshot.updatedAt)
           : null;
         if (recorded !== null && recorded > snapshot.count) {
           throw new PreconditionFailedError(
@@ -1261,27 +1025,16 @@ export function createSimStore(options: SimStoreOptions): SimStore {
       stepCreatedLazily = true;
 
       // The input now lives on the synthetic `step_created`; keep only the
-      // metadata on the `step_started` row. The synthetic took the position
-      // minted at the boundary — production mints it first for this very
-      // reason — so re-mint the `step_started` to sort after it.
-      //
-      // Consequence worth knowing: a lazy `step_started` held mid-flight does
-      // *not* keep an early position, because the pair's positions are settled
-      // here, at commit. Production mints both in the handler, so it can hold
-      // an early position for either. No scenario needs that yet; the writes
-      // that race for position in practice are the completions.
+      // metadata on the `step_started` row. The synthetic is committed first,
+      // so `step_started` takes the next position.
       const { input: _dropped, ...rest } = data.eventData;
-      position = mintEvent(runId);
-      held.position = position;
+      position = eventPosition();
       event = { ...event, ...position, eventData: rest } as Event;
     }
 
     // ---- The fold ----------------------------------------------------------
     const { run, step, hook, wait } = applyEvent(event, now);
 
-    // Reassigned, not just appended: under `appendOnlyLog` the commit is where
-    // the position is decided, and everything below — the fence's marker, the
-    // returned row — has to speak about the event as it actually landed.
     event = append(event);
 
     // Track externally-originated writes for the precondition fence. A write
@@ -1292,10 +1045,10 @@ export function createSimStore(options: SimStoreOptions): SimStore {
     // Two details are load-bearing, both copied from workflow-server's
     // `recordOutsideEvent`:
     //
-    // - The mark is the event's *own* slot, not the commit instant. It has to
-    //   be the same derivation as a caller's watermark (the slot of its newest
-    //   loaded event) or a caller holding exactly this event would compare as
-    //   older and 412 forever.
+    // - The mark is the event's *own* position time, not the commit instant. It
+    //   has to be the same derivation as a caller's watermark (the position
+    //   time of its newest loaded event) or a caller holding exactly this event
+    //   would compare as older and 412 forever.
     // - The write is forward-only. Concurrent out-of-band events can commit out
     //   of position order — the whole subject of these scenarios — and letting a
     //   late-committing older event drag the mark backwards would silently
@@ -1310,7 +1063,7 @@ export function createSimStore(options: SimStoreOptions): SimStore {
       const previous = externalWriteMarker.get(runId) ?? 0;
       externalWriteMarker.set(
         runId,
-        Math.max(previous, requireEventSlot(event.eventId))
+        Math.max(previous, event.createdAt.getTime())
       );
     }
 
@@ -1364,19 +1117,6 @@ export function createSimStore(options: SimStoreOptions): SimStore {
     // optional spread: the latter widens the three fields to `T | undefined`,
     // which is neither arm of the union.
     return deltaPage ? { ...result, ...deltaPage } : result;
-  }
-
-  async function create(
-    runIdArg: string | null,
-    data: AnyEventRequest,
-    params?: CreateEventParams
-  ): Promise<EventResult> {
-    const held: { runId?: string; position?: MintedEvent } = {};
-    try {
-      return await commitEvent(runIdArg, data, params, held);
-    } finally {
-      if (held.runId && held.position) releaseSlot(held.runId, held.position);
-    }
   }
 
   const storage: SimStore = {
@@ -1542,34 +1282,18 @@ export function createSimStore(options: SimStoreOptions): SimStore {
       armedWithhold = reads;
     },
 
-    mintEvent,
-
     seedFromLog(log) {
       for (const event of log) {
         const seeded = clone(event) as Event;
         events.push(seeded);
         recordInIndex(seeded);
-        // A cold start inherits the log's positions, so the next write has to
-        // continue them. Taking the maximum rather than counting: the log a
-        // scenario seeds is whatever the previous process committed, holes
-        // included, and re-issuing a slot it already used would be worse than
-        // leaving the hole.
-        const slot = requireEventSlot(seeded.eventId);
-        const highest = highestSlot.get(seeded.runId) ?? 0;
-        if (slot > highest) highestSlot.set(seeded.runId, slot);
         // The event's own position time is the only clock a seeded row can
         // have: the live one belongs to whenever this world was built.
         applyEvent(seeded, seeded.createdAt);
       }
     },
 
-    // Log order, which is position order — not the order the appends happened.
-    // The two differ exactly when a write was minted before another and
-    // committed after it, which is the fault these scenarios are about. The
-    // trace keeps commit order; this is what a reader sees.
-    //
-    // Under `appendOnlyLog` the two orders are the same by construction, and
-    // this sort is a no-op that stays for the invariant it documents.
+    // Log order and commit order are the same: positions are assigned at commit.
     allEvents: (runId) =>
       (runId ? eventsForRun(runId) : events)
         .map(clone)
