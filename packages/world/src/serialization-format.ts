@@ -1,15 +1,40 @@
+declare const formatPrefixBrand: unique symbol;
+
+/** A validated four-byte lowercase alphanumeric payload envelope prefix. */
+export type FormatPrefix = string & {
+  readonly [formatPrefixBrand]: 'FormatPrefix';
+};
+
+/** Whether a value is a valid persisted payload envelope prefix. */
+export function isFormatPrefix(value: unknown): value is FormatPrefix {
+  return (
+    typeof value === 'string' &&
+    value.length === 4 &&
+    /^[a-z0-9]{4}$/.test(value)
+  );
+}
+
+function defineFormatPrefix<const T extends string>(
+  value: T
+): T & FormatPrefix {
+  if (!isFormatPrefix(value)) {
+    throw new Error(`Invalid serialization format prefix: ${value}`);
+  }
+  return value;
+}
+
 /** Known four-byte envelope prefixes in the persisted payload protocol. */
 export const SerializationFormat = {
   /** devalue stringify/parse with TextEncoder/TextDecoder */
-  DEVALUE_V1: 'devl',
+  DEVALUE_V1: defineFormatPrefix('devl'),
   /** Symmetrically encrypted payload */
-  ENCRYPTED: 'encr',
+  ENCRYPTED: defineFormatPrefix('encr'),
   /** Payload sealed to a run's public key */
-  SEALED: 'encp',
+  SEALED: defineFormatPrefix('encp'),
   /** Gzip-compressed payload */
-  GZIP: 'gzip',
+  GZIP: defineFormatPrefix('gzip'),
   /** Zstandard-compressed payload */
-  ZSTD: 'zstd',
+  ZSTD: defineFormatPrefix('zstd'),
 } as const;
 
 export type SerializationFormatType =
@@ -26,7 +51,7 @@ export function isSerializationFormat(
   return typeof value === 'string' && serializationFormats.has(value);
 }
 
-const FORMAT_PREFIX_LENGTH = 4;
+export const SERIALIZATION_FORMAT_PREFIX_LENGTH = 4;
 const formatDecoder = new TextDecoder();
 
 /** Read a known persisted payload format without consuming its bytes. */
@@ -35,11 +60,13 @@ export function peekSerializationFormat(
 ): SerializationFormatType | null {
   if (
     !(value instanceof Uint8Array) ||
-    value.byteLength < FORMAT_PREFIX_LENGTH
+    value.byteLength < SERIALIZATION_FORMAT_PREFIX_LENGTH
   ) {
     return null;
   }
 
-  const format = formatDecoder.decode(value.subarray(0, FORMAT_PREFIX_LENGTH));
+  const format = formatDecoder.decode(
+    value.subarray(0, SERIALIZATION_FORMAT_PREFIX_LENGTH)
+  );
   return isSerializationFormat(format) ? format : null;
 }

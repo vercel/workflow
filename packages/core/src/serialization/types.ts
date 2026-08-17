@@ -4,33 +4,18 @@
 
 import type { RuntimeDecryptionErrorContext } from '@workflow/errors';
 import {
+  type FormatPrefix,
+  isFormatPrefix,
   SerializationFormat,
   type SerializationFormatType,
 } from '@workflow/world/serialization-format.js';
 
-export { SerializationFormat };
-
-// ---- Format Prefix ----
-
-/**
- * A format prefix is exactly 4 lowercase alphanumeric characters [a-z0-9].
- *
- * This is a branded string type — use `isFormatPrefix()` to validate
- * at runtime. The `SerializationFormat` object provides well-known
- * constants, but codecs may define additional prefixes.
- */
-export type FormatPrefix =
-  | SerializationFormatType
-  | (string & { readonly __brand: 'FormatPrefix' });
-
-/**
- * Runtime type guard for format prefix strings.
- *
- * Validates that a string is exactly 4 characters of [a-z0-9].
- */
-export function isFormatPrefix(value: string): value is FormatPrefix {
-  return value.length === 4 && /^[a-z0-9]{4}$/.test(value);
-}
+export {
+  type FormatPrefix,
+  isFormatPrefix,
+  SerializationFormat,
+  type SerializationFormatType,
+};
 
 // ---- Serializable Types ----
 

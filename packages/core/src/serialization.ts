@@ -89,6 +89,7 @@ import {
   type FormatPrefix,
   isFormatPrefix,
   SerializationFormat,
+  type SerializationFormatType,
 } from './serialization/types.js';
 import * as workflowModule from './serialization/workflow.js';
 import { contextStorage } from './step/context-storage.js';
@@ -117,6 +118,7 @@ import { WorkflowAbortSignal } from './workflow/abort-controller.js';
 // so existing consumers of `@workflow/core/serialization` keep working.
 export {
   SerializationFormat,
+  type SerializationFormatType,
   type FormatPrefix,
   isFormatPrefix,
   encodeWithFormatPrefix,
@@ -140,11 +142,6 @@ export {
 };
 
 export { compress, decompress } from './serialization/compression.js';
-
-// Re-export the legacy SerializationFormatType for backwards compatibility.
-// New code should use FormatPrefix from './serialization/types.js'.
-export type SerializationFormatType =
-  (typeof SerializationFormat)[keyof typeof SerializationFormat];
 
 /**
  * Default ULID generator for contexts where VM's seeded `stableUlid` isn't available.

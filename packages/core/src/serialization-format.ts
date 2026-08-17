@@ -24,7 +24,10 @@ import {
   isEncrypted,
   peekFormatPrefix,
 } from './serialization/format.js';
-import { SerializationFormat } from './serialization/types.js';
+import {
+  SerializationFormat,
+  type SerializationFormatType,
+} from './serialization/types.js';
 
 // ---------------------------------------------------------------------------
 // Key material (browser-safe re-exports)
@@ -57,8 +60,7 @@ export { type DecryptionKey, decrypt as decryptEnvelope, isRunPayloadKeys };
 
 export { encodeWithFormatPrefix, SerializationFormat };
 
-export type SerializationFormatType =
-  (typeof SerializationFormat)[keyof typeof SerializationFormat];
+export type { SerializationFormatType };
 
 export interface HydrateDataOptions {
   /**

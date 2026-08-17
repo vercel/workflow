@@ -66,6 +66,7 @@ describe('isFormatPrefix', () => {
   it('should reject strings that are too long', () => {
     expect(isFormatPrefix('abcde')).toBe(false);
     expect(isFormatPrefix('abcdef')).toBe(false);
+    expect(isFormatPrefix('abcd\n')).toBe(false);
   });
 
   it('should reject uppercase characters', () => {

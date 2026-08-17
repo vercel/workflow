@@ -1,3 +1,4 @@
+import { gzipSync, zstdCompressSync } from 'node:zlib';
 import { peekSerializationFormat } from '@workflow/world/serialization-format.js';
 import { describe, expect, it } from 'vitest';
 import { normalizeSerializedData } from './serialized-data.js';
@@ -27,5 +28,19 @@ describe('serialized data normalization', () => {
   it('leaves non-compressed envelopes untouched', () => {
     const encrypted = envelope('encr', new Uint8Array([1, 2, 3]));
     expect(normalizeSerializedData(encrypted)).toBe(encrypted);
+  });
+
+  it('decompresses gzip envelopes with the shared world codec', () => {
+    const original = new TextEncoder().encode('persisted workflow payload');
+    const compressed = envelope('gzip', gzipSync(original));
+
+    expect(normalizeSerializedData(compressed)).toEqual(original);
+  });
+
+  it('decompresses zstd envelopes with the shared world codec', () => {
+    const original = new TextEncoder().encode('persisted workflow payload');
+    const compressed = envelope('zstd', zstdCompressSync(original));
+
+    expect(normalizeSerializedData(compressed)).toEqual(original);
   });
 });

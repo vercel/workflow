@@ -30,6 +30,7 @@
  *   archives, etc.) from wasted CPU and size inflation.
  */
 
+import { decompressSerializedDataSync } from '@workflow/world/serialization-compression.js';
 import {
   decodeFormatPrefix,
   encodeWithFormatPrefix,
@@ -368,20 +369,7 @@ export function decompress(
  * its async hydration path is requested.
  */
 export function decompressSync(data: Uint8Array): Uint8Array | undefined {
-  const prefix = peekFormatPrefix(data);
-  if (prefix === SerializationFormat.ZSTD) {
-    const decompress = nodeZlib?.zstdDecompressSync;
-    return decompress
-      ? asUint8Array(decompress(decodeFormatPrefix(data).payload))
-      : undefined;
-  }
-  if (prefix === SerializationFormat.GZIP) {
-    const decompress = nodeZlib?.gunzipSync;
-    return decompress
-      ? asUint8Array(decompress(decodeFormatPrefix(data).payload))
-      : undefined;
-  }
-  return data;
+  return decompressSerializedDataSync(data);
 }
 
 /**
