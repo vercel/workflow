@@ -872,8 +872,16 @@ const getFramedStreamMaxTotalReconnects = (): number =>
  * bytes buffered before the cut are discarded — the server will resend the
  * in-flight chunk in full from the new startIndex.
  *
- * A clean upstream close (EOF with no error) signals the stream is truly
- * done; we close the wrapper and do not reconnect.
+ * A clean upstream close (EOF with no error) is NOT trusted as completion
+ * on its own: some transport paths normalize a mid-stream abort into a
+ * graceful end (observed in production on Vercel response streaming, where
+ * the server's max-duration abort arrives at the client as a clean EOF).
+ * On EOF the wrapper verifies against the stream's authoritative metadata
+ * (`streams.getInfo`) that the stream is complete AND that every chunk up to
+ * `done` was delivered; otherwise it reconnects from the next chunk exactly
+ * like an errored connection. If the metadata read itself fails, the EOF is
+ * trusted (legacy behavior) rather than failing a read that may well be
+ * complete.
  *
  * Negative `startIndex` values (last-N semantics) skip the reconnect
  * machinery because we cannot compute an absolute resume position without
@@ -908,6 +916,24 @@ export function createReconnectingFramedStream(
     const stream = await world.streams.get(runId, name, effectiveStartIndex);
     if (connectMs === undefined) connectMs = Date.now() - connectStart;
     reader = stream.getReader();
+  }
+
+  /**
+   * Whether an upstream EOF represents genuine completion: the stream's
+   * authoritative metadata says it is done AND the frames delivered so far
+   * cover every chunk up to the tail (one outer frame == one server chunk).
+   * A metadata failure trusts the EOF — turning a healthy completion into an
+   * error (or a reconnect loop) on a transient metadata blip would be worse
+   * than the legacy behavior this check guards against.
+   */
+  async function isVerifiedComplete(): Promise<boolean> {
+    try {
+      const world = await getWorldLazy();
+      const info = await world.streams.getInfo(runId, name);
+      return info.done && currentStartIndex + consumedFrames > info.tailIndex;
+    } catch {
+      return true;
+    }
   }
 
   async function reconnect(): Promise<void> {
@@ -992,10 +1018,25 @@ export function createReconnectingFramedStream(
         }
 
         if (result.done || !result.value) {
-          // Clean EOF — stream is truly complete. Drop any partial-frame
-          // bytes (there shouldn't be any; a well-formed stream ends on a
-          // frame boundary).
           reader = undefined;
+          // A clean EOF is only trustworthy if the stream is actually
+          // complete and this session delivered every chunk up to `done`.
+          // Infrastructure can normalize a mid-stream abort into a graceful
+          // end (the server's max-duration cut is designed to arrive as an
+          // errored body, but on some paths it reaches the client as a clean
+          // EOF), and a completed stream can still be cut mid-body — both
+          // would otherwise be silently read as a shorter, complete stream.
+          if (reconnectSupported && !(await isVerifiedComplete())) {
+            try {
+              await reconnect();
+            } catch (reconnectErr) {
+              controller.error(reconnectErr);
+              return;
+            }
+            continue;
+          }
+          // Genuine end-of-stream. Drop any partial-frame bytes (there
+          // shouldn't be any; a well-formed stream ends on a frame boundary).
           if (readStart !== undefined) {
             recordStreamReadComplete(
               readStart,
