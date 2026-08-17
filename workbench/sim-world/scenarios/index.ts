@@ -46,6 +46,7 @@ import { scenario as raceDuplicateDelivery } from './race-duplicate-delivery.ts'
 import { scenario as raceHookAfterProbe } from './race-hook-after-probe.ts';
 import { scenario as raceHookBeforeProbe } from './race-hook-before-probe.ts';
 import { scenario as sleepReplayInheritsResumeAt } from './sleep-replay-inherits-resumeat.ts';
+import { scenario as sleepResumeAtDriftCompounds } from './sleep-resumeat-drift-compounds.ts';
 import { scenario as sleepResumeAtRecomputed } from './sleep-resumeat-recomputed.ts';
 import { scenario as sleepWaitContinuationStranded } from './sleep-wait-continuation-stranded.ts';
 import { scenario as smokeNoSteps } from './smoke-no-steps.ts';
@@ -104,6 +105,7 @@ export const scenarios: ScenarioSpec[] = [
   // `wait_created` re-reads the clock".
   // -------------------------------------------------------------------------
   sleepResumeAtRecomputed,
+  sleepResumeAtDriftCompounds,
   sleepWaitContinuationStranded,
   sleepReplayInheritsResumeAt,
 

@@ -112,6 +112,33 @@ export async function sleepWithBystanderHookWorkflow(documentId: string) {
 }
 
 /**
+ * The same shape with a second bystander, so a scenario can make the suspension
+ * write go stale *twice*.
+ *
+ * One bystander buys one fence rejection, and so one extra reading of the
+ * clock. Two buys two — which is the point: it shows the recomputations
+ * accumulate rather than settling on an answer. Each restarted pass resolves the
+ * duration from wherever the clock now stands, carrying no memory of what any
+ * earlier pass asked for, so the committed deadline walks away from the intended
+ * one once per concurrent writer. Neither hook is awaited; they exist only to
+ * commit an event behind a held snapshot.
+ */
+export async function sleepWithTwoBystanderHooksWorkflow(documentId: string) {
+  'use workflow';
+
+  using _first = createHook<{ ping: boolean }>({
+    token: `bystander-a:${documentId}`,
+  });
+  using _second = createHook<{ ping: boolean }>({
+    token: `bystander-b:${documentId}`,
+  });
+
+  const prepared = await prepare(documentId);
+  await sleep('30m');
+  return await finalize(prepared);
+}
+
+/**
  * Fails deterministically for its first two attempts, then succeeds.
  *
  * Retry backoff is `delaySeconds` on a queue message, so the retry schedule
