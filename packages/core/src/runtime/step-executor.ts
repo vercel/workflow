@@ -39,7 +39,7 @@ import {
 } from '../serialization.js';
 import { contextStorage } from '../step/context-storage.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
-import { trace } from '../telemetry.js';
+import { recordStepExecutionDuration, trace } from '../telemetry.js';
 import {
   getErrorName,
   getErrorStack,
@@ -978,6 +978,8 @@ export async function executeStep(
         span?.setAttributes(attributes);
       };
 
+      let stepExecutionStatus: 'ok' | 'error' = 'ok';
+      const stepExecutionStartTime = performance.now();
       try {
         result = await trace('step.execute', {}, async () => {
           return await contextStorage.run(
@@ -1017,8 +1019,14 @@ export async function executeStep(
           );
         });
       } catch (err) {
+        stepExecutionStatus = 'error';
         userCodeError = err;
         userCodeFailed = true;
+      } finally {
+        void recordStepExecutionDuration(
+          performance.now() - stepExecutionStartTime,
+          stepExecutionStatus
+        );
       }
       const executionTimeMs = Date.now() - executionStartTime;
 
