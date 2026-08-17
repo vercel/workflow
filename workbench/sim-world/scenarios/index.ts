@@ -45,6 +45,7 @@ import { scenario as peekHookBeforeBranch } from './peek-hook-before-branch.ts';
 import { scenario as raceDuplicateDelivery } from './race-duplicate-delivery.ts';
 import { scenario as raceHookAfterProbe } from './race-hook-after-probe.ts';
 import { scenario as raceHookBeforeProbe } from './race-hook-before-probe.ts';
+import { scenario as sleepReplayInheritsResumeAt } from './sleep-replay-inherits-resumeat.ts';
 import { scenario as sleepResumeAtRecomputed } from './sleep-resumeat-recomputed.ts';
 import { scenario as sleepWaitContinuationStranded } from './sleep-wait-continuation-stranded.ts';
 import { scenario as smokeNoSteps } from './smoke-no-steps.ts';
@@ -95,9 +96,16 @@ export const scenarios: ScenarioSpec[] = [
   // Where a sleep's deadline comes from. `sleep()` converts a duration to an
   // instant in host scope, against the host wall clock, at the point the body
   // reaches the call — so the answer depends on which pass computed it.
+  //
+  // The third is the control, and reading it first is the shortcut to what the
+  // other two mean: a replay over a committed `wait_created` inherits that
+  // event's deadline and discards its own clock read, so the exposure is not
+  // "every replay re-reads the clock" but "a pass with no visible
+  // `wait_created` re-reads the clock".
   // -------------------------------------------------------------------------
   sleepResumeAtRecomputed,
   sleepWaitContinuationStranded,
+  sleepReplayInheritsResumeAt,
 
   // -------------------------------------------------------------------------
   // Step lifecycle.

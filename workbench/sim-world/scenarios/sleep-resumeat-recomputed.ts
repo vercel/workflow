@@ -22,6 +22,25 @@ const requestedResumeAtMs = (ctx: CallContext): number => {
  */
 const RETRY_GAP_MS = 90_000;
 
+/** What `sleep('30m')` in the fixture is asking for. */
+const SLEEP_MS = 30 * 60 * 1_000;
+
+/**
+ * The newest `createdAt` in the committed log.
+ *
+ * This is the value a deterministic clock would be sitting at: the VM's clock
+ * is seeded from the run and advanced to `event.createdAt` as each event is
+ * consumed, so a pass that has just replayed the log reads *this*, not real
+ * time. Printing it next to the host clock is what makes the two
+ * distinguishable — while the world sits idle between two passes the host
+ * clock moves and this does not.
+ */
+const newestEventMs = (events: { createdAt: string | Date }[]): number =>
+  events.reduce(
+    (newest, event) => Math.max(newest, new Date(event.createdAt).getTime()),
+    0
+  );
+
 export const scenario: ScenarioSpec = {
   id: 'sleep-resumeat-recomputed',
   name: 'sleep: a retried pass resolves the same `sleep()` against a later clock',
@@ -86,6 +105,25 @@ export const scenario: ScenarioSpec = {
     const requestedB = requestedResumeAtMs(passB.ctx);
     sim.note(`pass B asked to resume at ${new Date(requestedB).toISOString()}`);
     sim.note(`the two passes disagree by ${requestedB - requestedA}ms`);
+
+    // Which clock did pass B read? The two candidates have separated by now:
+    // the world sat idle for the retry gap, so the host clock has moved and the
+    // log's newest timestamp has not. Recorded as notes rather than checks on
+    // purpose — each one states what the code does today, so asserting it would
+    // invert the moment the behaviour is fixed. The assertion below is the
+    // property instead.
+    const hostNowB = sim.world.nowMs();
+    const vmNowB = newestEventMs(sim.world.events());
+    sim.note(
+      `at pass B the host clock reads ${new Date(hostNowB).toISOString()}; ` +
+        `the log's newest event is ${new Date(vmNowB).toISOString()}`
+    );
+    sim.note(
+      `host clock + 30m = ${new Date(hostNowB + SLEEP_MS).toISOString()} ` +
+        `(off by ${requestedB - (hostNowB + SLEEP_MS)}ms); ` +
+        `log's newest + 30m = ${new Date(vmNowB + SLEEP_MS).toISOString()} ` +
+        `(off by ${requestedB - (vmNowB + SLEEP_MS)}ms)`
+    );
 
     sim.check(
       'the first write was fenced, so a second pass ran the body again',
