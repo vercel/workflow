@@ -36,24 +36,15 @@ export function normalizeSerializedData(value: unknown): unknown {
   return decompress(format, bytes.subarray(format.length));
 }
 
-const PAYLOAD_FIELDS = ['input', 'output', 'error'] as const;
-
-function normalizeFields<T extends Record<string, unknown>>(
-  value: T,
-  fields: readonly string[]
-): T {
-  return {
-    ...value,
-    ...Object.fromEntries(
-      fields.map((field) => [field, normalizeSerializedData(value[field])])
-    ),
-  };
-}
-
 export function normalizeWorkflowRunData<T extends Record<string, unknown>>(
   run: T
 ): T {
-  return normalizeFields(run, PAYLOAD_FIELDS);
+  return {
+    ...run,
+    input: normalizeSerializedData(run.input),
+    output: normalizeSerializedData(run.output),
+    error: normalizeSerializedData(run.error),
+  };
 }
 
 export function normalizeStepData<T extends Record<string, unknown>>(
@@ -62,11 +53,19 @@ export function normalizeStepData<T extends Record<string, unknown>>(
   // Only the resolved payload fields can carry a compression wrapper.
   // `*Ref` fields are RefDescriptor objects (lazy mode), never byte
   // payloads, so they need no normalization.
-  return normalizeFields(step, PAYLOAD_FIELDS);
+  return {
+    ...step,
+    input: normalizeSerializedData(step.input),
+    output: normalizeSerializedData(step.output),
+    error: normalizeSerializedData(step.error),
+  };
 }
 
 export function normalizeHookData<T extends Record<string, unknown>>(
   hook: T
 ): T {
-  return normalizeFields(hook, ['metadata']);
+  return {
+    ...hook,
+    metadata: normalizeSerializedData(hook.metadata),
+  };
 }
