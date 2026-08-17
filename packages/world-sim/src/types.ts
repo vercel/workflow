@@ -290,9 +290,9 @@ export interface Writer {
   /**
    * Stop once the event has crossed the world boundary — fully formed,
    * attributed to this writer, already in the trace — and before it is assigned
-    * a position in the event log.
+   * a position in the event log.
    *
-    * A write that commits to storage while this one is held sorts ahead of it.
+   * A write that commits to storage while this one is held sorts ahead of it.
    */
   runToEventProduced(
     eventType: EventType | EventType[],
