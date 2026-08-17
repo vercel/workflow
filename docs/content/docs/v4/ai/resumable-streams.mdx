@@ -22,6 +22,10 @@ Where a standard chat implementation would require the user to resend their mess
 
 Resumable streams come out of the box with Workflow SDK, however, the client needs to recognize that a stream exists, and needs to know which stream to reconnect to, and needs to know where to start from. For this, Workflow SDK provides the [`WorkflowChatTransport`](/docs/api-reference/workflow-ai/workflow-chat-transport) helper, a drop-in transport for the AI SDK that handles client-side resumption logic for you.
 
+<Callout type="info">
+When deploying a streaming route to Vercel, enable request cancellation so a browser disconnect terminates that route's abandoned stream reader instead of letting the function run until `FUNCTION_INVOCATION_TIMEOUT`. See [Avoiding Function Timeouts After Client Disconnects](/docs/foundations/streaming#avoiding-function-timeouts-after-client-disconnects).
+</Callout>
+
 ## Implementing stream resumption
 
 Let's add stream resumption to our Flight Booking Agent that we build in the [Building Durable AI Agents](/docs/ai) guide.
