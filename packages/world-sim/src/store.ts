@@ -1056,10 +1056,9 @@ export function createSimStore(options: SimStoreOptions): SimStore {
     // Two details are load-bearing, both copied from workflow-server's
     // `recordOutsideEvent`:
     //
-    // - The mark is the event's *own* position time, not the commit instant. It
-    //   has to be the same derivation as a caller's watermark (the position
-    //   time of its newest loaded event) or a caller holding exactly this event
-    //   would compare as older and 412 forever.
+    // - The mark is the event's own slot, not the commit instant. It has to use
+    //   the same unit as a caller's newest loaded position or a caller holding
+    //   exactly this event would compare as older and 412 forever.
     // - The write is forward-only. Concurrent out-of-band events can commit out
     //   of position order — the whole subject of these scenarios — and letting a
     //   late-committing older event drag the mark backwards would silently
@@ -1074,7 +1073,7 @@ export function createSimStore(options: SimStoreOptions): SimStore {
       const previous = externalWriteMarker.get(runId) ?? 0;
       externalWriteMarker.set(
         runId,
-        Math.max(previous, event.createdAt.getTime())
+        Math.max(previous, requireEventSlot(event.eventId))
       );
     }
 
