@@ -25,10 +25,11 @@ export const NODE_HTTP_ENV_VAR = 'WORKFLOW_NODE_HTTP';
 /**
  * Default for {@link NODE_HTTP_ENV_VAR}.
  *
- * TODO(before merge): flip to `false` so the node:http transport is opt-in. It
- * ships default-on only so CI exercises the new transport on every lane.
+ * The undici path stays the default because it is the one every deployment has
+ * run so far. This transport is opt-in, for the deployments that cannot use
+ * undici at all.
  */
-export const NODE_HTTP_DEFAULT = true;
+export const NODE_HTTP_DEFAULT = false;
 
 /**
  * Whether the HTTP Worlds should send their requests over Node's core HTTP

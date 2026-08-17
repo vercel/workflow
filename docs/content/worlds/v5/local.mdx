@@ -72,7 +72,7 @@ Maximum gap in milliseconds between response body chunks from a local queue hand
 
 ### `WORKFLOW_NODE_HTTP`
 
-Whether queue deliveries go out through Node's built-in `node:http` and `node:https` modules instead of the HTTP client library this World normally uses. Default: enabled. Set to `0` to go back to that library. Socket pooling, keep-alive, and both timeouts above apply either way. See [`WORKFLOW_NODE_HTTP`](/docs/configuration/runtime-tuning#workflow_node_http) for what else changes.
+Whether queue deliveries go out through Node's built-in `node:http` and `node:https` modules instead of the HTTP client library this World normally uses. Default: disabled. Set to `1` to switch to Node's modules. Socket pooling, keep-alive, and both timeouts above apply either way. See [`WORKFLOW_NODE_HTTP`](/docs/configuration/runtime-tuning#workflow_node_http) for what else changes.
 
 ### `WORKFLOW_LOCAL_RECOVER_ACTIVE_RUNS`
 

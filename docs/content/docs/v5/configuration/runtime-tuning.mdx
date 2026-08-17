@@ -218,9 +218,9 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 
 ### `WORKFLOW_NODE_HTTP`
 
-- Default: enabled
+- Default: disabled
 - Makes the Vercel and Local Worlds issue their HTTP requests through Node's built-in `node:http` and `node:https` modules, instead of the HTTP client library those Worlds normally use.
-- Set `0` to go back to that library. See the trade-offs below before leaving this on.
+- Set `1` to switch to Node's modules. Read the trade-offs below first: they cost throughput on every deployment, which is why this is opt-in.
 - Use it when that library is not an option: a bundler that mangles it, a runtime that does not ship a working copy of it, or a transport-level fault you want to rule out. It is not reached by way of `fetch()` either, so a runtime whose `fetch()` is built on the same library is still covered.
 
 Node's own modules do less than the client they replace, so enabling this drops the per-call-site tuning the Worlds configure:
