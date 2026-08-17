@@ -412,7 +412,7 @@ describe('sim store', () => {
 
       guarded.tick(10);
       const snapshot = {
-        updatedAt: guarded.nowMs(),
+        maxSlot: guarded.store.allEvents(RUN).length,
         count: guarded.store.allEvents(RUN).length,
       };
       guarded.tick(10);
@@ -437,7 +437,7 @@ describe('sim store', () => {
         )
       ).rejects.toThrow(/out of band/);
 
-      // An up-to-date snapshot passes — an equal timestamp must not livelock.
+      // An up-to-date snapshot passes — an equal slot must not livelock.
       await expect(
         guarded.store.events.create(
           RUN,
@@ -449,7 +449,7 @@ describe('sim store', () => {
           },
           {
             snapshot: {
-              updatedAt: guarded.nowMs(),
+              maxSlot: guarded.store.allEvents(RUN).length,
               count: guarded.store.allEvents(RUN).length,
             },
           }
