@@ -18,6 +18,16 @@ import { instrumentedFetch, resolveVercelApiToken } from './http-core.js';
 
 const KEY_BYTES = 32; // 256 bits = 32 bytes (AES-256)
 
+class RunKeyFetchError extends Error {
+  readonly status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = 'RunKeyFetchError';
+    this.status = status;
+  }
+}
+
 /**
  * Derive a per-run AES-256 encryption key using HKDF-SHA256.
  *
@@ -131,8 +141,9 @@ export async function fetchRunKey(
       } catch {
         body = '<unable to read response body>';
       }
-      return new Error(
-        `Failed to fetch run key for ${runId} (deployment ${deploymentId}): HTTP ${res.status} ${res.statusText}${body ? ` — ${body}` : ''}`
+      return new RunKeyFetchError(
+        `Failed to fetch run key for ${runId} (deployment ${deploymentId}): HTTP ${res.status} ${res.statusText}${body ? ` — ${body}` : ''}`,
+        res.status
       );
     },
   });
