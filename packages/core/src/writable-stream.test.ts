@@ -33,6 +33,7 @@ describe('WorkflowServerWritableStream', () => {
   let mockStreams: {
     write: ReturnType<typeof vi.fn>;
     writeMulti: ReturnType<typeof vi.fn>;
+    writeLease: ReturnType<typeof vi.fn>;
     close: ReturnType<typeof vi.fn>;
   };
   let mockWorld: {
@@ -45,6 +46,11 @@ describe('WorkflowServerWritableStream', () => {
     mockStreams = {
       write: vi.fn().mockResolvedValue(undefined),
       writeMulti: vi.fn().mockResolvedValue(undefined),
+      writeLease: vi.fn().mockResolvedValue({
+        base: 0,
+        committed: 0,
+        status: 'ok',
+      }),
       close: vi.fn().mockResolvedValue(undefined),
     };
 
@@ -54,6 +60,7 @@ describe('WorkflowServerWritableStream', () => {
   });
 
   afterEach(() => {
+    delete process.env.WORKFLOW_STREAM_LEASE_FAST_PATH;
     setWorld(undefined);
     vi.clearAllMocks();
   });
@@ -75,6 +82,113 @@ describe('WorkflowServerWritableStream', () => {
       expect(() => {
         new WorkflowServerWritableStream('run-123', 'test-stream');
       }).not.toThrow();
+    });
+  });
+
+  describe('stream lease fast path', () => {
+    it('is off by default and leaves legacy writes unchanged', async () => {
+      const stream = new WorkflowServerWritableStream('run-123', 'test-stream');
+      const writer = stream.getWriter();
+      await writer.write(new Uint8Array([1]));
+      await writer.close();
+
+      expect(mockStreams.writeLease).not.toHaveBeenCalled();
+      expect(mockStreams.write).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps writer identity and increments sequence across flushes', async () => {
+      process.env.WORKFLOW_STREAM_LEASE_FAST_PATH = '1';
+      const stream = new WorkflowServerWritableStream('run-123', 'test-stream');
+      const writer = stream.getWriter();
+      await writer.write(new Uint8Array([1]));
+      await writer.write(new Uint8Array([2]));
+      await writer.close();
+
+      expect(mockStreams.writeLease).toHaveBeenCalledTimes(2);
+      const first = mockStreams.writeLease.mock.calls[0][3];
+      const second = mockStreams.writeLease.mock.calls[1][3];
+      expect(first.writerId).toBe(second.writerId);
+      expect(first.epoch).toBe(second.epoch);
+      expect([first.seqStart, second.seqStart]).toEqual([0, 1]);
+    });
+
+    it('treats replay as success and permanently de-opts after need-reserve', async () => {
+      process.env.WORKFLOW_STREAM_LEASE_FAST_PATH = '1';
+      mockStreams.writeLease
+        .mockResolvedValueOnce({ base: 0, committed: 0, status: 'replay' })
+        .mockResolvedValueOnce({
+          base: 1,
+          committed: 1,
+          status: 'need-reserve',
+        });
+      const stream = new WorkflowServerWritableStream('run-123', 'test-stream');
+      const writer = stream.getWriter();
+      await writer.write(new Uint8Array([1]));
+      await writer.write(new Uint8Array([2]));
+      await writer.write(new Uint8Array([3]));
+      await writer.close();
+
+      expect(mockStreams.writeLease).toHaveBeenCalledTimes(2);
+      const legacyChunks = [
+        ...mockStreams.write.mock.calls.map((call) => call[2]),
+        ...mockStreams.writeMulti.mock.calls.flatMap((call) => call[2]),
+      ];
+      expect(legacyChunks.map((chunk) => chunk[0])).toEqual([2, 3]);
+    });
+
+    it('repairs a seq-gap from retained history in FIFO order', async () => {
+      process.env.WORKFLOW_STREAM_LEASE_FAST_PATH = '1';
+      mockStreams.writeLease
+        .mockResolvedValueOnce({ base: 0, committed: 0, status: 'ok' })
+        .mockResolvedValueOnce({
+          base: 0,
+          committed: 0,
+          status: 'seq-gap',
+          expected: 0,
+        })
+        .mockResolvedValueOnce({ base: 0, committed: 0, status: 'ok' });
+      const stream = new WorkflowServerWritableStream('run-123', 'test-stream');
+      const writer = stream.getWriter();
+      await writer.write(new Uint8Array([1]));
+      await writer.write(new Uint8Array([2]));
+      await writer.close();
+
+      expect(mockStreams.writeLease).toHaveBeenCalledTimes(3);
+      expect(
+        mockStreams.writeLease.mock.calls.map((call) => call[3].seqStart)
+      ).toEqual([0, 1, 0]);
+      expect(mockStreams.writeLease.mock.calls[2][2]).toEqual([
+        new Uint8Array([1]),
+        new Uint8Array([2]),
+      ]);
+    });
+
+    it('falls back from the entire missing suffix after seq-gap recovery loses its lease', async () => {
+      process.env.WORKFLOW_STREAM_LEASE_FAST_PATH = '1';
+      mockStreams.writeLease
+        .mockResolvedValueOnce({ base: 0, committed: 0, status: 'ok' })
+        .mockResolvedValueOnce({
+          base: 0,
+          committed: 0,
+          status: 'seq-gap',
+          expected: 0,
+        })
+        .mockResolvedValueOnce({
+          base: 0,
+          committed: 0,
+          status: 'need-reserve',
+        });
+      const stream = new WorkflowServerWritableStream('run-123', 'test-stream');
+      const writer = stream.getWriter();
+      await writer.write(new Uint8Array([1]));
+      await writer.write(new Uint8Array([2]));
+      await writer.close();
+
+      expect(mockStreams.writeMulti).toHaveBeenCalledTimes(1);
+      expect(mockStreams.writeMulti.mock.calls[0][2]).toEqual([
+        new Uint8Array([1]),
+        new Uint8Array([2]),
+      ]);
     });
   });
 

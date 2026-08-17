@@ -3,6 +3,7 @@ import type { APIConfig } from './utils.js';
 
 let _dispatcher: RetryAgent | undefined;
 let _streamDispatcher: RetryAgent | undefined;
+let _streamLeaseDispatcher: RetryAgent | undefined;
 let _streamCloseDispatcher: RetryAgent | undefined;
 
 /**
@@ -216,6 +217,16 @@ export const STREAM_RETRY_OPTIONS: RetryHandler.RetryOptions = {
   retryAfter: true,
   methods: ['PUT'],
   statusCodes: [429],
+};
+
+/**
+ * Lease appends carry a writer sequence and are replay-safe, so unlike legacy
+ * stream appends they can retry a 5xx response without duplicating chunks.
+ */
+export const STREAM_LEASE_RETRY_OPTIONS: RetryHandler.RetryOptions = {
+  retryAfter: true,
+  methods: ['PUT'],
+  statusCodes: [429, 500, 502, 503, 504],
 };
 
 /**
@@ -556,6 +567,10 @@ export function getStreamDispatcher(config?: APIConfig): unknown {
  * shared close agent whose retry policy includes 5xx — close is idempotent
  * (see STREAM_CLOSE_RETRY_OPTIONS), unlike chunk appends.
  */
+export function getStreamLeaseDispatcher(config?: APIConfig): unknown {
+  return config?.dispatcher ?? getDefaultStreamLeaseDispatcher();
+}
+
 export function getStreamCloseDispatcher(config?: APIConfig): unknown {
   return config?.dispatcher ?? getDefaultStreamCloseDispatcher();
 }
@@ -676,6 +691,11 @@ function getDefaultStreamDispatcher(): RetryAgent {
 }
 
 /** Shared agent for the idempotent stream close (5xx retriable). */
+function getDefaultStreamLeaseDispatcher(): RetryAgent {
+  _streamLeaseDispatcher ??= createStreamDispatcher(STREAM_LEASE_RETRY_OPTIONS);
+  return _streamLeaseDispatcher;
+}
+
 function getDefaultStreamCloseDispatcher(): RetryAgent {
   _streamCloseDispatcher ??= createStreamDispatcher(STREAM_CLOSE_RETRY_OPTIONS);
   return _streamCloseDispatcher;

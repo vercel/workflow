@@ -79,6 +79,18 @@ export interface Streamer {
       chunks: (string | Uint8Array)[]
     ): Promise<void>;
 
+    /**
+     * Optional idempotent stream-append protocol. The core writable sink owns
+     * the writer identity and sequence; worlds only transport the lease
+     * metadata and report the server's protocol result.
+     */
+    writeLease?(
+      runId: string,
+      name: string,
+      chunks: (string | Uint8Array)[],
+      lease: StreamWriteLease
+    ): Promise<StreamWriteLeaseResult>;
+
     close(runId: string, name: string): Promise<void>;
 
     /**
@@ -482,6 +494,24 @@ export interface WorldCapabilities {
 /**
  * The "World" interface represents how Workflows are able to communicate with the outside world.
  */
+export interface StreamWriteLease {
+  writerId: string;
+  epoch: number;
+  seqStart: number;
+}
+
+export interface StreamWriteLeaseResult {
+  status: 'ok' | 'replay' | 'seq-gap' | 'need-reserve';
+  base: number;
+  committed: number;
+  expected?: number;
+  /**
+   * Chunks from this local write call already acknowledged by the fast path.
+   * This is transport-local bookkeeping for a paged call, not a server field.
+   */
+  acknowledged?: number;
+}
+
 export interface World extends Queue, Streamer, Storage {
   /**
    * Optional analytics read namespace for observability surfaces.

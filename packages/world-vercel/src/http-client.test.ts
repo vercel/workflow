@@ -19,6 +19,7 @@ import {
   isRecyclableTransportError,
   STREAM_AGENT_OPTIONS,
   STREAM_CLOSE_RETRY_OPTIONS,
+  STREAM_LEASE_RETRY_OPTIONS,
   STREAM_RETRY_OPTIONS,
 } from './http-client.js';
 
@@ -78,6 +79,13 @@ describe('getStreamDispatcher', () => {
   // unsafe close shapes awaiting in-flight backups) surface as retriable
   // 503s with the stream left durably closing. Without 5xx here, that 503
   // rejects writer.close() and the stream stays fenced until run expiry.
+  it('retries idempotent lease appends on 5xx', () => {
+    expect(STREAM_LEASE_RETRY_OPTIONS.methods).toEqual(['PUT']);
+    for (const code of [429, 500, 502, 503, 504]) {
+      expect(STREAM_LEASE_RETRY_OPTIONS.statusCodes).toContain(code);
+    }
+  });
+
   it('retries stream close on 5xx (idempotent, and the close barrier depends on it)', () => {
     expect(STREAM_CLOSE_RETRY_OPTIONS.methods).toEqual(['PUT']);
     for (const code of [429, 500, 502, 503, 504]) {

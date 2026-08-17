@@ -149,6 +149,10 @@ export type SerializationFormatType =
  * (e.g., when starting a workflow or handling step return values).
  */
 const defaultUlid = monotonicFactory();
+// Lease epochs fence writers across sink instances. Date.now() alone can repeat
+// for sinks constructed in the same millisecond, so retain a process-local
+// monotonic floor while keeping the token an ordinary number on the wire.
+let latestStreamLeaseEpoch = Date.now();
 
 /**
  * Detect if a readable stream is a byte stream.
@@ -1279,6 +1283,23 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
      * early-ack sink.
      */
     let sinkError: unknown;
+    // The lease protocol is deliberately opt-in: worlds without this optional
+    // transport (and every default deployment) retain the existing writes.
+    // Identity and ordering remain sink-local; this is not a connection.
+    const leaseFastPathEnabled =
+      process.env.WORKFLOW_STREAM_LEASE_FAST_PATH === '1';
+    const writerId = defaultUlid();
+    // The server fences this client-supplied token. A new sink always starts a
+    // new writer session, so this process-local monotonic token needs no
+    // lease-acquisition round trip.
+    const epoch = ++latestStreamLeaseEpoch;
+    let nextLeaseSeq = 0;
+    let leaseFastPathActive = true;
+    // A seq-gap names the first writer sequence the server lacks. Because it
+    // can be from an earlier flush, retain the per-sink sequence until this
+    // experimental path de-opts; a gap can then be repaired in FIFO order.
+    // This is intentionally scoped to the flag-gated measurement prototype.
+    const leaseHistory: Uint8Array[] = [];
     // Group-commit window. The env var, when set, overrides the World
     // option; otherwise `world.streamFlushIntervalMs` governs (default 0) —
     // including the very first chunk. When it must come from the world,
@@ -1354,13 +1375,102 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
       await ensureRunReady();
       const world = await worldPromise;
       const dispatchAt = Date.now();
-      if (typeof world.streams.writeMulti === 'function' && group.length > 1) {
-        await world.streams.writeMulti(runId, name, group);
-      } else {
-        // Fall back to sequential writes
-        for (const chunk of group) {
-          await world.streams.write(runId, name, chunk);
+      const writeLegacy = async (): Promise<void> => {
+        if (
+          typeof world.streams.writeMulti === 'function' &&
+          group.length > 1
+        ) {
+          await world.streams.writeMulti(runId, name, group);
+        } else {
+          for (const chunk of group) {
+            await world.streams.write(runId, name, chunk);
+          }
         }
+      };
+
+      if (
+        leaseFastPathEnabled &&
+        leaseFastPathActive &&
+        typeof world.streams.writeLease === 'function'
+      ) {
+        const seqStart = nextLeaseSeq;
+        leaseHistory.push(...group);
+        const result = await world.streams.writeLease(runId, name, group, {
+          writerId,
+          epoch,
+          seqStart,
+        });
+        if (result.status === 'need-reserve') {
+          // De-opt is sticky: a multi-writer/expired lease stream remains on
+          // the known-safe allocator for this sink's remaining lifetime. A
+          // paged transport can have already acknowledged a leading prefix.
+          leaseFastPathActive = false;
+          const unacknowledged = group.slice(result.acknowledged ?? 0);
+          if (unacknowledged.length === group.length) {
+            await writeLegacy();
+          } else if (
+            typeof world.streams.writeMulti === 'function' &&
+            unacknowledged.length > 1
+          ) {
+            await world.streams.writeMulti(runId, name, unacknowledged);
+          } else {
+            for (const chunk of unacknowledged) {
+              await world.streams.write(runId, name, chunk);
+            }
+          }
+        } else if (result.status === 'seq-gap') {
+          // `expected` is the server's next sequence, so it precedes this
+          // request's seqStart. Replay every retained missing chunk in FIFO
+          // order, including this group, before accepting later groups.
+          if (result.expected === undefined) {
+            throw new Error('Stream lease seq-gap response omitted expected');
+          }
+          // `writeLease` can page one core group. In that case a later page
+          // reports its own expected sequence, which may lie inside the group
+          // even though no later core group has begun.
+          if (
+            result.expected < 0 ||
+            result.expected >= seqStart + group.length
+          ) {
+            throw new Error(
+              `Stream lease seq-gap expected ${result.expected} outside retained history`
+            );
+          }
+          const recovery = leaseHistory.slice(result.expected);
+          const recovered = await world.streams.writeLease(
+            runId,
+            name,
+            recovery,
+            {
+              writerId,
+              epoch,
+              seqStart: result.expected,
+            }
+          );
+          if (recovered.status === 'need-reserve') {
+            // A paged recovery may have acknowledged a leading prefix before
+            // it lost the lease. Resume legacy allocation from the remaining
+            // server-reported gap, never re-writing that acknowledged range.
+            leaseFastPathActive = false;
+            const unacknowledged = recovery.slice(recovered.acknowledged ?? 0);
+            if (
+              typeof world.streams.writeMulti === 'function' &&
+              unacknowledged.length > 1
+            ) {
+              await world.streams.writeMulti(runId, name, unacknowledged);
+            } else {
+              for (const chunk of unacknowledged) {
+                await world.streams.write(runId, name, chunk);
+              }
+            }
+          } else if (recovered.status === 'seq-gap') {
+            throw new Error('Stream lease seq-gap recovery did not advance');
+          }
+        }
+        // `ok` and `replay` both durably account for this entire group.
+        nextLeaseSeq += group.length;
+      } else {
+        await writeLegacy();
       }
       if (groupT0 !== undefined) {
         recordStreamWriteFlush(

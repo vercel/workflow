@@ -181,6 +181,94 @@ vi.mock('./utils.js', () => ({
   }),
 }));
 
+describe('streams.writeLease', () => {
+  async function getStreamer() {
+    const { createStreamer } = await import('./streamer.js');
+    return createStreamer();
+  }
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('sends lease metadata query parameters and parses a successful response', async () => {
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockImplementation(async () =>
+        Response.json({ base: 10, committed: 9, status: 'ok' })
+      );
+    const streamer = await getStreamer();
+    const result = await streamer.streams.writeLease?.(
+      'run-1',
+      'stream-1',
+      [new Uint8Array([1]), new Uint8Array([2])],
+      { writerId: 'writer-1', epoch: 42, seqStart: 7 }
+    );
+
+    expect(result).toEqual({ base: 10, committed: 9, status: 'ok' });
+    const url = new URL(fetchSpy.mock.calls[0][0] as string);
+    expect(url.searchParams.get('writerId')).toBe('writer-1');
+    expect(url.searchParams.get('epoch')).toBe('42');
+    expect(url.searchParams.get('seqStart')).toBe('7');
+    expect(url.searchParams.get('count')).toBe('2');
+    const headers = (fetchSpy.mock.calls[0][1] as RequestInit)
+      .headers as Headers;
+    expect(headers.get('X-Stream-Multi')).toBe('true');
+  });
+
+  it('advances the lease sequence for paged writes', async () => {
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockImplementation(async () =>
+        Response.json({ base: 0, committed: 0, status: 'ok' })
+      );
+    const streamer = await getStreamer();
+    const chunks = Array.from(
+      { length: MAX_CHUNKS_PER_REQUEST + 1 },
+      () => new Uint8Array([1])
+    );
+    await streamer.streams.writeLease?.('run-1', 'stream-1', chunks, {
+      writerId: 'writer-1',
+      epoch: 42,
+      seqStart: 7,
+    });
+
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    const first = new URL(fetchSpy.mock.calls[0][0] as string);
+    const second = new URL(fetchSpy.mock.calls[1][0] as string);
+    expect(first.searchParams.get('seqStart')).toBe('7');
+    expect(second.searchParams.get('seqStart')).toBe(
+      String(7 + MAX_CHUNKS_PER_REQUEST)
+    );
+  });
+
+  it('returns a seq-gap result without appending later pages', async () => {
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockImplementation(async () =>
+        Response.json({ base: 0, committed: 0, status: 'seq-gap', expected: 3 })
+      );
+    const streamer = await getStreamer();
+    const chunks = Array.from(
+      { length: MAX_CHUNKS_PER_REQUEST + 1 },
+      () => new Uint8Array([1])
+    );
+    const result = await streamer.streams.writeLease?.(
+      'run-1',
+      'stream-1',
+      chunks,
+      {
+        writerId: 'writer-1',
+        epoch: 42,
+        seqStart: 7,
+      }
+    );
+
+    expect(result).toMatchObject({ status: 'seq-gap', expected: 3 });
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('streams.get', () => {
   async function getStreamer() {
     const { createStreamer } = await import('./streamer.js');

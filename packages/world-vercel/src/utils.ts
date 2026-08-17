@@ -154,11 +154,10 @@ export interface APIConfig {
    * version's dispatcher, or any object implementing the dispatcher contract.
    *
    * Note: when provided, this dispatcher replaces *every* default — including
-   * the one used for stream writes (the `PUT` write/close path). Stream appends
-   * are not idempotent, and undici's `RetryAgent` retries `PUT` on 5xx by
-   * default, which can duplicate a chunk the server already persisted. A custom
-   * dispatcher used with stream writes should therefore not retry `PUT` on 5xx
-   * (the built-in stream dispatcher retries only on transient errors and 429).
+   * the one used for stream writes (the `PUT` write/close path). Legacy stream
+   * appends are not idempotent, while lease appends are explicitly replay-safe.
+   * A custom dispatcher replaces either built-in policy, so callers choosing
+   * one for legacy writes should not retry `PUT` on 5xx.
    */
   dispatcher?: unknown;
   projectConfig?: {

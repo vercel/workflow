@@ -196,6 +196,10 @@ Per-request timeout, in milliseconds, for Vercel World HTTP calls to workflow-se
 
 Maximum stream chunks written in one Vercel World request. Larger batches are split across multiple requests. Default: `1000`. Minimum: `1`.
 
+### `WORKFLOW_STREAM_LEASE_FAST_PATH`
+
+Experimental deploy-only stream-write prototype. Set to `1` only with a matching workflow-server preview. It enables replay-safe lease appends and 5xx retry while retaining the legacy allocator as a per-stream fallback. Default: off. It does not enable persistent connections or pipelining.
+
 ### `WORKFLOW_EVENTS_TRANSPORT`
 
 Experimental. Set `WORKFLOW_EVENTS_TRANSPORT=ws` to ship workflow run events to the Vercel World over a WebSocket instead of one HTTP request each. Default: `http`.

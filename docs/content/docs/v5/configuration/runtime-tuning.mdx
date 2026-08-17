@@ -228,6 +228,11 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 
 These variables are primarily for tests, debugging, or unusual deployments.
 
+### `WORKFLOW_STREAM_LEASE_FAST_PATH`
+
+- Default: unset (off)
+- Experimental deploy-only stream-write prototype. Set to `1` only when targeting a workflow-server preview implementing the matching lease protocol. It gives each writable sink a stable writer identity and sequence so lease appends can safely retry 5xx responses; streams that cannot retain a sole-writer lease de-opt to the existing allocator. This does not enable connection persistence or write pipelining.
+
 ### `WORKFLOW_STREAM_FLUSH_INTERVAL_MS`
 
 - Default: `0` (dispatch the first chunk of an idle stream immediately)

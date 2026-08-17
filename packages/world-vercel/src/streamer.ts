@@ -4,11 +4,14 @@ import {
   type StreamChunksResponse,
   type Streamer,
   type StreamInfoResponse,
+  type StreamWriteLease,
+  type StreamWriteLeaseResult,
 } from '@workflow/world';
 import { z } from 'zod';
 import {
   getStreamCloseDispatcher,
   getStreamDispatcher,
+  getStreamLeaseDispatcher,
 } from './http-client.js';
 import {
   errorForResponse,
@@ -183,6 +186,13 @@ const StreamInfoResponseSchema = z.object({
   done: z.boolean(),
 });
 
+const StreamWriteLeaseResultSchema = z.object({
+  base: z.number(),
+  committed: z.number(),
+  status: z.enum(['ok', 'replay', 'seq-gap', 'need-reserve']),
+  expected: z.number().optional(),
+});
+
 /**
  * Zod schema for the paginated stream chunks response from the server.
  * When using CBOR (the default for makeRequest), chunk data arrives as
@@ -285,6 +295,69 @@ export function createStreamer(config?: APIConfig): Streamer {
           // Drain so undici can release the pooled connection between pages.
           await response.text();
         }
+      },
+
+      async writeLease(
+        runId: string | Promise<string>,
+        name: string,
+        chunks: (string | Uint8Array)[],
+        lease: StreamWriteLease
+      ): Promise<StreamWriteLeaseResult> {
+        if (chunks.length === 0) {
+          throw new Error('Stream lease append requires at least one chunk');
+        }
+        const resolvedRunId = await runId;
+        const maxChunksPerRequest = getMaxChunksPerRequest();
+        let lastResult: StreamWriteLeaseResult | undefined;
+
+        for (let i = 0; i < chunks.length; i += maxChunksPerRequest) {
+          const batch = chunks.slice(i, i + maxChunksPerRequest);
+          const httpConfig = await getHttpConfig(config);
+          const headers = new Headers(httpConfig.headers);
+          if (batch.length > 1) headers.set('X-Stream-Multi', 'true');
+          const url = getStreamUrl(name, resolvedRunId, httpConfig);
+          // The stream body is opaque chunk data (or the existing multi-frame
+          // format), so lease negotiation travels as additive query fields.
+          // All fields are present together: their presence opts one PUT into
+          // the server's lease path without changing the stream endpoint.
+          url.searchParams.set('writerId', lease.writerId);
+          url.searchParams.set('epoch', String(lease.epoch));
+          url.searchParams.set('seqStart', String(lease.seqStart + i));
+          url.searchParams.set('count', String(batch.length));
+          const response = await instrumentedFetch({
+            method: 'PUT',
+            url: url.toString(),
+            body: batch.length === 1 ? batch[0] : encodeMultiChunks(batch),
+            headers,
+            dispatcher: getStreamLeaseDispatcher(config),
+            timeoutMs: null,
+            logLabel: url.pathname,
+            spanName: 'workflow.stream.write',
+            durationAttribute: 'workflow.stream.write.chunk_rtt',
+            attributes: streamSpanAttributes({
+              runId: resolvedRunId,
+              name,
+              operation: 'write_multi',
+            }),
+            buildError: async (res) =>
+              createStreamRequestError('write', url, res, await res.text()),
+          });
+          const result = StreamWriteLeaseResultSchema.parse(
+            await response.json()
+          );
+          if (result.status === 'seq-gap' || result.status === 'need-reserve') {
+            // Earlier pages in this call have an acknowledged contiguous
+            // prefix. Core needs that count to avoid legacy-writing them if a
+            // later page de-opts.
+            return { ...result, acknowledged: i };
+          }
+          lastResult = result;
+        }
+
+        if (!lastResult) {
+          throw new Error('Stream lease append produced no result');
+        }
+        return lastResult;
       },
 
       async close(runId: string | Promise<string>, name: string) {
