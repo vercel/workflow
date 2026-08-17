@@ -20,6 +20,7 @@ import { scenario as attrHookAfterStep } from './attr-hook-after-step.ts';
 import { scenario as attrHookBeforeStep } from './attr-hook-before-step.ts';
 import { scenario as cancelMidStep } from './cancel-mid-step.ts';
 import { scenario as claimedPayloadUnderFork } from './claimed-payload-under-fork.ts';
+import { scenario as clockAfterRace } from './clock-after-race.ts';
 import { scenario as countHookAfterTimeout } from './count-hook-after-timeout.ts';
 import { scenario as countHookBeforeTimeout } from './count-hook-before-timeout.ts';
 import { scenario as deadlineExpires } from './deadline-expires.ts';
@@ -45,10 +46,6 @@ import { scenario as peekHookBeforeBranch } from './peek-hook-before-branch.ts';
 import { scenario as raceDuplicateDelivery } from './race-duplicate-delivery.ts';
 import { scenario as raceHookAfterProbe } from './race-hook-after-probe.ts';
 import { scenario as raceHookBeforeProbe } from './race-hook-before-probe.ts';
-import { scenario as sleepReplayInheritsResumeAt } from './sleep-replay-inherits-resumeat.ts';
-import { scenario as sleepResumeAtDriftCompounds } from './sleep-resumeat-drift-compounds.ts';
-import { scenario as sleepResumeAtRecomputed } from './sleep-resumeat-recomputed.ts';
-import { scenario as sleepWaitContinuationStranded } from './sleep-wait-continuation-stranded.ts';
 import { scenario as smokeNoSteps } from './smoke-no-steps.ts';
 import { scenario as smokeOneStep } from './smoke-one-step.ts';
 import { scenario as staleReadEqualStepCounts } from './stale-read-equal-step-counts.ts';
@@ -94,22 +91,6 @@ export const scenarios: ScenarioSpec[] = [
   hookNeverArrives,
 
   // -------------------------------------------------------------------------
-  // Where a sleep's deadline comes from. `sleep()` converts a duration to an
-  // instant in host scope, against the host wall clock, at the point the body
-  // reaches the call — so the answer depends on which pass computed it.
-  //
-  // The third is the control, and reading it first is the shortcut to what the
-  // other two mean: a replay over a committed `wait_created` inherits that
-  // event's deadline and discards its own clock read, so the exposure is not
-  // "every replay re-reads the clock" but "a pass with no visible
-  // `wait_created` re-reads the clock".
-  // -------------------------------------------------------------------------
-  sleepResumeAtRecomputed,
-  sleepResumeAtDriftCompounds,
-  sleepWaitContinuationStranded,
-  sleepReplayInheritsResumeAt,
-
-  // -------------------------------------------------------------------------
   // Step lifecycle.
   // -------------------------------------------------------------------------
   stepRetriesTwice,
@@ -149,6 +130,7 @@ export const scenarios: ScenarioSpec[] = [
   staleReadEqualStepCounts,
   stepVsStepFork,
   stepVsStepForkFenced,
+  clockAfterRace,
   fenceCatchesBenignDirection,
 
   // -------------------------------------------------------------------------

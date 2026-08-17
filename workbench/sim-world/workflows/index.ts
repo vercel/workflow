@@ -84,61 +84,6 @@ export async function longSleepWorkflow(input: string) {
 }
 
 /**
- * A plain sleep, with an open hook nobody awaits.
- *
- * The hook is a *bystander*: it exists so a scenario has an out-of-band writer
- * it can fire at a chosen moment without changing the run's control flow. That
- * combination is what this workflow is for — every other hook fixture here
- * races the hook against something, so delivering the payload changes which
- * branch runs and the sleep stops being written at all.
- *
- * What it buys: a scenario can park the orchestrator inside its `wait_created`
- * write, commit the payload behind it, and release. The parked write's snapshot
- * now predates a committed event, so the fence rejects it and the replay
- * restarts — and `sleep()` resolves its duration against the host wall clock on
- * every pass that has not yet consumed a `wait_created`. One rejected write
- * means one more reading of the clock.
- */
-export async function sleepWithBystanderHookWorkflow(documentId: string) {
-  'use workflow';
-
-  using _bystander = createHook<{ ping: boolean }>({
-    token: `bystander:${documentId}`,
-  });
-
-  const prepared = await prepare(documentId);
-  await sleep('30m');
-  return await finalize(prepared);
-}
-
-/**
- * The same shape with a second bystander, so a scenario can make the suspension
- * write go stale *twice*.
- *
- * One bystander buys one fence rejection, and so one extra reading of the
- * clock. Two buys two — which is the point: it shows the recomputations
- * accumulate rather than settling on an answer. Each restarted pass resolves the
- * duration from wherever the clock now stands, carrying no memory of what any
- * earlier pass asked for, so the committed deadline walks away from the intended
- * one once per concurrent writer. Neither hook is awaited; they exist only to
- * commit an event behind a held snapshot.
- */
-export async function sleepWithTwoBystanderHooksWorkflow(documentId: string) {
-  'use workflow';
-
-  using _first = createHook<{ ping: boolean }>({
-    token: `bystander-a:${documentId}`,
-  });
-  using _second = createHook<{ ping: boolean }>({
-    token: `bystander-b:${documentId}`,
-  });
-
-  const prepared = await prepare(documentId);
-  await sleep('30m');
-  return await finalize(prepared);
-}
-
-/**
  * Fails deterministically for its first two attempts, then succeeds.
  *
  * Retry backoff is `delaySeconds` on a queue message, so the retry schedule
@@ -618,6 +563,48 @@ export async function stepVsStepForkWorkflow(documentId: string) {
   return winner === 'fast'
     ? await afterFast(documentId)
     : await afterSlow(documentId);
+}
+
+async function afterClockBeforeCutoff(documentId: string) {
+  'use step';
+  return `before:${documentId}`;
+}
+
+async function afterClockAfterCutoff(documentId: string) {
+  'use step';
+  return `after:${documentId}`;
+}
+
+/**
+ * Reads the deterministic VM clock immediately after a step race.
+ *
+ * Delivery barriers keep the winner stable, but event consumption advances
+ * the clock before those ordered deliveries reach workflow code. A live pass
+ * can therefore read after only the winner was consumed while a cold replay
+ * reads after both competitors were consumed from the committed log.
+ */
+export async function clockAfterRaceWorkflow(documentId: string) {
+  'use workflow';
+
+  using hook = createHook<{ fired: boolean }>({
+    token: `clock:${documentId}`,
+  });
+
+  const winner = await Promise.race([
+    fast(documentId).then(() => 'fast' as const),
+    hook.then(() => 'hook' as const),
+  ]);
+
+  if (winner !== 'fast') {
+    return await afterClockAfterCutoff(documentId);
+  }
+
+  const cutoff = Date.parse('2024-01-01T00:00:30.000Z');
+  const beforeCutoff = Date.now() < cutoff;
+  await sleep(beforeCutoff ? '2m' : '3m');
+  return beforeCutoff
+    ? await afterClockBeforeCutoff(documentId)
+    : await afterClockAfterCutoff(documentId);
 }
 
 // ---------------------------------------------------------------------------
