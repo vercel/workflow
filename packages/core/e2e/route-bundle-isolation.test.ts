@@ -98,7 +98,8 @@ describe('route bundle isolation (o2flow hook.resume regression)', () => {
         // module.exports may resolve asynchronously (Turbopack async modules)
         Promise.resolve(m)
           .then(async (mod) => {
-            const POST = mod.routeModule?.userland?.POST;
+            await mod.routeModule.ensureUserland();
+            const POST = mod.routeModule.userland.POST;
             if (typeof POST !== 'function') {
               report({
                 harnessError: 'route bundle did not expose routeModule.userland.POST',
