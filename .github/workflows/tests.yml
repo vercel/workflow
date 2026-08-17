@@ -17,6 +17,9 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
+env:
+  NEXT_CANARY_VERSION: 16.3.1-canary.21
+
 jobs:
   ci-scope:
     name: Detect CI Scope
@@ -1042,8 +1045,8 @@ jobs:
         env:
           APP_NAME: ${{ matrix.app.name }}
         run: |
-          cat packages/next/package.json | jq '.dependencies.next|="16.3.1-canary.17"' > packages/next/package.json.new && mv packages/next/package.json.new packages/next/package.json
-          cat "workbench/$APP_NAME/package.json" | jq '.dependencies.next|="16.3.1-canary.17"' > "workbench/$APP_NAME/package.json.new" && mv "workbench/$APP_NAME/package.json.new" "workbench/$APP_NAME/package.json"
+          jq --arg version "$NEXT_CANARY_VERSION" '.devDependencies.next=$version' packages/next/package.json > packages/next/package.json.new && mv packages/next/package.json.new packages/next/package.json
+          jq --arg version "$NEXT_CANARY_VERSION" '.dependencies.next=$version' "workbench/$APP_NAME/package.json" > "workbench/$APP_NAME/package.json.new" && mv "workbench/$APP_NAME/package.json.new" "workbench/$APP_NAME/package.json"
           pnpm install --no-frozen-lockfile
 
       - name: Install Dependencies
@@ -1132,8 +1135,8 @@ jobs:
         env:
           APP_NAME: ${{ matrix.app.name }}
         run: |
-          cat packages/next/package.json | jq '.dependencies.next|="16.3.1-canary.17"' > packages/next/package.json.new && mv packages/next/package.json.new packages/next/package.json
-          cat "workbench/$APP_NAME/package.json" | jq '.dependencies.next|="16.3.1-canary.17"' > "workbench/$APP_NAME/package.json.new" && mv "workbench/$APP_NAME/package.json.new" "workbench/$APP_NAME/package.json"
+          jq --arg version "$NEXT_CANARY_VERSION" '.devDependencies.next=$version' packages/next/package.json > packages/next/package.json.new && mv packages/next/package.json.new packages/next/package.json
+          jq --arg version "$NEXT_CANARY_VERSION" '.dependencies.next=$version' "workbench/$APP_NAME/package.json" > "workbench/$APP_NAME/package.json.new" && mv "workbench/$APP_NAME/package.json.new" "workbench/$APP_NAME/package.json"
           pnpm install --no-frozen-lockfile
 
       - name: Install Dependencies
@@ -1251,8 +1254,8 @@ jobs:
         env:
           APP_NAME: ${{ matrix.app.name }}
         run: |
-          cat packages/next/package.json | jq '.dependencies.next|="16.3.1-canary.17"' > packages/next/package.json.new && mv packages/next/package.json.new packages/next/package.json
-          cat "workbench/$APP_NAME/package.json" | jq '.dependencies.next|="16.3.1-canary.17"' > "workbench/$APP_NAME/package.json.new" && mv "workbench/$APP_NAME/package.json.new" "workbench/$APP_NAME/package.json"
+          jq --arg version "$NEXT_CANARY_VERSION" '.devDependencies.next=$version' packages/next/package.json > packages/next/package.json.new && mv packages/next/package.json.new packages/next/package.json
+          jq --arg version "$NEXT_CANARY_VERSION" '.dependencies.next=$version' "workbench/$APP_NAME/package.json" > "workbench/$APP_NAME/package.json.new" && mv "workbench/$APP_NAME/package.json.new" "workbench/$APP_NAME/package.json"
           pnpm install --no-frozen-lockfile
 
       - name: Install Dependencies

@@ -1286,36 +1286,24 @@ export function hmrFuzzWorkflowHelper(value: HmrFuzzBox) {
 `,
           },
         ] as const;
-        // Next canary has been flaky for transitive workflow-helper execution
-        // updates; stable still covers that HMR path.
-        const casesToRun = finalConfig.canary
-          ? cases.filter((testCase) => testCase.file !== files.workflowHelper)
-          : cases;
-
-        for (let index = 0; index < casesToRun.length; index++) {
+        for (let index = 0; index < cases.length; index++) {
           const iteration = index + 1;
-          const testCase = casesToRun[index];
+          const testCase = cases[index];
           const previousSnapshot = snapshot;
           const logCursor = await readDevServerLogCursor();
           await fs.writeFile(testCase.file, testCase.source(iteration));
 
-          // Next canary can keep executing a stale workflow bundle after the
-          // workflow hot-rebuild completed. Stable still covers execution
-          // correctness; canary keeps covering classification/log/artifact
-          // behavior for these changes.
-          if (!(finalConfig.canary && testCase.kind === 'workflow')) {
-            await expectWorkflowResult({
-              description: `${testCase.kind} HMR update to affect workflow execution`,
-              stepValue:
-                'expectedStepValue' in testCase
-                  ? testCase.expectedStepValue(iteration)
-                  : undefined,
-              workflowValue:
-                'expectedWorkflowValue' in testCase
-                  ? testCase.expectedWorkflowValue(iteration)
-                  : undefined,
-            });
-          }
+          await expectWorkflowResult({
+            description: `${testCase.kind} HMR update to affect workflow execution`,
+            stepValue:
+              'expectedStepValue' in testCase
+                ? testCase.expectedStepValue(iteration)
+                : undefined,
+            workflowValue:
+              'expectedWorkflowValue' in testCase
+                ? testCase.expectedWorkflowValue(iteration)
+                : undefined,
+          });
 
           if (testCase.kind === 'skip') {
             await expectHmrLogCounts(logCursor, testCase.expectedLogCounts);
@@ -1362,9 +1350,6 @@ export async function hmrFuzzWorkflow() {
               );
             },
             assert: async () => {
-              if (finalConfig.canary) {
-                return;
-              }
               await expectWorkflowResult({
                 description:
                   'workflow import graph full rediscovery to affect execution',
@@ -1382,9 +1367,6 @@ export async function hmrFuzzWorkflow() {
               );
             },
             assert: async () => {
-              if (finalConfig.canary) {
-                return;
-              }
               await expectWorkflowResult({
                 description:
                   'new workflow dependency body change to affect execution',
