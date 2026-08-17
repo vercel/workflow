@@ -29,12 +29,13 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import {
   type Event,
   getQueueTopicPrefix,
+  requireEventSlot,
   type QueuePayload,
   SPEC_VERSION_CURRENT,
   type World,
 } from '@workflow/world';
 import { createVirtualClock, type VirtualClock } from './clock.js';
-import { createIdFactory, type IdFactory, ulidTimeOf } from './ids.js';
+import { createIdFactory, type IdFactory } from './ids.js';
 import { createSimQueue, type DirectHandler, type SimQueue } from './queue.js';
 import {
   createSimStore,
@@ -575,12 +576,12 @@ export function createSimWorld(options: SimWorldOptions = {}): SimWorld {
     if (!runId) return undefined;
     const set = loadedEvents()?.get(runId);
     if (!set || set.size === 0) return undefined;
-    let updatedAt = 0;
+    let maxSlot = 0;
     for (const eventId of set) {
-      const at = ulidTimeOf(eventId);
-      if (at > updatedAt) updatedAt = at;
+      const slot = requireEventSlot(eventId);
+      if (slot > maxSlot) maxSlot = slot;
     }
-    return { updatedAt, count: set.size };
+    return { maxSlot, count: set.size };
   }
 
   /** Wrap one world method so it becomes a call point. */

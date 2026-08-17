@@ -43,14 +43,16 @@ import {
   type PaginatedResponse,
   type PaginationOptions,
   type ResolveData,
+  requireEventSlot,
   SPEC_VERSION_CURRENT,
+  slotToEventId,
   type Step,
   type Storage,
   stripEventDataRefs,
   type Wait,
   type WorkflowRun,
 } from '@workflow/world';
-import { type IdFactory, ulidTimeOf } from './ids.js';
+import { type IdFactory } from './ids.js';
 
 /** Per-run event ceiling reported on run responses, mirroring the other worlds. */
 const MAX_EVENTS_PER_RUN = 25_000;
@@ -91,9 +93,9 @@ interface SimCreateParams {
 
 /** What a replay-context writer had loaded when it decided to write. */
 export interface LoadedSnapshot {
-  /** ULID time of the newest loaded event. */
-  updatedAt: number;
-  /** How many loaded events sit at or below {@link updatedAt}. */
+  /** Slot of the newest loaded event. */
+  maxSlot: number;
+  /** How many loaded events sit at or below {@link maxSlot}. */
   count: number;
 }
 
@@ -115,10 +117,10 @@ interface RunEventIndex {
  */
 function countRecordedAtOrBelow(
   index: RunEventIndex,
-  updatedAt: number
+  maxSlot: number
 ): number | null {
   const above = index.recentEventIds.filter(
-    (id) => ulidTimeOf(id) > updatedAt
+    (id) => requireEventSlot(id) > maxSlot
   ).length;
   const pruned = index.total > index.recentEventIds.length;
   if (pruned && above === index.recentEventIds.length) return null;
@@ -361,8 +363,17 @@ export function createSimStore(options: SimStoreOptions): SimStore {
   const waitKey = (runId: string, correlationId: string) =>
     `${runId}:${correlationId}`;
 
-  function eventPosition(): Pick<Event, 'eventId' | 'createdAt'> {
-    return { eventId: ids.eventId(), createdAt: new Date(nowMs()) };
+  function eventPosition(runId: string): Pick<Event, 'eventId' | 'createdAt'> {
+    return {
+      eventId: slotToEventId(committedSlot(runId) + 1),
+      createdAt: new Date(nowMs()),
+    };
+  }
+
+  function committedSlot(runId: string): number {
+    return events
+      .filter((event) => event.runId === runId)
+      .reduce((max, event) => Math.max(max, requireEventSlot(event.eventId)), 0);
   }
 
   function recordInIndex(event: Event): void {
@@ -687,7 +698,6 @@ export function createSimStore(options: SimStoreOptions): SimStore {
     const internal = params as
       | (CreateEventParams & SimCreateParams)
       | undefined;
-    let position = eventPosition();
     const resolveData: ResolveData = params?.resolveData ?? 'all';
     const specVersion = data.specVersion ?? SPEC_VERSION_CURRENT;
 
@@ -699,6 +709,7 @@ export function createSimStore(options: SimStoreOptions): SimStore {
     } else {
       runId = runIdArg;
     }
+    let position = eventPosition(runId);
 
     let currentRun = runs.get(runId);
 
@@ -729,7 +740,7 @@ export function createSimStore(options: SimStoreOptions): SimStore {
         append(synthetic);
         // The synthetic is committed first, so the requested row takes the next
         // position and sorts after it.
-        position = eventPosition();
+        position = eventPosition(runId);
       }
     }
 
@@ -749,7 +760,7 @@ export function createSimStore(options: SimStoreOptions): SimStore {
     const snapshot = internal?.snapshot;
     if (options.preconditionGuard && snapshot) {
       const marker = externalWriteMarker.get(runId);
-      if (marker !== undefined && snapshot.updatedAt < marker) {
+      if (marker !== undefined && snapshot.maxSlot < marker) {
         throw new PreconditionFailedError(
           `Run "${runId}" changed out of band since the caller's snapshot`
         );
@@ -765,7 +776,7 @@ export function createSimStore(options: SimStoreOptions): SimStore {
       if (options.countGuard) {
         const index = runEventIndex.get(runId);
         const recorded = index
-          ? countRecordedAtOrBelow(index, snapshot.updatedAt)
+            ? countRecordedAtOrBelow(index, snapshot.maxSlot)
           : null;
         if (recorded !== null && recorded > snapshot.count) {
           throw new PreconditionFailedError(
@@ -1028,7 +1039,7 @@ export function createSimStore(options: SimStoreOptions): SimStore {
       // metadata on the `step_started` row. The synthetic is committed first,
       // so `step_started` takes the next position.
       const { input: _dropped, ...rest } = data.eventData;
-      position = eventPosition();
+      position = eventPosition(runId);
       event = { ...event, ...position, eventData: rest } as Event;
     }
 
