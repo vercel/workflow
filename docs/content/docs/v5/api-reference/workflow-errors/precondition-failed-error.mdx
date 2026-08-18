@@ -10,7 +10,7 @@ related:
 
 `PreconditionFailedError` is thrown by world implementations when an event creation is rejected because the client's event-log snapshot is stale: the log already held more events than the position the creation named. It corresponds to HTTP 412 Precondition Failed semantics.
 
-This only occurs against a world that fences on that position (`capabilities.preconditionGuard` — see [Stale-write rejection](/docs/configuration/runtime-tuning#stale-write-rejection)); event creations that carry no position are never rejected with this error.
+No world in this repository throws it. A stale replay does not need to be refused: its log is a prefix rather than a prefix with a hole in it, replay is deterministic on a prefix, and the write it makes next comes back carrying the events it was pushed past (see [Stale reads](/docs/configuration/runtime-tuning#stale-reads-and-why-nothing-has-to-be-rejected)). The error and the runtime's handling of it remain for a world that would rather refuse than report — one that allocates positions somewhere other than the commit, and so cannot report a gap reliably. Event creations that carry no position are never rejected with it.
 
 A world rejects only on evidence and accepts the creation whenever it cannot decide, so this error always means the snapshot really was stale — but not receiving it does not prove the snapshot was current.
 

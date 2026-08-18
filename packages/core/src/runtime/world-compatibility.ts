@@ -16,11 +16,12 @@ type WorldSpecVersionMetadata = Pick<World, 'specVersion'>;
  * ceiling means a World built against a newer spec than this runtime knows how
  * to read.
  *
- * The range has a floor and a ceiling rather than a single value because a
- * World may opt into a spec version above the default: `world-vercel` declares
- * the slot-identity version so its new runs are created with slot event ids,
- * while every other World stays on the default. An equality check would make
- * this runtime refuse the adapter shipped alongside it.
+ * Both bounds are the same version today, so this currently admits exactly one.
+ * It stays written as a range because the two constants answer different
+ * questions and come apart while a spec bump is staged: the ceiling rises when
+ * this runtime learns to read the next version, the floor when that version
+ * becomes the one Worlds stamp. An equality check against either constant alone
+ * would reject a World during that window.
  */
 export function assertWorldSupportsRuntimeProtocol(
   world: WorldSpecVersionMetadata

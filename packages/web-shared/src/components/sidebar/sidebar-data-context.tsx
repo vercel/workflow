@@ -7,6 +7,12 @@ import type { FetchSpanDetail } from './use-selected-span-detail';
 export interface SidebarDataContextValue {
   run: WorkflowRun;
   events: Event[];
+  /**
+   * Events every replay reads past as repeats, computed once from the whole
+   * of `events` by whoever knows the list is complete. Absent when nobody
+   * could vouch for that, in which case nothing is marked.
+   */
+  duplicateEventIds?: ReadonlySet<string>;
   fetchSpanDetail: FetchSpanDetail;
   onStreamClick?: (streamId: string) => void;
   onRunClick?: (runId: string) => void;

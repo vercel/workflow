@@ -23,7 +23,7 @@ import type {
   World,
 } from '@workflow/world';
 import {
-  eventIdToSlot,
+  requireEventSlot,
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_SUPPORTS_COMPRESSION,
 } from '@workflow/world';
@@ -39,7 +39,7 @@ import {
 } from '../serialization.js';
 import { contextStorage } from '../step/context-storage.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
-import { trace } from '../telemetry.js';
+import { recordStepExecutionDuration, trace } from '../telemetry.js';
 import {
   getErrorName,
   getErrorStack,
@@ -162,8 +162,8 @@ export interface StepExecutorParams {
    * A World that fences rejects a stale claim with `PreconditionFailedError`
    * (412); executeStep does NOT translate that rejection (re-claiming in place
    * would still commit the stale schedule), so it propagates for the caller to
-   * abandon the batch and restart its replay. Undefined for a run that is not
-   * slot-numbered, or a caller with nothing loaded.
+   * abandon the batch and restart its replay. Undefined for a caller with
+   * nothing loaded.
    */
   slotSnapshot?: SlotSnapshotParams;
   /**
@@ -313,11 +313,22 @@ export async function executeStep(
   let knownSlot = params.slotSnapshot?.eventCount;
   const observeSlot = (result: { event?: Event; events?: Event[] }): void => {
     if (knownSlot === undefined) {
+      // The caller scheduled this step without naming a position, so there is
+      // no snapshot to advance and the writes below send none. Not the same as
+      // a run without positions: every run has them, this executor just was not
+      // told which one it started from.
       return;
     }
-    const committed = result.event ? eventIdToSlot(result.event.eventId) : null;
-    for (const slot of [committed, maxEventSlot(result.events ?? []) ?? null]) {
-      if (slot !== null && slot > knownSlot) {
+    const observed: number[] = [];
+    if (result.event) {
+      observed.push(requireEventSlot(result.event.eventId));
+    }
+    const reported = maxEventSlot(result.events ?? []);
+    if (reported !== undefined) {
+      observed.push(reported);
+    }
+    for (const slot of observed) {
+      if (slot > knownSlot) {
         knownSlot = slot;
       }
     }
@@ -967,6 +978,8 @@ export async function executeStep(
         span?.setAttributes(attributes);
       };
 
+      let stepExecutionStatus: 'ok' | 'error' = 'ok';
+      const stepExecutionStartTime = performance.now();
       try {
         result = await trace('step.execute', {}, async () => {
           return await contextStorage.run(
@@ -1006,8 +1019,14 @@ export async function executeStep(
           );
         });
       } catch (err) {
+        stepExecutionStatus = 'error';
         userCodeError = err;
         userCodeFailed = true;
+      } finally {
+        void recordStepExecutionDuration(
+          performance.now() - stepExecutionStartTime,
+          stepExecutionStatus
+        );
       }
       const executionTimeMs = Date.now() - executionStartTime;
 

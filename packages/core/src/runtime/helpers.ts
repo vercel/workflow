@@ -14,11 +14,11 @@ import type {
   World,
 } from '@workflow/world';
 import {
-  eventIdToSlot,
   FIRST_EVENT_SLOT,
   getQueueTopicPrefix,
   HealthCheckPayloadSchema,
   HOOK_RESUME_INPUT_VERSION,
+  requireEventSlot,
   resolveQueueNamespace,
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_LEGACY,
@@ -489,15 +489,11 @@ function recordRequestedEventCursor(
  * same array. The set is updated alongside `target`.
  *
  * Events are appended in the order the World returned them, and are not
- * re-sorted: a World's canonical order is its own, and the runtime cannot
- * reproduce it from event ids alone. That is true even though the id schemes in
- * this repo happen to sort correctly today — a slot-numbered run orders by id
- * everywhere, and `world-local` falls back to `(createdAt, eventId)` only for a
- * run minted before slots, where it re-mints keys and the two orders diverge.
- * Every append source is already in canonical order
- * relative to the tail (a cursor-delimited page, or a write-response delta), so
- * receipt order is the order to keep. Nothing downstream may assume the tail is
- * the newest event — see {@link maxEventSlot}.
+ * re-sorted. Every append source is already in canonical order relative to the
+ * tail (a cursor-delimited page, or a write-response delta), so receipt order is
+ * the order to keep, and re-sorting here would only cost a pass over the log.
+ * Nothing downstream may assume the tail is the newest event — see
+ * {@link maxEventSlot}.
  */
 export function appendUniqueEvents(
   target: Event[],
@@ -528,13 +524,10 @@ export function appendUniqueEvents(
  * land in `eventId` order — a plain `push` would place a late-committing
  * earlier event after events that sort before it, corrupting replay.
  *
- * Lexicographic string order matches commit order under both id schemes, which
- * is why this needs no slot gate the way {@link mergeReportedEvents} does: a
- * slot id is a fixed-width zero-padded position, and a ULID is monotonic by
- * construction. What differs is the guarantee. On a slot run the id order *is*
- * the World's canonical order, while on a ULID run it is the runtime's best
- * reconstruction of it, which is enough for a single splice into a page that
- * was already loaded in that order.
+ * Lexicographic string order is the log's order: a slot id is a fixed-width
+ * zero-padded position, so comparing the strings compares the positions. This
+ * needs no parse of its own for that reason, and the comparison is exact rather
+ * than a reconstruction.
  */
 export function insertEventByEventId(target: Event[], event: Event): void {
   // Linear scan from the end: the spliced event is almost always the newest
@@ -774,10 +767,8 @@ export function isSlotGapCheckEnabled(): boolean {
  *
  * Unlike {@link appendUniqueEvents}, this re-sorts. The reported events occupy
  * slots *below* the write that reported them, so appending them would put them
- * after events they precede — and on a slot-numbered run the id order is the
- * World's canonical order, so restoring it is well defined rather than a guess.
- * A run that is not slot-numbered cannot produce this report in the first
- * place; the sort is skipped rather than applied to ids it cannot order.
+ * after events they precede. Sorting by id restores the World's canonical order
+ * rather than guessing at it: a slot id is that order, written down.
  */
 export function mergeReportedEvents(
   target: Event[],
@@ -786,7 +777,7 @@ export function mergeReportedEvents(
   const before = target.length;
   appendUniqueEvents(target, events);
   const added = target.length - before;
-  if (added > 0 && maxEventSlot(target) !== undefined) {
+  if (added > 0) {
     target.sort((a, b) =>
       a.eventId < b.eventId ? -1 : a.eventId > b.eventId ? 1 : 0
     );
@@ -845,9 +836,7 @@ export function absorbSkippedSlotReport(
 }
 
 /**
- * The highest slot the loaded log occupies, or `undefined` when the run is not
- * slot-numbered. A run keeps the id scheme it was created under, so one event
- * settles it for the whole log.
+ * The highest slot the loaded log occupies, or `undefined` for an empty log.
  *
  * The maximum, not the count, and the two are not interchangeable even though
  * a healthy log makes them equal. A World hands a position to the insert that
@@ -860,14 +849,16 @@ export function absorbSkippedSlotReport(
  *
  * A hole below the maximum is therefore a property of the read, not of the log,
  * which is what lets {@link settleEventSlotGap} re-read instead of giving up.
+ *
+ * @throws if any event id carries no slot. Every World the runtime replays
+ * against numbers events by slot, so an id that does not is a broken log rather
+ * than an older one, and a maximum derived by skipping it would understate the
+ * log to every write that reads it.
  */
-export function maxEventSlot(events: Event[]): number | undefined {
+export function maxEventSlot(events: readonly Event[]): number | undefined {
   let max: number | undefined;
   for (const event of events) {
-    const slot = eventIdToSlot(event.eventId);
-    if (slot === null) {
-      return undefined;
-    }
+    const slot = requireEventSlot(event.eventId);
     if (max === undefined || slot > max) {
       max = slot;
     }
@@ -888,8 +879,8 @@ export interface EventSlotGap {
 /**
  * The hole in a loaded log, or `undefined` when there is none to find.
  *
- * On a slot-numbered run the World allocates every position, so a log that
- * holds `n` events below slot `n` is missing one. That matters before a replay
+ * The World allocates every position, so a log that holds `n` events below slot
+ * `n` is missing one. That matters before a replay
  * and nowhere else: the replay reads the log as the complete record of what has
  * happened, and an absent position is indistinguishable from an event that
  * never occurred. The branch it would have decided gets decided the other way,
@@ -906,8 +897,10 @@ export interface EventSlotGap {
  * legitimately begins at the second slot and fills in on its own. Every replay
  * that races a run's own start would otherwise report a hole.
  *
- * Returns `undefined` for a log this cannot read as slots at all: an empty one,
- * or a run numbered by ULID, where positions carry no density to check.
+ * Returns `undefined` for an empty log, which has no density to check.
+ *
+ * @throws if any event id carries no slot, for the reason {@link maxEventSlot}
+ * gives.
  */
 export function findEventSlotGap(
   events: readonly Event[]
@@ -915,10 +908,7 @@ export function findEventSlotGap(
   const occupied = new Set<number>();
   let maxSlot = 0;
   for (const event of events) {
-    const slot = eventIdToSlot(event.eventId);
-    if (slot === null) {
-      return undefined;
-    }
+    const slot = requireEventSlot(event.eventId);
     occupied.add(slot);
     if (slot > maxSlot) {
       maxSlot = slot;
@@ -1014,7 +1004,7 @@ export async function settleEventSlotGap(
  * why {@link slotSnapshotParams} takes the maximum rather than the count.
  *
  * Its own object rather than a bare number so a call site cannot half-send it,
- * and so the empty case (a run that is not slot-numbered) spreads to nothing.
+ * and so the empty case spreads to nothing.
  */
 export interface SlotSnapshotParams {
   eventCount?: number;
@@ -1023,15 +1013,17 @@ export interface SlotSnapshotParams {
 /**
  * Build the slot snapshot to attach to a replay-context event creation.
  *
- * Empty for a run that is not slot-numbered: there is no position to name, and
- * a World that numbers by ULID has nothing to compare against.
+ * Empty for an empty log, which is the state a `run_created` write is issued
+ * from: there is no position held yet to name.
  *
  * The maximum rather than the length, for the reason {@link maxEventSlot}
  * gives: a partially-read log holds fewer events than its highest position, and
  * counting those would make the write claim to have seen less than it has, so
  * the World would report the same events back on every attempt.
  */
-export function slotSnapshotParams(events: Event[]): SlotSnapshotParams {
+export function slotSnapshotParams(
+  events: readonly Event[]
+): SlotSnapshotParams {
   const eventCount = maxEventSlot(events);
   return eventCount === undefined ? {} : { eventCount };
 }

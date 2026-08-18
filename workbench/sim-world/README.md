@@ -123,29 +123,17 @@ Two different instruments, for two different things:
 - **`expect`** asserts the run's outcome: `status`, and `output` when the
   output is the point.
 
-And one rule that matters more than either: **do not restate an expectation per
-world.** A scenario is one sequence of advances; the only thing a flag like
-`--append-only` changes is what a read returns. An expectation that has to be
-written twice is pinning a *consequence of the reads* rather than a property of
-the run, and a scenario that branches its tempo on `sim.appendOnlyLog` is two
-scenarios wearing one id.
-
-What catches the fault in every world is the invariant the runner checks for
-free: **a run's log must replay back into that run.** So when a flag decides
-which branch a run takes, report the branch with `sim.note` and assert only
-what holds either way — usually `status`, plus the replay check you get without
-asking. Reading `sim.appendOnlyLog` to *phrase* a check's sentence correctly is
-fine and encouraged; reading it to choose a different tempo is not.
+The runner checks the invariant that **a run's log must replay back into that
+run**, so expectations should describe durable outcomes rather than incidental
+intermediate ordering.
 
 There is deliberately no way to expect a violation. A scenario states the
 outcome the run should have reached and stays red until the runtime gets there.
 
 ### Per-scenario world flags
 
-`preconditionGuard`, `countGuard` and `appendOnlyLog` on the spec pick the world
-this scenario plays in. The usual reason to set one is a **paired scenario**:
-the red one and the same tempo with a fix armed, one flag apart, so the diff is
-the argument. The command-line flags below override the spec for a whole run.
+`preconditionGuard` and `countGuard` on the spec control the guards for that
+scenario. The command-line fence flags below override them for a whole run.
 
 ## Flags
 
@@ -153,54 +141,33 @@ the argument. The command-line flags below override the spec for a whole run.
 | --- | --- |
 | `--verbose` | include queue deliveries in the trace |
 | `--color` / `--no-color` | force colour on through a pipe / off. Default: on for a terminal, off otherwise, so `pnpm sim > out.txt` is already diffable |
-| `--append-only` / `--no-append-only` | play against an append-only log, or force production behaviour back on |
 | `--fence` / `--no-fence` | force the optimistic-concurrency fence on or off for every scenario |
 | `--report-only` | print every failure, exit 0 anyway |
 | `--summary-file <path>` | one collapsed `<details>` — the count on the visible line, the table behind it — for a PR comment or `$GITHUB_STEP_SUMMARY` |
 | `--detail-file <path>` | the full trace, colour forced off, as a CI artifact |
-| `--title <text>` | heading for the summary file, so two of them in one comment are told apart by more than their chips line |
-
-Two of these are measurements rather than conveniences.
-
-**`--append-only`** moves every event's position from its handler's mint to its
-commit, which is the one change that makes a stale read impossible: the log can
-be behind, never wrong. Running with and without it is how you tell which of
-the reds that change would actually close. Today: **35 pass / 6 violations**
-mint-ordered, **41 pass / 0 violations** append-only.
-
-The one red it does *not* close is `unclaimed-payload-under-fork`, and that is
-the point of it: no log position is wrong there, the runtime hands two
-resolutions to the workflow in the order the log did not record. It is the only
-scenario in the book that is red in both worlds.
+| `--title <text>` | heading for the summary file |
 
 **`--no-fence`** turns the fence off everywhere, asking whether anything relies
-on it. It is a diagnostic, not a world — **read the violation count, not the
+on it. It is a diagnostic — **read the violation count, not the
 pass count**, because a scenario whose whole point is that the guard fired
 asserts exactly that and fails by design when you disarm it
 (`in-flight-before-decision-counted` is the one that does this today).
-Measured: **6 → 8** violations mint-ordered, so it is load-bearing there;
-**0 → 0** append-only, so it is dead weight once positions are assigned at
-commit.
 
 ## In CI
 
 [`.github/workflows/world-sim.yml`](../../.github/workflows/world-sim.yml)
-plays the book on every pull request, once per world, and posts both summaries
-as one sticky comment — four lines until you open something:
+plays the book on every pull request and posts its summary as one sticky comment:
 
 ```
 ## Sim World
 
 Simulated world deterministic testing for races. [Traces](…)
 
-▸ 🟠 Mint-ordered log — 6 fail of 41 total
-▸ 🟢 Append-only log — 0 fail of 41 total
+▸ 🟢 world-sim scenario book — 0 fail of 41 total
 ```
 
-**It never blocks a merge**: those scenarios are red on purpose, so a lane that
-gated on them would be red on every PR and read as broken rather than as
-informative. What it publishes is the pair of counts, and the thing to look at
-is whether they still say 6 and 0.
+**It never blocks a merge**: the simulation is an informational measurement, so
+the published count is the thing to look at rather than the check mark.
 
 That is also why `pnpm test` in this package is `--report-only` while `pnpm sim`
 stays strict — a recursive `pnpm -r test` should not go red for the known reds,
@@ -210,8 +177,7 @@ but someone running the book deliberately wants the exit code.
 
 Events in the printed stream are referred to by **log position** — `#12` is the
 twelfth event in the durable log, `@7` the resource created at position 7 — and
-the trace prints in *commit* order, so the numbers count backwards exactly where
-the log and the execution disagree. See
+the trace prints in commit order. See
 [`packages/world-sim/README.md`](../../packages/world-sim/README.md#reading-the-output).
 
 ## What the scenarios show

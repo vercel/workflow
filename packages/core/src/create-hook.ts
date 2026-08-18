@@ -117,13 +117,17 @@ export interface HookOptions {
    * the token with the information it has available.
    *
    * Deterministic tokens are intended for use with `createHook()` and
-   * server-side `resumeHook()` only. For webhooks (`createWebhook()`),
-   * tokens are always randomly generated to prevent unauthorized access
-   * to the public webhook endpoint.
+   * server-side `resumeHook()` only. For webhooks (`createWebhook()`), an
+   * explicit token is not accepted — one is always generated for you.
+   *
+   * A generated token is not trivial to guess but is not a security
+   * contract, so authenticate webhook requests themselves rather than
+   * relying on URL secrecy:
+   * https://workflow-sdk.dev/docs/foundations/hooks#token-design
    *
    * If provided, the token must be a non-empty string; passing an empty
-   * string throws. If not provided (or `undefined`), a randomly generated
-   * token will be assigned.
+   * string throws. If not provided (or `undefined`), a token is generated
+   * for you.
    *
    * @example
    *

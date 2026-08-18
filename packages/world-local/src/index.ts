@@ -80,10 +80,6 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
       // events-storage.ts `claimHookResume`), so resumeHook()'s parallel fast
       // path converges on one event in dev exactly as it does on Vercel.
       hookResumeDedup: true,
-      // New runs get dense per-run slot event ids. Runs created before this
-      // keep their ULIDs; the scheme is pinned by a run's own first event id,
-      // not by this flag, which only says what new runs get.
-      slotEventIds: true,
     },
     ...queue,
     ...storage,

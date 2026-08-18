@@ -4,9 +4,12 @@ import type {
   ExperimentalSetAttributesResult,
 } from './attributes.js';
 import type {
+  BatchEventRequest,
+  CreateEventBatchParams,
   CreateEventParams,
   CreateEventRequest,
   Event,
+  EventBatchResult,
   EventResult,
   GetEventParams,
   ListEventsByCorrelationIdParams,
@@ -263,6 +266,35 @@ export interface Storage {
     ): Promise<PaginatedResponse<Step | StepWithoutData>>;
   };
 
+  /**
+   * The event log, and the one part of this interface with a requirement the
+   * types cannot express: **the World allocates every event id, and every id
+   * is a slot** — `evnt_` followed by the event's dense, 1-based position in
+   * its run's log, zero-padded to 26 characters. Use `slotToEventId()` to
+   * format one.
+   *
+   * Not a capability to opt into. The runtime reads a position out of every id
+   * it loads (`requireEventSlot`) and fails the run if it cannot, so a World
+   * whose ids are not positions cannot replay anything at all. Two properties
+   * are what the runtime actually relies on:
+   *
+   * - **Density.** A run's slots are contiguous from 1, so the number of
+   *   events a reader holds *is* the position of the last one. That is what
+   *   makes {@link CreateEventParams.eventCount} a complete statement of the
+   *   writer's snapshot in a single integer, and what lets a reader tell a
+   *   complete log from a truncated one by its length.
+   * - **Bump and report.** A create never fails because its requested slot is
+   *   taken. The World advances to the next free slot, commits there, and
+   *   returns the events occupying the slots it skipped over on the success
+   *   response (see {@link EventResult.events}). The writer learns its
+   *   snapshot was stale without the write being rejected — which is why no
+   *   World needs a precondition guard.
+   *
+   * Allocating at the commit is what makes a reader's log a *prefix* of the
+   * run's log rather than a prefix with a hole in it. A World that hands a
+   * position out earlier, and can therefore let an event land behind one a
+   * reader has already passed, breaks the property every replay depends on.
+   */
   events: {
     /**
      * Create a run_created event to start a new workflow run.
@@ -293,6 +325,48 @@ export interface Storage {
       data: T,
       params?: CreateEventParams
     ): Promise<EventResult<T['eventType']>>;
+
+    /**
+     * OPTIONAL batch write — append an ordered list of events to the run's
+     * log in one durable, atomic-per-attempt write, with a per-event outcome
+     * for each (see {@link BatchEventItemResult}). The events land in request
+     * order at consecutive slots. A concurrent writer may push the whole
+     * batch to slots above the caller's view of the log; no skipped-event
+     * report accompanies the result, so a position-tracking caller compares
+     * the committed slots against its expectation and reloads the log to
+     * observe what landed in between. Its local view stays a strict PREFIX
+     * of the log — never a hole — so replaying it stays correct and the
+     * next reload self-corrects.
+     *
+     * Presence of the method IS the capability declaration: the core runtime
+     * batches only when the World implements it (and the run's spec version
+     * supports slot identity); absent, every write takes the single-event
+     * `create` path unchanged. A World must implement it with real
+     * atomicity per attempt — a lost race must leave nothing behind — or not
+     * implement it at all.
+     *
+     * Size limits are the caller's problem: Worlds enforce their own caps
+     * (world-vercel enforces an event-count cap and a byte budget over frame
+     * meta plus inline-bound payloads) and reject an oversized batch with a
+     * request-level error. The core fold sizes its chunks accordingly.
+     *
+     * Not expressible in a batch (Worlds reject the whole batch with a
+     * request-level error): `run_created`, `run_started`, `run_cancelled`,
+     * `hook_created`, `hook_disposed`, `attr_set`, and more events targeting
+     * one entity than a single write can express (the one legal combination
+     * is `step_created` followed by `step_started` for the same step, which
+     * creates the step born-running — the step's input MUST ride the
+     * `step_created`; a `step_started` carrying a payload rejects the whole
+     * batch). Events outside this list keep their own ordering requirements:
+     * a caller mixing a batch with single writes (hook or attribute events)
+     * owns those barriers itself — the core runtime simply never batches a
+     * suspension that carries hook or attribute writes.
+     */
+    createBatch?(
+      runId: string,
+      events: BatchEventRequest[],
+      params?: CreateEventBatchParams
+    ): Promise<EventBatchResult>;
 
     get(
       runId: string,
@@ -341,24 +415,6 @@ export interface WorldCapabilities {
   hookRetention?: {
     active: boolean;
   };
-
-  /**
-   * The World fences a stale replay-context write: an event creation whose
-   * snapshot is behind what the run has already recorded is rejected with a
-   * `PreconditionFailedError` (412) rather than committed. The runtime's
-   * response is to abandon the write and replay from a corrected log.
-   *
-   * Runtime optimizations that are only safe behind that fence read this
-   * capability, so a World that accepts a snapshot and ignores it must leave
-   * this unset: sending a snapshot is not the same as one being enforced, and
-   * enabling those optimizations with nothing behind them makes a stale replay
-   * commit.
-   *
-   * Orthogonal to {@link slotEventIds}, which never rejects — it commits above
-   * the contention and reports back what the writer missed. A World may
-   * declare either, both, or neither.
-   */
-  preconditionGuard?: boolean;
 
   /**
    * The World's queue supports `maxConcurrency`-limited consumption — in
@@ -421,29 +477,6 @@ export interface WorldCapabilities {
    * fail ordinary runs after a version bump.
    */
   deploymentAffinity?: boolean;
-
-  /**
-   * The World allocates **slot-numbered** event ids: `evnt_` plus the event's
-   * dense, 1-based position in its run's log, zero-padded to 26 characters
-   * (see `slot-identity.ts`). Two guarantees come with it, and the runtime
-   * relies on both:
-   *
-   * - **Density.** A run's slots are contiguous from 1, so the number of
-   *   events a reader holds *is* the position of the last one. That is what
-   *   makes {@link CreateEventParams.eventCount} a complete statement of the
-   *   writer's snapshot in a single integer.
-   * - **Bump and report.** A create never fails because its requested slot is
-   *   taken. The World advances to the next free slot, commits there, and
-   *   returns the events occupying the slots it skipped over on the success
-   *   response (see {@link EventResult.events}). The writer learns its
-   *   snapshot was stale without the write being rejected.
-   *
-   * A run's scheme is pinned by the run, not by this flag: it is readable off
-   * the shape of the run's own first event id, so a World that turns slots on
-   * keeps replaying its existing ULID-numbered runs unchanged. The capability
-   * only says what *new* runs get.
-   */
-  slotEventIds?: boolean;
 }
 
 /**
@@ -461,10 +494,15 @@ export interface World extends Queue, Streamer, Storage {
   analytics?: Analytics;
 
   /**
-   * The Workflow protocol spec version this World implements.
+   * The Workflow protocol spec version this World implements, and the version
+   * stamped on every run it creates.
    *
-   * Current runtimes require this to exactly match their
-   * `SPEC_VERSION_CURRENT` before they create or replay runs.
+   * Declare `SPEC_VERSION_CURRENT` rather than a literal. The runtime checks
+   * this against `[SPEC_VERSION_CURRENT, SPEC_VERSION_MAX_SUPPORTED]` before it
+   * creates or replays anything, and refuses a World outside that range: below
+   * the floor the World allocates event ids the runtime cannot read positions
+   * out of (see the event log contract above), above the ceiling it speaks a
+   * spec this runtime has not learned.
    */
   specVersion: number;
 
