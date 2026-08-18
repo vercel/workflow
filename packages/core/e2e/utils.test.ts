@@ -1,5 +1,12 @@
 import { afterEach, describe, expect, test } from 'vitest';
-import { hasStepSourceMaps, waitForRunPickup } from './utils';
+import {
+  createPerTestState,
+  getCollectedRunIds,
+  hasStepSourceMaps,
+  runInTestState,
+  trackRun,
+  waitForRunPickup,
+} from './utils';
 
 const ORIGINAL_ENV = { ...process.env };
 
@@ -128,5 +135,33 @@ describe('waitForRunPickup', () => {
     };
     // biome-ignore lint/suspicious/noExplicitAny: minimal Run stand-in
     await expect(waitForRunPickup(run as any, 5_000)).resolves.toBe(true);
+  });
+});
+
+describe('per-test state isolation', () => {
+  test('interleaved contexts attribute runs to their own test', async () => {
+    const before = getCollectedRunIds().length;
+    const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+    const fakeRun = (id: string) => ({ runId: id }) as never;
+
+    // Two "tests" interleaving on the event loop, as under
+    // describe.concurrent: each tracks a run after yielding, so a
+    // module-global current-test-name would attribute both to whichever
+    // context touched it last.
+    await Promise.all([
+      runInTestState(createPerTestState('test-a'), async () => {
+        await sleep(20);
+        trackRun(fakeRun('wrun_a'));
+      }),
+      runInTestState(createPerTestState('test-b'), async () => {
+        await sleep(10);
+        trackRun(fakeRun('wrun_b'));
+      }),
+    ]);
+
+    const entries = getCollectedRunIds().slice(before);
+    expect(
+      Object.fromEntries(entries.map((e) => [e.runId, e.testName]))
+    ).toEqual({ wrun_a: 'test-a', wrun_b: 'test-b' });
   });
 });
