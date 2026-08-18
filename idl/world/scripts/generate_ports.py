@@ -234,6 +234,11 @@ def operation_signature(model: Model, operation_id: str) -> tuple[str | None, st
     )
 
 
+def optional_capability(model: Model, operation_id: str) -> str | None:
+    capability = model.traits(operation_id).get(OPTIONAL_CAPABILITY)
+    return capability["name"] if capability else None
+
+
 def operation_notes(model: Model, operation_id: str) -> list[str]:
     traits = model.traits(operation_id)
     notes = []
@@ -284,7 +289,12 @@ def render_typescript_ports(model: Model) -> str:
                 body.append("")
             body.extend(ts_doc(doc_text, "  "))
             argument = f"input: {input_type}" if input_type else ""
-            body.append(f"  {camel(name_of(operation_id))}({argument}): Promise<{output_type}>;")
+            # An operation an implementation may omit becomes an optional
+            # method, exactly like `getMany?` on today's World.
+            marker = "?" if optional_capability(model, operation_id) else ""
+            body.append(
+                f"  {camel(name_of(operation_id))}{marker}({argument}): Promise<{output_type}>;"
+            )
 
         body.append("}")
 
@@ -451,6 +461,29 @@ def render_python_error(model: Model, resolver: TypeResolver, shape_id: str) -> 
     return out
 
 
+def render_python_method(
+    model: Model, resolver: TypeResolver, operation_id: str, imported: set[str]
+) -> list[str]:
+    input_target, output_target = operation_signature(model, operation_id)
+    input_type = resolver.resolve(input_target) if input_target else None
+    output_type = resolver.resolve(output_target) if output_target else "None"
+    for candidate in (input_type, output_type):
+        if candidate and candidate != "None":
+            imported.add(candidate)
+
+    doc_text = model.doc(operation_id) or ""
+    notes = operation_notes(model, operation_id)
+    if notes:
+        doc_text = (doc_text + "\n\n" + "\n".join(notes)).strip()
+
+    argument = f', input: "{input_type}"' if input_type else ""
+    signature = f'    async def {snake(name_of(operation_id))}(self{argument}) -> "{output_type}":'
+    docs = py_doc(doc_text, "        ")
+    if docs:
+        return ["", signature, *docs, "        ..."]
+    return ["", f"{signature} ..."]
+
+
 def render_python_ports(model: Model) -> str:
     resolver = TypeResolver(model, PY_SCALARS, "py")
     imported: set[str] = set()
@@ -461,34 +494,36 @@ def render_python_ports(model: Model) -> str:
         operations = sorted(
             (op["target"] for op in service.get("operations", [])), key=name_of
         )
+        required = [op for op in operations if not optional_capability(model, op)]
+        optional = [op for op in operations if optional_capability(model, op)]
+
         body.extend(["", "", f"class {name_of(service_id)}Port(Protocol):"])
         doc = py_doc(model.doc(service_id), "    ")
         if doc:
             body.extend(doc)
+        for operation_id in required:
+            body.extend(render_python_method(model, resolver, operation_id, imported))
 
-        for operation_id in operations:
-            input_target, output_target = operation_signature(model, operation_id)
-            input_type = resolver.resolve(input_target) if input_target else None
-            output_type = resolver.resolve(output_target) if output_target else "None"
-            for candidate in (input_type, output_type):
-                if candidate and candidate != "None":
-                    imported.add(candidate)
-
-            doc_text = model.doc(operation_id) or ""
-            notes = operation_notes(model, operation_id)
-            if notes:
-                doc_text = (doc_text + "\n\n" + "\n".join(notes)).strip()
-
-            argument = f', input: "{input_type}"' if input_type else ""
-            body.append("")
-            body.append(
-                f'    async def {snake(name_of(operation_id))}(self{argument}) -> "{output_type}": ...'
+        # Python Protocols cannot mark a member optional the way TypeScript
+        # can, so each omittable operation also gets a narrowing protocol.
+        # `isinstance(world, SupportsBatchGetRuns)` is the Python spelling of
+        # `typeof world.batchGetRuns === 'function'`; the operation stays part
+        # of the one World interface either way.
+        for operation_id in optional:
+            capability = optional_capability(model, operation_id)
+            body.extend(
+                [
+                    "",
+                    "",
+                    "@runtime_checkable",
+                    f"class Supports{name_of(operation_id)}(Protocol):",
+                    *py_doc(
+                        f"Implementations that provide the optional `{capability}` capability.",
+                        "    ",
+                    ),
+                ]
             )
-            operation_docs = py_doc(doc_text, "        ")
-            if operation_docs:
-                body[-1] = body[-1].removesuffix(" ...")
-                body.extend(operation_docs)
-                body.append("        ...")
+            body.extend(render_python_method(model, resolver, operation_id, imported))
 
     header = [
         f'"""{GENERATED_HEADER}',
@@ -498,7 +533,7 @@ def render_python_ports(model: Model) -> str:
         "",
         "from __future__ import annotations",
         "",
-        "from typing import Protocol",
+        "from typing import Protocol, runtime_checkable",
         "",
         "from .models import (",
     ]

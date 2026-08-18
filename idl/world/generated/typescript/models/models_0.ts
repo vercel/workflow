@@ -3424,6 +3424,30 @@ export interface StructuredError {
 /**
  * @public
  */
+export interface WriteStreamChunkInput {
+  /**
+   * Identifier of a workflow run.
+   * @public
+   */
+  runId: string | undefined;
+
+  /**
+   * Name of a stream within a run.
+   * @public
+   */
+  name: string | undefined;
+
+  chunk: Uint8Array | undefined;
+}
+
+/**
+ * @public
+ */
+export interface WriteStreamChunkOutput {}
+
+/**
+ * @public
+ */
 export interface WriteStreamChunksInput {
   /**
    * Identifier of a workflow run.
@@ -3448,27 +3472,3 @@ export interface WriteStreamChunksInput {
  * @public
  */
 export interface WriteStreamChunksOutput {}
-
-/**
- * @public
- */
-export interface WriteStreamChunkInput {
-  /**
-   * Identifier of a workflow run.
-   * @public
-   */
-  runId: string | undefined;
-
-  /**
-   * Name of a stream within a run.
-   * @public
-   */
-  name: string | undefined;
-
-  chunk: Uint8Array | undefined;
-}
-
-/**
- * @public
- */
-export interface WriteStreamChunkOutput {}

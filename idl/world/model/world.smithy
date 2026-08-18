@@ -9,24 +9,38 @@ metadata shapeClosures = [
 
 namespace vercel.workflow.world
 
-/// The required World surface.
+/// The World interface.
 ///
-/// Every implementation provides all of it. Optional behavior lives in the
-/// capability services instead, so a generated interface never forces an
-/// implementation to stub a method it does not support.
+/// One interface, implemented by every World: local, Postgres, Vercel, and
+/// the simulator. This is the whole point of the model, so the surface is not
+/// split by concern, by optionality, or by whether an operation can cross a
+/// network.
+///
+/// Two of those distinctions still exist, and both are traits on operations
+/// rather than separate interfaces:
+///
+/// - `optionalCapability` marks an operation an implementation may omit. It
+///   is the modeled form of today's optional `World` methods (`getMany?`,
+///   `cancelMany?`, `writeMulti?`), and callers feature-detect it exactly as
+///   they do now. `GetWorldInfo` reports which ones are present.
+/// - `localOnly` marks an operation that is resolved in-process and must
+///   never be exposed over a transport. It stays on this interface because a
+///   World implements it; a future transport projection is what drops it.
 ///
 /// No protocol trait is applied anywhere in this model. The operations are
 /// transport-independent by construction: an in-process implementation
 /// satisfies the generated interface directly, and any wire format is a
 /// separate projection that layers protocol and binding traits on top.
-service WorldCore {
+service World {
     version: "2026-08-18"
 
     operations: [
         GetWorldInfo
         CreateRun
         GetRun
+        BatchGetRuns
         ListRuns
+        BulkCancelRuns
         GetStep
         ListSteps
         CreateEvent
@@ -37,6 +51,7 @@ service WorldCore {
         GetHookByToken
         ListHooks
         WriteStreamChunk
+        WriteStreamChunks
         CloseStream
         ReadStream
         ListStreams
@@ -44,44 +59,26 @@ service WorldCore {
         GetStreamInfo
         GetDeploymentId
         Enqueue
-    ]
-}
-
-/// Optional optimizations.
-///
-/// An implementation that omits this service is fully supported; callers fall
-/// back to the equivalent `WorldCore` operations.
-service WorldBatch {
-    version: "2026-08-18"
-
-    operations: [
-        BatchGetRuns
-        BulkCancelRuns
-        WriteStreamChunks
-    ]
-}
-
-/// Operations the workflow runtime implements and a World's queue adapter
-/// calls.
-service WorldConsumer {
-    version: "2026-08-18"
-
-    operations: [
-        DeliverQueueMessage
-    ]
-}
-
-/// Operations that are resolved in-process and never exposed over a
-/// transport. See the `localOnly` trait.
-service WorldLocalHooks {
-    version: "2026-08-18"
-
-    operations: [
         CreateRunId
         GetRuntimeDeadline
         GetEnvironment
         DescribeRun
         GetEncryptionKeyForRun
+    ]
+}
+
+/// The runtime's own queue-consumer interface.
+///
+/// Deliberately not part of `World`, and not a second World interface: the
+/// implementor is the workflow runtime, and the caller is a World's queue
+/// adapter. Today this is the callback handed to `createQueueHandler`.
+/// Folding it into `World` would say that a World implements it, which is
+/// backwards.
+service RuntimeQueueConsumer {
+    version: "2026-08-18"
+
+    operations: [
+        DeliverQueueMessage
     ]
 }
 

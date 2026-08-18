@@ -64,52 +64,15 @@ import type {
 } from './models/models_0';
 
 /**
- * Optional optimizations.
+ * The runtime's own queue-consumer interface.
  *
- * An implementation that omits this service is fully supported; callers
- * fall back to the equivalent `WorldCore` operations.
+ * Deliberately not part of `World`, and not a second World interface: the
+ * implementor is the workflow runtime, and the caller is a World's queue
+ * adapter. Today this is the callback handed to `createQueueHandler`.
+ * Folding it into `World` would say that a World implements it, which is
+ * backwards.
  */
-export interface WorldBatchPort {
-  /**
-   * Reads several runs as one snapshot.
-   *
-   * `runs` preserves the request order, including duplicate IDs, and carries
-   * a null entry for every ID that does not exist.
-   *
-   * Optional capability: `batchGetRuns`. Throws: BadRequestError,
-   * InternalError, ThrottledError.
-   */
-  batchGetRuns(input: BatchGetRunsInput): Promise<BatchGetRunsOutput>;
-
-  /**
-   * Cancels many runs in one request.
-   *
-   * Missing, already-cancelled, and non-cancellable runs are reported as
-   * per-run outcomes rather than as operation errors, so one bad ID never
-   * fails the batch.
-   *
-   * Optional capability: `bulkCancelRuns`. Throws: BadRequestError,
-   * InternalError, ThrottledError.
-   */
-  bulkCancelRuns(input: BulkCancelRunsInput): Promise<BulkCancelRunsOutput>;
-
-  /**
-   * Appends several chunks in order, in one request.
-   *
-   * An optional optimization. Callers fall back to repeated
-   * `WriteStreamChunk` calls when an implementation does not provide it.
-   *
-   * Optional capability: `writeStreamChunks`. Throws: ConflictError,
-   * InternalError, RunNotFoundError, StreamExpiredError, ThrottledError.
-   */
-  writeStreamChunks(input: WriteStreamChunksInput): Promise<WriteStreamChunksOutput>;
-}
-
-/**
- * Operations the workflow runtime implements and a World's queue adapter
- * calls.
- */
-export interface WorldConsumerPort {
+export interface RuntimeQueueConsumerPort {
   /**
    * Delivers one queued message to the workflow runtime.
    *
@@ -125,18 +88,53 @@ export interface WorldConsumerPort {
 }
 
 /**
- * The required World surface.
+ * The World interface.
  *
- * Every implementation provides all of it. Optional behavior lives in the
- * capability services instead, so a generated interface never forces an
- * implementation to stub a method it does not support.
+ * One interface, implemented by every World: local, Postgres, Vercel, and
+ * the simulator. This is the whole point of the model, so the surface is
+ * not split by concern, by optionality, or by whether an operation can
+ * cross a network.
+ *
+ * Two of those distinctions still exist, and both are traits on operations
+ * rather than separate interfaces:
+ *
+ * - `optionalCapability` marks an operation an implementation may omit. It
+ * is the modeled form of today's optional `World` methods (`getMany?`,
+ * `cancelMany?`, `writeMulti?`), and callers feature-detect it exactly as
+ * they do now. `GetWorldInfo` reports which ones are present. -
+ * `localOnly` marks an operation that is resolved in-process and must
+ * never be exposed over a transport. It stays on this interface because a
+ * World implements it; a future transport projection is what drops it.
  *
  * No protocol trait is applied anywhere in this model. The operations are
  * transport-independent by construction: an in-process implementation
  * satisfies the generated interface directly, and any wire format is a
  * separate projection that layers protocol and binding traits on top.
  */
-export interface WorldCorePort {
+export interface WorldPort {
+  /**
+   * Reads several runs as one snapshot.
+   *
+   * `runs` preserves the request order, including duplicate IDs, and carries
+   * a null entry for every ID that does not exist.
+   *
+   * Optional capability: `batchGetRuns`. Throws: BadRequestError,
+   * InternalError, ThrottledError.
+   */
+  batchGetRuns?(input: BatchGetRunsInput): Promise<BatchGetRunsOutput>;
+
+  /**
+   * Cancels many runs in one request.
+   *
+   * Missing, already-cancelled, and non-cancellable runs are reported as
+   * per-run outcomes rather than as operation errors, so one bad ID never
+   * fails the batch.
+   *
+   * Optional capability: `bulkCancelRuns`. Throws: BadRequestError,
+   * InternalError, ThrottledError.
+   */
+  bulkCancelRuns?(input: BulkCancelRunsInput): Promise<BulkCancelRunsOutput>;
+
   /**
    * Closes a stream. No further chunks may be appended.
    *
@@ -167,6 +165,27 @@ export interface WorldCorePort {
   createRun(input: CreateRunInput): Promise<EventMutationResult>;
 
   /**
+   * Mints a new run ID.
+   *
+   * Returns the bare ULID; the core attaches the `wrun_` prefix.
+   * Implementations may embed world-specific metadata such as a region as
+   * long as the result stays a valid ULID.
+   *
+   * Local only: never exposed over a transport.
+   */
+  createRunId(input: CreateRunIdInput): Promise<CreateRunIdOutput>;
+
+  /**
+   * Returns extra display fields for a run.
+   *
+   * Called once per displayed run by tooling, so it must be cheap, pure, and
+   * non-throwing.
+   *
+   * Local only: never exposed over a transport.
+   */
+  describeRun(input: DescribeRunInput): Promise<DescribeRunOutput>;
+
+  /**
    * Enqueues one message. Delivery is at-least-once.
    *
    * Throws: BadRequestError, InternalError, ThrottledError.
@@ -179,6 +198,29 @@ export interface WorldCorePort {
    * Throws: InternalError, ThrottledError.
    */
   getDeploymentId(input: GetDeploymentIdInput): Promise<GetDeploymentIdOutput>;
+
+  /**
+   * Resolves the AES-256 key for a run.
+   *
+   * Local only, permanently: key material must never cross a transport
+   * boundary. It is modeled here so in-process implementations share one
+   * contract across languages, and every transport projection is expected to
+   * drop it. Absent support means encryption is disabled.
+   *
+   * Local only: never exposed over a transport.
+   */
+  getEncryptionKeyForRun(input: GetEncryptionKeyForRunInput): Promise<GetEncryptionKeyForRunOutput>;
+
+  /**
+   * Returns the environment this World's writes are attributed to.
+   *
+   * Must match the attribution the backend will actually apply. Callers use
+   * it to detect cross-environment mismatches, so a plausible-looking wrong
+   * value is worse than none.
+   *
+   * Local only: never exposed over a transport.
+   */
+  getEnvironment(input: GetEnvironmentInput): Promise<GetEnvironmentOutput>;
 
   /**
    * Reads one event.
@@ -209,6 +251,14 @@ export interface WorldCorePort {
    * Throws: ExpiredError, InternalError, RunNotFoundError, ThrottledError.
    */
   getRun(input: GetRunInput): Promise<GetRunOutput>;
+
+  /**
+   * Returns the wall-clock time at which the current invocation will be
+   * terminated by the hosting platform, when that is known.
+   *
+   * Local only: never exposed over a transport.
+   */
+  getRuntimeDeadline(input: GetRuntimeDeadlineInput): Promise<GetRuntimeDeadlineOutput>;
 
   /**
    * Reads one step.
@@ -324,62 +374,15 @@ export interface WorldCorePort {
    * StreamExpiredError, ThrottledError.
    */
   writeStreamChunk(input: WriteStreamChunkInput): Promise<WriteStreamChunkOutput>;
-}
-
-/**
- * Operations that are resolved in-process and never exposed over a
- * transport. See the `localOnly` trait.
- */
-export interface WorldLocalHooksPort {
-  /**
-   * Mints a new run ID.
-   *
-   * Returns the bare ULID; the core attaches the `wrun_` prefix.
-   * Implementations may embed world-specific metadata such as a region as
-   * long as the result stays a valid ULID.
-   *
-   * Local only: never exposed over a transport.
-   */
-  createRunId(input: CreateRunIdInput): Promise<CreateRunIdOutput>;
 
   /**
-   * Returns extra display fields for a run.
+   * Appends several chunks in order, in one request.
    *
-   * Called once per displayed run by tooling, so it must be cheap, pure, and
-   * non-throwing.
+   * An optional optimization. Callers fall back to repeated
+   * `WriteStreamChunk` calls when an implementation does not provide it.
    *
-   * Local only: never exposed over a transport.
+   * Optional capability: `writeStreamChunks`. Throws: ConflictError,
+   * InternalError, RunNotFoundError, StreamExpiredError, ThrottledError.
    */
-  describeRun(input: DescribeRunInput): Promise<DescribeRunOutput>;
-
-  /**
-   * Resolves the AES-256 key for a run.
-   *
-   * Local only, permanently: key material must never cross a transport
-   * boundary. It is modeled here so in-process implementations share one
-   * contract across languages, and every transport projection is expected to
-   * drop it. Absent support means encryption is disabled.
-   *
-   * Local only: never exposed over a transport.
-   */
-  getEncryptionKeyForRun(input: GetEncryptionKeyForRunInput): Promise<GetEncryptionKeyForRunOutput>;
-
-  /**
-   * Returns the environment this World's writes are attributed to.
-   *
-   * Must match the attribution the backend will actually apply. Callers use
-   * it to detect cross-environment mismatches, so a plausible-looking wrong
-   * value is worse than none.
-   *
-   * Local only: never exposed over a transport.
-   */
-  getEnvironment(input: GetEnvironmentInput): Promise<GetEnvironmentOutput>;
-
-  /**
-   * Returns the wall-clock time at which the current invocation will be
-   * terminated by the hosting platform, when that is known.
-   *
-   * Local only: never exposed over a transport.
-   */
-  getRuntimeDeadline(input: GetRuntimeDeadlineInput): Promise<GetRuntimeDeadlineOutput>;
+  writeStreamChunks?(input: WriteStreamChunksInput): Promise<WriteStreamChunksOutput>;
 }

@@ -5,7 +5,7 @@ Source: idl/world/model, emitted by idl/world/scripts/generate_ports.py
 
 from __future__ import annotations
 
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 
 from .models import (
     BatchGetRunsInput,
@@ -70,51 +70,14 @@ from .models import (
 )
 
 
-class WorldBatchPort(Protocol):
-    """Optional optimizations.
+class RuntimeQueueConsumerPort(Protocol):
+    """The runtime's own queue-consumer interface.
 
-    An implementation that omits this service is fully supported; callers
-    fall back to the equivalent `WorldCore` operations.
-    """
-
-    async def batch_get_runs(self, input: "BatchGetRunsInput") -> "BatchGetRunsOutput":
-        """Reads several runs as one snapshot.
-
-        `runs` preserves the request order, including duplicate IDs, and carries
-        a null entry for every ID that does not exist.
-
-        Optional capability: `batchGetRuns`. Throws: BadRequestError,
-        InternalError, ThrottledError.
-        """
-        ...
-
-    async def bulk_cancel_runs(self, input: "BulkCancelRunsInput") -> "BulkCancelRunsOutput":
-        """Cancels many runs in one request.
-
-        Missing, already-cancelled, and non-cancellable runs are reported as
-        per-run outcomes rather than as operation errors, so one bad ID never
-        fails the batch.
-
-        Optional capability: `bulkCancelRuns`. Throws: BadRequestError,
-        InternalError, ThrottledError.
-        """
-        ...
-
-    async def write_stream_chunks(self, input: "WriteStreamChunksInput") -> "WriteStreamChunksOutput":
-        """Appends several chunks in order, in one request.
-
-        An optional optimization. Callers fall back to repeated
-        `WriteStreamChunk` calls when an implementation does not provide it.
-
-        Optional capability: `writeStreamChunks`. Throws: ConflictError,
-        InternalError, RunNotFoundError, StreamExpiredError, ThrottledError.
-        """
-        ...
-
-
-class WorldConsumerPort(Protocol):
-    """Operations the workflow runtime implements and a World's queue adapter
-    calls.
+    Deliberately not part of `World`, and not a second World interface: the
+    implementor is the workflow runtime, and the caller is a World's queue
+    adapter. Today this is the callback handed to `createQueueHandler`.
+    Folding it into `World` would say that a World implements it, which is
+    backwards.
     """
 
     async def deliver_queue_message(self, input: "DeliverQueueMessageInput") -> "DeliverQueueMessageOutput":
@@ -131,12 +94,24 @@ class WorldConsumerPort(Protocol):
         ...
 
 
-class WorldCorePort(Protocol):
-    """The required World surface.
+class WorldPort(Protocol):
+    """The World interface.
 
-    Every implementation provides all of it. Optional behavior lives in the
-    capability services instead, so a generated interface never forces an
-    implementation to stub a method it does not support.
+    One interface, implemented by every World: local, Postgres, Vercel, and
+    the simulator. This is the whole point of the model, so the surface is
+    not split by concern, by optionality, or by whether an operation can
+    cross a network.
+
+    Two of those distinctions still exist, and both are traits on operations
+    rather than separate interfaces:
+
+    - `optionalCapability` marks an operation an implementation may omit. It
+    is the modeled form of today's optional `World` methods (`getMany?`,
+    `cancelMany?`, `writeMulti?`), and callers feature-detect it exactly as
+    they do now. `GetWorldInfo` reports which ones are present. -
+    `localOnly` marks an operation that is resolved in-process and must
+    never be exposed over a transport. It stays on this interface because a
+    World implements it; a future transport projection is what drops it.
 
     No protocol trait is applied anywhere in this model. The operations are
     transport-independent by construction: an in-process implementation
@@ -173,6 +148,27 @@ class WorldCorePort(Protocol):
         """
         ...
 
+    async def create_run_id(self, input: "CreateRunIdInput") -> "CreateRunIdOutput":
+        """Mints a new run ID.
+
+        Returns the bare ULID; the core attaches the `wrun_` prefix.
+        Implementations may embed world-specific metadata such as a region as
+        long as the result stays a valid ULID.
+
+        Local only: never exposed over a transport.
+        """
+        ...
+
+    async def describe_run(self, input: "DescribeRunInput") -> "DescribeRunOutput":
+        """Returns extra display fields for a run.
+
+        Called once per displayed run by tooling, so it must be cheap, pure, and
+        non-throwing.
+
+        Local only: never exposed over a transport.
+        """
+        ...
+
     async def enqueue(self, input: "EnqueueInput") -> "EnqueueOutput":
         """Enqueues one message. Delivery is at-least-once.
 
@@ -184,6 +180,29 @@ class WorldCorePort(Protocol):
         """Returns the deployment this World writes as.
 
         Throws: InternalError, ThrottledError.
+        """
+        ...
+
+    async def get_encryption_key_for_run(self, input: "GetEncryptionKeyForRunInput") -> "GetEncryptionKeyForRunOutput":
+        """Resolves the AES-256 key for a run.
+
+        Local only, permanently: key material must never cross a transport
+        boundary. It is modeled here so in-process implementations share one
+        contract across languages, and every transport projection is expected to
+        drop it. Absent support means encryption is disabled.
+
+        Local only: never exposed over a transport.
+        """
+        ...
+
+    async def get_environment(self, input: "GetEnvironmentInput") -> "GetEnvironmentOutput":
+        """Returns the environment this World's writes are attributed to.
+
+        Must match the attribution the backend will actually apply. Callers use
+        it to detect cross-environment mismatches, so a plausible-looking wrong
+        value is worse than none.
+
+        Local only: never exposed over a transport.
         """
         ...
 
@@ -214,6 +233,14 @@ class WorldCorePort(Protocol):
         """Reads one run.
 
         Throws: ExpiredError, InternalError, RunNotFoundError, ThrottledError.
+        """
+        ...
+
+    async def get_runtime_deadline(self, input: "GetRuntimeDeadlineInput") -> "GetRuntimeDeadlineOutput":
+        """Returns the wall-clock time at which the current invocation will be
+        terminated by the hosting platform, when that is known.
+
+        Local only: never exposed over a transport.
         """
         ...
 
@@ -333,59 +360,52 @@ class WorldCorePort(Protocol):
         ...
 
 
-class WorldLocalHooksPort(Protocol):
-    """Operations that are resolved in-process and never exposed over a
-    transport. See the `localOnly` trait.
+@runtime_checkable
+class SupportsBatchGetRuns(Protocol):
+    """Implementations that provide the optional `batchGetRuns` capability."""
+
+    async def batch_get_runs(self, input: "BatchGetRunsInput") -> "BatchGetRunsOutput":
+        """Reads several runs as one snapshot.
+
+        `runs` preserves the request order, including duplicate IDs, and carries
+        a null entry for every ID that does not exist.
+
+        Optional capability: `batchGetRuns`. Throws: BadRequestError,
+        InternalError, ThrottledError.
+        """
+        ...
+
+
+@runtime_checkable
+class SupportsBulkCancelRuns(Protocol):
+    """Implementations that provide the optional `bulkCancelRuns` capability."""
+
+    async def bulk_cancel_runs(self, input: "BulkCancelRunsInput") -> "BulkCancelRunsOutput":
+        """Cancels many runs in one request.
+
+        Missing, already-cancelled, and non-cancellable runs are reported as
+        per-run outcomes rather than as operation errors, so one bad ID never
+        fails the batch.
+
+        Optional capability: `bulkCancelRuns`. Throws: BadRequestError,
+        InternalError, ThrottledError.
+        """
+        ...
+
+
+@runtime_checkable
+class SupportsWriteStreamChunks(Protocol):
+    """Implementations that provide the optional `writeStreamChunks`
+    capability.
     """
 
-    async def create_run_id(self, input: "CreateRunIdInput") -> "CreateRunIdOutput":
-        """Mints a new run ID.
+    async def write_stream_chunks(self, input: "WriteStreamChunksInput") -> "WriteStreamChunksOutput":
+        """Appends several chunks in order, in one request.
 
-        Returns the bare ULID; the core attaches the `wrun_` prefix.
-        Implementations may embed world-specific metadata such as a region as
-        long as the result stays a valid ULID.
+        An optional optimization. Callers fall back to repeated
+        `WriteStreamChunk` calls when an implementation does not provide it.
 
-        Local only: never exposed over a transport.
-        """
-        ...
-
-    async def describe_run(self, input: "DescribeRunInput") -> "DescribeRunOutput":
-        """Returns extra display fields for a run.
-
-        Called once per displayed run by tooling, so it must be cheap, pure, and
-        non-throwing.
-
-        Local only: never exposed over a transport.
-        """
-        ...
-
-    async def get_encryption_key_for_run(self, input: "GetEncryptionKeyForRunInput") -> "GetEncryptionKeyForRunOutput":
-        """Resolves the AES-256 key for a run.
-
-        Local only, permanently: key material must never cross a transport
-        boundary. It is modeled here so in-process implementations share one
-        contract across languages, and every transport projection is expected to
-        drop it. Absent support means encryption is disabled.
-
-        Local only: never exposed over a transport.
-        """
-        ...
-
-    async def get_environment(self, input: "GetEnvironmentInput") -> "GetEnvironmentOutput":
-        """Returns the environment this World's writes are attributed to.
-
-        Must match the attribution the backend will actually apply. Callers use
-        it to detect cross-environment mismatches, so a plausible-looking wrong
-        value is worse than none.
-
-        Local only: never exposed over a transport.
-        """
-        ...
-
-    async def get_runtime_deadline(self, input: "GetRuntimeDeadlineInput") -> "GetRuntimeDeadlineOutput":
-        """Returns the wall-clock time at which the current invocation will be
-        terminated by the hosting platform, when that is known.
-
-        Local only: never exposed over a transport.
+        Optional capability: `writeStreamChunks`. Throws: ConflictError,
+        InternalError, RunNotFoundError, StreamExpiredError, ThrottledError.
         """
         ...

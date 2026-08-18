@@ -14,7 +14,7 @@ contract can be reviewed as code rather than as prose.
 | --- | --- |
 | `model/` | The Smithy model. Hand-written; the source of truth. |
 | `generated/typescript/models`, `generated/typescript/schemas`, `generated/typescript/enums.ts` | Data types emitted by `smithy-typescript` in types mode. |
-| `generated/typescript/ports.ts` | One TypeScript interface per service, emitted by `scripts/generate_ports.py`. |
+| `generated/typescript/ports.ts` | The `WorldPort` interface, emitted by `scripts/generate_ports.py`. |
 | `generated/python/workflow_world/` | Python dataclasses, enums, errors, and `Protocol` interfaces, emitted by `scripts/generate_ports.py`. |
 | `scripts/generate.sh` | Regenerates everything under `generated/`. |
 
@@ -30,30 +30,42 @@ applies protocol and binding traits on top of these same operations. That
 choice is what the model is arranged to keep open, and none of it is proposed
 here.
 
-## Services
+## One World interface
 
-The surface is split into four service closures rather than one, because
-Smithy services have no optional operations and today's `World` very much
-does.
+There is a single `World` service, implemented by every World: local,
+Postgres, Vercel, and the simulator. It is not split by concern, by
+optionality, or by whether an operation can cross a network — `WorldPort` in
+TypeScript and `WorldPort` in Python are the whole surface.
 
-- **`WorldCore`** — the required surface: runs, steps, events, hooks, streams,
-  queue send, deployment identity, and capability discovery. Every
-  implementation provides all of it.
-- **`WorldBatch`** — optional optimizations (`BatchGetRuns`,
-  `BulkCancelRuns`, `WriteStreamChunks`). Callers fall back to the `WorldCore`
-  equivalents when an implementation omits it.
-- **`WorldConsumer`** — the reverse direction: the runtime implements
-  `DeliverQueueMessage`, and a World's queue adapter calls it. Today's
-  `createQueueHandler` becomes the thin per-language adapter that exposes it.
-- **`WorldLocalHooks`** — operations resolved in-process that must never be
-  exposed over a transport, marked with the `localOnly` trait. Encryption-key
-  resolution lives here: it is modeled so TypeScript and Python share one
-  contract, and it is the clearest example of an operation a transport
-  projection must drop.
+Two distinctions that do exist are traits on operations rather than separate
+interfaces:
 
-`GetWorldInfo` reports the spec version and capabilities. Feature detection by
-method presence stops working the moment calls cross a transport, where every
-method always exists.
+- **`optionalCapability`** marks an operation an implementation may omit:
+  `BatchGetRuns`, `BulkCancelRuns`, `WriteStreamChunks`. This is the modeled
+  form of today's optional `World` methods (`getMany?`, `cancelMany?`,
+  `writeMulti?`), and it generates the same thing: an optional method in
+  TypeScript. `GetWorldInfo` reports which ones an implementation provides,
+  because feature detection by method presence stops working the moment calls
+  cross a transport, where every method always exists.
+- **`localOnly`** marks an operation resolved in-process that must never be
+  exposed over a transport: `CreateRunId`, `GetRuntimeDeadline`,
+  `GetEnvironment`, `DescribeRun`, `GetEncryptionKeyForRun`. These are
+  ordinary `World` methods today and stay on the one interface here; dropping
+  them is the job of a transport projection, not of a second interface.
+
+`RuntimeQueueConsumer` is the one other service, and it is not a second World
+interface: its implementor is the workflow runtime and its caller is a World's
+queue adapter (today, the callback handed to `createQueueHandler`). Putting
+`DeliverQueueMessage` on `World` would claim a World implements it, which is
+backwards.
+
+### Optionality in Python
+
+TypeScript has optional methods; Python `Protocol` has no equivalent. Each
+omittable operation therefore also gets a `runtime_checkable` narrowing
+protocol, so `isinstance(world, SupportsBatchGetRuns)` is the Python spelling
+of `typeof world.batchGetRuns === 'function'`. The operation is still part of
+the one World interface; only the detection idiom differs.
 
 ## Modeling notes worth reviewing
 
@@ -84,7 +96,8 @@ method always exists.
   are private to producer and consumer and versioned by run spec version;
   modeling them belongs with the transport work.
 - **Analytics is not modeled yet.** It has different consistency, retention,
-  and plan semantics, and belongs in its own service closure.
+  and plan semantics. Whether it belongs on `World` or beside it is an open
+  question, not settled here.
 
 ## Regenerating
 
@@ -102,7 +115,7 @@ ignored; only `generated/` is committed.
 `smithy-typescript` covers TypeScript data types, and its types mode is
 transport-free — exactly what this model wants. It stops there, though: types
 mode emits data shapes only and never declares the operations, so nothing
-upstream produces the per-service interface.
+upstream produces the `World` interface itself.
 
 `smithy-python` has no published release and no Maven Central artifact at all,
 so for Python there is nothing upstream to run.
@@ -120,5 +133,7 @@ port interfaces should come from the same plugin as the types.
   TypeScript types.
 - The generated TypeScript, including `ports.ts`, type-checks under
   `tsc --strict` against `@smithy/types` and `@smithy/core`.
-- The generated Python package imports, and its dataclasses, enums, and
-  tagged-union variants round-trip in a smoke script.
+- The generated Python package imports, its dataclasses, enums, and
+  tagged-union variants round-trip in a smoke script, and the narrowing
+  protocols accept an implementation that provides the optional operation
+  while rejecting one that does not.
