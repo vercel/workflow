@@ -1,10 +1,11 @@
 import { Buffer } from 'node:buffer';
 import { gzipSync } from 'node:zlib';
+import { WorkflowWorldError } from '@workflow/errors';
 import type { AnyEventRequest, CreateEventParams } from '@workflow/world';
 import { decode, encode } from 'cbor-x';
 import { ulid } from 'ulid';
 import { MockAgent } from 'undici';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   createWorkflowRunEvent,
   getWorkflowRunEvents,
@@ -372,6 +373,44 @@ describe('createWorkflowRunEvent result contract', () => {
         dispatcher: agent,
       })
     ).rejects.toMatchObject(error);
+    agent.assertNoPendingInterceptors();
+  });
+
+  it('does not retry an observer failure that looks like a transport error', async () => {
+    const agent = mockAgent();
+    agent
+      .get(ORIGIN)
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events/run_started',
+        method: 'POST',
+      })
+      .reply(200, runStartedResponse(), {
+        headers: {
+          'content-type': V4_FRAME_CONTENT_TYPE,
+          'x-wf-event-id': 'evnt_1',
+          'x-wf-run-id': 'wrun_1',
+          'x-wf-created-at': STARTED_AT.toISOString(),
+          'x-wf-max-events': '10000',
+        },
+      });
+
+    const error = new WorkflowWorldError('observer failed', {
+      code: 'TRANSPORT',
+    });
+    const onEvent = vi.fn(() => {
+      throw error;
+    });
+
+    await expect(
+      createWorkflowRunEvent(
+        'wrun_1',
+        { eventType: 'run_started', specVersion: 2 } as AnyEventRequest,
+        { onEvent },
+        { token: 'test-token', dispatcher: agent }
+      )
+    ).rejects.toBe(error);
+
+    expect(onEvent).toHaveBeenCalledOnce();
     agent.assertNoPendingInterceptors();
   });
 });

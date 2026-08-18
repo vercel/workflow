@@ -31,6 +31,7 @@
  * the v3 path.
  */
 
+import assert from 'node:assert/strict';
 import { HookNotFoundError, WorkflowWorldError } from '@workflow/errors';
 import {
   type AnyEventRequest,
@@ -573,12 +574,33 @@ export async function createWorkflowRunEventBatch(
   };
 }
 
+class EventObserverError extends Error {
+  constructor(readonly error: unknown) {
+    super('event observer failed');
+  }
+}
+
 export async function createWorkflowRunEvent<T extends AnyEventRequest>(
   id: string | null,
   data: T,
   params?: CreateEventParams,
   config?: APIConfig
 ): Promise<EventResult<T['eventType']>> {
+  const onEvent = params?.onEvent;
+  const requestParams =
+    onEvent === undefined
+      ? params
+      : {
+          ...params,
+          onEvent(event: Event) {
+            try {
+              onEvent(event);
+            } catch (error) {
+              throw new EventObserverError(error);
+            }
+          },
+        };
+
   try {
     // Retry transient transport failures (UND_ERR_REQ_RETRY, ECONNRESET,
     // socket/headers timeouts, transient 5xx) in-process for event types that
@@ -589,7 +611,7 @@ export async function createWorkflowRunEvent<T extends AnyEventRequest>(
     // types (step_started, step_retrying, hook_received) run once. See
     // ./event-retry for the validated per-event classification.
     const result = await withEventPostRetry(
-      () => createWorkflowRunEventInner(id, data, params, config),
+      () => createWorkflowRunEventInner(id, data, requestParams, config),
       data.eventType,
       {
         // The atomic lazy-resume shape is deduplicated server-side by the
@@ -621,6 +643,7 @@ export async function createWorkflowRunEvent<T extends AnyEventRequest>(
     }
     return result as EventResult<T['eventType']>;
   } catch (err) {
+    if (err instanceof EventObserverError) throw err.error;
     // 404 on hook_disposed / hook_received → already-disposed hook.
     if (
       isHookEventRequiringExistence(data.eventType) &&
@@ -756,32 +779,12 @@ async function createWorkflowRunEventInner(
         'v4 createEvent: run_started stream is missing run_started'
       );
     }
-
-    let attributes = runCreated.eventData.attributes ?? {};
-    let updatedAt = runStarted.createdAt;
-    for (const event of result.events) {
-      if (event.eventType === 'attr_set') {
-        attributes = applyAttributeChanges(attributes, event.eventData.changes);
-        updatedAt = event.createdAt;
-      }
-    }
+    const run = reconstructRunFromReplayEvents(result.events);
+    assert(run);
 
     return {
       event: runStarted,
-      run: {
-        runId: runCreated.runId,
-        status: 'running',
-        deploymentId: runCreated.eventData.deploymentId,
-        workflowName: runCreated.eventData.workflowName,
-        specVersion: runCreated.specVersion,
-        executionContext: runCreated.eventData.executionContext,
-        input: runCreated.eventData.input,
-        attributes,
-        encryptionPublicKey: runCreated.eventData.encryptionPublicKey,
-        startedAt: runStarted.createdAt,
-        createdAt: runCreated.createdAt,
-        updatedAt,
-      },
+      run,
       events: result.events,
       cursor: result.cursor,
       hasMore: result.hasMore,

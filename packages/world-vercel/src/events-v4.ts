@@ -100,15 +100,23 @@ import { isWsEventsTransportEnabled } from './ws-transport-enabled.js';
  * for a large run can legitimately take a while to drain — a whole-request
  * deadline would abort it mid-stream.
  */
+interface V4Response {
+  response: Response;
+  reportTransportOutcome(error?: unknown): void;
+}
+
 async function fetchV4(
   url: string,
   init: { method: string; headers: Headers; body?: Uint8Array },
   config: APIConfig | undefined,
   opName: string,
+  transportSuccess: 'headers' | 'body',
   attributes?: Record<string, string | number | string[]>
-): Promise<Response> {
+): Promise<V4Response> {
   const dispatcher = getEventsDispatcher(config);
-  return instrumentedFetch({
+  const reportTransportOutcome = (error?: unknown) =>
+    noteEventsTransportOutcome(dispatcher, error);
+  const response = await instrumentedFetch({
     method: init.method,
     url,
     headers: init.headers,
@@ -119,8 +127,8 @@ async function fetchV4(
     // request builds a fresh one. undici keeps a black-holed HTTP/2 session in
     // service indefinitely, so without this every request routed onto it fails
     // until the compute instance is recycled — see noteEventsTransportOutcome.
-    onTransportOutcome: (error) =>
-      noteEventsTransportOutcome(dispatcher, error),
+    onTransportOutcome: reportTransportOutcome,
+    deferTransportSuccess: transportSuccess === 'body',
     timeoutMs: null,
     logLabel: opName,
     // Read the body as bytes, not text: a CBOR error body (the fence 412
@@ -134,6 +142,7 @@ async function fetchV4(
         url
       ),
   });
+  return { response, reportTransportOutcome };
 }
 
 const EVENT_ID_HEADER = 'x-wf-event-id';
@@ -715,6 +724,7 @@ async function postWorkflowRunEventV4(
     { method: 'POST', headers, body: frame },
     config,
     'createEvent',
+    responseType === 'event-stream' ? 'body' : 'headers',
     {
       ...WorkflowEventsTransport('http'),
       ...WorkflowEventType(input.eventType),
@@ -744,7 +754,11 @@ export async function createWorkflowRunEventV4<T extends EventType>(
     if (reply) return decodeCreateEventResponse(reply, input.eventType);
   }
 
-  const response = await postWorkflowRunEventV4(input, 'materialized', config);
+  const { response } = await postWorkflowRunEventV4(
+    input,
+    'materialized',
+    config
+  );
 
   const contentType = response.headers.get('content-type');
   if (contentType?.startsWith(V4_FRAME_CONTENT_TYPE)) {
@@ -787,19 +801,19 @@ export async function createWorkflowRunStartedEventV4(
   config?: APIConfig,
   onEvent?: (event: Event) => void
 ) {
-  const response = await postWorkflowRunEventV4(
+  const stream = await postWorkflowRunEventV4(
     { ...input, eventType: 'run_started' },
     'event-stream',
     config
   );
   const replay = await consumeReplayLogResponse(
-    response,
+    stream,
     { runId: input.runId, onEvent },
     config
   );
   assert(replay.cursor, 'v4 createEvent: event stream missing cursor');
   const maxEvents = MaxEventsHeaderSchema.safeParse(
-    response.headers.get(MAX_EVENTS_HEADER)
+    stream.response.headers.get(MAX_EVENTS_HEADER)
   );
   if (!maxEvents.success) {
     throw new WorkflowWorldError('v4 createEvent: invalid max-events header', {
@@ -896,11 +910,12 @@ export async function createWorkflowRunEventsBatchV4(
   // span carries only wire-level facts. workflow.event.type is deliberately
   // absent — it names a single event write, and tagging a batch with its
   // first event's type misclassifies the traffic.
-  const response = await fetchV4(
+  const { response } = await fetchV4(
     url,
     { method: 'POST', headers, body },
     config,
     'createEventBatch',
+    'headers',
     {
       ...WorkflowEventsTransport('http'),
       'workflow.batch.bytes': body.byteLength,
@@ -1192,17 +1207,20 @@ async function postEventFrameOverWs(
   );
 }
 
+export interface ReplayLogResult {
+  events: Event[];
+  cursor: string | null;
+  hasMore: boolean;
+}
+
 /**
  * Result of a `hook_received` POST that opted into the replay-log preload,
  * discriminated on `kind` (keyed on the response content type).
  */
 export type HookReceivedPreloadV4Result =
   /** The server streamed the replay log back as v4 frames. */
-  | {
+  | (ReplayLogResult & {
       kind: 'stream';
-      events: Event[];
-      cursor: string | null;
-      hasMore: boolean;
       /**
        * The canonical event this write created or converged on (the resume
        * claim winner's — ours or the producer's), named by the
@@ -1211,7 +1229,7 @@ export type HookReceivedPreloadV4Result =
       canonicalEventId: string | undefined;
       /** Per-run event ceiling from the response header, when present. */
       maxEvents: number | undefined;
-    }
+    })
   /**
    * The server answered with the normal materialized CBOR body instead —
    * an older server, or one that declined the optimization. The
@@ -1239,14 +1257,16 @@ export async function createHookReceivedPreloadEventV4(
   config?: APIConfig,
   onEvent?: (event: Event) => void
 ): Promise<HookReceivedPreloadV4Result> {
-  const response = await postWorkflowRunEventV4(
+  const stream = await postWorkflowRunEventV4(
     { ...input, eventType: 'hook_received' },
     'event-stream',
     config
   );
 
+  const { response } = stream;
   const contentType = response.headers.get('content-type');
   if (!contentType?.startsWith(V4_FRAME_CONTENT_TYPE)) {
+    stream.reportTransportOutcome();
     return {
       kind: 'materialized',
       result: await decodeCreateEventResponse(response, 'hook_received'),
@@ -1254,7 +1274,7 @@ export async function createHookReceivedPreloadEventV4(
   }
 
   const replay = await consumeReplayLogResponse(
-    response,
+    stream,
     { runId: input.runId, onEvent },
     config
   );
@@ -1296,14 +1316,17 @@ export async function getEventV4(
   const url =
     `${baseUrl}/v4/runs/${encodeURIComponent(runId)}/events/${encodeURIComponent(eventId)}` +
     `?remoteRefBehavior=${remoteRefBehavior}`;
-  const response = await fetchV4(
+  const stream = await fetchV4(
     url,
     { method: 'GET', headers },
     config,
-    'getEvent'
+    'getEvent',
+    'body'
   );
+  const { response } = stream;
   const contentType = response.headers.get('content-type');
   if (!contentType?.startsWith(V4_FRAME_CONTENT_TYPE)) {
+    stream.reportTransportOutcome();
     throw new Error(
       `v4 getEvent: expected ${V4_FRAME_CONTENT_TYPE}, got ${contentType ?? '(none)'}`
     );
@@ -1319,8 +1342,15 @@ export async function getEventV4(
 
   // GET emits a single frame (no sentinel); decodeFrames returns at EOF
   // after yielding it.
-  for await (const frame of decodeFrames(chunks)) {
-    return decodeEventFrame(frame);
+  try {
+    for await (const frame of decodeFrames(chunks)) {
+      stream.reportTransportOutcome();
+      return decodeEventFrame(frame);
+    }
+    stream.reportTransportOutcome();
+  } catch (error) {
+    stream.reportTransportOutcome(error);
+    throw error;
   }
   throw new Error(`v4 getEvent: empty frame stream for ${eventId}`);
 }
@@ -1331,14 +1361,29 @@ class PartialEventStreamError extends WorkflowWorldError {
   }
 }
 
+const MAX_PARTIAL_EVENT_STREAM_RETRIES = 3;
+
+type EventFrameStreamResult =
+  | {
+      kind: 'complete';
+      cursor: string | null;
+      hasMore: boolean;
+    }
+  | {
+      kind: 'partial';
+      error: PartialEventStreamError;
+    };
+
 async function consumeEventFrameStream(
-  response: Response,
+  stream: V4Response,
   opName: string,
   events: Event[],
   onEvent?: (event: Event) => void
-): Promise<{ cursor: string | null; hasMore: boolean }> {
+): Promise<EventFrameStreamResult> {
+  const { response } = stream;
   const contentType = response.headers.get('content-type');
   if (!contentType?.startsWith(V4_FRAME_CONTENT_TYPE)) {
+    stream.reportTransportOutcome();
     throw new Error(
       `v4 ${opName}: expected ${V4_FRAME_CONTENT_TYPE}, got ${contentType ?? '(none)'}`
     );
@@ -1353,33 +1398,47 @@ async function consumeEventFrameStream(
       try {
         next = await frames.next();
       } catch (cause) {
-        throw new PartialEventStreamError(
+        const error = new PartialEventStreamError(
           `v4 ${opName}: event frame stream failed after ${events.length} events`,
           cause
         );
+        stream.reportTransportOutcome(error);
+        return { kind: 'partial', error };
       }
       if (next.done) break;
 
-      const frame = next.value;
-      if (frame.meta._end === 1) {
-        const end = EventStreamEndSchema.parse(frame.meta);
-        return { cursor: end.next ?? null, hasMore: end.hasMore };
+      try {
+        const frame = next.value;
+        if (frame.meta._end === 1) {
+          const end = EventStreamEndSchema.parse(frame.meta);
+          stream.reportTransportOutcome();
+          return {
+            kind: 'complete',
+            cursor: end.next ?? null,
+            hasMore: end.hasMore,
+          };
+        }
+        if (Object.keys(frame.meta).some((key) => key.startsWith('_'))) {
+          throw new Error(`v4 ${opName}: unexpected control frame`);
+        }
+        const event = decodeEventFrame(frame);
+        events.push(event);
+        onEvent?.(event);
+      } catch (error) {
+        stream.reportTransportOutcome();
+        throw error;
       }
-      if (Object.keys(frame.meta).some((key) => key.startsWith('_'))) {
-        throw new Error(`v4 ${opName}: unexpected control frame`);
-      }
-      const event = decodeEventFrame(frame);
-      events.push(event);
-      onEvent?.(event);
     }
   } finally {
     void frames.return(undefined);
   }
 
-  throw new PartialEventStreamError(
+  const error = new PartialEventStreamError(
     `v4 ${opName}: frame stream ended without the end-of-stream sentinel ` +
       `(${events.length} events read) — truncated response?`
   );
+  stream.reportTransportOutcome(error);
+  return { kind: 'partial', error };
 }
 
 /**
@@ -1389,28 +1448,24 @@ async function consumeEventFrameStream(
  * again.
  */
 async function consumeReplayLogResponse(
-  response: Response,
+  stream: V4Response,
   params: Pick<ListEventsParams, 'runId' | 'onEvent'>,
   config?: APIConfig
-): Promise<{
-  events: Event[];
-  cursor: string | null;
-  hasMore: boolean;
-}> {
+): Promise<ReplayLogResult> {
   const events: Event[] = [];
   let page: { cursor: string | null; hasMore: boolean };
-  try {
-    page = await consumeEventFrameStream(
-      response,
-      'createEvent',
-      events,
-      params.onEvent
-    );
-  } catch (error) {
-    if (!(error instanceof PartialEventStreamError)) throw error;
+  const consumed = await consumeEventFrameStream(
+    stream,
+    'createEvent',
+    events,
+    params.onEvent
+  );
+  if (consumed.kind === 'partial') {
     const lastEvent = events.at(-1);
-    if (!lastEvent) throw error;
+    if (!lastEvent) throw consumed.error;
     page = { cursor: `eid:${lastEvent.eventId}`, hasMore: true };
+  } else {
+    page = consumed;
   }
 
   if (!page.hasMore) return { events, ...page };
@@ -1424,6 +1479,10 @@ async function consumeReplayLogResponse(
     config
   );
   events.push(...suffix.data);
+  assert(
+    suffix.data.length === 0 || suffix.cursor,
+    'v4 createEvent: non-empty continuation missing cursor'
+  );
   return {
     events,
     cursor: suffix.cursor ?? page.cursor,
@@ -1480,46 +1539,44 @@ export async function getWorkflowRunEventsV4(
   const events: Event[] = [];
   let cursor = params.pagination?.cursor ?? null;
 
-  while (true) {
+  for (let partialRetries = 0; ; partialRetries++) {
     const url =
       `${baseUrl}/v4/runs/${encodeURIComponent(params.runId)}/events` +
       paginationToQuery(params, cursor);
-    try {
-      const response = await fetchV4(
-        url,
-        { method: 'GET', headers },
-        config,
-        'listEvents'
-      );
-      const page = await consumeEventFrameStream(
-        response,
-        'listEvents',
-        events,
-        params.onEvent
-      );
-      if (params.pagination?.limit === undefined && page.hasMore) {
-        if (!page.cursor || page.cursor === cursor) {
-          throw new WorkflowWorldError(
-            `v4 listEvents: partial event stream made no cursor progress for run ${params.runId}`,
-            { code: 'SCHEMA_VALIDATION' }
-          );
-        }
-        cursor = page.cursor;
-        continue;
-      }
-      return { data: events, ...page };
-    } catch (error) {
-      if (!(error instanceof PartialEventStreamError)) throw error;
+    const stream = await fetchV4(
+      url,
+      { method: 'GET', headers },
+      config,
+      'listEvents',
+      'body'
+    );
+    const result = await consumeEventFrameStream(
+      stream,
+      'listEvents',
+      events,
+      params.onEvent
+    );
+    if (result.kind === 'partial') {
       const lastEvent = events.at(-1);
       if (
+        partialRetries === MAX_PARTIAL_EVENT_STREAM_RETRIES ||
         params.pagination?.limit !== undefined ||
         !lastEvent ||
         `eid:${lastEvent.eventId}` === cursor
       ) {
-        throw error;
+        throw result.error;
       }
       cursor = `eid:${lastEvent.eventId}`;
+      continue;
     }
+
+    if (params.pagination?.limit === undefined && result.hasMore) {
+      throw new WorkflowWorldError(
+        `v4 listEvents: returnAll response was unexpectedly paginated for run ${params.runId}`,
+        { code: 'SCHEMA_VALIDATION' }
+      );
+    }
+    return { data: events, cursor: result.cursor, hasMore: result.hasMore };
   }
 }
 
@@ -1548,16 +1605,18 @@ export async function getEventsByCorrelationIdV4(
   appendListParams(sp, params, params.pagination?.cursor ?? null);
   const url = `${baseUrl}/v4/events?${sp.toString()}`;
   const events: Event[] = [];
-  const response = await fetchV4(
+  const stream = await fetchV4(
     url,
     { method: 'GET', headers },
     config,
-    'listEventsByCorrelationId'
+    'listEventsByCorrelationId',
+    'body'
   );
-  const page = await consumeEventFrameStream(
-    response,
+  const result = await consumeEventFrameStream(
+    stream,
     'listEventsByCorrelationId',
     events
   );
-  return { data: events, ...page };
+  if (result.kind === 'partial') throw result.error;
+  return { data: events, cursor: result.cursor, hasMore: result.hasMore };
 }
