@@ -277,6 +277,18 @@ export const WorkflowEventsTransport = SemanticConvention<'http' | 'ws'>(
   'workflow.events.transport'
 );
 
+/**
+ * HTTP client library the request was issued through
+ * (workflow.http.transport): `undici` | `node-http`. Set on BOTH paths, for
+ * the same reason as {@link WorkflowEventsTransport}: the two emit the same
+ * client span against the same `url.full`, so without this attribute a trace
+ * cannot say which transport carried the request — and `WORKFLOW_NODE_HTTP`
+ * is an opt-in whose whole point is being verified in a real deployment.
+ */
+export const WorkflowHttpTransport = SemanticConvention<'undici' | 'node-http'>(
+  'workflow.http.transport'
+);
+
 /** Event type of a single event write (workflow.event.type), e.g. `step_started`. */
 export const WorkflowEventType = SemanticConvention<string>(
   'workflow.event.type'
