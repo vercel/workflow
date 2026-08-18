@@ -1060,7 +1060,7 @@ describe('workflowEntrypoint replay guards', () => {
     ).toEqual([]);
   });
 
-  it('replays attribute events before executing a step that loses the same race', async () => {
+  it('retains when an attribute write beats a step that signals first', async () => {
     const debug = vi
       .spyOn(runtimeLogger, 'debug')
       .mockImplementation(() => undefined);
@@ -1086,8 +1086,8 @@ describe('workflowEntrypoint replay guards', () => {
       const slowStep = useStep("slowStep");
       async function workflow() {
         await Promise.race([
-          setAttributes([{ key: "winner", value: "attribute" }]),
           slowStep(),
+          setAttributes([{ key: "winner", value: "attribute" }]),
         ]);
         return "attribute won";
       }${getWorkflowTransformCode('workflow')}`;
@@ -1103,10 +1103,8 @@ describe('workflowEntrypoint replay guards', () => {
     expect(createdEvents).toContainEqual(
       expect.objectContaining({ eventType: 'attr_set' })
     );
-    // The attr_set suspension skips step processing and resolves through an
-    // in-process replay, where the durable attribute event wins the race —
-    // so the run completes within this same delivery, with no queue
-    // interaction.
+    // The durable attribute event wins the retained resume. The later
+    // attribute suspension signal must not demote the session.
     expect(createdEvents).toContainEqual(
       expect.objectContaining({ eventType: 'run_completed' })
     );
@@ -1125,7 +1123,7 @@ describe('workflowEntrypoint replay guards', () => {
     const executionModes = debug.mock.calls
       .filter(([message]) => message === 'Starting workflow execution')
       .map(([, context]) => context?.executionMode);
-    expect(executionModes).toEqual(['replay', 'replay']);
+    expect(executionModes).toEqual(['replay', 'retained']);
     debug.mockRestore();
   });
 
