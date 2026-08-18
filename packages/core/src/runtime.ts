@@ -4066,6 +4066,18 @@ export function workflowEntrypoint(
                             );
                           }
                         );
+                        // The joins below sit BETWEEN these promises' creation
+                        // and the `Promise.all` that reads them, so a body that
+                        // rejects while a publish or a trailing chunk commit is
+                        // still in flight would have no handler attached at the
+                        // microtask checkpoint — an `unhandledRejection`, fatal
+                        // under Node's default `--unhandled-rejections=throw`.
+                        // A 412 stale-claim rejection races exactly that window.
+                        // Attach now; every rejection is still observed by the
+                        // awaits below, which are what decide the outcome.
+                        for (const promise of stepExecutionPromises) {
+                          promise.catch(() => {});
+                        }
                         try {
                           // Join the dispatch publishes launched above and
                           // the fold's deferred batch work (trailing chunk

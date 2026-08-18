@@ -216,6 +216,14 @@ export interface SuspensionHandlerResult {
    * chunk); a trailing chunk that commits later is echoed back on the
    * terminal writes like any foreign event — reports the executor reads for
    * position and discards.
+   *
+   * So the echo is only fully suppressed for a SINGLE-chunk fold. On a
+   * multi-chunk fan-out the bodies start off the pair chunk while trailing
+   * chunks are still in flight, and an inline terminal write issued in that
+   * window still names a position below them and still draws a report for
+   * their events. Bounded (trailing chunks only, large fan-outs only) and
+   * self-correcting on the next reload — recorded so a report seen there
+   * reads as expected rather than as a bug.
    */
   batchCommittedSlotCeiling?: number;
   /**
@@ -1291,6 +1299,13 @@ export async function handleSuspension({
                 if (dehydrated === undefined) {
                   // Unreachable: the same prep op that enqueued the pair set
                   // this entry, and the flush awaited every prep above.
+                  //
+                  // Not free if it ever fires, though: the pair is already
+                  // durable here, so this throws with the step claimed and
+                  // its body never run. The delivery fails, and redelivery
+                  // recovers it through owned-recovery (the step carries this
+                  // message's ownership stamp) rather than the request just
+                  // failing cleanly.
                   throw new WorkflowWorldError(
                     `no dehydrated input for pre-claimed step ${entry.correlationId}`,
                     { status: 500 }

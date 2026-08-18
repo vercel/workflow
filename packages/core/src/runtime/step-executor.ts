@@ -440,7 +440,12 @@ export async function executeStep(
       });
       span?.setAttributes({
         ...Attribute.StepSkipped(true),
-        ...Attribute.StepSkipReason('completed'),
+        // `running`, not `completed`: the pair's 409 says the step already
+        // EXISTS, and the writer that won the create-claim is executing it.
+        // The other skip site below is a genuine terminal-state conflict —
+        // tagging both `completed` would make the attribute read 100%
+        // `completed` and lose the only distinction worth querying it for.
+        ...Attribute.StepSkipReason('running'),
       });
       return { type: 'skipped' };
     }
