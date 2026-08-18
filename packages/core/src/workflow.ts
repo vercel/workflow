@@ -44,7 +44,8 @@ import {
 import * as Attribute from './telemetry/semantic-conventions.js';
 import {
   applyWorkflowSuspensionToSpan,
-  recordElapsedSpan,
+  createRefreshableTraceContext,
+  startTraceSpan,
   trace,
 } from './telemetry.js';
 import { getWorkflowRunStreamId } from './util.js';
@@ -309,15 +310,26 @@ export async function runWorkflow(
   return result.output;
 }
 
-async function createWorkflowSession({
-  workflowCode,
-  workflowRun,
-  events,
-  encryptionKey,
-  replayPayloadCache,
-  runReadyBarrier,
-  worldCapabilities,
-}: WorkflowSessionOptions): Promise<{
+async function createWorkflowSession(options: WorkflowSessionOptions) {
+  const vmTrace = await startTraceSpan('workflow.vm.create_context');
+  return createWorkflowSessionInner(options, vmTrace.end).catch((error) => {
+    vmTrace.fail(error);
+    throw error;
+  });
+}
+
+async function createWorkflowSessionInner(
+  {
+    workflowCode,
+    workflowRun,
+    events,
+    encryptionKey,
+    replayPayloadCache,
+    runReadyBarrier,
+    worldCapabilities,
+  }: WorkflowSessionOptions,
+  endVmTrace: () => void
+): Promise<{
   session: WorkflowSession;
   execution: Promise<WorkflowResult>;
 }> {
@@ -348,12 +360,10 @@ async function createWorkflowSession({
       ? `https://${process.env.VERCEL_URL}`
       : `http://localhost:${(await getPortLazy()) ?? 3000}`
   );
-
   // Include both node:vm's context creation and the host-side sandbox wiring
   // below. Most of the bootstrap lives in this function (EventsConsumer,
   // workflow globals, Web API shims), so tracing createContext() alone would
   // materially under-report VM startup.
-  const vmBootstrapStartedAt = Date.now();
   const {
     context,
     globalThis: vmGlobalThis,
@@ -1080,7 +1090,7 @@ async function createWorkflowSession({
   vmGlobalThis[SYMBOL_FOR_REQ_CONTEXT] = (globalThis as any)[
     SYMBOL_FOR_REQ_CONTEXT
   ];
-  await recordElapsedSpan('workflow.vm.create_context', vmBootstrapStartedAt);
+  endVmTrace();
 
   // Get a reference to the user-defined workflow function.
   // The filename parameter ensures stack traces show a meaningful name
@@ -1142,11 +1152,6 @@ async function createWorkflowSession({
   });
   await workflowContext.promiseQueue;
 
-  // The user function's promise. It may stay pending across many resumes
-  // (each parked step promise holds it up) and is raced against the current
-  // attempt's interruption in waitForExecution.
-  let workflowBody: Promise<unknown>;
-
   const failWorkflow = async (error: unknown): Promise<never> => {
     // Control-flow signals are handled by the runtime and do not mean the
     // workflow has terminally failed. `onWorkflowError` usually already moved
@@ -1173,6 +1178,7 @@ async function createWorkflowSession({
   };
 
   const waitForExecution = async (
+    workflowBody: Promise<unknown>,
     interruption: PromiseWithResolvers<never>
   ): Promise<WorkflowResult> => {
     let result: unknown;
@@ -1235,6 +1241,12 @@ async function createWorkflowSession({
     }
   };
 
+  const workflowTraceContext = await createRefreshableTraceContext();
+  const replayTrace = await startTraceSpan('workflow.replay.execute');
+  const workflowBody = workflowTraceContext.run(async () =>
+    workflowFn(...args)
+  );
+
   const session: WorkflowSession = {
     workflowRun,
     argumentCount: args.length,
@@ -1259,8 +1271,9 @@ async function createWorkflowSession({
           const interruption = withResolvers<never>();
           state = { type: 'running', interruption };
           workflowContext.suspensionGeneration++;
+          workflowTraceContext.refresh();
           eventsConsumer.append(nextEvents.slice(knownEvents.length));
-          return waitForExecution(interruption);
+          return waitForExecution(workflowBody, interruption);
         }
         case 'replay':
           return { type: 'replay' };
@@ -1274,17 +1287,11 @@ async function createWorkflowSession({
     },
   };
 
-  // Start the user function inside the span, rather than wrapping the already
-  // running promise: an async workflow executes synchronously until its first
-  // await, and that work is part of replay. The span ends at the first
-  // suspension/completion; later retained resumes get their own workflow.run
-  // span and do not leave this replay span open while the VM is parked.
-  const execution = trace('workflow.replay.execute', async () => {
-    workflowBody = (async (): Promise<unknown> => {
-      return await workflowFn(...args);
-    })();
-    return waitForExecution(initialInterruption);
-  });
+  // The replay span measures the user function without becoming its ambient
+  // context. The workflow promise stays pending across retained resumes, so an
+  // active replay span here would remain captured after that span has ended.
+  const execution = waitForExecution(workflowBody, initialInterruption);
+  void execution.then(replayTrace.end, replayTrace.fail);
 
   return {
     session,
