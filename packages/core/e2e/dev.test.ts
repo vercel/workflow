@@ -1226,7 +1226,7 @@ ${apiFileContent}`
         const cases = [
           {
             file: files.step,
-            kind: 'none',
+            kind: 'full',
             expectedLogCounts: { full: 1 },
             expectedStepValue: (iteration: number) => `step-only-${iteration}`,
             source: (
@@ -1255,7 +1255,7 @@ export async function hmrFuzzStep() {
           },
           {
             file: files.workflow,
-            kind: 'workflow',
+            kind: 'full',
             expectedLogCounts: { full: 1 },
             expectedWorkflowValue: (iteration: number) =>
               `workflow-body-${iteration}`,
