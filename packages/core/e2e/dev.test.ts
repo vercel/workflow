@@ -156,8 +156,6 @@ export function createDevTests(config?: DevTestConfig) {
       full: 'workflow dev hmr: full rediscovery',
       idle: 'workflow dev hmr: idle',
     };
-    const hmrRebuildCompleteMessage = 'workflow dev hmr: rebuild complete';
-
     const fetchWithTimeout = (pathname: string) => {
       if (!deploymentUrl) {
         return Promise.resolve();
@@ -196,11 +194,8 @@ export function createDevTests(config?: DevTestConfig) {
         .catch(() => '');
     };
     /**
-     * Wait until the dev server's HMR pipeline is quiescent: every rebuild
-     * the log says started (`hot rebuild` / `full rediscovery`) has logged
-     * `rebuild complete`, and no new HMR line has appeared for a short
-     * window (covering watcher latency for a just-landed write plus the
-     * flush debounce).
+     * Wait until the dev server's HMR pipeline is idle and no new HMR line
+     * has appeared for a short window covering watcher latency and debounce.
      *
      * Rebuilds are serialized and can take multi-second on CI, so a write
      * from a previous case (or a teardown restore) can still be rebuilding
@@ -224,13 +219,19 @@ export function createDevTests(config?: DevTestConfig) {
           const hot = countLogMessage(log, hmrLogMessages.hot);
           const full = countLogMessage(log, hmrLogMessages.full);
           const skip = countLogMessage(log, hmrLogMessages.skip);
-          const complete = countLogMessage(log, hmrRebuildCompleteMessage);
-          const counts = `${hot}/${full}/${skip}/${complete}`;
+          const idle = countLogMessage(log, hmrLogMessages.idle);
+          const counts = `${hot}/${full}/${skip}/${idle}`;
           if (counts !== lastCounts) {
             lastCounts = counts;
             quietSince = Date.now();
           }
-          expect(complete).toBeGreaterThanOrEqual(hot + full);
+          expect(log.lastIndexOf(hmrLogMessages.idle)).toBeGreaterThanOrEqual(
+            Math.max(
+              log.lastIndexOf(hmrLogMessages.hot),
+              log.lastIndexOf(hmrLogMessages.full),
+              log.lastIndexOf(hmrLogMessages.skip)
+            )
+          );
           expect(Date.now() - quietSince).toBeGreaterThanOrEqual(
             hmrQuiescenceQuietMs
           );
@@ -1139,7 +1140,7 @@ ${apiFileContent}`
           {
             file: files.step,
             kind: 'none',
-            expectedLogCounts: 'any',
+            expectedLogCounts: { full: 1 },
             expectedStepValue: (iteration: number) => `step-only-${iteration}`,
             source: (
               iteration: number
@@ -1168,7 +1169,7 @@ export async function hmrFuzzStep() {
           {
             file: files.workflow,
             kind: 'workflow',
-            expectedLogCounts: { hot: 1 },
+            expectedLogCounts: { full: 1 },
             expectedWorkflowValue: (iteration: number) =>
               `workflow-body-${iteration}`,
             source: (
