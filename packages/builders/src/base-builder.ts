@@ -28,9 +28,11 @@ import {
   createWorkflowEntrypointOptionsCode,
   createWorkflowRouteHandlersCode,
 } from './constants.js';
+import { parentHasChild } from './discover-entries-esbuild-plugin.js';
 import { getEsbuildTsconfigOptions } from './esbuild-tsconfig.js';
 import {
   type DiscoveredEntries,
+  extractImportSpecifiers,
   fastDiscoverEntries,
 } from './fast-discovery.js';
 import {
@@ -197,6 +199,87 @@ function moduleIdentityKey(file: string, moduleSpecifierRoot: string): string {
   return file.replace(/\\/g, '/');
 }
 
+async function canShareSerializer(
+  file: string,
+  workflowPaths: string[],
+  stepPaths: string[],
+  workflowIdentities: Set<string>,
+  moduleSpecifierRoot: string
+): Promise<boolean> {
+  if (workflowIdentities.has(moduleIdentityKey(file, moduleSpecifierRoot))) {
+    return false;
+  }
+  const [source, serializerPaths] = await Promise.all([
+    readFile(file, 'utf8'),
+    withRealpaths([file]),
+  ]);
+  if (
+    extractImportSpecifiers(source).some(
+      (specifier) => specifier !== '@workflow/serde'
+    )
+  ) {
+    return false;
+  }
+  return !workflowPaths.some((workflowPath) =>
+    serializerPaths.some((serializerPath) =>
+      parentHasChild(
+        workflowPath.replace(/\\/g, '/'),
+        serializerPath.replace(/\\/g, '/'),
+        { excludedRoots: stepPaths }
+      )
+    )
+  );
+}
+
+function shareableSerializerSuffix(
+  serializerFiles: string[],
+  shareableFiles: string[],
+  moduleSpecifierRoot: string
+): string[] {
+  const shareableIdentities = new Set(
+    shareableFiles.map((file) => moduleIdentityKey(file, moduleSpecifierRoot))
+  );
+  let suffixStart = serializerFiles.length;
+  while (
+    suffixStart > 0 &&
+    shareableIdentities.has(
+      moduleIdentityKey(serializerFiles[suffixStart - 1], moduleSpecifierRoot)
+    )
+  ) {
+    suffixStart--;
+  }
+  return serializerFiles.slice(suffixStart);
+}
+
+function lastSerializerBundledWithWorkflow(
+  result: esbuild.BuildResult,
+  serializerFiles: string[],
+  workingDir: string,
+  moduleSpecifierRoot: string
+): number {
+  const workflowInputIdentities = new Set(
+    Object.entries(result.metafile?.outputs ?? {})
+      .filter(([output]) => /workflow-\d+\.js$/.test(output))
+      .flatMap(([, { inputs }]) =>
+        Object.keys(inputs)
+          .filter((input) => !input.startsWith('workflow-entry:'))
+          .map((input) =>
+            moduleIdentityKey(resolve(workingDir, input), moduleSpecifierRoot)
+          )
+      )
+  );
+  for (let index = serializerFiles.length - 1; index >= 0; index--) {
+    if (
+      workflowInputIdentities.has(
+        moduleIdentityKey(serializerFiles[index], moduleSpecifierRoot)
+      )
+    ) {
+      return index;
+    }
+  }
+  return -1;
+}
+
 type ManifestEntryLocation = {
   filePath: string;
   name: string;
@@ -208,16 +291,34 @@ type CachedManifestTransform = {
   manifest: WorkflowManifest;
 };
 
-type WorkflowBundle = {
+type WorkflowBundleArtifact = {
   code: string;
   fileName: string;
+};
+
+type WorkflowBundle = WorkflowBundleArtifact & {
   workflowIds: string[];
 };
+
+type WorkflowBundleSet = {
+  serializerRegistry?: WorkflowBundleArtifact;
+  workflowBundles: WorkflowBundle[];
+};
+
+function bundleArtifacts({
+  serializerRegistry,
+  workflowBundles,
+}: WorkflowBundleSet): WorkflowBundleArtifact[] {
+  return serializerRegistry
+    ? [serializerRegistry, ...workflowBundles]
+    : workflowBundles;
+}
 
 type WorkflowBundleBuild = {
   context: esbuild.BuildContext;
   manifest: WorkflowManifest;
-  readBundles(result: esbuild.BuildResult): WorkflowBundle[];
+  readBundles(result: esbuild.BuildResult): WorkflowBundleSet;
+  rebuild(): Promise<esbuild.BuildResult>;
   startedAt: number;
 };
 
@@ -228,21 +329,35 @@ function getWorkflowIds(manifest: WorkflowManifest): string[] {
 }
 
 function createWorkflowBundleLoaders(
-  bundles: WorkflowBundle[],
+  { serializerRegistry, workflowBundles }: WorkflowBundleSet,
   source: 'module' | 'inline'
 ): string {
-  const loaders = bundles
-    .map(({ code, fileName }, index) => {
-      const modulePath = `./${WORKFLOW_BUNDLE_DIRECTORY}/${fileName}`;
-      if (source === 'module') {
-        return `let workflowBundlePromise${index};
-const loadWorkflowBundle${index} = () => workflowBundlePromise${index} ??= import('${modulePath}').then((module) => Buffer.from(module.default, 'base64').toString('utf8'));`;
-      }
-      return `let workflowBundle${index};
-const loadWorkflowBundle${index} = () => Promise.resolve(workflowBundle${index} ??= Buffer.from(${JSON.stringify(encodeWorkflowBundle(code))}, 'base64').toString('utf8'));`;
-    })
+  const createLoader = (
+    { code, fileName }: WorkflowBundleArtifact,
+    name: string,
+    cacheName: string
+  ) => {
+    const modulePath = `./${WORKFLOW_BUNDLE_DIRECTORY}/${fileName}`;
+    if (source === 'module') {
+      return `let ${cacheName}Promise;
+const load${name} = () => ${cacheName}Promise ??= import('${modulePath}').then((module) => Buffer.from(module.default, 'base64').toString('utf8'));`;
+    }
+    return `let ${cacheName};
+const load${name} = () => Promise.resolve(${cacheName} ??= Buffer.from(${JSON.stringify(encodeWorkflowBundle(code))}, 'base64').toString('utf8'));`;
+  };
+  const loaders = workflowBundles
+    .map((bundle, index) =>
+      createLoader(bundle, `WorkflowBundle${index}`, `workflowBundle${index}`)
+    )
     .join('\n');
-  const entries = bundles
+  const serializerLoader = serializerRegistry
+    ? createLoader(
+        serializerRegistry,
+        'SerializerRegistry',
+        'serializerRegistry'
+      )
+    : '';
+  const entries = workflowBundles
     .flatMap(({ workflowIds }, index) =>
       workflowIds.map(
         (workflowId) =>
@@ -251,7 +366,10 @@ const loadWorkflowBundle${index} = () => Promise.resolve(workflowBundle${index} 
     )
     .join('\n');
 
-  return `${loaders}\nconst workflowCode = {\n${entries}\n};`;
+  const serializerAssignment = serializerRegistry
+    ? '\nworkflowCode.__serializerRegistry = loadSerializerRegistry;'
+    : '';
+  return `${loaders}\n${serializerLoader}\nconst workflowCode = {\n${entries}\n};${serializerAssignment}`;
 }
 
 function formatIdLocation(location: ManifestEntryLocation): string {
@@ -1354,14 +1472,16 @@ export const __steps_registered = true;
 
   private async warnAboutSerdeCompliance(
     manifest: WorkflowManifest,
-    bundles: WorkflowBundle[]
+    bundles: WorkflowBundleSet
   ): Promise<void> {
     if (!manifest.classes || Object.keys(manifest.classes).length === 0) return;
 
     const { analyzeSerdeCompliance } = await import('./serde-checker.js');
     const serdeResult = analyzeSerdeCompliance({
       sourceCode: '',
-      workflowCode: bundles.map(({ code }) => code).join('\n'),
+      workflowCode: bundleArtifacts(bundles)
+        .map(({ code }) => code)
+        .join('\n'),
       manifest,
     });
     const issuesToClasses = new Map<string, Set<string>>();
@@ -1388,7 +1508,7 @@ export const __steps_registered = true;
 
   private createWorkflowBundlePublisher(
     outfile: string
-  ): (bundles: WorkflowBundle[]) => Promise<void> {
+  ): (bundles: WorkflowBundleSet) => Promise<void> {
     const workflowBundleDir = join(dirname(outfile), WORKFLOW_BUNDLE_DIRECTORY);
     let shouldResetWorkflowBundleDir = true;
     return async (bundles) => {
@@ -1406,7 +1526,7 @@ export const __steps_registered = true;
         shouldResetWorkflowBundleDir = false;
       }
       await Promise.all(
-        bundles.map(({ code, fileName }) =>
+        bundleArtifacts(bundles).map(({ code, fileName }) =>
           this.writeGeneratedFile(
             join(workflowBundleDir, fileName),
             serializeWorkflowBundle(code)
@@ -1451,29 +1571,83 @@ export const __steps_registered = true;
       })
     );
     const serdeFiles = uniqueFiles([...discovered.discoveredSerdeFiles].sort());
+    const workflowIdentities = new Set(
+      workflowFiles.map((file) =>
+        moduleIdentityKey(file, this.moduleSpecifierRoot)
+      )
+    );
+    const workflowPaths = await withRealpaths(workflowFiles);
+    const stepPaths = (
+      await withRealpaths([...discovered.discoveredSteps])
+    ).map((file) => file.replace(/\\/g, '/'));
+    const shareableSerializerFiles =
+      workflowFiles.length > 1 && !this.config.watch
+        ? (
+            await Promise.all(
+              serdeFiles.map(async (file) =>
+                (await canShareSerializer(
+                  file,
+                  workflowPaths,
+                  stepPaths,
+                  workflowIdentities,
+                  this.moduleSpecifierRoot
+                ))
+                  ? file
+                  : undefined
+              )
+            )
+          ).filter((file): file is string => file !== undefined)
+        : [];
+
+    // Moving a serializer into a separately evaluated script may not reorder it
+    // across a retained serializer.
+    let sharedSerializerFiles = shareableSerializerSuffix(
+      serdeFiles,
+      shareableSerializerFiles,
+      this.moduleSpecifierRoot
+    );
 
     await this.writeDebugFile(outfile, { workflowFiles, serdeFiles });
 
     const createImport = (file: string) =>
       `import '${this.createRouteImportSpecifier(file, this.config.workingDir)}';`;
     const bundleFiles = workflowFiles.length > 0 ? workflowFiles : [undefined];
-    const bundleEntries = bundleFiles.map((workflowFile) => {
-      const workflowImport = workflowFile ? createImport(workflowFile) : '';
-      const workflowIdentity = workflowFile
-        ? moduleIdentityKey(workflowFile, this.moduleSpecifierRoot)
-        : undefined;
-      const serdeImports = serdeFiles
-        .filter(
-          (file) =>
-            moduleIdentityKey(file, this.moduleSpecifierRoot) !==
-            workflowIdentity
+    let bundleEntries: string[] = [];
+    let serializerRegistryEntry = '';
+    const updateBundleEntries = () => {
+      const sharedSerializerIdentities = new Set(
+        sharedSerializerFiles.map((file) =>
+          moduleIdentityKey(file, this.moduleSpecifierRoot)
         )
+      );
+      const perWorkflowSerdeFiles = serdeFiles.filter(
+        (file) =>
+          !sharedSerializerIdentities.has(
+            moduleIdentityKey(file, this.moduleSpecifierRoot)
+          )
+      );
+      bundleEntries = bundleFiles.map((workflowFile) => {
+        const workflowImport = workflowFile ? createImport(workflowFile) : '';
+        const workflowIdentity = workflowFile
+          ? moduleIdentityKey(workflowFile, this.moduleSpecifierRoot)
+          : undefined;
+        const serdeImports = perWorkflowSerdeFiles
+          .filter(
+            (file) =>
+              moduleIdentityKey(file, this.moduleSpecifierRoot) !==
+              workflowIdentity
+          )
+          .map(createImport)
+          .join('\n');
+        return serdeImports
+          ? `${workflowImport}\n// Serde files for cross-context class registration\n${serdeImports}`
+          : workflowImport;
+      });
+      serializerRegistryEntry = sharedSerializerFiles
         .map(createImport)
         .join('\n');
-      return serdeImports
-        ? `${workflowImport}\n// Serde files for cross-context class registration\n${serdeImports}`
-        : workflowImport;
-    });
+    };
+    updateBundleEntries();
     const startedAt = Date.now();
     const manifest: WorkflowManifest = {};
     const workflowIdsByBundleIndex = new Map<number, string[]>();
@@ -1483,12 +1657,15 @@ export const __steps_registered = true;
       ...workflowFiles,
       ...serdeFiles,
     ]);
-    const entryPoints = Object.fromEntries(
+    const entryPoints: Record<string, string> = Object.fromEntries(
       bundleEntries.map((_, index) => [
         `workflow-${index}`,
         `workflow-entry:${index}`,
       ])
     );
+    if (serializerRegistryEntry) {
+      entryPoints['serializer-registry'] = 'serializer-registry-entry';
+    }
     const workflowResolveDir = this.config.workingDir;
 
     // Bundle each workflow source independently. A source may register several
@@ -1508,11 +1685,11 @@ export const __steps_registered = true;
       treeShaking: true,
       keepNames: true,
       minify: false,
-      metafile: includeMetafile,
+      metafile: includeMetafile || sharedSerializerFiles.length > 0,
       // Initialize the workflow registry at the beginning of the bundle. This
       // must be a banner because esbuild can reorder virtual-entry code.
       banner: {
-        js: 'globalThis.__private_workflows = new Map();',
+        js: 'globalThis.__private_workflows ??= new Map();',
       },
       // Source maps improve workflow VM stack traces. Production defaults to
       // no map; development defaults to inline unless configured otherwise.
@@ -1532,15 +1709,20 @@ export const __steps_registered = true;
         {
           name: 'workflow-entries',
           setup(build) {
-            build.onResolve({ filter: /^workflow-entry:/ }, ({ path }) => ({
-              path,
-              namespace: 'workflow-entry',
-            }));
+            build.onResolve(
+              { filter: /^(?:workflow-entry:|serializer-registry-entry$)/ },
+              ({ path }) => ({
+                path,
+                namespace: 'workflow-entry',
+              })
+            );
             build.onLoad(
               { filter: /.*/, namespace: 'workflow-entry' },
               ({ path }) => ({
                 contents:
-                  bundleEntries[Number(path.slice(path.indexOf(':') + 1))],
+                  path === 'serializer-registry-entry'
+                    ? serializerRegistryEntry
+                    : bundleEntries[Number(path.slice(path.indexOf(':') + 1))],
                 loader: 'js',
                 resolveDir: workflowResolveDir,
               })
@@ -1576,9 +1758,34 @@ export const __steps_registered = true;
     return {
       context,
       manifest,
+      rebuild: async () => {
+        let result = await context.rebuild();
+
+        // Step implementations disappear in the workflow transform, so the raw
+        // import graph intentionally ignores dependencies below step modules.
+        // A hybrid step module can still expose a non-step value, though. Verify
+        // candidates against esbuild's transformed inputs and retain any suffix
+        // prefix that was actually bundled with a workflow.
+        if (sharedSerializerFiles.length > 0) {
+          const lastBundledSerializer = lastSerializerBundledWithWorkflow(
+            result,
+            sharedSerializerFiles,
+            this.config.workingDir,
+            this.moduleSpecifierRoot
+          );
+          if (lastBundledSerializer >= 0) {
+            sharedSerializerFiles = sharedSerializerFiles.slice(
+              lastBundledSerializer + 1
+            );
+            updateBundleEntries();
+            result = await context.rebuild();
+          }
+        }
+        return result;
+      },
       startedAt,
       readBundles(result) {
-        return bundleEntries.map((_, index) => {
+        const workflowBundles = bundleEntries.map((_, index) => {
           const output = result.outputFiles?.find(
             ({ path }) => basename(path) === `workflow-${index}.js`
           );
@@ -1602,6 +1809,28 @@ export const __steps_registered = true;
             workflowIds,
           };
         });
+        const serializerOutput = serializerRegistryEntry
+          ? result.outputFiles?.find(
+              ({ path }) => basename(path) === 'serializer-registry.js'
+            )
+          : undefined;
+        if (serializerRegistryEntry && !serializerOutput) {
+          throw new WorkflowBuildError(
+            'No output generated for workflow serializer registry'
+          );
+        }
+        return {
+          workflowBundles,
+          serializerRegistry: serializerOutput
+            ? {
+                code: serializerOutput.text,
+                fileName: workflowBundleFileName(
+                  'serializer',
+                  serializerOutput.text
+                ),
+              }
+            : undefined,
+        };
       },
     };
   }
@@ -1629,8 +1858,8 @@ export const __steps_registered = true;
     interimBundleCtx?: esbuild.BuildContext;
     bundleFinal?: (
       interimBundleResult: esbuild.BuildResult
-    ) => Promise<WorkflowBundle[]>;
-    workflowBundles: WorkflowBundle[];
+    ) => Promise<WorkflowBundleSet>;
+    bundles: WorkflowBundleSet;
     /** The initial workflow VM build graph, when requested by a caller. */
     interimBundleMetafile?: esbuild.Metafile;
   }> {
@@ -1649,7 +1878,7 @@ export const __steps_registered = true;
     const writeWorkflowBundles = this.createWorkflowBundlePublisher(outfile);
     let shouldDisposeInterimBundleCtx = !keepInterimBundleContext;
     try {
-      const interimBundle = await interimBundleCtx.rebuild();
+      const interimBundle = await build.rebuild();
 
       this.logEsbuildMessages(
         interimBundle,
@@ -1667,14 +1896,14 @@ export const __steps_registered = true;
       await this.writeConfiguredWorkflowManifest(workflowManifest);
       await this.ensureSwcIgnored();
 
-      const workflowBundles = readWorkflowBundles(interimBundle);
-      await this.warnAboutSerdeCompliance(workflowManifest, workflowBundles);
+      const bundles = readWorkflowBundles(interimBundle);
+      await this.warnAboutSerdeCompliance(workflowManifest, bundles);
       const bundleFinal = async (result: esbuild.BuildResult) => {
         const bundles = readWorkflowBundles(result);
         await writeWorkflowBundles(bundles);
         return bundles;
       };
-      await writeWorkflowBundles(workflowBundles);
+      await writeWorkflowBundles(bundles);
 
       if (keepInterimBundleContext) {
         shouldDisposeInterimBundleCtx = false;
@@ -1682,13 +1911,13 @@ export const __steps_registered = true;
           manifest: workflowManifest,
           interimBundleCtx,
           bundleFinal,
-          workflowBundles,
+          bundles,
           interimBundleMetafile: interimBundle.metafile,
         };
       }
       return {
         manifest: workflowManifest,
-        workflowBundles,
+        bundles,
         interimBundleMetafile: interimBundle.metafile,
       };
     } catch (error) {
@@ -1799,7 +2028,7 @@ export const __steps_registered = true;
     });
 
     const createCombinedFunctionCode = (
-      bundles: WorkflowBundle[]
+      bundles: WorkflowBundleSet
     ) => `// biome-ignore-all lint: generated file
 /* eslint-disable */
 import { __steps_registered } from '${stepsRelativePath}';
@@ -1814,7 +2043,7 @@ ${createWorkflowBundleLoaders(bundles, this.config.watch ? 'inline' : 'module')}
 
 ${createWorkflowRouteHandlersCode(`workflowEntrypoint(workflowCode${workflowEntrypointOptionsCode})`)}`;
     const combinedFunctionCode = createCombinedFunctionCode(
-      workflowsResult.workflowBundles
+      workflowsResult.bundles
     );
 
     if (!bundleFinalOutput) {

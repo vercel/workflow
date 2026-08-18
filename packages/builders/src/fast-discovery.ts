@@ -372,7 +372,7 @@ function stripCommentsFromSource(source: string): string {
   return output;
 }
 
-function extractImportSpecifiers(source: string): string[] {
+export function extractImportSpecifiers(source: string): string[] {
   const sourceWithoutComments = stripCommentsFromSource(source);
   if (
     !sourceWithoutComments.includes('import') &&

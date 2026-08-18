@@ -31,6 +31,7 @@ import {
   dehydrateWorkflowReturnValue,
   hydrateWorkflowArguments,
 } from './serialization.js';
+import { WORKFLOW_SERIALIZER_REGISTRY_FILENAME } from './source-map.js';
 import { createUseStep } from './step.js';
 import {
   BODY_INIT_SYMBOL,
@@ -120,6 +121,7 @@ async function drainPendingQueueItems(
 
 /** Everything needed to cold-start a workflow VM over an event log. */
 interface WorkflowSessionOptions {
+  readonly serializerRegistryCode?: string;
   readonly workflowCode: string;
   readonly workflowRun: WorkflowRun;
   readonly events: Event[];
@@ -306,6 +308,7 @@ export async function runWorkflow(
 }
 
 async function createWorkflowSession({
+  serializerRegistryCode,
   workflowCode,
   workflowRun,
   events,
@@ -1083,6 +1086,13 @@ async function createWorkflowSession({
   // and the filename preserves workflow source attribution in stack traces.
   // The bundle registers workflows on `globalThis.__private_workflows`.
   runCachedWorkflowScript(workflowCode, filename, context);
+  if (serializerRegistryCode) {
+    runCachedWorkflowScript(
+      serializerRegistryCode,
+      WORKFLOW_SERIALIZER_REGISTRY_FILENAME,
+      context
+    );
+  }
   const workflowFn = (
     vmGlobalThis as typeof globalThis & {
       __private_workflows?: Map<string, unknown>;

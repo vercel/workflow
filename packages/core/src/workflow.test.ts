@@ -108,6 +108,57 @@ describe('runWorkflow', () => {
       ).toEqual(3);
     });
 
+    it('hydrates custom workflow input after evaluating the serializer registry', async () => {
+      const runId = 'wrun_serializer_registry';
+      const timestamp = new Date('2024-01-01T00:00:00.000Z');
+      const workflowRun: WorkflowRun = {
+        runId,
+        workflowName: 'workflow',
+        status: 'running',
+        input: new TextEncoder().encode(
+          'devl[[1],["Instance",2],{"classId":3,"data":4},"test/Point",{"value":5},42]'
+        ),
+        createdAt: timestamp,
+        updatedAt: timestamp,
+        startedAt: timestamp,
+        deploymentId: 'test-deployment',
+      };
+      const serializerRegistryCode = `
+        class Point {
+          constructor(value) { this.value = value; }
+          static [Symbol.for('workflow-deserialize')](data) {
+            return new Point(data.value);
+          }
+        }
+        (globalThis[Symbol.for('workflow-class-registry')] ??= new Map()).set('test/Point', Point);
+        globalThis.__Point = Point;
+      `;
+      const workflowCode = `
+        async function workflow(point) {
+          return point instanceof globalThis.__Point ? point.value : -1;
+        }
+        globalThis.__private_workflows = new Map([['workflow', workflow]]);
+      `;
+
+      const result = await replayWorkflow({
+        serializerRegistryCode,
+        workflowCode,
+        workflowRun,
+        events: [],
+        encryptionKey: noEncryptionKey,
+        replayPayloadCache: new ReplayPayloadCache(noEncryptionKey),
+      });
+
+      assert(result.type === 'completed');
+      expect(
+        await hydrateWorkflowReturnValue(
+          result.output as any,
+          runId,
+          noEncryptionKey
+        )
+      ).toBe(42);
+    });
+
     it('allow user code to handle user-defined errors', async () => {
       const ops: Promise<any>[] = [];
       const workflowCode = `function workflow() {

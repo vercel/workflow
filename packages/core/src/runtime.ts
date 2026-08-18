@@ -117,7 +117,10 @@ import { useQuickJSVm } from './runtime/vm-mode.js';
 import { getWaitContinuationDispatch } from './runtime/wait-continuation.js';
 import { getWorld, type WorldHandlers } from './runtime/world.js';
 import { dehydrateRunError } from './serialization.js';
-import { remapErrorStack } from './source-map.js';
+import {
+  remapErrorStack,
+  WORKFLOW_SERIALIZER_REGISTRY_FILENAME,
+} from './source-map.js';
 import * as Attribute from './telemetry/semantic-conventions.js';
 import {
   buildInvocationSpanLinks,
@@ -629,18 +632,30 @@ async function getMaxInlineDurationMs(
  * @param workflowCode - A legacy workflow bundle or lazy loaders keyed by workflow ID
  * @returns A function that can be used as a Vercel API route
  */
-export type WorkflowCode =
-  | string
-  | Readonly<Record<string, () => Promise<string>>>;
+type WorkflowCodeLoader = () => Promise<string>;
+type WorkflowCodeLoaders = Readonly<Record<string, WorkflowCodeLoader>> & {
+  readonly __serializerRegistry?: WorkflowCodeLoader;
+};
+
+export type WorkflowCode = string | WorkflowCodeLoaders;
+
+type LoadedWorkflowCode = {
+  readonly serializerRegistryCode?: string;
+  readonly workflowCode: string;
+};
 
 async function loadWorkflowCode(
   workflowCode: WorkflowCode,
   workflowName: string
-): Promise<string> {
-  if (typeof workflowCode === 'string') return workflowCode;
+): Promise<LoadedWorkflowCode> {
+  if (typeof workflowCode === 'string') return { workflowCode };
   const load = workflowCode[workflowName];
   if (!load) throw new WorkflowNotRegisteredError(workflowName);
-  return load();
+  const [loadedCode, serializerRegistryCode] = await Promise.all([
+    load(),
+    workflowCode.__serializerRegistry?.(),
+  ]);
+  return { workflowCode: loadedCode, serializerRegistryCode };
 }
 
 export function workflowEntrypoint(
@@ -839,9 +854,9 @@ export function workflowEntrypoint(
           return await withWorkflowBaggage(
             { workflowRunId: runId, workflowName },
             async () => {
-              let loadedWorkflowCode: string | undefined;
-              let workflowCodeLoad: Promise<string> | undefined;
-              const startWorkflowCodeLoad = (): Promise<string> => {
+              let loadedWorkflowCode: LoadedWorkflowCode | undefined;
+              let workflowCodeLoad: Promise<LoadedWorkflowCode> | undefined;
+              const startWorkflowCodeLoad = (): Promise<LoadedWorkflowCode> => {
                 workflowCodeLoad ??= trace('workflow.bundle.load', () =>
                   loadWorkflowCode(workflowCode, workflowName)
                 ).then((code) => {
@@ -2712,8 +2727,11 @@ export function workflowEntrypoint(
                         const { runWorkflowWithQuickJS } = await import(
                           './runtime/quickjs-entrypoint.js'
                         );
+                        const loadedCode = await workflowCodePromise;
                         const quickjsResult = await runWorkflowWithQuickJS({
-                          workflowCode: await workflowCodePromise,
+                          serializerRegistryCode:
+                            loadedCode.serializerRegistryCode,
+                          workflowCode: loadedCode.workflowCode,
                           workflowName,
                           workflowRun,
                           preloadedEvents:
@@ -3030,8 +3048,11 @@ export function workflowEntrypoint(
 
                       if (workflowResult.type === 'replay') {
                         retainedSession = null;
+                        const loadedCode = await workflowCodePromise;
                         workflowResult = await replayWorkflow({
-                          workflowCode: await workflowCodePromise,
+                          serializerRegistryCode:
+                            loadedCode.serializerRegistryCode,
+                          workflowCode: loadedCode.workflowCode,
                           workflowRun,
                           events: eventLog.events,
                           encryptionKey,
@@ -4590,13 +4611,20 @@ export function workflowEntrypoint(
                           normalizedError.stack || getErrorStack(terminalError);
 
                         if (errorStack && loadedWorkflowCode) {
+                          if (loadedWorkflowCode.serializerRegistryCode) {
+                            errorStack = remapErrorStack(
+                              errorStack,
+                              WORKFLOW_SERIALIZER_REGISTRY_FILENAME,
+                              loadedWorkflowCode.serializerRegistryCode
+                            );
+                          }
                           const parsedName = parseWorkflowName(workflowName);
                           const filename =
                             parsedName?.moduleSpecifier || workflowName;
                           errorStack = remapErrorStack(
                             errorStack,
                             filename,
-                            loadedWorkflowCode
+                            loadedWorkflowCode.workflowCode
                           );
                         }
 
