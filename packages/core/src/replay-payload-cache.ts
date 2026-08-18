@@ -8,6 +8,13 @@ import {
 const MAX_MEMOIZED_PRIMITIVE_LENGTH = 4096;
 type ReplayPayloadField = 'result' | 'error' | 'payload';
 
+/** Copy a view only when retaining it would also retain unrelated bytes. */
+function compactOwnedBytes(data: Uint8Array): Uint8Array {
+  return data.byteOffset === 0 && data.byteLength === data.buffer.byteLength
+    ? data
+    : data.slice();
+}
+
 function isMemoizablePrimitive(value: unknown): boolean {
   if (value === null) return true;
   const type = typeof value;
@@ -198,11 +205,11 @@ export class ReplayPayloadCache {
     return preparation;
   }
 
-  /** Normalize synchronous and asynchronous preparers to one promise contract. */
+  /** Compact prepared bytes before retaining them for the invocation. */
   private async runPreparation(
     value: Uint8Array
   ): Promise<PreparedReplayPayload> {
-    return this.preparer(value, this.encryptionKey);
+    return compactOwnedBytes(await this.preparer(value, this.encryptionKey));
   }
 
   private workflowInputKey(runId: string): string {

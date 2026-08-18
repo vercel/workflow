@@ -280,13 +280,11 @@ function requireAesDecryptionKey(
 
 /**
  * Decrypt a format-prefixed payload if it is encrypted or sealed.
- * Node AES decrypts synchronously. Sealed payloads and portable Web Crypto
- * fallbacks return a Promise.
  */
-export function decrypt(
+export async function decrypt(
   data: Uint8Array,
   key: DecryptionKey | undefined
-): Uint8Array | Promise<Uint8Array> {
+): Promise<Uint8Array> {
   const format = peekFormatPrefix(data);
 
   if (format === SerializationFormat.SEALED) {
@@ -300,12 +298,7 @@ export function decrypt(
 
   const { payload } = decodeFormatPrefix(data);
   try {
-    const decrypted = aesGcmDecrypt(aesKey, payload);
-    return decrypted instanceof Promise
-      ? decrypted.catch((error) => {
-          throw addFormatPrefix(error, format);
-        })
-      : decrypted;
+    return await aesGcmDecrypt(aesKey, payload);
   } catch (error) {
     throw addFormatPrefix(error, format);
   }

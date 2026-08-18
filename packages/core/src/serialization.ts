@@ -3505,20 +3505,17 @@ export async function dehydrateWorkflowArguments(
  * arguments from the database at the start of workflow execution. A prepared
  * payload skips host-side decrypt/decompress but always performs VM revival.
  */
-export function hydrateWorkflowArguments(
+export async function hydrateWorkflowArguments(
   value: unknown,
   _runId: string,
   key: DecryptionKey | undefined,
   global: Record<string, any> = globalThis,
   extraRevivers: Record<string, (value: any) => any> = {},
   prepared?: PreparedReplayPayload
-): any | Promise<any> {
-  if (prepared) {
-    return deserializePreparedReplayPayload(prepared, global, extraRevivers);
-  }
-  return prepareReplayPayloadWithTelemetry(value, key).then((payload) =>
-    deserializePreparedReplayPayload(payload, global, extraRevivers)
-  );
+): Promise<any> {
+  const payload =
+    prepared ?? (await prepareReplayPayloadWithTelemetry(value, key));
+  return deserializePreparedReplayPayload(payload, global, extraRevivers);
 }
 
 /**
@@ -3799,20 +3796,17 @@ export async function dehydrateStepError(
  * @param prepared - Optional cached decrypt/decompress result
  * @returns The hydrated thrown value, ready to reject the step promise
  */
-export function hydrateStepError(
+export async function hydrateStepError(
   value: unknown,
   _runId: string,
   key: DecryptionKey | undefined,
   global: Record<string, any> = globalThis,
   extraRevivers: Record<string, (value: any) => any> = {},
   prepared?: PreparedReplayPayload
-): unknown | Promise<unknown> {
-  if (prepared) {
-    return deserializePreparedStepError(prepared, global, extraRevivers);
-  }
-  return prepareReplayPayloadWithTelemetry(value, key).then((payload) =>
-    deserializePreparedStepError(payload, global, extraRevivers)
-  );
+): Promise<unknown> {
+  const payload =
+    prepared ?? (await prepareReplayPayloadWithTelemetry(value, key));
+  return deserializePreparedStepError(payload, global, extraRevivers);
 }
 
 /**
@@ -3912,20 +3906,17 @@ export async function hydrateRunError(
  * Called from the workflow handler when replaying the event log
  * of a `step_completed` event.
  */
-export function hydrateStepReturnValue(
+export async function hydrateStepReturnValue(
   value: unknown,
   _runId: string,
   key: DecryptionKey | undefined,
   global: Record<string, any> = globalThis,
   extraRevivers: Record<string, (value: any) => any> = {},
   prepared?: PreparedReplayPayload
-): any | Promise<any> {
-  if (prepared) {
-    return deserializePreparedReplayPayload(prepared, global, extraRevivers);
-  }
-  return prepareReplayPayloadWithTelemetry(value, key).then((payload) =>
-    deserializePreparedReplayPayload(payload, global, extraRevivers)
-  );
+): Promise<any> {
+  const payload =
+    prepared ?? (await prepareReplayPayloadWithTelemetry(value, key));
+  return deserializePreparedReplayPayload(payload, global, extraRevivers);
 }
 
 // ---- Helpers to extract stream/Request/Response reducers and revivers ----

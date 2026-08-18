@@ -48,10 +48,9 @@ import {
 import seedrandom from 'seedrandom';
 import { monotonicFactory } from 'ulid';
 import { runtimeLogger } from '../logger.js';
-import { decompress } from '../serialization/compression.js';
 import type { DecryptionKey } from '../serialization/encryption.js';
-import { decrypt } from '../serialization/encryption.js';
 import { formatSerializationError } from '../serialization/errors.js';
+import { decodePayload } from '../serialization/payload.js';
 import {
   getReplayTimeoutMs,
   isQuickJSBaselineSnapshotEnabled,
@@ -77,14 +76,13 @@ import { runIdCreatedAt } from './run-id-time.js';
  * X25519 keypair) so sealed `encp` hook payloads from cross-deployment
  * resumeHook() calls open here too, not just symmetric `encr` ones.
  * Both stages are format-prefix dispatched, so plaintext/uncompressed
- * data passes through unchanged. Mirrors `prepareReplayPayload` in
- * serialization.ts (the node:vm engine's equivalent host-side stage).
+ * data passes through unchanged.
  */
-async function prepareBytesForVM(
+function prepareBytesForVM(
   data: Uint8Array,
   key?: DecryptionKey
 ): Promise<Uint8Array> {
-  return (await decompress(await decrypt(data, key))) as Uint8Array;
+  return decodePayload(data, key);
 }
 
 // ---- Types ----

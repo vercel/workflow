@@ -6,4 +6,4 @@
 "@workflow/world-vercel": patch
 ---
 
-Simplify payload codecs and decode replay payloads synchronously with Node AES-GCM and zstd.
+Simplify payload codecs and reuse prepared replay payloads across workflow VMs.

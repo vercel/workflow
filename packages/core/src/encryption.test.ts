@@ -14,7 +14,7 @@ async function getOtherKey(): Promise<CryptoKey> {
   return importKey(OTHER_RAW_KEY);
 }
 
-async function captureError(action: () => unknown): Promise<unknown> {
+async function captureError(action: () => Promise<unknown>): Promise<unknown> {
   try {
     await action();
   } catch (error) {
@@ -25,7 +25,7 @@ async function captureError(action: () => unknown): Promise<unknown> {
 
 describe('encryption', () => {
   describe('round-trip', () => {
-    it('decrypts synchronously on Node', async () => {
+    it('uses one asynchronous contract on Node', async () => {
       const key = await getKey();
       const plaintext = new TextEncoder().encode('hello, workflow');
       const ciphertext = await encrypt(key, plaintext);
@@ -34,11 +34,8 @@ describe('encryption', () => {
       expect(ciphertext.byteLength).toBe(plaintext.byteLength + 12 + 16);
 
       const decoded = decrypt(key, ciphertext);
-      expect(decoded).not.toBeInstanceOf(Promise);
-      expect(decoded).toBeInstanceOf(Uint8Array);
-      expect(new TextDecoder().decode(decoded as Uint8Array)).toBe(
-        'hello, workflow'
-      );
+      expect(decoded).toBeInstanceOf(Promise);
+      expect(new TextDecoder().decode(await decoded)).toBe('hello, workflow');
     });
   });
 
@@ -94,19 +91,6 @@ describe('encryption', () => {
       const error = await captureError(() => decrypt(readerKey, ciphertext));
       expect(RuntimeDecryptionError.is(error)).toBe(true);
       expect(error).toMatchObject({ cause: expect.anything() });
-    });
-
-    it('keeps RuntimeDecryptionError on synchronous auth failure', async () => {
-      const key = await getKey();
-      const ciphertext = await encrypt(
-        key,
-        new TextEncoder().encode('tamper me')
-      );
-      ciphertext[ciphertext.length - 1] ^= 0xff;
-
-      expect(() => decrypt(key, ciphertext)).toThrowError(
-        RuntimeDecryptionError
-      );
     });
 
     it('does not record a formatPrefix at the low-level layer', async () => {

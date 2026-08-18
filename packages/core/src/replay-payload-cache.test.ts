@@ -1,5 +1,5 @@
 import type { Event, WorkflowRun } from '@workflow/world';
-import { describe, expect, it, vi } from 'vitest';
+import { assert, describe, expect, it, vi } from 'vitest';
 import { importKey } from './encryption.js';
 import { ReplayPayloadCache } from './replay-payload-cache.js';
 import { prepareReplayPayload } from './serialization/replay.js';
@@ -54,9 +54,9 @@ function makeEvents(payloads: unknown[]): Event[] {
 }
 
 describe('ReplayPayloadCache', () => {
-  it('deduplicates preparation and accepts a synchronous preparer', async () => {
+  it('deduplicates preparation', async () => {
     const payload = new Uint8Array([1]);
-    const preparer = vi.fn<typeof prepareReplayPayload>((value) => value);
+    const preparer = vi.fn<typeof prepareReplayPayload>(async (value) => value);
     const cache = new ReplayPayloadCache(undefined, preparer);
 
     const first = cache.prepareEventPayload('evnt_one', 'result', payload);
@@ -67,13 +67,32 @@ describe('ReplayPayloadCache', () => {
     expect(preparer).toHaveBeenCalledOnce();
   });
 
+  it('compacts prepared bytes before retaining them', async () => {
+    const backing = new Uint8Array(64 * 1024);
+    const prepared = backing.subarray(1024, 2048);
+    const cache = new ReplayPayloadCache(
+      undefined,
+      vi.fn<typeof prepareReplayPayload>(async () => prepared)
+    );
+
+    const retained = await cache.prepareEventPayload(
+      'evnt_compact',
+      'result',
+      new Uint8Array([1])
+    );
+
+    assert(retained instanceof Uint8Array);
+    expect(retained).toEqual(prepared);
+    expect(retained.buffer.byteLength).toBe(retained.byteLength);
+  });
+
   it('keeps a failed prewarm until its consumer observes it, then retries', async () => {
     const payload = new Uint8Array([1]);
     const run = makeRun(payload);
     const preparer = vi
       .fn<typeof prepareReplayPayload>()
       .mockRejectedValueOnce(new Error('decrypt failed'))
-      .mockReturnValueOnce(payload);
+      .mockResolvedValueOnce(payload);
     const cache = new ReplayPayloadCache(undefined, preparer);
 
     await cache.prewarm(run, []);
@@ -155,7 +174,7 @@ describe('ReplayPayloadCache', () => {
     // shift every later position. Resuming from that length skips exactly the
     // events the reload was for, which is what `resetScan` exists to prevent.
     const payloads = [0, 1, 2].map((value) => new Uint8Array([value]));
-    const preparer = vi.fn<typeof prepareReplayPayload>((value) => value);
+    const preparer = vi.fn<typeof prepareReplayPayload>(async (value) => value);
     const cache = new ReplayPayloadCache(undefined, preparer);
     const run = makeRun(undefined);
     const [first, missing, second] = makeEvents(payloads);
@@ -178,7 +197,7 @@ describe('ReplayPayloadCache', () => {
 
   it('bypasses legacy values and ignores missing event data during prewarm', async () => {
     const legacy = [0, { value: 1 }];
-    const preparer = vi.fn<typeof prepareReplayPayload>((value) => value);
+    const preparer = vi.fn<typeof prepareReplayPayload>(async (value) => value);
     const cache = new ReplayPayloadCache(undefined, preparer);
 
     await cache.prepareEventPayload('evnt_legacy', 'result', legacy);

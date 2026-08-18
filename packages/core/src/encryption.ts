@@ -1,7 +1,7 @@
 import { RuntimeDecryptionError, WorkflowRuntimeError } from '@workflow/errors';
 
 /**
- * Portable AES-256-GCM encryption with a synchronous Node decrypt path.
+ * Portable AES-256-GCM encryption with a native Node decrypt path.
  *
  * Key import, encryption, and the browser fallback use Web Crypto. On Node,
  * importKey also retains a native key handle so decrypt can call OpenSSL
@@ -242,14 +242,13 @@ export async function encrypt(
  * @param aad - Optional additional authenticated data. Must match the bytes
  *   passed to {@link encrypt} exactly, otherwise the GCM tag fails to verify
  *   and a {@link RuntimeDecryptionError} is thrown.
- * @returns Plaintext directly on Node, or a Promise from the Web Crypto
- * fallback.
+ * @returns Decrypted plaintext.
  */
-export function decrypt(
+export async function decrypt(
   key: CryptoKey,
   data: Uint8Array,
   aad?: Uint8Array
-): Uint8Array | Promise<Uint8Array> {
+): Promise<Uint8Array> {
   assertAesGcmEnvelopeLength(data);
   if (!key.usages.includes('decrypt')) {
     throw new RuntimeDecryptionError(
@@ -261,7 +260,8 @@ export function decrypt(
   }
 
   const nodeKey = nodeKeys.get(key);
-  return nodeCrypto && nodeKey
-    ? decryptWithNode(nodeCrypto, nodeKey, data, aad)
-    : decryptWithWebCrypto(key, data, aad);
+  if (nodeCrypto && nodeKey) {
+    return decryptWithNode(nodeCrypto, nodeKey, data, aad);
+  }
+  return decryptWithWebCrypto(key, data, aad);
 }

@@ -6045,7 +6045,7 @@ describe('encrypt/decrypt primitives', () => {
 
   it('should reject truncated ciphertext', async () => {
     const tooShort = new Uint8Array(10); // Less than nonce (12) + auth tag (16)
-    expect(() => decrypt(testKey, tooShort)).toThrow(
+    await expect(decrypt(testKey, tooShort)).rejects.toThrow(
       'Encrypted data too short'
     );
   });
@@ -6054,7 +6054,7 @@ describe('encrypt/decrypt primitives', () => {
     const data = new TextEncoder().encode('secret');
     const encrypted = await encrypt(testKey, data);
     const wrongKey = await importKey(new Uint8Array(32).fill(0xff));
-    expect(() => decrypt(wrongKey, encrypted)).toThrow();
+    await expect(decrypt(wrongKey, encrypted)).rejects.toThrow();
   });
 
   it('should fail with tampered ciphertext', async () => {
@@ -6062,7 +6062,7 @@ describe('encrypt/decrypt primitives', () => {
     const encrypted = await encrypt(testKey, data);
     // Flip a byte in the ciphertext (past the nonce)
     encrypted[15] ^= 0xff;
-    expect(() => decrypt(testKey, encrypted)).toThrow();
+    await expect(decrypt(testKey, encrypted)).rejects.toThrow();
   });
 });
 
@@ -6112,7 +6112,7 @@ describe('serialized payload encryption', () => {
   it('should throw when encrypted data has no key', async () => {
     const data = new Uint8Array([1, 2, 3]);
     const encrypted = await encryptEnvelope(data, testKey);
-    expect(() => decryptEnvelope(encrypted, undefined)).toThrow(
+    await expect(decryptEnvelope(encrypted, undefined)).rejects.toThrow(
       'Encrypted data encountered but no encryption key'
     );
   });

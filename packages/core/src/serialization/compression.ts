@@ -30,7 +30,10 @@
  *   archives, etc.) from wasted CPU and size inflation.
  */
 
-import { decompressSerializedDataSync } from '@workflow/world/serialization-compression.js';
+import {
+  decompressSerializedDataSync,
+  getNativeCompressionCodec,
+} from '@workflow/world/serialization-compression.js';
 import {
   decodeFormatPrefix,
   encodeWithFormatPrefix,
@@ -88,25 +91,8 @@ function codecOverrideFromEnv(): 'gzip' | 'zstd' | undefined {
   }
 }
 
-/**
- * Resolve `node:zlib` via `process.getBuiltinModule` — no static import, so
- * this module stays bundler-safe for browser/edge targets (where it returns
- * undefined and we fall back to gzip).
- */
-const nodeZlib = (() => {
-  try {
-    return typeof process === 'undefined'
-      ? undefined
-      : process.getBuiltinModule('node:zlib');
-  } catch {
-    return undefined;
-  }
-})();
-
-/** Return a plain Uint8Array view without copying a Node Buffer's bytes. */
-function asUint8Array(data: Uint8Array): Uint8Array {
-  return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
-}
+const nativeGzip = getNativeCompressionCodec('gzip');
+const nativeZstd = getNativeCompressionCodec('zstd');
 
 /** Runtime-specific zstd decoder used when native Node support is unavailable. */
 export type ZstdDecoder = (
@@ -118,10 +104,7 @@ export interface DecompressionOptions {
 }
 
 function isZstdAvailable(): boolean {
-  return (
-    typeof nodeZlib?.zstdCompressSync === 'function' &&
-    typeof nodeZlib?.zstdDecompressSync === 'function'
-  );
+  return nativeZstd !== undefined;
 }
 
 /**
@@ -129,8 +112,9 @@ function isZstdAvailable(): boolean {
  */
 function canCompressGzip(): boolean {
   return (
-    typeof nodeZlib?.gzipSync === 'function' ||
-    typeof CompressionStream === 'function'
+    nativeGzip !== undefined ||
+    (typeof CompressionStream === 'function' &&
+      typeof DecompressionStream === 'function')
   );
 }
 
@@ -172,10 +156,8 @@ function gzipBytes(data: Uint8Array): Promise<Uint8Array> {
   return pipeThroughTransform(data, new CompressionStream('gzip'));
 }
 
-function gzip(data: Uint8Array): Uint8Array | Promise<Uint8Array> {
-  return nodeZlib?.gzipSync
-    ? asUint8Array(nodeZlib.gzipSync(data))
-    : gzipBytes(data);
+async function gzip(data: Uint8Array): Promise<Uint8Array> {
+  return nativeGzip ? nativeGzip.compress(data) : gzipBytes(data);
 }
 
 function gunzipBytes(data: Uint8Array): Promise<Uint8Array> {
@@ -183,23 +165,17 @@ function gunzipBytes(data: Uint8Array): Promise<Uint8Array> {
 }
 
 function zstdBytes(data: Uint8Array): Uint8Array {
-  const compress = nodeZlib?.zstdCompressSync;
-  if (!compress) {
+  if (!nativeZstd) {
     throw new Error('zstd compression is not available in this runtime');
   }
-  const level = nodeZlib?.constants?.ZSTD_c_compressionLevel;
-  const opts =
-    level !== undefined ? { params: { [level]: ZSTD_LEVEL } } : undefined;
-  return asUint8Array(compress(data, opts));
+  return nativeZstd.compress(data, ZSTD_LEVEL);
 }
 
-function decompressZstd(
+async function decompressZstd(
   payload: Uint8Array,
   decoder?: ZstdDecoder
-): Uint8Array | Promise<Uint8Array> {
-  if (nodeZlib?.zstdDecompressSync) {
-    return asUint8Array(nodeZlib.zstdDecompressSync(payload));
-  }
+): Promise<Uint8Array> {
+  if (nativeZstd) return nativeZstd.decompress(payload);
   if (decoder) return decoder(payload);
   throw new Error(
     'Compressed (zstd) workflow data encountered but no zstd decoder is ' +
@@ -208,10 +184,8 @@ function decompressZstd(
   );
 }
 
-function decompressGzip(payload: Uint8Array): Uint8Array | Promise<Uint8Array> {
-  if (nodeZlib?.gunzipSync) {
-    return asUint8Array(nodeZlib.gunzipSync(payload));
-  }
+async function decompressGzip(payload: Uint8Array): Promise<Uint8Array> {
+  if (nativeGzip) return nativeGzip.decompress(payload);
   if (typeof DecompressionStream === 'function') return gunzipBytes(payload);
   throw new Error(
     'Compressed (gzip) workflow data encountered but no gzip decoder is available.'
@@ -287,11 +261,11 @@ function selectWriteCodec(): 'zstd' | 'gzip' | 'none' {
  * @returns The compressed data with a codec prefix, or the original data
  *   when compression is disabled, unavailable, or not worthwhile.
  */
-export function compress(
+export async function compress(
   data: Uint8Array,
   enabled: boolean,
   stats?: CompressionStats
-): Uint8Array | Promise<Uint8Array> {
+): Promise<Uint8Array> {
   if (
     !enabled ||
     data.length < COMPRESSION_MIN_BYTES ||
@@ -307,23 +281,18 @@ export function compress(
     return data;
   }
 
-  const finish = (compressed: Uint8Array): Uint8Array => {
-    const wrappedLength = 4 + compressed.length;
-    if (wrappedLength >= data.length * (1 - COMPRESSION_MIN_SAVINGS_RATIO)) {
-      recordStats(stats, 'none', data.length, data.length);
-      return data;
-    }
-    recordStats(stats, codec, data.length, wrappedLength);
-    return encodeWithFormatPrefix(
-      codec === 'zstd' ? SerializationFormat.ZSTD : SerializationFormat.GZIP,
-      compressed
-    );
-  };
+  const compressed = codec === 'zstd' ? zstdBytes(data) : await gzip(data);
+  const wrappedLength = 4 + compressed.length;
+  if (wrappedLength >= data.length * (1 - COMPRESSION_MIN_SAVINGS_RATIO)) {
+    recordStats(stats, 'none', data.length, data.length);
+    return data;
+  }
 
-  const compressed = codec === 'zstd' ? zstdBytes(data) : gzip(data);
-  return compressed instanceof Promise
-    ? compressed.then(finish)
-    : finish(compressed);
+  recordStats(stats, codec, data.length, wrappedLength);
+  return encodeWithFormatPrefix(
+    codec === 'zstd' ? SerializationFormat.ZSTD : SerializationFormat.GZIP,
+    compressed
+  );
 }
 
 /**
@@ -333,11 +302,11 @@ export function compress(
  *
  * Non-compressed data is returned unchanged.
  */
-export function decompress(
+export async function decompress(
   data: Uint8Array,
   stats?: CompressionStats,
   options?: DecompressionOptions
-): Uint8Array | Promise<Uint8Array> {
+): Promise<Uint8Array> {
   const prefix = peekFormatPrefix(data);
 
   const codec =
@@ -352,15 +321,11 @@ export function decompress(
   }
 
   const { payload } = decodeFormatPrefix(data);
-  const inflated =
-    codec === 'zstd'
-      ? decompressZstd(payload, options?.zstdDecoder)
-      : decompressGzip(payload);
-  const finish = (value: Uint8Array): Uint8Array => {
-    recordStats(stats, codec, value.length, data.length);
-    return value;
-  };
-  return inflated instanceof Promise ? inflated.then(finish) : finish(inflated);
+  const inflated = await (codec === 'zstd'
+    ? decompressZstd(payload, options?.zstdDecoder)
+    : decompressGzip(payload));
+  recordStats(stats, codec, inflated.length, data.length);
+  return inflated;
 }
 
 /**

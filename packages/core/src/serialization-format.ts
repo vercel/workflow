@@ -3,7 +3,8 @@
  *
  * This module contains the format prefix handling, generic hydrate/dehydrate
  * dispatch, and shared types/classes used by all environments (runtime, web
- * o11y, CLI o11y). It has NO Node.js dependencies.
+ * o11y, CLI o11y). Node acceleration is discovered at runtime without static
+ * Node imports, so this module remains safe to bundle for browsers.
  */
 
 import { getEventDataRefFields } from '@workflow/world';
@@ -39,8 +40,8 @@ import {
  * `@workflow/core/serialization`, whose module graph reaches Node built-ins
  * (`node:util`, `node:async_hooks`) and cannot be bundled for the browser.
  *
- * Everything below is Web Crypto only: `serialization/encryption.ts`,
- * `encryption.ts` and `sealed-box.ts` are all free of Node dependencies.
+ * The encryption and compression modules use portable web APIs in browsers and
+ * conditionally discover native Node codecs at runtime.
  */
 export {
   deriveRunPayloadKeys,

@@ -326,7 +326,7 @@ describe('codec selection (zstd preferred, gzip fallback)', () => {
     ) as Uint8Array;
     const stats: CompressionStats = {};
     const compression = compress(original, true, stats);
-    expect(compression).not.toBeInstanceOf(Promise);
+    expect(compression).toBeInstanceOf(Promise);
     const compressed = await compression;
     expect(isCompressed(compressed)).toBe(true);
     expect(peekFormatPrefix(compressed)).toBe(SerializationFormat.ZSTD);
@@ -341,7 +341,7 @@ describe('codec selection (zstd preferred, gzip fallback)', () => {
     ) as Uint8Array;
     const stats: CompressionStats = {};
     const compression = compress(original, true, stats);
-    expect(compression).not.toBeInstanceOf(Promise);
+    expect(compression).toBeInstanceOf(Promise);
     const compressed = await compression;
     expect(peekFormatPrefix(compressed)).toBe(SerializationFormat.GZIP);
     expect(stats.codec).toBe('gzip');
@@ -349,7 +349,7 @@ describe('codec selection (zstd preferred, gzip fallback)', () => {
     // Read path still inflates gzip and reports the codec.
     const readStats: CompressionStats = {};
     const result = decompress(compressed, readStats);
-    expect(result).not.toBeInstanceOf(Promise);
+    expect(result).toBeInstanceOf(Promise);
     const inflated = await result;
     expect(inflated).toEqual(original);
     expect(readStats.codec).toBe('gzip');
