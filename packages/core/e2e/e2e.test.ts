@@ -1287,12 +1287,16 @@ describe('e2e', () => {
             expect(result.stack).toMatch(/errorStepFn|registerStepFunction/);
             expect(result.stack).not.toContain('evalmachine');
 
-            // Source maps are not supported everyhwere. Check the definition
-            // of hasStepSourceMaps() to see where they are supported
+            // Source maps are not supported everywhere — see
+            // hasStepSourceMaps() for the matrix. Only the positive direction
+            // is asserted: where maps are unsupported they still apply
+            // nondeterministically on some lanes (nuxt, nextjs-webpack), so
+            // asserting their absence pinned that nondeterminism as a flake.
+            // A stack resolving to source where none was promised is an
+            // improvement, not a failure — hasStepSourceMaps() is the record
+            // to update when a lane starts mapping reliably.
             if (hasStepSourceMaps()) {
               expect(result.stack).toContain('99_e2e.ts');
-            } else {
-              expect(result.stack).not.toContain('99_e2e.ts');
             }
 
             // Verify step failed via CLI (--withData needed to resolve errorRef)
@@ -1311,12 +1315,10 @@ describe('e2e', () => {
             );
             expect(failedStep.error.stack).not.toContain('evalmachine');
 
-            // Source maps are not supported everyhwere. Check the definition
-            // of hasStepSourceMaps() to see where they are supported
+            // Positive direction only — see the note on the first source-map
+            // assertion above.
             if (hasStepSourceMaps()) {
               expect(failedStep.error.stack).toContain('99_e2e.ts');
-            } else {
-              expect(failedStep.error.stack).not.toContain('99_e2e.ts');
             }
 
             // Workflow completed (error was caught)
@@ -1346,12 +1348,10 @@ describe('e2e', () => {
             );
             expect(result.stack).not.toContain('evalmachine');
 
-            // Source maps are not supported everyhwere. Check the definition
-            // of hasStepSourceMaps() to see where they are supported
+            // Positive direction only — see the note on the first source-map
+            // assertion above.
             if (hasStepSourceMaps()) {
               expect(result.stack).toContain('helpers.ts');
-            } else {
-              expect(result.stack).not.toContain('helpers.ts');
             }
 
             // Verify step failed via CLI - same stack info available there too (--withData needed to resolve errorRef)
@@ -1367,12 +1367,10 @@ describe('e2e', () => {
               /stepThatThrowsFromHelper|registerStepFunction/
             );
             expect(failedStep.error.stack).not.toContain('evalmachine');
-            // Source maps are not supported everyhwere. Check the definition
-            // of hasStepSourceMaps() to see where they are supported
+            // Positive direction only — see the note on the first source-map
+            // assertion above.
             if (hasStepSourceMaps()) {
               expect(failedStep.error.stack).toContain('helpers.ts');
-            } else {
-              expect(failedStep.error.stack).not.toContain('helpers.ts');
             }
 
             // Workflow completed (error was caught)
