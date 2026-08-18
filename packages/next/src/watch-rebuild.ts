@@ -283,10 +283,11 @@ export const readSourceSnapshots = async ({
   return snapshots;
 };
 
-const didSourceStructureChange = (
+const requiresFullRediscovery = (
   previousSnapshot: SourceSnapshot,
   nextSnapshot: SourceSnapshot
 ) =>
+  nextSnapshot.hasDirective ||
   previousSnapshot.importSignature !== nextSnapshot.importSignature ||
   previousSnapshot.definitionSignature !== nextSnapshot.definitionSignature ||
   previousSnapshot.hasDirective !== nextSnapshot.hasDirective ||
@@ -449,7 +450,7 @@ export const classifyRebuild = async ({
       }
       continue;
     }
-    if (didSourceStructureChange(previousSnapshot, nextSnapshot)) {
+    if (requiresFullRediscovery(previousSnapshot, nextSnapshot)) {
       return { kind: 'full' };
     }
     if (previousSnapshot.sourceHash === nextSnapshot.sourceHash) {
