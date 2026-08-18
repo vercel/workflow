@@ -220,6 +220,52 @@ describe('createWorkflowRunEventBatch', () => {
     agent.assertNoPendingInterceptors();
   });
 
+  it('puts per-event computeInstanceId in the frame meta, and omits it when unset', async () => {
+    // A pre-claimed inline pair sets computeInstanceId on the step_started
+    // half only, so the batched claim attributes the executing instance the
+    // way the single POST's CreateEventParams does. Batch encoding is a
+    // separate path from the single-event POST, so assert it on the wire.
+    const agent = mockAgent();
+    let requestBody: Uint8Array | undefined;
+    agent
+      .get(ORIGIN)
+      .intercept({
+        path: `/api/v4/runs/${RUN_ID}/events/batch`,
+        method: 'POST',
+        body: (raw) => {
+          requestBody = new Uint8Array(Buffer.from(raw, 'binary'));
+          return true;
+        },
+      })
+      .reply(
+        200,
+        encode({
+          results: [
+            { status: 200, event: createdEvent, step: { ...stepB } },
+            { status: 200, event: startedEvent, step: { ...stepB } },
+          ],
+        }),
+        { headers: { 'content-type': 'application/cbor' } }
+      );
+
+    const pair = transitionEvents().slice(1);
+    pair[1] = { ...pair[1], computeInstanceId: 'ci_instance_1' };
+
+    await createWorkflowRunEventBatch(RUN_ID, pair, undefined, {
+      token: 'test-token',
+      dispatcher: agent,
+    });
+
+    expect(requestBody).toBeDefined();
+    // biome-ignore lint/style/noNonNullAssertion: asserted above
+    const frames = decodeBatchFrames(requestBody!);
+    expect(frames).toHaveLength(2);
+    // The created half carries no compute attribution; the claim does.
+    expect(frames[0].meta).not.toHaveProperty('computeInstanceId');
+    expect(frames[1].meta.computeInstanceId).toBe('ci_instance_1');
+    agent.assertNoPendingInterceptors();
+  });
+
   it('maps per-event outcomes: successes typed, failures passed through', async () => {
     const agent = mockAgent();
     agent
