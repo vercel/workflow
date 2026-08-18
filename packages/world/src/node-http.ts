@@ -245,6 +245,17 @@ function decodeBody(message: http.IncomingMessage): DestroyableReadable {
     if (message.complete) return;
     decoder.destroy(transportError('socket hang up', 'ECONNRESET'));
   });
+  // `pipe()` forwards the message's teardown to the decoder but not the
+  // reverse: destroying the decoder (a reader cancelling mid-body, or the
+  // decoder erroring on corrupt input) leaves the message and its socket alive
+  // with nobody reading them, so the socket never returns to the agent pool
+  // and the pool wedges once `maxSockets` are stranded. Forward the decoder's
+  // teardown back to the message so releasing the decoded stream releases the
+  // socket. A cleanly-finished message is already complete, so it is left
+  // alone to be reused by keep-alive.
+  decoder.on('close', () => {
+    if (!message.complete) message.destroy();
+  });
   return message.pipe(decoder);
 }
 
