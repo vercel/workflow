@@ -30,7 +30,11 @@ import {
 } from '@workflow/errors';
 import { envNumber } from '@workflow/world';
 import { nodeHttpFetch } from '@workflow/world/node-http.js';
-import { getNodeHttpAgents } from './http-client.js';
+import {
+  getNodeHttpAgents,
+  NODE_HTTP_BODY_TIMEOUT_MS,
+  NODE_HTTP_HEADERS_TIMEOUT_MS,
+} from './http-client.js';
 import {
   ErrorType,
   getSpanKind,
@@ -553,6 +557,12 @@ export async function instrumentedFetch(
               body,
               signal,
               agents: nodeAgents,
+              // Match undici's per-phase defaults (which the undici agents
+              // inherit implicitly): without these the node:http path arms no
+              // stalled-socket deadline, and a `timeoutMs: null` caller would
+              // have no deadline at all.
+              headersTimeoutMs: NODE_HTTP_HEADERS_TIMEOUT_MS,
+              bodyTimeoutMs: NODE_HTTP_BODY_TIMEOUT_MS,
             })
           : await fetch(url, {
               method,

@@ -24,6 +24,20 @@ const BASE_AGENT_OPTIONS = {
 };
 
 /**
+ * Per-phase deadlines for the `node:http` transport under `WORKFLOW_NODE_HTTP`,
+ * matching undici's `headersTimeout` / `bodyTimeout` defaults (300s).
+ *
+ * The undici agents configured in this module never set these explicitly, so
+ * they inherit undici's 300s defaults, which bound a dead-but-not-reset socket.
+ * `nodeHttpFetch` arms neither timer unless a value is passed, so the same
+ * values must be supplied at every node:http call site — otherwise a request
+ * that opts out of the whole-request deadline (`timeoutMs: null`) would have no
+ * per-phase deadline at all and could hang until the function itself times out.
+ */
+export const NODE_HTTP_HEADERS_TIMEOUT_MS = 300_000;
+export const NODE_HTTP_BODY_TIMEOUT_MS = 300_000;
+
+/**
  * In-flight H2 streams allowed per connection. Matches undici's
  * `maxConcurrentStreams` default (100), which is the real ceiling once the
  * server's SETTINGS_MAX_CONCURRENT_STREAMS is known — so this only has to be
