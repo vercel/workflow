@@ -37,12 +37,7 @@ import {
 import { createVirtualClock, type VirtualClock } from './clock.js';
 import { createIdFactory, type IdFactory } from './ids.js';
 import { createSimQueue, type DirectHandler, type SimQueue } from './queue.js';
-import {
-  createSimStore,
-  type LoadedSnapshot,
-  type MintedEvent,
-  type SimStore,
-} from './store.js';
+import { createSimStore, type LoadedSnapshot, type SimStore } from './store.js';
 import { createSimStreamer, type SimStreamer } from './streams.js';
 import type {
   CallContext,
@@ -95,17 +90,6 @@ export interface SimWorldOptions {
    * would be a world that exists nowhere.
    */
   countGuard?: boolean;
-  /**
-   * Assign log positions at commit rather than at the handler boundary, so the
-   * log is append-only and no read can be contradicted by a later one. See
-   * `SimStoreOptions.appendOnlyLog` for what that buys and what it costs.
-   *
-   * The boundary reservation still happens — `reservePosition` and everything
-   * a scenario hangs off it work unchanged. It just stops being binding: a held
-   * write that nothing overtook keeps the position it reserved, and one that
-   * was overtaken takes the tail when it lands.
-   */
-  appendOnlyLog?: boolean;
 }
 
 export interface SimWorld extends World {
@@ -129,22 +113,6 @@ export interface SimWorld extends World {
    * `external` writer, and not itself a call point.
    */
   asExternal<T>(fn: () => Promise<T>): Promise<T>;
-  /**
-   * Take a log position in `runId` now, to be used by a write that happens
-   * later.
-   *
-   * The scenario's own calls are not call points (see `fireWatches`), so a script
-   * cannot hold *itself* between taking a position and committing the way it
-   * holds a writer. This pair is how it states the same thing directly: reserve the
-   * position, do whatever should observe the log without it, then run the write
-   * inside `withReservedPosition` so it lands where it was reserved.
-   */
-  reservePosition(runId: string): MintedEvent;
-  /** Run `fn` with the next `events.create` taking `position` instead of minting. */
-  withReservedPosition<T>(
-    position: MintedEvent,
-    fn: () => Promise<T>
-  ): Promise<T>;
   pushTrace(entry: TraceInput): void;
   /** Total intercepted world calls so far. */
   callCount(): number;
@@ -191,8 +159,6 @@ export function createSimWorld(options: SimWorldOptions = {}): SimWorld {
    */
   const externalCtx = new AsyncLocalStorage<true>();
   const isExternal = () => externalCtx.getStore() === true;
-  /** Set by `withReservedPosition`; consumed by the next `events.create`. */
-  let reservedPosition: MintedEvent | undefined;
   let callSeq = 0;
   let traceSeq = 0;
 
@@ -213,19 +179,15 @@ export function createSimWorld(options: SimWorldOptions = {}): SimWorld {
     ids,
     preconditionGuard: options.preconditionGuard,
     countGuard: options.countGuard,
-    appendOnlyLog: options.appendOnlyLog,
     // Fires synchronously inside `events.create`, so it runs in that call's
     // async context and `isExternal()` still describes who is writing.
     onEvent: (event) =>
       pushTrace({ kind: 'event', event, writer: writerOfEvent(event) }),
-    // Two different faults, and the trace should not blur them: one read
-    // around a committed event, the other stopped before it.
-    onStaleRead: ({ eventId, hidden, truncated }) =>
+    // A stale read is always a lagging prefix of the log.
+    onStaleRead: ({ eventId, hidden }) =>
       pushTrace({
         kind: 'warn',
-        message: truncated
-          ? `lagging read: log cut short at ${eventId}; ${hidden} committed event(s) not yet visible`
-          : `stale read: committed event ${eventId} withheld from this event-log read`,
+        message: `lagging read: log cut short at ${eventId}; ${hidden} committed event(s) not yet visible`,
       }),
   });
 
@@ -643,43 +605,21 @@ export function createSimWorld(options: SimWorldOptions = {}): SimWorld {
       record(base);
       await fireWatches(base);
 
-      // The handler boundary. workflow-server mints the event id here
-      // (`EventId.make()`, before the storage write is attempted) because
-      // DynamoDB does not generate ids and that id *is* the log's sort key. So a
-      // write acquires its position and its visibility at two different moments.
-      // A scenario holds that gap open with `sim.beginHookDelivery`, which takes
-      // the position on one side and lets the write land on the other.
       let callArgs = args;
       let entered = base;
       if (call === 'events.create') {
-        // A reserved position wins: it belongs to a write whose handler was
-        // entered earlier and is only now reaching storage.
-        //
-        // No boundary mint for a `run_created` that names no run
-        // (`events.create(null, …)`, which the Storage contract allows and the
-        // store supports by generating the id). There is no run to allocate
-        // against yet: minting under the null key would hand out slots from a
-        // bucket shared by every such call, and the generated run's own
-        // allocator would then start at 1 and collide. The store mints after it
-        // resolves the id instead. The runtime never takes this path, so this
-        // is about the failure being impossible rather than merely unobserved.
-        const minted =
-          reservedPosition ??
-          (runId === undefined ? undefined : store.mintEvent(runId));
-        reservedPosition = undefined;
         const params = (args[2] ?? {}) as Record<string, unknown>;
         callArgs = [
           args[0],
           args[1],
           {
             ...params,
-            ...(minted ? { minted } : {}),
-            // The snapshot the fence reads. Reconstructed rather than taken
-            // off the wire, because the wire carries only the writer's highest
-            // slot and the count guard also wants how many events it loaded at
-            // or below it. What the facade tracks is the same array the client
-            // is holding (see `loadedEvents`), so the pair it derives is the
-            // pair the client would have sent.
+            // The snapshot the fence reads. Reconstructed rather than taken off
+            // the wire: the runtime states its position as a slot count, and
+            // this store mints ULIDs, so there is nothing on the wire a ULID
+            // fence can compare. What the facade tracks is the same array the
+            // client is holding (see `loadedEvents`), so the pair it derives is
+            // the pair the client would have sent.
             //
             // Attached whenever the fence is armed, not just for the count
             // half: `SimCreateParams.snapshot` is also what marks a write as
@@ -790,10 +730,6 @@ export function createSimWorld(options: SimWorldOptions = {}): SimWorld {
 
   const world: SimWorld = {
     specVersion: SPEC_VERSION_CURRENT,
-    // Whether the fence is armed is a store option, not a capability: the
-    // runtime assumes every World may reject a stale write, so a scenario can
-    // only change what the store does about one, never what the runtime
-    // expects. See `SimStoreOptions.preconditionGuard`.
     capabilities: {},
     getDeploymentId: intercept('getDeploymentId', () =>
       simQueue.getDeploymentId()
@@ -860,15 +796,6 @@ export function createSimWorld(options: SimWorldOptions = {}): SimWorld {
     },
     async asExternal(fn) {
       return externalCtx.run(true, fn);
-    },
-    reservePosition: (runId) => store.mintEvent(runId),
-    async withReservedPosition(position, fn) {
-      reservedPosition = position;
-      try {
-        return await fn();
-      } finally {
-        reservedPosition = undefined;
-      }
     },
     pushTrace,
     callCount: () => callSeq,
