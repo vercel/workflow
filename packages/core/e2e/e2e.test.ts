@@ -16,10 +16,9 @@ import {
   afterAll,
   assert,
   beforeAll,
-  beforeEach,
   describe,
   expect,
-  test,
+  test as vitestTest,
 } from 'vitest';
 import { getTrustedSourcesHeaders } from '../../../scripts/trusted-sources-headers.mjs';
 import type { Run } from '../src/runtime';
@@ -46,7 +45,11 @@ import {
   isJsApp,
   isLocalDeployment,
   requireFixture,
-  setupRunTracking,
+  announceTestStart,
+  createPerTestState,
+  dumpTrackedRunDiagnostics,
+  requireSupported,
+  runInTestState,
   setupWorld,
   startTracked,
   trackRun,
@@ -144,6 +147,43 @@ const e2e = (fn: string) => {
  * Every test not marked here is in scope for cross-language conformance, and is
  * gated only by `e2e-conformance.json`. No-op for the JS workbench apps.
  */
+/**
+ * Every test in this suite runs through this auto fixture, which owns the
+ * per-test harness plumbing the sequential suites do in a `beforeEach`
+ * (announce heartbeat, conformance gate, failure diagnostics):
+ *
+ * - The suite runs concurrently, and vitest's `getCurrentTest()` is a plain
+ *   module variable that is wrong after any `await`, so nothing per-test can
+ *   live in module globals. The fixture is the one place that receives the
+ *   test's own context unambiguously; it binds a per-test state (name,
+ *   tracked runs, the test's own `skip`) via AsyncLocalStorage around the
+ *   test body, and `trackRun`/`recordInfraEvent`/`requireFixture` read it
+ *   ambiently — no call-site changes.
+ * - Failure diagnostics dump from the state the fixture bound, so a failing
+ *   test reports its own runs, not a concurrent sibling's.
+ */
+const test = vitestTest.extend<{ e2eTracking: unknown }>({
+  e2eTracking: [
+    // biome-ignore lint/correctness/noEmptyPattern: vitest fixture signature
+    async ({ task, skip, onTestFailed }, use) => {
+      const state = createPerTestState(task.name, skip);
+      announceTestStart(task.name);
+      onTestFailed(
+        (result) =>
+          dumpTrackedRunDiagnostics(state, result.errors?.[0]?.message),
+        30_000 // Allow 30s for diagnostics fetching (default hookTimeout is 10s)
+      );
+      await runInTestState(state, async () => {
+        // Second conformance gate — inside the bound state so the skip
+        // targets this test.
+        requireSupported(task.name);
+        await use(state);
+      });
+    },
+    { auto: true },
+  ],
+});
+
 const testJsOnly = isJsApp() ? test : test.skip;
 const describeJsOnly = isJsApp() ? describe : describe.skip;
 
@@ -321,9 +361,13 @@ async function startWorkflowViaHttp(
   return run;
 }
 
-// NOTE: Temporarily disabling concurrent tests to avoid flakiness.
-// TODO: Re-enable concurrent tests after conf when we have more time to investigate.
-describe('e2e', () => {
+// Concurrent: ~128 serial tests were the dominant wall-clock cost per matrix
+// entry (~22 of 24 minutes on the Vercel lanes). The known blockers are
+// fixed: per-test attribution is concurrency-safe (see the e2eTracking
+// fixture), abort-fetch tests are hermetic, the fibonacci tree fits the
+// scheduler, and source-map assertions are positive-only. A test that
+// genuinely cannot share a deployment can opt out with `test.sequential`.
+describe.concurrent('e2e', () => {
   // Configure the World for the test runner process so that start() and
   // run.returnValue can communicate with the same backend as the workbench app.
   // Also warm the target before the first test starts a run: a fresh Vercel
@@ -345,11 +389,6 @@ describe('e2e', () => {
       )
     );
   }, 150_000);
-
-  // Enable automatic run diagnostics on test failure
-  beforeEach((ctx) => {
-    setupRunTracking(ctx.task.name);
-  });
 
   // Write E2E metadata and diagnostics files
   afterAll(() => {

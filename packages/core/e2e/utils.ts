@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path, { dirname } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { getCurrentTest } from '@vitest/runner';
 import { createWorkflowUrl } from '@workflow/utils';
 import { createWorld as createVercelTestWorld } from '@workflow/world-vercel';
@@ -268,7 +269,7 @@ export function hasFixture(fixtureName: string): boolean {
  */
 export function requireFixture(fixtureName: string): void {
   if (hasFixture(fixtureName)) return;
-  getCurrentTest()?.context.skip(
+  currentSkip()?.(
     `"${fixtureName}" is not listed in ${CONFORMANCE_CONFIG_FILENAME}`
   );
 }
@@ -290,7 +291,7 @@ export function requireSupported(testName: string): void {
   seenTestNames.add(testName);
   const reason = getConformanceConfig()?.unsupported?.[testName];
   if (!reason) return;
-  getCurrentTest()?.context.skip(
+  currentSkip()?.(
     `${CONFORMANCE_CONFIG_FILENAME} declares this unsupported: ${reason}`
   );
 }
@@ -758,8 +759,56 @@ interface TrackedRun {
   workflowFn?: string;
 }
 
-// Per-test tracked runs — reset between tests via setupRunTracking()
-let trackedRuns: TrackedRun[] = [];
+/**
+ * Per-test harness state: the name used to attribute runs and infra events,
+ * and the runs whose diagnostics dump if the test fails.
+ *
+ * Concurrent suites bind one of these per test via {@link runInTestState}
+ * (AsyncLocalStorage), so tests interleaving on the event loop cannot
+ * clobber each other's attribution — `getCurrentTest()` is a plain module
+ * variable in vitest and is wrong after any `await` under concurrency.
+ * Sequential suites (dev.test.ts, e2e-agent.test.ts, e2e-region.test.ts)
+ * keep the classic path: {@link setupRunTracking} resets a module-level
+ * fallback that is safe when only one test runs at a time.
+ */
+interface PerTestState {
+  testName: string;
+  trackedRuns: TrackedRun[];
+  /**
+   * The test's own `ctx.skip`, captured where the context is unambiguous
+   * (the fixture), so conformance gates called mid-test-body can skip the
+   * right test — `getCurrentTest()?.context.skip` would target whichever
+   * test most recently started.
+   */
+  skip?: (note?: string) => void;
+}
+
+const testStateStorage = new AsyncLocalStorage<PerTestState>();
+let fallbackTestState: PerTestState = {
+  testName: 'unknown',
+  trackedRuns: [],
+};
+const currentTestState = (): PerTestState =>
+  testStateStorage.getStore() ?? fallbackTestState;
+
+export function createPerTestState(
+  testName: string,
+  skip?: (note?: string) => void
+): PerTestState {
+  return { testName, trackedRuns: [], skip };
+}
+
+/** ALS-bound skip when available, vitest's global otherwise. */
+const currentSkip = (): ((note?: string) => void) | undefined =>
+  testStateStorage.getStore()?.skip ?? getCurrentTest()?.context.skip;
+
+/** Run `fn` with `state` bound as the ambient per-test state. */
+export function runInTestState<T>(
+  state: PerTestState,
+  fn: () => Promise<T>
+): Promise<T> {
+  return testStateStorage.run(state, fn);
+}
 
 // Global list of run IDs collected for metadata (observability links)
 const globalCollectedRunIds: {
@@ -790,8 +839,9 @@ export function trackRun<T>(
     workflowFn?: string;
   }
 ): Run<T> {
-  const testName = options?.testName ?? currentTestName;
-  trackedRuns.push({
+  const state = currentTestState();
+  const testName = options?.testName ?? state.testName;
+  state.trackedRuns.push({
     run,
     workflowFile: options?.workflowFile,
     workflowFn: options?.workflowFn,
@@ -865,7 +915,7 @@ export function recordInfraEvent(
 ) {
   infraEvents.push({
     ...event,
-    testName: event.testName ?? currentTestName,
+    testName: event.testName ?? currentTestState().testName,
     timestamp: new Date().toISOString(),
   });
 }
@@ -1223,43 +1273,55 @@ function emitGitHubAnnotation(
  *   beforeEach((ctx) => { setupRunTracking(ctx.task.name); });
  */
 export function setupRunTracking(testName: string) {
-  currentTestName = testName;
-  trackedRuns = [];
+  fallbackTestState = createPerTestState(testName);
 
   // Second conformance gate. Sited here because every test in the suite calls
   // setupRunTracking from `beforeEach`, which makes this the one place that
   // sees a test's name without the test having to declare anything.
   requireSupported(testName);
 
-  // Heartbeat: announce the test the moment it starts, written straight to
-  // stdout to bypass vitest's per-file console buffering. Without this, a
-  // test that stalls (e.g. polling a run that never progresses) produces no
-  // output until its timeout, making CI look like a silent hang — the
-  // reporter only prints a test's result line once it completes. Emitting the
-  // name on start makes the stalling test immediately identifiable.
-  process.stdout.write(`\n[e2e] ▶ start: ${testName}\n`);
+  announceTestStart(testName);
+  const state = fallbackTestState;
   onTestFailed(
-    async (result) => {
-      const errorMessage = result.errors?.[0]?.message || 'Test failed';
-
-      for (const tracked of trackedRuns) {
-        try {
-          const diagnostics = await getRunDiagnostics(tracked);
-          console.error(diagnostics);
-          emitGitHubAnnotation(testName, tracked, errorMessage);
-        } catch {
-          console.error(
-            `[diagnostics] Failed to fetch diagnostics for run ${tracked.run.runId}`
-          );
-        }
-      }
-    },
+    (result) => dumpTrackedRunDiagnostics(state, result.errors?.[0]?.message),
     30_000 // Allow 30s for diagnostics fetching (default hookTimeout is 10s)
   );
 }
 
-// Current test name for auto-tracking
-let currentTestName = 'unknown';
+/**
+ * Heartbeat: announce the test the moment it starts, written straight to
+ * stdout to bypass vitest's per-file console buffering. Without this, a
+ * test that stalls (e.g. polling a run that never progresses) produces no
+ * output until its timeout, making CI look like a silent hang — the
+ * reporter only prints a test's result line once it completes. Emitting the
+ * name on start makes the stalling test immediately identifiable.
+ */
+export function announceTestStart(testName: string) {
+  process.stdout.write(`\n[e2e] ▶ start: ${testName}\n`);
+}
+
+/**
+ * Dump diagnostics for every run tracked by `state`. Shared by the
+ * sequential path (setupRunTracking's onTestFailed) and the concurrent
+ * fixture, which passes the state it bound for its own test — the one
+ * thing vitest's globals cannot provide under concurrency.
+ */
+export async function dumpTrackedRunDiagnostics(
+  state: PerTestState,
+  errorMessage = 'Test failed'
+) {
+  for (const tracked of state.trackedRuns) {
+    try {
+      const diagnostics = await getRunDiagnostics(tracked);
+      console.error(diagnostics);
+      emitGitHubAnnotation(state.testName, tracked, errorMessage);
+    } catch {
+      console.error(
+        `[diagnostics] Failed to fetch diagnostics for run ${tracked.run.runId}`
+      );
+    }
+  }
+}
 
 /**
  * Write diagnostics sidecar file with per-test run info for the aggregation script.
