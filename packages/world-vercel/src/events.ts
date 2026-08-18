@@ -541,23 +541,28 @@ export async function createWorkflowRunEventBatch(
   });
 
   // In-process transient retry is safe only when EVERY event in the batch
-  // converges on a retry of a committed attempt: entity-conditioned events
-  // (creates, terminal transitions) re-reject with 409, and a step_started
-  // converges only as the second half of a born-running pair, where the
-  // pair's create-claim fences it. A standalone bare step_started re-patches
-  // a running step (attempt++) and step_retrying re-patches a pending one —
-  // a batch carrying either runs single-attempt and leaves transient-failure
-  // recovery to queue redelivery, exactly like their single POSTs.
-  const retryConvergent = events.every(({ event }, index) => {
-    if (event.eventType === 'step_started') {
-      const previous = events[index - 1]?.event;
-      return (
-        previous?.eventType === 'step_created' &&
-        previous.correlationId === event.correlationId
-      );
-    }
-    return event.eventType !== 'step_retrying';
-  });
+  // converges on a retry of a committed attempt AND the caller can act on the
+  // converged answer. Entity-conditioned events (creates, terminal
+  // transitions) re-reject with 409, which their callers already treat as
+  // "someone got here first" — no information lost.
+  //
+  // A `step_started` is excluded on both counts. A standalone bare start
+  // re-patches a running step (attempt++) and `step_retrying` re-patches a
+  // pending one, so neither converges at all. The born-running
+  // `step_created` + `step_started` pair DOES converge (the pair's
+  // create-claim fences it), but its 409 is ambiguous in a way the caller
+  // cannot resolve: the pre-claim caller reads a pair 409 as "a concurrent
+  // writer owns this step" and skips the body, and on a retry that answer is
+  // indistinguishable from "my own first attempt committed the pair, and I
+  // own it". Skipping there strands a `running` step stamped with this
+  // invocation's own message id until its ownership lease expires. This is
+  // the same reason `EVENT_RETRY_ELIGIBILITY` marks the single-POST
+  // `step_started` non-retryable: fail the delivery, let redelivery recover
+  // it through owned-recovery, which re-executes in seconds.
+  const retryConvergent = events.every(
+    ({ event }) =>
+      event.eventType !== 'step_started' && event.eventType !== 'step_retrying'
+  );
 
   const wire = await withEventPostRetry(
     () => createWorkflowRunEventsBatchV4({ runId, events: inputs }, config),

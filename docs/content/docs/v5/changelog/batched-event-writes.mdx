@@ -68,7 +68,9 @@ The contract:
 
 **Pre-claimed inline pairs.** When the fold engages and has company for them (at least two inline steps, or one plus other batchable events), the steps the runtime is about to execute inline join the batch as adjacent `[step_created, step_started]` pairs — the created row carrying the input, the started row a bare ownership-stamped claim the World folds into a born-running create. The inline bodies start straight off the pair chunk's commit (in parallel with the queue publishes and any trailing chunks) with no per-step claim POST at all, and a pair that loses its atomic create-claim to a concurrent delivery skips its body exactly as a lost lazy claim does. A lone inline step with nothing else to batch keeps the optimistic lazy-start path, whose claim overlaps the body.
 
-Per-event `409`s are tolerated the same way the single path tolerates `EntityConflictError` (a concurrent delivery already created the entity); any other per-event failure fails the suspension write the way a single-path rejection would.
+Per-event `409`s are tolerated the same way the single path tolerates `EntityConflictError` (a concurrent delivery already created the entity); any other per-event failure fails the suspension write the way a single-path rejection would. A batch carrying a `step_started` (that is, any batch with inline pairs) is **not** retried in-process on a transport blip: a pair's `409` cannot be told apart from the caller's own earlier attempt having committed it, so recovery goes through queue redelivery instead, where the step's ownership stamp routes it back to the same invocation.
+
+`createBatch` is optional, so today only the Vercel World folds at all: every other World keeps the single-event path and never sends a pair.
 
 **Escape hatch:** set `WORKFLOW_BATCH_TRANSITIONS=0` (or `false`) to disable batching and restore the exact prior one-write-per-event path — see [`WORKFLOW_BATCH_TRANSITIONS`](/docs/configuration/worlds#workflow_batch_transitions).
 

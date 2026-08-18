@@ -1,3 +1,4 @@
+import assert from 'node:assert/strict';
 import { types } from 'node:util';
 import {
   EntityConflictError,
@@ -415,6 +416,16 @@ export async function executeStep(
       ...Attribute.WorkflowRunId(workflowRunId),
       ...Attribute.StepId(stepId),
     });
+
+    // The two lazy start modes are mutually exclusive by construction (the
+    // caller sets one or the other), and several branches below read only one
+    // of them to decide whether the step is brand-new. Enforced rather than
+    // documented so a caller that ever sets both fails here instead of
+    // silently taking the pre-claimed path with an unsent input.
+    assert(
+      !(params.lazyStepInput !== undefined && params.preclaimedStart),
+      'executeStep: lazyStepInput and preclaimedStart are mutually exclusive'
+    );
 
     // A pre-claimed start that LOST the batched pair's atomic create-claim: a
     // concurrent writer owns this step. Same outcome as losing the lazy

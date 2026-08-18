@@ -1683,6 +1683,66 @@ describe('handleSuspension batched fan-out', () => {
       });
     });
 
+    it('settles the trailing chunk before a pair-chunk failure escapes', async () => {
+      // settlePhase's invariant: a phase's write set must be final before a
+      // failure escapes, or a sibling create lands during the caller's replay
+      // restart. `deferredBatchWork` never reaches the caller when
+      // handleSuspension throws, so the pair-chunk failure path has to join
+      // the trailing work itself.
+      let rejectPairChunk: ((err: unknown) => void) | undefined;
+      let releaseTrailing: (() => void) | undefined;
+      let trailingSettled = false;
+      let call = 0;
+      const createBatch = vi.fn().mockImplementation((_runId, events) => {
+        call += 1;
+        if (call === 1) {
+          return new Promise((_resolve, reject) => {
+            rejectPairChunk = reject;
+          });
+        }
+        return new Promise((resolve) => {
+          releaseTrailing = () => {
+            trailingSettled = true;
+            let slot = 100;
+            resolve({
+              results: events.map(({ event }: { event: object }) => ({
+                status: 200,
+                event: { ...event, eventId: slotToEventId(slot++) },
+              })),
+            });
+          };
+        });
+      });
+      const { world } = queueWorld(createBatch);
+      const stepIds = Array.from({ length: 34 }, (_, i) => `s${i + 1}`);
+
+      const pending = handleSuspension({
+        suspension: new WorkflowSuspension(stepsAndWait(stepIds), globalThis),
+        world,
+        run: slotRun,
+        ownerMessageId: 'msg_owner_1',
+        stepDispatch: stepDispatch(),
+        allowDeferredBatchWork: true,
+      });
+      await vi.waitFor(() => {
+        expect(createBatch).toHaveBeenCalledTimes(2);
+      });
+      // biome-ignore lint/style/noNonNullAssertion: set by the first call
+      rejectPairChunk!(
+        new WorkflowWorldError('pair chunk exploded', { status: 500 })
+      );
+      // The rejection must NOT escape while chunk 2 is outstanding.
+      expect(await probe(pending)).toBe('pending');
+      expect(trailingSettled).toBe(false);
+
+      // biome-ignore lint/style/noNonNullAssertion: set by the second call
+      releaseTrailing!();
+      await expect(pending).rejects.toMatchObject({
+        message: expect.stringContaining('pair chunk exploded'),
+      });
+      expect(trailingSettled).toBe(true);
+    });
+
     it('awaits everything at return without the opt-in', async () => {
       const { createBatch, releases } = gatedCreateBatch();
       const { world } = queueWorld(createBatch);

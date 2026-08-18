@@ -1474,8 +1474,19 @@ export async function handleSuspension({
           if (failure) throw failure.reason;
         })();
 
-        const pairChunkIndex = chunks.findIndex((chunk) =>
+        // EVERY chunk carrying pairs gates the return, not just the first:
+        // a pair whose commit the caller has not seen yields no
+        // `inlineClaims` entry, so the caller falls back to a lazy
+        // `step_started` that would race this same fold's still-in-flight
+        // pair for the same step. Today pairs always land in one chunk
+        // (they sort first, and two rows per inline step fit inside one
+        // chunk — pinned by constants.test.ts), so this is at most one
+        // commit; the filter is what keeps the property true if either cap
+        // moves.
+        const pairCommits = chunks.flatMap((chunk, index) =>
           chunk.some((entry) => entry.kind === 'inline-started')
+            ? [commits[index]]
+            : []
         );
         if (allowDeferredBatchWork) {
           // The trailing work is the caller's to join before ack. Attach a
@@ -1484,12 +1495,24 @@ export async function handleSuspension({
           // an unhandledRejection — awaiting the promise still observes it.
           trailing.catch(() => {});
           deferredBatchWork = trailing;
-          // Only the pair chunk gates the return: its claims are what the
+          // Only the pair chunks gate the return: their claims are what the
           // caller starts the inline bodies from. With no pairs there is
           // nothing the caller's post-return work reads from the commits,
           // so nothing gates.
-          if (pairChunkIndex >= 0) {
-            await commits[pairChunkIndex];
+          if (pairCommits.length > 0) {
+            try {
+              await Promise.all(pairCommits);
+            } catch (err) {
+              // A pair chunk failed, so this phase's write set is NOT the
+              // caller's to join any more — `deferredBatchWork` never
+              // reaches it once handleSuspension throws. Settle the rest
+              // before the rejection escapes, for the reason `settlePhase`
+              // gives: a sibling create landing after the throw commits an
+              // event from the abandoned replay's seeded sequence and races
+              // the caller's restart reload while doing so.
+              await trailing.catch(() => {});
+              throw err;
+            }
           }
         } else {
           await trailing;
