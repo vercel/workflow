@@ -28,8 +28,10 @@ async function setupRunningStep(opts: {
   world: World;
   stepName: string;
   onBody: () => void;
+  register?: boolean;
+  createStep?: boolean;
 }): Promise<{ runId: string; stepId: string }> {
-  const { world, stepName, onBody } = opts;
+  const { world, stepName, onBody, register = true, createStep = true } = opts;
   const runInput = await dehydrateStepArguments([], 'run', undefined);
   const created = await world.events.create(null, {
     eventType: 'run_created',
@@ -48,13 +50,15 @@ async function setupRunningStep(opts: {
   } as never);
 
   const stepId = 'step_timeout_1';
-  const stepInput = await dehydrateStepArguments([], runId, undefined);
-  await world.events.create(runId, {
-    eventType: 'step_created',
-    specVersion: SPEC_VERSION_CURRENT,
-    correlationId: stepId,
-    eventData: { stepName, input: stepInput },
-  });
+  if (createStep) {
+    const stepInput = await dehydrateStepArguments([], runId, undefined);
+    await world.events.create(runId, {
+      eventType: 'step_created',
+      specVersion: SPEC_VERSION_CURRENT,
+      correlationId: stepId,
+      eventData: { stepName, input: stepInput },
+    });
+  }
 
   const stepFn = Object.assign(
     async () => {
@@ -63,7 +67,9 @@ async function setupRunningStep(opts: {
     },
     { maxRetries: MAX_RETRIES }
   );
-  registerStepFunction(stepName, stepFn);
+  if (register) {
+    registerStepFunction(stepName, stepFn);
+  }
 
   return { runId, stepId };
 }
@@ -171,7 +177,7 @@ describe('executeStep — compute instance stamping', () => {
     counter += 1;
   });
 
-  it('stamps computeInstanceId on step_started without displacing the slot snapshot', async () => {
+  it('stamps request and compute provenance on step_started without displacing the slot snapshot', async () => {
     const world = makeWorld();
     const stepName = uniqueStepName();
     const { runId, stepId } = await setupRunningStep({
@@ -191,6 +197,7 @@ describe('executeStep — compute instance stamping', () => {
       workflowRunId: runId,
       workflowName: 'wf',
       workflowStartedAt: Date.now(),
+      requestId: 'req_step_executor',
       stepId,
       stepName,
       slotSnapshot,
@@ -200,9 +207,100 @@ describe('executeStep — compute instance stamping', () => {
       ([, data]) => data.eventType === 'step_started'
     );
     expect(started).toHaveLength(1);
-    expect(started[0]?.[2]?.computeInstanceId).toBe(COMPUTE_INSTANCE_ID);
-    // Both ride the same params object and neither may clobber the other.
+    expect(started[0]?.[2]).toMatchObject({
+      requestId: 'req_step_executor',
+      computeInstanceId: COMPUTE_INSTANCE_ID,
+    });
+    // All dimensions ride the same params object and neither may clobber another.
     expect(started[0]?.[2]?.eventCount).toBe(slotSnapshot.eventCount);
+  });
+
+  it('stamps provenance when a lazy unregistered step is materialized', async () => {
+    const world = makeWorld();
+    const stepName = uniqueStepName();
+    const { runId, stepId } = await setupRunningStep({
+      world,
+      stepName,
+      onBody: () => {},
+      register: false,
+      createStep: false,
+    });
+    const input = await dehydrateStepArguments([], runId, undefined);
+    const createSpy = vi.spyOn(world.events, 'create');
+
+    const result = await executeStep({
+      world,
+      workflowRunId: runId,
+      workflowName: 'wf',
+      workflowStartedAt: Date.now(),
+      requestId: 'req_unregistered',
+      stepId,
+      stepName,
+      lazyStepInput: input,
+    });
+
+    expect(result.type).toBe('failed');
+    const started = createSpy.mock.calls.find(
+      ([, data]) => data.eventType === 'step_started'
+    );
+    expect(started?.[2]).toMatchObject({
+      requestId: 'req_unregistered',
+      computeInstanceId: COMPUTE_INSTANCE_ID,
+    });
+  });
+
+  it('omits an empty requestId from step_started', async () => {
+    const world = makeWorld();
+    const stepName = uniqueStepName();
+    const { runId, stepId } = await setupRunningStep({
+      world,
+      stepName,
+      onBody: () => {},
+    });
+    const createSpy = vi.spyOn(world.events, 'create');
+
+    await executeStep({
+      world,
+      workflowRunId: runId,
+      workflowName: 'wf',
+      workflowStartedAt: Date.now(),
+      requestId: '',
+      stepId,
+      stepName,
+    });
+
+    const started = createSpy.mock.calls.find(
+      ([, data]) => data.eventType === 'step_started'
+    );
+    expect(started?.[2]?.requestId).toBeUndefined();
+  });
+
+  it('omits requestId from step_started when unavailable', async () => {
+    const world = makeWorld();
+    const stepName = uniqueStepName();
+    const { runId, stepId } = await setupRunningStep({
+      world,
+      stepName,
+      onBody: () => {},
+    });
+    const createSpy = vi.spyOn(world.events, 'create');
+
+    await executeStep({
+      world,
+      workflowRunId: runId,
+      workflowName: 'wf',
+      workflowStartedAt: Date.now(),
+      stepId,
+      stepName,
+    });
+
+    const started = createSpy.mock.calls.find(
+      ([, data]) => data.eventType === 'step_started'
+    );
+    expect(started?.[2]).toMatchObject({
+      computeInstanceId: COMPUTE_INSTANCE_ID,
+    });
+    expect(started?.[2]?.requestId).toBeUndefined();
   });
 
   it('advances the snapshot it sends as its own writes land', async () => {
