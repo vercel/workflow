@@ -320,7 +320,12 @@ jobs:
   e2e-vercel-prod:
     name: E2E Vercel Prod Tests (${{ matrix.app.name }} - ${{ matrix.vm }})
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # The slowest lane (nextjs-turbopack quickjs) baselines at 24-29 minutes
+    # on green runs: ~128 serial tests, quickjs VM overhead, and 5s
+    # return-value polling. 30 minutes left ~90s of headroom, so ordinary
+    # slow days cancelled the whole job at the ceiling and burned full-run
+    # re-runs. Headroom, not a fix — the fix is re-enabling e2e concurrency.
+    timeout-minutes: 40
     needs: ci-scope
     if: ${{ needs.ci-scope.outputs.fast-path != 'true' }}
     permissions:
