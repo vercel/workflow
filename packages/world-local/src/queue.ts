@@ -2,12 +2,18 @@ import { setTimeout } from 'node:timers/promises';
 import type { Transport } from '@vercel/queue';
 import { createWorkflowUrl } from '@workflow/utils';
 import {
+  isNodeHttpEnabled,
   MessageId,
   parseQueueName,
   type Queue,
   type QueuePrefix,
   ValidQueueName,
 } from '@workflow/world';
+import {
+  createNodeHttpAgents,
+  destroyNodeHttpAgents,
+  nodeHttpFetch,
+} from '@workflow/world/node-http.js';
 import { Sema } from 'async-sema';
 import { monotonicFactory } from 'ulid';
 import { Agent } from 'undici';
@@ -112,11 +118,21 @@ export function createQueue(config: Partial<Config>): LocalQueue {
   // - connections: 1000 allows many parallel connections to the same host
   // - pipelining: 1 (default) for HTTP/1.1 compatibility
   // - keepAliveTimeout: 30s keeps connections warm for rapid step execution
-  const httpAgent = new Agent({
+  const agentOptions = {
     headersTimeout: 0,
     connections: 1000,
     keepAliveTimeout: 30_000,
-  });
+  } as const;
+  // Exactly one of these is built, and close() shuts down whichever it is.
+  // Resolved once per queue rather than per delivery so a single queue never
+  // mixes transports mid-flight.
+  const nodeHttpAgents = isNodeHttpEnabled()
+    ? createNodeHttpAgents({
+        maxSockets: agentOptions.connections,
+        keepAliveMs: agentOptions.keepAliveTimeout,
+      })
+    : undefined;
+  const httpAgent = nodeHttpAgents ? undefined : new Agent(agentOptions);
   const transport = new TypedJsonTransport();
   const generateId = monotonicFactory();
   const semaphore = new Sema(WORKFLOW_LOCAL_QUEUE_CONCURRENCY);
@@ -197,17 +213,23 @@ export function createQueue(config: Partial<Config>): LocalQueue {
             response = await directHandler(req);
           } else {
             const baseUrl = await resolveBaseUrl(config);
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici v7 dispatcher types don't match @types/node's RequestInit
-            response = await fetch(
-              createWorkflowUrl(baseUrl, { type: pathname }),
-              {
-                method: 'POST',
-                duplex: 'half',
-                dispatcher: httpAgent,
-                headers,
-                body,
-              } as any
-            );
+            const url = createWorkflowUrl(baseUrl, { type: pathname });
+            response = nodeHttpAgents
+              ? await nodeHttpFetch(url, {
+                  method: 'POST',
+                  headers: new Headers(headers),
+                  body,
+                  agents: nodeHttpAgents,
+                  headersTimeoutMs: agentOptions.headersTimeout,
+                })
+              : // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici v7 dispatcher types don't match @types/node's RequestInit
+                await fetch(url, {
+                  method: 'POST',
+                  duplex: 'half',
+                  dispatcher: httpAgent,
+                  headers,
+                  body,
+                } as any);
           }
 
           const text = await response.text();
@@ -362,7 +384,8 @@ export function createQueue(config: Partial<Config>): LocalQueue {
       directHandlers.set(prefix, handler);
     },
     async close() {
-      await httpAgent.close();
+      if (nodeHttpAgents) destroyNodeHttpAgents(nodeHttpAgents);
+      await httpAgent?.close();
     },
   };
 }
