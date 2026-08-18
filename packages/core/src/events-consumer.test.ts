@@ -1167,3 +1167,96 @@ describe('EventsConsumer', () => {
     });
   });
 });
+
+describe('sealed-log noop events (specVersion 7)', () => {
+  function logEvent(eventType: Event['eventType'], id: string): Event {
+    return createMockEvent({ id, eventId: id, eventType } as Partial<Event>);
+  }
+
+  function consumerFor(ids: string[]) {
+    const seen: string[] = [];
+    const callback = (event: Event | null) => {
+      if (event && ids.includes(event.id) && !seen.includes(event.id)) {
+        seen.push(event.id);
+        return EventConsumerResult.Consumed;
+      }
+      return EventConsumerResult.NotConsumed;
+    };
+    return { seen, callback };
+  }
+
+  it('steps over a noop without offering it to any consumer', async () => {
+    // The backend sealed an abandoned slot between two real events. The walk
+    // must pass through it as if the position never had a writer: both real
+    // events land, nothing is reported unconsumed, and the callback is never
+    // even offered the noop.
+    const noop = logEvent('noop' as Event['eventType'], 'noop-1');
+    const before = logEvent('wait_created', 'wait-1');
+    const after = logEvent('wait_completed', 'wait-2');
+    const onUnconsumedEvent = vi.fn();
+    const offered: (string | null)[] = [];
+    const consumer = new EventsConsumer([before, noop, after], {
+      onUnconsumedEvent,
+      getPromiseQueue: () => Promise.resolve(),
+      isDeliveryIdle: () => true,
+    });
+    const reals = consumerFor(['wait-1', 'wait-2']);
+    consumer.subscribe((event) => {
+      offered.push(event === null ? null : event.id);
+      return reals.callback(event);
+    });
+
+    await vi.waitFor(() => {
+      expect(reals.seen).toEqual(['wait-1', 'wait-2']);
+    });
+    expect(consumer.eventIndex).toBe(3);
+    expect(onUnconsumedEvent).not.toHaveBeenCalled();
+    expect(offered).not.toContain('noop-1');
+  });
+
+  it('never advances the deterministic clock off a noop', async () => {
+    // A noop's createdAt is the SEALER's wall clock — it can postdate every
+    // real event around it. Letting it reach onConsumedEvent would leak that
+    // timestamp into replay Date.now() and diverge from a log whose hole was
+    // filled by the real writer instead.
+    const noop = createMockEvent({
+      id: 'noop-1',
+      eventId: 'noop-1',
+      eventType: 'noop',
+      createdAt: new Date(Date.now() + 60_000),
+    } as Partial<Event>);
+    const real = logEvent('wait_created', 'wait-1');
+    const onConsumedEvent = vi.fn();
+    const consumer = new EventsConsumer([noop, real], {
+      ...defaultOptions,
+      onConsumedEvent,
+    });
+    const reals = consumerFor(['wait-1']);
+    consumer.subscribe(reals.callback);
+
+    await vi.waitFor(() => {
+      expect(reals.seen).toEqual(['wait-1']);
+    });
+    expect(onConsumedEvent).toHaveBeenCalledTimes(1);
+    expect(onConsumedEvent).toHaveBeenCalledWith(real);
+  });
+
+  it('handles a log that ends on a noop', async () => {
+    const real = logEvent('wait_created', 'wait-1');
+    const noop = logEvent('noop' as Event['eventType'], 'noop-1');
+    const onUnconsumedEvent = vi.fn();
+    const consumer = new EventsConsumer([real, noop], {
+      onUnconsumedEvent,
+      getPromiseQueue: () => Promise.resolve(),
+      isDeliveryIdle: () => true,
+    });
+    const reals = consumerFor(['wait-1']);
+    consumer.subscribe(reals.callback);
+
+    await vi.waitFor(() => {
+      expect(reals.seen).toEqual(['wait-1']);
+    });
+    expect(consumer.eventIndex).toBe(2);
+    expect(onUnconsumedEvent).not.toHaveBeenCalled();
+  });
+});

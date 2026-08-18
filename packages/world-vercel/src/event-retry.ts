@@ -172,6 +172,12 @@ export const EVENT_RETRY_ELIGIBILITY = {
     retryable: false,
     reason: 'server-originated; never POSTed by the SDK',
   },
+  // Server-originated sealed-log filler (specVersion 7); the SDK never
+  // POSTs it — the server's read path writes it to seal an abandoned slot.
+  noop: {
+    retryable: false,
+    reason: 'server-originated; never POSTed by the SDK',
+  },
 } satisfies Record<WorkflowEventType, EventRetryPolicy>;
 
 /** Up to this many retries after the initial attempt (3 attempts total). */

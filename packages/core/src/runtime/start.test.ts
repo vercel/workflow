@@ -5,7 +5,6 @@ import {
   SPEC_VERSION_MAX_SUPPORTED,
   SPEC_VERSION_SUPPORTS_ATTRIBUTES,
   SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
-  SPEC_VERSION_SUPPORTS_SLOT_IDENTITY,
 } from '@workflow/world';
 import {
   afterEach,
@@ -201,17 +200,19 @@ describe('start', () => {
       expect(mockQueue).not.toHaveBeenCalled();
     });
 
-    it('accepts a world that opts into a spec version above the default', async () => {
-      // `world-vercel` declares the slot-identity version so its new runs are
-      // created with slot event ids. An equality check against the default
-      // would make the runtime refuse the adapter shipped alongside it, and
-      // the failure surfaces only in e2e against that World.
+    it('accepts a world that declares the ceiling version', async () => {
+      // With the sealed-log bump the default and the ceiling coincide at 7,
+      // so "above the default" is momentarily unoccupiable — what this pins
+      // instead is that a World declaring the ceiling is admitted and its
+      // declaration is what gets stamped, not this runtime's default. (When
+      // the ceiling next moves ahead of the default, point the declaration
+      // between them again.)
       const validWorkflow = Object.assign(() => Promise.resolve('result'), {
         workflowId: 'test-workflow',
       });
 
       setWorld({
-        specVersion: SPEC_VERSION_SUPPORTS_SLOT_IDENTITY,
+        specVersion: SPEC_VERSION_MAX_SUPPORTED,
         getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
         events: { create: mockEventsCreate },
         queue: mockQueue,
@@ -225,7 +226,7 @@ describe('start', () => {
         expect.stringMatching(/^wrun_/),
         expect.objectContaining({
           eventType: 'run_created',
-          specVersion: SPEC_VERSION_SUPPORTS_SLOT_IDENTITY,
+          specVersion: SPEC_VERSION_MAX_SUPPORTED,
         }),
         expect.anything()
       );

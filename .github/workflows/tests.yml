@@ -481,7 +481,12 @@ jobs:
           # unset for changeset-release PRs: they test a production deployment
           # that is wired to the production workflow-server, and the harness
           # has to read run state from the same server the app writes it to.
-          VERCEL_WORKFLOW_SERVER_URL: ${{ github.ref != 'refs/heads/main' && !startsWith(github.head_ref, 'changeset-release/') && secrets.VERCEL_WORKFLOW_SERVER_URL || '' }}
+          # TODO(sealed-log): DO NOT MERGE as-is — pinned to the sealed-log
+          # sequencer server preview (workflow-server PR) so this PR's e2e
+          # suite exercises spec-7 sequencing + noop sealing end-to-end.
+          # Revert to the secrets.VERCEL_WORKFLOW_SERVER_URL expression
+          # before landing.
+          VERCEL_WORKFLOW_SERVER_URL: https://workflow-server-git-pgp-sealed-log-sequencer.vercel.sh
 
       - name: Capture runtime logs on failure
         if: failure()
@@ -595,7 +600,12 @@ jobs:
           WORKFLOW_VERCEL_PROJECT_SLUG: "example-nextjs-workflow-turbopack"
           # See the note on e2e-vercel-prod: PRs point at the protected
           # workflow-server preview; unset on main for production.
-          VERCEL_WORKFLOW_SERVER_URL: ${{ github.ref != 'refs/heads/main' && !startsWith(github.head_ref, 'changeset-release/') && secrets.VERCEL_WORKFLOW_SERVER_URL || '' }}
+          # TODO(sealed-log): DO NOT MERGE as-is — pinned to the sealed-log
+          # sequencer server preview (workflow-server PR) so this PR's e2e
+          # suite exercises spec-7 sequencing + noop sealing end-to-end.
+          # Revert to the secrets.VERCEL_WORKFLOW_SERVER_URL expression
+          # before landing.
+          VERCEL_WORKFLOW_SERVER_URL: https://workflow-server-git-pgp-sealed-log-sequencer.vercel.sh
 
       - name: Capture runtime logs on failure
         if: failure()
@@ -769,7 +779,9 @@ jobs:
           WORKFLOW_VERCEL_TEAM: ${{ env.WS_TEAM_ID }}
           WORKFLOW_VERCEL_PROJECT: ${{ matrix.app.project-id }}
           WORKFLOW_VERCEL_PROJECT_SLUG: ${{ matrix.app.project-slug }}
-          VERCEL_WORKFLOW_SERVER_URL: ${{ github.ref != 'refs/heads/main' && secrets.VERCEL_WORKFLOW_SERVER_URL || '' }}
+          # TODO(sealed-log): DO NOT MERGE as-is — see the note on the
+          # e2e-vercel-prod job; pinned to the sealed-log server preview.
+          VERCEL_WORKFLOW_SERVER_URL: https://workflow-server-git-pgp-sealed-log-sequencer.vercel.sh
 
       - name: Capture runtime logs on failure
         if: failure()

@@ -7,23 +7,22 @@ import {
   SPEC_VERSION_MAX_SUPPORTED,
   SPEC_VERSION_SUPPORTS_ATTRIBUTES,
   SPEC_VERSION_SUPPORTS_COMPRESSION,
+  SPEC_VERSION_SUPPORTS_SEALED_LOG,
   SPEC_VERSION_SUPPORTS_SLOT_IDENTITY,
 } from './spec-version.js';
 
 describe('spec version constants', () => {
-  it('current spec version is the compression version', () => {
-    expect(SPEC_VERSION_CURRENT).toBe(SPEC_VERSION_SUPPORTS_COMPRESSION);
-    expect(SPEC_VERSION_SUPPORTS_COMPRESSION).toBe(5);
+  it('current spec version is the sealed-log version', () => {
+    expect(SPEC_VERSION_SUPPORTS_SLOT_IDENTITY).toBe(6);
+    expect(SPEC_VERSION_SUPPORTS_SEALED_LOG).toBe(7);
+    expect(SPEC_VERSION_CURRENT).toBe(SPEC_VERSION_SUPPORTS_SEALED_LOG);
   });
 
-  it('the readable ceiling is the slot-identity version', () => {
-    // The default a World stamps and the highest version this SDK can read
-    // are separate dials. Slot identity is above the default on purpose: only
-    // a World that actually allocates slots opts into it.
-    expect(SPEC_VERSION_SUPPORTS_SLOT_IDENTITY).toBe(6);
-    expect(SPEC_VERSION_MAX_SUPPORTED).toBe(
-      SPEC_VERSION_SUPPORTS_SLOT_IDENTITY
-    );
+  it('the readable ceiling moves with the version we stamp', () => {
+    // "What do we write?" and "what can we still read?" are separate dials,
+    // and the ceiling must never sit below the default: an SDK that stamps a
+    // version it cannot read back would reject its own runs.
+    expect(SPEC_VERSION_MAX_SUPPORTED).toBe(SPEC_VERSION_SUPPORTS_SEALED_LOG);
     expect(SPEC_VERSION_MAX_SUPPORTED).toBeGreaterThanOrEqual(
       SPEC_VERSION_CURRENT
     );

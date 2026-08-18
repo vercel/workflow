@@ -51,8 +51,22 @@ export const SPEC_VERSION_SUPPORTS_COMPRESSION = 5 as SpecVersion;
 export const SPEC_VERSION_SUPPORTS_SLOT_IDENTITY = 6 as SpecVersion;
 
 /**
+ * Runs at this spec version or later live in a "sealed log": their slot
+ * positions are pre-assigned by a per-run sequencer on the World's backend,
+ * so concurrent writers never race each other for a position — and a position
+ * whose writer died is filled ("sealed") by the backend with a `noop` event.
+ * What the version gates is the READER contract that makes that safe: a
+ * reader at this version knows a `noop` occupies its slot and carries no
+ * workflow meaning, and skips it during replay without advancing the
+ * deterministic clock (see `EventsConsumer`). A reader below this version
+ * would fail to parse the unknown event type, which is exactly what
+ * `requiresNewerWorld` exists to catch.
+ */
+export const SPEC_VERSION_SUPPORTS_SEALED_LOG = 7 as SpecVersion;
+
+/**
  * Current spec version: event-sourced architecture with native attributes,
- * compressed payloads and slot-numbered event ids.
+ * compressed payloads, slot-numbered event ids, and sealed-log sequencing.
  *
  * This is both the version a World stamps on the runs it creates and the
  * *lowest* one this runtime accepts from a World (see
@@ -72,7 +86,7 @@ export const SPEC_VERSION_SUPPORTS_SLOT_IDENTITY = 6 as SpecVersion;
  * run's identity scheme from what is stored rather than from this constant.
  */
 export const SPEC_VERSION_CURRENT =
-  SPEC_VERSION_SUPPORTS_SLOT_IDENTITY as SpecVersion;
+  SPEC_VERSION_SUPPORTS_SEALED_LOG as SpecVersion;
 
 /**
  * The highest spec version this SDK can read.
@@ -86,7 +100,7 @@ export const SPEC_VERSION_CURRENT =
  * impossible to express.
  */
 export const SPEC_VERSION_MAX_SUPPORTED =
-  SPEC_VERSION_SUPPORTS_SLOT_IDENTITY as SpecVersion;
+  SPEC_VERSION_SUPPORTS_SEALED_LOG as SpecVersion;
 
 /**
  * Check if a spec version is legacy (<= SPEC_VERSION_LEGACY or undefined).

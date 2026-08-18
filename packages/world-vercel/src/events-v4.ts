@@ -361,6 +361,9 @@ const CreateEventV4BodySchemas: {
   hook_conflict: CreateEventV4BodySchema,
   wait_created: CreateEventV4BodySchema,
   wait_completed: CreateEventV4BodySchema,
+  // Never POSTed by the SDK (server-originated sealed-log filler); present
+  // only because the map is exhaustive over EventType.
+  noop: CreateEventV4BodySchema,
 };
 
 const MaxEventsHeaderSchema = z.coerce.number().int().positive();
