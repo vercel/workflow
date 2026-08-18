@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
+import { readFile, stat } from 'node:fs/promises';
 
 export interface DiscoveredEntriesLike {
   discoveredSteps: Set<string>;
@@ -14,6 +14,17 @@ export type ScheduledRebuild =
 
 export interface SourceSnapshot {
   sourceHash: string;
+  /**
+   * File modification time observed alongside the content read. Together with
+   * `sourceHash` it identifies a specific write: an event whose content AND
+   * mtime both match the baseline is a duplicate notification for a write
+   * that was already consumed, while identical content with a newer mtime is
+   * a distinct rewrite (whose interim states a build may have consumed) and
+   * stays a conservative invalidation. Snapshots built without filesystem
+   * access use 0, which never equals a real mtime, so they always classify
+   * as rewrites rather than duplicates.
+   */
+  mtimeMs: number;
   importSignature: string;
   definitionSignature: string;
   hasDirective: boolean;
@@ -21,13 +32,30 @@ export interface SourceSnapshot {
 }
 
 export type RebuildDecision =
+  /**
+   * Every file in the batch was a duplicate notification for content the
+   * builder already consumed (same hash, same mtime). Nothing to rebuild,
+   * and — unlike `skip` — nothing happened, so the builder logs it under a
+   * marker the HMR log-count assertions do not count.
+   */
+  | { kind: 'duplicate' }
   | { kind: 'skip'; snapshots: Map<string, SourceSnapshot> }
   | {
       kind: 'hot';
       refreshStepRegistrations: boolean;
       snapshots: Map<string, SourceSnapshot>;
     }
-  | { kind: 'full' };
+  /**
+   * `snapshots` carries what the classifier read for the files that
+   * triggered the rediscovery. The full rebuild re-captures every already-
+   * relevant file from disk itself, but files it discovers for the first
+   * time are absent from that capture — seeding them from these reads gives
+   * a freshly created file a baseline matching (modulo the classify→build
+   * gap, which the mtime rule covers) what the build consumed, so its
+   * routine duplicate events suppress instead of forcing another rebuild,
+   * while a genuine mid-build edit still diffs as changed.
+   */
+  | { kind: 'full'; snapshots: Map<string, SourceSnapshot> };
 
 export type SourcePatternDetector = (source: string) => {
   hasDirective: boolean;
@@ -210,13 +238,15 @@ export const extractDefinitionSignature = (source: string) => {
 
 export const createSourceSnapshotFromSource = (
   source: string,
-  detectWorkflowPatterns: SourcePatternDetector
+  detectWorkflowPatterns: SourcePatternDetector,
+  mtimeMs = 0
 ): SourceSnapshot => {
   const sourceWithoutComments = stripCommentsFromSource(source);
   const patterns = detectWorkflowPatterns(sourceWithoutComments);
 
   return {
     sourceHash: createHash('sha256').update(source).digest('base64url'),
+    mtimeMs,
     importSignature: extractImportSignature(sourceWithoutComments),
     definitionSignature: extractDefinitionSignature(sourceWithoutComments),
     hasDirective: patterns.hasDirective,
@@ -224,17 +254,27 @@ export const createSourceSnapshotFromSource = (
   };
 };
 
+// The content read and the stat can interleave with a concurrent write, but
+// every tearing lands safe: content-behind-mtime makes the write's own event
+// diff as changed (rebuild), and mtime-behind-content makes it diff as a
+// rewrite (conservative rebuild). Neither can suppress a real write.
 export const createSourceSnapshot = async ({
   file,
   detectWorkflowPatterns,
 }: {
   file: string;
   detectWorkflowPatterns: SourcePatternDetector;
-}): Promise<SourceSnapshot> =>
-  createSourceSnapshotFromSource(
-    await readFile(file, 'utf8'),
-    detectWorkflowPatterns
+}): Promise<SourceSnapshot> => {
+  const [source, stats] = await Promise.all([
+    readFile(file, 'utf8'),
+    stat(file),
+  ]);
+  return createSourceSnapshotFromSource(
+    source,
+    detectWorkflowPatterns,
+    stats.mtimeMs
   );
+};
 
 export const getRelevantFiles = ({
   discoveredEntries,
@@ -427,16 +467,25 @@ export const classifyRebuild = async ({
     normalizePath,
   });
   const snapshots = new Map<string, SourceSnapshot>();
+  const readSnapshots = new Map<string, SourceSnapshot>();
+  let duplicates = 0;
+  let requiresFullRebuild = false;
+  // Read the whole batch even once a full rebuild is certain: the full
+  // decision's snapshots seed baselines for files the rebuild discovers for
+  // the first time, and a file skipped here (e.g. one created alongside the
+  // change that forced the rediscovery) would re-classify its duplicate
+  // events as brand new and force a second rebuild.
   for (const file of files) {
     let nextSnapshot: SourceSnapshot;
     try {
       nextSnapshot = await readSnapshot(file);
     } catch {
       if (relevantFiles.has(file)) {
-        return { kind: 'full' };
+        requiresFullRebuild = true;
       }
       continue;
     }
+    readSnapshots.set(file, nextSnapshot);
 
     const previousSnapshot = sourceSnapshots.get(file);
     if (!previousSnapshot) {
@@ -446,17 +495,50 @@ export const classifyRebuild = async ({
         nextSnapshot.hasDirective ||
         nextSnapshot.hasSerde
       ) {
-        return { kind: 'full' };
+        requiresFullRebuild = true;
+        continue;
       }
+      // Track files that cannot affect the build so their follow-up watcher
+      // events have a baseline to diff against and duplicates suppress.
+      snapshots.set(file, nextSnapshot);
+      continue;
+    }
+    // The duplicate check runs before any invalidation rule: identical
+    // content AND mtime is a repeated notification for a write that was
+    // already consumed, so nothing can have changed — directive files
+    // included.
+    if (previousSnapshot.sourceHash === nextSnapshot.sourceHash) {
+      // Same content, same write (mtime matches): a duplicate notification
+      // for a write that was already consumed. Watchers routinely emit
+      // several events per edit; treating them as fresh invalidations turned
+      // each into a spurious rebuild.
+      if (previousSnapshot.mtimeMs === nextSnapshot.mtimeMs) {
+        duplicates += 1;
+        continue;
+      }
+      // Same content but a different write (rewrite-in-place, or a revert
+      // during a build whose interim state the build may have consumed):
+      // stay conservative for files that can affect the build.
+      if (relevantFiles.has(file)) {
+        requiresFullRebuild = true;
+        continue;
+      }
+      duplicates += 1;
       continue;
     }
     if (requiresFullRediscovery(previousSnapshot, nextSnapshot)) {
-      return { kind: 'full' };
-    }
-    if (previousSnapshot.sourceHash === nextSnapshot.sourceHash) {
-      return { kind: 'full' };
+      requiresFullRebuild = true;
+      continue;
     }
     snapshots.set(file, nextSnapshot);
+  }
+
+  if (requiresFullRebuild) {
+    return { kind: 'full', snapshots: readSnapshots };
+  }
+
+  if (snapshots.size === 0 && duplicates > 0) {
+    return { kind: 'duplicate' };
   }
 
   const changedFiles = [...snapshots.keys()];

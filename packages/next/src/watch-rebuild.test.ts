@@ -172,7 +172,7 @@ export const allWorkflows = {
           ),
         sourceSnapshots,
       })
-    ).resolves.toEqual({ kind: 'full' });
+    ).resolves.toMatchObject({ kind: 'full' });
   });
 
   test('modified registry import without previous snapshot requires full rediscovery', async () => {
@@ -202,18 +202,21 @@ export const allWorkflows = {} as const;
           ),
         sourceSnapshots: new Map(),
       })
-    ).resolves.toEqual({ kind: 'full' });
+    ).resolves.toMatchObject({ kind: 'full' });
   });
 
-  test('fully rebuilds byte-identical workflow notifications', async () => {
+  test('suppresses duplicate notifications for an already-consumed write', async () => {
     const workflowFile = '/app/workflows/example.ts';
     const source = `export async function example() {
   'use workflow';
 }
 `;
+    // Same content AND same mtime: a second watcher event for the same
+    // write. Watchers routinely emit several events per edit.
     const snapshot = createSourceSnapshotFromSource(
       source,
-      detectWorkflowPatterns
+      detectWorkflowPatterns,
+      1000
     );
 
     await expect(
@@ -227,10 +230,172 @@ export const allWorkflows = {} as const;
         files: [workflowFile],
         inputFiles: [workflowFile],
         parentHasChild: () => false,
-        readSnapshot: async () => snapshot,
+        readSnapshot: async () => ({ ...snapshot }),
         sourceSnapshots: new Map([[workflowFile, snapshot]]),
       })
-    ).resolves.toEqual({ kind: 'full' });
+    ).resolves.toEqual({ kind: 'duplicate' });
+  });
+
+  test('fully rebuilds byte-identical rewrites of relevant files', async () => {
+    const workflowFile = '/app/workflows/example.ts';
+    const source = `export async function example() {
+  'use workflow';
+}
+`;
+    // Same content but a NEWER mtime: a distinct write whose interim states
+    // an in-flight build may have consumed. Stays a conservative
+    // invalidation.
+    const previousSnapshot = createSourceSnapshotFromSource(
+      source,
+      detectWorkflowPatterns,
+      1000
+    );
+    const rewrittenSnapshot = createSourceSnapshotFromSource(
+      source,
+      detectWorkflowPatterns,
+      2000
+    );
+
+    await expect(
+      classifyRebuild({
+        discoveredEntries: {
+          discoveredSteps: new Set(),
+          discoveredWorkflows: new Set([workflowFile]),
+          discoveredSerdeFiles: new Set(),
+          discoveredFiles: new Set([workflowFile]),
+        },
+        files: [workflowFile],
+        inputFiles: [workflowFile],
+        parentHasChild: () => false,
+        readSnapshot: async () => rewrittenSnapshot,
+        sourceSnapshots: new Map([[workflowFile, previousSnapshot]]),
+      })
+    ).resolves.toMatchObject({ kind: 'full' });
+  });
+
+  test('carries classifier reads on full decisions to seed new-file baselines', async () => {
+    const addedStepFile = '/app/workflows/added-step.ts';
+    const snapshot = createSourceSnapshotFromSource(
+      `export async function addedStep() {
+  'use step';
+}
+`,
+      detectWorkflowPatterns,
+      1000
+    );
+
+    await expect(
+      classifyRebuild({
+        discoveredEntries: {
+          discoveredSteps: new Set(),
+          discoveredWorkflows: new Set(),
+          discoveredSerdeFiles: new Set(),
+          discoveredFiles: new Set(),
+        },
+        files: [addedStepFile],
+        inputFiles: [],
+        parentHasChild: () => false,
+        readSnapshot: async () => snapshot,
+        sourceSnapshots: new Map(),
+      })
+    ).resolves.toEqual({
+      kind: 'full',
+      snapshots: new Map([[addedStepFile, snapshot]]),
+    });
+  });
+
+  test('tracks irrelevant files so their duplicate notifications suppress', async () => {
+    const unrelatedFile = '/app/scripts/unrelated.ts';
+    const snapshot = createSourceSnapshotFromSource(
+      'export const unrelated = true;\n',
+      detectWorkflowPatterns,
+      1000
+    );
+    const sourceSnapshots = new Map<string, SourceSnapshot>();
+    const discoveredEntries = {
+      discoveredSteps: new Set<string>(),
+      discoveredWorkflows: new Set<string>(),
+      discoveredSerdeFiles: new Set<string>(),
+      discoveredFiles: new Set<string>(),
+    };
+
+    const firstDecision = await classifyRebuild({
+      discoveredEntries,
+      files: [unrelatedFile],
+      inputFiles: [],
+      parentHasChild: () => false,
+      readSnapshot: async () => snapshot,
+      sourceSnapshots,
+    });
+    expect(firstDecision).toEqual({
+      kind: 'skip',
+      snapshots: new Map([[unrelatedFile, snapshot]]),
+    });
+    if (firstDecision.kind === 'skip') {
+      for (const [file, value] of firstDecision.snapshots) {
+        sourceSnapshots.set(file, value);
+      }
+    }
+
+    await expect(
+      classifyRebuild({
+        discoveredEntries,
+        files: [unrelatedFile],
+        inputFiles: [],
+        parentHasChild: () => false,
+        readSnapshot: async () => ({ ...snapshot }),
+        sourceSnapshots,
+      })
+    ).resolves.toEqual({ kind: 'duplicate' });
+  });
+
+  test('drops duplicates from a batch while rebuilding real changes', async () => {
+    const helperFile = '/app/workflows/helper.ts';
+    const workflowFile = '/app/workflows/workflow.ts';
+    const workflowSource = `export async function example() {
+  'use workflow';
+}
+`;
+    const workflowSnapshot = createSourceSnapshotFromSource(
+      workflowSource,
+      detectWorkflowPatterns,
+      1000
+    );
+    const previousHelperSnapshot = createSourceSnapshotFromSource(
+      "export const value = 'before';\n",
+      detectWorkflowPatterns,
+      1000
+    );
+    const nextHelperSnapshot = createSourceSnapshotFromSource(
+      "export const value = 'after';\n",
+      detectWorkflowPatterns,
+      2000
+    );
+
+    await expect(
+      classifyRebuild({
+        discoveredEntries: {
+          discoveredSteps: new Set(),
+          discoveredWorkflows: new Set([workflowFile]),
+          discoveredSerdeFiles: new Set(),
+          discoveredFiles: new Set([helperFile, workflowFile]),
+        },
+        files: [workflowFile, helperFile],
+        inputFiles: [workflowFile],
+        parentHasChild: (parent, child) =>
+          parent === workflowFile && child === helperFile,
+        readSnapshot: async (file) =>
+          file === workflowFile ? { ...workflowSnapshot } : nextHelperSnapshot,
+        sourceSnapshots: new Map([
+          [workflowFile, workflowSnapshot],
+          [helperFile, previousHelperSnapshot],
+        ]),
+      })
+    ).resolves.toEqual({
+      kind: 'hot',
+      refreshStepRegistrations: false,
+      snapshots: new Map([[helperFile, nextHelperSnapshot]]),
+    });
   });
 
   test('rebuilds relevant files without snapshots', async () => {
@@ -254,7 +419,7 @@ export const allWorkflows = {} as const;
           ),
         sourceSnapshots: new Map(),
       })
-    ).resolves.toEqual({ kind: 'full' });
+    ).resolves.toMatchObject({ kind: 'full' });
   });
 
   test('fully rebuilds every directive file change', async () => {
@@ -290,7 +455,7 @@ export const allWorkflows = {} as const;
         readSnapshot: async () => nextSnapshot,
         sourceSnapshots: new Map([[stepFile, previousSnapshot]]),
       })
-    ).resolves.toEqual({ kind: 'full' });
+    ).resolves.toMatchObject({ kind: 'full' });
   });
 
   test('rebuilds new files that can introduce graph entries', async () => {
@@ -314,7 +479,7 @@ export const allWorkflows = {} as const;
           ),
         sourceSnapshots: new Map(),
       })
-    ).resolves.toEqual({ kind: 'full' });
+    ).resolves.toMatchObject({ kind: 'full' });
   });
 
   test('hot rebuilds body changes used by workflows', async () => {

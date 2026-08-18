@@ -152,7 +152,6 @@ export async function getNextBuilderEager(
             : resolve(this.config.workingDir, pathname)
           ).replace(/\\/g, '/');
         let sourceSnapshots = new Map<string, SourceSnapshot>();
-        let buildInProgress = false;
 
         const watchableExtensions = new Set([
           '.js',
@@ -215,15 +214,6 @@ export async function getNextBuilderEager(
           },
         });
 
-        const runBuild = async (build: () => Promise<void>) => {
-          buildInProgress = true;
-          try {
-            await build();
-          } finally {
-            buildInProgress = false;
-          }
-        };
-
         const hotRebuild = async (refreshStepRegistrations: boolean) => {
           if (refreshStepRegistrations) {
             if (stepsCtx) {
@@ -250,7 +240,9 @@ export async function getNextBuilderEager(
           await writeManifest(mergeCombinedManifest(stepsManifest));
         };
 
-        const fullRebuild = async () => {
+        const fullRebuild = async (
+          triggerSnapshots?: Map<string, SourceSnapshot>
+        ) => {
           this.clearDiscoveredEntriesCache();
           const newInputFiles = await this.getInputFiles();
           options.inputFiles = newInputFiles;
@@ -279,6 +271,18 @@ export async function getNextBuilderEager(
           };
 
           await writeManifest(newCombined.manifest);
+          // Files this rebuild discovered for the first time are absent from
+          // the pre-build capture (it read the previous graph's relevant
+          // set). Seed them from what the classifier read when it decided on
+          // this rediscovery, so a freshly created file's routine duplicate
+          // events diff equal instead of forcing another rebuild, while a
+          // mid-build edit still diffs as changed. Files the capture did read
+          // keep the captured value: it is closer to what the build consumed.
+          for (const [file, snapshot] of triggerSnapshots ?? []) {
+            if (!nextSourceSnapshots.has(file)) {
+              nextSourceSnapshots.set(file, snapshot);
+            }
+          }
           sourceSnapshots = nextSourceSnapshots;
         };
 
@@ -368,9 +372,11 @@ export async function getNextBuilderEager(
           rememberKnownFile = nextKnown.addKnownFile;
         };
 
-        const runFullRebuild = async () => {
+        const runFullRebuild = async (
+          triggerSnapshots?: Map<string, SourceSnapshot>
+        ) => {
           logDevHmr('workflow dev hmr: full rediscovery');
-          await runBuild(fullRebuild);
+          await fullRebuild(triggerSnapshots);
           await refreshKnownFiles();
         };
 
@@ -385,6 +391,13 @@ export async function getNextBuilderEager(
             sourceSnapshots,
           });
           switch (decision.kind) {
+            // A repeated notification for a write that was already consumed:
+            // nothing changed and nothing was rebuilt. Logged under its own
+            // marker (not `skip`) so the e2e HMR log-count assertions can
+            // stay exact for the events that had an effect.
+            case 'duplicate':
+              logDevHmr('workflow dev hmr: duplicate');
+              return;
             case 'skip':
               logDevHmr('workflow dev hmr: skip');
               break;
@@ -392,12 +405,10 @@ export async function getNextBuilderEager(
               logDevHmr(
                 `workflow dev hmr: hot rebuild${decision.refreshStepRegistrations ? ' with step registration refresh' : ''}`
               );
-              await runBuild(() =>
-                hotRebuild(decision.refreshStepRegistrations)
-              );
+              await hotRebuild(decision.refreshStepRegistrations);
               break;
             case 'full':
-              await runFullRebuild();
+              await runFullRebuild(decision.snapshots);
               return;
             default:
               decision satisfies never;
@@ -431,11 +442,6 @@ export async function getNextBuilderEager(
         );
         const scheduleFileChange = (file: string) => {
           scheduleRebuild({ kind: 'files', files: [file] });
-        };
-        const scheduleBuildOverlap = () => {
-          if (buildInProgress) {
-            scheduleRebuild({ kind: 'full' });
-          }
         };
 
         const handleFileWritten = async (pathname: string) => {
@@ -475,16 +481,20 @@ export async function getNextBuilderEager(
           },
         });
 
+        // Events that land while a rebuild runs are not special-cased: the
+        // scheduled dirty path is classified after the build finishes against
+        // the baseline the build consumed, so a real mid-build edit diffs as
+        // changed, a duplicate notification diffs as the same write and is
+        // suppressed, and a same-content rewrite (whose interim states the
+        // build may have consumed) diffs as a rewrite and stays a
+        // conservative rediscovery.
         watcher.on('add', (pathname) => {
-          scheduleBuildOverlap();
           void handleFileWritten(pathname);
         });
         watcher.on('change', (pathname) => {
-          scheduleBuildOverlap();
           void handleFileWritten(pathname);
         });
         watcher.on('unlink', (pathname) => {
-          scheduleBuildOverlap();
           handleFileRemoved(pathname);
         });
         watcher.on('error', (error) => {
