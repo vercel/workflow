@@ -61,15 +61,15 @@
     {
       "id": "rivet",
       "type": "community",
-      "package": "@rivet-dev/vercel-world",
+      "package": "@rivet-dev/workflow-world",
       "name": "Rivet",
-      "description": "A Vercel World powered by Rivet Actors.",
-      "repository": "https://github.com/rivet-dev/rivet/tree/main/integrations/vercel-world",
-      "docs": "https://rivet.dev/integrations/vercel-workflows/",
-      "example": "https://github.com/rivet-dev/rivet/tree/main/examples/vercel-workflow",
+      "description": "Workflow World powered by Rivet Actors.",
+      "repository": "https://github.com/rivet-dev/rivet/tree/main/integrations/workflow-world",
+      "docs": "https://rivet.dev/actors/integrations/workflow-sdk/",
+      "example": "https://github.com/rivet-dev/rivet/tree/main/examples/workflow-sdk",
       "features": [],
       "env": {
-        "WORKFLOW_TARGET_WORLD": "@rivet-dev/vercel-world",
+        "WORKFLOW_TARGET_WORLD": "@rivet-dev/workflow-world",
         "WORKFLOW_RUNTIME_URL": "http://127.0.0.1:3000"
       },
       "services": []
