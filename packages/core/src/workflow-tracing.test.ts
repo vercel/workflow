@@ -1,23 +1,39 @@
-import { context, trace as otelTrace } from '@opentelemetry/api';
+import {
+  context,
+  trace as otelTrace,
+  SpanStatusCode,
+} from '@opentelemetry/api';
 import { AsyncLocalStorageContextManager } from '@opentelemetry/context-async-hooks';
 import {
   BasicTracerProvider,
   InMemorySpanExporter,
   SimpleSpanProcessor,
 } from '@opentelemetry/sdk-trace-base';
-import type { WorkflowRun } from '@workflow/world';
+import type { Event, WorkflowRun } from '@workflow/world';
 import {
   afterAll,
   afterEach,
+  assert,
   beforeAll,
   beforeEach,
   describe,
   expect,
   it,
+  vi,
 } from 'vitest';
-import { dehydrateWorkflowArguments } from './serialization.js';
+import { ReplayPayloadCache } from './replay-payload-cache.js';
+import {
+  dehydrateStepReturnValue,
+  dehydrateWorkflowArguments,
+} from './serialization.js';
+import { createContext } from './vm/index.js';
 import { clearWorkflowScriptCache } from './vm/script-cache.js';
-import { runWorkflow } from './workflow.js';
+import { replayWorkflow, resumeWorkflow, runWorkflow } from './workflow.js';
+
+vi.mock('./vm/index.js', async (importActual) => {
+  const actual = await importActual<typeof import('./vm/index.js')>();
+  return { ...actual, createContext: vi.fn(actual.createContext) };
+});
 
 const exporter = new InMemorySpanExporter();
 const provider = new BasicTracerProvider();
@@ -42,6 +58,7 @@ beforeEach(() => {
 
 afterEach(() => {
   exporter.reset();
+  vi.restoreAllMocks();
 });
 
 async function makeRun(): Promise<WorkflowRun> {
@@ -58,6 +75,10 @@ async function makeRun(): Promise<WorkflowRun> {
   };
 }
 
+function spans(name: string) {
+  return exporter.getFinishedSpans().filter((span) => span.name === name);
+}
+
 const workflowCode = `
 async function workflow(value) { return value; }
 globalThis.__private_workflows = new Map();
@@ -69,13 +90,11 @@ describe('fresh replay tracing', () => {
     const run = await makeRun();
     await runWorkflow(workflowCode, run, [], undefined);
 
-    const spans = exporter.getFinishedSpans();
-    const workflowRun = spans.find(
-      (span) => span.name === 'workflow.run workflow'
-    );
+    const allSpans = exporter.getFinishedSpans();
+    const [workflowRun] = spans('workflow.run workflow');
     expect(workflowRun).toBeDefined();
 
-    const childNames = spans
+    const childNames = allSpans
       .filter((span) => span.parentSpanId === workflowRun?.spanContext().spanId)
       .map((span) => span.name);
     expect(childNames).toEqual(
@@ -89,14 +108,76 @@ describe('fresh replay tracing', () => {
     );
   });
 
+  it('records VM bootstrap failures on the create-context span', async () => {
+    vi.mocked(createContext).mockImplementationOnce(() => {
+      throw new Error('test bootstrap failure');
+    });
+
+    await expect(
+      runWorkflow(workflowCode, await makeRun(), [], undefined)
+    ).rejects.toThrow('test bootstrap failure');
+
+    expect(spans('workflow.vm.create_context')[0]?.status).toEqual({
+      code: SpanStatusCode.ERROR,
+      message: 'test bootstrap failure',
+    });
+  });
+
+  it('parents retained workflow continuations to the retained run', async () => {
+    const run = await makeRun();
+    const code = `const step = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step");
+      async function workflow() { await step(); console.log("resumed"); }
+      globalThis.__private_workflows = new Map([["workflow", workflow]]);
+    `;
+    const activeSpanIds: (string | undefined)[] = [];
+    vi.spyOn(console, 'log').mockImplementation((message) => {
+      if (message === 'resumed') {
+        activeSpanIds.push(otelTrace.getActiveSpan()?.spanContext().spanId);
+      }
+    });
+
+    const first = await replayWorkflow({
+      workflowCode: code,
+      workflowRun: run,
+      events: [],
+      encryptionKey: undefined,
+      replayPayloadCache: new ReplayPayloadCache(undefined),
+    });
+    assert(first.type === 'suspended');
+    expect(spans('workflow.replay.execute')).toHaveLength(1);
+    const step = first.suspension.steps[0];
+    assert(step?.type === 'step');
+    const result = await dehydrateStepReturnValue(
+      undefined,
+      run.runId,
+      undefined
+    );
+
+    const completed = await resumeWorkflow(first.session, [
+      {
+        eventId: 'event-step-completed',
+        runId: run.runId,
+        eventType: 'step_completed',
+        correlationId: step.correlationId,
+        eventData: { stepName: 'step', result },
+        createdAt: run.updatedAt,
+      },
+    ] as Event[]);
+    assert(completed.type === 'completed');
+
+    expect(spans('workflow.replay.execute')).toHaveLength(1);
+    const retainedRun = spans('workflow.run workflow').find(
+      (span) => span.attributes['workflow.execution.mode'] === 'retained'
+    );
+    expect(activeSpanIds).toEqual([retainedRun?.spanContext().spanId]);
+  });
+
   it('marks bundle compilation cache hits on later fresh replays', async () => {
     const run = await makeRun();
     await runWorkflow(workflowCode, run, [], undefined);
     await runWorkflow(workflowCode, run, [], undefined);
 
-    const compileSpans = exporter
-      .getFinishedSpans()
-      .filter((span) => span.name === 'workflow.bundle.compile');
+    const compileSpans = spans('workflow.bundle.compile');
     expect(compileSpans).toHaveLength(2);
     expect(
       compileSpans.map(
@@ -121,9 +202,7 @@ globalThis.__private_workflows.set(${JSON.stringify(secondName)}, second);
     await runWorkflow(sharedBundle, firstRun, [], undefined);
     await runWorkflow(sharedBundle, secondRun, [], undefined);
 
-    const compileSpans = exporter
-      .getFinishedSpans()
-      .filter((span) => span.name === 'workflow.bundle.compile');
+    const compileSpans = spans('workflow.bundle.compile');
     expect(
       compileSpans.map(
         (span) => span.attributes['workflow.bundle.compile.cache_hit']
