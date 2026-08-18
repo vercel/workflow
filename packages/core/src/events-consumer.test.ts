@@ -1241,6 +1241,74 @@ describe('sealed-log noop events (specVersion 7)', () => {
     expect(onConsumedEvent).toHaveBeenCalledWith(real);
   });
 
+  it('is scheduling-neutral: same offers, same tick, as the log without noops', async () => {
+    // The skip is a synchronous `continue` inside the walk pass — it consumes
+    // no extra micro- or macrotask. This pins that: a log with noops
+    // interleaved at the head, middle, and tail is fully consumed after the
+    // SAME single tick as its noop-free twin, and the sequence of events
+    // offered to consumers is byte-for-byte identical. Deterministic
+    // scheduling is what keeps replay ULID draws (and therefore correlation
+    // ids) stable across branches racing in Promise.all.
+    async function offersAfterOneTick(events: Event[]) {
+      const offered: (string | null)[] = [];
+      const consumer = new EventsConsumer(events, {
+        onUnconsumedEvent: vi.fn(),
+        getPromiseQueue: () => Promise.resolve(),
+        isDeliveryIdle: () => true,
+      });
+      consumer.subscribe((event) => {
+        offered.push(event === null ? null : event.id);
+        return event === null
+          ? EventConsumerResult.NotConsumed
+          : EventConsumerResult.Consumed;
+      });
+      // subscribe() schedules exactly one nextTick; the walk drains
+      // synchronously inside it. One tick must therefore finish either log.
+      await waitForNextTick();
+      return { offered, index: consumer.eventIndex, total: events.length };
+    }
+
+    const clean = await offersAfterOneTick([
+      logEvent('wait_created', 'w1'),
+      logEvent('wait_completed', 'w2'),
+    ]);
+    const sealed = await offersAfterOneTick([
+      logEvent('noop' as Event['eventType'], 'n0'),
+      logEvent('wait_created', 'w1'),
+      logEvent('noop' as Event['eventType'], 'n1'),
+      logEvent('noop' as Event['eventType'], 'n2'),
+      logEvent('wait_completed', 'w2'),
+      logEvent('noop' as Event['eventType'], 'n3'),
+    ]);
+
+    expect(clean.index).toBe(clean.total);
+    expect(sealed.index).toBe(sealed.total);
+    // Identical offer sequences — the noops were never offered at all, and
+    // both logs finished inside the same single tick.
+    expect(sealed.offered).toEqual(clean.offered);
+  });
+
+  it('consumes an all-noop log to the end without divergence', async () => {
+    const onUnconsumedEvent = vi.fn();
+    const consumer = new EventsConsumer(
+      [
+        logEvent('noop' as Event['eventType'], 'n1'),
+        logEvent('noop' as Event['eventType'], 'n2'),
+      ],
+      {
+        onUnconsumedEvent,
+        getPromiseQueue: () => Promise.resolve(),
+        isDeliveryIdle: () => true,
+      }
+    );
+    consumer.subscribe(() => EventConsumerResult.NotConsumed);
+
+    await vi.waitFor(() => {
+      expect(consumer.eventIndex).toBe(2);
+    });
+    expect(onUnconsumedEvent).not.toHaveBeenCalled();
+  });
+
   it('handles a log that ends on a noop', async () => {
     const real = logEvent('wait_created', 'wait-1');
     const noop = logEvent('noop' as Event['eventType'], 'noop-1');
