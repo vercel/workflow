@@ -257,6 +257,42 @@ export const allWorkflows = {} as const;
     ).resolves.toEqual({ kind: 'full' });
   });
 
+  test('fully rebuilds every directive file change', async () => {
+    const stepFile = '/app/workflows/step.ts';
+    const previousSnapshot = createSourceSnapshotFromSource(
+      `export let example = async () => {
+  'use step';
+  return 'before';
+};
+`,
+      detectWorkflowPatterns
+    );
+    const nextSnapshot = createSourceSnapshotFromSource(
+      `export let example = async () => {
+  'use step';
+  return 'after';
+};
+`,
+      detectWorkflowPatterns
+    );
+
+    await expect(
+      classifyRebuild({
+        discoveredEntries: {
+          discoveredSteps: new Set([stepFile]),
+          discoveredWorkflows: new Set(),
+          discoveredSerdeFiles: new Set(),
+          discoveredFiles: new Set([stepFile]),
+        },
+        files: [stepFile],
+        inputFiles: [],
+        parentHasChild: () => false,
+        readSnapshot: async () => nextSnapshot,
+        sourceSnapshots: new Map([[stepFile, previousSnapshot]]),
+      })
+    ).resolves.toEqual({ kind: 'full' });
+  });
+
   test('rebuilds new files that can introduce graph entries', async () => {
     const routeFile = '/app/app/new/route.ts';
 
