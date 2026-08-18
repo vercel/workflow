@@ -41,6 +41,12 @@ jobs:
       issues: write
     steps:
       - name: Validate AI model
+        # Deliberately inline rather than a `.github/scripts/*.js` helper with
+        # unit tests (this repo's usual home for CI logic): `Checkout Repo`
+        # below checks out the *commit being backported*, which for a manual
+        # dispatch of an older SHA can predate any script we add here. Logic
+        # in the workflow file always comes from the workflow ref, so it works
+        # no matter which commit is being backported. Keep it that way.
         env:
           # Empty on `push`; non-empty only when a manual run overrode the
           # model, which lets us word the error for whoever can fix it.
