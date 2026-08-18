@@ -2668,11 +2668,15 @@ describe('e2e', () => {
     'fibonacciWorkflow - recursive workflow composition via start()',
     { timeout: 180_000 },
     async () => {
-      // fib(6) = 8, spawns a tree of child workflow runs
-      const run = await start(await e2e('fibonacciWorkflow'), [6]);
+      // fib(5) = 5, spawns a tree of 15 runs (~14 concurrent parent polls at
+      // peak). fib(6)'s 25-run tree proved enough to saturate the scheduler
+      // past this test's budget under a concurrent suite (#2083); depth 4
+      // still exercises recursive start() composition with parallel children
+      // at every level, which is the subject here — the tree size is not.
+      const run = await start(await e2e('fibonacciWorkflow'), [5]);
       trackRun(run);
       const returnValue = await run.returnValue;
-      expect(returnValue).toBe(8);
+      expect(returnValue).toBe(5);
     }
   );
 
