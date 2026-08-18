@@ -18,8 +18,10 @@ import {
   beforeAll,
   describe,
   expect,
-  test as vitestTest,
+  type TestContext,
+  type test as vitestTest,
 } from 'vitest';
+import { createTaskCollector, getCurrentSuite } from 'vitest/suite';
 import { getTrustedSourcesHeaders } from '../../../scripts/trusted-sources-headers.mjs';
 import type { Run } from '../src/runtime';
 import {
@@ -31,11 +33,14 @@ import {
   resumeHook,
 } from '../src/runtime';
 import {
+  announceTestStart,
   assertUnsupportedTestsExist,
   cliCancel,
   cliHealthJson,
   cliInspectJson,
   cliInspectJsonUntil,
+  createPerTestState,
+  dumpTrackedRunDiagnostics,
   fetchManifest,
   getCollectedRunIds,
   getWorkflowMetadata,
@@ -45,9 +50,6 @@ import {
   isJsApp,
   isLocalDeployment,
   requireFixture,
-  announceTestStart,
-  createPerTestState,
-  dumpTrackedRunDiagnostics,
   requireSupported,
   runInTestState,
   setupWorld,
@@ -63,7 +65,12 @@ if (!deploymentUrl) {
 }
 
 const DISTRIBUTED_CLOCK_TOLERANCE_MS = 1_000;
-const RACE_WINNER_MAX_DURATION_MS = 5_000;
+// The race winner takes 1s; the loser would take 10s. The bound only has to
+// sit clearly below the loser to catch badly delayed or sequential
+// completion — under the concurrent suite, queue latency pushed the winner's
+// observed duration to ~6.5s on loaded local-dev lanes, so 5s was tight
+// enough to flake without being any better at catching the regression.
+const RACE_WINNER_MAX_DURATION_MS = 8_000;
 const EVENT_POLL_PAGE_SIZE = 100;
 
 function expectElapsedAtLeast(
@@ -147,41 +154,72 @@ const e2e = (fn: string) => {
  * gated only by `e2e-conformance.json`. No-op for the JS workbench apps.
  */
 /**
- * Every test in this suite runs through this auto fixture, which owns the
+ * Every test in this suite runs through this handler wrapper, which owns the
  * per-test harness plumbing the sequential suites do in a `beforeEach`
- * (announce heartbeat, conformance gate, failure diagnostics):
+ * (announce heartbeat, conformance gates, failure diagnostics).
  *
- * - The suite runs concurrently, and vitest's `getCurrentTest()` is a plain
- *   module variable that is wrong after any `await`, so nothing per-test can
- *   live in module globals. The fixture is the one place that receives the
- *   test's own context unambiguously; it binds a per-test state (name,
- *   tracked runs, the test's own `skip`) via AsyncLocalStorage around the
- *   test body, and `trackRun`/`recordInfraEvent`/`requireFixture` read it
- *   ambiently — no call-site changes.
- * - Failure diagnostics dump from the state the fixture bound, so a failing
- *   test reports its own runs, not a concurrent sibling's.
+ * The suite runs concurrently, and vitest's `getCurrentTest()` is a plain
+ * module variable that is wrong after any `await`, so nothing per-test can
+ * live in module globals. The wrapper binds a per-test state (name, tracked
+ * runs, the test's own `skip`) via AsyncLocalStorage *around the handler
+ * call itself* — a direct call stack, so the store provably reaches the test
+ * body — and `trackRun`/`recordInfraEvent`/`requireFixture` read it
+ * ambiently with no call-site changes. (A `test.extend` auto fixture cannot
+ * do this: vitest resolves fixtures in a separate async context, so a store
+ * bound around `use()` never reaches the test body.) Failure diagnostics
+ * dump from the bound state, so a failing test reports its own runs, not a
+ * concurrent sibling's.
  */
-const test = vitestTest.extend<{ e2eTracking: unknown }>({
-  e2eTracking: [
-    // biome-ignore lint/correctness/noEmptyPattern: vitest fixture signature
-    async ({ task, skip, onTestFailed }, use) => {
-      const state = createPerTestState(task.name, skip);
-      announceTestStart(task.name);
-      onTestFailed(
-        (result) =>
-          dumpTrackedRunDiagnostics(state, result.errors?.[0]?.message),
-        30_000 // Allow 30s for diagnostics fetching (default hookTimeout is 10s)
-      );
-      await runInTestState(state, async () => {
-        // Second conformance gate — inside the bound state so the skip
-        // targets this test.
-        requireSupported(task.name);
-        await use(state);
-      });
-    },
-    { auto: true },
-  ],
-});
+const wrapE2EHandler =
+  (handler: (ctx: TestContext) => unknown) => (ctx: TestContext) => {
+    const state = createPerTestState(ctx.task.name, ctx.skip);
+    announceTestStart(ctx.task.name);
+    ctx.onTestFailed(
+      (result) => dumpTrackedRunDiagnostics(state, result.errors?.[0]?.message),
+      30_000 // Allow 30s for diagnostics fetching (default hookTimeout is 10s)
+    );
+    return runInTestState(state, async () => {
+      // Second conformance gate — inside the bound state so the skip
+      // targets this test.
+      requireSupported(ctx.task.name);
+      return handler(ctx);
+    });
+  };
+
+/**
+ * Drop-in `test` whose collector mirrors vitest's own argument handling
+ * (options-second, legacy options/timeout-third, `.each`'s generated
+ * callbacks) and wraps every handler with {@link wrapE2EHandler}. Built on
+ * `createTaskCollector`, so the whole chainable surface (`.skip`, `.only`,
+ * `.each`, `.runIf`, `.sequential`, …) keeps working.
+ */
+const test = createTaskCollector(function (
+  this: Record<string, unknown>,
+  name: string,
+  optionsOrFn?: unknown,
+  optionsOrTest?: unknown
+) {
+  let options: Record<string, unknown> = {};
+  let handler: (ctx: TestContext) => unknown = () => {};
+  if (typeof optionsOrTest === 'object' && optionsOrTest !== null) {
+    options = optionsOrTest as Record<string, unknown>;
+    handler = optionsOrFn as typeof handler;
+  } else if (typeof optionsOrTest === 'number') {
+    options = { timeout: optionsOrTest };
+    handler = optionsOrFn as typeof handler;
+  } else if (typeof optionsOrFn === 'object' && optionsOrFn !== null) {
+    options = optionsOrFn as Record<string, unknown>;
+    handler = optionsOrTest as typeof handler;
+  } else if (typeof optionsOrFn === 'function') {
+    handler = optionsOrFn as typeof handler;
+  }
+
+  getCurrentSuite().task(name, {
+    ...this,
+    ...options,
+    handler: wrapE2EHandler(handler),
+  });
+}) as typeof vitestTest;
 
 const testJsOnly = isJsApp() ? test : test.skip;
 const describeJsOnly = isJsApp() ? describe : describe.skip;
