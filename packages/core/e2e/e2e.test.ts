@@ -3895,7 +3895,7 @@ describe('e2e', () => {
 
         // Include the full returnValue (status + elapsedMs from the step) in
         // the assertion message so a flaky failure surfaces *why* fetch won
-        // the race — e.g. httpbin returning a 5xx in <1s — instead of just
+        // the race — e.g. the loopback fetch erroring in <1s — instead of just
         // "expected 'fetch' to be 'timeout'".
         const summary = JSON.stringify(returnValue);
         expect(returnValue.winner, summary).toBe('timeout');
