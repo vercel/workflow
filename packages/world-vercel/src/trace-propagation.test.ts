@@ -449,5 +449,28 @@ describe('node:http mode trace propagation', () => {
     expect(sentTraceparent).toBe(
       `00-${traceId}-${clientSpan?.spanContext().spanId}-01`
     );
+    // Both transports emit `http GET` against the same `url.full`, so this
+    // attribute is the only thing in a trace that names which one ran.
+    expect(clientSpan?.attributes['workflow.http.transport']).toBe('node-http');
+  });
+
+  it('marks the undici path with the same attribute', async () => {
+    vi.stubEnv(NODE_HTTP_ENV_VAR, '0');
+    const schema = z.object({ value: z.string() });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => cborResponse({ value: 'ok' }))
+    );
+
+    await makeRequest({
+      endpoint: '/v3/runs/wrun_test/events',
+      options: { method: 'GET' },
+      schema,
+    });
+
+    const clientSpan = exporter
+      .getFinishedSpans()
+      .find((s) => s.name === 'http GET');
+    expect(clientSpan?.attributes['workflow.http.transport']).toBe('undici');
   });
 });

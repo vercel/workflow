@@ -26,9 +26,12 @@ import {
   getDispatcher,
   getEventsDispatcher,
   getNodeHttpAgents,
+  getQueueDispatcher,
   getStreamCloseDispatcher,
   getStreamDispatcher,
   isRecyclableTransportError,
+  NODE_HTTP_BODY_TIMEOUT_MS,
+  NODE_HTTP_HEADERS_TIMEOUT_MS,
   noteEventsTransportOutcome,
   STREAM_AGENT_OPTIONS,
   STREAM_CLOSE_RETRY_OPTIONS,
@@ -786,6 +789,30 @@ describe('node:http mode', () => {
     expect(getEventsDispatcher()).toBeUndefined();
     expect(getStreamDispatcher()).toBeUndefined();
     expect(getStreamCloseDispatcher()).toBeUndefined();
+  });
+
+  // `@vercel/queue` takes a dispatcher and no `fetch` override, so `undefined`
+  // would not move its requests off undici — it would only drop them onto
+  // undici's global agent and quietly lose this package's pool tuning.
+  it('keeps the undici agent for the client that cannot leave undici', () => {
+    expect(getQueueDispatcher()).toBeDefined();
+    expect(getQueueDispatcher()).toBe(getQueueDispatcher());
+    // Same agent the flag-off path hands every other call site.
+    vi.stubEnv(NODE_HTTP_ENV_VAR, '0');
+    expect(getQueueDispatcher()).toBe(getDispatcher());
+  });
+
+  it('still yields to a caller-supplied dispatcher on that path too', () => {
+    const custom = {};
+    expect(getQueueDispatcher({ dispatcher: custom })).toBe(custom);
+  });
+
+  // node:http has no deadline of its own and the agents above set none, so
+  // these restate the undici Client defaults the agents inherit. Dropping them
+  // would leave every `timeoutMs: null` call site unbounded.
+  it('carries the undici default per-phase deadlines', () => {
+    expect(NODE_HTTP_HEADERS_TIMEOUT_MS).toBe(300_000);
+    expect(NODE_HTTP_BODY_TIMEOUT_MS).toBe(300_000);
   });
 
   // The flag picks which *default* this package builds. It is not a veto on

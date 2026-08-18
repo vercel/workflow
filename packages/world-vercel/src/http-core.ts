@@ -48,6 +48,7 @@ import {
   ServerPort,
   trace,
   UrlFull,
+  WorkflowHttpTransport,
 } from './telemetry.js';
 
 /**
@@ -550,6 +551,11 @@ export async function instrumentedFetch(
         // `fetch`. A dispatcher the caller supplied is an instruction to use
         // undici, so it keeps the request on `fetch`.
         const nodeAgents = dispatcher ? undefined : getNodeHttpAgents();
+        // Both transports issue the same span against the same URL, so this is
+        // the only thing that tells them apart in a trace.
+        span?.setAttributes({
+          ...WorkflowHttpTransport(nodeAgents ? 'node-http' : 'undici'),
+        });
         response = nodeAgents
           ? await nodeHttpFetch(url, {
               method,

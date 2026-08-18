@@ -29,6 +29,7 @@ import {
   HttpResponseStatusCode,
   injectTraceContextIntoHeaders,
   trace,
+  WorkflowHttpTransport,
   WorldParseFormat,
 } from './telemetry.js';
 import { version } from './version.js';
@@ -83,6 +84,12 @@ const BODY_PARSE_RETRY_BASE_MS = 100;
  * errors, so we map them to a typed `WorkflowWorldError` (`code: 'TRANSPORT'`)
  * that the runtime recognizes as retryable and bubbles to the queue for a fast
  * redrive, instead of crashing the invocation or failing the run.
+ *
+ * The set is consulted on both paths, so adding `ETIMEDOUT` for the node:http
+ * deadlines also classifies it on the undici path — where it is near
+ * unreachable, since undici's 10s `connectTimeout` fires long before the OS
+ * raises `ETIMEDOUT` on a connect, and its own stalls surface as `UND_ERR_*`.
+ * Deliberate either way: a socket that timed out is transient under any client.
  */
 const TRANSIENT_TRANSPORT_ERROR_CODES = new Set([
   'UND_ERR_REQ_RETRY',
@@ -477,6 +484,11 @@ export async function makeRequest<T>({
           // returns the pool only when no caller dispatcher was supplied, so
           // an explicit `config.dispatcher` still keeps the request on `fetch`.
           const nodeAgents = getNodeHttpAgents(config);
+          // Both transports issue the same span against the same URL, so this
+          // is the only thing that tells them apart in a trace.
+          span?.setAttributes({
+            ...WorkflowHttpTransport(nodeAgents ? 'node-http' : 'undici'),
+          });
           response = nodeAgents
             ? await nodeHttpFetch(url, {
                 method,

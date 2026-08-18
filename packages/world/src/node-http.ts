@@ -78,6 +78,10 @@ export interface NodeHttpFetchInit {
   /**
    * Give up if response headers do not arrive within this many ms. `0` or
    * omitted means no deadline, matching undici's `headersTimeout`.
+   *
+   * Starts when the request is handed a socket, matching where undici starts
+   * its own: waiting for a free socket does not consume the budget, connecting
+   * does (undici bounds that separately with `connectTimeout`).
    */
   headersTimeoutMs?: number;
   /**
@@ -397,15 +401,29 @@ export function nodeHttpFetch(
       reject(error);
     };
 
+    // Armed when the request is handed a socket, not when it is created. Time
+    // spent waiting for one is the pool being busy, not the origin being slow:
+    // undici starts its `headersTimeout` at the equivalent point (once the
+    // request is written, in `writeH1`), and a deadline that counted the queue
+    // wait would expire deliveries the origin never saw — a redelivery storm
+    // sourced entirely from local concurrency. The pool wait is left unbounded
+    // for the same reason it is in undici; a caller that needs a ceiling on the
+    // whole call passes `signal`.
+    //
+    // Connect lands inside this budget rather than getting its own, which is
+    // where undici puts `connectTimeout` (10s). Node has no equivalent, so
+    // folding it in is what keeps a connect to a black hole bounded at all.
     if (headersTimeoutMs) {
-      headersTimer = setTimeout(() => {
-        request.destroy(
-          transportError(
-            `no response headers after ${headersTimeoutMs}ms`,
-            TIMEOUT_CODE
-          )
-        );
-      }, headersTimeoutMs);
+      request.on('socket', () => {
+        headersTimer = setTimeout(() => {
+          request.destroy(
+            transportError(
+              `no response headers within ${headersTimeoutMs}ms`,
+              TIMEOUT_CODE
+            )
+          );
+        }, headersTimeoutMs);
+      });
     }
 
     request.on('error', fail);

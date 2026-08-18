@@ -377,6 +377,72 @@ describe('nodeHttpFetch', () => {
     );
   });
 
+  // `readFrames` cancels the body on every early exit specifically to hand the
+  // socket back, so a cancel that does not reach the message is a socket lost
+  // for good. On a compressed body the reader is attached to the decoder, and
+  // destroying a pipe's destination does not touch its source.
+  it.each([
+    ['identity', (body: Buffer) => ({ headers: {}, body })],
+    [
+      'gzip',
+      (body: Buffer) => ({
+        headers: { 'content-encoding': 'gzip' },
+        body: gzipSync(body),
+      }),
+    ],
+  ])('releases the socket when a %s body is cancelled mid-read', async (_coding, encode) => {
+    let closed: (() => void) | undefined;
+    const serverSocketClosed = new Promise<void>((resolve) => {
+      closed = resolve;
+    });
+    const base = await listen((_request, response) => {
+      response.socket?.on('close', () => closed?.());
+      const { headers, body } = encode(Buffer.from('a'.repeat(64 * 1024)));
+      response.writeHead(200, { ...headers, 'content-length': '999999999' });
+      response.write(body);
+      // Then stalls: the body never completes, so only the cancel can end it.
+    });
+
+    agents = createNodeHttpAgents({ maxSockets: 1, keepAliveMs: 10_000 });
+    const response = await nodeHttpFetch(base, { agents });
+    const reader = response.body?.getReader();
+    await reader?.read();
+    await reader?.cancel();
+
+    // Resolves only if the teardown reached the message; a leaked socket
+    // leaves the origin's connection open and times the test out instead.
+    await serverSocketClosed;
+    // maxSockets is 1, so the pool is wedged for good if the socket was not
+    // returned. This request cannot be served otherwise.
+    const next = await nodeHttpFetch(base, { agents });
+    expect(next.status).toBe(200);
+    await next.body?.cancel();
+  });
+
+  // undici arms `headersTimeout` only once the request is on a socket, so a
+  // request queued behind a busy pool must not spend the budget waiting for
+  // one — that would be a redelivery the origin did nothing to earn.
+  it('does not spend the header deadline waiting for a socket', async () => {
+    // Answers instantly, then holds the connection open for 300ms. Every
+    // request meets its own deadline comfortably; only the wait for a free
+    // socket exceeds it.
+    const base = await listen((_request, response) => {
+      response.writeHead(200);
+      response.write('ok');
+      setTimeout(() => response.end(), 300);
+    });
+
+    agents = createNodeHttpAgents({ maxSockets: 1, keepAliveMs: 10_000 });
+    const first = await nodeHttpFetch(base, { agents, headersTimeoutMs: 100 });
+    // Queued behind `first`, whose body is still open, for well past 100ms.
+    const queued = nodeHttpFetch(base, { agents, headersTimeoutMs: 100 });
+
+    await expect(first.text()).resolves.toBe('ok');
+    const second = await queued;
+    expect(second.status).toBe(200);
+    await expect(second.text()).resolves.toBe('ok');
+  });
+
   // Keep-alive is the reason the pool exists: without socket reuse every
   // request would pay a fresh connection, which is what the undici agents the
   // flag replaces were configured to avoid.
