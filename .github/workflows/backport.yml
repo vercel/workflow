@@ -14,7 +14,27 @@ on:
         required: false
         type: string
 
-concurrency: backport-stable
+# One backport at a time per target commit, rather than one across the whole
+# repository. A single global group loses runs: GitHub keeps only one *pending*
+# run per group, so any new run silently cancels a queued one. Observed
+# 2026-08-18: a manual `workflow_dispatch` backport was cancelled by a push to
+# `main`, and a push run for 7027301 was cancelled by the next push, so that
+# commit got no backport evaluation at all. Neither leaves a signal anywhere.
+#
+# Keying on the target commit is safe because runs never push to `stable`
+# itself — each one cherry-picks locally and pushes its own
+# `backport/pr-<n>-to-stable` branch — so two runs for different commits cannot
+# interfere.
+#
+# `github.sha` (not `github.event.after`) is the fallback so a dispatch with a
+# blank `ref` lands in the same group as the push run for that commit: on
+# `workflow_dispatch` it is the HEAD of `main`, which is exactly what the
+# `Resolve commit SHA` step defaults to, and on `push` it is the pushed head
+# commit. Residual gap: a dispatch whose `ref` input is a short SHA or a branch
+# name keys off that literal string, so it can still run alongside the push run
+# for the same commit; pass a full SHA (what the no-backport comment gives you)
+# to stay in the same group.
+concurrency: backport-stable-${{ inputs.ref || github.sha }}
 
 # AI model used by every opencode invocation in this workflow. The
 # `vercel/` provider prefix is added at each use site, so this should
