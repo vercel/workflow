@@ -50,6 +50,7 @@ import {
   setupWorld,
   startTracked,
   trackRun,
+  warmDeployment,
   writeDiagnosticsSidecar,
   writeInfraSidecar,
 } from './utils';
@@ -325,9 +326,25 @@ async function startWorkflowViaHttp(
 describe('e2e', () => {
   // Configure the World for the test runner process so that start() and
   // run.returnValue can communicate with the same backend as the workbench app.
+  // Also warm the target before the first test starts a run: a fresh Vercel
+  // deployment picks up runs long after it answers HTTP, and a local dev
+  // server pays its first flow-route compile on the first delivery. Either
+  // cold window otherwise surfaces as pickup-stall infra events on the
+  // suite's first tests (see warmDeployment). rawStart, not start — probes
+  // manage their own stalls without tripping the per-test watchdog.
   beforeAll(async () => {
     setupWorld(deploymentUrl);
-  });
+    await warmDeployment(async () =>
+      rawStart(
+        await getWorkflowMetadata(
+          deploymentUrl,
+          'workflows/99_e2e.ts',
+          'addTenWorkflow'
+        ),
+        [1]
+      )
+    );
+  }, 150_000);
 
   // Enable automatic run diagnostics on test failure
   beforeEach((ctx) => {
