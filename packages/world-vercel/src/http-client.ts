@@ -591,6 +591,24 @@ export function getDispatcher(config?: APIConfig): unknown {
 }
 
 /**
+ * Resolves the dispatcher for the `@vercel/queue` client's HTTP sends.
+ *
+ * Unlike `getDispatcher`, this never returns `undefined` under
+ * `WORKFLOW_NODE_HTTP`. The `QueueClient` exposes no `fetch` override, so it
+ * cannot be moved onto `node:http` the way `instrumentedFetch` / `makeRequest`
+ * are: the flag has nothing to hand the request off to on this path. Returning
+ * `undefined` there would therefore not switch transports — it would just drop
+ * the tuned shared agent (`DEFAULT_AGENT_OPTIONS`: 8 connections, ~10s
+ * keep-alive) and let undici fall back to its GLOBAL agent (unlimited
+ * connections, 4s keep-alive), an unintended regression from a flag this path
+ * can't honor. So the queue send stays on the shared default undici agent
+ * regardless of the flag, while still honoring an explicit `config.dispatcher`.
+ */
+export function getQueueDispatcher(config?: APIConfig): unknown {
+  return config?.dispatcher ?? getDefaultDispatcher();
+}
+
+/**
  * Resolves the dispatcher for the v4 events API: the caller's override, or the
  * shared HTTP/2 events agent. See EVENTS_AGENT_OPTIONS for why the events API
  * uses H2 while the default path stays on H1.
