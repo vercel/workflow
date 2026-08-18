@@ -117,11 +117,14 @@ export async function applySwcTransform(
             }),
       },
       target: 'es2022',
-      experimental: mode
-        ? {
-            plugins: [[swcPluginPath, { mode, moduleSpecifier }]],
-          }
-        : undefined,
+      experimental: {
+        // Import attributes carry runtime semantics (for example, JSON module
+        // validation) and must survive this transform for the bundler to honor.
+        keepImportAssertions: true,
+        plugins: mode
+          ? [[swcPluginPath, { mode, moduleSpecifier }]]
+          : undefined,
+      },
       transform: {
         react: {
           runtime: 'preserve',

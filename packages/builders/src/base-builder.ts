@@ -1120,6 +1120,10 @@ export const __steps_registered = true;
       platform: 'node',
       conditions: ['node'],
       target: 'es2022',
+      // External ESM packages can require import attributes (for example,
+      // JSON imports). The Node.js runtime validates these attributes, so
+      // preserve them even though they postdate the general ES2022 target.
+      supported: format === 'esm' ? { 'import-attributes': true } : undefined,
       write: true,
       treeShaking: true,
       keepNames: true,
