@@ -1,5 +1,5 @@
-import { afterEach, describe, expect, test, vi } from 'vitest';
 import { detectWorkflowPatterns } from '@workflow/builders';
+import { afterEach, describe, expect, test, vi } from 'vitest';
 import {
   classifyRebuild,
   createRebuildScheduler,
