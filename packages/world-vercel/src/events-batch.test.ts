@@ -20,8 +20,11 @@ import { WORKFLOW_SERVER_URL_OVERRIDE } from './utils.js';
  *  - a malformed response (wrong results length, invalid item body) fails
  *    loudly as SCHEMA_VALIDATION rather than degrading into per-event
  *    failures;
- *  - the whole POST is idempotent-on-retry (batchIdempotent): a transient
- *    5xx is retried in-process regardless of the contained event types.
+ *  - retry eligibility is derived from the contained event types
+ *    (batchIdempotent): a transient 5xx is retried in-process for a batch of
+ *    entity-conditioned events, and NOT for one carrying a `step_started` —
+ *    bare or as the second half of a born-running pair — because a retried
+ *    pair's 409 cannot be told apart from the caller's own committed attempt.
  */
 
 const ORIGIN = WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
@@ -217,6 +220,52 @@ describe('createWorkflowRunEventBatch', () => {
     agent.assertNoPendingInterceptors();
   });
 
+  it('puts per-event computeInstanceId in the frame meta, and omits it when unset', async () => {
+    // A pre-claimed inline pair sets computeInstanceId on the step_started
+    // half only, so the batched claim attributes the executing instance the
+    // way the single POST's CreateEventParams does. Batch encoding is a
+    // separate path from the single-event POST, so assert it on the wire.
+    const agent = mockAgent();
+    let requestBody: Uint8Array | undefined;
+    agent
+      .get(ORIGIN)
+      .intercept({
+        path: `/api/v4/runs/${RUN_ID}/events/batch`,
+        method: 'POST',
+        body: (raw) => {
+          requestBody = new Uint8Array(Buffer.from(raw, 'binary'));
+          return true;
+        },
+      })
+      .reply(
+        200,
+        encode({
+          results: [
+            { status: 200, event: createdEvent, step: { ...stepB } },
+            { status: 200, event: startedEvent, step: { ...stepB } },
+          ],
+        }),
+        { headers: { 'content-type': 'application/cbor' } }
+      );
+
+    const pair = transitionEvents().slice(1);
+    pair[1] = { ...pair[1], computeInstanceId: 'ci_instance_1' };
+
+    await createWorkflowRunEventBatch(RUN_ID, pair, undefined, {
+      token: 'test-token',
+      dispatcher: agent,
+    });
+
+    expect(requestBody).toBeDefined();
+    // biome-ignore lint/style/noNonNullAssertion: asserted above
+    const frames = decodeBatchFrames(requestBody!);
+    expect(frames).toHaveLength(2);
+    // The created half carries no compute attribution; the claim does.
+    expect(frames[0].meta).not.toHaveProperty('computeInstanceId');
+    expect(frames[1].meta.computeInstanceId).toBe('ci_instance_1');
+    agent.assertNoPendingInterceptors();
+  });
+
   it('maps per-event outcomes: successes typed, failures passed through', async () => {
     const agent = mockAgent();
     agent
@@ -344,7 +393,7 @@ describe('createWorkflowRunEventBatch', () => {
     ).rejects.toMatchObject({ name: 'WorkflowWorldError', status: 400 });
   });
 
-  it('retries a transient 5xx in-process (the batch POST is idempotent-on-retry)', async () => {
+  it('retries a transient 5xx in-process for an entity-conditioned batch', async () => {
     const agent = mockAgent();
     const pool = agent.get(ORIGIN);
     pool
@@ -360,17 +409,27 @@ describe('createWorkflowRunEventBatch', () => {
         path: `/api/v4/runs/${RUN_ID}/events/batch`,
         method: 'POST',
       })
-      .reply(200, fullSuccessBody(), {
-        headers: { 'content-type': 'application/cbor' },
-      });
+      .reply(
+        200,
+        encode({
+          results: [
+            { status: 200, event: completedEvent, step: stepA },
+            { status: 200, event: createdEvent, step: { ...stepB } },
+          ],
+        }),
+        { headers: { 'content-type': 'application/cbor' } }
+      );
 
+    // A terminal transition plus a create: both re-reject with 409 on a
+    // retry of a committed attempt, and their callers already read a 409 as
+    // "someone got here first" — so nothing is lost by re-attempting.
     const { results } = await createWorkflowRunEventBatch(
       RUN_ID,
-      transitionEvents(),
+      transitionEvents().slice(0, 2),
       undefined,
       { token: 'test-token', dispatcher: agent }
     );
-    expect(results.map((result) => result.status)).toEqual([200, 200, 200]);
+    expect(results.map((result) => result.status)).toEqual([200, 200]);
     agent.assertNoPendingInterceptors();
   });
 
@@ -435,6 +494,33 @@ describe('createWorkflowRunEventBatch — retry-convergence and attribution', ()
       expect(frame.meta.vercelId).toBe('req_attrib_1');
       expect(frame.meta.remoteRefBehavior).toBe('resolve');
     }
+    agent.assertNoPendingInterceptors();
+  });
+
+  it('does NOT retry a transient 5xx when the batch carries a born-running pair', async () => {
+    const agent = mockAgent();
+    agent
+      .get(ORIGIN)
+      .intercept({
+        path: `/api/v4/runs/${RUN_ID}/events/batch`,
+        method: 'POST',
+      })
+      .reply(503, JSON.stringify({ message: 'unavailable' }), {
+        headers: { 'content-type': 'application/json' },
+      });
+
+    // created(step_b) + started(step_b) IS retry-convergent on the wire — the
+    // pair's create fences it — but the 409 it converges to is ambiguous to
+    // the caller: indistinguishable from "my own first attempt committed the
+    // pair". The pre-claim caller reads a pair 409 as a lost claim and skips
+    // the body, which would strand a running step it actually owns until its
+    // ownership lease expires. Single-attempt; redelivery recovers it.
+    await expect(
+      createWorkflowRunEventBatch(RUN_ID, transitionEvents(), undefined, {
+        token: 'test-token',
+        dispatcher: agent,
+      })
+    ).rejects.toMatchObject({ status: 503 });
     agent.assertNoPendingInterceptors();
   });
 

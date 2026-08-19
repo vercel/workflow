@@ -135,6 +135,38 @@ export function instrumentObject<T extends object>(prefix: string, o: T): T {
           }
         }
 
+        // Batch writes describe themselves by size and per-type shape —
+        // deliberately NOT workflow.event.type, which names a single event
+        // write and would misleadingly tag the whole batch with its first
+        // event. These live here (the world.events.createBatch span), not on
+        // the transport span underneath.
+        let batchAttributes: Record<string, string | number> | undefined;
+        if (prefix === 'world.events' && methodName === 'createBatch') {
+          const events = args[1];
+          if (Array.isArray(events)) {
+            const counts = new Map<string, number>();
+            for (const item of events) {
+              const eventType = (item as { event?: { eventType?: unknown } })
+                ?.event?.eventType;
+              if (typeof eventType === 'string') {
+                counts.set(eventType, (counts.get(eventType) ?? 0) + 1);
+              }
+            }
+            batchAttributes = {
+              'workflow.batch.size': events.length,
+              // Sorted by type, so the same batch composition always renders
+              // the same string. Map iteration is first-seen order, which
+              // depends on frame order — a pre-claimed fold leads with a
+              // pair while a pure eager fold leads with its creates — and an
+              // unstable string is not groupable as a telemetry dimension.
+              'workflow.batch.shape': [...counts]
+                .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+                .map(([type, count]) => `${type}:${count}`)
+                .join(','),
+            };
+          }
+        }
+
         return trace(
           spanName,
           { kind: await getSpanKind('CLIENT') },
@@ -147,6 +179,7 @@ export function instrumentObject<T extends object>(prefix: string, o: T): T {
               ...RpcService(WORKFLOW_SERVER_SERVICE.rpcService),
               ...RpcMethod(spanName),
               ...extractWorkflowAttributes(prefix, methodName, args),
+              ...batchAttributes,
             });
             const result = await f(...args);
             const resultRunId = getRunIdFromResult(result);
