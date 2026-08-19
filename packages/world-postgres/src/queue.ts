@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { connect } from 'node:net';
 import * as Stream from 'node:stream';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -53,6 +54,11 @@ function createGraphileLogger() {
 
 const graphileLogger = createGraphileLogger();
 const COMPLETED_IDEMPOTENCY_CACHE_LIMIT = 10_000;
+// Graphile retains named queues after their jobs complete. Keep this bounded
+// at 2,048 idempotency queues per configured job prefix.
+// Keep this mapping stable across releases; changing it requires a drained
+// rollout.
+const IDEMPOTENCY_QUEUE_BUCKET_COUNT = 2_048;
 // Core records MAX_DELIVERIES_EXCEEDED on delivery 49.
 const MAX_GRAPHILE_JOB_ATTEMPTS = 49;
 const GraphileHelpers = z.object({
@@ -74,6 +80,12 @@ type HttpExecutionResult =
 
 type RunnerStart = { controller: AbortController; promise: Promise<void> };
 type LoopbackTarget = { hosts: string[]; port: number };
+type MigratedPgBossJob = {
+  name: string;
+  data: unknown;
+  singleton_key: string | null;
+  retry_limit: number | null;
+};
 
 /**
  * The Postgres queue stores messages under one graphile-worker flow task.
@@ -128,6 +140,42 @@ export function createQueue(
   function getJobQueueName(): string {
     const jobPrefix = config.jobPrefix || 'workflow_';
     return `${jobPrefix}flows`;
+  }
+
+  const idempotencyQueueScope = createHash('sha256')
+    .update(getJobQueueName())
+    .digest('hex');
+
+  function getIdempotencyQueueName(idempotencyKey: string): string {
+    const bucket = (
+      createHash('sha256').update(idempotencyKey).digest().readUInt16BE(0) %
+      IDEMPOTENCY_QUEUE_BUCKET_COUNT
+    )
+      .toString(16)
+      .padStart(3, '0');
+    return `workflow_idempotency_${idempotencyQueueScope}_${bucket}`;
+  }
+
+  function getMigratedJobIdempotencyKey(data: unknown): string | undefined {
+    const messageData = MessageData.safeParse(data);
+    return messageData.success ? messageData.data.idempotencyKey : undefined;
+  }
+
+  async function addMigratedPgBossJobs(
+    utils: WorkerUtils,
+    jobs: MigratedPgBossJob[]
+  ): Promise<void> {
+    for (const job of jobs) {
+      const jobKey = job.singleton_key ?? undefined;
+      const idempotencyKey = getMigratedJobIdempotencyKey(job.data);
+      await utils.addJob(job.name, job.data as Record<string, unknown>, {
+        jobKey,
+        ...(idempotencyKey
+          ? { queueName: getIdempotencyQueueName(idempotencyKey) }
+          : {}),
+        maxAttempts: Math.max(job.retry_limit ?? 0, MAX_GRAPHILE_JOB_ATTEMPTS),
+      });
+    }
   }
 
   const createQueueHandler = localWorld.createQueueHandler;
@@ -200,6 +248,9 @@ export function createQueue(
       }),
       {
         ...(jobKey ? { jobKey } : {}),
+        ...(idempotencyKey
+          ? { queueName: getIdempotencyQueueName(idempotencyKey) }
+          : {}),
         ...(runAt ? { runAt } : {}),
         maxAttempts: MAX_GRAPHILE_JOB_ATTEMPTS,
       }
@@ -390,19 +441,11 @@ export function createQueue(
       ) AS exists`
     );
     if (hasStaging.rows[0]?.exists) {
-      const jobs = await pool.query(
+      const jobs = await pool.query<MigratedPgBossJob>(
         `SELECT name, data, singleton_key, retry_limit
         FROM "workflow"."_pgboss_pending_jobs"`
       );
-      for (const job of jobs.rows) {
-        await utils.addJob(job.name, job.data as Record<string, unknown>, {
-          jobKey: job.singleton_key ?? undefined,
-          maxAttempts: Math.max(
-            job.retry_limit ?? 0,
-            MAX_GRAPHILE_JOB_ATTEMPTS
-          ),
-        });
-      }
+      await addMigratedPgBossJobs(utils, jobs.rows);
       await pool.query(`DROP TABLE "workflow"."_pgboss_pending_jobs"`);
       return;
     }
@@ -415,20 +458,12 @@ export function createQueue(
       ) AS exists`
     );
     if (hasPgBoss.rows[0]?.exists) {
-      const jobs = await pool.query(
+      const jobs = await pool.query<MigratedPgBossJob>(
         `SELECT name, data, singleton_key, retry_limit
         FROM pgboss.job
         WHERE state IN ('created', 'retry')`
       );
-      for (const job of jobs.rows) {
-        await utils.addJob(job.name, job.data as Record<string, unknown>, {
-          jobKey: job.singleton_key ?? undefined,
-          maxAttempts: Math.max(
-            job.retry_limit ?? 0,
-            MAX_GRAPHILE_JOB_ATTEMPTS
-          ),
-        });
-      }
+      await addMigratedPgBossJobs(utils, jobs.rows);
       await pool.query(`DROP SCHEMA pgboss CASCADE`);
     }
   }

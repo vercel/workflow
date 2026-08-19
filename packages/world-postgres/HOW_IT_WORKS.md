@@ -36,6 +36,8 @@ Call `world.start()` to initialize graphile-worker workers. When `.start()` is c
 
 When the runtime returns `{ timeoutSeconds }`, the worker schedules a new Graphile job with a future `runAt` time before finishing the current task.
 
+Messages carrying an idempotency key are deterministically assigned to one of 2,048 Graphile named queues per configured job prefix. Graphile holds that queue while the handler runs, so a same-key replacement remains pending rather than executing on another worker. The default replacement behavior stays enabled so delayed reschedules and crash recovery retain a durable successor. Because named queues persist after their jobs complete, the bounded mapping avoids an ever-growing queue table; unrelated keys that hash to the same bucket are serialized.
+
 The worker sends workflow orchestration and queued step messages to the combined `.well-known/workflow/v1/flow` endpoint.
 
 In **Next.js**, the `world.start()` call needs to be added to `instrumentation.ts|js` to ensure workers start before request handling. Use `workflow/runtime` for `getWorld` (same as the testing server and other framework plugins):

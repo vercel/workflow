@@ -187,6 +187,9 @@ and its token can be reused. If the token is never reused, the expired
 - Graphile jobs are acknowledged only after execution finishes, or after the worker durably schedules a delayed follow-up job
 - Backlog stays in PostgreSQL when all execution slots are busy
 - Retry and sleep-style delays use Graphile `runAt` scheduling
+- Messages with an idempotency key are assigned to one of 2,048 Graphile named queues per `jobPrefix`. This prevents the same keyed delivery from executing concurrently across worker processes while keeping delayed successors durable. Hash collisions can serialize unrelated keyed messages.
+- Existing jobs from a version without named queues do not participate in this lock. Drain keyed jobs and old producers during the first rollout or rollback when a fully protected handoff is required.
+- An abrupt process death can hold its named queue until Graphile Worker's four-hour stale-lock recovery. Graceful shutdown releases it normally.
 - Workflow orchestration and queued step execution are both sent through `/.well-known/workflow/v1/flow`
 
 ## Development

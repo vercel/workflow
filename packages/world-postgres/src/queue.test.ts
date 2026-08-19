@@ -15,6 +15,10 @@ import { MessageData } from './message.js';
 import { createQueue } from './queue.js';
 
 const transport = new JsonTransport();
+const DEFAULT_IDEMPOTENCY_QUEUE =
+  'workflow_idempotency_9d70a9b47b31ee4a598d79d3949545c491ca35b9fb2aed6b7ac8bdc277f09df3_1a5';
+const PREFIXED_IDEMPOTENCY_QUEUE =
+  'workflow_idempotency_4ed3ab71b053166eab6696d23bd4b98bba01573451cf7fbad1c531a9460e716b_1a5';
 const createdQueues: Array<ReturnType<typeof createQueue>> = [];
 const createdServers: Server[] = [];
 
@@ -489,12 +493,160 @@ describe('postgres queue http execution', () => {
         expect.objectContaining({
           jobKey: 'step_01ABC',
           maxAttempts: 49,
+          queueName: DEFAULT_IDEMPOTENCY_QUEUE,
           runAt: new Date('2024-01-01T00:00:05.000Z'),
         })
       );
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('keeps delayed retries on the same idempotency queue', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2024-01-01T00:00:00.000Z'));
+    const fetchMock = vi.fn(async () => Response.json({ timeoutSeconds: 300 }));
+    vi.stubGlobal('fetch', fetchMock);
+    process.env.WORKFLOW_LOCAL_BASE_URL = 'https://workflow.example.test';
+
+    try {
+      const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
+      await queue.start();
+
+      const task = getTaskHandler('workflow_flows');
+      await task(
+        buildMessageData(
+          '__wkf_workflow_test-step',
+          {
+            runId: 'run_01ABC',
+            stepId: 'step_01ABC',
+            stepName: 'test-step',
+          },
+          { idempotencyKey: 'step_01ABC' }
+        ),
+        { job: { attempts: 1 } }
+      );
+
+      expect(workerUtilsMock.addJob).toHaveBeenCalledWith(
+        'workflow_flows',
+        expect.objectContaining({
+          attempt: 2,
+          idempotencyKey: 'step_01ABC',
+        }),
+        expect.objectContaining({
+          jobKey: 'step_01ABC',
+          maxAttempts: 49,
+          queueName: DEFAULT_IDEMPOTENCY_QUEUE,
+          runAt: new Date('2024-01-01T00:05:00.000Z'),
+        })
+      );
+    } finally {
+      vi.unstubAllGlobals();
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not assign an idempotency queue to unkeyed messages', async () => {
+    const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
+    await queue.start();
+
+    await queue.queue('__wkf_workflow_test-workflow', {
+      runId: 'run_01ABC',
+    });
+
+    expect(workerUtilsMock.addJob).toHaveBeenCalledWith(
+      'workflow_flows',
+      expect.anything(),
+      expect.not.objectContaining({ queueName: expect.anything() })
+    );
+  });
+
+  it('scopes idempotency queues to the configured job prefix', async () => {
+    const queue = buildQueue(
+      { connectionString: 'postgres://test', jobPrefix: 'billing_' },
+      pool
+    );
+    await queue.start();
+
+    await queue.queue(
+      '__wkf_workflow_test-step',
+      {
+        runId: 'run_01ABC',
+        stepId: 'step_01ABC',
+        stepName: 'test-step',
+      },
+      { idempotencyKey: 'step_01ABC' }
+    );
+
+    expect(workerUtilsMock.addJob).toHaveBeenCalledWith(
+      'billing_flows',
+      expect.anything(),
+      expect.objectContaining({
+        queueName: PREFIXED_IDEMPOTENCY_QUEUE,
+      })
+    );
+  });
+
+  it('assigns idempotency queues to migrated keyed jobs', async () => {
+    const migrationPool = {
+      query: vi
+        .fn()
+        .mockResolvedValueOnce({ rows: [{ exists: true }] })
+        .mockResolvedValueOnce({
+          rows: [
+            {
+              name: 'workflow_flows',
+              data: buildMessageData(
+                '__wkf_workflow_test-step',
+                {
+                  runId: 'run_01ABC',
+                  stepId: 'step_01ABC',
+                  stepName: 'test-step',
+                },
+                { idempotencyKey: 'step_01ABC' }
+              ),
+              singleton_key: 'step_01ABC',
+              retry_limit: 3,
+            },
+            {
+              name: 'workflow_flows',
+              data: buildMessageData('__wkf_workflow_test-workflow', {
+                runId: 'run_01ABD',
+              }),
+              singleton_key: 'msg_01ABC',
+              retry_limit: 3,
+            },
+          ],
+        })
+        .mockResolvedValueOnce({ rows: [] }),
+    } as unknown as Parameters<typeof createQueue>[1];
+    const queue = buildQueue(
+      { connectionString: 'postgres://test' },
+      migrationPool
+    );
+
+    await queue.start();
+
+    expect(workerUtilsMock.addJob).toHaveBeenCalledWith(
+      'workflow_flows',
+      expect.objectContaining({
+        id: 'test-step',
+        idempotencyKey: 'step_01ABC',
+      }),
+      {
+        jobKey: 'step_01ABC',
+        maxAttempts: 49,
+        queueName: DEFAULT_IDEMPOTENCY_QUEUE,
+      }
+    );
+    expect(workerUtilsMock.addJob).toHaveBeenCalledWith(
+      'workflow_flows',
+      expect.objectContaining({
+        id: 'test-workflow',
+        idempotencyKey: undefined,
+      }),
+      expect.not.objectContaining({ queueName: expect.anything() })
+    );
   });
 
   it('queues namespaced producer messages in graphile job metadata', async () => {
@@ -526,6 +678,7 @@ describe('postgres queue http execution', () => {
       expect.objectContaining({
         jobKey: 'step_01ABC',
         maxAttempts: 49,
+        queueName: DEFAULT_IDEMPOTENCY_QUEUE,
       })
     );
   });
