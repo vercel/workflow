@@ -13,6 +13,11 @@ export type PostgresWorldConfig = PgConnectionConfig & {
   namespace?: string;
   queueConcurrency?: number;
   /**
+   * Whether start() should re-enqueue pending and running runs from storage.
+   * Defaults to true.
+   */
+  recoverActiveRuns?: boolean;
+  /**
    * Whether the application coordinates shutdown instead of Graphile Worker
    * responding automatically. The application must await world.close().
    * Defaults to false. The package's default createWorld() configuration

@@ -153,6 +153,13 @@ The Postgres World is a self-hosted durable backend for long-running server proc
 - Number of concurrent workers polling for jobs.
 - Also bounds concurrent parent-to-child workflow return-value polls.
 
+### `recoverActiveRuns`
+
+- Environment variable: none
+- Default: `true`
+- Whether `start()` re-enqueues every pending and running workflow run.
+- Setting it to `false` still starts the queue worker; recovery must be handled separately.
+
 ### `applicationManagedShutdown`
 
 - Environment variable: `WORKFLOW_POSTGRES_APPLICATION_MANAGED_SHUTDOWN` (`1` enables)
