@@ -3313,6 +3313,35 @@ export function workflowEntrypoint(
                           continue;
                         }
 
+                        // Steps whose arguments failed to serialize were
+                        // finalized by the suspension handler as step_created
+                        // + step_failed (see finalizeUnserializableStep). No
+                        // step-execution message is dispatched for them, so
+                        // when such a step is the only pending work nothing
+                        // would ever re-invoke the run — replay in-process
+                        // over the reloaded log instead. The replay rejects
+                        // the step's promise with the SerializationError,
+                        // which a try/catch around the step call observes;
+                        // uncaught, it propagates out of the workflow body
+                        // and fails the run as a USER_ERROR. Healthy sibling
+                        // steps are not dispatched this pass: the replay
+                        // re-suspends over their already-committed
+                        // step_created events and the next pass dispatches
+                        // them as usual.
+                        if (
+                          suspensionResult.failedStepCorrelationIds.size > 0
+                        ) {
+                          // The failed dehydration may have executed
+                          // workflow-owned code (getters/proxies) before
+                          // throwing; demote to a cold replay rather than
+                          // resume a VM that may have diverged. This is a
+                          // rare terminal-error path, so the replay cost is
+                          // irrelevant next to the divergence risk.
+                          retainedSession = null;
+                          eventLog = nextEventLogLoad(eventLog);
+                          continue;
+                        }
+
                         const pendingSteps = suspensionResult.pendingSteps;
 
                         // Inline execution is gated on ownership. The

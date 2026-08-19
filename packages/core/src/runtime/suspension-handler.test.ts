@@ -1,7 +1,9 @@
 import { runInNewContext } from 'node:vm';
 import {
+  EntityConflictError,
   FatalError,
   PreconditionFailedError,
+  RunExpiredError,
   WorkflowWorldError,
 } from '@workflow/errors';
 import type { Event } from '@workflow/world';
@@ -14,6 +16,7 @@ import {
 } from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { WorkflowSuspension } from '../global.js';
+import { hydrateStepError } from '../serialization.js';
 import { maxEventSlot, stepDispatchIdempotencyKey } from './helpers.js';
 import { ReplayRecoveryReporter } from './replay-recovery-reporter.js';
 import { handleSuspension } from './suspension-handler.js';
@@ -1221,5 +1224,221 @@ describe('handleSuspension batched fan-out', () => {
       )
     ).toEqual(['s4', 's5']);
     expect([...result.createdStepCorrelationIds].sort()).toEqual(['s4', 's5']);
+  });
+});
+
+describe('step-argument serialization failure', () => {
+  // A value the workflow serializer cannot dehydrate: a class instance with
+  // no registered serde model. Mirrors serialization.test.ts's unsupported
+  // type coverage — dehydrateStepArguments throws a SerializationError.
+  class Unserializable {
+    secret = 'not-a-pojo';
+  }
+
+  function stepItem(id: string, args: unknown[] = []) {
+    return {
+      type: 'step' as const,
+      correlationId: id,
+      stepName: id,
+      args,
+    };
+  }
+
+  it('finalizes the step as step_created + step_failed instead of rejecting the suspension', async () => {
+    const eventsCreate = vi.fn().mockImplementation(async (_runId, event) => ({
+      event,
+    }));
+    const world = createWorld(eventsCreate);
+    const pending = new Map([
+      ['s_bad', stepItem('s_bad', [new Unserializable()])],
+    ]);
+
+    const result = await handleSuspension({
+      suspension: new WorkflowSuspension(pending, globalThis),
+      world,
+      run,
+    });
+
+    // The suspension itself resolves — the failure is scoped to the step.
+    expect(eventsCreate).toHaveBeenCalledTimes(2);
+    const [createdCall, failedCall] = eventsCreate.mock.calls;
+    expect(createdCall[1]).toMatchObject({
+      eventType: 'step_created',
+      correlationId: 's_bad',
+      eventData: expect.objectContaining({
+        stepName: 's_bad',
+        workflowName: run.workflowName,
+      }),
+    });
+    expect(failedCall[1]).toMatchObject({
+      eventType: 'step_failed',
+      correlationId: 's_bad',
+      eventData: expect.objectContaining({ stepName: 's_bad' }),
+    });
+    expect([...result.failedStepCorrelationIds]).toEqual(['s_bad']);
+    // Not owned for dispatch, not deferred for lazy-inline execution: the
+    // step is terminal.
+    expect(result.createdStepCorrelationIds.size).toBe(0);
+    expect(result.lazyInlineSteps).toEqual([]);
+  });
+
+  it('round-trips the SerializationError through the step_failed payload', async () => {
+    const eventsCreate = vi.fn().mockImplementation(async (_runId, event) => ({
+      event,
+    }));
+    const world = createWorld(eventsCreate);
+    const pending = new Map([
+      ['s_bad', stepItem('s_bad', [new Unserializable()])],
+    ]);
+
+    await handleSuspension({
+      suspension: new WorkflowSuspension(pending, globalThis),
+      world,
+      run,
+    });
+
+    const failedEvent = eventsCreate.mock.calls.find(
+      ([, event]) => event.eventType === 'step_failed'
+    )?.[1];
+    expect(failedEvent).toBeDefined();
+    const hydrated = (await hydrateStepError(
+      failedEvent.eventData.error,
+      run.runId,
+      undefined
+    )) as Error;
+    expect(hydrated).toBeInstanceOf(Error);
+    expect(hydrated.name).toBe('SerializationError');
+    expect(hydrated.message).toContain('Failed to serialize step arguments');
+  });
+
+  it('finalizes the bad step while healthy siblings proceed', async () => {
+    const eventsCreate = vi.fn().mockImplementation(async (_runId, event) => ({
+      event,
+    }));
+    const world = createWorld(eventsCreate);
+    // Default inline cap (3): both steps are designated lazy-inline, but the
+    // bad one is finalized before deferral, so only the healthy step defers.
+    const pending = new Map([
+      ['s_bad', stepItem('s_bad', [new Unserializable()])],
+      ['s_good', stepItem('s_good', ['fine'])],
+    ]);
+
+    const result = await handleSuspension({
+      suspension: new WorkflowSuspension(pending, globalThis),
+      world,
+      run,
+    });
+
+    expect([...result.failedStepCorrelationIds]).toEqual(['s_bad']);
+    expect(result.lazyInlineSteps.map((s) => s.correlationId)).toEqual([
+      's_good',
+    ]);
+    const eventTypes = eventsCreate.mock.calls.map(([, event]) => [
+      event.eventType,
+      event.correlationId,
+    ]);
+    expect(eventTypes).toEqual([
+      ['step_created', 's_bad'],
+      ['step_failed', 's_bad'],
+    ]);
+  });
+
+  it('drops the bad step out of the batched fan-out onto the sequential path', async () => {
+    vi.stubEnv('WORKFLOW_MAX_INLINE_STEPS', '1');
+    try {
+      const slotRun: WorkflowRun = { ...run, specVersion: 6 };
+      let slot = 10;
+      const createBatch = vi
+        .fn()
+        .mockImplementation(async (_runId, events) => ({
+          results: events.map(({ event }: { event: object }) => ({
+            status: 200,
+            event: { ...event, eventId: slotToEventId(slot++) },
+          })),
+        }));
+      const eventsCreate = vi
+        .fn()
+        .mockImplementation(async (_runId, event) => ({ event }));
+      const world = {
+        events: { create: eventsCreate, createBatch },
+        getEncryptionKeyForRun: vi.fn().mockResolvedValue(undefined),
+      } as unknown as World;
+      // s1 defers (cap 1); s_bad fails serialization; s3 + s4 fold into the
+      // batch. The bad step's two writes go through the single-event path.
+      const pending = new Map([
+        ['s1', stepItem('s1')],
+        ['s_bad', stepItem('s_bad', [new Unserializable()])],
+        ['s3', stepItem('s3')],
+        ['s4', stepItem('s4')],
+      ]);
+
+      const result = await handleSuspension({
+        suspension: new WorkflowSuspension(pending, globalThis),
+        world,
+        run: slotRun,
+      });
+
+      expect([...result.failedStepCorrelationIds]).toEqual(['s_bad']);
+      expect(createBatch).toHaveBeenCalledTimes(1);
+      expect(
+        createBatch.mock.calls[0][1].map(
+          (e: { event: { correlationId: string } }) => e.event.correlationId
+        )
+      ).toEqual(['s3', 's4']);
+      expect(
+        eventsCreate.mock.calls.map(([, event]) => [
+          event.eventType,
+          event.correlationId,
+        ])
+      ).toEqual([
+        ['step_created', 's_bad'],
+        ['step_failed', 's_bad'],
+      ]);
+      expect([...result.createdStepCorrelationIds].sort()).toEqual([
+        's3',
+        's4',
+      ]);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('tolerates a concurrent handler having already finalized the step', async () => {
+    // Both writes conflict: a concurrent replay hit the same deterministic
+    // serialization failure and wrote step_created + step_failed first.
+    const eventsCreate = vi
+      .fn()
+      .mockRejectedValue(new EntityConflictError('already exists'));
+    const world = createWorld(eventsCreate);
+    const pending = new Map([
+      ['s_bad', stepItem('s_bad', [new Unserializable()])],
+    ]);
+
+    const result = await handleSuspension({
+      suspension: new WorkflowSuspension(pending, globalThis),
+      world,
+      run,
+    });
+
+    expect([...result.failedStepCorrelationIds]).toEqual(['s_bad']);
+  });
+
+  it('skips finalization when the run has already finished', async () => {
+    const eventsCreate = vi
+      .fn()
+      .mockRejectedValue(new RunExpiredError('run is gone'));
+    const world = createWorld(eventsCreate);
+    const pending = new Map([
+      ['s_bad', stepItem('s_bad', [new Unserializable()])],
+    ]);
+
+    const result = await handleSuspension({
+      suspension: new WorkflowSuspension(pending, globalThis),
+      world,
+      run,
+    });
+
+    // Nothing to observe the failure — no replay is forced.
+    expect(result.failedStepCorrelationIds.size).toBe(0);
   });
 });
