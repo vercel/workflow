@@ -3456,6 +3456,78 @@ describe('e2e', () => {
     }
   );
 
+  // Lifecycle hooks (`registerLifecycleHooks`) are registered in the Next.js
+  // workbenches' instrumentation.ts (see lifecycle-hooks-e2e.ts there). The
+  // handlers report each lifecycleHookTarget* run's terminal transition by
+  // resuming the lifecycleHookObserver workflow's hook — a durable channel
+  // that works even when the terminal write happens on a different instance
+  // than the one serving these HTTP requests.
+  describe.skipIf(!isNextJsApp)('lifecycle hooks', () => {
+    test(
+      'onRunCompleted receives the Run and can read its return value',
+      { timeout: 90_000 },
+      async () => {
+        const token = `lifecycle-completed-${Math.random().toString(36).slice(2)}`;
+
+        const observer = await start(await e2e('lifecycleHookObserver'), [
+          token,
+        ]);
+        await waitForHook(token, { runId: observer.runId });
+
+        const target = await start(await e2e('lifecycleHookTargetCompleted'), [
+          token,
+        ]);
+        await expect(target.returnValue).resolves.toMatchObject({
+          outcome: 'completed',
+        });
+
+        // The onRunCompleted handler fetched the target's workflowName and
+        // returnValue off the lazily-hydrated Run instance, then resumed the
+        // observer's hook with what it saw.
+        const payload = await observer.returnValue;
+        expect(payload).toMatchObject({
+          observed: 'completed',
+          runId: target.runId,
+          workflowName: expect.stringContaining('lifecycleHookTargetCompleted'),
+          returnedOutcome: 'completed',
+        });
+      }
+    );
+
+    test(
+      'onRunFailed receives the hydrated error with errorCode and cause',
+      { timeout: 90_000 },
+      async () => {
+        const token = `lifecycle-failed-${Math.random().toString(36).slice(2)}`;
+
+        const observer = await start(await e2e('lifecycleHookObserver'), [
+          token,
+        ]);
+        await waitForHook(token, { runId: observer.runId });
+
+        const target = await start(await e2e('lifecycleHookTargetFailed'), [
+          token,
+        ]);
+        const error = await target.returnValue.catch((e: unknown) => e);
+        expect(WorkflowRunFailedError.is(error)).toBe(true);
+
+        // The onRunFailed handler received a WorkflowRunFailedError whose
+        // errorCode carries the classification and whose cause is the
+        // hydrated thrown FatalError (name + message preserved).
+        const payload = await observer.returnValue;
+        expect(payload).toMatchObject({
+          observed: 'failed',
+          runId: target.runId,
+          errorCode: 'USER_ERROR',
+          causeName: 'FatalError',
+          causeMessage: expect.stringContaining(
+            `lifecycle-hook-target-failed:${token}`
+          ),
+        });
+      }
+    );
+  });
+
   test(
     'hookWithSleepWorkflow - hook payloads delivered correctly with concurrent sleep',
     { timeout: 90_000 },

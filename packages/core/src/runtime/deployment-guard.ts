@@ -14,6 +14,7 @@ import { runtimeLogger } from '../logger.js';
 import { dehydrateRunError } from '../serialization.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { getDeploymentMismatchMaxRetries } from './constants.js';
+import { dispatchRunFailedHooks } from './lifecycle-hooks.js';
 
 /** Cap on the re-route backoff, in seconds. */
 const MAX_REROUTE_DELAY_SECONDS = 8;
@@ -211,6 +212,11 @@ export async function guardDeploymentAffinity({
           },
         },
         { requestId }
+      );
+      dispatchRunFailedHooks(
+        run.runId,
+        error,
+        RUN_ERROR_CODES.DEPLOYMENT_MISMATCH
       );
     } catch (failError) {
       // Run already reached a terminal state (a concurrent writer failed it, or

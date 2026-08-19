@@ -1,6 +1,12 @@
 import { registerOTel } from '@vercel/otel';
+import { registerE2eLifecycleHooks } from './lifecycle-hooks-e2e';
 
 export function register() {
+  if (process.env.NEXT_RUNTIME === 'nodejs') {
+    // Workflow lifecycle hooks are host-only; skip the edge runtime's
+    // instrumentation pass.
+    registerE2eLifecycleHooks();
+  }
   registerOTel({
     serviceName: 'nextjs-turbopack',
     instrumentationConfig: {

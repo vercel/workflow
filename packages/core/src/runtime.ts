@@ -88,6 +88,10 @@ import {
   withHealthCheck,
 } from './runtime/helpers.js';
 import {
+  dispatchRunCompletedHooks,
+  dispatchRunFailedHooks,
+} from './runtime/lifecycle-hooks.js';
+import {
   handleReplayBudgetExhausted,
   ReplayBudget,
 } from './runtime/replay-budget.js';
@@ -429,6 +433,7 @@ async function recordFatalRunError({
     }
     throw failErr;
   }
+  dispatchRunFailedHooks(runId, err, errorCode);
 }
 
 function hasRecordedTerminalRunEvent(events: Event[], runId: string): boolean {
@@ -760,6 +765,11 @@ export function workflowEntrypoint(
                 },
               },
               { requestId }
+            );
+            dispatchRunFailedHooks(
+              runId,
+              err,
+              RUN_ERROR_CODES.MAX_DELIVERIES_EXCEEDED
             );
           } catch (err) {
             if (EntityConflictError.is(err) || RunExpiredError.is(err)) {
@@ -3025,6 +3035,7 @@ export function workflowEntrypoint(
                         }
                         throw err;
                       }
+                      dispatchRunCompletedHooks(runId);
 
                       span?.setAttributes({
                         ...Attribute.WorkflowRunStatus('completed'),
@@ -3233,6 +3244,11 @@ export function workflowEntrypoint(
                             }
                             throw failErr;
                           }
+                          dispatchRunFailedHooks(
+                            runId,
+                            suspensionError,
+                            errorCode
+                          );
                           span?.setAttributes({
                             ...Attribute.WorkflowRunStatus('failed'),
                             ...Attribute.WorkflowErrorCode(errorCode),
@@ -4559,6 +4575,7 @@ export function workflowEntrypoint(
                           }
                           throw failErr;
                         }
+                        dispatchRunFailedHooks(runId, terminalError, errorCode);
 
                         span?.setAttributes({
                           ...Attribute.WorkflowRunStatus('failed'),

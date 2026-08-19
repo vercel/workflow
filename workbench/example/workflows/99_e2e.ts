@@ -3809,3 +3809,44 @@ export async function crossRegionStreamWorkflow(chunkCount: number) {
   await closeCrossRegionStream(writable);
   return 'done';
 }
+
+// ============================================================
+// LIFECYCLE HOOK TESTS
+// Exercised only by the Next.js workbenches, whose
+// instrumentation.ts registers `registerLifecycleHooks` handlers
+// (see workbench/nextjs-*/instrumentation.ts). The handlers
+// observe these target runs' terminal transitions and report
+// them by resuming the observer workflow's hook — a durable
+// channel that works across serverless instances.
+// ============================================================
+
+/**
+ * Target: completes immediately. The `onRunCompleted` handler reads this
+ * run's return value (exercising the Run instance's lazy hydration) to
+ * discover the observer's hook token.
+ */
+export async function lifecycleHookTargetCompleted(token: string) {
+  'use workflow';
+  return { token, outcome: 'completed' };
+}
+
+/**
+ * Target: fails immediately. The token is embedded in the thrown error's
+ * message so the `onRunFailed` handler can find the observer without any
+ * backend reads (the hydrated cause is on the WorkflowRunFailedError it
+ * receives).
+ */
+export async function lifecycleHookTargetFailed(token: string) {
+  'use workflow';
+  throw new FatalError(`lifecycle-hook-target-failed:${token}`);
+}
+
+/**
+ * Observer: parks on a hook until a lifecycle handler reports the target
+ * run's terminal transition, then returns the reported payload verbatim.
+ */
+export async function lifecycleHookObserver(token: string) {
+  'use workflow';
+  using hook = createHook<Record<string, unknown>>({ token });
+  return await hook;
+}

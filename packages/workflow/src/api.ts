@@ -15,6 +15,12 @@ export type {
   WorkflowRun,
 } from '@workflow/core/runtime';
 export {
+  type RunCompletedHookParams,
+  type RunFailedHookParams,
+  registerLifecycleHooks,
+  type WorkflowLifecycleHooks,
+} from '@workflow/core/runtime/lifecycle-hooks';
+export {
   getHookByToken,
   type ResumedHook,
   resumeHook,
