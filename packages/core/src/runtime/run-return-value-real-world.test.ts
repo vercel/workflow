@@ -48,21 +48,27 @@ describe('run.returnValue over a real World', () => {
 
   /** A run in `running`, created through the event log like a real one. */
   async function startRun(): Promise<string> {
-    const created = await world.events.create(null as never, {
-      eventType: 'run_created',
-      specVersion: SPEC_VERSION_CURRENT,
-      eventData: {
-        deploymentId: 'dpl_test',
-        workflowName: 'return-value-real-world',
-        input: new Uint8Array([1]),
-      },
-    } as never);
+    const created = await world.events.create(
+      null as never,
+      {
+        eventType: 'run_created',
+        specVersion: SPEC_VERSION_CURRENT,
+        eventData: {
+          deploymentId: 'dpl_test',
+          workflowName: 'return-value-real-world',
+          input: new Uint8Array([1]),
+        },
+      } as never
+    );
     const runId = created.run?.runId;
     if (!runId) throw new Error('expected the run to be created');
-    await world.events.create(runId as never, {
-      eventType: 'run_started',
-      specVersion: SPEC_VERSION_CURRENT,
-    } as never);
+    await world.events.create(
+      runId as never,
+      {
+        eventType: 'run_started',
+        specVersion: SPEC_VERSION_CURRENT,
+      } as never
+    );
     return runId;
   }
 
@@ -72,11 +78,14 @@ describe('run.returnValue over a real World', () => {
       setTimeout(() => {
         dehydrateWorkflowReturnValue('done', runId)
           .then((output) =>
-            world.events.create(runId as never, {
-              eventType: 'run_completed',
-              specVersion: SPEC_VERSION_CURRENT,
-              eventData: { output },
-            } as never)
+            world.events.create(
+              runId as never,
+              {
+                eventType: 'run_completed',
+                specVersion: SPEC_VERSION_CURRENT,
+                eventData: { output },
+              } as never
+            )
           )
           .then(resolve, reject);
       }, ms);
@@ -106,10 +115,13 @@ describe('run.returnValue over a real World', () => {
     const cancelling = new Promise((resolve, reject) => {
       setTimeout(() => {
         world.events
-          .create(runId as never, {
-            eventType: 'run_cancelled',
-            specVersion: SPEC_VERSION_CURRENT,
-          } as never)
+          .create(
+            runId as never,
+            {
+              eventType: 'run_cancelled',
+              specVersion: SPEC_VERSION_CURRENT,
+            } as never
+          )
           .then(resolve, reject);
       }, 300);
     });
