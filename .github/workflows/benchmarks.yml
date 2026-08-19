@@ -16,6 +16,23 @@ on:
   push:
     branches: [main]
   workflow_dispatch: # Allow manual triggers
+    inputs:
+      # Opt-in overrides for comparing transports / server builds. Both default to
+      # empty, so PR and main runs are byte-for-byte unchanged and CI cost does not
+      # grow. A 2x2 (transport x server build) is four dispatches, not a matrix
+      # expansion on every PR.
+      events_transport:
+        description: 'Override WORKFLOW_EVENTS_TRANSPORT (ws|http). Empty = app default.'
+        required: false
+        default: ''
+      stream_transport:
+        description: 'Override WORKFLOW_STREAMS_TRANSPORT (ws|http). Empty = app default. Requires a build that reads it.'
+        required: false
+        default: ''
+      workflow_server_url:
+        description: 'Override VERCEL_WORKFLOW_SERVER_URL (e.g. a workflow-server PR preview). Empty = repo secret.'
+        required: false
+        default: ''
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -162,7 +179,16 @@ jobs:
           APP_NAME: ${{ matrix.target.app }}
           VERCEL_DEPLOYMENT_ID: ${{ steps.waitForDeployment.outputs.deployment-id }}
           WORKFLOW_VERCEL_ENV: ${{ github.ref == 'refs/heads/main' && 'production' || 'preview' }}
-          VERCEL_WORKFLOW_SERVER_URL: ${{ github.ref != 'refs/heads/main' && secrets.VERCEL_WORKFLOW_SERVER_URL || '' }}
+          # A dispatch input wins over the secret so a run can be pointed at a
+          # workflow-server PR preview (e.g. a WebSocket or lease-fast-path branch)
+          # without touching project-level environment variables, which are shared
+          # by every preview in the project.
+          VERCEL_WORKFLOW_SERVER_URL: ${{ inputs.workflow_server_url != '' && inputs.workflow_server_url || (github.ref != 'refs/heads/main' && secrets.VERCEL_WORKFLOW_SERVER_URL || '') }}
+          # Empty means "leave unset", so the app keeps its own default transport.
+          # WORKFLOW_EVENTS_TRANSPORT is live today; WORKFLOW_STREAMS_TRANSPORT is a
+          # no-op until a build that reads it is deployed, which is harmless.
+          WORKFLOW_EVENTS_TRANSPORT: ${{ inputs.events_transport }}
+          WORKFLOW_STREAMS_TRANSPORT: ${{ inputs.stream_transport }}
           WORKFLOW_VERCEL_AUTH_TOKEN: ${{ secrets.VERCEL_LABS_TOKEN }}
           WORKFLOW_VERCEL_TEAM: "team_nO2mCG4W8IxPIeKoSsqwAxxB"
           WORKFLOW_VERCEL_PROJECT: ${{ matrix.target.project-id }}
