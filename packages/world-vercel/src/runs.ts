@@ -291,6 +291,42 @@ export function _resetRunStatusLongPollSupportForTests(): void {
 }
 
 /**
+ * Whether this failure means "the long poll is not usable against this
+ * backend", as opposed to something the caller needs to see.
+ *
+ * Two shapes, for the same reason: the answer we want is a plain read either
+ * way, and the fast path should stand down until it re-probes.
+ *
+ * - **The route is missing** (`404`/`405`/`501`). `404` is ambiguous — the run
+ *   may not exist — which the plain read below disambiguates.
+ * - **The hold did not survive** — the request timed out client-side
+ *   (`TIMEOUT`), the connection was severed mid-hold (`TRANSPORT`), or an
+ *   intermediary gave up on it (`504`). Holding a request open for ~25s is a
+ *   new shape for this client, and it crosses gateways and egress proxies that
+ *   are entitled to cut an apparently idle connection. None of that means the
+ *   run is in trouble, so it must not surface as a failed `run.returnValue`:
+ *   without this, a healthy still-running run hard-fails the caller's await,
+ *   and does so on every retry, since nothing would mark the route unusable.
+ *
+ * A plain `500`/`502`/`503` still propagates. Those say the backend itself is
+ * unwell rather than that this *route* cannot be held open, and masking them
+ * behind a second read would hide a real outage. `RetryAgent` has already
+ * retried them in-process by the time they reach here.
+ */
+function isLongPollUnusable(error: WorkflowWorldError): boolean {
+  if (error.status === 404 || error.status === 405 || error.status === 501) {
+    return true;
+  }
+  if (error.status === 504) return true;
+  // Set by makeRequest/instrumentedFetch; both carry no HTTP status, because
+  // no response ever arrived.
+  return (
+    error.status === undefined &&
+    (error.code === 'TIMEOUT' || error.code === 'TRANSPORT')
+  );
+}
+
+/**
  * Wait for a run to reach a terminal status, using workflow-server's
  * long-pollable `GET /v2/runs/:runId/status` route.
  *
@@ -360,10 +396,15 @@ export async function waitForWorkflowRunTerminalStatus(
       config
     );
   } catch (error) {
-    if (
-      !(error instanceof WorkflowWorldError) ||
-      !(error.status === 404 || error.status === 405 || error.status === 501)
-    ) {
+    // The caller cancelled on purpose. That is not a verdict on the route, so
+    // it propagates rather than degrading — otherwise an ordinary abort would
+    // both cost an extra read and switch the fast path off for every run in
+    // this process. Checked first because an abort surfaces with the same
+    // `TIMEOUT` code as a request that ran out of time on its own.
+    if (params?.signal?.aborted) {
+      throw error;
+    }
+    if (!(error instanceof WorkflowWorldError) || !isLongPollUnusable(error)) {
       throw error;
     }
 

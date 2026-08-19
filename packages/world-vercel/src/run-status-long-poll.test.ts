@@ -153,6 +153,111 @@ describe('waitForWorkflowRunTerminalStatus', () => {
     agent.assertNoPendingInterceptors();
   });
 
+  it('degrades to the plain read when the held request is severed', async () => {
+    // A ~25s hold crosses gateways and egress proxies entitled to cut an
+    // apparently idle connection. That must not fail the caller's await for a
+    // run that is merely still running, and it must stand the fast path down
+    // rather than repeating the same doomed request every iteration.
+    const agent = mockAgent();
+    agent
+      .get(ORIGIN)
+      .intercept({
+        path: `/api/v2/runs/${RUN_ID}/status?remoteRefBehavior=resolve&waitMs=25000`,
+        method: 'GET',
+      })
+      .replyWithError(
+        Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' })
+      );
+    agent
+      .get(ORIGIN)
+      .intercept({
+        path: `/api/v2/runs/${RUN_ID}?remoteRefBehavior=resolve`,
+        method: 'GET',
+      })
+      .reply(200, runBody('running'))
+      .times(2);
+
+    const first = await waitForWorkflowRunTerminalStatus(
+      RUN_ID,
+      { timeoutMs: 25_000 },
+      { token: 'test-token', dispatcher: agent }
+    );
+    // A still-running run is an answer, not a rejection.
+    expect(first.status).toBe('running');
+
+    // Second call goes straight to the plain read — no second status attempt.
+    const second = await waitForWorkflowRunTerminalStatus(
+      RUN_ID,
+      { timeoutMs: 25_000 },
+      { token: 'test-token', dispatcher: agent }
+    );
+    expect(second.status).toBe('running');
+    agent.assertNoPendingInterceptors();
+  });
+
+  it('propagates a caller abort instead of degrading', async () => {
+    // An abort is deliberate, so it must not be read as "this backend cannot
+    // hold a request open" — that would cost an extra read and disable the
+    // fast path process-wide for five minutes on an ordinary cancellation.
+    const agent = mockAgent();
+    const controller = new AbortController();
+    // Already aborted, so fetch rejects before it dispatches — no interceptor
+    // is consumed, which is part of the point: nothing reached the wire, so
+    // nothing should be concluded about the route.
+    controller.abort();
+
+    await expect(
+      waitForWorkflowRunTerminalStatus(
+        RUN_ID,
+        { timeoutMs: 25_000, signal: controller.signal },
+        { token: 'test-token', dispatcher: agent }
+      )
+    ).rejects.toThrow();
+
+    // No plain-read interceptor was needed, and the next call still long polls.
+    agent
+      .get(ORIGIN)
+      .intercept({
+        path: `/api/v2/runs/${RUN_ID}/status?remoteRefBehavior=resolve&waitMs=25000`,
+        method: 'GET',
+      })
+      .reply(200, runBody('completed'));
+    const run = await waitForWorkflowRunTerminalStatus(
+      RUN_ID,
+      { timeoutMs: 25_000 },
+      { token: 'test-token', dispatcher: agent }
+    );
+    expect(run.status).toBe('completed');
+    agent.assertNoPendingInterceptors();
+  });
+
+  it('degrades to the plain read on a 504 from an intermediary', async () => {
+    const agent = mockAgent();
+    agent
+      .get(ORIGIN)
+      .intercept({
+        path: `/api/v2/runs/${RUN_ID}/status?remoteRefBehavior=resolve&waitMs=25000`,
+        method: 'GET',
+      })
+      .reply(504, { message: 'Gateway Timeout' });
+    agent
+      .get(ORIGIN)
+      .intercept({
+        path: `/api/v2/runs/${RUN_ID}?remoteRefBehavior=resolve`,
+        method: 'GET',
+      })
+      .reply(200, runBody('running'));
+
+    const run = await waitForWorkflowRunTerminalStatus(
+      RUN_ID,
+      { timeoutMs: 25_000 },
+      { token: 'test-token', dispatcher: agent }
+    );
+
+    expect(run.status).toBe('running');
+    agent.assertNoPendingInterceptors();
+  });
+
   it('degrades to the plain read when the server has no status route', async () => {
     const agent = mockAgent();
     // Two waits: the first discovers the route is missing, the second must not
