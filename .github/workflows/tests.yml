@@ -904,6 +904,7 @@ jobs:
           WORKFLOW_DEV_HMR_LOGS: "1"
           NEXT_CANARY: ${{ matrix.app.canary && '1' || '' }}
           WORKFLOW_VM: ${{ matrix.app.vm || '' }}
+          WORKFLOW_SNAPSHOT_THRESHOLD: ${{ matrix.app.snapshotThreshold || '' }}
 
       - name: Generate E2E summary
         if: always()
@@ -996,6 +997,7 @@ jobs:
           DEPLOYMENT_URL: "http://localhost:${{ matrix.app.name == 'sveltekit' && '4173' || (matrix.app.name == 'astro' && '4321' || '3000') }}"
           NEXT_CANARY: ${{ matrix.app.canary && '1' || '' }}
           WORKFLOW_VM: ${{ matrix.app.vm || '' }}
+          WORKFLOW_SNAPSHOT_THRESHOLD: ${{ matrix.app.snapshotThreshold || '' }}
 
       - name: Generate E2E summary
         if: always()
@@ -1108,6 +1110,7 @@ jobs:
           DEPLOYMENT_URL: "http://localhost:${{ matrix.app.name == 'sveltekit' && '4173' || (matrix.app.name == 'astro' && '4321' || '3000') }}"
           NEXT_CANARY: ${{ matrix.app.canary && '1' || '' }}
           WORKFLOW_VM: ${{ matrix.app.vm || '' }}
+          WORKFLOW_SNAPSHOT_THRESHOLD: ${{ matrix.app.snapshotThreshold || '' }}
 
       - name: Generate E2E summary
         if: always()

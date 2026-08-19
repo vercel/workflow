@@ -181,6 +181,18 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 - The engine choice is stamped into the run's `executionContext` when the run starts, so a run keeps executing on the engine it started on even if the deployment's `WORKFLOW_VM` changes. Runs without a stamped engine use the handler's `WORKFLOW_VM` value.
 - Unknown values throw at startup.
 
+### `WORKFLOW_SNAPSHOT_THRESHOLD`
+
+- Default: `0` (disabled)
+- Values: non-negative integer
+- Only used by the QuickJS engine (`WORKFLOW_VM=quickjs`).
+- When set above `0`, the runtime persists a **VM-memory snapshot** at a suspension once at least this many events have been processed since the last snapshot. Subsequent invocations restore the VM from the snapshot and replay only the events recorded since — instead of re-executing the workflow from the top against the full event log.
+- Short-lived runs below the threshold never pay the snapshot cost; long-running or unbounded runs stop scaling their resume cost with total event-log length. `1` snapshots at every qualifying suspension.
+- Snapshots are an optimization, not a source of truth: the event log remains authoritative, and a missing, corrupt, or incompatible snapshot automatically falls back to a full replay.
+- Snapshot bytes are compressed (zstd, gzip fallback) and encrypted with the run's encryption key (when configured) before being handed to the World's `snapshots` storage. They are deleted when the run reaches a terminal state.
+- Like `WORKFLOW_VM`, the policy is stamped into the run's `executionContext` at start, so a run keeps the snapshot policy it started with.
+- Invalid values throw at startup.
+
 ## Compression and tracing
 
 ### `WORKFLOW_DISABLE_COMPRESSION`

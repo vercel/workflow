@@ -137,6 +137,7 @@ export type * from './snapshots.js';
 export {
   decodeSnapshotEnvelope,
   encodeSnapshotEnvelope,
+  SNAPSHOT_FORMAT_VERSION,
   SnapshotMetadataSchema,
 } from './snapshots.js';
 export type { SpecVersion } from './spec-version.js';

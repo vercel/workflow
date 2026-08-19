@@ -32,6 +32,7 @@
 import type {
   Event,
   RunInput,
+  SnapshotMetadata,
   WorkflowRun,
   WorldCapabilities,
 } from '@workflow/world';
@@ -53,7 +54,11 @@ import {
   getReplayTimeoutMs,
   isQuickJSBaselineSnapshotEnabled,
 } from './constants.js';
-import { quickjsExtensions, quickjsWasm } from './quickjs-assets.generated.js';
+import {
+  quickjsExtensions,
+  quickjsWasiVersion,
+  quickjsWasm,
+} from './quickjs-assets.generated.js';
 import {
   adoptSerdeRoot,
   captureSerdeRoot,
@@ -213,10 +218,26 @@ export interface QuickJSRuntimeOptions {
   /** Features supported by the World executing this workflow. */
   worldCapabilities?: WorldCapabilities;
   /**
-   * The full event log for the run. Every invocation replays the complete
-   * log from the start (same replay semantics as the `node:vm` engine).
+   * The event log to process. Without a snapshot this is the FULL log and
+   * every invocation replays it from the start (same replay semantics as
+   * the `node:vm` engine). With `existingSnapshot`, this is the delta of
+   * events recorded at/after the snapshot's `eventsCursor` — feeding
+   * already-consumed events is harmless (consumed resolvers are gone and
+   * hook deliveries are deduped in the VM heap), so an imprecise cursor
+   * only costs redundant scanning.
    */
   events: Event[];
+  /**
+   * A previously persisted VM-memory snapshot to restore from, or
+   * null/undefined for a fresh boot + full replay. Restoring skips VM
+   * bootstrap, bundle evaluation, and pre-snapshot re-execution entirely:
+   * the WASM heap resumes at the exact suspension point it was captured
+   * at, and only `events` are processed on top.
+   */
+  existingSnapshot?: {
+    data: Uint8Array;
+    metadata: SnapshotMetadata;
+  } | null;
   /** Encryption key for decrypting event payloads (undefined if unencrypted) */
   encryptionKey?: DecryptionKey;
   /**
@@ -1065,14 +1086,16 @@ function getCompiledAssets() {
 
 /**
  * WASI clock override reading the given accessor — shared between fresh
- * boots (initWorkflowVM) and baseline-snapshot restores, so the two
- * paths cannot drift on rounding/encoding.
+ * boots (initWorkflowVM), baseline-snapshot restores, and per-run
+ * VM-memory snapshot restores (restoreWorkflowVM), so the paths cannot
+ * drift on rounding/encoding.
  *
  * Deterministic replay clock: Date.now() / new Date() inside the VM
  * read the host-controlled clock instead of wall time. Replay
- * re-executes the workflow from the top on every invocation, so the
- * clock must be derived from the event log (not real time) for the
- * workflow to observe stable timestamps across invocations.
+ * re-executes the workflow from the top (or resumes a restored heap)
+ * against the event log, so the clock must be derived from the log —
+ * not real time — for the workflow to observe stable timestamps across
+ * invocations.
  */
 function makeDeterministicClockWasi(getNowMs: () => number): WasiOptions {
   return (memory) => ({
@@ -1309,6 +1332,63 @@ function getBaselineEntry(
 }
 
 /**
+ * Restore a VM from persisted snapshot bytes. The restored WASM heap
+ * resumes at the exact suspension point it was captured at — the serde
+ * bundle, workflow bundle, and all workflow state are already inside it,
+ * so no bootstrap or bundle evaluation happens here. Host callbacks are
+ * name-registered by the caller (they live host-side and do not survive
+ * serialization).
+ */
+/**
+ * Continue a monotonic ULID sequence from a persisted last value:
+ * re-implements the `ulid` package's same-timestamp step (Crockford
+ * base32 +1 on the 16-char random part, carrying left; the 10-char time
+ * prefix is preserved — the run's seed timestamp is constant, so the
+ * package would never re-encode it). Byte-for-byte equivalent to what
+ * `monotonicFactory` returns for the same draw position, which is what
+ * keeps correlation ids identical between a snapshot-restored invocation
+ * and a full replay. Exported for tests (equivalence is asserted against
+ * the package itself).
+ */
+export function incrementUlidRandom(prev: string): string {
+  const ENCODING = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
+  const TIME_LEN = 10;
+  const time = prev.slice(0, TIME_LEN);
+  const chars = prev.slice(TIME_LEN).split('');
+  for (let i = chars.length - 1; i >= 0; i--) {
+    const index = ENCODING.indexOf(chars[i]);
+    if (index === -1) {
+      throw new Error(`Incorrectly encoded ULID: ${prev}`);
+    }
+    if (index === ENCODING.length - 1) {
+      chars[i] = ENCODING[0];
+      continue;
+    }
+    chars[i] = ENCODING[index + 1];
+    return time + chars.join('');
+  }
+  // 80 bits of randomness all at max — unreachable in practice, and the
+  // ulid package throws here too.
+  throw new Error(`Cannot increment ULID random part beyond maximum: ${prev}`);
+}
+
+async function restoreWorkflowVM(
+  data: Uint8Array,
+  getNowMs: () => number,
+  interruptBudget: InterruptBudget
+): Promise<QuickJS> {
+  const assets = await getCompiledAssets();
+  const snapshot = QuickJS.deserializeSnapshot(data);
+  return QuickJS.restore(snapshot, {
+    wasm: assets.wasm as never,
+    memoryLimit: 256 * 1024 * 1024,
+    interruptHandler: createInterruptHandler(interruptBudget),
+    extensions: assets.extensions,
+    wasi: makeDeterministicClockWasi(getNowMs),
+  });
+}
+
+/**
  * A live QuickJS workflow invocation. When the initial `result` is
  * `suspended`, the VM is kept alive so the caller can feed newly recorded
  * events (e.g. terminal events of inline-executed steps) into the SAME VM
@@ -1325,6 +1405,30 @@ export interface QuickJSWorkflowSession {
    * Resets the VM's interrupt budget for the new execution burst.
    */
   continueWithEvents(newEvents: Event[]): Promise<QuickJSRuntimeResult>;
+  /**
+   * Capture and serialize the live VM's memory. Only valid while the
+   * last result was `suspended`. The returned bytes restore via
+   * `existingSnapshot` on a later invocation (pair them with the events
+   * cursor at capture time). `rngDraws` is the seeded PRNG's draw count
+   * at capture — persisted in the snapshot metadata so a restore
+   * fast-forwards the base seed to the same position. `lastUlid` is the
+   * monotonic correlation-id factory's last output (undefined if the
+   * run has drawn none) — persisted so a restore continues the exact
+   * ULID sequence instead of drawing fresh randomness. `serdeRootPtr`
+   * is the host-serde capture root's snapshot-portable token — the
+   * restore path re-adopts it so serde initialization executes no guest
+   * code after user code has run.
+   */
+  snapshot(): {
+    data: Uint8Array;
+    rngDraws: number;
+    lastUlid: string | undefined;
+    serdeRootPtr: number;
+    /** Deterministic clock high-water mark at capture (ms since epoch). */
+    clockMs: number;
+    /** Exact engine build (quickjs-wasi version) that captured the heap. */
+    engineVersion: string;
+  };
   /** Dispose the VM if it is still alive. Safe to call multiple times. */
   dispose(): void;
 }
@@ -1366,12 +1470,33 @@ export async function startQuickJSWorkflow(
   // synthesized run object whose timestamps differ from the durably
   // stored ones that later invocations load. Matches the node:vm
   // engine's seed (workflow.ts).
+  //
+  // When restoring from a snapshot, the restored heap already consumed
+  // some number of PRNG draws. The seed stays the BASE seed and the
+  // runtime fast-forwards the recorded draw count (metadata.rngDraws)
+  // instead of mixing the snapshot cursor into the seed: a cursor-mixed
+  // seed made ids depend on WHICH snapshot generation an invocation
+  // restored from, so two overlapping invocations straddling a snapshot
+  // save (queue redelivery of an in-flight invocation) generated
+  // DIFFERENT ids for the same logical step and both step_created writes
+  // landed — the exact double-execution the seeding exists to prevent.
+  // Position-based fast-forward keeps ids identical across snapshot
+  // generations and identical to a no-snapshot run.
   const seed = [
     workflowRun.runId,
     workflowRun.workflowName,
     workflowRun.deploymentId,
   ].join(':');
-  const rng = seedrandom(seed);
+  const baseRng = seedrandom(seed);
+  const restoredDraws = options.existingSnapshot?.metadata.rngDraws ?? 0;
+  for (let i = 0; i < restoredDraws; i++) baseRng();
+  // Every consumer (Math.random, nanoid, the VM ULID factory via
+  // Math.random) draws through this counter so the total is exact.
+  let rngDraws = restoredDraws;
+  const rng = () => {
+    rngDraws++;
+    return baseRng();
+  };
 
   // Seeded nanoid generator — uses the same nanoid package and seeded PRNG
   // as the node:vm engine for consistent token generation.
@@ -1391,6 +1516,184 @@ export async function startQuickJSWorkflow(
     if (Number.isFinite(ms)) vmNowMs = Math.max(vmNowMs, ms);
   };
 
+  const interruptBudget: InterruptBudget = { start: Date.now() };
+
+  // ---- Correlation-id ULID machinery ----
+  // Hoisted out of the per-run phase so BOTH the fresh-boot path and the
+  // snapshot-restore path share it (the `__generateUlid` host callback
+  // closes over it; see hostCallbacks below). Uses the same `ulid`
+  // package and monotonic factory as the node:vm engine, drawing from
+  // the SAME seeded PRNG instance as the VM's Math.random — so the
+  // interleaved draw sequence (and therefore every correlationId) is
+  // byte-identical to what the node:vm engine produces for the same
+  // run. The time prefix is derived from the runId's embedded ULID
+  // (stable across invocations by construction — unlike `startedAt`,
+  // which differs between turbo's synthesized run object and the
+  // durably stored run), so two concurrent invocations of the same run
+  // produce IDENTICAL correlationIds and the world's
+  // EntityConflictError on `events.create` dedups one of each pair.
+  //
+  // Snapshot interplay: the factory's monotonic state (the last ULID it
+  // returned) lives HOST-side and does not survive into a snapshot's
+  // memory image, so it is persisted in the snapshot metadata
+  // (`lastUlid`) and the restore path continues from it by re-applying
+  // the package's own same-timestamp increment step
+  // (incrementUlidRandom). The timestamp seed is constant for the run,
+  // so every post-first draw takes the increment path — a restored
+  // invocation therefore emits the exact ULID sequence a full replay
+  // would have reached. Without this, a restored invocation's first new
+  // correlation id would draw FRESH randomness while a concurrent
+  // full-replay invocation of the same run increments — different ids
+  // for the same logical operation, and both step_created writes land.
+  const ulidTimestamp =
+    runIdCreatedAt(workflowRun.runId) ?? (+workflowRun.createdAt || startedAt);
+  const ulidFactory = monotonicFactory(() => rng());
+  let lastUlid: string | undefined =
+    options.existingSnapshot?.metadata.lastUlid;
+  const generateUlid =
+    lastUlid !== undefined
+      ? () => {
+          // Restored with prior draws: continue the monotonic sequence
+          // exactly where the snapshot left off. Zero PRNG draws — same
+          // as the same-timestamp increment path in full replay.
+          lastUlid = incrementUlidRandom(lastUlid as string);
+          return lastUlid;
+        }
+      : () => {
+          lastUlid = ulidFactory(ulidTimestamp);
+          return lastUlid;
+        };
+
+  // ---- Host callbacks ----
+  // ONE list drives both the fresh-boot path (newFunction + install) and
+  // the snapshot-restore path (registerHostCallback): host functions are
+  // referenced from the WASM heap by name and the host-side registry is
+  // empty in a fresh process, so a callback added to the boot path but
+  // not re-registered on restore resolves to nothing after a restore.
+  // Add new host callbacks HERE, never inline at either site.
+  const hostCallbacks: {
+    name: string;
+    fn: (vm: QuickJS) => () => ReturnType<QuickJS['newNumber']>;
+    /** How the fresh-boot path exposes the function to guest code. */
+    install: (
+      vm: QuickJS,
+      fnHandle: ReturnType<QuickJS['newFunction']>
+    ) => void;
+  }[] = [
+    {
+      name: 'random',
+      fn: (vm) => () => vm.newNumber(rng()),
+      install: (vm, fnHandle) => {
+        using math = vm.global.getProp('Math');
+        math.setProp('random', fnHandle);
+      },
+    },
+    {
+      name: '__generateNanoid',
+      fn: (vm) => () => vm.newString(generateNanoid()) as never,
+      install: (vm, fnHandle) => {
+        vm.setProp(vm.global, '__generateNanoid', fnHandle);
+      },
+    },
+    {
+      name: '__generateUlid',
+      fn: (vm) => () => vm.newString(generateUlid()) as never,
+      install: (vm, fnHandle) => {
+        vm.setProp(vm.global, '__generateUlid', fnHandle);
+      },
+    },
+  ];
+
+  if (options.existingSnapshot) {
+    // ---- RESTORE from a persisted per-run VM snapshot ----
+    const restoredMeta = options.existingSnapshot.metadata;
+    // The entrypoint's format gate guarantees this; guard anyway so a
+    // caller skipping the gate gets a loud failure it can fall back on
+    // rather than a serde built from post-user-code captures.
+    if (restoredMeta.serdeRootPtr === undefined) {
+      throw new Error(
+        'QuickJS snapshot restore requires metadata.serdeRootPtr (snapshot predates host-side serde)'
+      );
+    }
+    // Restore the deterministic clock's high-water mark: the clock lives
+    // host-side, so without this the restored heap observes Date.now()
+    // regressed to the run-creation time until the first delta event
+    // advances it. advanceClock is monotonic (max), so a missing value
+    // (older metadata) degrades to the derived initial clock.
+    if (restoredMeta.clockMs !== undefined) {
+      advanceClock(restoredMeta.clockMs);
+    }
+    const vm = await restoreWorkflowVM(
+      options.existingSnapshot.data,
+      () => vmNowMs,
+      interruptBudget
+    );
+    try {
+      // Host-side serde for the restored heap: re-adopt the capture
+      // root the ORIGINAL boot created before any user code ran — its
+      // box rides inside the memory image (same mechanism as the
+      // baseline-snapshot path; the per-run save re-exports the token,
+      // so this works across snapshot generations). The handle is kept
+      // so a follow-up save can export it again (see makeLiveSession's
+      // snapshot()).
+      const serdeRoot = adoptSerdeRoot(vm, restoredMeta.serdeRootPtr);
+      const serde = createQuickJSSerde(vm, serdeRoot);
+
+      // Re-register every host callback from the shared list — host
+      // functions are referenced from the WASM heap by name and the
+      // host-side registry is empty in a fresh process.
+      for (const callback of hostCallbacks) {
+        vm.registerHostCallback(callback.name, callback.fn(vm));
+      }
+
+      // Process the delta events and drain jobs.
+      {
+        let maxIterations = 100;
+        let madeProgress: boolean;
+        do {
+          madeProgress = await processEvents(
+            vm,
+            serde,
+            events,
+            advanceClock,
+            options.encryptionKey
+          );
+          let batch: number;
+          do {
+            batch = vm.executePendingJobs();
+            if (batch > 0) madeProgress = true;
+          } while (batch > 0);
+        } while (madeProgress && --maxIterations > 0);
+      }
+
+      return makeLiveSession(
+        vm,
+        serde,
+        interruptBudget,
+        advanceClock,
+        () => ({
+          rngDraws,
+          lastUlid,
+          serdeRootPtr: exportSerdeRoot(vm, serdeRoot),
+          clockMs: vmNowMs,
+          engineVersion: quickjsWasiVersion,
+        }),
+        options.encryptionKey
+      );
+    } catch (err) {
+      // Any throw before the session takes ownership would leak the
+      // restored VM (and its WASM linear memory) for the lifetime of
+      // the reused compute instance. The entrypoint catches this and
+      // falls back to a fresh boot + full event replay.
+      try {
+        vm.dispose();
+      } catch {
+        // Already disposed — ignore.
+      }
+      throw err;
+    }
+  }
+
   // ---- Phase 1: static initialization ----
   //
   // Baseline-snapshot fast path (default ON; see the section comment at
@@ -1398,7 +1701,6 @@ export async function startQuickJSWorkflow(
   // booting fresh and re-evaluating the bundle. `ineligible` bundles
   // (module-scope nondeterminism, eval failure) take the fresh path with
   // identical semantics.
-  const interruptBudget: InterruptBudget = { start: Date.now() };
   let baselineSnapshot: Snapshot | undefined;
   let baselineSerdeRootPtr: number | undefined;
   if (isQuickJSBaselineSnapshotEnabled()) {
@@ -1445,10 +1747,14 @@ export async function startQuickJSWorkflow(
   // lives in the restored memory image at the recorded offset. Both give
   // the serde pristine capture-before-user-code intrinsics; neither
   // executes guest code here.
-  const serde =
+  // The root handle is kept (createQuickJSSerde owns it for the VM's
+  // lifetime) so a per-run snapshot save can export its token into the
+  // snapshot metadata — the restore path above re-adopts it by pointer.
+  const serdeRoot =
     baselineSnapshot && baselineSerdeRootPtr !== undefined
-      ? createQuickJSSerde(vm, adoptSerdeRoot(vm, baselineSerdeRootPtr))
-      : createQuickJSSerde(vm);
+      ? adoptSerdeRoot(vm, baselineSerdeRootPtr)
+      : captureSerdeRoot(vm);
+  const serde = createQuickJSSerde(vm, serdeRoot);
 
   // Any throw between here and the terminal paths (which dispose the VM
   // inside checkWorkflowState / extractError before RETURNING) would leak
@@ -1472,41 +1778,14 @@ export async function startQuickJSWorkflow(
       `globalThis.__worldCapabilities = ${JSON.stringify(options.worldCapabilities)};`
     ).dispose();
 
-    // Seeded Math.random
-    {
-      using randomFn = vm.newFunction('random', () => vm.newNumber(rng()));
-      using math = vm.global.getProp('Math');
-      math.setProp('random', randomFn);
-    }
-
-    // Seeded nanoid generator
-    {
-      using nanoidFn = vm.newFunction('__generateNanoid', () =>
-        vm.newString(generateNanoid())
-      );
-      vm.setProp(vm.global, '__generateNanoid', nanoidFn);
-    }
-
-    // Host-side deterministic ULID generator for correlationIds. Uses the
-    // same `ulid` package and monotonic factory as before, drawing from
-    // the SAME seeded PRNG instance as the VM's Math.random — so the
-    // interleaved draw sequence (and therefore every correlationId) is
-    // byte-identical to what the previous in-VM ULID factory produced for
-    // the same run. The time prefix is derived from the runId's embedded
-    // ULID (stable across invocations by construction — unlike
-    // `startedAt`, which differs between turbo's synthesized run object
-    // and the durably stored run), so two concurrent invocations of the
-    // same run produce IDENTICAL correlationIds and the world's
-    // EntityConflictError on `events.create` dedups one of each pair.
-    {
-      const ulidFactory = monotonicFactory(() => rng());
-      const ulidTimestamp =
-        runIdCreatedAt(workflowRun.runId) ??
-        (+workflowRun.createdAt || startedAt);
-      using ulidFn = vm.newFunction('__generateUlid', () =>
-        vm.newString(ulidFactory(ulidTimestamp))
-      );
-      vm.setProp(vm.global, '__generateUlid', ulidFn);
+    // Install every host callback from the shared list (see
+    // hostCallbacks above — the restore path re-registers from the same
+    // list, so the two can't drift). Covers the seeded Math.random, the
+    // seeded nanoid generator, and the deterministic ULID generator for
+    // correlationIds (see the ULID machinery in the enclosing scope).
+    for (const callback of hostCallbacks) {
+      using fnHandle = vm.newFunction(callback.name, callback.fn(vm));
+      callback.install(vm, fnHandle);
     }
 
     // `process.env` — parity with the node:vm engine, which exposes a frozen
@@ -1702,6 +1981,13 @@ export async function startQuickJSWorkflow(
       serde,
       interruptBudget,
       advanceClock,
+      () => ({
+        rngDraws,
+        lastUlid,
+        serdeRootPtr: exportSerdeRoot(vm, serdeRoot),
+        clockMs: vmNowMs,
+        engineVersion: quickjsWasiVersion,
+      }),
       options.encryptionKey
     );
   }
@@ -1718,6 +2004,11 @@ function makeSettledSession(
         'QuickJS workflow session is settled — continueWithEvents is only valid while suspended'
       );
     },
+    snapshot: () => {
+      throw new Error(
+        'QuickJS workflow session is settled — snapshot is only valid while suspended'
+      );
+    },
     dispose: () => {},
   };
 }
@@ -1732,6 +2023,19 @@ function makeLiveSession(
   serde: QuickJSSerde,
   interruptBudget: InterruptBudget,
   advanceClock: (ms: number) => void,
+  /**
+   * Deterministic-state accessor for snapshot saves: the PRNG draw
+   * count, the monotonic ULID factory's last output, and the serde
+   * capture root's export token (exported lazily — only snapshot saves
+   * pay for it). See {@link QuickJSWorkflowSession.snapshot}.
+   */
+  getSnapshotState: () => {
+    rngDraws: number;
+    lastUlid: string | undefined;
+    serdeRootPtr: number;
+    clockMs: number;
+    engineVersion: string;
+  },
   encryptionKey?: DecryptionKey
 ): QuickJSWorkflowSession {
   const result = checkWorkflowState(vm, serde, { keepAliveOnSuspend: true });
@@ -1774,6 +2078,26 @@ function makeLiveSession(
       if (!next.suspended) alive = false;
       session.result = next;
       return next;
+    },
+    snapshot(): {
+      data: Uint8Array;
+      rngDraws: number;
+      lastUlid: string | undefined;
+      serdeRootPtr: number;
+      clockMs: number;
+      engineVersion: string;
+    } {
+      if (!alive) {
+        throw new Error(
+          'QuickJS workflow session is not alive — snapshot is only valid while suspended'
+        );
+      }
+      // Export the serde root BEFORE capturing memory: exporting pins
+      // the handle's box in a survival table that must be part of the
+      // image for a restore's adoptSerdeRoot to find it.
+      const state = getSnapshotState();
+      const snap = vm.snapshot();
+      return { data: QuickJS.serializeSnapshot(snap), ...state };
     },
     dispose(): void {
       if (alive) {

@@ -26,13 +26,16 @@ import {
   type Event,
   ROOT_RUN_ID_ATTRIBUTE,
   type RunInput,
+  SNAPSHOT_FORMAT_VERSION,
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
   type WorkflowRun,
 } from '@workflow/world';
 import { classifyRunError, isRetryableWorldError } from '../classify-error.js';
 import { runtimeLogger } from '../logger.js';
+import { compress, decompress } from '../serialization/compression.js';
 import {
+  decrypt as decryptSerializedData,
   deriveRunPayloadKeys,
   encrypt as encryptSerializedData,
   type RunPayloadKeys,
@@ -57,6 +60,7 @@ import {
   queueMessage,
   stepDispatchIdempotencyKey,
 } from './helpers.js';
+import { quickjsWasiVersion } from './quickjs-assets.generated.js';
 import {
   BASELINE_BUNDLE_FILENAME,
   type PendingAttribute,
@@ -70,7 +74,9 @@ import {
 import { ReplayBudget } from './replay-budget.js';
 import { executeStep, type StepExecutionResult } from './step-executor.js';
 import { runStepSingleFlight } from './step-single-flight.js';
+import { getSnapshotThreshold } from './vm-mode.js';
 import { getWaitContinuationDispatch } from './wait-continuation.js';
+import { safeWaitUntil } from './wait-until.js';
 import { getWorld } from './world.js';
 
 /** Tiny ms timer using performance.now() — already monotonic on Node. */
@@ -213,6 +219,35 @@ async function queueStepMessage(params: {
  * transiently. Steps queued this way are reported in `queuedStepCids`; the
  * caller queues the rest itself.
  */
+/**
+ * Plaintext size ceiling for persisted VM snapshots. A heap beyond this
+ * costs more to store, encrypt and decompress than the replay it saves —
+ * oversized captures are skipped (with a warn) and the run keeps making
+ * progress via full replay.
+ */
+const MAX_SNAPSHOT_PLAINTEXT_BYTES = 32 * 1024 * 1024;
+
+/**
+ * Runs whose heap exceeded {@link MAX_SNAPSHOT_PLAINTEXT_BYTES} at some
+ * suspension. WASM linear memory never shrinks, so a run that crossed
+ * the ceiling once will exceed it at EVERY later suspension — without
+ * this latch each of those would re-pay `session.snapshot()` (two full
+ * copies of the heap) just to discard the result. Process-local by
+ * design: the warm instance replaying the same run repeatedly is where
+ * the repeated cost lives; a cold instance pays one probe and re-latches.
+ * Bounded defensively (a process rarely sees many distinct oversized
+ * runs).
+ */
+const oversizedSnapshotRuns = new Set<string>();
+const OVERSIZED_SNAPSHOT_RUNS_MAX = 1024;
+
+function latchOversizedSnapshotRun(runId: string): void {
+  if (oversizedSnapshotRuns.size >= OVERSIZED_SNAPSHOT_RUNS_MAX) {
+    oversizedSnapshotRuns.clear();
+  }
+  oversizedSnapshotRuns.add(runId);
+}
+
 async function dispatchPendingOps(params: {
   world: Awaited<ReturnType<typeof getWorld>>;
   runId: string;
@@ -834,22 +869,129 @@ export async function runWorkflowWithQuickJS(params: {
   const rawKey = await world.getEncryptionKeyForRun?.(workflowRun);
   const encryptionKey = rawKey ? await deriveRunPayloadKeys(rawKey) : undefined;
 
-  // Load the FULL event log for the run. On first invocation the
-  // preloaded events from the run_started response are the complete log
-  // and save the events.list round-trips; a caller-attested complete
-  // preload (lazy hook fast path) is trusted the same way.
+  // VM-memory snapshotting policy for this run. 0 = disabled (pure
+  // replay). When enabled, suspensions persist a snapshot once at least
+  // `snapshotThreshold` events have been processed since the last one,
+  // and resumptions restore the VM and replay only the delta events.
+  //
+  // `world.snapshots` is an OPTIONAL World capability: a World that
+  // doesn't provide blob storage simply omits it, and the threshold is
+  // forced to 0 here — the run executes with pure full replay, which is
+  // always correct (snapshots are an optimization, never a
+  // requirement).
+  const snapshotThreshold = world.snapshots
+    ? getSnapshotThreshold(workflowRun)
+    : 0;
+  const snapshotsStorage = world.snapshots;
+
+  // Try to load a persisted snapshot. Skipped on the first invocation
+  // (nothing can have been saved yet) and on any load/decode failure —
+  // the fresh-boot full replay below is always a correct fallback (the
+  // event log remains the source of truth; snapshots are an optimization).
+  let existingSnapshot: {
+    data: Uint8Array;
+    metadata: import('@workflow/world').SnapshotMetadata;
+  } | null = null;
+  if (
+    snapshotsStorage &&
+    snapshotThreshold > 0 &&
+    !isFirstInvocation(preloadedEvents)
+  ) {
+    try {
+      const loaded = await snapshotsStorage.load(runId);
+      if (loaded) {
+        const version = loaded.metadata.formatVersion;
+        if (
+          version !== SNAPSHOT_FORMAT_VERSION ||
+          loaded.metadata.rngDraws === undefined ||
+          loaded.metadata.serdeRootPtr === undefined ||
+          loaded.metadata.engineVersion !== quickjsWasiVersion
+        ) {
+          // Unknown/older format (v1 predates the host-side serde and
+          // ULID engine — its heaps are not restorable here), a snapshot
+          // without the PRNG draw count (restoring would reset id
+          // generation to the base seed and collide with pre-snapshot
+          // correlation ids), one without the serde capture-root token
+          // (the host serde cannot be rebuilt without executing guest
+          // code after user code has run), or one captured by a
+          // DIFFERENT quickjs-wasi build (the QJSS heap-image header is
+          // identical across builds, so a cross-build restore would pass
+          // deserialization and execute as undefined behavior — a live
+          // hazard mid-rollout when a deploy bumps quickjs-wasi).
+          runtimeLogger.warn(
+            'QuickJS runtime: snapshot format/engine mismatch, falling back to full replay',
+            {
+              workflowRunId: runId,
+              snapshotVersion: version,
+              expectedVersion: SNAPSHOT_FORMAT_VERSION,
+              snapshotEngine: loaded.metadata.engineVersion,
+              expectedEngine: quickjsWasiVersion,
+            }
+          );
+        } else {
+          // Inverse of the save pipeline: decrypt → decompress.
+          const decrypted = await decryptSerializedData(
+            loaded.data,
+            encryptionKey
+          );
+          const decompressed = await decompress(decrypted);
+          if (decompressed instanceof Uint8Array) {
+            existingSnapshot = {
+              data: decompressed,
+              metadata: loaded.metadata,
+            };
+          } else {
+            // A stored snapshot that doesn't decode is a failure worth
+            // seeing — 100% miss rate must not look like a working
+            // system.
+            runtimeLogger.warn(
+              'QuickJS runtime: snapshot decoded to an unexpected shape, falling back to full replay',
+              { workflowRunId: runId, decodedType: typeof decompressed }
+            );
+          }
+        }
+      }
+    } catch (err) {
+      runtimeLogger.warn(
+        'QuickJS runtime: snapshot load failed, falling back to full replay',
+        { workflowRunId: runId, message: (err as Error)?.message }
+      );
+    }
+  }
+  wfdiag('snapshot_load', {
+    threshold: snapshotThreshold,
+    restored: !!existingSnapshot,
+    eventsCursor: existingSnapshot?.metadata.eventsCursor ?? null,
+  });
+
+  // Load the event log. With a restored snapshot only the delta after
+  // its cursor is needed — preloads (which are full logs without a
+  // cursor) are ignored on that path. Otherwise load the FULL log — on
+  // first invocation the preloaded events from the run_started response
+  // are the complete log and save the events.list round-trips; a
+  // caller-attested complete preload (lazy hook fast path) is trusted
+  // the same way. Preload is used even with snapshotting enabled: it
+  // carries no cursor, so the FIRST qualifying suspension simply skips
+  // its snapshot save (the persist path requires a cursor) and the next
+  // one — whose feed loop has observed a cursor — snapshots normally.
+  // Short-lived runs keep the zero-overhead fast path either way.
   let events: Event[];
   let eventsFetchedPages = 0;
+  // Cursor after the last event the VM has processed — persisted as the
+  // snapshot's eventsCursor so restores fetch only the delta.
+  let lastEventsCursor: string | null =
+    existingSnapshot?.metadata.eventsCursor ?? null;
   const usePreloaded =
-    (preloadedEventsComplete === true &&
+    !existingSnapshot &&
+    ((preloadedEventsComplete === true &&
       Array.isArray(preloadedEvents) &&
       preloadedEvents.length > 0) ||
-    isFirstInvocation(preloadedEvents);
+      isFirstInvocation(preloadedEvents));
   if (usePreloaded && preloadedEvents) {
     events = preloadedEvents;
   } else {
     const allEvents: Event[] = [];
-    let cursor: string | null = null;
+    let cursor: string | null = lastEventsCursor;
     let hasMore = true;
 
     while (hasMore) {
@@ -873,13 +1015,31 @@ export async function runWorkflowWithQuickJS(params: {
     }
 
     events = allEvents;
+    if (cursor) lastEventsCursor = cursor;
   }
 
   // Event-limit guard: fail a runaway run once its log reaches the
-  // server-supplied ceiling — same enforcement point as the node:vm
-  // engine's replay loop.
-  if (maxEventsLimit !== undefined && events.length >= maxEventsLimit) {
-    throw new MaxEventsExceededError(events.length, maxEventsLimit);
+  // server-supplied ceiling. With a restored snapshot `events` is only
+  // the delta after the snapshot cursor, so the guard compares the TOTAL
+  // (pre-snapshot count persisted in the metadata + delta) — otherwise a
+  // run that keeps snapshotting would never accumulate enough delta to
+  // trip the ceiling it exists to enforce.
+  //
+  // `let`, not `const`: the restore-failure fallback below refetches the
+  // FULL log, and from that point `events`/`seenEventIds` cover the
+  // whole run — keeping the pre-snapshot count would double-count every
+  // pre-snapshot event against the ceiling (tripping
+  // MaxEventsExceededError below the real limit) and stamp the inflated
+  // total into the next save's `eventCount`, compounding.
+  let restoredEventCount = existingSnapshot?.metadata.eventCount ?? 0;
+  if (
+    maxEventsLimit !== undefined &&
+    restoredEventCount + events.length >= maxEventsLimit
+  ) {
+    throw new MaxEventsExceededError(
+      restoredEventCount + events.length,
+      maxEventsLimit
+    );
   }
 
   parentSpan?.setAttributes({
@@ -945,20 +1105,70 @@ export async function runWorkflowWithQuickJS(params: {
     eventCount: events.length,
   });
 
-  const session = await startQuickJSWorkflow({
-    // Pass the STRIPPED bundle to the VM so the inline source map
-    // doesn't end up in the QuickJS heap. The original (unstripped)
-    // `workflowCode` is still kept in this host-side scope and is used
-    // by `remapErrorStack` on workflow failures below.
-    workflowCode: workflowCodeForVM,
-    workflowId,
-    workflowRun,
-    events,
-    worldCapabilities: world.capabilities,
-    encryptionKey,
-    port,
-    runInput,
-  });
+  let session: Awaited<ReturnType<typeof startQuickJSWorkflow>>;
+  try {
+    session = await startQuickJSWorkflow({
+      // Pass the STRIPPED bundle to the VM so the inline source map
+      // doesn't end up in the QuickJS heap. The original (unstripped)
+      // `workflowCode` is still kept in this host-side scope and is used
+      // by `remapErrorStack` on workflow failures below.
+      workflowCode: workflowCodeForVM,
+      workflowId,
+      workflowRun,
+      events,
+      existingSnapshot,
+      worldCapabilities: world.capabilities,
+      encryptionKey,
+      port,
+      runInput,
+    });
+  } catch (err) {
+    if (!existingSnapshot) throw err;
+    // Snapshot restore failed (corrupt bytes, incompatible quickjs-wasi
+    // build across a redeploy without version-skew protection, ...).
+    // Fall back to a fresh boot + full event replay — always correct,
+    // since the event log is the source of truth.
+    runtimeLogger.warn(
+      'QuickJS runtime: snapshot restore failed, falling back to full replay',
+      { workflowRunId: runId, message: (err as Error)?.message }
+    );
+    wfdiag('snapshot_restore_failed', { message: (err as Error)?.message });
+    existingSnapshot = null;
+    lastEventsCursor = null;
+    // The refetched log below is the WHOLE run — the pre-snapshot count
+    // no longer describes anything not already in events/seenEventIds.
+    restoredEventCount = 0;
+    // Refetch the FULL log (the earlier fetch started at the snapshot's
+    // cursor).
+    const allEvents: Event[] = [];
+    let cursor: string | null = null;
+    let hasMore = true;
+    while (hasMore) {
+      const response = await world.events.list({
+        runId,
+        pagination: {
+          sortOrder: 'asc',
+          cursor: cursor ?? undefined,
+          limit: 1000,
+        },
+      });
+      allEvents.push(...response.data);
+      if (response.cursor) cursor = response.cursor;
+      hasMore = response.data.length > 0 && response.cursor != null;
+    }
+    events = allEvents;
+    if (cursor) lastEventsCursor = cursor;
+    session = await startQuickJSWorkflow({
+      workflowCode: workflowCodeForVM,
+      workflowId,
+      workflowRun,
+      events,
+      worldCapabilities: world.capabilities,
+      encryptionKey,
+      port,
+      runInput,
+    });
+  }
   let result = session.result;
 
   runtimeLogger.debug('QuickJS runtime: VM returned', {
@@ -1021,6 +1231,10 @@ export async function runWorkflowWithQuickJS(params: {
   for (const e of events) {
     if (e.eventId) seenEventIds.add(e.eventId);
   }
+  // Events processed since the restored snapshot (or since run start when
+  // booting fresh) — compared against snapshotThreshold at suspension
+  // exit to decide whether to persist a new snapshot.
+  let eventsProcessedSinceSnapshot = events.length;
   // Step cids already executed inline by this invocation.
   const executedStepIds = new Set<string>();
   // Steps for which THIS invocation already sent a queue message.
@@ -1088,6 +1302,18 @@ export async function runWorkflowWithQuickJS(params: {
   // exiting awaiting_external with the unblocking event already written
   // and nothing scheduled to read it.
   let pendingRequeueSignal = false;
+  // Snapshot captured at suspension exit (threshold met), persisted
+  // after the VM is disposed.
+  let capturedSnapshot:
+    | {
+        data: Uint8Array;
+        rngDraws: number;
+        lastUlid: string | undefined;
+        serdeRootPtr: number;
+        clockMs: number;
+        engineVersion: string;
+      }
+    | undefined;
 
   /** Fetch all events not yet processed by the live VM (log order). */
   const fetchUnseenEvents = async (): Promise<Event[]> => {
@@ -1108,7 +1334,12 @@ export async function runWorkflowWithQuickJS(params: {
         if (e.eventId) seenEventIds.add(e.eventId);
         unseen.push(e);
       }
-      if (response.cursor) cursor = response.cursor;
+      if (response.cursor) {
+        cursor = response.cursor;
+        // Every listed event is either already processed or about to be
+        // fed, so the page cursor always tracks the VM's frontier.
+        lastEventsCursor = response.cursor;
+      }
       hasMore = response.data.length > 0 && response.cursor != null;
     }
     observeEventsForOwnership(unseen);
@@ -1125,8 +1356,14 @@ export async function runWorkflowWithQuickJS(params: {
       // re-checks per replay for the same reason). `seenEventIds` counts
       // every event this invocation has observed — initial log + all
       // feeds.
-      if (maxEventsLimit !== undefined && seenEventIds.size >= maxEventsLimit) {
-        throw new MaxEventsExceededError(seenEventIds.size, maxEventsLimit);
+      if (
+        maxEventsLimit !== undefined &&
+        restoredEventCount + seenEventIds.size >= maxEventsLimit
+      ) {
+        throw new MaxEventsExceededError(
+          restoredEventCount + seenEventIds.size,
+          maxEventsLimit
+        );
       }
       const pendingOperations = result.suspended.pendingOperations;
 
@@ -1256,6 +1493,7 @@ export async function runWorkflowWithQuickJS(params: {
           // attr_set / getConflict hook_created has been (or is being)
           // consumed by the live VM, so no external requeue is needed.
           pendingRequeueSignal = false;
+          eventsProcessedSinceSnapshot += newEvents.length;
           result = await session.continueWithEvents(newEvents);
           wfdiag('inline_iteration', {
             iteration,
@@ -1525,6 +1763,7 @@ export async function runWorkflowWithQuickJS(params: {
         pendingRequeueSignal = true;
         break;
       }
+      eventsProcessedSinceSnapshot += newEvents.length;
       result = await session.continueWithEvents(newEvents);
 
       wfdiag('inline_iteration', {
@@ -1539,13 +1778,130 @@ export async function runWorkflowWithQuickJS(params: {
         budgetExhausted: budget.isExhausted(),
       });
     }
+    // Capture the VM memory for persistence while the session is still
+    // alive. The (compress → encrypt → save) pipeline runs after the VM
+    // is disposed — only the byte capture needs the live session.
+    if (
+      snapshotThreshold > 0 &&
+      result.suspended &&
+      !runGone &&
+      eventsProcessedSinceSnapshot >= snapshotThreshold &&
+      // Once oversized, always oversized (linear memory never shrinks):
+      // skip BEFORE the capture, which costs two full heap copies.
+      !oversizedSnapshotRuns.has(runId)
+    ) {
+      try {
+        capturedSnapshot = session.snapshot();
+        if (capturedSnapshot.data.byteLength > MAX_SNAPSHOT_PLAINTEXT_BYTES) {
+          // A heap this large costs more to store/decompress than the
+          // replay it saves — skip the save (full replay remains correct)
+          // and make the skip visible. Latch so later suspensions of
+          // this run skip the capture itself.
+          latchOversizedSnapshotRun(runId);
+          runtimeLogger.warn(
+            'QuickJS runtime: snapshot exceeds the size ceiling, skipping persist for the rest of this run',
+            {
+              workflowRunId: runId,
+              plaintextBytes: capturedSnapshot.data.byteLength,
+              maxBytes: MAX_SNAPSHOT_PLAINTEXT_BYTES,
+            }
+          );
+          capturedSnapshot = undefined;
+        }
+      } catch (err) {
+        runtimeLogger.warn('QuickJS runtime: snapshot capture failed', {
+          workflowRunId: runId,
+          message: (err as Error)?.message,
+        });
+      }
+    }
   } finally {
     session.dispose();
+  }
+
+  if (capturedSnapshot && snapshotsStorage && lastEventsCursor !== null) {
+    // Persist: compress (QuickJS heaps compress ~4x) → encrypt → save.
+    // Compression goes BEFORE encryption because ciphertext is ~random
+    // and doesn't compress. Failures are non-fatal — the run still makes
+    // progress via full replay; the next qualifying suspension retries.
+    // Moved off the response path via waitUntil: only the byte capture
+    // needed the live session; the pipeline runs post-response so a
+    // multi-MB heap doesn't delay the next step's pickup. (Skipped when
+    // no cursor exists yet — a preloaded first invocation snapshots at
+    // its next qualifying suspension instead.)
+    const snapshot = capturedSnapshot;
+    const totalEventCount = restoredEventCount + seenEventIds.size;
+    safeWaitUntil(
+      (async () => {
+        // Yield PAST the current tick before touching the bytes: this
+        // IIFE runs synchronously up to its first real await, and the
+        // point of waitUntil here is to let the response flush first.
+        // (`preferAsync` below keeps the zstd work itself off the event
+        // loop — without it the default codec is zstdCompressSync, which
+        // would block the loop for a multi-MB heap no matter when it
+        // starts.)
+        await new Promise((resolve) => setImmediate(resolve));
+        const t0 = tick();
+        const compressed = await compress(snapshot.data, true, undefined, {
+          preferAsync: true,
+        });
+        const toStore = (await encryptSerializedData(
+          compressed as Uint8Array,
+          encryptionKey
+        )) as Uint8Array;
+        await snapshotsStorage.save(runId, toStore, {
+          eventsCursor: lastEventsCursor,
+          createdAt: new Date(),
+          eventCount: totalEventCount,
+          rngDraws: snapshot.rngDraws,
+          lastUlid: snapshot.lastUlid,
+          serdeRootPtr: snapshot.serdeRootPtr,
+          clockMs: snapshot.clockMs,
+          engineVersion: snapshot.engineVersion,
+          formatVersion: SNAPSHOT_FORMAT_VERSION,
+        });
+        wfdiag('snapshot_saved', {
+          plaintextBytes: snapshot.data.byteLength,
+          storedBytes: toStore.byteLength,
+          eventsCursor: lastEventsCursor,
+          eventsProcessedSinceSnapshot,
+          rngDraws: snapshot.rngDraws,
+          durationMs: Math.round(tick() - t0),
+        });
+      })(),
+      (err) => {
+        runtimeLogger.warn('QuickJS runtime: snapshot save failed', {
+          workflowRunId: runId,
+          message: (err as Error)?.message,
+        });
+      }
+    );
   }
 
   parentSpan?.setAttributes({
     ...Attribute.QuickJSInlineSteps(inlineStepsExecuted),
   });
+
+  // The run reached a terminal state — its snapshot (if any) is dead
+  // weight; delete best-effort. Guarded on the policy AND on whether a
+  // snapshot can actually exist (one was restored, or this invocation
+  // just persisted one), so the common short-run case never pays the
+  // delete round-trip. A transient load failure earlier can leave an
+  // orphan behind; a server-side TTL on snapshot records is the
+  // self-correcting backstop for those (and for runs cancelled without
+  // any invocation observing it).
+  const deleteSnapshotIfAny = async (): Promise<void> => {
+    if (snapshotThreshold <= 0) return;
+    if (!existingSnapshot && !capturedSnapshot) return;
+    try {
+      await snapshotsStorage?.delete(runId);
+    } catch (err) {
+      runtimeLogger.debug('QuickJS runtime: snapshot delete failed', {
+        workflowRunId: runId,
+        message: (err as Error)?.message,
+      });
+    }
+  };
 
   if (result.completed) {
     // Workflow completed
@@ -1555,6 +1911,7 @@ export async function runWorkflowWithQuickJS(params: {
     parentSpan?.setAttributes({
       ...Attribute.QuickJSOutcome('completed'),
     });
+    await deleteSnapshotIfAny();
 
     // Flush leftover pending side effects (abort recordings, system-hook
     // disposals, fire-and-forget attribute/hook events) BEFORE writing
@@ -1639,7 +1996,9 @@ export async function runWorkflowWithQuickJS(params: {
     });
 
     if (runGone) {
-      // The run no longer exists (expired / deleted) — nothing to drive.
+      // The run no longer exists (expired / cancelled / deleted) —
+      // nothing to drive, and its snapshot is dead weight.
+      await deleteSnapshotIfAny();
       wfdiag('exit_suspended', { action: 'run_gone' });
       return;
     }
@@ -1798,6 +2157,7 @@ export async function runWorkflowWithQuickJS(params: {
     parentSpan?.setAttributes({
       ...Attribute.QuickJSOutcome('failed'),
     });
+    await deleteSnapshotIfAny();
 
     // Flush leftover pending side effects before writing run_failed —
     // same drain semantics as the completed branch.

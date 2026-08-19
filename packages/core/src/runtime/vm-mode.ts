@@ -73,3 +73,60 @@ export function useQuickJSVm(workflowRun: WorkflowRun): boolean {
   }
   return getWorkflowVmFromEnv() === 'quickjs';
 }
+
+/**
+ * Read and validate the `WORKFLOW_SNAPSHOT_THRESHOLD` env var.
+ *
+ * The threshold is the number of processed events after which the QuickJS
+ * engine persists a VM-memory snapshot at suspension, so subsequent
+ * invocations restore the VM and replay only the events recorded since —
+ * instead of re-executing the workflow from the top against the full log.
+ *
+ * `0` (or unset) disables snapshotting entirely: short-lived runs never
+ * pay the snapshot cost, while long/forever runs can opt in. `1`
+ * effectively snapshots at every suspension.
+ *
+ * Returns the configured threshold, or `undefined` if unset/empty.
+ * Throws {@link WorkflowRuntimeError} for non-integer or negative values.
+ */
+export function getSnapshotThresholdFromEnv(
+  env: NodeJS.ProcessEnv = process.env
+): number | undefined {
+  const raw = env.WORKFLOW_SNAPSHOT_THRESHOLD;
+  if (raw === undefined || raw === '') return undefined;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    throw new WorkflowRuntimeError(
+      `Invalid WORKFLOW_SNAPSHOT_THRESHOLD value: "${raw}". ` +
+        'Expected a non-negative integer (0 disables snapshotting).'
+    );
+  }
+  return parsed;
+}
+
+/**
+ * Resolve the snapshot threshold for a run: the run's stamped
+ * `executionContext.snapshotThreshold` (set by the SDK at `start()` when
+ * `WORKFLOW_SNAPSHOT_THRESHOLD` is set on the client) wins so a run keeps
+ * the policy it started with; otherwise the handler's env var; otherwise
+ * `0` (disabled). Only consulted by the QuickJS engine.
+ */
+export function getSnapshotThreshold(workflowRun: WorkflowRun): number {
+  const fromRun = (
+    workflowRun.executionContext as { snapshotThreshold?: unknown } | undefined
+  )?.snapshotThreshold;
+  if (fromRun !== undefined) {
+    if (
+      typeof fromRun !== 'number' ||
+      !Number.isInteger(fromRun) ||
+      fromRun < 0
+    ) {
+      throw new WorkflowRuntimeError(
+        `Invalid executionContext.snapshotThreshold value: "${fromRun}". ` +
+          'Expected a non-negative integer.'
+      );
+    }
+    return fromRun;
+  }
+  return getSnapshotThresholdFromEnv() ?? 0;
+}
