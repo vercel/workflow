@@ -60,7 +60,9 @@ export function createWorld(
   const drizzle = createClient(pool);
   const queue = createQueue(config, pool);
   const storage = createStorage(drizzle);
-  const streamer = createStreamer(pool, drizzle);
+  const streamer = createStreamer(pool, drizzle, {
+    pollIntervalMs: config.streamPollIntervalMs,
+  });
 
   return {
     specVersion: SPEC_VERSION_CURRENT,
