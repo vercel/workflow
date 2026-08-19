@@ -2,4 +2,4 @@
 '@workflow/core': patch
 ---
 
-Step-argument serialization failures now fail the step (a `step_failed` event is written, so a try/catch around the step call observes the `SerializationError`, same as a step-body failure) instead of failing the run from outside the workflow. Uncaught, the error fails the run immediately as a `USER_ERROR` instead of retrying until max queue deliveries.
+Step-argument serialization failures now fail the step with a catchable `SerializationError` (via a `step_failed` event, like a step-body failure) instead of failing the run from outside the workflow, and when uncaught they fail the run immediately as a `USER_ERROR` rather than retrying until max queue deliveries.

@@ -729,13 +729,19 @@ export async function handleSuspension({
             stepName: queueItem.stepName,
             // The error itself is a plain WorkflowError (name, message with
             // framed hint, cause chain) — serializable even though the step
-            // input was not.
+            // input was not. Error detection is realm-independent
+            // (types.isNativeError), so the host-created error serializes
+            // the same under either global; the VM global is passed for
+            // consistency with every other dehydration in this file and so
+            // any VM-realm values guest code threw into the cause chain
+            // (getters/proxies executed during the failed dehydration) are
+            // detected by the realm-sensitive reducers.
             error: await dehydrateStepError(
               error,
               runId,
               encryptionKey,
               [],
-              globalThis,
+              suspension.globalThis,
               compression
             ),
           },
