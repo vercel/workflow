@@ -218,6 +218,15 @@ describe('withWorkflow builder config', () => {
         name: '@vercel/queue',
         version,
         main: 'index.js',
+        // The published package exports `.` and nothing else, so asking Node
+        // for the manifest by subpath throws. Mirroring the map here keeps a
+        // resolver-based lookup from passing against a fixture that the real
+        // package layout would reject.
+        exports: {
+          '.': {
+            require: './index.js',
+          },
+        },
       })
     );
     writeFile(
@@ -229,8 +238,9 @@ describe('withWorkflow builder config', () => {
 
   it('keeps an unbundlable @vercel/queue external', async () => {
     // Older releases leave their dynamic `import()` unannotated, which Turbopack
-    // cannot resolve, so bundling that copy would fail the build.
-    process.chdir(writeProjectWithQueueVersion('0.4.0'));
+    // cannot resolve, so bundling that copy risks failing the build. Any version
+    // below the bundlable floor works here, without restating the floor.
+    process.chdir(writeProjectWithQueueVersion('0.0.1'));
 
     const nextConfig = await withWorkflow({})('phase-production-build', {
       defaultConfig: {},
@@ -240,7 +250,8 @@ describe('withWorkflow builder config', () => {
   });
 
   it('bundles a @vercel/queue version that carries the bundler-ignore hints', async () => {
-    process.chdir(writeProjectWithQueueVersion('0.5.0'));
+    // Any version above the bundlable floor, without restating the floor here.
+    process.chdir(writeProjectWithQueueVersion('99.0.0'));
 
     const nextConfig = await withWorkflow({})('phase-production-build', {
       defaultConfig: {},

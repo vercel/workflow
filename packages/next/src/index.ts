@@ -1,4 +1,4 @@
-import { copyFileSync, mkdirSync, statSync } from 'node:fs';
+import { copyFileSync, mkdirSync, readFileSync, statSync } from 'node:fs';
 import { copyFile, mkdir, readFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join } from 'node:path';
 import {
@@ -259,25 +259,61 @@ function resolveNextVersion(workingDir: string): string {
 }
 
 /**
- * Whether the `@vercel/queue` copy the consuming app resolves can be bundled.
- * Fails open: when the package is not resolvable from the app root, the app does
- * not import it directly and only `@workflow/world-vercel`'s own pinned copy is
- * in the module graph.
+ * Whether the `@vercel/queue` copy in the app's dependency tree can be bundled.
+ * Fails open when no version can be read: the copy in the graph is then the one
+ * `@workflow/world-vercel` pins, which ships alongside this plugin.
  */
 function isBundlableQueueVersion(workingDir: string): boolean {
-  let version: unknown;
-  try {
-    const packageJsonPath = require.resolve(`${QUEUE_PACKAGE}/package.json`, {
-      paths: [workingDir],
-    });
-    version = (require(packageJsonPath) as { version?: unknown }).version;
-  } catch {
-    return true;
-  }
-  if (typeof version !== 'string' || !semver.valid(version)) {
+  const version = readInstalledQueueVersion(workingDir);
+  if (version === undefined || !semver.valid(version)) {
     return true;
   }
   return semver.gte(version, QUEUE_MIN_BUNDLABLE_VERSION);
+}
+
+/**
+ * The installed `@vercel/queue` version, read from the nearest `node_modules`
+ * copy at or above the app directory.
+ *
+ * The manifest is read from disk rather than looked up with
+ * `require.resolve('@vercel/queue/package.json')`: the published package's
+ * `exports` map declares only `.`, so Node answers a manifest subpath with
+ * `ERR_PACKAGE_PATH_NOT_EXPORTED` even when the package is installed. Resolving
+ * the package entry instead is no better, because a bundler or a test runner can
+ * substitute a resolver that answers from the toolchain's module graph rather
+ * than the app's.
+ *
+ * Returns undefined for a layout that keeps the package out of a reachable
+ * `node_modules` directory, which includes any pnpm app that does not depend on
+ * the queue client directly. Those layouts cannot externalize it by name under
+ * webpack either, so the caller bundles it.
+ */
+function readInstalledQueueVersion(workingDir: string): string | undefined {
+  let directory = workingDir;
+  let previous = '';
+  while (directory !== previous) {
+    const manifestPath = join(
+      directory,
+      'node_modules',
+      ...QUEUE_PACKAGE.split('/'),
+      'package.json'
+    );
+    if (fileExists(manifestPath)) {
+      try {
+        const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as {
+          version?: unknown;
+        };
+        return typeof manifest.version === 'string'
+          ? manifest.version
+          : undefined;
+      } catch {
+        return undefined;
+      }
+    }
+    previous = directory;
+    directory = dirname(directory);
+  }
+  return undefined;
 }
 
 function fileExists(path: string): boolean {
