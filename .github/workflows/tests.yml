@@ -18,7 +18,7 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 env:
-  NEXT_CANARY_VERSION: 16.3.1-canary.21
+  NEXT_CANARY_VERSION: 16.3.1-canary.24
 
 jobs:
   ci-scope:
