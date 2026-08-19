@@ -2,7 +2,7 @@ import { registerLifecycleHooks, resumeHook } from 'workflow/api';
 
 /**
  * E2E coverage for `registerLifecycleHooks` (see the "lifecycle hooks"
- * describe in packages/core/e2e/e2e.test.ts and the fixtures in
+ * describe block in packages/core/e2e/e2e.test.ts and the fixtures in
  * workflows/99_e2e.ts).
  *
  * The handlers observe the `lifecycleHookTarget*` workflows' terminal
