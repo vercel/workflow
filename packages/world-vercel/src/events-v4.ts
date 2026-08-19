@@ -881,14 +881,12 @@ export async function createWorkflowRunEventsBatchV4(
     offset += frame.byteLength;
   }
 
-  // Per-type shape for the span, so mixed batches classify as what they
-  // carry rather than as their first event's type alone.
-  const typeCounts = new Map<string, number>();
-  for (const event of input.events) {
-    typeCounts.set(event.eventType, (typeCounts.get(event.eventType) ?? 0) + 1);
-  }
-
   const url = `${baseUrl}/v4/runs/${encodeURIComponent(input.runId)}/events/batch`;
+  // Batch identity attributes (size, per-type shape) live on the
+  // world.events.createBatch span (see instrumentObject); this transport
+  // span carries only wire-level facts. workflow.event.type is deliberately
+  // absent — it names a single event write, and tagging a batch with its
+  // first event's type misclassifies the traffic.
   const response = await fetchV4(
     url,
     { method: 'POST', headers, body },
@@ -896,11 +894,6 @@ export async function createWorkflowRunEventsBatchV4(
     'createEventBatch',
     {
       ...WorkflowEventsTransport('http'),
-      ...WorkflowEventType(input.events[0].eventType),
-      'workflow.batch.size': input.events.length,
-      'workflow.batch.shape': [...typeCounts]
-        .map(([type, count]) => `${type}:${count}`)
-        .join(','),
       'workflow.batch.bytes': body.byteLength,
     }
   );

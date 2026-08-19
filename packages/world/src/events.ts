@@ -1031,6 +1031,13 @@ export interface BatchEventRequest {
    * instant the event logically occurred.
    */
   occurredAt?: Date;
+  /**
+   * Compute-instance attribution for this event, same as the single create's
+   * {@link CreateEventParams.computeInstanceId}. Set on the `step_started`
+   * half of a pre-claimed inline pair so a batched claim attributes the
+   * executing instance exactly like the lazy claim it replaces.
+   */
+  computeInstanceId?: string;
 }
 
 /** Per-batch parameters for {@link Storage.events.createBatch}. */
@@ -1070,13 +1077,21 @@ export interface CreateEventBatchParams {
  * can return a mix of 200s and 409s from one call.
  *
  * Retry semantics: a transport retry of a committed batch converges to
- * per-event 409s ONLY for entity-conditioned events — creates, terminal
- * transitions, and the born-running `step_created`+`step_started` pair
- * (fenced by the pair's create). A standalone bare `step_started` or a
- * `step_retrying` re-patches its step on every attempt and does NOT
- * converge, and `hook_received` appends a new row per attempt —
- * `world-vercel` rejects `hook_received` in a batch outright and only
- * auto-retries batches whose every event is retry-convergent.
+ * per-event 409s ONLY for entity-conditioned events — creates and terminal
+ * transitions. A standalone bare `step_started` or a `step_retrying`
+ * re-patches its step on every attempt and does NOT converge, and
+ * `hook_received` appends a new row per attempt — `world-vercel` rejects
+ * `hook_received` in a batch outright and only auto-retries batches whose
+ * every event is retry-convergent.
+ *
+ * The born-running `step_created`+`step_started` pair converges (the pair's
+ * create fences it) but is still excluded from auto-retry, because
+ * convergence alone is not enough for the caller: a pair 409 means "this step
+ * already exists", and on a retry that is indistinguishable from "my own
+ * previous attempt committed it". A caller that reads the 409 as a lost claim
+ * would skip a body it actually owns, so a batch carrying a `step_started`
+ * runs single-attempt and leaves transient-failure recovery to queue
+ * redelivery.
  */
 export type BatchEventItemResult =
   | {
