@@ -79,10 +79,17 @@ export function waitForRunTerminalSignal(
       resolve();
     };
 
+    // Deliberately left ref'd. Nothing else here holds the event loop open:
+    // the emitter `once`, the abort listener and the pending promise are all
+    // invisible to it, and world-local's store is the filesystem, so between
+    // two backstop reads a process whose only job is `await run.returnValue`
+    // has no active handle at all. Unref'ing this timer let such a process
+    // drain its loop and exit 0 with the wait unsettled — silently returning
+    // nothing for a run that was merely still going. The interval poll this
+    // replaces (`Run#pollReturnValue`) sleeps on a ref'd timer for exactly
+    // this reason, so keeping it ref'd is parity, not a new cost: a caller
+    // that stops caring aborts via `params.signal`.
     const timer = setTimeout(settle, timeoutMs);
-    // Never keep a process alive just to observe a run it stopped caring
-    // about (e.g. a CLI command that finished while a wait was in flight).
-    timer.unref?.();
     emitter.once(key, settle);
     signal?.addEventListener('abort', settle, { once: true });
   });

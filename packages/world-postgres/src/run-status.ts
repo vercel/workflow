@@ -142,9 +142,13 @@ export function createRunStatusListener(pool: Pool): RunStatusListener {
           resolve();
         };
 
+        // Left ref'd, for the reason spelled out in world-local's
+        // `waitForRunTerminalSignal`: this timer can be the only thing holding
+        // the event loop open while a wait is legitimately parked, and a
+        // process that drains its loop mid-wait exits 0 having silently
+        // abandoned the await. A caller that stops caring aborts via
+        // `params.signal`.
         const timer = setTimeout(settle, timeoutMs);
-        // Never hold the process open for a run nobody is waiting on anymore.
-        timer.unref?.();
         emitter.once(key, settle);
         signal?.addEventListener('abort', settle, { once: true });
       });
