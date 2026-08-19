@@ -18,10 +18,12 @@ import {
   getWorkflowRuns,
   listWorkflowRuns,
 } from './runs.js';
+import { createSnapshotsStorage } from './snapshots.js';
 import { getStep, listWorkflowRunSteps } from './steps.js';
 import type { APIConfig } from './utils.js';
 
 export function createStorage(config?: APIConfig): Storage {
+  const snapshots = createSnapshotsStorage(config);
   const storage: Storage = {
     // Storage interface with namespaced methods
     runs: {
@@ -60,6 +62,7 @@ export function createStorage(config?: APIConfig): Storage {
       getByToken: (token) => getHookByToken(token, config),
       list: (params) => listHooks(params, config),
     },
+    snapshots,
   };
 
   // Instrument all storage methods with tracing
@@ -69,5 +72,6 @@ export function createStorage(config?: APIConfig): Storage {
     steps: instrumentObject('world.steps', storage.steps),
     events: instrumentObject('world.events', storage.events),
     hooks: instrumentObject('world.hooks', storage.hooks),
+    snapshots: instrumentObject('world.snapshots', snapshots),
   };
 }

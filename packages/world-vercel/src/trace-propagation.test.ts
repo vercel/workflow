@@ -325,6 +325,87 @@ describe('streamer write trace propagation', () => {
   });
 });
 
+describe('snapshot requests trace propagation', () => {
+  it('injects traceparent on snapshots.load, propagating the active context to workflow-server', async () => {
+    const { encodeSnapshotEnvelope } = await import('@workflow/world');
+    const body = encodeSnapshotEnvelope(
+      { eventsCursor: 'evnt_1', createdAt: new Date() },
+      new Uint8Array([1, 2, 3])
+    );
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(body, {
+        status: 200,
+        headers: { 'Content-Type': 'application/octet-stream' },
+      })
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    vi.stubEnv(WORKFLOW_SERVER_URL_OVERRIDE, 'https://workflow-server.test');
+
+    const { createSnapshotsStorage } = await import('./snapshots.js');
+    const snapshots = createSnapshotsStorage({ token: 'test-token' });
+
+    const tracer = otelTrace.getTracer('test');
+    let traceId = '';
+    await tracer.startActiveSpan('flow-invocation', async (span) => {
+      traceId = span.spanContext().traceId;
+      const loaded = await snapshots.load('wrun_1');
+      expect(loaded?.data).toBeInstanceOf(Uint8Array);
+      span.end();
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const calledInit = fetchMock.mock.calls[0][1];
+    const sent = new Headers(calledInit?.headers as HeadersInit);
+    // Without the explicit injection this header is absent — the snapshot
+    // path routes around makeRequest (raw undici / global fetch), which
+    // ambient auto-instrumentation does not reliably hook.
+    const traceparent = sent.get('traceparent');
+    expect(traceparent).toMatch(/^00-[0-9a-f]{32}-[0-9a-f]{16}-0[01]$/);
+    expect(traceparent).toContain(traceId);
+  });
+
+  it('injects traceparent on snapshots.save (undici request path)', async () => {
+    const agent = new MockAgent();
+    agent.disableNetConnect();
+    let capturedHeaders: Record<string, unknown> | undefined;
+    agent
+      .get('https://vercel-workflow.com')
+      .intercept({
+        path: '/api/v2/runs/wrun_1/snapshot',
+        method: 'PUT',
+      })
+      .reply(200, (opts) => {
+        capturedHeaders = opts.headers as Record<string, unknown>;
+        return 'ok';
+      });
+
+    const { createSnapshotsStorage } = await import('./snapshots.js');
+    const snapshots = createSnapshotsStorage({
+      token: 'test-token',
+      dispatcher: agent,
+    });
+
+    const tracer = otelTrace.getTracer('test');
+    let traceId = '';
+    await tracer.startActiveSpan('flow-invocation', async (span) => {
+      traceId = span.spanContext().traceId;
+      await snapshots.save('wrun_1', new Uint8Array([1, 2, 3]), {
+        eventsCursor: 'evnt_1',
+        createdAt: new Date(),
+      });
+      span.end();
+    });
+
+    const headers = new Headers(
+      (capturedHeaders ?? {}) as Record<string, string>
+    );
+    const traceparent = headers.get('traceparent');
+    expect(traceparent).toMatch(/^00-[0-9a-f]{32}-[0-9a-f]{16}-0[01]$/);
+    expect(traceparent).toContain(traceId);
+    agent.assertNoPendingInterceptors();
+  });
+});
+
 describe('ws events transport upgrade trace propagation', () => {
   // `openWsChannel` is gated, unlike the `resolveWsTransport` lookup it
   // replaced: nothing opens a channel on the HTTP default.

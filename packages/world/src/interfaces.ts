@@ -32,6 +32,7 @@ import type {
   StreamChunksResponse,
   StreamInfoResponse,
 } from './shared.js';
+import type { SnapshotMetadata } from './snapshots.js';
 import type {
   GetStepParams,
   ListWorkflowRunStepsParams,
@@ -396,6 +397,67 @@ export interface Storage {
      * end.
      */
     list(params: ListHooksParams): Promise<PaginatedResponse<Hook>>;
+  };
+
+  /**
+   * VM snapshot storage for VM-memory snapshotting. OPTIONAL: a World
+   * that cannot (or chooses not to) store multi-MB blobs simply omits
+   * it, and the runtime falls back to full event replay — snapshots are
+   * an optimization, never a correctness requirement. Consumers must
+   * feature-detect (`world.snapshots?.…`).
+   *
+   * Snapshots capture the state of the QuickJS WASM VM at a suspension
+   * point, allowing workflow execution to resume from the exact point of
+   * suspension instead of replaying the full event log.
+   *
+   * The metadata (including eventsCursor) is stored alongside the snapshot
+   * data so that on restore, only events created after the snapshot need
+   * to be fetched. Implementations MUST round-trip the metadata object
+   * losslessly and atomically with the bytes it describes — a snapshot
+   * paired with another suspension's metadata replays from the wrong log
+   * position and silently diverges. The `encodeSnapshotEnvelope` /
+   * `decodeSnapshotEnvelope` helpers pack both into one self-describing
+   * blob so a plain blob store satisfies this with a single atomic
+   * write; worlds with transactional metadata storage may store the
+   * fields natively instead.
+   */
+  snapshots?: {
+    /**
+     * Save a VM snapshot for a workflow run.
+     * Each save overwrites the previous snapshot for this run.
+     *
+     * @param runId - The workflow run ID
+     * @param data - The serialized snapshot bytes (from QuickJS.serializeSnapshot())
+     * @param metadata - Snapshot metadata including the events cursor
+     */
+    save(
+      runId: string,
+      data: Uint8Array,
+      metadata: SnapshotMetadata
+    ): Promise<void>;
+
+    /**
+     * Load the most recent VM snapshot for a workflow run.
+     * Returns null if no snapshot exists (first invocation).
+     *
+     * @param runId - The workflow run ID
+     * @returns The snapshot data and metadata, or null if not found
+     */
+    load(
+      runId: string
+    ): Promise<{ data: Uint8Array; metadata: SnapshotMetadata } | null>;
+
+    /**
+     * Delete the snapshot for a workflow run.
+     * Called when the workflow reaches a terminal state (completed,
+     * failed, cancelled). MUST be idempotent: terminal-state cleanup is
+     * exactly the path most likely to retry or run for a run that never
+     * snapshotted, so deleting a nonexistent snapshot resolves
+     * successfully.
+     *
+     * @param runId - The workflow run ID
+     */
+    delete(runId: string): Promise<void>;
   };
 }
 
