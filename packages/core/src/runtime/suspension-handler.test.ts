@@ -912,3 +912,314 @@ describe('retainedStepInputsSafe (serialization passivity gate)', () => {
     expect(result.lazyInlineSteps).toHaveLength(1);
   });
 });
+
+describe('handleSuspension batched fan-out', () => {
+  const slotRun: WorkflowRun = { ...run, specVersion: 6 };
+
+  function createBatchWorld(
+    eventsCreate: ReturnType<typeof vi.fn>,
+    createBatch?: ReturnType<typeof vi.fn>
+  ): World {
+    return {
+      events: {
+        create: eventsCreate,
+        ...(createBatch ? { createBatch } : {}),
+      },
+      getEncryptionKeyForRun: vi.fn().mockResolvedValue(undefined),
+    } as unknown as World;
+  }
+
+  /** createBatch mock answering every event with a 200 at consecutive slots. */
+  function successfulCreateBatch(firstSlot = 10) {
+    let slot = firstSlot;
+    return vi.fn().mockImplementation(async (_runId, events) => ({
+      results: events.map(({ event }: { event: { eventType: string } }) => ({
+        status: 200,
+        event: { ...event, eventId: slotToEventId(slot++) },
+      })),
+    }));
+  }
+
+  function stepsAndWait(stepIds: string[], waitId?: string) {
+    const pending = new Map<string, unknown>(
+      stepIds.map((id) => [
+        id,
+        { type: 'step' as const, correlationId: id, stepName: id, args: [] },
+      ])
+    );
+    if (waitId) {
+      pending.set(waitId, {
+        type: 'wait' as const,
+        correlationId: waitId,
+        resumeAt: new Date(Date.now() + 60_000),
+      });
+    }
+    return pending as ConstructorParameters<typeof WorkflowSuspension>[0];
+  }
+
+  beforeEach(() => {
+    // No WORKFLOW_BATCH_TRANSITIONS stub: the fold is DEFAULT ON, so these
+    // tests exercising it with an unset env prove the default engages. The
+    // kill switch has its own test below.
+    // Cap lazy-inline deferral at 1 so only the first step defers its
+    // step_created and the rest take the eager path where the fold engages;
+    // the cap interaction has its own test below.
+    vi.stubEnv('WORKFLOW_MAX_INLINE_STEPS', '1');
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('folds eager step and wait creates into one createBatch, in order', async () => {
+    const eventsCreate = vi.fn();
+    const createBatch = successfulCreateBatch();
+    const world = createBatchWorld(eventsCreate, createBatch);
+
+    const result = await handleSuspension({
+      suspension: new WorkflowSuspension(
+        stepsAndWait(['s1', 's2', 's3'], 'wait_1'),
+        globalThis
+      ),
+      world,
+      run: slotRun,
+    });
+
+    expect(createBatch).toHaveBeenCalledTimes(1);
+    const [runId, events] = createBatch.mock.calls[0];
+    expect(runId).toBe(slotRun.runId);
+    // s1 is lazy-inline deferred (cap 1); s2/s3 eager-create via the fold,
+    // then the wait — scheduling order preserved.
+    expect(
+      events.map((e: { event: { eventType: string } }) => e.event.eventType)
+    ).toEqual(['step_created', 'step_created', 'wait_created']);
+    expect(
+      events.map(
+        (e: { event: { correlationId: string } }) => e.event.correlationId
+      )
+    ).toEqual(['s2', 's3', 'wait_1']);
+    // No single-event writes for the folded events.
+    expect(eventsCreate).not.toHaveBeenCalled();
+    expect([...result.createdStepCorrelationIds].sort()).toEqual(['s2', 's3']);
+  });
+
+  it('tolerates a per-event 409 exactly like a single-path conflict', async () => {
+    const createBatch = vi.fn().mockImplementation(async (_runId, events) => ({
+      results: events.map(
+        (
+          { event }: { event: { eventType: string; correlationId: string } },
+          index: number
+        ) =>
+          index === 0
+            ? {
+                status: 409,
+                error: 'conflict',
+                message: 'already created by an earlier delivery',
+              }
+            : { status: 200, event: { ...event, eventId: slotToEventId(11) } }
+      ),
+    }));
+    const world = createBatchWorld(vi.fn(), createBatch);
+
+    const result = await handleSuspension({
+      suspension: new WorkflowSuspension(
+        stepsAndWait(['s1', 's2', 's3']),
+        globalThis
+      ),
+      world,
+      run: slotRun,
+    });
+
+    // s1 defers; of the folded pair, the conflicted step (s2) is not owned
+    // and the survivor (s3) is.
+    expect([...result.createdStepCorrelationIds]).toEqual(['s3']);
+  });
+
+  it('fails the suspension on a non-409 per-event failure', async () => {
+    const createBatch = vi.fn().mockImplementation(async (_runId, events) => ({
+      results: events.map(() => ({
+        status: 410,
+        error: 'gone',
+        message: 'run already finished',
+      })),
+    }));
+    const world = createBatchWorld(vi.fn(), createBatch);
+
+    await expect(
+      handleSuspension({
+        suspension: new WorkflowSuspension(
+          // s1 defers; s2 + s3 form a real (multi-event) batch.
+          stepsAndWait(['s1', 's2', 's3']),
+          globalThis
+        ),
+        world,
+        run: slotRun,
+      })
+    ).rejects.toMatchObject({ status: 410 });
+  });
+
+  it('keeps the single path when the kill switch disables batching', async () => {
+    vi.stubEnv('WORKFLOW_BATCH_TRANSITIONS', '0');
+    const eventsCreate = vi.fn().mockImplementation(async (_runId, event) => ({
+      event,
+    }));
+    const createBatch = successfulCreateBatch();
+    const world = createBatchWorld(eventsCreate, createBatch);
+
+    await handleSuspension({
+      suspension: new WorkflowSuspension(
+        stepsAndWait(['s1', 's2'], 'w1'),
+        globalThis
+      ),
+      world,
+      run: slotRun,
+    });
+
+    expect(createBatch).not.toHaveBeenCalled();
+    // s1 defers; s2's eager create + the wait go out as single writes.
+    expect(eventsCreate).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps the single path when the World lacks createBatch', async () => {
+    const eventsCreate = vi.fn().mockImplementation(async (_runId, event) => ({
+      event,
+    }));
+    const world = createBatchWorld(eventsCreate);
+
+    await handleSuspension({
+      suspension: new WorkflowSuspension(
+        stepsAndWait(['s1', 's2']),
+        globalThis
+      ),
+      world,
+      run: slotRun,
+    });
+
+    expect(eventsCreate).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the single path on a pre-slot-identity run', async () => {
+    const eventsCreate = vi.fn().mockImplementation(async (_runId, event) => ({
+      event,
+    }));
+    const createBatch = successfulCreateBatch();
+    const world = createBatchWorld(eventsCreate, createBatch);
+
+    await handleSuspension({
+      suspension: new WorkflowSuspension(
+        stepsAndWait(['s1', 's2']),
+        globalThis
+      ),
+      world,
+      run: { ...run, specVersion: 5 },
+    });
+
+    expect(createBatch).not.toHaveBeenCalled();
+    expect(eventsCreate).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the single path when the suspension carries hook writes', async () => {
+    const eventsCreate = vi.fn().mockImplementation(async (_runId, event) => ({
+      event: { ...event, eventType: event.eventType },
+      hook: { hookId: 'hook_1', token: 'tok' },
+    }));
+    const createBatch = successfulCreateBatch();
+    const world = createBatchWorld(eventsCreate, createBatch);
+    const pending = stepsAndWait(['s1']) as Map<string, unknown>;
+    pending.set('hook_1', {
+      type: 'hook' as const,
+      correlationId: 'hook_1',
+      token: 'order:456',
+    });
+
+    await handleSuspension({
+      suspension: new WorkflowSuspension(
+        pending as ConstructorParameters<typeof WorkflowSuspension>[0],
+        globalThis
+      ),
+      world,
+      run: slotRun,
+    });
+
+    expect(createBatch).not.toHaveBeenCalled();
+  });
+
+  it('routes a lone eager event through the single path, never a batch of one', async () => {
+    const eventsCreate = vi.fn().mockImplementation(async (_runId, event) => ({
+      event,
+    }));
+    const createBatch = successfulCreateBatch();
+    const world = createBatchWorld(eventsCreate, createBatch);
+
+    // Two steps: s1 lazy-defers (cap 1), leaving exactly one eager create.
+    const result = await handleSuspension({
+      suspension: new WorkflowSuspension(
+        stepsAndWait(['s1', 's2']),
+        globalThis
+      ),
+      world,
+      run: slotRun,
+    });
+
+    expect(createBatch).not.toHaveBeenCalled();
+    expect(eventsCreate).toHaveBeenCalledTimes(1);
+    expect(eventsCreate).toHaveBeenCalledWith(
+      slotRun.runId,
+      expect.objectContaining({
+        eventType: 'step_created',
+        correlationId: 's2',
+      }),
+      expect.anything()
+    );
+    expect([...result.createdStepCorrelationIds]).toEqual(['s2']);
+  });
+
+  it('chunks a fan-out past MAX_BATCH_FANOUT_EVENTS', async () => {
+    const createBatch = successfulCreateBatch();
+    const world = createBatchWorld(vi.fn(), createBatch);
+    const stepIds = Array.from({ length: 34 }, (_, i) => `s${i + 1}`);
+
+    const result = await handleSuspension({
+      suspension: new WorkflowSuspension(stepsAndWait(stepIds), globalThis),
+      world,
+      run: slotRun,
+    });
+
+    // s1 defers; the remaining 33 eager creates chunk as 32 + 1.
+    expect(createBatch).toHaveBeenCalledTimes(2);
+    expect(createBatch.mock.calls[0][1]).toHaveLength(32);
+    expect(createBatch.mock.calls[1][1]).toHaveLength(1);
+    expect(result.createdStepCorrelationIds.size).toBe(33);
+  });
+
+  it('leaves lazy-inline deferred steps out of the batch', async () => {
+    // Default inline cap (3): s1..s3 defer their step_created for the lazy
+    // start; s4 + s5 eager-create, so the batch carries exactly those two.
+    vi.stubEnv('WORKFLOW_MAX_INLINE_STEPS', '3');
+    const createBatch = successfulCreateBatch();
+    const world = createBatchWorld(vi.fn(), createBatch);
+
+    const result = await handleSuspension({
+      suspension: new WorkflowSuspension(
+        stepsAndWait(['s1', 's2', 's3', 's4', 's5']),
+        globalThis
+      ),
+      world,
+      run: slotRun,
+    });
+
+    expect(result.lazyInlineSteps.map((s) => s.correlationId)).toEqual([
+      's1',
+      's2',
+      's3',
+    ]);
+    expect(createBatch).toHaveBeenCalledTimes(1);
+    expect(createBatch.mock.calls[0][1]).toHaveLength(2);
+    expect(
+      createBatch.mock.calls[0][1].map(
+        (e: { event: { correlationId: string } }) => e.event.correlationId
+      )
+    ).toEqual(['s4', 's5']);
+    expect([...result.createdStepCorrelationIds].sort()).toEqual(['s4', 's5']);
+  });
+});

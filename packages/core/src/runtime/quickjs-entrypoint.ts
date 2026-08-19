@@ -739,6 +739,8 @@ export async function runWorkflowWithQuickJS(params: {
    * the in-flight body instead of requeueing the step.
    */
   ownerMessageId?: string;
+  /** Request ID of the queue invocation, when the queue provides one. */
+  requestId?: string;
   /**
    * Queue namespace resolved at route registration (runtime.ts). Must be
    * threaded into every message publish: the builders bake the namespace
@@ -767,6 +769,7 @@ export async function runWorkflowWithQuickJS(params: {
     maxEventsLimit,
     deliveryAttempt,
     ownerMessageId,
+    requestId,
     namespace,
   } = params;
   // Standalone-caller fallback (tests): without a runtime.ts carrier
@@ -1436,6 +1439,7 @@ export async function runWorkflowWithQuickJS(params: {
                   workflowDeploymentId: workflowRun.deploymentId,
                   workflowName: workflowRun.workflowName,
                   workflowStartedAt,
+                  requestId,
                   rootRunId,
                   stepId: step.correlationId,
                   stepName: step.stepId,

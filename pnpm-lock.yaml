@@ -27,6 +27,9 @@ catalogs:
     '@vitest/coverage-v8':
       specifier: ^4.1.10
       version: 4.1.10
+    '@vitest/runner':
+      specifier: ^4.1.10
+      version: 4.1.10
     ai:
       specifier: 6.0.116
       version: 6.0.116
@@ -81,6 +84,9 @@ importers:
       '@vitest/coverage-v8':
         specifier: 'catalog:'
         version: 4.1.10(vitest@4.1.10)
+      '@vitest/runner':
+        specifier: 'catalog:'
+        version: 4.1.10
       esbuild:
         specifier: 'catalog:'
         version: 0.28.1
@@ -2312,6 +2318,12 @@ importers:
       zod:
         specifier: 'catalog:'
         version: 4.3.6
+
+  workbench/python:
+    devDependencies:
+      workflow:
+        specifier: workspace:*
+        version: link:../../packages/workflow
 
   workbench/sim-world:
     devDependencies:

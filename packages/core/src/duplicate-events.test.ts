@@ -8,6 +8,7 @@ import {
   runWithDiscontinuation,
   setupWorkflowContext,
 } from './test-support/orchestrator-context.js';
+import { createCreateHook } from './workflow/hook.js';
 import { createSleep } from './workflow/sleep.js';
 
 /**
@@ -118,6 +119,66 @@ describe('events repeating a class already in the log', () => {
     expect(pendingStepNames(ctx)).toEqual(['afterSleep']);
     expect(onDuplicateEvent).toHaveBeenCalledTimes(1);
     expect(onDuplicateEvent).toHaveBeenCalledWith(events[2], 'wait_created');
+  });
+
+  it('ignores a second hook_disposed for a hook already disposed', async () => {
+    const onDuplicateEvent = vi.fn();
+    const events = [
+      event(0, 'hook_created', `hook_${CORR_IDS[0]}`, { token: 'a-token' }),
+      event(1, 'hook_disposed', `hook_${CORR_IDS[0]}`, { token: 'a-token' }),
+      // Both writers of a concurrent teardown reached the dispose. The write
+      // path rejects the second one, so a log holding it is rare, and this is
+      // what replay does when it holds one anyway.
+      event(2, 'hook_disposed', `hook_${CORR_IDS[0]}`, { token: 'a-token' }),
+      event(3, 'step_created', `step_${CORR_IDS[1]}`, {
+        stepName: 'afterHook',
+      }),
+    ];
+    const ctx = setupWorkflowContext(events, { onDuplicateEvent });
+    const createHook = createCreateHook(ctx);
+    const useStep = createUseStep(ctx);
+
+    const { error } = await runWithDiscontinuation(ctx, async () => {
+      const hook = createHook({ token: 'a-token' });
+      hook.dispose();
+      await useStep('afterHook')();
+      return 'done';
+    });
+
+    expect(WorkflowSuspension.is(error)).toBe(true);
+    expect(pendingStepNames(ctx)).toEqual(['afterHook']);
+    expect(onDuplicateEvent).toHaveBeenCalledTimes(1);
+    expect(onDuplicateEvent).toHaveBeenCalledWith(events[2], 'hook_disposed');
+  });
+
+  it('ignores a hook_created that lands after the hook was disposed', async () => {
+    const onDuplicateEvent = vi.fn();
+    const events = [
+      event(0, 'hook_created', `hook_${CORR_IDS[0]}`, { token: 'a-token' }),
+      event(1, 'hook_disposed', `hook_${CORR_IDS[0]}`, { token: 'a-token' }),
+      // A replay working from a prefix that predates the disposal re-created
+      // the hook. Creation has a class of its own, so this is read past rather
+      // than reviving a hook whose scope already exited.
+      event(2, 'hook_created', `hook_${CORR_IDS[0]}`, { token: 'a-token' }),
+      event(3, 'step_created', `step_${CORR_IDS[1]}`, {
+        stepName: 'afterHook',
+      }),
+    ];
+    const ctx = setupWorkflowContext(events, { onDuplicateEvent });
+    const createHook = createCreateHook(ctx);
+    const useStep = createUseStep(ctx);
+
+    const { error } = await runWithDiscontinuation(ctx, async () => {
+      const hook = createHook({ token: 'a-token' });
+      hook.dispose();
+      await useStep('afterHook')();
+      return 'done';
+    });
+
+    expect(WorkflowSuspension.is(error)).toBe(true);
+    expect(pendingStepNames(ctx)).toEqual(['afterHook']);
+    expect(onDuplicateEvent).toHaveBeenCalledTimes(1);
+    expect(onDuplicateEvent).toHaveBeenCalledWith(events[2], 'hook_created');
   });
 
   it('still reports divergence for an event repeating nothing in the log', async () => {

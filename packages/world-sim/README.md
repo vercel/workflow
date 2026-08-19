@@ -121,18 +121,7 @@ every *validation* is kept, because rejections are the observable contract.
 
 ## World behaviors
 
-A scenario picks the world it plays in, and each behavior below changes a rule
-the runtime is written against.
-
-**Mint-ordered log** — the default. A position is assigned when the event's
-handler mints its id, and the event is committed to storage separately. The id
-*is* the log's sort key, so a write held between the two lands *behind* events
-minted later and committed sooner: an event can arrive in the past, and a read
-taken in between saw a log the log itself went on to contradict.
-
-**Append-only log** (`appendOnlyLog: true`) — a position is assigned at commit.
-A write overtaken while it was held gives up its position and re-takes the tail.
-Two things follow:
+**Event log** — positions are assigned at commit. Two things follow:
 
 - Log order is commit order. Nothing is inserted behind a row a reader has
   already seen, so no two reads can disagree about the past.
@@ -141,12 +130,8 @@ Two things follow:
   into lag, and lag is what an optimistic-concurrency fence can see; a hole is
   what it cannot.
 
-Uncontended writes are untouched either way: a position that is still the newest
-when it commits keeps its id, so a scenario that never holds a write mid-flight
-produces a byte-identical log in both. `withholdNextEvent` follows the same
-rule — a hole in the mint-ordered log, a truncated tail under append-only —
-which is why `StaleRead` reports `{ eventId, hidden, truncated }` and the trace
-distinguishes a lagging read from a stale one.
+`withholdNextEvent` models a lagging replica by truncating the visible tail;
+`StaleRead` reports `{ eventId, hidden, truncated }` for that read.
 
 **Precondition fence** (`preconditionGuard: true`) — rejects a write whose
 snapshot is strictly older than the newest externally originated event. It is a
@@ -166,11 +151,8 @@ client's own — newest loaded position, and how many loaded events sit at or
 below it. A write the facade attached no snapshot to did not come from a replay
 context and is never fenced.
 
-Each is a spec field, and `RunScenarioOptions` carries a run-wide override —
-`pnpm sim --append-only`, `--fence` / `--no-fence` — where `undefined` leaves
-each scenario's own choice alone. Playing one book under two behaviors and
-diffing the results is what the pair is for; [DESIGN.md
-§5](./DESIGN.md#the-two-guards) has the guards in full.
+Each is a spec field, and `RunScenarioOptions` carries a run-wide override for
+the fence. [DESIGN.md §5](./DESIGN.md#the-two-guards) has the guards in full.
 
 ## Usage
 
@@ -377,12 +359,8 @@ const script: ScenarioScript = async (sim) => {
 `{stepName, token, correlationId, where, label, timeoutMs}`.
 
 Both advances hold a writer whose event has no position yet, so a write that
-commits during the hold sorts *ahead* of it. For the other order — an event that
-already owns an earlier slot and has not appeared — hold the write itself with
-[`sim.beginHookDelivery`](#withholdings), which reserves the position and hands
-back a `commit()`. Under `appendOnlyLog` that reservation is provisional: an
-overtaken write gives it up and re-takes the tail, which is exactly how the world
-closes the gap. See [World behaviors](#world-behaviors).
+commits during the hold sorts ahead of it. `sim.beginHookDelivery` can defer an
+external hook write until its `commit()` call.
 
 `runTo` is **level-triggered**: it consults recorded history, so a point this
 writer already passed is an `AlreadyPassedError` naming the point rather than a
@@ -435,7 +413,7 @@ and changes what storage answers.
 | method | writer | description |
 | --- | --- | --- |
 | `sim.withholdNextEvent(reads?)` | whichever commits next | Hide the next event committed to storage from the next `reads` event-log reads (default 1). Call it immediately before the write to hide. |
-| `sim.beginHookDelivery(token, payload)` | `external` | Deliver a hook, withheld between its two halves: assigned a position in the event log, not committed to storage. Returns `{eventId, commit()}`. |
+| `sim.beginHookDelivery(token, payload)` | `external` | Begin an external hook delivery and return `commit()`, which writes it at the log tail. |
 
 `beginHookDelivery` is the one place inside an `external` writer a script can
 reach, and it is a withholding rather than an advance because holding that
@@ -443,9 +421,8 @@ writer would be the wrong model: an out-of-band receiver is a separate process,
 so nothing of the run's is blocked while its write is in flight. Holding an
 inline write would stall the delivery that made it, and the reader with it.
 
-Both change shape with the log. Under `appendOnlyLog` a withheld read is cut
-short at the withheld event instead of missing it from the middle — the log can
-be behind, never wrong — and an overtaken hook re-takes the tail on `commit()`.
+A withheld read is cut short at the withheld event: the log can be behind, never
+wrong.
 
 ### Everything else a script can do
 
@@ -457,7 +434,6 @@ be behind, never wrong — and an overtaken hook re-takes the tail on `commit()`
 | `deliverQueued(select?)` | Deliver one queued message now, concurrently with a held writer |
 | `note(msg)` / `check(name, cond)` | Record a marker / an assertion in the trace; a false check fails the scenario |
 | `world` | Read-only snapshot: runs, events, steps, hooks, waits, pending messages, rejected calls |
-| `appendOnlyLog` | Which log this run is playing against — for *phrasing* a check, never for branching the tempo |
 
 A scenario with no script at all is a control: the run plays out on the default
 schedule, and the only question is whether the log it leaves reproduces it.
@@ -530,22 +506,14 @@ so adding an option to one of them is not a change to the package's public
 signature. Promote a name to the entry when something outside the package needs
 it, not before.
 
-**A new world flag is tri-state at the runner.** `ScenarioSpec` carries the
-scenario's own choice, `RunScenarioOptions` the run-wide override, and
-`undefined` means "leave it to the spec" — not the same as `false`, because a
-scenario that asked for the flag must keep it. `run.ts` maps `--x` / `--no-x`
-onto that, and the resolved value reaches `createSimWorld` and the chips line.
-
 **Anything a scenario can observe has to survive replay.** `verifyReplay`
-re-plays the log in a fresh world built from the same options, so a store rule
-that is not applied there turns every scenario using it red for the wrong
-reason.
+re-plays the log in a fresh world, so a store rule that is not applied there
+turns every scenario using it red for the wrong reason.
 
 **Tests come in two shapes.** `src/*.test.ts` are vitest units against the
-pieces in isolation — copy `store.test.ts` for anything that changes what the
-log looks like, where the append-only block is written as pairs asserting
-*opposite* outcomes in the two worlds. The scenario book is the integration
-test; run it before and after and diff the counts.
+ pieces in isolation — copy `store.test.ts` for anything that changes what the
+ log looks like. The scenario book is the integration test; run it before and
+ after and diff the counts.
 
 ## What this does *not* give you
 
