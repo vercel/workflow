@@ -1099,6 +1099,42 @@ describe('handleSuspension batched fan-out', () => {
     expect(eventsCreate).toHaveBeenCalledTimes(1);
   });
 
+  it('leaves the pre-claim path fully inert on a World without createBatch', async () => {
+    // world-local and world-postgres do not implement createBatch, so the fold
+    // never engages there — but the runtime passes `ownerMessageId` and
+    // `allowDeferredBatchWork` unconditionally. Assert those are inert rather
+    // than assuming it: the lazy-inline path must be taken with no claims, no
+    // deferred work and no slot ceiling, so the caller sends the lazy
+    // `step_started` it always did.
+    const eventsCreate = vi.fn().mockImplementation(async (_runId, event) => ({
+      event,
+    }));
+    const world = createBatchWorld(eventsCreate);
+
+    const result = await handleSuspension({
+      suspension: new WorkflowSuspension(
+        stepsAndWait(['s1', 's2', 's3']),
+        globalThis
+      ),
+      world,
+      run: slotRun,
+      ownerMessageId: 'msg_owner_1',
+      allowDeferredBatchWork: true,
+    });
+
+    expect(result.inlineClaims.size).toBe(0);
+    expect(result.deferredBatchWork).toBeUndefined();
+    expect(result.batchCommittedSlotCeiling).toBeUndefined();
+    // The deferred inline step still carries its input for the lazy start.
+    expect(result.lazyInlineSteps).toHaveLength(1);
+    expect(result.lazyInlineSteps[0].correlationId).toBe('s1');
+    expect(result.lazyInlineSteps[0].dehydratedInput).toBeDefined();
+    // No step_started rode a batch, so nothing pre-claimed anything.
+    for (const [, event] of eventsCreate.mock.calls) {
+      expect(event.eventType).not.toBe('step_started');
+    }
+  });
+
   it('keeps the single path on a pre-slot-identity run', async () => {
     const eventsCreate = vi.fn().mockImplementation(async (_runId, event) => ({
       event,
