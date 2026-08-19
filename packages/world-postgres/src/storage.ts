@@ -634,6 +634,11 @@ async function handleLegacyEventPostgres(
         .where(eq(Schema.runs.runId, runId))
         .limit(1);
 
+      // Wake `runs.waitForTerminalStatus` waiters. This shortcut returns
+      // before the notify in `createEventsStorage`, so without this a legacy
+      // run's cancellation is only noticed by the backstop re-read.
+      await notifyRunTerminal(drizzle, runId);
+
       // Return without event (legacy behavior skips event storage)
       // Type assertion: EventResult expects WorkflowRun, filterRunData may return WorkflowRunWithoutData
       return {
@@ -2323,12 +2328,15 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
         };
       }
 
-      // Wake `runs.waitForTerminalStatus` waiters. Every run-terminal
-      // transition in this world happens on the way to here (run_completed /
+      // Wake `runs.waitForTerminalStatus` waiters. Every current-spec
+      // run-terminal transition passes through here (run_completed /
       // run_failed / run_cancelled all update the row above), and the update
       // has committed by now, so a woken waiter re-reads a terminal run. The
       // early-return paths above are the idempotent ones — a run that was
-      // *already* terminal, whose original transition announced itself.
+      // *already* terminal, whose original transition announced itself. The
+      // one terminal write that does NOT reach here is the legacy
+      // (specVersion < 2) `run_cancelled` shortcut, which returns from
+      // `handleLegacyEventPostgres` and notifies for itself.
       if (run && isTerminalWorkflowRunStatus(run.status)) {
         await notifyRunTerminal(drizzle, effectiveRunId);
       }

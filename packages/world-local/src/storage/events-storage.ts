@@ -564,7 +564,9 @@ async function writeRunUnderLifecycleLock<T extends WorkflowRun>(
     });
     // Wake `runs.waitForTerminalStatus` waiters in this process. Emitted after
     // the file is on disk so a woken waiter re-reads a terminal run, and from
-    // here because every run-lifecycle write funnels through this helper.
+    // here because every current-spec run-lifecycle write funnels through this
+    // helper. The legacy (specVersion < 2) `run_cancelled` shortcut in
+    // `legacy.ts` writes the run file directly and signals for itself.
     if (isTerminalWorkflowRunStatus(next.status)) {
       signalRunTerminal(runId);
     }
