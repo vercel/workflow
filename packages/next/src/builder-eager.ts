@@ -191,7 +191,6 @@ export async function getNextBuilderEager(
             : resolve(this.config.workingDir, pathname)
           ).replace(/\\/g, '/');
         let sourceSnapshots = new Map<string, SourceSnapshot>();
-        let buildInProgress = false;
 
         const watchableExtensions = new Set([
           '.js',
@@ -254,15 +253,6 @@ export async function getNextBuilderEager(
           },
         });
 
-        const runBuild = async (build: () => Promise<void>) => {
-          buildInProgress = true;
-          try {
-            await build();
-          } finally {
-            buildInProgress = false;
-          }
-        };
-
         const hotRebuild = async (refreshStepRegistrations: boolean) => {
           if (refreshStepRegistrations) {
             if (stepsCtx) {
@@ -298,24 +288,28 @@ export async function getNextBuilderEager(
           // dirty and trigger the file event already queued behind this task.
           const nextSourceSnapshots = await snapshotSources();
 
-          await stepsCtx?.dispose();
-          await workflowsCtx.interimBundleCtx.dispose();
-
           const newCombined = await this.buildCombinedFunction(options);
-          stepsCtx = newCombined.stepsContext;
-          discoveredEntries = newCombined.discoveredEntries;
-          stepsManifest = newCombined.stepsManifest;
-          workflowsManifest = newCombined.workflowsManifest;
-
           if (!newCombined?.interimBundleCtx || !newCombined?.bundleFinal) {
             throw new Error(
               'Invariant: expected workflows bundle context after rebuild'
             );
           }
+
+          const previousStepsCtx = stepsCtx;
+          const previousWorkflowsCtx = workflowsCtx.interimBundleCtx;
+          stepsCtx = newCombined.stepsContext;
+          discoveredEntries = newCombined.discoveredEntries;
+          stepsManifest = newCombined.stepsManifest;
+          workflowsManifest = newCombined.workflowsManifest;
           workflowsCtx = {
             interimBundleCtx: newCombined.interimBundleCtx,
             bundleFinal: newCombined.bundleFinal,
           };
+
+          await Promise.all([
+            previousStepsCtx?.dispose(),
+            previousWorkflowsCtx.dispose(),
+          ]);
 
           await writeManifest(newCombined.manifest);
           sourceSnapshots = nextSourceSnapshots;
@@ -409,7 +403,7 @@ export async function getNextBuilderEager(
 
         const runFullRebuild = async () => {
           logDevHmr('workflow dev hmr: full rediscovery');
-          await runBuild(fullRebuild);
+          await fullRebuild();
           await refreshKnownFiles();
         };
 
@@ -431,9 +425,7 @@ export async function getNextBuilderEager(
               logDevHmr(
                 `workflow dev hmr: hot rebuild${decision.refreshStepRegistrations ? ' with step registration refresh' : ''}`
               );
-              await runBuild(() =>
-                hotRebuild(decision.refreshStepRegistrations)
-              );
+              await hotRebuild(decision.refreshStepRegistrations);
               break;
             case 'full':
               await runFullRebuild();
@@ -442,10 +434,9 @@ export async function getNextBuilderEager(
               decision satisfies never;
               throw new Error('Unknown rebuild decision');
           }
-          sourceSnapshots = new Map([
-            ...sourceSnapshots,
-            ...decision.snapshots,
-          ]);
+          for (const [file, snapshot] of decision.snapshots) {
+            sourceSnapshots.set(file, snapshot);
+          }
         };
 
         const scheduleRebuild = createRebuildScheduler(
@@ -471,12 +462,6 @@ export async function getNextBuilderEager(
         const scheduleFileChange = (file: string) => {
           scheduleRebuild({ kind: 'files', files: [file] });
         };
-        const scheduleBuildOverlap = () => {
-          if (buildInProgress) {
-            scheduleRebuild({ kind: 'full' });
-          }
-        };
-
         const handleFileWritten = async (pathname: string) => {
           const normalizedPath = normalizePath(pathname);
           if (!isWatchableFile(normalizedPath)) {
@@ -514,18 +499,9 @@ export async function getNextBuilderEager(
           },
         });
 
-        watcher.on('add', (pathname) => {
-          scheduleBuildOverlap();
-          void handleFileWritten(pathname);
-        });
-        watcher.on('change', (pathname) => {
-          scheduleBuildOverlap();
-          void handleFileWritten(pathname);
-        });
-        watcher.on('unlink', (pathname) => {
-          scheduleBuildOverlap();
-          handleFileRemoved(pathname);
-        });
+        watcher.on('add', handleFileWritten);
+        watcher.on('change', handleFileWritten);
+        watcher.on('unlink', handleFileRemoved);
         watcher.on('error', (error) => {
           console.error('Workflow dev watcher error', error);
         });
