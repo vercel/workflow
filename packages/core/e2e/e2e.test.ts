@@ -188,11 +188,19 @@ const wrapE2EHandler =
   };
 
 /**
- * Drop-in `test` whose collector mirrors vitest's own argument handling
- * (options-second, legacy options/timeout-third, `.each`'s generated
- * callbacks) and wraps every handler with {@link wrapE2EHandler}. Built on
- * `createTaskCollector`, so the whole chainable surface (`.skip`, `.only`,
- * `.each`, `.runIf`, `.sequential`, …) keeps working.
+ * Drop-in `test` that wraps every handler with {@link wrapE2EHandler} and
+ * then hands the call to the enclosing suite's own collector — exactly what
+ * vitest's top-level `test` does (`getCurrentSuite().test.fn.call(this, …)`).
+ *
+ * Delegating rather than calling `getCurrentSuite().task()` directly is
+ * load-bearing: the suite collector is where suite options are merged into
+ * each test (`Object.assign({}, suiteOptions, options)`), which is how
+ * `describe.concurrent` reaches its tests. Calling `task()` directly skips
+ * that merge, and the suite silently runs sequentially — caught in CI as
+ * lanes matching the serial baseline minute-for-minute.
+ *
+ * Built on `createTaskCollector`, so the whole chainable surface (`.skip`,
+ * `.only`, `.each`, `.runIf`, `.sequential`, …) keeps working.
  */
 const test = createTaskCollector(function (
   this: Record<string, unknown>,
@@ -200,26 +208,22 @@ const test = createTaskCollector(function (
   optionsOrFn?: unknown,
   optionsOrTest?: unknown
 ) {
-  let options: Record<string, unknown> = {};
+  let options: unknown = {};
   let handler: (ctx: TestContext) => unknown = () => {};
   if (typeof optionsOrTest === 'object' && optionsOrTest !== null) {
-    options = optionsOrTest as Record<string, unknown>;
+    options = optionsOrTest;
     handler = optionsOrFn as typeof handler;
   } else if (typeof optionsOrTest === 'number') {
     options = { timeout: optionsOrTest };
     handler = optionsOrFn as typeof handler;
   } else if (typeof optionsOrFn === 'object' && optionsOrFn !== null) {
-    options = optionsOrFn as Record<string, unknown>;
+    options = optionsOrFn;
     handler = optionsOrTest as typeof handler;
   } else if (typeof optionsOrFn === 'function') {
     handler = optionsOrFn as typeof handler;
   }
 
-  getCurrentSuite().task(name, {
-    ...this,
-    ...options,
-    handler: wrapE2EHandler(handler),
-  });
+  getCurrentSuite().test.fn.call(this, name, options, wrapE2EHandler(handler));
 }) as typeof vitestTest;
 
 const testJsOnly = isJsApp() ? test : test.skip;
