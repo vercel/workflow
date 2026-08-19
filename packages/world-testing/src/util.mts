@@ -143,6 +143,32 @@ export function createFetcher(control: Control) {
       });
       return data;
     },
+    /**
+     * Every event of a run, oldest first, as the World stored it.
+     *
+     * Ids included on purpose: they are the one part of the storage contract a
+     * World can get wrong while every workflow still appears to work, right
+     * up until a replay reads one (see `eventIds`).
+     */
+    async getEvents(runId: string): Promise<
+      {
+        eventId: string;
+        eventType: string;
+        correlationId?: string;
+      }[]
+    > {
+      const x = await fetch(
+        `http://localhost:${control.info.port}/runs/${encodeURIComponent(runId)}/events`
+      );
+      const data = (await x.json()) as {
+        events: {
+          eventId: string;
+          eventType: string;
+          correlationId?: string;
+        }[];
+      };
+      return data.events;
+    },
     async getFlowInvocationCount(runId: string): Promise<number> {
       const x = await fetch(
         `http://localhost:${control.info.port}/_flow-invocations/${encodeURIComponent(runId)}`

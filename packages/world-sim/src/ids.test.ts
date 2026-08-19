@@ -19,10 +19,10 @@ describe('deterministic id factory', () => {
   it('sorts by (time, mint order), which is what event-log ordering relies on', () => {
     let now = 1_704_067_200_000;
     const ids = createIdFactory(() => now);
-    const a = ids.eventId();
-    const b = ids.eventId();
+    const a = ids.messageId();
+    const b = ids.messageId();
     now += 1;
-    const c = ids.eventId();
+    const c = ids.messageId();
     expect(a < b).toBe(true);
     expect(b < c).toBe(true);
   });
@@ -30,7 +30,7 @@ describe('deterministic id factory', () => {
   it('is a pure function of (clock, counter)', () => {
     const build = () => {
       const ids = createIdFactory(() => 1_704_067_200_000);
-      return [ids.runId(), ids.eventId(), ids.messageId()];
+      return [ids.runId(), ids.messageId()];
     };
     expect(build()).toEqual(build());
   });

@@ -2,6 +2,7 @@ import { PreconditionFailedError } from '@workflow/errors';
 import {
   type Event,
   SPEC_VERSION_CURRENT,
+  slotToEventId,
   type WorkflowRun,
 } from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -225,7 +226,7 @@ async function drive(
       return { run, events };
     }
     const event = {
-      eventId: `e-${++seq}`,
+      eventId: slotToEventId(++seq),
       runId,
       createdAt: new Date(),
       ...data,

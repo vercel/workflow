@@ -676,15 +676,14 @@ async function dispatchPendingOps(params: {
  * This replaces the `node:vm` replay path (runWorkflow + EventsConsumer)
  * with a QuickJS VM invocation that performs the same full event replay.
  *
- * KNOWN GAP — precondition guard: unlike the node:vm path, no event write
- * in this file participates in the optimistic-concurrency precondition
- * guard (`withPreconditionRetry` + `stateUpdatedAtForCreate`), which
- * protects a writer holding a stale event-log snapshot from clobbering a
- * concurrent one. The engine currently relies on per-(runId,
- * correlationId) event uniqueness (EntityConflictError dedup) alone. This
- * is a deliberate simplification while the engine is experimental — wiring
- * the guard is tracked follow-up work; anyone adding new write paths here
- * should not assume parity with the node engine on this axis.
+ * KNOWN GAP — slot snapshot: unlike the node:vm path, no event write in
+ * this file carries {@link CreateEventParams.eventCount}, so a World never
+ * learns which events the writer had not seen and never reports them back.
+ * The engine currently relies on per-(runId, correlationId) event
+ * uniqueness (EntityConflictError dedup) alone. This is a deliberate
+ * simplification while the engine is experimental — wiring the snapshot is
+ * tracked follow-up work; anyone adding new write paths here should not
+ * assume parity with the node engine on this axis.
  */
 export async function runWorkflowWithQuickJS(params: {
   workflowCode: string;
@@ -740,6 +739,8 @@ export async function runWorkflowWithQuickJS(params: {
    * the in-flight body instead of requeueing the step.
    */
   ownerMessageId?: string;
+  /** Request ID of the queue invocation, when the queue provides one. */
+  requestId?: string;
   /**
    * Queue namespace resolved at route registration (runtime.ts). Must be
    * threaded into every message publish: the builders bake the namespace
@@ -768,6 +769,7 @@ export async function runWorkflowWithQuickJS(params: {
     maxEventsLimit,
     deliveryAttempt,
     ownerMessageId,
+    requestId,
     namespace,
   } = params;
   // Standalone-caller fallback (tests): without a runtime.ts carrier
@@ -1437,6 +1439,7 @@ export async function runWorkflowWithQuickJS(params: {
                   workflowDeploymentId: workflowRun.deploymentId,
                   workflowName: workflowRun.workflowName,
                   workflowStartedAt,
+                  requestId,
                   rootRunId,
                   stepId: step.correlationId,
                   stepName: step.stepId,

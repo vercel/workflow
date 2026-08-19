@@ -41,14 +41,8 @@ export type WorldCallName =
  * The two points a world call can be caught at: entering it, and returning
  * from it.
  *
- * A held `'before'` has decided nothing durable and owns no log position, so a
- * write that commits during the hold sorts *ahead* of it. For the other order —
- * a writer that already owns an earlier slot and has not yet appeared — hold the
- * write itself with `sim.beginHookDelivery`, which reserves the position that
- * `events.create` would have minted and hands the caller the moment in between.
- * That gap is not a detail: it is the only way a log can gain an event *behind*
- * a position a reader has already read past, which is the one shape no
- * high-water-mark fence can see.
+ * A held `'before'` has decided nothing durable. A write that commits during
+ * the hold sorts ahead of it because event positions are assigned at commit.
  */
 export type CallPhase = 'before' | 'after';
 
@@ -298,11 +292,7 @@ export interface Writer {
    * attributed to this writer, already in the trace — and before it is assigned
    * a position in the event log.
    *
-   * Having no position yet, a write that commits to storage while this one is
-   * held sorts *ahead* of it. For the opposite — an event that already owns an
-   * earlier slot and has not appeared — hold the write itself with
-   * `sim.beginHookDelivery`, which reserves the position on one side of the
-   * gap and commits on the other.
+   * A write that commits to storage while this one is held sorts ahead of it.
    */
   runToEventProduced(
     eventType: EventType | EventType[],
@@ -365,20 +355,11 @@ export interface ScenarioApi {
    */
   deliverHook(token: string, payload: unknown): Promise<void>;
   /**
-   * Start a hook delivery and stop between its two halves: the log position is
-   * taken, the event is not there yet.
-   *
-   * This is the fault the `in-flight` scenarios are about, and it needs no stale
-   * read to express. The receiver's write has entered the handler, so its event
-   * id — the log's sort key — is fixed; it has not reached storage, so every
-   * reader sees a complete, consistent log that simply does not contain it. When
-   * `commit()` runs, the event appears *behind* positions those readers already
-   * read past, which is the one shape a high-water mark cannot represent.
+   * Start a hook delivery and defer its commit. The event takes its log position
+   * when `commit()` runs.
    *
    * Unlike a held writer, nothing is blocked in the meantime: the receiver is a
-   * separate process from the run's invocation. Holding an *inline* write instead
-   * would stall the delivery that made it, and thus the reader too — which is why
-   * the out-of-band writer is the one that can do this.
+   * separate process from the run's invocation.
    */
   beginHookDelivery(token: string, payload: unknown): Promise<InFlightWrite>;
   /** Cancel the run under test, as an operator would. */
@@ -431,27 +412,10 @@ export interface ScenarioApi {
   check(name: string, condition: boolean): void;
   /** The run under test. */
   runId: string;
-  /**
-   * Which log this run is playing against, resolved from the spec and the run
-   * option. See `ScenarioSpec.appendOnlyLog`.
-   *
-   * A check's *name* is a sentence in the trace, and several of them are
-   * sentences about where a position came from — "the hook owns a log position
-   * but is nowhere in the log" is true of a reserved mint and false of an
-   * append-only commit. Read this to phrase the sentence for the world the run
-   * is actually in, rather than narrating one world while playing the other.
-   *
-   * It is not for branching the *tempo*. A scenario whose script takes a
-   * different path under the flag is two scenarios wearing one id, and the diff
-   * between the two runs stops meaning anything.
-   */
-  appendOnlyLog: boolean;
 }
 
-/** An out-of-band write that owns a log position and has not committed. */
+/** An out-of-band write that has not committed. */
 export interface InFlightWrite {
-  /** The position it will occupy, whenever it lands. */
-  eventId: string;
   /** Let it reach storage. */
   commit(): Promise<void>;
 }

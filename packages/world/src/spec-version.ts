@@ -42,36 +42,48 @@ export const SPEC_VERSION_SUPPORTS_COMPRESSION = 5 as SpecVersion;
  * and the spec version stamped on `run_created` is what carries it. A run
  * created before the backend adopted slots stays on ULIDs for its whole life
  * because its stamped version is below this one.
+ *
+ * Slots are no longer optional for a World: the runtime reads a position out
+ * of every event id it loads (`requireEventSlot`) and fails the run if it
+ * cannot. That makes this version the lowest one this runtime can serve at
+ * all. See `SPEC_VERSION_CURRENT`.
  */
 export const SPEC_VERSION_SUPPORTS_SLOT_IDENTITY = 6 as SpecVersion;
 
 /**
- * Current spec version (event-sourced architecture with native attributes
- * and compressed payloads).
+ * Current spec version: event-sourced architecture with native attributes,
+ * compressed payloads and slot-numbered event ids.
  *
- * Deliberately NOT bumped for slot-numbered event ids. Slot numbering is a
- * property of a run's whole log rather than of an individual event, and it is
- * already self-describing: a run's scheme is readable from the shape of its
- * own first event id (see `isSlotEventId`), so a World that owns its own id
- * allocation needs no version negotiation to pin one. Bumping this constant
- * would stamp the new version on every World
- * including ones that have not adopted slots yet, which is exactly the
- * cross-version breakage the pin exists to avoid. A World that does allocate
- * slots declares the higher version itself (see `world-vercel`), and
- * `SPEC_VERSION_MAX_SUPPORTED` is what keeps this reader from rejecting the
- * runs it produces.
+ * This is both the version a World stamps on the runs it creates and the
+ * *lowest* one this runtime accepts from a World (see
+ * `assertWorldSupportsRuntimeProtocol`). The two coincide because slot
+ * numbering is a requirement of the World contract rather than a capability to
+ * opt into: a World declaring anything below this allocates event ids the
+ * runtime cannot read positions out of, so admitting it would only move the
+ * failure from startup to the middle of a run.
+ *
+ * A World therefore declares this constant rather than a literal, so a bump
+ * moves the declaration and the floor together. Pinning a literal would leave
+ * the adapter one version behind the next bump and get it rejected by the
+ * runtime it ships alongside.
+ *
+ * Bumping this does not touch runs already created: their stamped version is
+ * persisted, every version test in the runtime is `>=`, and a World resolves a
+ * run's identity scheme from what is stored rather than from this constant.
  */
 export const SPEC_VERSION_CURRENT =
-  SPEC_VERSION_SUPPORTS_COMPRESSION as SpecVersion;
+  SPEC_VERSION_SUPPORTS_SLOT_IDENTITY as SpecVersion;
 
 /**
  * The highest spec version this SDK can read.
  *
- * Distinct from `SPEC_VERSION_CURRENT`, which is the *default* a World stamps
- * on runs it creates. A World may declare a higher version than the default,
- * so the "was this run made by a newer SDK?" test has to be against the
- * ceiling: comparing against the default would make the SDK reject runs its
- * own adapters just created.
+ * Kept distinct from `SPEC_VERSION_CURRENT` even though the two are equal
+ * today. They answer different questions, "what do we write?" versus "what can
+ * we still read?", and they come apart in the release order a spec bump
+ * follows: a reader that can already handle the next version raises this
+ * ceiling first, and `SPEC_VERSION_CURRENT` follows only once the version is
+ * safe to stamp. Collapsing them into one constant would make that staging
+ * impossible to express.
  */
 export const SPEC_VERSION_MAX_SUPPORTED =
   SPEC_VERSION_SUPPORTS_SLOT_IDENTITY as SpecVersion;

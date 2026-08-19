@@ -137,20 +137,30 @@ control that provides the calibration baseline. Any outcome other than
 `completed` fails the run, except `infra`, which means the harness could not
 reach the deployment.
 
-Run it locally against `@workflow/world-postgres` and a locally started
-workbench app — no Vercel deployment, no credentials:
+Run it locally against a locally started workbench app — no Vercel deployment,
+no credentials:
 
 ```bash
-pnpm run test:e2e:event-log-race-repro:local
+pnpm run test:e2e:event-log-race-repro:local              # world-postgres
+pnpm run test:e2e:event-log-race-repro:local --world local # world-local
 ```
 
-The script (`scripts/event-log-race-repro-local.sh`, `--help` for flags) brings up
-the world-postgres container, applies migrations, builds and starts
-`workbench/nextjs-turbopack` with `WORKFLOW_TARGET_WORLD` and
+The script (`scripts/event-log-race-repro-local.sh`, `--help` for flags) builds
+and starts `workbench/nextjs-turbopack` with `WORKFLOW_TARGET_WORLD` and
 `WORKFLOW_PUBLIC_MANIFEST=1` set **at build time** (both are build-time inputs;
-missing either silently yields a world-local app or a 404 manifest), runs the
-harness, prints the same summary table CI posts, and tears the server down.
-Postgres is left running for the next iteration unless `--teardown` is passed.
+missing either silently yields a default-world app or a 404 manifest), runs the
+harness, prints the same summary table CI posts, and tears the server down. For
+world-postgres it first brings up the container and applies migrations, and
+leaves Postgres running for the next iteration unless `--teardown` is passed;
+the container flags (`--skip-db-setup`, `--no-docker`, `--teardown`) do nothing
+under `--world local`, whose only state is a data directory the script clears
+before each run.
+
+Both worlds are worth running, and neither subsumes the other: world-postgres
+arbitrates event slots inside one SQL statement, while world-local arbitrates
+them with an exclusive `link(2)` against a directory that two processes (the app
+and the harness) both write to. A slot race a transaction closes is not
+automatically closed by a filesystem.
 
 Scale is controlled entirely by `EVENT_LOG_RACE_REPRO_*` environment variables.
 Their defaults live only in `event-log-race-repro.test.ts` — neither the CI
@@ -176,6 +186,32 @@ setup, and it is why the local runner is the fast signal while a fix is in
 flight — at 14 runs a green CI job means "the storms did not trip it", nowhere
 near "the rate is below X".
 
+That is a *laptop* result, and the distinction matters: `CORRUPTED_EVENT_LOG`
+means the run finished the race, while `stuck` usually means it never got to
+run one. Two dispatches of the local lanes against unmodified `main` on GitHub's
+4-core runners scored, at the default scale, world-postgres 5-6 of 6 `step-storm`
+runs `stuck` at `runTimeoutMs` in both, and world-local 6 and 12 of 14 `stuck` —
+the *same* lane, the same commit, "6/14" and "12/14" one dispatch apart. Read a
+single local-lane number as a verdict on a PR and it will mislead you; read
+`pressure.resumesSent` and `progress.events` in the results JSON instead, which
+say whether the run was racing or starving.
+
+Two properties of the harness made that starvation self-sustaining, and both are
+now bounded — if you change either, know what you are giving up:
+
+* **The poke pump is capped** (`EVENT_LOG_RACE_REPRO_POKE_MAX`, default 64).
+  `step-storm`'s pressure is a wall-clock cadence, so a slow run collected *more*
+  out-of-band writes per unit of progress than a fast one, and each one appends a
+  `hook_received` that every later replay re-reads. Unbounded on a 4-core runner
+  that reached ~270 pokes per run and no run ever finished; a healthy 6-round run
+  sends 35-41, so the cap clips runaways only.
+* **Runs abandoned at `runTimeoutMs` are cancelled.** They used to keep replaying
+  in the same app process for the rest of the job. That is how world-local's
+  `hook-storm` came to report six `stuck` runs with `resumesSent: 0` — every one
+  of them starved behind the previous scenario's six abandoned `step-storm` runs
+  and never created a hook for the driver to resume, so the scenario measured
+  nothing about hooks at all.
+
 One thing about a local run is unlike CI and is worth knowing before you read a
 result: in CI each replay gets its own Fluid invocation, while here every replay
 of every run shares one Next.js process. world-postgres gives that process (and
@@ -185,18 +221,44 @@ one heap saturates GC — measured on a 12-core laptop, all 14 attempts came bac
 sets `WORKFLOW_POSTGRES_WORKER_CONCURRENCY=10` (override by exporting it) and
 raises the app's old-space limit (`--heap-mb`). If a local run reports `stuck`
 rather than `CORRUPTED_EVENT_LOG`, suspect the machine before the SDK.
+world-local saturates the same single process from its own in-process queue,
+which defaults to 1000 deliveries in flight, so the script holds it at the same
+number via `WORKFLOW_LOCAL_QUEUE_CONCURRENCY`.
+
+world-local's storms come out clean far more often than world-postgres's, so the
+default scale says even less there: the corruption it does produce needs a
+`hook_received` to be staged and then rejected, which the harness reaches only
+in a run's terminal moments. Reach for a unit test in
+`packages/world-local/src/storage/` when a suspected filesystem race can be
+staged directly — it costs milliseconds and does not depend on the interleaving
+showing up.
 
 In CI the same harness runs from `.github/workflows/event-log-race-repro.yml`,
 triggered by adding the `event-log-race-repro` label to a PR (or by
 `workflow_dispatch`, whose inputs are the soak dial — raise `timeout-minutes` in
-that dispatch's branch if you raise `budget_ms`). Results land in a sticky PR
-comment that keeps a history of previous runs and their configs.
+that dispatch's branch if you raise `budget_ms`). Alongside the Vercel lane, the
+workflow runs the local script against world-local and world-postgres as
+parallel lanes. Those two lanes are report-only — the local storms have red
+baselines at the default scale (see above), so they publish numbers rather than a
+verdict and fail only when the harness produced no result file at all; the Vercel
+lane remains the gate.
+
+All three lanes land in one sticky PR comment, rendered from their artifacts by
+the `event-log-race-repro-comment` job: a verdict line per lane, then a history
+table of one row per lane per run (total / complete / corrupt / stuck / other),
+then the latest run's non-completed runs with links. Each lane's own job summary
+carries the same tables for that lane alone. The comment keeps the last few runs;
+older ones stay in the jobs' artifacts, which hold the full results JSON.
 
 To poke at a run afterwards, the CLI reads the same world from the environment:
 
 ```bash
 WORKFLOW_TARGET_WORLD=@workflow/world-postgres \
 WORKFLOW_POSTGRES_URL=postgres://world:world@localhost:5432/world \
+  pnpm wf inspect <run-id>
+
+WORKFLOW_TARGET_WORLD=local \
+WORKFLOW_LOCAL_DATA_DIR=workbench/nextjs-turbopack/.next/workflow-data \
   pnpm wf inspect <run-id>
 ```
 
@@ -384,3 +446,5 @@ The `executionContext` field on workflow runs is a flexible JSONB/CBOR object th
 Every outgoing HTTP request from `@workflow/world-vercel` to workflow-server (or the queue) MUST explicitly inject W3C trace context so the server can parent its spans to the caller and traces stay correlated end to end. Call `injectTraceContextIntoHeaders(headers)` (from `packages/world-vercel/src/telemetry.ts`) on the outgoing headers, inside the client span when one exists — `makeRequest` in `utils.ts` is the reference implementation. It is a no-op when no OpenTelemetry SDK is registered.
 
 Do **not** rely on ambient OpenTelemetry auto-instrumentation to do this: world-vercel's request paths use custom undici dispatchers / `global fetch`, which auto-instrumentation does not reliably hook. When you add a new request path or API version (e.g. a future v5 events API), wire the injection in the same place you build the request headers. The v4 events path (`fetchV4` in `events-v4.ts`) regressed cross-service correlation precisely by routing around `makeRequest` and skipping this step — workflow-server spans stopped joining the flow-route invocation trace until the injection was added back. Cover new paths with a test in `trace-propagation.test.ts`.
+
+The same rule covers a request path that is not an HTTP request. A non-`fetch` transport must still open the client span callers read a trace through: use `withHttpClientSpan` (`http-core.ts`), the envelope `instrumentedFetch` is built on, so the span carries the same name, kind and attributes rather than a hand-rolled parallel shape. The WS events transport is the worked example — `postEventFrameOverWs` synthesizes an `http POST` span per frame and tags it `workflow.events.transport: 'ws'`, and the handshake gets its own `workflow.events.ws.connect` span (`ws-transport-spans.test.ts`). Adding a transport that writes events without one silently deletes the per-event view of a run.

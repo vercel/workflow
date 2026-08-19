@@ -28,13 +28,20 @@ function getRangeOffsets(
     return null;
   }
 
-  const startRange = document.createRange();
-  startRange.selectNodeContents(container);
-  startRange.setEnd(range.startContainer, range.startOffset);
+  let startRange: Range;
+  let endRange: Range;
 
-  const endRange = document.createRange();
-  endRange.selectNodeContents(container);
-  endRange.setEnd(range.endContainer, range.endOffset);
+  try {
+    startRange = document.createRange();
+    startRange.selectNodeContents(container);
+    startRange.setEnd(range.startContainer, range.startOffset);
+
+    endRange = document.createRange();
+    endRange.selectNodeContents(container);
+    endRange.setEnd(range.endContainer, range.endOffset);
+  } catch {
+    return null;
+  }
 
   return {
     end: endRange.toString().length,
@@ -80,6 +87,7 @@ function MiddleTruncate({
       let copyText: string | null = null;
 
       if (
+        selectionText.includes(ELLIPSIS) &&
         e.currentTarget.contains(range.startContainer) &&
         e.currentTarget.contains(range.endContainer) &&
         visibleEl

@@ -51,12 +51,27 @@ import {
 import {
   errorForResponse,
   headersToRecord,
+  httpLog,
   instrumentedFetch,
   parseRetryAfter,
+  recordClientSpanStatus,
+  withHttpClientSpan,
 } from './http-core.js';
 import { hasSerializedDataFormatPrefix } from './serialized-data.js';
 import { deserializeStep, StepWireSchema } from './steps.js';
-import { type APIConfig, getHttpConfig } from './utils.js';
+import {
+  ErrorType,
+  NetworkProtocolName,
+  StepLatencyOptimizations,
+  StepStsoMs,
+  WorkflowClientVersion,
+  WorkflowEventsTransport,
+  WorkflowEventType,
+  WorkflowWsRequestId,
+  WorkflowWsUrl,
+} from './telemetry.js';
+import { type APIConfig, getHttpConfig, getHttpUrl } from './utils.js';
+import { version } from './version.js';
 import type { WsFrameReply } from './ws-transport.js';
 import { isWsEventsTransportEnabled } from './ws-transport-enabled.js';
 
@@ -87,7 +102,8 @@ async function fetchV4(
   url: string,
   init: { method: string; headers: Headers; body?: Uint8Array },
   config: APIConfig | undefined,
-  opName: string
+  opName: string,
+  attributes?: Record<string, string | number | string[]>
 ): Promise<Response> {
   const dispatcher = getEventsDispatcher(config);
   return instrumentedFetch({
@@ -96,6 +112,7 @@ async function fetchV4(
     headers: init.headers,
     body: init.body,
     dispatcher,
+    attributes,
     // Repeated transport failures retire the shared events pool and the next
     // request builds a fresh one. undici keeps a black-holed HTTP/2 session in
     // service indefinitely, so without this every request routed onto it fails
@@ -119,6 +136,23 @@ async function fetchV4(
 
 const EVENT_ID_HEADER = 'x-wf-event-id';
 const MAX_EVENTS_HEADER = 'x-wf-max-events';
+
+/**
+ * The v4 endpoint one event write targets.
+ *
+ * Shared with the WS path, which never requests it but reports it as the
+ * `url.full` of its synthetic client span: the server forwards a frame into
+ * this exact route, so naming it is what lets a trace or a dashboard compare
+ * the two transports write-for-write. Drift between the two would silently
+ * split that comparison in half.
+ */
+function eventsV4Url(
+  baseUrl: string,
+  runId: string,
+  eventType: string
+): string {
+  return `${baseUrl}/v4/runs/${encodeURIComponent(runId)}/events/${encodeURIComponent(eventType)}`;
+}
 
 interface CreateEventV4InputBase {
   // runId is required even for run_created, because the payload is keyed under the runId
@@ -223,38 +257,14 @@ interface CreateEventV4InputBase {
    *  falls back to events.list). */
   sinceCursor?: string;
   /**
-   * Epoch ms (the ULID time of the latest event the runtime has loaded
-   * during replay). Sent by replay-context creates so the backend can
-   * reject the event when a newer out-of-band event was recorded after this
-   * snapshot, enabling an optimistic-concurrency guard. Omitted by callers
-   * without a loaded event log; older servers ignore it entirely.
-   */
-  stateUpdatedAt?: number;
-  /**
-   * Number of loaded events at or below `stateUpdatedAt` (i.e. the loaded
-   * log's length). Sent with `stateUpdatedAt` so the backend can also reject
-   * a snapshot that is *missing* an event at or below its watermark — the
-   * corruption case a watermark alone cannot detect. Older servers ignore it.
-   */
-  stateEventCount?: number;
-  /**
-   * The runtime's event-log cursor at snapshot time. Advisory: sent so a
-   * rejecting backend MAY return the missing events on the 412 body, saving a
-   * follow-up events.list. Distinct from `sinceCursor`, which the server acts
-   * on for the *accepted* path.
-   */
-  stateCursor?: string;
-  /**
    * Highest event slot the writer had loaded, i.e. the length of its loaded
    * log under slot identity. Named `maxSlot` on the wire because the meta
    * already carries an unrelated telemetry `eventCount`.
    *
-   * Supersedes the `stateUpdatedAt`/`stateEventCount`/`stateCursor` triple for
-   * slot-identity runs: with dense positions one integer says everything the
-   * watermark approximated. The server allocates from the tail regardless, and
-   * uses this only to report which slots the write skipped over (returned on
-   * the success response as `events`/`cursor`/`hasMore`). Older servers ignore
-   * it.
+   * Sent by every replay-context create on a slot-identity run. The server
+   * allocates from the tail regardless, and uses this only to report which
+   * slots the write skipped over (returned on the success response as
+   * `events`/`cursor`/`hasMore`). Older servers ignore it.
    */
   maxSlot?: number;
   /** Number of consecutive replay divergences resolved by this write. */
@@ -463,13 +473,6 @@ function buildPostFrameMeta(
   }
   if (input.sinceCursor !== undefined) meta.sinceCursor = input.sinceCursor;
   if (input.skipPreload) meta.skipPreload = true;
-  if (input.stateUpdatedAt !== undefined) {
-    meta.stateUpdatedAt = input.stateUpdatedAt;
-  }
-  if (input.stateEventCount !== undefined) {
-    meta.stateEventCount = input.stateEventCount;
-  }
-  if (input.stateCursor !== undefined) meta.stateCursor = input.stateCursor;
   if (input.maxSlot !== undefined) meta.maxSlot = input.maxSlot;
   if (input.replayDivergenceCount !== undefined) {
     meta.replayDivergenceCount = input.replayDivergenceCount;
@@ -701,12 +704,21 @@ async function postWorkflowRunEventV4(
     input.payload ?? new Uint8Array(0)
   );
 
-  const url = `${baseUrl}/v4/runs/${encodeURIComponent(input.runId)}/events/${encodeURIComponent(input.eventType)}`;
+  const url = eventsV4Url(baseUrl, input.runId, input.eventType);
   return fetchV4(
     url,
     { method: 'POST', headers, body: frame },
     config,
-    'createEvent'
+    'createEvent',
+    {
+      ...WorkflowEventsTransport('http'),
+      ...WorkflowEventType(input.eventType),
+      ...WorkflowClientVersion(`@workflow/world-vercel/${version}`),
+      ...(input.stso !== undefined ? StepStsoMs(input.stso) : {}),
+      ...(input.optimizations !== undefined
+        ? StepLatencyOptimizations(input.optimizations)
+        : {}),
+    }
   );
 }
 
@@ -790,6 +802,176 @@ export async function createWorkflowRunStartedEventV4(
   return { events, ...page, maxEvents: maxEvents.data };
 }
 
+/** One event of a v4 batch POST, index-aligned with the response results. */
+export type CreateEventBatchV4Event = CreateEventV4InputBase & {
+  eventType: EventType;
+};
+
+export interface CreateEventBatchV4Input {
+  runId: string;
+  /** Events in request order — the order they land in the run's log. */
+  events: CreateEventBatchV4Event[];
+}
+
+/**
+ * One event's outcome in a batch response. `error === undefined`
+ * discriminates success; a success item carries the same materialized body
+ * its single-event POST would have returned (validated against the same
+ * per-type schema).
+ */
+export type CreateEventBatchV4ItemResult =
+  | ({ status: 200; error?: undefined; message?: undefined } & EventResult &
+      Record<'event', Event>)
+  | { status: number; error: string; message: string; event?: undefined };
+
+export interface CreateEventBatchV4Result {
+  results: CreateEventBatchV4ItemResult[];
+}
+
+const BatchItemFailureSchema = z.object({
+  status: z.number().int(),
+  error: z.string(),
+  message: z.string(),
+});
+
+/**
+ * POST /api/v4/runs/:runId/events/batch
+ *
+ * Appends an ordered batch of events to one run's log in a single durable
+ * write with per-event outcomes. The body is the events' single-POST frames
+ * back-to-back (byte-identical framing, no batch-level meta); the response is
+ * HTTP 200 CBOR `{ results }` whenever the batch was processed, one entry per
+ * frame in request order.
+ *
+ * Slot-identity runs only — an older server 404s the route and a pre-slot
+ * run is rejected with a 400. There is NO automatic fallback to single-event
+ * posts on either: the runtime never sends a batch for a pre-slot run (it
+ * gates on the run's spec version), and against a backend without the route
+ * the batch fails and the suspension redelivers until the operator disables
+ * batching via `WORKFLOW_BATCH_TRANSITIONS=0`. Ambiguous failures (timeouts,
+ * resets, 5xx, malformed responses) never convert to single posts either —
+ * the wrapper either re-sends the SAME batch (only when its shape is
+ * retry-convergent; see `createWorkflowRunEventBatch`) or surfaces the error
+ * for queue redelivery, whose replay re-derives an idempotent batch.
+ *
+ * HTTP-only by design: the WS event transport streams one frame per message
+ * and has no batch framing, so a WS-configured deployment still sends
+ * batches over HTTP (single-event writes keep their configured transport).
+ */
+export async function createWorkflowRunEventsBatchV4(
+  input: CreateEventBatchV4Input,
+  config?: APIConfig
+): Promise<CreateEventBatchV4Result> {
+  assert(input.events.length > 0, 'v4 createEventBatch: empty batch');
+  const { baseUrl, headers: baseHeaders } = await getHttpConfig(config);
+  const headers = new Headers(baseHeaders);
+  // Match the single-event POST content type — the batch route runs on the
+  // same authed + v4 middleware chain and the frame bytes are identical.
+  headers.set('Content-Type', 'application/octet-stream');
+
+  const frames = input.events.map((event) =>
+    encodeFrame(buildPostFrameMeta(event), event.payload ?? new Uint8Array(0))
+  );
+  let total = 0;
+  for (const frame of frames) total += frame.byteLength;
+  const body = new Uint8Array(total);
+  let offset = 0;
+  for (const frame of frames) {
+    body.set(frame, offset);
+    offset += frame.byteLength;
+  }
+
+  // Per-type shape for the span, so mixed batches classify as what they
+  // carry rather than as their first event's type alone.
+  const typeCounts = new Map<string, number>();
+  for (const event of input.events) {
+    typeCounts.set(event.eventType, (typeCounts.get(event.eventType) ?? 0) + 1);
+  }
+
+  const url = `${baseUrl}/v4/runs/${encodeURIComponent(input.runId)}/events/batch`;
+  const response = await fetchV4(
+    url,
+    { method: 'POST', headers, body },
+    config,
+    'createEventBatch',
+    {
+      ...WorkflowEventsTransport('http'),
+      ...WorkflowEventType(input.events[0].eventType),
+      'workflow.batch.size': input.events.length,
+      'workflow.batch.shape': [...typeCounts]
+        .map(([type, count]) => `${type}:${count}`)
+        .join(','),
+      'workflow.batch.bytes': body.byteLength,
+    }
+  );
+
+  const bodyBytes = new Uint8Array(await response.arrayBuffer());
+  const decoded =
+    bodyBytes.byteLength > 0
+      ? (decode(bodyBytes) as { results?: unknown[] })
+      : {};
+  // A 200 MUST carry exactly one outcome per submitted frame, in request
+  // order — callers index `results` positionally. A missing / non-array /
+  // short `results` is a server protocol violation; silently coercing it
+  // would masquerade as per-event failures and hide the server bug. The
+  // batch POST is idempotent-on-retry (per-event entity conditions), so
+  // failing loudly here is safe for the retry wrapper to re-send.
+  if (
+    !Array.isArray(decoded.results) ||
+    decoded.results.length !== input.events.length
+  ) {
+    throw new WorkflowWorldError(
+      `v4 createEventBatch: response \`results\` length ` +
+        `(${Array.isArray(decoded.results) ? decoded.results.length : 'non-array'}) ` +
+        `!= ${input.events.length} submitted frames`,
+      { code: 'SCHEMA_VALIDATION' }
+    );
+  }
+
+  const results = decoded.results.map(
+    (raw, index): CreateEventBatchV4ItemResult => {
+      const failure = BatchItemFailureSchema.safeParse(raw);
+      if (failure.success && failure.data.status !== 200) {
+        return failure.data;
+      }
+      // Success requires the LITERAL 200: an item with a non-200 status that
+      // failed the failure schema (e.g. missing error/message) must not fall
+      // through and be re-labeled a success by the body parse below.
+      if ((raw as { status?: unknown } | null)?.status !== 200) {
+        throw new WorkflowWorldError(
+          `v4 createEventBatch: result at index ${index} is neither a ` +
+            'success (status 200) nor a well-formed failure',
+          { code: 'SCHEMA_VALIDATION' }
+        );
+      }
+      // Success items validate against the SAME per-type schema the single
+      // POST uses, so a batched write and its single-path twin return
+      // byte-equivalent bodies to the caller.
+      const eventType = input.events[index].eventType;
+      const parsed = CreateEventV4BodySchemas[eventType].safeParse(raw);
+      if (!parsed.success) {
+        throw new WorkflowWorldError(
+          `v4 createEventBatch: invalid result body at index ${index} (${eventType})`,
+          { code: 'SCHEMA_VALIDATION', cause: parsed.error }
+        );
+      }
+      // Results are consumed positionally; an item whose committed event is
+      // of a different type than the frame submitted at this index is a
+      // server protocol violation, same as a wrong-length results array.
+      if (parsed.data.event.eventType !== eventType) {
+        throw new WorkflowWorldError(
+          `v4 createEventBatch: result at index ${index} carries a ` +
+            `${parsed.data.event.eventType} event, expected ${eventType}`,
+          { code: 'SCHEMA_VALIDATION' }
+        );
+      }
+      return { status: 200, ...parsed.data };
+    }
+  );
+
+  return { results };
+}
+
 /** The only two members a decoded transport result is read for. `fetch`'s
  *  `Response` satisfies it structurally, so the HTTP branch returns one
  *  unchanged and the WS branch synthesizes the same shape. */
@@ -855,6 +1037,43 @@ function wsReplyStatus(reply: WsFrameReply, endpoint: string): number {
   return status;
 }
 
+/**
+ * Synthesize the per-write client span the WS path would otherwise not have.
+ *
+ * On HTTP every event write goes through `fetchV4` → `instrumentedFetch`, which
+ * opens an `http POST` CLIENT span, times it, and stamps the response status on
+ * it. A frame multiplexed onto a shared socket makes no `fetch` call and
+ * produces no `Response`, so that span simply disappeared when the transport
+ * flipped — and with it the per-event view of a run's writes, which is the
+ * thing a trace of a step execution is mostly made of.
+ *
+ * Nothing about the request/response *semantics* changed, though: one frame out,
+ * one correlated reply back, one status. So the span is synthesized here with
+ * the same name, kind and attributes the fetch path emits, over the v4 REST
+ * endpoint the server forwards the frame into. Two consequences that are the
+ * point rather than a side effect:
+ *
+ *   - a trace looks the same either side of `WORKFLOW_EVENTS_TRANSPORT`, so the
+ *     A/B the flag exists for compares like with like, and
+ *   - dashboards keyed on `http POST` + `url.full` keep working unchanged.
+ *
+ * What is *not* elided: `workflow.events.transport: 'ws'`,
+ * `network.protocol.name: 'websocket'` and `workflow.events.ws.url` say plainly
+ * that no HTTP request was issued, and `workflow.events.ws.req_id` is the join
+ * key to the server's log line for the same frame. A synthetic span that hid
+ * which transport produced it would be a trap, not a convenience.
+ *
+ * Two things the HTTP envelope has that this one deliberately does not: the
+ * cache-bust header (a frame is memoized by nothing) and a per-frame
+ * `traceparent` (frames carry no headers — trace context rides the upgrade
+ * instead, so the server parents to the connection's span, not to this one).
+ *
+ * One gap this cannot close: Vercel's observability *outgoing requests* view is
+ * built by instrumenting the global `fetch`, not by reading OTEL spans, so WS
+ * event writes stay absent from it however faithful the span is. Traces get the
+ * writes back; that view needs a real request, which is the transport's whole
+ * point to avoid.
+ */
 async function postEventFrameOverWs(
   input: CreateEventV4InputBase & {
     eventType: EventType;
@@ -869,54 +1088,106 @@ async function postEventFrameOverWs(
   const { resolveWsTransport } = await import('./ws-transport.js');
   const { runId } = input;
   const resolved = resolveWsTransport(runId, config);
+  // No span: resolving nothing means no write was attempted here at all — the
+  // caller falls through to HTTP, which opens its own.
   if (!resolved) return undefined;
   const { transport, wsUrl } = resolved;
   const endpoint = `${wsUrl}#runs/${encodeURIComponent(runId)}/events`;
+  // Same helper the HTTP path builds its URL with. `resolveWsTransport` already
+  // returned null for the proxy World, so this is always the direct
+  // workflow-server origin the socket itself points at.
+  const restUrl = eventsV4Url(
+    getHttpUrl(config).baseUrl,
+    runId,
+    input.eventType
+  );
 
-  let reply: WsFrameReply;
-  try {
-    // `runId` isn't repeated here — it's already in `wsUrl`, one connection
-    // per run. The server's request-frame schema is a discriminated union on
-    // `type` with each type's payload nested under its own name, so a future
-    // request type is a new variant rather than a reshape of this one.
-    reply = await transport.request((reqId) =>
-      encodeFrame(
-        { reqId, type: 'event', event: buildPostFrameMeta(input) },
-        input.payload ?? new Uint8Array(0)
-      )
-    );
-  } catch (err) {
-    // Anything `transport.request()` throws means the frame was never acked.
-    // `code: 'TRANSPORT'` is the shape `utils.ts` gives a failed `fetch`, so
-    // one classification drives both transports — in-process retry gated by
-    // event type, then queue redelivery. An unwrapped `WsTransportError`
-    // would fail `WorkflowWorldError.is()` and classify as a USER_ERROR.
-    // Application errors are raised below, outside this try.
-    throw new WorkflowWorldError(
-      `POST ${endpoint} transport failure: ${
-        err instanceof Error ? err.message : String(err)
-      }`,
-      { url: wsUrl, code: 'TRANSPORT', cause: err }
-    );
-  }
+  return withHttpClientSpan(
+    {
+      method: 'POST',
+      url: restUrl,
+      attributes: {
+        ...WorkflowEventsTransport('ws'),
+        ...WorkflowEventType(input.eventType),
+        ...WorkflowClientVersion(`@workflow/world-vercel/${version}`),
+        ...(input.stso !== undefined ? StepStsoMs(input.stso) : {}),
+        ...(input.optimizations !== undefined
+          ? StepLatencyOptimizations(input.optimizations)
+          : {}),
+        ...NetworkProtocolName('websocket'),
+        ...WorkflowWsUrl(wsUrl),
+      },
+    },
+    async (span) => {
+      const start = Date.now();
+      let reply: WsFrameReply;
+      try {
+        // `runId` isn't repeated here — it's already in `wsUrl`, one connection
+        // per run. The server's request-frame schema is a discriminated union on
+        // `type` with each type's payload nested under its own name, so a future
+        // request type is a new variant rather than a reshape of this one.
+        reply = await transport.request((reqId) => {
+          // Recorded before the frame is sent so a request that fails, or one
+          // that never gets a reply, still carries the id the server logged it
+          // under. Assigned per attempt and per connection, so a retry or a
+          // reconnect legitimately re-uses low numbers.
+          span?.setAttributes({ ...WorkflowWsRequestId(reqId) });
+          return encodeFrame(
+            { reqId, type: 'event', event: buildPostFrameMeta(input) },
+            input.payload ?? new Uint8Array(0)
+          );
+        });
+      } catch (err) {
+        // Anything `transport.request()` throws means the frame was never acked.
+        // `code: 'TRANSPORT'` is the shape `utils.ts` gives a failed `fetch`, so
+        // one classification drives both transports — in-process retry gated by
+        // event type, then queue redelivery. An unwrapped `WsTransportError`
+        // would fail `WorkflowWorldError.is()` and classify as a USER_ERROR.
+        // Application errors are raised below, outside this try.
+        const error = new WorkflowWorldError(
+          `POST ${endpoint} transport failure: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+          { url: wsUrl, code: 'TRANSPORT', cause: err }
+        );
+        // `error.type: TRANSPORT` rather than an `HTTP <status>` value: there is
+        // no status, and the fetch path marks its own no-response failures the
+        // same way (`TIMEOUT`) instead of inventing one.
+        span?.setAttributes({ ...ErrorType('TRANSPORT') });
+        span?.recordException?.(error);
+        throw error;
+      }
+      const ms = Date.now() - start;
 
-  const status = wsReplyStatus(reply, endpoint);
-  const headerRecord = replyMetaToHeaderRecord(reply.meta);
+      const status = wsReplyStatus(reply, endpoint);
+      const headerRecord = replyMetaToHeaderRecord(reply.meta);
+      const headers = {
+        get: (name: string) => headerRecord[name.toLowerCase()] ?? null,
+      };
 
-  if (status < 200 || status >= 300) {
-    throw errorFromV4Response(
-      status,
-      headerRecord,
-      new TextDecoder().decode(reply.body),
-      'createEvent',
-      endpoint
-    );
-  }
+      // The same one-line `DEBUG` record the HTTP path emits, so a log grepped
+      // for event writes reads identically on either transport.
+      httpLog('POST', 'createEvent', { status, headers }, ms);
+      recordClientSpanStatus(span, status);
 
-  return {
-    headers: { get: (name) => headerRecord[name.toLowerCase()] ?? null },
-    arrayBuffer: async () => reply.body.slice().buffer as ArrayBuffer,
-  };
+      if (status < 200 || status >= 300) {
+        const error = errorFromV4Response(
+          status,
+          headerRecord,
+          new TextDecoder().decode(reply.body),
+          'createEvent',
+          endpoint
+        );
+        span?.recordException?.(error);
+        throw error;
+      }
+
+      return {
+        headers,
+        arrayBuffer: async () => reply.body.slice().buffer as ArrayBuffer,
+      };
+    }
+  );
 }
 
 /**

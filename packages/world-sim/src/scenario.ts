@@ -133,24 +133,11 @@ export interface ScenarioSpec {
    * Also enforce the count half of the fence: reject a write whose caller loaded
    * fewer events at or below its watermark than the log now holds.
    *
-   * Defaults to `preconditionGuard`, because that is production: since #3145
-   * `@workflow/core` sends `stateEventCount` on every replay-context create and
-   * workflow-server's count guard is on by default, so a fence is a fence with
-   * both halves. Set it to `false` alongside `preconditionGuard: true` to model
-   * the watermark alone.
+   * Defaults to `preconditionGuard`, because that is production: a world that
+   * fences at all fences with both halves. Set it to `false` alongside
+   * `preconditionGuard: true` to model the watermark alone.
    */
   countGuard?: boolean;
-  /**
-   * Run this scenario against an append-only log, where an event takes its
-   * position at commit and a read can therefore be behind but never
-   * self-contradictory. See `SimStoreOptions.appendOnlyLog`.
-   *
-   * Off by default, and no scenario in the book sets it: the interesting use is
-   * as a global override (`RunScenarioOptions.appendOnlyLog`), where the whole
-   * book runs twice and the diff is the answer to "which of these failures are
-   * about the mint-before-commit window, and which are about something else?".
-   */
-  appendOnlyLog?: boolean;
 }
 
 export interface ScenarioExpectation {
@@ -173,12 +160,6 @@ export interface ScenarioResult {
   runId: string;
   outcome: ScenarioOutcome;
   ok: boolean;
-  /**
-   * Which log the run played against — resolved from the spec and the run
-   * option, so a stored result says which world produced it rather than
-   * leaving the reader to remember.
-   */
-  appendOnlyLog: boolean;
   /** Scenario-level failures: unmet expectations, failed checks, script errors. */
   problems: string[];
   /** World-contract violations found by re-deriving state from the log. */
@@ -210,16 +191,6 @@ export interface RunScenarioOptions {
   /** Workflow function name → machine workflow id, from `buildSimBundle`. */
   workflowIds?: Record<string, string>;
   /**
-   * Force `SimStoreOptions.appendOnlyLog` on or off for this run, overriding
-   * whatever the spec asked for.
-   *
-   * This is the knob a caller flips to play the same book under both worlds —
-   * the CLI's `--append-only`, the page's toggle. `undefined` leaves the
-   * decision to the spec, which is how a book of scenarios written against
-   * production keeps behaving like one.
-   */
-  appendOnlyLog?: boolean;
-  /**
    * Force `SimStoreOptions.preconditionGuard` on or off for this run,
    * overriding whatever the spec asked for.
    *
@@ -243,7 +214,6 @@ export async function runScenario(
 ): Promise<ScenarioResult> {
   const limits = { ...DEFAULT_LIMITS, ...spec.limits };
   const clock = createVirtualClock();
-  const appendOnlyLog = options.appendOnlyLog ?? spec.appendOnlyLog ?? false;
   // One expectation, whichever world this is. Aliased rather than read inline
   // so the outcome check and the output check below cannot drift apart.
   const expected = spec.expect;
@@ -256,7 +226,6 @@ export async function runScenario(
     clock,
     preconditionGuard,
     countGuard: spec.countGuard ?? preconditionGuard,
-    appendOnlyLog,
   });
 
   const workflowId =
@@ -272,8 +241,7 @@ export async function runScenario(
       )
         .filter((k) => !k.includes('#'))
         .sort()
-        .join(', ')}`,
-      appendOnlyLog
+        .join(', ')}`
     );
   }
 
@@ -300,7 +268,6 @@ export async function runScenario(
 
   const api: ScenarioApi = {
     world: world.snapshot,
-    appendOnlyLog,
     get runId() {
       return runId;
     },
@@ -317,24 +284,9 @@ export async function runScenario(
       await world.asExternal(() => resumeHook(token, payload));
     },
     async beginHookDelivery(token, payload) {
-      // Take the position now and commit later. This is the handler boundary
-      // split made visible to a script: the receiver has entered `resumeHook`,
-      // its event id is minted and its slot in the log is spoken for, but the
-      // storage write has not happened — so every other writer that commits in
-      // the meantime lands *behind* a position nobody can see yet.
-      //
-      // It has to be an out-of-band writer. An inline step's `step_completed`
-      // held the same way would stall the orchestrator that should misread the
-      // log, because the runtime awaits its promise before deciding anything.
-      const position = world.reservePosition();
       return {
-        eventId: position.eventId,
         async commit() {
-          await world.asExternal(() =>
-            world.withReservedPosition(position, () =>
-              resumeHook(token, payload)
-            )
-          );
+          await world.asExternal(() => resumeHook(token, payload));
         },
       };
     },
@@ -473,7 +425,6 @@ export async function runScenario(
           events: world.store.allEvents(runId),
           handler: options.handler,
           limits,
-          appendOnlyLog,
         });
       } finally {
         uninstallClock = clock.install();
@@ -562,10 +513,7 @@ export async function runScenario(
     ? checkInvariants({
         runId,
         events,
-        // Only meaningful when the world promises commit order is log order.
-        ...(appendOnlyLog
-          ? { eventsInCommitOrder: world.store.allEventsInCommitOrder(runId) }
-          : {}),
+        eventsInCommitOrder: world.store.allEventsInCommitOrder(runId),
         runs: world.store.allRuns(),
         steps: world.store.allSteps(runId),
         waits: world.store.allWaits(runId),
@@ -597,7 +545,6 @@ export async function runScenario(
     runId,
     outcome,
     ok: problems.length === 0 && violations.length === 0 && outcome !== 'error',
-    appendOnlyLog,
     problems,
     violations,
     events,
@@ -680,8 +627,7 @@ function deepEqual(a: unknown, b: unknown): boolean {
 
 function failedBeforeStart(
   spec: ScenarioSpec,
-  problem: string,
-  appendOnlyLog: boolean
+  problem: string
 ): ScenarioResult {
   return {
     id: spec.id,
@@ -690,7 +636,6 @@ function failedBeforeStart(
     runId: '',
     outcome: 'error',
     ok: false,
-    appendOnlyLog,
     problems: [problem],
     violations: [],
     events: [],

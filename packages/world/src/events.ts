@@ -792,15 +792,16 @@ export interface CreateEventParams {
    * parallelized with the queue publish and may have failed. Only meaningful
    * for `step_created`.
    *
-   * Advisory. The runtime never parallelizes a *guarded* `step_created` with
-   * its publish (see the eligibility gate in the suspension handler), so in
-   * correct operation a re-ensure can only correspond to an unguarded create
-   * — there is no guard verdict for it to bypass. A guard-enforcing backend
-   * MAY nevertheless use this flag as defense-in-depth: refuse the re-ensure
-   * (world-vercel surfaces the backend's 410 as `RunExpiredError`, which the
-   * consumer treats as "nothing left to execute" and acks the message) when
-   * it has recorded a 412 rejection for this correlation id and no step
-   * entity exists — hardening against a misbehaving or future client. Worlds
+   * Advisory. Parallelizing a create with its publish is opt-in and off by
+   * default (`WORKFLOW_RESILIENT_STEP_DISPATCH`), precisely because a create
+   * can come back refused while the message carrying its payload is already
+   * out. A deployment that opts in accepts that window, and a backend MAY use
+   * this flag to narrow it: refuse the re-ensure (world-vercel surfaces the
+   * backend's 410 as `RunExpiredError`, which the consumer treats as "nothing
+   * left to execute" and acks the message) when it has recorded a refusal for
+   * this correlation id and no step entity exists. Best-effort by nature — a
+   * marker written at refusal time cannot be ordered before the redelivery it
+   * is meant to stop — so it hardens, and does not close, the window. Worlds
    * may ignore this flag entirely.
    */
   viaStepDispatch?: boolean;
@@ -814,85 +815,15 @@ export interface CreateEventParams {
    */
   computeInstanceId?: string;
   /**
-   * Epoch ms (the ULID time of the latest event the runtime has loaded during
-   * replay). Sent by replay-context creates so the backend can reject the event
-   * when a newer out-of-band event was recorded after this snapshot, enabling
-   * an optimistic-concurrency guard. Omitted by callers without a loaded event
-   * log.
-   *
-   * Backend contract (for World implementers who want to support the guard):
-   * maintain a per-run marker holding the ULID time of the most recent
-   * *externally-originated* event — a `hook_received` or `step_completed`
-   * created **without** a `stateUpdatedAt` (replay-origin events carry one and
-   * must not advance the marker). On a create that carries `stateUpdatedAt`,
-   * reject with 412 when `stateUpdatedAt < marker` (strictly older); an equal
-   * timestamp must pass (anti-livelock, so an up-to-date client is never
-   * rejected). A backend that ignores this field simply disables the guard —
-   * the client falls open and behaves as before.
-   *
-   * A watermark alone cannot see an event *missing at or below* it, which is
-   * the failure that actually corrupts a replay — see {@link stateEventCount}
-   * for the second half of the guard.
-   */
-  stateUpdatedAt?: number;
-  /**
-   * How many loaded events have a ULID time at or below {@link stateUpdatedAt}.
-   * Since `stateUpdatedAt` is the *maximum* ULID time in the loaded log, this
-   * equals the loaded array's length. Sent **only** together with
-   * `stateUpdatedAt`; a World must ignore a count that arrives without one.
-   *
-   * This closes the hole a watermark cannot: the watermark proves only "no
-   * newer event exists", while a replay corrupts its log by missing an event
-   * at or *below* its own frontier — a concurrent writer commits in the same
-   * ULID millisecond as the client's last loaded event, so the two watermarks
-   * compare equal and the write is accepted against a log that is one event
-   * short. Because correlation IDs are positional ordinals of a single seeded
-   * sequence, that one-event difference renames every entity after it.
-   *
-   * Backend contract (for World implementers who want to support this half):
-   *
-   * - Count **every** created event for the run, including replay-origin ones.
-   *   Unlike the watermark, this is not restricted to out-of-band writes: the
-   *   race being fenced is one replay against another.
-   * - Reject with 412 when the count of recorded events at ULID time
-   *   `<= stateUpdatedAt` is strictly **greater** than `stateEventCount`.
-   * - Compare **at or below** `stateUpdatedAt`, never strictly below (the
-   *   missing event routinely shares the client's frontier millisecond) and
-   *   never against a total (all the creates of one suspension share one
-   *   snapshot, so a total would reject every sibling after the first).
-   * - **One-sided safety is mandatory.** Anything that makes the backend's
-   *   count incomplete, uncomputable, or expired must *allow* the write. A
-   *   rejection has to imply a real hole, because the client responds to it by
-   *   discarding and re-deriving its whole replay.
-   *
-   * See also the millisecond-granularity caveat on `stateUpdatedAt`: the count
-   * is what makes an equal-timestamp snapshot safe to accept.
-   */
-  stateEventCount?: number;
-  /**
-   * The client's current event-log cursor (advisory). Sent alongside the other
-   * two snapshot fields so a World that rejects the write MAY return the
-   * events the client is missing on the 412 itself, saving the client a
-   * follow-up `events.list`.
-   *
-   * Distinct from {@link sinceCursor}: a World must **not** compute a delta for
-   * this on the accepted path — it exists purely to make a rejection cheaper.
-   * Returning events on a 412 is OPTIONAL, and the returned set must be
-   * provably complete (it must account for the entire discrepancy the
-   * rejection reported) or omitted entirely: a cursor filters by lexicographic
-   * event id while a hole is defined by ULID time, so a naive
-   * "everything after the cursor" delta can silently exclude the very event
-   * the client is missing. A client that receives nothing does the
-   * authoritative full reload, which is always correct.
-   */
-  stateCursor?: string;
-  /**
    * How many events the writer held in its loaded log when it decided to write
-   * this one — equivalently, the slot it expects to land on minus one.
+   * this one — equivalently, the slot it expects to land on minus one. Sent by
+   * every replay-context create; omitted by callers with no loaded log to be
+   * stale against.
    *
-   * Only meaningful against a World that declares
-   * `WorldCapabilities.slotEventIds`, where slots are dense and 1-based so a
-   * count and a position are the same number. Such a World attempts
+   * A World's slots are dense and 1-based (see `Storage.events`), so a count
+   * and a position are the same number. An id that is not a position does not
+   * produce a count here — it throws, since the runtime cannot state a
+   * snapshot for a log it cannot place. Such a World attempts
    * `eventCount + 1`, and on contention **bumps** to the next free slot and
    * commits there anyway — a stale count never rejects a write. What it does
    * instead is report: when the committed slot is higher than the one asked
@@ -900,13 +831,10 @@ export interface CreateEventParams {
    * response in {@link EventResult.events} / `cursor` / `hasMore`, so the
    * writer learns exactly what it had not seen.
    *
-   * This supersedes the {@link stateUpdatedAt} / {@link stateEventCount} /
-   * {@link stateCursor} triple for slot Worlds. That triple approximates a
-   * position with a ULID-time watermark plus a count of events at or below it,
-   * which is why a *complete but stale* prefix passes it: every event the
-   * writer holds is at or below its own watermark, so the count matches and no
-   * fence fires. A dense position has no such blind spot. Worlds without slots
-   * ignore this field and keep using the triple.
+   * Understating is safe and overstating is not. A count below the writer's
+   * true position only widens the reported span, and the client discards what
+   * its log already holds. A count above it makes the World report less than
+   * the writer is missing, which is a hole the writer never learns about.
    *
    * A batch of writes issued from one snapshot starts from the same
    * `eventCount`; they land on consecutive slots in whatever order the World
@@ -1062,9 +990,8 @@ export type EventResult<T extends EventType = EventType> = {
        *   log through the canonical `hook_received`, so the lazy hook queue
        *   consumer can skip both the `run_started` write and the initial
        *   `events.list`.
-       * - On any response from a slot-allocating World (see
-       *   `WorldCapabilities.slotEventIds`) whose committed slot came out
-       *   higher than the one {@link CreateEventParams.eventCount} asked for:
+       * - On any response whose committed slot came out higher than the one
+       *   {@link CreateEventParams.eventCount} asked for:
        *   the events occupying the slots that were skipped over, in slot
        *   order. This is the "report" half of bump-and-report — the write
        *   succeeded, and these are the events the writer had not seen when it
@@ -1089,6 +1016,93 @@ export type EventResult<T extends EventType = EventType> = {
       : T extends 'step_started'
         ? { step: StartedStep }
         : unknown);
+
+/**
+ * One event of a batch write ({@link Storage.events.createBatch}), in request
+ * order — which is the order the events land in the run's log.
+ */
+export interface BatchEventRequest {
+  /** The event, same discriminated union the single `create` takes. */
+  event: CreateEventRequest;
+  /**
+   * Client event time for this event. Under slot identity this is the source
+   * of the durable event's `createdAt` (a slot id carries no time), so the
+   * timestamp a replay observes is the one the writer chose — set it to the
+   * instant the event logically occurred.
+   */
+  occurredAt?: Date;
+}
+
+/** Per-batch parameters for {@link Storage.events.createBatch}. */
+export interface CreateEventBatchParams {
+  resolveData?: ResolveData;
+  /**
+   * Request id for per-write attribution, same as the single create's
+   * {@link CreateEventParams.requestId}: stamped on every event in the batch
+   * so a batched write's usage facts and telemetry carry the same request
+   * attribution its single-path twin would.
+   */
+  requestId?: string;
+}
+
+/**
+ * One event's outcome in a batch response, index-aligned with the submitted
+ * events. `error === undefined` discriminates success.
+ *
+ * A batch is processed as a whole (HTTP 200 whenever the World evaluated it);
+ * each event reports the outcome its OWN single `create` would have had:
+ *
+ * - success → `status: 200` plus the committed event and the same
+ *   materialized entity the single create returns (`step` for step events,
+ *   `wait` for wait events, `run` for run terminals);
+ * - rejection → the status code and error code the single create would have
+ *   failed with, so callers reuse their single-path conflict handling per
+ *   event. A `409`/`conflict` means the entity was not in the prior state
+ *   the event requires — most commonly because an earlier delivery already
+ *   applied the same event, but possibly because the entity reached a
+ *   DIFFERENT state (e.g. `step_completed` conflicting because the step
+ *   failed). A 409 alone does not prove the equivalent effect was applied;
+ *   a caller that needs effect-equivalence consults the entity (returned on
+ *   sibling successes, or reloaded).
+ *
+ * The batch is atomic per attempt, not all-or-nothing across the submitted
+ * set: a World may drop rejected events and commit the survivors, so a batch
+ * can return a mix of 200s and 409s from one call.
+ *
+ * Retry semantics: a transport retry of a committed batch converges to
+ * per-event 409s ONLY for entity-conditioned events — creates, terminal
+ * transitions, and the born-running `step_created`+`step_started` pair
+ * (fenced by the pair's create). A standalone bare `step_started` or a
+ * `step_retrying` re-patches its step on every attempt and does NOT
+ * converge, and `hook_received` appends a new row per attempt —
+ * `world-vercel` rejects `hook_received` in a batch outright and only
+ * auto-retries batches whose every event is retry-convergent.
+ */
+export type BatchEventItemResult =
+  | {
+      status: 200;
+      error?: undefined;
+      message?: undefined;
+      event: Event;
+      run?: WorkflowRun;
+      step?: Step;
+      wait?: Wait;
+    }
+  | {
+      status: number;
+      error: string;
+      message: string;
+      event?: undefined;
+      run?: undefined;
+      step?: undefined;
+      wait?: undefined;
+    };
+
+/** Result of {@link Storage.events.createBatch}. */
+export interface EventBatchResult {
+  /** One entry per submitted event, in request order. */
+  results: BatchEventItemResult[];
+}
 
 export interface GetEventParams {
   resolveData?: ResolveData;

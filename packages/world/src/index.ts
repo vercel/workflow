@@ -27,6 +27,7 @@ export {
 export {
   _resetEnvWarnCacheForTests,
   type EnvNumberOptions,
+  envFlag,
   envNumber,
   getMaxEventsPerRun,
 } from './env-config.js';
@@ -70,6 +71,14 @@ export {
   HookSchema,
 } from './hooks.js';
 export type * from './interfaces.js';
+// The client this flag selects lives in `./node-http.js`, which is reachable
+// only by subpath: it imports node builtins statically, and this index is also
+// pulled into browser bundles.
+export {
+  isNodeHttpEnabled,
+  NODE_HTTP_DEFAULT,
+  NODE_HTTP_ENV_VAR,
+} from './node-http-flag.js';
 export type * from './queue.js';
 export {
   getQueueTopicPrefix,
@@ -121,6 +130,7 @@ export {
   isSlotBody,
   isSlotEventId,
   MAX_EVENT_SLOT,
+  requireEventSlot,
   slotToEventId,
 } from './slot-identity.js';
 export type { SpecVersion } from './spec-version.js';

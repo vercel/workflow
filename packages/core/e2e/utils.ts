@@ -3,12 +3,13 @@ import fs from 'node:fs';
 import path, { dirname } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
+import { getCurrentTest } from '@vitest/runner';
 import { createWorkflowUrl } from '@workflow/utils';
 import { createWorld as createVercelTestWorld } from '@workflow/world-vercel';
 import { onTestFailed } from 'vitest';
 import { getTrustedSourcesHeaders } from '../../../scripts/trusted-sources-headers.mjs';
 import type { Run } from '../src/runtime';
-import { getWorld, setWorld } from '../src/runtime';
+import { getWorld, start as runtimeStart, setWorld } from '../src/runtime';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const defaultCliTimeoutMs = Number(
@@ -117,6 +118,200 @@ export function isLocalDeployment(): boolean {
 
   const localHosts = ['localhost', '127.0.0.1'];
   return localHosts.some((host) => deploymentUrl.includes(host));
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Cross-language conformance
+// ───────────────────────────────────────────────────────────────────────────
+
+/**
+ * Per-app conformance declaration, read from `e2e-conformance.json` in the
+ * workbench app's directory.
+ *
+ * Most of the e2e suite only talks to the app over the two documented HTTP
+ * routes (`manifest.json` and `flow`) plus the world, so it is language
+ * agnostic by construction. A minority of it is not: some tests assert
+ * JavaScript value semantics, some assert bundler or source-map behavior. An
+ * app written in another language needs a way to say which half applies to it,
+ * and which fixtures it has ported so far.
+ *
+ * This file is that declaration. `workbench/python` is the only app that ships
+ * one; when it is absent every predicate below reports "JavaScript app, all
+ * fixtures present", so the gating is a no-op for the JS workbench apps.
+ */
+export interface ConformanceConfig {
+  /**
+   * Implementation language of the app. Anything other than `javascript`
+   * disables the tests marked JS-only in the suite.
+   */
+  language: string;
+  /**
+   * Names of the `workflows/99_e2e` fixtures this app implements — the
+   * conformance baseline. It is a ratchet in both directions:
+   *
+   * - listed, and present in the deployed manifest → the test runs
+   * - not listed, and absent from the manifest → the test skips
+   * - listed, but absent from the manifest → **hard failure**
+   *
+   * Without that third case a renamed or unregistered fixture would silently
+   * turn into a skip, and a green run would stop meaning anything.
+   */
+  fixtures: string[];
+  /**
+   * Tests to skip even though their fixture is listed, mapping the test's exact
+   * name to why. The second axis exists because `fixtures` answers "did you port
+   * this workflow", and some tests fail on a different question: whether the
+   * app's *runtime* implements a protocol behavior the fixture happens to
+   * exercise. `addTenWorkflow` is the case that forced it — the fixture is
+   * ported and its own test passes, but a separate test drives the same fixture
+   * through a simulated `run_created` outage and expects the runtime to bootstrap
+   * the run from `run_started`.
+   *
+   * Ratcheted the same way as `fixtures`, in the direction that can rot: a name
+   * here that matches no test in the suite is a **hard failure**, so a renamed
+   * test cannot leave a stale exemption behind that silently covers nothing.
+   */
+  unsupported?: Record<string, string>;
+}
+
+export const CONFORMANCE_CONFIG_FILENAME = 'e2e-conformance.json';
+
+let conformanceConfigCache: ConformanceConfig | null | undefined;
+
+/** Loads the app's conformance declaration, or `null` when it has none. */
+export function getConformanceConfig(): ConformanceConfig | null {
+  if (conformanceConfigCache !== undefined) return conformanceConfigCache;
+
+  let configPath: string;
+  try {
+    configPath = path.join(getWorkbenchAppPath(), CONFORMANCE_CONFIG_FILENAME);
+  } catch {
+    // No APP_NAME (e.g. utils' own unit tests). Nothing to declare.
+    conformanceConfigCache = null;
+    return conformanceConfigCache;
+  }
+
+  if (!fs.existsSync(configPath)) {
+    conformanceConfigCache = null;
+    return conformanceConfigCache;
+  }
+
+  const raw = fs.readFileSync(configPath, 'utf8');
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    throw new Error(
+      `${configPath} is not valid JSON: ${(error as Error).message}`
+    );
+  }
+
+  const { language, fixtures, unsupported } = (parsed ??
+    {}) as Partial<ConformanceConfig>;
+  if (typeof language !== 'string' || !Array.isArray(fixtures)) {
+    throw new Error(
+      `${configPath} must be an object with a string "language" and a "fixtures" array`
+    );
+  }
+  if (
+    unsupported !== undefined &&
+    (typeof unsupported !== 'object' ||
+      unsupported === null ||
+      Array.isArray(unsupported) ||
+      Object.values(unsupported).some((v) => typeof v !== 'string'))
+  ) {
+    throw new Error(
+      `${configPath}: "unsupported" must be an object mapping a test name to the reason it is skipped`
+    );
+  }
+
+  conformanceConfigCache = { language, fixtures, unsupported };
+  return conformanceConfigCache;
+}
+
+/**
+ * Whether the app under test is implemented in JavaScript/TypeScript.
+ *
+ * Gates the tests whose subject is the JS implementation rather than the
+ * workflow protocol — value semantics (`this`, `.call()`, class methods,
+ * `WORKFLOW_SERIALIZE`, throwing a non-Error), and the toolchain (source maps,
+ * `import.meta.url`, tsconfig path aliases). Those can never pass against
+ * another language, so they are skipped rather than reported as gaps.
+ */
+export function isJsApp(): boolean {
+  const config = getConformanceConfig();
+  return !config || config.language === 'javascript';
+}
+
+/**
+ * Whether the app declares the given `workflows/99_e2e` fixture.
+ *
+ * Always `true` for an app with no conformance declaration, so the existing
+ * workbench apps are unaffected.
+ */
+export function hasFixture(fixtureName: string): boolean {
+  const config = getConformanceConfig();
+  return !config || config.fixtures.includes(fixtureName);
+}
+
+/**
+ * Skips the running test when the app does not declare `fixtureName`.
+ *
+ * Called from the `e2e()` helper in the suite, so the gate reads the fixture
+ * name the test already names and no per-test annotation is needed. Marks the
+ * test skipped rather than failed: a fixture that is absent from the baseline is
+ * "not implemented yet", which is a gap to close, not a regression. (The
+ * opposite case — declared in the baseline but missing from the deployed
+ * manifest — is the hard failure raised by `getWorkflowMetadata`.)
+ *
+ * No-op for an app with no conformance declaration.
+ */
+export function requireFixture(fixtureName: string): void {
+  if (hasFixture(fixtureName)) return;
+  getCurrentTest()?.context.skip(
+    `"${fixtureName}" is not listed in ${CONFORMANCE_CONFIG_FILENAME}`
+  );
+}
+
+// Names matched against `unsupported` so far, so `assertUnsupportedTestsExist`
+// can tell a live exemption from one whose test was renamed away.
+const seenTestNames = new Set<string>();
+
+/**
+ * Skips the running test when the app declares it unsupported.
+ *
+ * Called from `setupRunTracking`, which every test in the suite already runs
+ * through, so this needs no per-test annotation either. Unlike a missing
+ * fixture, the reason is the app's own words — the config carries it.
+ *
+ * No-op for an app with no conformance declaration.
+ */
+export function requireSupported(testName: string): void {
+  seenTestNames.add(testName);
+  const reason = getConformanceConfig()?.unsupported?.[testName];
+  if (!reason) return;
+  getCurrentTest()?.context.skip(
+    `${CONFORMANCE_CONFIG_FILENAME} declares this unsupported: ${reason}`
+  );
+}
+
+/**
+ * Fails when the app exempts a test name the suite never ran.
+ *
+ * The mirror of `getWorkflowMetadata`'s "declared but not in the manifest"
+ * failure, for the other axis: an exemption is a claim about a specific test,
+ * and a rename must break it loudly rather than leave it silently covering
+ * nothing. Call from `afterAll` — it needs the whole file to have run.
+ */
+export function assertUnsupportedTestsExist(): void {
+  const unsupported = getConformanceConfig()?.unsupported;
+  if (!unsupported) return;
+  const stale = Object.keys(unsupported).filter((n) => !seenTestNames.has(n));
+  if (stale.length === 0) return;
+  throw new Error(
+    `${CONFORMANCE_CONFIG_FILENAME} lists "unsupported" tests that do not exist ` +
+      `in this suite (renamed or removed?): ${stale.map((n) => `"${n}"`).join(', ')}`
+  );
 }
 
 /**
@@ -393,6 +588,12 @@ export async function fetchManifest(
   return cachedManifest;
 }
 
+/**
+ * Source extensions a workflow file may carry, across the languages the suite
+ * can be pointed at.
+ */
+const SOURCE_EXTENSION_RE = /\.(tsx?|py)$/;
+
 export function findWorkflowMetadataInManifest(
   manifest: WorkflowManifest,
   workflowFile: string,
@@ -410,9 +611,16 @@ export function findWorkflowMetadataInManifest(
     }
   }
 
-  const fileWithoutExt = workflowFile.replace(/\.tsx?$/, '');
+  // Strip a non-JS extension too, so an app in another language can key its
+  // manifest by its own source file. The suite always looks fixtures up by the
+  // TypeScript path (`workflows/99_e2e.ts`); matching on the stem is what lets
+  // `workflows/99_e2e.py` answer for it.
+  const fileWithoutExt = workflowFile.replace(SOURCE_EXTENSION_RE, '');
   for (const [manifestFile, functions] of Object.entries(manifest.workflows)) {
-    const manifestFileWithoutExt = manifestFile.replace(/\.tsx?$/, '');
+    const manifestFileWithoutExt = manifestFile.replace(
+      SOURCE_EXTENSION_RE,
+      ''
+    );
     if (
       manifestFileWithoutExt.endsWith(fileWithoutExt) ||
       fileWithoutExt.endsWith(manifestFileWithoutExt)
@@ -474,6 +682,20 @@ export async function getWorkflowMetadata(
       return metadata;
     }
     await sleep(manifestRetryIntervalMs);
+  }
+
+  // An app that declares a conformance baseline gets no fallback. Reaching
+  // here means the fixture is in its `fixtures` list but missing from the
+  // deployed manifest — the third state of the ratchet, and a regression. Fail
+  // now rather than synthesize an ID that no handler will claim, which only
+  // surfaces ~60s later as a test timeout.
+  if (getConformanceConfig()) {
+    throw new Error(
+      `Workflow "${workflowFn}" is declared in ${CONFORMANCE_CONFIG_FILENAME} ` +
+        `but is not in the deployed manifest for "${workflowFile}" after ` +
+        `${manifestRetryTimeoutMs}ms. Either the app stopped registering it, or ` +
+        `it should be removed from the "fixtures" list.`
+    );
   }
 
   // Manifest publication can lag in staged/out-of-monorepo tests. Fall back to
@@ -580,6 +802,270 @@ export function trackRun<T>(
     timestamp: new Date().toISOString(),
   });
   return run;
+}
+
+// ---------------------------------------------------------------------------
+// Infra events
+//
+// Platform-level anomalies the harness observed and absorbed (e.g. a run the
+// queue never picked up). These are backend signal, not test-flake signal:
+// they are recorded to a sidecar (`e2e-infra-*.json`) that the aggregation
+// script surfaces separately from test failures and flaky retries, so a
+// cluster of events in one time window reads as the platform blip it is.
+// ---------------------------------------------------------------------------
+
+interface InfraEventBase {
+  testName: string;
+  waitedMs: number;
+  timestamp: string;
+}
+
+/** A mid-suite run the queue never picked up; abandoned and replaced. */
+interface RunPickupStallEvent extends InfraEventBase {
+  kind: 'run-pickup-stall';
+  /** The run that was abandoned. */
+  runId: string;
+  /** The run started in its place. */
+  replacementRunId: string;
+}
+
+/**
+ * A fresh deployment needed more than one warmup probe before its queue
+ * consumer picked anything up (see `warmDeployment`). One event per suite,
+ * not per stalled probe.
+ */
+interface ColdStartWarmupEvent extends InfraEventBase {
+  kind: 'cold-start-warmup';
+  /** First abandoned probe (what the aggregation renders). */
+  runId: string;
+  /** Every probe that stalled, in order. */
+  stalledProbeRunIds: string[];
+  /** The probe that was finally picked up, or null if the budget ran out. */
+  pickedUpRunId: string | null;
+}
+
+type InfraEvent = RunPickupStallEvent | ColdStartWarmupEvent;
+
+/** `Omit` that distributes over a union instead of collapsing it. */
+type DistributiveOmit<T, K extends keyof T> = T extends unknown
+  ? Omit<T, K>
+  : never;
+
+const infraEvents: InfraEvent[] = [];
+
+/** Test-only visibility into events recorded so far. */
+export function getRecordedInfraEvents(): readonly InfraEvent[] {
+  return infraEvents;
+}
+
+export function recordInfraEvent(
+  event: DistributiveOmit<InfraEvent, 'testName' | 'timestamp'> & {
+    testName?: string;
+  }
+) {
+  infraEvents.push({
+    ...event,
+    testName: event.testName ?? currentTestName,
+    timestamp: new Date().toISOString(),
+  });
+}
+
+/**
+ * Write recorded infra events to `e2e-infra-{app}-{backend}.json`.
+ *
+ * Merges with any existing file contents: the e2e suites run in separate
+ * vitest workers with separate module state, so each worker appends its own
+ * events rather than clobbering the other's. (Two workers writing in the
+ * same instant could still drop events; afterAll hooks make that window
+ * negligible and the sidecar is observability, not correctness.)
+ */
+export function writeInfraSidecar() {
+  if (infraEvents.length === 0) return;
+
+  const appName = process.env.APP_NAME || 'unknown';
+  const isVercel = !!process.env.WORKFLOW_VERCEL_ENV;
+  const backend = isVercel ? 'vercel' : 'local';
+  const filePath = path.resolve(
+    process.cwd(),
+    `e2e-infra-${appName}-${backend}.json`
+  );
+
+  let existing: InfraEvent[] = [];
+  try {
+    existing = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+  } catch {}
+
+  fs.writeFileSync(
+    filePath,
+    JSON.stringify([...existing, ...infraEvents], null, 2)
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Run pickup guard
+// ---------------------------------------------------------------------------
+
+/**
+ * How long a freshly started run may sit in `pending` before the harness
+ * treats it as never-picked-up. Healthy pickup is sub-second (observed
+ * ~160ms on Vercel preview deployments); the budget only has to sit safely
+ * above tail latency, and well below the 30–60s test timeouts so the
+ * replacement run still has budget to finish in.
+ */
+const PICKUP_BUDGET_MS = Number(
+  process.env.WORKFLOW_E2E_PICKUP_BUDGET_MS ?? '15000'
+);
+
+/**
+ * Poll until the run leaves `pending` (picked up — any other status counts,
+ * including terminal ones). Returns false if it is still `pending` after
+ * `budgetMs`. The common path costs a single status read.
+ */
+export async function waitForRunPickup(
+  run: Run<unknown>,
+  budgetMs: number = PICKUP_BUDGET_MS
+): Promise<boolean> {
+  const deadline = Date.now() + budgetMs;
+  let interval = 500;
+
+  for (;;) {
+    try {
+      if ((await run.status) !== 'pending') return true;
+    } catch {
+      // Transient status-read failure: keep polling until the budget ends.
+    }
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) return false;
+    await sleep(Math.min(interval, remaining));
+    interval = Math.min(interval * 2, 5_000);
+  }
+}
+
+/**
+ * `start()` + `trackRun()` with a pickup watchdog.
+ *
+ * A run that is still `pending` after {@link PICKUP_BUDGET_MS} was never
+ * invoked: queue delivery to the deployment stalled (observed as clusters of
+ * runs stuck at `run_created` across apps during backend blips). No workflow
+ * code has executed — no hooks registered, no steps run — so abandoning the
+ * run and starting a replacement is side-effect-free, unlike retrying a
+ * whole test. One replacement, recorded loudly as an infra event; if the
+ * replacement stalls too, the test fails on its own timeouts and the
+ * CI-level retry remains the backstop.
+ */
+export async function startTracked<T>(
+  ...args: Parameters<typeof runtimeStart<T>>
+): Promise<Run<T>> {
+  const run = await runtimeStart<T>(...args);
+  trackRun(run);
+  if (await waitForRunPickup(run)) {
+    return run;
+  }
+
+  const replacement = await runtimeStart<T>(...args);
+  trackRun(replacement);
+  recordInfraEvent({
+    kind: 'run-pickup-stall',
+    runId: run.runId,
+    replacementRunId: replacement.runId,
+    waitedMs: PICKUP_BUDGET_MS,
+  });
+  console.warn(
+    `[e2e] run ${run.runId} was never picked up (pending > ${PICKUP_BUDGET_MS}ms); ` +
+      `replaced with ${replacement.runId} (infra event, not a test failure)`
+  );
+  // Best-effort: keep the zombie from executing if the queue delivers late.
+  void run
+    .cancel({ cancelReason: 'e2e: stuck pending, replaced by watchdog' })
+    .catch(() => {});
+  return replacement;
+}
+
+/**
+ * Total budget for warming a fresh deployment before the suite runs.
+ */
+const WARMUP_BUDGET_MS = Number(
+  process.env.WORKFLOW_E2E_WARMUP_BUDGET_MS ?? '120000'
+);
+
+/**
+ * Warm a cold target before the first test starts a run.
+ *
+ * A target answers HTTP well before its first run is picked up promptly,
+ * for two reasons with one shape: a fresh Vercel deployment's queue
+ * consumer takes a while to start delivering, and a local dev server pays
+ * its first flow-route compile on the first delivery (observed as the
+ * suite's first test recording a pickup stall on local-dev lanes, `waitedMs`
+ * pegged at the full pickup budget). Either way the stalls the watchdog
+ * absorbs cluster on the suite's first tests, which drowns the infra
+ * telemetry in cold-start noise and leaves those tests one stalled
+ * replacement away from failing.
+ *
+ * Probes follow the watchdog's shape: start a throwaway run, and if it is
+ * still `pending` after `WORKFLOW_E2E_PICKUP_BUDGET_MS`, abandon it
+ * (best-effort cancel) and probe again, until a probe is picked up or
+ * `WORKFLOW_E2E_WARMUP_BUDGET_MS` is spent. A picked-up probe is left to
+ * finish on its own — pickup is what proves the pipeline is awake. A warmup
+ * that needed abandoned probes is recorded as a single `cold-start-warmup`
+ * infra event instead of per-test `run-pickup-stall` noise.
+ *
+ * If the budget runs out the suite proceeds anyway: the per-test watchdog
+ * still guards every start, and test failures carry the run diagnostics a
+ * thrown warmup would not.
+ */
+export async function warmDeployment(
+  startProbe: () => Promise<Run<unknown>>,
+  {
+    pickupBudgetMs = PICKUP_BUDGET_MS,
+    totalBudgetMs = WARMUP_BUDGET_MS,
+  }: { pickupBudgetMs?: number; totalBudgetMs?: number } = {}
+): Promise<void> {
+  const startedAt = Date.now();
+  const deadline = startedAt + totalBudgetMs;
+  const stalledProbeRunIds: string[] = [];
+
+  const record = (pickedUpRunId: string | null) => {
+    if (stalledProbeRunIds.length === 0) return;
+    recordInfraEvent({
+      kind: 'cold-start-warmup',
+      testName: 'suite warmup',
+      runId: stalledProbeRunIds[0],
+      stalledProbeRunIds: [...stalledProbeRunIds],
+      pickedUpRunId,
+      waitedMs: Date.now() - startedAt,
+    });
+  };
+
+  for (;;) {
+    const probe = await startProbe();
+    const remaining = deadline - Date.now();
+    if (await waitForRunPickup(probe, Math.min(pickupBudgetMs, remaining))) {
+      record(probe.runId);
+      if (stalledProbeRunIds.length > 0) {
+        console.warn(
+          `[e2e] deployment warmup: ${stalledProbeRunIds.length} probe(s) ` +
+            `stalled before ${probe.runId} was picked up ` +
+            `(${Date.now() - startedAt}ms; infra event, not a test failure)`
+        );
+      }
+      return;
+    }
+
+    stalledProbeRunIds.push(probe.runId);
+    void probe
+      .cancel({ cancelReason: 'e2e: warmup probe stuck pending, abandoned' })
+      .catch(() => {});
+
+    if (deadline - Date.now() <= 0) {
+      record(null);
+      console.warn(
+        `[e2e] deployment warmup: no probe picked up within ` +
+          `${totalBudgetMs}ms (${stalledProbeRunIds.length} abandoned); ` +
+          `proceeding — the per-test pickup watchdog still guards`
+      );
+      return;
+    }
+  }
 }
 
 /**
@@ -739,6 +1225,11 @@ function emitGitHubAnnotation(
 export function setupRunTracking(testName: string) {
   currentTestName = testName;
   trackedRuns = [];
+
+  // Second conformance gate. Sited here because every test in the suite calls
+  // setupRunTracking from `beforeEach`, which makes this the one place that
+  // sees a test's name without the test having to declare anything.
+  requireSupported(testName);
 
   // Heartbeat: announce the test the moment it starts, written straight to
   // stdout to bypass vitest's per-file console buffering. Without this, a

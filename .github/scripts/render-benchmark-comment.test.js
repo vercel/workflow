@@ -23,6 +23,17 @@ function sampleResult(overrides = {}) {
       sequentialIterations: 1,
       sequentialStepCount: 1020,
       warmupIterations: 2,
+      replayCadences: [
+        {
+          id: 'eve-test-cadence',
+          model: 'test-model',
+          events: 823,
+          spanMs: 6196,
+          totalBytes: 2000000,
+          semanticSha256:
+            '609bc99fb5eb810086dcaecc9128f5fecd7c75d8bc3f2b39a6622f89d5a5a47a',
+        },
+      ],
     },
     scenarios: [
       { name: 'stream', description: 'one streaming step in turbo mode' },
@@ -120,6 +131,11 @@ test('renders a completed run with a table and embedded history', async () => {
     body,
     /<sub>Scenarios — \*\*stream\*\*: one streaming step in turbo mode/
   );
+  // Replay-cadence identity line: full semantic hash on its own legend line
+  assert.match(
+    body,
+    /<sub>Replay cadences \(semantic sha256\) — \*\*eve-test-cadence\*\* `609bc99fb5eb810086dcaecc9128f5fecd7c75d8bc3f2b39a6622f89d5a5a47a`<\/sub>/
+  );
   // Target marks: TTFS p75 398 > 200 → 🔴; SL row is within target on every
   // percentile, so it stays unmarked (no 🟢 anywhere); WO has no targets.
   assert.match(body, /398 🔴/);
@@ -195,6 +211,101 @@ test('renders both SO payload-shape rows under one metric', async () => {
   // Both rows share the one SO metric definition and targets entry.
   assert.match(body, /\*\*SO\*\*: stream overhead/);
   assert.match(body, /Targets \(p75\/p90\/p99, ms\) — SO 250\/500\/1000/);
+});
+
+test('renders the fan-out scenario as one Fan-out TTFS row and one Fan-out TTLS row', async () => {
+  const { renderComment } = await loadModule();
+  const fanOutRow = (metric, overrides) => ({
+    metric,
+    scenario: 'Promise.all(100 steps)',
+    unit: 'ms',
+    best: 300,
+    avg: 420,
+    p75: 450,
+    p90: 520,
+    p99: 700,
+    samples: 10,
+    ...overrides,
+  });
+  const result = sampleResult({
+    scenarios: [
+      {
+        name: 'Promise.all(100 steps)',
+        description: '100 trivial no-op steps started together',
+      },
+    ],
+    metrics: [
+      // Deliberately out of display order: the table sorts by METRIC_ORDER.
+      fanOutRow('fanout-ttls', { best: 900, p75: 1400, p90: 1800, p99: 2600 }),
+      fanOutRow('fanout-ttfs'),
+      sampleResult().metrics[0],
+    ],
+  });
+  const body = renderComment({
+    status: 'completed',
+    results: [result],
+    history: [],
+    commit: 'abcdef1234567890',
+  });
+
+  assert.match(
+    body,
+    /\| \*\*Fan-out TTFS\*\* \| Promise\.all\(100 steps\) \| 300 \|/
+  );
+  assert.match(
+    body,
+    /\| \*\*Fan-out TTLS\*\* \| Promise\.all\(100 steps\) \| 900 \|/
+  );
+  // Neither row falls back to the raw metric id.
+  assert.doesNotMatch(body, /\| fanout-ttfs \|/);
+  assert.doesNotMatch(body, /\| fanout-ttls \|/);
+  // Display order: single-step TTFS, then the fan-out pair with first before last.
+  const order = ['**TTFS**', '**Fan-out TTFS**', '**Fan-out TTLS**'].map(
+    (name) => body.indexOf(name)
+  );
+  assert.ok(
+    order.every((index, i) => index > -1 && (i === 0 || index > order[i - 1])),
+    `unexpected row order: ${JSON.stringify(order)}`
+  );
+  // Both metrics are defined in the collapsed footer.
+  assert.match(body, /\*\*Fan-out TTFS\*\*: fan-out time to first step/);
+  assert.match(body, /\*\*Fan-out TTLS\*\*: fan-out time to last step/);
+  // No targets on the fan-out rows, so they contribute nothing to the targets
+  // legend and carry no 🔴 marks.
+  assert.doesNotMatch(body, /Targets \(p75\/p90\/p99, ms\) —[^<]*Fan-out/);
+  assert.doesNotMatch(body, /\| \*\*Fan-out TT[FL]S\*\* \|[^\n]*🔴/);
+});
+
+test('diffs fan-out rows against a baseline keyed on their own metric ids', async () => {
+  const { renderComment } = await loadModule();
+  const fanOutRow = (metric, best) => ({
+    metric,
+    scenario: 'Promise.all(100 steps)',
+    unit: 'ms',
+    best,
+    avg: best,
+    p75: best,
+    p90: best,
+    p99: best,
+    samples: 10,
+  });
+  const metricsFor = (ttfsBest, ttlsBest) => [
+    fanOutRow('fanout-ttfs', ttfsBest),
+    fanOutRow('fanout-ttls', ttlsBest),
+  ];
+  const body = renderComment({
+    status: 'completed',
+    // First branch lands as fast as on main; the tail is 50% slower.
+    results: [sampleResult({ metrics: metricsFor(300, 1500) })],
+    baseline: [sampleResult({ metrics: metricsFor(300, 1000) })],
+    history: [],
+    commit: 'abcdef1234567890',
+  });
+
+  // TTFS unchanged, TTLS regressed — the two rows carry independent deltas,
+  // which is the point of splitting them.
+  assert.match(body, /\| \*\*Fan-out TTFS\*\* \|[^\n]*300 \(±0%\)/);
+  assert.match(body, /\| \*\*Fan-out TTLS\*\* \|[^\n]*1500 \(\+50%\) 🔻/);
 });
 
 test('renders best/p75/p90/p99 deltas with 🔻/💚 threshold marks and embeds them', async () => {
@@ -484,6 +595,204 @@ function sequentialResult({ inline, queueHop }) {
     ],
   });
 }
+
+// Fixed log-bin edges matching RTT_HIST_EDGES_MS in the bench helper module
+// (workbench/example/workflows/97_bench_rtt.ts).
+const CRTT_EDGES = [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000];
+
+/** Histogram over CRTT_EDGES with counts placed by (value, count) pairs. */
+function crttHist(entries) {
+  const counts = new Array(CRTT_EDGES.length + 1).fill(0);
+  for (const [value, count] of entries) {
+    let bin = 0;
+    while (bin < CRTT_EDGES.length && value >= CRTT_EDGES[bin]) bin++;
+    counts[bin] += count;
+  }
+  return counts;
+}
+
+function crttResult({ avg = 120, hist }) {
+  const streamRow = (scenario, group, extra = {}) => ({
+    metric: 'stream',
+    scenario,
+    unit: 'ms',
+    best: 59,
+    avg,
+    p50: 128,
+    p75: 188,
+    p90: 438,
+    p99: 1229,
+    samples: hist.reduce((a, b) => a + b, 0),
+    raw: [],
+    hist: { edgesMs: CRTT_EDGES, counts: hist },
+    group,
+    bucket: 'all',
+    stream: {
+      iterations: 10,
+      wrCps: 100,
+      wrKiBps: 6.1,
+      rdCps: 99.4,
+      rdKiBps: 6,
+      firstMs: 96,
+      cdvMaxMs: 141,
+      runs: [
+        { wrCps: 100, rdCps: 99.4, firstMs: 96, cdvMaxMs: 141, slipMaxMs: 4 },
+      ],
+    },
+    ...extra,
+  });
+  return sampleResult({
+    scenarios: [
+      { name: 'chunk RTT (llm)', description: 'self-timestamping chunks' },
+    ],
+    metrics: [
+      streamRow('chunk RTT (llm)', 'llm', {
+        progressAvgMs: [110, 112, 115, 113, 118, 120, 119, 125, 130, 135],
+        cdvAvgMs: [2, 2, 3, 5, 9, 15, 24, 40, 66, 108],
+      }),
+      // Artifact-only detail rows: per-index CRTT split and slip tail.
+      {
+        metric: 'crtt',
+        scenario: 'chunk RTT llm (seq 0)',
+        unit: 'ms',
+        best: 97,
+        avg: 130,
+        p50: 112,
+        p75: 126,
+        p90: 129,
+        p99: 157,
+        samples: 10,
+        raw: [],
+        group: 'llm',
+        bucket: 'seq 0',
+        detail: true,
+      },
+      {
+        metric: 'slip',
+        scenario: 'write slip (llm)',
+        unit: 'ms',
+        best: 2,
+        avg: 3,
+        p50: 3,
+        p75: 4,
+        p90: 5,
+        p99: 6,
+        samples: 10,
+        raw: [],
+        group: 'llm',
+        detail: true,
+      },
+      streamRow('replay eve-test (2x)', 'replay', {
+        stream: {
+          iterations: 5,
+          wrCps: 297,
+          wrKiBps: 742,
+          rdCps: 288,
+          rdKiBps: 719,
+          firstMs: 118,
+          cdvMaxMs: 210,
+          runs: [
+            {
+              wrCps: 297,
+              rdCps: 288,
+              firstMs: 118,
+              cdvMaxMs: 210,
+              slipMaxMs: 9,
+            },
+          ],
+        },
+      }),
+    ],
+  });
+}
+
+test('renders stream scenarios in their own table without rate columns', async () => {
+  const { renderComment, extractHistory } = await loadModule();
+  const hist = crttHist([
+    [59, 1400],
+    [128, 1500],
+    [438, 100],
+  ]);
+  const baseline = crttResult({ avg: 150, hist });
+  // Baseline medians differ so deltas render: rd rate was lower on main.
+  baseline.metrics[0].stream.rdCps = 90;
+  const body = renderComment({
+    status: 'completed',
+    results: [crttResult({ avg: 120, hist })],
+    baseline: [baseline],
+    history: [],
+    commit: 'abcdef1234567890',
+  });
+
+  // Stream rows are OUT of the metric table and IN the Streams table.
+  assert.doesNotMatch(body, /\| \*\*stream\*\* \|/);
+  assert.match(
+    body,
+    /\| Scenario \| CRTT 1st \| p75 \| p90 \| p99 \| CDV max \| iters \|/
+  );
+  // Latency cells retain their vs-main deltas, and the stream table has no
+  // red/green marks.
+  assert.match(body, /\| chunk RTT \(llm\) \| 96 \(\u00b10%\) \|/);
+  assert.match(body, /\| replay eve-test \(2x\) \| 118 \(\u00b10%\) \|/);
+  assert.match(body, /\| 141 \(\u00b10%\) \| 10 \|/);
+  const streamsSection = body.slice(
+    body.indexOf('**Streams**'),
+    body.indexOf('</details>')
+  );
+  assert.doesNotMatch(
+    streamsSection,
+    /\ud83d\udd34|\ud83d\udfe2|\ud83d\udd3b|\ud83d\udc9a/
+  );
+  // Detail rows render nowhere.
+  assert.doesNotMatch(body, /seq 0 \|/);
+  assert.doesNotMatch(body, /write slip/);
+  // Drill-down still renders from the stream rows.
+  assert.match(body, /\ud83d\udcc8 CRTT drill-down/);
+  assert.match(
+    body,
+    /llm +\u00b7+[\u2581\u2582\u2583\u2584\u2585\u2586\u2587\u2588]*\u2588/
+  );
+  assert.match(body, /Delivery jitter over stream progress/);
+  // CRTT + CDV definitions stay in the legend (stream table columns), and
+  // the internal 'stream' id never leaks into it.
+  assert.match(body, /\*\*CRTT\*\*: chunk round-trip time/);
+  assert.match(body, /\*\*CDV\*\*: chunk delay variation/);
+  assert.match(body, /\*\*Streams\*\*: first-chunk RTT/);
+  // History block: per-run arrays and sparkline payloads stripped, medians
+  // and baseline annotations kept.
+  const history = extractHistory(body);
+  const kept = history[0].results[0].metrics[0];
+  assert.strictEqual(kept.hist, undefined);
+  assert.strictEqual(kept.progressAvgMs, undefined);
+  assert.strictEqual(kept.stream.runs, undefined);
+  assert.strictEqual(kept.stream.wrCps, 100);
+  assert.strictEqual(kept.baselineStream.rdCps, 90);
+  // Re-render from history keeps the Streams table, drops the drill-down.
+  const rerendered = renderComment({
+    status: 'running',
+    results: [],
+    history,
+    commit: 'ffffff1234567890',
+  });
+  assert.match(rerendered, /\| chunk RTT \(llm\) \| 96/);
+  assert.doesNotMatch(rerendered, /CRTT drill-down/);
+});
+
+test('renders the stream table without deltas when main has no baseline', async () => {
+  const { renderComment } = await loadModule();
+  const body = renderComment({
+    status: 'completed',
+    results: [crttResult({ hist: crttHist([[128, 3000]]) })],
+    history: [],
+    commit: 'abcdef1234567890',
+  });
+  assert.match(
+    body,
+    /\| chunk RTT \(llm\) \| 96 \| 188 \| 438 \| 1229 \| 141 \| 10 \|/
+  );
+  assert.doesNotMatch(body, /%\)/);
+  assert.match(body, /No `main` baseline yet/);
+});
 
 test('renders inline and queue-hop STSO histogram diffs against main', async () => {
   const { renderComment } = await loadModule();

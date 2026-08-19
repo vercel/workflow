@@ -8,6 +8,7 @@ import {
 import {
   type Event,
   SPEC_VERSION_CURRENT,
+  slotToEventId,
   type WorkflowRun,
 } from '@workflow/world';
 import { ulid } from 'ulid';
@@ -104,7 +105,7 @@ async function runWorkflowHandlerWithEvents(
       }
 
       const event = {
-        eventId: `event-${createdEvents.length}`,
+        eventId: slotToEventId(createdEvents.length),
         runId: workflowRun.runId,
         createdAt: new Date(),
         ...data,
@@ -392,7 +393,7 @@ describe('workflowEntrypoint replay guards', () => {
       createdEvents.push(data);
       return {
         event: {
-          eventId: `event-${createdEvents.length}`,
+          eventId: slotToEventId(createdEvents.length),
           runId: 'wrun_schema_validation',
           createdAt: new Date(),
           ...data,
@@ -491,7 +492,7 @@ describe('workflowEntrypoint replay guards', () => {
         ? { run: workflowRun }
         : {
             event: {
-              eventId: `event-${createdEvents.length}`,
+              eventId: slotToEventId(createdEvents.length),
               runId: workflowRun.runId,
               createdAt: new Date(),
               ...data,
@@ -589,7 +590,7 @@ describe('workflowEntrypoint replay guards', () => {
         ? { run: workflowRun }
         : {
             event: {
-              eventId: `event-${createdEvents.length}`,
+              eventId: slotToEventId(createdEvents.length),
               runId: workflowRun.runId,
               createdAt: new Date(),
               ...data,
@@ -669,7 +670,7 @@ describe('workflowEntrypoint replay guards', () => {
       createdEvents.push(data);
       return {
         event: {
-          eventId: `event-${createdEvents.length}`,
+          eventId: slotToEventId(createdEvents.length),
           runId: 'wrun_parse',
           createdAt: new Date(),
           ...data,
@@ -754,7 +755,7 @@ describe('workflowEntrypoint replay guards', () => {
     };
     const events: Event[] = [
       {
-        eventId: 'event-foreign-failed',
+        eventId: slotToEventId(1),
         runId: 'wrun_other',
         eventType: 'run_failed',
         eventData: {
@@ -797,7 +798,7 @@ describe('workflowEntrypoint replay guards', () => {
 
     const events: Event[] = [
       {
-        eventId: 'event-0',
+        eventId: slotToEventId(1),
         runId: workflowRun.runId,
         eventType: 'wait_created',
         correlationId: 'wait_01HK153X00VFKAJV9XFN9JXXRS',
@@ -807,7 +808,7 @@ describe('workflowEntrypoint replay guards', () => {
         createdAt: new Date('2024-01-01T00:00:00.000Z'),
       },
       {
-        eventId: 'event-1',
+        eventId: slotToEventId(2),
         runId: workflowRun.runId,
         eventType: 'wait_completed',
         correlationId: 'wait_01HK153X00VFKAJV9XFN9JXXRS',
@@ -840,7 +841,7 @@ describe('workflowEntrypoint replay guards', () => {
     expect(queueCalls.map((c) => c.message)).toContainEqual(
       expect.objectContaining({
         replayDivergence: {
-          eventId: 'event-0',
+          eventId: slotToEventId(1),
           count: 1,
         },
       })
@@ -957,7 +958,7 @@ describe('workflowEntrypoint replay guards', () => {
     // matches no hook' below).
     const events: Event[] = [
       {
-        eventId: 'event-0',
+        eventId: slotToEventId(1),
         runId: workflowRun.runId,
         eventType: 'hook_created',
         correlationId: 'hook_01HK153X00VFKAJV9XFN9JXXRS',
@@ -988,7 +989,7 @@ describe('workflowEntrypoint replay guards', () => {
     );
     expect(queueCalls.map((c) => c.message)).toContainEqual(
       expect.objectContaining({
-        replayDivergence: { eventId: 'event-0', count: 1 },
+        replayDivergence: { eventId: slotToEventId(1), count: 1 },
       })
     );
   });
@@ -1017,7 +1018,7 @@ describe('workflowEntrypoint replay guards', () => {
     // the run.
     const events: Event[] = [
       {
-        eventId: 'event-0',
+        eventId: slotToEventId(1),
         runId: workflowRun.runId,
         eventType: 'hook_received',
         correlationId: 'hook_01HK153X00VFKAJV9XFN9JXXRS',
@@ -1165,7 +1166,7 @@ describe('workflowEntrypoint replay guards', () => {
       createdEvents.push(data);
       return {
         event: {
-          eventId: `event-${createdEvents.length}`,
+          eventId: slotToEventId(createdEvents.length),
           runId: workflowRun.runId,
           createdAt: new Date(),
           ...data,
@@ -1275,7 +1276,7 @@ describe('workflowEntrypoint replay guards', () => {
       createdEvents.push(data);
       return {
         event: {
-          eventId: `event-${createdEvents.length}`,
+          eventId: slotToEventId(createdEvents.length),
           runId: workflowRun.runId,
           createdAt: new Date(),
           ...data,
@@ -1440,7 +1441,7 @@ describe('workflowEntrypoint step-dispatch ack ordering', () => {
     const recordEvent = (data: any): Event => {
       eventSeq += 1;
       const created = {
-        eventId: `event-${eventSeq}`,
+        eventId: slotToEventId(eventSeq),
         runId: workflowRun.runId,
         createdAt: new Date(),
         ...data,
@@ -1449,50 +1450,58 @@ describe('workflowEntrypoint step-dispatch ack ordering', () => {
       return created;
     };
 
-    const eventsCreate = vi.fn(async (_runId: string, data: any) => {
-      if (data.eventType === 'run_started') {
-        return { run: workflowRun, events: [] as Event[] };
-      }
-      if (data.eventType === 'step_created') {
-        // Eager step_created for the QUEUED step (the one not run inline).
-        // It must be durably created before its dispatch send — the ordering
-        // assertion below checks step_created precedes queue_dispatch_start.
-        order.push('step_created');
+    const createdEventParams: any[] = [];
+    const stepStartedParams: any[] = [];
+    const eventsCreate = vi.fn(
+      async (_runId: string, data: any, params?: any) => {
+        createdEventParams.push(params);
+        if (data.eventType === 'step_started') {
+          stepStartedParams.push(params);
+        }
+        if (data.eventType === 'run_started') {
+          return { run: workflowRun, events: [] as Event[] };
+        }
+        if (data.eventType === 'step_created') {
+          // Eager step_created for the QUEUED step (the one not run inline).
+          // It must be durably created before its dispatch send — the ordering
+          // assertion below checks step_created precedes queue_dispatch_start.
+          order.push('step_created');
+          return { event: recordEvent(data) };
+        }
+        if (data.eventType === 'step_started') {
+          // The inline step's lazy step_started creates the step on the fly:
+          // record a synthetic step_created so replay observes it, then the
+          // step_started, and return a running step so executeStep can run the
+          // (registered, no-op) body to completion.
+          const lazy = data.eventData as { stepName?: string; input?: unknown };
+          if (lazy?.input !== undefined) {
+            recordEvent({
+              eventType: 'step_created',
+              specVersion: SPEC_VERSION_CURRENT,
+              correlationId: data.correlationId,
+              eventData: { stepName: lazy.stepName, input: lazy.input },
+            });
+          }
+          const created = recordEvent(data);
+          return {
+            event: created,
+            step: {
+              runId: workflowRun.runId,
+              stepId: data.correlationId,
+              stepName: lazy?.stepName,
+              status: 'running' as const,
+              attempt: 1,
+              input: lazy?.input,
+              startedAt: new Date(),
+              createdAt: new Date(),
+              updatedAt: new Date(),
+            },
+            ...(lazy?.input !== undefined ? { stepCreated: true } : {}),
+          };
+        }
         return { event: recordEvent(data) };
       }
-      if (data.eventType === 'step_started') {
-        // The inline step's lazy step_started creates the step on the fly:
-        // record a synthetic step_created so replay observes it, then the
-        // step_started, and return a running step so executeStep can run the
-        // (registered, no-op) body to completion.
-        const lazy = data.eventData as { stepName?: string; input?: unknown };
-        if (lazy?.input !== undefined) {
-          recordEvent({
-            eventType: 'step_created',
-            specVersion: SPEC_VERSION_CURRENT,
-            correlationId: data.correlationId,
-            eventData: { stepName: lazy.stepName, input: lazy.input },
-          });
-        }
-        const created = recordEvent(data);
-        return {
-          event: created,
-          step: {
-            runId: workflowRun.runId,
-            stepId: data.correlationId,
-            stepName: lazy?.stepName,
-            status: 'running' as const,
-            attempt: 1,
-            input: lazy?.input,
-            startedAt: new Date(),
-            createdAt: new Date(),
-            updatedAt: new Date(),
-          },
-          ...(lazy?.input !== undefined ? { stepCreated: true } : {}),
-        };
-      }
-      return { event: recordEvent(data) };
-    });
+    );
 
     const queue = vi.fn(async (queueName: string, message: any) => {
       // Only the step-dispatch send carries a stepId; ignore other sends.
@@ -1559,7 +1568,13 @@ describe('workflowEntrypoint step-dispatch ack ordering', () => {
       }
     );
 
-    return { handlerPromise, order, queue };
+    return {
+      handlerPromise,
+      order,
+      queue,
+      createdEventParams,
+      stepStartedParams,
+    };
   }
 
   it('completes the step-dispatch send before the orchestrator message is acked', async () => {
@@ -1661,7 +1676,7 @@ describe('workflowEntrypoint step-dispatch ack ordering', () => {
     // continuation is queued (it carries no stepId).
     process.env.WORKFLOW_MAX_INLINE_STEPS = '3';
 
-    const { handlerPromise, order } = await driveHandler({
+    const { handlerPromise, order, stepStartedParams } = await driveHandler({
       runId: 'wrun_multi_inline',
       queueImpl: async () => ({ messageId: null }),
     });
@@ -1672,6 +1687,10 @@ describe('workflowEntrypoint step-dispatch ack ordering', () => {
     // No eager step_created and no step-dispatch send: both steps went inline.
     expect(order).not.toContain('step_created');
     expect(order).not.toContain('queue_dispatch_start');
+    expect(stepStartedParams).toHaveLength(2);
+    for (const params of stepStartedParams) {
+      expect(params).toMatchObject({ requestId: 'req_test' });
+    }
   });
 
   it('does not re-queue a throttled inline step as an input-less background step', async () => {
@@ -1698,7 +1717,7 @@ describe('workflowEntrypoint step-dispatch ack ordering', () => {
     const rec = (data: any): Event => {
       seq += 1;
       const e = {
-        eventId: `e-${seq}`,
+        eventId: slotToEventId(seq),
         runId: workflowRun.runId,
         createdAt: new Date(),
         ...data,
@@ -1850,12 +1869,13 @@ describe('workflowEntrypoint resilient step consumption (stepInput re-ensure)', 
       deploymentId: 'test-deployment',
     };
 
-    let eventSeq = 0;
+    // Slot 1 is taken by the seeded event below, so recorded events start at 2.
+    let eventSeq = 1;
     const durableEvents: Event[] = [
       // An unrelated pending step: keeps the run un-replayable so the handler
       // returns right after the background step completes.
       {
-        eventId: 'event-other',
+        eventId: slotToEventId(1),
         runId: opts.runId,
         createdAt: new Date(),
         eventType: 'step_created',
@@ -1867,7 +1887,7 @@ describe('workflowEntrypoint resilient step consumption (stepInput re-ensure)', 
     const recordEvent = (data: any): Event => {
       eventSeq += 1;
       const created = {
-        eventId: `event-${eventSeq}`,
+        eventId: slotToEventId(eventSeq),
         runId: opts.runId,
         createdAt: new Date(),
         ...data,
@@ -1998,6 +2018,13 @@ describe('workflowEntrypoint resilient step consumption (stepInput re-ensure)', 
     );
     expect(createdIdx).toBeGreaterThanOrEqual(0);
     expect(createdIdx).toBeLessThan(startedIdx);
+    // The queued step start carries the queue invocation's request provenance.
+    const startIdx = createdEvents.findIndex(
+      (e) => e.eventType === 'step_started'
+    );
+    expect(createdEventParams[startIdx]).toMatchObject({
+      requestId: 'req_test',
+    });
     // The step body ran and its terminal event was written.
     expect(stepBodySpy).toHaveBeenCalledWith(2, 3);
     expect(createdEvents).toContainEqual(
@@ -2088,6 +2115,15 @@ describe('workflowEntrypoint resilient step consumption (stepInput re-ensure)', 
     expect(createdEventParams[ensureIdx]).toMatchObject({
       viaStepDispatch: true,
     });
+    // Both the failed bare start and the recovery start retain the current
+    // invocation's provenance.
+    for (const [index, event] of createdEvents.entries()) {
+      if (event.eventType === 'step_started') {
+        expect(createdEventParams[index]).toMatchObject({
+          requestId: 'req_test',
+        });
+      }
+    }
   });
 
   it('recovers in-band on attempt 1 with the local-world error shape (no status)', async () => {
@@ -2202,7 +2238,7 @@ describe('workflowEntrypoint turbo mode', () => {
     const rec = (data: any): Event => {
       seq += 1;
       const e = {
-        eventId: `e-${seq}`,
+        eventId: slotToEventId(seq),
         runId,
         createdAt: new Date(),
         ...data,
@@ -2450,20 +2486,13 @@ describe('workflowEntrypoint turbo mode', () => {
 });
 
 describe('workflowEntrypoint inline-delta gate with open hooks', () => {
-  const ORIG_GUARD = process.env.WORKFLOW_PRECONDITION_GUARD;
   const ORIG_OPT = process.env.WORKFLOW_OPTIMISTIC_INLINE_START;
 
   beforeEach(() => {
-    delete process.env.WORKFLOW_PRECONDITION_GUARD;
     delete process.env.WORKFLOW_OPTIMISTIC_INLINE_START;
     deltaGateBodyRuns = [];
   });
   afterEach(() => {
-    if (ORIG_GUARD === undefined) {
-      delete process.env.WORKFLOW_PRECONDITION_GUARD;
-    } else {
-      process.env.WORKFLOW_PRECONDITION_GUARD = ORIG_GUARD;
-    }
     if (ORIG_OPT === undefined) {
       delete process.env.WORKFLOW_OPTIMISTIC_INLINE_START;
     } else {
@@ -2509,7 +2538,7 @@ describe('workflowEntrypoint inline-delta gate with open hooks', () => {
    * off and the initial events.list — which supplies the cursor the delta
    * diffs against — runs). Returns the events.create mock so tests can
    * inspect the step-terminal write's params for `sinceCursor` and the
-   * step_started claims' params for `stateUpdatedAt`.
+   * step_started claims' params for `eventCount`.
    */
   async function driveDeltaGate(
     runId: string,
@@ -2518,7 +2547,7 @@ describe('workflowEntrypoint inline-delta gate with open hooks', () => {
        * World capabilities to declare. Absent by default — capability-gated
        * fast paths must fail closed without them.
        */
-      capabilities?: { preconditionGuard?: boolean; maxConcurrency?: boolean };
+      capabilities?: { maxConcurrency?: boolean };
       /** Workflow source to run (defaults to hookAndStepWorkflow). */
       source?: string;
       /**
@@ -2542,10 +2571,11 @@ describe('workflowEntrypoint inline-delta gate with open hooks', () => {
 
     const durableEvents: Event[] = [];
     const recordEvent = (data: any): Event => {
-      // ULID-shaped event IDs so the runtime's stateUpdatedAt snapshot
-      // (derived from the latest event id's ULID timestamp) is computable.
+      // Slot-numbered event ids, so the runtime's snapshot (the highest slot
+      // its loaded log occupies) is computable. This is the only kind of run
+      // that reaches a fencing backend.
       const created = {
-        eventId: `evnt_${ulid()}`,
+        eventId: slotToEventId(durableEvents.length + 1),
         runId,
         createdAt: new Date(),
         ...data,
@@ -2658,16 +2688,14 @@ describe('workflowEntrypoint inline-delta gate with open hooks', () => {
     return call?.[2] as { sinceCursor?: string } | undefined;
   }
 
-  it('requests the inline delta despite the open hook when the precondition guard is enabled and the World enforces it', async () => {
-    process.env.WORKFLOW_PRECONDITION_GUARD = '1';
+  it('requests the inline delta despite the open hook', async () => {
     const { res, eventsCreate } = await driveDeltaGate(
-      'wrun_delta_gate_guard_on',
-      { capabilities: { preconditionGuard: true } }
+      'wrun_delta_gate_guard_on'
     );
     expect(res.status).toBe(204);
-    // The suspension created a hook (left open) and one lazy inline step —
-    // with an enforced guard, a hook_received missed by the delta window is
-    // fenced by the outside-event marker, so the fast path stays active.
+    // The suspension created a hook (left open) and one lazy inline step. A
+    // hook_received missed by the delta window is fenced by the outside-event
+    // marker, so the fast path stays active.
     expect(stepCompletedParams(eventsCreate)?.sinceCursor).toBe(
       'cursor_delta_gate'
     );
@@ -2678,30 +2706,7 @@ describe('workflowEntrypoint inline-delta gate with open hooks', () => {
     );
   });
 
-  it('does not request the inline delta with an open hook when the guard is disabled', async () => {
-    const { res, eventsCreate } = await driveDeltaGate(
-      'wrun_delta_gate_guard_off'
-    );
-    expect(res.status).toBe(204);
-    // Without the guard there is no fence for a hook_received landing in the
-    // delta window, so the conservative gate keeps the fetch path.
-    expect(stepCompletedParams(eventsCreate)?.sinceCursor).toBeUndefined();
-  });
-
-  it('does not request the inline delta when the env flag is set but the World does not enforce the guard', async () => {
-    process.env.WORKFLOW_PRECONDITION_GUARD = '1';
-    // No capabilities declared: the env flag only makes the runtime SEND
-    // snapshots — a World that ignores stateUpdatedAt provides no 412 fence,
-    // so the relaxation must fail closed to the conservative gate.
-    const { res, eventsCreate } = await driveDeltaGate(
-      'wrun_delta_gate_guard_no_capability'
-    );
-    expect(res.status).toBe(204);
-    expect(stepCompletedParams(eventsCreate)?.sinceCursor).toBeUndefined();
-  });
-
   it('restarts the replay in-process and still completes the run when a stale lazy claim is rejected by the guard (interleaved hook_received)', async () => {
-    process.env.WORKFLOW_PRECONDITION_GUARD = '1';
     // Simulates the interleaving the fence exists for: after step A's
     // terminal write, an out-of-band hook_received bumps the run's marker;
     // the next replay (working from a view that misses it) schedules step B,
@@ -2709,12 +2714,11 @@ describe('workflowEntrypoint inline-delta gate with open hooks', () => {
     const { res, eventsCreate, queueMock } = await driveDeltaGate(
       'wrun_delta_gate_stale_claim',
       {
-        capabilities: { preconditionGuard: true },
         source: hookAndTwoStepWorkflow,
         rejectClaimOnce: {
           stepName: 'deltaGateStepB',
           error: new PreconditionFailedError(
-            'stale stateUpdatedAt: a newer outside event exists'
+            'stale snapshot: a newer outside event exists'
           ),
         },
       }
@@ -2722,17 +2726,17 @@ describe('workflowEntrypoint inline-delta gate with open hooks', () => {
     // The handler responds normally: the rejection restarts the replay inside
     // this delivery, never a run_failed.
     expect(res.status).toBe(204);
-    // Step B's claim was issued from a loaded (non-empty) log, so it carried
-    // the guard snapshot — that is what lets the backend fence it. (The very
-    // first batch of a run loads an empty log and has no snapshot to send;
-    // the guard is best-effort there, matching the suspension creates.)
+    // Step B's claim was issued from a loaded (non-empty) log, so it named the
+    // position it was decided against. (The very first batch of a run loads an
+    // empty log and has no position to name; reporting is best-effort there,
+    // matching the suspension creates.)
     const rejectedClaim = eventsCreate.mock.calls.find(
       (c) =>
         (c[1] as any).eventType === 'step_started' &&
         ((c[1] as any).eventData as { stepName?: string })?.stepName ===
           'deltaGateStepB'
     );
-    expect(typeof (rejectedClaim?.[2] as any)?.stateUpdatedAt).toBe('number');
+    expect(typeof (rejectedClaim?.[2] as any)?.eventCount).toBe('number');
     // The fenced claim's body never ran: step B executes exactly once, on the
     // restarted replay whose claim the backend accepted.
     expect(deltaGateBodyRuns).toEqual(['B']);
@@ -2760,7 +2764,6 @@ describe('workflowEntrypoint inline-delta gate with open hooks', () => {
   });
 
   it('suppresses optimistic start on guarded stale-sensitive batches: a 412-fenced step never runs its body even with WORKFLOW_OPTIMISTIC_INLINE_START=1', async () => {
-    process.env.WORKFLOW_PRECONDITION_GUARD = '1';
     process.env.WORKFLOW_OPTIMISTIC_INLINE_START = '1';
     // Same interleaving as above, but with optimistic start enabled globally.
     // Without suppression, executeStep would begin step B's body immediately
@@ -2772,12 +2775,11 @@ describe('workflowEntrypoint inline-delta gate with open hooks', () => {
     const { res, eventsCreate } = await driveDeltaGate(
       'wrun_delta_gate_stale_claim_optimistic',
       {
-        capabilities: { preconditionGuard: true },
         source: hookAndTwoStepWorkflow,
         rejectClaimOnce: {
           stepName: 'deltaGateStepB',
           error: new PreconditionFailedError(
-            'stale stateUpdatedAt: a newer outside event exists'
+            'stale snapshot: a newer outside event exists'
           ),
         },
       }
@@ -2858,7 +2860,7 @@ describe('workflowEntrypoint latency telemetry (ttfs / stso)', () => {
     const rec = (data: any): Event => {
       seq += 1;
       const e = {
-        eventId: `e-${seq}`,
+        eventId: slotToEventId(seq),
         runId,
         createdAt: new Date(),
         ...data,
@@ -3142,7 +3144,7 @@ describe('workflowEntrypoint latency telemetry (ttfs / stso)', () => {
     const attrOccurredAt = new Date(runCreatedAtMs + 7_000);
     const attrEvent = {
       ...attrCreates[0],
-      eventId: 'e-attr-1',
+      eventId: slotToEventId(1),
       runId,
       createdAt: attrOccurredAt,
       occurredAt: attrOccurredAt,

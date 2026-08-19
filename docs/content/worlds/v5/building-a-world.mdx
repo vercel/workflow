@@ -36,11 +36,10 @@ interface WorldCapabilities {
   hookRetention?: {
     active: boolean;
   };
-  slotEventIds?: boolean;
-  preconditionGuard?: boolean;
 }
 
 interface World extends Storage, Queue, Streamer {
+  specVersion: number;
   capabilities?: WorldCapabilities;
   start?(): Promise<void>;
   close?(): Promise<void>;
@@ -49,7 +48,29 @@ interface World extends Storage, Queue, Streamer {
 }
 ```
 
-The optional `capabilities` object advertises additional behavior. Set `hookRetention.active` to `true` only when the World implements Hook token retention, `slotEventIds` when it allocates [slot-numbered event IDs](#event-id-allocation), and `preconditionGuard` when it enforces the [precondition guard](#optional-the-event-creation-precondition-guard). The optional `start()` method initializes background tasks (for example, queue polling). The optional `close()` method releases resources like connection pools and listeners. The optional `getEncryptionKeyForRun()` method returns the AES-256 key used to encrypt data for a run; if it is not implemented, encryption is disabled.
+`specVersion` is required. See [Declaring the spec version](#declaring-the-spec-version).
+
+The optional `capabilities` object advertises additional behavior. Set `hookRetention.active` to `true` only when the World implements Hook token retention. Note what is *not* in there: [slot-numbered event IDs](#event-id-allocation) are a requirement of this contract, not a capability to opt into. The optional `start()` method initializes background tasks (for example, queue polling). The optional `close()` method releases resources like connection pools and listeners. The optional `getEncryptionKeyForRun()` method returns the AES-256 key used to encrypt data for a run; if it is not implemented, encryption is disabled.
+
+### Declaring the spec version
+
+`specVersion` is the protocol version your World implements, and the version stamped on every run it creates. Export `SPEC_VERSION_CURRENT` from `@workflow/world` rather than writing a number:
+
+{/* @skip-typecheck - partial World, the other members are elided */}
+```typescript
+import { SPEC_VERSION_CURRENT } from '@workflow/world';
+
+export function createWorld(): World {
+  return {
+    specVersion: SPEC_VERSION_CURRENT,
+    // ...
+  };
+}
+```
+
+The runtime checks this before it creates or replays anything and throws if the version is outside the range it supports, naming both the range and what your World declared. A version below the range means your World allocates event IDs the runtime cannot read positions out of; above it means your World speaks a protocol this runtime has not learned.
+
+Using the constant is what keeps that check passing across upgrades: it moves with the `@workflow/world` version your package resolves, so a spec bump raises your declaration and the runtime's requirement together. A hard-coded number leaves your World a version behind the next bump, and the runtime rejects it. Keep `@workflow/world` in the same release channel as the `workflow` version your users install.
 
 ## The Event Log Model
 
@@ -110,38 +131,37 @@ Keep the owning Run available for at least as long as its token remains unavaila
 
 ### Event ID Allocation
 
-Your World assigns every event ID. An ID is `evnt_` followed by the event's 1-based position in that run's log, zero-padded to 26 characters, so the run's first event is `evnt_00000000000000000000000001`. Use `slotToEventId()` from `@workflow/world` to format one, and declare `capabilities.slotEventIds`.
+<Callout type="warn">
+  **Required.** Your World assigns every event ID, and every ID must be a position in its run's log. The runtime reads a position out of every ID it loads and fails the run when it cannot, so a World whose IDs are anything else — a ULID, a UUID, a database sequence shared across runs — cannot replay a single workflow. There is no capability flag and no fallback path.
+</Callout>
+
+An ID is `evnt_` followed by the event's 1-based position in that run's log, zero-padded to 26 characters, so the run's first event is `evnt_00000000000000000000000001`. Use `slotToEventId()` from `@workflow/world` to format one.
 
 Two properties have to hold, and both are about what a reader can conclude from the log:
 
 - **Uniqueness.** Two writers racing to append must not both take a position. Settle it where the store settles it, with a unique constraint on `(runId, eventId)` or a conditional write, rather than reading the maximum and adding one in your own process.
 - **Density.** Positions run from 1 with no holes, which is what lets a reader tell a complete log from a truncated one by its length alone. A writer that loses a race must re-derive its position from the store and take the next free one. Incrementing a local number after a loss leaves a permanent hole, and the runtime treats a hole as a log it cannot safely replay across.
 
+Allocate the position **at the commit**, in the same operation that appends the event. That is what makes a reader's log a *prefix* of the run's log rather than a prefix with a hole in it: nothing can land behind a position a reader has already passed. Handing a position out earlier — in a request handler, say — and committing later breaks the property every replay depends on, and is the one case where you may need [a stale-write rejection](#optional-rejecting-a-stale-write) to compensate.
+
 `events.create()` params carry `eventCount`: how many events the writer held in the log it replayed from, which is the position it expects to land on minus one. Attempt `eventCount + 1`. When that position is taken, **do not reject the write**. Advance to the next free position, commit there, and return the events occupying the positions you skipped over on the success response, in `events` with a matching `cursor` and `hasMore`. The writer merges them into its own log and replays once, rather than paying a second round trip to discover it was behind. A caller with a stale count is the normal case for a fan-out, and rejecting it would serialize writes the runtime issues in parallel.
 
-`eventCount` supersedes the `stateUpdatedAt` / `stateEventCount` / `stateCursor` triple below for a World that allocates positions. The triple approximates a position with a timestamp watermark plus a count of events at or below it, which a complete-but-stale snapshot passes: every event the writer holds is at or below its own watermark, so the count matches and no fence fires. A dense position has no such blind spot.
+### Optional: Rejecting a Stale Write
 
-### Optional: The Event Creation Precondition Guard
+A replay writes events derived from the event log it loaded, so a write made from an event log that no longer matches the store can commit events no correct replay would produce. Rejecting one means answering `events.create()` with a `PreconditionFailedError` when the run's log already holds more events than the caller's `eventCount` says it had loaded.
 
-A replay writes events derived from the event log it loaded, so a write made from an event log that no longer matches the store can commit events no correct replay would produce. To let a World fence those writes, `events.create()` params may carry a description of the snapshot the caller replayed from:
+No World in this repository does. Reporting is the better mechanism, and the reason it is *sufficient* rather than merely cheaper is worth stating, because it is what removed the need to reject at all: a reader's log is a prefix of the run's log rather than a prefix with a hole in it, replay is deterministic on a prefix, and the writer's next write brings back what it missed. A shorter log therefore means a run that has not caught up, never a run that will decide differently.
 
-- `stateUpdatedAt` — the timestamp encoded in the latest loaded event's ID.
-- `stateEventCount` — how many events the caller loaded. Only sent together with `stateUpdatedAt`; ignore a count that arrives without one.
-- `stateCursor` — the caller's event-log cursor. Advisory, and only meaningful on the reject path (see below).
-
-Enforcing the guard means rejecting the creation with a `PreconditionFailedError` when either holds:
-
-1. An event was recorded after `stateUpdatedAt` that the caller could not have loaded.
-2. More events were recorded at or before `stateUpdatedAt` than `stateEventCount` — the caller's snapshot is missing one.
+That leaves rejecting worth implementing in one case — your store allocates positions somewhere other than the commit, so it cannot report the skipped span reliably and refusing a stale write is safer than accepting one out of order.
 
 Two rules make this safe:
 
-- **Compare at or below `stateUpdatedAt`, not strictly below.** Events routinely share a millisecond with the caller's latest event, and a strict comparison misses exactly those.
-- **Every uncertainty must allow the write.** If your record of a run's events is incomplete, expired, or cannot answer the question, accept the creation. A rejection must always mean a real discrepancy, because the runtime responds to one by discarding a replay.
+- **Only reject on evidence.** If your record of a run's events is incomplete, expired, or cannot answer the question, accept the creation. A rejection must always mean a real discrepancy, because the runtime responds to one by discarding a replay.
+- **Accept a creation that carries no `eventCount`.** It came from a caller with no loaded log to be stale (a queued step body, an out-of-band writer), not from a caller claiming the log is empty.
 
 A rejection may optionally carry the events the caller was missing, as `{ events, cursor }` on the error's `details`. Only include them when you can prove the set is complete — that those events fully account for the discrepancy and are not truncated — and that every one of them belongs to the run being written. The runtime merges them straight into the replay's event log, so anything else there is worse than no delta at all. Otherwise omit them, and the runtime performs a full reload instead.
 
-A World that enforces the guard should declare `capabilities.preconditionGuard`, which the runtime also reads to keep event-log delta optimizations enabled. A World that ignores these params must not declare it.
+The runtime handles a rejection wherever it can arrive: it restarts the replay in-process from a corrected log, and re-invokes with a fresh replay once that budget is spent. It never retries the rejected write as-is, because a replay working from a corrected log derives different events. Nothing has to be declared for that to work — there is no capability to set.
 
 ## Queue Interface
 

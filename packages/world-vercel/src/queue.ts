@@ -18,7 +18,7 @@ import {
 import { decode as cborDecode, encode as cborEncode } from 'cbor-x';
 import { z } from 'zod/v4';
 import { missingDeploymentIdMessage } from './deployment-id.js';
-import { getDispatcher } from './http-client.js';
+import { getQueueDispatcher } from './http-client.js';
 import { decode as decodeTaggedRunId } from './run-id/index.js';
 import { isKnownRegionCode, REGION_IDS } from './run-id/regions.js';
 import { type APIConfig, getHeaders, getHttpUrl } from './utils.js';
@@ -29,7 +29,7 @@ import { isWsEventsTransportEnabled } from './ws-transport-enabled.js';
  * decodes on receive, preserving Uint8Array values natively (workflow
  * input is a Uint8Array in specVersion >= 2).
  *
- * Used for specVersion >= SPEC_VERSION_CURRENT (3).
+ * Used for specVersion >= SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT.
  */
 class CborTransport implements Transport<unknown> {
   readonly contentType = 'application/cbor';
@@ -51,8 +51,9 @@ class CborTransport implements Transport<unknown> {
 }
 
 /**
- * JSON-based queue transport. Used for specVersion < SPEC_VERSION_CURRENT
- * to maintain compatibility with older deployments that expect JSON messages.
+ * JSON-based queue transport. Used for specVersion <
+ * SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT to maintain compatibility with
+ * older deployments that expect JSON messages.
  */
 class JsonTransport implements Transport<unknown> {
   readonly contentType = 'application/json';
@@ -410,7 +411,7 @@ export function createQueue(config?: APIConfig): Queue {
    * from the incoming `ce-vqsregion` header regardless).
    */
   const clientOptions = {
-    dispatcher: getDispatcher(config),
+    dispatcher: getQueueDispatcher(config),
     transport: dualTransport,
     ...(usingProxy && {
       // final path will be /queues-proxy/api/v3/topic/...

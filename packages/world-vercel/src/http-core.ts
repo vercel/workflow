@@ -10,12 +10,14 @@
  * `DEBUG` logging, x-vercel diagnostic headers, and the status → typed-error
  * mapping the runtime branches on.
  *
- * This module is the single source of truth for that envelope. It depends only
- * on `telemetry.js`, `@workflow/errors`, and `@vercel/oidc` so it can be
- * imported by both `utils.ts` and `events-v4.ts` without an import cycle —
- * dispatchers are passed in by the caller rather than imported here.
+ * This module is the single source of truth for that envelope. Undici
+ * dispatchers are passed in by the caller rather than resolved here, so it can
+ * be imported by both `utils.ts` and `events-v4.ts` without an import cycle.
+ * The one thing it does reach for is `http-client.js`'s shared node:http pool,
+ * which is safe: `http-client.ts` imports nothing from `utils.ts` but a type.
  */
 
+import type { Span } from '@opentelemetry/api';
 import { getVercelOidcToken } from '@vercel/oidc';
 import {
   EntityConflictError,
@@ -27,6 +29,12 @@ import {
   WorkflowWorldError,
 } from '@workflow/errors';
 import { envNumber } from '@workflow/world';
+import { nodeHttpFetch } from '@workflow/world/node-http.js';
+import {
+  getNodeHttpAgents,
+  NODE_HTTP_BODY_TIMEOUT_MS,
+  NODE_HTTP_HEADERS_TIMEOUT_MS,
+} from './http-client.js';
 import {
   ErrorType,
   getSpanKind,
@@ -40,6 +48,7 @@ import {
   ServerPort,
   trace,
   UrlFull,
+  WorkflowHttpTransport,
 } from './telemetry.js';
 
 /**
@@ -85,11 +94,20 @@ const DIAGNOSTIC_HEADERS = [
 ] as const;
 
 /**
+ * The one member the diagnostic/log helpers read headers through. `Headers`
+ * satisfies it, and so does the header record a WS reply frame's meta is
+ * flattened into — which has no `Headers` to offer.
+ */
+export interface HeaderLookup {
+  get(name: string): string | null;
+}
+
+/**
  * Extract the Vercel diagnostic response headers (x-vercel-id /
  * x-vercel-error / x-vercel-mitigated) as `key=value` strings, skipping any
  * that are absent.
  */
-export function getVercelDiagnostics(headers: Headers): string[] {
+export function getVercelDiagnostics(headers: HeaderLookup): string[] {
   return DIAGNOSTIC_HEADERS.flatMap((header) => {
     const value = headers.get(header);
     return value ? [`${header}=${value}`] : [];
@@ -100,19 +118,21 @@ export function getVercelDiagnostics(headers: Headers): string[] {
  * Format the Vercel diagnostic headers as a ` (a=b; c=d)` suffix for error
  * messages, or an empty string when none are present.
  */
-export function formatVercelDiagnostics(headers: Headers): string {
+export function formatVercelDiagnostics(headers: HeaderLookup): string {
   const diagnostics = getVercelDiagnostics(headers);
   return diagnostics.length > 0 ? ` (${diagnostics.join('; ')})` : '';
 }
 
 /**
  * One-line request log, emitted only when HTTP debug is enabled. `label` is a
- * short request identifier (an endpoint path or full URL).
+ * short request identifier (an endpoint path or full URL). Takes the
+ * status/headers pair rather than a `Response` so the WS events transport,
+ * which has no `Response` to show, logs in the same format as the HTTP path.
  */
 export function httpLog(
   method: string,
   label: string,
-  response: Response,
+  response: { status: number; headers: HeaderLookup },
   ms: number
 ): void {
   if (!HTTP_DEBUG_ENABLED) return;
@@ -293,20 +313,19 @@ export async function resolveVercelApiToken(opts?: {
   );
 }
 
-/** Parse the server address/port from a URL for OTEL span attributes. */
+/** Parse the server address/port from a URL for OTEL span attributes.
+ *  `wss:` counts as a TLS scheme: the WS events transport reports its upgrade
+ *  URL through here, and defaulting it to 80 would misreport the peer. */
 function parseServer(url: string): {
   serverAddress?: string;
   serverPort?: number;
 } {
   try {
     const parsed = new URL(url);
+    const secure = parsed.protocol === 'https:' || parsed.protocol === 'wss:';
     return {
       serverAddress: parsed.hostname,
-      serverPort: parsed.port
-        ? parseInt(parsed.port, 10)
-        : parsed.protocol === 'https:'
-          ? 443
-          : 80,
+      serverPort: parsed.port ? parseInt(parsed.port, 10) : secure ? 443 : 80,
     };
   } catch {
     return {};
@@ -338,18 +357,98 @@ export function httpClientSpanAttributes(args: {
   };
 }
 
-export interface InstrumentedFetchOptions {
+export interface HttpClientSpanOptions {
   method: string;
   url: string;
-  headers: Headers;
-  body?: Uint8Array | string;
-  /** Undici dispatcher (typed `unknown`; see APIConfig.dispatcher). */
-  dispatcher: unknown;
   /**
    * OTEL peer/rpc service label. 'workflow-server' for backend calls (default),
    * 'vercel-api' for direct api.vercel.com calls.
    */
   peerService?: string;
+  /**
+   * Override the client-span name. Defaults to `http ${method}`. Pass a
+   * semantic operation name (e.g. `workflow.stream.write`) so the operation is
+   * discoverable in traces beyond the generic HTTP verb.
+   */
+  spanName?: string;
+  /** Extra attributes merged on top of the standard HTTP attributes. */
+  attributes?: Record<string, string | number | string[]>;
+}
+
+/**
+ * Open a CLIENT span for one outgoing request and run `fn` inside it.
+ *
+ * Split out of `instrumentedFetch` so a request path that cannot go through
+ * `fetch` still reports the *same* span: name, kind and the full
+ * `httpClientSpanAttributes` set. The WS events transport is the reason this
+ * exists — a frame on a multiplexed socket is a request in every sense the
+ * caller's trace cares about, but there is no `Response` and no `fetch` call to
+ * hang a span off, so it synthesizes one here (see `postEventFrameOverWs`).
+ *
+ * `fn` runs inside the active span, so anything it injects trace context into
+ * is parented to this span rather than to the caller's — which is the contract
+ * CLAUDE.md's trace-propagation rule describes.
+ */
+export async function withHttpClientSpan<T>(
+  opts: HttpClientSpanOptions,
+  fn: (span?: Span) => Promise<T>
+): Promise<T> {
+  const {
+    method,
+    url,
+    peerService = 'workflow-server',
+    spanName,
+    attributes,
+  } = opts;
+  return trace(
+    spanName ?? `http ${method}`,
+    { kind: await getSpanKind('CLIENT') },
+    async (span) => {
+      // Diagnostic (DEBUG only): named spans are created and recording here,
+      // yet never found in the backend — log the exact span identity so the
+      // export side can be checked for this specific span id.
+      if (spanName && HTTP_DEBUG_ENABLED && span) {
+        const ctx = span.spanContext();
+        console.warn(
+          '[workflow:otel-diag] span-open',
+          JSON.stringify({
+            spanName,
+            traceId: ctx.traceId,
+            spanId: ctx.spanId,
+            recording: span.isRecording(),
+          })
+        );
+      }
+      span?.setAttributes(
+        httpClientSpanAttributes({ method, url, peerService })
+      );
+      if (attributes) span?.setAttributes(attributes);
+      return fn(span);
+    }
+  );
+}
+
+/**
+ * Stamp a response status onto a client span, marking a non-2xx with the same
+ * `error.type` the fetch path uses. Shared so a synthesized span reports a 409
+ * identically to a real one — the status → error-type contract is what
+ * dashboards filter on, and it must not depend on which transport answered.
+ */
+export function recordClientSpanStatus(
+  span: Span | undefined,
+  status: number
+): void {
+  span?.setAttributes({ ...HttpResponseStatusCode(status) });
+  if (status < 200 || status >= 300) {
+    span?.setAttributes({ ...ErrorType(`HTTP ${status}`) });
+  }
+}
+
+export interface InstrumentedFetchOptions extends HttpClientSpanOptions {
+  headers: Headers;
+  body?: Uint8Array | string;
+  /** Undici dispatcher (typed `unknown`; see APIConfig.dispatcher). */
+  dispatcher: unknown;
   /**
    * Per-request timeout in ms. Defaults to REQUEST_TIMEOUT_MS. Pass `null` to
    * disable (e.g. stream writes, which buffer arbitrarily large bodies).
@@ -363,17 +462,6 @@ export interface InstrumentedFetchOptions {
   cacheBust?: boolean;
   /** Short label for logs (endpoint path). Defaults to the full URL. */
   logLabel?: string;
-  /**
-   * Override the client-span name. Defaults to `http ${method}`. Pass a
-   * semantic operation name (e.g. `workflow.stream.write`) so the operation is
-   * discoverable in traces beyond the generic HTTP verb.
-   */
-  spanName?: string;
-  /**
-   * Extra attributes merged onto the client span, in addition to the standard
-   * HTTP attributes (e.g. stream name / run id on stream operations).
-   */
-  attributes?: Record<string, string | number>;
   /**
    * When set, stamp the measured request round-trip (dispatch -> response
    * received, in ms) onto the client span under this attribute key. For a
@@ -421,7 +509,7 @@ export async function instrumentedFetch(
     headers,
     body,
     dispatcher,
-    peerService = 'workflow-server',
+    peerService,
     timeoutMs = getRequestTimeoutMs(),
     signal: callerSignal,
     injectTraceContext = true,
@@ -435,30 +523,9 @@ export async function instrumentedFetch(
   } = opts;
   const label = logLabel ?? url;
 
-  return trace(
-    spanName ?? `http ${method}`,
-    { kind: await getSpanKind('CLIENT') },
+  return withHttpClientSpan(
+    { method, url, peerService, spanName, attributes },
     async (span) => {
-      // Diagnostic (DEBUG only): named spans are created and recording here,
-      // yet never found in the backend — log the exact span identity so the
-      // export side can be checked for this specific span id.
-      if (spanName && HTTP_DEBUG_ENABLED && span) {
-        const ctx = span.spanContext();
-        console.warn(
-          '[workflow:otel-diag] span-open',
-          JSON.stringify({
-            spanName,
-            traceId: ctx.traceId,
-            spanId: ctx.spanId,
-            recording: span.isRecording(),
-          })
-        );
-      }
-      span?.setAttributes(
-        httpClientSpanAttributes({ method, url, peerService })
-      );
-      if (attributes) span?.setAttributes(attributes);
-
       // Explicitly propagate trace context so the receiving server can parent
       // its spans to this client span — the custom undici dispatcher bypasses
       // ambient auto-instrumentation. No-ops when no OTEL SDK is registered.
@@ -479,14 +546,38 @@ export async function instrumentedFetch(
       const start = Date.now();
       let response: Response;
       try {
-        response = await fetch(url, {
-          method,
-          headers,
-          body,
-          signal,
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici dispatcher type doesn't match @types/node's RequestInit
-          dispatcher,
-        } as any);
+        // With no dispatcher to honour, `WORKFLOW_NODE_HTTP` takes the request
+        // off undici altogether rather than leaving it on the undici behind
+        // `fetch`. A dispatcher the caller supplied is an instruction to use
+        // undici, so it keeps the request on `fetch`.
+        const nodeAgents = dispatcher ? undefined : getNodeHttpAgents();
+        // Both transports issue the same span against the same URL, so this is
+        // the only thing that tells them apart in a trace.
+        span?.setAttributes({
+          ...WorkflowHttpTransport(nodeAgents ? 'node-http' : 'undici'),
+        });
+        response = nodeAgents
+          ? await nodeHttpFetch(url, {
+              method,
+              headers,
+              body,
+              signal,
+              agents: nodeAgents,
+              // Match undici's per-phase defaults (which the undici agents
+              // inherit implicitly): without these the node:http path arms no
+              // stalled-socket deadline, and a `timeoutMs: null` caller would
+              // have no deadline at all.
+              headersTimeoutMs: NODE_HTTP_HEADERS_TIMEOUT_MS,
+              bodyTimeoutMs: NODE_HTTP_BODY_TIMEOUT_MS,
+            })
+          : await fetch(url, {
+              method,
+              headers,
+              body,
+              signal,
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici dispatcher type doesn't match @types/node's RequestInit
+              dispatcher,
+            } as any);
       } catch (error) {
         const elapsed = Date.now() - start;
         // Report the raw error, before the timeout mapping below rewraps it: the
@@ -513,11 +604,10 @@ export async function instrumentedFetch(
       onTransportOutcome?.();
 
       httpLog(method, label, response, ms);
-      span?.setAttributes({ ...HttpResponseStatusCode(response.status) });
+      recordClientSpanStatus(span, response.status);
       if (durationAttribute) span?.setAttributes({ [durationAttribute]: ms });
 
       if (!response.ok) {
-        span?.setAttributes({ ...ErrorType(`HTTP ${response.status}`) });
         logCurlRepro(method, url, headers);
         if (buildError) {
           const error = await buildError(response);
