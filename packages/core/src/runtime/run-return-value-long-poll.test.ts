@@ -99,6 +99,9 @@ describe('Run.returnValue long poll', () => {
     expect(waitForTerminalStatus).toHaveBeenCalledTimes(1);
     expect(waitForTerminalStatus).toHaveBeenCalledWith(RUN_ID, {
       timeoutMs: getReturnValueWaitTimeoutMs(),
+      // The wait is the *polling* read, so it skips payload refs the same way
+      // the interval poll it replaces does.
+      resolveData: 'none',
     });
     // The status read went through the long poll — no interval poll happened.
     expect(world.runs.get).not.toHaveBeenCalled();
@@ -115,6 +118,7 @@ describe('Run.returnValue long poll', () => {
 
     expect(waitForTerminalStatus).toHaveBeenCalledWith(RUN_ID, {
       timeoutMs: 3_000,
+      resolveData: 'none',
     });
   });
 

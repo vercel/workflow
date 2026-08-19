@@ -1,4 +1,7 @@
+import { createServer, type RequestListener, type Server } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { PreconditionFailedError, StreamExpiredError } from '@workflow/errors';
+import { NODE_HTTP_ENV_VAR } from '@workflow/world';
 import { encode } from 'cbor-x';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
@@ -290,6 +293,16 @@ describe('getHttpConfig (proxied path)', () => {
 });
 
 describe('makeRequest stream expiry errors', () => {
+  // These drive the response from a stubbed `fetch`, which the node:http
+  // client never calls, so the flag is pinned off for them.
+  beforeEach(() => {
+    vi.stubEnv(NODE_HTTP_ENV_VAR, '0');
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
   it.each([
     ['/v2/runs/wrun_test/streams/stream-test/chunks'],
     ['/v2/runs/wrun_test/streams/stream-test/info'],
@@ -331,6 +344,9 @@ describe('makeRequest body-parse retry', () => {
     process.env = { ...originalEnv };
     delete process.env.VERCEL_WORKFLOW_SERVER_URL;
     delete process.env.VERCEL_OIDC_TOKEN;
+    // These tests drive the retry loop from a stubbed `fetch`, so they only
+    // reach the code under test while requests go through `fetch`.
+    process.env[NODE_HTTP_ENV_VAR] = '0';
   });
 
   afterEach(() => {
@@ -606,6 +622,10 @@ describe('makeRequest transport errors', () => {
     process.env = { ...originalEnv };
     delete process.env.VERCEL_WORKFLOW_SERVER_URL;
     delete process.env.VERCEL_OIDC_TOKEN;
+    // The `UND_ERR_*` codes below only ever come out of undici, so these
+    // cases are specific to the `fetch` path. The node:http path raises
+    // Node's own socket codes and is covered separately.
+    process.env[NODE_HTTP_ENV_VAR] = '0';
   });
 
   afterEach(() => {
@@ -694,5 +714,106 @@ describe('makeRequest transport errors', () => {
         schema,
       })
     ).rejects.toMatchObject({ name: 'WorkflowWorldError', code: 'TIMEOUT' });
+  });
+});
+
+// The suites above pin the flag off and simulate the transport with a `fetch`
+// stub, which the node:http client never calls. These run against a loopback
+// origin instead, covering the two contracts the runtime branches on: a
+// failed request has to stay retryable, and a typed error status has to keep
+// producing the same typed error whichever transport carried it.
+describe('makeRequest over node:http', () => {
+  const schema = z.object({ value: z.string() });
+  const originalEnv = process.env;
+  let server: Server | undefined;
+
+  beforeEach(() => {
+    process.env = { ...originalEnv };
+    delete process.env.VERCEL_OIDC_TOKEN;
+    process.env[NODE_HTTP_ENV_VAR] = '1';
+  });
+
+  afterEach(async () => {
+    process.env = originalEnv;
+    const toClose = server;
+    server = undefined;
+    if (toClose) {
+      toClose.closeAllConnections();
+      await new Promise((resolve) => toClose.close(resolve));
+    }
+  });
+
+  /** Start a loopback origin and point the client at it. */
+  async function listen(handler: RequestListener): Promise<void> {
+    server = createServer(handler);
+    await new Promise<void>((resolve) =>
+      server?.listen(0, '127.0.0.1', resolve)
+    );
+    const { port } = server.address() as AddressInfo;
+    process.env.VERCEL_WORKFLOW_SERVER_URL = `http://127.0.0.1:${port}`;
+  }
+
+  it('maps a dropped socket to a retryable TRANSPORT error', async () => {
+    await listen((request) => request.socket.destroy());
+
+    // Node raises ECONNRESET on the error itself rather than on a `cause`, so
+    // this only passes if getTransientTransportCode reads the top-level code.
+    await expect(
+      makeRequest({
+        endpoint: '/v3/runs/wrun_test/events',
+        options: { method: 'GET' },
+        schema,
+      })
+    ).rejects.toMatchObject({ name: 'WorkflowWorldError', code: 'TRANSPORT' });
+  });
+
+  it('maps a 412 response to PreconditionFailedError', async () => {
+    await listen((request, response) => {
+      request.resume();
+      response.statusCode = 412;
+      response.setHeader('content-type', 'application/cbor');
+      response.end(
+        encode({
+          success: false,
+          error: 'precondition-failed',
+          code: 'precondition-failed',
+          message: 'precondition-failed',
+        })
+      );
+    });
+
+    await expect(
+      makeRequest({
+        endpoint: '/v3/runs/wrun_test/events',
+        options: { method: 'POST' },
+        data: { eventType: 'run_completed' },
+        schema,
+      })
+    ).rejects.toBeInstanceOf(PreconditionFailedError);
+  });
+
+  it('round-trips a CBOR POST body to the origin', async () => {
+    let seen: { method?: string; length?: string } = {};
+    await listen((request, response) => {
+      seen = {
+        method: request.method,
+        length: request.headers['content-length'],
+      };
+      request.resume();
+      response.setHeader('content-type', 'application/cbor');
+      response.end(encode({ value: 'ok' }));
+    });
+
+    const result = await makeRequest({
+      endpoint: '/v3/runs/wrun_test/events',
+      options: { method: 'POST' },
+      data: { eventType: 'run_completed' },
+      schema,
+    });
+
+    expect(result).toEqual({ value: 'ok' });
+    expect(seen.method).toBe('POST');
+    // A declared length, not a chunked body: some origins reject the latter.
+    expect(Number(seen.length)).toBeGreaterThan(0);
   });
 });

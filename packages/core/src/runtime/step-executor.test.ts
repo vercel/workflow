@@ -28,8 +28,10 @@ async function setupRunningStep(opts: {
   world: World;
   stepName: string;
   onBody: () => void;
+  register?: boolean;
+  createStep?: boolean;
 }): Promise<{ runId: string; stepId: string }> {
-  const { world, stepName, onBody } = opts;
+  const { world, stepName, onBody, register = true, createStep = true } = opts;
   const runInput = await dehydrateStepArguments([], 'run', undefined);
   const created = await world.events.create(null, {
     eventType: 'run_created',
@@ -48,13 +50,15 @@ async function setupRunningStep(opts: {
   } as never);
 
   const stepId = 'step_timeout_1';
-  const stepInput = await dehydrateStepArguments([], runId, undefined);
-  await world.events.create(runId, {
-    eventType: 'step_created',
-    specVersion: SPEC_VERSION_CURRENT,
-    correlationId: stepId,
-    eventData: { stepName, input: stepInput },
-  });
+  if (createStep) {
+    const stepInput = await dehydrateStepArguments([], runId, undefined);
+    await world.events.create(runId, {
+      eventType: 'step_created',
+      specVersion: SPEC_VERSION_CURRENT,
+      correlationId: stepId,
+      eventData: { stepName, input: stepInput },
+    });
+  }
 
   const stepFn = Object.assign(
     async () => {
@@ -63,7 +67,9 @@ async function setupRunningStep(opts: {
     },
     { maxRetries: MAX_RETRIES }
   );
-  registerStepFunction(stepName, stepFn);
+  if (register) {
+    registerStepFunction(stepName, stepFn);
+  }
 
   return { runId, stepId };
 }
@@ -171,7 +177,7 @@ describe('executeStep — compute instance stamping', () => {
     counter += 1;
   });
 
-  it('stamps computeInstanceId on step_started without displacing the slot snapshot', async () => {
+  it('stamps request and compute provenance on step_started without displacing the slot snapshot', async () => {
     const world = makeWorld();
     const stepName = uniqueStepName();
     const { runId, stepId } = await setupRunningStep({
@@ -191,6 +197,7 @@ describe('executeStep — compute instance stamping', () => {
       workflowRunId: runId,
       workflowName: 'wf',
       workflowStartedAt: Date.now(),
+      requestId: 'req_step_executor',
       stepId,
       stepName,
       slotSnapshot,
@@ -200,9 +207,100 @@ describe('executeStep — compute instance stamping', () => {
       ([, data]) => data.eventType === 'step_started'
     );
     expect(started).toHaveLength(1);
-    expect(started[0]?.[2]?.computeInstanceId).toBe(COMPUTE_INSTANCE_ID);
-    // Both ride the same params object and neither may clobber the other.
+    expect(started[0]?.[2]).toMatchObject({
+      requestId: 'req_step_executor',
+      computeInstanceId: COMPUTE_INSTANCE_ID,
+    });
+    // All dimensions ride the same params object and neither may clobber another.
     expect(started[0]?.[2]?.eventCount).toBe(slotSnapshot.eventCount);
+  });
+
+  it('stamps provenance when a lazy unregistered step is materialized', async () => {
+    const world = makeWorld();
+    const stepName = uniqueStepName();
+    const { runId, stepId } = await setupRunningStep({
+      world,
+      stepName,
+      onBody: () => {},
+      register: false,
+      createStep: false,
+    });
+    const input = await dehydrateStepArguments([], runId, undefined);
+    const createSpy = vi.spyOn(world.events, 'create');
+
+    const result = await executeStep({
+      world,
+      workflowRunId: runId,
+      workflowName: 'wf',
+      workflowStartedAt: Date.now(),
+      requestId: 'req_unregistered',
+      stepId,
+      stepName,
+      lazyStepInput: input,
+    });
+
+    expect(result.type).toBe('failed');
+    const started = createSpy.mock.calls.find(
+      ([, data]) => data.eventType === 'step_started'
+    );
+    expect(started?.[2]).toMatchObject({
+      requestId: 'req_unregistered',
+      computeInstanceId: COMPUTE_INSTANCE_ID,
+    });
+  });
+
+  it('omits an empty requestId from step_started', async () => {
+    const world = makeWorld();
+    const stepName = uniqueStepName();
+    const { runId, stepId } = await setupRunningStep({
+      world,
+      stepName,
+      onBody: () => {},
+    });
+    const createSpy = vi.spyOn(world.events, 'create');
+
+    await executeStep({
+      world,
+      workflowRunId: runId,
+      workflowName: 'wf',
+      workflowStartedAt: Date.now(),
+      requestId: '',
+      stepId,
+      stepName,
+    });
+
+    const started = createSpy.mock.calls.find(
+      ([, data]) => data.eventType === 'step_started'
+    );
+    expect(started?.[2]?.requestId).toBeUndefined();
+  });
+
+  it('omits requestId from step_started when unavailable', async () => {
+    const world = makeWorld();
+    const stepName = uniqueStepName();
+    const { runId, stepId } = await setupRunningStep({
+      world,
+      stepName,
+      onBody: () => {},
+    });
+    const createSpy = vi.spyOn(world.events, 'create');
+
+    await executeStep({
+      world,
+      workflowRunId: runId,
+      workflowName: 'wf',
+      workflowStartedAt: Date.now(),
+      stepId,
+      stepName,
+    });
+
+    const started = createSpy.mock.calls.find(
+      ([, data]) => data.eventType === 'step_started'
+    );
+    expect(started?.[2]).toMatchObject({
+      computeInstanceId: COMPUTE_INSTANCE_ID,
+    });
+    expect(started?.[2]?.requestId).toBeUndefined();
   });
 
   it('advances the snapshot it sends as its own writes land', async () => {
@@ -245,5 +343,138 @@ describe('executeStep — compute instance stamping', () => {
     for (let i = 1; i < counts.length; i++) {
       expect(counts[i]).toBeGreaterThan(counts[i - 1] as number);
     }
+  });
+});
+
+// Pre-claimed inline starts: the suspension handler's batched fan-out already
+// committed (or lost) the step's step_created + step_started pair, so the
+// executor must run the body straight off that verdict — no start write of
+// its own on the owned path, no write AT ALL on the lost path.
+describe('executeStep — pre-claimed inline start', () => {
+  afterEach(() => {
+    counter += 1;
+  });
+
+  it('runs the body without sending a step_started of its own when owned', async () => {
+    const world = makeWorld();
+    const stepName = uniqueStepName();
+    let bodyRuns = 0;
+
+    // Commit the pair the suspension batch would have committed.
+    const runInput = await dehydrateStepArguments([], 'run', undefined);
+    const created = await world.events.create(null, {
+      eventType: 'run_created',
+      specVersion: SPEC_VERSION_CURRENT,
+      eventData: {
+        deploymentId: 'dpl_test',
+        workflowName: 'wf',
+        input: runInput,
+      },
+    });
+    const runId = created.run!.runId;
+    await world.events.create(runId, {
+      eventType: 'run_started',
+      specVersion: SPEC_VERSION_CURRENT,
+      eventData: {},
+    } as never);
+    const stepId = 'step_preclaimed_1';
+    // The shape the suspension handler dehydrates for a pair's created row —
+    // the body's hydration reads `.args` off it.
+    const stepInput = await dehydrateStepArguments(
+      { args: [], closureVars: undefined, thisVal: undefined },
+      runId,
+      undefined
+    );
+    await world.events.create(runId, {
+      eventType: 'step_created',
+      specVersion: SPEC_VERSION_CURRENT,
+      correlationId: stepId,
+      eventData: { stepName, input: stepInput },
+    });
+    const startResult = await world.events.create(runId, {
+      eventType: 'step_started',
+      specVersion: SPEC_VERSION_CURRENT,
+      correlationId: stepId,
+      eventData: { stepName },
+    });
+    registerStepFunction(stepName, async () => {
+      bodyRuns += 1;
+      return 'ok';
+    });
+
+    const createSpy = vi.spyOn(world.events, 'create');
+    const result = await executeStep({
+      world,
+      workflowRunId: runId,
+      workflowName: 'wf',
+      workflowStartedAt: Date.now(),
+      stepId,
+      stepName,
+      authoritativeAttempt: 1,
+      preclaimedStart: {
+        owned: true,
+        step: { ...startResult.step!, input: stepInput },
+        batchPostSentAtMs: Date.now() - 5,
+        claimCompletedAtMs: Date.now(),
+      },
+    });
+
+    expect(result.type).toBe('completed');
+    expect(bodyRuns).toBe(1);
+    // The executor wrote ONLY the terminal event — the claim was the batch's.
+    const eventTypesWritten = createSpy.mock.calls.map(
+      (call) => (call[1] as { eventType: string }).eventType
+    );
+    expect(eventTypesWritten).not.toContain('step_started');
+    expect(eventTypesWritten).toContain('step_completed');
+    expect(await eventsFor(world, runId, stepId, 'step_started')).toHaveLength(
+      1
+    );
+  });
+
+  it('skips without any write when the pair lost its claim', async () => {
+    const world = makeWorld();
+    const stepName = uniqueStepName();
+    let bodyRuns = 0;
+    registerStepFunction(stepName, async () => {
+      bodyRuns += 1;
+      return 'ok';
+    });
+
+    const createSpy = vi.spyOn(world.events, 'create');
+    const result = await executeStep({
+      world,
+      workflowRunId: 'wrun_never_used',
+      workflowName: 'wf',
+      workflowStartedAt: Date.now(),
+      stepId: 'step_lost_claim',
+      stepName,
+      authoritativeAttempt: 1,
+      preclaimedStart: { owned: false },
+    });
+
+    expect(result).toEqual({ type: 'skipped' });
+    expect(bodyRuns).toBe(0);
+    expect(createSpy).not.toHaveBeenCalled();
+  });
+
+  it('skips before the unregistered-step fallback when the claim was lost', async () => {
+    const world = makeWorld();
+    const createSpy = vi.spyOn(world.events, 'create');
+
+    const result = await executeStep({
+      world,
+      workflowRunId: 'wrun_never_used',
+      workflowName: 'wf',
+      workflowStartedAt: Date.now(),
+      stepId: 'step_lost_unregistered',
+      // Never registered: the owned path would write step_failed here, but a
+      // lost claim is not this handler's to fail.
+      stepName: 'step//./step-executor-test//neverRegistered',
+      preclaimedStart: { owned: false },
+    });
+
+    expect(result).toEqual({ type: 'skipped' });
+    expect(createSpy).not.toHaveBeenCalled();
   });
 });

@@ -11,6 +11,7 @@ import {
   isOptimisticInlineStartEnabled,
   isOptimisticInlineStartExplicitlyDisabled,
   isTurboEnabled,
+  MAX_BATCH_FANOUT_EVENTS,
   MAX_INLINE_OWNERSHIP_LEASE_SECONDS,
   MAX_INLINE_STEPS,
   MAX_MAX_INLINE_STEPS,
@@ -391,5 +392,23 @@ describe('getInlineOwnershipLeaseSeconds', () => {
   it('clamps a non-positive override up to 1', () => {
     process.env[ENV] = '0';
     expect(getInlineOwnershipLeaseSeconds()).toBe(1);
+  });
+});
+
+describe('pre-claimed inline pairs fit one batch chunk', () => {
+  it('keeps two rows per inline step inside MAX_BATCH_FANOUT_EVENTS', () => {
+    // The suspension fold folds each lazy-inline step into an adjacent
+    // [step_created, step_started] pair, and the inline slice sorts to the
+    // front of the batch — so every pair lands in the FIRST chunk exactly
+    // while two rows per inline step fit inside one chunk.
+    //
+    // Past that, pairs spill into a trailing chunk. `handleSuspension` gates
+    // its return on every pair-carrying chunk so that degrades safely, but a
+    // spilled pair costs the caller its claim/body overlap for no reason.
+    // Raising MAX_MAX_INLINE_STEPS therefore has to raise the chunk cap with
+    // it (and re-check the server's per-batch transaction budget).
+    expect(2 * MAX_MAX_INLINE_STEPS).toBeLessThanOrEqual(
+      MAX_BATCH_FANOUT_EVENTS
+    );
   });
 });

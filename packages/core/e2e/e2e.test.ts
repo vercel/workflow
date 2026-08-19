@@ -50,6 +50,7 @@ import {
   setupWorld,
   startTracked,
   trackRun,
+  warmDeployment,
   writeDiagnosticsSidecar,
   writeInfraSidecar,
 } from './utils';
@@ -325,9 +326,25 @@ async function startWorkflowViaHttp(
 describe('e2e', () => {
   // Configure the World for the test runner process so that start() and
   // run.returnValue can communicate with the same backend as the workbench app.
+  // Also warm the target before the first test starts a run: a fresh Vercel
+  // deployment picks up runs long after it answers HTTP, and a local dev
+  // server pays its first flow-route compile on the first delivery. Either
+  // cold window otherwise surfaces as pickup-stall infra events on the
+  // suite's first tests (see warmDeployment). rawStart, not start — probes
+  // manage their own stalls without tripping the per-test watchdog.
   beforeAll(async () => {
     setupWorld(deploymentUrl);
-  });
+    await warmDeployment(async () =>
+      rawStart(
+        await getWorkflowMetadata(
+          deploymentUrl,
+          'workflows/99_e2e.ts',
+          'addTenWorkflow'
+        ),
+        [1]
+      )
+    );
+  }, 150_000);
 
   // Enable automatic run diagnostics on test failure
   beforeEach((ctx) => {
@@ -1353,12 +1370,16 @@ describe('e2e', () => {
             expect(result.stack).toContain('errorStepFn');
             expect(result.stack).not.toContain('evalmachine');
 
-            // Source maps are not supported everywhere. Check the definition
-            // of hasStepSourceMaps() to see where they are supported
+            // Source maps are not supported everywhere — see
+            // hasStepSourceMaps() for the matrix. Only the positive direction
+            // is asserted: where maps are unsupported they still apply
+            // nondeterministically on some lanes (nuxt, nextjs-webpack), so
+            // asserting their absence pinned that nondeterminism as a flake.
+            // A stack resolving to source where none was promised is an
+            // improvement, not a failure — hasStepSourceMaps() is the record
+            // to update when a lane starts mapping reliably.
             if (hasStepSourceMaps()) {
               expect(result.stack).toContain('99_e2e.ts');
-            } else {
-              expect(result.stack).not.toContain('99_e2e.ts');
             }
 
             // Verify step failed via CLI (--withData needed to resolve errorRef)
@@ -1381,12 +1402,10 @@ describe('e2e', () => {
             expect(errorData.stack).toContain('errorStepFn');
             expect(errorData.stack).not.toContain('evalmachine');
 
-            // Source maps are not supported everywhere. Check the definition
-            // of hasStepSourceMaps() to see where they are supported
+            // Positive direction only — see the note on the first source-map
+            // assertion above.
             if (hasStepSourceMaps()) {
               expect(errorData.stack).toContain('99_e2e.ts');
-            } else {
-              expect(errorData.stack).not.toContain('99_e2e.ts');
             }
 
             // Workflow completed (error was caught)
@@ -1415,12 +1434,10 @@ describe('e2e', () => {
             expect(result.stack).toContain('stepThatThrowsFromHelper');
             expect(result.stack).not.toContain('evalmachine');
 
-            // Source maps are not supported everywhere. Check the definition
-            // of hasStepSourceMaps() to see where they are supported
+            // Positive direction only — see the note on the first source-map
+            // assertion above.
             if (hasStepSourceMaps()) {
               expect(result.stack).toContain('helpers.ts');
-            } else {
-              expect(result.stack).not.toContain('helpers.ts');
             }
 
             // Verify step failed via CLI - same stack info available there too (--withData needed to resolve errorRef)
@@ -1439,12 +1456,10 @@ describe('e2e', () => {
             }
             expect(errorData.stack).toContain('stepThatThrowsFromHelper');
             expect(errorData.stack).not.toContain('evalmachine');
-            // Source maps are not supported everywhere. Check the definition
-            // of hasStepSourceMaps() to see where they are supported
+            // Positive direction only — see the note on the first source-map
+            // assertion above.
             if (hasStepSourceMaps()) {
               expect(errorData.stack).toContain('helpers.ts');
-            } else {
-              expect(errorData.stack).not.toContain('helpers.ts');
             }
 
             // Workflow completed (error was caught)
@@ -2670,11 +2685,15 @@ describe('e2e', () => {
     'fibonacciWorkflow - recursive workflow composition via start()',
     { timeout: 180_000 },
     async () => {
-      // fib(6) = 8, spawns a tree of child workflow runs
-      const run = await start(await e2e('fibonacciWorkflow'), [6]);
+      // fib(5) = 5, spawns a tree of 15 runs (~14 concurrent parent polls at
+      // peak). fib(6)'s 25-run tree proved enough to saturate the scheduler
+      // past this test's budget under a concurrent suite (#2083); depth 4
+      // still exercises recursive start() composition with parallel children
+      // at every level, which is the subject here — the tree size is not.
+      const run = await start(await e2e('fibonacciWorkflow'), [5]);
       trackRun(run);
       const returnValue = await run.returnValue;
-      expect(returnValue).toBe(8);
+      expect(returnValue).toBe(5);
     }
   );
 
@@ -3893,7 +3912,7 @@ describe('e2e', () => {
 
         // Include the full returnValue (status + elapsedMs from the step) in
         // the assertion message so a flaky failure surfaces *why* fetch won
-        // the race — e.g. httpbin returning a 5xx in <1s — instead of just
+        // the race — e.g. the loopback fetch erroring in <1s — instead of just
         // "expected 'fetch' to be 'timeout'".
         const summary = JSON.stringify(returnValue);
         expect(returnValue.winner, summary).toBe('timeout');

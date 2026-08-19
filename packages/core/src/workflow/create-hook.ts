@@ -62,7 +62,7 @@ export function createWebhook(
 
   if (token !== undefined) {
     throw new Error(
-      '`createWebhook()` does not accept a `token` option. Webhook tokens are always randomly generated. Use `createHook()` with `resumeHook()` for deterministic token patterns.'
+      '`createWebhook()` does not accept a `token` option. Webhook tokens are always generated for you. Use `createHook()` with `resumeHook()` for deterministic token patterns.'
     );
   }
 

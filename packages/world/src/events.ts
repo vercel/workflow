@@ -1017,6 +1017,108 @@ export type EventResult<T extends EventType = EventType> = {
         ? { step: StartedStep }
         : unknown);
 
+/**
+ * One event of a batch write ({@link Storage.events.createBatch}), in request
+ * order — which is the order the events land in the run's log.
+ */
+export interface BatchEventRequest {
+  /** The event, same discriminated union the single `create` takes. */
+  event: CreateEventRequest;
+  /**
+   * Client event time for this event. Under slot identity this is the source
+   * of the durable event's `createdAt` (a slot id carries no time), so the
+   * timestamp a replay observes is the one the writer chose — set it to the
+   * instant the event logically occurred.
+   */
+  occurredAt?: Date;
+  /**
+   * Compute-instance attribution for this event, same as the single create's
+   * {@link CreateEventParams.computeInstanceId}. Set on the `step_started`
+   * half of a pre-claimed inline pair so a batched claim attributes the
+   * executing instance exactly like the lazy claim it replaces.
+   */
+  computeInstanceId?: string;
+}
+
+/** Per-batch parameters for {@link Storage.events.createBatch}. */
+export interface CreateEventBatchParams {
+  resolveData?: ResolveData;
+  /**
+   * Request id for per-write attribution, same as the single create's
+   * {@link CreateEventParams.requestId}: stamped on every event in the batch
+   * so a batched write's usage facts and telemetry carry the same request
+   * attribution its single-path twin would.
+   */
+  requestId?: string;
+}
+
+/**
+ * One event's outcome in a batch response, index-aligned with the submitted
+ * events. `error === undefined` discriminates success.
+ *
+ * A batch is processed as a whole (HTTP 200 whenever the World evaluated it);
+ * each event reports the outcome its OWN single `create` would have had:
+ *
+ * - success → `status: 200` plus the committed event and the same
+ *   materialized entity the single create returns (`step` for step events,
+ *   `wait` for wait events, `run` for run terminals);
+ * - rejection → the status code and error code the single create would have
+ *   failed with, so callers reuse their single-path conflict handling per
+ *   event. A `409`/`conflict` means the entity was not in the prior state
+ *   the event requires — most commonly because an earlier delivery already
+ *   applied the same event, but possibly because the entity reached a
+ *   DIFFERENT state (e.g. `step_completed` conflicting because the step
+ *   failed). A 409 alone does not prove the equivalent effect was applied;
+ *   a caller that needs effect-equivalence consults the entity (returned on
+ *   sibling successes, or reloaded).
+ *
+ * The batch is atomic per attempt, not all-or-nothing across the submitted
+ * set: a World may drop rejected events and commit the survivors, so a batch
+ * can return a mix of 200s and 409s from one call.
+ *
+ * Retry semantics: a transport retry of a committed batch converges to
+ * per-event 409s ONLY for entity-conditioned events — creates and terminal
+ * transitions. A standalone bare `step_started` or a `step_retrying`
+ * re-patches its step on every attempt and does NOT converge, and
+ * `hook_received` appends a new row per attempt — `world-vercel` rejects
+ * `hook_received` in a batch outright and only auto-retries batches whose
+ * every event is retry-convergent.
+ *
+ * The born-running `step_created`+`step_started` pair converges (the pair's
+ * create fences it) but is still excluded from auto-retry, because
+ * convergence alone is not enough for the caller: a pair 409 means "this step
+ * already exists", and on a retry that is indistinguishable from "my own
+ * previous attempt committed it". A caller that reads the 409 as a lost claim
+ * would skip a body it actually owns, so a batch carrying a `step_started`
+ * runs single-attempt and leaves transient-failure recovery to queue
+ * redelivery.
+ */
+export type BatchEventItemResult =
+  | {
+      status: 200;
+      error?: undefined;
+      message?: undefined;
+      event: Event;
+      run?: WorkflowRun;
+      step?: Step;
+      wait?: Wait;
+    }
+  | {
+      status: number;
+      error: string;
+      message: string;
+      event?: undefined;
+      run?: undefined;
+      step?: undefined;
+      wait?: undefined;
+    };
+
+/** Result of {@link Storage.events.createBatch}. */
+export interface EventBatchResult {
+  /** One entry per submitted event, in request order. */
+  results: BatchEventItemResult[];
+}
+
 export interface GetEventParams {
   resolveData?: ResolveData;
 }

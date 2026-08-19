@@ -66,14 +66,23 @@ export async function* decodeFrames(
   let buffer = new Uint8Array(0);
 
   const refill = async (needed: number): Promise<boolean> => {
-    while (buffer.byteLength < needed) {
-      const { done, value } = await chunks.next();
-      if (done) return false;
-      if (!value || value.byteLength === 0) continue;
-      const next = new Uint8Array(buffer.byteLength + value.byteLength);
-      next.set(buffer, 0);
-      next.set(value, buffer.byteLength);
-      buffer = next;
+    if (buffer.byteLength >= needed) return true;
+
+    const parts: Uint8Array[] = [buffer];
+    let byteLength = buffer.byteLength;
+    while (byteLength < needed) {
+      const chunk = await chunks.next();
+      if (chunk.done) return false;
+      if (chunk.value.byteLength === 0) continue;
+      parts.push(chunk.value);
+      byteLength += chunk.value.byteLength;
+    }
+
+    buffer = new Uint8Array(byteLength);
+    let offset = 0;
+    for (const part of parts) {
+      buffer.set(part, offset);
+      offset += part.byteLength;
     }
     return true;
   };

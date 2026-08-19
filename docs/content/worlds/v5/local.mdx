@@ -70,6 +70,10 @@ Maximum time in milliseconds to wait for a local queue handler to begin respondi
 
 Maximum gap in milliseconds between response body chunks from a local queue handler before redelivering the durable message. Default: `30000`. Set to `0` to disable.
 
+### `WORKFLOW_NODE_HTTP`
+
+Whether queue deliveries go out through Node's built-in `node:http` and `node:https` modules instead of the HTTP client library this World normally uses. Default: disabled. Set to `1` to switch to Node's modules. Socket pooling, keep-alive, and both timeouts above apply either way. See [`WORKFLOW_NODE_HTTP`](/docs/configuration/runtime-tuning#workflow_node_http) for what else changes.
+
 ### `WORKFLOW_LOCAL_RECOVER_ACTIVE_RUNS`
 
 Whether pending and running runs found in the data directory are re-enqueued when the world starts. Set to `0` or `false` to skip recovery and leave stale runs untouched. Default: `true`

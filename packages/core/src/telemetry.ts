@@ -180,6 +180,18 @@ const Tracer = once(async () => {
   return tracer;
 });
 
+const StepExecutionDurationHistogram = once(async () => {
+  const otel = await OtelApi.value;
+  if (!otel) return null;
+  // service.name is a resource attribute, applied by the configured provider.
+  return otel.metrics
+    .getMeter('workflow')
+    .createHistogram('workflow.step.execute.duration', {
+      description: 'Duration of user step execution',
+      unit: 'ms',
+    });
+});
+
 /**
  * One-shot runtime diagnostic (DEBUG=workflow:* only), same shape as the one
  * world-vercel emits tagged `world-vercel`: prints how this module instance
@@ -276,6 +288,19 @@ export async function recordElapsedSpan(
   const tracer = await Tracer.value;
   if (!tracer) return;
   tracer.startSpan(spanName, { ...opts, startTime: startEpochMs }).end();
+}
+
+/**
+ * Records the same user-code interval as the inner `step.execute` span. The
+ * configured OpenTelemetry meter provider attaches resource dimensions such as
+ * service.name, so this avoids accepting a caller-controlled service tag.
+ */
+export async function recordStepExecutionDuration(
+  durationMs: number,
+  status: 'ok' | 'error'
+): Promise<void> {
+  const histogram = await StepExecutionDurationHistogram.value;
+  histogram?.record(durationMs, { 'workflow.step.status': status });
 }
 
 /**

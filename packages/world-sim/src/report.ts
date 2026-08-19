@@ -414,10 +414,7 @@ export function renderScenario(
       `      run=${result.runId || '(none)'} outcome=${result.outcome} ` +
         `events=${result.events.length} deliveries=${result.deliveries} ` +
         `worldCalls=${result.worldCalls} virtual=${formatDuration(result.virtualElapsedMs)} ` +
-        `wall=${result.wallMs.toFixed(0)}ms replay=${describeReplay(result)}` +
-        // Only when it is on. The default is production, and a line that
-        // repeats "this is the ordinary world" on every scenario says nothing.
-        (result.appendOnlyLog ? ' log=append-only' : ''),
+        `wall=${result.wallMs.toFixed(0)}ms replay=${describeReplay(result)}`,
       'dim'
     )
   );

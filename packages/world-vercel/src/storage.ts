@@ -5,6 +5,7 @@ import type {
 } from '@workflow/world';
 import {
   createWorkflowRunEvent,
+  createWorkflowRunEventBatch,
   getEvent,
   getWorkflowRunEvents,
 } from './events.js';
@@ -53,6 +54,8 @@ export function createStorage(config?: APIConfig): Storage {
         data: AnyEventRequest,
         params?: CreateEventParams
       ) => createWorkflowRunEvent(runId, data, params, config),
+      createBatch: (runId, events, params) =>
+        createWorkflowRunEventBatch(runId, events, params, config),
       get: (runId, eventId, params) => getEvent(runId, eventId, params, config),
       list: (params) => getWorkflowRunEvents(params, config),
       listByCorrelationId: (params) => getWorkflowRunEvents(params, config),

@@ -1,0 +1,79 @@
+---
+title: Batched event writes
+description: An optional World API (events.createBatch) that appends an ordered set of events in one durable write with per-event outcomes, and a suspension fan-out fold that uses it.
+---
+
+# Batched event writes (`events.createBatch`)
+
+## Motivation
+
+A workflow suspension that schedules several steps and waits previously wrote one event per entity — one `world.events.create` call per `step_created` and `wait_created`. Against a remote World each write is its own network round trip and its own crash boundary. Batching folds a suspension's schedule into **one durable write** with per-event outcomes, cutting request count and making the whole fan-out land atomically per attempt.
+
+## The World spec addition
+
+`Storage['events']` gains one **optional** method:
+
+```ts
+import type {
+  BatchEventRequest,
+  CreateEventBatchParams,
+  EventBatchResult,
+} from '@workflow/world';
+
+interface BatchCapableEvents {
+  createBatch?(
+    runId: string,
+    events: BatchEventRequest[],
+    params?: CreateEventBatchParams
+  ): Promise<EventBatchResult>;
+}
+```
+
+The supporting types, excerpted (canonical definitions live in `@workflow/world`):
+
+{/* @skip-typecheck illustrative excerpts of the canonical @workflow/world types */}
+```ts
+interface BatchEventRequest {
+  /** The event — the same discriminated union the single `create` takes. */
+  event: CreateEventRequest;
+  /** Client event time; under slot identity, the source of the durable createdAt. */
+  occurredAt?: Date;
+  /** Per-event compute attribution, same as the single create's CreateEventParams. */
+  computeInstanceId?: string;
+}
+
+type BatchEventItemResult =
+  | { status: 200; event: Event; run?: WorkflowRun; step?: Step; wait?: Wait }
+  | { status: number; error: string; message: string };
+
+interface EventBatchResult {
+  /** One entry per submitted event, in request order. */
+  results: BatchEventItemResult[];
+}
+```
+
+The contract:
+
+- **Ordered**: events land in the run's log in request order at consecutive slots. A concurrent writer may push the whole batch to slots above the caller's view; no skipped-event report accompanies the batch result, so a position-tracking caller compares committed slots against its expectation and reloads to observe what interleaved (its local view stays a strict prefix of the log — never a hole).
+- **Per-event outcomes**: the batch is processed as a whole, and each event reports what its own single `create` would have returned — `200` plus the materialized entity, or the single-path status/code (`409`/`conflict` for an event an earlier delivery already applied). Callers reuse their single-path conflict handling per event.
+- **Idempotent on retry — for entity-conditioned shapes**: creates, terminal transitions, and the born-running pair are each guarded by their own entity condition, so retrying a batch of them that (partially) committed converges to per-event `409`s with nothing written twice. A standalone bare `step_started` or a `step_retrying` re-patches its step instead of converging, so `world-vercel` only auto-retries batches whose every event is retry-convergent (everything the runtime folds today is), and rejects `hook_received` in a batch outright.
+- **Method presence is the capability declaration.** A World that doesn't implement it keeps the single-event path; a World that implements it must make each attempt atomic (a lost race leaves nothing behind). `world-vercel` implements it against `POST /v4/runs/:runId/events/batch` (slot-identity runs only, i.e. specVersion ≥ 6). `world-local` and `world-postgres` deliberately do not — batching buys nothing for a local write.
+- **Not batchable** (Worlds reject the request): `run_created`, `run_started`, `run_cancelled`, `hook_created`, `hook_disposed`, `attr_set`, and multiple events targeting one entity — except `step_created` followed by `step_started` for the same step, which creates the step born-running.
+
+## The runtime integration (suspension fan-out fold)
+
+**On by default.** The suspension handler folds a **clean fan-out** — the suspension's eager `step_created` and `wait_created` writes — into `createBatch` calls of at most 32 events (mirroring the server's transaction budgets). Chunks of a larger fan-out commit **concurrently**: slot assignment is the World's, so parallel chunks race for slot ranges exactly like the pre-fold path's parallel single writes did, and per-entity conditions — not commit order — carry correctness. The fold only engages when the World implements `createBatch`, the run is on slot identity, and the suspension carries no attribute writes, no hook writes, and no resilient step dispatch; everything else keeps the single-event path byte-for-byte.
+
+**Per-chunk continuation.** Each chunk's follow-on work starts the moment **that chunk** commits, not when the whole fold does: a chunk's step-execution queue messages publish right off its own commit (publish-after-create holds per step), and only the chunk carrying the inline pairs gates the replay's continuation — trailing chunks' commits and publishes are joined before the invocation can acknowledge its message, so the durability contract ("every create durable before ack") is unchanged.
+
+**Pre-claimed inline pairs.** When the fold engages and has company for them (at least two inline steps, or one plus other batchable events), the steps the runtime is about to execute inline join the batch as adjacent `[step_created, step_started]` pairs — the created row carrying the input, the started row a bare ownership-stamped claim the World folds into a born-running create. The inline bodies start straight off the pair chunk's commit (in parallel with the queue publishes and any trailing chunks) with no per-step claim POST at all, and a pair that loses its atomic create-claim to a concurrent delivery skips its body exactly as a lost lazy claim does. A lone inline step with nothing else to batch keeps the optimistic lazy-start path, whose claim overlaps the body.
+
+Per-event `409`s are tolerated the same way the single path tolerates `EntityConflictError` (a concurrent delivery already created the entity); any other per-event failure fails the suspension write the way a single-path rejection would. A batch carrying a `step_started` (that is, any batch with inline pairs) is **not** retried in-process on a transport blip: a pair's `409` cannot be told apart from the caller's own earlier attempt having committed it, so recovery goes through queue redelivery instead, where the step's ownership stamp routes it back to the same invocation.
+
+`createBatch` is optional, so today only the Vercel World folds at all: every other World keeps the single-event path and never sends a pair.
+
+**Escape hatch:** set `WORKFLOW_BATCH_TRANSITIONS=0` (or `false`) to disable batching and restore the exact prior one-write-per-event path — see [`WORKFLOW_BATCH_TRANSITIONS`](/docs/configuration/worlds#workflow_batch_transitions).
+
+## Follow-up
+
+The deferred sequential transition — holding `step_completed(N)` across the replay turn and committing `[step_completed(N), step_created(N+1), step_started(N+1)]` as one batch at the next lazy start — builds on this contract and ships separately.

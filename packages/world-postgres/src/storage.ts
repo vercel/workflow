@@ -1170,7 +1170,14 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
         }
       }
 
-      // Hook-related event validation (ordering)
+      // Hook-related event validation (existence).
+      //
+      // An unlocked read outside any transaction, so it settles only the case
+      // where the hook was already gone when the request arrived. It is NOT
+      // what orders a delivery against a disposal: the disposal can commit in
+      // the gap between this read and the append. Both writers take the hook's
+      // row lock for that — see the `hook_disposed` and `hook_received`
+      // branches below.
       if (isHookEventRequiringExistence(data.eventType) && data.correlationId) {
         const [existingHook] = await drizzle
           .select({ hookId: Schema.hooks.hookId })
@@ -1955,19 +1962,53 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
         }
       }
 
-      // Handle hook_disposed event: delete hook entity atomically.
-      // Uses DELETE ... RETURNING to ensure only one concurrent caller
-      // succeeds — if no rows are returned, the hook was already disposed.
+      // Handle hook_disposed event: delete the hook entity and append the
+      // disposal in ONE transaction.
+      //
+      // `DELETE ... RETURNING` ensures only one concurrent caller succeeds — if
+      // no rows are returned, the hook was already disposed. The delete also
+      // takes the hook row's lock, and the transaction is what holds it until
+      // the `hook_disposed` row exists. Committed separately (as this used to
+      // be), the lock is released at the delete's own autocommit, which leaves a
+      // window for a resume to pass its existence check and land its
+      // `hook_received` AFTER this disposal. That order is durable, and it
+      // corrupts the owning run for good: no replay can consume a delivery
+      // behind the disposal that retired the hook's consumer, so it strands,
+      // every replay reports divergence and the run ends in
+      // CorruptedEventLogError. See vercel/workflow#2781, which fixed the same
+      // ordering for world-local.
       if (data.eventType === 'hook_disposed' && data.correlationId) {
-        const [deleted] = await drizzle
-          .delete(Schema.hooks)
-          .where(eq(Schema.hooks.hookId, data.correlationId))
-          .returning({ hookId: Schema.hooks.hookId });
-        if (!deleted) {
-          throw new EntityConflictError(
-            `Hook "${data.correlationId}" already disposed`
-          );
-        }
+        const disposedHookId = data.correlationId;
+        value = await drizzle.transaction(async (tx) => {
+          const [deleted] = await tx
+            .delete(Schema.hooks)
+            .where(eq(Schema.hooks.hookId, disposedHookId))
+            .returning({ hookId: Schema.hooks.hookId });
+          if (!deleted) {
+            throw new EntityConflictError(
+              `Hook "${disposedHookId}" already disposed`
+            );
+          }
+
+          // Allocated only after the lock is held, matching hook_received's
+          // ordering guarantee: a writer that had to wait must not carry an
+          // earlier position into a later insert.
+          const eventValue = await insertEventRow(tx, {
+            runId: effectiveRunId,
+            eventId: await getEventId(tx),
+            correlationId: disposedHookId,
+            eventType: data.eventType,
+            eventData: storedEventData,
+            specVersion: effectiveSpecVersion,
+          });
+          if (!eventValue) {
+            throw new EntityConflictError(
+              `Event for hook "${disposedHookId}" could not be created`
+            );
+          }
+          eventId = eventValue.eventId;
+          return { createdAt: eventValue.createdAt };
+        }, SLOT_INSERT_TRANSACTION);
       }
 
       // Handle hook_received event: append the event only if the run has
@@ -2000,9 +2041,37 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
             );
           }
 
-          // Allocate the position only after the row lock is acquired,
+          // Re-check the hook under its own row lock, for the ordering the
+          // unlocked read near the top of `create` cannot settle. `FOR UPDATE`
+          // blocks on the disposer's `DELETE`, which holds that lock until its
+          // `hook_disposed` row is committed, then re-evaluates: either this
+          // delivery got the lock first and its `hook_received` is ordered
+          // BEFORE the disposal, or the disposer got it and the row is gone and
+          // this delivery is refused. The one order that is unreachable is the
+          // one that corrupts the run — a `hook_received` journaled behind its
+          // hook's `hook_disposed`, which no replay can consume.
+          //
+          // Under READ COMMITTED (see SLOT_INSERT_TRANSACTION) a locked read of
+          // a row deleted by the transaction it waited on returns no row rather
+          // than raising, so the refusal needs no serialization-failure
+          // handling. Reported as HookNotFoundError, matching the unlocked
+          // check and the public resume contract for a hook that can no longer
+          // receive.
+          if (data.correlationId) {
+            const [liveHook] = await tx
+              .select({ hookId: Schema.hooks.hookId })
+              .from(Schema.hooks)
+              .where(eq(Schema.hooks.hookId, data.correlationId))
+              .for('update')
+              .limit(1);
+            if (!liveHook) {
+              throw new HookNotFoundError(data.correlationId);
+            }
+          }
+
+          // Allocate the position only after the row locks are acquired,
           // matching step_started's ordering guarantee: a writer blocked
-          // on the run row must not carry an earlier position into a later
+          // on a lock must not carry an earlier position into a later
           // insert.
           const eventValue = await insertEventRow(tx, {
             runId: effectiveRunId,

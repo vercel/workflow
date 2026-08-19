@@ -100,6 +100,7 @@ import { runIdCreatedAt } from './runtime/run-id-time.js';
 import {
   DEFAULT_STEP_MAX_RETRIES,
   executeStep,
+  type PreclaimedInlineStart,
 } from './runtime/step-executor.js';
 import { computeStepLatencyTracking } from './runtime/step-latency.js';
 import {
@@ -1674,6 +1675,7 @@ export function workflowEntrypoint(
                             workflowDeploymentId: bgRun.deploymentId,
                             workflowName,
                             workflowStartedAt: bgStartedAt,
+                            requestId,
                             rootRunId: rootRunIdFrom(bgRun.attributes, runId),
                             stepId: incomingStepId,
                             stepName: incomingStepName,
@@ -2696,6 +2698,7 @@ export function workflowEntrypoint(
                           // requeueing the step.
                           deliveryAttempt: metadata.attempt,
                           ownerMessageId: metadata.messageId,
+                          requestId,
                         });
                         if (quickjsResult?.timeoutSeconds !== undefined) {
                           // Use `reinvoke` rather than returning
@@ -3126,6 +3129,21 @@ export function workflowEntrypoint(
                               ),
                               getTraceCarrier: nextTraceCarrier,
                             },
+                            // Inline pre-claims: lets the batched fan-out
+                            // fold the lazy-inline steps' step_created +
+                            // step_started pairs — stamped with this
+                            // message's ownership — into the one commit, so
+                            // the bodies below start straight off it. See
+                            // SuspensionHandlerResult.inlineClaims.
+                            ownerMessageId: metadata.messageId,
+                            // Let the fold return once the pair chunk has
+                            // committed: trailing chunks and the per-chunk
+                            // step-message publishes ride
+                            // `deferredBatchWork`, which this invocation
+                            // joins before it can ack (below, next to the
+                            // dispatch join) — so the durability contract
+                            // is unchanged while the bodies start earlier.
+                            allowDeferredBatchWork: true,
                           });
                         } catch (suspensionError) {
                           // A suspension create was rejected as stale: re-derive
@@ -3586,7 +3604,21 @@ export function workflowEntrypoint(
                             )
                           );
                         }
-                        await Promise.all(dispatches);
+                        // The dispatch publishes and the inline bodies below
+                        // run CONCURRENTLY: the suspension commit already made
+                        // every dispatched step durable (and, when the fold
+                        // engaged, settled the inline pairs' claims), which is
+                        // the only ordering both sides need — so neither waits
+                        // for the other. The joins below (before step results
+                        // are read, and on the no-inline early returns) keep
+                        // the failure contract: a dispatch rejection still
+                        // fails this delivery, after in-flight bodies settle.
+                        const dispatchesSettled = Promise.all(dispatches);
+                        // A rejection must not surface as an unhandled
+                        // rejection while the bodies run (or if setup between
+                        // here and the join throws first); awaiting the
+                        // original promise below still observes it.
+                        dispatchesSettled.catch(() => {});
 
                         // The set of steps THIS invocation executes: the
                         // deferred lazy-inline batch plus any owned-recovery
@@ -3602,12 +3634,29 @@ export function workflowEntrypoint(
                           correlationId: string;
                           stepName: string;
                           lazyStepInput?: (typeof lazyInlineSteps)[number]['dehydratedInput'];
+                          preclaimedStart?: PreclaimedInlineStart;
                         }> = [
-                          ...lazyInlineSteps.map((s) => ({
-                            correlationId: s.correlationId,
-                            stepName: s.stepName,
-                            lazyStepInput: s.dehydratedInput,
-                          })),
+                          ...lazyInlineSteps.map((s) => {
+                            // Pre-claimed by the suspension batch: the pair
+                            // already settled this step's create + claim, so
+                            // the executor runs (or skips) the body off that
+                            // verdict instead of sending a lazy start with
+                            // the input.
+                            const claim = suspensionResult.inlineClaims.get(
+                              s.correlationId
+                            );
+                            return claim
+                              ? {
+                                  correlationId: s.correlationId,
+                                  stepName: s.stepName,
+                                  preclaimedStart: claim,
+                                }
+                              : {
+                                  correlationId: s.correlationId,
+                                  stepName: s.stepName,
+                                  lazyStepInput: s.dehydratedInput,
+                                };
+                          }),
                           ...ownedRecoverySteps.map((s) => ({
                             correlationId: s.correlationId,
                             stepName: s.stepName,
@@ -3652,6 +3701,14 @@ export function workflowEntrypoint(
                         // queued (or no work needs scheduling). Exit and let
                         // the queue drive subsequent replays.
                         if (inlineExecutions.length === 0) {
+                          // Nothing runs concurrently with the dispatches on
+                          // this path — join them (and the fold's deferred
+                          // chunk commits/publishes) here so a failure fails
+                          // the delivery exactly as it always has.
+                          await Promise.all([
+                            dispatchesSettled,
+                            suspensionResult.deferredBatchWork,
+                          ]);
                           // A `hook.getConflict()` awaiter needs an immediate
                           // re-invocation: the replay consumes the
                           // just-committed hook_created and resolves the
@@ -3848,9 +3905,24 @@ export function workflowEntrypoint(
                         // this is the view the scheduling decision was made
                         // against. The executor advances from it as its own
                         // writes land; see `slotSnapshot` in step-executor.
-                        const inlineClaimSnapshot = slotSnapshotParams(
+                        const loadedSlotSnapshot = slotSnapshotParams(
                           eventLog.events
                         );
+                        // The batched fan-out's own events are not in the
+                        // loaded log yet (the next iteration reloads), but
+                        // this invocation wrote them — fold the batch's
+                        // ceiling in, or every inline terminal write would
+                        // name a pre-batch position and be answered with a
+                        // skipped-slot report echoing the events this
+                        // suspension just committed.
+                        const batchSlotCeiling =
+                          suspensionResult.batchCommittedSlotCeiling;
+                        const inlineClaimSnapshot =
+                          batchSlotCeiling !== undefined &&
+                          batchSlotCeiling >
+                            (loadedSlotSnapshot.eventCount ?? 0)
+                            ? { eventCount: batchSlotCeiling }
+                            : loadedSlotSnapshot;
 
                         // TTR: consumed by this batch. Every step is handed
                         // the SAME tracking object and its one-shot
@@ -3879,6 +3951,7 @@ export function workflowEntrypoint(
                                 workflowDeploymentId: workflowRun.deploymentId,
                                 workflowName,
                                 workflowStartedAt,
+                                requestId,
                                 rootRunId: rootRunIdFrom(
                                   workflowRun.attributes,
                                   runId
@@ -3909,7 +3982,8 @@ export function workflowEntrypoint(
                                 // every inline step (which would be O(n²)
                                 // across a long sequential workflow).
                                 authoritativeAttempt:
-                                  s.lazyStepInput !== undefined
+                                  s.lazyStepInput !== undefined ||
+                                  s.preclaimedStart !== undefined
                                     ? 1
                                     : countStepStartedEvents(
                                         eventLog.events,
@@ -3923,8 +3997,15 @@ export function workflowEntrypoint(
                                 // input on step_started so the world creates
                                 // the step on the fly. Absent for
                                 // owned-recovery steps, whose input hydrates
-                                // from the existing step entity.
+                                // from the existing step entity, and for
+                                // pre-claimed steps, whose pair already
+                                // carried it.
                                 lazyStepInput: s.lazyStepInput,
+                                // Pre-claimed inline start: the suspension
+                                // batch settled this step's create + claim;
+                                // the executor runs (or skips) the body off
+                                // that verdict with no start write of its own.
+                                preclaimedStart: s.preclaimedStart,
                                 // Inline ownership: stamp (or re-stamp) this
                                 // invocation's queue message ID on the
                                 // step_started, so wake replays see the body
@@ -3945,7 +4026,8 @@ export function workflowEntrypoint(
                                 runReadyBarrier,
                                 slotSnapshot: inlineClaimSnapshot,
                                 ...(stepIndex === 0 &&
-                                s.lazyStepInput !== undefined &&
+                                (s.lazyStepInput !== undefined ||
+                                  s.preclaimedStart !== undefined) &&
                                 latencyTracking
                                   ? { latencyTracking }
                                   : {}),
@@ -3964,14 +4046,15 @@ export function workflowEntrypoint(
                             // these bodies until they settle — see
                             // assertNoInFlightOwnedSteps.
                             inFlightOwnedSteps.add(s.correlationId);
-                            // Lazy steps are brand-new (their create-claim
-                            // is the exactly-once gate), but an
-                            // owned-recovery step already exists and its
-                            // delayed backstop message may fire mid-body
+                            // Lazy and pre-claimed steps are brand-new
+                            // (their create-claim is the exactly-once gate),
+                            // but an owned-recovery step already exists and
+                            // its delayed backstop message may fire mid-body
                             // in this same process — route those through
                             // the in-process single-flight.
                             const executed =
-                              s.lazyStepInput === undefined
+                              s.lazyStepInput === undefined &&
+                              s.preclaimedStart === undefined
                                 ? runStepSingleFlight(
                                     runId,
                                     s.correlationId,
@@ -3983,7 +4066,39 @@ export function workflowEntrypoint(
                             );
                           }
                         );
+                        // The joins below sit BETWEEN these promises' creation
+                        // and the `Promise.all` that reads them, so a body that
+                        // rejects while a publish or a trailing chunk commit is
+                        // still in flight would have no handler attached at the
+                        // microtask checkpoint — an `unhandledRejection`, fatal
+                        // under Node's default `--unhandled-rejections=throw`.
+                        // A 412 stale-claim rejection races exactly that window.
+                        // Attach now; every rejection is still observed by the
+                        // awaits below, which are what decide the outcome.
+                        for (const promise of stepExecutionPromises) {
+                          promise.catch(() => {});
+                        }
                         try {
+                          // Join the dispatch publishes launched above and
+                          // the fold's deferred batch work (trailing chunk
+                          // commits + per-chunk step-message publishes) —
+                          // the bodies are already running in parallel with
+                          // both, and this invocation must not ack before
+                          // every create and publish is durable. A failure
+                          // keeps its old contract (fail this delivery so
+                          // the message redelivers), but the in-flight
+                          // bodies must settle first: an owned body left
+                          // running past this handler would race its own
+                          // redelivery.
+                          try {
+                            await Promise.all([
+                              dispatchesSettled,
+                              suspensionResult.deferredBatchWork,
+                            ]);
+                          } catch (dispatchErr) {
+                            await Promise.allSettled(stepExecutionPromises);
+                            throw dispatchErr;
+                          }
                           stepResults = await Promise.all(
                             stepExecutionPromises
                           );

@@ -1450,50 +1450,58 @@ describe('workflowEntrypoint step-dispatch ack ordering', () => {
       return created;
     };
 
-    const eventsCreate = vi.fn(async (_runId: string, data: any) => {
-      if (data.eventType === 'run_started') {
-        return { run: workflowRun, events: [] as Event[] };
-      }
-      if (data.eventType === 'step_created') {
-        // Eager step_created for the QUEUED step (the one not run inline).
-        // It must be durably created before its dispatch send — the ordering
-        // assertion below checks step_created precedes queue_dispatch_start.
-        order.push('step_created');
+    const createdEventParams: any[] = [];
+    const stepStartedParams: any[] = [];
+    const eventsCreate = vi.fn(
+      async (_runId: string, data: any, params?: any) => {
+        createdEventParams.push(params);
+        if (data.eventType === 'step_started') {
+          stepStartedParams.push(params);
+        }
+        if (data.eventType === 'run_started') {
+          return { run: workflowRun, events: [] as Event[] };
+        }
+        if (data.eventType === 'step_created') {
+          // Eager step_created for the QUEUED step (the one not run inline).
+          // It must be durably created before its dispatch send — the ordering
+          // assertion below checks step_created precedes queue_dispatch_start.
+          order.push('step_created');
+          return { event: recordEvent(data) };
+        }
+        if (data.eventType === 'step_started') {
+          // The inline step's lazy step_started creates the step on the fly:
+          // record a synthetic step_created so replay observes it, then the
+          // step_started, and return a running step so executeStep can run the
+          // (registered, no-op) body to completion.
+          const lazy = data.eventData as { stepName?: string; input?: unknown };
+          if (lazy?.input !== undefined) {
+            recordEvent({
+              eventType: 'step_created',
+              specVersion: SPEC_VERSION_CURRENT,
+              correlationId: data.correlationId,
+              eventData: { stepName: lazy.stepName, input: lazy.input },
+            });
+          }
+          const created = recordEvent(data);
+          return {
+            event: created,
+            step: {
+              runId: workflowRun.runId,
+              stepId: data.correlationId,
+              stepName: lazy?.stepName,
+              status: 'running' as const,
+              attempt: 1,
+              input: lazy?.input,
+              startedAt: new Date(),
+              createdAt: new Date(),
+              updatedAt: new Date(),
+            },
+            ...(lazy?.input !== undefined ? { stepCreated: true } : {}),
+          };
+        }
         return { event: recordEvent(data) };
       }
-      if (data.eventType === 'step_started') {
-        // The inline step's lazy step_started creates the step on the fly:
-        // record a synthetic step_created so replay observes it, then the
-        // step_started, and return a running step so executeStep can run the
-        // (registered, no-op) body to completion.
-        const lazy = data.eventData as { stepName?: string; input?: unknown };
-        if (lazy?.input !== undefined) {
-          recordEvent({
-            eventType: 'step_created',
-            specVersion: SPEC_VERSION_CURRENT,
-            correlationId: data.correlationId,
-            eventData: { stepName: lazy.stepName, input: lazy.input },
-          });
-        }
-        const created = recordEvent(data);
-        return {
-          event: created,
-          step: {
-            runId: workflowRun.runId,
-            stepId: data.correlationId,
-            stepName: lazy?.stepName,
-            status: 'running' as const,
-            attempt: 1,
-            input: lazy?.input,
-            startedAt: new Date(),
-            createdAt: new Date(),
-            updatedAt: new Date(),
-          },
-          ...(lazy?.input !== undefined ? { stepCreated: true } : {}),
-        };
-      }
-      return { event: recordEvent(data) };
-    });
+    );
 
     const queue = vi.fn(async (queueName: string, message: any) => {
       // Only the step-dispatch send carries a stepId; ignore other sends.
@@ -1560,7 +1568,13 @@ describe('workflowEntrypoint step-dispatch ack ordering', () => {
       }
     );
 
-    return { handlerPromise, order, queue };
+    return {
+      handlerPromise,
+      order,
+      queue,
+      createdEventParams,
+      stepStartedParams,
+    };
   }
 
   it('completes the step-dispatch send before the orchestrator message is acked', async () => {
@@ -1662,7 +1676,7 @@ describe('workflowEntrypoint step-dispatch ack ordering', () => {
     // continuation is queued (it carries no stepId).
     process.env.WORKFLOW_MAX_INLINE_STEPS = '3';
 
-    const { handlerPromise, order } = await driveHandler({
+    const { handlerPromise, order, stepStartedParams } = await driveHandler({
       runId: 'wrun_multi_inline',
       queueImpl: async () => ({ messageId: null }),
     });
@@ -1673,6 +1687,10 @@ describe('workflowEntrypoint step-dispatch ack ordering', () => {
     // No eager step_created and no step-dispatch send: both steps went inline.
     expect(order).not.toContain('step_created');
     expect(order).not.toContain('queue_dispatch_start');
+    expect(stepStartedParams).toHaveLength(2);
+    for (const params of stepStartedParams) {
+      expect(params).toMatchObject({ requestId: 'req_test' });
+    }
   });
 
   it('does not re-queue a throttled inline step as an input-less background step', async () => {
@@ -2000,6 +2018,13 @@ describe('workflowEntrypoint resilient step consumption (stepInput re-ensure)', 
     );
     expect(createdIdx).toBeGreaterThanOrEqual(0);
     expect(createdIdx).toBeLessThan(startedIdx);
+    // The queued step start carries the queue invocation's request provenance.
+    const startIdx = createdEvents.findIndex(
+      (e) => e.eventType === 'step_started'
+    );
+    expect(createdEventParams[startIdx]).toMatchObject({
+      requestId: 'req_test',
+    });
     // The step body ran and its terminal event was written.
     expect(stepBodySpy).toHaveBeenCalledWith(2, 3);
     expect(createdEvents).toContainEqual(
@@ -2090,6 +2115,15 @@ describe('workflowEntrypoint resilient step consumption (stepInput re-ensure)', 
     expect(createdEventParams[ensureIdx]).toMatchObject({
       viaStepDispatch: true,
     });
+    // Both the failed bare start and the recovery start retain the current
+    // invocation's provenance.
+    for (const [index, event] of createdEvents.entries()) {
+      if (event.eventType === 'step_started') {
+        expect(createdEventParams[index]).toMatchObject({
+          requestId: 'req_test',
+        });
+      }
+    }
   });
 
   it('recovers in-band on attempt 1 with the local-world error shape (no status)', async () => {

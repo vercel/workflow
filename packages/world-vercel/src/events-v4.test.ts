@@ -8,9 +8,10 @@ import {
   WorkflowWorldError,
 } from '@workflow/errors';
 import type { AnyEventRequest } from '@workflow/world';
+import { NODE_HTTP_ENV_VAR } from '@workflow/world';
 import { decode, encode } from 'cbor-x';
 import { MockAgent } from 'undici';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { splitEventDataForV4 } from './events.js';
 import {
   createWorkflowRunEventV4,
@@ -1506,7 +1507,15 @@ describe('v4 POST frame meta forwards every field the splitter produces', () => 
  * `fetchV4` the recycler is never told anything and the pool lives forever.
  */
 describe('v4 transport reports failures to the events recycler', () => {
+  // There is only an undici pool to retire while the adapter owns one:
+  // `WORKFLOW_NODE_HTTP` takes the request off undici and makes
+  // getEventsDispatcher return `undefined`, so pin the flag off here.
+  beforeEach(() => {
+    vi.stubEnv(NODE_HTTP_ENV_VAR, '0');
+  });
+
   afterEach(() => {
+    vi.unstubAllEnvs();
     vi.restoreAllMocks();
   });
 

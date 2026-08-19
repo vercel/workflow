@@ -8,6 +8,7 @@ import { WORKFLOW_DESERIALIZE, WORKFLOW_SERIALIZE } from '@workflow/serde';
 import {
   envNumber,
   SPEC_VERSION_CURRENT,
+  type WorkflowRun,
   type WorkflowRunStatus,
   type World,
 } from '@workflow/world';
@@ -30,6 +31,10 @@ import {
 } from './runs.js';
 
 const RETURN_VALUE_POLL_INTERVAL_MS = 1_000;
+const PAYLOAD_TERMINAL_RUN_STATUSES = new Set<WorkflowRunStatus>([
+  'completed',
+  'failed',
+]);
 
 /** @internal */
 export function getReturnValuePollIntervalMs(): number {
@@ -180,12 +185,12 @@ export class Run<TResult> {
    * to be resolved once.
    * @internal
    */
-  #getEncryptionKey(): Promise<PayloadKey | undefined> {
+  #getEncryptionKey(run?: WorkflowRun): Promise<PayloadKey | undefined> {
     if (!this.#encryptionKeyPromise) {
       this.#encryptionKeyPromise = (async () => {
         const world = await this.#lazyWorldPromise;
-        const run = await world.runs.get(this.runId);
-        const rawKey = await world.getEncryptionKeyForRun?.(run);
+        const runData = run ?? (await world.runs.get(this.runId));
+        const rawKey = await world.getEncryptionKeyForRun?.(runData);
         return rawKey ? await deriveRunPayloadKeys(rawKey) : undefined;
       })();
     }
@@ -257,7 +262,9 @@ export class Run<TResult> {
   get status(): Promise<WorkflowRunStatus> {
     'use step';
     return this.#lazyWorldPromise.then((world) =>
-      world.runs.get(this.runId).then((run) => run.status)
+      world.runs
+        .get(this.runId, { resolveData: 'none' })
+        .then((run) => run.status)
     );
   }
 
@@ -358,6 +365,49 @@ export class Run<TResult> {
     });
   }
 
+  /** @internal */
+  async #resolveTerminalReturnValue(run: WorkflowRun): Promise<TResult> {
+    if (run.status === 'completed') {
+      const encryptionKey = await this.#getEncryptionKey(run);
+      return await hydrateWorkflowReturnValue(
+        run.output,
+        this.runId,
+        encryptionKey
+      );
+    }
+
+    if (run.status === 'cancelled') {
+      throw new WorkflowRunCancelledError(this.runId);
+    }
+
+    if (run.status === 'failed') {
+      // Hydrate the serialized run error so the original thrown value
+      // (with its type identity, cause chain, etc.) is set as the
+      // `cause` on WorkflowRunFailedError.
+      const encryptionKey = await this.#getEncryptionKey(run);
+      let hydratedError: unknown;
+      try {
+        hydratedError = await hydrateRunError(
+          run.error,
+          this.runId,
+          encryptionKey
+        );
+      } catch {
+        // If hydration fails, surface a generic fallback rather than
+        // leaving the user with a raw Uint8Array. The run's errorCode
+        // is still preserved on the thrown WorkflowRunFailedError.
+        hydratedError = new Error('Failed to hydrate workflow run error');
+      }
+      throw new WorkflowRunFailedError(this.runId, hydratedError, {
+        errorCode: run.errorCode,
+      });
+    }
+
+    // Terminal statuses are immutable, but if an inconsistent world returns
+    // a non-terminal full record, resume polling safely.
+    throw new WorkflowRunNotCompletedError(this.runId, run.status);
+  }
+
   /**
    * Polls the workflow return value until it is completed.
    * @internal
@@ -396,50 +446,33 @@ export class Run<TResult> {
     while (true) {
       const iterationStartedAt = Date.now();
       try {
-        const run = waitForTerminalStatus
+        // Metadata only, either way: the status is all this iteration needs,
+        // and payload refs are resolved once below, after a terminal status is
+        // observed.
+        const runMetadata = waitForTerminalStatus
           ? await waitForTerminalStatus(this.runId, {
               timeoutMs: getReturnValueWaitTimeoutMs(),
+              resolveData: 'none',
             })
-          : await world.runs.get(this.runId);
+          : await world.runs.get(this.runId, {
+              resolveData: 'none',
+            });
 
-        if (run.status === 'completed') {
-          const encryptionKey = await this.#getEncryptionKey();
-          return await hydrateWorkflowReturnValue(
-            run.output,
-            this.runId,
-            encryptionKey
-          );
-        }
-
-        if (run.status === 'cancelled') {
+        if (runMetadata.status === 'cancelled') {
           throw new WorkflowRunCancelledError(this.runId);
         }
 
-        if (run.status === 'failed') {
-          // Hydrate the serialized run error so the original thrown value
-          // (with its type identity, cause chain, etc.) is set as the
-          // `cause` on WorkflowRunFailedError.
-          const encryptionKey = await this.#getEncryptionKey();
-          let hydratedError: unknown;
-          try {
-            hydratedError = await hydrateRunError(
-              run.error,
-              this.runId,
-              encryptionKey
-            );
-          } catch {
-            // If hydration fails, surface a generic fallback rather than
-            // leaving the user with a raw Uint8Array. The run's errorCode
-            // is still preserved on the thrown WorkflowRunFailedError.
-            hydratedError = new Error('Failed to hydrate workflow run error');
-          }
-          throw new WorkflowRunFailedError(this.runId, hydratedError, {
-            errorCode: run.errorCode,
+        if (PAYLOAD_TERMINAL_RUN_STATUSES.has(runMetadata.status)) {
+          // The polling read above deliberately skips input/output/error refs.
+          // Resolve payloads only once the run reaches a terminal state.
+          const run = await world.runs.get(this.runId, {
+            resolveData: 'all',
           });
+          return await this.#resolveTerminalReturnValue(run);
         }
 
         // Run not completed yet — sleep and poll again.
-        throw new WorkflowRunNotCompletedError(this.runId, run.status);
+        throw new WorkflowRunNotCompletedError(this.runId, runMetadata.status);
       } catch (error) {
         if (WorkflowRunNotCompletedError.is(error)) {
           // Space consecutive non-terminal observations at least one poll
