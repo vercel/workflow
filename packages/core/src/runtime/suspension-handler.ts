@@ -60,6 +60,7 @@ import {
 } from './helpers.js';
 import { ReplayRecoveryReporter } from './replay-recovery-reporter.js';
 import type { PreclaimedInlineStart } from './step-executor.js';
+import { unserializableStepInputPlaceholder } from './unserializable-step.js';
 
 export interface SuspensionHandlerParams {
   suspension: WorkflowSuspension;
@@ -765,8 +766,11 @@ export async function handleSuspension({
       }
     );
     await ensureRunReady();
+    // Marker placeholder (not empty args): byte-identical-to-zero-args would
+    // make `workflow inspect steps` show "no arguments" for the one step
+    // whose entire problem was its arguments.
     const placeholderInput = (await dehydrateStepArguments(
-      { args: [], closureVars: [], thisVal: undefined },
+      unserializableStepInputPlaceholder(),
       runId,
       encryptionKey,
       suspension.globalThis,
@@ -849,6 +853,13 @@ export async function handleSuspension({
       }
     }
     failedStepCorrelationIds.add(queueItem.correlationId);
+    // Release the inline slot bookkeeping: the step never runs, so it must
+    // not appear in the rebuilt `lazyInlineSteps`. (Its slot in the first-N
+    // selection and in `inlinePairFoldEligible`'s arithmetic was consumed
+    // before dehydration could reveal the failure — inherent to selecting
+    // before serializing, and bounded to one wasted slot on a pass that
+    // ends in a forced replay anyway.)
+    lazyInlineCorrelationIds.delete(queueItem.correlationId);
   };
 
   // Serialization always runs through the one ordinary path below, so the
@@ -1036,6 +1047,17 @@ export async function handleSuspension({
             // e.g. RuntimeDecryptionError — an SDK fault, not a user value
             // problem. Keep its identity (RUNTIME_ERROR) and current
             // fail-the-suspension behavior.
+            throw err;
+          }
+          if (!stepDispatch) {
+            // No dispatch target means no replay will observe a
+            // finalization: this is the terminal drain (or a create-only
+            // test caller). The run is already completing/failing, so
+            // writing step_created + step_failed here would leave e.g. a
+            // COMPLETED run carrying a failed step nothing can ever
+            // observe — reading as a bug from the dashboard. Rethrow
+            // instead; the drain's own catch swallows it, preserving its
+            // pre-existing behavior (no rows for the unawaited step).
             throw err;
           }
           await finalizeUnserializableStep(queueItem, err);
@@ -1798,6 +1820,11 @@ export async function handleSuspension({
     ...Attribute.WorkflowStepsCreated(stepItems.length),
     ...Attribute.WorkflowHooksCreated(hooksNeedingCreation.length),
     ...Attribute.WorkflowWaitsCreated(waitItems.length),
+    ...(failedStepCorrelationIds.size > 0
+      ? Attribute.WorkflowStepsFailedSerialization(
+          failedStepCorrelationIds.size
+        )
+      : {}),
     ...(resilientDispatchRecovered > 0
       ? Attribute.StepResilientDispatchRecovered(resilientDispatchRecovered)
       : {}),

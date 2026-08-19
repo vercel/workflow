@@ -3347,6 +3347,25 @@ export function workflowEntrypoint(
                         if (
                           suspensionResult.failedStepCorrelationIds.size > 0
                         ) {
+                          // Join the batched fan-out's trailing chunk commits
+                          // and step-message publishes before continuing,
+                          // exactly like the two joins on the dispatch paths
+                          // below: this invocation must not proceed (and
+                          // eventually ack) before every create and publish
+                          // it launched is durable. A rejection propagates
+                          // like theirs — transient world errors rethrow to
+                          // the queue for redelivery.
+                          await suspensionResult.deferredBatchWork;
+                          // Inline steps whose pair-folded step_started this
+                          // pass already committed (`inlineClaims`) are
+                          // deliberately NOT executed on this pass: the
+                          // forced replay below re-suspends over the same
+                          // pending steps, and owned recovery (the claims
+                          // carry this message's ownerMessageId) re-executes
+                          // them there. Its "previous delivery crashed
+                          // mid-body" log is a misnomer on this path —
+                          // nothing crashed, the bodies were never started.
+                          //
                           // The failed dehydration may have executed
                           // workflow-owned code (getters/proxies) before
                           // throwing; demote to a cold replay rather than

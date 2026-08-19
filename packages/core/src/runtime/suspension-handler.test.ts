@@ -1825,6 +1825,14 @@ describe('step-argument serialization failure', () => {
     };
   }
 
+  // Finalization requires a dispatch target: a caller without one (the
+  // terminal drain) has no replay to observe the failure — see the
+  // stepDispatch gate in the per-step op.
+  const stepDispatch = () => ({
+    queueName: '__wkf_workflow_test-workflow' as ValidQueueName,
+    getTraceCarrier: vi.fn().mockResolvedValue({}),
+  });
+
   it('finalizes the step as step_created + step_failed instead of rejecting the suspension', async () => {
     const eventsCreate = vi.fn().mockImplementation(async (_runId, event) => ({
       event,
@@ -1838,6 +1846,7 @@ describe('step-argument serialization failure', () => {
       suspension: new WorkflowSuspension(pending, globalThis),
       world,
       run,
+      stepDispatch: stepDispatch(),
     });
 
     // The suspension itself resolves — the failure is scoped to the step.
@@ -1876,6 +1885,7 @@ describe('step-argument serialization failure', () => {
       suspension: new WorkflowSuspension(pending, globalThis),
       world,
       run,
+      stepDispatch: stepDispatch(),
     });
 
     const failedEvent = eventsCreate.mock.calls.find(
@@ -1908,6 +1918,7 @@ describe('step-argument serialization failure', () => {
       suspension: new WorkflowSuspension(pending, globalThis),
       world,
       run,
+      stepDispatch: stepDispatch(),
     });
 
     expect([...result.failedStepCorrelationIds]).toEqual(['s_bad']);
@@ -1942,6 +1953,9 @@ describe('step-argument serialization failure', () => {
         .mockImplementation(async (_runId, event) => ({ event }));
       const world = {
         events: { create: eventsCreate, createBatch },
+        // The batch flush publishes chunk step messages when a dispatch
+        // target is provided.
+        queue: vi.fn().mockResolvedValue({ messageId: 'msg_1' }),
         getEncryptionKeyForRun: vi.fn().mockResolvedValue(undefined),
       } as unknown as World;
       // s1 defers (cap 1); s_bad fails serialization; s3 + s4 fold into the
@@ -1957,6 +1971,7 @@ describe('step-argument serialization failure', () => {
         suspension: new WorkflowSuspension(pending, globalThis),
         world,
         run: slotRun,
+        stepDispatch: stepDispatch(),
       });
 
       expect([...result.failedStepCorrelationIds]).toEqual(['s_bad']);
@@ -1999,6 +2014,7 @@ describe('step-argument serialization failure', () => {
       suspension: new WorkflowSuspension(pending, globalThis),
       world,
       run,
+      stepDispatch: stepDispatch(),
     });
 
     expect([...result.failedStepCorrelationIds]).toEqual(['s_bad']);
@@ -2017,9 +2033,32 @@ describe('step-argument serialization failure', () => {
       suspension: new WorkflowSuspension(pending, globalThis),
       world,
       run,
+      stepDispatch: stepDispatch(),
     });
 
     // Nothing to observe the failure — no replay is forced.
     expect(result.failedStepCorrelationIds.size).toBe(0);
+  });
+
+  it('rethrows instead of finalizing when no stepDispatch is provided (terminal drain)', async () => {
+    // The drain caller (drainPendingQueueItems) passes no stepDispatch and
+    // swallows the rejection: a run that is already completing must not
+    // gain step_created + step_failed rows nothing can ever observe.
+    const eventsCreate = vi.fn().mockImplementation(async (_runId, event) => ({
+      event,
+    }));
+    const world = createWorld(eventsCreate);
+    const pending = new Map([
+      ['s_bad', stepItem('s_bad', [new Unserializable()])],
+    ]);
+
+    await expect(
+      handleSuspension({
+        suspension: new WorkflowSuspension(pending, globalThis),
+        world,
+        run,
+      })
+    ).rejects.toMatchObject({ name: 'SerializationError' });
+    expect(eventsCreate).not.toHaveBeenCalled();
   });
 });
