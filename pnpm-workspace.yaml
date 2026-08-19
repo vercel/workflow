@@ -12,7 +12,7 @@ catalog:
   "@types/node": 22.19.0
   "@vercel/functions": ^3.8.0
   "@vercel/oidc": 3.2.0
-  "@vercel/queue": 0.4.0
+  "@vercel/queue": 0.5.0
   "@vitest/coverage-v8": ^4.1.10
   "@vitest/runner": ^4.1.10
   ai: 6.0.116
@@ -30,6 +30,12 @@ onlyBuiltDependencies:
   - esbuild
 
 overrides:
+  # `@vercel/queue` accepts any `@vercel/oidc` in the 3.x line, and 3.3+ pulls in
+  # `@vercel/cli-config`, whose `xdg-app-paths` dependency instantiates itself at
+  # module scope and throws `The "path" argument must be of type string` once a
+  # bundler inlines it. Pin the queue client's copy to the last dependency-free
+  # release so a bundled queue client keeps working.
+  '@vercel/queue>@vercel/oidc': 3.2.0
   # Single @opentelemetry/api instance workspace-wide: with two resolved
   # copies (1.9.0 + 1.9.1), the copy that registers the tracer provider and
   # the copy a package imports can differ, and the API's global-registration
