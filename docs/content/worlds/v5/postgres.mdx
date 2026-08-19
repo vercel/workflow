@@ -218,6 +218,12 @@ For higher worker concurrency, Graphile Worker recommends setting `maxPoolSize` 
 
 Set to `1` when the application or framework coordinates shutdown and awaits `world.close()` before closing its workflow HTTP server and any caller-owned pool. Default: unset (`false`).
 
+### `WORKFLOW_POSTGRES_RUN_STATUS_POLL_INTERVAL_MS`
+
+How often a wait for a terminal run status re-reads the run, in milliseconds. Default: `1000`.
+
+`await run.returnValue` asks the World to wait for the run to finish, and the Postgres World parks that wait on a `NOTIFY` issued by the run-terminal write. This interval is only the backstop: it bounds how long a lost notification can go unnoticed, so lowering it costs a query per waiting run per interval and buys nothing while notifications are arriving.
+
 ### `WORKFLOW_POSTGRES_HOOK_RETENTION_LIMIT_DAYS`
 
 Maximum [`experimental_minRetention`](/docs/api-reference/workflow/create-hook#keep-a-token-unavailable-after-the-run-ends) accepted by the Postgres World, in days. Default: `30`. Set this to the same limit as your production World so oversized values fail during development.

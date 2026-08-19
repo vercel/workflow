@@ -19,6 +19,22 @@ Runtime variables are read where workflows execute. Set them on the deployment o
 - Delay between status requests made by [`Run.returnValue`](/docs/api-reference/workflow-api/get-run) while a workflow run is not yet complete.
 - Increase it to reduce polling traffic at the cost of noticing completion later.
 - This variable is read by the process awaiting `Run.returnValue`, such as an E2E test runner, rather than by the workflow deployment.
+- Applies whenever the World cannot hold a read open. When it can, the wait below replaces most of this polling and the interval only paces retries.
+
+### `WORKFLOW_RETURN_VALUE_WAIT_MS`
+
+- Default: `25000`
+- Minimum: `1`
+- How long a single wait for a terminal run status may block, when the World supports waiting (`world.runs.waitForTerminalStatus()`). `Run.returnValue` re-issues the wait until the run finishes, so this bounds one request rather than the total wait.
+- The default leaves headroom under the Vercel World's 60s per-request HTTP timeout, so the budget expires as a response carrying the run's current status rather than as a client-side timeout. Raising it past that headroom has no effect: the wait is clamped to stay inside the request timeout.
+- Read by the process awaiting `Run.returnValue`, like the interval above.
+
+### `WORKFLOW_RETURN_VALUE_LONG_POLL`
+
+- Default: enabled
+- Set to `0` or `false` to stop `Run.returnValue` from waiting and restore fixed-interval polling on `WORKFLOW_RETURN_VALUE_POLL_INTERVAL_MS` exactly.
+- The kill switch for the wait. Worlds that do not implement waiting are already on the interval path, so this changes nothing for them.
+- Read by the process awaiting `Run.returnValue`, like the interval above.
 
 ## Replay and queue delivery
 
