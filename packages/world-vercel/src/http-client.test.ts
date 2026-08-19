@@ -34,14 +34,13 @@ import {
   getEventsAgentOptionsNoH2,
   getEventsDispatcher,
   getNodeHttpAgents,
+  getNodeHttpPhaseTimeouts,
   getQueueDispatcher,
   getStreamAgentOptions,
   getStreamCloseDispatcher,
   getStreamDispatcher,
   isRecyclableTransportError,
   MAX_RETRIES,
-  NODE_HTTP_BODY_TIMEOUT_MS,
-  NODE_HTTP_HEADERS_TIMEOUT_MS,
   noteEventsTransportOutcome,
   RETRY_ERROR_CODES,
   STREAM_CLOSE_RETRY_OPTIONS,
@@ -1021,12 +1020,26 @@ describe('node:http mode', () => {
     expect(getQueueDispatcher({ dispatcher: custom })).toBe(custom);
   });
 
-  // node:http has no deadline of its own and the agents above set none, so
-  // these restate the undici Client defaults the agents inherit. Dropping them
-  // would leave every `timeoutMs: null` call site unbounded.
-  it('carries the undici default per-phase deadlines', () => {
-    expect(NODE_HTTP_HEADERS_TIMEOUT_MS).toBe(300_000);
-    expect(NODE_HTTP_BODY_TIMEOUT_MS).toBe(300_000);
+  // node:http arms no deadline of its own, so the call sites pass these
+  // explicitly. They have to track the undici agents' own per-phase timeouts,
+  // including the environment overrides: otherwise the flag would silently
+  // change how fast a stalled socket is detected, and every `timeoutMs: null`
+  // call site would be bounded differently depending on the transport.
+  it('carries the same per-phase deadlines as the undici agents', () => {
+    const { headersTimeout, bodyTimeout } = getAgentOptions();
+    expect(getNodeHttpPhaseTimeouts()).toEqual({
+      headersTimeoutMs: headersTimeout,
+      bodyTimeoutMs: bodyTimeout,
+    });
+  });
+
+  it('tracks the per-phase timeout overrides', () => {
+    vi.stubEnv('WORKFLOW_VERCEL_HEADERS_TIMEOUT_MS', '1234');
+    vi.stubEnv('WORKFLOW_VERCEL_BODY_TIMEOUT_MS', '5678');
+    expect(getNodeHttpPhaseTimeouts()).toEqual({
+      headersTimeoutMs: 1234,
+      bodyTimeoutMs: 5678,
+    });
   });
 
   // The flag picks which *default* this package builds. It is not a veto on

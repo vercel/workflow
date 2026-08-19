@@ -121,18 +121,26 @@ function getBaseAgentOptions() {
 }
 
 /**
- * Per-phase deadlines for the `node:http` transport under `WORKFLOW_NODE_HTTP`,
- * matching undici's `headersTimeout` / `bodyTimeout` defaults (300s).
+ * Per-phase deadlines for the `node:http` transport under `WORKFLOW_NODE_HTTP`.
  *
- * The undici agents configured in this module never set these explicitly, so
- * they inherit undici's 300s defaults, which bound a dead-but-not-reset socket.
- * `nodeHttpFetch` arms neither timer unless a value is passed, so the same
- * values must be supplied at every node:http call site — otherwise a request
- * that opts out of the whole-request deadline (`timeoutMs: null`) would have no
- * per-phase deadline at all and could hang until the function itself times out.
+ * `nodeHttpFetch` arms neither timer unless a value is passed, so these must be
+ * supplied at every node:http call site — otherwise a request that opts out of
+ * the whole-request deadline (`timeoutMs: null`: the v4 events API, stream
+ * writes, encryption-key and deployment lookups) would have no per-phase
+ * deadline at all and could hang until the function itself times out.
+ *
+ * Read from `getBaseAgentOptions()` rather than restating undici's defaults, so
+ * both transports arm the same deadlines and
+ * `WORKFLOW_VERCEL_HEADERS_TIMEOUT_MS` / `WORKFLOW_VERCEL_BODY_TIMEOUT_MS`
+ * apply whichever one is carrying the request.
  */
-export const NODE_HTTP_HEADERS_TIMEOUT_MS = 300_000;
-export const NODE_HTTP_BODY_TIMEOUT_MS = 300_000;
+export function getNodeHttpPhaseTimeouts(): {
+  headersTimeoutMs: number;
+  bodyTimeoutMs: number;
+} {
+  const { headersTimeout, bodyTimeout } = getBaseAgentOptions();
+  return { headersTimeoutMs: headersTimeout, bodyTimeoutMs: bodyTimeout };
+}
 
 /**
  * In-flight H2 streams allowed per connection. Matches undici's

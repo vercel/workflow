@@ -118,10 +118,14 @@ export function createQueue(config: Partial<Config>): LocalQueue {
   // - connections: 1000 allows many parallel connections to the same host
   // - pipelining: 1 (default) for HTTP/1.1 compatibility
   // - keepAliveTimeout: 30s keeps connections warm for rapid step execution
+  // - bodyTimeout: undici's own default, stated explicitly because the
+  //   node:http transport arms no timer unless it is passed one, and the two
+  //   transports must bound a socket that goes quiet mid-response the same way
   const agentOptions = {
     headersTimeout: 0,
     connections: 1000,
     keepAliveTimeout: 30_000,
+    bodyTimeout: 300_000,
   } as const;
   // Exactly one of these is built, and close() shuts down whichever it is.
   // Resolved once per queue rather than per delivery so a single queue never
@@ -221,6 +225,7 @@ export function createQueue(config: Partial<Config>): LocalQueue {
                   body,
                   agents: nodeHttpAgents,
                   headersTimeoutMs: agentOptions.headersTimeout,
+                  bodyTimeoutMs: agentOptions.bodyTimeout,
                 })
               : // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici v7 dispatcher types don't match @types/node's RequestInit
                 await fetch(url, {
