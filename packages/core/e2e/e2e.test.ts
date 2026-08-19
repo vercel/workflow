@@ -186,7 +186,16 @@ const wrapE2EHandler =
       // Second conformance gate — inside the bound state so the skip
       // targets this test.
       requireSupported(ctx.task.name);
-      return handler(ctx);
+      // Timed for the per-lane load summary (see summarizeLoad): under
+      // concurrency the interesting number is not pass/fail but how far
+      // per-test latency moved and whether CLI children dominate it.
+      const startedAt = Date.now();
+      noteTestStarted();
+      try {
+        return await handler(ctx);
+      } finally {
+        noteTestSettled(ctx.task.name, Date.now() - startedAt);
+      }
     });
   };
 
@@ -437,6 +446,9 @@ describe.concurrent('e2e', () => {
 
   // Write E2E metadata and diagnostics files
   afterAll(() => {
+    // First, so the numbers reach the log even if a later assertion in this
+    // hook throws.
+    process.stdout.write(summarizeLoad());
     writeE2EMetadata();
     writeDiagnosticsSidecar();
     writeInfraSidecar();
