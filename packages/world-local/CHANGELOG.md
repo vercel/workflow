@@ -1,5 +1,17 @@
 # @workflow/world-local
 
+## 4.3.0
+
+### Minor Changes
+
+- [#3461](https://github.com/vercel/workflow/pull/3461) [`e331cd6`](https://github.com/vercel/workflow/commit/e331cd6aa9c5b578caa9770cb2889e306bd493e6) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Add `WORKFLOW_NODE_HTTP` to run the Vercel and Local World HTTP layers on Node's built-in `node:http` and `node:https` modules instead of their usual HTTP client library.
+
+### Patch Changes
+
+- Updated dependencies [[`e331cd6`](https://github.com/vercel/workflow/commit/e331cd6aa9c5b578caa9770cb2889e306bd493e6)]:
+  - @workflow/world@4.4.0
+  - @workflow/errors@4.2.1
+
 ## 4.2.4
 
 ### Patch Changes
