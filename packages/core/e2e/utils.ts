@@ -413,6 +413,76 @@ function getCliArgs(): string {
   return `--backend vercel --verbose`;
 }
 
+// ---------------------------------------------------------------------------
+// Load observability
+//
+// The concurrent suite's cost is not obvious from pass/fail: tests can pass
+// while per-test latency inflates several-fold, and the inflation can come
+// from the deployment (queueing) or from the runner (every CLI assertion
+// spawns a full `node` child, and a CI runner has few cores). The counters
+// here make each lane report which one it was — peak test and CLI
+// concurrency, CLI child count, and CLI wall time as a share of total test
+// wall time — so a tuning decision has numbers behind it instead of a guess.
+// ---------------------------------------------------------------------------
+
+const loadStats = {
+  cliCalls: 0,
+  cliMs: 0,
+  cliInFlight: 0,
+  cliPeakInFlight: 0,
+  testsInFlight: 0,
+  testsPeakInFlight: 0,
+  testMs: 0,
+  durations: [] as { name: string; ms: number }[],
+};
+
+/** Called by the suite's handler wrapper when a test body starts. */
+export function noteTestStarted() {
+  loadStats.testsInFlight++;
+  loadStats.testsPeakInFlight = Math.max(
+    loadStats.testsPeakInFlight,
+    loadStats.testsInFlight
+  );
+}
+
+/** Called by the suite's handler wrapper when a test body settles. */
+export function noteTestSettled(name: string, ms: number) {
+  loadStats.testsInFlight--;
+  loadStats.testMs += ms;
+  loadStats.durations.push({ name, ms });
+}
+
+/**
+ * One-line-per-fact load summary for the job log. Logged from `afterAll`.
+ */
+export function summarizeLoad(): string {
+  const { durations } = loadStats;
+  if (durations.length === 0) return '';
+  const slowest = [...durations].sort((a, b) => b.ms - a.ms).slice(0, 10);
+  const sum = durations.reduce((acc, d) => acc + d.ms, 0);
+  const cliShare =
+    loadStats.testMs > 0
+      ? Math.round((loadStats.cliMs / loadStats.testMs) * 100)
+      : 0;
+  const lines = [
+    '',
+    '━━━ e2e load summary ━━━',
+    `tests: ${durations.length} · peak concurrent: ${loadStats.testsPeakInFlight}`,
+    `test wall time (summed): ${Math.round(sum / 1000)}s · median ${Math.round(
+      [...durations].sort((a, b) => a.ms - b.ms)[
+        Math.floor(durations.length / 2)
+      ].ms
+    )}ms`,
+    `cli children: ${loadStats.cliCalls} · peak concurrent: ${loadStats.cliPeakInFlight} · ` +
+      `wall time ${Math.round(loadStats.cliMs / 1000)}s (${cliShare}% of summed test time)`,
+    'slowest tests:',
+    ...slowest.map((d) => `  ${Math.round(d.ms / 1000)}s  ${d.name}`),
+    '━━━━━━━━━━━━━━━━━━━━━━',
+    '',
+  ];
+  return lines.join('\n');
+}
+
 const awaitCommand = async (
   command: string,
   args: string[],
@@ -422,6 +492,18 @@ const awaitCommand = async (
 ) => {
   console.log(`[Debug]: Executing ${command} ${args.join(' ')}`);
   console.log(`[Debug]: in CWD: ${cwd}`);
+
+  loadStats.cliCalls++;
+  loadStats.cliInFlight++;
+  loadStats.cliPeakInFlight = Math.max(
+    loadStats.cliPeakInFlight,
+    loadStats.cliInFlight
+  );
+  const cliStartedAt = Date.now();
+  const noteCliSettled = () => {
+    loadStats.cliInFlight--;
+    loadStats.cliMs += Date.now() - cliStartedAt;
+  };
 
   return await new Promise<{ stdout: string; stderr: string }>(
     (resolve, reject) => {
@@ -459,8 +541,12 @@ const awaitCommand = async (
         });
       }
 
-      child.on('error', (err) => reject(err));
+      child.on('error', (err) => {
+        noteCliSettled();
+        reject(err);
+      });
       child.on('close', (code, signal) => {
+        noteCliSettled();
         if (code !== 0) {
           const exitReason = signal
             ? `killed by signal ${signal}`
