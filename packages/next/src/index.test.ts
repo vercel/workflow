@@ -187,7 +187,7 @@ describe('withWorkflow builder config', () => {
     });
   });
 
-  it('externalizes the Vercel world dependencies while preserving user externals', async () => {
+  it('externalizes the non-bundlable Vercel packages while preserving user externals', async () => {
     const config = withWorkflow({
       serverExternalPackages: ['@node-rs/xxhash'],
     });
@@ -196,17 +196,57 @@ describe('withWorkflow builder config', () => {
       defaultConfig: {},
     });
 
-    // @workflow/world-vercel is deliberately absent: it is bundled into the
-    // server output so a cold start does not resolve its module graph from
-    // disk one file at a time.
+    // @workflow/world-vercel and @vercel/queue are deliberately absent: they
+    // are bundled into the server output so a cold start does not resolve their
+    // module graphs from disk one file at a time.
     expect(nextConfig.serverExternalPackages).toEqual([
       '@node-rs/xxhash',
-      '@vercel/queue',
       '@vercel/oidc',
       '@vercel/cli-auth',
       '@napi-rs/keyring',
     ]);
     expect(nextConfig.outputFileTracingIncludes).toBeUndefined();
+  });
+
+  function writeProjectWithQueueVersion(version: string): string {
+    const projectDir = mkdtempSync(
+      join(realTmpDir, 'workflow-next-queue-version-')
+    );
+    writeFile(
+      join(projectDir, 'node_modules', '@vercel', 'queue', 'package.json'),
+      JSON.stringify({
+        name: '@vercel/queue',
+        version,
+        main: 'index.js',
+      })
+    );
+    writeFile(
+      join(projectDir, 'node_modules', '@vercel', 'queue', 'index.js'),
+      'module.exports = {};'
+    );
+    return projectDir;
+  }
+
+  it('keeps an unbundlable @vercel/queue external', async () => {
+    // Older releases leave their dynamic `import()` unannotated, which Turbopack
+    // cannot resolve, so bundling that copy would fail the build.
+    process.chdir(writeProjectWithQueueVersion('0.4.0'));
+
+    const nextConfig = await withWorkflow({})('phase-production-build', {
+      defaultConfig: {},
+    });
+
+    expect(nextConfig.serverExternalPackages).toContain('@vercel/queue');
+  });
+
+  it('bundles a @vercel/queue version that carries the bundler-ignore hints', async () => {
+    process.chdir(writeProjectWithQueueVersion('0.5.0'));
+
+    const nextConfig = await withWorkflow({})('phase-production-build', {
+      defaultConfig: {},
+    });
+
+    expect(nextConfig.serverExternalPackages).not.toContain('@vercel/queue');
   });
 
   it('keeps the Vercel world external for the workflow/step bundles', async () => {
@@ -298,7 +338,6 @@ describe('withWorkflow builder config', () => {
 
       expect(resolvedConfig.serverExternalPackages).toEqual([
         'plain-external-a',
-        '@vercel/queue',
         '@vercel/oidc',
         '@vercel/cli-auth',
         '@napi-rs/keyring',
@@ -309,11 +348,11 @@ describe('withWorkflow builder config', () => {
           'server-only',
           'client-only',
           'plain-external-a',
-          '@vercel/queue',
           '@vercel/oidc',
           '@vercel/cli-auth',
           '@napi-rs/keyring',
           '@workflow/world-vercel',
+          '@vercel/queue',
         ],
       });
 
@@ -362,7 +401,6 @@ describe('withWorkflow builder config', () => {
 
       expect(resolvedConfig.serverExternalPackages).toEqual([
         'plain-external-b',
-        '@vercel/queue',
         '@vercel/oidc',
         '@vercel/cli-auth',
         '@napi-rs/keyring',
@@ -373,11 +411,11 @@ describe('withWorkflow builder config', () => {
           'server-only',
           'client-only',
           'plain-external-b',
-          '@vercel/queue',
           '@vercel/oidc',
           '@vercel/cli-auth',
           '@napi-rs/keyring',
           '@workflow/world-vercel',
+          '@vercel/queue',
         ],
       });
       expect(warnSpy).not.toHaveBeenCalled();

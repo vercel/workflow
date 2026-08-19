@@ -11,28 +11,35 @@ import semver from 'semver';
 import { getNextBuilder } from './builder.js';
 
 const VERCEL_WORLD_PACKAGE = '@workflow/world-vercel';
-// `@vercel/queue` performs a fully dynamic `import(absolutePath)`, which
-// Turbopack cannot resolve ("server relative imports are not implemented
-// yet"), so it has to stay external. `@vercel/oidc` is reached through it, and
-// `@vercel/cli-auth`/`@napi-rs/keyring` are only present in workspaces that
-// also depend on the CLI; keeping them external avoids bundlers walking into a
-// native dependency tree that never runs on a server.
-const VERCEL_WORLD_DEPENDENCY_PACKAGES = [
-  '@vercel/queue',
+const QUEUE_PACKAGE = '@vercel/queue';
+// Bundling `@vercel/queue` requires the version whose dynamic `import()` carries
+// `turbopackIgnore`/`webpackIgnore` annotations. Without them Turbopack cannot
+// resolve that import ("server relative imports are not implemented yet") and
+// fails the build, so an older copy has to stay external.
+const QUEUE_MIN_BUNDLABLE_VERSION = '0.5.0';
+// `@vercel/oidc` reaches `@vercel/cli-config`, and `@vercel/cli-auth` reaches
+// both that and `@napi-rs/keyring`. Those are CLI-shaped dependencies that never
+// run on a server: `xdg-app-paths` builds its config directory at module scope
+// and throws `The "path" argument must be of type string` once bundled, which
+// fails page-data collection. Keeping the three external stops any bundler from
+// walking into that tree.
+const VERCEL_WORLD_SERVER_EXTERNAL_PACKAGES = [
   '@vercel/oidc',
   '@vercel/cli-auth',
   '@napi-rs/keyring',
 ];
-// Only the dependencies above are externalized for the Next.js server bundle.
-// `@workflow/world-vercel` itself is bundled: every module it pulls in that is
-// left external has to be resolved from disk on a cold start, one file at a
-// time, and `register()` in `instrumentation.ts` sits in front of the first
-// request. Bundling it cuts the module count for that import from ~440 to
-// ~250 and takes ~50ms off `register()`.
-const VERCEL_WORLD_SERVER_EXTERNAL_PACKAGES = VERCEL_WORLD_DEPENDENCY_PACKAGES;
-// The workflow/step bundles are built by esbuild, which resolves
-// `@vercel/queue`'s dynamic import fine but has no reason to inline the world
-// either. Keep the previous behavior there.
+// `@workflow/world-vercel` and the queue client are bundled into the Next.js
+// server build. Every module left external has to be resolved from disk on a
+// cold start, one file at a time, and `register()` in `instrumentation.ts` sits
+// in front of the first request. Bundling the world cuts the module count for
+// that import from ~440 to ~250 and takes ~50ms off `register()`.
+const VERCEL_WORLD_DEPENDENCY_PACKAGES = [
+  QUEUE_PACKAGE,
+  ...VERCEL_WORLD_SERVER_EXTERNAL_PACKAGES,
+];
+// The workflow and step bundles are built by esbuild, which resolves the
+// dynamic import fine but gains nothing from inlining the world: those bundles
+// are loaded once per invocation either way.
 const WORKFLOW_BUNDLE_EXTERNAL_PACKAGES = [
   VERCEL_WORLD_PACKAGE,
   ...VERCEL_WORLD_DEPENDENCY_PACKAGES,
@@ -251,6 +258,28 @@ function resolveNextVersion(workingDir: string): string {
   );
 }
 
+/**
+ * Whether the `@vercel/queue` copy the consuming app resolves can be bundled.
+ * Fails open: when the package is not resolvable from the app root, the app does
+ * not import it directly and only `@workflow/world-vercel`'s own pinned copy is
+ * in the module graph.
+ */
+function isBundlableQueueVersion(workingDir: string): boolean {
+  let version: unknown;
+  try {
+    const packageJsonPath = require.resolve(`${QUEUE_PACKAGE}/package.json`, {
+      paths: [workingDir],
+    });
+    version = (require(packageJsonPath) as { version?: unknown }).version;
+  } catch {
+    return true;
+  }
+  if (typeof version !== 'string' || !semver.valid(version)) {
+    return true;
+  }
+  return semver.gte(version, QUEUE_MIN_BUNDLABLE_VERSION);
+}
+
 function fileExists(path: string): boolean {
   try {
     const stats = statSync(path);
@@ -429,6 +458,7 @@ export function withWorkflow(
       ...new Set([
         ...(nextConfig.serverExternalPackages || []),
         ...VERCEL_WORLD_SERVER_EXTERNAL_PACKAGES,
+        ...(isBundlableQueueVersion(process.cwd()) ? [] : [QUEUE_PACKAGE]),
       ]),
     ];
     const existingCompiler = nextConfig.compiler ?? {};
