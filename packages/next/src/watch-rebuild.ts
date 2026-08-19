@@ -15,7 +15,7 @@ export type ScheduledRebuild =
 export interface SourceSnapshot {
   sourceHash: string;
   importSignature: string;
-  definitionSignature: string;
+  serdeSignature: string;
   hasDirective: boolean;
   hasSerde: boolean;
 }
@@ -39,10 +39,6 @@ const importSpecifierPatterns = [
   /(?:^|[;\n])\s*import\s+['"]([^'"]+)['"]/g,
   /\bimport\s*\(\s*['"]([^'"]+)['"]\s*\)/g,
   /\brequire\s*\(\s*['"]([^'"]+)['"]\s*\)/g,
-];
-const directiveFunctionPatterns = [
-  /\b(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_$][\w$]*)[^{]*\{\s*['"]use\s+(workflow|step)['"]/g,
-  /\b(?:export\s+)?const\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>\s*\{\s*['"]use\s+(workflow|step)['"]/g,
 ];
 const serdeClassPattern =
   /\bclass\s+([A-Za-z_$][\w$]*)[\s\S]*?(?:static\s+classId\s*=\s*['"]([^'"]+)['"]|Symbol\.for\s*\(\s*['"]workflow-(?:serialize|deserialize)['"]\s*\)|\[\s*WORKFLOW_(?:SERIALIZE|DESERIALIZE)\s*\])/g;
@@ -193,14 +189,8 @@ export const extractImportSignature = (source: string) =>
     ? collectImportSpecifiers(source)
     : '';
 
-export const extractDefinitionSignature = (source: string) => {
+export const extractSerdeSignature = (source: string) => {
   const definitions: string[] = [];
-  for (const pattern of directiveFunctionPatterns) {
-    pattern.lastIndex = 0;
-    for (const match of source.matchAll(pattern)) {
-      definitions.push(`${match[2]}:${match[1]}`);
-    }
-  }
   serdeClassPattern.lastIndex = 0;
   for (const match of source.matchAll(serdeClassPattern)) {
     definitions.push(`serde:${match[2] ?? match[1]}`);
@@ -218,7 +208,7 @@ export const createSourceSnapshotFromSource = (
   return {
     sourceHash: createHash('sha256').update(source).digest('base64url'),
     importSignature: extractImportSignature(sourceWithoutComments),
-    definitionSignature: extractDefinitionSignature(sourceWithoutComments),
+    serdeSignature: extractSerdeSignature(sourceWithoutComments),
     hasDirective: patterns.hasDirective,
     hasSerde: patterns.hasSerde,
   };
@@ -287,10 +277,10 @@ const requiresFullRediscovery = (
   previousSnapshot: SourceSnapshot,
   nextSnapshot: SourceSnapshot
 ) =>
+  previousSnapshot.hasDirective ||
   nextSnapshot.hasDirective ||
   previousSnapshot.importSignature !== nextSnapshot.importSignature ||
-  previousSnapshot.definitionSignature !== nextSnapshot.definitionSignature ||
-  previousSnapshot.hasDirective !== nextSnapshot.hasDirective ||
+  previousSnapshot.serdeSignature !== nextSnapshot.serdeSignature ||
   previousSnapshot.hasSerde !== nextSnapshot.hasSerde;
 
 export const createRebuildScheduler = (
@@ -324,7 +314,9 @@ export const createRebuildScheduler = (
   return (request: ScheduledRebuild) => {
     switch (request.kind) {
       case 'files':
-        if (pending?.kind !== 'full') {
+        if (rebuilding) {
+          pending = { kind: 'full' };
+        } else if (pending?.kind !== 'full') {
           pending = {
             kind: 'files',
             files: [...new Set([...(pending?.files ?? []), ...request.files])],

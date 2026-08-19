@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test, vi } from 'vitest';
+import { detectWorkflowPatterns } from '@workflow/builders';
 import {
   classifyRebuild,
   createRebuildScheduler,
@@ -37,7 +38,7 @@ describe('watch-rebuild scheduling', () => {
     });
   });
 
-  test('collapses full rebuild requests while a rebuild runs', async () => {
+  test('fully rebuilds after files change during a rebuild', async () => {
     vi.useFakeTimers();
     const firstBuild = Promise.withResolvers<void>();
     const fullBuild = Promise.withResolvers<void>();
@@ -53,31 +54,19 @@ describe('watch-rebuild scheduling', () => {
       }
     }, onIdle);
 
-    schedule({ kind: 'full' });
+    schedule({ kind: 'files', files: ['/app/workflow.ts'] });
     await vi.advanceTimersByTimeAsync(100);
 
-    schedule({ kind: 'full' });
-    schedule({ kind: 'full' });
+    schedule({ kind: 'files', files: ['/app/helper.ts'] });
     await vi.advanceTimersByTimeAsync(100);
     expect(onIdle).not.toHaveBeenCalled();
     firstBuild.resolve();
     await fullBuild.promise;
     await idle.promise;
 
-    expect(requests).toEqual(['full', 'full']);
+    expect(requests).toEqual(['files', 'full']);
     expect(onIdle).toHaveBeenCalledOnce();
   });
-});
-
-const detectWorkflowPatterns = (source: string) => ({
-  hasDirective:
-    source.includes("'use workflow'") ||
-    source.includes('"use workflow"') ||
-    source.includes("'use step'") ||
-    source.includes('"use step"'),
-  hasSerde: /Symbol\.for\(['"]workflow-(?:serialize|deserialize)['"]\)/.test(
-    source
-  ),
 });
 
 describe('watch-rebuild source snapshots', () => {
@@ -103,22 +92,18 @@ import * as active from './workflows/active';
     expect(extractImportSignature(source)).toBe('./workflows/active');
   });
 
-  test('ignores workflow definitions inside comments', () => {
+  test('ignores directives inside comments', () => {
     const snapshot = createSourceSnapshotFromSource(
       `
 // export async function commentedWorkflow() { 'use workflow'; }
 /*
 export async function commentedStep() { 'use step'; }
 */
-export async function realWorkflow() {
-  'use workflow';
-}
 `,
       detectWorkflowPatterns
     );
 
-    expect(snapshot.definitionSignature).toBe('workflow:realWorkflow');
-    expect(snapshot.hasDirective).toBe(true);
+    expect(snapshot.hasDirective).toBe(false);
   });
 
   test('commenting out a registry import requires full rediscovery', async () => {
@@ -205,12 +190,9 @@ export const allWorkflows = {} as const;
     ).resolves.toEqual({ kind: 'full' });
   });
 
-  test('fully rebuilds byte-identical workflow notifications', async () => {
-    const workflowFile = '/app/workflows/example.ts';
-    const source = `export async function example() {
-  'use workflow';
-}
-`;
+  test('fully rebuilds byte-identical relevant notifications', async () => {
+    const workflowFile = '/app/workflows/helper.ts';
+    const source = "export const value = 'unchanged';\n";
     const snapshot = createSourceSnapshotFromSource(
       source,
       detectWorkflowPatterns
