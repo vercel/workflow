@@ -4,4 +4,4 @@
 '@workflow/core': patch
 ---
 
-Batched event writes: add the optional `events.createBatch` World API (ordered events, one durable write, per-event outcomes), implement it in `@workflow/world-vercel` against `POST /v4/runs/:runId/events/batch` (slot-identity runs only), and fold clean suspension fan-outs — eager `step_created` and `wait_created` writes — into batched writes in the runtime. On by default; disable with `WORKFLOW_BATCH_TRANSITIONS=0`.
+Add `world.events.createBatch` World API method, which allows writing ordered events in one durable write, returning per-event outcomes. Optional. On by default if implemented by the World. Disable with `WORKFLOW_BATCH_TRANSITIONS=0`.
