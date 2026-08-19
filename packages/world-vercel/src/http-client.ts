@@ -1,9 +1,16 @@
+import { isNodeHttpEnabled } from '@workflow/world';
+import {
+  createNodeHttpAgents,
+  destroyNodeHttpAgents,
+  type NodeHttpAgents,
+} from '@workflow/world/node-http.js';
 import { Agent, type Dispatcher, RetryAgent, type RetryHandler } from 'undici';
 import type { APIConfig } from './utils.js';
 
 let _dispatcher: RetryAgent | undefined;
 let _streamDispatcher: RetryAgent | undefined;
 let _streamCloseDispatcher: RetryAgent | undefined;
+let _nodeHttpAgents: NodeHttpAgents | undefined;
 
 /**
  * Time-to-first-byte cap for every request through the shared dispatcher.
@@ -111,6 +118,28 @@ function getBaseAgentOptions() {
       DEFAULT_BODY_TIMEOUT_MS
     ),
   } as const;
+}
+
+/**
+ * Per-phase deadlines for the `node:http` transport under `WORKFLOW_NODE_HTTP`.
+ *
+ * `nodeHttpFetch` arms neither timer unless a value is passed, so these must be
+ * supplied at every node:http call site — otherwise a request that opts out of
+ * the whole-request deadline (`timeoutMs: null`: the v4 events API, stream
+ * writes, encryption-key and deployment lookups) would have no per-phase
+ * deadline at all and could hang until the function itself times out.
+ *
+ * Read from `getBaseAgentOptions()` rather than restating undici's defaults, so
+ * both transports arm the same deadlines and
+ * `WORKFLOW_VERCEL_HEADERS_TIMEOUT_MS` / `WORKFLOW_VERCEL_BODY_TIMEOUT_MS`
+ * apply whichever one is carrying the request.
+ */
+export function getNodeHttpPhaseTimeouts(): {
+  headersTimeoutMs: number;
+  bodyTimeoutMs: number;
+} {
+  const { headersTimeout, bodyTimeout } = getBaseAgentOptions();
+  return { headersTimeoutMs: headersTimeout, bodyTimeoutMs: bodyTimeout };
 }
 
 /**
@@ -638,10 +667,86 @@ export function noteEventsTransportOutcome(
 }
 
 /**
+ * Resolution order shared by every `get*Dispatcher` below:
+ *
+ *  1. `config.dispatcher` — an explicit caller override always wins, including
+ *     under `WORKFLOW_NODE_HTTP`. Supplying a dispatcher is an instruction to
+ *     use undici, so the request stays on `fetch` with that dispatcher.
+ *  2. `undefined` when `WORKFLOW_NODE_HTTP` is on. Nothing then dispatches
+ *     through undici at all: `instrumentedFetch` and `makeRequest` read the same
+ *     flag and send the request over `node:http` / `node:https` instead, using
+ *     the pool from `getNodeHttpAgents` and none of the HTTP/2, receive-window
+ *     or retry configuration below. See `isNodeHttpEnabled` for what that costs.
+ *  3. the shared per-call-site undici agent.
+ *
+ * Read per call (not memoized) so the flag can be toggled within a process.
+ */
+function resolveDispatcher(
+  config: APIConfig | undefined,
+  buildDefault: () => RetryAgent
+): unknown {
+  if (config?.dispatcher) return config.dispatcher;
+  return isNodeHttpEnabled() ? undefined : buildDefault();
+}
+
+/**
+ * Shared `node:http` / `node:https` connection pool for `WORKFLOW_NODE_HTTP`
+ * mode, or `undefined` when the request should go over undici.
+ *
+ * There is one pool rather than the four the undici side maintains, because
+ * the four differ only in the two things Node's core client cannot express:
+ * HTTP/2 (with its multiplexing and receive windows) and a `RetryAgent` policy.
+ * Strip those and the remaining configuration is `getBaseAgentOptions()`, which
+ * is identical across all four, so splitting the pool would buy nothing but
+ * fragmentation of the sockets.
+ *
+ * Built on first use and then kept for the life of the process: keep-alive is
+ * the point, and a pool rebuilt per request would open a connection per
+ * request.
+ */
+export function getNodeHttpAgents(
+  config?: APIConfig
+): NodeHttpAgents | undefined {
+  if (config?.dispatcher) return undefined;
+  if (!isNodeHttpEnabled()) return undefined;
+  const baseOptions = getBaseAgentOptions();
+  _nodeHttpAgents ??= createNodeHttpAgents({
+    maxSockets: baseOptions.connections,
+    keepAliveMs: baseOptions.keepAliveTimeout,
+  });
+  return _nodeHttpAgents;
+}
+
+/** Drop the shared node:http pool. Exported for tests; production keeps it. */
+export function _resetNodeHttpAgentsForTests(): void {
+  if (_nodeHttpAgents) destroyNodeHttpAgents(_nodeHttpAgents);
+  _nodeHttpAgents = undefined;
+}
+
+/**
  * Resolves the undici dispatcher for a request: the caller's override, or the
- * shared default agent (HTTP/1.1).
+ * shared default agent (HTTP/1.1). Returns `undefined` under
+ * `WORKFLOW_NODE_HTTP`, which routes the request off undici entirely.
  */
 export function getDispatcher(config?: APIConfig): unknown {
+  return resolveDispatcher(config, getDefaultDispatcher);
+}
+
+/**
+ * Resolves the dispatcher for the `@vercel/queue` client's HTTP sends.
+ *
+ * Unlike `getDispatcher`, this never returns `undefined` under
+ * `WORKFLOW_NODE_HTTP`. The `QueueClient` exposes no `fetch` override, so it
+ * cannot be moved onto `node:http` the way `instrumentedFetch` / `makeRequest`
+ * are: the flag has nothing to hand the request off to on this path. Returning
+ * `undefined` there would therefore not switch transports — it would just drop
+ * the tuned shared agent (`getAgentOptions()`: 8 connections, ~10s
+ * keep-alive) and let undici fall back to its GLOBAL agent (unlimited
+ * connections, 4s keep-alive), an unintended regression from a flag this path
+ * can't honor. So the queue send stays on the shared default undici agent
+ * regardless of the flag, while still honoring an explicit `config.dispatcher`.
+ */
+export function getQueueDispatcher(config?: APIConfig): unknown {
   return config?.dispatcher ?? getDefaultDispatcher();
 }
 
@@ -654,9 +759,15 @@ export function getDispatcher(config?: APIConfig): unknown {
  * transport failures retire it and the next call here builds a replacement (see
  * noteEventsTransportOutcome). Resolve it per request rather than caching the
  * returned value.
+ *
+ * Under `WORKFLOW_NODE_HTTP` there is no undici pool to recycle: `undefined` is
+ * returned, the recycler is never asked for an agent, and
+ * `noteEventsTransportOutcome` no-ops (its `!current` guard). Node's own agent
+ * evicts a socket when the request on it fails, so there is no equivalent
+ * wedged-session failure mode to recover from.
  */
 export function getEventsDispatcher(config?: APIConfig): unknown {
-  return config?.dispatcher ?? eventsRecycler.get();
+  return resolveDispatcher(config, () => eventsRecycler.get());
 }
 
 /**
@@ -667,7 +778,7 @@ export function getEventsDispatcher(config?: APIConfig): unknown {
  * 5xx — chosen because stream appends are not idempotent.
  */
 export function getStreamDispatcher(config?: APIConfig): unknown {
-  return config?.dispatcher ?? getDefaultStreamDispatcher();
+  return resolveDispatcher(config, getDefaultStreamDispatcher);
 }
 
 /**
@@ -676,7 +787,7 @@ export function getStreamDispatcher(config?: APIConfig): unknown {
  * (see STREAM_CLOSE_RETRY_OPTIONS), unlike chunk appends.
  */
 export function getStreamCloseDispatcher(config?: APIConfig): unknown {
-  return config?.dispatcher ?? getDefaultStreamCloseDispatcher();
+  return resolveDispatcher(config, getDefaultStreamCloseDispatcher);
 }
 
 /**

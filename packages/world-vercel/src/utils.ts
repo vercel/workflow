@@ -3,9 +3,14 @@ import { inspect } from 'node:util';
 import { getVercelOidcToken } from '@vercel/oidc';
 import { WorkflowWorldError } from '@workflow/errors';
 import { type StructuredError, StructuredErrorSchema } from '@workflow/world';
+import { nodeHttpFetch } from '@workflow/world/node-http.js';
 import { decode, encode } from 'cbor-x';
 import type { z } from 'zod';
-import { getDispatcher } from './http-client.js';
+import {
+  getDispatcher,
+  getNodeHttpAgents,
+  getNodeHttpPhaseTimeouts,
+} from './http-client.js';
 import {
   errorForResponse,
   formatVercelDiagnostics,
@@ -22,6 +27,7 @@ import {
   HttpResponseStatusCode,
   injectTraceContextIntoHeaders,
   trace,
+  WorkflowHttpTransport,
   WorldParseFormat,
 } from './telemetry.js';
 import { version } from './version.js';
@@ -59,15 +65,31 @@ const BODY_PARSE_RETRY_BASE_MS = 100;
 
 /**
  * Transient transport failure codes. When a request to workflow-server cannot
- * complete, `fetch()` throws rather than returning a response: the shared
- * `RetryAgent` exhausted its retries (`UND_ERR_REQ_RETRY` — e.g. the firewall
- * in front of workflow-server shedding load with sustained 429/503, which the
- * RetryAgent retries internally and never surfaces to us), the socket dropped,
- * or connect/DNS failed. These are retryable infrastructure failures, not
- * contract or user errors, so we map them to a typed `WorkflowWorldError`
- * (`code: 'TRANSPORT'`) that the runtime recognizes as retryable and bubbles
- * to the queue for a fast redrive — instead of crashing the invocation or
- * failing the run.
+ * complete, the request throws rather than returning a response, and the code
+ * it carries depends on which transport issued it.
+ *
+ * Over undici (`fetch` plus the shared dispatcher): the `RetryAgent` exhausted
+ * its retries (`UND_ERR_REQ_RETRY`, e.g. the firewall in front of
+ * workflow-server shedding load with sustained 429/503, which the RetryAgent
+ * retries internally and never surfaces to us), the socket dropped, or
+ * connect/DNS failed.
+ *
+ * Over `node:http` / `node:https` (`WORKFLOW_NODE_HTTP`): there is no undici in
+ * the path, so no `UND_ERR_*` code ever appears. Node's own socket and DNS
+ * codes are raised instead, plus `ETIMEDOUT` from the client's own header and
+ * body deadlines, which stand in for `UND_ERR_HEADERS_TIMEOUT` /
+ * `UND_ERR_BODY_TIMEOUT`.
+ *
+ * Either way these are retryable infrastructure failures, not contract or user
+ * errors, so we map them to a typed `WorkflowWorldError` (`code: 'TRANSPORT'`)
+ * that the runtime recognizes as retryable and bubbles to the queue for a fast
+ * redrive, instead of crashing the invocation or failing the run.
+ *
+ * The set is consulted on both paths, so adding `ETIMEDOUT` for the node:http
+ * deadlines also classifies it on the undici path — where it is near
+ * unreachable, since undici's 10s `connectTimeout` fires long before the OS
+ * raises `ETIMEDOUT` on a connect, and its own stalls surface as `UND_ERR_*`.
+ * Deliberate either way: a socket that timed out is transient under any client.
  */
 const TRANSIENT_TRANSPORT_ERROR_CODES = new Set([
   'UND_ERR_REQ_RETRY',
@@ -82,14 +104,17 @@ const TRANSIENT_TRANSPORT_ERROR_CODES = new Set([
   'ENOTFOUND',
   'EAI_AGAIN',
   'EPIPE',
+  'ETIMEDOUT',
 ]);
 
 /**
  * Walks the `cause` chain of a thrown value looking for a transient transport
  * error code. `fetch()` wraps the underlying undici error in a
  * `TypeError: fetch failed` whose `cause` carries the real `.code`, so the
- * code we care about is usually one level down (sometimes two). Bounded depth
- * guards against pathological or cyclic `cause` chains.
+ * code we care about is usually one level down (sometimes two). The
+ * `node:http` client throws the socket error itself, so there the code is on
+ * the top-level value. Bounded depth guards against pathological or cyclic
+ * `cause` chains.
  */
 function getTransientTransportCode(error: unknown): string | undefined {
   let current: unknown = error;
@@ -387,7 +412,9 @@ export async function makeRequest<T>({
   /** Retry an idempotent read once when connecting timed out before a request was sent. */
   retryConnectTimeout?: boolean;
 }): Promise<T> {
-  const method = options.method || 'GET';
+  // Normalized once: `Request` used to do this uppercasing on the way into
+  // `fetch`, and both the idempotency check and the curl repro read it.
+  const method = (options.method || 'GET').toUpperCase();
   const { baseUrl, headers } = await getHttpConfig(config);
   const url = `${baseUrl}${endpoint}`;
 
@@ -429,7 +456,7 @@ export async function makeRequest<T>({
       // already handed back the response by the time we consume the body, so
       // we retry such failures here. Only idempotent reads are re-issued; a
       // write must not be replayed (it could be applied twice).
-      const canRetryRead = IDEMPOTENT_METHODS.has(method.toUpperCase());
+      const canRetryRead = IDEMPOTENT_METHODS.has(method);
       let parseResult: ParseResult;
       let responseDiagnostics = '';
       for (let attempt = 0; ; attempt++) {
@@ -444,19 +471,38 @@ export async function makeRequest<T>({
         const signal = options.signal
           ? AbortSignal.any([options.signal, timeoutSignal])
           : timeoutSignal;
-        const request = new Request(url, {
-          ...options,
-          body,
-          headers,
-          signal,
-        });
         const fetchStart = Date.now();
         let response: Response;
         try {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici v7 dispatcher types don't match @types/node's RequestInit
-          response = await fetch(request, {
-            dispatcher: getDispatcher(config),
-          } as any);
+          // `WORKFLOW_NODE_HTTP` takes this request off undici entirely, rather
+          // than leaving it on the undici behind `fetch`. `getNodeHttpAgents`
+          // returns the pool only when no caller dispatcher was supplied, so
+          // an explicit `config.dispatcher` still keeps the request on `fetch`.
+          const nodeAgents = getNodeHttpAgents(config);
+          // Both transports issue the same span against the same URL, so this
+          // is the only thing that tells them apart in a trace.
+          span?.setAttributes({
+            ...WorkflowHttpTransport(nodeAgents ? 'node-http' : 'undici'),
+          });
+          response = nodeAgents
+            ? await nodeHttpFetch(url, {
+                method,
+                headers,
+                body,
+                signal,
+                agents: nodeAgents,
+                // Same per-phase deadlines the undici agents are configured
+                // with: without these the node:http path arms no stalled-socket
+                // deadline.
+                ...getNodeHttpPhaseTimeouts(),
+              })
+            : await fetch(
+                new Request(url, { ...options, body, headers, signal }),
+                {
+                  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici v7 dispatcher types don't match @types/node's RequestInit
+                  dispatcher: getDispatcher(config),
+                } as any
+              );
         } catch (error) {
           const elapsed = Date.now() - fetchStart;
           // AbortSignal.timeout() surfaces as a DOMException with name
@@ -515,7 +561,7 @@ export async function makeRequest<T>({
             await parseResponseBody(response)
               .then((r) => r.data as { message?: string; code?: string })
               .catch(() => ({}));
-          logCurlRepro(request.method, url, headers);
+          logCurlRepro(method, url, headers);
 
           // Used by 425 and 429. The RetryAgent no longer retries 429
           // in-process (see http-client.ts), so every 429 reaches here.
@@ -525,7 +571,7 @@ export async function makeRequest<T>({
 
           const defaultMessage =
             (errorData.message ||
-              `${request.method} ${endpoint} -> HTTP ${response.status}: ${response.statusText}`) +
+              `${method} ${endpoint} -> HTTP ${response.status}: ${response.statusText}`) +
             responseDiagnostics;
 
           // Map the status to the typed error the runtime branches on (shared
