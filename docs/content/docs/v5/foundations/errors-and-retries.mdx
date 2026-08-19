@@ -144,6 +144,11 @@ callApi.maxRetries = 5; // Retry up to 5 times on failure (6 total attempts)
 A step whose arguments or return value cannot be [serialized](/docs/foundations/serialization) fails like a step whose body threw a `FatalError`: the failure is deterministic, so it skips the retry loop, and a `try/catch` around the step call observes the `SerializationError`:
 
 ```typescript lineNumbers
+async function someStep(input: unknown) {
+  "use step";
+  return input;
+}
+
 export async function myWorkflow(input: unknown) {
   "use workflow";
 

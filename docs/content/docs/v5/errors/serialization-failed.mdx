@@ -38,7 +38,12 @@ Where you observe the failure depends on which boundary it crosses:
 - **Workflow return values** — the workflow body has already returned, so nothing can catch it; the run fails.
 
 ```typescript lineNumbers
-export async function processWorkflow() {
+async function stepWithBadArguments(value: unknown) {
+  "use step";
+  return value;
+}
+
+export async function processWorkflow(someValue: unknown) {
   "use workflow";
 
   try {

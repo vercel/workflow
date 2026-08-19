@@ -16,11 +16,12 @@ import {
 } from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { WorkflowSuspension } from '../global.js';
-import { hydrateStepError } from '../serialization.js';
+import { hydrateStepArguments, hydrateStepError } from '../serialization.js';
 import { COMPUTE_INSTANCE_ID } from './compute-instance.js';
 import { maxEventSlot, stepDispatchIdempotencyKey } from './helpers.js';
 import { ReplayRecoveryReporter } from './replay-recovery-reporter.js';
 import { handleSuspension } from './suspension-handler.js';
+import { isUnserializableStepInputPlaceholder } from './unserializable-step.js';
 
 vi.mock('../version.js', () => ({ version: '0.0.0-test' }));
 
@@ -1722,6 +1723,90 @@ describe('handleSuspension batched fan-out', () => {
       });
     });
 
+    it('mixed bad step + large fan-out: deferred rejection still surfaces through deferredBatchWork', async () => {
+      // A step whose args fail serialization is finalized on the sequential
+      // path while the healthy fan-out still defers trailing chunk commits
+      // and publishes. The caller's failed-step replay path must join
+      // deferredBatchWork before continuing (runtime.ts), so its rejection
+      // is observable — this pins the handler-side contract: the failure
+      // set and the still-pending deferred work coexist on one result.
+      class Unserializable {
+        secret = 'not-a-pojo';
+      }
+      let call = 0;
+      let releaseFailure: (() => void) | undefined;
+      const createBatch = vi.fn().mockImplementation((_runId, events) => {
+        call += 1;
+        if (call === 2) {
+          return new Promise((_resolve, reject) => {
+            releaseFailure = () =>
+              reject(
+                new WorkflowWorldError('trailing publish failed', {
+                  status: 500,
+                })
+              );
+          });
+        }
+        let slot = 10;
+        return Promise.resolve({
+          results: events.map(({ event }: { event: object }) => ({
+            status: 200,
+            event: { ...event, eventId: slotToEventId(slot++) },
+          })),
+        });
+      });
+      const eventsCreate = vi
+        .fn()
+        .mockImplementation(async (_runId, event) => ({ event }));
+      const world = {
+        events: { create: eventsCreate, createBatch },
+        queue: vi.fn().mockResolvedValue({ messageId: 'msg_q' }),
+        getEncryptionKeyForRun: vi.fn().mockResolvedValue(undefined),
+      } as unknown as World;
+
+      const pending = stepsAndWait(
+        Array.from({ length: 34 }, (_, i) => `s${i + 1}`)
+      ) as Map<string, { args: unknown[] }>;
+      // biome-ignore lint/style/noNonNullAssertion: seeded above
+      pending.get('s5')!.args = [new Unserializable()];
+
+      const result = await handleSuspension({
+        suspension: new WorkflowSuspension(
+          pending as ConstructorParameters<typeof WorkflowSuspension>[0],
+          globalThis
+        ),
+        world,
+        run: slotRun,
+        ownerMessageId: 'msg_owner_1',
+        stepDispatch: stepDispatch(),
+        allowDeferredBatchWork: true,
+      });
+
+      // The bad step was finalized sequentially (step_created placeholder +
+      // step_failed), dropped out of the batch fold…
+      expect([...result.failedStepCorrelationIds]).toEqual(['s5']);
+      expect(
+        eventsCreate.mock.calls.map(([, event]) => [
+          event.eventType,
+          event.correlationId,
+        ])
+      ).toEqual([
+        ['step_created', 's5'],
+        ['step_failed', 's5'],
+      ]);
+      // …while the healthy fan-out still handed back live deferred work.
+      expect(result.deferredBatchWork).toBeDefined();
+      expect(await probe(result.deferredBatchWork)).toBe('pending');
+
+      // A trailing rejection surfaces through the deferred promise — the
+      // caller's failed-step path awaits it before replaying.
+      // biome-ignore lint/style/noNonNullAssertion: set by the second call
+      releaseFailure!();
+      await expect(result.deferredBatchWork).rejects.toMatchObject({
+        message: expect.stringContaining('trailing publish failed'),
+      });
+    });
+
     it('settles the trailing chunk before a pair-chunk failure escapes', async () => {
       // settlePhase's invariant: a phase's write set must be final before a
       // failure escapes, or a sibling create lands during the caller's replay
@@ -2038,6 +2123,47 @@ describe('step-argument serialization failure', () => {
 
     // Nothing to observe the failure — no replay is forced.
     expect(result.failedStepCorrelationIds.size).toBe(0);
+  });
+
+  it('rejects the suspension when step_failed cannot be written after step_created landed', async () => {
+    // The two finalization writes are separate durable writes. If the second
+    // fails transiently, the suspension must reject so the message
+    // redelivers — leaving a lone placeholder step_created behind. Recovery
+    // for that window lives in the step executor: the placeholder carries a
+    // structural flag (see unserializable-step.ts) that the executor
+    // completes as the intended step_failed instead of running user code
+    // with placeholder arguments (covered in step-executor.test.ts).
+    const writeError = new Error('storage unavailable');
+    const eventsCreate = vi
+      .fn()
+      .mockImplementationOnce(async (_runId, event) => ({ event }))
+      .mockRejectedValueOnce(writeError);
+    const world = createWorld(eventsCreate);
+    const pending = new Map([
+      ['s_bad', stepItem('s_bad', [new Unserializable()])],
+    ]);
+
+    await expect(
+      handleSuspension({
+        suspension: new WorkflowSuspension(pending, globalThis),
+        world,
+        run,
+        stepDispatch: stepDispatch(),
+      })
+    ).rejects.toBe(writeError);
+
+    // The lone step_created that redelivery will find carries the
+    // recoverable placeholder, not a genuine-looking empty input.
+    expect(eventsCreate).toHaveBeenCalledTimes(2);
+    const createdEvent = eventsCreate.mock.calls[0][1];
+    expect(createdEvent.eventType).toBe('step_created');
+    const hydrated = await hydrateStepArguments(
+      createdEvent.eventData.input,
+      run.runId,
+      undefined,
+      []
+    );
+    expect(isUnserializableStepInputPlaceholder(hydrated)).toBe(true);
   });
 
   it('rethrows instead of finalizing when no stepDispatch is provided (terminal drain)', async () => {
