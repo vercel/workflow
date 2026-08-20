@@ -96,8 +96,15 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
     }
 
     // Generate hook ID and token
-    const correlationId = `hook_${ctx.generateUlid()}`;
-    const token = options.token ?? ctx.generateNanoid();
+    // A pinned token identifies the hook independently of call order, so it can
+    // scope the id. Unpinned hooks fall back to a per-kind counter: the Nth hook
+    // this replay created, which is still far narrower than a run-global ordinal.
+    const correlationId = `hook_${ctx.generateUlid(
+      options.token === undefined || options.token === null
+        ? 'hook'
+        : `hook ${options.token}`
+    )}`;
+    const token = options.token ?? ctx.generateHookToken(correlationId);
     const tokenRetentionUntil =
       options.experimental_minRetention === undefined
         ? undefined

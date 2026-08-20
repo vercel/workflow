@@ -17,7 +17,7 @@ export function createSetAttributes(ctx: WorkflowOrchestratorContext) {
     options: { allowReservedAttributes?: boolean } = {}
   ): Promise<void> {
     const { promise, resolve } = withResolvers<void>();
-    const correlationId = `attr_${ctx.generateUlid()}`;
+    const correlationId = `attr_${ctx.generateUlid('attr')}`;
     const queueItem: AttributeInvocationQueueItem = {
       type: 'attribute',
       correlationId,

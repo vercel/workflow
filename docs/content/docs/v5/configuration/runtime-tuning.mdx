@@ -115,6 +115,14 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 - Delay before a re-invocation caused by a rejected event creation.
 - Unlike an in-process restart, which re-reads immediately, a re-invocation only happens once the in-process budget failed to catch up — so the delay gives the other writers a moment to quiesce.
 
+### `WORKFLOW_CALLSITE_CORRELATION_IDS`
+
+- Default: enabled
+- Experimental. Derives the correlation ID of each step, hook, wait, and attribute write from its call site — the step name plus a fingerprint of its arguments, or a hook's token — combined with a per-call-site counter.
+- By default every correlation ID is instead the next draw of one per-run sequence, which makes an ID an ordinal: two concurrent replays of the same run that disagree about a single event assign different IDs to every entity after it, so one replay writes events the other can neither match nor consume, and the run fails with `CORRUPTED_EVENT_LOG`. Call-site addressing makes the same entity get the same ID in both replays, so the late write collides with the entity it duplicates instead of renaming everything downstream.
+- Correlation IDs of runs created before the setting changed are not affected: a run keeps replaying on the deployment it started on. On platforms without that guarantee, only enable it while no runs are in flight — a replay that switches schemes mid-run cannot consume its own earlier events.
+- Set `0` to opt back into the positional per-run sequence.
+
 ## Inline execution
 
 ### `WORKFLOW_V2_TIMEOUT_MS`

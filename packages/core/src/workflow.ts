@@ -15,6 +15,11 @@ import type { Event, WorkflowRun, WorldCapabilities } from '@workflow/world';
 import { SPEC_VERSION_SUPPORTS_COMPRESSION } from '@workflow/world';
 import * as nanoid from 'nanoid';
 import { monotonicFactory } from 'ulid';
+import {
+  createCorrelationIdGenerator,
+  deriveHookToken,
+  isCallSiteCorrelationIdsEnabled,
+} from './correlation-id.js';
 import { EventConsumerResult, EventsConsumer } from './events-consumer.js';
 import type { QueueItem } from './global.js';
 import { ENOTSUP, WorkflowSuspension } from './global.js';
@@ -345,12 +350,14 @@ async function createWorkflowSession({
       : `http://localhost:${(await getPortLazy()) ?? 3000}`
   );
 
+  const seed = `${workflowRun.runId}:${workflowRun.workflowName}:${workflowRun.deploymentId}`;
+
   const {
     context,
     globalThis: vmGlobalThis,
     updateTimestamp,
   } = createContext({
-    seed: `${workflowRun.runId}:${workflowRun.workflowName}:${workflowRun.deploymentId}`,
+    seed,
     fixedTimestamp,
   });
 
@@ -391,10 +398,19 @@ async function createWorkflowSession({
   const ulid = monotonicFactory(() => vmGlobalThis.Math.random());
   // Correlation IDs must be replay-stable. `startedAt` differs between a turbo
   // delivery and a later server-backed replay, so use fixedTimestamp.
-  const generateUlid = () => ulid(fixedTimestamp);
+  const positionalUlid = () => ulid(fixedTimestamp);
+  const callSiteScoped = isCallSiteCorrelationIdsEnabled();
+  const generateUlid = createCorrelationIdGenerator({
+    seed,
+    fixedTimestamp,
+    positional: positionalUlid,
+    callSiteScoped,
+  });
   const generateNanoid = nanoid.customRandom(nanoid.urlAlphabet, 21, (size) =>
     new Uint8Array(size).map(() => 256 * vmGlobalThis.Math.random())
   );
+  const generateHookToken = (correlationId: string) =>
+    callSiteScoped ? deriveHookToken(seed, correlationId) : generateNanoid();
 
   // Create a mutable holder for the promise queue so the EventsConsumer
   // can access the current queue state via a getter. The queue is mutated
@@ -480,6 +496,7 @@ async function createWorkflowSession({
     eventsConsumer,
     generateUlid,
     generateNanoid,
+    generateHookToken,
     invocationsQueue: new Map(),
     // Use getter/setter so the EventsConsumer's getPromiseQueue() always
     // sees the latest queue state as it's mutated by step/hook/sleep callbacks.
@@ -572,7 +589,9 @@ async function createWorkflowSession({
   // instead of `fixedTimestamp`, a value that differs on every replay. Binding
   // the seed time here keeps the whole run on one replay-stable clock.
   // @ts-expect-error - `@types/node` says symbol is not valid, but it does work
-  vmGlobalThis[STABLE_ULID] = generateUlid;
+  // Stream ids keep drawing from the positional sequence under both
+  // correlation-id schemes; nothing consumes them as ordinals.
+  vmGlobalThis[STABLE_ULID] = positionalUlid;
 
   // Workflow code must import the deterministic `fetch` step from `workflow`.
   vmGlobalThis.fetch = () => {
