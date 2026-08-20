@@ -228,7 +228,9 @@ export function stepToSpan(stepEvents: Event[], maxEndTime: Date): Span | null {
   if (!step) {
     return null;
   }
-  const parsedName = parseStepName(String(step.stepName));
+  const parsedName =
+    parseStepName(String(step.stepName)) ??
+    parseWorkflowName(String(step.stepName));
 
   const attributes = {
     resource: 'step' as const,
