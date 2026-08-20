@@ -280,6 +280,9 @@ function renderConfigScale(config) {
   const scenarios = [
     config.stepStormAttempts ? `step-storm ${config.stepStormAttempts}` : '',
     config.hookStormAttempts ? `hook-storm ${config.hookStormAttempts}` : '',
+    config.blockedBranchAttempts
+      ? `blocked-branch ${config.blockedBranchAttempts}`
+      : '',
     config.hookSleepAttempts ? `hook-sleep ${config.hookSleepAttempts}` : '',
     // Historical entries from the pre-storm harness, kept so an old sticky
     // comment still renders its own configuration rather than a blank line.
