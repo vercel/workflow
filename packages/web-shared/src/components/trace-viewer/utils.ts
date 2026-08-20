@@ -351,17 +351,19 @@ function timeToFraction(
   return clampFraction((time - spanStart) / spanDuration);
 }
 
-interface EventMark {
+interface EventMark<T extends string = string> {
   time: number;
-  type: string;
+  type: T;
 }
 
-function sortedEventMarks(
+function sortedEventMarks<T extends string>(
   events: SpanEvent[],
-  relevantNames: readonly string[]
-): EventMark[] {
+  relevantNames: readonly T[]
+): EventMark<T>[] {
   return events
-    .filter((e) => relevantNames.includes(e.name))
+    .filter((e): e is SpanEvent & { name: T } =>
+      relevantNames.includes(e.name as T)
+    )
     .map((e) => ({ time: getHighResInMs(e.timestamp), type: e.name }))
     .sort((a, b) => a.time - b.time);
 }
@@ -619,28 +621,11 @@ const MARKER_EVENT_NAMES: readonly SpanMarkerKind[] = [
   'attr_set',
 ];
 
-function isSpanMarkerKind(name: string): name is SpanMarkerKind {
-  return (MARKER_EVENT_NAMES as readonly string[]).includes(name);
-}
-
 export function computeSpanMarkers(span: Span): SpanMarker[] {
-  return sortedEventMarks(span.events, MARKER_EVENT_NAMES).flatMap((mark) =>
-    isSpanMarkerKind(mark.type) ? [{ timeMs: mark.time, kind: mark.type }] : []
-  );
-}
-
-/** Prefix for the marker context-card relative time, e.g. "Hook received 5 hours ago". */
-export function spanMarkerKindLabel(kind: SpanMarkerKind): string {
-  switch (kind) {
-    case 'hook_received':
-      return 'Hook received';
-    case 'attr_set':
-      return 'Attribute set';
-    default: {
-      const _exhaustive: never = kind;
-      return _exhaustive;
-    }
-  }
+  return sortedEventMarks(span.events, MARKER_EVENT_NAMES).map((mark) => ({
+    timeMs: mark.time,
+    kind: mark.type,
+  }));
 }
 
 export interface OffscreenSide {

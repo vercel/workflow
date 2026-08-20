@@ -156,10 +156,6 @@ function ZoneDateTimeRow({
   );
 }
 
-function prefixedRelativeTime(timeAgo: string, prefix?: string): string {
-  return prefix && timeAgo ? `${prefix} ${timeAgo}` : timeAgo;
-}
-
 function RelativeTimeContextCardContent({
   date,
   prefix,
@@ -174,7 +170,7 @@ function RelativeTimeContextCardContent({
     <div className="flex flex-col gap-3 min-w-[300px]">
       <div className="flex flex-col gap-3">
         <span className="tabular-nums text-label-13 text-gray-900">
-          {prefixedRelativeTime(timeAgo, prefix)}
+          {prefix ? `${prefix} ${timeAgo}` : timeAgo}
         </span>
       </div>
       <div className="flex flex-col gap-2">
@@ -187,17 +183,11 @@ function RelativeTimeContextCardContent({
 
 function DefaultTimeText({
   date,
-  prefix,
 }: {
   date: number | null | undefined;
-  prefix?: string;
 }): ReactNode {
   const shortTimeAgo = useShortTimeAgo(date);
-  return (
-    <span className="text-label-14 text-gray-900">
-      {prefixedRelativeTime(shortTimeAgo, prefix)}
-    </span>
-  );
+  return <span className="text-label-14 text-gray-900">{shortTimeAgo}</span>;
 }
 
 // ---------------------------------------------------------------------------
@@ -212,7 +202,7 @@ type RelativeTimeCardProps = Omit<
   date?: number | null;
   /** Custom content to render instead of the default relative time text. */
   children?: ReactNode;
-  /** Optional prefix for the relative-time line, e.g. "Hook received". */
+  /** Optional heading prefix for the relative-time line. */
   prefix?: string;
 };
 
@@ -229,11 +219,7 @@ export function RelativeTimeCard({
   ...props
 }: RelativeTimeCardProps): ReactNode {
   const children =
-    _children === undefined ? (
-      <DefaultTimeText date={date} prefix={prefix} />
-    ) : (
-      _children
-    );
+    _children === undefined ? <DefaultTimeText date={date} /> : _children;
 
   if (!date) return children;
 
@@ -266,7 +252,7 @@ export function TimestampTooltip({
   date: number | Date | string | null | undefined;
   children: ReactNode;
   side?: ContextCardTriggerProps['side'];
-  /** Optional prefix for the relative-time line, e.g. "Hook received". */
+  /** Optional heading prefix for the relative-time line. */
   prefix?: string;
 }): ReactNode {
   const hasProvider = useHasContextCardProvider();

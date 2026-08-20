@@ -4,11 +4,12 @@ import { ArrowLeft, ArrowRight } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { cn } from '../../../lib/cn';
 import { TimestampTooltip } from '../../ui/timestamp-tooltip';
-import {
-  type SpanMarker,
-  type SpanMarkerKind,
-  spanMarkerKindLabel,
-} from '../utils';
+import type { SpanMarker, SpanMarkerKind } from '../utils';
+
+const MARKER_KIND_PREFIX: Record<SpanMarkerKind, string> = {
+  hook_received: 'Hook received',
+  attr_set: 'Attribute set',
+};
 
 // ---------------------------------------------------------------------------
 // Marker projection
@@ -89,9 +90,8 @@ function MarkerTick({ className }: { className?: string }): ReactNode {
  * Point-in-time markers overlaid on a bar — one vertical tick per event (hook
  * resumptions and attribute writes), centered on the bar. Each tick sits inside
  * a larger hit target and, on hover, shows the shared relative-time context
- * card, prefixed with the event kind (`Hook received 5 hours ago` /
- * `Attribute set 5 hours ago`). The position is clamped a hair inside the bar
- * so an edge marker never jams the rounded corner.
+ * card, prefixed with the event kind. The position is clamped a hair inside
+ * the bar so an edge marker never jams the rounded corner.
  */
 export function MarkerLayer({
   markers,
@@ -102,14 +102,11 @@ export function MarkerLayer({
     <>
       {markers.map((m, index) => (
         <span
-          key={`${m.kind}-${m.timeMs}-${index}`}
+          key={`${m.timeMs}-${index}`}
           className="pointer-events-auto absolute top-0 bottom-0 z-10 flex w-8 -translate-x-1/2 items-center justify-center"
           style={{ left: `clamp(8px, ${m.leftPct}%, calc(100% - 8px))` }}
         >
-          <TimestampTooltip
-            date={m.timeMs}
-            prefix={spanMarkerKindLabel(m.kind)}
-          >
+          <TimestampTooltip date={m.timeMs} prefix={MARKER_KIND_PREFIX[m.kind]}>
             <span className="flex h-6 w-8 items-center justify-center">
               <MarkerTick className="h-3" />
             </span>

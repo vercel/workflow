@@ -8,7 +8,6 @@ import {
   computeSpanSegments,
   computeTimeMarkers,
   getResourceClassNames,
-  spanMarkerKindLabel,
 } from './utils';
 
 /** Build a high-res timestamp tuple ([seconds, nanoseconds]) for a given ms. */
@@ -146,7 +145,7 @@ describe('computeSpanMarkers', () => {
     expect(markers.map((m) => m.timeMs)).toEqual([1_000, 50_000, 99_000]);
   });
 
-  it('merges hook_received and attr_set events, sorted by time, with kind', () => {
+  it('merges hook_received and attr_set events, sorted by time', () => {
     const span = hookSpan({
       startMs: 0,
       endMs: 100_000,
@@ -164,13 +163,6 @@ describe('computeSpanMarkers', () => {
   it('returns no markers when the span has no marker events', () => {
     const span = hookSpan({ startMs: 0, endMs: 100_000, receivesMs: [] });
     expect(computeSpanMarkers(span)).toEqual([]);
-  });
-});
-
-describe('spanMarkerKindLabel', () => {
-  it('names hook resumptions and attribute writes', () => {
-    expect(spanMarkerKindLabel('hook_received')).toBe('Hook received');
-    expect(spanMarkerKindLabel('attr_set')).toBe('Attribute set');
   });
 });
 
