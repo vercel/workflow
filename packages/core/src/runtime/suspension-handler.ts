@@ -5,6 +5,7 @@ import {
   HookNotFoundError,
   PreconditionFailedError,
   RunExpiredError,
+  SerializationError,
   WorkflowWorldError,
 } from '@workflow/errors';
 import {
@@ -34,7 +35,10 @@ import type {
 } from '../global.js';
 import { runtimeLogger } from '../logger.js';
 import type { GuestCodeStats } from '../serialization/hardened.js';
-import { dehydrateStepArguments } from '../serialization.js';
+import {
+  dehydrateStepArguments,
+  dehydrateStepError,
+} from '../serialization.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { getAbortStreamIdFromToken } from '../util.js';
 import { COMPUTE_INSTANCE_ID } from './compute-instance.js';
@@ -56,6 +60,7 @@ import {
 } from './helpers.js';
 import { ReplayRecoveryReporter } from './replay-recovery-reporter.js';
 import type { PreclaimedInlineStart } from './step-executor.js';
+import { unserializableStepInputPlaceholder } from './unserializable-step.js';
 
 export interface SuspensionHandlerParams {
   suspension: WorkflowSuspension;
@@ -149,6 +154,18 @@ export interface SuspensionHandlerResult {
    * into the same batch boundary.
    */
   createdStepCorrelationIds: Set<string>;
+  /**
+   * Correlation IDs of steps whose arguments failed to serialize. Each was
+   * finalized here as `step_created` (with a placeholder input — the real
+   * input is precisely what refused to serialize) followed by `step_failed`
+   * carrying the SerializationError, so the next replay rejects the step's
+   * promise and a try/catch around the step call observes the error —
+   * exactly like a step-body failure. No step-execution message is
+   * dispatched for these, so the caller MUST force an in-process replay:
+   * when the failed step was the only pending work, nothing else will ever
+   * re-invoke the run to observe the terminal event.
+   */
+  failedStepCorrelationIds: Set<string>;
   /**
    * Correlation IDs of steps this suspension call already published
    * step-execution queue messages for, via resilient step dispatch (the
@@ -716,6 +733,135 @@ export async function handleSuspension({
   // racing with concurrent handlers on step execution.
   const createdStepCorrelationIds = new Set<string>();
 
+  // Correlation IDs of steps finalized as failed because their arguments
+  // refused to serialize — see finalizeUnserializableStep below.
+  const failedStepCorrelationIds = new Set<string>();
+
+  /**
+   * A step whose arguments fail to serialize is deterministic: every replay
+   * re-derives the same unserializable value, so redelivering the
+   * orchestrator message can never succeed. Instead of rejecting the whole
+   * suspension (which fails the run from the outside, where no user code can
+   * observe it), treat it exactly like a step-body failure: write
+   * `step_created` with a placeholder input (every World requires the step
+   * entity to exist before a terminal step event, and the real input is
+   * precisely what refused to serialize) followed by `step_failed` carrying
+   * the SerializationError. The next replay rejects the step's promise with
+   * it, so a try/catch around the step call observes the error; uncaught, it
+   * propagates out of the workflow body and fails the run as a USER_ERROR —
+   * without burning queue redeliveries either way.
+   */
+  const finalizeUnserializableStep = async (
+    queueItem: StepInvocationQueueItem,
+    error: SerializationError
+  ): Promise<void> => {
+    runtimeLogger.warn(
+      'Step arguments failed to serialize; failing the step so the ' +
+        'workflow can observe the error',
+      {
+        workflowRunId: runId,
+        correlationId: queueItem.correlationId,
+        stepName: queueItem.stepName,
+        error: error.message,
+      }
+    );
+    await ensureRunReady();
+    // Marker placeholder (not empty args): byte-identical-to-zero-args would
+    // make `workflow inspect steps` show "no arguments" for the one step
+    // whose entire problem was its arguments.
+    const placeholderInput = (await dehydrateStepArguments(
+      unserializableStepInputPlaceholder(),
+      runId,
+      encryptionKey,
+      suspension.globalThis,
+      false,
+      compression
+    )) as SerializedData;
+    try {
+      await createGuarded(
+        {
+          eventType: 'step_created' as const,
+          specVersion: SPEC_VERSION_CURRENT,
+          correlationId: queueItem.correlationId,
+          eventData: {
+            stepName: queueItem.stepName,
+            workflowName: run.workflowName,
+            input: placeholderInput,
+          },
+        },
+        { requestId }
+      );
+    } catch (createErr) {
+      if (EntityConflictError.is(createErr)) {
+        // A concurrent handler already created the step — the failure is
+        // deterministic, so it is racing toward the same step_failed below.
+        runtimeLogger.info('Step already exists, continuing', {
+          workflowRunId: runId,
+          correlationId: queueItem.correlationId,
+          message: createErr.message,
+        });
+      } else if (RunExpiredError.is(createErr)) {
+        // Run already finished — nothing to observe the failure.
+        return;
+      } else {
+        throw createErr;
+      }
+    }
+    try {
+      await createGuarded(
+        {
+          eventType: 'step_failed' as const,
+          specVersion: SPEC_VERSION_CURRENT,
+          correlationId: queueItem.correlationId,
+          eventData: {
+            stepName: queueItem.stepName,
+            // The error itself is a plain WorkflowError (name, message with
+            // framed hint, cause chain) — serializable even though the step
+            // input was not. Error detection is realm-independent
+            // (types.isNativeError), so the host-created error serializes
+            // the same under either global; the VM global is passed for
+            // consistency with every other dehydration in this file and so
+            // any VM-realm values guest code threw into the cause chain
+            // (getters/proxies executed during the failed dehydration) are
+            // detected by the realm-sensitive reducers.
+            error: await dehydrateStepError(
+              error,
+              runId,
+              encryptionKey,
+              [],
+              suspension.globalThis,
+              compression
+            ),
+          },
+        },
+        { requestId }
+      );
+    } catch (failErr) {
+      if (EntityConflictError.is(failErr) || RunExpiredError.is(failErr)) {
+        // Step already terminal (a concurrent handler wrote the same
+        // deterministic failure) or the run already finished.
+        runtimeLogger.info(
+          'Tried failing step, but step or run has already finished.',
+          {
+            workflowRunId: runId,
+            correlationId: queueItem.correlationId,
+            message: failErr.message,
+          }
+        );
+      } else {
+        throw failErr;
+      }
+    }
+    failedStepCorrelationIds.add(queueItem.correlationId);
+    // Release the inline slot bookkeeping: the step never runs, so it must
+    // not appear in the rebuilt `lazyInlineSteps`. (Its slot in the first-N
+    // selection and in `inlinePairFoldEligible`'s arithmetic was consumed
+    // before dehydration could reveal the failure — inherent to selecting
+    // before serializing, and bounded to one wasted slot on a pass that
+    // ends in a forced replay anyway.)
+    lazyInlineCorrelationIds.delete(queueItem.correlationId);
+  };
+
   // Serialization always runs through the one ordinary path below, so the
   // durable bytes cannot depend on retention. What retention needs to know is
   // whether that serialization *executed* workflow code (getters, proxy
@@ -878,19 +1024,45 @@ export async function handleSuspension({
         // attributes from the sink it is handed, so sharing one across
         // steps would re-emit (and misattribute) earlier steps' entries.
         const stepGuestCode: GuestCodeStats = { executions: [] };
-        const dehydratedInput = await dehydrateStepArguments(
-          {
-            args: queueItem.args,
-            closureVars: queueItem.closureVars,
-            thisVal: queueItem.thisVal,
-          },
-          runId,
-          encryptionKey,
-          suspension.globalThis,
-          false,
-          compression,
-          stepGuestCode
-        );
+        let dehydratedInput: Uint8Array | unknown;
+        try {
+          dehydratedInput = await dehydrateStepArguments(
+            {
+              args: queueItem.args,
+              closureVars: queueItem.closureVars,
+              thisVal: queueItem.thisVal,
+            },
+            runId,
+            encryptionKey,
+            suspension.globalThis,
+            false,
+            compression,
+            stepGuestCode
+          );
+        } catch (err) {
+          // The sink records executions as they happen, so guest code that
+          // ran before the failure still counts against retention.
+          guestCodeStats.executions.push(...stepGuestCode.executions);
+          if (!SerializationError.is(err)) {
+            // e.g. RuntimeDecryptionError — an SDK fault, not a user value
+            // problem. Keep its identity (RUNTIME_ERROR) and current
+            // fail-the-suspension behavior.
+            throw err;
+          }
+          if (!stepDispatch) {
+            // No dispatch target means no replay will observe a
+            // finalization: this is the terminal drain (or a create-only
+            // test caller). The run is already completing/failing, so
+            // writing step_created + step_failed here would leave e.g. a
+            // COMPLETED run carrying a failed step nothing can ever
+            // observe — reading as a bug from the dashboard. Rethrow
+            // instead; the drain's own catch swallows it, preserving its
+            // pre-existing behavior (no rows for the unawaited step).
+            throw err;
+          }
+          await finalizeUnserializableStep(queueItem, err);
+          return;
+        }
         guestCodeStats.executions.push(...stepGuestCode.executions);
         // Deferred (lazy) inline step: skip the step_created write — the
         // caller's inline executeStep will send a lazy step_started carrying
@@ -1648,6 +1820,11 @@ export async function handleSuspension({
     ...Attribute.WorkflowStepsCreated(stepItems.length),
     ...Attribute.WorkflowHooksCreated(hooksNeedingCreation.length),
     ...Attribute.WorkflowWaitsCreated(waitItems.length),
+    ...(failedStepCorrelationIds.size > 0
+      ? Attribute.WorkflowStepsFailedSerialization(
+          failedStepCorrelationIds.size
+        )
+      : {}),
     ...(resilientDispatchRecovered > 0
       ? Attribute.StepResilientDispatchRecovered(resilientDispatchRecovered)
       : {}),
@@ -1656,6 +1833,7 @@ export async function handleSuspension({
   return {
     pendingSteps: stepItems,
     createdStepCorrelationIds,
+    failedStepCorrelationIds,
     queuedStepCorrelationIds,
     lazyInlineSteps,
     inlineClaims,

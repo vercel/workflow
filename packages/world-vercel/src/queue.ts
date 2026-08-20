@@ -1,10 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { Transport } from '@vercel/queue';
-import {
-  ConsumerDiscoveryError,
-  DuplicateMessageError,
-  QueueClient,
-} from '@vercel/queue';
+import { ConsumerDiscoveryError, QueueClient } from '@vercel/queue';
 import {
   MessageId,
   type Queue,
@@ -483,34 +479,22 @@ export function createQueue(config?: APIConfig): Queue {
       /[^A-Za-z0-9-_]/g,
       '-'
     );
-    try {
-      const { messageId } = await client.send(sanitizedQueueName, wrapper, {
-        idempotencyKey: opts?.idempotencyKey,
-        delaySeconds: opts?.delaySeconds,
-        headers: {
-          ...getHeadersFromPayload(payload),
-          ...opts?.headers,
-        },
-      });
-      return {
-        // messageId may be null when VQS fails over to a different region —
-        // the event is ingested but the responding region cannot return an ID.
-        messageId: messageId ? MessageId.parse(messageId) : null,
-      };
-    } catch (error) {
-      // Silently handle idempotency key conflicts - the message was already queued.
-      // This matches the behavior of world-local and world-postgres.
-      if (error instanceof DuplicateMessageError) {
-        // Return a placeholder messageId since the original is not available from the error.
-        // Callers using idempotency keys shouldn't depend on the returned messageId.
-        return {
-          messageId: MessageId.parse(
-            `msg_duplicate_${error.idempotencyKey ?? opts?.idempotencyKey ?? 'unknown'}`
-          ),
-        };
-      }
-      throw error;
-    }
+    // A repeated `idempotencyKey` is accepted rather than rejected: the send
+    // returns a fresh message ID and only one of the messages is delivered, so
+    // there is no conflict for the caller to handle here.
+    const { messageId } = await client.send(sanitizedQueueName, wrapper, {
+      idempotencyKey: opts?.idempotencyKey,
+      delaySeconds: opts?.delaySeconds,
+      headers: {
+        ...getHeadersFromPayload(payload),
+        ...opts?.headers,
+      },
+    });
+    return {
+      // messageId may be null when the queue fails over to a different region:
+      // the event is ingested but the responding region cannot return an ID.
+      messageId: messageId ? MessageId.parse(messageId) : null,
+    };
   };
 
   const createQueueHandler: Queue['createQueueHandler'] = (

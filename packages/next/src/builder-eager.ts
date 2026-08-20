@@ -1,14 +1,5 @@
 import { constants, type Dirent } from 'node:fs';
-import {
-  access,
-  copyFile,
-  mkdir,
-  readdir,
-  realpath,
-  rm,
-  stat,
-  writeFile,
-} from 'node:fs/promises';
+import { access, mkdir, readdir, realpath, rm, stat } from 'node:fs/promises';
 import { extname, isAbsolute, join, relative, resolve } from 'node:path';
 import type {
   NextConfig as BuilderNextConfig,
@@ -47,6 +38,7 @@ export async function getNextBuilderEager(
     getWorkflowQueueTrigger,
     detectWorkflowPatterns,
     parentHasChild,
+    writeFileIfChanged,
   } = buildersModule ??
   (await importEsm<typeof import('@workflow/builders')>('@workflow/builders'));
 
@@ -69,7 +61,7 @@ export async function getNextBuilderEager(
           force: true,
         });
       }
-      await writeFile(join(workflowGeneratedDir, '.gitignore'), '*');
+      await writeFileIfChanged(join(workflowGeneratedDir, '.gitignore'), '*');
 
       const inputFiles = await this.getInputFiles();
       const tsconfigPath = await this.findTsConfigPath();
@@ -109,11 +101,16 @@ export async function getNextBuilderEager(
           );
           await mkdir(publicManifestDir, { recursive: true });
           if (process.env.VERCEL_DEPLOYMENT_ID === undefined) {
-            await writeFile(join(publicManifestDir, '.gitignore'), '*');
+            await writeFileIfChanged(
+              join(publicManifestDir, '.gitignore'),
+              '*'
+            );
           }
-          await copyFile(
-            join(workflowGeneratedDir, 'manifest.json'),
-            join(publicManifestDir, 'manifest.json')
+          // Written from the same string rather than copied, so an unchanged
+          // manifest leaves the public copy untouched too.
+          await writeFileIfChanged(
+            join(publicManifestDir, 'manifest.json'),
+            manifestJson
           );
         }
       };
@@ -669,7 +666,7 @@ export async function getNextBuilderEager(
         },
       };
 
-      await writeFile(
+      await writeFileIfChanged(
         join(outputDir, '.well-known/workflow/v1/config.json'),
         JSON.stringify(generatedConfig, null, 2)
       );

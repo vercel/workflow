@@ -80,6 +80,21 @@ export class LocalBuilder extends BaseBuilder {
     this.#outDir = outDir;
   }
 
+  /**
+   * The dev handler in `../src/index.ts` cache-busts its dynamic import of
+   * `workflow/steps.mjs` using the mtime of `workflow/workflows.mjs`, so an
+   * unchanged `workflows.mjs` must still be rewritten: a step-body-only edit
+   * changes `steps.mjs` alone, and skipping the `workflows.mjs` write would
+   * freeze the version key and serve the previous step code until restart.
+   *
+   * Nothing is lost by opting out. These files are generated into
+   * `<buildDir>/workflow`, which no dev server watches, so skipping the write
+   * would not have saved a recompile here.
+   */
+  protected override get skipsUnchangedGeneratedWrites(): boolean {
+    return false;
+  }
+
   // Serialize concurrent build() calls so overlapping dev rebuilds don't
   // stomp on each other's temp files or partially overwrite output.
   #buildQueue: Promise<void> = Promise.resolve();

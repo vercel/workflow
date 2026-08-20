@@ -1,5 +1,16 @@
 # @workflow/world-postgres
 
+## 5.0.0-beta.35
+
+### Patch Changes
+
+- [#3645](https://github.com/vercel/workflow/pull/3645) [`771cdb2`](https://github.com/vercel/workflow/commit/771cdb22a874b1c880ac6b6b3dc8a1f9a3923632) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Reject a hook resume that races the hook's disposal, instead of journaling it after `hook_disposed` and corrupting the owning run's event log.
+
+- Updated dependencies [[`b0adb50`](https://github.com/vercel/workflow/commit/b0adb50bce623b23252735021205e8d870a2b11f), [`37e1d9e`](https://github.com/vercel/workflow/commit/37e1d9e5a9870ef4a35e1875e7054253a9fb89c3), [`1321570`](https://github.com/vercel/workflow/commit/13215704645ea487ef6f8821016ec3f13c1cd830), [`04e060a`](https://github.com/vercel/workflow/commit/04e060a0ecc247a3291714d8396430fa9d96bccc)]:
+  - @workflow/world@5.0.0-beta.28
+  - @workflow/world-local@5.0.0-beta.37
+  - @workflow/errors@5.0.0-beta.17
+
 ## 5.0.0-beta.34
 
 ### Patch Changes

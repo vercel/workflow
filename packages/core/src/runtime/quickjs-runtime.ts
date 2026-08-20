@@ -29,6 +29,7 @@
  * `node:vm` engine's replay determinism.
  */
 
+import { SerializationError } from '@workflow/errors';
 import type {
   Event,
   RunInput,
@@ -49,6 +50,7 @@ import { runtimeLogger } from '../logger.js';
 import { decompress } from '../serialization/compression.js';
 import type { DecryptionKey } from '../serialization/encryption.js';
 import { decrypt } from '../serialization/encryption.js';
+import { formatSerializationError } from '../serialization/errors.js';
 import {
   getReplayTimeoutMs,
   isQuickJSBaselineSnapshotEnabled,
@@ -90,10 +92,25 @@ export interface PendingStep {
   type: 'step';
   correlationId: string;
   stepId: string;
-  /** Format-prefixed devalue-serialized step input (args + closureVars) */
-  input: Uint8Array;
+  /**
+   * Format-prefixed devalue-serialized step input (args + closureVars).
+   * Absent when {@link serializationError} is set — the input is precisely
+   * what refused to serialize.
+   */
+  input?: Uint8Array;
   /** Whether a step_created event already exists for this step */
   hasCreatedEvent: boolean;
+  /**
+   * Set when host-side serialization of the step's raw input failed while
+   * dumping the VM's pending ops (see `dumpPendingOps`). The failure is
+   * deterministic (replaying re-derives the same unserializable value), so
+   * instead of failing the whole collection the op is surfaced with the
+   * reframed error and no `input`; the entrypoint finalizes the step as
+   * `step_created` (placeholder input) + `step_failed`, mirroring the
+   * node:vm engine's `finalizeUnserializableStep`, so a try/catch around
+   * the step call observes the SerializationError.
+   */
+  serializationError?: SerializationError;
 }
 
 export interface PendingWait {
@@ -2512,7 +2529,32 @@ function dumpPendingOps(
       let bytes = byteCache?.get(cacheKey);
       if (!bytes) {
         using valueHandle = rawFields.getProp(String(index));
-        bytes = serde.serialize(valueHandle);
+        try {
+          bytes = serde.serialize(valueHandle);
+        } catch (err) {
+          // A step input that refuses to serialize is a deterministic user
+          // error: failing the whole collection here would fail the run
+          // from the outside, where no workflow code can observe it (and
+          // with a bare DevalueError instead of the framed message the
+          // node:vm engine produces). Reframe it exactly like
+          // `dehydrateStepArguments` does and surface it on the op — the
+          // entrypoint finalizes the step as step_created + step_failed so
+          // the failure rejects into the workflow, catchable. Other raw
+          // fields (hook metadata, abort payloads) keep the throwing
+          // behavior, matching the node:vm engine's scope.
+          if (op.type === 'step' && field === 'input') {
+            const { message, hint } = formatSerializationError(
+              'step arguments',
+              err
+            );
+            (op as PendingStep).serializationError = new SerializationError(
+              message,
+              { hint, cause: err }
+            );
+            continue;
+          }
+          throw err;
+        }
         byteCache?.set(cacheKey, bytes);
       }
       (op as unknown as Record<string, unknown>)[field] = bytes;

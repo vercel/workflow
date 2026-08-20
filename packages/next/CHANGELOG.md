@@ -1,5 +1,19 @@
 # @workflow/next
 
+## 5.0.0-beta.43
+
+### Patch Changes
+
+- [#3529](https://github.com/vercel/workflow/pull/3529) [`ae16375`](https://github.com/vercel/workflow/commit/ae1637502b35c8f635d2b0e103cd8de85b5ffcdd) Thanks [@alangenfeld](https://github.com/alangenfeld)! - Fix dev HMR dropping edits to already-tracked files that land while a full rediscovery rebuild is in flight
+
+- [#3589](https://github.com/vercel/workflow/pull/3589) [`916fcf0`](https://github.com/vercel/workflow/commit/916fcf08339695861c41145970085dea96b99140) Thanks [@alangenfeld](https://github.com/alangenfeld)! - Dev HMR logging (`WORKFLOW_DEV_HMR_LOGS=1`) now also logs `workflow dev hmr: rebuild complete`
+
+- [#3493](https://github.com/vercel/workflow/pull/3493) [`0b2797b`](https://github.com/vercel/workflow/commit/0b2797bbace75f590897959367aec03300ca6e13) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Bundle `@workflow/world-vercel` into the Next.js server output instead of leaving it external, so cold starts no longer resolve its module graph from disk one file at a time.
+
+- Updated dependencies [[`b0adb50`](https://github.com/vercel/workflow/commit/b0adb50bce623b23252735021205e8d870a2b11f), [`37e1d9e`](https://github.com/vercel/workflow/commit/37e1d9e5a9870ef4a35e1875e7054253a9fb89c3), [`1321570`](https://github.com/vercel/workflow/commit/13215704645ea487ef6f8821016ec3f13c1cd830), [`234d3dd`](https://github.com/vercel/workflow/commit/234d3dd7b852129e189d321314c4f749f12711d8), [`707dfe6`](https://github.com/vercel/workflow/commit/707dfe6a063564cd1c146742e90661abc49534b3), [`a074259`](https://github.com/vercel/workflow/commit/a074259166819121579ffbb5b9f8da60853ae57b), [`ac51658`](https://github.com/vercel/workflow/commit/ac51658d39649e7d8e290924c3bf7b2c7df78b00), [`c5f9177`](https://github.com/vercel/workflow/commit/c5f9177be3c58a2b5616f798932061b67e0b54a5), [`880801b`](https://github.com/vercel/workflow/commit/880801bd4521a0cfd76e8c46ebf560c388ecf30c)]:
+  - @workflow/core@5.0.0-beta.43
+  - @workflow/builders@5.0.0-beta.43
+
 ## 5.0.0-beta.42
 
 ### Patch Changes

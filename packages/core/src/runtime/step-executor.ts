@@ -5,6 +5,7 @@ import {
   FatalError,
   RetryableError,
   RunExpiredError,
+  SerializationError,
   ThrottleError,
   TooEarlyError,
   WorkflowRuntimeError,
@@ -31,6 +32,7 @@ import {
 import { runtimeLogger, stepLogger } from '../logger.js';
 import { getStepFunction } from '../private.js';
 import type { PayloadKey } from '../serialization/encryption.js';
+import { formatSerializationError } from '../serialization/errors.js';
 import {
   cancelAbortReaders,
   dehydrateStepError,
@@ -68,6 +70,7 @@ import {
   type StepLatencyEventData,
   type StepLatencyTracking,
 } from './step-latency.js';
+import { isUnserializableStepInputPlaceholder } from './unserializable-step.js';
 import { safeWaitUntil } from './wait-until.js';
 
 export const DEFAULT_STEP_MAX_RETRIES = 3;
@@ -999,6 +1002,23 @@ export async function executeStep(
           return hydrated;
         }
       );
+
+      // Finalization of an unserializable-argument step writes step_created
+      // (placeholder input) and step_failed as two separate durable writes.
+      // A crash or transient failure between them leaves this step pending
+      // with the placeholder stored as its input, and normal crash recovery
+      // then dispatches it here. NEVER run user code with placeholder
+      // arguments — complete the intended failure instead. The
+      // SerializationError is fatal (`fatal: true`), so the catch below
+      // writes step_failed without retries, exactly what the interrupted
+      // finalization was about to do.
+      if (isUnserializableStepInputPlaceholder(hydratedInput)) {
+        const { message, hint } = formatSerializationError(
+          'step arguments',
+          undefined
+        );
+        throw new SerializationError(message, { hint });
+      }
 
       const args = hydratedInput.args;
       const thisVal = hydratedInput.thisVal ?? null;
