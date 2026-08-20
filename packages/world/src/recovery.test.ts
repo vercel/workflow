@@ -5,20 +5,26 @@ import { reenqueueActiveRuns } from './recovery.js';
 
 function createRuns(): Storage['runs'] {
   return {
-    list: vi.fn(async ({ status }) => ({
-      data:
-        status === 'pending'
+    list: vi.fn(async ({ status }) => {
+      const statuses = Array.isArray(status)
+        ? status
+        : status
+          ? [status]
+          : [];
+      return {
+        data: statuses.includes('pending')
           ? [
               {
                 runId: 'wrun_AAA',
                 workflowName: 'myWorkflow',
-                status,
+                status: 'pending',
               },
             ]
           : [],
-      hasMore: false,
-      cursor: null,
-    })),
+        hasMore: false,
+        cursor: null,
+      };
+    }),
   } as unknown as Storage['runs'];
 }
 
@@ -47,5 +53,22 @@ describe('reenqueueActiveRuns', () => {
     expect(enqueue).toHaveBeenCalledWith('__explicit_wkf_workflow_myWorkflow', {
       runId: 'wrun_AAA',
     });
+  });
+
+  it("issues a single list call over ['pending', 'running'] (not one per status)", async () => {
+    const runs = createRuns();
+    const enqueue = vi.fn<Queue['queue']>();
+
+    await reenqueueActiveRuns(runs, enqueue, 'test');
+
+    // Prior implementation looped over ['pending', 'running'] and called
+    // list() once per status. The array-status refactor collapses that
+    // to a single call — the world does the fan-out server-side.
+    expect(runs.list).toHaveBeenCalledTimes(1);
+    expect(runs.list).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: ['pending', 'running'],
+      })
+    );
   });
 });

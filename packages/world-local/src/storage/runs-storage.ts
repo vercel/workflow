@@ -152,8 +152,13 @@ export function createRunsStorage(
           ) {
             return false;
           }
-          if (params?.status && run.status !== params.status) {
-            return false;
+          if (params?.status !== undefined) {
+            const statuses = Array.isArray(params.status)
+              ? params.status
+              : [params.status];
+            if (statuses.length > 0 && !statuses.includes(run.status)) {
+              return false;
+            }
           }
           return true;
         },

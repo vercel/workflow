@@ -90,13 +90,17 @@ describe('re-enqueue active runs on start', () => {
     >
   ) {
     vi.mocked(createRunsStorage).mockReturnValue({
-      list: vi.fn(async (params: any) => ({
-        data: (runsByStatus[params?.status as 'pending' | 'running'] ?? []).map(
-          (r) => ({ ...r, status: params?.status })
-        ),
-        hasMore: false,
-        cursor: null,
-      })),
+      list: vi.fn(async (params: any) => {
+        const statuses = Array.isArray(params?.status)
+          ? (params.status as Array<'pending' | 'running'>)
+          : params?.status
+            ? [params.status as 'pending' | 'running']
+            : (['pending', 'running'] as const);
+        const data = statuses.flatMap((status) =>
+          (runsByStatus[status] ?? []).map((r) => ({ ...r, status }))
+        );
+        return { data, hasMore: false, cursor: null };
+      }),
       get: vi.fn(),
     } as any);
   }
@@ -222,16 +226,14 @@ describe('re-enqueue active runs on start', () => {
     vi.mocked(createRunsStorage).mockReturnValue({
       list: vi.fn(async (params: any) => {
         callCount++;
-        // First call for each status returns one run with hasMore=true,
-        // second call returns empty.
+        // First call returns two runs (one per status) with hasMore=true,
+        // second call returns empty. Assumes the caller asked for both
+        // statuses in one array — see recovery.ts's `status: ['pending', 'running']`.
         if (!params?.pagination?.cursor) {
           return {
             data: [
-              {
-                runId: `wrun_page1_${params?.status}`,
-                workflowName: 'paginatedWf',
-                status: params?.status,
-              },
+              { runId: 'wrun_page1_pending', workflowName: 'paginatedWf', status: 'pending' },
+              { runId: 'wrun_page1_running', workflowName: 'paginatedWf', status: 'running' },
             ],
             hasMore: true,
             cursor: 'next',
@@ -245,10 +247,11 @@ describe('re-enqueue active runs on start', () => {
     const world = createWorld({ connectionString: 'postgres://test', pool });
     await world.start();
 
-    // Should have 4 list calls: 2 statuses × 2 pages each
-    expect(callCount).toBe(4);
+    // Should have 2 list calls: single non-terminal filter × 2 pages.
+    // (Prior: 4 calls, once per status × 2 pages.)
+    expect(callCount).toBe(2);
 
-    // Should have enqueued 2 runs (one per status from first page)
+    // Should have enqueued 2 runs (both statuses from first page).
     expect(workerUtilsMock.addJob).toHaveBeenCalledTimes(2);
 
     await world.close();
