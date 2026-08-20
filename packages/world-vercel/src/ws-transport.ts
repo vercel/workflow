@@ -290,7 +290,9 @@ class WsEventsTransport {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
-    if (transports.get(this.wsUrl) === this) transports.delete(this.wsUrl);
+    if (wsEvents.transports.get(this.wsUrl) === this) {
+      wsEvents.transports.delete(this.wsUrl);
+    }
     const conn = this.connection;
     this.connection = null;
     // Normal closure: a clean client-side release, not an aborted run.
@@ -660,7 +662,43 @@ class WsEventsTransport {
   }
 }
 
-const transports = new Map<string, WsEventsTransport>();
+/**
+ * On `globalThis`, not at module scope: a bundler can put two copies of this
+ * module in one process — Next.js gives the `instrumentation.ts` entry its own
+ * copy of the world now that it is bundled rather than external
+ * (vercel/workflow#3493) — and the open and the lookup run through different
+ * Worlds (`getWorldHandlers()` vs `getWorld()`, two `createWorld()` calls under
+ * two `globalThis` keys in core), so they can land in different copies. With the
+ * registry at module scope, opens went into one Map and every write read the
+ * other, empty one: socket open, every event silently on HTTP.
+ *
+ * `/v1` so a later change to `WsEventsTransport`'s shape gets a fresh registry
+ * rather than a structurally-incompatible hit from an older copy.
+ */
+const WsEventsStateKey = Symbol.for(
+  '@workflow/world-vercel//wsEventsTransports/v1'
+);
+
+interface WsEventsState {
+  /** Open channels by `wsUrl`; see `getWsEventsTransport` below. */
+  transports: Map<string, WsEventsTransport>;
+  /** Log-once latches; per-copy ones would log once *per copy*. */
+  loggedWsInUse: boolean;
+  loggedWsProxyFallback: boolean;
+}
+
+const globalWsEventsState = globalThis as typeof globalThis & {
+  [WsEventsStateKey]?: WsEventsState;
+};
+
+// First copy to evaluate seeds the state; later copies adopt that same object,
+// so nothing here may ever *replace* the slot.
+const wsEvents: WsEventsState = globalWsEventsState[WsEventsStateKey] ?? {
+  transports: new Map(),
+  loggedWsInUse: false,
+  loggedWsProxyFallback: false,
+};
+globalWsEventsState[WsEventsStateKey] = wsEvents;
 
 /**
  * Get (or lazily create) the shared WS transport for `wsUrl`. `getHeaders` runs
@@ -678,26 +716,26 @@ export function getWsEventsTransport(
     forceRefresh: boolean;
   }) => Promise<Record<string, string>>
 ): WsEventsTransport {
-  let transport = transports.get(wsUrl);
+  let transport = wsEvents.transports.get(wsUrl);
   if (!transport) {
     transport = new WsEventsTransport(wsUrl, getHeaders);
-    transports.set(wsUrl, transport);
+    wsEvents.transports.set(wsUrl, transport);
   }
   return transport;
 }
 
 /**
  * Test seam: close and drop every cached transport, and re-arm the
- * once-per-process log latches below so a test asserting on either message
- * isn't silenced by an earlier one having already logged it.
+ * once-per-process log latches so a test asserting on either message isn't
+ * silenced by an earlier one having already logged it.
  */
 export function resetWsEventsTransportsForTest(): void {
-  for (const transport of [...transports.values()]) {
+  for (const transport of [...wsEvents.transports.values()]) {
     transport.close('test reset');
   }
-  transports.clear();
-  loggedWsProxyFallback = false;
-  loggedWsInUse = false;
+  wsEvents.transports.clear();
+  wsEvents.loggedWsProxyFallback = false;
+  wsEvents.loggedWsInUse = false;
 }
 
 /**
@@ -772,8 +810,8 @@ export function openWsChannel(
   if (!isWsEventsTransportEnabled()) return undefined;
   const resolved = resolveChannelUrl(runId, config);
   if (!resolved) return undefined;
-  if (!loggedWsInUse) {
-    loggedWsInUse = true;
+  if (!wsEvents.loggedWsInUse) {
+    wsEvents.loggedWsInUse = true;
     console.log(`world-vercel: using ws events transport (${resolved}).`);
   }
   // Cheap: a URL plus a map lookup, no token mint and no I/O. The socket work
@@ -829,11 +867,6 @@ async function refreshOidcTokenBestEffort(): Promise<void> {
   }
 }
 
-// Each logged at most once per process — both branches below are expected
-// to repeat (every event), and a per-request log would just be noise.
-let loggedWsProxyFallback = false;
-let loggedWsInUse = false;
-
 /**
  * Resolve this run's channel URL, or `null` when this World can't hold a socket
  * at all and every caller must use HTTP. Says nothing about whether a channel is
@@ -855,8 +888,8 @@ function resolveChannelUrl(
     // platform-level upgrade path, which is what surfaces as
     // "experimental_upgradeWebSocket is not available in the current runtime
     // environment". Fall back rather than fail a connection it can't serve.
-    if (!loggedWsProxyFallback) {
-      loggedWsProxyFallback = true;
+    if (!wsEvents.loggedWsProxyFallback) {
+      wsEvents.loggedWsProxyFallback = true;
       console.warn(
         `world-vercel: ws events transport requested but a World with projectConfig ` +
           `(api-workflow proxy, resolved baseUrl: ${baseUrl}) is active — falling back.`
@@ -885,6 +918,6 @@ export function resolveWsTransport(
 } | null {
   const wsUrl = resolveChannelUrl(runId, config);
   if (!wsUrl) return null;
-  const transport = transports.get(wsUrl);
+  const transport = wsEvents.transports.get(wsUrl);
   return transport ? { transport, wsUrl } : null;
 }

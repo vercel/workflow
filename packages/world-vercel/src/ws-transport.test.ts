@@ -1049,6 +1049,57 @@ describe('transport selection', () => {
   });
 
   /**
+   * Two copies of this module can share a process, and the open and the lookup
+   * run through different Worlds, so they can land in different copies. With
+   * the registry at module scope that made an open socket carry nothing.
+   */
+  describe('the channel registry is process-wide', () => {
+    const WsEventsStateKey = Symbol.for(
+      '@workflow/world-vercel//wsEventsTransports/v1'
+    );
+
+    /** The registry as a second copy of this module in the process sees it. */
+    const sharedTransports = () =>
+      (
+        globalThis as typeof globalThis & {
+          [WsEventsStateKey]?: { transports: Map<string, unknown> };
+        }
+      )[WsEventsStateKey]?.transports;
+
+    it('registers an opened channel there, and evicts it on release', () => {
+      process.env.WORKFLOW_EVENTS_TRANSPORT = 'ws';
+      const release = openWsChannel('wrun_1', directConfig);
+      const wsUrl = resolveWsTransport('wrun_1', directConfig)?.wsUrl;
+
+      expect(wsUrl).toBeDefined();
+      expect(sharedTransports()?.has(String(wsUrl))).toBe(true);
+
+      release?.();
+
+      expect(sharedTransports()?.has(String(wsUrl))).toBe(false);
+    });
+
+    it('resolves a channel another copy of this module opened', () => {
+      process.env.WORKFLOW_EVENTS_TRANSPORT = 'ws';
+      // Borrow the URL the open path derives, then stand in for that other
+      // copy by registering under it directly.
+      const release = openWsChannel('wrun_1', directConfig);
+      const wsUrl = String(resolveWsTransport('wrun_1', directConfig)?.wsUrl);
+      release?.();
+      expect(resolveWsTransport('wrun_1', directConfig)).toBeNull();
+
+      // Stands in for a transport built by that other copy: structurally used
+      // by the write path, and `close`able by the reset seam.
+      const openedElsewhere = { copy: 'other', close: () => {} };
+      sharedTransports()?.set(wsUrl, openedElsewhere);
+      const resolved = resolveWsTransport('wrun_1', directConfig);
+
+      expect(resolved?.wsUrl).toBe(wsUrl);
+      expect(resolved?.transport as unknown).toBe(openedElsewhere);
+    });
+  });
+
+  /**
    * The flow route calls these on every message, for every World — including the
    * HTTP default and the proxy World that can't speak WS at all. So "does
    * nothing, quietly" is as much the contract as the open itself: a throw or an
