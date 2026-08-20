@@ -280,6 +280,9 @@ function renderConfigScale(config) {
   const scenarios = [
     config.stepStormAttempts ? `step-storm ${config.stepStormAttempts}` : '',
     config.hookStormAttempts ? `hook-storm ${config.hookStormAttempts}` : '',
+    config.blockedBranchAttempts
+      ? `blocked-branch ${config.blockedBranchAttempts}`
+      : '',
     config.hookSleepAttempts ? `hook-sleep ${config.hookSleepAttempts}` : '',
     // Historical entries from the pre-storm harness, kept so an old sticky
     // comment still renders its own configuration rather than a blank line.
@@ -309,6 +312,9 @@ function renderConfigTiming(config) {
       ? `step ${config.stepDelayMs}±${config.stepDelayJitterMs ?? 0}ms`
       : '',
     config.hookResumeStaggerMs ? `stagger ${config.hookResumeStaggerMs}ms` : '',
+    config.resumeBurstOffsetMs && config.blockedBranchAttempts
+      ? `burst ${config.resumeBurstOffsetMs}+${config.resumeBurstJitterMs ?? 0}ms`
+      : '',
     config.pokeIntervalMs ? `poke ${config.pokeIntervalMs}ms` : '',
     // The budget belongs next to the cadence it bounds: it is SPENT on the
     // local lanes (every step-storm run there reaches it), so a config line
@@ -335,6 +341,7 @@ function compactConfig(config = {}) {
     attempts: config.attempts,
     stepStormAttempts: config.stepStormAttempts,
     hookStormAttempts: config.hookStormAttempts,
+    blockedBranchAttempts: config.blockedBranchAttempts,
     hookSleepAttempts: config.hookSleepAttempts,
     concurrency: config.concurrency,
     rounds: config.rounds,
@@ -348,6 +355,10 @@ function compactConfig(config = {}) {
     pokeMax: config.pokeMax,
     pokeDecayFactor: config.pokeDecayFactor,
     hookResumeStaggerMs: config.hookResumeStaggerMs,
+    launchStaggerMs: config.launchStaggerMs,
+    resumeBurstOffsetMs: config.resumeBurstOffsetMs,
+    resumeBurstJitterMs: config.resumeBurstJitterMs,
+    blockedBranchWatchdogMs: config.blockedBranchWatchdogMs,
     runTimeoutMs: config.runTimeoutMs,
     // Pre-storm harness keys, retained so history rows recorded by an older
     // revision of this script keep rendering their own configuration.

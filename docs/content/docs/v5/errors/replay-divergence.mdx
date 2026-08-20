@@ -20,7 +20,7 @@ A single divergent replay does not prove that persisted history is corrupted. Fo
 
 The runtime automatically queues another replay when an invocation reports `REPLAY_DIVERGENCE`. No terminal `run_failed` event is written during these recovery attempts.
 
-If recovery replays continue to diverge after the retry budget is exhausted, the runtime marks the run as failed with `CORRUPTED_EVENT_LOG` and records the latest divergent event for diagnosis.
+If recovery replays continue to diverge after the recovery budget is exhausted, the runtime marks the run as failed with `CORRUPTED_EVENT_LOG` and records the latest divergent event for diagnosis.
 
 ## What To Do
 

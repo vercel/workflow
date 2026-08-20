@@ -188,6 +188,28 @@ export interface GetWorkflowRunParams {
   resolveData?: ResolveData;
 }
 
+/**
+ * Params for the optional `runs.waitForTerminalStatus` long poll.
+ */
+export interface WaitForTerminalRunStatusParams extends GetWorkflowRunParams {
+  /**
+   * How long the caller is willing to wait, in milliseconds. Treat it as an
+   * upper bound on the wait, not a promise about the duration: the call
+   * resolves as soon as the run is terminal, and a World may also resolve
+   * early with a non-terminal snapshot (see
+   * {@link Storage.runs.waitForTerminalStatus}).
+   *
+   * Implementations clamp this to whatever their backend can hold open.
+   */
+  timeoutMs?: number;
+
+  /**
+   * Abandon the wait when this signal aborts. Implementations that cannot
+   * observe it may ignore it; callers must not rely on it to bound the call.
+   */
+  signal?: AbortSignal;
+}
+
 export interface ListWorkflowRunsParams {
   workflowName?: string;
   status?: WorkflowRunStatus;

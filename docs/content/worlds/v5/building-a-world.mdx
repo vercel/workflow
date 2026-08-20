@@ -88,6 +88,9 @@ interface Storage {
   runs: {
     get(id: string, params?: GetWorkflowRunParams): Promise<WorkflowRun>;
     list(params?: ListWorkflowRunsParams): Promise<PaginatedResponse<WorkflowRun>>;
+
+    // Optional: long poll for a terminal status (see below)
+    waitForTerminalStatus?(id: string, params?: WaitForTerminalRunStatusParams): Promise<WorkflowRun>;
   };
 
   steps: {
@@ -128,6 +131,21 @@ interface Storage {
 Keep the owning Run available for at least as long as its token remains unavailable, because conflicts return that Run.
 
 **Automatic Hook Cleanup:** When a run ends, remove its live Hooks. Make each token available unless its `tokenRetentionUntil` is still in the future. A `hook_disposed` event always makes the token available immediately.
+
+### Optional: Waiting for a Terminal Run Status
+
+`await run.returnValue` has to find out when a run finished. Without help it re-reads the run every second, so a run that finishes just after a read is reported up to a second late. Implement `runs.waitForTerminalStatus(id, { timeoutMs, signal, resolveData })` and the runtime asks once and is answered the moment the run ends.
+
+The contract is deliberately forgiving, because "wait" means something different in every store:
+
+- Resolve as soon as the run's status is terminal, returning the same entity `get` returns.
+- Resolve no later than roughly `timeoutMs` with the latest snapshot, whatever its status. **A timeout is a normal return, never an error** — a run that is still running is a legitimate answer, and the runtime simply asks again.
+- `timeoutMs` is an upper bound, not a lower one: returning a non-terminal snapshot early is allowed, and the runtime paces its own retries.
+- Fail exactly like `get` — a missing run throws `WorkflowRunNotFoundError`.
+
+How you wait is up to your store. The reference worlds use, respectively, a server-side long poll (`world-vercel` holds `GET /v2/runs/:runId/status` open), `LISTEN`/`NOTIFY` (`world-postgres`), and an in-process emitter over the run files (`world-local`). Whatever the mechanism, treat the notification as a *signal only* and re-read the run before answering, and back the wait with a periodic re-read so a lost notification costs latency rather than hanging until the budget expires.
+
+Omitting the method is a supported choice — a store with no change notification, or a deterministic simulator like `world-sim` where a real wait would stall a virtual clock, simply leaves it off and the runtime keeps interval-polling `get`. Nothing else degrades; there is no capability to declare.
 
 ### Event ID Allocation
 

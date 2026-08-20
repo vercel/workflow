@@ -27,9 +27,40 @@
 //   overhead/backpressure. Two payload shapes are supported so the runner can
 //   isolate serialization cost: `'text'` (raw string fragments) and
 //   `'structured'` (AI-SDK-style `{ type: 'text-delta', id, text }` objects).
+// - `benchCrttWorkflow` measures per-chunk round-trip time (CRTT), reusing the
+//   SO setup (paced writer + parallel reader, same deployment, so no clock
+//   skew beyond intra-Vercel NTP bounds) but embedding `{ seq, writtenAt }` in
+//   every chunk — the SL scenario's payload-embedded-timestamp trick applied
+//   to the whole stream. The "round trip" is deployment -> stream backend ->
+//   reader on the same deployment (one clock domain), not an echo back to the
+//   writer. The reader stamps each chunk's arrival, computes
+//   `rtt = Date.now() - chunk.writtenAt`, and aggregates on the deployment
+//   (see 97_bench_rtt.ts): chunk-index buckets, mean-RTT profiles over stream
+//   progress and over serialized chunk size, and fixed log-bin histograms —
+//   compact aggregates instead of hundreds of raw samples.
+// - `benchReplayWorkflow` reuses the whole CRTT measurement rig but replays a
+//   REAL captured stream cadence (97_bench_cadence.ts): every write
+//   instant and chunk size comes from the capture, so the replay scenario's
+//   only chosen parameter is the speed multiplier.
 
 import { createHook, getWorkflowMetadata, getWritable } from 'workflow';
 import { getRun } from 'workflow/api';
+import { BENCH_CADENCES } from './97_bench_cadence';
+import {
+  type BenchDelayTail,
+  type BenchRttMeanProfile,
+  type BenchRttSummary,
+  type BenchSteadyRate,
+  type CdvArrival,
+  computeCdv,
+  progressProfile,
+  type RttIndexBucket,
+  rttIndexBucket,
+  sizeProfile,
+  steadyRate,
+  summarizeDelayTail,
+  summarizeRttSamples,
+} from './97_bench_rtt';
 
 export interface BenchStepTiming {
   /** Date.now() at step body entry */
@@ -109,6 +140,9 @@ const SL_READY_NAMESPACE = 'bench-sl-ready';
 // reader-ready barrier pattern SL uses.
 const SO_STREAM_NAMESPACE = 'bench-so';
 const SO_READY_NAMESPACE = 'bench-so-ready';
+// Dedicated streams for the CRTT scenario, same isolation + barrier pattern.
+const CRTT_STREAM_NAMESPACE = 'bench-crtt';
+const CRTT_READY_NAMESPACE = 'bench-crtt-ready';
 // Deterministic, variable-length text fragments cycled to approximate real
 // token-stream traffic (≈4.5 UTF-8 bytes on average, including punctuation and
 // newline "tokens") while keeping every run byte-for-byte reproducible.
@@ -140,6 +174,68 @@ function soChunk(
     ? { type: 'text-delta', id: SO_STRUCTURED_DELTA_ID, text }
     : text;
 }
+
+/** A self-timestamping CRTT chunk. `text` keeps the payload LLM-shaped (the
+ * same cycled fragments the SO scenarios stream); the `'sweep'` variant adds
+ * `pad` so the serialized chunk size rotates across the size buckets. */
+export interface BenchChunkRttDelta {
+  seq: number;
+  /** Date.now() in the writer step immediately before this chunk's write */
+  writtenAt: number;
+  text: string;
+  pad?: string;
+}
+
+/** CRTT payload variant. `'llm'` streams LLM-shaped deltas (a few tens of
+ * bytes each, so the index numbers stay pure of padding); `'sweep'` pads
+ * deltas in rotation across log-spaced sizes so mean RTT can be profiled as
+ * a function of serialized chunk size. (The replay scenario replays real
+ * captured cadences instead — see {@link benchReplayWorkflow}.) */
+export type BenchChunkRttVariant = 'llm' | 'sweep';
+
+/** Reader-side aggregation of one CRTT run: per-bucket summaries computed on
+ * the deployment (see 97_bench_rtt.ts). Buckets that received no samples are
+ * absent. */
+/** Chunk delay variation for one run, aggregated in the reader step (see
+ * computeCdv in 97_bench_rtt.ts for the definition and pairing rules). */
+export interface BenchChunkCdv {
+  /** Number of seq-adjacent pairs measured. */
+  pairs: number;
+  /** Adjacent arrivals whose seqs weren't consecutive (0 by contract). */
+  skippedPairs: number;
+  /** Tail of POSITIVE cdv — delivery clumps/stalls. Negatives (catch-up)
+   * balance them by the telescoping identity and are not summarized. */
+  positive?: BenchDelayTail;
+  /** Mean positive cdv per tenth of the stream — localizes where delivery
+   * clumping/stalls concentrate. */
+  progress: BenchRttMeanProfile;
+}
+
+export interface BenchChunkRttResult {
+  /** Number of chunks the reader received (validated against the request) */
+  received: number;
+  /** All chunks pooled — the headline "average per-chunk RTT" summary. */
+  all?: BenchRttSummary;
+  byIndex: Partial<Record<RttIndexBucket, BenchRttSummary>>;
+  /** Mean RTT per tenth of the stream — the drift/trend readout that fixed
+   * index buckets cannot provide (see progressProfile in 97_bench_rtt.ts). */
+  progress: BenchRttMeanProfile;
+  /** Mean RTT per log size bin — the size→latency curve (only informative
+   * for the `'sweep'` variant, whose pad rotation occupies every bin). */
+  size: BenchRttMeanProfile;
+  /** Chunk delay variation (delivery jitter), from RAW timestamps. */
+  cdv: BenchChunkCdv;
+  /** Delivered (reader-side) sustained throughput over the steady window. */
+  delivered?: BenchSteadyRate;
+}
+
+// Pad lengths cycled by the CRTT `'sweep'` variant: a log ladder chosen so
+// the ~60B base chunk serializes to one representative size per size-profile
+// bin (~160B, ~400B, ~760B, ~1.5KB, ~3KB, ~6KB, ~12KB — see
+// RTT_SIZE_BIN_EDGES_BYTES in 97_bench_rtt.ts). Rotation decouples size from
+// seq: every size appears throughout the stream, so the size profile is not
+// confounded with warmup or drift.
+const CRTT_SWEEP_PAD_LENGTHS = [100, 340, 700, 1400, 3000, 6000, 12000];
 
 async function timedNoopStep(index: number): Promise<BenchStepTiming> {
   'use step';
@@ -437,4 +533,325 @@ export async function benchSoWorkflow(
       received: reader.received,
     },
   };
+}
+
+/** Reader half of the CRTT scenario. Same attach/ready handshake as
+ * {@link soReaderStep}, but each received chunk is scored individually:
+ * `rtt = Date.now() - chunk.writtenAt` (clamped at 0 to absorb tiny
+ * intra-Vercel clock skew between the writer's and reader's instances) and
+ * an approximate serialized size (`JSON.stringify` length — the payloads are
+ * ASCII, so chars ≈ UTF-8 bytes). Raw (unclamped) timestamps are also kept
+ * in arrival order for chunk delay variation — the skew-free
+ * delivery-jitter companion metric (see computeCdv). Everything is
+ * aggregated here in the step, so the workflow returns compact summaries
+ * rather than one number per chunk. */
+async function crttReaderStep(): Promise<BenchChunkRttResult> {
+  'use step';
+  const { workflowRunId } = getWorkflowMetadata();
+  const reader = getRun<BenchChunkRttDelta>(workflowRunId)
+    .getReadable<BenchChunkRttDelta>({ namespace: CRTT_STREAM_NAMESPACE })
+    .getReader();
+  try {
+    // Initiate the read BEFORE signalling ready so the stream GET is in flight
+    // by the time the writer starts (identical to the SL/SO handshake).
+    const firstRead = reader.read();
+
+    const ready = getWritable<{ ready: true }>({
+      namespace: CRTT_READY_NAMESPACE,
+    });
+    const readyWriter = ready.getWriter();
+    await readyWriter.write({ ready: true });
+    readyWriter.releaseLock();
+    await ready.close();
+
+    const all: number[] = [];
+    // RTT per seq (indexed by the chunk's own seq, not arrival order) so the
+    // progress profile bins by position in the stream even if delivery ever
+    // reorders.
+    const rttBySeq: (number | undefined)[] = [];
+    // RAW timestamps in arrival order for CDV — the clamped RTTs below must
+    // never feed it (clamping breaks cdv_i = CTT_i - CTT_{i-1} and hides the
+    // negative catch-up half of every clump). Bytes ride along for the
+    // delivered-throughput computation.
+    const arrivals: (CdvArrival & { bytes: number })[] = [];
+    const sizeSamples: { bytes: number; rttMs: number }[] = [];
+    const byIndex = new Map<RttIndexBucket, number[]>();
+    let received = 0;
+    let result = await firstRead;
+    while (!result.done) {
+      const receivedAt = Date.now();
+      const chunk = result.value;
+      if (
+        !chunk ||
+        typeof chunk.seq !== 'number' ||
+        typeof chunk.writtenAt !== 'number'
+      ) {
+        throw new Error(
+          `bench CRTT reader: malformed chunk ${JSON.stringify(chunk)?.slice(0, 120)}`
+        );
+      }
+      const rtt = Math.max(0, receivedAt - chunk.writtenAt);
+      all.push(rtt);
+      rttBySeq[chunk.seq] = rtt;
+      // Approximate serialized bytes (ASCII payloads, so chars ≈ bytes).
+      const bytes = JSON.stringify(chunk).length;
+      arrivals.push({
+        seq: chunk.seq,
+        writtenAt: chunk.writtenAt,
+        readAt: receivedAt,
+        // Extra field beyond CdvArrival — reused for delivered throughput.
+        bytes,
+      });
+      sizeSamples.push({ bytes, rttMs: rtt });
+      const bucket = rttIndexBucket(chunk.seq);
+      const samples = byIndex.get(bucket);
+      if (samples) samples.push(rtt);
+      else byIndex.set(bucket, [rtt]);
+      received++;
+      result = await reader.read();
+    }
+
+    const summarize = <K extends string>(buckets: Map<K, number[]>) => {
+      const out: Partial<Record<K, BenchRttSummary>> = {};
+      for (const [bucket, samples] of buckets) {
+        out[bucket] = summarizeRttSamples(samples);
+      }
+      return out;
+    };
+    const cdv = computeCdv(arrivals);
+    // Ordered, complete delivery is this bench's contract; a violation is a
+    // stream-integrity failure, not a latency data point. With no
+    // duplicates and no reorders, zero skipped pairs plus a first seq of 0
+    // makes the received sequence exactly contiguous 0..received-1 — the
+    // runner's received-count check alone can't distinguish a hole from a
+    // relabeled range.
+    if (
+      cdv.duplicateSeqs > 0 ||
+      cdv.reorderedArrivals > 0 ||
+      cdv.skippedPairs > 0 ||
+      (arrivals.length > 0 && arrivals[0].seq !== 0)
+    ) {
+      throw new Error(
+        `bench CRTT reader: stream integrity violated (duplicates=${cdv.duplicateSeqs}, reordered=${cdv.reorderedArrivals}, holes=${cdv.skippedPairs}, firstSeq=${arrivals[0]?.seq})`
+      );
+    }
+    return {
+      received,
+      all: summarizeRttSamples(all),
+      byIndex: summarize(byIndex),
+      progress: progressProfile(rttBySeq),
+      size: sizeProfile(sizeSamples),
+      cdv: {
+        pairs: cdv.cdvMs.length,
+        skippedPairs: cdv.skippedPairs,
+        positive: summarizeDelayTail(cdv.cdvMs.filter((v) => v > 0)),
+        progress: progressProfile(cdv.positiveBySeq),
+      },
+      delivered: steadyRate(
+        arrivals.map((a) => ({ atMs: a.readAt, bytes: a.bytes }))
+      ),
+    };
+  } finally {
+    reader.cancel().catch(() => {});
+  }
+}
+
+/** Writer half of the CRTT scenario: identical pacing to {@link soWriterStep}
+ * (ready barrier, then `chunkCount` chunks at one per `intervalMs`, writing
+ * immediately when behind schedule), but every chunk is self-timestamping —
+ * `writtenAt` is stamped immediately before its write — so the reader can
+ * compute a per-chunk RTT instead of a whole-stream span.
+ *
+ * Also reports write slip: `writtenAt_i - scheduledAt_i`, how late each write
+ * happened vs its open-loop schedule. This is the producer-stall guard
+ * per-chunk RTT structurally cannot provide — a write delayed by
+ * backpressure is stamped late, so its RTT still looks fine (coordinated
+ * omission), but its slip grows. For slip to mean anything the schedule MUST
+ * stay absolute from `startedAt` (as below): sleeping a fixed interval after
+ * each awaited write would re-anchor the schedule to the writes themselves
+ * (closed-loop) and hide the stall. */
+async function crttWriterStep(
+  chunkCount: number,
+  intervalMs: number,
+  variant: BenchChunkRttVariant
+): Promise<{ slip?: BenchDelayTail; achieved?: BenchSteadyRate }> {
+  'use step';
+  const { workflowRunId } = getWorkflowMetadata();
+  const readyReader = getRun<{ ready: true }>(workflowRunId)
+    .getReadable<{ ready: true }>({ namespace: CRTT_READY_NAMESPACE })
+    .getReader();
+  try {
+    await readyReader.read();
+  } finally {
+    readyReader.cancel().catch(() => {});
+  }
+
+  const writable = getWritable<BenchChunkRttDelta>({
+    namespace: CRTT_STREAM_NAMESPACE,
+  });
+  const writer = writable.getWriter();
+  const slips: number[] = [];
+  const writes: { atMs: number; bytes: number }[] = [];
+  const startedAt = Date.now();
+  for (let i = 0; i < chunkCount; i++) {
+    const scheduledAt = startedAt + (i + 1) * intervalMs;
+    const delay = scheduledAt - Date.now();
+    if (delay > 0) {
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
+    const chunk: BenchChunkRttDelta = {
+      seq: i,
+      writtenAt: Date.now(),
+      text: SO_TEXT_FRAGMENTS[i % SO_TEXT_FRAGMENTS.length],
+    };
+    if (variant === 'sweep') {
+      chunk.pad = 'x'.repeat(
+        CRTT_SWEEP_PAD_LENGTHS[i % CRTT_SWEEP_PAD_LENGTHS.length]
+      );
+    }
+    // Slip is stamped at the same instant as `writtenAt` (just before the
+    // write is enqueued); the awaited write's own duration surfaces in the
+    // NEXT chunk's slip when it pushes that chunk past its schedule.
+    slips.push(Math.max(0, chunk.writtenAt - scheduledAt));
+    writes.push({ atMs: chunk.writtenAt, bytes: JSON.stringify(chunk).length });
+    await writer.write(chunk);
+  }
+  writer.releaseLock();
+  await writable.close();
+  return {
+    slip: summarizeDelayTail(slips),
+    // Achieved (writer-side) sustained rate over the steady window: under
+    // healthy pacing ≈ the nominal rate; if writes block, this is what the
+    // producer actually managed.
+    achieved: steadyRate(writes),
+  };
+}
+
+/**
+ * Scenario 7: per-chunk round-trip time (CRTT), measured entirely on the
+ * deployment.
+ *
+ * Same shape as the SO scenario (paced writer + parallel draining reader on a
+ * dedicated namespaced stream, reader-ready barrier), but the measurement is
+ * per chunk rather than per stream: every delta embeds `{ seq, writtenAt }`
+ * (the SL scenario's payload-embedded-timestamp trick applied to all chunks),
+ * and the reader computes each chunk's write->read RTT on arrival (the "round
+ * trip" being deployment -> stream backend -> co-located reader, not an echo
+ * back to the writer).
+ *
+ * Naming: CRTT (chunk ROUND-trip time) is reserved for this same-clock-domain
+ * setup, where "round" is literally true — the chunk returns to the
+ * deployment whose clock stamped it. The future production write->read
+ * metric crosses clocks (producer deployment -> arbitrary consumer) and is a
+ * one-way trip: that one is CTT (chunk trip time), a separate metric with
+ * its own clock-skew caveats. Keep the names distinct. The reader aggregates the samples on the deployment
+ * (see 97_bench_rtt.ts): chunk-index buckets, a per-tenth-of-stream progress
+ * profile, a per-log-size-bin size profile, and fixed log-bin histograms so
+ * distributions merge and diff exactly across runs. The `'llm'` variant
+ * streams the same LLM-shaped deltas as SO (index/progress numbers pure of
+ * padding); the `'sweep'` variant pads deltas in rotation across log-spaced
+ * sizes (~160B to ~12KB serialized) so the size profile becomes a
+ * size->latency curve.
+ */
+export async function benchCrttWorkflow(
+  chunkCount: number,
+  intervalMs: number,
+  variant: BenchChunkRttVariant = 'llm'
+): Promise<{
+  crtt: BenchChunkRttResult;
+  writeSlip?: BenchDelayTail;
+  achieved?: BenchSteadyRate;
+}> {
+  'use workflow';
+  const [crtt, writer] = await Promise.all([
+    crttReaderStep(),
+    crttWriterStep(chunkCount, intervalMs, variant),
+  ]);
+  return { crtt, writeSlip: writer.slip, achieved: writer.achieved };
+}
+
+/** Writer half of the replay scenario: identical structure to
+ * {@link crttWriterStep} (ready barrier, absolute open-loop schedule, slip +
+ * achieved-rate reporting), but the schedule and per-chunk sizes come from a
+ * REAL captured eve cadence (see 97_bench_cadence.ts) instead of a fixed
+ * interval: chunk i is scheduled at `startedAt + offsetsMs[i] / speed` and
+ * padded so its serialized size matches the capture. Missed ticks are never
+ * re-spread — overdue chunks write back-to-back and the lost time surfaces
+ * as slip (open-loop; see the crttWriterStep caveat). */
+async function replayWriterStep(
+  cadenceId: string,
+  speed: number
+): Promise<{ slip?: BenchDelayTail; achieved?: BenchSteadyRate }> {
+  'use step';
+  const cadence = BENCH_CADENCES[cadenceId];
+  if (!cadence) {
+    throw new Error(`bench replay writer: unknown cadence "${cadenceId}"`);
+  }
+  const { workflowRunId } = getWorkflowMetadata();
+  const readyReader = getRun<{ ready: true }>(workflowRunId)
+    .getReadable<{ ready: true }>({ namespace: CRTT_READY_NAMESPACE })
+    .getReader();
+  try {
+    await readyReader.read();
+  } finally {
+    readyReader.cancel().catch(() => {});
+  }
+
+  const writable = getWritable<BenchChunkRttDelta>({
+    namespace: CRTT_STREAM_NAMESPACE,
+  });
+  const writer = writable.getWriter();
+  const slips: number[] = [];
+  const writes: { atMs: number; bytes: number }[] = [];
+  const startedAt = Date.now();
+  for (let i = 0; i < cadence.offsetsMs.length; i++) {
+    const scheduledAt = startedAt + cadence.offsetsMs[i] / speed;
+    const delay = scheduledAt - Date.now();
+    if (delay > 0) {
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
+    const chunk: BenchChunkRttDelta = {
+      seq: i,
+      writtenAt: Date.now(),
+      text: SO_TEXT_FRAGMENTS[i % SO_TEXT_FRAGMENTS.length],
+    };
+    // Pad the delta so its serialized size matches the captured event's
+    // (~60B envelope of seq/writtenAt/text; exactness beyond a few bytes
+    // doesn't matter — the doubling size bins absorb it).
+    const pad = cadence.sizes[i] - 60;
+    if (pad > 0) chunk.pad = 'x'.repeat(pad);
+    slips.push(Math.max(0, chunk.writtenAt - scheduledAt));
+    writes.push({ atMs: chunk.writtenAt, bytes: JSON.stringify(chunk).length });
+    await writer.write(chunk);
+  }
+  writer.releaseLock();
+  await writable.close();
+  return { slip: summarizeDelayTail(slips), achieved: steadyRate(writes) };
+}
+
+/**
+ * Scenario 8: cadence replay, measured entirely on the deployment.
+ *
+ * Same reader, barrier, and measurement machinery as {@link benchCrttWorkflow}
+ * (per-chunk CRTT, CDV, profiles, delivered rate), but the writer replays a
+ * REAL captured eve stream cadence at `speed`x: every write instant and every
+ * chunk size comes from the capture, so nothing about the workload shape is a
+ * judgment call except the speed multiplier. Eve's protocol re-ships the
+ * cumulative message per delta, so sizes ramp through the turn — the
+ * end-of-turn byte-rate peak is part of the workload, not an accident.
+ */
+export async function benchReplayWorkflow(
+  cadenceId: string,
+  speed: number
+): Promise<{
+  crtt: BenchChunkRttResult;
+  writeSlip?: BenchDelayTail;
+  achieved?: BenchSteadyRate;
+}> {
+  'use workflow';
+  const [crtt, writer] = await Promise.all([
+    crttReaderStep(),
+    replayWriterStep(cadenceId, speed),
+  ]);
+  return { crtt, writeSlip: writer.slip, achieved: writer.achieved };
 }

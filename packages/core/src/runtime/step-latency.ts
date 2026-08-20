@@ -326,6 +326,12 @@ export function computeStepLatencyEventData(params: {
   lazyStepStart: boolean;
   /** Whether the body ran optimistically, without awaiting step_started. */
   optimisticStart: boolean;
+  /**
+   * Whether the step's `step_created` + `step_started` pair was pre-claimed
+   * inside the suspension handler's batched fan-out write (no start POST of
+   * its own at all).
+   */
+  preclaimedStart?: boolean;
 }): StepLatencyEventData | undefined {
   const { tracking } = params;
   if (!tracking || params.attempt !== 1) {
@@ -396,6 +402,7 @@ export function computeStepLatencyEventData(params: {
   if (tracking.turbo) optimizations.push('turbo');
   if (params.lazyStepStart) optimizations.push('lazyStepStart');
   if (params.optimisticStart) optimizations.push('optimisticStart');
+  if (params.preclaimedStart) optimizations.push('preclaimedStart');
 
   return {
     ...(ttfs !== undefined ? { ttfs } : {}),

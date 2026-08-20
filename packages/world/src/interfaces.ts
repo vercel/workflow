@@ -4,9 +4,12 @@ import type {
   ExperimentalSetAttributesResult,
 } from './attributes.js';
 import type {
+  BatchEventRequest,
+  CreateEventBatchParams,
   CreateEventParams,
   CreateEventRequest,
   Event,
+  EventBatchResult,
   EventResult,
   GetEventParams,
   ListEventsByCorrelationIdParams,
@@ -20,6 +23,7 @@ import type {
   BulkCancelWorkflowRunsResult,
   GetWorkflowRunParams,
   ListWorkflowRunsParams,
+  WaitForTerminalRunStatusParams,
   WorkflowRun,
   WorkflowRunWithoutData,
 } from './runs.js';
@@ -153,6 +157,63 @@ export interface Storage {
       id: string,
       params?: GetWorkflowRunParams
     ): Promise<WorkflowRun | WorkflowRunWithoutData>;
+
+    /**
+     * Long poll for a run to reach a terminal status (`completed`, `failed`,
+     * or `cancelled`), returning the same entity `get` returns.
+     *
+     * This is how a caller awaiting a run's outcome — `await run.returnValue`
+     * — avoids paying interval-poll quantization for it: instead of asking
+     * "is it done yet?" every second, it asks once and the World answers the
+     * moment the run finishes.
+     *
+     * The contract:
+     *
+     * - **Resolve as soon as the run is terminal**, with the run entity in
+     *   the shape `params.resolveData` asks for.
+     * - **Resolve no later than roughly `params.timeoutMs`** with the latest
+     *   snapshot, whatever its status. A timeout is a normal return, never an
+     *   error: a run that is still running is a legitimate answer.
+     * - **`timeoutMs` is an upper bound, not a lower one.** An
+     *   implementation MAY resolve earlier with a non-terminal snapshot —
+     *   e.g. `@workflow/world-vercel` does when the backend it is talking to
+     *   has no long-poll route and it degrades to a plain read. Callers must
+     *   therefore pace their own retries rather than assume one call per
+     *   `timeoutMs` (the runtime's `Run#pollReturnValue` keeps consecutive
+     *   non-terminal observations at least one poll interval apart).
+     * - **Fail exactly like `get`.** A missing run throws
+     *   `WorkflowRunNotFoundError`; transport failures surface as they would
+     *   on any other read.
+     *
+     * OPTIONAL. Omit it entirely when the World has no way to wait — a
+     * deterministic simulator, a store with no change notification — and the
+     * runtime keeps interval-polling `get` on
+     * `WORKFLOW_RETURN_VALUE_POLL_INTERVAL_MS`. There is nothing to declare
+     * beyond the method's presence, and no behavior degrades when it is
+     * absent: the fast path is strictly additive.
+     *
+     * Implementations are free to satisfy this however their backend allows —
+     * a server-side long poll (`world-vercel` holds
+     * `GET /v2/runs/:runId/status` open), a change notification
+     * (`world-postgres` uses `LISTEN`/`NOTIFY`, `world-local` an in-process
+     * emitter), or a tight internal poll — as long as a lost or missing
+     * notification degrades to returning a snapshot rather than hanging past
+     * the budget.
+     */
+    waitForTerminalStatus?: {
+      (
+        id: string,
+        params: WaitForTerminalRunStatusParams & { resolveData: 'none' }
+      ): Promise<WorkflowRunWithoutData>;
+      (
+        id: string,
+        params?: WaitForTerminalRunStatusParams & { resolveData?: 'all' }
+      ): Promise<WorkflowRun>;
+      (
+        id: string,
+        params?: WaitForTerminalRunStatusParams
+      ): Promise<WorkflowRun | WorkflowRunWithoutData>;
+    };
 
     /**
      * Retrieves several runs as one snapshot. The result preserves the input
@@ -322,6 +383,48 @@ export interface Storage {
       data: T,
       params?: CreateEventParams
     ): Promise<EventResult<T['eventType']>>;
+
+    /**
+     * OPTIONAL batch write — append an ordered list of events to the run's
+     * log in one durable, atomic-per-attempt write, with a per-event outcome
+     * for each (see {@link BatchEventItemResult}). The events land in request
+     * order at consecutive slots. A concurrent writer may push the whole
+     * batch to slots above the caller's view of the log; no skipped-event
+     * report accompanies the result, so a position-tracking caller compares
+     * the committed slots against its expectation and reloads the log to
+     * observe what landed in between. Its local view stays a strict PREFIX
+     * of the log — never a hole — so replaying it stays correct and the
+     * next reload self-corrects.
+     *
+     * Presence of the method IS the capability declaration: the core runtime
+     * batches only when the World implements it (and the run's spec version
+     * supports slot identity); absent, every write takes the single-event
+     * `create` path unchanged. A World must implement it with real
+     * atomicity per attempt — a lost race must leave nothing behind — or not
+     * implement it at all.
+     *
+     * Size limits are the caller's problem: Worlds enforce their own caps
+     * (world-vercel enforces an event-count cap and a byte budget over frame
+     * meta plus inline-bound payloads) and reject an oversized batch with a
+     * request-level error. The core fold sizes its chunks accordingly.
+     *
+     * Not expressible in a batch (Worlds reject the whole batch with a
+     * request-level error): `run_created`, `run_started`, `run_cancelled`,
+     * `hook_created`, `hook_disposed`, `attr_set`, and more events targeting
+     * one entity than a single write can express (the one legal combination
+     * is `step_created` followed by `step_started` for the same step, which
+     * creates the step born-running — the step's input MUST ride the
+     * `step_created`; a `step_started` carrying a payload rejects the whole
+     * batch). Events outside this list keep their own ordering requirements:
+     * a caller mixing a batch with single writes (hook or attribute events)
+     * owns those barriers itself — the core runtime simply never batches a
+     * suspension that carries hook or attribute writes.
+     */
+    createBatch?(
+      runId: string,
+      events: BatchEventRequest[],
+      params?: CreateEventBatchParams
+    ): Promise<EventBatchResult>;
 
     get(
       runId: string,

@@ -53,24 +53,36 @@
  *          `(lastStep.end - clientStart) - Σ(step durations)`. Measured on the
  *          sequential scenario only — on a single-step workflow WO reduces
  *          algebraically to TTFS.
- * - SL    (stream latency): live write->read propagation for the default
- *          output stream, measured entirely on the deployment by
- *          `benchSlWorkflow`: a reader step and a writer step run in parallel,
- *          the reader blocks on the first chunk, and the workflow returns both
- *          the writer's `writtenAt` and the reader's `readAt`. SL is
- *          `readAt - writtenAt`, so it excludes the api.vercel.com read path
- *          the old client-observed metric included.
- * - SO    (stream overhead): end-to-end write+consume time in excess of a
- *          modelled generation window, measured on the deployment by
- *          `benchSoWorkflow`. A writer streams deterministic variable-length
- *          LLM-token deltas at a fixed rate for a fixed duration while a
- *          parallel reader drains the whole stream; SO is
- *          `(doneAt - writtenAt) - chunkCount*intervalMs`, i.e. the
- *          overhead/backpressure the stream adds on top of the token rate. Same
- *          setup as SL, but the reader stamps `doneAt` after the last chunk
- *          rather than `readAt` on the first. Measured for two payload shapes
- *          (raw text vs AI-SDK-style structured deltas) so the SO delta between
- *          them isolates serialization cost.
+ * - CRTT  (chunk round-trip time): per-chunk write->read latency, measured
+ *          on the deployment by benchCrttWorkflow. The "round trip" is
+ *          deployment -> stream backend -> reader on the SAME deployment
+ *          (one clock domain), not an echo to the writer. NAMING: CRTT is
+ *          reserved for this same-clock measurement; the future production
+ *          cross-clock one-way metric is CTT. Every delta embeds
+ *          { seq, writtenAt }; writer and reader run in parallel behind a
+ *          reader-ready barrier (chunk 0 is a live delivery). CRTT subsumes
+ *          the retired SL/SO rows: SL = the seq-0 slice, SO = last-chunk RTT
+ *          + stall accumulation, at ~100x the samples. Aggregation happens
+ *          INSIDE the reader step: index buckets (seq 0 / 1-20 / 21+), fixed
+ *          log-bin histograms, and mean-RTT profiles over stream progress
+ *          and chunk size; the runner merges per-iteration summaries (exact
+ *          best/avg/count/hist, percentile-of-percentiles for p50-p99).
+ *          Per-index rows are artifact-only (detail: true). No targets yet.
+ * - CDV   (chunk delay variation, "delivery jitter"): for seq-adjacent
+ *          chunks received back to back, cdv_i = CTT_i - CTT_{i-1}, computed
+ *          from RAW unclamped timestamps. Each gap subtracts same-clock
+ *          stamps, so CDV is skew-free — the one per-chunk stat measurable
+ *          in production across clock domains. Positives are clumps/stalls,
+ *          negatives catch-up, means telescope away — the sample unit is
+ *          each run's MAX positive cdv. Writer pauses self-exclude, which is
+ *          why write slip (writtenAt - scheduledAt vs the open-loop absolute
+ *          schedule) stays as artifact-only data: it is the producer-stall
+ *          guard neither CRTT nor CDV can see.
+ * - STREAM TABLE: stream scenarios render as one row each in their own
+ *          table: writer/reader sustained rates (steady window, 10% trimmed
+ *          each side), first-chunk RTT (seq-0, the retired SL signal), CRTT
+ *          p75/p90/p99, CDV max. Cells are medians of per-run values (kept
+ *          in the artifacts). No 🔴/🟢 marks until targets attach.
  *
  * Scenarios (defined in workbench/example/workflows/97_bench.ts):
  *
@@ -80,18 +92,22 @@
  * 4. benchSequentialStepsWorkflow — 1020 trivial sequential steps → STSO + WO
  * 5. benchFanOutStepsWorkflow     — Promise.all over 100 trivial steps
  *                                   → Fan-out TTFS + Fan-out TTLS
- * 6. benchSlWorkflow              — parallel reader/writer steps → SL
- * 7. benchSoWorkflow              — paced LLM-shaped stream, drained → SO
- *                                   (run in text and structured payload modes)
+ * 6. benchCrttWorkflow            — paced stream of self-timestamping chunks →
+ *                                   CRTT/CDV/rates (llm-shaped and size-sweep
+ *                                   variants)
+ * 7. benchReplayWorkflow          — replays REAL captured stream cadences
+ *                                   (write instants + chunk sizes from the
+ *                                   capture, speed multiplier the only knob)
+ *                                   → replay rows
  *
  * Each scenario runs many iterations (env-tunable, see BENCH_* below) so the
  * percentiles are computed from real samples.
  *
  * The backend is selected exactly like the e2e tests (setupWorld): Vercel when
  * WORKFLOW_VERCEL_ENV is set, Postgres when WORKFLOW_TARGET_WORLD is
- * @workflow/world-postgres, local filesystem otherwise. Because SL is now
- * measured inside the workflow (not by a reader in this process), it no longer
- * depends on `run.getReadable()` working across processes; CI still runs this
+ * @workflow/world-postgres, local filesystem otherwise. CRTT is measured
+ * inside the workflow (not by a reader in this process), so it does not
+ * depend on `run.getReadable()` working across processes; CI still runs this
  * file against Vercel only.
  *
  * All timestamps are deployment-side, so the only residual skew is intra-Vercel
@@ -99,10 +115,22 @@
  * relative to the measured values.
  */
 
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, test } from 'vitest';
 import { getTrustedSourcesHeaders } from '../../../scripts/trusted-sources-headers.mjs';
+import { BENCH_CADENCES } from '../../../workbench/example/workflows/97_bench_cadence';
+import {
+  type BenchDelayTail,
+  type BenchRttMeanProfile,
+  type BenchRttSummary,
+  type BenchSteadyRate,
+  mergeMeanProfiles,
+  mergeRttSummaries,
+  RTT_HIST_EDGES_MS,
+  RTT_INDEX_BUCKETS,
+} from '../../../workbench/example/workflows/97_bench_rtt';
 import { getRun } from '../src/runtime';
 import { setupWorld } from './utils';
 
@@ -123,12 +151,13 @@ const envInt = (name: string, fallback: number, min = 1): number => {
   return value;
 };
 
-// Iteration counts. The stream/hook/SL scenarios yield one sample per
+// Iteration counts. The stream/hook scenarios yield one sample per
 // iteration; the sequential scenario yields (stepCount - 1) STSO samples per
 // iteration, so a single long run already provides solid percentiles.
 const STREAM_ITERATIONS = envInt('BENCH_STREAM_ITERATIONS', 30);
-const SL_ITERATIONS = envInt('BENCH_SL_ITERATIONS', STREAM_ITERATIONS);
-const SO_ITERATIONS = envInt('BENCH_SO_ITERATIONS', STREAM_ITERATIONS);
+// Each CRTT iteration yields one RTT sample per chunk (300 by default), so
+// few iterations already give thousands of samples per bucket.
+const CRTT_ITERATIONS = envInt('BENCH_CRTT_ITERATIONS', 10);
 const SEQUENTIAL_ITERATIONS = envInt('BENCH_SEQUENTIAL_ITERATIONS', 1);
 const SEQUENTIAL_STEP_COUNT = envInt('BENCH_SEQUENTIAL_STEP_COUNT', 1020);
 // The fan-out scenario yields exactly one TTFS and one TTLS sample per
@@ -151,21 +180,47 @@ const BENCH_METHODOLOGY_VERSION = 2;
 // Provisional: now that the proxy leg is out of every window, these will be
 // re-tightened once a few in-deployment baselines land.
 const TTFS_TARGETS = { p75: 200, p90: 300, p99: 600 };
-const SL_TARGETS = { p75: 50, p90: 60, p99: 125 };
 
-// SO scenario: model a haiku-size LLM streaming tokens — ~100 tokens/sec, each
-// token a 4-byte chunk, for 3 seconds (300 chunks). The writer paces itself so
-// the write phase spans exactly `SO_CHUNK_COUNT * SO_INTERVAL_MS` ms; SO is the
-// end-to-end write+consume time beyond that window (see runSoIteration). These
-// derive `SO_NOMINAL_DURATION_MS`, the single value subtracted from the
-// measured span, so the workflow's write span and the subtraction never drift.
-const SO_CHUNK_RATE_PER_SEC = envInt('BENCH_SO_CHUNK_RATE', 100);
-const SO_DURATION_SECONDS = envInt('BENCH_SO_DURATION_SECONDS', 3);
-const SO_CHUNK_COUNT = SO_CHUNK_RATE_PER_SEC * SO_DURATION_SECONDS;
-const SO_INTERVAL_MS = 1000 / SO_CHUNK_RATE_PER_SEC;
-const SO_NOMINAL_DURATION_MS = SO_CHUNK_COUNT * SO_INTERVAL_MS;
-// Provisional, like TTFS/SL above: re-tighten once in-deployment baselines land.
-const SO_TARGETS = { p75: 250, p90: 500, p99: 1000 };
+// CRTT workload: model a haiku-size LLM streaming tokens — ~100 tokens/sec
+// for 3 seconds (300 chunks). The writer paces itself so the write phase
+// spans exactly `CRTT_CHUNK_COUNT * CRTT_INTERVAL_MS` ms.
+const CRTT_CHUNK_RATE_PER_SEC = envInt('BENCH_CRTT_CHUNK_RATE', 100);
+const CRTT_DURATION_SECONDS = envInt('BENCH_CRTT_DURATION_SECONDS', 3);
+const CRTT_CHUNK_COUNT = CRTT_CHUNK_RATE_PER_SEC * CRTT_DURATION_SECONDS;
+const CRTT_INTERVAL_MS = 1000 / CRTT_CHUNK_RATE_PER_SEC;
+
+// Replay workload: REAL captured cadences (provenance in
+// 97_bench_cadence.ts) — every write instant and chunk size comes from a
+// capture, one per boundary (eve = demanding envelope protocol, gateway =
+// typical raw SSE). The speed multiplier is the only chosen parameter; 2x
+// matches how real fast-tier models behave (same chunk sizes, compressed
+// time) and exceeds every fast tier measured.
+const REPLAY_SPEED = envInt('BENCH_REPLAY_SPEED', 2);
+const REPLAY_CADENCE_EVE = 'eve-gpt-5.6-sol-2000t'; // 2593 ev / 52.4s / 16.4MiB
+const REPLAY_CADENCE_GATEWAY = 'gateway-gpt-5.4-nano-2000t'; // 1765 ev / 19.9s / 322KiB
+// Eve replays cost ~26s (2x) / ~52s (1x) wall per iteration — few
+// iterations there, more on the cheap gateway row. 1x = reality (not
+// implied by a strained 2x row, and the more linear regression detector);
+// 2x = headroom.
+/**
+ * Cross-system cadence identity: durabench carries its own copy of each
+ * capture, so both sides hash canonical event tuples (format-independent).
+ * CANONICAL FORM (keep in sync with durabench): sha256 over UTF-8
+ * "v1\n" + "<offsetMs>,<bytes>\n" per event, base-10, LF separators.
+ */
+function cadenceSemanticSha256(cadenceId: string): string {
+  const cadence = BENCH_CADENCES[cadenceId];
+  const hash = createHash('sha256');
+  hash.update('v1\n');
+  for (let i = 0; i < cadence.offsetsMs.length; i++) {
+    hash.update(`${cadence.offsetsMs[i]},${cadence.sizes[i]}\n`);
+  }
+  return hash.digest('hex');
+}
+
+const REPLAY_EVE_ITERATIONS = envInt('BENCH_REPLAY_EVE_ITERATIONS', 3);
+const REPLAY_REALITY_ITERATIONS = envInt('BENCH_REPLAY_REALITY_ITERATIONS', 2);
+const REPLAY_GATEWAY_ITERATIONS = envInt('BENCH_REPLAY_GATEWAY_ITERATIONS', 3);
 
 // Guard timeouts so a single stuck run fails fast instead of eating the job.
 const RUN_TIMEOUT_MS = envInt('BENCH_RUN_TIMEOUT_MS', 120_000);
@@ -193,17 +248,6 @@ interface BenchStepTiming {
    * 'inline' for later steps in the same warm process. Set by the workflow
    * itself (see workflows/97_bench.ts) — ground truth, not inferred. */
   kind: 'inline' | 'queue-hop';
-}
-
-interface BenchStreamLatency {
-  writtenAt: number;
-  readAt: number;
-}
-
-interface BenchStreamOverhead {
-  writtenAt: number;
-  doneAt: number;
-  received: number;
 }
 
 interface StreamIterationResult {
@@ -240,16 +284,34 @@ interface FanOutIterationResult {
   fanOutTtlsMs: number;
 }
 
-interface SlIterationResult {
-  runId: string;
-  /** `readAt - writtenAt`, both deployment-side step-body clocks. */
-  slMs: number;
+/** Mirrors BenchChunkRttResult in workflows/97_bench.ts: per-bucket RTT
+ * summaries aggregated inside the reader step (buckets without samples are
+ * absent). */
+interface BenchChunkRttResult {
+  received: number;
+  all?: BenchRttSummary;
+  byIndex: Partial<Record<string, BenchRttSummary>>;
+  progress?: BenchRttMeanProfile;
+  size?: BenchRttMeanProfile;
+  cdv?: BenchChunkCdv;
+  delivered?: BenchSteadyRate;
 }
 
-interface SoIterationResult {
+/** Mirrors BenchChunkCdv in workflows/97_bench.ts. */
+interface BenchChunkCdv {
+  pairs: number;
+  skippedPairs: number;
+  positive?: BenchDelayTail;
+  progress?: BenchRttMeanProfile;
+}
+
+interface CrttIterationResult {
   runId: string;
-  /** `(doneAt - writtenAt) - SO_NOMINAL_DURATION_MS`, deployment-side clocks. */
-  soMs: number;
+  crtt: BenchChunkRttResult;
+  /** Writer-side pacing slip for the run (artifact-only guard). */
+  writeSlip?: BenchDelayTail;
+  /** Writer-side achieved sustained rate over the steady window. */
+  achieved?: BenchSteadyRate;
 }
 
 /** Response shape of the in-deployment `POST /api/bench` trigger route. */
@@ -464,72 +526,131 @@ async function runFanOutIteration(
   }
 }
 
-async function runSlIteration(): Promise<SlIterationResult> {
-  const { runId } = await triggerBenchRun('benchSlWorkflow');
-  try {
-    const returnValue = await withTimeout(
-      getReturnValue(runId),
-      RUN_TIMEOUT_MS,
-      `benchSlWorkflow returnValue (run ${runId})`
-    );
-    const sl = (returnValue as { sl?: BenchStreamLatency } | undefined)?.sl;
-    if (
-      !sl ||
-      typeof sl.writtenAt !== 'number' ||
-      typeof sl.readAt !== 'number'
-    ) {
-      throw new Error(
-        `Run ${runId} returned no stream-latency sample: ${JSON.stringify(returnValue)?.slice(0, 200)}`
-      );
-    }
-    return { runId, slMs: Math.max(0, sl.readAt - sl.writtenAt) };
-  } catch (error) {
-    (error as Error).message += ` (run ${runId})`;
-    throw error;
-  }
-}
-
-async function runSoIteration(
-  mode: 'text' | 'structured'
-): Promise<SoIterationResult> {
-  const { runId } = await triggerBenchRun('benchSoWorkflow', [
-    SO_CHUNK_COUNT,
-    SO_INTERVAL_MS,
-    mode,
+async function runCrttIteration(
+  variant: 'llm' | 'sweep',
+  chunkCount: number,
+  intervalMs: number
+): Promise<CrttIterationResult> {
+  const { runId } = await triggerBenchRun('benchCrttWorkflow', [
+    chunkCount,
+    intervalMs,
+    variant,
   ]);
   try {
     const returnValue = await withTimeout(
       getReturnValue(runId),
       // The writer streams for the whole generation window before the run can
       // complete, so extend the guard past the base run timeout by that window.
-      RUN_TIMEOUT_MS + SO_NOMINAL_DURATION_MS,
-      `benchSoWorkflow (${mode}) returnValue (run ${runId})`
+      RUN_TIMEOUT_MS + chunkCount * intervalMs,
+      `benchCrttWorkflow (${variant}) returnValue (run ${runId})`
     );
-    const so = (returnValue as { so?: BenchStreamOverhead } | undefined)?.so;
-    if (
-      !so ||
-      typeof so.writtenAt !== 'number' ||
-      typeof so.doneAt !== 'number'
-    ) {
+    const { crtt, writeSlip, achieved } =
+      (returnValue as
+        | {
+            crtt?: BenchChunkRttResult;
+            writeSlip?: BenchDelayTail;
+            achieved?: BenchSteadyRate;
+          }
+        | undefined) ?? {};
+    if (!crtt || !crtt.all || typeof crtt.all.avg !== 'number') {
       throw new Error(
-        `Run ${runId} returned no stream-overhead sample: ${JSON.stringify(returnValue)?.slice(0, 200)}`
+        `Run ${runId} returned no chunk-RTT summaries: ${JSON.stringify(returnValue)?.slice(0, 200)}`
       );
     }
-    if (so.received !== SO_CHUNK_COUNT) {
+    if (crtt.received !== chunkCount) {
       throw new Error(
-        `Run ${runId} consumed ${so.received} chunks, expected ${SO_CHUNK_COUNT}`
+        `Run ${runId} consumed ${crtt.received} chunks, expected ${chunkCount}`
       );
     }
-    // Both timestamps are deployment-side; subtract the modelled generation
-    // window and clamp to absorb tiny intra-Vercel skew.
-    return {
-      runId,
-      soMs: Math.max(0, so.doneAt - so.writtenAt - SO_NOMINAL_DURATION_MS),
-    };
+    return { runId, crtt, writeSlip, achieved };
   } catch (error) {
     (error as Error).message += ` (run ${runId})`;
     throw error;
   }
+}
+
+async function runReplayIteration(
+  cadenceId: string,
+  speed: number
+): Promise<CrttIterationResult> {
+  const cadence = BENCH_CADENCES[cadenceId];
+  const { runId } = await triggerBenchRun('benchReplayWorkflow', [
+    cadenceId,
+    speed,
+  ]);
+  try {
+    const returnValue = await withTimeout(
+      getReturnValue(runId),
+      RUN_TIMEOUT_MS + cadence.spanMs / speed,
+      `benchReplayWorkflow (${cadenceId} ${speed}x) returnValue (run ${runId})`
+    );
+    const { crtt, writeSlip, achieved } =
+      (returnValue as
+        | {
+            crtt?: BenchChunkRttResult;
+            writeSlip?: BenchDelayTail;
+            achieved?: BenchSteadyRate;
+          }
+        | undefined) ?? {};
+    if (!crtt || !crtt.all || typeof crtt.all.avg !== 'number') {
+      throw new Error(
+        `Run ${runId} returned no chunk-RTT summaries: ${JSON.stringify(returnValue)?.slice(0, 200)}`
+      );
+    }
+    if (crtt.received !== cadence.events) {
+      throw new Error(
+        `Run ${runId} consumed ${crtt.received} chunks, expected ${cadence.events}`
+      );
+    }
+    return { runId, crtt, writeSlip, achieved };
+  } catch (error) {
+    (error as Error).message += ` (run ${runId})`;
+    throw error;
+  }
+}
+
+/**
+ * Median across per-iteration values (undefined skipped); even counts
+ * average the two middles — lower-middle would report the better of a
+ * 2-run scenario's runs and call it the median.
+ */
+function medianOf(values: readonly (number | undefined)[]): number | undefined {
+  const present = values.filter((v): v is number => typeof v === 'number');
+  if (present.length === 0) return undefined;
+  const sorted = [...present].sort((a, b) => a - b);
+  const mid = sorted.length / 2;
+  const median =
+    sorted.length % 2 === 1
+      ? sorted[Math.floor(mid)]
+      : (sorted[mid - 1] + sorted[mid]) / 2;
+  // Inputs carry one decimal; averaging two of them yields float artifacts
+  // (54.650000000000006) that leak into the table and artifacts unrounded.
+  return Math.round(median * 100) / 100;
+}
+
+/**
+ * Records the write-slip detail row for a stream variant (artifact-only,
+ * never rendered). The sample unit is each run's MAX slip: one producer
+ * stall among thousands of chunks vanishes into a pooled p99 but is, by
+ * construction, that run's max. Slip is the guard for producer stalls,
+ * which neither per-chunk RTT (late writes are stamped late) nor CDV
+ * (writer pauses grow both gaps equally) can see.
+ */
+function recordSlipDetailRow(
+  scenario: string,
+  group: string,
+  tails: readonly (BenchDelayTail | undefined)[]
+) {
+  const samples = tails.flatMap((tail) => (tail ? [tail.maxMs] : []));
+  if (samples.length === 0) return;
+  metricRows.push({
+    metric: 'slip',
+    scenario,
+    unit: 'ms',
+    group,
+    detail: true,
+    ...computeStats(samples),
+  });
 }
 
 /**
@@ -600,6 +721,9 @@ interface MetricStats {
   best: number;
   /** Mean; kept in the JSON for reference but not shown in the PR comment. */
   avg: number;
+  /** Median; only recorded for CRTT rows (the exit criteria track median and
+   * average per-chunk RTT). Kept in the JSON, not shown in the PR comment. */
+  p50?: number;
   p75: number;
   p90: number;
   p99: number;
@@ -608,6 +732,56 @@ interface MetricStats {
    * comment diffs the whole STSO distribution against `main`, and
    * percentiles alone hide *how many* samples moved and by how much. */
   raw: number[];
+  /** Fixed-bin histogram of the samples, for rows whose raw samples never
+   * reach this process (CRTT: aggregation happens in the reader step on the
+   * deployment). Fixed shared edges make the PR comment's distribution diff
+   * against `main` exact — the renderer only diffs matching-edge rows. */
+  hist?: { edgesMs: number[]; counts: number[] };
+  /** Drill-down rows (e.g. CRTT per-bucket splits): kept out of the PR
+   * comment's main results table and rendered in a collapsed section. */
+  detail?: boolean;
+  /** Mean RTT per tenth of the stream (CRTT headline rows): the drift/trend
+   * readout, rendered as a progress sparkline in the drill-down. Null
+   * entries are empty bins (rendered as gaps, never as zero). */
+  progressAvgMs?: (number | null)[];
+  /** Mean RTT per log size bin (CRTT sweep headline row): the size→latency
+   * curve, rendered as a size sparkline in the drill-down. Null entries are
+   * bins the sweep left empty. */
+  sizeAvgMs?: (number | null)[];
+  /** Mean POSITIVE CDV per tenth of the stream (stream headline rows),
+   * rendered as a delivery-jitter sparkline in the drill-down: localizes
+   * where delivery clumping/stalls concentrate. Complements the stream
+   * table's CDV max column, which says the worst stall's size but not
+   * where. */
+  cdvAvgMs?: (number | null)[];
+  /** Stream-scenario columns (marks the row for the PR comment's separate
+   * stream table): writer/reader sustained rates over the steady window and
+   * the median worst delivery stall, medians across iterations with the
+   * per-run values retained in `runs`. */
+  stream?: {
+    iterations: number;
+    wrCps?: number;
+    wrKiBps?: number;
+    rdCps?: number;
+    rdKiBps?: number;
+    /** Median across runs of each run's seq-0 RTT — the stream-open path,
+     * before any buffering/backpressure (the retired SL signal). */
+    firstMs?: number;
+    cdvMaxMs?: number;
+    runs: {
+      wrCps?: number;
+      wrKiBps?: number;
+      rdCps?: number;
+      rdKiBps?: number;
+      firstMs?: number;
+      cdvMaxMs?: number;
+      slipMaxMs?: number;
+    }[];
+  };
+  /** Short group/bucket labels for drill-down rendering (CRTT: variant and
+   * index/size bucket). */
+  group?: string;
+  bucket?: string;
 }
 
 interface MetricTargets {
@@ -648,6 +822,9 @@ interface MetricRow extends MetricStats {
 }
 
 const metricRows: MetricRow[] = [];
+// Per-run seq-0 RTTs from every stream scenario, pooled into the
+// 'first chunk (pooled)' main-table row in afterAll.
+const firstChunkRttSamples: number[] = [];
 
 function recordMetric(
   metric: string,
@@ -662,6 +839,131 @@ function recordMetric(
     unit: 'ms',
     targets,
     ...computeStats(samples),
+  });
+}
+
+/**
+ * Records one CRTT row from per-iteration summaries. Unlike recordMetric
+ * there are no raw samples in this process — the reader step aggregated them
+ * on the deployment — so the row is the mergeRttSummaries merge: exact
+ * count/best/avg/histogram, percentile-of-percentiles for p50-p99. `samples`
+ * is the total chunk count across iterations. The merged fixed-bin histogram
+ * rides along for the PR comment's sparkline drill-down (exact vs `main`,
+ * where the percentiles are approximations). Rows with `detail` are not
+ * rendered at all — they carry the per-index-bucket splits in the results
+ * JSON (with baseline annotations) so a headline regression can be localized
+ * from the artifacts. No targets yet (see the CRTT header note), so no 🔴
+ * marks render.
+ */
+// Mean RTT per profile bin; sums/counts merge exactly across iterations,
+// so these avgs are exact like the histogram. Empty bins become null so
+// the renderer can show them as gaps rather than zeros.
+function profileAvgs(profile?: BenchRttMeanProfile) {
+  return profile?.totalMs.map((total, i) =>
+    profile.counts[i] > 0
+      ? Math.round((total / profile.counts[i]) * 10) / 10
+      : null
+  );
+}
+
+/** Records an artifact-only per-index-bucket CRTT row (never rendered). */
+function recordCrttDetailRow(
+  scenario: string,
+  summaries: readonly (BenchRttSummary | undefined)[],
+  { group, bucket }: { group: string; bucket: string }
+) {
+  const merged = mergeRttSummaries(summaries);
+  if (!merged) return;
+  metricRows.push({
+    metric: 'crtt',
+    scenario,
+    unit: 'ms',
+    best: merged.best,
+    avg: merged.avg,
+    p50: merged.p50,
+    p75: merged.p75,
+    p90: merged.p90,
+    p99: merged.p99,
+    samples: merged.count,
+    raw: [],
+    hist: { edgesMs: RTT_HIST_EDGES_MS, counts: merged.hist },
+    detail: true,
+    group,
+    bucket,
+  });
+}
+
+/**
+ * Records one stream-scenario row (headline of the PR comment's STREAM
+ * table). CRTT percentiles are percentile-of-percentiles across iterations
+ * (count/best/avg/histograms are exact); rates, first-chunk RTT, and CDV
+ * max are medians of per-run values, kept per-run in `stream.runs`.
+ */
+function recordStreamRow(
+  scenario: string,
+  group: string,
+  results: readonly CrttIterationResult[],
+  {
+    size,
+  }: {
+    /** Include the size→latency profile (sweep variant only). */
+    size?: boolean;
+  } = {}
+) {
+  const merged = mergeRttSummaries(results.map((r) => r.crtt.all));
+  if (!merged) return;
+  for (const r of results) {
+    const first = r.crtt.byIndex?.['seq 0']?.avg;
+    if (typeof first === 'number') firstChunkRttSamples.push(first);
+  }
+  const runs = results.map((r) => ({
+    wrCps: r.achieved?.chunksPerSec,
+    wrKiBps: r.achieved?.kibPerSec,
+    rdCps: r.crtt.delivered?.chunksPerSec,
+    rdKiBps: r.crtt.delivered?.kibPerSec,
+    // Single sample (the run's seq-0 chunk), so avg IS that run's value.
+    firstMs: r.crtt.byIndex?.['seq 0']?.avg,
+    cdvMaxMs: r.crtt.cdv?.positive?.maxMs,
+    slipMaxMs: r.writeSlip?.maxMs,
+  }));
+  metricRows.push({
+    metric: 'stream',
+    scenario,
+    unit: 'ms',
+    best: merged.best,
+    avg: merged.avg,
+    p50: merged.p50,
+    p75: merged.p75,
+    p90: merged.p90,
+    p99: merged.p99,
+    samples: merged.count,
+    raw: [],
+    hist: { edgesMs: RTT_HIST_EDGES_MS, counts: merged.hist },
+    group,
+    bucket: 'all',
+    // Nulls (empty bins) are preserved: the renderer draws them as gaps.
+    // Mapping them to 0 would claim "measured no jitter/latency here"
+    // rather than "no samples here" — CDV progress bins are legitimately
+    // empty wherever a tenth of the stream had no positive-cdv chunks.
+    progressAvgMs: profileAvgs(
+      mergeMeanProfiles(results.map((r) => r.crtt.progress))
+    ),
+    sizeAvgMs: size
+      ? profileAvgs(mergeMeanProfiles(results.map((r) => r.crtt.size)))
+      : undefined,
+    cdvAvgMs: profileAvgs(
+      mergeMeanProfiles(results.map((r) => r.crtt.cdv?.progress))
+    ),
+    stream: {
+      iterations: results.length,
+      wrCps: medianOf(runs.map((r) => r.wrCps)),
+      wrKiBps: medianOf(runs.map((r) => r.wrKiBps)),
+      rdCps: medianOf(runs.map((r) => r.rdCps)),
+      rdKiBps: medianOf(runs.map((r) => r.rdKiBps)),
+      firstMs: medianOf(runs.map((r) => r.firstMs)),
+      cdvMaxMs: medianOf(runs.map((r) => r.cdvMaxMs)),
+      runs,
+    },
   });
 }
 
@@ -683,13 +985,22 @@ const SCENARIO_TURBO_STREAM = 'stream';
 const SCENARIO_HOOK_STREAM = 'hook + stream';
 const SCENARIO_SEQUENTIAL = `${SEQUENTIAL_STEP_COUNT} steps`;
 const SCENARIO_FANOUT = `Promise.all(${FANOUT_STEP_COUNT} steps)`;
-const SCENARIO_STREAM_LATENCY = 'stream latency';
-// Two SO scenarios differing only in payload shape. The labels are distinct
-// from the pre-existing 'stream overhead' baseline key, so the payload change
-// doesn't diff against the old fixed-'aaaa' numbers — the SO deltas start blank
-// and re-baseline on the next `main` run.
-const SCENARIO_STREAM_OVERHEAD_TEXT = 'stream overhead (text)';
-const SCENARIO_STREAM_OVERHEAD_STRUCTURED = 'stream overhead (structured)';
+// Stream scenario labels, doubling as the stream-table rows' scenario keys;
+// the per-bucket detail rows are keyed `paced control (<bucket>)` and slip
+// detail rows `write slip (<variant>)`. All new baseline keys, so the
+// stream deltas stay blank until `main` produces them.
+// Synthetic rows are named for their role: the metronome is the control
+// (diagnostic anchor + flush-cadence probe); the sweep isolates size
+// causally (rotation decouples size from position; the replay ramp
+// couples them).
+const SCENARIO_PACED_CONTROL = 'paced control (100/s, 60B)';
+const SCENARIO_SIZE_SWEEP = 'size sweep (100/s, 160B-12KB)';
+// Capture id + speed IS the baseline key: a re-capture is a new workload
+// and starts a new baseline by construction.
+// Parenthesized speed, not `@2x`: GitHub renders @<word> as a user mention.
+const SCENARIO_REPLAY_EVE = `replay ${REPLAY_CADENCE_EVE} (${REPLAY_SPEED}x)`;
+const SCENARIO_REPLAY_REALITY = `replay ${REPLAY_CADENCE_EVE} (1x)`;
+const SCENARIO_REPLAY_GATEWAY = `replay ${REPLAY_CADENCE_GATEWAY} (1x)`;
 const SCENARIO_DESCRIPTIONS = [
   {
     name: SCENARIO_STEP,
@@ -715,19 +1026,34 @@ const SCENARIO_DESCRIPTIONS = [
     description: `${FANOUT_STEP_COUNT} trivial no-op steps started together in a single Promise.all; Fan-out TTFS is the first of them to complete and Fan-out TTLS the last, both from the in-deployment clientStart, so their gap is the spread the runtime adds across the fan-out`,
   },
   {
-    name: SCENARIO_STREAM_LATENCY,
-    description:
-      'parallel reader/writer steps on a dedicated stream; SL is the in-deployment write->read propagation (readAt - writtenAt)',
+    name: SCENARIO_PACED_CONTROL,
+    description: `the control: ${CRTT_CHUNK_COUNT} tiny (~60B) deltas metronome-paced at ${CRTT_CHUNK_RATE_PER_SEC}/s — zero workload structure, so it reads the transport floor and flush cadence, and disambiguates transport-wide vs workload-specific when a replay row moves`,
   },
   {
-    name: SCENARIO_STREAM_OVERHEAD_TEXT,
-    description: `writer streams ${SO_CHUNK_COUNT} variable-length text token deltas paced at ${SO_CHUNK_RATE_PER_SEC}/s for ${SO_DURATION_SECONDS}s (a haiku-size LLM's token throughput) while a parallel reader drains the whole stream; SO is the end-to-end write+consume time beyond the ${SO_DURATION_SECONDS}s generation window (overhead/backpressure)`,
+    name: SCENARIO_SIZE_SWEEP,
+    description: `same pacing as the control with deltas padded in rotation across seven log-spaced sizes (~160B–12KB) — rotation decouples size from stream position, so it isolates whether chunk size causes latency`,
   },
   {
-    name: SCENARIO_STREAM_OVERHEAD_STRUCTURED,
-    description: `same workload as ${SCENARIO_STREAM_OVERHEAD_TEXT}, but each delta is an AI-SDK-style structured object ({ type: 'text-delta', id, text }) instead of a raw string, so the SO gap vs the text scenario is the added serialization cost`,
+    name: SCENARIO_REPLAY_GATEWAY,
+    description: `raw provider SSE cadence captured at the AI gateway boundary (gpt-5.4-nano, the most popular gateway model; per-token deltas p50 208B = the modal production chunk size), replayed exactly as measured — the typical customer's workload; its CDV is the typical customer's real delivery jitter`,
+  },
+  {
+    name: SCENARIO_REPLAY_REALITY,
+    description: `a captured eve turn (gpt-5.6-sol, the most-used demanding eve model; ~2000 output tokens = production p50 turn length) replayed exactly as measured — eve's envelope protocol re-ships the cumulative message so sizes ramp 142B→13KB; the demanding outlier tenant's reality`,
+  },
+  {
+    name: SCENARIO_REPLAY_EVE,
+    description: `the same eve capture at ${REPLAY_SPEED}x — the headroom/stress row; real fast-tier models emit the same chunk sizes at proportionally higher rate, so time compression is a faithful speed model`,
+  },
+  {
+    name: 'first chunk (pooled)',
+    description: `every run's seq-0 RTT pooled across all stream scenarios — the first chunk precedes any workload differentiation, so pooling samples one shared stream-open path with exact percentiles`,
   },
 ];
+// Cross-system cadence identity: the full semantic hash lands in
+// config.replayCadences (rendered as its own "Replay cadences" legend line
+// and copyable from the artifacts); durabench computes the same hash over
+// its copy (see cadenceSemanticSha256).
 
 // Datadog APM permalink for a trace id. The benchmark deployment exports its
 // OTel spans to Datadog, and `/api/bench` returns the trace id of the request
@@ -830,52 +1156,114 @@ describe('workflow benchmarks', { retry: 0 }, () => {
     }
   );
 
-  test('scenario: stream latency', { timeout: 30 * 60_000 }, async () => {
+  test('scenario: paced control', { timeout: 30 * 60_000 }, async () => {
     const results = await runScenario(
-      SCENARIO_STREAM_LATENCY,
-      SL_ITERATIONS,
-      () => runSlIteration()
+      SCENARIO_PACED_CONTROL,
+      CRTT_ITERATIONS,
+      () => runCrttIteration('llm', CRTT_CHUNK_COUNT, CRTT_INTERVAL_MS)
     );
-    recordMetric(
-      'sl',
-      SCENARIO_STREAM_LATENCY,
-      results.map((r) => r.slMs),
-      SL_TARGETS
+    // One rendered row per stream scenario (in the separate stream table);
+    // the index-bucket rows split RTT by position in the stream for the
+    // results artifacts only (flat across runs so far), as do slip tails.
+    recordStreamRow(SCENARIO_PACED_CONTROL, 'control', results);
+    for (const bucket of RTT_INDEX_BUCKETS) {
+      recordCrttDetailRow(
+        `paced control (${bucket})`,
+        results.map((r) => r.crtt.byIndex[bucket]),
+        { group: 'control', bucket }
+      );
+    }
+    recordSlipDetailRow(
+      'write slip (paced control)',
+      'control',
+      results.map((r) => r.writeSlip)
     );
   });
 
+  test('scenario: size sweep', { timeout: 30 * 60_000 }, async () => {
+    const results = await runScenario(
+      SCENARIO_SIZE_SWEEP,
+      CRTT_ITERATIONS,
+      () => runCrttIteration('sweep', CRTT_CHUNK_COUNT, CRTT_INTERVAL_MS)
+    );
+    // The size→latency profile only makes sense here: the llm-shaped
+    // deltas all land in the smallest size bin.
+    recordStreamRow(SCENARIO_SIZE_SWEEP, 'sweep', results, {
+      size: true,
+    });
+    recordSlipDetailRow(
+      'write slip (size sweep)',
+      'sweep',
+      results.map((r) => r.writeSlip)
+    );
+  });
+
+  // The replay scenarios run (and therefore render) in ascending difficulty:
+  // gateway 1x (typical customer as measured, the lightest total load) →
+  // eve 1x (demanding workload as measured) → eve 2x (stress). The gateway
+  // capture deliberately has no 2x row: nano at 1x already sits at the fast
+  // end of measured gateway rates, and a first run showed gateway-2x tails
+  // statistically identical to eve 2x — headroom is eve 2x's job.
+
   test(
-    'scenario: stream overhead (text)',
+    'scenario: replay (gateway gpt-5.4-nano 2000t, 1x reality)',
     { timeout: 30 * 60_000 },
     async () => {
       const results = await runScenario(
-        SCENARIO_STREAM_OVERHEAD_TEXT,
-        SO_ITERATIONS,
-        () => runSoIteration('text')
+        SCENARIO_REPLAY_GATEWAY,
+        REPLAY_GATEWAY_ITERATIONS,
+        () => runReplayIteration(REPLAY_CADENCE_GATEWAY, 1),
+        // ~20s wall per run; one warmup — earlier scenarios already warmed
+        // the deployment and stream path.
+        { warmupIterations: 1 }
       );
-      recordMetric(
-        'so',
-        SCENARIO_STREAM_OVERHEAD_TEXT,
-        results.map((r) => r.soMs),
-        SO_TARGETS
+      recordStreamRow(SCENARIO_REPLAY_GATEWAY, 'gw 1x', results);
+      recordSlipDetailRow(
+        `write slip (${REPLAY_CADENCE_GATEWAY} 1x)`,
+        'gw 1x',
+        results.map((r) => r.writeSlip)
       );
     }
   );
 
   test(
-    'scenario: stream overhead (structured)',
+    'scenario: replay (eve gpt-5.6-sol 2000t, 1x reality)',
     { timeout: 30 * 60_000 },
     async () => {
       const results = await runScenario(
-        SCENARIO_STREAM_OVERHEAD_STRUCTURED,
-        SO_ITERATIONS,
-        () => runSoIteration('structured')
+        SCENARIO_REPLAY_REALITY,
+        REPLAY_REALITY_ITERATIONS,
+        () => runReplayIteration(REPLAY_CADENCE_EVE, 1),
+        // ~52s wall per run; no warmup — the gateway 1x replay just ran, so
+        // the replay path is warm.
+        { warmupIterations: 0 }
       );
-      recordMetric(
-        'so',
-        SCENARIO_STREAM_OVERHEAD_STRUCTURED,
-        results.map((r) => r.soMs),
-        SO_TARGETS
+      recordStreamRow(SCENARIO_REPLAY_REALITY, 'eve 1x', results);
+      recordSlipDetailRow(
+        `write slip (${REPLAY_CADENCE_EVE} 1x)`,
+        'eve 1x',
+        results.map((r) => r.writeSlip)
+      );
+    }
+  );
+
+  test(
+    'scenario: replay (eve gpt-5.6-sol 2000t, 2x)',
+    { timeout: 30 * 60_000 },
+    async () => {
+      const results = await runScenario(
+        SCENARIO_REPLAY_EVE,
+        REPLAY_EVE_ITERATIONS,
+        () => runReplayIteration(REPLAY_CADENCE_EVE, REPLAY_SPEED),
+        // No warmup: the same cadence already replayed at 1x above, so
+        // everything this touches is warm.
+        { warmupIterations: 0 }
+      );
+      recordStreamRow(SCENARIO_REPLAY_EVE, 'eve 2x', results);
+      recordSlipDetailRow(
+        `write slip (${REPLAY_CADENCE_EVE} ${REPLAY_SPEED}x)`,
+        'eve 2x',
+        results.map((r) => r.writeSlip)
       );
     }
   );
@@ -973,6 +1361,18 @@ describe('workflow benchmarks', { retry: 0 }, () => {
   });
 
   afterAll(() => {
+    // Pooled first-chunk RTTs: seq 0 precedes any workload differentiation
+    // (no queue depth / backpressure), so every scenario samples one shared
+    // stream-open path — the one valid cross-scenario pool. ~TTFS-sized
+    // sample set, exact percentiles (raw samples, no merge).
+    if (firstChunkRttSamples.length > 0) {
+      metricRows.push({
+        metric: 'crtt',
+        scenario: 'first chunk (pooled)',
+        unit: 'ms',
+        ...computeStats(firstChunkRttSamples),
+      });
+    }
     if (metricRows.length === 0) {
       console.warn('[bench] No metrics collected; skipping results file');
       return;
@@ -995,11 +1395,29 @@ describe('workflow benchmarks', { retry: 0 }, () => {
       commit: process.env.GITHUB_SHA || undefined,
       config: {
         streamIterations: STREAM_ITERATIONS,
-        slIterations: SL_ITERATIONS,
-        soIterations: SO_ITERATIONS,
-        soChunkCount: SO_CHUNK_COUNT,
-        soChunkRatePerSec: SO_CHUNK_RATE_PER_SEC,
-        soDurationSeconds: SO_DURATION_SECONDS,
+        crttIterations: CRTT_ITERATIONS,
+        crttChunkCount: CRTT_CHUNK_COUNT,
+        crttChunkRatePerSec: CRTT_CHUNK_RATE_PER_SEC,
+        crttDurationSeconds: CRTT_DURATION_SECONDS,
+        replaySpeed: REPLAY_SPEED,
+        replayEveIterations: REPLAY_EVE_ITERATIONS,
+        replayRealityIterations: REPLAY_REALITY_ITERATIONS,
+        replayGatewayIterations: REPLAY_GATEWAY_ITERATIONS,
+        replayCadences: [REPLAY_CADENCE_EVE, REPLAY_CADENCE_GATEWAY].map(
+          (id) => {
+            const c = BENCH_CADENCES[id];
+            return {
+              id,
+              model: c.model,
+              capturedAt: c.capturedAt,
+              eveCommit: c.eveCommit,
+              events: c.events,
+              spanMs: c.spanMs,
+              totalBytes: c.totalBytes,
+              semanticSha256: cadenceSemanticSha256(id),
+            };
+          }
+        ),
         sequentialIterations: SEQUENTIAL_ITERATIONS,
         sequentialStepCount: SEQUENTIAL_STEP_COUNT,
         fanoutIterations: FANOUT_ITERATIONS,

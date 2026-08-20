@@ -1,14 +1,5 @@
 import { constants, type Dirent } from 'node:fs';
-import {
-  access,
-  copyFile,
-  mkdir,
-  readdir,
-  realpath,
-  rm,
-  stat,
-  writeFile,
-} from 'node:fs/promises';
+import { access, mkdir, readdir, realpath, rm, stat } from 'node:fs/promises';
 import { extname, isAbsolute, join, relative, resolve } from 'node:path';
 import type {
   NextConfig as BuilderNextConfig,
@@ -22,6 +13,7 @@ import {
   createSourceSnapshot,
   type FileChanges,
   getRelevantFiles,
+  pinBaselinesAcrossFullRebuild,
   replaceSourceSnapshots,
   type SourceSnapshot,
 } from './watch-rebuild.js';
@@ -46,6 +38,7 @@ export async function getNextBuilderEager(
     getWorkflowQueueTrigger,
     detectWorkflowPatterns,
     parentHasChild,
+    writeFileIfChanged,
   } = buildersModule ??
   (await importEsm<typeof import('@workflow/builders')>('@workflow/builders'));
 
@@ -68,7 +61,7 @@ export async function getNextBuilderEager(
           force: true,
         });
       }
-      await writeFile(join(workflowGeneratedDir, '.gitignore'), '*');
+      await writeFileIfChanged(join(workflowGeneratedDir, '.gitignore'), '*');
 
       const inputFiles = await this.getInputFiles();
       const tsconfigPath = await this.findTsConfigPath();
@@ -108,11 +101,16 @@ export async function getNextBuilderEager(
           );
           await mkdir(publicManifestDir, { recursive: true });
           if (process.env.VERCEL_DEPLOYMENT_ID === undefined) {
-            await writeFile(join(publicManifestDir, '.gitignore'), '*');
+            await writeFileIfChanged(
+              join(publicManifestDir, '.gitignore'),
+              '*'
+            );
           }
-          await copyFile(
-            join(workflowGeneratedDir, 'manifest.json'),
-            join(publicManifestDir, 'manifest.json')
+          // Written from the same string rather than copied, so an unchanged
+          // manifest leaves the public copy untouched too.
+          await writeFileIfChanged(
+            join(publicManifestDir, 'manifest.json'),
+            manifestJson
           );
         }
       };
@@ -250,33 +248,48 @@ export async function getNextBuilderEager(
           await writeManifest(mergeCombinedManifest(stepsManifest));
         };
 
-        const fullRebuild = async () => {
-          this.clearDiscoveredEntriesCache();
-          const newInputFiles = await this.getInputFiles();
-          options.inputFiles = newInputFiles;
+        // The pin helper owns the capture-before-build / restore-after-
+        // refresh ordering (including that the capture reads the CURRENT
+        // discovered entries and input files, before the rebuild replaces
+        // them), so an edit landing while the multi-second rebuild runs still
+        // diffs against what the rebuild consumed instead of being absorbed
+        // into the refreshed baseline. See `pinBaselinesAcrossFullRebuild`
+        // for the full reasoning.
+        const fullRebuild = () =>
+          pinBaselinesAcrossFullRebuild({
+            discoveredEntries,
+            inputFiles: options.inputFiles,
+            normalizePath,
+            readSnapshot: readSourceSnapshot,
+            sourceSnapshots,
+            rebuild: async () => {
+              this.clearDiscoveredEntriesCache();
+              const newInputFiles = await this.getInputFiles();
+              options.inputFiles = newInputFiles;
 
-          await stepsCtx?.dispose();
-          await workflowsCtx.interimBundleCtx.dispose();
+              await stepsCtx?.dispose();
+              await workflowsCtx.interimBundleCtx.dispose();
 
-          const newCombined = await this.buildCombinedFunction(options);
-          stepsCtx = newCombined.stepsContext;
-          discoveredEntries = newCombined.discoveredEntries;
-          stepsManifest = newCombined.stepsManifest;
-          workflowsManifest = newCombined.workflowsManifest;
+              const newCombined = await this.buildCombinedFunction(options);
+              stepsCtx = newCombined.stepsContext;
+              discoveredEntries = newCombined.discoveredEntries;
+              stepsManifest = newCombined.stepsManifest;
+              workflowsManifest = newCombined.workflowsManifest;
 
-          if (!newCombined?.interimBundleCtx || !newCombined?.bundleFinal) {
-            throw new Error(
-              'Invariant: expected workflows bundle context after rebuild'
-            );
-          }
-          workflowsCtx = {
-            interimBundleCtx: newCombined.interimBundleCtx,
-            bundleFinal: newCombined.bundleFinal,
-          };
+              if (!newCombined?.interimBundleCtx || !newCombined?.bundleFinal) {
+                throw new Error(
+                  'Invariant: expected workflows bundle context after rebuild'
+                );
+              }
+              workflowsCtx = {
+                interimBundleCtx: newCombined.interimBundleCtx,
+                bundleFinal: newCombined.bundleFinal,
+              };
 
-          await writeManifest(newCombined.manifest);
-          await refreshSourceSnapshots();
-        };
+              await writeManifest(newCombined.manifest);
+              await refreshSourceSnapshots();
+            },
+          });
 
         const isWatchableFile = (path: string) =>
           watchableExtensions.has(extname(path));
@@ -410,6 +423,13 @@ export async function getNextBuilderEager(
           }
         };
 
+        // Known gap: the initial build has the same two-read shape (the
+        // combined build above consumed sources, and this refresh re-reads
+        // them), but no pinning — and the watcher below attaches with
+        // `ignoreInitial: true`, so an edit landing inside the startup window
+        // is absorbed with no straggler event to recover it. Bounded by dev
+        // server startup rather than recurring per rebuild; knowingly out of
+        // scope for the mid-rebuild pinning above.
         await refreshSourceSnapshots();
         let {
           files: knownFiles,
@@ -447,17 +467,28 @@ export async function getNextBuilderEager(
           }
           if (decision.kind === 'full') {
             logDevHmr('workflow dev hmr: full rediscovery');
-            await fullRebuild();
-            await refreshKnownFiles();
+            try {
+              await fullRebuild();
+              await refreshKnownFiles();
+            } finally {
+              // Lets a log reader tell "quiet" from "rebuild in flight".
+              // The e2e HMR tests drain-to-quiet before counting lines.
+              logDevHmr('workflow dev hmr: rebuild complete');
+            }
             return;
           }
 
           logDevHmr(
             `workflow dev hmr: hot rebuild${decision.refreshStepRegistrations ? ' with step registration refresh' : ''}`
           );
-          await hotRebuild(decision.refreshStepRegistrations);
-          for (const [file, snapshot] of decision.snapshots) {
-            sourceSnapshots.set(file, snapshot);
+          try {
+            await hotRebuild(decision.refreshStepRegistrations);
+            for (const [file, snapshot] of decision.snapshots) {
+              sourceSnapshots.set(file, snapshot);
+            }
+          } finally {
+            // See the matching line on the full path above.
+            logDevHmr('workflow dev hmr: rebuild complete');
           }
         };
 
@@ -635,7 +666,7 @@ export async function getNextBuilderEager(
         },
       };
 
-      await writeFile(
+      await writeFileIfChanged(
         join(outputDir, '.well-known/workflow/v1/config.json'),
         JSON.stringify(generatedConfig, null, 2)
       );

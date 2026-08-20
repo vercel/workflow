@@ -1,5 +1,33 @@
 # @workflow/core
 
+## 5.0.0-beta.43
+
+### Patch Changes
+
+- [#3025](https://github.com/vercel/workflow/pull/3025) [`b0adb50`](https://github.com/vercel/workflow/commit/b0adb50bce623b23252735021205e8d870a2b11f) Thanks [@pranaygp](https://github.com/pranaygp)! - Add `world.events.createBatch` World API method, which allows writing ordered events in one durable write, returning per-event outcomes. Optional. On by default if implemented by the World. Disable with `WORKFLOW_BATCH_TRANSITIONS=0`.
+
+- [#3568](https://github.com/vercel/workflow/pull/3568) [`37e1d9e`](https://github.com/vercel/workflow/commit/37e1d9e5a9870ef4a35e1875e7054253a9fb89c3) Thanks [@pranaygp](https://github.com/pranaygp)! - Pre-claim inline steps inside the suspension batch, so a fan-out's inline step bodies start off the batch commit with no per-step claim request
+
+- [#3497](https://github.com/vercel/workflow/pull/3497) [`1321570`](https://github.com/vercel/workflow/commit/13215704645ea487ef6f8821016ec3f13c1cd830) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Log ignored duplicate events at `debug` instead of `info`/`error`, so a straggler no longer prints on every replay of the run.
+
+- [#3560](https://github.com/vercel/workflow/pull/3560) [`234d3dd`](https://github.com/vercel/workflow/commit/234d3dd7b852129e189d321314c4f749f12711d8) Thanks [@alangenfeld](https://github.com/alangenfeld)! - Add a run-pickup watchdog to the e2e harness: a started run still pending after a budget is replaced (side-effect-free) and recorded as an infra event surfaced separately from test failures and flaky retries.
+
+- [#3554](https://github.com/vercel/workflow/pull/3554) [`707dfe6`](https://github.com/vercel/workflow/commit/707dfe6a063564cd1c146742e90661abc49534b3) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix a replay-determinism gap where branch wake order — and therefore step correlation ids — could depend on how much of the event log an invocation had loaded, corrupting runs under concurrent replays (CORRUPTED_EVENT_LOG).
+
+- [#3674](https://github.com/vercel/workflow/pull/3674) [`a074259`](https://github.com/vercel/workflow/commit/a074259166819121579ffbb5b9f8da60853ae57b) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Reduce payload resolution while polling workflow run status.
+
+- [#3526](https://github.com/vercel/workflow/pull/3526) [`ac51658`](https://github.com/vercel/workflow/commit/ac51658d39649e7d8e290924c3bf7b2c7df78b00) Thanks [@shalabhc](https://github.com/shalabhc)! - Record a `workflow.step.execute.duration` OpenTelemetry histogram around user step execution
+
+- [#3564](https://github.com/vercel/workflow/pull/3564) [`c5f9177`](https://github.com/vercel/workflow/commit/c5f9177be3c58a2b5616f798932061b67e0b54a5) Thanks [@alangenfeld](https://github.com/alangenfeld)! - Verify stream tail when the reconnecting framed reader receives an EOF to ensure it is due to stream completion (and not other world-side behavior)
+
+- [#3567](https://github.com/vercel/workflow/pull/3567) [`880801b`](https://github.com/vercel/workflow/commit/880801bd4521a0cfd76e8c46ebf560c388ecf30c) Thanks [@alangenfeld](https://github.com/alangenfeld)! - Propagate invocation request IDs to step-start events.
+
+- Updated dependencies [[`b0adb50`](https://github.com/vercel/workflow/commit/b0adb50bce623b23252735021205e8d870a2b11f), [`37e1d9e`](https://github.com/vercel/workflow/commit/37e1d9e5a9870ef4a35e1875e7054253a9fb89c3), [`1321570`](https://github.com/vercel/workflow/commit/13215704645ea487ef6f8821016ec3f13c1cd830), [`52526e1`](https://github.com/vercel/workflow/commit/52526e14aaa848dc24eaeebfbf91ccc9ca0df89a), [`04e060a`](https://github.com/vercel/workflow/commit/04e060a0ecc247a3291714d8396430fa9d96bccc), [`0b2797b`](https://github.com/vercel/workflow/commit/0b2797bbace75f590897959367aec03300ca6e13)]:
+  - @workflow/world@5.0.0-beta.28
+  - @workflow/world-vercel@5.0.0-beta.39
+  - @workflow/world-local@5.0.0-beta.37
+  - @workflow/errors@5.0.0-beta.17
+
 ## 5.0.0-beta.42
 
 ### Minor Changes

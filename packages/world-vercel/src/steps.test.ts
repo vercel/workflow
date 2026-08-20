@@ -1,4 +1,5 @@
 import * as zlib from 'node:zlib';
+import { NODE_HTTP_ENV_VAR } from '@workflow/world';
 import { encode } from 'cbor-x';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { deserializeStep, getStep } from './steps.js';
@@ -46,6 +47,9 @@ describe('getStep', () => {
   beforeEach(() => {
     process.env = { ...originalEnv };
     process.env.VERCEL_WORKFLOW_SERVER_URL = 'https://workflow.test';
+    // The response comes from a stubbed `fetch`, which the node:http path
+    // never calls. What is under test here is decompression, not transport.
+    process.env[NODE_HTTP_ENV_VAR] = '0';
   });
 
   afterEach(() => {

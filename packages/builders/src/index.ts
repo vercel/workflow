@@ -74,3 +74,4 @@ export type {
 export { isValidBuildTarget, validBuildTargets } from './types.js';
 export { VercelBuildOutputAPIBuilder } from './vercel-build-output-api.js';
 export { resolveWorkflowAliasRelativePath } from './workflow-alias.js';
+export { hasSameContent, writeFileIfChanged } from './write-if-changed.js';

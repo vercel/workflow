@@ -265,7 +265,9 @@ Platform-provided values such as `VERCEL_DEPLOYMENT_ID`, `VERCEL_PROJECT_ID`, an
 - Factory option: none
 - CLI flag: none
 - Default: `60000`
+- Clamp: `10000` to `120000` (values outside are clamped, with a warning)
 - Per-request timeout for Vercel World HTTP calls to workflow-server.
+- At the `10000` floor the run-status long poll disables itself, because its budget is this value minus 10s of headroom.
 
 ### `WORKFLOW_MAX_CHUNKS_PER_REQUEST`
 
@@ -273,6 +275,14 @@ Platform-provided values such as `VERCEL_DEPLOYMENT_ID`, `VERCEL_PROJECT_ID`, an
 - CLI flag: none
 - Default: `1000`
 - Maximum stream chunks written in one Vercel World request. Larger batches are split.
+
+### `WORKFLOW_BATCH_TRANSITIONS`
+
+- Surface: environment variable
+- Default: on
+- Set to `0` (or `false`) to **disable** batched event writes — the escape hatch that restores the exact prior one-write-per-event path.
+
+When enabled (the default), a suspension's eager `step_created` and `wait_created` writes fold into batched `events.createBatch` calls (one durable write with per-event outcomes) on Worlds that implement the optional batch API. The fold only engages when the World implements `events.createBatch` (the Vercel World does; Local and Postgres do not), the run's spec version supports slot identity (≥ 6), and the suspension carries no attribute writes, hook writes, or resilient step dispatch — everything else keeps the single-event path unchanged, so disabling is only needed as an operational escape hatch. Batches are capped at 32 events; larger fan-outs commit in successive batches. See the [batched event writes changelog](/docs/changelog/batched-event-writes) for the World API contract.
 
 ### `WORKFLOW_EVENTS_TRANSPORT`
 

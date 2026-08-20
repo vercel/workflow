@@ -19,6 +19,31 @@ Runtime variables are read where workflows execute. Set them on the deployment o
 - Delay between status requests made by [`Run.returnValue`](/docs/api-reference/workflow-api/get-run) while a workflow run is not yet complete.
 - Increase it to reduce polling traffic at the cost of noticing completion later.
 - This variable is read by the process awaiting `Run.returnValue`, such as an E2E test runner, rather than by the workflow deployment.
+- Applies whenever the World cannot hold a read open. When it can, the wait below replaces most of this polling and the interval only paces retries.
+
+### `WORKFLOW_RETURN_VALUE_WAIT_MS`
+
+- Default: `50000`
+- Minimum: `1`
+- How long a single wait for a terminal run status may block, when the World supports waiting (`world.runs.waitForTerminalStatus()`). `Run.returnValue` re-issues the wait until the run finishes, so this bounds one request rather than the total wait.
+- `50000` is the largest value the Vercel World can actually request: it clamps the ask to its 60s per-request HTTP timeout minus 10s of headroom, so the budget always expires as a response carrying the run's current status rather than as a client-side timeout. Raising this alone has no effect; raise `WORKFLOW_REQUEST_TIMEOUT_MS` as well.
+- Read by the process awaiting `Run.returnValue`, like the interval above.
+
+### `WORKFLOW_RETURN_VALUE_MAX_LONG_POLLS`
+
+- Default: `10`
+- Minimum: `1`
+- How many consecutive waits `Run.returnValue` issues before falling back to interval polling for the rest of the await.
+- It never ends the await. A run that outlives the cap keeps being waited for, just on `WORKFLOW_RETURN_VALUE_POLL_INTERVAL_MS` instead.
+- Runs longer than roughly `WORKFLOW_RETURN_VALUE_MAX_LONG_POLLS` x `WORKFLOW_RETURN_VALUE_WAIT_MS` therefore spend most of their life interval polling, which costs more requests than continuing to wait would. Raise it if you routinely await long runs.
+- Read by the process awaiting `Run.returnValue`, like the interval above.
+
+### `WORKFLOW_RETURN_VALUE_LONG_POLL`
+
+- Default: enabled
+- Set to `0` or `false` to stop `Run.returnValue` from waiting and restore fixed-interval polling on `WORKFLOW_RETURN_VALUE_POLL_INTERVAL_MS` exactly.
+- The kill switch for the wait. Worlds that do not implement waiting are already on the interval path, so this changes nothing for them.
+- Read by the process awaiting `Run.returnValue`, like the interval above.
 
 ## Replay and queue delivery
 
@@ -214,6 +239,24 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 - Default: enabled
 - On the Vercel World, lets concurrent event-log requests share one HTTP/2 connection instead of one connection per in-flight request.
 - Set `0` to take the event-log requests off HTTP/2 entirely, back to one request per HTTP/1.1 connection. Use this as the kill switch if HTTP/2 turns out to be at fault for event delivery problems.
+- Has no effect when `WORKFLOW_NODE_HTTP` is enabled, which takes the whole HTTP/2 path away.
+
+### `WORKFLOW_NODE_HTTP`
+
+- Default: disabled
+- Makes the Vercel and Local Worlds issue their HTTP requests through Node's built-in `node:http` and `node:https` modules, instead of the HTTP client library those Worlds normally use.
+- Set `1` to switch to Node's modules. Read the trade-offs below first: they cost throughput on every deployment, which is why this is opt-in.
+- Use it when that library is not an option: a bundler that mangles it, a runtime that does not ship a working copy of it, or a transport-level fault you want to rule out. It is not reached by way of `fetch()` either, so a runtime whose `fetch()` is built on the same library is still covered.
+
+Node's own modules do less than the client they replace, so enabling this drops the per-call-site tuning the Worlds configure:
+
+- Event-log requests lose HTTP/2, so concurrent reads and writes no longer share one connection, and the enlarged HTTP/2 receive windows no longer apply. This is the largest difference, and it slows down replays that read a big event log. It does not apply to event writes on [`WORKFLOW_EVENTS_TRANSPORT=ws`](/docs/configuration/worlds#workflow_events_transport), which take neither transport.
+- Requests lose their transport-level retry. Failures still surface to the layers above, which retry event writes and redeliver queue messages, so nothing is silently dropped, but a failure that a same-connection retry would have hidden now costs a full redelivery.
+- Stream close loses its retry of retriable server errors. A transient failure at close can leave a stream marked closing until the run expires, where it would previously have resolved on the retry.
+
+Connection pooling, keep-alive, and the request, header, and body deadlines are preserved: pooling and keep-alive are configured on Node's agents, and the deadlines are passed per request — from the Local World's two queue timeouts, and on the Vercel World from the same defaults its HTTP client applies today. Queue sends are the exception in the other direction: that client takes no transport override, so its requests keep using the library either way.
+
+A `dispatcher` passed to `createVercelWorld()` still wins over this variable. The variable chooses which transport the World builds when you have not supplied one.
 
 ## Queue namespace
 

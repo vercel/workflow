@@ -84,6 +84,14 @@ The migration is idempotent and can safely be run as a post-deployment lifecycle
 
 To subscribe to the graphile-worker queue, your workflow app needs to start the world on server start. Here are examples for a few frameworks:
 
+<Callout type="warn">
+This step is specific to worlds that run a background worker, such as Postgres
+World. Worlds whose queue delivers work over HTTP, including the Vercel world,
+have no worker to subscribe, so `start()` does nothing there while the import
+still costs you: pulling in `workflow/runtime` from a server-startup hook puts
+the whole runtime into the cold-start path before the first request is served.
+</Callout>
+
 <Tabs items={["Next.js", "SvelteKit", "Nitro"]}>
 
 <Tab value="Next.js">
@@ -217,6 +225,12 @@ For higher worker concurrency, Graphile Worker recommends setting `maxPoolSize` 
 ### `WORKFLOW_POSTGRES_APPLICATION_MANAGED_SHUTDOWN`
 
 Set to `1` when the application or framework coordinates shutdown and awaits `world.close()` before closing its workflow HTTP server and any caller-owned pool. Default: unset (`false`).
+
+### `WORKFLOW_POSTGRES_RUN_STATUS_POLL_INTERVAL_MS`
+
+How often a wait for a terminal run status re-reads the run, in milliseconds. Default: `1000`.
+
+`await run.returnValue` asks the World to wait for the run to finish, and the Postgres World parks that wait on a `NOTIFY` issued by the run-terminal write. This interval is only the backstop: it bounds how long a lost notification can go unnoticed, so lowering it costs a query per waiting run per interval and buys nothing while notifications are arriving.
 
 ### `WORKFLOW_POSTGRES_HOOK_RETENTION_LIMIT_DAYS`
 

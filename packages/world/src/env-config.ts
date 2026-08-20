@@ -72,6 +72,34 @@ export function envNumber(
   return parsed;
 }
 
+/**
+ * Resolve a boolean feature flag from `process.env[name]`.
+ *
+ * Matches the convention the runtime flags already use (`WORKFLOW_TURBO`,
+ * `WORKFLOW_SLOT_IDENTITY`, …): unset or empty takes `fallback`, and the only
+ * values that force a side are `0` / `false` and `1` / `true`
+ * (case-insensitive). Anything else falls back rather than throwing — a flag is
+ * an escape hatch, not a hard requirement — and warns once per process.
+ */
+export function envFlag(
+  name: string,
+  fallback: boolean,
+  env: Record<string, string | undefined> = process.env
+): boolean {
+  const raw = env[name];
+  if (raw === undefined || raw === '') return fallback;
+
+  const normalized = raw.toLowerCase();
+  if (normalized === '0' || normalized === 'false') return false;
+  if (normalized === '1' || normalized === 'true') return true;
+
+  warnOnce(
+    `${name}=${raw}`,
+    `Ignoring ${name}: expected 0/1/true/false; using default ${fallback}`
+  );
+  return fallback;
+}
+
 const DEFAULT_MAX_EVENTS_PER_RUN = 25_000;
 
 export function getMaxEventsPerRun(): number {
