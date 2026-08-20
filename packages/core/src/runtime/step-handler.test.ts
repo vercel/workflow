@@ -109,6 +109,9 @@ vi.mock('../serialization.js', () => ({
   dehydrateStepReturnValue: vi
     .fn()
     .mockResolvedValue(new Uint8Array([1, 2, 3])),
+  formatSerializationError: vi.fn(
+    (context: string) => `Failed to serialize ${context}.`
+  ),
 }));
 
 // Mock context storage
@@ -138,6 +141,7 @@ vi.mock('../private.js', () => ({
 // which populates capturedHandlerRef
 import './step-handler.js';
 import { getStepFunction } from '../private.js';
+import { hydrateStepArguments } from '../serialization.js';
 import {
   getErrorName,
   getErrorStack,
@@ -148,6 +152,10 @@ import {
   resetPortCacheForTesting,
   setPortResolverForTesting,
 } from './get-port-lazy.js';
+import {
+  UNSERIALIZABLE_STEP_INPUT_MARKER,
+  unserializableStepInputPlaceholder,
+} from './unserializable-step.js';
 import { getWorld } from './world.js';
 
 const mockPortResolver = vi.fn(async () => 3000);
@@ -727,5 +735,96 @@ describe('step-handler step not found', () => {
     );
     // Should NOT re-queue the workflow since step was already resolved
     expect(mockQueueMessage).not.toHaveBeenCalled();
+  });
+});
+
+describe('step-handler unserializable-argument placeholder recovery', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(getStepFunction).mockReturnValue(mockStepFn);
+    vi.mocked(normalizeUnknownError).mockImplementation(
+      async (err: unknown) => ({
+        message: err instanceof Error ? err.message : String(err),
+        name: err instanceof Error ? err.name : 'Error',
+        stack: err instanceof Error ? err.stack : undefined,
+      })
+    );
+    vi.mocked(getErrorName).mockReturnValue('FatalError');
+    vi.mocked(getErrorStack).mockReturnValue('');
+    mockStepFn.mockReset().mockResolvedValue('step-result');
+    mockStepFn.maxRetries = 3;
+    mockQueueMessage.mockResolvedValue(undefined);
+    vi.mocked(getWorld).mockReturnValue({
+      events: { create: mockEventsCreate },
+      queue: mockQueue,
+      getEncryptionKeyForRun: vi.fn().mockResolvedValue(undefined),
+    } as any);
+    mockEventsCreate.mockReset().mockResolvedValue({
+      step: {
+        stepId: 'step_abc',
+        status: 'running',
+        attempt: 1,
+        startedAt: new Date(),
+        input: [],
+      },
+      event: {},
+    });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.mocked(hydrateStepArguments).mockResolvedValue({
+      args: [],
+      thisVal: null,
+      closureVars: undefined,
+    } as any);
+  });
+
+  it('fails a placeholder-input step without running the step body', async () => {
+    // A crash between finalization's two durable writes leaves a lone
+    // step_created carrying the placeholder; crash recovery dispatches it
+    // here. The body must not run — the intended failure completes instead.
+    vi.mocked(hydrateStepArguments).mockResolvedValue(
+      unserializableStepInputPlaceholder() as any
+    );
+
+    const result = await capturedHandler(
+      createMessage(),
+      createMetadata('acceptAnyValue')
+    );
+
+    expect(result).toBeUndefined();
+    expect(mockStepFn).not.toHaveBeenCalled();
+    expect(mockEventsCreate).toHaveBeenCalledWith(
+      'wrun_test123',
+      expect.objectContaining({
+        eventType: 'step_failed',
+        eventData: expect.objectContaining({
+          error: expect.stringContaining('Failed to serialize step arguments'),
+        }),
+      }),
+      expect.anything()
+    );
+    // Fatal: no step_retrying, so no queue attempts are burned.
+    expect(mockEventsCreate).not.toHaveBeenCalledWith(
+      'wrun_test123',
+      expect.objectContaining({ eventType: 'step_retrying' }),
+      expect.anything()
+    );
+  });
+
+  it('does not trip on a genuine argument equal to the display marker', async () => {
+    // The structural flag — not the human-readable marker string — is what
+    // identifies the placeholder, so a step legitimately called with the
+    // marker text still runs.
+    vi.mocked(hydrateStepArguments).mockResolvedValue({
+      args: [UNSERIALIZABLE_STEP_INPUT_MARKER],
+      thisVal: null,
+      closureVars: undefined,
+    } as any);
+
+    await capturedHandler(createMessage(), createMetadata('acceptAnyValue'));
+
+    expect(mockStepFn).toHaveBeenCalledWith(UNSERIALIZABLE_STEP_INPUT_MARKER);
   });
 });

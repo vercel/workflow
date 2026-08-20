@@ -122,6 +122,15 @@ export const WorkflowWaitsCreated = SemanticConvention<number>(
   'workflow.waits.created'
 );
 
+/**
+ * Number of steps this suspension finalized as failed because their
+ * arguments refused to serialize (step_created placeholder + step_failed
+ * carrying the serialization error — see finalizeUnserializableStep).
+ */
+export const WorkflowStepsFailedSerialization = SemanticConvention<number>(
+  'workflow.steps.failed_serialization'
+);
+
 // Step attributes
 
 /** Name of the step function being executed */
