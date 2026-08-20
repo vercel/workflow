@@ -63,12 +63,12 @@ describe('ReplayPayloadCache', () => {
     const second = cache.prepareEventPayload('evnt_one', 'result', payload);
 
     expect(first).toBe(second);
-    await expect(first).resolves.toBe(payload);
+    await expect(first).resolves.toEqual({ data: payload });
     expect(preparer).toHaveBeenCalledOnce();
   });
 
   it('compacts prepared bytes before retaining them', async () => {
-    const backing = new Uint8Array(64 * 1024);
+    const backing = Buffer.alloc(64 * 1024);
     const prepared = backing.subarray(1024, 2048);
     const cache = new ReplayPayloadCache(
       undefined,
@@ -81,9 +81,10 @@ describe('ReplayPayloadCache', () => {
       new Uint8Array([1])
     );
 
-    assert(retained instanceof Uint8Array);
-    expect(retained).toEqual(prepared);
-    expect(retained.buffer.byteLength).toBe(retained.byteLength);
+    assert(retained.data instanceof Uint8Array);
+    expect(Array.from(retained.data)).toEqual(Array.from(prepared));
+    expect(retained.data).not.toBeInstanceOf(Buffer);
+    expect(retained.data.buffer.byteLength).toBe(retained.data.byteLength);
   });
 
   it('keeps a failed prewarm until its consumer observes it, then retries', async () => {
@@ -101,7 +102,9 @@ describe('ReplayPayloadCache', () => {
     );
     expect(preparer).toHaveBeenCalledOnce();
 
-    await expect(cache.prepareWorkflowInput(run)).resolves.toBe(payload);
+    await expect(cache.prepareWorkflowInput(run)).resolves.toEqual({
+      data: payload,
+    });
     expect(preparer).toHaveBeenCalledTimes(2);
   });
 
@@ -192,7 +195,11 @@ describe('ReplayPayloadCache', () => {
     // Only the inserted event is new: the other two are keyed by event id and
     // stay prepared across the rescan.
     expect(preparer).toHaveBeenCalledTimes(3);
-    expect(preparer).toHaveBeenLastCalledWith(payloads[1], undefined);
+    expect(preparer).toHaveBeenLastCalledWith(
+      payloads[1],
+      undefined,
+      expect.any(Object)
+    );
   });
 
   it('bypasses legacy values and ignores missing event data during prewarm', async () => {

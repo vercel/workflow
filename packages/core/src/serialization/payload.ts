@@ -7,7 +7,9 @@ import {
 } from './encryption.js';
 
 /** Host-owned payload state that is safe to reuse across workflow VMs. */
-export type PreparedReplayPayload = Uint8Array | { readonly legacy: unknown };
+export interface PreparedReplayPayload {
+  readonly data: unknown;
+}
 
 /** Apply the storage layers in their only valid order: compress, then encrypt. */
 export async function encodePayload(

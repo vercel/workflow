@@ -71,6 +71,16 @@ export interface HydrateDataOptions {
   zstdDecoder?: ZstdDecoder;
 }
 
+let registeredZstdDecoder: ZstdDecoder | undefined;
+
+/**
+ * @deprecated Pass `zstdDecoder` through `HydrateDataOptions` instead.
+ * Retained as a fallback for existing observability integrations.
+ */
+export function registerZstdDecoder(decoder: ZstdDecoder): void {
+  registeredZstdDecoder = decoder;
+}
+
 /**
  * Decode a format-prefixed payload.
  */
@@ -152,7 +162,7 @@ export function isExpiredStub(data: unknown): boolean {
  * Browser-safe — does not depend on the full serialization module.
  */
 export function isEncryptedData(data: unknown): boolean {
-  return isEncrypted(data);
+  return isEncrypted(data) || isSealedData(data);
 }
 
 /**
@@ -290,7 +300,12 @@ export async function hydrateDataWithKey(
     // web-standard DecompressionStream (works in browsers); zstd uses
     // node:zlib on Node or an explicitly supplied WASM decoder in the browser.
     // The inflated bytes carry their own format prefix (e.g. 'devl').
-    data = await decompress(data, undefined, options);
+    const zstdDecoder = options?.zstdDecoder ?? registeredZstdDecoder;
+    data = await decompress(
+      data,
+      undefined,
+      zstdDecoder ? { zstdDecoder } : undefined
+    );
   }
   // Delegate the (decrypted/decompressed) result to sync hydrateData
   return hydrateData(data, revivers);

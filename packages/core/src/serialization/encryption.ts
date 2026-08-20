@@ -207,11 +207,19 @@ export async function resolveEncryptionKey(
  * @param key - Encryption key (undefined to skip encryption)
  * @returns The encrypted data with its format prefix, or the original data if no key
  */
-export async function encrypt(
+export function encrypt(
   data: Uint8Array,
   key: PayloadKey | undefined
-): Promise<Uint8Array> {
-  if (!key) return data;
+): Promise<Uint8Array>;
+export function encrypt(
+  data: unknown,
+  key: PayloadKey | undefined
+): Promise<unknown>;
+export async function encrypt(
+  data: unknown,
+  key: PayloadKey | undefined
+): Promise<unknown> {
+  if (!key || !(data instanceof Uint8Array)) return data;
 
   if (isSealTarget(key)) {
     const sealed = await sealToPublicKey(key.recipientPublicKey, data, key.aad);
@@ -281,10 +289,19 @@ function requireAesDecryptionKey(
 /**
  * Decrypt a format-prefixed payload if it is encrypted or sealed.
  */
-export async function decrypt(
+export function decrypt(
   data: Uint8Array,
   key: DecryptionKey | undefined
-): Promise<Uint8Array> {
+): Promise<Uint8Array>;
+export function decrypt(
+  data: unknown,
+  key: DecryptionKey | undefined
+): Promise<unknown>;
+export async function decrypt(
+  data: unknown,
+  key: DecryptionKey | undefined
+): Promise<unknown> {
+  if (!(data instanceof Uint8Array)) return data;
   const format = peekFormatPrefix(data);
 
   if (format === SerializationFormat.SEALED) {

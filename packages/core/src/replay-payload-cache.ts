@@ -1,9 +1,11 @@
 import type { Event, WorkflowRun } from '@workflow/world';
+import type { CompressionStats } from './serialization/compression.js';
 import type { DecryptionKey } from './serialization/encryption.js';
 import {
   decodePayload,
   type PreparedReplayPayload,
 } from './serialization/payload.js';
+import { recordCompression } from './serialization/telemetry.js';
 
 const MAX_MEMOIZED_PRIMITIVE_LENGTH = 4096;
 type ReplayPayloadField = 'result' | 'error' | 'payload';
@@ -12,7 +14,7 @@ type ReplayPayloadField = 'result' | 'error' | 'payload';
 function compactOwnedBytes(data: Uint8Array): Uint8Array {
   return data.byteOffset === 0 && data.byteLength === data.buffer.byteLength
     ? data
-    : data.slice();
+    : new Uint8Array(data);
 }
 
 function isMemoizablePrimitive(value: unknown): boolean {
@@ -180,7 +182,7 @@ export class ReplayPayloadCache {
     value: unknown
   ): Promise<PreparedReplayPayload> {
     if (!(value instanceof Uint8Array)) {
-      return Promise.resolve({ legacy: value });
+      return Promise.resolve({ data: value });
     }
 
     const preparation = this.ensurePreparation(cacheKey, value);
@@ -209,7 +211,14 @@ export class ReplayPayloadCache {
   private async runPreparation(
     value: Uint8Array
   ): Promise<PreparedReplayPayload> {
-    return compactOwnedBytes(await this.preparer(value, this.encryptionKey));
+    const compressionStats: CompressionStats = {};
+    const prepared = await this.preparer(
+      value,
+      this.encryptionKey,
+      compressionStats
+    );
+    await recordCompression(compressionStats, 'deserialize');
+    return { data: compactOwnedBytes(prepared) };
   }
 
   private workflowInputKey(runId: string): string {

@@ -103,6 +103,13 @@ describe('compression layer (compress/decompress)', () => {
     const plain = textEncoder.encode('devl"hello"');
     expect(await decompress(plain)).toBe(plain);
   });
+
+  it('passes legacy non-binary values through unchanged', async () => {
+    const value = { legacy: true };
+    expect(await compress(value, true)).toBe(value);
+    expect(await decompress(value)).toBe(value);
+    expect(isCompressed(value)).toBe(false);
+  });
 });
 
 describe('CompressionStats telemetry sink', () => {

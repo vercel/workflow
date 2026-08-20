@@ -126,6 +126,13 @@ describe('encodeWithFormatPrefix', () => {
     expect(Array.from(encoded.subarray(4))).toEqual([1, 2, 3]);
   });
 
+  it('passes legacy non-binary values through unchanged', () => {
+    const value = { legacy: true };
+    expect(encodeWithFormatPrefix(SerializationFormat.DEVALUE_V1, value)).toBe(
+      value
+    );
+  });
+
   it('should handle empty payload', () => {
     const payload = new Uint8Array(0);
     const encoded = encodeWithFormatPrefix(
@@ -159,6 +166,12 @@ describe('decodeFormatPrefix', () => {
     expect(decoded.payload).toEqual(new Uint8Array([1, 2, 3]));
   });
 
+  it('maps legacy non-binary values to the devalue format', () => {
+    const decoded = decodeFormatPrefix({ legacy: true });
+    expect(decoded.format).toBe(SerializationFormat.DEVALUE_V1);
+    expect(new TextDecoder().decode(decoded.payload)).toBe('{"legacy":true}');
+  });
+
   it('should throw for data too short', () => {
     expect(() => decodeFormatPrefix(new Uint8Array([1, 2, 3]))).toThrow(
       /Data too short to contain format prefix/
@@ -188,6 +201,10 @@ describe('decodeFormatPrefix', () => {
 });
 
 describe('peekFormatPrefix', () => {
+  it('returns null for legacy non-binary values', () => {
+    expect(peekFormatPrefix('legacy')).toBeNull();
+    expect(peekFormatPrefix(null)).toBeNull();
+  });
   it('should return prefix for valid format-prefixed data', () => {
     const payload = new Uint8Array([1, 2, 3]);
     const encoded = encodeWithFormatPrefix(
@@ -255,6 +272,11 @@ describe('encrypt', () => {
     expect(result).toBe(data);
   });
 
+  it('passes legacy non-binary data through even when a key is present', async () => {
+    const data = { legacy: true };
+    expect(await encrypt(data, await makeKey())).toBe(data);
+  });
+
   it('should encrypt and add encr prefix when key provided', async () => {
     const key = await makeKey();
     const data = encodeWithFormatPrefix(
@@ -280,6 +302,11 @@ describe('decrypt', () => {
     const decrypted = decrypt(encrypted, key);
     expect(decrypted).toBeInstanceOf(Promise);
     expect(await decrypted).toEqual(data);
+  });
+
+  it('passes legacy non-binary data through unchanged', async () => {
+    const data = { legacy: true };
+    expect(await decrypt(data, undefined)).toBe(data);
   });
 
   it('should return non-encrypted binary data unchanged', async () => {
@@ -372,9 +399,9 @@ describe('sealed envelopes', () => {
     )) as Uint8Array;
 
     expect(peekFormatPrefix(sealed)).toBe(SerializationFormat.SEALED);
-    // Both symmetric and sealed envelopes are encrypted. Callers that need to
-    // distinguish the schemes dispatch on the exact prefix.
-    expect(isEncrypted(sealed)).toBe(true);
+    // `isEncrypted` remains the symmetric-envelope predicate. Display callers
+    // use `isEncryptedData` when both encrypted formats should match.
+    expect(isEncrypted(sealed)).toBe(false);
   });
 
   it('round-trips: cross-run writer seals, owning run opens', async () => {

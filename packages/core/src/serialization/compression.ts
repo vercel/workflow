@@ -264,11 +264,22 @@ function selectWriteCodec(): 'zstd' | 'gzip' | 'none' {
  * @returns The compressed data with a codec prefix, or the original data
  *   when compression is disabled, unavailable, or not worthwhile.
  */
-export async function compress(
+export function compress(
   data: Uint8Array,
   enabled: boolean,
   stats?: CompressionStats
-): Promise<Uint8Array> {
+): Promise<Uint8Array>;
+export function compress(
+  data: unknown,
+  enabled: boolean,
+  stats?: CompressionStats
+): Promise<unknown>;
+export async function compress(
+  data: unknown,
+  enabled: boolean,
+  stats?: CompressionStats
+): Promise<unknown> {
+  if (!(data instanceof Uint8Array)) return data;
   if (
     !enabled ||
     data.length < COMPRESSION_MIN_BYTES ||
@@ -305,11 +316,22 @@ export async function compress(
  *
  * Non-compressed data is returned unchanged.
  */
-export async function decompress(
+export function decompress(
   data: Uint8Array,
   stats?: CompressionStats,
   options?: DecompressionOptions
-): Promise<Uint8Array> {
+): Promise<Uint8Array>;
+export function decompress(
+  data: unknown,
+  stats?: CompressionStats,
+  options?: DecompressionOptions
+): Promise<unknown>;
+export async function decompress(
+  data: unknown,
+  stats?: CompressionStats,
+  options?: DecompressionOptions
+): Promise<unknown> {
+  if (!(data instanceof Uint8Array)) return data;
   const prefix = peekFormatPrefix(data);
 
   const codec =
@@ -349,7 +371,8 @@ export function decompressSync(data: Uint8Array): Uint8Array | undefined {
 /**
  * Check if data is compressed (has a 'zstd' or 'gzip' format prefix).
  */
-export function isCompressed(data: Uint8Array): boolean {
+export function isCompressed(data: unknown): boolean {
+  if (!(data instanceof Uint8Array)) return false;
   const prefix = peekFormatPrefix(data);
   return (
     prefix === SerializationFormat.ZSTD || prefix === SerializationFormat.GZIP

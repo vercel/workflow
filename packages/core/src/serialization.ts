@@ -91,6 +91,10 @@ import {
   SerializationFormat,
   type SerializationFormatType,
 } from './serialization/types.js';
+import {
+  recordCompression,
+  recordGuestCodeExecutions,
+} from './serialization/telemetry.js';
 import * as workflowModule from './serialization/workflow.js';
 import { contextStorage } from './step/context-storage.js';
 import {
@@ -109,8 +113,7 @@ import {
   STREAM_TYPE_SYMBOL,
   WEBHOOK_RESPONSE_WRITABLE,
 } from './symbols.js';
-import * as Attr from './telemetry/semantic-conventions.js';
-import { getActiveSpan, getSpanKind, recordElapsedSpan } from './telemetry.js';
+import { getSpanKind, recordElapsedSpan } from './telemetry.js';
 import { getAbortStreamId } from './util.js';
 import { WorkflowAbortSignal } from './workflow/abort-controller.js';
 
@@ -142,6 +145,24 @@ export {
 };
 
 export { compress, decompress } from './serialization/compression.js';
+export type { PreparedReplayPayload } from './serialization/payload.js';
+
+/** @deprecated Use `encrypt` instead. */
+export async function maybeEncrypt(
+  data: Uint8Array,
+  key: PayloadKey | undefined
+): Promise<Uint8Array> {
+  return encrypt(data, key);
+}
+
+/** @deprecated Use `decrypt` instead. */
+export async function maybeDecrypt(
+  data: Uint8Array | unknown,
+  key: PayloadKey | undefined
+): Promise<Uint8Array | unknown> {
+  if (!(data instanceof Uint8Array)) return data;
+  return decrypt(data, key as DecryptionKey | undefined);
+}
 
 /**
  * Default ULID generator for contexts where VM's seeded `stableUlid` isn't available.
@@ -200,72 +221,6 @@ function unwrapSerializationCause(error: unknown): unknown {
     return error.cause;
   }
   return error;
-}
-
-/**
- * Emit compression telemetry onto the active span after a (de)serialize.
- *
- * The compression layer populates `stats` only when it actually ran (binary
- * data on a spec >= 5 path); legacy / v1Compat paths leave it unrecorded, so
- * this no-ops for them and avoids the `getActiveSpan` lookup. Attributes land
- * on whatever span is active — typically the dedicated `step.dehydrate` /
- * `step.hydrate` span, otherwise the enclosing run/start span.
- */
-async function recordCompression(
-  stats: CompressionStats,
-  operation: 'serialize' | 'deserialize'
-): Promise<void> {
-  if (!stats.recorded) return;
-  // Telemetry must never break the serialize/deserialize data path — a
-  // missing/failing tracer is purely an observability loss.
-  try {
-    const span = await getActiveSpan();
-    if (!span) return;
-    const uncompressedBytes = stats.uncompressedBytes ?? 0;
-    const storedBytes = stats.storedBytes ?? 0;
-    span.setAttributes({
-      ...Attr.SerializationOperation(operation),
-      ...Attr.SerializationCompressed(stats.compressed ?? false),
-      ...Attr.SerializationCodec(stats.codec ?? 'none'),
-      ...Attr.SerializationUncompressedBytes(uncompressedBytes),
-      ...Attr.SerializationStoredBytes(storedBytes),
-      ...(stats.compressed && uncompressedBytes > 0
-        ? Attr.SerializationCompressionRatio(
-            1 - storedBytes / uncompressedBytes
-          )
-        : {}),
-    });
-  } catch {
-    // ignore telemetry failures
-  }
-}
-
-/**
- * Emits OTel span attributes for workflow (guest) code executions that the
- * hardened serializer could not avoid (getters, proxies, custom
- * serializers). No-ops when serialization was fully side-effect free —
- * the common case. Same never-break-the-data-path contract as
- * `recordCompression` above.
- */
-async function recordGuestCodeExecutions(stats: GuestCodeStats): Promise<void> {
-  if (stats.executions.length === 0) return;
-  try {
-    const span = await getActiveSpan();
-    if (!span) return;
-    const details = [
-      ...new Set(
-        stats.executions.map((e) =>
-          e.detail ? `${e.kind} (${e.detail})` : e.kind
-        )
-      ),
-    ];
-    span.setAttributes({
-      ...Attr.SerializationGuestCodeExecutions(stats.executions.length),
-      ...Attr.SerializationGuestCodeDetails(details),
-    });
-  } catch {
-    // ignore telemetry failures
-  }
 }
 
 export function getSerializeStream(
@@ -3380,13 +3335,26 @@ async function decodeReplayPayloadWithTelemetry(
   value: unknown,
   key: DecryptionKey | undefined
 ): Promise<PreparedReplayPayload> {
-  if (!(value instanceof Uint8Array)) return { legacy: value };
+  if (!(value instanceof Uint8Array)) return { data: value };
 
   const compressionStats: CompressionStats = {};
-  const prepared = await decodePayload(value, key, compressionStats);
+  const data = await decodePayload(value, key, compressionStats);
   await recordCompression(compressionStats, 'deserialize');
-  return prepared;
+  return { data };
 }
+
+/**
+ * @deprecated Replay preparation is an internal cache concern. Retained for
+ * compatibility with existing `@workflow/core/serialization` consumers.
+ */
+export type ReplayPayloadPreparer = (
+  value: unknown,
+  key: PayloadKey | undefined
+) => PreparedReplayPayload | Promise<PreparedReplayPayload>;
+
+/** @deprecated Replay preparation is performed by `ReplayPayloadCache`. */
+export const prepareReplayPayload: ReplayPayloadPreparer = (value, key) =>
+  decodeReplayPayloadWithTelemetry(value, key as DecryptionKey | undefined);
 
 /**
  * Parse a prepared workflow argument or successful step/hook payload using the
@@ -3398,8 +3366,7 @@ export function deserializePreparedReplayPayload(
   global: Record<string, any> = globalThis,
   extraRevivers: Record<string, (value: any) => any> = {}
 ): any {
-  const data = prepared instanceof Uint8Array ? prepared : prepared.legacy;
-  return workflowModule.deserialize(data, {
+  return workflowModule.deserialize(prepared.data, {
     global,
     extraRevivers: {
       ...getStreamAndRequestRevivers(getWorkflowRevivers(global)),
@@ -3417,7 +3384,7 @@ export function deserializePreparedStepError(
   global: Record<string, any> = globalThis,
   extraRevivers: Record<string, (value: any) => any> = {}
 ): unknown {
-  const data = prepared instanceof Uint8Array ? prepared : prepared.legacy;
+  const { data } = prepared;
   if (!(data instanceof Uint8Array)) {
     return unflatten(data as any[], {
       ...getWorkflowRevivers(global),

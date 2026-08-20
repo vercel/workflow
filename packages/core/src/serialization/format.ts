@@ -37,7 +37,16 @@ const formatDecoder = new TextDecoder();
 export function encodeWithFormatPrefix(
   format: FormatPrefix,
   payload: Uint8Array
-): Uint8Array {
+): Uint8Array;
+export function encodeWithFormatPrefix(
+  format: FormatPrefix,
+  payload: unknown
+): unknown;
+export function encodeWithFormatPrefix(
+  format: FormatPrefix,
+  payload: unknown
+): unknown {
+  if (!(payload instanceof Uint8Array)) return payload;
   const prefixBytes = formatEncoder.encode(format);
   const result = new Uint8Array(FORMAT_PREFIX_LENGTH + payload.length);
   result.set(prefixBytes, 0);
@@ -55,8 +64,8 @@ export function encodeWithFormatPrefix(
  * @param data - The format-prefixed data
  * @returns The format prefix, or null
  */
-export function peekFormatPrefix(data: Uint8Array): FormatPrefix | null {
-  if (data.length < FORMAT_PREFIX_LENGTH) {
+export function peekFormatPrefix(data: unknown): FormatPrefix | null {
+  if (!(data instanceof Uint8Array) || data.length < FORMAT_PREFIX_LENGTH) {
     return null;
   }
   const prefixBytes = data.subarray(0, FORMAT_PREFIX_LENGTH);
@@ -64,17 +73,10 @@ export function peekFormatPrefix(data: Uint8Array): FormatPrefix | null {
   return isFormatPrefix(str) ? str : null;
 }
 
-/**
- * Check if data is encrypted, whether symmetrically (`encr`) or sealed to a
- * run's public key (`encp`). Use the exact prefix when the scheme matters.
- */
+/** Check if data is symmetrically encrypted with the `encr` prefix. */
 export function isEncrypted(data: unknown): boolean {
   if (!(data instanceof Uint8Array)) return false;
-  const prefix = peekFormatPrefix(data);
-  return (
-    prefix === SerializationFormat.ENCRYPTED ||
-    prefix === SerializationFormat.SEALED
-  );
+  return peekFormatPrefix(data) === SerializationFormat.ENCRYPTED;
 }
 
 /**
@@ -92,10 +94,16 @@ export function isEncrypted(data: unknown): boolean {
  * @returns An object with the format prefix and payload
  * @throws Error if the data is too short or has an invalid prefix
  */
-export function decodeFormatPrefix(data: Uint8Array): {
+export function decodeFormatPrefix(data: unknown): {
   format: FormatPrefix;
   payload: Uint8Array;
 } {
+  if (!(data instanceof Uint8Array)) {
+    return {
+      format: SerializationFormat.DEVALUE_V1,
+      payload: new TextEncoder().encode(JSON.stringify(data)),
+    };
+  }
   if (data.length < FORMAT_PREFIX_LENGTH) {
     throw new Error(
       `Data too short to contain format prefix: expected at least ${FORMAT_PREFIX_LENGTH} bytes, got ${data.length}`
