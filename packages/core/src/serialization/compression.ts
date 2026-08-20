@@ -334,7 +334,13 @@ export async function decompress(
  * its async hydration path is requested.
  */
 export function decompressSync(data: Uint8Array): Uint8Array | undefined {
-  return decompressSerializedDataSync(data);
+  try {
+    return decompressSerializedDataSync(data);
+  } catch {
+    // Observability hydration is best-effort: preserve corrupt bytes so the
+    // event remains inspectable instead of failing the CLI/server response.
+    return undefined;
+  }
 }
 
 /**

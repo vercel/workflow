@@ -413,6 +413,15 @@ describe('o11y hydration of compressed payloads', () => {
     expect(hydrated).toEqual(value);
   });
 
+  it('hydrateData leaves a corrupt compressed payload available for inspection', () => {
+    const data = encodeWithFormatPrefix(
+      SerializationFormat.GZIP,
+      new Uint8Array([1, 2, 3])
+    );
+
+    expect(hydrateData(data, {})).toBe(data);
+  });
+
   it('hydrateDataWithKey decompresses encrypted + compressed payloads', async () => {
     const key = await makeKey();
     const value = makeCompressibleValue();
