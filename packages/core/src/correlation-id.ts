@@ -120,6 +120,23 @@ function encodeRandomFromHash(lanes: [number, number, number, number]): string {
 }
 
 /**
+ * Encodes a per-kind creation ordinal as 4 Crockford characters (20 bits),
+ * most significant first, saturating at the ceiling rather than wrapping so a
+ * pathological run cannot make a later id sort below an earlier one.
+ */
+const ORDINAL_CHARS = 4;
+const ORDINAL_CEILING = 32 ** ORDINAL_CHARS - 1;
+function encodeOrdinal(ordinal: number): string {
+  let remaining = Math.min(ordinal, ORDINAL_CEILING);
+  let out = '';
+  for (let i = 0; i < ORDINAL_CHARS; i++) {
+    out = CROCKFORD[remaining & 31] + out;
+    remaining = Math.floor(remaining / 32);
+  }
+  return out;
+}
+
+/**
  * A replay-stable fingerprint of a step's arguments, used as part of a
  * call-site scope.
  *
@@ -227,12 +244,27 @@ export function createCorrelationIdGenerator(options: {
 
   const time = encodeTime(fixedTimestamp, 26 - RANDOM_CHARS);
   const counters = new Map<string, number>();
+  // Hooks only: the Nth hook this replay created, independent of scope.
+  let hookCount = 0;
 
   return (scope?: string | (() => string)) => {
     const key = (typeof scope === 'function' ? scope() : scope) ?? 'anonymous';
     const ordinal = counters.get(key) ?? 0;
     counters.set(key, ordinal + 1);
-    return `${time}${encodeRandomFromHash(hash128(`${seed} ${key} ${ordinal}`))}`;
+    const random = encodeRandomFromHash(hash128(`${seed} ${key} ${ordinal}`));
+    // Hook ids carry their creation ordinal in the top 20 bits of the
+    // random section, so ids — and everything that sorts by them: the
+    // World's `hooks.list`, the dashboard, the CLI — keep listing hooks in
+    // creation order, which the positional scheme provided by accident and
+    // the e2e suite (and plausibly users) rely on. The identity semantics
+    // are unchanged (the scope and per-scope ordinal still feed the hash);
+    // the cost is that a PINNED hook's id becomes sensitive to how many
+    // hooks preceded it, the same per-kind residual waits already carry.
+    if (key === 'hook' || key.startsWith('hook\u0020')) {
+      const sortPrefix = encodeOrdinal(hookCount++);
+      return `${time}${sortPrefix}${random.slice(ORDINAL_CHARS)}`;
+    }
+    return `${time}${random}`;
   };
 }
 

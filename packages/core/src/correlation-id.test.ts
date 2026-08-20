@@ -143,6 +143,38 @@ describe('createCorrelationIdGenerator', () => {
   });
 });
 
+describe('hook id sort order', () => {
+  it('lists hooks in creation order when sorted by id, pinned or not', () => {
+    const generate = generator({ callSiteScoped: true });
+    const minted = [
+      generate('hook'),
+      generate('hook pinned-b'),
+      generate('hook'),
+      generate('hook pinned-a'),
+      generate('hook'),
+    ];
+    // Backends order hooks.list by hook id (world-vercel gsi2sk, world-postgres
+    // orderBy(hookId), world-local), so sorting the ids must reproduce minting
+    // order — the property the positional scheme provided by accident.
+    expect([...minted].sort()).toEqual(minted);
+    expect(new Set(minted).size).toBe(minted.length);
+  });
+
+  it('does not burden non-hook kinds with the sort prefix', () => {
+    const generate = generator({ callSiteScoped: true });
+    // 'hooked' must not be mistaken for the hook kind by a prefix check.
+    const other = [
+      generate('wait'),
+      generate('hooked thing'),
+      generate('attr'),
+    ];
+    const again = generator({ callSiteScoped: true });
+    expect([again('wait'), again('hooked thing'), again('attr')]).toEqual(
+      other
+    );
+  });
+});
+
 describe('fingerprintValue', () => {
   it('separates different arguments and matches equal ones', () => {
     expect(fingerprintValue([1, 'a'])).toBe(fingerprintValue([1, 'a']));
