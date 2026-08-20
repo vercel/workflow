@@ -351,19 +351,17 @@ function timeToFraction(
   return clampFraction((time - spanStart) / spanDuration);
 }
 
-interface EventMark<T extends string = string> {
+interface EventMark {
   time: number;
-  type: T;
+  type: string;
 }
 
-function sortedEventMarks<T extends string>(
+function sortedEventMarks(
   events: SpanEvent[],
-  relevantNames: readonly T[]
-): EventMark<T>[] {
+  relevantNames: string[]
+): EventMark[] {
   return events
-    .filter((e): e is SpanEvent & { name: T } =>
-      relevantNames.includes(e.name as T)
-    )
+    .filter((e) => relevantNames.includes(e.name))
     .map((e) => ({ time: getHighResInMs(e.timestamp), type: e.name }))
     .sort((a, b) => a.time - b.time);
 }
@@ -616,15 +614,12 @@ export interface SpanMarker {
 }
 
 // `hook_received` = a resumption; `attr_set` = attributes written mid-span.
-const MARKER_EVENT_NAMES: readonly SpanMarkerKind[] = [
-  'hook_received',
-  'attr_set',
-];
+const MARKER_EVENT_NAMES = ['hook_received', 'attr_set'];
 
 export function computeSpanMarkers(span: Span): SpanMarker[] {
   return sortedEventMarks(span.events, MARKER_EVENT_NAMES).map((mark) => ({
     timeMs: mark.time,
-    kind: mark.type,
+    kind: mark.type as SpanMarkerKind,
   }));
 }
 

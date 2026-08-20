@@ -202,7 +202,6 @@ type RelativeTimeCardProps = Omit<
   date?: number | null;
   /** Custom content to render instead of the default relative time text. */
   children?: ReactNode;
-  /** Optional heading prefix for the relative-time line. */
   prefix?: string;
 };
 
@@ -252,7 +251,6 @@ export function TimestampTooltip({
   date: number | Date | string | null | undefined;
   children: ReactNode;
   side?: ContextCardTriggerProps['side'];
-  /** Optional heading prefix for the relative-time line. */
   prefix?: string;
 }): ReactNode {
   const hasProvider = useHasContextCardProvider();
