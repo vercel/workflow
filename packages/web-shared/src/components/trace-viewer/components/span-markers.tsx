@@ -109,10 +109,7 @@ export function MarkerLayer({
           >
             <Tooltip>
               <TooltipTrigger asChild>
-                <span
-                  aria-label={label}
-                  className="flex h-6 w-8 items-center justify-center"
-                >
+                <span className="flex h-6 w-8 items-center justify-center">
                   <MarkerTick className="h-3" />
                 </span>
               </TooltipTrigger>

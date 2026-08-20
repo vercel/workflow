@@ -626,9 +626,7 @@ function isSpanMarkerKind(name: string): name is SpanMarkerKind {
 
 export function computeSpanMarkers(span: Span): SpanMarker[] {
   return sortedEventMarks(span.events, MARKER_EVENT_NAMES).flatMap((mark) =>
-    isSpanMarkerKind(mark.type)
-      ? [{ timeMs: mark.time, kind: mark.type }]
-      : []
+    isSpanMarkerKind(mark.type) ? [{ timeMs: mark.time, kind: mark.type }] : []
   );
 }
 
