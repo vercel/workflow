@@ -52,17 +52,47 @@ export function getReturnValuePollIntervalMs(): number {
  * job is to bound one request so a stalled connection cannot hold the awaiting
  * side forever.
  *
- * 25s keeps a Vercel long poll comfortably inside `world-vercel`'s 60s
- * per-request HTTP timeout, so the wait budget is always observed as a
- * *response* (a non-terminal snapshot) rather than as a client-side timeout.
+ * 50s is the largest budget `world-vercel` can actually request: it clamps to
+ * `REQUEST_TIMEOUT_MS` (60s) minus 10s of headroom, so the budget is always
+ * observed as a *response* (a non-terminal snapshot) rather than as a
+ * client-side timeout. Asking for more is silently reduced to that, so raising
+ * this without also raising `WORKFLOW_REQUEST_TIMEOUT_MS` has no effect.
  */
-const RETURN_VALUE_WAIT_TIMEOUT_MS = 25_000;
+const RETURN_VALUE_WAIT_TIMEOUT_MS = 50_000;
 
 /** @internal */
 export function getReturnValueWaitTimeoutMs(): number {
   return envNumber(
     'WORKFLOW_RETURN_VALUE_WAIT_MS',
     RETURN_VALUE_WAIT_TIMEOUT_MS,
+    { integer: true, min: 1 }
+  );
+}
+
+/**
+ * How many consecutive long-poll calls `await run.returnValue` will make
+ * before falling back to interval polling for the rest of the wait.
+ *
+ * A cap is worth having because a wait that keeps returning non-terminal is
+ * indistinguishable from one that is not working, and interval polling is the
+ * behavior we know is correct. It does **not** end the await: a run legitimately
+ * lasts hours or days, so exhausting the cap switches strategy and keeps
+ * waiting rather than throwing.
+ *
+ * Note the consequence, since it cuts against the reason the long poll exists:
+ * a run still going after `MAX x budget` (~8 minutes at the defaults) spends
+ * the remainder of its life polling once per
+ * `WORKFLOW_RETURN_VALUE_POLL_INTERVAL_MS`, which is more requests than
+ * continuing to long poll would have cost. Runs that outlive the cap are
+ * exactly the ones the request reduction helped most.
+ */
+const RETURN_VALUE_MAX_LONG_POLLS = 10;
+
+/** @internal */
+export function getReturnValueMaxLongPolls(): number {
+  return envNumber(
+    'WORKFLOW_RETURN_VALUE_MAX_LONG_POLLS',
+    RETURN_VALUE_MAX_LONG_POLLS,
     { integer: true, min: 1 }
   );
 }
@@ -436,6 +466,12 @@ export class Run<TResult> {
       ? world.runs.waitForTerminalStatus?.bind(world.runs)
       : undefined;
 
+    // Long polls spent so far. Once the cap is reached the loop keeps waiting
+    // but on the interval path, which is the strategy we know is correct — see
+    // `RETURN_VALUE_MAX_LONG_POLLS`. Never a reason to stop awaiting.
+    let longPolls = 0;
+    const maxLongPolls = getReturnValueMaxLongPolls();
+
     // NOTE: when this poll runs inside a step (e.g. the step that a parent
     // workflow uses to await a child workflow's `returnValue`), it blocks
     // a queue worker slot for as long as the child run takes to finish.
@@ -449,7 +485,9 @@ export class Run<TResult> {
         // Metadata only, either way: the status is all this iteration needs,
         // and payload refs are resolved once below, after a terminal status is
         // observed.
-        const runMetadata = waitForTerminalStatus
+        const useLongPoll = waitForTerminalStatus && longPolls < maxLongPolls;
+        if (useLongPoll) longPolls++;
+        const runMetadata = useLongPoll
           ? await waitForTerminalStatus(this.runId, {
               timeoutMs: getReturnValueWaitTimeoutMs(),
               resolveData: 'none',

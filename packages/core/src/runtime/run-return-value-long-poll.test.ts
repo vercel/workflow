@@ -68,6 +68,7 @@ describe('Run.returnValue long poll', () => {
   const envNames = [
     'WORKFLOW_RETURN_VALUE_LONG_POLL',
     'WORKFLOW_RETURN_VALUE_WAIT_MS',
+    'WORKFLOW_RETURN_VALUE_MAX_LONG_POLLS',
     'WORKFLOW_RETURN_VALUE_POLL_INTERVAL_MS',
   ] as const;
   const originalEnv = new Map(
@@ -200,6 +201,38 @@ describe('Run.returnValue long poll', () => {
     await assertion;
   });
 
+  it('falls back to interval polling after the long-poll cap, without ending the await', async () => {
+    // A run can legitimately outlive the cap by hours, so exhausting it must
+    // switch strategy rather than throw. After the cap the loop keeps waiting
+    // on `runs.get`, and the run is still reported when it eventually ends.
+    process.env.WORKFLOW_RETURN_VALUE_POLL_INTERVAL_MS = '1000';
+    process.env.WORKFLOW_RETURN_VALUE_MAX_LONG_POLLS = '2';
+    process.env.WORKFLOW_RETURN_VALUE_WAIT_MS = '1000';
+
+    const waitForTerminalStatus = vi.fn().mockResolvedValue(runningRun);
+    const get = vi
+      .fn()
+      .mockResolvedValueOnce(runningRun)
+      .mockResolvedValue(cancelledRun);
+    setWorld(createWorld({ waitForTerminalStatus, get }));
+
+    const pending = new Run(RUN_ID).returnValue;
+    const assertion = expect(pending).rejects.toBeInstanceOf(
+      WorkflowRunCancelledError
+    );
+
+    // Two long polls, then the cap is spent.
+    await vi.advanceTimersByTimeAsync(4_000);
+    expect(waitForTerminalStatus).toHaveBeenCalledTimes(2);
+
+    // From here it is the interval path, and it still resolves the run.
+    await vi.advanceTimersByTimeAsync(4_000);
+    expect(waitForTerminalStatus).toHaveBeenCalledTimes(2);
+    expect(get).toHaveBeenCalled();
+
+    await assertion;
+  });
+
   it('interval-polls runs.get when the World has no long poll', async () => {
     process.env.WORKFLOW_RETURN_VALUE_POLL_INTERVAL_MS = '1000';
     const get = vi
@@ -287,7 +320,7 @@ describe('getReturnValueWaitTimeoutMs', () => {
 
   it('defaults to a budget under the adapter request timeout', () => {
     delete process.env[envName];
-    expect(getReturnValueWaitTimeoutMs()).toBe(25_000);
+    expect(getReturnValueWaitTimeoutMs()).toBe(50_000);
   });
 
   it('accepts a runtime override', () => {
