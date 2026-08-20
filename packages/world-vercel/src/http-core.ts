@@ -626,7 +626,7 @@ export async function instrumentedFetch(
         throw error;
       }
       const ms = Date.now() - start;
-      if (!deferTransportSuccess || !response.ok) {
+      if (!deferTransportSuccess) {
         onTransportOutcome?.();
       }
 

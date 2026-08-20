@@ -574,33 +574,12 @@ export async function createWorkflowRunEventBatch(
   };
 }
 
-class EventObserverError extends Error {
-  constructor(readonly error: unknown) {
-    super('event observer failed');
-  }
-}
-
 export async function createWorkflowRunEvent<T extends AnyEventRequest>(
   id: string | null,
   data: T,
   params?: CreateEventParams,
   config?: APIConfig
 ): Promise<EventResult<T['eventType']>> {
-  const onEvent = params?.onEvent;
-  const requestParams =
-    onEvent === undefined
-      ? params
-      : {
-          ...params,
-          onEvent(event: Event) {
-            try {
-              onEvent(event);
-            } catch (error) {
-              throw new EventObserverError(error);
-            }
-          },
-        };
-
   try {
     // Retry transient transport failures (UND_ERR_REQ_RETRY, ECONNRESET,
     // socket/headers timeouts, transient 5xx) in-process for event types that
@@ -611,7 +590,7 @@ export async function createWorkflowRunEvent<T extends AnyEventRequest>(
     // types (step_started, step_retrying, hook_received) run once. See
     // ./event-retry for the validated per-event classification.
     const result = await withEventPostRetry(
-      () => createWorkflowRunEventInner(id, data, requestParams, config),
+      () => createWorkflowRunEventInner(id, data, params, config),
       data.eventType,
       {
         // The atomic lazy-resume shape is deduplicated server-side by the
@@ -643,7 +622,6 @@ export async function createWorkflowRunEvent<T extends AnyEventRequest>(
     }
     return result as EventResult<T['eventType']>;
   } catch (err) {
-    if (err instanceof EventObserverError) throw err.error;
     // 404 on hook_disposed / hook_received → already-disposed hook.
     if (
       isHookEventRequiringExistence(data.eventType) &&
@@ -758,11 +736,7 @@ async function createWorkflowRunEventInner(
   };
 
   if (data.eventType === 'run_started' && !params?.skipPreload) {
-    const result = await createWorkflowRunStartedEventV4(
-      input,
-      config,
-      params?.onEvent
-    );
+    const result = await createWorkflowRunStartedEventV4(input, config);
     const runCreated = result.events.find(
       (event) => event.eventType === 'run_created'
     );
@@ -800,24 +774,15 @@ async function createWorkflowRunEventInner(
   ) {
     // Lazy hook resume: the queue consumer's idempotent re-ensure doubles
     // as the invocation's setup request. A supporting server streams the
-    // complete replay log back in this response with resolved frame bodies
-    // — the SERVER owns that resolution (the preload contract requires
+    // complete replay log back in this response with resolved frame bodies.
+    // The SERVER owns that resolution (the preload contract requires
     // replay-ready bytes; v4 has no /refs endpoint to hydrate a lazy
     // descriptor during replay), so the request keeps hook_received's lazy
-    // default. Against an older server this makes the CBOR fallback
-    // lightweight: it answers the mutation without resolving and echoing
-    // an S3-backed hook payload the runtime would discard anyway.
+    // default.
     const outcome = await createHookReceivedPreloadEventV4(
       { ...input, remoteRefBehavior: 'lazy' },
-      config,
-      params.onEvent
+      config
     );
-    if (outcome.kind === 'materialized') {
-      // Older server (or optimization declined): the write still succeeded
-      // and this is its normal materialized result. The runtime sees no
-      // replay preload on it and falls back to the run_started setup.
-      return outcome.result;
-    }
     const { canonicalEventId, maxEvents, events, cursor, hasMore } = outcome;
     const canonicalEvent = events.find(
       (event) => event.eventId === canonicalEventId

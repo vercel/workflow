@@ -76,6 +76,18 @@ import type { z } from 'zod';
  * `hook_conflict`, which the SDK never POSTs). */
 type WorkflowEventType = z.infer<typeof EventTypeSchema>;
 
+/**
+ * A follow-up read failed after the event POST had already succeeded and
+ * exposed validated response data. Repeating the mutation cannot repair that
+ * read and would redownload/re-observe the accepted prefix.
+ */
+export class EventPostResponseError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = 'EventPostResponseError';
+  }
+}
+
 export interface EventRetryPolicy {
   /** Whether a failed POST of this event type may be retried in-process. */
   retryable: boolean;
@@ -243,14 +255,8 @@ function collectErrorMarkers(err: unknown, depth = 0): string[] {
   return markers;
 }
 
-/**
- * Whether a failed event POST should be retried as a transient failure.
- * Retries transient/ambiguous transport failures and transient 5xx; never
- * retries a definitive response (409/410/425/429 and other 4xx). 429 is not
- * "transient" in this classification — `withEventPostRetry` gives it its own
- * budgeted, Retry-After-honoring policy.
- */
-export function isRetryableEventPostError(err: unknown): boolean {
+/** Transient request failures shared by idempotent event reads and writes. */
+export function isRetryableEventRequestError(err: unknown): boolean {
   // Definitive, server-considered outcomes — never retried as *transient*.
   // (425 is left to the runtime's retry-after handling; 429 has its own
   // in-process policy in withEventPostRetry, gated by THROTTLE_RETRY_BUDGET_MS
@@ -265,9 +271,6 @@ export function isRetryableEventPostError(err: unknown): boolean {
   }
 
   if (WorkflowWorldError.is(err)) {
-    // Body parsed past the response but the write may have landed — safe to
-    // retry for eligible events (a landed original re-surfaces as 409).
-    if (err.code === 'PARSE_ERROR') return true;
     // A transport failure the world layer already classified as transient:
     // `utils.ts` sets this for a `fetch` failing with a
     // `TRANSIENT_TRANSPORT_ERROR_CODES` code, `events-v4.ts` for a WS socket
@@ -293,6 +296,18 @@ export function isRetryableEventPostError(err: unknown): boolean {
   }
 
   return collectErrorMarkers(err).some((m) => TRANSIENT_CODES.has(m));
+}
+
+/**
+ * Whether a failed event POST should be retried as a transient failure.
+ * Response parse errors are write-specific: the mutation may have landed, and
+ * eligible event types converge when it is repeated. A follow-up read failure
+ * after an accepted POST is explicitly excluded.
+ */
+export function isRetryableEventPostError(err: unknown): boolean {
+  if (err instanceof EventPostResponseError) return false;
+  if (WorkflowWorldError.is(err) && err.code === 'PARSE_ERROR') return true;
+  return isRetryableEventRequestError(err);
 }
 
 const sleep = (ms: number): Promise<void> =>

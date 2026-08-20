@@ -1,11 +1,11 @@
 import { Buffer } from 'node:buffer';
 import { gzipSync } from 'node:zlib';
-import { WorkflowWorldError } from '@workflow/errors';
 import type { AnyEventRequest, CreateEventParams } from '@workflow/world';
 import { decode, encode } from 'cbor-x';
 import { ulid } from 'ulid';
 import { MockAgent } from 'undici';
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
+import { EventPostResponseError } from './event-retry.js';
 import {
   createWorkflowRunEvent,
   getWorkflowRunEvents,
@@ -376,7 +376,7 @@ describe('createWorkflowRunEvent result contract', () => {
     agent.assertNoPendingInterceptors();
   });
 
-  it('does not retry an observer failure that looks like a transport error', async () => {
+  it('does not repeat a run_started POST when its continuation exhausts retries', async () => {
     const agent = mockAgent();
     agent
       .get(ORIGIN)
@@ -384,33 +384,49 @@ describe('createWorkflowRunEvent result contract', () => {
         path: '/api/v4/runs/wrun_1/events/run_started',
         method: 'POST',
       })
-      .reply(200, runStartedResponse(), {
-        headers: {
-          'content-type': V4_FRAME_CONTENT_TYPE,
-          'x-wf-event-id': 'evnt_1',
-          'x-wf-run-id': 'wrun_1',
-          'x-wf-created-at': STARTED_AT.toISOString(),
-          'x-wf-max-events': '10000',
-        },
-      });
+      .reply(
+        200,
+        encodeFrame(
+          {
+            eventId: 'evnt_0',
+            runId: 'wrun_1',
+            eventType: 'run_created',
+            createdAt: new Date('2026-06-09T23:59:59.000Z'),
+            specVersion: 2,
+            eventData: {
+              deploymentId: 'dpl_1',
+              workflowName: 'workflow',
+            },
+          },
+          new Uint8Array()
+        ),
+        {
+          headers: {
+            'content-type': V4_FRAME_CONTENT_TYPE,
+            'x-wf-max-events': '10000',
+          },
+        }
+      );
 
-    const error = new WorkflowWorldError('observer failed', {
-      code: 'TRANSPORT',
-    });
-    const onEvent = vi.fn(() => {
-      throw error;
-    });
+    const continuationPath =
+      '/api/v4/runs/wrun_1/events?cursor=eid%3Aevnt_0&remoteRefBehavior=resolve&returnAll=true';
+    for (let attempt = 0; attempt < 4; attempt++) {
+      agent
+        .get(ORIGIN)
+        .intercept({ path: continuationPath, method: 'GET' })
+        .reply(200, new Uint8Array(), {
+          headers: { 'content-type': V4_FRAME_CONTENT_TYPE },
+        });
+    }
 
     await expect(
       createWorkflowRunEvent(
         'wrun_1',
         { eventType: 'run_started', specVersion: 2 } as AnyEventRequest,
-        { onEvent },
+        undefined,
         { token: 'test-token', dispatcher: agent }
       )
-    ).rejects.toBe(error);
-
-    expect(onEvent).toHaveBeenCalledOnce();
+    ).rejects.toBeInstanceOf(EventPostResponseError);
     agent.assertNoPendingInterceptors();
   });
 });
@@ -1703,9 +1719,8 @@ describe('createWorkflowRunEvent hook_received replay preload', () => {
     );
 
     // The idempotency key + digest rode the frame meta. The request keeps
-    // hook_received's lazy default: a supporting server owns frame-body
-    // resolution regardless, and an older server then answers the CBOR
-    // fallback without resolving a payload the runtime would discard.
+    // hook_received's lazy default; the preload contract makes the server own
+    // resolution of the replay-ready frame bodies.
     expect(capturedMeta?.resumeId).toBe(RESUME_ID);
     expect(capturedMeta?.resumePayloadDigest).toBe(DIGEST);
     expect(capturedMeta?.remoteRefBehavior).toBe('lazy');
@@ -1844,7 +1859,7 @@ describe('createWorkflowRunEvent hook_received replay preload', () => {
     agent.assertNoPendingInterceptors();
   });
 
-  it('keeps the CBOR result when the server does not stream (older server)', async () => {
+  it('requires the framed preload response promised by workflow-server', async () => {
     const agent = mockAgent();
     agent
       .get(ORIGIN)
@@ -1853,41 +1868,18 @@ describe('createWorkflowRunEvent hook_received replay preload', () => {
         method: 'POST',
         headers: { accept: V4_FRAME_CONTENT_TYPE },
       })
-      .reply(
-        200,
-        encode({
-          event: {
-            eventId: 'evnt_4',
-            runId: 'wrun_1',
-            eventType: 'hook_received',
-            correlationId: 'hook_1',
-            createdAt: new Date('2026-06-10T00:00:03.000Z'),
-            specVersion: 2,
-            eventData: { token: 'tok-preload' },
-          },
-        }),
-        {
-          headers: {
-            'content-type': 'application/cbor',
-            'x-wf-event-id': 'evnt_4',
-            'x-wf-run-id': 'wrun_1',
-            'x-wf-created-at': '2026-06-10T00:00:03.000Z',
-          },
-        }
-      );
+      .reply(200, encode({ event: { eventType: 'hook_received' } }), {
+        headers: { 'content-type': 'application/cbor' },
+      });
 
-    const result = await createWorkflowRunEvent(
-      'wrun_1',
-      hookReceivedRequest(),
-      preloadParams,
-      { token: 'test-token', dispatcher: agent }
+    await expect(
+      createWorkflowRunEvent('wrun_1', hookReceivedRequest(), preloadParams, {
+        token: 'test-token',
+        dispatcher: agent,
+      })
+    ).rejects.toThrow(
+      `v4 createEvent: expected ${V4_FRAME_CONTENT_TYPE}, got application/cbor`
     );
-
-    // A successful write with no replay preload — the runtime falls back to
-    // the run_started setup without posting the hook again.
-    expect(result.event?.eventType).toBe('hook_received');
-    expect(result.events).toBeUndefined();
-    expect(result.run).toBeUndefined();
     agent.assertNoPendingInterceptors();
   });
 

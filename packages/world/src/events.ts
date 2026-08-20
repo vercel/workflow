@@ -982,11 +982,6 @@ export interface CreateEventParams {
    * `resumeHook()` must not set it.
    */
   preloadEvents?: true;
-  /**
-   * Observe replay-preload events as their frames are decoded. This is a
-   * client-side delivery hook only; it is never serialized to a backend.
-   */
-  onEvent?: (event: Event) => void;
 }
 
 /**
@@ -1174,11 +1169,6 @@ export interface ListEventsParams {
   /** Omit `limit` to return every remaining event. */
   pagination?: PaginationOptions;
   resolveData?: ResolveData;
-  /**
-   * Observe events as a streaming World decodes them. The callback runs
-   * synchronously and therefore applies response-stream backpressure.
-   */
-  onEvent?: (event: Event) => void;
 }
 
 export interface ListEventsByCorrelationIdParams {

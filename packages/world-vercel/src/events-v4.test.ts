@@ -21,11 +21,12 @@ import {
   getWorkflowRunEventsV4,
   throwForErrorResponse,
 } from './events-v4.js';
-import { encodeFrame, V4_FRAME_CONTENT_TYPE } from './frames.js';
 import {
-  EVENTS_RECYCLE_AFTER_CONSECUTIVE_FAILURES,
-  getEventsDispatcher,
-} from './http-client.js';
+  encodeFrame,
+  InvalidFrameError,
+  V4_FRAME_CONTENT_TYPE,
+} from './frames.js';
+import { getEventsDispatcher } from './http-client.js';
 import { WORKFLOW_SERVER_URL_OVERRIDE } from './utils.js';
 
 const CREATED_AT = '2026-06-10T00:00:00.000Z';
@@ -319,52 +320,6 @@ describe('getWorkflowRunEventsV4 over HTTP', () => {
     agent.assertNoPendingInterceptors();
   });
 
-  it('does not resume past a GET observer failure', async () => {
-    const agent = mockAgent();
-
-    agent
-      .get(ORIGIN)
-      .intercept({
-        path: '/api/v4/runs/wrun_1/events?remoteRefBehavior=resolve&returnAll=true',
-        method: 'GET',
-      })
-      .reply(
-        200,
-        Buffer.concat([
-          encodeFrame(
-            {
-              eventId: 'evnt_1',
-              runId: 'wrun_1',
-              eventType: 'run_started',
-              createdAt: CREATED_AT,
-            },
-            new Uint8Array()
-          ),
-          encodeFrame(
-            { _end: 1, next: 'eid:evnt_1', hasMore: false },
-            new Uint8Array()
-          ),
-        ]),
-        { headers: { 'content-type': V4_FRAME_CONTENT_TYPE } }
-      );
-
-    const observerError = new WorkflowWorldError('observer failed', {
-      code: 'TRANSPORT',
-    });
-    await expect(
-      getWorkflowRunEventsV4(
-        {
-          runId: 'wrun_1',
-          onEvent: () => {
-            throw observerError;
-          },
-        },
-        { token: 'test-token', dispatcher: agent }
-      )
-    ).rejects.toBe(observerError);
-    agent.assertNoPendingInterceptors();
-  });
-
   it.each([
     ['an unknown event type', { eventType: 'future_event', eventData: {} }],
     ['invalid event metadata', { eventType: 'run_created', eventData: {} }],
@@ -392,6 +347,29 @@ describe('getWorkflowRunEventsV4 over HTTP', () => {
         { token: 'test-token', dispatcher: agent }
       )
     ).rejects.toThrow();
+    agent.assertNoPendingInterceptors();
+  });
+
+  it('does not retry invalid CBOR frame metadata as a transport failure', async () => {
+    const agent = mockAgent();
+    const nonObjectCborFrame = new Uint8Array([0, 0, 0, 1, 0x01, 0, 0, 0, 0]);
+
+    agent
+      .get(ORIGIN)
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events?remoteRefBehavior=resolve&returnAll=true',
+        method: 'GET',
+      })
+      .reply(200, nonObjectCborFrame, {
+        headers: { 'content-type': V4_FRAME_CONTENT_TYPE },
+      });
+
+    await expect(
+      getWorkflowRunEventsV4(
+        { runId: 'wrun_1' },
+        { token: 'test-token', dispatcher: agent }
+      )
+    ).rejects.toBeInstanceOf(InvalidFrameError);
     agent.assertNoPendingInterceptors();
   });
 
@@ -614,7 +592,7 @@ describe('getWorkflowRunEventsV4 over HTTP', () => {
     agent.assertNoPendingInterceptors();
   });
 
-  it('rejects an unexpected clean pagination response', async () => {
+  it('preserves a clean event-ceiling response', async () => {
     const agent = mockAgent();
     agent
       .get(ORIGIN)
@@ -631,12 +609,16 @@ describe('getWorkflowRunEventsV4 over HTTP', () => {
         { headers: { 'content-type': V4_FRAME_CONTENT_TYPE } }
       );
 
-    await expect(
-      getWorkflowRunEventsV4(
-        { runId: 'wrun_1' },
-        { token: 'test-token', dispatcher: agent }
-      )
-    ).rejects.toThrow(/returnAll response was unexpectedly paginated/);
+    const result = await getWorkflowRunEventsV4(
+      { runId: 'wrun_1' },
+      { token: 'test-token', dispatcher: agent }
+    );
+
+    expect(result).toEqual({
+      data: [],
+      cursor: 'eid:evnt_1',
+      hasMore: true,
+    });
     agent.assertNoPendingInterceptors();
   });
 });
@@ -1039,7 +1021,6 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
 
   it('continues a truncated run_started stream after its last event', async () => {
     const agent = mockAgent();
-    const observed: string[] = [];
 
     agent
       .get(ORIGIN)
@@ -1099,8 +1080,7 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
 
     const result = await createWorkflowRunStartedEventV4(
       { runId: 'wrun_1', specVersion: 5 },
-      { token: 'test-token', dispatcher: agent },
-      (event) => observed.push(event.eventId)
+      { token: 'test-token', dispatcher: agent }
     );
 
     expect(result.events.map((event) => event.eventId)).toEqual([
@@ -1108,7 +1088,6 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
       'evnt_2',
     ]);
     expect(result.hasMore).toBe(false);
-    expect(observed).toEqual(['evnt_1', 'evnt_2']);
     agent.assertNoPendingInterceptors();
   });
 
@@ -1182,7 +1161,6 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
 
   it('retries a truncated continuation that produced no complete event', async () => {
     const agent = mockAgent();
-    const observed: string[] = [];
     const continuationPath =
       '/api/v4/runs/wrun_1/events?cursor=eid%3Aevnt_1&remoteRefBehavior=resolve&returnAll=true';
 
@@ -1249,20 +1227,18 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
 
     const result = await createWorkflowRunStartedEventV4(
       { runId: 'wrun_1', specVersion: 5 },
-      { token: 'test-token', dispatcher: agent },
-      (event) => observed.push(event.eventId)
+      { token: 'test-token', dispatcher: agent }
     );
 
     expect(result.events.map((event) => event.eventId)).toEqual([
       'evnt_1',
       'evnt_2',
     ]);
-    expect(observed).toEqual(['evnt_1', 'evnt_2']);
     expect(result.cursor).toBe('eid:evnt_2');
     agent.assertNoPendingInterceptors();
   });
 
-  it('continues a graceful partial run_started stream from its sentinel cursor', async () => {
+  it('preserves a clean event-ceiling run_started response', async () => {
     const agent = mockAgent();
 
     agent
@@ -1301,43 +1277,14 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
           },
         }
       );
-    agent
-      .get(ORIGIN)
-      .intercept({
-        path: '/api/v4/runs/wrun_1/events?cursor=eid%3Aevnt_1&remoteRefBehavior=resolve&returnAll=true',
-        method: 'GET',
-      })
-      .reply(
-        200,
-        Buffer.concat([
-          encodeFrame(
-            {
-              eventId: 'evnt_2',
-              runId: 'wrun_1',
-              eventType: 'run_started',
-              createdAt: CREATED_AT,
-            },
-            new Uint8Array()
-          ),
-          encodeFrame(
-            { _end: 1, next: 'eid:evnt_2', hasMore: false },
-            new Uint8Array()
-          ),
-        ]),
-        { headers: { 'content-type': V4_FRAME_CONTENT_TYPE } }
-      );
-
     const result = await createWorkflowRunStartedEventV4(
       { runId: 'wrun_1', specVersion: 5 },
       { token: 'test-token', dispatcher: agent }
     );
 
-    expect(result.events.map((event) => event.eventId)).toEqual([
-      'evnt_1',
-      'evnt_2',
-    ]);
-    expect(result.cursor).toBe('eid:evnt_2');
-    expect(result.hasMore).toBe(false);
+    expect(result.events.map((event) => event.eventId)).toEqual(['evnt_1']);
+    expect(result.cursor).toBe('eid:evnt_1');
+    expect(result.hasMore).toBe(true);
     agent.assertNoPendingInterceptors();
   });
 
@@ -1993,16 +1940,12 @@ describe('v4 transport reports failures to the events recycler', () => {
     // which is what the recycler owns.
     const before = getEventsDispatcher({ token: 'test-token' });
 
-    for (let i = 0; i < EVENTS_RECYCLE_AFTER_CONSECUTIVE_FAILURES; i++) {
-      await expect(
-        getWorkflowRunEventsV4({ runId: 'wrun_1' }, { token: 'test-token' })
-      ).rejects.toThrow();
-      // Still the same pool until the threshold is reached.
-      if (i < EVENTS_RECYCLE_AFTER_CONSECUTIVE_FAILURES - 1) {
-        expect(getEventsDispatcher({ token: 'test-token' })).toBe(before);
-      }
-    }
+    await expect(
+      getWorkflowRunEventsV4({ runId: 'wrun_1' }, { token: 'test-token' })
+    ).rejects.toThrow();
 
+    // The bounded GET retry loop produces enough consecutive body failures to
+    // retire the wedged pool within this one logical read.
     expect(getEventsDispatcher({ token: 'test-token' })).not.toBe(before);
   });
 });

@@ -18,9 +18,47 @@ export interface DecodedFrame {
   body: Uint8Array;
 }
 
+/** The response body stopped before the next complete frame was available. */
+export class IncompleteFrameError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = 'IncompleteFrameError';
+  }
+}
+
+/** The body was complete enough to decode, but did not contain valid frame metadata. */
+export class InvalidFrameError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = 'InvalidFrameError';
+  }
+}
+
 // The protocol consumer validates the event or control-frame shape after the
 // body is available. The byte codec only requires a CBOR object here.
 const CborObjectSchema = z.record(z.string(), z.unknown());
+
+async function readChunk(
+  chunks: AsyncIterator<Uint8Array>
+): Promise<IteratorResult<Uint8Array>> {
+  try {
+    return await chunks.next();
+  } catch (cause) {
+    throw new IncompleteFrameError('decodeFrames: source stream failed', {
+      cause,
+    });
+  }
+}
+
+function decodeFrameMeta(bytes: Uint8Array): Record<string, unknown> {
+  try {
+    return CborObjectSchema.parse(decode(bytes));
+  } catch (cause) {
+    throw new InvalidFrameError('decodeFrames: invalid CBOR metadata', {
+      cause,
+    });
+  }
+}
 
 /** Test/utility: encode a complete frame. Production server uses prefix
  *  + streaming body. */
@@ -71,7 +109,7 @@ export async function* decodeFrames(
     const parts: Uint8Array[] = [buffer];
     let byteLength = buffer.byteLength;
     while (byteLength < needed) {
-      const chunk = await chunks.next();
+      const chunk = await readChunk(chunks);
       if (chunk.done) return false;
       if (chunk.value.byteLength === 0) continue;
       parts.push(chunk.value);
@@ -104,12 +142,12 @@ export async function* decodeFrames(
       take(4);
 
       if (!(await refill(metaLen))) {
-        throw new Error('decodeFrames: truncated meta block');
+        throw new IncompleteFrameError('decodeFrames: truncated meta block');
       }
-      const meta = CborObjectSchema.parse(decode(take(metaLen)));
+      const meta = decodeFrameMeta(take(metaLen));
 
       if (!(await refill(4))) {
-        throw new Error('decodeFrames: truncated body length');
+        throw new IncompleteFrameError('decodeFrames: truncated body length');
       }
       const bodyLen = new DataView(
         buffer.buffer,
@@ -119,7 +157,7 @@ export async function* decodeFrames(
       take(4);
 
       if (bodyLen > 0 && !(await refill(bodyLen))) {
-        throw new Error('decodeFrames: truncated body bytes');
+        throw new IncompleteFrameError('decodeFrames: truncated body bytes');
       }
       // Slice (not subarray) so the yielded body owns its bytes — later
       // reads into the buffer won't overwrite it; bodyLen 0 yields empty.
