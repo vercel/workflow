@@ -3901,7 +3901,7 @@ export async function crossRegionStreamWorkflow(chunkCount: number) {
 // instrumentation.ts registers `registerLifecycleHooks` handlers
 // (see workbench/nextjs-*/instrumentation.ts). The handlers
 // observe these target runs' terminal transitions and report
-// them by resuming the observer workflow's hook — a durable
+// them by resuming the observer workflow's hook, a durable
 // channel that works across serverless instances.
 // ============================================================
 

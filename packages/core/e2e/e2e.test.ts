@@ -3669,7 +3669,7 @@ describe.concurrent('e2e', () => {
   // Lifecycle hooks (`registerLifecycleHooks`) are registered in the Next.js
   // workbenches' instrumentation.ts (see lifecycle-hooks-e2e.ts there). The
   // handlers report each lifecycleHookTarget* run's terminal transition by
-  // resuming the lifecycleHookObserver workflow's hook — a durable channel
+  // resuming the lifecycleHookObserver workflow's hook, a durable channel
   // that works even when the terminal write happens on a different instance
   // than the one serving these HTTP requests.
   describe.skipIf(!isNextJsApp)('lifecycle hooks', () => {

@@ -50,7 +50,7 @@ export interface WorkflowLifecycleHooks {
 /**
  * The registry lives on `globalThis` under a `Symbol.for` key so that every
  * copy of `@workflow/core` in the process (bundled + unbundled, ESM + CJS)
- * shares one list — same pattern as the cross-realm error-class registry in
+ * shares one list, the same pattern as the cross-realm error-class registry in
  * `@workflow/errors` and the World cache in `get-world-lazy.ts`. The property
  * is non-writable/non-configurable so accidental clobbering is loud; the
  * array's contents stay mutable for register/unregister.
@@ -74,7 +74,7 @@ function getRegistry(): WorkflowLifecycleHooks[] {
 /**
  * Registers global workflow lifecycle handlers, invoked by the runtime on
  * the compute that records a run's terminal transition. Useful for
- * centralized reporting — e.g. forwarding failed runs to Sentry — without
+ * centralized reporting (e.g. forwarding failed runs to Sentry) without
  * wrapping every workflow body.
  *
  * Register early in the process lifecycle so handlers exist before the first
@@ -84,8 +84,8 @@ function getRegistry(): WorkflowLifecycleHooks[] {
  * Semantics:
  * - Handlers run on the host (full Node.js), never inside the workflow VM.
  * - Handlers fire only on the invocation that actually wrote the terminal
- *   event. Transitions recorded elsewhere — e.g. a run cancelled from the
- *   CLI or dashboard — do not fire handlers in the app.
+ *   event. Transitions recorded elsewhere (e.g. a run cancelled from the
+ *   CLI or dashboard) do not fire handlers in the app.
  * - Handlers are fire-and-forget: they cannot delay or change the run's
  *   outcome, and a throwing handler is logged and swallowed. On serverless
  *   platforms the invocation is kept alive via `waitUntil`.
@@ -169,13 +169,13 @@ export function dispatchRunCompletedHooks(runId: string): void {
  * (the workflow runs in a separate realm, so `instanceof Error` on it is
  * `false` for handlers) and may carry VM-realm exotics in its cause chain.
  * Round-trip it through the run-error serialization pipeline so handlers
- * receive the same host-realm hydrated shape `run.returnValue` rejects with
- * — real host Error instances with name/message/stack/cause preserved and
- * registered classes (FatalError, custom serde classes) revived with their
- * class identity. No encryption: the bytes never leave this process.
+ * receive the same host-realm hydrated shape `run.returnValue` rejects
+ * with: real host Error instances with name/message/stack/cause preserved
+ * and registered classes (FatalError, custom serde classes) revived with
+ * their class identity. No encryption: the bytes never leave this process.
  *
- * Falls back to the original value when the round-trip fails — a degraded
- * report beats no report.
+ * Falls back to the original value when the round-trip fails, since a
+ * degraded report beats no report.
  */
 async function hydrateForHandlers(
   error: unknown,
