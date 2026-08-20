@@ -66,17 +66,17 @@ pnpm clean:artifacts
 ### Branch-switch hygiene
 
 Build outputs are gitignored, so they survive `git checkout` across branches
-whose layouts disagree (e.g. `main` vs `stable`). The mismatched leftovers —
-stale `packages/*/dist`, generated sources from the other branch, stale
-`.tsbuildinfo`, and a Turbo cache that may have captured polluted outputs —
+whose layouts disagree (e.g. `main` vs `stable`). The mismatched leftovers
+(stale `packages/*/dist`, generated sources from the other branch, stale
+`.tsbuildinfo`, and a Turbo cache that may have captured polluted outputs)
 wedge the repo in ways that look like unrelated breakage: `pnpm install`
 hanging or erroring in workbench `prepare` scripts (`Could not resolve
 "workflow/internal/private"`, SWC transform errors on valid workflow code),
 `tsc` failing on generated files the branch doesn't have, or cleaned files
 reappearing on every build (Turbo restoring a polluted cache entry).
 
-After switching between divergent branches — or whenever the workspace shows
-any of those symptoms — run:
+After switching between divergent branches, or whenever the workspace shows
+any of those symptoms, run:
 
 ```bash
 pnpm clean:artifacts   # add --dry-run to preview, --all to also drop node_modules + Cargo target/
@@ -84,10 +84,11 @@ pnpm install
 pnpm build
 ```
 
-It is a thin wrapper around `git clean -xdf` with a small exclusion list
-(`node_modules`, `.env*`/`*.local`, `.vercel`, Cargo `target/`, local agent
-state), so it works even when the workspace is too broken to run turbo or
-pnpm scripts.
+The script removes only files git ignores (candidates come from `git
+ls-files -o -i`, filtered through a keep-list that preserves `node_modules`,
+`.env*`/`*.local`, `.vercel`, Cargo `target/`, and local agent state), so
+untracked work-in-progress files are never touched, and it works even when
+the workspace is too broken to run turbo or pnpm scripts.
 
 ### Core Package Testing
 
