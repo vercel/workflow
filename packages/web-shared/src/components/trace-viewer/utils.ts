@@ -606,8 +606,11 @@ export function computeSpanSegments(span: Span): Segment[] {
 // Span markers — point-in-time events rendered as ticks on top of a bar
 // ---------------------------------------------------------------------------
 
+export type SpanMarkerKind = 'hook_received' | 'attr_set';
+
 export interface SpanMarker {
   timeMs: number;
+  kind: SpanMarkerKind;
 }
 
 // `hook_received` = a resumption; `attr_set` = attributes written mid-span.
@@ -616,6 +619,7 @@ const MARKER_EVENT_NAMES = ['hook_received', 'attr_set'];
 export function computeSpanMarkers(span: Span): SpanMarker[] {
   return sortedEventMarks(span.events, MARKER_EVENT_NAMES).map((mark) => ({
     timeMs: mark.time,
+    kind: mark.type as SpanMarkerKind,
   }));
 }
 
