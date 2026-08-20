@@ -3,8 +3,12 @@
 import { ArrowLeft, ArrowRight } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { cn } from '../../../lib/cn';
-import { TimestampTooltip } from '../../ui/timestamp-tooltip';
-import type { SpanMarker } from '../utils';
+import { Tooltip, TooltipContent, TooltipTrigger } from '../../ui/tooltip';
+import {
+  formatSpanMarkerTooltip,
+  type SpanMarker,
+  type SpanMarkerKind,
+} from '../utils';
 
 // ---------------------------------------------------------------------------
 // Marker projection
@@ -14,6 +18,7 @@ export interface VisibleMarker {
   leftPct: number;
   /** Absolute (epoch) timestamp in ms — for the tooltip. */
   timeMs: number;
+  kind: SpanMarkerKind;
 }
 
 /**
@@ -37,6 +42,7 @@ export function projectMarkers(
       {
         leftPct: ((m.timeMs - visibleStartMs) / visibleDurationMs) * 100,
         timeMs: m.timeMs,
+        kind: m.kind,
       },
     ];
   });
@@ -82,11 +88,9 @@ function MarkerTick({ className }: { className?: string }): ReactNode {
 /**
  * Point-in-time markers overlaid on a bar — one vertical tick per event (hook
  * resumptions and attribute writes), centered on the bar. Each tick sits inside
- * a larger hit target and, on hover, shows the shared `TimestampTooltip` card
- * (the same light Geist card used for every other timestamp in the app, e.g. the
- * attribute panel and event list) so the time reads consistently with the rest
- * of the product. The position is clamped a hair inside the bar so an edge
- * marker never jams the rounded corner.
+ * a larger hit target and, on hover, shows a compact UTC tooltip naming the
+ * event (`Hook received` / `Attribute set`). The position is clamped a hair
+ * inside the bar so an edge marker never jams the rounded corner.
  */
 export function MarkerLayer({
   markers,
@@ -95,19 +99,28 @@ export function MarkerLayer({
 }): ReactNode {
   return (
     <>
-      {markers.map((m) => (
-        <span
-          key={m.timeMs}
-          className="pointer-events-auto absolute top-0 bottom-0 z-10 flex w-8 -translate-x-1/2 items-center justify-center"
-          style={{ left: `clamp(8px, ${m.leftPct}%, calc(100% - 8px))` }}
-        >
-          <TimestampTooltip date={m.timeMs}>
-            <span className="flex h-6 w-8 items-center justify-center">
-              <MarkerTick className="h-3" />
-            </span>
-          </TimestampTooltip>
-        </span>
-      ))}
+      {markers.map((m, index) => {
+        const label = formatSpanMarkerTooltip(m.kind, m.timeMs);
+        return (
+          <span
+            key={`${m.kind}-${m.timeMs}-${index}`}
+            className="pointer-events-auto absolute top-0 bottom-0 z-10 flex w-8 -translate-x-1/2 items-center justify-center"
+            style={{ left: `clamp(8px, ${m.leftPct}%, calc(100% - 8px))` }}
+          >
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span
+                  aria-label={label}
+                  className="flex h-6 w-8 items-center justify-center"
+                >
+                  <MarkerTick className="h-3" />
+                </span>
+              </TooltipTrigger>
+              <TooltipContent side="top">{label}</TooltipContent>
+            </Tooltip>
+          </span>
+        );
+      })}
     </>
   );
 }

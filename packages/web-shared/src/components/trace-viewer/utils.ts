@@ -2,6 +2,7 @@ import type { Span, SpanEvent } from './types';
 import {
   formatDuration,
   formatDurationPrecise,
+  formatUtcDateTime,
   getHighResInMs,
 } from './util/timing';
 
@@ -358,7 +359,7 @@ interface EventMark {
 
 function sortedEventMarks(
   events: SpanEvent[],
-  relevantNames: string[]
+  relevantNames: readonly string[]
 ): EventMark[] {
   return events
     .filter((e) => relevantNames.includes(e.name))
@@ -606,17 +607,49 @@ export function computeSpanSegments(span: Span): Segment[] {
 // Span markers — point-in-time events rendered as ticks on top of a bar
 // ---------------------------------------------------------------------------
 
+export type SpanMarkerKind = 'hook_received' | 'attr_set';
+
 export interface SpanMarker {
   timeMs: number;
+  kind: SpanMarkerKind;
 }
 
 // `hook_received` = a resumption; `attr_set` = attributes written mid-span.
-const MARKER_EVENT_NAMES = ['hook_received', 'attr_set'];
+const MARKER_EVENT_NAMES: readonly SpanMarkerKind[] = [
+  'hook_received',
+  'attr_set',
+];
+
+function isSpanMarkerKind(name: string): name is SpanMarkerKind {
+  return (MARKER_EVENT_NAMES as readonly string[]).includes(name);
+}
 
 export function computeSpanMarkers(span: Span): SpanMarker[] {
-  return sortedEventMarks(span.events, MARKER_EVENT_NAMES).map((mark) => ({
-    timeMs: mark.time,
-  }));
+  return sortedEventMarks(span.events, MARKER_EVENT_NAMES).flatMap((mark) =>
+    isSpanMarkerKind(mark.type)
+      ? [{ timeMs: mark.time, kind: mark.type }]
+      : []
+  );
+}
+
+/**
+ * One-line tooltip for a span marker, e.g. `Hook received [UTC] August 20, 2026 09:31:38 AM`.
+ */
+export function formatSpanMarkerTooltip(
+  kind: SpanMarkerKind,
+  timeMs: number
+): string {
+  const time = formatUtcDateTime(timeMs);
+  switch (kind) {
+    case 'hook_received':
+      return `Hook received [UTC] ${time}`;
+    case 'attr_set':
+      return `Attribute set [UTC] ${time}`;
+    default: {
+      const _exhaustive: never = kind;
+      return _exhaustive;
+    }
+  }
 }
 
 export interface OffscreenSide {

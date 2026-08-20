@@ -7,6 +7,7 @@ import {
   computeSpanMarkers,
   computeSpanSegments,
   computeTimeMarkers,
+  formatSpanMarkerTooltip,
   getResourceClassNames,
 } from './utils';
 
@@ -145,7 +146,7 @@ describe('computeSpanMarkers', () => {
     expect(markers.map((m) => m.timeMs)).toEqual([1_000, 50_000, 99_000]);
   });
 
-  it('merges hook_received and attr_set events, sorted by time', () => {
+  it('merges hook_received and attr_set events, sorted by time, with kind', () => {
     const span = hookSpan({
       startMs: 0,
       endMs: 100_000,
@@ -153,8 +154,10 @@ describe('computeSpanMarkers', () => {
       attrSetMs: [10_000, 70_000],
     });
 
-    expect(computeSpanMarkers(span).map((m) => m.timeMs)).toEqual([
-      10_000, 50_000, 70_000,
+    expect(computeSpanMarkers(span)).toEqual([
+      { timeMs: 10_000, kind: 'attr_set' },
+      { timeMs: 50_000, kind: 'hook_received' },
+      { timeMs: 70_000, kind: 'attr_set' },
     ]);
   });
 
@@ -164,8 +167,33 @@ describe('computeSpanMarkers', () => {
   });
 });
 
+describe('formatSpanMarkerTooltip', () => {
+  const timeMs = Date.UTC(2026, 7, 20, 9, 31, 38);
+
+  it('labels hook resumptions with the UTC timestamp', () => {
+    expect(formatSpanMarkerTooltip('hook_received', timeMs)).toBe(
+      'Hook received [UTC] August 20, 2026 09:31:38 AM'
+    );
+  });
+
+  it('labels attribute writes with the UTC timestamp', () => {
+    expect(formatSpanMarkerTooltip('attr_set', timeMs)).toBe(
+      'Attribute set [UTC] August 20, 2026 09:31:38 AM'
+    );
+  });
+
+  it('uses 12-hour UTC hours at midnight and noon', () => {
+    expect(
+      formatSpanMarkerTooltip('hook_received', Date.UTC(2026, 0, 1, 0, 0, 0))
+    ).toBe('Hook received [UTC] January 1, 2026 12:00:00 AM');
+    expect(
+      formatSpanMarkerTooltip('attr_set', Date.UTC(2026, 0, 1, 12, 5, 6))
+    ).toBe('Attribute set [UTC] January 1, 2026 12:05:06 PM');
+  });
+});
+
 describe('computeOffscreenMarkers', () => {
-  const mk = (timeMs: number) => ({ timeMs });
+  const mk = (timeMs: number) => ({ timeMs, kind: 'hook_received' as const });
 
   it('partitions markers by side with the nearest one per side', () => {
     const markers = [mk(5), mk(8), mk(50), mk(92), mk(99)];
