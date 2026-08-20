@@ -804,6 +804,7 @@ describe('v4 transport uses global fetch (observability)', () => {
     expect(fetchSpy).toHaveBeenCalledTimes(1);
     const [calledUrl, calledInit] = fetchSpy.mock.calls[0];
     expect(String(calledUrl)).toContain('/api/v4/runs/wrun_1/events');
+    expect(calledInit?.signal).toBeUndefined();
     agent.assertNoPendingInterceptors();
 
     // Cache-busting header must be set so Next.js fetch memoization / Data
@@ -811,6 +812,53 @@ describe('v4 transport uses global fetch (observability)', () => {
     // See https://github.com/vercel/workflow/issues/618.
     const sentHeaders = new Headers(calledInit?.headers as HeadersInit);
     expect(sentHeaders.get('x-request-time')).toBeTruthy();
+  });
+
+  it('keeps the normal request deadline on a materialized POST', async () => {
+    const agent = mockAgent();
+    agent
+      .get(ORIGIN)
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events/step_completed',
+        method: 'POST',
+      })
+      .reply(
+        200,
+        createEventBody(
+          {
+            eventType: 'step_completed',
+            specVersion: 2,
+            correlationId: 'step_1',
+            eventData: { result: new Uint8Array() },
+          },
+          {
+            step: {
+              runId: 'wrun_1',
+              stepId: 'step_1',
+              stepName: 'step',
+              status: 'completed',
+              attempt: 1,
+              createdAt: CREATED_AT,
+              updatedAt: CREATED_AT,
+            },
+          }
+        )
+      );
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+
+    await createWorkflowRunEventV4(
+      {
+        runId: 'wrun_1',
+        eventType: 'step_completed',
+        specVersion: 2,
+        correlationId: 'step_1',
+      },
+      { token: 'test-token', dispatcher: agent }
+    );
+
+    const [, calledInit] = fetchSpy.mock.calls[0];
+    expect(calledInit?.signal).toBeInstanceOf(AbortSignal);
+    agent.assertNoPendingInterceptors();
   });
 });
 
@@ -1129,6 +1177,88 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
     ]);
     expect(result.cursor).toBe('eid:evnt_2');
     expect(result.hasMore).toBe(false);
+    agent.assertNoPendingInterceptors();
+  });
+
+  it('retries a truncated continuation that produced no complete event', async () => {
+    const agent = mockAgent();
+    const observed: string[] = [];
+    const continuationPath =
+      '/api/v4/runs/wrun_1/events?cursor=eid%3Aevnt_1&remoteRefBehavior=resolve&returnAll=true';
+
+    agent
+      .get(ORIGIN)
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events/run_started',
+        method: 'POST',
+        headers: { accept: V4_FRAME_CONTENT_TYPE },
+      })
+      .reply(
+        200,
+        encodeFrame(
+          {
+            eventId: 'evnt_1',
+            runId: 'wrun_1',
+            eventType: 'run_created',
+            createdAt: CREATED_AT,
+            eventData: {
+              deploymentId: 'dpl_1',
+              workflowName: 'workflow',
+              input: null,
+            },
+          },
+          new Uint8Array()
+        ),
+        {
+          headers: {
+            'content-type': V4_FRAME_CONTENT_TYPE,
+            'x-wf-max-events': '10000',
+          },
+        }
+      );
+
+    const runStartedFrame = encodeFrame(
+      {
+        eventId: 'evnt_2',
+        runId: 'wrun_1',
+        eventType: 'run_started',
+        createdAt: CREATED_AT,
+      },
+      new Uint8Array()
+    );
+    agent
+      .get(ORIGIN)
+      .intercept({ path: continuationPath, method: 'GET' })
+      .reply(200, runStartedFrame.subarray(0, 4), {
+        headers: { 'content-type': V4_FRAME_CONTENT_TYPE },
+      });
+    agent
+      .get(ORIGIN)
+      .intercept({ path: continuationPath, method: 'GET' })
+      .reply(
+        200,
+        Buffer.concat([
+          runStartedFrame,
+          encodeFrame(
+            { _end: 1, next: 'eid:evnt_2', hasMore: false },
+            new Uint8Array()
+          ),
+        ]),
+        { headers: { 'content-type': V4_FRAME_CONTENT_TYPE } }
+      );
+
+    const result = await createWorkflowRunStartedEventV4(
+      { runId: 'wrun_1', specVersion: 5 },
+      { token: 'test-token', dispatcher: agent },
+      (event) => observed.push(event.eventId)
+    );
+
+    expect(result.events.map((event) => event.eventId)).toEqual([
+      'evnt_1',
+      'evnt_2',
+    ]);
+    expect(observed).toEqual(['evnt_1', 'evnt_2']);
+    expect(result.cursor).toBe('eid:evnt_2');
     agent.assertNoPendingInterceptors();
   });
 

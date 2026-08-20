@@ -96,9 +96,9 @@ import { isWsEventsTransportEnabled } from './ws-transport-enabled.js';
  * stays on HTTP/1.1 because H2 deadlocks the queue's webhook respondWith
  * mechanism — see http-client.ts.
  *
- * No per-request timeout: a LIST response streams the full event-log page, which
- * for a large run can legitimately take a while to drain — a whole-request
- * deadline would abort it mid-stream.
+ * Event streams opt out of the whole-request timeout because a large replay
+ * page can legitimately take a while to drain. Materialized single and batch
+ * writes keep the normal request deadline.
  */
 interface V4Response {
   response: Response;
@@ -129,7 +129,7 @@ async function fetchV4(
     // until the compute instance is recycled — see noteEventsTransportOutcome.
     onTransportOutcome: reportTransportOutcome,
     deferTransportSuccess: transportSuccess === 'body',
-    timeoutMs: null,
+    timeoutMs: transportSuccess === 'body' ? null : undefined,
     logLabel: opName,
     // Read the body as bytes, not text: a CBOR error body (the fence 412
     // carries event payloads back) does not survive a UTF-8 decode.
@@ -1561,12 +1561,11 @@ export async function getWorkflowRunEventsV4(
       if (
         partialRetries === MAX_PARTIAL_EVENT_STREAM_RETRIES ||
         params.pagination?.limit !== undefined ||
-        !lastEvent ||
-        `eid:${lastEvent.eventId}` === cursor
+        (!lastEvent && cursor === null)
       ) {
         throw result.error;
       }
-      cursor = `eid:${lastEvent.eventId}`;
+      if (lastEvent) cursor = `eid:${lastEvent.eventId}`;
       continue;
     }
 
