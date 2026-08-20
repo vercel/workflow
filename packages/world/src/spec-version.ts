@@ -99,10 +99,10 @@ export const SPEC_VERSION_SUPPORTS_SEALED_LOG = 7 as SpecVersion;
  * run's identity scheme from what is stored rather than from this constant.
  */
 export const SPEC_VERSION_CURRENT =
-  SPEC_VERSION_SUPPORTS_SLOT_IDENTITY as SpecVersion;
+  SPEC_VERSION_SUPPORTS_SEALED_LOG as SpecVersion;
 
 /**
- * Environment variable that opts new runs INTO the sealed log.
+ * Environment variable that opts new runs OUT of the sealed log.
  *
  * Read per `createWorld()` call rather than at module load, so a test or a
  * single process can create worlds in both modes.
@@ -110,34 +110,30 @@ export const SPEC_VERSION_CURRENT =
 export const SEALED_LOG_ENV_VAR = 'WORKFLOW_SEALED_LOG';
 
 /**
- * The spec version a World should stamp on the runs it creates.
+ * The spec version a World should stamp on the runs it creates: the sealed log
+ * unless {@link SEALED_LOG_ENV_VAR} switches it off, in which case the
+ * slot-identity version it supersedes.
  *
- * Sealed-log runs are opt-in for now, so this answers
- * {@link SPEC_VERSION_CURRENT} unless {@link SEALED_LOG_ENV_VAR} turns it on.
  * Same shape, and the same reasoning, as the flag slot identity itself shipped
- * behind before going unconditional.
+ * behind before going unconditional: default on, with one env var to put a
+ * deployment back on the previous scheme without a release.
  *
- * Opt-in rather than opt-out because stamping a version is not a local
- * decision: it changes what every OTHER reader of the run has to understand.
- * A spec-7 log may contain `noop` rows, and a reader that does not know to
- * skip them cannot replay it — which includes readers that are not this
- * package and do not ship on its release train. The Python runtime pins its
- * own accepted range and rejects 7 outright today, so a default-on bump takes
- * every Python workflow down the moment this is published, with no way back
- * except another release. Default-off makes the rollout a deployment setting:
- * turn it on where the backend seals and every reader of those runs
- * understands noops, leave it off everywhere else.
+ * The fallback is a real fallback, not a formality. Turning this off has to
+ * leave a World the runtime still admits, which is why
+ * `assertWorldSupportsRuntimeProtocol` floors at the slot-identity version
+ * rather than at {@link SPEC_VERSION_CURRENT} — a kill switch that made the
+ * runtime reject its own World would be no kill switch at all.
  *
  * Every World reads runs up to {@link SPEC_VERSION_MAX_SUPPORTED} whatever
- * this returns, so turning the flag off here does not make runs another
- * process created unreadable.
+ * this returns, so switching it off here does not make runs another process
+ * created unreadable.
  */
 export function mintedSpecVersion(
   env: Record<string, string | undefined> = process.env
 ): SpecVersion {
-  return envFlag(SEALED_LOG_ENV_VAR, false, env)
-    ? SPEC_VERSION_SUPPORTS_SEALED_LOG
-    : SPEC_VERSION_CURRENT;
+  return envFlag(SEALED_LOG_ENV_VAR, true, env)
+    ? SPEC_VERSION_CURRENT
+    : SPEC_VERSION_SUPPORTS_SLOT_IDENTITY;
 }
 
 /**

@@ -14,42 +14,40 @@ import {
 } from './spec-version.js';
 
 describe('spec version constants', () => {
-  it('the floor a World stamps is still the slot-identity version', () => {
+  it('current spec version is the sealed-log version', () => {
     expect(SPEC_VERSION_SUPPORTS_SLOT_IDENTITY).toBe(6);
     expect(SPEC_VERSION_SUPPORTS_SEALED_LOG).toBe(7);
-    // Sealed-log runs are opt-in, so the floor has NOT moved to 7: the version
-    // a World actually stamps comes from `mintedSpecVersion`.
-    expect(SPEC_VERSION_CURRENT).toBe(SPEC_VERSION_SUPPORTS_SLOT_IDENTITY);
+    expect(SPEC_VERSION_CURRENT).toBe(SPEC_VERSION_SUPPORTS_SEALED_LOG);
   });
 
   describe('mintedSpecVersion', () => {
-    it('stamps the slot-identity floor by default', () => {
-      // Default-off matters beyond this package: a spec-7 log may hold `noop`
-      // rows, and every reader of those runs has to know to skip them --
-      // including readers that do not ship on this release train.
+    it('stamps the sealed-log version by default', () => {
       expect(mintedSpecVersion({})).toBe(SPEC_VERSION_CURRENT);
+      expect(mintedSpecVersion({})).toBe(SPEC_VERSION_SUPPORTS_SEALED_LOG);
     });
 
-    it('stamps the sealed-log version when opted in', () => {
-      for (const on of ['1', 'true', 'TRUE']) {
-        expect(mintedSpecVersion({ [SEALED_LOG_ENV_VAR]: on })).toBe(
-          SPEC_VERSION_SUPPORTS_SEALED_LOG
+    it('falls back to slot identity when switched off', () => {
+      for (const off of ['0', 'false']) {
+        expect(mintedSpecVersion({ [SEALED_LOG_ENV_VAR]: off })).toBe(
+          SPEC_VERSION_SUPPORTS_SLOT_IDENTITY
         );
       }
     });
 
-    it('treats an explicit off and a malformed value as off', () => {
-      for (const off of ['0', 'false', '', 'yes-please']) {
-        expect(mintedSpecVersion({ [SEALED_LOG_ENV_VAR]: off })).toBe(
+    it('stays on by default for an unset or malformed value', () => {
+      // A flag is an escape hatch, not a hard requirement: a typo must not
+      // silently move a deployment onto the older identity scheme.
+      for (const raw of ['', '1', 'true', 'yes-please']) {
+        expect(mintedSpecVersion({ [SEALED_LOG_ENV_VAR]: raw })).toBe(
           SPEC_VERSION_CURRENT
         );
       }
     });
 
     it('never stamps a version this build cannot read back', () => {
-      expect(
-        mintedSpecVersion({ [SEALED_LOG_ENV_VAR]: '1' })
-      ).toBeLessThanOrEqual(SPEC_VERSION_MAX_SUPPORTED);
+      expect(mintedSpecVersion({})).toBeLessThanOrEqual(
+        SPEC_VERSION_MAX_SUPPORTED
+      );
     });
   });
 

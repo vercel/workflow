@@ -5,6 +5,7 @@ import {
   SPEC_VERSION_MAX_SUPPORTED,
   SPEC_VERSION_SUPPORTS_ATTRIBUTES,
   SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
+  SPEC_VERSION_SUPPORTS_SLOT_IDENTITY,
 } from '@workflow/world';
 import {
   afterEach,
@@ -200,11 +201,39 @@ describe('start', () => {
       expect(mockQueue).not.toHaveBeenCalled();
     });
 
-    it('accepts a world that opts into a spec version above the default', async () => {
-      // `world-vercel` declares the sealed-log version when the mint flag is
-      // on, so its new runs are created above the floor. An equality check
-      // against the default would make the runtime refuse the adapter shipped
-      // alongside it, and the failure surfaces only in e2e against that World.
+    it('accepts a world switched back to the pre-sealed-log version', async () => {
+      // What `WORKFLOW_SEALED_LOG=0` produces: `mintedSpecVersion()` answers
+      // the slot-identity version, so the World declares one BELOW the version
+      // this runtime stamps by default. The runtime has to admit it, or the
+      // kill switch would reject the very World it selects and a rollback
+      // would surface as a startup failure instead.
+      const rolledBack = Object.assign(() => Promise.resolve('result'), {
+        workflowId: 'test-workflow',
+      });
+
+      setWorld({
+        specVersion: SPEC_VERSION_SUPPORTS_SLOT_IDENTITY,
+        getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
+        events: { create: mockEventsCreate },
+        queue: mockQueue,
+      } as any);
+
+      await start(rolledBack, []);
+
+      expect(mockEventsCreate).toHaveBeenCalledWith(
+        expect.stringMatching(/^wrun_/),
+        expect.objectContaining({
+          eventType: 'run_created',
+          specVersion: SPEC_VERSION_SUPPORTS_SLOT_IDENTITY,
+        }),
+        expect.anything()
+      );
+    });
+
+    it('accepts a world that declares the ceiling version', async () => {
+      // The default and the ceiling coincide at the sealed log, so what this
+      // pins is that a World declaring the ceiling is admitted and its own
+      // declaration is what gets stamped, not this runtime's default.
       const validWorkflow = Object.assign(() => Promise.resolve('result'), {
         workflowId: 'test-workflow',
       });
