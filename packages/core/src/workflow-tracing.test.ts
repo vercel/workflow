@@ -123,6 +123,22 @@ describe('fresh replay tracing', () => {
     });
   });
 
+  it('ends the replay span when workflow code throws null', async () => {
+    const nullThrowingWorkflow = `
+async function workflow() { throw null; }
+globalThis.__private_workflows = new Map([['workflow', workflow]]);
+`;
+
+    await expect(
+      runWorkflow(nullThrowingWorkflow, await makeRun(), [], undefined)
+    ).rejects.toBeNull();
+
+    expect(spans('workflow.replay.execute')[0]?.status).toEqual({
+      code: SpanStatusCode.ERROR,
+      message: 'null',
+    });
+  });
+
   it('parents retained workflow continuations to the retained run', async () => {
     const run = await makeRun();
     const code = `const step = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step");

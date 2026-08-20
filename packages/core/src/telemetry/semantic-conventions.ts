@@ -82,7 +82,7 @@ export const WorkflowExecutionMode = SemanticConvention<'replay' | 'retained'>(
   'workflow.execution.mode'
 );
 
-/** Whether every script needed for workflow bundle evaluation was cached. */
+/** Whether the compiled application workflow bundle was cached. */
 export const WorkflowBundleCompileCacheHit = SemanticConvention<boolean>(
   'workflow.bundle.compile.cache_hit'
 );
