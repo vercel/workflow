@@ -246,6 +246,48 @@ export async function stepWinsRaceWorkflow() {
 
 //////////////////////////////////////////////////////////
 
+// Takes an OBJECT argument: under VM retention (WORKFLOW_RETAINED_VM), a
+// boundary whose new step has a non-primitive input falls back to cold
+// replay instead of resuming the retained VM.
+async function unwrapValue(box: { value: number }) {
+  'use step';
+  return box.value;
+}
+
+/**
+ * Interleaves every retention mode the runtime can hit: retained boundaries
+ * (primitive step args), demoted boundaries (object args), wait boundaries
+ * (sleep, step-vs-sleep race), and a hook awaited in parallel with a step.
+ * The chained arithmetic makes any dropped, duplicated, or misordered
+ * boundary visible in the final output.
+ */
+export async function retainedInterleavingWorkflow(token: string) {
+  'use workflow';
+  // Retained: sequential primitive-arg step.
+  const a = await add(1, 2); // 3
+  // Demoted: object argument.
+  const b = await unwrapValue({ value: a }); // 3
+  // Retained: parallel all-primitive batch.
+  const [c, d] = await Promise.all([add(b, 10), add(b, 20)]); // 13, 23
+  // Demoted: mixed parallel batch (one object arg, one primitive).
+  const [e, f] = await Promise.all([unwrapValue({ value: c }), add(d, 1)]); // 13, 24
+  // Wait boundary: step races (and beats) a sleep.
+  const winner = await Promise.race([
+    delayMsStep(100, 'step'),
+    sleep('30s').then(() => 'sleep'),
+  ]); // 'step'
+  // Wait boundary: plain sleep.
+  await sleep('1s');
+  // Hook boundary: hook payload awaited in parallel with a primitive step.
+  using hook = createHook<{ delta: number }>({ token });
+  const [payload, g] = await Promise.all([hook, add(e + f, 100)]); // _, 137
+  // Retained again after all the demotions.
+  const h = await add(g, payload.delta); // 137 + delta
+  return { a, b, c, d, e, f, winner, g, h };
+}
+
+//////////////////////////////////////////////////////////
+
 async function nullByteStep() {
   'use step';
   return 'null byte \0';
@@ -745,6 +787,32 @@ export async function hookGetConflictThenStepParallelWorkflow(
 // These mirror the patterns documented in
 // docs/content/docs/*/foundations/idempotency.mdx.
 //////////////////////////////////////////////////////////
+
+/**
+ * Keeps its token reserved after this run ends. The Hook is intentionally left
+ * undisposed so duplicates continue to receive a conflict during retention.
+ */
+export async function hookMinRetentionWorkflow(
+  token: string,
+  minRetentionMs: number
+) {
+  'use workflow';
+
+  const hook = createHook({
+    token,
+    experimental_minRetention: minRetentionMs,
+  });
+  const conflict = await hook.getConflict();
+  if (conflict) {
+    return {
+      role: 'duplicate' as const,
+      conflictRunId: conflict.runId,
+      conflictStatus: await conflict.status,
+    };
+  }
+
+  return { role: 'owner' as const };
+}
 
 /**
  * Claim-only run mutex: the hook is used purely for run idempotency —
@@ -1405,6 +1473,91 @@ export async function errorStepThrowNonErrorValue() {
   }
 }
 
+// ---
+
+/**
+ * A class instance with no registered serde model cannot cross the
+ * workflow/step boundary — the serializer rejects non-POJO instances.
+ * Used by the serialization-error tests below.
+ */
+class UnserializableValue {
+  secret = 'not-serializable';
+}
+
+async function acceptAnyValue(value: unknown) {
+  'use step';
+  return { received: value !== undefined };
+}
+
+/**
+ * Test: step ARGUMENTS that cannot be serialized. The suspension handler
+ * fails the step (step_created + step_failed) instead of failing the run
+ * from the outside, so a try/catch around the step call observes the
+ * SerializationError — same shape as catching a step-body failure.
+ */
+export async function serializationErrorStepArgsCaught() {
+  'use workflow';
+  try {
+    await acceptAnyValue(new UnserializableValue());
+    return { caught: false } as any;
+  } catch (err: any) {
+    return {
+      caught: true,
+      name: err?.name,
+      messageIncludesStepArguments:
+        typeof err?.message === 'string' &&
+        err.message.includes('Failed to serialize step arguments'),
+    };
+  }
+}
+
+/**
+ * Test: uncaught step-argument serialization failure fails the run as a
+ * fatal USER_ERROR immediately — no queue-redelivery retry loop.
+ */
+export async function serializationErrorStepArgsUncaught() {
+  'use workflow';
+  // Don't catch — the SerializationError propagates and fails the run.
+  await acceptAnyValue(new UnserializableValue());
+  return { caught: false };
+}
+
+async function returnUnserializableValue() {
+  'use step';
+  return new UnserializableValue();
+}
+
+/**
+ * Test: step RETURN VALUE that cannot be serialized. The step executor
+ * treats the SerializationError as fatal (skipping the retry loop) and
+ * writes step_failed, so the workflow can catch it.
+ */
+export async function serializationErrorStepReturnCaught() {
+  'use workflow';
+  try {
+    await returnUnserializableValue();
+    return { caught: false } as any;
+  } catch (err: any) {
+    return {
+      caught: true,
+      name: err?.name,
+      messageIncludesReturnValue:
+        typeof err?.message === 'string' &&
+        err.message.includes('Failed to serialize step return value'),
+    };
+  }
+}
+
+/**
+ * Test: uncaught step-return-value serialization failure fails the run as
+ * a fatal USER_ERROR.
+ */
+export async function serializationErrorStepReturnUncaught() {
+  'use workflow';
+  await returnUnserializableValue();
+  return { caught: false };
+}
+
 // ------------------------------------------------------------
 // SECTION 4: NOT REGISTERED ERRORS
 // Tests for step/workflow not registered in the current deployment
@@ -2020,79 +2173,90 @@ async function abortFromStep(
 }
 
 /**
- * Step that uses fetch with an AbortSignal.
- * Uses a URL that intentionally delays, so the abort cancels it.
+ * Step that uses fetch with an AbortSignal against a slow endpoint the step
+ * hosts itself: an in-process `node:http` server on a loopback ephemeral
+ * port that holds each response open for ~30s before answering 200.
  *
- * Accepts a list of URLs and tries them in order, falling back to the
- * next on 5xx (or non-AbortError network failure) so a single bad upstream
- * doesn't flake the abort-fetch tests. Empirically, httpbin.org returns
- * 502 from GH Actions runners often enough to dominate CI flakiness;
- * pairing it with a second slow endpoint gives both belt and suspenders.
+ * Earlier versions fetched external slow endpoints (postman-echo, httpbin
+ * `/delay/10`, with fallback from one to the other), and those upstreams'
+ * 5xxs and early returns from GH Actions runners were a recurring e2e flake
+ * — the abort-fetch tests were measuring the public internet instead of
+ * abort propagation. A loopback server keeps the subject (cancelling a real
+ * in-flight HTTP fetch) while removing the external dependency entirely; a
+ * per-workbench `/api/delay` route was rejected earlier because it would
+ * exist only on whichever workbench it was added to.
  *
- * Reports `status`, `elapsedMs`, and the `url` that resolved so that when
- * the abort-fetch tests do fail, the assertion message shows exactly what
- * the upstream(s) returned instead of leaving us guessing why the race
- * winner was `fetch` instead of `timeout`.
+ * The 30s hold is load-bearing for regression detection: if abort
+ * propagation breaks, fetch runs to natural completion (`ok: true`,
+ * `aborted: false`) within the tests' 60s budgets and the assertions fail
+ * for the right reason, rather than hanging the suite.
+ *
+ * Reports `status` and `elapsedMs` so that when the abort-fetch tests do
+ * fail, the assertion message shows how the request actually ended instead
+ * of leaving us guessing why the race winner was `fetch` instead of
+ * `timeout`.
  */
-async function fetchWithSignal(
-  urls: readonly string[],
-  signal: AbortSignal
-): Promise<{
+async function fetchWithSignal(signal: AbortSignal): Promise<{
   ok: boolean;
   aborted: boolean;
   status?: number;
-  url?: string;
+  error?: string;
   elapsedMs: number;
-  attempts: { url: string; status?: number; error?: string }[];
 }> {
   'use step';
+  const { createServer } = await import('node:http');
   const startedAt = Date.now();
-  const attempts: { url: string; status?: number; error?: string }[] = [];
-  for (const url of urls) {
-    try {
-      const response = await globalThis.fetch(url, { signal });
-      attempts.push({ url, status: response.status });
-      if (response.ok) {
-        return {
-          ok: true,
-          aborted: false,
-          status: response.status,
-          url,
-          elapsedMs: Date.now() - startedAt,
-          attempts,
-        };
-      }
-      // Non-2xx — fall through and try the next URL.
-    } catch (err: any) {
-      if (err.name === 'AbortError') {
-        attempts.push({ url, error: 'AbortError' });
-        return {
-          ok: false,
-          aborted: true,
-          elapsedMs: Date.now() - startedAt,
-          attempts,
-        };
-      }
-      attempts.push({ url, error: err?.message ?? String(err) });
-      // Network error — fall through and try the next URL.
-    }
-  }
-  return {
-    ok: false,
-    aborted: false,
-    elapsedMs: Date.now() - startedAt,
-    attempts,
-  };
-}
 
-// Slow endpoints used by the abort-fetch e2e tests. Tried in order; postman-
-// echo first because httpbin.org has historically returned 502s from GH
-// Actions. Both cap at /delay/10 in practice, which is comfortably longer
-// than the 2s race threshold these tests use.
-const SLOW_FETCH_URLS = [
-  'https://postman-echo.com/delay/10',
-  'https://httpbin.org/delay/10',
-] as const;
+  const timers: NodeJS.Timeout[] = [];
+  const server = createServer((_req, res) => {
+    timers.push(
+      setTimeout(() => {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ delayed: true }));
+      }, 30_000)
+    );
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  const address = server.address();
+  if (address === null || typeof address !== 'object') {
+    server.close();
+    throw new Error('Invariant: expected loopback server to have a port');
+  }
+
+  try {
+    const response = await globalThis.fetch(
+      `http://127.0.0.1:${address.port}/delay`,
+      { signal }
+    );
+    return {
+      ok: response.ok,
+      aborted: false,
+      status: response.status,
+      elapsedMs: Date.now() - startedAt,
+    };
+  } catch (err: any) {
+    if (err.name === 'AbortError') {
+      return {
+        ok: false,
+        aborted: true,
+        elapsedMs: Date.now() - startedAt,
+      };
+    }
+    return {
+      ok: false,
+      aborted: false,
+      error: err?.message ?? String(err),
+      elapsedMs: Date.now() - startedAt,
+    };
+  } finally {
+    for (const timer of timers) clearTimeout(timer);
+    server.closeAllConnections();
+    server.close();
+  }
+}
 
 /**
  * E2E: Basic timeout cancellation.
@@ -2553,14 +2717,10 @@ export async function abortFetchInFlightWorkflow() {
   'use workflow';
 
   const controller = new AbortController();
-  // SLOW_FETCH_URLS holds the response open for ~10s — used here as a slow
-  // endpoint that the abort can cancel mid-flight. Same external-service
-  // pattern as other e2e workflows in this file (jsonplaceholder, example.com).
-  // Avoids needing a per-workbench /api/delay route, which would only exist
-  // on the one workbench it was added to. The step falls back to the second
-  // URL only if the first returns a 5xx or non-AbortError network failure,
-  // so a transient outage on one upstream doesn't flake the test.
-  const fetchPromise = fetchWithSignal(SLOW_FETCH_URLS, controller.signal);
+  // The step hosts its own slow endpoint (see fetchWithSignal) that holds
+  // the response open for ~30s — a real in-flight fetch the abort can
+  // cancel mid-flight, with no external upstream to flake.
+  const fetchPromise = fetchWithSignal(controller.signal);
 
   // Race the fetch against a 2s sleep. Sleep wins; abort fires.
   const winner = await Promise.race([
@@ -2603,7 +2763,7 @@ export async function abortVoidSleepTimeoutWorkflow() {
   const controller = new AbortController();
   void sleep('2s').then(() => controller.abort());
 
-  return await fetchWithSignal(SLOW_FETCH_URLS, controller.signal);
+  return await fetchWithSignal(controller.signal);
 }
 
 /**

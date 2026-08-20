@@ -1,4 +1,5 @@
 import {
+  ANALYTICS_EVENTS_GET_MANY_LIMIT,
   type Analytics,
   AnalyticsAttributeKeySchema,
   AnalyticsEventSchema,
@@ -25,6 +26,19 @@ function appendPagination(
 function createQueryString(params: URLSearchParams): string {
   const query = params.toString();
   return query ? `?${query}` : '';
+}
+
+function normalizeEventIds(eventIds: readonly string[]): string[] {
+  const uniqueEventIds = [...new Set(eventIds)];
+  if (uniqueEventIds.length === 0) {
+    throw new RangeError('eventIds must contain at least one event ID');
+  }
+  if (uniqueEventIds.length > ANALYTICS_EVENTS_GET_MANY_LIMIT) {
+    throw new RangeError(
+      `eventIds must contain at most ${ANALYTICS_EVENTS_GET_MANY_LIMIT} unique event IDs`
+    );
+  }
+  return uniqueEventIds;
 }
 
 function appendAttributeListParams(
@@ -117,6 +131,15 @@ export function createAnalytics(config?: APIConfig): Analytics {
           schema: AnalyticsEventSchema,
         });
       },
+      getMany(runId, eventIds) {
+        return makeRequest({
+          endpoint: `/v2/analytics/runs/${encodeURIComponent(runId)}/events/get-many`,
+          options: { method: 'POST' },
+          data: { eventIds: normalizeEventIds(eventIds) },
+          config,
+          schema: AnalyticsEventSchema.array(),
+        });
+      },
       list(params) {
         const searchParams = new URLSearchParams();
         if (params.eventType) {
@@ -138,8 +161,12 @@ export function createAnalytics(config?: APIConfig): Analytics {
         searchParams.set('correlationId', params.correlationId);
         appendPagination(searchParams, params.pagination);
 
+        // A correlation id is unique per run, not globally — a slot-numbered
+        // run numbers its own steps, so `step_…001` names the first step of
+        // every such run. The run-scoped endpoint takes the same
+        // correlation-id filter, so scoping costs nothing here.
         return makeRequest({
-          endpoint: `/v2/analytics/events${createQueryString(searchParams)}`,
+          endpoint: `/v2/analytics/runs/${encodeURIComponent(params.runId)}/events${createQueryString(searchParams)}`,
           config,
           schema: PaginatedResponseSchema(AnalyticsEventSchema),
         });

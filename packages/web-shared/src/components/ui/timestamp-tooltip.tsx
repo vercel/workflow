@@ -143,28 +143,34 @@ function ZoneDateTimeRow({
     <div className="flex items-center justify-between gap-3">
       <div className="flex items-center gap-1.5">
         <div className="flex items-center justify-center h-4 px-1.5 bg-gray-200 rounded-xs">
-          <span className="text-[12px] font-mono text-gray-900">
+          <span className="text-label-12-mono text-gray-900">
             {formattedZone}
           </span>
         </div>
-        <span className="text-[13px] text-gray-1000">{formattedDate}</span>
+        <span className="text-label-13 text-gray-1000">{formattedDate}</span>
       </div>
-      <span className="tabular-nums text-[12px] font-mono text-gray-900">
+      <span className="tabular-nums text-label-12-mono text-gray-900">
         {formattedTime}
       </span>
     </div>
   );
 }
 
-function RelativeTimeContextCardContent({ date }: { date: number }): ReactNode {
+function RelativeTimeContextCardContent({
+  date,
+  prefix,
+}: {
+  date: number;
+  prefix?: string;
+}): ReactNode {
   const localTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
   const timeAgo = useTimeAgo(date);
 
   return (
     <div className="flex flex-col gap-3 min-w-[300px]">
       <div className="flex flex-col gap-3">
-        <span className="tabular-nums text-[13px] text-gray-900">
-          {timeAgo}
+        <span className="tabular-nums text-label-13 text-gray-900">
+          {prefix ? `${prefix} ${timeAgo}` : timeAgo}
         </span>
       </div>
       <div className="flex flex-col gap-2">
@@ -196,6 +202,7 @@ type RelativeTimeCardProps = Omit<
   date?: number | null;
   /** Custom content to render instead of the default relative time text. */
   children?: ReactNode;
+  prefix?: string;
 };
 
 /**
@@ -207,6 +214,7 @@ type RelativeTimeCardProps = Omit<
 export function RelativeTimeCard({
   date,
   children: _children,
+  prefix,
   ...props
 }: RelativeTimeCardProps): ReactNode {
   const children =
@@ -216,7 +224,7 @@ export function RelativeTimeCard({
 
   return (
     <ContextCardTrigger
-      content={<RelativeTimeContextCardContent date={date} />}
+      content={<RelativeTimeContextCardContent date={date} prefix={prefix} />}
       {...props}
     >
       {children}
@@ -238,10 +246,12 @@ export function TimestampTooltip({
   date,
   children,
   side = 'top',
+  prefix,
 }: {
   date: number | Date | string | null | undefined;
   children: ReactNode;
   side?: ContextCardTriggerProps['side'];
+  prefix?: string;
 }): ReactNode {
   const hasProvider = useHasContextCardProvider();
 
@@ -255,7 +265,7 @@ export function TimestampTooltip({
   if (ts == null || Number.isNaN(ts)) return <>{children}</>;
 
   const card = (
-    <RelativeTimeCard date={ts} side={side} asChild>
+    <RelativeTimeCard date={ts} side={side} prefix={prefix} asChild>
       {children}
     </RelativeTimeCard>
   );

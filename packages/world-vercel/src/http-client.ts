@@ -1,10 +1,16 @@
+import { isNodeHttpEnabled } from '@workflow/world';
+import {
+  createNodeHttpAgents,
+  destroyNodeHttpAgents,
+  type NodeHttpAgents,
+} from '@workflow/world/node-http.js';
 import { Agent, type Dispatcher, RetryAgent, type RetryHandler } from 'undici';
 import type { APIConfig } from './utils.js';
 
 let _dispatcher: RetryAgent | undefined;
-let _eventsDispatcher: RetryAgent | undefined;
 let _streamDispatcher: RetryAgent | undefined;
 let _streamCloseDispatcher: RetryAgent | undefined;
+let _nodeHttpAgents: NodeHttpAgents | undefined;
 
 /**
  * Shared between all agents — connection pooling only. `pipelining` is
@@ -16,6 +22,20 @@ const BASE_AGENT_OPTIONS = {
   connections: 8,
   keepAliveTimeout: 10_000,
 };
+
+/**
+ * Per-phase deadlines for the `node:http` transport under `WORKFLOW_NODE_HTTP`,
+ * matching undici's `headersTimeout` / `bodyTimeout` defaults (300s).
+ *
+ * The undici agents configured in this module never set these explicitly, so
+ * they inherit undici's 300s defaults, which bound a dead-but-not-reset socket.
+ * `nodeHttpFetch` arms neither timer unless a value is passed, so the same
+ * values must be supplied at every node:http call site — otherwise a request
+ * that opts out of the whole-request deadline (`timeoutMs: null`) would have no
+ * per-phase deadline at all and could hang until the function itself times out.
+ */
+export const NODE_HTTP_HEADERS_TIMEOUT_MS = 300_000;
+export const NODE_HTTP_BODY_TIMEOUT_MS = 300_000;
 
 /**
  * In-flight H2 streams allowed per connection. Matches undici's
@@ -133,6 +153,28 @@ export const EVENTS_AGENT_OPTIONS = {
 } as const;
 
 /**
+ * Events-agent options with HTTP/2 off entirely — what `WORKFLOW_H2_MULTIPLEX=0`
+ * selects. Identical to the H1 default agent, so the kill switch puts the events
+ * path back on the transport it used before H2 was enabled there.
+ *
+ * Leaving `allowH2: true` and only skipping the multiplexing interceptor is not a
+ * mitigation for an H2 transport fault: undici never evicts an HTTP/2 session
+ * when a stream times out (`client-h2.js`: "We do not destroy the socket as we
+ * can continue using the session"), and `keepAliveTimeout` is not consulted on
+ * the H2 path at all, so a session whose flow has been black-holed while the TCP
+ * connection stays established is never retired. Measured against a loopback h2
+ * origin behind a TCP proxy that black-holes one flow: with `allowH2: true` one
+ * request in eight kept failing indefinitely, while `allowH2: false` evicted the
+ * socket on the first timeout and recovered on the next request. The kill switch
+ * has to reach `allowH2` to get that behavior back.
+ */
+export const EVENTS_AGENT_OPTIONS_NO_H2 = {
+  ...BASE_AGENT_OPTIONS,
+  allowH2: false,
+  pipelining: 1,
+} as const;
+
+/**
  * Options for the stream write/close Agents. H2 is enabled (these send a
  * fully-buffered body, or none, so they avoid the duplex-streaming issues that
  * keep the long-lived live-read on plain `fetch`), but multiplexing is
@@ -226,8 +268,14 @@ export const STREAM_CLOSE_RETRY_OPTIONS: RetryHandler.RetryOptions = {
  */
 const H2_REBUFFER_MAX_BYTES = 1 << 20; // 1 MiB
 
-/** Set `WORKFLOW_H2_MULTIPLEX=0` to fall back to one request per connection. */
-function h2MultiplexEnabled(): boolean {
+/**
+ * Set `WORKFLOW_H2_MULTIPLEX=0` to take the events API off HTTP/2 entirely: no
+ * multiplexing interceptor *and* `allowH2: false` (see
+ * EVENTS_AGENT_OPTIONS_NO_H2 for why both are needed for this to be a usable
+ * kill switch). Read when a dispatcher is built, so it applies to agents created
+ * after it is set.
+ */
+function h2EventsEnabled(): boolean {
   return process.env.WORKFLOW_H2_MULTIPLEX !== '0';
 }
 
@@ -317,10 +365,260 @@ export function h2MultiplexInterceptor(
 }
 
 /**
+ * Consecutive transport failures on the *same* shared dispatcher before it is
+ * retired and rebuilt.
+ *
+ * The count is what separates a fault undici recovers from on its own from one it
+ * does not. On HTTP/1.1, and on H2 for connection-level events (GOAWAY, socket
+ * reset), undici destroys the connection as part of failing the request, so the
+ * next request opens a fresh one and a single failure is the whole story. The
+ * case this exists for is the one where it doesn't: an H2 stream timeout leaves
+ * the session in place by design, so if the flow underneath it has been
+ * black-holed while TCP stays established, every later request routed onto that
+ * session times out too — indefinitely. Requiring several failures in a row means
+ * the self-healing paths never trigger a rebuild, and the wedged-session path
+ * always does.
+ */
+export const EVENTS_RECYCLE_AFTER_CONSECUTIVE_FAILURES = 3;
+
+/**
+ * Floor on how often a recycler will rebuild, so a persistently unreachable
+ * origin can't turn every few requests into a fresh TLS handshake.
+ */
+const RECYCLE_MIN_INTERVAL_MS = 5_000;
+
+/**
+ * How long a retired dispatcher is left dispatchable before it is closed.
+ *
+ * A request that resolved the dispatcher just before the swap has not dispatched
+ * yet, and `close()` would reject it with ClientClosedError — turning a healthy
+ * event write into a step retry. The delay makes that race impossible in
+ * practice; the retired agent serves those few requests and then closes.
+ */
+const RETIRED_CLOSE_DELAY_MS = 5_000;
+
+/**
+ * Backstop for `close()` never settling. Closing is graceful: it waits for
+ * in-flight requests, which on a black-holed session means waiting for each
+ * stream's own timeout. Anything still in flight this long after retirement is
+ * wedged by definition, so the sockets get freed the hard way.
+ */
+const RETIRED_DESTROY_DELAY_MS = 60_000;
+
+/**
+ * undici error codes that mean "no response arrived over a connection that was
+ * already established". These are the failures a rebuild can fix; DNS, connect
+ * and TLS errors are excluded because a new agent would hit the same wall, and an
+ * abort is excluded because it is the caller's own doing.
+ */
+const RECYCLABLE_ERROR_CODES = new Set([
+  // Covers H2 stream timeout, frameError and GOAWAY (undici InformationalError).
+  'UND_ERR_INFO',
+  'UND_ERR_HEADERS_TIMEOUT',
+  'UND_ERR_BODY_TIMEOUT',
+]);
+
+/** Guard against a self-referential `cause` chain. */
+const MAX_CAUSE_DEPTH = 8;
+
+/**
+ * True when `error` (or anything in its `cause` chain) is a transport failure a
+ * dispatcher rebuild can fix. The chain walk is required, not defensive: `fetch`
+ * rejects with `TypeError: fetch failed` and hangs the undici error off `cause`,
+ * so the code is never on the error the caller sees. Exported for tests.
+ */
+export function isRecyclableTransportError(error: unknown): boolean {
+  let current = error;
+  for (let depth = 0; current && depth < MAX_CAUSE_DEPTH; depth++) {
+    const code = (current as { code?: unknown }).code;
+    if (typeof code === 'string' && RECYCLABLE_ERROR_CODES.has(code)) {
+      return true;
+    }
+    current = (current as { cause?: unknown }).cause;
+  }
+  return false;
+}
+
+export interface DispatcherRecycler {
+  /** The current shared dispatcher, built on first use. */
+  get(): RetryAgent;
+  /**
+   * Record the transport-level outcome of one request: `error` when the
+   * `fetch()`/dispatch itself failed, nothing when a response arrived (whatever
+   * its status — an HTTP error is the origin answering, so the transport worked).
+   *
+   * `dispatcher` is the dispatcher the request actually used. Outcomes from any
+   * other dispatcher are ignored, which covers both a caller-supplied override
+   * and the tail of the batch that provoked a rebuild: those requests were issued
+   * on the now-retired agent, and counting them would immediately recycle its
+   * replacement too.
+   */
+  note(dispatcher: unknown, error?: unknown): void;
+}
+
+/**
+ * Wraps a dispatcher factory with the failure accounting that retires a wedged
+ * connection pool. Exported so a test can drive the whole loop against a
+ * loopback origin; production uses the events recycler below.
+ */
+export function createDispatcherRecycler(
+  factory: () => RetryAgent,
+  label: string
+): DispatcherRecycler {
+  let current: RetryAgent | undefined;
+  let consecutiveFailures = 0;
+  let lastRecycledAt = 0;
+
+  function retire(stale: RetryAgent): void {
+    const closeTimer = setTimeout(() => {
+      void Promise.resolve(stale.close?.()).catch(() => undefined);
+    }, RETIRED_CLOSE_DELAY_MS);
+    const destroyTimer = setTimeout(() => {
+      void Promise.resolve(stale.destroy?.()).catch(() => undefined);
+    }, RETIRED_DESTROY_DELAY_MS);
+    // Never hold the process open for a pool we have already given up on.
+    closeTimer.unref?.();
+    destroyTimer.unref?.();
+  }
+
+  return {
+    get(): RetryAgent {
+      current ??= factory();
+      return current;
+    },
+
+    note(dispatcher: unknown, error?: unknown): void {
+      if (!current || dispatcher !== current) return;
+      if (error === undefined) {
+        consecutiveFailures = 0;
+        return;
+      }
+      if (!isRecyclableTransportError(error)) return;
+      consecutiveFailures++;
+      if (consecutiveFailures < EVENTS_RECYCLE_AFTER_CONSECUTIVE_FAILURES) {
+        return;
+      }
+      const now = Date.now();
+      if (now - lastRecycledAt < RECYCLE_MIN_INTERVAL_MS) return;
+      lastRecycledAt = now;
+      consecutiveFailures = 0;
+      const stale = current;
+      // Swap first: subsequent requests build and use a fresh pool, and the
+      // stale agent stops receiving `note` calls.
+      current = undefined;
+      // Breadcrumb on stderr (stdout is a machine-parsed contract in the CLI):
+      // a rebuild means the transport was stuck, which is worth seeing in
+      // function logs even though the SDK recovered on its own.
+      console.warn(
+        `[workflow] ${label}: rebuilding connection pool after ${EVENTS_RECYCLE_AFTER_CONSECUTIVE_FAILURES} consecutive transport failures`
+      );
+      retire(stale);
+    },
+  };
+}
+
+/**
+ * The shared events dispatcher, with the failure accounting that makes a
+ * black-holed HTTP/2 session self-healing. See createDispatcherRecycler and
+ * EVENTS_RECYCLE_AFTER_CONSECUTIVE_FAILURES.
+ */
+const eventsRecycler = createDispatcherRecycler(
+  () => createEventsDispatcher(),
+  'events transport'
+);
+
+/**
+ * Record the transport-level outcome of a v4 events request so a wedged
+ * connection pool gets retired. No-ops for a caller-supplied dispatcher. Called
+ * by `fetchV4`; see DispatcherRecycler.note.
+ */
+export function noteEventsTransportOutcome(
+  dispatcher: unknown,
+  error?: unknown
+): void {
+  eventsRecycler.note(dispatcher, error);
+}
+
+/**
+ * Resolution order shared by every `get*Dispatcher` below:
+ *
+ *  1. `config.dispatcher` — an explicit caller override always wins, including
+ *     under `WORKFLOW_NODE_HTTP`. Supplying a dispatcher is an instruction to
+ *     use undici, so the request stays on `fetch` with that dispatcher.
+ *  2. `undefined` when `WORKFLOW_NODE_HTTP` is on. Nothing then dispatches
+ *     through undici at all: `instrumentedFetch` and `makeRequest` read the same
+ *     flag and send the request over `node:http` / `node:https` instead, using
+ *     the pool from `getNodeHttpAgents` and none of the HTTP/2, receive-window
+ *     or retry configuration below. See `isNodeHttpEnabled` for what that costs.
+ *  3. the shared per-call-site undici agent.
+ *
+ * Read per call (not memoized) so the flag can be toggled within a process.
+ */
+function resolveDispatcher(
+  config: APIConfig | undefined,
+  buildDefault: () => RetryAgent
+): unknown {
+  if (config?.dispatcher) return config.dispatcher;
+  return isNodeHttpEnabled() ? undefined : buildDefault();
+}
+
+/**
+ * Shared `node:http` / `node:https` connection pool for `WORKFLOW_NODE_HTTP`
+ * mode, or `undefined` when the request should go over undici.
+ *
+ * There is one pool rather than the four the undici side maintains, because
+ * the four differ only in the two things Node's core client cannot express:
+ * HTTP/2 (with its multiplexing and receive windows) and a `RetryAgent` policy.
+ * Strip those and the remaining configuration is `BASE_AGENT_OPTIONS`, which is
+ * identical across all four, so splitting the pool would buy nothing but
+ * fragmentation of the sockets.
+ *
+ * Built on first use and then kept for the life of the process: keep-alive is
+ * the point, and a pool rebuilt per request would open a connection per
+ * request.
+ */
+export function getNodeHttpAgents(
+  config?: APIConfig
+): NodeHttpAgents | undefined {
+  if (config?.dispatcher) return undefined;
+  if (!isNodeHttpEnabled()) return undefined;
+  _nodeHttpAgents ??= createNodeHttpAgents({
+    maxSockets: BASE_AGENT_OPTIONS.connections,
+    keepAliveMs: BASE_AGENT_OPTIONS.keepAliveTimeout,
+  });
+  return _nodeHttpAgents;
+}
+
+/** Drop the shared node:http pool. Exported for tests; production keeps it. */
+export function _resetNodeHttpAgentsForTests(): void {
+  if (_nodeHttpAgents) destroyNodeHttpAgents(_nodeHttpAgents);
+  _nodeHttpAgents = undefined;
+}
+
+/**
  * Resolves the undici dispatcher for a request: the caller's override, or the
- * shared default agent (HTTP/1.1).
+ * shared default agent (HTTP/1.1). Returns `undefined` under
+ * `WORKFLOW_NODE_HTTP`, which routes the request off undici entirely.
  */
 export function getDispatcher(config?: APIConfig): unknown {
+  return resolveDispatcher(config, getDefaultDispatcher);
+}
+
+/**
+ * Resolves the dispatcher for the `@vercel/queue` client's HTTP sends.
+ *
+ * Unlike `getDispatcher`, this never returns `undefined` under
+ * `WORKFLOW_NODE_HTTP`. The `QueueClient` exposes no `fetch` override, so it
+ * cannot be moved onto `node:http` the way `instrumentedFetch` / `makeRequest`
+ * are: the flag has nothing to hand the request off to on this path. Returning
+ * `undefined` there would therefore not switch transports — it would just drop
+ * the tuned shared agent (`DEFAULT_AGENT_OPTIONS`: 8 connections, ~10s
+ * keep-alive) and let undici fall back to its GLOBAL agent (unlimited
+ * connections, 4s keep-alive), an unintended regression from a flag this path
+ * can't honor. So the queue send stays on the shared default undici agent
+ * regardless of the flag, while still honoring an explicit `config.dispatcher`.
+ */
+export function getQueueDispatcher(config?: APIConfig): unknown {
   return config?.dispatcher ?? getDefaultDispatcher();
 }
 
@@ -328,9 +626,20 @@ export function getDispatcher(config?: APIConfig): unknown {
  * Resolves the dispatcher for the v4 events API: the caller's override, or the
  * shared HTTP/2 events agent. See EVENTS_AGENT_OPTIONS for why the events API
  * uses H2 while the default path stays on H1.
+ *
+ * The shared agent is not a fixed instance for the life of the process: repeated
+ * transport failures retire it and the next call here builds a replacement (see
+ * noteEventsTransportOutcome). Resolve it per request rather than caching the
+ * returned value.
+ *
+ * Under `WORKFLOW_NODE_HTTP` there is no undici pool to recycle: `undefined` is
+ * returned, the recycler is never asked for an agent, and
+ * `noteEventsTransportOutcome` no-ops (its `!current` guard). Node's own agent
+ * evicts a socket when the request on it fails, so there is no equivalent
+ * wedged-session failure mode to recover from.
  */
 export function getEventsDispatcher(config?: APIConfig): unknown {
-  return config?.dispatcher ?? getDefaultEventsDispatcher();
+  return resolveDispatcher(config, () => eventsRecycler.get());
 }
 
 /**
@@ -341,7 +650,7 @@ export function getEventsDispatcher(config?: APIConfig): unknown {
  * 5xx — chosen because stream appends are not idempotent.
  */
 export function getStreamDispatcher(config?: APIConfig): unknown {
-  return config?.dispatcher ?? getDefaultStreamDispatcher();
+  return resolveDispatcher(config, getDefaultStreamDispatcher);
 }
 
 /**
@@ -350,7 +659,7 @@ export function getStreamDispatcher(config?: APIConfig): unknown {
  * (see STREAM_CLOSE_RETRY_OPTIONS), unlike chunk appends.
  */
 export function getStreamCloseDispatcher(config?: APIConfig): unknown {
-  return config?.dispatcher ?? getDefaultStreamCloseDispatcher();
+  return resolveDispatcher(config, getDefaultStreamCloseDispatcher);
 }
 
 /** Build a shared undici RetryAgent wrapping an Agent with the given options. */
@@ -371,11 +680,15 @@ function makeRetryDispatcher(
 export function createEventsDispatcher(
   agentOverrides?: Partial<Agent.Options>
 ): RetryAgent {
+  const h2 = h2EventsEnabled();
   const agent = new RetryAgent(
-    new Agent({ ...EVENTS_AGENT_OPTIONS, ...agentOverrides }),
+    new Agent({
+      ...(h2 ? EVENTS_AGENT_OPTIONS : EVENTS_AGENT_OPTIONS_NO_H2),
+      ...agentOverrides,
+    }),
     RETRY_AGENT_OPTIONS
   );
-  if (!h2MultiplexEnabled()) {
+  if (!h2) {
     return agent;
   }
   // The interceptor wraps the RetryAgent (rather than the Agent inside it) so
@@ -443,18 +756,6 @@ function getDefaultDispatcher(): RetryAgent {
     RETRY_AGENT_OPTIONS
   );
   return _dispatcher;
-}
-
-/**
- * Returns the shared HTTP/2 RetryAgent used by the v4 events API. Same retry /
- * pooling behavior as the default dispatcher, but with `allowH2` enabled, a
- * pipelining depth that lets H2 actually multiplex (EVENTS_AGENT_OPTIONS), and
- * the interceptor that lifts undici's remaining two per-request H2 busy gates
- * (h2MultiplexInterceptor).
- */
-function getDefaultEventsDispatcher(): RetryAgent {
-  _eventsDispatcher ??= createEventsDispatcher();
-  return _eventsDispatcher;
 }
 
 /**

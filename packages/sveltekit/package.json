@@ -1,6 +1,6 @@
 {
   "name": "@workflow/sveltekit",
-  "version": "5.0.0-beta.38",
+  "version": "5.0.0-beta.43",
   "description": "SvelteKit integration for Workflow SDK",
   "type": "module",
   "main": "dist/index.js",
@@ -22,9 +22,11 @@
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
+    "test": "vitest run src",
     "clean": "tsc --build --clean && rm -rf dist"
   },
   "dependencies": {
+    "@sveltejs/load-config": "^0.2.3",
     "@swc/core": "catalog:",
     "@workflow/builders": "workspace:*",
     "@workflow/rollup": "workspace:*",
@@ -39,6 +41,7 @@
     "@types/node": "catalog:",
     "@workflow/tsconfig": "workspace:*",
     "typescript": "catalog:",
-    "vite": "7.3.6"
+    "vite": "7.3.6",
+    "vitest": "catalog:"
   }
 }

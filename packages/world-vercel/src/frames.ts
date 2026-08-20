@@ -5,10 +5,11 @@
  *
  *   list-response := frame*  end-frame
  *   frame         := u32_be(meta_len) || cbor_meta || u32_be(body_len) || body_bytes
- *   end-frame     := u32_be(meta_len) || cbor_meta {_end: 1, next?: string, hasMore?: boolean} || u32_be(0)
+ *   end-frame     := u32_be(meta_len) || cbor_meta {_end: 1, next?: string, hasMore: boolean} || u32_be(0)
  */
 
 import { decode, encode } from 'cbor-x';
+import { z } from 'zod';
 
 export const V4_FRAME_CONTENT_TYPE = 'application/vnd.workflow.v4-frames';
 
@@ -16,6 +17,10 @@ export interface DecodedFrame {
   meta: Record<string, unknown>;
   body: Uint8Array;
 }
+
+// The protocol consumer validates the event or control-frame shape after the
+// body is available. The byte codec only requires a CBOR object here.
+const CborObjectSchema = z.record(z.string(), z.unknown());
 
 /** Test/utility: encode a complete frame. Production server uses prefix
  *  + streaming body. */
@@ -61,14 +66,23 @@ export async function* decodeFrames(
   let buffer = new Uint8Array(0);
 
   const refill = async (needed: number): Promise<boolean> => {
-    while (buffer.byteLength < needed) {
-      const { done, value } = await chunks.next();
-      if (done) return false;
-      if (!value || value.byteLength === 0) continue;
-      const next = new Uint8Array(buffer.byteLength + value.byteLength);
-      next.set(buffer, 0);
-      next.set(value, buffer.byteLength);
-      buffer = next;
+    if (buffer.byteLength >= needed) return true;
+
+    const parts: Uint8Array[] = [buffer];
+    let byteLength = buffer.byteLength;
+    while (byteLength < needed) {
+      const chunk = await chunks.next();
+      if (chunk.done) return false;
+      if (chunk.value.byteLength === 0) continue;
+      parts.push(chunk.value);
+      byteLength += chunk.value.byteLength;
+    }
+
+    buffer = new Uint8Array(byteLength);
+    let offset = 0;
+    for (const part of parts) {
+      buffer.set(part, offset);
+      offset += part.byteLength;
     }
     return true;
   };
@@ -92,7 +106,7 @@ export async function* decodeFrames(
       if (!(await refill(metaLen))) {
         throw new Error('decodeFrames: truncated meta block');
       }
-      const meta = decode(take(metaLen)) as Record<string, unknown>;
+      const meta = CborObjectSchema.parse(decode(take(metaLen)));
 
       if (!(await refill(4))) {
         throw new Error('decodeFrames: truncated body length');

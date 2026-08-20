@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { Transport } from '@vercel/queue';
-import { DuplicateMessageError, QueueClient } from '@vercel/queue';
+import { ConsumerDiscoveryError, QueueClient } from '@vercel/queue';
 import {
   MessageId,
   type Queue,
@@ -14,17 +14,18 @@ import {
 import { decode as cborDecode, encode as cborEncode } from 'cbor-x';
 import { z } from 'zod/v4';
 import { missingDeploymentIdMessage } from './deployment-id.js';
-import { getDispatcher } from './http-client.js';
+import { getQueueDispatcher } from './http-client.js';
 import { decode as decodeTaggedRunId } from './run-id/index.js';
 import { isKnownRegionCode, REGION_IDS } from './run-id/regions.js';
 import { type APIConfig, getHeaders, getHttpUrl } from './utils.js';
+import { isWsEventsTransportEnabled } from './ws-transport-enabled.js';
 
 /**
  * CBOR-based queue transport. Encodes values with cbor-x on send and
  * decodes on receive, preserving Uint8Array values natively (workflow
  * input is a Uint8Array in specVersion >= 2).
  *
- * Used for specVersion >= SPEC_VERSION_CURRENT (3).
+ * Used for specVersion >= SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT.
  */
 class CborTransport implements Transport<unknown> {
   readonly contentType = 'application/cbor';
@@ -46,8 +47,9 @@ class CborTransport implements Transport<unknown> {
 }
 
 /**
- * JSON-based queue transport. Used for specVersion < SPEC_VERSION_CURRENT
- * to maintain compatibility with older deployments that expect JSON messages.
+ * JSON-based queue transport. Used for specVersion <
+ * SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT to maintain compatibility with
+ * older deployments that expect JSON messages.
  */
 class JsonTransport implements Transport<unknown> {
   readonly contentType = 'application/json';
@@ -189,6 +191,53 @@ function getRunIdFromPayload(payload: QueuePayload): string | undefined {
   }
   return undefined;
 }
+
+/**
+ * Bind this run's events channel to one invocation of the flow route. This is
+ * the only pair of calls that opens one: nothing else in the SDK does, so every
+ * other writer — `start()` writing `run_created` from an arbitrary request
+ * handler, where a lone write would not repay a handshake — stays on HTTP.
+ *
+ * Both halves are no-ops on the HTTP default, and the gate is checked before the
+ * import so a deployment on the default never loads `ws`.
+ */
+const wsEventsChannelForInvocation = (
+  runId: string | undefined,
+  config: APIConfig | undefined
+) => {
+  /** This invocation's release, once the open has resolved one. */
+  let claim: Promise<(() => void) | undefined> | undefined;
+
+  return {
+    /**
+     * Unawaited and failure-proof: callers treat the handshake as free. The
+     * refcount therefore rises a microtask late, so a write racing the import
+     * finds no channel and goes over HTTP — one frame, not the invocation,
+     * since `close` awaits this same promise and so cannot release ahead of
+     * the claim it is releasing.
+     */
+    open(): void {
+      if (!runId || !isWsEventsTransportEnabled()) return;
+      claim = import('./ws-transport.js')
+        .then(({ openWsChannel }) => openWsChannel(runId, config))
+        .catch(() => undefined);
+    },
+    /**
+     * Awaited, unlike the open: work scheduled after the handler returns is not
+     * guaranteed to run, and an open socket is not `unref`'d, so skipping this
+     * stops the process exiting and keeps a server invocation pinned.
+     *
+     * Releases the claim the open returned rather than re-resolving the run,
+     * which is what keeps a channel this invocation never opened — a later
+     * invocation's, registered under the same URL after ours was evicted — out
+     * of reach of our release.
+     */
+    async close(): Promise<void> {
+      const release = await claim;
+      release?.();
+    },
+  };
+};
 
 /**
  * Workflow run IDs are prefixed with `wrun_` before the underlying ULID.
@@ -358,7 +407,7 @@ export function createQueue(config?: APIConfig): Queue {
    * from the incoming `ce-vqsregion` header regardless).
    */
   const clientOptions = {
-    dispatcher: getDispatcher(config),
+    dispatcher: getQueueDispatcher(config),
     transport: dualTransport,
     ...(usingProxy && {
       // final path will be /queues-proxy/api/v3/topic/...
@@ -430,34 +479,22 @@ export function createQueue(config?: APIConfig): Queue {
       /[^A-Za-z0-9-_]/g,
       '-'
     );
-    try {
-      const { messageId } = await client.send(sanitizedQueueName, wrapper, {
-        idempotencyKey: opts?.idempotencyKey,
-        delaySeconds: opts?.delaySeconds,
-        headers: {
-          ...getHeadersFromPayload(payload),
-          ...opts?.headers,
-        },
-      });
-      return {
-        // messageId may be null when VQS fails over to a different region —
-        // the event is ingested but the responding region cannot return an ID.
-        messageId: messageId ? MessageId.parse(messageId) : null,
-      };
-    } catch (error) {
-      // Silently handle idempotency key conflicts - the message was already queued.
-      // This matches the behavior of world-local and world-postgres.
-      if (error instanceof DuplicateMessageError) {
-        // Return a placeholder messageId since the original is not available from the error.
-        // Callers using idempotency keys shouldn't depend on the returned messageId.
-        return {
-          messageId: MessageId.parse(
-            `msg_duplicate_${error.idempotencyKey ?? opts?.idempotencyKey ?? 'unknown'}`
-          ),
-        };
-      }
-      throw error;
-    }
+    // A repeated `idempotencyKey` is accepted rather than rejected: the send
+    // returns a fresh message ID and only one of the messages is delivered, so
+    // there is no conflict for the caller to handle here.
+    const { messageId } = await client.send(sanitizedQueueName, wrapper, {
+      idempotencyKey: opts?.idempotencyKey,
+      delaySeconds: opts?.delaySeconds,
+      headers: {
+        ...getHeadersFromPayload(payload),
+        ...opts?.headers,
+      },
+    });
+    return {
+      // messageId may be null when the queue fails over to a different region:
+      // the event is ingested but the responding region cannot return an ID.
+      messageId: messageId ? MessageId.parse(messageId) : null,
+    };
   };
 
   const createQueueHandler: Queue['createQueueHandler'] = (
@@ -477,26 +514,43 @@ export function createQueue(config?: APIConfig): Queue {
         const { payload, queueName, deploymentId } =
           MessageWrapper.parse(message);
 
-        const result = await handler(payload, {
-          queueName,
-          messageId: MessageId.parse(metadata.messageId),
-          attempt: metadata.deliveryCount,
-          requestId,
-        });
+        // Earliest point in an invocation where the run id is known, so the WS
+        // handshake happens here instead of on the runtime's first event write
+        // (which would record a `step_started` later than the work it
+        // timestamps). This path also absorbs `ws`'s module init.
+        const wsEvents = wsEventsChannelForInvocation(
+          getRunIdFromPayload(payload),
+          config
+        );
+        wsEvents.open();
 
-        if (typeof result?.timeoutSeconds === 'number') {
-          // When timeoutSeconds is 0, skip delaySeconds entirely for immediate re-enqueue.
-          // Otherwise, clamp to one continuation hop (23h by default). Longer
-          // sleeps chain delayed messages until the full duration has elapsed.
-          const delaySeconds =
-            result.timeoutSeconds > 0
-              ? Math.min(result.timeoutSeconds, MAX_DELAY_SECONDS)
-              : undefined;
+        try {
+          const result = await handler(payload, {
+            queueName,
+            messageId: MessageId.parse(metadata.messageId),
+            attempt: metadata.deliveryCount,
+            requestId,
+          });
 
-          // Send new message BEFORE acknowledging current message.
-          // This ensures crash safety: if process dies after send but before ack,
-          // we may get a duplicate invocation but won't lose the scheduled wakeup.
-          await queue(queueName, payload, { deploymentId, delaySeconds });
+          if (typeof result?.timeoutSeconds === 'number') {
+            // When timeoutSeconds is 0, skip delaySeconds entirely for immediate re-enqueue.
+            // Otherwise, clamp to one continuation hop (23h by default). Longer
+            // sleeps chain delayed messages until the full duration has elapsed.
+            const delaySeconds =
+              result.timeoutSeconds > 0
+                ? Math.min(result.timeoutSeconds, MAX_DELAY_SECONDS)
+                : undefined;
+
+            // Send new message BEFORE acknowledging current message.
+            // This ensures crash safety: if process dies after send but before ack,
+            // we may get a duplicate invocation but won't lose the scheduled wakeup.
+            await queue(queueName, payload, { deploymentId, delaySeconds });
+          }
+        } finally {
+          // The only point in the SDK that knows an invocation has no writes
+          // left. In a `finally` so a failed handler closes too — the retry
+          // arrives as a new invocation and opens its own channel.
+          await wsEvents.close();
         }
       },
       {
@@ -535,5 +589,14 @@ export function createQueue(config?: APIConfig): Queue {
     return deploymentId;
   };
 
-  return { queue, createQueueHandler, getDeploymentId };
+  const isDeploymentUnavailableError: Queue['isDeploymentUnavailableError'] = (
+    error
+  ) => error instanceof ConsumerDiscoveryError;
+
+  return {
+    queue,
+    createQueueHandler,
+    getDeploymentId,
+    isDeploymentUnavailableError,
+  };
 }

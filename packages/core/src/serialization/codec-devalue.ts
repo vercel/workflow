@@ -10,7 +10,13 @@
  * typed arrays, Map, Set natively).
  */
 
-import { parse, stringify, unflatten } from 'devalue';
+import {
+  defaultParseOperations,
+  type ParseOptions,
+  parse,
+  stringify,
+  unflatten,
+} from 'devalue';
 import type { Codec, CodecOptions, SerializationMode } from './codec.js';
 import { hardenedStringifyOperations, withGuestCodeStats } from './hardened.js';
 import { getClassReducers, getClassRevivers } from './reducers/class.js';
@@ -23,6 +29,20 @@ import { type Reducers, type Revivers, SerializationFormat } from './types.js';
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
+const MAX_SPARSE_ARRAY_LENGTH = 100_000;
+
+const parseOptions = {
+  operations: {
+    createSparseArray(length) {
+      if (length > MAX_SPARSE_ARRAY_LENGTH) {
+        throw new RangeError(
+          `Sparse array length ${length} exceeds the maximum of ${MAX_SPARSE_ARRAY_LENGTH}`
+        );
+      }
+      return defaultParseOperations.createSparseArray(length);
+    },
+  },
+} satisfies ParseOptions;
 
 // ---- Reducer/Reviver composition per mode ----
 
@@ -136,7 +156,7 @@ export const devalueCodec: Codec = {
       options?.extraRevivers
     );
     const str = decoder.decode(data);
-    return parse(str, revivers);
+    return parse(str, revivers, parseOptions);
   },
 
   deserializeLegacy(
@@ -149,6 +169,6 @@ export const devalueCodec: Codec = {
       options?.global,
       options?.extraRevivers
     );
-    return unflatten(data as any[], revivers);
+    return unflatten(data as any[], revivers, parseOptions);
   },
 };

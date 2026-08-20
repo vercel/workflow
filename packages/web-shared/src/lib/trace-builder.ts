@@ -13,7 +13,6 @@ import {
   isWaitEventType,
   type WorkflowRun,
 } from '@workflow/world';
-import type { Span } from '../components/trace-viewer/types';
 import {
   getEventTimestamp,
   hookToSpan,
@@ -23,6 +22,8 @@ import {
   waitToSpan,
 } from '../components/workflow-traces/trace-span-construction';
 import { otelTimeToMs } from '../components/workflow-traces/trace-time-utils';
+import { findDuplicateEventIds } from './duplicate-events';
+import type { Span } from './trace-types';
 
 /**
  * Events that belong to the run root span rather than a child entity span.
@@ -188,15 +189,40 @@ export interface TraceWithMeta {
   resources: { name: string; attributes: Record<string, string> }[];
   /** Duration in ms from trace start to the latest known event. */
   knownDurationMs: number;
+  /**
+   * The events left out of the span geometry as repeats. Empty unless the
+   * caller vouched for the log being complete. See
+   * {@link findDuplicateEventIds}.
+   */
+  duplicateEventIds: ReadonlySet<string>;
 }
 
 export function buildTrace(
   run: WorkflowRun,
   events: Event[],
-  now: Date
+  now: Date,
+  /**
+   * Whether `events` is the run's whole log. Defaults to false, which builds
+   * the trace from every event: on a subset there is no way to tell a repeat
+   * from the only copy the caller was given, and dropping the wrong one moves
+   * a span. See {@link findDuplicateEventIds}.
+   */
+  { isCompleteHistory = false }: { isCompleteHistory?: boolean } = {}
 ): TraceWithMeta {
-  const groupedEvents = groupEventsByCorrelation(events);
-  const latestKnownTime = computeLatestKnownTime(events, run);
+  // Span geometry comes from what the run acted on. A repeat of a class the
+  // log already records is read past by every replay, and letting one through
+  // here would stretch a span to whenever a concurrent replay committed it.
+  // The event lists still show them, marked as repeats.
+  const duplicateEventIds = findDuplicateEventIds(events, {
+    isCompleteHistory,
+  });
+  const actedOnEvents =
+    duplicateEventIds.size === 0
+      ? events
+      : events.filter((event) => !duplicateEventIds.has(event.eventId));
+
+  const groupedEvents = groupEventsByCorrelation(actedOnEvents);
+  const latestKnownTime = computeLatestKnownTime(actedOnEvents, run);
   const { runSpan, spans } = buildSpans(
     run,
     groupedEvents,
@@ -222,5 +248,6 @@ export function buildTrace(
       },
     ],
     knownDurationMs: Math.max(0, knownDurationMs),
+    duplicateEventIds,
   };
 }

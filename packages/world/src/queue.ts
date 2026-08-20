@@ -147,6 +147,40 @@ export type RunInput = z.infer<typeof RunInputSchema>;
  * `events.create`, so both server receipts hash to the same digest under the
  * `(runId, resumeId)` constraint.
  */
+/**
+ * Resilient step dispatch data carried through the queue alongside a
+ * step-execution message ({@link WorkflowInvokePayload.stepId}). Present when
+ * the producer (the suspension handler dispatching a newly created step)
+ * parallelized the `step_created` event write with the queue publish — the
+ * same shape as resilient start (`runInput`) and the resilient hook resume
+ * (`hookInput`).
+ *
+ * When the producer's `step_created` write fails transiently (429 / 5xx /
+ * transport), the step entity may not exist when this message is consumed. A
+ * consumer that understands `stepInput` idempotently re-ensures the
+ * `step_created` event — keyed by the message's `stepId` (the step's
+ * correlation id, unique per `(runId, correlationId)`) — before executing, so
+ * the producer's write and the consumer's re-ensure converge on exactly one
+ * event.
+ *
+ * The `input` is the already-serialized (and possibly encrypted) step input —
+ * the identical bytes the producer also sent on the direct `events.create`.
+ */
+export const StepDispatchInputSchema = z.object({
+  /**
+   * The serialized step input, reused verbatim from the direct write. Always
+   * binary: producers only attach `stepInput` when the dehydrated input is a
+   * `Uint8Array` and the run's queue transport preserves bytes (CBOR).
+   * Validated here so a malformed or transport-mangled payload fails the
+   * message parse instead of being silently written into a `step_created` as
+   * non-binary data. `Buffer` is a `Uint8Array` subclass and passes.
+   */
+  input: z.custom<Uint8Array>((value) => value instanceof Uint8Array, {
+    message: 'stepInput.input must be a Uint8Array',
+  }),
+});
+export type StepDispatchInput = z.infer<typeof StepDispatchInputSchema>;
+
 export const HookResumeInputSchema = z.object({
   /** Stable idempotency key minted once per `resumeHook()` call. */
   resumeId: z.string(),
@@ -169,8 +203,65 @@ export const HookResumeInputSchema = z.object({
    * content-stable server-side.
    */
   payloadDigest: z.string(),
+  /**
+   * The deployment the run is pinned to, from the producer's resume context.
+   * Lets the consumer detect a misrouted delivery with a cheap ambient
+   * deployment-id comparison BEFORE its hoisted `hook_received` replay-preload
+   * write — only a detected mismatch pays for the authoritative run fetch and
+   * the deployment-affinity guard. Optional for queued-message compatibility:
+   * messages from older producers omit it and simply skip the pre-write
+   * check (the authoritative guard before replay still protects them).
+   */
+  deploymentId: z.string().optional(),
 });
 export type HookResumeInput = z.infer<typeof HookResumeInputSchema>;
+
+/**
+ * Wall-clock boundaries of a hook-triggered resume, carried on the queue
+ * message so the SDK can report end-to-end time-to-resume (TTR) — entry into
+ * `resumeHook()` through to the first line of the next durable step — and its
+ * non-overlapping phase breakdown, as span attributes on that step's
+ * `step.execute` span. See `runtime/resume-latency.ts` in `@workflow/core`.
+ *
+ * Two groups of fields:
+ *
+ * - Producer fields (`resumeRequestedAtMs`, `queuePublishRequestedAtMs`,
+ *   `strategy`) are stamped by `resumeHook()` on the invocation message. They
+ *   ride along on a deployment-affinity re-route unchanged, so a misrouted
+ *   delivery's extra hop stays inside `queue_delivery`.
+ * - Consumer fields (`consumerStartedAtMs`, `replayStartedAtMs`,
+ *   `nextStepEncounteredAtMs`, `setupSource`) are filled in by the invocation
+ *   that replayed the resume, and ONLY when it dispatches the next durable
+ *   step to a separate queue invocation instead of running it inline. They let
+ *   that invocation report the same single TTR measurement.
+ *
+ * Every field is advisory and the whole object is optional, in all three
+ * directions that matter for a rolling deploy: a new producer's timing is
+ * ignored by an old consumer, a new consumer simply reports no TTR for an old
+ * message, and workflow-server never reads it at all.
+ *
+ * `strategy` and `setupSource` are deliberately typed as plain strings rather
+ * than enums: an unrecognized value from a newer producer must not fail the
+ * parse of the whole invocation payload (which would wedge the run) — it is
+ * only ever forwarded to a span attribute.
+ */
+export const HookResumeTimingSchema = z.object({
+  /** Epoch ms at entry into `resumeHook()` — the start of the TTR window. */
+  resumeRequestedAtMs: z.number(),
+  /** Epoch ms immediately before the queue publish was requested. */
+  queuePublishRequestedAtMs: z.number(),
+  /** Which `resumeHook()` dispatch path ran: `parallel` or `sequential`. */
+  strategy: z.string().optional(),
+  /** Epoch ms the final consumer's queue handler was entered. */
+  consumerStartedAtMs: z.number().optional(),
+  /** Epoch ms this invocation's first replay pass began. */
+  replayStartedAtMs: z.number().optional(),
+  /** Epoch ms replay first encountered a durable step after the resume. */
+  nextStepEncounteredAtMs: z.number().optional(),
+  /** How the consumer initialized replay state: see `ResumeSetupSource`. */
+  setupSource: z.string().optional(),
+});
+export type HookResumeTiming = z.infer<typeof HookResumeTimingSchema>;
 
 export const WorkflowInvokePayloadSchema = z.object({
   runId: z.string(),
@@ -193,6 +284,8 @@ export const WorkflowInvokePayloadSchema = z.object({
   preconditionReinvocations: z.number().int().positive().optional(),
   /** Number of times this message has been re-enqueued due to server errors (5xx) */
   serverErrorRetryCount: z.number().int().optional(),
+  /** Number of times this message has been re-routed after a deployment mismatch */
+  deploymentMismatchRetryCount: z.number().int().nonnegative().optional(),
   /** Step ID for inline step execution in combined handler. If provided, the flow execution
    * will jump directly to execute the step with the given ID before doing an event replay. */
   stepId: z.string().optional(),
@@ -206,6 +299,27 @@ export const WorkflowInvokePayloadSchema = z.object({
    * `hook_received` event exists (keyed by `resumeId`) before replaying.
    */
   hookInput: HookResumeInputSchema.optional(),
+  /**
+   * Resilient step dispatch data, only present alongside `stepId` when the
+   * producer parallelized the `step_created` write with this queue publish. A
+   * consumer that understands this field idempotently ensures the
+   * `step_created` event exists (keyed by `stepId`) before executing the step.
+   */
+  stepInput: StepDispatchInputSchema.optional(),
+  /**
+   * Hook-resume TTR timing. Present on both `resumeHook()` dispatch paths
+   * (unlike `hookInput`, which only rides the parallel fast path), and
+   * forwarded onto a dispatched step message when the resuming invocation
+   * hands the next durable step to another invocation. Purely observational —
+   * see {@link HookResumeTimingSchema}.
+   *
+   * `.catch(undefined)` because this field must never be able to fail the
+   * parse of the invocation payload: a malformed value (a NaN boundary, a
+   * shape change from a future producer) would otherwise throw on every
+   * delivery of that message and burn the run's delivery budget over a
+   * telemetry field. Anything unparseable degrades to "no measurement".
+   */
+  hookResumeTiming: HookResumeTimingSchema.optional().catch(undefined),
 });
 
 export type WorkflowInvokePayload = z.infer<typeof WorkflowInvokePayloadSchema>;
@@ -280,6 +394,13 @@ export interface Queue {
   getDeploymentId(): Promise<string>;
 
   /**
+   * Returns true only when a queue error definitively means the explicitly
+   * targeted deployment cannot receive the message. Unknown and transient
+   * errors must return false so the current delivery can be retried safely.
+   */
+  isDeploymentUnavailableError?(error: unknown): boolean;
+
+  /**
    * Enqueues a message to the specified queue.
    *
    * @param queueName - The name of the queue to which the message will be sent.
@@ -294,6 +415,7 @@ export interface Queue {
 
   /**
    * Creates an HTTP queue handler for processing messages from a specific queue.
+   * A rejected handler must retry the same message with an incremented attempt.
    *
    * `meta.messageId` SHOULD be stable across redeliveries of the same message
    * (one ID per enqueued message, reused on every delivery attempt). The

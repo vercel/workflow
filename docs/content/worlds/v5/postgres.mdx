@@ -27,8 +27,8 @@ Use the same release channel for `workflow` and `@workflow/world-postgres`. If
 your app uses a beta or other prerelease Workflow version, install the matching
 prerelease Postgres World package, such as
 `npm install @workflow/world-postgres@beta`. Mismatched versions fail before
-starting a run with an error that says the runtime requires a World with a
-matching spec version.
+starting a run with an error that names the spec versions the runtime supports
+and the one the World declares.
 </Callout>
 
 Configure the required environment variables to use the world and point it to your PostgreSQL database:
@@ -83,6 +83,14 @@ The migration is idempotent and can safely be run as a post-deployment lifecycle
 ## Starting the World
 
 To subscribe to the graphile-worker queue, your workflow app needs to start the world on server start. Here are examples for a few frameworks:
+
+<Callout type="warn">
+This step is specific to worlds that run a background worker, such as Postgres
+World. Worlds whose queue delivers work over HTTP, including the Vercel world,
+have no worker to subscribe, so `start()` does nothing there while the import
+still costs you: pulling in `workflow/runtime` from a server-startup hook puts
+the whole runtime into the cold-start path before the first request is served.
+</Callout>
 
 <Tabs items={["Next.js", "SvelteKit", "Nitro"]}>
 
@@ -217,6 +225,10 @@ For higher worker concurrency, Graphile Worker recommends setting `maxPoolSize` 
 ### `WORKFLOW_POSTGRES_APPLICATION_MANAGED_SHUTDOWN`
 
 Set to `1` when the application or framework coordinates shutdown and awaits `world.close()` before closing its workflow HTTP server and any caller-owned pool. Default: unset (`false`).
+
+### `WORKFLOW_POSTGRES_HOOK_RETENTION_LIMIT_DAYS`
+
+Maximum [`experimental_minRetention`](/docs/api-reference/workflow/create-hook#keep-a-token-unavailable-after-the-run-ends) accepted by the Postgres World, in days. Default: `30`. Set this to the same limit as your production World so oversized values fail during development.
 
 ### `WORKFLOW_QUEUE_NAMESPACE`
 

@@ -1,3 +1,4 @@
+import { StreamExpiredError } from '@workflow/errors';
 import { SPEC_VERSION_CURRENT, type World } from '@workflow/world';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -75,7 +76,8 @@ async function readAll(
  * check reconnect positioning.
  */
 function makeWorldWithScriptedStreams(
-  scripts: Record<number, () => ReadableStream<Uint8Array>>
+  scripts: Record<number, () => ReadableStream<Uint8Array>>,
+  getInfo?: () => Promise<{ tailIndex: number; done: boolean }>
 ): { world: World; calls: number[] } {
   const calls: number[] = [];
   const world = {
@@ -90,6 +92,7 @@ function makeWorldWithScriptedStreams(
         }
         return factory();
       }),
+      ...(getInfo ? { getInfo: vi.fn(getInfo) } : {}),
     },
   } as unknown as World;
   return { world, calls };
@@ -222,6 +225,37 @@ describe('createReconnectingFramedStream', () => {
     // index 0 once, then index 2 twice — the failed reopen and the retry both
     // resume from the same position.
     expect(calls).toEqual([0, 2, 2]);
+  });
+
+  it('surfaces retention expiry from a reconnect without retrying it', async () => {
+    const expired = new StreamExpiredError(
+      'stream expired',
+      RUN_ID,
+      's',
+      new Date('2026-08-10T14:40:00.000Z')
+    );
+    let calls = 0;
+    const world = {
+      specVersion: SPEC_VERSION_CURRENT,
+      streams: {
+        get: vi.fn(async () => {
+          calls++;
+          if (calls === 1) {
+            return scriptedStream([
+              { kind: 'value', value: payloadFrame(1) },
+              { kind: 'error', err: new Error('connection dropped') },
+            ]);
+          }
+          throw expired;
+        }),
+      },
+    } as unknown as World;
+    setWorld(world);
+
+    const reader = createReconnectingFramedStream(RUN_ID, 's', 0).getReader();
+    expect((await reader.read()).value).toEqual(payloadFrame(1));
+    await expect(reader.read()).rejects.toBe(expired);
+    expect(calls).toBe(2);
   });
 
   it('respects an initial non-zero startIndex on reconnect', async () => {
@@ -405,6 +439,138 @@ describe('createReconnectingFramedStream', () => {
     // and each reconnect resumed at the next index.
     expect(calls.length).toBeGreaterThan(FRAMED_STREAM_MAX_RECONNECTS + 1);
     expect(calls).toEqual(Array.from({ length: lastIndex + 1 }, (_, i) => i));
+  });
+
+  it('reconnects when a clean EOF arrives before the stream is complete', async () => {
+    // Infrastructure can normalize a mid-stream abort into a graceful EOF
+    // (production shape: the server's max-duration cut reaches the client as
+    // a clean close). The wrapper must verify completion instead of trusting
+    // the EOF, and resume from the next chunk.
+    let infoCalls = 0;
+    const { world, calls } = makeWorldWithScriptedStreams(
+      {
+        0: () =>
+          scriptedStream([
+            { kind: 'value', value: payloadFrame(1) },
+            { kind: 'value', value: payloadFrame(2) },
+            { kind: 'close' },
+          ]),
+        2: () =>
+          scriptedStream([
+            { kind: 'value', value: payloadFrame(3) },
+            { kind: 'close' },
+          ]),
+      },
+      async () => {
+        infoCalls++;
+        // Not complete at the first EOF; complete (3 chunks) at the second.
+        return infoCalls === 1
+          ? { tailIndex: 1, done: false }
+          : { tailIndex: 2, done: true };
+      }
+    );
+    setWorld(world);
+
+    const stream = createReconnectingFramedStream(RUN_ID, 's', 0);
+    const chunks = await readAll(stream);
+
+    expect(chunks).toEqual([payloadFrame(1), payloadFrame(2), payloadFrame(3)]);
+    expect(calls).toEqual([0, 2]);
+    expect(infoCalls).toBe(2);
+  });
+
+  it('reconnects when a completed stream EOFs short of its tail', async () => {
+    // The stream IS complete, but this session was cut mid-body: delivered
+    // frames don't cover every chunk up to `done`. Trusting the EOF here
+    // silently loses the tail.
+    const { world, calls } = makeWorldWithScriptedStreams(
+      {
+        0: () =>
+          scriptedStream([
+            { kind: 'value', value: payloadFrame(1) },
+            { kind: 'close' },
+          ]),
+        1: () =>
+          scriptedStream([
+            { kind: 'value', value: payloadFrame(2) },
+            { kind: 'close' },
+          ]),
+      },
+      async () => ({ tailIndex: 1, done: true })
+    );
+    setWorld(world);
+
+    const stream = createReconnectingFramedStream(RUN_ID, 's', 0);
+    const chunks = await readAll(stream);
+
+    expect(chunks).toEqual([payloadFrame(1), payloadFrame(2)]);
+    expect(calls).toEqual([0, 1]);
+  });
+
+  it('closes on EOF when metadata confirms completion', async () => {
+    const { world, calls } = makeWorldWithScriptedStreams(
+      {
+        0: () =>
+          scriptedStream([
+            { kind: 'value', value: payloadFrame(1) },
+            { kind: 'value', value: payloadFrame(2) },
+            { kind: 'close' },
+          ]),
+      },
+      async () => ({ tailIndex: 1, done: true })
+    );
+    setWorld(world);
+
+    const stream = createReconnectingFramedStream(RUN_ID, 's', 0);
+    const chunks = await readAll(stream);
+
+    expect(chunks).toEqual([payloadFrame(1), payloadFrame(2)]);
+    expect(calls).toEqual([0]);
+  });
+
+  it('trusts EOF when stream metadata is unavailable', async () => {
+    // A transient getInfo failure must not turn a healthy completion into an
+    // error or a reconnect loop — fall back to the legacy trust-the-EOF
+    // behavior.
+    const { world, calls } = makeWorldWithScriptedStreams(
+      {
+        0: () =>
+          scriptedStream([
+            { kind: 'value', value: payloadFrame(1) },
+            { kind: 'close' },
+          ]),
+      },
+      async () => {
+        throw new Error('metadata unavailable');
+      }
+    );
+    setWorld(world);
+
+    const stream = createReconnectingFramedStream(RUN_ID, 's', 0);
+    const chunks = await readAll(stream);
+
+    expect(chunks).toEqual([payloadFrame(1)]);
+    expect(calls).toEqual([0]);
+  });
+
+  it('gives up after the reconnect budget when EOF stays unverified', async () => {
+    // A server that keeps clean-EOFing an incomplete stream without ever
+    // making progress must exhaust the consecutive-reconnect budget, not
+    // loop forever.
+    const { world, calls } = makeWorldWithScriptedStreams(
+      {
+        0: () => scriptedStream([{ kind: 'close' }]),
+      },
+      async () => ({ tailIndex: 4, done: false })
+    );
+    setWorld(world);
+
+    const stream = createReconnectingFramedStream(RUN_ID, 's', 0);
+    await expect(readAll(stream)).rejects.toThrow(
+      /exceeded maximum reconnection attempts/
+    );
+    expect(calls).toHaveLength(FRAMED_STREAM_MAX_RECONNECTS + 1);
+    expect(calls.every((i) => i === 0)).toBe(true);
   });
 
   it('errors at the absolute backstop when a world ignores startIndex and loops forever', async () => {

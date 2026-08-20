@@ -1,5 +1,59 @@
 # @workflow/world-testing
 
+## 5.0.0-beta.43
+
+### Patch Changes
+
+- Updated dependencies [[`b0adb50`](https://github.com/vercel/workflow/commit/b0adb50bce623b23252735021205e8d870a2b11f), [`37e1d9e`](https://github.com/vercel/workflow/commit/37e1d9e5a9870ef4a35e1875e7054253a9fb89c3), [`1321570`](https://github.com/vercel/workflow/commit/13215704645ea487ef6f8821016ec3f13c1cd830), [`234d3dd`](https://github.com/vercel/workflow/commit/234d3dd7b852129e189d321314c4f749f12711d8), [`04e060a`](https://github.com/vercel/workflow/commit/04e060a0ecc247a3291714d8396430fa9d96bccc), [`707dfe6`](https://github.com/vercel/workflow/commit/707dfe6a063564cd1c146742e90661abc49534b3), [`a074259`](https://github.com/vercel/workflow/commit/a074259166819121579ffbb5b9f8da60853ae57b), [`ac51658`](https://github.com/vercel/workflow/commit/ac51658d39649e7d8e290924c3bf7b2c7df78b00), [`c5f9177`](https://github.com/vercel/workflow/commit/c5f9177be3c58a2b5616f798932061b67e0b54a5), [`880801b`](https://github.com/vercel/workflow/commit/880801bd4521a0cfd76e8c46ebf560c388ecf30c)]:
+  - @workflow/world@5.0.0-beta.28
+  - @workflow/core@5.0.0-beta.43
+  - workflow@5.0.0-beta.43
+  - @workflow/cli@5.0.0-beta.43
+
+## 5.0.0-beta.42
+
+### Patch Changes
+
+- [#3542](https://github.com/vercel/workflow/pull/3542) [`de2a86c`](https://github.com/vercel/workflow/commit/de2a86c61c843a04c292e54e9c439553b3da02c5) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - **Breaking**: New runs are created at spec version 6, and a World that declares an older spec version is now rejected before the first run rather than failing partway through one.
+
+- [#3519](https://github.com/vercel/workflow/pull/3519) [`dc85865`](https://github.com/vercel/workflow/commit/dc85865718fdf5e4abdb5ad8edf715ec956bf07d) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Slot-numbered event ids are a requirement of the World contract, not a capability. The `slotEventIds` flag is gone, and the conformance suite now fails a World whose event ids are not positions.
+
+- Updated dependencies [[`600b096`](https://github.com/vercel/workflow/commit/600b096d2fa5423b742683fcd047010a1f1bfcd6), [`9add9d7`](https://github.com/vercel/workflow/commit/9add9d782d0cbf41ce447175c7b9fe47846d794d), [`dc85865`](https://github.com/vercel/workflow/commit/dc85865718fdf5e4abdb5ad8edf715ec956bf07d), [`efbc408`](https://github.com/vercel/workflow/commit/efbc408c4e98178dc8c8151764f308e9e4b6fd58), [`c041d3d`](https://github.com/vercel/workflow/commit/c041d3d231f8a75236311df56a68bd4ca104be22), [`60dd206`](https://github.com/vercel/workflow/commit/60dd2065f368f10ba5c0b1ae98240749c1d29dc3), [`a0ccfe0`](https://github.com/vercel/workflow/commit/a0ccfe0f50df1e6726b033e91c41257065e20edd), [`3560218`](https://github.com/vercel/workflow/commit/3560218937ab76cf631ffe200489f337ba843a40), [`de2a86c`](https://github.com/vercel/workflow/commit/de2a86c61c843a04c292e54e9c439553b3da02c5), [`dc85865`](https://github.com/vercel/workflow/commit/dc85865718fdf5e4abdb5ad8edf715ec956bf07d), [`dc85865`](https://github.com/vercel/workflow/commit/dc85865718fdf5e4abdb5ad8edf715ec956bf07d), [`7683130`](https://github.com/vercel/workflow/commit/7683130461a1a3de16c13be52d8aee96590b3814), [`dc85865`](https://github.com/vercel/workflow/commit/dc85865718fdf5e4abdb5ad8edf715ec956bf07d), [`b589460`](https://github.com/vercel/workflow/commit/b589460ce873bad3ddd7bda4a9bff147ddccac49), [`c1a5c74`](https://github.com/vercel/workflow/commit/c1a5c74edb2fad84eb5bbc2036bf73cbd16ca28d)]:
+  - @workflow/world@5.0.0-beta.27
+  - @workflow/core@5.0.0-beta.42
+  - @workflow/cli@5.0.0-beta.42
+  - workflow@5.0.0-beta.42
+
+## 5.0.0-beta.41
+
+### Patch Changes
+
+- Updated dependencies [[`74dbf81`](https://github.com/vercel/workflow/commit/74dbf81d327b8574cca429b56757c7322a26b4ef), [`65139ac`](https://github.com/vercel/workflow/commit/65139acfd7118d3b73672435a6e1c47115f6e23f), [`1a64f68`](https://github.com/vercel/workflow/commit/1a64f684723757c5a839abb94189b953dd3ac536), [`a8db185`](https://github.com/vercel/workflow/commit/a8db185c3b19b3dab971f51aa076aead81ed26ea), [`4bb86d3`](https://github.com/vercel/workflow/commit/4bb86d305423a2da813cbef8b7d6fe4421288bba), [`439a495`](https://github.com/vercel/workflow/commit/439a495a715b9426ef4dbcf8d928a8fc50ffb040), [`eb9e13f`](https://github.com/vercel/workflow/commit/eb9e13fd23eb12e353cd8f53ed4357da06f8e5ac), [`19b5b85`](https://github.com/vercel/workflow/commit/19b5b85c8b78cfd6c8ebbdf62ae7b8241a109595), [`fbebf71`](https://github.com/vercel/workflow/commit/fbebf7104d97219b73b6a51b0e77e42c45cdd99c), [`6786db9`](https://github.com/vercel/workflow/commit/6786db99538ef57c872d861ecfb28d99ae857d6d), [`22349e9`](https://github.com/vercel/workflow/commit/22349e95fd85a112cbec3f425900b74bf5ccc77f), [`69c30ff`](https://github.com/vercel/workflow/commit/69c30ff49eb89c0c4c4b2642c37985fdf64fa9fd), [`65139ac`](https://github.com/vercel/workflow/commit/65139acfd7118d3b73672435a6e1c47115f6e23f)]:
+  - @workflow/core@5.0.0-beta.41
+  - @workflow/world@5.0.0-beta.26
+  - @workflow/cli@5.0.0-beta.41
+  - workflow@5.0.0-beta.41
+
+## 5.0.0-beta.40
+
+### Patch Changes
+
+- Updated dependencies [[`2150798`](https://github.com/vercel/workflow/commit/2150798ca6dda8810607b6fb2d6d3734ed1a1e57), [`8d47928`](https://github.com/vercel/workflow/commit/8d479283cabd9de84fa2542c4ff16f2697d16399), [`de1905f`](https://github.com/vercel/workflow/commit/de1905f15c0a31f272966ac518ebf272864ea5c6), [`79e4c04`](https://github.com/vercel/workflow/commit/79e4c044091185e68bbdcc254a86133e54956ad3), [`e084e08`](https://github.com/vercel/workflow/commit/e084e08ac0b4f1830659cb316df50d50962aada4), [`9c1b3c8`](https://github.com/vercel/workflow/commit/9c1b3c86384181b673d41123d2eec0b987afc75a), [`e6f1b6f`](https://github.com/vercel/workflow/commit/e6f1b6f5489da19f736fcd86a06a03d8247e5b78), [`cb77725`](https://github.com/vercel/workflow/commit/cb77725960a8c280bd96fda0068fca0ba83d52f2), [`939ffb4`](https://github.com/vercel/workflow/commit/939ffb4f512a35d3fd041af16f3fa518552ba730), [`27a3f15`](https://github.com/vercel/workflow/commit/27a3f15a7b08659f2b0e69e12e0c4ad923d7f4e5), [`f8f6e17`](https://github.com/vercel/workflow/commit/f8f6e17aebbd138e9c6c4a03814a5bfc65e63c23), [`f8f6e17`](https://github.com/vercel/workflow/commit/f8f6e17aebbd138e9c6c4a03814a5bfc65e63c23), [`5d591d2`](https://github.com/vercel/workflow/commit/5d591d28863b539d8ff5b5af56f99b43d1db9842), [`89ede82`](https://github.com/vercel/workflow/commit/89ede82faa25143a150edcd088cd48b6d34daf3d), [`cb77725`](https://github.com/vercel/workflow/commit/cb77725960a8c280bd96fda0068fca0ba83d52f2), [`72efc90`](https://github.com/vercel/workflow/commit/72efc90f286956e6cde25b814f9375a8ecbbff36)]:
+  - @workflow/cli@5.0.0-beta.40
+  - @workflow/core@5.0.0-beta.40
+  - @workflow/world@5.0.0-beta.25
+  - workflow@5.0.0-beta.40
+
+## 5.0.0-beta.39
+
+### Patch Changes
+
+- Updated dependencies [[`4a9d26b`](https://github.com/vercel/workflow/commit/4a9d26b1cb807a9e31489350b468db42a8c13ef3), [`ee944d2`](https://github.com/vercel/workflow/commit/ee944d2476daca81b89ba545b522385a7902ec03), [`1471f25`](https://github.com/vercel/workflow/commit/1471f252fa18024695f1bf149f5bee4876ab149e), [`9cc11f5`](https://github.com/vercel/workflow/commit/9cc11f5329fbc9151c2f0ccd0139387c07f2d7ce), [`679dfa9`](https://github.com/vercel/workflow/commit/679dfa9c15e68e841d8c326c716bc14b5997c6c3), [`b732e91`](https://github.com/vercel/workflow/commit/b732e91fac77e0f445349aefa8bdeac5b8b77e20), [`31f92df`](https://github.com/vercel/workflow/commit/31f92df10d295cf09c93aadd35380209c137326c), [`4174a6e`](https://github.com/vercel/workflow/commit/4174a6ea733d61709b5d66d31920badaad6df0a1), [`4017597`](https://github.com/vercel/workflow/commit/4017597a5f6a54da7ea3bf467c8c63b3bf3bc845), [`438eaa6`](https://github.com/vercel/workflow/commit/438eaa6a595811e6d6942ba679e831d25e6cbfbe), [`ee944d2`](https://github.com/vercel/workflow/commit/ee944d2476daca81b89ba545b522385a7902ec03)]:
+  - @workflow/core@5.0.0-beta.39
+  - @workflow/world@5.0.0-beta.24
+  - workflow@5.0.0-beta.39
+  - @workflow/cli@5.0.0-beta.39
+
 ## 5.0.0-beta.38
 
 ### Patch Changes

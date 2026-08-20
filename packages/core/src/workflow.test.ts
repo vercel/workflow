@@ -2,10 +2,11 @@ import { types } from 'node:util';
 import { HookConflictError, WorkflowRuntimeError } from '@workflow/errors';
 import type { Event, WorkflowRun } from '@workflow/world';
 import { SPEC_VERSION_CURRENT } from '@workflow/world';
-import { monotonicFactory } from 'ulid';
+import { decodeTime, monotonicFactory } from 'ulid';
 import { afterEach, assert, describe, expect, it, vi } from 'vitest';
 import { DEFERRED_CHECK_DELAY_MS } from './events-consumer.js';
 import type { WorkflowSuspension } from './global.js';
+import { ReplayPayloadCache } from './replay-payload-cache.js';
 import { setWorld } from './runtime/world.js';
 import {
   dehydrateStepReturnValue,
@@ -13,7 +14,7 @@ import {
   hydrateWorkflowReturnValue,
 } from './serialization.js';
 import { createContext } from './vm/index.js';
-import { runWorkflow } from './workflow.js';
+import { replayWorkflow, resumeWorkflow, runWorkflow } from './workflow.js';
 
 // No encryption key = encryption disabled
 const noEncryptionKey = undefined;
@@ -221,6 +222,186 @@ describe('runWorkflow', () => {
     ).toEqual(3);
   });
 
+  describe('workflow sessions (retained VM)', () => {
+    const sessionRun = async (runId: string): Promise<WorkflowRun> => ({
+      runId,
+      workflowName: 'workflow',
+      status: 'running',
+      input: await dehydrateWorkflowArguments([], runId, noEncryptionKey, []),
+      createdAt: new Date('2024-01-01T00:00:00.000Z'),
+      updatedAt: new Date('2024-01-01T00:00:00.000Z'),
+      startedAt: new Date('2024-01-01T00:00:00.000Z'),
+      deploymentId: 'test-deployment',
+    });
+
+    const replay = (
+      workflowRun: WorkflowRun,
+      workflowCode: string,
+      events: Event[]
+    ) =>
+      replayWorkflow({
+        workflowCode,
+        workflowRun,
+        events,
+        encryptionKey: noEncryptionKey,
+        replayPayloadCache: new ReplayPayloadCache(noEncryptionKey),
+      });
+
+    // Append the step_created/started/completed triplet for the suspension's
+    // single pending step, as the runtime's inline execution would.
+    let eventCounter = 0;
+    const completeStep = async (
+      run: WorkflowRun,
+      events: Event[],
+      suspension: WorkflowSuspension,
+      result: number
+    ): Promise<void> => {
+      const step = suspension.steps[0];
+      assert(step?.type === 'step');
+      const base = {
+        runId: run.runId,
+        correlationId: step.correlationId,
+        createdAt: new Date(Date.UTC(2024, 0, 1, 0, 0, ++eventCounter)),
+      };
+      events.push(
+        {
+          ...base,
+          eventId: `event-${eventCounter}-created`,
+          eventType: 'step_created',
+          eventData: { stepName: 'add' },
+        } as Event,
+        {
+          ...base,
+          eventId: `event-${eventCounter}-started`,
+          eventType: 'step_started',
+          eventData: { stepName: 'add' },
+        } as Event,
+        {
+          ...base,
+          eventId: `event-${eventCounter}-completed`,
+          eventType: 'step_completed',
+          eventData: {
+            stepName: 'add',
+            result: await dehydrateStepReturnValue(
+              result,
+              run.runId,
+              noEncryptionKey,
+              []
+            ),
+          },
+        } as Event
+      );
+    };
+
+    it('resumes one VM across sequential step boundaries', async () => {
+      const run = await sessionRun('wrun_retained');
+      const workflowCode = `
+        const add = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("add");
+        async function workflow() {
+          console.log("retained:entered");
+          const first = await add(1, 2);
+          console.log("retained:continued");
+          return await add(first, 3);
+        }
+        ${getWorkflowTransformCode('workflow')}`;
+      const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+      const events: Event[] = [];
+
+      const first = await replay(run, workflowCode, events);
+      assert(first.type === 'suspended');
+      await completeStep(run, events, first.suspension, 3);
+
+      const second = await resumeWorkflow(first.session, events);
+      assert(second.type === 'suspended');
+      expect(second.session).toBe(first.session);
+      await completeStep(run, events, second.suspension, 6);
+
+      const completed = await resumeWorkflow(second.session, events);
+      assert(completed.type === 'completed');
+      expect(
+        await hydrateWorkflowReturnValue(
+          completed.output as any,
+          run.runId,
+          noEncryptionKey,
+          []
+        )
+      ).toBe(6);
+      // The body ran straight through exactly once — never re-entered.
+      expect(
+        log.mock.calls
+          .map(([message]) => message)
+          .filter((message) => String(message).startsWith('retained:'))
+      ).toEqual(['retained:entered', 'retained:continued']);
+      log.mockRestore();
+    });
+
+    it('declines resume permanently when the event prefix diverges', async () => {
+      const run = await sessionRun('wrun_retained_divergence');
+      const workflowCode = `
+        const step = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step");
+        async function workflow() { await step(); }
+        ${getWorkflowTransformCode('workflow')}`;
+      const events: Event[] = [
+        {
+          eventId: 'event-run-created',
+          runId: run.runId,
+          eventType: 'run_created',
+          createdAt: new Date('2024-01-01T00:00:00.000Z'),
+        } as Event,
+      ];
+
+      const suspended = await replay(run, workflowCode, events);
+      assert(suspended.type === 'suspended');
+
+      // A log whose consumed prefix was rewritten is not a strict extension.
+      const rewritten = [
+        { ...events[0], eventId: 'rewritten-event' } as Event,
+        { ...events[0], eventId: 'new-event' } as Event,
+      ];
+      expect(await resumeWorkflow(suspended.session, rewritten)).toEqual({
+        type: 'replay',
+      });
+
+      // The fallback is permanent, even for a well-formed extension.
+      expect(await resumeWorkflow(suspended.session, events)).toEqual({
+        type: 'replay',
+      });
+    });
+
+    it('demotes to replay (not failure) after mid-execution divergence', async () => {
+      const run = await sessionRun('wrun_retained_mid_divergence');
+      const workflowCode = `
+        const step = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step");
+        async function workflow() { await step(); }
+        ${getWorkflowTransformCode('workflow')}`;
+
+      const suspended = await replay(run, workflowCode, []);
+      assert(suspended.type === 'suspended');
+
+      // A strict extension whose appended suffix the VM cannot consume: the
+      // resume starts, then diverges mid-execution. It has to be a
+      // replay-origin type: the consumer walks past an unclaimed delivery and
+      // holds it for a later consumer, so only an event whose position is a
+      // replay's own decision record diverges on the spot.
+      const alien = {
+        eventId: 'event-alien',
+        runId: run.runId,
+        eventType: 'step_created',
+        correlationId: 'step_unknown',
+        eventData: { stepName: 'unknown' },
+        createdAt: new Date('2024-01-01T00:00:01.000Z'),
+      } as Event;
+      await expect(resumeWorkflow(suspended.session, [alien])).rejects.toThrow(
+        /could not consume event/
+      );
+
+      // The session demotes to replay — resume() must not throw.
+      expect(await resumeWorkflow(suspended.session, [])).toEqual({
+        type: 'replay',
+      });
+    });
+  });
+
   it('regenerates step correlation IDs independent of startedAt (turbo replay-stability)', async () => {
     // Turbo's first delivery synthesizes `startedAt` from the local clock,
     // while later (non-turbo) deliveries load the server-canonical `startedAt`.
@@ -229,7 +410,7 @@ describe('runWorkflow', () => {
     // `startedAt`. Here the recorded `add` event uses the createdAt-derived
     // correlation ID, but `startedAt` is months away — replay must still
     // regenerate the same ID and consume the completion rather than throwing
-    // ReplayDivergenceError. Reverting `generateUlid` to `ulid(+startedAt)`
+    // ReplayDivergenceError. Keying the generator off `+startedAt` instead
     // fails this test.
     const ops: Promise<any>[] = [];
     const workflowRunId = 'wrun_123';
@@ -298,6 +479,99 @@ describe('runWorkflow', () => {
         ops
       )
     ).toEqual(3);
+  });
+
+  it('keeps IDs minted through STABLE_ULID on the run clock', async () => {
+    // Serialization mints stream names (and an abort holder's identity) through
+    // the STABLE_ULID global, calling it with no seed time. `monotonicFactory`
+    // returns `encodeTime(lastTime)` on its increment branch, so binding the raw
+    // factory there let one such call latch the *host* wall clock into
+    // `lastTime`: the stream ID and every correlation ID drawn after it carried a
+    // timestamp that differs on every replay. This drives the binding through
+    // `runWorkflow` rather than the generator, so reverting the binding site to
+    // the raw factory fails here.
+    const ops: Promise<any>[] = [];
+    const workflowRunId = 'wrun_stable_ulid';
+    const startedAt = new Date('2024-01-01T00:00:00.000Z');
+    const workflowRun: WorkflowRun = {
+      runId: workflowRunId,
+      workflowName: 'workflow',
+      status: 'running',
+      input: await dehydrateWorkflowArguments(
+        [],
+        workflowRunId,
+        noEncryptionKey,
+        ops
+      ),
+      createdAt: startedAt,
+      updatedAt: startedAt,
+      startedAt,
+      deploymentId: 'test-deployment',
+    };
+
+    // Derive the IDs the run should mint, in draw order, with the same seeded
+    // factory runWorkflow uses: the stream draw first, then the step that
+    // follows it. The step's recorded event only matches if the stream draw left
+    // the sequence on `fixedTimestamp`.
+    const seed = `${workflowRunId}:${workflowRun.workflowName}:${workflowRun.deploymentId}`;
+    const fixedTimestamp = +startedAt;
+    const vm = createContext({ seed, fixedTimestamp });
+    const ulid = monotonicFactory(() => vm.globalThis.Math.random());
+    const expectedStreamId = ulid(fixedTimestamp);
+    const stepCorr = `step_${ulid(fixedTimestamp)}`;
+
+    const events: Event[] = [
+      {
+        eventId: 'event-0',
+        runId: workflowRunId,
+        eventType: 'step_started',
+        correlationId: stepCorr,
+        eventData: { stepName: 'add' },
+        createdAt: startedAt,
+      },
+      {
+        eventId: 'event-1',
+        runId: workflowRunId,
+        eventType: 'step_completed',
+        correlationId: stepCorr,
+        eventData: {
+          stepName: 'add',
+          result: await dehydrateStepReturnValue(
+            3,
+            workflowRunId,
+            noEncryptionKey,
+            ops
+          ),
+        },
+        createdAt: startedAt,
+      },
+    ];
+
+    const result = await runWorkflow(
+      `const add = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("add");
+          async function workflow() {
+            // Stands in for serialization, which is what actually calls this.
+            const streamId = globalThis[Symbol.for("WORKFLOW_STABLE_ULID")]();
+            const a = await add(1, 2);
+            return { streamId, a };
+          }${getWorkflowTransformCode('workflow')}`,
+      workflowRun,
+      events,
+      noEncryptionKey
+    );
+
+    const returned = (await hydrateWorkflowReturnValue(
+      result as any,
+      workflowRunId,
+      noEncryptionKey,
+      ops
+    )) as { streamId: string; a: number };
+
+    expect(decodeTime(returned.streamId)).toBe(fixedTimestamp);
+    expect(returned.streamId).toBe(expectedStreamId);
+    // Consuming the recorded completion is the other half: a stream draw that
+    // moved the clock would have renamed this step out of its own event log.
+    expect(returned.a).toBe(3);
   });
 
   // Test that timestamps update correctly as events are consumed
@@ -4109,7 +4383,7 @@ describe('runWorkflow', () => {
       ).toEqual('sleep with date completed');
     });
 
-    it('should reject with WorkflowRuntimeError for duplicate wait_completed in event log', async () => {
+    it('should ignore a duplicate wait_completed and keep replaying', async () => {
       const ops: Promise<any>[] = [];
       const workflowRunId = 'test-run-123';
       const workflowRun: WorkflowRun = {
@@ -4150,11 +4424,9 @@ describe('runWorkflow', () => {
           createdAt: new Date('2024-01-01T00:00:05.000Z'),
         },
         {
-          // Duplicate wait_completed — all worlds enforce one wait_completed
-          // per correlationId, so this shape indicates a corrupted event log.
-          // Its position between the sleep's completion and the subsequent
-          // step events means it blocks event consumption until onUnconsumedEvent
-          // fires.
+          // Duplicate wait_completed. The wait's outcome was already decided by
+          // event-1, so this one is committed but inert and replay skips past
+          // it to the step events below rather than stalling on it.
           eventId: 'event-2',
           runId: workflowRunId,
           eventType: 'wait_completed',
@@ -4187,22 +4459,28 @@ describe('runWorkflow', () => {
         },
       ];
 
-      await expect(
-        runWorkflow(
-          `const doWork = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("doWork");
+      const result = await runWorkflow(
+        `const doWork = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("doWork");
             const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")];
             async function workflow() {
               await sleep('5s');
               const result = await doWork();
               return result;
             }${getWorkflowTransformCode('workflow')}`,
-          workflowRun,
-          events
+        workflowRun,
+        events
+      );
+      expect(
+        await hydrateWorkflowReturnValue(
+          result as any,
+          workflowRunId,
+          noEncryptionKey,
+          ops
         )
-      ).rejects.toThrow('Replay could not consume event');
+      ).toEqual('step done');
     });
 
-    it('should reject with WorkflowRuntimeError for duplicate step_completed blocking subsequent events', async () => {
+    it('should ignore a duplicate step_completed and keep replaying', async () => {
       const ops: Promise<any>[] = [];
       const workflowRunId = 'test-run-123';
       const workflowRun: WorkflowRun = {
@@ -4244,7 +4522,9 @@ describe('runWorkflow', () => {
           createdAt: new Date('2024-01-01T00:00:01.000Z'),
         },
         {
-          // Duplicate step_completed - orphaned, blocks events below
+          // Duplicate step_completed. doWork1's result was already decided by
+          // event-1, so the second result is never observed and replay skips
+          // past it to doWork2's events.
           eventId: 'event-2',
           runId: workflowRunId,
           eventType: 'step_completed',
@@ -4278,18 +4558,24 @@ describe('runWorkflow', () => {
         },
       ];
 
-      await expect(
-        runWorkflow(
-          `const doWork1 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("doWork1");
+      const result = await runWorkflow(
+        `const doWork1 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("doWork1");
           const doWork2 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("doWork2");
           async function workflow() {
             await doWork1();
             return await doWork2();
           }${getWorkflowTransformCode('workflow')}`,
-          workflowRun,
-          events
+        workflowRun,
+        events
+      );
+      expect(
+        await hydrateWorkflowReturnValue(
+          result as any,
+          workflowRunId,
+          noEncryptionKey,
+          ops
         )
-      ).rejects.toThrow(WorkflowRuntimeError);
+      ).toEqual('second done');
     });
 
     it('should reject with WorkflowRuntimeError for orphaned step_completed blocking workflow step', async () => {

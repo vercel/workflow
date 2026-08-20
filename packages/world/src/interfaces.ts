@@ -4,9 +4,12 @@ import type {
   ExperimentalSetAttributesResult,
 } from './attributes.js';
 import type {
+  BatchEventRequest,
+  CreateEventBatchParams,
   CreateEventParams,
   CreateEventRequest,
   Event,
+  EventBatchResult,
   EventResult,
   GetEventParams,
   ListEventsByCorrelationIdParams,
@@ -16,6 +19,8 @@ import type {
 import type { GetHookParams, Hook, ListHooksParams } from './hooks.js';
 import type { Queue } from './queue.js';
 import type {
+  BulkCancelWorkflowRunsRequest,
+  BulkCancelWorkflowRunsResult,
   GetWorkflowRunParams,
   ListWorkflowRunsParams,
   WorkflowRun,
@@ -171,6 +176,14 @@ export interface Storage {
       ): Promise<(WorkflowRun | WorkflowRunWithoutData | null)[]>;
     };
 
+    /**
+     * Lists canonical workflow storage records.
+     *
+     * @remarks Observability and inspection usage of this method is
+     * deprecated. Use `world.analytics?.runs.list()` for plan-aware
+     * observability queries. This storage API remains available for
+     * operational and payload-bearing callers.
+     */
     list(
       params: ListWorkflowRunsParams & { resolveData: 'none' }
     ): Promise<PaginatedResponse<WorkflowRunWithoutData>>;
@@ -212,6 +225,17 @@ export interface Storage {
       changes: AttributeChange[],
       options?: { allowReservedAttributes?: boolean }
     ): Promise<ExperimentalSetAttributesResult>;
+
+    /**
+     * Cancel many runs in a single operation, returning a per-run outcome
+     * for each requested ID (order preserved) plus an aggregate summary.
+     *
+     * OPTIONAL. The SDK helper `cancelRuns` in `@workflow/core` falls back to
+     * bounded-concurrency single-run cancellation when unavailable.
+     */
+    cancelMany?(
+      request: BulkCancelWorkflowRunsRequest
+    ): Promise<BulkCancelWorkflowRunsResult>;
   };
 
   steps: {
@@ -242,6 +266,35 @@ export interface Storage {
     ): Promise<PaginatedResponse<Step | StepWithoutData>>;
   };
 
+  /**
+   * The event log, and the one part of this interface with a requirement the
+   * types cannot express: **the World allocates every event id, and every id
+   * is a slot** — `evnt_` followed by the event's dense, 1-based position in
+   * its run's log, zero-padded to 26 characters. Use `slotToEventId()` to
+   * format one.
+   *
+   * Not a capability to opt into. The runtime reads a position out of every id
+   * it loads (`requireEventSlot`) and fails the run if it cannot, so a World
+   * whose ids are not positions cannot replay anything at all. Two properties
+   * are what the runtime actually relies on:
+   *
+   * - **Density.** A run's slots are contiguous from 1, so the number of
+   *   events a reader holds *is* the position of the last one. That is what
+   *   makes {@link CreateEventParams.eventCount} a complete statement of the
+   *   writer's snapshot in a single integer, and what lets a reader tell a
+   *   complete log from a truncated one by its length.
+   * - **Bump and report.** A create never fails because its requested slot is
+   *   taken. The World advances to the next free slot, commits there, and
+   *   returns the events occupying the slots it skipped over on the success
+   *   response (see {@link EventResult.events}). The writer learns its
+   *   snapshot was stale without the write being rejected — which is why no
+   *   World needs a precondition guard.
+   *
+   * Allocating at the commit is what makes a reader's log a *prefix* of the
+   * run's log rather than a prefix with a hole in it. A World that hands a
+   * position out earlier, and can therefore let an event land behind one a
+   * reader has already passed, breaks the property every replay depends on.
+   */
   events: {
     /**
      * Create a run_created event to start a new workflow run.
@@ -252,11 +305,11 @@ export interface Storage {
      * @param params - Optional parameters for event creation
      * @returns Promise resolving to the created event and run entity
      */
-    create(
+    create<T extends RunCreatedEventRequest>(
       runId: string | null,
-      data: RunCreatedEventRequest,
+      data: T,
       params?: CreateEventParams
-    ): Promise<EventResult>;
+    ): Promise<EventResult<T['eventType']>>;
 
     /**
      * Create an event for an existing workflow run and atomically update the entity.
@@ -267,11 +320,53 @@ export interface Storage {
      * @param params - Optional parameters for event creation
      * @returns Promise resolving to the created event and affected entity
      */
-    create(
+    create<T extends CreateEventRequest>(
       runId: string,
-      data: CreateEventRequest,
+      data: T,
       params?: CreateEventParams
-    ): Promise<EventResult>;
+    ): Promise<EventResult<T['eventType']>>;
+
+    /**
+     * OPTIONAL batch write — append an ordered list of events to the run's
+     * log in one durable, atomic-per-attempt write, with a per-event outcome
+     * for each (see {@link BatchEventItemResult}). The events land in request
+     * order at consecutive slots. A concurrent writer may push the whole
+     * batch to slots above the caller's view of the log; no skipped-event
+     * report accompanies the result, so a position-tracking caller compares
+     * the committed slots against its expectation and reloads the log to
+     * observe what landed in between. Its local view stays a strict PREFIX
+     * of the log — never a hole — so replaying it stays correct and the
+     * next reload self-corrects.
+     *
+     * Presence of the method IS the capability declaration: the core runtime
+     * batches only when the World implements it (and the run's spec version
+     * supports slot identity); absent, every write takes the single-event
+     * `create` path unchanged. A World must implement it with real
+     * atomicity per attempt — a lost race must leave nothing behind — or not
+     * implement it at all.
+     *
+     * Size limits are the caller's problem: Worlds enforce their own caps
+     * (world-vercel enforces an event-count cap and a byte budget over frame
+     * meta plus inline-bound payloads) and reject an oversized batch with a
+     * request-level error. The core fold sizes its chunks accordingly.
+     *
+     * Not expressible in a batch (Worlds reject the whole batch with a
+     * request-level error): `run_created`, `run_started`, `run_cancelled`,
+     * `hook_created`, `hook_disposed`, `attr_set`, and more events targeting
+     * one entity than a single write can express (the one legal combination
+     * is `step_created` followed by `step_started` for the same step, which
+     * creates the step born-running — the step's input MUST ride the
+     * `step_created`; a `step_started` carrying a payload rejects the whole
+     * batch). Events outside this list keep their own ordering requirements:
+     * a caller mixing a batch with single writes (hook or attribute events)
+     * owns those barriers itself — the core runtime simply never batches a
+     * suspension that carries hook or attribute writes.
+     */
+    createBatch?(
+      runId: string,
+      events: BatchEventRequest[],
+      params?: CreateEventBatchParams
+    ): Promise<EventBatchResult>;
 
     get(
       runId: string,
@@ -322,26 +417,6 @@ export interface WorldCapabilities {
   };
 
   /**
-   * The World enforces the optimistic-concurrency precondition guard: an
-   * event creation carrying a `stateUpdatedAt` snapshot is rejected with a
-   * `PreconditionFailedError` (412) when a newer out-of-band event (e.g. a
-   * received hook) was recorded after that snapshot. Worlds that accept but
-   * ignore `stateUpdatedAt` must leave this unset so runtime optimizations
-   * that rely on the 412 fence (see `WORKFLOW_PRECONDITION_GUARD`) are not
-   * enabled without an actual fence behind them.
-   *
-   * A World declaring this should honour the whole snapshot the runtime sends,
-   * not just the watermark: `stateUpdatedAt`, `stateEventCount` (the count
-   * fence, which catches an event missing at or below the watermark — the case
-   * the watermark provably cannot see) and, optionally, `stateCursor` (return
-   * the missing events on the 412 to save the client a reload). See
-   * `CreateEventParams` for each field's contract. The runtime does not branch
-   * on which halves are implemented; a World that ignores the count simply
-   * fences less.
-   */
-  preconditionGuard?: boolean;
-
-  /**
    * The World's queue supports `maxConcurrency`-limited consumption — in
    * particular the per-run flow topics consumed with `maxConcurrency: 1`
    * that `WORKFLOW_SEQUENTIAL_REPLAYS=1` uses to serialize a run's
@@ -387,6 +462,21 @@ export interface WorldCapabilities {
    * `resumeCapabilities.hookResumeDedupVersion` on the by-token hook.
    */
   hookResumeDedup?: boolean;
+
+  /**
+   * Deployments are atomic and immutable: a deployment id names one fixed
+   * build for its whole lifetime, so a run pinned to one may only execute
+   * there. Worlds that declare this get the runtime's deployment-affinity
+   * guard, which re-routes a misrouted delivery to the run's own deployment
+   * and ultimately fails the run with `DEPLOYMENT_MISMATCH`.
+   *
+   * Worlds whose deployment id is synthetic or version-tagged (e.g.
+   * `dpl_local@<sdk-version>`, which legitimately differs across SDK versions
+   * within one logical environment) must leave this unset: there a
+   * "mismatch" is not a real cross-deployment delivery, and guarding would
+   * fail ordinary runs after a version bump.
+   */
+  deploymentAffinity?: boolean;
 }
 
 /**
@@ -404,10 +494,15 @@ export interface World extends Queue, Streamer, Storage {
   analytics?: Analytics;
 
   /**
-   * The Workflow protocol spec version this World implements.
+   * The Workflow protocol spec version this World implements, and the version
+   * stamped on every run it creates.
    *
-   * Current runtimes require this to exactly match their
-   * `SPEC_VERSION_CURRENT` before they create or replay runs.
+   * Declare `SPEC_VERSION_CURRENT` rather than a literal. The runtime checks
+   * this against `[SPEC_VERSION_CURRENT, SPEC_VERSION_MAX_SUPPORTED]` before it
+   * creates or replays anything, and refuses a World outside that range: below
+   * the floor the World allocates event ids the runtime cannot read positions
+   * out of (see the event log contract above), above the ceiling it speaks a
+   * spec this runtime has not learned.
    */
   specVersion: number;
 
@@ -419,26 +514,10 @@ export interface World extends Queue, Streamer, Storage {
   capabilities?: WorldCapabilities;
 
   /**
-   * Whether calling `process.exit(1)` from a queue handler is observed by
-   * the World as a delivery failure that will be retried.
-   *
-   * Set to `true` for worlds running inside a managed serverless platform
-   * (e.g. `world-vercel`) where the platform fails the invocation when the
-   * function process exits non-zero, and the queue redelivers the message
-   * via a separate fresh invocation.
-   *
-   * Set to `false` (the default) for in-process worlds (e.g. `world-local`,
-   * dev servers) where calling `process.exit()` would terminate the host
-   * process — including the user's `pnpm dev` — without producing a
-   * redelivery. Such worlds should instead surface failures via the event
-   * log and return normally.
-   *
-   * The core runtime reads this when deciding how to handle an exhausted
-   * replay budget: when `true` it exits so the queue redelivers; when
-   * `false` it writes `run_failed` best-effort and returns. See
-   * `packages/core/src/runtime/replay-budget.ts`.
+   * Absolute wall-clock time when the current function invocation will be
+   * terminated by the hosting platform, if known. Used to optimize runtime behavior.
    */
-  processExitTriggersQueueRedelivery?: boolean;
+  getRuntimeDeadline?(): Promise<Date | undefined>;
 
   /**
    * A function that will be called to start any background tasks needed by the World implementation.

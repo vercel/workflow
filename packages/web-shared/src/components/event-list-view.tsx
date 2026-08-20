@@ -10,6 +10,7 @@ import type {
 } from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso';
+import { findDuplicateEventIds } from '../lib/duplicate-events';
 import {
   type ExactIdSearchResult,
   type ExactWorkflowSearchIdKind,
@@ -23,6 +24,7 @@ import { AttrSetEventBlock } from './sidebar/attributes-block';
 import { ContextCardProvider } from './ui/context-card';
 import { DataInspector, DecryptClickContext } from './ui/data-inspector';
 import { DecryptButton } from './ui/decrypt-button';
+import { DuplicateEventTooltip } from './ui/duplicate-event-tooltip';
 import {
   ErrorStackBlock,
   isStructuredError,
@@ -148,7 +150,7 @@ function getStatusDotColor(eventType: string): string {
  * Build a map from correlationId (stepId) → display name using step_created
  * events, and parse the workflow name from the run.
  */
-function buildNameMaps(
+export function buildNameMaps(
   events: Event[] | null,
   run: WorkflowRun | null
 ): {
@@ -162,7 +164,9 @@ function buildNameMaps(
     for (const event of events) {
       if (event.eventType === 'step_created' && event.correlationId) {
         const stepName = event.eventData?.stepName ?? '';
-        const parsed = parseStepName(String(stepName));
+        const parsed =
+          parseStepName(String(stepName)) ??
+          parseWorkflowName(String(stepName));
         correlationNameMap.set(
           event.correlationId,
           parsed?.shortName ?? stepName
@@ -190,15 +194,24 @@ export interface DurationInfo {
  * Build a map from correlationId → duration info by diffing
  * created ↔ started (queued) and started ↔ completed/failed/cancelled (ran).
  * Also computes run-level durations under the key '__run__'.
+ *
+ * Events every replay reads past as repeats are excluded: a second
+ * `step_completed` written by a concurrent replay would otherwise stretch the
+ * step's measured runtime to whenever that replay happened to commit. The
+ * caller supplies them, because whether an event is a repeat is a property of
+ * the whole log and this function may be handed a page of it.
  */
-export function buildDurationMap(events: Event[]): Map<string, DurationInfo> {
+export function buildDurationMap(
+  events: Event[],
+  duplicateEventIds: ReadonlySet<string> = new Set()
+): Map<string, DurationInfo> {
   // Process events in chronological order so the result doesn't depend on
   // the caller's sort direction. Retried steps emit multiple `step_started`
   // events for the same correlationId; the queued duration must be measured
   // against the first one, not the last.
-  const chronological = [...events].sort(
-    (a, b) => getEffectiveEventTime(a) - getEffectiveEventTime(b)
-  );
+  const chronological = [...events]
+    .filter((event) => !duplicateEventIds.has(event.eventId))
+    .sort((a, b) => getEffectiveEventTime(a) - getEffectiveEventTime(b));
 
   const createdTimes = new Map<string, number>();
   const firstStartedTimes = new Map<string, number>();
@@ -639,7 +652,10 @@ function PayloadBlock({
         : null;
     if (cancelReason) {
       return (
-        <div className="p-2 text-xs" style={{ color: 'var(--ds-gray-1000)' }}>
+        <div
+          className="p-2 text-label-12"
+          style={{ color: 'var(--ds-gray-1000)' }}
+        >
           <span style={{ color: 'var(--ds-gray-900)' }}>Reason: </span>
           <span className="whitespace-pre-wrap break-words">
             {cancelReason}
@@ -660,7 +676,7 @@ function PayloadBlock({
       <button
         type="button"
         onClick={handleCopy}
-        className="absolute bottom-2 right-2 opacity-0 group-hover/payload:opacity-100 transition-opacity flex items-center gap-1 px-2 py-1 rounded-md text-xs hover:bg-[var(--ds-gray-alpha-200)]"
+        className="absolute bottom-2 right-2 opacity-0 group-hover/payload:opacity-100 transition-opacity flex items-center gap-1 px-2 py-1 rounded-md text-button-12 hover:bg-[var(--ds-gray-alpha-200)]"
         style={{ ...BUTTON_RESET_STYLE, color: 'var(--ds-gray-700)' }}
         aria-label="Copy payload"
       >
@@ -829,6 +845,7 @@ export function EventRow({
   onEncryptedDataDetected,
   suppressGroupDimming = false,
   showSeparateEventOccurrenceTimestamps = false,
+  isDuplicate = false,
 }: {
   event: Event;
   index: number;
@@ -853,6 +870,8 @@ export function EventRow({
   suppressGroupDimming?: boolean;
   /** Show occurredAt separately instead of folding it into the Created timestamp. */
   showSeparateEventOccurrenceTimestamps?: boolean;
+  /** The event repeats a class already in the log, so the runtime ignored it. */
+  isDuplicate?: boolean;
 }) {
   const [isLoading, setIsLoading] = useState(false);
   const [loadedEventData, setLoadedEventData] = useState<unknown | null>(
@@ -1028,7 +1047,7 @@ export function EventRow({
         onKeyDown={(e) => {
           if (e.key === 'Enter' || e.key === ' ') handleRowClick();
         }}
-        className="w-full text-left flex items-center gap-0 text-[13px] hover:bg-[var(--ds-gray-alpha-100)] transition-colors cursor-pointer"
+        className="w-full text-left flex items-center gap-0 text-label-13 hover:bg-[var(--ds-gray-alpha-100)] transition-colors cursor-pointer"
         style={{ minHeight: 40 }}
       >
         <TreeGutter
@@ -1092,43 +1111,49 @@ export function EventRow({
 
           {/* Event Type */}
           <div className="font-medium min-w-0 px-4" style={{ flex: '2 1 0%' }}>
-            <span
-              className="inline-flex items-center gap-1.5"
-              style={{ color: 'var(--ds-gray-900)' }}
-            >
+            <DuplicateEventTooltip isDuplicate={isDuplicate}>
               <span
+                className="inline-flex items-center gap-1.5"
                 style={{
-                  position: 'relative',
-                  display: 'inline-flex',
-                  width: 6,
-                  height: 6,
-                  flexShrink: 0,
+                  color: isDuplicate
+                    ? 'var(--ds-gray-700)'
+                    : 'var(--ds-gray-900)',
                 }}
               >
-                {isPulsing && (
-                  <span
-                    style={{
-                      position: 'absolute',
-                      inset: 0,
-                      borderRadius: '50%',
-                      backgroundColor: statusDotColor,
-                      opacity: 0.75,
-                      animation: DOT_PULSE_ANIMATION,
-                    }}
-                  />
-                )}
                 <span
                   style={{
                     position: 'relative',
+                    display: 'inline-flex',
                     width: 6,
                     height: 6,
-                    borderRadius: '50%',
-                    backgroundColor: statusDotColor,
+                    flexShrink: 0,
                   }}
-                />
+                >
+                  {isPulsing && (
+                    <span
+                      style={{
+                        position: 'absolute',
+                        inset: 0,
+                        borderRadius: '50%',
+                        backgroundColor: statusDotColor,
+                        opacity: 0.75,
+                        animation: DOT_PULSE_ANIMATION,
+                      }}
+                    />
+                  )}
+                  <span
+                    style={{
+                      position: 'relative',
+                      width: 6,
+                      height: 6,
+                      borderRadius: '50%',
+                      backgroundColor: statusDotColor,
+                    }}
+                  />
+                </span>
+                {formatEventType(event.eventType)}
               </span>
-              {formatEventType(event.eventType)}
-            </span>
+            </DuplicateEventTooltip>
           </div>
 
           {/* Name */}
@@ -1185,7 +1210,7 @@ export function EventRow({
             {(durationInfo?.queued !== undefined ||
               durationInfo?.ran !== undefined) && (
               <div
-                className="px-2 pb-1.5 text-xs flex gap-3"
+                className="px-2 pb-1.5 text-label-12 flex gap-3"
                 style={{ color: 'var(--ds-gray-900)' }}
               >
                 {durationInfo.queued !== undefined &&
@@ -1213,7 +1238,7 @@ export function EventRow({
               <PayloadBlock data={displayPayload} eventType={event.eventType} />
             ) : loadError ? (
               <div
-                className="rounded-md border p-3 text-xs"
+                className="rounded-md border p-3 text-label-12"
                 style={{
                   borderColor: 'var(--ds-red-400)',
                   backgroundColor: 'var(--ds-red-100)',
@@ -1233,7 +1258,7 @@ export function EventRow({
               </div>
             ) : (
               <div
-                className="p-2 text-xs"
+                className="p-2 text-label-12"
                 style={{ color: 'var(--ds-gray-900)' }}
               >
                 No data
@@ -1307,6 +1332,23 @@ function EventListViewInner({
     );
   }, [events, effectiveSortOrder, isExactSearchActive, searchResults]);
 
+  // Events every replay reads past as repeats. Computed from the source list
+  // rather than `sortedEvents` because which occurrence counted is a property
+  // of the log, not of the direction the table happens to be sorted in.
+  //
+  // A page short of the whole log, or an exact-ID search that returns one
+  // event, cannot answer that question: the event a repeat lost to may be
+  // outside the window, and reading it the other way round would mark the
+  // event the run acted on and drop it from the durations. Both cases classify
+  // nothing.
+  const duplicateEventIds = useMemo(
+    () =>
+      findDuplicateEventIds(events ?? [], {
+        isCompleteHistory: !hasMoreEvents && !isExactSearchActive,
+      }),
+    [events, hasMoreEvents, isExactSearchActive]
+  );
+
   // Detect encrypted fields across all loaded events (inline eventData).
   const hasEncryptedInlineData = useMemo(() => {
     const sourceEvents = isExactSearchActive ? searchResults : events;
@@ -1339,8 +1381,8 @@ function EventListViewInner({
   );
 
   const durationMap = useMemo(
-    () => buildDurationMap(sortedEvents),
-    [sortedEvents]
+    () => buildDurationMap(sortedEvents, duplicateEventIds),
+    [sortedEvents, duplicateEventIds]
   );
 
   const [selectedGroupKey, setSelectedGroupKey] = useState<string | undefined>(
@@ -1708,7 +1750,7 @@ function EventListViewInner({
 
         {/* Header */}
         <div
-          className="flex items-center gap-0 text-[13px] font-medium h-10 border-b flex-shrink-0"
+          className="flex items-center gap-0 text-label-13 font-medium h-10 border-b flex-shrink-0"
           style={{
             borderColor: 'var(--ds-gray-alpha-200)',
             color: 'var(--ds-gray-900)',
@@ -1748,7 +1790,7 @@ function EventListViewInner({
           />
         ) : sortedEvents.length === 0 ? (
           <div
-            className="flex flex-1 items-center justify-center px-6 text-center text-sm"
+            className="flex flex-1 items-center justify-center px-6 text-center text-copy-14"
             style={{ color: 'var(--ds-gray-700)' }}
           >
             {searchNotFound && searchQuery.trim()
@@ -1801,6 +1843,7 @@ function EventListViewInner({
                   encryptionKey={encryptionKey}
                   onEncryptedDataDetected={handleEncryptedDataDetected}
                   suppressGroupDimming={isExactSearchActive}
+                  isDuplicate={duplicateEventIds.has(ev.eventId)}
                   showSeparateEventOccurrenceTimestamps={
                     showSeparateEventOccurrenceTimestamps
                   }
@@ -1813,7 +1856,7 @@ function EventListViewInner({
 
         {/* Fixed footer — count + load more */}
         <div
-          className="relative flex-shrink-0 flex items-center h-10 border-t px-4 text-xs"
+          className="relative flex-shrink-0 flex items-center h-10 border-t px-4 text-label-12"
           style={{
             borderColor: 'var(--ds-gray-alpha-200)',
             color: 'var(--ds-gray-900)',

@@ -42,6 +42,8 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
     replayPayloadCache: new ReplayPayloadCache(undefined),
     globalThis: context.globalThis,
     eventsConsumer: new EventsConsumer(events, {
+      // Fake context: no deliveries are modeled, so the gate is a no-op here.
+      isDeliveryIdle: () => true,
       onUnconsumedEvent: () => {},
       getPromiseQueue: () => Promise.resolve(),
     }),
@@ -1263,7 +1265,7 @@ describe('createCreateHook', () => {
     const createHook = createCreateHook(ctx);
 
     expect(() => createHook({ token: '' })).toThrow(
-      '`createHook()` was called with an empty string token. Pass a non-empty token, or omit the `token` option to use a randomly generated one.'
+      '`createHook()` was called with an empty string token. Pass a non-empty token, or omit the `token` option to use a generated one.'
     );
 
     // The rejected hook must not be registered in the invocations queue.
@@ -1289,7 +1291,7 @@ describe('createCreateHook', () => {
 describe('createWebhook', () => {
   it('should throw when a token option is passed', () => {
     expect(() => (createWebhook as any)({ token: 'anything' })).toThrow(
-      '`createWebhook()` does not accept a `token` option. Webhook tokens are always randomly generated. Use `createHook()` with `resumeHook()` for deterministic token patterns.'
+      '`createWebhook()` does not accept a `token` option. Webhook tokens are always generated for you. Use `createHook()` with `resumeHook()` for deterministic token patterns.'
     );
   });
 });

@@ -1,5 +1,50 @@
 # @workflow/web
 
+## 5.0.0-beta.43
+
+### Patch Changes
+
+- Updated dependencies [[`04e060a`](https://github.com/vercel/workflow/commit/04e060a0ecc247a3291714d8396430fa9d96bccc)]:
+  - @workflow/world-local@5.0.0-beta.37
+
+## 5.0.0-beta.42
+
+### Patch Changes
+
+- Updated dependencies [[`de2a86c`](https://github.com/vercel/workflow/commit/de2a86c61c843a04c292e54e9c439553b3da02c5), [`dc85865`](https://github.com/vercel/workflow/commit/dc85865718fdf5e4abdb5ad8edf715ec956bf07d), [`0f4b35f`](https://github.com/vercel/workflow/commit/0f4b35f62945327417013060f6e5de5111fe6ff1)]:
+  - @workflow/world-local@5.0.0-beta.36
+
+## 5.0.0-beta.41
+
+### Patch Changes
+
+- Updated dependencies [[`a8db185`](https://github.com/vercel/workflow/commit/a8db185c3b19b3dab971f51aa076aead81ed26ea), [`6786db9`](https://github.com/vercel/workflow/commit/6786db99538ef57c872d861ecfb28d99ae857d6d), [`22349e9`](https://github.com/vercel/workflow/commit/22349e95fd85a112cbec3f425900b74bf5ccc77f), [`65139ac`](https://github.com/vercel/workflow/commit/65139acfd7118d3b73672435a6e1c47115f6e23f)]:
+  - @workflow/world-local@5.0.0-beta.35
+
+## 5.0.0-beta.40
+
+### Minor Changes
+
+- [#3349](https://github.com/vercel/workflow/pull/3349) [`371f06e`](https://github.com/vercel/workflow/commit/371f06e5ac777b2c91df479d99a53dcc186b9929) Thanks [@karthikscale3](https://github.com/karthikscale3)! - The runs table now bulk-cancels selected runs in a single request via `bulkCancelRuns`, caps a batch at 500 runs, and reports a single outcome-summary toast.
+
+- [#3280](https://github.com/vercel/workflow/pull/3280) [`de1905f`](https://github.com/vercel/workflow/commit/de1905f15c0a31f272966ac518ebf272864ea5c6) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - **Breaking:** `events.listByCorrelationId` and `analytics.events.listByCorrelationId` now require a `runId`. A correlation id is unique within its run, not across runs, so an unscoped lookup answered with one event per run that numbered a step or wait the same.
+
+### Patch Changes
+
+- Updated dependencies [[`1222aab`](https://github.com/vercel/workflow/commit/1222aab74da39b4a7ae93e6c5ecc2dc4707b68d0), [`de1905f`](https://github.com/vercel/workflow/commit/de1905f15c0a31f272966ac518ebf272864ea5c6), [`e6f1b6f`](https://github.com/vercel/workflow/commit/e6f1b6f5489da19f736fcd86a06a03d8247e5b78)]:
+  - @workflow/world-local@5.0.0-beta.34
+
+## 5.0.0-beta.39
+
+### Major Changes
+
+- [#3298](https://github.com/vercel/workflow/pull/3298) [`d06b55e`](https://github.com/vercel/workflow/commit/d06b55e64195d9e4b87521b8010967d16139cabc) Thanks [@mitul-s](https://github.com/mitul-s)! - Rename `new-trace-viewer` to `trace-viewer` and the public `NewTraceViewer` export to `TraceViewer`.
+
+### Patch Changes
+
+- Updated dependencies [[`31f92df`](https://github.com/vercel/workflow/commit/31f92df10d295cf09c93aadd35380209c137326c), [`2677653`](https://github.com/vercel/workflow/commit/2677653759aa34c5c9fe28950fe1a02cec294551), [`aa78a7e`](https://github.com/vercel/workflow/commit/aa78a7e63c73e170f32143b22e01e796a537c405), [`f05f642`](https://github.com/vercel/workflow/commit/f05f642e89d7fe0af6e3d007621b0aa05f996a5b)]:
+  - @workflow/world-local@5.0.0-beta.33
+
 ## 5.0.0-beta.38
 
 ### Minor Changes

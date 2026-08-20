@@ -16,13 +16,12 @@
  *
  *   - POST request body is one v4 frame (meta + payload). The response
  *     surfaces eventId/runId/createdAt as `x-wf-*` headers and carries
- *     the materialized EventResult (event/run/step/hook/wait/events/
- *     cursor/hasMore) as a CBOR body — `remoteRefBehavior` in the frame
- *     meta still controls server-side ref resolution.
+ *     a materialized EventResult. `run_started` instead returns the current
+ *     event log using the same frame stream as LIST; other events use CBOR.
  *   - GET single event returns one v4 frame: the event entity in the
  *     frame meta, the user payload bytes in the frame body.
  *   - LIST events returns a stream of v4 frames terminated by a sentinel
- *     frame whose meta carries `{_end: 1, next?: cursor, hasMore?: boolean}`.
+ *     frame whose meta carries `{_end: 1, next?: cursor, hasMore: boolean}`.
  *     The old
  *     per-event `/refs` round-trip is eliminated.
  *
@@ -35,8 +34,13 @@
 import { HookNotFoundError, WorkflowWorldError } from '@workflow/errors';
 import {
   type AnyEventRequest,
+  applyAttributeChanges,
+  type BatchEventItemResult,
+  type BatchEventRequest,
+  type CreateEventBatchParams,
   type CreateEventParams,
   type Event,
+  type EventBatchResult,
   type EventDataPayloadField,
   type EventResult,
   EventSchema,
@@ -46,33 +50,25 @@ import {
   type ListEventsByCorrelationIdParams,
   type ListEventsParams,
   type PaginatedResponse,
-  StructuredErrorSchema,
-  stripEventDataRefs,
   validateUlidTimestamp,
   type WorkflowRun,
 } from '@workflow/world';
-import { decode } from 'cbor-x';
-import { coerceEventDates } from './event-coerce.js';
 import { withEventPostRetry } from './event-retry.js';
 import {
+  createHookReceivedPreloadEventV4,
+  createWorkflowRunEventsBatchV4,
   createWorkflowRunEventV4,
-  type DecodedV4Event,
+  createWorkflowRunStartedEventV4,
   getEventsByCorrelationIdV4,
   getEventV4,
   getWorkflowRunEventsV4,
+  type ListEventsV4Params,
 } from './events-v4.js';
 import { decode as decodeRunId } from './run-id/index.js';
 import { cancelWorkflowRunV1, createWorkflowRunV1 } from './runs.js';
 import {
-  hasSerializedDataFormatPrefix,
-  normalizeEventData,
-  normalizeSerializedData,
-} from './serialized-data.js';
-import { deserializeStep } from './steps.js';
-import {
   type APIConfig,
   DEFAULT_RESOLVE_DATA_OPTION,
-  deserializeError,
   makeRequest,
 } from './utils.js';
 
@@ -109,15 +105,6 @@ const eventsNeedingResolve = new Set<string>([
   'run_created', // runtime reads result.run.runId
   'run_started', // runtime reads result.run (checks startedAt, status)
   'step_started', // runtime reads result.step (checks attempt, state)
-]);
-
-// Stable runtimes stored these errors as backend-materialized
-// StructuredError objects. Their resolved v4 frame bodies are CBOR rather
-// than the format-prefixed serialized data emitted by current runtimes.
-const legacyStructuredErrorEventTypes = new Set<string>([
-  'run_failed',
-  'step_failed',
-  'step_retrying',
 ]);
 
 // =============================================================================
@@ -430,88 +417,6 @@ export function splitEventDataForV4(data: AnyEventRequest): SplitEventData {
   return { payload, meta };
 }
 
-function coerceNormalizedEvent(raw: Record<string, unknown>): Event {
-  return coerceEventDates(normalizeEventData(raw));
-}
-
-function decodeLegacyStructuredError(payload: Uint8Array): unknown {
-  if (hasSerializedDataFormatPrefix(payload)) {
-    return payload;
-  }
-
-  try {
-    // cbor-x caches decode state on its input, so decode a copy to keep the
-    // raw-byte fallback byte-for-byte and property-for-property unchanged.
-    const parsed = StructuredErrorSchema.safeParse(decode(payload.slice()));
-    return parsed.success ? parsed.data : payload;
-  } catch {
-    return payload;
-  }
-}
-
-/**
- * Turn a v4 event (frame meta + frame body) into the Event shape the
- * workflow runtime expects.
- *
- * Both GET single-event and LIST use the same frame format: meta is the
- * full event entity with the payload field as a RefDescriptor, body is
- * the resolved payload bytes (possibly empty). This helper splices the
- * body bytes into `eventData[fieldName]`, normalizing any zstd wrapper
- * back to the raw devalue-with-format-prefix Uint8Array the runtime's
- * hydrate helpers (hydrateStepIO, hydrateRunError, …) consume. Stable-line
- * structured errors are the exception: the backend stored those as CBOR,
- * so they are decoded after checking that the payload is not a current
- * format-prefixed serialized value.
- */
-function buildEventFromV4(
-  decoded: DecodedV4Event,
-  payloadBody: Uint8Array,
-  resolveData: 'none' | 'all'
-): Event {
-  const eventData = (decoded.eventData ?? {}) as Record<string, unknown>;
-
-  if (payloadBody.byteLength > 0) {
-    const payloadField = getEventDataPayloadField(decoded.eventType);
-    const normalizedPayload = normalizeSerializedData(payloadBody);
-    if (payloadField && normalizedPayload instanceof Uint8Array) {
-      eventData[payloadField] = legacyStructuredErrorEventTypes.has(
-        decoded.eventType
-      )
-        ? decodeLegacyStructuredError(normalizedPayload)
-        : normalizedPayload;
-    }
-  }
-
-  const raw = {
-    eventId: decoded.eventId,
-    runId: decoded.runId,
-    eventType: decoded.eventType,
-    createdAt:
-      decoded.createdAt instanceof Date
-        ? decoded.createdAt
-        : new Date(decoded.createdAt),
-    ...(decoded.occurredAt !== undefined
-      ? {
-          occurredAt:
-            decoded.occurredAt instanceof Date
-              ? decoded.occurredAt
-              : new Date(decoded.occurredAt),
-        }
-      : {}),
-    ...(decoded.correlationId ? { correlationId: decoded.correlationId } : {}),
-    eventData,
-    ...(decoded.specVersion !== undefined
-      ? { specVersion: decoded.specVersion }
-      : {}),
-  };
-
-  const event = coerceNormalizedEvent(raw);
-
-  // For resolveData='none', strip eventData entirely. Reuse the world-
-  // side helper so behavior stays in sync with other backends.
-  return resolveData === 'none' ? stripEventDataRefs(event, 'none') : event;
-}
-
 // =============================================================================
 // Public API
 // =============================================================================
@@ -522,11 +427,12 @@ export async function getEvent(
   params?: GetEventParams,
   config?: APIConfig
 ): Promise<Event> {
-  const resolveData = params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
-  const { event, body } = await getEventV4(runId, eventId, config);
-  // Same shape as a LIST frame — splice the body bytes into
-  // eventData[payloadField] in buildEventFromV4.
-  return buildEventFromV4(event, body, resolveData);
+  return getEventV4(
+    runId,
+    eventId,
+    params?.resolveData === 'none' ? 'lazy' : 'resolve',
+    config
+  );
 }
 
 export async function getWorkflowRunEvents(
@@ -534,50 +440,162 @@ export async function getWorkflowRunEvents(
   config?: APIConfig
 ): Promise<PaginatedResponse<Event>> {
   const { pagination, resolveData = DEFAULT_RESOLVE_DATA_OPTION } = params;
-  // `resolveData: 'none'` means the caller only wants metadata — it discards
-  // payloads in buildEventFromV4 below. Tell the backend not to stream them
-  // in the first place (lazy → empty frame bodies). On `'all'` we resolve
-  // (the default). A backend that predates this flag ignores it and streams
-  // full bodies regardless; buildEventFromV4 still strips them when
-  // resolveData is 'none', so this is purely a bandwidth optimization and is
-  // safe against an older backend.
-  const wirePagination = {
-    cursor: pagination?.cursor ?? undefined,
-    limit: pagination?.limit,
-    sortOrder: pagination?.sortOrder,
-    remoteRefBehavior: (resolveData === 'none' ? 'lazy' : 'resolve') as
-      | 'lazy'
-      | 'resolve',
+  // `resolveData: 'none'` leaves payload refs unresolved, so the backend can
+  // skip reading and streaming their contents. The validated lazy descriptors
+  // remain on the returned events.
+  const listParams: ListEventsV4Params = {
+    ...pagination,
+    remoteRefBehavior: resolveData === 'none' ? 'lazy' : 'resolve',
   };
 
   const result = await ('correlationId' in params
-    ? getEventsByCorrelationIdV4(params.correlationId, wirePagination, config)
-    : getWorkflowRunEventsV4(params.runId, wirePagination, config));
+    ? getEventsByCorrelationIdV4(
+        params.correlationId,
+        params.runId,
+        listParams,
+        config
+      )
+    : getWorkflowRunEventsV4(params.runId, listParams, config));
 
-  const events = result.events.map((listed) =>
-    buildEventFromV4(listed.event, listed.body, resolveData)
+  // A correlation id is unique per run, not globally — a slot-numbered run
+  // numbers its own steps, so `step_…001` names the first step of every such
+  // run. The run id scopes the backend query; the filter also protects against
+  // an older backend that ignores that parameter.
+  // `hasMore`/`cursor` stay the backend's, so a page that filters down to
+  // nothing is still followed by the next one.
+  return {
+    data:
+      'correlationId' in params
+        ? result.events.filter((event) => event.runId === params.runId)
+        : result.events,
+    // The cursor is present even on the final page because it is also the
+    // incremental-load resume point. `hasMore` is the pagination signal.
+    cursor: result.cursor,
+    hasMore: result.hasMore,
+  };
+}
+
+/**
+ * Batch write: append an ordered list of events to the run's log in one
+ * request with per-event outcomes — the world-vercel implementation of
+ * `Storage['events']['createBatch']`.
+ *
+ * The whole POST retries transient transport failures and 429s like a single
+ * event write does, and is safe to: every batchable event is guarded by its
+ * own entity condition server-side, so a retry of a batch that (partially)
+ * committed converges to per-event 409 results with nothing written twice.
+ */
+export async function createWorkflowRunEventBatch(
+  runId: string,
+  events: BatchEventRequest[],
+  params?: CreateEventBatchParams,
+  config?: APIConfig
+): Promise<EventBatchResult> {
+  if (events.length === 0) {
+    throw new WorkflowWorldError(
+      'world-vercel: createBatch requires at least one event',
+      { status: 400 }
+    );
+  }
+  // Advisory `hook_received` has no entity condition: the server appends a
+  // fresh row on every attempt, so a retried batch would deliver the hook
+  // payload twice — and the atomic lazy-resume shape (the one dedupable
+  // form) is rejected by the batch route anyway. Nothing batches hook
+  // deliveries today; reject them here so the retry contract below stays
+  // honest instead of silently double-appending.
+  if (events.some(({ event }) => event.eventType === 'hook_received')) {
+    throw new WorkflowWorldError(
+      'world-vercel: hook_received cannot be batched (it has no entity ' +
+        'condition, so a batch retry would append the delivery twice); ' +
+        'send it through the single-event path',
+      { status: 400 }
+    );
+  }
+  const inputs = events.map(({ event, occurredAt, computeInstanceId }) => {
+    const { payload, meta } = splitEventDataForV4(event);
+    return {
+      runId,
+      eventType: event.eventType,
+      specVersion: event.specVersion ?? 2,
+      ...(event.correlationId ? { correlationId: event.correlationId } : {}),
+      // Under slot identity this is the source of the durable createdAt, so
+      // the caller's logical time is what every replay observes.
+      occurredAt: occurredAt ?? new Date(),
+      // Per-event compute attribution (pre-claimed inline starts) — rides the
+      // frame meta exactly like the single POST's CreateEventParams field.
+      ...(computeInstanceId !== undefined ? { computeInstanceId } : {}),
+      // Batch responses carry entities for bookkeeping, not payload reads —
+      // default to lazy refs unless the caller explicitly asks for resolved
+      // data (the same `resolveData` mapping the read paths use).
+      remoteRefBehavior:
+        params?.resolveData === 'all'
+          ? ('resolve' as const)
+          : ('lazy' as const),
+      // Per-write request attribution, exactly like the single POST's
+      // `params.requestId` → `vercelId` threading — stamped per frame so
+      // batched usage facts carry the same attribution.
+      ...(params?.requestId ? { vercelId: params.requestId } : {}),
+      payload,
+      ...meta,
+    };
+  });
+
+  // In-process transient retry is safe only when EVERY event in the batch
+  // converges on a retry of a committed attempt AND the caller can act on the
+  // converged answer. Entity-conditioned events (creates, terminal
+  // transitions) re-reject with 409, which their callers already treat as
+  // "someone got here first" — no information lost.
+  //
+  // A `step_started` is excluded on both counts. A standalone bare start
+  // re-patches a running step (attempt++) and `step_retrying` re-patches a
+  // pending one, so neither converges at all. The born-running
+  // `step_created` + `step_started` pair DOES converge (the pair's
+  // create-claim fences it), but its 409 is ambiguous in a way the caller
+  // cannot resolve: the pre-claim caller reads a pair 409 as "a concurrent
+  // writer owns this step" and skips the body, and on a retry that answer is
+  // indistinguishable from "my own first attempt committed the pair, and I
+  // own it". Skipping there strands a `running` step stamped with this
+  // invocation's own message id until its ownership lease expires. This is
+  // the same reason `EVENT_RETRY_ELIGIBILITY` marks the single-POST
+  // `step_started` non-retryable: fail the delivery, let redelivery recover
+  // it through owned-recovery, which re-executes in seconds.
+  const retryConvergent = events.every(
+    ({ event }) =>
+      event.eventType !== 'step_started' && event.eventType !== 'step_retrying'
+  );
+
+  const wire = await withEventPostRetry(
+    () => createWorkflowRunEventsBatchV4({ runId, events: inputs }, config),
+    events[0].event.eventType,
+    { batchIdempotent: retryConvergent }
   );
 
   return {
-    data: events,
-    // `next` is present even on the final page (it's the incremental-load
-    // resume cursor), so prefer the server's explicit `hasMore`. The
-    // `Boolean(next)` fallback covers older servers that don't emit it —
-    // at the cost of one extra empty-page request per load.
-    cursor: result.next ?? null,
-    hasMore:
-      typeof result.hasMore === 'boolean'
-        ? result.hasMore
-        : Boolean(result.next),
-  } as PaginatedResponse<Event>;
+    results: wire.results.map((item): BatchEventItemResult => {
+      if (item.error !== undefined) {
+        return {
+          status: item.status,
+          error: item.error,
+          message: item.message,
+        };
+      }
+      return {
+        status: 200,
+        event: item.event,
+        ...(item.run ? { run: item.run } : {}),
+        ...(item.step ? { step: item.step } : {}),
+        ...(item.wait ? { wait: item.wait } : {}),
+      };
+    }),
+  };
 }
 
-export async function createWorkflowRunEvent(
+export async function createWorkflowRunEvent<T extends AnyEventRequest>(
   id: string | null,
-  data: AnyEventRequest,
+  data: T,
   params?: CreateEventParams,
   config?: APIConfig
-): Promise<EventResult> {
+): Promise<EventResult<T['eventType']>> {
   try {
     // Retry transient transport failures (UND_ERR_REQ_RETRY, ECONNRESET,
     // socket/headers timeouts, transient 5xx) in-process for event types that
@@ -587,10 +605,38 @@ export async function createWorkflowRunEvent(
     // the next queue delivery. Non-retryable
     // types (step_started, step_retrying, hook_received) run once. See
     // ./event-retry for the validated per-event classification.
-    return await withEventPostRetry(
+    const result = await withEventPostRetry(
       () => createWorkflowRunEventInner(id, data, params, config),
-      data.eventType
+      data.eventType,
+      {
+        // The atomic lazy-resume shape is deduplicated server-side by the
+        // (runId, resumeId) claim, so its POST is idempotent-on-retry even
+        // though plain hook_received is not — see EVENT_RETRY_ELIGIBILITY.
+        idempotentHookResume:
+          data.eventType === 'hook_received' &&
+          params?.resumeId !== undefined &&
+          params?.resumePayloadDigest !== undefined,
+      }
     );
+    if (data.eventType === 'run_created' && !result.run) {
+      throw new WorkflowWorldError(
+        `${data.eventType} response is missing the run entity`,
+        { code: 'SCHEMA_VALIDATION' }
+      );
+    }
+    if (data.eventType === 'run_started' && !result.run?.startedAt) {
+      throw new WorkflowWorldError(
+        'run_started response is missing run.startedAt',
+        { code: 'SCHEMA_VALIDATION' }
+      );
+    }
+    if (data.eventType === 'step_started' && !result.step?.startedAt) {
+      throw new WorkflowWorldError(
+        'step_started response is missing step.startedAt',
+        { code: 'SCHEMA_VALIDATION' }
+      );
+    }
+    return result as EventResult<T['eventType']>;
   } catch (err) {
     // 404 on hook_disposed / hook_received → already-disposed hook.
     if (
@@ -661,112 +707,191 @@ async function createWorkflowRunEventInner(
     }
   }
 
-  const remoteRefBehavior = eventsNeedingResolve.has(data.eventType)
+  const remoteRefBehavior: 'resolve' | 'lazy' = eventsNeedingResolve.has(
+    data.eventType
+  )
     ? 'resolve'
     : 'lazy';
 
   const { payload, meta } = splitEventDataForV4(data);
 
-  const result = await createWorkflowRunEventV4(
-    {
-      runId: id,
-      eventType: data.eventType,
-      specVersion: data.specVersion ?? 2,
-      ...(data.correlationId ? { correlationId: data.correlationId } : {}),
-      ...(params?.requestId ? { vercelId: params.requestId } : {}),
-      ...(params?.computeInstanceId
-        ? { computeInstanceId: params.computeInstanceId }
-        : {}),
-      // Precondition snapshot. The three fields describe one snapshot and the
-      // runtime always sends them together (or not at all); each is spread
-      // independently only so an older server that knows one but not the
-      // others still gets what it understands.
-      ...(params?.stateUpdatedAt !== undefined
-        ? { stateUpdatedAt: params.stateUpdatedAt }
-        : {}),
-      ...(params?.stateEventCount !== undefined
-        ? { stateEventCount: params.stateEventCount }
-        : {}),
-      ...(params?.stateCursor ? { stateCursor: params.stateCursor } : {}),
-      ...(params?.replayDivergenceCount !== undefined
-        ? { replayDivergenceCount: params.replayDivergenceCount }
-        : {}),
-      occurredAt: params?.occurredAt ?? new Date(),
-      // Opt-in inline-delta: forward the cursor the runtime held before
-      // this write so the server can return the authoritative event-log
-      // delta on the response (events/cursor/hasMore), letting the inline
-      // loop skip a follow-up events.list. The server only acts on it for
-      // step_completed/step_failed; older servers ignore it and the runtime
-      // falls back to events.list.
-      ...(params?.sinceCursor ? { sinceCursor: params.sinceCursor } : {}),
-      // Run-started preload opt-out: turbo backgrounds run_started as a write
-      // barrier only and never reads the preloaded log, so tell the server to
-      // skip the list+resolve. The server only acts on it for run_started;
-      // older servers ignore it and simply preload as before.
-      ...(params?.skipPreload ? { skipPreload: true } : {}),
-      // Lazy hook resume idempotency key (hook_received only). Routes the
-      // write through the server's (runId, resumeId) constraint so a
-      // concurrent queue-consumer re-ensure deduplicates to one event.
-      ...(params?.resumeId ? { resumeId: params.resumeId } : {}),
-      // Content digest forwarded alongside resumeId so the direct write and the
-      // queue re-ensure record an identical digest on the server constraint.
-      ...(params?.resumePayloadDigest
-        ? { resumePayloadDigest: params.resumePayloadDigest }
-        : {}),
-      remoteRefBehavior,
-      payload,
-      ...meta,
-    },
+  const input = {
+    runId: id,
+    specVersion: data.specVersion ?? 2,
+    ...(data.correlationId ? { correlationId: data.correlationId } : {}),
+    ...(params?.requestId ? { vercelId: params.requestId } : {}),
+    ...(params?.computeInstanceId
+      ? { computeInstanceId: params.computeInstanceId }
+      : {}),
+    // Slot-identity snapshot: how much of the log the writer held. Rides as
+    // `maxSlot` because the v4 meta already has an unrelated telemetry
+    // `eventCount`.
+    ...(params?.eventCount !== undefined ? { maxSlot: params.eventCount } : {}),
+    replayDivergenceCount: params?.replayDivergenceCount,
+    occurredAt: params?.occurredAt ?? new Date(),
+    // Opt-in inline-delta: forward the cursor the runtime held before
+    // this write so the server can return the authoritative event-log
+    // delta on the response (events/cursor/hasMore), letting the caller
+    // skip a follow-up events.list. Outside turbo the runtime sends this on
+    // every write, but a server may act on only some event types (or none);
+    // a response without a delta just means the runtime keeps its cursor
+    // and fetches when it next needs to.
+    ...(params?.sinceCursor ? { sinceCursor: params.sinceCursor } : {}),
+    ...(params?.resumeId ? { resumeId: params.resumeId } : {}),
+    ...(params?.resumePayloadDigest
+      ? { resumePayloadDigest: params.resumePayloadDigest }
+      : {}),
+    // Resilient step dispatch re-ensure marker (step_created only). Advisory
+    // — the server MAY refuse it with 410 → RunExpiredError as
+    // defense-in-depth when it recorded a 412 rejection for this correlation
+    // id and no step entity exists.
+    ...(params?.viaStepDispatch ? { viaStepDispatch: true } : {}),
+    remoteRefBehavior,
+    payload,
+    ...meta,
+  };
+
+  if (data.eventType === 'run_started' && !params?.skipPreload) {
+    const result = await createWorkflowRunStartedEventV4(input, config);
+    const runCreated = result.events.find(
+      (event) => event.eventType === 'run_created'
+    );
+    const runStarted = result.events.find(
+      (event) => event.eventType === 'run_started'
+    );
+    if (!runCreated) {
+      throw new Error(
+        'v4 createEvent: run_started stream is missing run_created'
+      );
+    }
+    if (!runStarted) {
+      throw new Error(
+        'v4 createEvent: run_started stream is missing run_started'
+      );
+    }
+
+    let attributes = runCreated.eventData.attributes ?? {};
+    let updatedAt = runStarted.createdAt;
+    for (const event of result.events) {
+      if (event.eventType === 'attr_set') {
+        attributes = applyAttributeChanges(attributes, event.eventData.changes);
+        updatedAt = event.createdAt;
+      }
+    }
+
+    return {
+      event: runStarted,
+      run: {
+        runId: runCreated.runId,
+        status: 'running',
+        deploymentId: runCreated.eventData.deploymentId,
+        workflowName: runCreated.eventData.workflowName,
+        specVersion: runCreated.specVersion,
+        executionContext: runCreated.eventData.executionContext,
+        input: runCreated.eventData.input,
+        attributes,
+        encryptionPublicKey: runCreated.eventData.encryptionPublicKey,
+        startedAt: runStarted.createdAt,
+        createdAt: runCreated.createdAt,
+        updatedAt,
+      },
+      events: result.events,
+      cursor: result.cursor,
+      hasMore: result.hasMore,
+      maxEvents: result.maxEvents,
+    };
+  }
+
+  if (
+    data.eventType === 'hook_received' &&
+    params?.preloadEvents === true &&
+    params.resumeId !== undefined &&
+    params.resumePayloadDigest !== undefined
+  ) {
+    // Lazy hook resume: the queue consumer's idempotent re-ensure doubles
+    // as the invocation's setup request. A supporting server streams the
+    // complete replay log back in this response with resolved frame bodies
+    // — the SERVER owns that resolution (the preload contract requires
+    // replay-ready bytes; v4 has no /refs endpoint to hydrate a lazy
+    // descriptor during replay), so the request keeps hook_received's lazy
+    // default. Against an older server this makes the CBOR fallback
+    // lightweight: it answers the mutation without resolving and echoing
+    // an S3-backed hook payload the runtime would discard anyway.
+    const outcome = await createHookReceivedPreloadEventV4(
+      { ...input, remoteRefBehavior: 'lazy' },
+      config
+    );
+    if (outcome.kind === 'materialized') {
+      // Older server (or optimization declined): the write still succeeded
+      // and this is its normal materialized result. The runtime sees no
+      // replay preload on it and falls back to the run_started setup.
+      return outcome.result;
+    }
+    const { canonicalEventId, maxEvents, events, cursor, hasMore } = outcome;
+    const canonicalEvent = events.find(
+      (event) => event.eventId === canonicalEventId
+    );
+    // Unlike lifecycle streams, a preload missing run_created/run_started is
+    // not fatal here: the write has already converged, so return the page
+    // without a run and let the runtime take its safe fallback.
+    const run = reconstructRunFromReplayEvents(events);
+    return {
+      ...(canonicalEvent ? { event: canonicalEvent } : {}),
+      ...(run ? { run } : {}),
+      events,
+      cursor,
+      hasMore,
+      ...(maxEvents !== undefined ? { maxEvents } : {}),
+    };
+  }
+
+  return createWorkflowRunEventV4(
+    data.eventType === 'run_started'
+      ? { ...input, eventType: 'run_started', skipPreload: true }
+      : { ...input, eventType: data.eventType },
     config
   );
+}
 
-  // The server already CBOR-decoded into result.body — just thread the
-  // fields through. This is the runtime's event-append path (world.events
-  // .create is only ever called from the workflow runtime, never from
-  // o11y), and the runtime re-hydrates every payload it consumes through
-  // the decompress-aware helpers (hydrateStepReturnValue, hydrateRunError,
-  // …). So we deliberately do NOT decompress here: doing so would be
-  // redundant work on the TTFB-sensitive run_started/inline-delta path and
-  // would make the runtime's deserialize compression telemetry report
-  // `codec: none` for payloads that were compressed at rest. gzip/zstd
-  // normalization for o11y/display lives on the read paths (getEvent,
-  // getWorkflowRunEvents, getStep, getRun, getHook).
-  //
-  // `event`/`events` go through coerceEventDates only: they can be read
-  // back from the backing store server-side (e.g. the run_started TTFB
-  // preload queries the event log), where nested eventData dates are ISO
-  // strings — same coercion the GET/LIST path applies. The returned event
-  // honors the caller's resolveData: 'none' strips payload fields,
-  // matching the v3 path's stripEventAndLegacyRefs behavior.
-  const resolveData = params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
-  const body = result.body;
+/**
+ * Reconstruct the run entity from a streamed replay log: identity and input
+ * from `run_created`, start time from `run_started`, later `attr_set` events
+ * folded into `attributes`/`updatedAt`. Returns undefined when the log does
+ * not contain both lifecycle events (the caller decides whether that is
+ * fatal). The reconstructed status is always `running` — a terminal event
+ * committed concurrently still rides in the log itself, and the runtime's
+ * replay-time terminal detection handles it.
+ */
+function reconstructRunFromReplayEvents(
+  events: Event[]
+): (WorkflowRun & { startedAt: Date }) | undefined {
+  const runCreated = events.find((event) => event.eventType === 'run_created');
+  const runStarted = events.find((event) => event.eventType === 'run_started');
+  if (!runCreated || !runStarted) {
+    return undefined;
+  }
+
+  let attributes = runCreated.eventData.attributes ?? {};
+  let updatedAt = runStarted.createdAt;
+  for (const event of events) {
+    if (event.eventType === 'attr_set') {
+      attributes = applyAttributeChanges(attributes, event.eventData.changes);
+      updatedAt = event.createdAt;
+    }
+  }
+
   return {
-    event: body.event
-      ? stripEventDataRefs(
-          coerceEventDates(body.event as Record<string, unknown>),
-          resolveData
-        )
-      : undefined,
-    run: body.run
-      ? deserializeError<WorkflowRun>(body.run as Record<string, unknown>)
-      : undefined,
-    step: body.step
-      ? deserializeStep(body.step as Parameters<typeof deserializeStep>[0])
-      : undefined,
-    hook: body.hook as EventResult['hook'],
-    wait: body.wait as EventResult['wait'],
-    events: body.events
-      ? (body.events as Record<string, unknown>[]).map(coerceEventDates)
-      : undefined,
-    cursor: body.cursor ?? undefined,
-    hasMore: body.hasMore,
-    // Lazy step start: thread the server's "I created the step on this call"
-    // signal through so the owned-inline runtime path can gate body execution
-    // on it. Absent from older servers → undefined → safe default.
-    ...(body.stepCreated ? { stepCreated: true } : {}),
-    // Server-supplied per-run event ceiling; absent from older servers.
-    ...(typeof body.maxEvents === 'number'
-      ? { maxEvents: body.maxEvents }
-      : {}),
+    runId: runCreated.runId,
+    status: 'running',
+    deploymentId: runCreated.eventData.deploymentId,
+    workflowName: runCreated.eventData.workflowName,
+    specVersion: runCreated.specVersion,
+    executionContext: runCreated.eventData.executionContext,
+    input: runCreated.eventData.input,
+    attributes,
+    encryptionPublicKey: runCreated.eventData.encryptionPublicKey,
+    startedAt: runStarted.createdAt,
+    createdAt: runCreated.createdAt,
+    updatedAt,
   };
 }

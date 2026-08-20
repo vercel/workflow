@@ -1,0 +1,12 @@
+{
+  "name": "@workflow/example-python",
+  "private": true,
+  "version": "0.0.0",
+  "license": "Apache-2.0",
+  "scripts": {
+    "dev": "uv run --no-config uvicorn app:app --port 3000"
+  },
+  "devDependencies": {
+    "workflow": "workspace:*"
+  }
+}

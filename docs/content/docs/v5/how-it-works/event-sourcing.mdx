@@ -94,7 +94,7 @@ flowchart TD
 - `cancelled`: Reserved for future use (not currently emitted)
 
 <Callout type="info">
-The `step_retrying` event is optional. Steps can retry without it - the retry mechanism works regardless of whether this event is emitted. You may see back-to-back `step_started` events in logs when a step retries after a timeout or when the error is not explicitly captured. See [Errors and Retries](/docs/foundations/errors-and-retries) for more on how retries work.
+The `step_retrying` event is optional. Steps can retry without it - the retry mechanism works regardless of whether this event is emitted. You may see back-to-back `step_started` events in logs when a step retries after a timeout or when the error is not explicitly captured, and also when concurrent replays each commit one (see [Duplicate Events](#duplicate-events)). See [Errors and Retries](/docs/foundations/errors-and-retries) for more on how retries work.
 </Callout>
 
 When present, the `step_retrying` event moves a step back to `pending` state and records the error that caused the retry. This provides two benefits:
@@ -225,6 +225,44 @@ Terminal states represent the end of an entity's lifecycle. Once an entity reach
 
 Attempting to create an event that would transition an entity out of a terminal state will result in an error. This prevents inconsistent state and ensures the integrity of the event log.
 
+That guard sits on the write path. A duplicate the write path does permit — a second `step_created` for a step that is not yet terminal, for example — is handled during replay instead, described next.
+
+## Duplicate Events
+
+Concurrent invocations replaying the same run share one event log. An invocation working from a stale prefix — one that predates another invocation's write — can commit its own `step_created`, `step_started`, or `wait_created` for an entity the log already records one of. These writes pass the terminal-state guard above, so the write path commits them even when a backend validates transitions atomically with the insert.
+
+Those duplicates are committed but inert. The outcome was decided by the first event of its kind at a lower position in the log, and every replay reads that same event at that same position, so a later copy cannot change what the workflow observes.
+
+To keep an inert copy from failing an otherwise healthy run, the runtime groups event types into **classes** and tracks, per entity, which classes the current replay has already consumed. When an event is offered to every registered consumer and none wants it, and its class is already recorded for that entity, the replay steps over it instead of reporting a [replay divergence](/docs/errors/replay-divergence) — which, once the recovery budget is exhausted, ends the run with [`CORRUPTED_EVENT_LOG`](/docs/errors/corrupted-event-log).
+
+| Class | Event types |
+|-------|-------------|
+| `run_started` | `run_started` |
+| `step_created` | `step_created` |
+| `step_started` | `step_started` |
+| `step_retrying` | `step_retrying` |
+| `step_terminal` | `step_completed`, `step_failed` |
+| `wait_created` | `wait_created` |
+| `wait_completed` | `wait_completed` |
+| `hook_created` | `hook_created` |
+| `hook_disposed` | `hook_disposed` |
+
+Types that share a class are the mutually exclusive outcomes of one decision: a step either completes or fails, and the first outcome recorded is the one that counts. Classes are independent of one another, so passing over one does not suppress another. A step whose result is already in the log has still recorded exactly one `step_created`, which is what makes a second one ignorable on its own terms.
+
+The two hook classes cover the same shape of duplicate, and replay reaches them less often because the write path resolves most hook duplicates before they reach the log: a run re-creating a hook it already owns converges on the existing `hook_created` rather than appending a second one, and a second `hook_disposed` for the same hook is refused as an idempotent no-op. A log that holds either anyway is read past like any other repeat.
+
+The remaining event types belong to no class and are never skipped:
+
+- `hook_received`: a hook legitimately receives many payloads under one ID, so a second `hook_received` is not a repeat of anything.
+- `hook_conflict`: records a failed acquisition of a hook's token, which the same run can hit repeatedly over its lifetime as other runs take and release that token. The hook's own consumer stays registered and claims every copy it is offered, so a repeat is consumed rather than reaching the class check.
+- `attr_set`: written on every [`setAttributes()`](/docs/api-reference/workflow/set-attributes) call, so a second write of the same key is a new fact rather than a repeat.
+- `run_created` precedes every replay and is always consumed.
+- `run_completed`, `run_failed`, and `run_cancelled` never reach the check. The runtime exits before replaying the workflow body once the log holds one of them, so no consumer ever takes one and no class is ever recorded for them.
+
+Both kinds of skip are logged at `debug`, so neither reaches the console unless you run with `DEBUG=workflow:runtime:*`. A duplicate is a permanent feature of the log: every later replay re-reads it and lands on the same check, so anything printed unconditionally would print once per replay for the life of the run, and there is nothing to act on either way. A repeat that decides a class differently — a `step_failed` behind a `step_completed`, or the reverse — gets its own message, because unlike a re-commit of the same outcome there is no reading in which both writers were right.
+
+The observability UI greys out the events it can identify this way, with the reason on hover. Its set is narrower than the runtime's: it reads the log without consumer state, and a consumer for an entity that is still open legitimately claims a repeat — each retry of a step writes another `step_started`. So it marks a repeat only once no consumer can remain for it: past a terminal event for the same entity, or a second `run_started`, of which the log records one per run. On a partial view of the log — one page of a paginated list, or search results — it marks nothing, since which copy came first is a property of the whole log.
+
 ## Event Correlation
 
 Events use a `correlationId` to link related events together. For step, hook, and wait events, the correlation ID identifies the specific entity instance:
@@ -260,7 +298,7 @@ On Vercel, `requestId` is the platform request ID when available. Other worlds a
 
 ## Entity IDs
 
-All entities in the Workflow SDK use a consistent ID format: a 4-character prefix followed by an underscore and a [ULID](https://github.com/ulid/spec) (Universally Unique Lexicographically Sortable Identifier).
+All entities in the Workflow SDK use a consistent ID format: a 4-character prefix followed by an underscore and a fixed-width body. For every entity except events, that body is a [ULID](https://github.com/ulid/spec) (Universally Unique Lexicographically Sortable Identifier). An event's body is its slot number, described below.
 
 | Entity | Prefix | Example |
 |--------|--------|---------|
@@ -268,11 +306,19 @@ All entities in the Workflow SDK use a consistent ID format: a 4-character prefi
 | Step | `step_` | `step_01HXYZ123ABC456DEF789GHJ` |
 | Hook | `hook_` | `hook_01HXYZ123ABC456DEF789GHJ` |
 | Wait | `wait_` | `wait_01HXYZ123ABC456DEF789GHJ` |
-| Event | `evnt_` | `evnt_01HXYZ123ABC456DEF789GHJ` |
+| Event | `evnt_` | `evnt_00000000000000000000000042` (slot 42) |
 | Stream | `strm_` | `strm_01HXYZ123ABC456DEF789GHJ` |
 
 **Why this format?**
 
 - **Prefixes enable introspection**: Given any ID, you can immediately identify what type of entity it refers to. This makes debugging, logging, and cross-referencing entities across the system straightforward.
 
-- **ULIDs enable chronological ordering**: Unlike UUIDs, ULIDs encode a timestamp in their first 48 bits, making them lexicographically sortable by creation time. This property is essential for the event log—events are always stored and retrieved in the correct chronological order simply by sorting their IDs.
+- **Fixed-width bodies enable ordering**: Unlike UUIDs, these bodies sort lexicographically in creation order, so the event log is stored and retrieved in the correct order by sorting IDs alone. Slot numbers get that from counting at a fixed width, which makes string order the same as numeric order. ULIDs get it from the timestamp in their first 48 bits, which also makes a ULID's creation time recoverable from the ID itself.
+
+### Event IDs
+
+An event ID is a **slot number**: the event's 1-based position in the run's event log, zero-padded to the same width as a ULID. The world assigns it when the event is published, so two writers racing to append never claim the same position and a rejected write leaves no gap behind. Slots are dense, and unique only within a run, so an event ID identifies an event only when paired with its `runId`.
+
+Density is what lets a reader tell a complete log from an incomplete one by its length alone. A replay that loads a log with a position missing below the highest one it can see cannot tell an event that was never written from one it failed to read, so it fails the run with [`CORRUPTED_EVENT_LOG`](/docs/errors/corrupted-event-log) rather than replay across the hole. See [`WORKFLOW_SLOT_GAP_CHECK`](/docs/configuration/runtime-tuning#workflow_slot_gap_check).
+
+A slot ID carries no timestamp. Zero-padded decimal digits are a subset of the ULID alphabet, so a slot ID passes ULID validation and sorts correctly, but decoding its first 48 bits yields the Unix epoch instead of a creation time. Read `createdAt` on the event when you need to know when it was written, and don't decode the time from an `evnt_` ID you get back from an API, a log line, or a cursor.

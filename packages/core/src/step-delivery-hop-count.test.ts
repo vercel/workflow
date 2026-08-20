@@ -55,11 +55,14 @@ function setupWorkflowContext(
   const promiseQueueHolder = { current: Promise.resolve() };
   const ctxRef: { current?: WorkflowOrchestratorContext } = {};
   const ctx: WorkflowOrchestratorContext = {
+    suspensionGeneration: 0,
     runId: 'wrun_test',
     encryptionKey: undefined,
     replayPayloadCache,
     globalThis: context.globalThis,
     eventsConsumer: new EventsConsumer(events, {
+      // Fake context: no deliveries are modeled, so the gate is a no-op here.
+      isDeliveryIdle: () => true,
       onUnconsumedEvent: (event) => {
         ctxRef.current?.onWorkflowError(
           new WorkflowRuntimeError(`Unconsumed event: ${event.eventType}`)

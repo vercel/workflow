@@ -260,7 +260,16 @@ export async function resumeHook<T = any>(
   // implementation with the fresh attestation set. Keeping the freshness flag
   // off the exported signature prevents a caller from passing a stale Hook plus
   // `true` and reactivating dynamic dedup against a rolled-back backend.
-  return resumeHookImpl(tokenOrHook, payload, encryptionKeyOverride, false);
+  //
+  // T0 of the hook-resume TTR window is taken HERE, at the public entry point,
+  // rather than inside the implementation — see the parameter's doc comment.
+  return resumeHookImpl(
+    tokenOrHook,
+    payload,
+    encryptionKeyOverride,
+    false,
+    Date.now()
+  );
 }
 
 /**
@@ -272,12 +281,20 @@ export async function resumeHook<T = any>(
  *   by token during THIS resume, so its response-only `resumeCapabilities`
  *   reflects the live backend and may be trusted for the dynamic-dedup gate.
  *   A token string is always fetched fresh here, so it is implicitly fresh.
+ * @param resumeRequestedAtMs - T0 of the hook-resume TTR window (see
+ *   runtime/resume-latency.ts), stamped by the PUBLIC entry point the caller
+ *   used. It is a parameter rather than a local because `resumeWebhook` does
+ *   real work before it gets here — the by-token lookup, the run-key
+ *   resolution that hydrates hook metadata, and the `respondWith` setup — and
+ *   stamping locally would silently exclude all of it, so the two entry points
+ *   would report the same metric over different windows.
  */
 async function resumeHookImpl<T = any>(
   tokenOrHook: string | Hook,
   payload: T,
   encryptionKeyOverride: PayloadKey | undefined,
-  hookFreshlyLookedUp: boolean
+  hookFreshlyLookedUp: boolean,
+  resumeRequestedAtMs: number
 ): Promise<ResumedHook> {
   return await waitedUntil(() => {
     return trace('hook.resume', async (span) => {
@@ -550,11 +567,21 @@ async function resumeHookImpl<T = any>(
             throw err;
           }
 
+          // T1 of the TTR window. Stamped immediately before the publish so
+          // `producer_prep` covers exactly the work above it (hook lookup,
+          // key resolution, serialization, and — on this path — the awaited
+          // `hook_received` write, which is genuinely serial here).
+          const queuePublishRequestedAtMs = Date.now();
           await world.queue(
             queueName,
             {
               runId: hook.runId,
               traceCarrier: resumeContext.traceCarrier ?? undefined,
+              hookResumeTiming: {
+                resumeRequestedAtMs,
+                queuePublishRequestedAtMs,
+                strategy: 'sequential',
+              },
             } satisfies WorkflowInvokePayload,
             queueOptions
           );
@@ -571,6 +598,38 @@ async function resumeHookImpl<T = any>(
         );
         span?.setAttributes({ 'workflow.hook.resume_id': resumeId });
 
+        // Wrapped in a thunk purely so T1 of the TTR window is stamped at the
+        // exact instant the publish is requested — after the racing
+        // `hook_received` write has been kicked off, which is where the
+        // additive `producer_prep` phase must end. The two calls still start
+        // in the same turn and race exactly as before.
+        const publishInvocation = () => {
+          const queuePublishRequestedAtMs = Date.now();
+          return world.queue(
+            queueName,
+            {
+              runId: hook.runId,
+              traceCarrier: resumeContext.traceCarrier ?? undefined,
+              hookInput: {
+                resumeId,
+                hookId: hook.hookId,
+                token: hook.token,
+                payload: dehydratedPayload,
+                payloadDigest,
+                // Deployment affinity for the consumer's cheap pre-write
+                // check: lets a misrouted delivery re-route before its
+                // hoisted hook_received write instead of after.
+                deploymentId: resumeContext.deploymentId,
+              },
+              hookResumeTiming: {
+                resumeRequestedAtMs,
+                queuePublishRequestedAtMs,
+                strategy: 'parallel',
+              },
+            } satisfies WorkflowInvokePayload,
+            queueOptions
+          );
+        };
         const [eventResult, queueResult] = await Promise.allSettled([
           world.events.create(
             hook.runId,
@@ -582,21 +641,7 @@ async function resumeHookImpl<T = any>(
             },
             { v1Compat, resumeId, resumePayloadDigest: payloadDigest }
           ),
-          world.queue(
-            queueName,
-            {
-              runId: hook.runId,
-              traceCarrier: resumeContext.traceCarrier ?? undefined,
-              hookInput: {
-                resumeId,
-                hookId: hook.hookId,
-                token: hook.token,
-                payload: dehydratedPayload,
-                payloadDigest,
-              },
-            } satisfies WorkflowInvokePayload,
-            queueOptions
-          ),
+          publishInvocation(),
         ]);
 
         // Queue failure is always fatal — the run was not re-triggered, so no
@@ -714,6 +759,12 @@ export async function resumeWebhook(
   token: string,
   request: Request
 ): Promise<Response> {
+  // T0 of the hook-resume TTR window. Everything below — the by-token lookup,
+  // the run-key resolution it may trigger, and the `respondWith` setup — is
+  // real producer-side latency on this path, so the window has to open here
+  // and not inside `resumeHookImpl`; otherwise webhook resumes would report a
+  // systematically shorter total than `resumeHook` ones into the same metric.
+  const resumeRequestedAtMs = Date.now();
   const { hook, encryptionKey } = await getHookByTokenWithKey(token);
 
   // Only webhooks can be resumed via the public endpoint.
@@ -756,7 +807,7 @@ export async function resumeWebhook(
   // backend — call the internal implementation with the fresh attestation so
   // the parallel fast path stays available without a second GET. (The public
   // `resumeHook` never sets this, so a caller cannot forge it.)
-  await resumeHookImpl(hook, request, encryptionKey, true);
+  await resumeHookImpl(hook, request, encryptionKey, true, resumeRequestedAtMs);
 
   if (responseReadable) {
     // Wait for the readable stream to emit one chunk,

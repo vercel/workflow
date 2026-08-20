@@ -1,10 +1,16 @@
 import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { WorkflowWorldError } from '@workflow/errors';
+import { eventIdToSlot } from '@workflow/world';
+import { lock } from 'proper-lockfile';
 import { decodeTime, monotonicFactory } from 'ulid';
+import { z } from 'zod';
 import {
+  deleteJSON,
   hasTag,
   isUntagged,
+  readJSON,
   resolveWithinBase,
   stripTag,
   ulidToDate,
@@ -229,46 +235,24 @@ export async function reapPendingHookEvents(
  * >= every visible event's `createdAt`, which was stamped at that event's
  * `createImpl()` entry — before its publish, and thus before this call.
  * Equal-`createdAt` ties fall to the strictly-dominant eventId.
+ *
+ * ULID-numbered runs only. A slot-numbered run needs no temporal argument:
+ * the next slot dominates every allocated one by construction, so its
+ * terminal transition just draws from the run's slot allocator after the
+ * reap. Callers pick the branch (see `mintDominantEventKey` in
+ * events-storage.ts).
  */
 export async function mintRunDominantEventKey(
   basedir: string,
   runId: string,
   tag?: string
 ): Promise<{ eventId: string; createdAt: Date }> {
-  let files: string[] = [];
-  try {
-    files = await fs.readdir(path.join(basedir, 'events'));
-  } catch (error) {
-    // Only ENOENT ("no events directory yet") means there is provably
-    // nothing visible to dominate. Any other failure would silently mint a
-    // wall-clock key with no dominance guarantee over an already-accepted
-    // hook — abort the terminal transition instead; its retry re-runs this
-    // scan.
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
-      throw error;
-    }
-  }
-  const prefix = `${runId}-`;
-  let maxUlid: string | null = null;
-  for (const file of files) {
-    if (!file.startsWith(prefix) || !file.endsWith('.json')) {
-      continue;
-    }
-    const fileId = file.slice(0, -'.json'.length);
-    // Mirror read visibility: untagged files are visible to every tag,
-    // tagged files only to their own tag.
-    if (!isUntagged(fileId) && !(tag && hasTag(fileId, tag))) {
-      continue;
-    }
-    const candidate = stripTag(fileId).slice(prefix.length);
-    if (!maxUlid || candidate > maxUlid) {
-      maxUlid = candidate;
-    }
-  }
+  const scan = await scanRunEventIds(basedir, runId, tag);
+
   let ts = Date.now();
-  if (maxUlid) {
+  if (scan.maxId) {
     try {
-      const maxTs = decodeTime(maxUlid.replace(/^evnt_/, ''));
+      const maxTs = decodeTime(scan.maxId.replace(/^evnt_/, ''));
       if (ts <= maxTs) {
         ts = maxTs + 1;
       }
@@ -280,10 +264,172 @@ export async function mintRunDominantEventKey(
 }
 
 /**
+ * What a run's already-published event ids say about its identity scheme.
+ *
+ * A run keeps the scheme it was created under for its whole life (a log may
+ * not mix ULID and slot ids — `events.list` sorts on the id, and the two
+ * schemes do not interleave), so the ids on disk are the authoritative pin.
+ * `usesSlots` is false for a run with no events yet; the caller decides what a
+ * brand-new run gets.
+ */
+export interface RunEventIdScan {
+  /** Highest reader-visible event id, or null when the run has no events. */
+  maxId: string | null;
+  /** Whether the run's ids are slot-numbered. */
+  usesSlots: boolean;
+  /** Highest allocated slot, or 0 when the run has none. */
+  maxSlot: number;
+  /** Number of reader-visible events found for the run. */
+  count: number;
+  /** Reader-visible event ids, tag stripped, in directory order. */
+  ids: string[];
+}
+
+/**
+ * Scans the events directory for one run's ids, honoring tag visibility.
+ *
+ * O(all event files), like every other directory-walking read in this
+ * backend. Callers that run it per write memoize the result and use the
+ * publish itself to detect when the memo has fallen behind.
+ */
+export async function scanRunEventIds(
+  basedir: string,
+  runId: string,
+  tag?: string
+): Promise<RunEventIdScan> {
+  let files: string[] = [];
+  try {
+    files = await fs.readdir(path.join(basedir, 'events'));
+  } catch (error) {
+    // Only ENOENT ("no events directory yet") means there is provably
+    // nothing visible. Any other failure would silently report an empty run,
+    // which would mint a colliding slot / a non-dominant ULID — let the
+    // caller's retry re-run the scan instead.
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+      throw error;
+    }
+  }
+  const prefix = `${runId}-`;
+  const ids: string[] = [];
+  let maxId: string | null = null;
+  let maxSlot = 0;
+  let usesSlots = false;
+  let count = 0;
+  for (const file of files) {
+    if (!file.startsWith(prefix) || !file.endsWith('.json')) {
+      continue;
+    }
+    const fileId = file.slice(0, -'.json'.length);
+    // Mirror read visibility: untagged files are visible to every tag,
+    // tagged files only to their own tag.
+    if (!isUntagged(fileId) && !(tag && hasTag(fileId, tag))) {
+      continue;
+    }
+    const candidate = stripTag(fileId).slice(prefix.length);
+    count += 1;
+    ids.push(candidate);
+    if (!maxId || candidate > maxId) {
+      maxId = candidate;
+    }
+    const slot = eventIdToSlot(candidate);
+    if (slot !== null) {
+      usesSlots = true;
+      if (slot > maxSlot) maxSlot = slot;
+    }
+  }
+  return { maxId, usesSlots, maxSlot, count, ids };
+}
+
+/**
  * Path of the exclusive-create claim file that reserves a hook token.
  */
 export function hookTokenClaimPath(basedir: string, token: string): string {
   return path.join(basedir, 'hooks', 'tokens', `${hashToken(token)}.json`);
+}
+
+export const HookTokenClaimSchema = z.object({
+  // Legacy claims omitted hookId. Keeping it optional preserves their
+  // existing cross-hook conflict behavior (see #2283).
+  hookId: z.string().optional(),
+  runId: z.string(),
+  // Legacy claims also omitted eventId. Their recovery marker pins the
+  // canonical hook_created event before concurrent retries publish it.
+  eventId: z.string().optional(),
+  tokenRetentionUntil: z.coerce.date().optional(),
+});
+
+export type HookTokenClaim = z.infer<typeof HookTokenClaimSchema>;
+
+export async function readHookTokenClaim(
+  claimPath: string
+): Promise<HookTokenClaim | null> {
+  try {
+    return await readJSON(claimPath, HookTokenClaimSchema);
+  } catch (error) {
+    if (error instanceof SyntaxError || error instanceof z.ZodError) {
+      return null;
+    }
+    throw error;
+  }
+}
+
+/**
+ * Serializes claim handoffs. Exclusive writes admit the first owner, but
+ * cannot atomically replace a stale owner across local-world processes.
+ */
+export async function withHookTokenClaimLock<T>(
+  basedir: string,
+  token: string,
+  fn: (signal: AbortSignal) => Promise<T>
+): Promise<T> {
+  const claimPath = hookTokenClaimPath(basedir, token);
+  await fs.mkdir(path.dirname(claimPath), { recursive: true });
+  const controller = new AbortController();
+  let release: () => Promise<void>;
+  try {
+    release = await lock(claimPath, {
+      realpath: false,
+      stale: 30_000,
+      update: 1_000,
+      retries: {
+        retries: 350,
+        factor: 1,
+        minTimeout: 100,
+        maxTimeout: 100,
+      },
+      onCompromised(error) {
+        controller.abort(
+          new WorkflowWorldError('Hook token claim lock was compromised', {
+            cause: error,
+          })
+        );
+      },
+    });
+  } catch (error) {
+    throw new WorkflowWorldError('Could not acquire Hook token claim lock', {
+      cause: error,
+    });
+  }
+
+  let result: T;
+  try {
+    result = await fn(controller.signal);
+    controller.signal.throwIfAborted();
+  } catch (error) {
+    if (!controller.signal.aborted) {
+      await release().catch(() => {});
+    }
+    throw error;
+  }
+
+  try {
+    await release();
+  } catch (error) {
+    throw new WorkflowWorldError('Could not release Hook token claim lock', {
+      cause: error,
+    });
+  }
+  return result;
 }
 
 /**
@@ -310,41 +456,22 @@ export function hookResumeClaimPath(
   return path.join(basedir, 'hooks', 'resumes', `${key}.json`);
 }
 
-/**
- * Release (delete) a token claim only if it still points at the releasing
- * hook's own `(runId, hookId)`.
- *
- * Both in-flight releasers — the `hook_disposed` handler and the
- * terminal-run `deleteAllHooksForRun` cleanup — read the hook entity and
- * then delete the claim file. Deleting unconditionally is unsafe across
- * processes: a releaser that stalls between those two operations can
- * outlive a force-release of its stale claim (see
- * `isHookTokenClaimReleasable`) and then delete the NEXT claimant's live
- * claim, transiently breaking token uniqueness. Re-reading the claim and
- * matching its identity here shrinks that window from "a stall of any
- * length" to the adjacent read/delete file ops.
- *
- * A claim that is missing, unreadable, or owned by someone else is left
- * alone — if it is genuinely stale debris, the claimant-side force-release
- * path reaps it.
- */
+/** Deletes a claim only while it still belongs to this Hook. */
 export async function releaseHookTokenClaimIfOwnedBy(
   basedir: string,
   token: string,
   runId: string,
   hookId: string
 ): Promise<void> {
-  const claimPath = hookTokenClaimPath(basedir, token);
-  let claim: { runId?: unknown; hookId?: unknown };
-  try {
-    claim = JSON.parse(await fs.readFile(claimPath, 'utf8'));
-  } catch {
-    return;
-  }
-  if (claim.runId !== runId || claim.hookId !== hookId) {
-    return;
-  }
-  await fs.unlink(claimPath).catch(() => {});
+  await withHookTokenClaimLock(basedir, token, async (signal) => {
+    const claimPath = hookTokenClaimPath(basedir, token);
+    const claim = await readHookTokenClaim(claimPath);
+    if (!claim) return;
+    if (claim.runId === runId && claim.hookId === hookId) {
+      signal.throwIfAborted();
+      await deleteJSON(claimPath);
+    }
+  });
 }
 
 /**

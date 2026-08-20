@@ -2,7 +2,7 @@
 title: CLI and Web UI
 description: CLI flags and environment variables for inspecting local, Postgres, and Vercel Workflow runs.
 type: reference
-summary: Configure workflow inspect, workflow web, workflow health, and observability tooling.
+summary: Configure workflow inspect, workflow cancel, workflow web, workflow health, and observability tooling.
 related:
   - /docs/observability
   - /docs/configuration/worlds
@@ -114,6 +114,34 @@ Vercel project and auth settings can often be inferred from `.vercel/project.jso
 - Environment variable: none
 - Default: disabled
 - Enables keyboard-controlled pagination for supported list commands.
+
+## Bulk cancel
+
+`workflow cancel <run-id>` cancels one run. Given a filter instead, it bulk-cancels a batch; bulk mode requires `--status` or `--workflowName`.
+
+### `--status`
+
+- Command: `workflow cancel`
+- Default: unset
+- Restricts the batch to this status. Only `pending` and `running` are accepted — terminal runs cannot be cancelled.
+
+### `--workflowName` / `-n`
+
+- Command: `workflow cancel`
+- Default: unset
+- Restricts the batch to one workflow. Expects the generated workflow ID from `workflow inspect runs`, not the short function name.
+
+### `--limit` (cancel)
+
+- Command: `workflow cancel`
+- Default: `50`
+- Maximum runs to cancel in one batch (1–500). Only one batch is cancelled per invocation; re-run to cancel the next.
+
+### `--confirm` / `-y`
+
+- Command: `workflow cancel`
+- Default: disabled
+- Skips the interactive confirmation prompt.
 
 ## Health checks
 

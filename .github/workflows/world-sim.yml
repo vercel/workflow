@@ -1,0 +1,119 @@
+name: World Sim
+
+# Plays the deterministic scenario book (`workbench/sim-world`) against the
+# runtime in this commit and publishes its summary.
+#
+# This lane never blocks a merge, by design. The job publishes its numbers
+# instead of a verdict, so the comment is the result to watch, not the check
+# mark.
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - "!*"
+  pull_request:
+    types:
+      - opened
+      - reopened
+      - synchronize
+  workflow_dispatch:
+
+concurrency:
+  # Unique group for this workflow and branch
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  world-sim:
+    name: World Sim
+    runs-on: ubuntu-latest
+    # Non-blocking at the job level, not just on the sim steps: a failed
+    # checkout, install, or PR comment should not turn this lane into a red X
+    # on a PR it has nothing to say about. The step summary and the artifact
+    # still carry whatever did happen.
+    continue-on-error: true
+    # The book itself is ~11s on a laptop. Everything else here is install and
+    # build.
+    timeout-minutes: 15
+    env:
+      TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
+      TURBO_TEAM: ${{ vars.TURBO_TEAM }}
+
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      # The default build (every package, no workbench) rather than a filter
+      # narrowed to the sim's own dependencies: those two graphs reach most of
+      # the repo anyway — through `@workflow/builders`, which is what compiles
+      # the scenario workflows — and matching what the other lanes build is
+      # what keeps this one on their turbo cache instead of warming its own.
+      # The workbench itself has no build; `run.ts` is executed by Node's type
+      # stripping.
+      - name: Setup environment
+        uses: ./.github/actions/setup-workflow-dev
+
+      - name: Play the book
+        id: world-sim
+        continue-on-error: true
+        run: |
+          pnpm --filter @workflow/sim-world-workbench sim \
+            --no-color \
+            --summary-file "${{ github.workspace }}/world-sim.md" \
+            --detail-file "${{ github.workspace }}/world-sim.txt"
+
+      # The comment is reposted on every push to the PR, so what it costs when
+      # it has nothing new to say is the thing to keep small.
+      - name: Render summary
+        if: always()
+        run: |
+          run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          {
+            echo "## Sim World"
+            echo
+            echo "Simulated world deterministic testing for races. [Traces]($run_url)"
+            echo
+            if [ -f world-sim.md ]; then
+                # The summary names its detail file by the path it was given,
+                # which is absolute so that pnpm's package-directory cwd cannot
+                # scatter them. Strip the workspace prefix back off, leaving
+                # the bare name the artifact below actually contains.
+                sed "s|${{ github.workspace }}/||g" world-sim.md
+                echo
+            else
+                echo "🟠 _The run produced no summary — see the job log._"
+                echo
+            fi
+          } | tee world-sim-summary.md >> "$GITHUB_STEP_SUMMARY"
+
+      # Skipped on forks, where `pull_request` grants read-only permissions and
+      # the write would fail. The step summary above is the fallback there.
+      - name: Update PR comment
+        if: >-
+          always() && github.event_name == 'pull_request' &&
+          github.event.pull_request.head.repo.full_name == github.repository
+        continue-on-error: true
+        uses: marocchino/sticky-pull-request-comment@773744901bac0e8cbb5a0dc842800d45e9b2b405 # v2.9.4
+        with:
+          header: world-sim-results
+          path: world-sim-summary.md
+
+      - name: Upload traces
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: world-sim-traces
+          path: |
+            world-sim-summary.md
+            world-sim.md
+            world-sim.txt
+          retention-days: 7
+          if-no-files-found: ignore

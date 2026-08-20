@@ -2,9 +2,9 @@
 
 import React, { useEffect, useRef } from 'react';
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso';
-import { CopyButton } from './new-trace-viewer/components/copy-button';
 import { serializeForClipboard } from './sidebar/copyable-data-block';
 import { StreamViewerSkeleton } from './stream-viewer-skeleton';
+import { CopyButton } from './trace-viewer/components/copy-button';
 import { DataInspector } from './ui/data-inspector';
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -122,7 +122,7 @@ export function StreamViewer({
                 <ChunkRow chunk={chunks[index]} />
               </div>
             )}
-            style={{ flex: 1, minHeight: 0 }}
+            className="min-h-0 flex-1"
           />
         )}
       </div>

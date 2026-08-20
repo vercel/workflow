@@ -4,7 +4,7 @@ import { describeError } from '../describe-error.js';
 import { runtimeLogger } from '../logger.js';
 import { dehydrateRunError } from '../serialization.js';
 import { getReplayTimeoutMaxRetries, getReplayTimeoutMs } from './constants.js';
-import { memoizeEncryptionKey } from './helpers.js';
+import { memoizeEncryptionKey, type SlotSnapshotParams } from './helpers.js';
 import { getWorld } from './world.js';
 
 /**
@@ -105,21 +105,13 @@ export class ReplayBudget {
   }
 }
 
+export class ReplayTimeoutRetryError extends Error {
+  override readonly name = 'ReplayTimeoutRetryError';
+}
+
 /**
- * Fail the run (or retry, on early attempts) when the replay budget is
- * exhausted. The handling depends on whether the underlying World
- * supports `process.exit(1)` as a queue redelivery signal (see
- * `World.processExitTriggersQueueRedelivery`):
- *
- * - **Managed-platform Worlds** (`world-vercel`): on attempts <=
- *   `REPLAY_TIMEOUT_MAX_RETRIES` exit the process so the platform fails
- *   the invocation and the queue redelivers; on the next attempt write
- *   `run_failed` with `RUN_ERROR_CODES.REPLAY_TIMEOUT` and exit.
- *
- * - **In-process Worlds** (`world-local`, dev servers): calling
- *   `process.exit()` would terminate the host (e.g. `pnpm dev`), so
- *   instead log a warning, write `run_failed` best-effort, and return.
- *   The framework completes the request normally.
+ * Reject the current delivery while replay-timeout retries remain. Once
+ * exhausted, fail the run and let the queue acknowledge the delivery.
  */
 export async function handleReplayBudgetExhausted(args: {
   runId: string;
@@ -127,66 +119,31 @@ export async function handleReplayBudgetExhausted(args: {
   requestId: string | undefined;
   attempt: number;
   limitMs: number;
+  /**
+   * How much of the log the replay that ran out of budget had loaded. Carried
+   * onto the terminal write for the same reason every other write from that
+   * replay carries it: the run is being failed on a view of the log, and the
+   * World should be told which view.
+   */
+  slotSnapshot?: SlotSnapshotParams;
 }): Promise<void> {
-  const { runId, workflowName, requestId, attempt, limitMs } = args;
+  const { runId, workflowName, requestId, attempt, limitMs, slotSnapshot } =
+    args;
   const runLogger = runtimeLogger.forRun(runId, workflowName);
-
-  const world = await getWorld();
-  const canExitForRedelivery =
-    world.processExitTriggersQueueRedelivery === true;
-
-  // Worlds without managed-platform redelivery (e.g. world-local, custom
-  // in-process worlds) must not have us exit the process — that would
-  // kill the user's host (`pnpm dev`, CLI, etc.) without producing a
-  // retry. Surface the failure via the event log if we can, then return.
-  if (!canExitForRedelivery) {
-    runLogger.warn(
-      'Workflow replay exceeded timeout; current World does not support process exit for redelivery — failing the run and returning',
-      { timeoutMs: limitMs, attempt }
-    );
-    try {
-      const getEncryptionKey = memoizeEncryptionKey(world, runId);
-      const timeoutErr = new FatalError(
-        `Workflow replay exceeded maximum duration (${limitMs / 1000}s)`
-      );
-      await world.events.create(
-        runId,
-        {
-          eventType: 'run_failed',
-          specVersion: SPEC_VERSION_CURRENT,
-          eventData: {
-            error: await dehydrateRunError(
-              timeoutErr,
-              runId,
-              await getEncryptionKey()
-            ),
-            errorCode: RUN_ERROR_CODES.REPLAY_TIMEOUT,
-          },
-        },
-        { requestId }
-      );
-    } catch (err) {
-      runLogger.warn('Unable to mark run as failed', {
-        attempt,
-        errorName: err instanceof Error ? err.name : 'UnknownError',
-        errorMessage: err instanceof Error ? err.message : String(err),
-      });
-    }
-    return;
-  }
 
   const maxRetries = getReplayTimeoutMaxRetries();
   if (attempt <= maxRetries) {
-    runLogger.warn(
-      'Workflow replay exceeded timeout but will be re-attempted (attempt < maxRetries)',
-      {
-        timeoutMs: limitMs,
-        attempt,
-        maxRetries,
-      }
+    runLogger.warn('Workflow replay exceeded timeout; retrying delivery', {
+      timeoutMs: limitMs,
+      attempt,
+      maxRetries,
+    });
+    throw new ReplayTimeoutRetryError(
+      `Workflow replay exceeded maximum duration (${limitMs / 1000}s)`
     );
-    process.exit(1);
   }
+
+  const world = await getWorld();
 
   const replayTimeoutDescription = describeError(
     undefined,
@@ -203,42 +160,24 @@ export async function handleReplayBudgetExhausted(args: {
     }
   );
 
-  try {
-    const getEncryptionKey = memoizeEncryptionKey(world, runId);
-    const timeoutErr = new FatalError(
-      `Workflow replay exceeded maximum duration (${limitMs / 1000}s) after ${attempt} attempts`
-    );
-    await world.events.create(
-      runId,
-      {
-        eventType: 'run_failed',
-        specVersion: SPEC_VERSION_CURRENT,
-        eventData: {
-          error: await dehydrateRunError(
-            timeoutErr,
-            runId,
-            await getEncryptionKey()
-          ),
-          errorCode: RUN_ERROR_CODES.REPLAY_TIMEOUT,
-        },
+  const getEncryptionKey = memoizeEncryptionKey(world, runId);
+  const timeoutErr = new FatalError(
+    `Workflow replay exceeded maximum duration (${limitMs / 1000}s) after ${attempt} attempts`
+  );
+  await world.events.create(
+    runId,
+    {
+      eventType: 'run_failed',
+      specVersion: SPEC_VERSION_CURRENT,
+      eventData: {
+        error: await dehydrateRunError(
+          timeoutErr,
+          runId,
+          await getEncryptionKey()
+        ),
+        errorCode: RUN_ERROR_CODES.REPLAY_TIMEOUT,
       },
-      { requestId }
-    );
-  } catch (err) {
-    // Best effort — process exits regardless. Surface why so operators
-    // can diagnose repeat timeouts against the backend.
-    runLogger.warn(
-      'Unable to mark run as failed. The queue will continue to retry',
-      {
-        attempt,
-        errorName: err instanceof Error ? err.name : 'UnknownError',
-        errorMessage: err instanceof Error ? err.message : String(err),
-        errorStack: err instanceof Error ? err.stack : undefined,
-      }
-    );
-  }
-  // Note that this also prevents the runtime from acking the queue
-  // message, so the queue will call back once, after which a 410 will
-  // get it to exit early.
-  process.exit(1);
+    },
+    { requestId, ...slotSnapshot }
+  );
 }

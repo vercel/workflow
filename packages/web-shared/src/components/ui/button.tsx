@@ -33,8 +33,8 @@ const buttonVariants = cva(
           '[--themed-bg:_transparent] [--themed-fg:_var(--ds-gray-1000)] [--themed-hover-bg:_var(--ds-gray-alpha-100)]',
       },
       size: {
-        default: 'h-10 px-4 text-[14px]',
-        sm: 'h-8 px-3 text-[14px]',
+        default: 'h-10 px-4 text-button-14',
+        sm: 'h-8 px-3 text-button-14',
         xs: 'h-6 px-1.5 py-0.5 text-button-12 rounded-[4px]',
         icon: 'h-8 w-8',
       },

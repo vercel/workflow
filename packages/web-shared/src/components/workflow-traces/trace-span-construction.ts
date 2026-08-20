@@ -8,7 +8,7 @@ import {
   isTerminalStepEventType,
   type WorkflowRun,
 } from '@workflow/world';
-import type { Span, SpanEvent } from '../trace-viewer/types';
+import type { Span, SpanEvent } from '../../lib/trace-types';
 import { shouldShowVerticalLine } from './event-colors';
 import { calculateDuration, dateToOtelTime } from './trace-time-utils';
 
@@ -236,7 +236,9 @@ export function stepToSpan(stepEvents: Event[], maxEndTime: Date): Span | null {
   if (!step) {
     return null;
   }
-  const parsedName = parseStepName(String(step.stepName));
+  const parsedName =
+    parseStepName(String(step.stepName)) ??
+    parseWorkflowName(String(step.stepName));
 
   const attributes = {
     resource: 'step' as const,

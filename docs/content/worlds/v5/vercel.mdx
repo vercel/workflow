@@ -91,6 +91,7 @@ const run = await start(myWorkflow, [input], { region: "sfo1" });
 ## Limitations
 
 - **No run migration** - A run's region is fixed at creation. Existing runs cannot be moved to a different region.
+- **Hook minimum retention** - [`experimental_minRetention`](/docs/api-reference/workflow/create-hook#keep-a-token-unavailable-after-the-run-ends) cannot exceed 30 days.
 
 ## Observability
 
@@ -194,6 +195,24 @@ Per-request timeout, in milliseconds, for Vercel World HTTP calls to workflow-se
 ### `WORKFLOW_MAX_CHUNKS_PER_REQUEST`
 
 Maximum stream chunks written in one Vercel World request. Larger batches are split across multiple requests. Default: `1000`. Minimum: `1`.
+
+### `WORKFLOW_EVENTS_TRANSPORT`
+
+Experimental. Set `WORKFLOW_EVENTS_TRANSPORT=ws` to ship workflow run events to the Vercel World over a WebSocket instead of one HTTP request each. Default: `http`.
+
+The setting is ignored when the World is configured with `projectConfig` and therefore routes through the `api-workflow` proxy: that endpoint is an HTTP-only REST gateway and does not forward a WebSocket upgrade, so events stay on HTTP and a warning is logged once per process.
+
+Tracing is unaffected by the choice. Each event write emits an `http POST` client span whichever transport carries it, against the same `url.full` — on the WebSocket path that span is synthesized around the frame, since no HTTP request is made. Attributes tell the two apart:
+
+| Attribute | HTTP | WebSocket |
+| --- | --- | --- |
+| `workflow.events.transport` | `http` | `ws` |
+| `workflow.event.type` | the event type, e.g. `step_started` | same |
+| `network.protocol.name` | — | `websocket` |
+| `workflow.events.ws.url` | — | the socket the frame went over |
+| `workflow.events.ws.req_id` | — | per-connection request id, matching the server's log line |
+
+The WebSocket handshake is itself a span, `workflow.events.ws.connect`, so the cost of opening (or eagerly reopening) a connection is attributable rather than showing up as unexplained time inside the first write.
 
 ### Programmatic configuration
 

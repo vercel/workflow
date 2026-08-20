@@ -70,16 +70,17 @@ describe('resumeHook (parallel fast path)', () => {
   ) => {
     const createEvent = overrides.createEvent ?? vi.fn();
     const queue = overrides.queue ?? vi.fn();
+    const getByToken = overrides.getByToken ?? vi.fn().mockResolvedValue(hook);
     setWorld({
       specVersion: SPEC_VERSION_CURRENT,
       capabilities,
-      hooks: { getByToken: vi.fn().mockResolvedValue(hook) },
+      hooks: { getByToken },
       runs: { get: vi.fn() },
       events: { create: createEvent },
       getEncryptionKeyForRun: vi.fn().mockResolvedValue(undefined),
       queue,
     } as unknown as World);
-    return { createEvent, queue };
+    return { createEvent, queue, getByToken };
   };
 
   it('dispatches the event write and queue publish concurrently with a shared resumeId + digest', async () => {
@@ -102,6 +103,10 @@ describe('resumeHook (parallel fast path)', () => {
     const digest = optsArg.resumePayloadDigest as string;
     expect(resumeId).toEqual(expect.any(String));
     expect(digest).toMatch(/^[0-9a-f]{64}$/);
+    // The replay-log preload is the consumer re-ensure's opt-in only: the
+    // producer never reads the log, so it must not ask the World (and, on
+    // world-vercel, the server) to assemble one.
+    expect(optsArg.preloadEvents).toBeUndefined();
 
     expect(queue).toHaveBeenCalledTimes(1);
     const [, payloadArg] = queue.mock.calls[0];
@@ -112,7 +117,33 @@ describe('resumeHook (parallel fast path)', () => {
       token: hook.token,
       payload: PAYLOAD_BYTES,
       payloadDigest: digest,
+      // The run's pinned deployment from the resume context, for the
+      // consumer's cheap pre-write affinity check.
+      deploymentId: 'deployment_par',
     });
+  });
+
+  it('stamps the resume TTR window on the queue message', async () => {
+    const hook = { ...baseHook, resumeContext: parallelContext } satisfies Hook;
+    const { queue } = makeWorld(hook);
+
+    const before = Date.now();
+    await resumeHook(hook.token, { foo: 'bar' });
+    const after = Date.now();
+
+    const [, payloadArg] = queue.mock.calls[0];
+    const timing = payloadArg.hookResumeTiming;
+    expect(timing.strategy).toBe('parallel');
+    // T0 is entry into resumeHook and T1 the publish request, so both fall
+    // inside this call and in that order.
+    expect(timing.resumeRequestedAtMs).toBeGreaterThanOrEqual(before);
+    expect(timing.queuePublishRequestedAtMs).toBeGreaterThanOrEqual(
+      timing.resumeRequestedAtMs
+    );
+    expect(timing.queuePublishRequestedAtMs).toBeLessThanOrEqual(after);
+    // The consumer boundaries belong to the consuming invocation.
+    expect(timing.consumerStartedAtMs).toBeUndefined();
+    expect(timing.setupSource).toBeUndefined();
   });
 
   it('always throws when the queue publish fails', async () => {
@@ -324,6 +355,13 @@ describe('resumeHook (parallel fast path)', () => {
     expect(queue).toHaveBeenCalledTimes(1);
     const [, payloadArg] = queue.mock.calls[0];
     expect(payloadArg.hookInput).toBeUndefined();
+    // TTR is measured on both dispatch paths — the sequential message carries
+    // no hookInput but still reports its own strategy.
+    expect(payloadArg.hookResumeTiming).toMatchObject({
+      strategy: 'sequential',
+      resumeRequestedAtMs: expect.any(Number),
+      queuePublishRequestedAtMs: expect.any(Number),
+    });
   });
 
   it('falls back to the sequential path when the run lacks the hookResumeInput marker', async () => {
@@ -502,6 +540,42 @@ describe('resumeHook (parallel fast path)', () => {
     expect(optsArg.resumePayloadDigest).toMatch(/^[0-9a-f]{64}$/);
     const [, payloadArg] = queue.mock.calls[0];
     expect(payloadArg.hookInput).toBeDefined();
+  });
+
+  it('opens the resumeWebhook TTR window before its own hook lookup', async () => {
+    // `resumeWebhook` does real producer-side work before it reaches the
+    // shared implementation: the by-token lookup and the run-key resolution
+    // it can trigger. Stamping T0 inside the implementation would silently
+    // exclude that, so webhook resumes would report a systematically shorter
+    // total than `resumeHook` ones into the same distribution. The clock is
+    // pinned and advanced only by the lookup, so the assertion is exact.
+    let clock = 1_000;
+    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => clock);
+    try {
+      const hook = {
+        ...baseHook,
+        isWebhook: true,
+        resumeContext: parallelContext,
+      } satisfies Hook;
+      const { queue } = makeWorld(hook, {
+        // The lookup takes 500ms of wall clock.
+        getByToken: vi.fn(async () => {
+          clock += 500;
+          return hook;
+        }),
+      });
+
+      await resumeWebhook(hook.token, new Request('http://x'));
+
+      const [, payloadArg] = queue.mock.calls[0];
+      const timing = payloadArg.hookResumeTiming;
+      expect(timing.resumeRequestedAtMs).toBe(1_000);
+      expect(
+        timing.queuePublishRequestedAtMs - timing.resumeRequestedAtMs
+      ).toBeGreaterThanOrEqual(500);
+    } finally {
+      nowSpy.mockRestore();
+    }
   });
 
   it('ignores a stale resumeCapabilities below the required dedup version', async () => {

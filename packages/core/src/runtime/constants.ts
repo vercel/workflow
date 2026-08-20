@@ -46,7 +46,7 @@ export function getMaxQueueDeliveries(): number {
  * `maxDuration` (e.g. 800s on Vercel Pro Fluid) and `NO_INLINE_REPLAY_AFTER_MS`.
  *
  * If the non-step ("replay") time within a single invocation exceeds this
- * budget, the handler exits so the queue can retry. After
+ * budget, the handler rejects so the queue can retry. After
  * `REPLAY_TIMEOUT_MAX_RETRIES` exhausted attempts the run is failed with
  * `RUN_ERROR_CODES.REPLAY_TIMEOUT`.
  *
@@ -137,7 +137,7 @@ export function _resetReplayTimeoutWarnCacheForTests(): void {
 
 // Number of queue delivery attempts to allow before permanently failing a run
 // due to a replay timeout. On attempts 1 through this value, the timeout
-// handler exits without writing run_failed so the queue retries the message.
+// handler rejects without writing run_failed so the queue retries the message.
 // On the next attempt the run is marked as failed.
 export const REPLAY_TIMEOUT_MAX_RETRIES = 3;
 
@@ -214,6 +214,78 @@ export function getMaxInlineSteps(): number {
   }
   return parsed;
 }
+
+/**
+ * Upper bound on the serialized step input that resilient step dispatch will
+ * inline into the queue message's `stepInput`.
+ *
+ * Vercel Queues has no hard message-size cap (bodies above its ~256 KB
+ * inline threshold transparently spill to S3-backed storage), so this bound
+ * is a cost/latency choice, not a rejection guard: the message also carries
+ * the runId, stepId, stepName, and trace carrier alongside CBOR framing
+ * overhead, and staying under the queue's inline threshold keeps step
+ * messages on its fast inline path instead of paying an S3 store+fetch
+ * double-hop for bytes that already live in the event log. Above this size
+ * the dispatch falls back to the sequential path (`step_created` write, then
+ * a payload-less queue message). Matches `MAX_INLINE_RESUME_PAYLOAD_BYTES`
+ * on the resilient hook resume path.
+ */
+export const MAX_RESILIENT_STEP_INPUT_BYTES = 128 * 1024;
+
+/**
+ * Whether resilient step dispatch is enabled: the suspension handler
+ * parallelizes each newly created step's `step_created` event write with its
+ * step-execution queue publish, carrying the serialized step input in the
+ * queue message (`stepInput`) so the consumer can idempotently re-ensure the
+ * event if the direct write failed transiently. Mirrors the resilient start
+ * (`runInput`) and resilient hook resume (`hookInput`) patterns.
+ *
+ * **Off by default.** Enable via `WORKFLOW_RESILIENT_STEP_DISPATCH=1`.
+ *
+ * The queue publish races the create's verdict, and a create can come back
+ * refused — as a duplicate this replay should stop pursuing, or as a stale
+ * write on a World that refuses rather than reports. Either way the message
+ * carrying the payload is already out, so the consumer can materialize a step
+ * whose create was refused, and nothing orders the verdict before the
+ * consumer's redelivery re-ensure. Enabling this trades that window for the
+ * latency the parallel publish saves.
+ */
+export function isResilientStepDispatchEnabled(): boolean {
+  return process.env.WORKFLOW_RESILIENT_STEP_DISPATCH === '1';
+}
+
+/**
+ * Whether batched event transitions are enabled: the suspension handler folds
+ * a clean fan-out's `step_created` + `wait_created` writes into one
+ * `world.events.createBatch` call (one durable write, per-event outcomes)
+ * instead of one write per event. Only engages when the World implements the
+ * optional `events.createBatch` AND the run is on slot identity
+ * (specVersion >= 6) AND the suspension carries no attribute/hook writes and
+ * no resilient step dispatch — everything else keeps the single-event path
+ * byte-for-byte.
+ *
+ * Reads `process.env.WORKFLOW_BATCH_TRANSITIONS` lazily. Default **ON**;
+ * disabled only by an explicit `'0'` / `'false'` (case-insensitive) — the
+ * operator escape hatch that restores the exact prior one-write-per-event
+ * path, mirroring `WORKFLOW_TURBO`'s kill-switch shape.
+ */
+export function isBatchTransitionsEnabled(): boolean {
+  const raw = process.env.WORKFLOW_BATCH_TRANSITIONS;
+  if (raw === undefined || raw === '') return true;
+  return !(raw === '0' || raw.toLowerCase() === 'false');
+}
+
+/**
+ * Ceiling on events per `createBatch` call from the batched fan-out fold.
+ * Mirrors the server's transaction budgets with a comfortable margin: each
+ * fan-out event costs 2 transaction items server-side (entity + event row)
+ * against the 100-item DynamoDB cap, and inline payloads count against a
+ * 768 KB byte budget — 32 events stays well under both, and a fan-out larger
+ * than this simply commits in successive batches (split batches lose
+ * cross-batch atomicity, which is exactly today's per-event-write crash
+ * surface — every batch still converges on retry via per-event 409s).
+ */
+export const MAX_BATCH_FANOUT_EVENTS = 32;
 
 const warnedMaxEventsValues = new Set<string>();
 
@@ -300,6 +372,42 @@ export function isOptimisticInlineStartExplicitlyDisabled(): boolean {
  */
 export function isTurboEnabled(): boolean {
   const raw = process.env.WORKFLOW_TURBO;
+  if (raw === undefined || raw === '') return true;
+  return !(raw === '0' || raw.toLowerCase() === 'false');
+}
+
+/**
+ * Whether the QuickJS engine's baseline-snapshot startup optimization is
+ * enabled (default ON). When on, the engine hydrates a VM with the
+ * workflow bundle once per function instance, snapshots it, and starts
+ * every invocation by restoring the snapshot instead of re-evaluating
+ * the bundle — skipping the dominant share of VM startup (measured
+ * ~77ms → ~3ms to first suspension for a 1.3MB bundle). Bundles whose
+ * module scope consumes randomness, reads the clock, or replaces a
+ * serialization intrinsic are detected at hydrate time and
+ * automatically fall back to per-invocation fresh evaluation (see
+ * prepareBaselineSnapshot). Set WORKFLOW_QUICKJS_BASELINE_SNAPSHOT=0 to
+ * disable.
+ */
+export function isQuickJSBaselineSnapshotEnabled(): boolean {
+  const raw = process.env.WORKFLOW_QUICKJS_BASELINE_SNAPSHOT;
+  if (raw === undefined || raw === '') return true;
+  return !(raw === '0' || raw.toLowerCase() === 'false');
+}
+
+/**
+ * Whether the inline loop retains a suspended workflow VM across inline steps
+ * within one invocation (default ON). When on, a step-only suspension keeps
+ * the live VM, event consumer, and hydrated state alive, and the next loop
+ * iteration appends only the newly durable events instead of rebuilding the
+ * `vm.Context` and replaying the whole event log. Non-step suspensions and
+ * replay divergence always fall back to the ordinary durable replay path.
+ *
+ * `WORKFLOW_RETAINED_VM=0` (or `false`) is the kill switch: every iteration
+ * replays from scratch in a fresh VM, matching the pre-retention behavior.
+ */
+export function isVmRetentionEnabled(): boolean {
+  const raw = process.env.WORKFLOW_RETAINED_VM;
   if (raw === undefined || raw === '') return true;
   return !(raw === '0' || raw.toLowerCase() === 'false');
 }
@@ -445,5 +553,23 @@ export function getPreconditionReinvokeDelaySeconds(): number {
     'WORKFLOW_PRECONDITION_REINVOKE_DELAY_SECONDS',
     PRECONDITION_REINVOKE_DELAY_SECONDS,
     { integer: true }
+  );
+}
+
+// A delivery reaching a deployment the run is not pinned to is not treated as
+// permanent. Re-route the message at the run's own deployment a bounded number
+// of times before failing the run with DEPLOYMENT_MISMATCH.
+export const DEPLOYMENT_MISMATCH_MAX_RETRIES = 3;
+
+/**
+ * Effective deployment-mismatch re-route budget. Override via
+ * `WORKFLOW_DEPLOYMENT_MISMATCH_MAX_RETRIES`; `0` fails the run on the first
+ * misrouted delivery instead of attempting recovery.
+ */
+export function getDeploymentMismatchMaxRetries(): number {
+  return envNumber(
+    'WORKFLOW_DEPLOYMENT_MISMATCH_MAX_RETRIES',
+    DEPLOYMENT_MISMATCH_MAX_RETRIES,
+    { integer: true, min: 0 }
   );
 }

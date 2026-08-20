@@ -1,5 +1,6 @@
 export type * from './analytics.js';
 export {
+  ANALYTICS_EVENTS_GET_MANY_LIMIT,
   AnalyticsAttributeKeySchema,
   AnalyticsEventSchema,
   AnalyticsHookSchema,
@@ -26,7 +27,9 @@ export {
 export {
   _resetEnvWarnCacheForTests,
   type EnvNumberOptions,
+  envFlag,
   envNumber,
+  getMaxEventsPerRun,
 } from './env-config.js';
 export type * from './events.js';
 export {
@@ -37,6 +40,7 @@ export {
   EVENT_DATA_REF_FIELDS,
   EventSchema,
   EventTypeSchema,
+  entityEventClass,
   getEventDataPayloadField,
   getEventDataRefFields,
   HOOK_EVENTS_REQUIRING_EXISTENCE,
@@ -67,6 +71,14 @@ export {
   HookSchema,
 } from './hooks.js';
 export type * from './interfaces.js';
+// The client this flag selects lives in `./node-http.js`, which is reachable
+// only by subpath: it imports node builtins statically, and this index is also
+// pulled into browser bundles.
+export {
+  isNodeHttpEnabled,
+  NODE_HTTP_DEFAULT,
+  NODE_HTTP_ENV_VAR,
+} from './node-http-flag.js';
 export type * from './queue.js';
 export {
   getQueueTopicPrefix,
@@ -83,6 +95,10 @@ export {
 export { reenqueueActiveRuns } from './recovery.js';
 export type * from './runs.js';
 export {
+  BULK_CANCEL_MAX_RUN_IDS,
+  BulkCancelWorkflowRunResultSchema,
+  BulkCancelWorkflowRunsRequestSchema,
+  BulkCancelWorkflowRunsResultSchema,
   isTerminalWorkflowRunStatus,
   TERMINAL_WORKFLOW_RUN_STATUSES,
   TerminalWorkflowRunStatusSchema,
@@ -106,16 +122,29 @@ export {
   PaginatedResponseSchema,
   StructuredErrorSchema,
 } from './shared.js';
+export {
+  EVENT_ID_BODY_LENGTH,
+  EVENT_ID_PREFIX,
+  eventIdToSlot,
+  FIRST_EVENT_SLOT,
+  isSlotBody,
+  isSlotEventId,
+  MAX_EVENT_SLOT,
+  requireEventSlot,
+  slotToEventId,
+} from './slot-identity.js';
 export type { SpecVersion } from './spec-version.js';
 export {
   isLegacySpecVersion,
   requiresNewerWorld,
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_LEGACY,
+  SPEC_VERSION_MAX_SUPPORTED,
   SPEC_VERSION_SUPPORTS_ATTRIBUTES,
   SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
   SPEC_VERSION_SUPPORTS_COMPRESSION,
   SPEC_VERSION_SUPPORTS_EVENT_SOURCING,
+  SPEC_VERSION_SUPPORTS_SLOT_IDENTITY,
 } from './spec-version.js';
 export type * from './steps.js';
 export {

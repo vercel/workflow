@@ -104,6 +104,13 @@ The Local World is the default outside Vercel and is intended for development.
 - Default: `true`
 - Re-enqueues pending and running local runs when the World starts. Set the environment variable to `0` or `false` to skip recovery; the factory option wins when both are set.
 
+### `WORKFLOW_LOCAL_HOOK_RETENTION_LIMIT_DAYS`
+
+- Factory option: none
+- Default: `30`
+- Maximum [`experimental_minRetention`](/docs/api-reference/workflow/create-hook#keep-a-token-unavailable-after-the-run-ends) accepted by the Local World, in days.
+- Set this to the same limit as your production World so oversized values fail during local development.
+
 ### `tag`
 
 - Environment variable: none
@@ -159,6 +166,13 @@ The Postgres World is a self-hosted durable backend for long-running server proc
 - Environment variable: `WORKFLOW_POSTGRES_MAX_POOL_SIZE`
 - Default: `pg` default
 - Maximum size of the internal `pg.Pool` when the World creates the pool.
+
+### `WORKFLOW_POSTGRES_HOOK_RETENTION_LIMIT_DAYS`
+
+- Factory option: none
+- Default: `30`
+- Maximum [`experimental_minRetention`](/docs/api-reference/workflow/create-hook#keep-a-token-unavailable-after-the-run-ends) accepted by the Postgres World, in days.
+- Set this to the same limit as your production World so oversized values fail during development.
 
 ### `namespace`
 
@@ -259,3 +273,19 @@ Platform-provided values such as `VERCEL_DEPLOYMENT_ID`, `VERCEL_PROJECT_ID`, an
 - CLI flag: none
 - Default: `1000`
 - Maximum stream chunks written in one Vercel World request. Larger batches are split.
+
+### `WORKFLOW_BATCH_TRANSITIONS`
+
+- Surface: environment variable
+- Default: on
+- Set to `0` (or `false`) to **disable** batched event writes — the escape hatch that restores the exact prior one-write-per-event path.
+
+When enabled (the default), a suspension's eager `step_created` and `wait_created` writes fold into batched `events.createBatch` calls (one durable write with per-event outcomes) on Worlds that implement the optional batch API. The fold only engages when the World implements `events.createBatch` (the Vercel World does; Local and Postgres do not), the run's spec version supports slot identity (≥ 6), and the suspension carries no attribute writes, hook writes, or resilient step dispatch — everything else keeps the single-event path unchanged, so disabling is only needed as an operational escape hatch. Batches are capped at 32 events; larger fan-outs commit in successive batches. See the [batched event writes changelog](/docs/changelog/batched-event-writes) for the World API contract.
+
+### `WORKFLOW_EVENTS_TRANSPORT`
+
+- Factory option: none
+- CLI flag: none
+- Default: `http`
+- Experimental. Set to `ws` to ship workflow run events to the Vercel World over a WebSocket instead of one HTTP request each.
+- Ignored when the World is configured with `projectConfig` and routes through the `api-workflow` proxy — that endpoint is an HTTP-only REST gateway and does not forward a WebSocket upgrade, so events stay on HTTP.

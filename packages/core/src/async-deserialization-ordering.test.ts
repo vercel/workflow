@@ -53,6 +53,8 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
     replayPayloadCache: new ReplayPayloadCache(undefined),
     globalThis: context.globalThis,
     eventsConsumer: new EventsConsumer(events, {
+      // Fake context: no deliveries are modeled, so the gate is a no-op here.
+      isDeliveryIdle: () => true,
       onUnconsumedEvent: () => {},
       getPromiseQueue: () => Promise.resolve(),
     }),

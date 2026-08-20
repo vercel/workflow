@@ -18,9 +18,6 @@ import {
 } from '@workflow/errors';
 import {
   arrayBufferByteLength,
-  canReadHeaders,
-  canReadUrl,
-  canReadUrlSearchParams,
   dateGetDate,
   dateGetTime,
   dateToISOString,
@@ -34,7 +31,6 @@ import {
   regExpSource,
   setToValues,
   urlHref,
-  urlSearchParamsSize,
   urlSearchParamsToString,
   viewInfo,
 } from '../hardened.js';
@@ -112,6 +108,29 @@ type SimpleErrorSubclassKey = {
 }[keyof SerializableSpecial];
 
 /**
+ * Reads `error.stack` for serialization. A natural V8 error carries `stack`
+ * as an own *accessor* whose first invocation formats and caches the trace.
+ * That read is not passive: it executes `Error.prepareStackTrace` when the
+ * realm has one installed, and the format-and-cache itself is
+ * workflow-visible (a formatter installed later never runs for an
+ * already-materialized error). A cold replay repeats neither — it skips
+ * dehydration entirely — so the read is recorded as guest code. A
+ * data-property `stack` (rehydrated errors, workflow-assigned strings)
+ * reads passively.
+ */
+function readErrorStack(value: unknown): string | undefined {
+  const descriptor = Object.getOwnPropertyDescriptor(value as object, 'stack');
+  if (descriptor && 'value' in descriptor) {
+    return descriptor.value as string | undefined;
+  }
+  recordGuestCode('getter', 'stack');
+  if (descriptor?.get) {
+    return descriptor.get.call(value) as string | undefined;
+  }
+  return readProperty(value, 'stack') as string | undefined;
+}
+
+/**
  * Reduces any native Error instance to the shared `BaseErrorPayload` shape,
  * preserving `cause` only when present (to distinguish "no cause" from
  * "cause is undefined"). Used directly by reducers for subclasses that need
@@ -123,12 +142,12 @@ type SimpleErrorSubclassKey = {
  */
 function reduceErrorBase(value: unknown): BaseErrorPayload | false {
   if (!types.isNativeError(value)) return false;
-  // `message`/`stack`/`cause` are own data properties on natural errors, so
-  // the descriptor-based reads cost nothing; a sandbox-defined accessor
+  // `message`/`cause` are own data properties on natural errors, so the
+  // descriptor-based reads cost nothing; a sandbox-defined accessor
   // (e.g. a getter on an Error subclass) is still invoked but recorded.
   const reduced: BaseErrorPayload = {
     message: readProperty(value, 'message') as string,
-    stack: readProperty(value, 'stack') as string | undefined,
+    stack: readErrorStack(value),
   };
   if (hasProperty(value, 'cause')) reduced.cause = readProperty(value, 'cause');
   return reduced;
@@ -240,7 +259,7 @@ export function getCommonReducers(
       const reduced: SerializableSpecial['DOMException'] = {
         message: readProperty(value, 'message') as string,
         name: readProperty(value, 'name') as string,
-        stack: readProperty(value, 'stack') as string | undefined,
+        stack: readErrorStack(value),
       };
       if (hasProperty(value, 'cause')) {
         reduced.cause = readProperty(value, 'cause');
@@ -350,7 +369,7 @@ export function getCommonReducers(
       const reduced: SerializableSpecial['Error'] = {
         name: readProperty(value, 'name') as string,
         message: readProperty(value, 'message') as string,
-        stack: readProperty(value, 'stack') as string | undefined,
+        stack: readErrorStack(value),
       };
       if (hasProperty(value, 'cause')) {
         reduced.cause = readProperty(value, 'cause');
@@ -363,7 +382,6 @@ export function getCommonReducers(
     // prototype is reachable from workflow code — iterate through the
     // boot-captured iterator instead of a live Symbol.iterator lookup.
     Headers: (value) =>
-      canReadHeaders &&
       isInstanceOfPrototype(value, Headers.prototype) &&
       headersToEntries(value as Headers),
     Int8Array: (value) => types.isInt8Array(value) && viewToBase64(value),
@@ -384,9 +402,7 @@ export function getCommonReducers(
     // to deserialize as plain objects.
     Set: (value) => types.isSet(value) && setToValues(value as Set<unknown>),
     URL: (value) =>
-      canReadUrl &&
-      isInstanceOfPrototype(value, URL.prototype) &&
-      urlHref(value),
+      isInstanceOfPrototype(value, URL.prototype) && urlHref(value as URL),
     WorkflowFunction: (value) => {
       // Only match function references with a workflowId property (set by
       // the SWC compiler on workflow functions). Plain { workflowId } objects
@@ -398,14 +414,11 @@ export function getCommonReducers(
       return { workflowId };
     },
     URLSearchParams: (value) => {
-      if (
-        !canReadUrlSearchParams ||
-        !isInstanceOfPrototype(value, URLSearchParams.prototype)
-      ) {
+      if (!isInstanceOfPrototype(value, URLSearchParams.prototype)) {
         return false;
       }
-      if (urlSearchParamsSize(value) === 0) return '.';
-      return urlSearchParamsToString(value);
+      const text = urlSearchParamsToString(value as URLSearchParams);
+      return text === '' ? '.' : text;
     },
     Uint8Array: (value) => types.isUint8Array(value) && viewToBase64(value),
     Uint8ClampedArray: (value) =>

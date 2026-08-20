@@ -8,7 +8,9 @@ import {
   WorkflowWorldError,
 } from '@workflow/errors';
 import type {
+  AnyEventRequest,
   AttributeChange,
+  CreateEventParams,
   Event,
   EventResult,
   ExperimentalSetAttributesResult,
@@ -29,7 +31,12 @@ import type {
 import {
   ATTRIBUTE_MAX_PER_RUN,
   AttributeValidationError,
+  EVENT_ID_BODY_LENGTH,
+  EVENT_ID_PREFIX,
   EventSchema,
+  eventIdToSlot,
+  FIRST_EVENT_SLOT,
+  getMaxEventsPerRun,
   HookSchema,
   isChildEntityCreationEvent,
   isChildEntityCreationEventType,
@@ -41,6 +48,7 @@ import {
   requiresNewerWorld,
   SPEC_VERSION_CURRENT,
   StepSchema,
+  slotToEventId,
   stripEventDataRefs,
   TERMINAL_STEP_STATUSES,
   TERMINAL_WORKFLOW_RUN_STATUSES,
@@ -53,16 +61,276 @@ import {
   asc,
   desc,
   eq,
+  exists,
   gt,
   inArray,
+  isNull,
   lt,
+  lte,
+  notExists,
   notInArray,
+  or,
+  type SQL,
   sql,
 } from 'drizzle-orm';
 import { monotonicFactory } from 'ulid';
 import { type Drizzle, Schema } from './drizzle/index.js';
 import type { SerializedContent } from './drizzle/schema.js';
 import { compact } from './util.js';
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * A drizzle handle, either the pool or a transaction. Slot allocation runs on
+ * whichever one the caller is already inside, so the position an insert takes
+ * commits or rolls back with the insert itself.
+ */
+type DrizzleLike = Pick<Drizzle, 'insert' | 'update' | 'select'>;
+
+/** Only for legacy (pre-slot) runs; see `allocateEventId`. */
+const legacyEventUlid = monotonicFactory();
+
+/**
+ * How many positions one insert will try before giving up. Reached only when a
+ * run is taking concurrent writes faster than any of them can commit.
+ */
+const SLOT_INSERT_MAX_ATTEMPTS = 40;
+/**
+ * Collisions that retry the instant the conflicting writer settles.
+ *
+ * `ON CONFLICT DO NOTHING` does not skip an uncommitted conflicting row: the
+ * unique-index check waits on that writer's transaction and only then reports
+ * the conflict, so a lost race has already waited for exactly the thing the
+ * next position depends on. Sleeping on top of that adds latency to a
+ * suspension flush and buys nothing.
+ *
+ * The backoff below covers the shape blocking does not: writers that keep
+ * arriving while the loop spins, where jittering the herd is the only way the
+ * loop converges before it exhausts its attempts.
+ */
+const SLOT_INSERT_IMMEDIATE_ATTEMPTS = 8;
+/** Backoff between collisions, so a wide fan-out spreads rather than lockstep. */
+const SLOT_INSERT_BASE_DELAY_MS = 2;
+const SLOT_INSERT_MAX_DELAY_MS = 40;
+
+/**
+ * Isolation for every transaction an event insert can run inside.
+ *
+ * {@link insertEventRow} answers a collision by recomputing the next position
+ * and inserting again, which only terminates if the retry can see rows
+ * committed since the transaction began. Under REPEATABLE READ or SERIALIZABLE
+ * it cannot: every attempt reads the transaction's original snapshot, computes
+ * the same taken position, and the loop runs to its limit and 503s. READ
+ * COMMITTED is Postgres' default, so this is a statement of the requirement
+ * rather than a change, and it keeps a database whose
+ * `default_transaction_isolation` was raised from turning event writes into
+ * timeouts. Inserts outside a transaction need nothing: a lone statement takes
+ * a fresh snapshot at every isolation level.
+ */
+const SLOT_INSERT_TRANSACTION = { isolationLevel: 'read committed' } as const;
+
+/** The pg error behind a drizzle wrapper, or an empty shape if there is none. */
+function pgErrorOf(err: unknown): { code?: string; constraint?: string } {
+  const direct = err as { code?: string; constraint?: string };
+  if (direct?.code) {
+    return direct;
+  }
+  return (
+    (err as { cause?: { code?: string; constraint?: string } })?.cause ?? {}
+  );
+}
+
+/**
+ * The position a slot-numbered insert takes: one above the highest the run
+ * already holds, read inside the INSERT that takes it.
+ *
+ * Nothing hands out a position ahead of the write that fills it. A writer that
+ * loses a dedup race, or whose transaction rolls back, leaves the numbering
+ * untouched, so a log missing a position is missing an *event* rather than
+ * merely a number. The runtime depends on exactly that: it refuses to replay a
+ * log with a hole, because a position nothing occupies cannot be told apart
+ * from an event that never happened.
+ *
+ * A counter column would be cheaper and is what this used to be. It cannot
+ * hold that property: a number handed out before the write lands is a number
+ * lost whenever the write does not, and the resulting holes are permanent.
+ *
+ * The subquery is an index-only read of the primary key's last row for the
+ * run, not a scan. Ordering is lexicographic, which is the same order as by
+ * position because every body is zero-padded to a fixed width.
+ *
+ * Every numeric parameter is cast explicitly. `substring(text from $n)` with an
+ * untyped parameter resolves to the *regular expression* overload rather than
+ * the positional one, which quietly returns NULL for every id and hands every
+ * writer the first slot.
+ */
+function nextSlotId(runId: string): SQL<string> {
+  const bodyFrom = sql.raw(String(EVENT_ID_PREFIX.length + 1));
+  const width = sql.raw(String(EVENT_ID_BODY_LENGTH));
+  const noEvents = sql.raw(String(FIRST_EVENT_SLOT - 1));
+  return sql<string>`${EVENT_ID_PREFIX} || lpad((coalesce((select cast(substring(prev.id from ${bodyFrom}) as bigint) from ${Schema.events} prev where prev.run_id = ${runId} order by prev.id desc limit 1), ${noEvents}) + 1)::text, ${width}, '0')`;
+}
+
+/**
+ * The id an insert for `runId` should allocate with: a slot expression for a
+ * slot-numbered run, a fresh ULID for one that predates slots.
+ *
+ * A row in `workflow_event_slots` is the marker for the first case. Its
+ * absence is exactly the "this run predates slots" signal, which is why the
+ * table is still read even though nothing advances it any more.
+ *
+ * A legacy run keeps minting under the original `wevt_` prefix rather than
+ * moving to `evnt_`: a mid-life prefix change would sort every new event
+ * before every old one, since `evnt_` < `wevt_`.
+ */
+async function allocateEventId(
+  db: DrizzleLike,
+  runId: string
+): Promise<string | SQL<string>> {
+  const [row] = await db
+    .select({ runId: Schema.eventSlots.runId })
+    .from(Schema.eventSlots)
+    .where(eq(Schema.eventSlots.runId, runId))
+    .limit(1);
+  return row ? nextSlotId(runId) : `wevt_${legacyEventUlid()}`;
+}
+
+/**
+ * Inserts one event row, retrying while the position it computed is taken.
+ *
+ * The primary-key conflict is absorbed by `ON CONFLICT DO NOTHING` rather than
+ * raised, so a lost race costs a retry instead of the enclosing transaction —
+ * an error inside a transaction would poison it, and these inserts run in one.
+ * Every other unique violation still raises, which is what lets callers
+ * translate a dedup conflict on `workflow_events_entity_creation_unique`.
+ *
+ * Returns `undefined` only for an id that is a plain string (a legacy ULID, or
+ * the reserved first slot), where a conflict is the caller's answer rather
+ * than something to retry.
+ */
+async function insertEventRow(
+  db: DrizzleLike,
+  values: Omit<typeof Schema.events.$inferInsert, 'eventId'> & {
+    eventId: string | SQL<string>;
+  }
+): Promise<{ eventId: string; createdAt: Date } | undefined> {
+  const runId = values.runId;
+  const allocates = typeof values.eventId !== 'string';
+  for (let attempt = 0; ; attempt++) {
+    const [row] = await db
+      .insert(Schema.events)
+      .values(values as typeof Schema.events.$inferInsert)
+      .onConflictDoNothing({
+        target: [Schema.events.runId, Schema.events.eventId],
+      })
+      .returning({
+        eventId: Schema.events.eventId,
+        createdAt: Schema.events.createdAt,
+      });
+    if (row) {
+      return row;
+    }
+    if (!allocates || attempt >= SLOT_INSERT_MAX_ATTEMPTS) {
+      if (!allocates) {
+        return undefined;
+      }
+      throw new WorkflowWorldError(
+        `Could not allocate an event slot for run "${runId}" after ${SLOT_INSERT_MAX_ATTEMPTS} attempts`,
+        { status: 503 }
+      );
+    }
+    if (attempt >= SLOT_INSERT_IMMEDIATE_ATTEMPTS) {
+      const delay = Math.min(
+        SLOT_INSERT_MAX_DELAY_MS,
+        SLOT_INSERT_BASE_DELAY_MS *
+          2 ** (attempt - SLOT_INSERT_IMMEDIATE_ATTEMPTS)
+      );
+      await new Promise((resolve) =>
+        setTimeout(resolve, Math.random() * delay)
+      );
+    }
+  }
+}
+
+/**
+ * Marks a run being created as slot-numbered and returns its first event id.
+ *
+ * The row records the scheme and nothing else; positions come from the log
+ * itself, see {@link nextSlotId}.
+ *
+ * `DO NOTHING` on conflict because the arbitration that matters is the event
+ * insert: two writers racing one run_created both take the first slot, and the
+ * composite events primary key rejects the loser.
+ */
+async function openEventSlots(db: DrizzleLike, runId: string): Promise<string> {
+  await db.insert(Schema.eventSlots).values({ runId }).onConflictDoNothing();
+  return slotToEventId(FIRST_EVENT_SLOT);
+}
+
+/**
+ * The report half of bump-and-report: the events sitting on the slots between
+ * the one the writer asked for and the one its write actually landed on.
+ *
+ * Returns `undefined` when there is nothing to report — the write took the slot
+ * it asked for, the run is not slot-numbered, or the caller sent a count from a
+ * log that is already ahead of this write.
+ *
+ * The set can be short of the slot span it covers. A position is taken by the
+ * INSERT that computes it, and that INSERT commits on its own, so at the moment
+ * this reads the span a concurrent writer holding a lower position may not have
+ * committed yet. Its row appears shortly after and no position is left behind,
+ * because a write that fails never took one. `hasMore` says the report is a
+ * lower bound for now rather than a permanent one, and it is advisory either
+ * way: the caller's ordinary incremental read still runs.
+ */
+async function reportSkippedSlots(
+  db: Drizzle,
+  runId: string,
+  committedEventId: string,
+  askedFor: number,
+  resolveData: ResolveData
+): Promise<{ events: Event[]; hasMore: boolean } | undefined> {
+  const committedSlot = eventIdToSlot(committedEventId);
+  if (
+    committedSlot === null ||
+    askedFor < FIRST_EVENT_SLOT ||
+    committedSlot <= askedFor + 1
+  ) {
+    return undefined;
+  }
+  const rows = await db
+    .select()
+    .from(Schema.events)
+    .where(
+      and(
+        eq(Schema.events.runId, runId),
+        gt(Schema.events.eventId, slotToEventId(askedFor)),
+        lt(Schema.events.eventId, committedEventId)
+      )
+    )
+    .orderBy(Schema.events.eventId);
+  const events = rows.map((row) => {
+    row.eventData ||= row.eventDataJson;
+    return stripEventDataRefs(EventSchema.parse(compact(row)), resolveData);
+  });
+  return {
+    events,
+    hasMore: events.length < committedSlot - askedFor - 1,
+  };
+}
+
+function getHookRetentionLimitMs(): number {
+  const days = Number(
+    process.env.WORKFLOW_POSTGRES_HOOK_RETENTION_LIMIT_DAYS ?? 30
+  );
+  if (!Number.isFinite(days) || days <= 0) {
+    throw new WorkflowWorldError(
+      'WORKFLOW_POSTGRES_HOOK_RETENTION_LIMIT_DAYS must be a positive number',
+      { status: 400 }
+    );
+  }
+  return days * DAY_MS;
+}
 
 /**
  * Read helper for the deprecated `error` text column (legacy: JSON-stringified
@@ -379,7 +647,7 @@ async function handleLegacyEventPostgres(
                 );
               }
               return insertLegacyEvent(tx);
-            })
+            }, SLOT_INSERT_TRANSACTION)
           : await insertLegacyEvent(drizzle);
 
       const event = EventSchema.parse({
@@ -401,8 +669,22 @@ async function handleLegacyEventPostgres(
 }
 
 export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
+  const hookRetentionLimitMs = getHookRetentionLimitMs();
   const ulid = monotonicFactory();
   const { events } = Schema;
+  const ownerRunIsTerminal = drizzle
+    .select({ runId: Schema.runs.runId })
+    .from(Schema.runs)
+    .where(
+      and(
+        eq(Schema.runs.runId, Schema.hooks.runId),
+        inArray(Schema.runs.status, TERMINAL_WORKFLOW_RUN_STATUSES)
+      )
+    );
+  const hookRetentionEnded = or(
+    isNull(Schema.hooks.tokenRetentionUntil),
+    lte(Schema.hooks.tokenRetentionUntil, sql`now()`)
+  );
 
   // Prepared statements for validation queries (performance optimization)
   const getRunForValidation = drizzle
@@ -434,7 +716,15 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
   const getHookByToken = drizzle
     .select({ hookId: Schema.hooks.hookId, runId: Schema.hooks.runId })
     .from(Schema.hooks)
-    .where(eq(Schema.hooks.token, sql.placeholder('token')))
+    .where(
+      and(
+        eq(Schema.hooks.token, sql.placeholder('token')),
+        or(
+          gt(Schema.hooks.tokenRetentionUntil, sql`now()`),
+          notExists(ownerRunIsTerminal)
+        )
+      )
+    )
     .limit(1)
     .prepare('events_get_hook_by_token');
 
@@ -465,9 +755,35 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
     .prepare('events_get_wait_for_validation');
 
   return {
-    async create(runId, data, params): Promise<EventResult> {
+    async create(
+      runId: string | null,
+      data: AnyEventRequest,
+      params?: CreateEventParams
+    ): Promise<EventResult> {
+      if (
+        data.eventType === 'hook_created' &&
+        data.eventData.tokenRetentionUntil !== undefined &&
+        data.eventData.tokenRetentionUntil.getTime() >
+          Date.now() + hookRetentionLimitMs
+      ) {
+        throw new WorkflowWorldError(
+          `Hook minimum retention cannot exceed ${hookRetentionLimitMs / DAY_MS} days in the Postgres World.`,
+          { status: 400 }
+        );
+      }
+
+      // The id this call's event took, known only once its insert has
+      // committed: on a slot-numbered run the position is chosen inside the
+      // INSERT, so there is nothing to read before it.
       let eventId: string | undefined;
-      const getEventId = () => (eventId ??= `wevt_${ulid()}`);
+      // Lazy, because on a legacy run this mints a ULID and on a slot run it
+      // reads which of the two schemes applies. Every caller below awaits it
+      // immediately before its insert. A caller that has already fixed the id
+      // — run_created, which always takes the first slot — gets that back.
+      const getEventId = async (
+        db: DrizzleLike = drizzle
+      ): Promise<string | SQL<string>> =>
+        eventId ?? (await allocateEventId(db, effectiveRunId));
 
       // For run_created events, use client-provided runId or generate one server-side
       let effectiveRunId: string;
@@ -585,7 +901,12 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
               .returning();
 
             if (inserted) {
-              const runCreatedEventId = `wevt_${ulid()}`;
+              // This synthetic run_created is the run's first event, so it
+              // opens the slot counter the rest of the run allocates from.
+              const runCreatedEventId = await openEventSlots(
+                drizzle,
+                effectiveRunId
+              );
               await drizzle.insert(events).values({
                 runId: effectiveRunId,
                 eventId: runCreatedEventId,
@@ -635,19 +956,24 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
           );
         }
 
-        // Route to legacy handler for pre-event-sourcing runs
+        // Route to legacy handler for pre-event-sourcing runs. A run this old
+        // is ULID-numbered by definition, so the id is minted here rather than
+        // read out of a slot marker the run cannot have.
         if (isLegacySpecVersion(currentRun.specVersion)) {
           return handleLegacyEventPostgres(
             drizzle,
             effectiveRunId,
-            getEventId(),
+            `wevt_${legacyEventUlid()}`,
             data,
             currentRun,
             params
           );
         }
       }
-      if (data.eventType === 'attr_set' && !currentRun) {
+      if (
+        !currentRun &&
+        (data.eventType === 'attr_set' || data.eventType === 'run_started')
+      ) {
         throw new WorkflowRunNotFoundError(effectiveRunId);
       }
 
@@ -676,23 +1002,24 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
             .limit(1);
 
           // Create the event (still record it)
-          const [value] = await drizzle
-            .insert(Schema.events)
-            .values({
-              runId: effectiveRunId,
-              eventId: getEventId(),
-              correlationId: data.correlationId,
-              eventType: data.eventType,
-              eventData: 'eventData' in data ? data.eventData : undefined,
-              specVersion: effectiveSpecVersion,
-            })
-            .returning({ createdAt: Schema.events.createdAt });
+          const value = await insertEventRow(drizzle, {
+            runId: effectiveRunId,
+            eventId: await getEventId(),
+            correlationId: data.correlationId,
+            eventType: data.eventType,
+            eventData: 'eventData' in data ? data.eventData : undefined,
+            specVersion: effectiveSpecVersion,
+          });
 
+          if (!value) {
+            throw new EntityConflictError(
+              `run_cancelled for run "${effectiveRunId}" could not be created`
+            );
+          }
           const result = {
             ...data,
             ...value,
             runId: effectiveRunId,
-            eventId: getEventId(),
           };
           const parsed = EventSchema.parse(result);
           const resolveData = params?.resolveData ?? 'all';
@@ -801,7 +1128,14 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
         }
       }
 
-      // Hook-related event validation (ordering)
+      // Hook-related event validation (existence).
+      //
+      // An unlocked read outside any transaction, so it settles only the case
+      // where the hook was already gone when the request arrived. It is NOT
+      // what orders a delivery against a disposal: the disposal can commit in
+      // the gap between this read and the append. Both writers take the hook's
+      // row lock for that — see the `hook_disposed` and `hook_received`
+      // branches below.
       if (isHookEventRequiringExistence(data.eventType) && data.correlationId) {
         const [existingHook] = await drizzle
           .select({ hookId: Schema.hooks.hookId })
@@ -866,6 +1200,10 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
             `Workflow run "${effectiveRunId}" already exists`
           );
         }
+        // Open the run's slot counter. Doing it here, rather than lazily on
+        // first allocation, is what makes "no row" mean "created before slots
+        // existed" for the rest of the run's life.
+        eventId = await openEventSlots(drizzle, effectiveRunId);
         run = deserializeRunError(compact(runValue));
       }
 
@@ -902,13 +1240,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
         }
       }
 
-      // Terminal run statuses for use in SQL WHERE clauses (atomic guard).
-      // Must match the Vercel world's conditional expressions:
-      //   ne(status, 'completed') AND ne(status, 'failed') AND ne(status, 'cancelled')
-      const terminalRunStatuses: (typeof Schema.runs.status.enumValues)[number][] =
-        [...TERMINAL_WORKFLOW_RUN_STATUSES];
-
-      // Handle run_completed event: update run status and cleanup hooks
+      // Handle run_completed event: update run status
       // Uses conditional UPDATE to prevent completing an already-terminal run.
       if (data.eventType === 'run_completed') {
         const eventData = (data as any).eventData as { output?: any };
@@ -923,7 +1255,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
           .where(
             and(
               eq(Schema.runs.runId, effectiveRunId),
-              notInArray(Schema.runs.status, terminalRunStatuses)
+              notInArray(Schema.runs.status, TERMINAL_WORKFLOW_RUN_STATUSES)
             )
           )
           .returning();
@@ -942,18 +1274,9 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
             );
           }
         }
-        // Delete all hooks and waits for this run to allow token reuse
-        await Promise.all([
-          drizzle
-            .delete(Schema.hooks)
-            .where(eq(Schema.hooks.runId, effectiveRunId)),
-          drizzle
-            .delete(Schema.waits)
-            .where(eq(Schema.waits.runId, effectiveRunId)),
-        ]);
       }
 
-      // Handle run_failed event: update run status and cleanup hooks
+      // Handle run_failed event: update run status
       // Uses conditional UPDATE to prevent failing an already-terminal run.
       if (data.eventType === 'run_failed') {
         const eventData = (data as any).eventData as {
@@ -975,7 +1298,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
           .where(
             and(
               eq(Schema.runs.runId, effectiveRunId),
-              notInArray(Schema.runs.status, terminalRunStatuses)
+              notInArray(Schema.runs.status, TERMINAL_WORKFLOW_RUN_STATUSES)
             )
           )
           .returning();
@@ -994,18 +1317,9 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
             );
           }
         }
-        // Delete all hooks and waits for this run to allow token reuse
-        await Promise.all([
-          drizzle
-            .delete(Schema.hooks)
-            .where(eq(Schema.hooks.runId, effectiveRunId)),
-          drizzle
-            .delete(Schema.waits)
-            .where(eq(Schema.waits.runId, effectiveRunId)),
-        ]);
       }
 
-      // Handle run_cancelled event: update run status and cleanup hooks
+      // Handle run_cancelled event: update run status
       // Uses conditional UPDATE to prevent cancelling an already-terminal run.
       // Note: idempotent run_cancelled on already-cancelled runs is handled
       // earlier in the pre-validation block (creates event and returns early).
@@ -1020,7 +1334,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
           .where(
             and(
               eq(Schema.runs.runId, effectiveRunId),
-              notInArray(Schema.runs.status, terminalRunStatuses)
+              notInArray(Schema.runs.status, TERMINAL_WORKFLOW_RUN_STATUSES)
             )
           )
           .returning();
@@ -1039,11 +1353,17 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
             );
           }
         }
-        // Delete all hooks and waits for this run to allow token reuse
+      }
+
+      if (isTerminalRunEventType(data.eventType)) {
+        // Retained Hooks remain visible after the run ends. Other Hooks and
+        // all waits are removed immediately.
         await Promise.all([
           drizzle
             .delete(Schema.hooks)
-            .where(eq(Schema.hooks.runId, effectiveRunId)),
+            .where(
+              and(eq(Schema.hooks.runId, effectiveRunId), hookRetentionEnded)
+            ),
           drizzle
             .delete(Schema.waits)
             .where(eq(Schema.waits.runId, effectiveRunId)),
@@ -1223,12 +1543,10 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
             // step_started. Because this synthetic event is in the same
             // transaction as the lazy step row and step_started event, we
             // cannot leave behind only one side of that materialization.
-            const stepCreatedEventId = `wevt_${ulid()}`;
-            await tx
-              .insert(events)
-              .values({
+            try {
+              await insertEventRow(tx, {
                 runId: effectiveRunId,
-                eventId: stepCreatedEventId,
+                eventId: await allocateEventId(tx, effectiveRunId),
                 correlationId: data.correlationId,
                 eventType: 'step_created',
                 eventData: {
@@ -1236,8 +1554,18 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
                   input: lazyData.input,
                 },
                 specVersion: effectiveSpecVersion,
-              })
-              .onConflictDoNothing();
+              });
+            } catch (err) {
+              // A concurrent writer already published this run's
+              // step_created for the same step. The event exists either way,
+              // which is all this synthetic write was for.
+              if (
+                pgErrorOf(err).constraint !==
+                'workflow_events_entity_creation_unique'
+              ) {
+                throw err;
+              }
+            }
             stepCreatedLazily = true;
           }
 
@@ -1304,31 +1632,27 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
             }
           }
 
-          // Allocate the step_started ULID only after the guarded step UPDATE
-          // has acquired and passed the row lock. Without a sequence, this is
-          // the local ordering guarantee we can provide: a writer blocked on
-          // the step row will not carry an older event id into a later insert.
-          const stepStartedEventId = `wevt_${ulid()}`;
-          eventId = stepStartedEventId;
-          const [eventValue] = await tx
-            .insert(events)
-            .values({
-              runId: effectiveRunId,
-              eventId: stepStartedEventId,
-              correlationId: data.correlationId,
-              eventType: data.eventType,
-              eventData: storedEventData,
-              specVersion: effectiveSpecVersion,
-            })
-            .returning({ createdAt: events.createdAt });
+          // Allocate the step_started position only after the guarded step
+          // UPDATE has acquired and passed the row lock, so a writer blocked
+          // on the step row cannot carry an earlier position into a later
+          // insert.
+          const eventValue = await insertEventRow(tx, {
+            runId: effectiveRunId,
+            eventId: await allocateEventId(tx, effectiveRunId),
+            correlationId: data.correlationId,
+            eventType: data.eventType,
+            eventData: storedEventData,
+            specVersion: effectiveSpecVersion,
+          });
 
           if (!eventValue) {
             throw new EntityConflictError(
-              `Event ${stepStartedEventId} could not be created`
+              `Event for step "${data.correlationId}" could not be created`
             );
           }
-          return eventValue;
-        });
+          eventId = eventValue.eventId;
+          return { createdAt: eventValue.createdAt };
+        }, SLOT_INSERT_TRANSACTION);
       }
 
       // Handle step_completed event: update step status
@@ -1462,12 +1786,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
       // Handle hook_created event: create hook entity
       // Uses prepared statement for token uniqueness check (performance optimization)
       if (data.eventType === 'hook_created') {
-        const eventData = (data as any).eventData as {
-          token: string;
-          metadata?: any;
-          isWebhook?: boolean;
-          isSystem?: boolean;
-        };
+        const { eventData } = data;
 
         // Check for duplicate token using prepared statement
         const [existingHook] = await getHookByToken.execute({
@@ -1531,25 +1850,22 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
               token: eventData.token,
               conflictingRunId: existingHook.runId,
             };
-            const conflictEventId = getEventId();
-
-            const [conflictValue] = await drizzle
-              .insert(events)
-              .values({
-                runId: effectiveRunId,
-                eventId: conflictEventId,
-                correlationId: data.correlationId,
-                eventType: 'hook_conflict',
-                eventData: conflictEventData,
-                specVersion: effectiveSpecVersion,
-              })
-              .returning({ createdAt: events.createdAt });
+            const conflictValue = await insertEventRow(drizzle, {
+              runId: effectiveRunId,
+              eventId: await getEventId(),
+              correlationId: data.correlationId,
+              eventType: 'hook_conflict',
+              eventData: conflictEventData,
+              specVersion: effectiveSpecVersion,
+            });
 
             if (!conflictValue) {
               throw new EntityConflictError(
-                `Event ${conflictEventId} could not be created`
+                `hook_conflict for run "${effectiveRunId}" could not be created`
               );
             }
+            const conflictEventId = conflictValue.eventId;
+            eventId = conflictEventId;
 
             const conflictResult = {
               eventType: 'hook_conflict' as const,
@@ -1569,6 +1885,16 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
             };
           }
         } else {
+          await drizzle
+            .delete(Schema.hooks)
+            .where(
+              and(
+                eq(Schema.hooks.token, eventData.token),
+                exists(ownerRunIsTerminal),
+                hookRetentionEnded
+              )
+            );
+
           const [hookValue] = await drizzle
             .insert(Schema.hooks)
             .values({
@@ -1579,6 +1905,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
               ownerId: '', // TODO: get from context
               projectId: '', // TODO: get from context
               environment: '', // TODO: get from context
+              tokenRetentionUntil: eventData.tokenRetentionUntil,
               // Propagate specVersion from the event to the hook entity
               specVersion: effectiveSpecVersion,
               isWebhook: eventData.isWebhook,
@@ -1593,19 +1920,53 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
         }
       }
 
-      // Handle hook_disposed event: delete hook entity atomically.
-      // Uses DELETE ... RETURNING to ensure only one concurrent caller
-      // succeeds — if no rows are returned, the hook was already disposed.
+      // Handle hook_disposed event: delete the hook entity and append the
+      // disposal in ONE transaction.
+      //
+      // `DELETE ... RETURNING` ensures only one concurrent caller succeeds — if
+      // no rows are returned, the hook was already disposed. The delete also
+      // takes the hook row's lock, and the transaction is what holds it until
+      // the `hook_disposed` row exists. Committed separately (as this used to
+      // be), the lock is released at the delete's own autocommit, which leaves a
+      // window for a resume to pass its existence check and land its
+      // `hook_received` AFTER this disposal. That order is durable, and it
+      // corrupts the owning run for good: no replay can consume a delivery
+      // behind the disposal that retired the hook's consumer, so it strands,
+      // every replay reports divergence and the run ends in
+      // CorruptedEventLogError. See vercel/workflow#2781, which fixed the same
+      // ordering for world-local.
       if (data.eventType === 'hook_disposed' && data.correlationId) {
-        const [deleted] = await drizzle
-          .delete(Schema.hooks)
-          .where(eq(Schema.hooks.hookId, data.correlationId))
-          .returning({ hookId: Schema.hooks.hookId });
-        if (!deleted) {
-          throw new EntityConflictError(
-            `Hook "${data.correlationId}" already disposed`
-          );
-        }
+        const disposedHookId = data.correlationId;
+        value = await drizzle.transaction(async (tx) => {
+          const [deleted] = await tx
+            .delete(Schema.hooks)
+            .where(eq(Schema.hooks.hookId, disposedHookId))
+            .returning({ hookId: Schema.hooks.hookId });
+          if (!deleted) {
+            throw new EntityConflictError(
+              `Hook "${disposedHookId}" already disposed`
+            );
+          }
+
+          // Allocated only after the lock is held, matching hook_received's
+          // ordering guarantee: a writer that had to wait must not carry an
+          // earlier position into a later insert.
+          const eventValue = await insertEventRow(tx, {
+            runId: effectiveRunId,
+            eventId: await getEventId(tx),
+            correlationId: disposedHookId,
+            eventType: data.eventType,
+            eventData: storedEventData,
+            specVersion: effectiveSpecVersion,
+          });
+          if (!eventValue) {
+            throw new EntityConflictError(
+              `Event for hook "${disposedHookId}" could not be created`
+            );
+          }
+          eventId = eventValue.eventId;
+          return { createdAt: eventValue.createdAt };
+        }, SLOT_INSERT_TRANSACTION);
       }
 
       // Handle hook_received event: append the event only if the run has
@@ -1638,31 +1999,55 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
             );
           }
 
-          // Allocate the ULID only after the row lock is acquired,
+          // Re-check the hook under its own row lock, for the ordering the
+          // unlocked read near the top of `create` cannot settle. `FOR UPDATE`
+          // blocks on the disposer's `DELETE`, which holds that lock until its
+          // `hook_disposed` row is committed, then re-evaluates: either this
+          // delivery got the lock first and its `hook_received` is ordered
+          // BEFORE the disposal, or the disposer got it and the row is gone and
+          // this delivery is refused. The one order that is unreachable is the
+          // one that corrupts the run — a `hook_received` journaled behind its
+          // hook's `hook_disposed`, which no replay can consume.
+          //
+          // Under READ COMMITTED (see SLOT_INSERT_TRANSACTION) a locked read of
+          // a row deleted by the transaction it waited on returns no row rather
+          // than raising, so the refusal needs no serialization-failure
+          // handling. Reported as HookNotFoundError, matching the unlocked
+          // check and the public resume contract for a hook that can no longer
+          // receive.
+          if (data.correlationId) {
+            const [liveHook] = await tx
+              .select({ hookId: Schema.hooks.hookId })
+              .from(Schema.hooks)
+              .where(eq(Schema.hooks.hookId, data.correlationId))
+              .for('update')
+              .limit(1);
+            if (!liveHook) {
+              throw new HookNotFoundError(data.correlationId);
+            }
+          }
+
+          // Allocate the position only after the row locks are acquired,
           // matching step_started's ordering guarantee: a writer blocked
-          // on the run row must not carry an older event id into a later
+          // on a lock must not carry an earlier position into a later
           // insert.
-          const hookReceivedEventId = `wevt_${ulid()}`;
-          eventId = hookReceivedEventId;
-          const [eventValue] = await tx
-            .insert(events)
-            .values({
-              runId: effectiveRunId,
-              eventId: hookReceivedEventId,
-              correlationId: data.correlationId,
-              eventType: data.eventType,
-              eventData: storedEventData,
-              specVersion: effectiveSpecVersion,
-            })
-            .returning({ createdAt: events.createdAt });
+          const eventValue = await insertEventRow(tx, {
+            runId: effectiveRunId,
+            eventId: await allocateEventId(tx, effectiveRunId),
+            correlationId: data.correlationId,
+            eventType: data.eventType,
+            eventData: storedEventData,
+            specVersion: effectiveSpecVersion,
+          });
 
           if (!eventValue) {
             throw new EntityConflictError(
-              `Event ${hookReceivedEventId} could not be created`
+              `Event for hook "${data.correlationId}" could not be created`
             );
           }
-          return eventValue;
-        });
+          eventId = eventValue.eventId;
+          return { createdAt: eventValue.createdAt };
+        }, SLOT_INSERT_TRANSACTION);
       }
 
       // Handle wait_created event: create wait entity
@@ -1748,17 +2133,18 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
 
       try {
         if (!value) {
-          [value] = await drizzle
-            .insert(events)
-            .values({
-              runId: effectiveRunId,
-              eventId: getEventId(),
-              correlationId: data.correlationId,
-              eventType: data.eventType,
-              eventData: storedEventData,
-              specVersion: effectiveSpecVersion,
-            })
-            .returning({ createdAt: events.createdAt });
+          const inserted = await insertEventRow(drizzle, {
+            runId: effectiveRunId,
+            eventId: await getEventId(),
+            correlationId: data.correlationId,
+            eventType: data.eventType,
+            eventData: storedEventData,
+            specVersion: effectiveSpecVersion,
+          });
+          if (inserted) {
+            eventId = inserted.eventId;
+            value = { createdAt: inserted.createdAt };
+          }
         }
       } catch (err) {
         // Translate unique-violation on the correlated-event partial index
@@ -1777,10 +2163,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
           isChildEntityCreationEventType(data.eventType) ||
           (data.eventType === 'attr_set' &&
             data.eventData.writer.type === 'workflow');
-        const pgErr = (err as { code?: string; constraint?: string }).code
-          ? (err as { code?: string; constraint?: string })
-          : ((err as { cause?: { code?: string; constraint?: string } })
-              .cause ?? {});
+        const pgErr = pgErrorOf(err);
         const pgCode = pgErr.code;
         const pgConstraint = pgErr.constraint;
         if (
@@ -1794,16 +2177,16 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
         }
         throw err;
       }
-      if (!value) {
+      if (!value || !eventId) {
         throw new EntityConflictError(
-          `Event ${getEventId()} could not be created`
+          `${data.eventType} for run "${effectiveRunId}" could not be created`
         );
       }
       const result = {
         ...data,
         ...value,
         runId: effectiveRunId,
-        eventId: getEventId(),
+        eventId,
         ...(storedEventData !== undefined
           ? { eventData: storedEventData }
           : {}),
@@ -1819,34 +2202,101 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
 
       // For run_started: include all events so the runtime can skip
       // the initial events.list call and reduce TTFB.
-      let allEvents: Event[] | undefined;
-      let cursor: string | null | undefined;
-      let hasMore: boolean | undefined;
-      if (data.eventType === 'run_started' && run) {
+      let eventPage: PaginatedResponse<Event> | undefined;
+      // The skipped-slot report and the inline delta below share
+      // `events`/`cursor`/`hasMore`, and the runtime sends both on the same
+      // write. The delta wins: the skipped slots all sit above the cursor, so
+      // it is a strict superset, and it is the only one of the two that
+      // advances `cursor`. Running the report anyway would cost a query whose
+      // result the delta overwrites.
+      if (
+        params?.eventCount !== undefined &&
+        typeof params.sinceCursor !== 'string'
+      ) {
+        const report = await reportSkippedSlots(
+          drizzle,
+          effectiveRunId,
+          parsed.eventId,
+          params.eventCount,
+          resolveData
+        );
+        if (report) {
+          // Deliberately no cursor: the report is a lower bound on what this
+          // write skipped over, not a page the caller has now read to the end
+          // of, so it must not advance the caller's read position.
+          eventPage = {
+            data: report.events,
+            cursor: null,
+            hasMore: report.hasMore,
+          };
+        }
+      }
+      if (data.eventType === 'run_started' && run && !params?.skipPreload) {
         const eventRows = await drizzle
           .select()
           .from(Schema.events)
           .where(eq(Schema.events.runId, effectiveRunId))
           .orderBy(Schema.events.eventId);
-        allEvents = eventRows.map((e) => {
+        const data = eventRows.map((e) => {
           e.eventData ||= e.eventDataJson;
           const parsed = EventSchema.parse(compact(e));
           return stripEventDataRefs(parsed, resolveData);
         });
-        cursor = allEvents.at(-1)?.eventId ?? null;
-        hasMore = false;
+        eventPage = {
+          data,
+          cursor: data.at(-1)?.eventId ?? null,
+          hasMore: false,
+        };
       }
 
-      return {
+      // Inline delta: the caller told us the cursor of the log it holds, so
+      // return the page `events.list({ cursor: sinceCursor, sortOrder: 'asc' })`
+      // would return right now and save it the round-trip. Same query, same
+      // page size, same cursor semantics as `list` below — deliberately not
+      // paginated to exhaustion, since the contract is
+      // single-page-or-fall-back and the caller ignores a delta with
+      // `hasMore: true`.
+      if (typeof params?.sinceCursor === 'string') {
+        const limit = 100;
+        const deltaRows = await drizzle
+          .select()
+          .from(Schema.events)
+          .where(
+            and(
+              eq(Schema.events.runId, effectiveRunId),
+              gt(Schema.events.eventId, params.sinceCursor)
+            )
+          )
+          .orderBy(Schema.events.eventId)
+          .limit(limit + 1);
+        const page = deltaRows.slice(0, limit);
+        const data = page.map((e) => {
+          e.eventData ||= e.eventDataJson;
+          return stripEventDataRefs(EventSchema.parse(compact(e)), resolveData);
+        });
+        eventPage = {
+          data,
+          cursor: data.at(-1)?.eventId ?? null,
+          hasMore: deltaRows.length > limit,
+        };
+      }
+
+      const eventResult: EventResult = {
         event: stripEventDataRefs(parsed, resolveData),
         run,
         step,
         hook,
         wait,
-        events: allEvents,
-        cursor,
-        hasMore,
         ...(stepCreatedLazily ? { stepCreated: true } : {}),
+      };
+
+      if (!eventPage) return eventResult;
+
+      return {
+        ...eventResult,
+        events: eventPage.data,
+        cursor: eventPage.cursor,
+        hasMore: eventPage.hasMore,
       };
     },
     async get(
@@ -1870,37 +2320,53 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
       return stripEventDataRefs(parsed, resolveData);
     },
     async list(params: ListEventsParams): Promise<PaginatedResponse<Event>> {
-      const limit = params?.pagination?.limit ?? 100;
-      const sortOrder = params.pagination?.sortOrder || 'asc';
+      const limit = params.pagination?.limit ?? getMaxEventsPerRun();
+      const sortOrder = params.pagination?.sortOrder ?? 'asc';
       const order =
         sortOrder === 'desc'
           ? { by: desc(events.eventId), compare: lt }
           : { by: events.eventId, compare: gt };
-      const all = await drizzle
-        .select()
-        .from(events)
-        .where(
-          and(
-            eq(events.runId, params.runId),
-            map(params.pagination?.cursor, (c) =>
-              order.compare(events.eventId, c)
+      const resolveData = params.resolveData ?? 'all';
+      const data: Event[] = [];
+      let cursor = params.pagination?.cursor;
+      let hasMore = false;
+
+      do {
+        const pageLimit =
+          params.pagination?.limit === undefined
+            ? Math.min(500, limit - data.length)
+            : limit;
+        const rows = await drizzle
+          .select()
+          .from(events)
+          .where(
+            and(
+              eq(events.runId, params.runId),
+              map(cursor, (value) => order.compare(events.eventId, value))
             )
           )
-        )
-        .orderBy(order.by)
-        .limit(limit + 1);
+          .orderBy(order.by)
+          .limit(pageLimit + 1);
+        const page = rows.slice(0, pageLimit);
 
-      const values = all.slice(0, limit);
+        for (const row of page) {
+          row.eventData ||= row.eventDataJson;
+          const event = EventSchema.parse(compact(row));
+          data.push(stripEventDataRefs(event, resolveData));
+        }
 
-      const resolveData = params?.resolveData ?? 'all';
+        cursor = page.at(-1)?.eventId;
+        hasMore = rows.length > pageLimit;
+      } while (
+        params.pagination?.limit === undefined &&
+        hasMore &&
+        data.length < limit
+      );
+
       return {
-        data: values.map((v) => {
-          v.eventData ||= v.eventDataJson;
-          const parsed = EventSchema.parse(compact(v));
-          return stripEventDataRefs(parsed, resolveData);
-        }),
-        cursor: values.at(-1)?.eventId ?? null,
-        hasMore: all.length > limit,
+        data,
+        cursor: data.at(-1)?.eventId ?? null,
+        hasMore,
       };
     },
     async listByCorrelationId(params) {
@@ -1916,6 +2382,11 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
         .where(
           and(
             eq(events.correlationId, params.correlationId),
+            // A correlation id names a step or wait within its run, so an
+            // unscoped query matches one event per run that allocated the same
+            // id — and the cursor, an event id, cannot tell two such rows
+            // apart. Scoped, `(run_id, id)` is the primary key, so it can.
+            eq(events.runId, params.runId),
             map(params.pagination?.cursor, (c) =>
               order.compare(events.eventId, c)
             )
@@ -1941,11 +2412,24 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
 }
 
 export function createHooksStorage(drizzle: Drizzle): Storage['hooks'] {
-  const { hooks } = Schema;
+  const { hooks, runs } = Schema;
+  const ownerRunIsTerminal = drizzle
+    .select({ runId: runs.runId })
+    .from(runs)
+    .where(
+      and(
+        eq(runs.runId, hooks.runId),
+        inArray(runs.status, TERMINAL_WORKFLOW_RUN_STATUSES)
+      )
+    );
+  const available = or(
+    gt(hooks.tokenRetentionUntil, sql`now()`),
+    notExists(ownerRunIsTerminal)
+  );
   const getByToken = drizzle
     .select()
     .from(hooks)
-    .where(eq(hooks.token, sql.placeholder('token')))
+    .where(and(eq(hooks.token, sql.placeholder('token')), available))
     .limit(1)
     .prepare('workflow_hooks_get_by_token');
 
@@ -1954,8 +2438,11 @@ export function createHooksStorage(drizzle: Drizzle): Storage['hooks'] {
       const [value] = await drizzle
         .select()
         .from(hooks)
-        .where(eq(hooks.hookId, hookId))
+        .where(and(eq(hooks.hookId, hookId), available))
         .limit(1);
+      if (!value) {
+        throw new HookNotFoundError(hookId);
+      }
       value.metadata ||= value.metadataJson;
       const parsed = HookSchema.parse(compact(value));
       parsed.isWebhook ??= true;
@@ -1984,6 +2471,7 @@ export function createHooksStorage(drizzle: Drizzle): Storage['hooks'] {
         .from(hooks)
         .where(
           and(
+            available,
             map(params.runId, (id) => eq(hooks.runId, id)),
             map(fromCursor, (c) => cursorFn(hooks.hookId, c))
           )

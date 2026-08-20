@@ -77,6 +77,37 @@ export const WorkflowEventsCount = SemanticConvention<number>(
   'workflow.events.count'
 );
 
+/** Whether workflow execution starts with replay or resumes a retained VM */
+export const WorkflowExecutionMode = SemanticConvention<'replay' | 'retained'>(
+  'workflow.execution.mode'
+);
+
+/**
+ * Events the replay walked past that no consumer claimed, still held when the
+ * replay stopped.
+ *
+ * A non-zero count on a suspension is ordinary: an out-of-band delivery that
+ * landed ahead of the code that reads it waits for the replay that gets there.
+ * From inside one replay that is indistinguishable from an event no replay will
+ * ever claim, because the two differ only in what the next replay does. So the
+ * count goes on the span instead of failing the run, and the case worth acting
+ * on is a query across a run's spans: the same
+ * {@link WorkflowParkedEventId} held on suspension after suspension.
+ */
+export const WorkflowParkedEventsCount = SemanticConvention<number>(
+  'workflow.events.parked.count'
+);
+
+/** Oldest event still held unclaimed when the replay stopped. */
+export const WorkflowParkedEventId = SemanticConvention<string>(
+  'workflow.events.parked.event_id'
+);
+
+/** Type of the oldest event still held unclaimed when the replay stopped. */
+export const WorkflowParkedEventType = SemanticConvention<string>(
+  'workflow.events.parked.event_type'
+);
+
 /** Number of arguments passed to the workflow */
 export const WorkflowArgumentsCount = SemanticConvention<number>(
   'workflow.arguments.count'
@@ -90,6 +121,41 @@ export const WorkflowResultType = SemanticConvention<string>(
 /** Whether trace context was propagated to this workflow execution */
 export const WorkflowTracePropagated = SemanticConvention<boolean>(
   'workflow.trace.propagated'
+);
+
+// QuickJS VM engine attributes
+
+/** The VM engine executing the workflow function for this invocation */
+export const WorkflowVm = SemanticConvention<'node' | 'quickjs'>('workflow.vm');
+
+/** Outcome of a QuickJS VM workflow invocation */
+export const QuickJSOutcome = SemanticConvention<
+  'completed' | 'suspended' | 'failed'
+>('workflow.vm.outcome');
+
+/** Whether preloaded events from `events.create('run_started')` were used */
+export const QuickJSEventsPreloaded = SemanticConvention<boolean>(
+  'workflow.vm.events.preloaded'
+);
+
+/** Total number of events fetched from the world for this invocation */
+export const QuickJSEventsFetchedCount = SemanticConvention<number>(
+  'workflow.vm.events.fetched_count'
+);
+
+/** Number of pages required to fetch all events */
+export const QuickJSEventsFetchedPages = SemanticConvention<number>(
+  'workflow.vm.events.fetched_pages'
+);
+
+/** Number of pending VM operations captured at suspension */
+export const QuickJSPendingOpsCount = SemanticConvention<number>(
+  'workflow.vm.pending_ops_count'
+);
+
+/** Number of steps executed inline (live-VM continuation) this invocation */
+export const QuickJSInlineSteps = SemanticConvention<number>(
+  'quickjs.inline_steps'
 );
 
 /** Active trace-correlation mode for this invocation (linked or continuous) */
@@ -128,6 +194,15 @@ export const WorkflowHooksCreated = SemanticConvention<number>(
 /** Number of waits created during workflow execution */
 export const WorkflowWaitsCreated = SemanticConvention<number>(
   'workflow.waits.created'
+);
+
+/**
+ * Number of steps this suspension finalized as failed because their
+ * arguments refused to serialize (step_created placeholder + step_failed
+ * carrying the SerializationError — see finalizeUnserializableStep).
+ */
+export const WorkflowStepsFailedSerialization = SemanticConvention<number>(
+  'workflow.steps.failed_serialization'
 );
 
 /**
@@ -324,6 +399,21 @@ export const QueueOverheadMs = SemanticConvention<number>(
 /** Unique identifier for the deployment environment */
 export const DeploymentId = SemanticConvention<string>('deployment.id');
 
+/** The deployment a run is pinned to, set only on a misrouted delivery. */
+export const WorkflowRunPinnedDeploymentId = SemanticConvention<string>(
+  'workflow.deployment.pinned_id'
+);
+
+/** Re-route attempts for this misrouted delivery, including this one. */
+export const WorkflowDeploymentMismatchRetryCount = SemanticConvention<number>(
+  'workflow.deployment_mismatch.retry_count'
+);
+
+/** Whether the misrouted delivery was re-routed instead of failing the run. */
+export const WorkflowDeploymentMismatchRecovered = SemanticConvention<boolean>(
+  'workflow.deployment_mismatch.recovered'
+);
+
 // Hook attributes
 
 /** Token identifying a specific hook */
@@ -350,9 +440,153 @@ export const HookResilientResume = SemanticConvention<boolean>(
  * materialized the `hook_received` event from the queue message's `hookInput`
  * because the producer's direct write had not landed — the completion of the
  * recovery path {@link HookResilientResume} began.
+ *
+ * Legacy / non-atomic re-ensure signal only. Atomic lazy resumes
+ * (resumeId + digest) go through the hoisted preload write instead, whose
+ * response cannot tell whether the producer or the consumer won the
+ * `(runId, resumeId)` claim — so this attribute is deliberately NOT emitted
+ * for them (emitting `true` unconditionally would count every producer-won
+ * resume as a recovery). The producer-begin ({@link HookResilientResume}) /
+ * consumer-materialized pairing is therefore no longer complete for atomic
+ * lazy resumptions; use {@link HookResumeSetupSource} to observe that path.
  */
 export const HookResilientResumeMaterialized = SemanticConvention<boolean>(
   'workflow.hook.resilient_resume_materialized'
+);
+
+/**
+ * Consumer-side signal (on the workflow execution span) of how a lazy hook
+ * resume initialized its replay state:
+ *
+ * - `hook_received_stream` — the hoisted `hook_received` write returned a
+ *   usable replay preload (run + complete event log), so the invocation
+ *   skipped both the `run_started` write and the initial `events.list`.
+ * - `hook_received_fallback` — the hoisted write succeeded but returned no
+ *   usable preload (a CBOR response from an older server, a World that
+ *   ignored the opt-in, a bounded `hasMore` page, or a preload that failed
+ *   validation); the invocation fell back to the `run_started` setup without
+ *   re-posting the hook.
+ *
+ * Absent on legacy hook deliveries (no resumeId/digest) and on every other
+ * delivery kind, which take the `run_started` setup unconditionally.
+ *
+ * This is a latency/setup-path signal: it says which requests initialized
+ * the invocation, NOT that this consumer created the `hook_received` event
+ * (the hoisted write may equally have converged on the producer's — claim
+ * ownership is not observable client-side; cf.
+ * {@link HookResilientResumeMaterialized}).
+ */
+export const HookResumeSetupSource = SemanticConvention<string>(
+  'workflow.resume_setup_source'
+);
+
+/**
+ * Producer-side signal (on the suspension span) counting steps whose direct
+ * `step_created` write failed transiently while their `stepInput`-carrying
+ * queue publish succeeded, so step creation is recovered via the consumer's
+ * re-ensure. Mirrors {@link HookResilientResume}.
+ */
+export const StepResilientDispatchRecovered = SemanticConvention<number>(
+  'workflow.step.resilient_dispatch_recovered'
+);
+
+/**
+ * Consumer-side signal (on the workflow execution span) that this delivery
+ * materialized the `step_created` event from the queue message's `stepInput`
+ * because the producer's direct write had not landed — the completion of the
+ * recovery path {@link StepResilientDispatchRecovered} began.
+ */
+export const StepResilientDispatchMaterialized = SemanticConvention<boolean>(
+  'workflow.step.resilient_dispatch_materialized'
+);
+
+// Hook-triggered time-to-resume (TTR) attributes
+//
+// Set on the `step.execute <name>` span of the FIRST durable step following a
+// hook resume, and only there: one resumption produces exactly one sample, so
+// a later step in the same invocation, a retry, or a redelivery never
+// re-reports it. The phases are non-overlapping and sum exactly to
+// {@link ResumeTotalMs} — see runtime/resume-latency.ts for the boundary
+// definitions and the emission gate.
+//
+// Deliberately carries no `resumeId`, run ID, or token: the metric is meant to
+// be aggregated across every resume, and high-cardinality keys would make that
+// prohibitive. Existing trace-correlation fields on the same span are
+// unchanged and still identify the individual run.
+
+/** Total TTR: entry into `resumeHook()` → immediately before `stepFn.apply()`. */
+export const ResumeTotalMs = SemanticConvention<number>(
+  'workflow.resume.total_ms'
+);
+
+/** Phase: `resumeHook()` entry → the queue publish being requested. */
+export const ResumeProducerPrepMs = SemanticConvention<number>(
+  'workflow.resume.phase.producer_prep_ms'
+);
+
+/** Phase: queue publish requested → the final consumer's handler being entered. */
+export const ResumeQueueDeliveryMs = SemanticConvention<number>(
+  'workflow.resume.phase.queue_delivery_ms'
+);
+
+/** Phase: consumer entry → replay beginning. */
+export const ResumeSetupMs = SemanticConvention<number>(
+  'workflow.resume.phase.resume_setup_ms'
+);
+
+/** Phase: replay beginning → the next durable step being encountered. */
+export const ResumeReplayMs = SemanticConvention<number>(
+  'workflow.resume.phase.replay_ms'
+);
+
+/** Phase: step encountered → the `step_started` request beginning. */
+export const ResumeStepDispatchMs = SemanticConvention<number>(
+  'workflow.resume.phase.step_dispatch_ms'
+);
+
+/**
+ * Phase: `step_started` request beginning → its response returning. Omitted
+ * under optimistic inline start, where the claim is not awaited before the
+ * body runs and therefore has no completion instant at that point; the time
+ * is then reported entirely as {@link ResumeStepPrepareMs}.
+ */
+export const ResumeStepClaimMs = SemanticConvention<number>(
+  'workflow.resume.phase.step_claim_ms'
+);
+
+/**
+ * Phase: claim returning → immediately before `stepFn.apply()`. Deliberately
+ * includes encryption-key resolution, argument hydration, and step-context
+ * setup; `workflow.queue.deserialize_time_ms` still isolates hydration.
+ */
+export const ResumeStepPrepareMs = SemanticConvention<number>(
+  'workflow.resume.phase.step_prepare_ms'
+);
+
+/** What triggered the measured resumption. */
+export const ResumeTrigger = SemanticConvention<'hook'>(
+  'workflow.resume.trigger'
+);
+
+/** Which `resumeHook()` dispatch path produced this resume. */
+export const ResumeStrategy = SemanticConvention<'parallel' | 'sequential'>(
+  'workflow.resume.strategy'
+);
+
+/**
+ * How the consuming invocation initialized replay state. Distinct from the
+ * pre-existing {@link HookResumeSetupSource} (`workflow.resume_setup_source`,
+ * on the workflow execution span), which reports the finer-grained
+ * hoisted-write outcome; this one is the TTR dimension and shares the metric's
+ * three-value vocabulary.
+ */
+export const ResumeSetupSource = SemanticConvention<
+  'hook_preload' | 'run_started' | 'event_load'
+>('workflow.resume.setup_source');
+
+/** Whether the measured step ran in the resuming invocation or a queued one. */
+export const ResumeStepExecution = SemanticConvention<'inline' | 'dispatched'>(
+  'workflow.resume.step_execution'
 );
 
 // Webhook attributes

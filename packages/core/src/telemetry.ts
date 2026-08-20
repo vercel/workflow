@@ -180,6 +180,18 @@ const Tracer = once(async () => {
   return tracer;
 });
 
+const StepExecutionDurationHistogram = once(async () => {
+  const otel = await OtelApi.value;
+  if (!otel) return null;
+  // service.name is a resource attribute, applied by the configured provider.
+  return otel.metrics
+    .getMeter('workflow')
+    .createHistogram('workflow.step.execute.duration', {
+      description: 'Duration of user step execution',
+      unit: 'ms',
+    });
+});
+
 /**
  * One-shot runtime diagnostic (DEBUG=workflow:* only), same shape as the one
  * world-vercel emits tagged `world-vercel`: prints how this module instance
@@ -245,11 +257,15 @@ export async function trace<T>(
       span.setStatus({ code: otel.SpanStatusCode.OK });
       return result;
     } catch (e) {
-      span.setStatus({
-        code: otel.SpanStatusCode.ERROR,
-        message: (e as Error).message,
-      });
-      applyWorkflowSuspensionToSpan(e, otel, span);
+      if (WorkflowSuspension.is(e)) {
+        span.setStatus({ code: otel.SpanStatusCode.OK });
+        applyWorkflowSuspensionToSpan(e, span);
+      } else {
+        span.setStatus({
+          code: otel.SpanStatusCode.ERROR,
+          message: (e as Error).message,
+        });
+      }
       throw e;
     } finally {
       span.end();
@@ -275,19 +291,25 @@ export async function recordElapsedSpan(
 }
 
 /**
- * Applies workflow suspension attributes to the given span if the error is a WorkflowSuspension
- * which is technically not an error, but an algebraic effect indicating suspension.
+ * Records the same user-code interval as the inner `step.execute` span. The
+ * configured OpenTelemetry meter provider attaches resource dimensions such as
+ * service.name, so this avoids accepting a caller-controlled service tag.
  */
-function applyWorkflowSuspensionToSpan(
-  error: unknown,
-  otel: typeof api,
-  span: api.Span
-) {
-  if (!error || !WorkflowSuspension.is(error)) {
-    return;
-  }
+export async function recordStepExecutionDuration(
+  durationMs: number,
+  status: 'ok' | 'error'
+): Promise<void> {
+  const histogram = await StepExecutionDurationHistogram.value;
+  histogram?.record(durationMs, { 'workflow.step.status': status });
+}
 
-  span.setStatus({ code: otel.SpanStatusCode.OK });
+/**
+ * Applies the workflow suspension algebraic effect to an active span.
+ */
+export function applyWorkflowSuspensionToSpan(
+  error: WorkflowSuspension,
+  span: api.Span
+): void {
   span.setAttributes({
     ...Attr.WorkflowSuspensionState('suspended'),
     ...Attr.WorkflowSuspensionStepCount(error.stepCount),
