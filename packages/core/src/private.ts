@@ -158,6 +158,14 @@ export interface WorkflowOrchestratorContext {
    * whole run and both replays of a run must draw in the same order.
    */
   generateUlid: () => string;
+  /**
+   * Monotone count of correlation-id draws this replay has made. Progress
+   * metric for {@link quiesceEarlierCascades}: a macrotask turn in which it
+   * does not move (and no hydration is in flight) means every woken branch has
+   * run as far as it can without another delivery. Optional so lightweight
+   * test contexts degrade to the single-yield behavior.
+   */
+  readonly mintCount?: number;
   generateNanoid: () => string;
   /**
    * Sequential promise queue that ensures all event-driven promise resolutions
@@ -431,17 +439,85 @@ function computeResolvesOnItsOwn(
  * loaded. storm-log-replay.test.ts replays a production log corrupted exactly
  * that way.)
  */
+/**
+ * Whether correlation-id draw order is pinned to event-log order
+ * (`WORKFLOW_LOG_ORDER_DRAWS=1`). Read per call so tests can flip it.
+ *
+ * Off, a delivery that had to defer yields ONE macrotask after its
+ * predecessors resolve — enough for short consumers, but a woken branch whose
+ * path to its next draw crosses more hops (a `Promise.race` resolution, a
+ * user-level semaphore, an async-iterator read) can still be overtaken by a
+ * later-in-log delivery's shorter cascade, so the run's draw order — and
+ * therefore its correlation ids — depends on how much log this replay loaded.
+ * On, the yield becomes a fixpoint: the delivery resolves only once every
+ * earlier cascade has quiesced, making the draw sequence a pure function of
+ * the dense log, stable under prefix extension, and concurrent writers'
+ * duplicate creates identical (deduped) instead of colliding.
+ */
+export function isLogOrderDrawsEnabled(): boolean {
+  return process.env.WORKFLOW_LOG_ORDER_DRAWS !== '0';
+}
+
+/**
+ * Waits until the workflow can make no further progress without another
+ * delivery: repeated (promise-queue drain + macrotask turn)s until a full
+ * turn passes with no new correlation-id draws and no hydration in flight.
+ *
+ * Termination: each extra iteration requires the body to have drawn a new id
+ * or started a hydration in the previous turn, and a body's progress between
+ * deliveries is finite. The loop holds this delivery's own barrier registered
+ * (its `markDelivered` has not run), so `isDeliveryIdle` stays false and no
+ * suspension can preempt the cascade being waited out.
+ */
+async function quiesceEarlierCascades(
+  ctx: WorkflowOrchestratorContext,
+  eventIndex: number
+): Promise<void> {
+  for (;;) {
+    const mintsBefore = ctx.mintCount ?? 0;
+    const pendingBefore = ctx.pendingDeliveries;
+    // Settled or rejected, the queue snapshot only orders us behind work
+    // already chained; a rejection is the run failing elsewhere.
+    await ctx.promiseQueue.then(
+      () => {},
+      () => {}
+    );
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    if (
+      (ctx.mintCount ?? 0) !== mintsBefore ||
+      pendingBefore !== 0 ||
+      ctx.pendingDeliveries !== 0
+    ) {
+      continue;
+    }
+    // Quiet is not enough on its own: several delivery chains can be sitting
+    // in this loop at once, and letting the first quiet observation resolve
+    // would break the tie by timer arrival — the arrival-order dependence this
+    // mode removes. A lower-index ARMED barrier is a delivery committed to
+    // happening that has not happened yet, so this one keeps waiting. Unarmed
+    // entries (buffered payloads nobody has claimed) do not block, exactly as
+    // in `gatesOn`: their handover is claim-driven, which is body-position
+    // determined and therefore already a function of the prefix.
+    let lowerArmed = false;
+    for (const [index, entry] of ctx.pendingDeliveryBarriers ?? []) {
+      if (index < eventIndex && entry.armed) {
+        lowerArmed = true;
+        break;
+      }
+    }
+    if (!lowerArmed) {
+      return;
+    }
+  }
+}
+
 export async function awaitEarlierDeliveries(
   ctx: WorkflowOrchestratorContext,
   eventIndex: number | undefined,
   kind: DeliveryKind
 ): Promise<void> {
   // Defensive: tolerate contexts that predate this field (test harnesses).
-  if (
-    eventIndex === undefined ||
-    !ctx.pendingDeliveryBarriers ||
-    ctx.pendingDeliveryBarriers.size === 0
-  ) {
+  if (eventIndex === undefined || !ctx.pendingDeliveryBarriers) {
     return;
   }
   const barriers = ctx.pendingDeliveryBarriers;
@@ -454,6 +530,19 @@ export async function awaitEarlierDeliveries(
   }
   if (earlier.length > 0) {
     await Promise.all(earlier);
+  }
+  if (isLogOrderDrawsEnabled()) {
+    // Unconditional, not just when a barrier was still registered: an earlier
+    // delivery's barrier deregisters when its resolve() runs, but the branch
+    // it woke may still be hops away from its next draw. A later delivery
+    // consumed after that deregistration sees an empty gate set, and without
+    // this it would resolve mid-cascade and overtake the draw — the exact
+    // arrival-order dependence this mode exists to remove. Costs one quiet
+    // macrotask turn when nothing is in flight.
+    await quiesceEarlierCascades(ctx, eventIndex);
+    return;
+  }
+  if (earlier.length > 0) {
     // An earlier delivery being "delivered" only means its `resolve()` ran.
     // The branch it woke may need an arbitrary number of further microtask
     // hops before it reaches its next `useStep` call and draws a ULID — a
