@@ -38,8 +38,18 @@ import { version } from './version.js';
  * Inline workflow-server URL override. Must remain an empty string on
  * `main` — rewritten by external CI for branch-deployment testing.
  * Prefer `VERCEL_WORKFLOW_SERVER_URL` for deployment-time configuration.
+ *
+ * TODO(sealed-log): REVERT TO '' BEFORE MERGE. Pinned to the sealed-log
+ * sequencer's server branch (vercel/workflow-server#805) so this PR's e2e
+ * suite exercises spec-7 position assignment and `noop` sealing against the
+ * server that implements them, rather than against a server that treats spec 7
+ * as plain slot identity. This constant wins over
+ * `VERCEL_WORKFLOW_SERVER_URL`, so it points both the deployed workbench apps
+ * and the e2e harness at the same server — which is the point: the harness has
+ * to read run state from the server the app wrote it to.
  */
-export const WORKFLOW_SERVER_URL_OVERRIDE = '';
+export const WORKFLOW_SERVER_URL_OVERRIDE =
+  'https://workflow-server-git-pgp-sealed-log-sequencer.vercel.sh';
 
 /**
  * HTTP methods that are safe to transparently re-issue inside the adapter.
