@@ -76,6 +76,15 @@ import { unserializableStepInputPlaceholder } from './unserializable-step.js';
 import { getWaitContinuationDispatch } from './wait-continuation.js';
 import { getWorld } from './world.js';
 
+function requireSerializedStepInput(step: PendingStep): Uint8Array {
+  if (step.input === undefined) {
+    throw new Error(
+      `QuickJS pending step ${step.correlationId} is missing serialized input`
+    );
+  }
+  return step.input;
+}
+
 /** Tiny ms timer using performance.now() — already monotonic on Node. */
 function tick(): number {
   return performance.now();
@@ -616,7 +625,7 @@ async function dispatchPendingOps(params: {
           // on the host side — matching what
           // `dehydrateStepArguments` does in the node:vm engine.
           const encryptedInput = await encryptSerializedData(
-            step.input,
+            requireSerializedStepInput(step),
             encryptionKey
           );
 
@@ -1590,7 +1599,7 @@ export async function runWorkflowWithQuickJS(params: {
                   // EntityConflictError → { type: 'skipped' } and never
                   // runs the body. Mirrors the node engine's inline path.
                   lazyStepInput: await encryptSerializedData(
-                    step.input,
+                    requireSerializedStepInput(step),
                     encryptionKey
                   ),
                   // Ownership stamp: wake replays see the body as in
