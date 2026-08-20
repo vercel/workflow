@@ -28,6 +28,7 @@ import {
   type RunInput,
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
+  SPEC_VERSION_SUPPORTS_COMPRESSION,
   type WorkflowRun,
 } from '@workflow/world';
 import { classifyRunError, isRetryableWorldError } from '../classify-error.js';
@@ -39,6 +40,8 @@ import {
 } from '../serialization/encryption.js';
 import {
   dehydrateRunError,
+  dehydrateStepArguments,
+  dehydrateStepError,
   hydrateRunError,
   maybeEncrypt,
 } from '../serialization.js';
@@ -70,6 +73,7 @@ import {
 import { ReplayBudget } from './replay-budget.js';
 import { executeStep, type StepExecutionResult } from './step-executor.js';
 import { runStepSingleFlight } from './step-single-flight.js';
+import { unserializableStepInputPlaceholder } from './unserializable-step.js';
 import { getWaitContinuationDispatch } from './wait-continuation.js';
 import { getWorld } from './world.js';
 
@@ -244,12 +248,30 @@ async function dispatchPendingOps(params: {
    * queues.
    */
   nextTraceCarrier: () => Promise<Record<string, string>>;
+  /**
+   * When true (the inline loop), a step carrying `serializationError` is
+   * finalized as step_created (placeholder input) + step_failed so the
+   * live-VM feed rejects the step's promise and workflow code can catch
+   * it — mirroring the node:vm engine's finalizeUnserializableStep. When
+   * false (the terminal drain), such steps are skipped entirely: the run
+   * is already completing/failing, no replay follows the drain to observe
+   * the failure, and a completed run carrying a failed step would read as
+   * a bug from the dashboard — matching the node:vm drain's behavior.
+   */
+  finalizeUnserializableSteps?: boolean;
   wfdiag: (checkpoint: string, fields: Record<string, unknown>) => void;
 }): Promise<{
   createdAttributeEvent: boolean;
   createdGetConflictHook: boolean;
   /** Step cids already published via resilient dispatch — see above. */
   queuedStepCids: Set<string>;
+  /**
+   * Step cids finalized as failed because their input refused to
+   * serialize (see `finalizeUnserializableSteps`). No execution message
+   * exists for these; the caller must ensure the run observes the
+   * terminal event (the inline loop's feed, or the requeue signal).
+   */
+  failedSerializationStepCids: Set<string>;
 }> {
   const {
     world,
@@ -267,6 +289,9 @@ async function dispatchPendingOps(params: {
   // parallel, message carrying `stepInput`). Reported to the caller so it
   // skips them in its own queueing pass.
   const queuedStepCids = new Set<string>();
+  // Step cids finalized as step_created + step_failed because their input
+  // refused to serialize — see the `finalizeUnserializableSteps` param.
+  const failedSerializationStepCids = new Set<string>();
   // Resilient step dispatch eligibility, shared by every step op below (the
   // per-step input-size check is applied inside the op): feature enabled and
   // a binary-safe (CBOR) queue transport for the run.
@@ -498,6 +523,86 @@ async function dispatchPendingOps(params: {
       const step = op as PendingStep;
       opsPromises.push(
         (async () => {
+          // The step's input refused to serialize while dumping the VM's
+          // pending ops (see PendingStep.serializationError). Finalize it
+          // as step_created (placeholder input — the world requires the
+          // step entity before a terminal event) + step_failed carrying
+          // the SerializationError, so the live-VM feed rejects the
+          // step's promise and workflow code can catch it. Never queue an
+          // execution message for it. Mirrors the node:vm engine's
+          // finalizeUnserializableStep. In the terminal drain
+          // (finalizeUnserializableSteps unset), skip entirely — see the
+          // param docs.
+          if (step.serializationError) {
+            if (!params.finalizeUnserializableSteps) {
+              return;
+            }
+            runtimeLogger.warn(
+              'Step arguments failed to serialize; failing the step so ' +
+                'the workflow can observe the error',
+              {
+                workflowRunId: runId,
+                correlationId: step.correlationId,
+                stepName: step.stepId,
+                error: step.serializationError.message,
+              }
+            );
+            try {
+              await world.events.create(runId, {
+                eventType: 'step_created',
+                specVersion: SPEC_VERSION_CURRENT,
+                correlationId: step.correlationId,
+                eventData: {
+                  stepName: step.stepId,
+                  input: (await dehydrateStepArguments(
+                    unserializableStepInputPlaceholder(),
+                    runId,
+                    encryptionKey,
+                    globalThis,
+                    false,
+                    (workflowRun.specVersion ?? 0) >=
+                      SPEC_VERSION_SUPPORTS_COMPRESSION
+                  )) as Uint8Array,
+                },
+              });
+            } catch (err) {
+              // Concurrent invocation hit the same deterministic failure
+              // and created it first, or the run already finished.
+              if (RunExpiredError.is(err)) return;
+              if (!EntityConflictError.is(err)) throw err;
+            }
+            try {
+              await world.events.create(runId, {
+                eventType: 'step_failed',
+                specVersion: SPEC_VERSION_CURRENT,
+                correlationId: step.correlationId,
+                eventData: {
+                  stepName: step.stepId,
+                  error: await dehydrateStepError(
+                    step.serializationError,
+                    runId,
+                    encryptionKey,
+                    [],
+                    globalThis,
+                    (workflowRun.specVersion ?? 0) >=
+                      SPEC_VERSION_SUPPORTS_COMPRESSION
+                  ),
+                },
+              });
+            } catch (err) {
+              // Step already terminal or run already finished.
+              if (!EntityConflictError.is(err) && !RunExpiredError.is(err)) {
+                throw err;
+              }
+            }
+            failedSerializationStepCids.add(step.correlationId);
+            wfdiag('step_serialization_failed', {
+              stepId: step.stepId,
+              correlationId: step.correlationId,
+            });
+            return;
+          }
+
           // Create step_created event. `step.input` is the
           // format-prefixed devalue bytes ("devl" + devalue) produced
           // by `globalThis[Symbol.for('workflow-serialize')]({args,
@@ -667,7 +772,12 @@ async function dispatchPendingOps(params: {
   // Per-op dispatch runs in parallel.
   await Promise.all(opsPromises);
 
-  return { createdAttributeEvent, createdGetConflictHook, queuedStepCids };
+  return {
+    createdAttributeEvent,
+    createdGetConflictHook,
+    queuedStepCids,
+    failedSerializationStepCids,
+  };
 }
 
 /**
@@ -1146,8 +1256,17 @@ export async function runWorkflowWithQuickJS(params: {
           !executedStepIds.has(op.correlationId) &&
           !queuedStepIds.has(op.correlationId)
       );
+      // Steps whose input refused to serialize (see
+      // PendingStep.serializationError) never execute: they must not be
+      // inline-claimed (a lazy step_started would need the very input that
+      // failed) nor queued. Dispatch below finalizes them as step_created
+      // + step_failed instead; only healthy steps compete for inline
+      // slots and overflow.
+      const healthySteps = freshSteps.filter(
+        (step) => !step.serializationError
+      );
       const inlineCandidates =
-        maxInlineSteps <= 0 ? [] : freshSteps.slice(0, maxInlineSteps);
+        maxInlineSteps <= 0 ? [] : healthySteps.slice(0, maxInlineSteps);
       const inlineClaimCids = new Set(
         inlineCandidates.map((step) => step.correlationId)
       );
@@ -1178,7 +1297,7 @@ export async function runWorkflowWithQuickJS(params: {
       // hasCreatedEvent and would never be queued at all (the wedge behind
       // promiseRaceStressTestWorkflow hanging in the quickjs CI legs). The
       // step-identity-scoped idempotency key makes repeats harmless.
-      const overflowSteps = freshSteps.slice(inlineCandidates.length);
+      const overflowSteps = healthySteps.slice(inlineCandidates.length);
       const dispatched = await dispatchPendingOps({
         world,
         runId,
@@ -1189,6 +1308,7 @@ export async function runWorkflowWithQuickJS(params: {
         pendingOperations: opsToDispatch,
         skipStepCreation: inlineClaimCids,
         queueStepCids: new Set(overflowSteps.map((s) => s.correlationId)),
+        finalizeUnserializableSteps: true,
         wfdiag,
       });
       if (
@@ -1196,6 +1316,19 @@ export async function runWorkflowWithQuickJS(params: {
         dispatched.createdGetConflictHook
       ) {
         pendingRequeueSignal = true;
+      }
+      // A finalized unserializable step has terminal events durably
+      // written but no execution message anywhere: if the feed below
+      // doesn't surface them (eventually-consistent listing) and the loop
+      // exits, nothing would ever re-invoke the run to observe the
+      // failure. Raise the requeue signal — same mechanism as inline
+      // terminals — and mark the steps handled so later turns don't
+      // re-finalize or backstop-queue them.
+      if (dispatched.failedSerializationStepCids.size > 0) {
+        pendingRequeueSignal = true;
+        for (const cid of dispatched.failedSerializationStepCids) {
+          executedStepIds.add(cid);
+        }
       }
 
       for (const cid of dispatched.queuedStepCids) {

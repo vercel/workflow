@@ -197,6 +197,15 @@ export const WorkflowWaitsCreated = SemanticConvention<number>(
 );
 
 /**
+ * Number of steps this suspension finalized as failed because their
+ * arguments refused to serialize (step_created placeholder + step_failed
+ * carrying the SerializationError — see finalizeUnserializableStep).
+ */
+export const WorkflowStepsFailedSerialization = SemanticConvention<number>(
+  'workflow.steps.failed_serialization'
+);
+
+/**
  * Number of inline-owned steps this invocation re-executed because it is a
  * redelivery of their owning queue message (crash recovery for inline
  * steps — see the inline step ownership changelog, workflow#2780).

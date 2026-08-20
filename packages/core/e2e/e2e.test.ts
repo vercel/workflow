@@ -1815,6 +1815,120 @@ describe.concurrent('e2e', () => {
       );
     });
 
+    describe('serialization failures', () => {
+      test(
+        'step-argument serialization failure is catchable in workflow code',
+        { timeout: 60_000 },
+        async () => {
+          // Passing an unserializable value (a class instance with no serde
+          // model) to a step must fail THAT STEP — step_created +
+          // step_failed — not the whole run, so a try/catch around the step
+          // call observes the SerializationError.
+          const run = await start(
+            await e2e('serializationErrorStepArgsCaught'),
+            []
+          );
+          const result = await run.returnValue;
+
+          expect(result.caught).toBe(true);
+          expect(result.name).toBe('SerializationError');
+          expect(result.messageIncludesStepArguments).toBe(true);
+
+          // The workflow completed (the error was caught) …
+          const { json: runData } = await cliInspectJson(`runs ${run.runId}`);
+          expect(runData.status).toBe('completed');
+
+          // … and the step itself is recorded as failed.
+          const steps = await cliInspectJsonUntil(
+            `steps --runId ${run.runId}`,
+            (json) =>
+              json.some(
+                (s: any) =>
+                  s.stepName.includes('acceptAnyValue') && s.status === 'failed'
+              )
+          );
+          const step = steps.find((s: any) =>
+            s.stepName.includes('acceptAnyValue')
+          );
+          expect(step.status).toBe('failed');
+        }
+      );
+
+      test(
+        'uncaught step-argument serialization failure fails the run as USER_ERROR without redelivery retries',
+        { timeout: 60_000 },
+        async () => {
+          // Regression coverage for the production failure mode where a
+          // step-argument serialization error caused the run to redeliver
+          // until "exceeded max deliveries (49/48)". The run must fail
+          // promptly (well within this test's timeout — 48 redeliveries
+          // with backoff would take many minutes) and classify as
+          // USER_ERROR, not MAX_DELIVERIES_EXCEEDED.
+          const run = await start(
+            await e2e('serializationErrorStepArgsUncaught'),
+            []
+          );
+          const error = await run.returnValue.catch((e: unknown) => e);
+
+          expect(WorkflowRunFailedError.is(error)).toBe(true);
+          assert(WorkflowRunFailedError.is(error));
+          expect(error.errorCode).toBe('USER_ERROR');
+          expect(String(error.message)).toContain(
+            'Failed to serialize step arguments'
+          );
+
+          const { json: runData } = await cliInspectJson(`runs ${run.runId}`);
+          expect(runData.status).toBe('failed');
+          expect(runData.errorCode).toBe('USER_ERROR');
+        }
+      );
+
+      test(
+        'step-return-value serialization failure is catchable in workflow code',
+        { timeout: 60_000 },
+        async () => {
+          // The step executor treats a return-value SerializationError as
+          // fatal (skipping the retry loop) and writes step_failed, so the
+          // workflow's try/catch observes it.
+          const run = await start(
+            await e2e('serializationErrorStepReturnCaught'),
+            []
+          );
+          const result = await run.returnValue;
+
+          expect(result.caught).toBe(true);
+          expect(result.name).toBe('SerializationError');
+          expect(result.messageIncludesReturnValue).toBe(true);
+
+          const { json: runData } = await cliInspectJson(`runs ${run.runId}`);
+          expect(runData.status).toBe('completed');
+        }
+      );
+
+      test(
+        'uncaught step-return-value serialization failure fails the run as USER_ERROR',
+        { timeout: 60_000 },
+        async () => {
+          const run = await start(
+            await e2e('serializationErrorStepReturnUncaught'),
+            []
+          );
+          const error = await run.returnValue.catch((e: unknown) => e);
+
+          expect(WorkflowRunFailedError.is(error)).toBe(true);
+          assert(WorkflowRunFailedError.is(error));
+          expect(error.errorCode).toBe('USER_ERROR');
+          expect(String(error.message)).toContain(
+            'Failed to serialize step return value'
+          );
+
+          const { json: runData } = await cliInspectJson(`runs ${run.runId}`);
+          expect(runData.status).toBe('failed');
+          expect(runData.errorCode).toBe('USER_ERROR');
+        }
+      );
+    });
+
     describe('not registered', () => {
       // JS-only: the workflowId is hand-built in the JS scheme, so on another
       // language it names nothing rather than naming something missing.

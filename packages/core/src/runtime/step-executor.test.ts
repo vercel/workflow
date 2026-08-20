@@ -6,9 +6,13 @@ import { SPEC_VERSION_CURRENT } from '@workflow/world';
 import { createWorld } from '@workflow/world-local';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { registerStepFunction } from '../private.js';
-import { dehydrateStepArguments } from '../serialization.js';
+import { dehydrateStepArguments, hydrateStepError } from '../serialization.js';
 import { COMPUTE_INSTANCE_ID } from './compute-instance.js';
 import { executeStep } from './step-executor.js';
+import {
+  UNSERIALIZABLE_STEP_INPUT_MARKER,
+  unserializableStepInputPlaceholder,
+} from './unserializable-step.js';
 
 // The retry ceiling (`authoritativeAttempt`) is what bounds a step that keeps
 // timing out: a timeout hard-kills the body without writing any error, so the
@@ -476,5 +480,116 @@ describe('executeStep — pre-claimed inline start', () => {
 
     expect(result).toEqual({ type: 'skipped' });
     expect(createSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe('executeStep — unserializable-argument placeholder guard', () => {
+  afterEach(() => {
+    counter += 1;
+  });
+
+  it('fails the step without running the body when the stored input is the finalization placeholder', async () => {
+    // Simulates the crash window in finalizeUnserializableStep: the
+    // step_created (placeholder input) landed but the process died before
+    // step_failed. Redelivery dispatches the step through normal crash
+    // recovery — the executor must complete the intended failure, not run
+    // user code with placeholder arguments.
+    const world = makeWorld();
+    const stepName = uniqueStepName();
+    let bodyRuns = 0;
+    const { runId, stepId } = await setupRunningStep({
+      world,
+      stepName,
+      onBody: () => {
+        bodyRuns += 1;
+      },
+      createStep: false,
+    });
+    await world.events.create(runId, {
+      eventType: 'step_created',
+      specVersion: SPEC_VERSION_CURRENT,
+      correlationId: stepId,
+      eventData: {
+        stepName,
+        input: (await dehydrateStepArguments(
+          unserializableStepInputPlaceholder(),
+          runId,
+          undefined
+        )) as Uint8Array,
+      },
+    });
+
+    const result = await executeStep({
+      world,
+      workflowRunId: runId,
+      workflowName: 'wf',
+      workflowStartedAt: Date.now(),
+      stepId,
+      stepName,
+      authoritativeAttempt: 1,
+    });
+
+    expect(result.type).toBe('failed');
+    expect(bodyRuns).toBe(0);
+
+    // Fatal — one attempt, no step_retrying, straight to step_failed.
+    const retrying = await eventsFor(world, runId, stepId, 'step_retrying');
+    expect(retrying).toHaveLength(0);
+    const failures = await eventsFor(world, runId, stepId, 'step_failed');
+    expect(failures).toHaveLength(1);
+    const hydrated = (await hydrateStepError(
+      (failures[0].eventData as { error: unknown }).error,
+      runId,
+      undefined
+    )) as Error;
+    expect(hydrated.name).toBe('SerializationError');
+    expect(hydrated.message).toContain('Failed to serialize step arguments');
+  });
+
+  it('does not trip on a genuine input that merely contains the marker string', async () => {
+    // The structural flag lives on the triple's top level, which user code
+    // never controls — an argument that happens to equal the display marker
+    // must execute normally.
+    const world = makeWorld();
+    const stepName = uniqueStepName();
+    let bodyRuns = 0;
+    const { runId, stepId } = await setupRunningStep({
+      world,
+      stepName,
+      onBody: () => {
+        bodyRuns += 1;
+      },
+      createStep: false,
+    });
+    await world.events.create(runId, {
+      eventType: 'step_created',
+      specVersion: SPEC_VERSION_CURRENT,
+      correlationId: stepId,
+      eventData: {
+        stepName,
+        input: (await dehydrateStepArguments(
+          {
+            args: [UNSERIALIZABLE_STEP_INPUT_MARKER],
+            closureVars: [],
+            thisVal: undefined,
+          },
+          runId,
+          undefined
+        )) as Uint8Array,
+      },
+    });
+
+    const result = await executeStep({
+      world,
+      workflowRunId: runId,
+      workflowName: 'wf',
+      workflowStartedAt: Date.now(),
+      stepId,
+      stepName,
+      authoritativeAttempt: 1,
+    });
+
+    expect(result.type).toBe('completed');
+    expect(bodyRuns).toBe(1);
   });
 });
