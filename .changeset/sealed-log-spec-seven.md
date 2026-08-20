@@ -1,7 +1,9 @@
 ---
 '@workflow/world': minor
 '@workflow/world-vercel': minor
+'@workflow/world-local': minor
+'@workflow/world-postgres': minor
 '@workflow/core': minor
 ---
 
-Sealed-log event identity (specVersion 7): runs are stamped at spec 7, whose slot positions come from a per-run sequencer on the backend instead of writers racing conditional creates. The backend may fill a position whose writer died with a server-written `noop` event ("sealing"); the runtime skips noops during replay without advancing the deterministic clock, and the read union accepts the new event type. `SPEC_VERSION_SUPPORTS_SEALED_LOG` is exported from `@workflow/world`.
+Add the sealed-log event identity (specVersion 7), opt-in via `WORKFLOW_SEALED_LOG=1`. A sealed-log run's event positions are assigned by the backend before each write commits, so concurrent writers never contend for a position. A position whose writer dies is closed by the backend with a `noop` event; replay steps over those without delivering them or advancing the deterministic clock. Every runtime reads sealed logs regardless of the setting, and a run's version is fixed at creation, so enabling it affects only new runs.

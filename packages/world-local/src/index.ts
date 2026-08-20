@@ -2,7 +2,7 @@ import { promises as fs } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import path from 'node:path';
 import type { QueuePrefix, World } from '@workflow/world';
-import { reenqueueActiveRuns, SPEC_VERSION_CURRENT } from '@workflow/world';
+import { mintedSpecVersion, reenqueueActiveRuns } from '@workflow/world';
 import { warnIfRunningInVercelDeployment } from './build-target-mismatch.js';
 import type { Config } from './config.js';
 import { config, resolveRecoverActiveRuns } from './config.js';
@@ -72,7 +72,7 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
   );
   const recoverActiveRuns = resolveRecoverActiveRuns(mergedConfig);
   return {
-    specVersion: SPEC_VERSION_CURRENT,
+    specVersion: mintedSpecVersion(),
     capabilities: {
       hookRetention: { active: true },
       // world-local deduplicates concurrent `hook_received` writes sharing a

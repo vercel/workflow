@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
   isLegacySpecVersion,
+  mintedSpecVersion,
   requiresNewerWorld,
+  SEALED_LOG_ENV_VAR,
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_LEGACY,
   SPEC_VERSION_MAX_SUPPORTED,
@@ -12,10 +14,43 @@ import {
 } from './spec-version.js';
 
 describe('spec version constants', () => {
-  it('current spec version is the sealed-log version', () => {
+  it('the floor a World stamps is still the slot-identity version', () => {
     expect(SPEC_VERSION_SUPPORTS_SLOT_IDENTITY).toBe(6);
     expect(SPEC_VERSION_SUPPORTS_SEALED_LOG).toBe(7);
-    expect(SPEC_VERSION_CURRENT).toBe(SPEC_VERSION_SUPPORTS_SEALED_LOG);
+    // Sealed-log runs are opt-in, so the floor has NOT moved to 7: the version
+    // a World actually stamps comes from `mintedSpecVersion`.
+    expect(SPEC_VERSION_CURRENT).toBe(SPEC_VERSION_SUPPORTS_SLOT_IDENTITY);
+  });
+
+  describe('mintedSpecVersion', () => {
+    it('stamps the slot-identity floor by default', () => {
+      // Default-off matters beyond this package: a spec-7 log may hold `noop`
+      // rows, and every reader of those runs has to know to skip them --
+      // including readers that do not ship on this release train.
+      expect(mintedSpecVersion({})).toBe(SPEC_VERSION_CURRENT);
+    });
+
+    it('stamps the sealed-log version when opted in', () => {
+      for (const on of ['1', 'true', 'TRUE']) {
+        expect(mintedSpecVersion({ [SEALED_LOG_ENV_VAR]: on })).toBe(
+          SPEC_VERSION_SUPPORTS_SEALED_LOG
+        );
+      }
+    });
+
+    it('treats an explicit off and a malformed value as off', () => {
+      for (const off of ['0', 'false', '', 'yes-please']) {
+        expect(mintedSpecVersion({ [SEALED_LOG_ENV_VAR]: off })).toBe(
+          SPEC_VERSION_CURRENT
+        );
+      }
+    });
+
+    it('never stamps a version this build cannot read back', () => {
+      expect(
+        mintedSpecVersion({ [SEALED_LOG_ENV_VAR]: '1' })
+      ).toBeLessThanOrEqual(SPEC_VERSION_MAX_SUPPORTED);
+    });
   });
 
   it('the readable ceiling moves with the version we stamp', () => {

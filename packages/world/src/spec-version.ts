@@ -5,6 +5,8 @@
  * from @workflow/world rather than using arbitrary numbers.
  */
 
+import { envFlag } from './env-config.js';
+
 declare const SpecVersionBrand: unique symbol;
 
 /**
@@ -77,11 +79,15 @@ export const SPEC_VERSION_SUPPORTS_SEALED_LOG = 7 as SpecVersion;
  *
  * This is both the version a World stamps on the runs it creates and the
  * *lowest* one this runtime accepts from a World (see
- * `assertWorldSupportsRuntimeProtocol`). The two coincide because slot
- * numbering is a requirement of the World contract rather than a capability to
- * opt into: a World declaring anything below this allocates event ids the
- * runtime cannot read positions out of, so admitting it would only move the
- * failure from startup to the middle of a run.
+ * `assertWorldSupportsRuntimeProtocol`). Slot numbering is a requirement of
+ * the World contract rather than a capability to opt into: a World declaring
+ * anything below this allocates event ids the runtime cannot read positions
+ * out of, so admitting it would only move the failure from startup to the
+ * middle of a run.
+ *
+ * This is the FLOOR, not necessarily what gets stamped. Sealed-log runs sit
+ * one version above it and are opt-in, so what a World actually stamps comes
+ * from {@link mintedSpecVersion}; this is what that falls back to.
  *
  * A World therefore declares this constant rather than a literal, so a bump
  * moves the declaration and the floor together. Pinning a literal would leave
@@ -93,18 +99,58 @@ export const SPEC_VERSION_SUPPORTS_SEALED_LOG = 7 as SpecVersion;
  * run's identity scheme from what is stored rather than from this constant.
  */
 export const SPEC_VERSION_CURRENT =
-  SPEC_VERSION_SUPPORTS_SEALED_LOG as SpecVersion;
+  SPEC_VERSION_SUPPORTS_SLOT_IDENTITY as SpecVersion;
+
+/**
+ * Environment variable that opts new runs INTO the sealed log.
+ *
+ * Read per `createWorld()` call rather than at module load, so a test or a
+ * single process can create worlds in both modes.
+ */
+export const SEALED_LOG_ENV_VAR = 'WORKFLOW_SEALED_LOG';
+
+/**
+ * The spec version a World should stamp on the runs it creates.
+ *
+ * Sealed-log runs are opt-in for now, so this answers
+ * {@link SPEC_VERSION_CURRENT} unless {@link SEALED_LOG_ENV_VAR} turns it on.
+ * Same shape, and the same reasoning, as the flag slot identity itself shipped
+ * behind before going unconditional.
+ *
+ * Opt-in rather than opt-out because stamping a version is not a local
+ * decision: it changes what every OTHER reader of the run has to understand.
+ * A spec-7 log may contain `noop` rows, and a reader that does not know to
+ * skip them cannot replay it — which includes readers that are not this
+ * package and do not ship on its release train. The Python runtime pins its
+ * own accepted range and rejects 7 outright today, so a default-on bump takes
+ * every Python workflow down the moment this is published, with no way back
+ * except another release. Default-off makes the rollout a deployment setting:
+ * turn it on where the backend seals and every reader of those runs
+ * understands noops, leave it off everywhere else.
+ *
+ * Every World reads runs up to {@link SPEC_VERSION_MAX_SUPPORTED} whatever
+ * this returns, so turning the flag off here does not make runs another
+ * process created unreadable.
+ */
+export function mintedSpecVersion(
+  env: Record<string, string | undefined> = process.env
+): SpecVersion {
+  return envFlag(SEALED_LOG_ENV_VAR, false, env)
+    ? SPEC_VERSION_SUPPORTS_SEALED_LOG
+    : SPEC_VERSION_CURRENT;
+}
 
 /**
  * The highest spec version this SDK can read.
  *
- * Kept distinct from `SPEC_VERSION_CURRENT` even though the two are equal
- * today. They answer different questions, "what do we write?" versus "what can
- * we still read?", and they come apart in the release order a spec bump
- * follows: a reader that can already handle the next version raises this
- * ceiling first, and `SPEC_VERSION_CURRENT` follows only once the version is
- * safe to stamp. Collapsing them into one constant would make that staging
- * impossible to express.
+ * Kept distinct from `SPEC_VERSION_CURRENT`, and right now they genuinely
+ * differ. They answer different questions, "what do we write?" versus "what
+ * can we still read?", and they come apart in exactly the release order a spec
+ * bump follows: a reader that can already handle the next version raises this
+ * ceiling first, and stamping follows only once the version is safe to mint
+ * everywhere. Sealed-log support is at that first stage — every build reads
+ * spec 7 and skips `noop`, while {@link mintedSpecVersion} still has to be
+ * turned on before anything creates a spec-7 run.
  */
 export const SPEC_VERSION_MAX_SUPPORTED =
   SPEC_VERSION_SUPPORTS_SEALED_LOG as SpecVersion;

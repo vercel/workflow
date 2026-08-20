@@ -200,13 +200,11 @@ describe('start', () => {
       expect(mockQueue).not.toHaveBeenCalled();
     });
 
-    it('accepts a world that declares the ceiling version', async () => {
-      // With the sealed-log bump the default and the ceiling coincide at 7,
-      // so "above the default" is momentarily unoccupiable — what this pins
-      // instead is that a World declaring the ceiling is admitted and its
-      // declaration is what gets stamped, not this runtime's default. (When
-      // the ceiling next moves ahead of the default, point the declaration
-      // between them again.)
+    it('accepts a world that opts into a spec version above the default', async () => {
+      // `world-vercel` declares the sealed-log version when the mint flag is
+      // on, so its new runs are created above the floor. An equality check
+      // against the default would make the runtime refuse the adapter shipped
+      // alongside it, and the failure surfaces only in e2e against that World.
       const validWorkflow = Object.assign(() => Promise.resolve('result'), {
         workflowId: 'test-workflow',
       });
