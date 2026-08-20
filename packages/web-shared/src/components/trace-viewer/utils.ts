@@ -2,7 +2,6 @@ import type { Span, SpanEvent } from './types';
 import {
   formatDuration,
   formatDurationPrecise,
-  formatUtcDateTime,
   getHighResInMs,
 } from './util/timing';
 
@@ -630,19 +629,13 @@ export function computeSpanMarkers(span: Span): SpanMarker[] {
   );
 }
 
-/**
- * One-line tooltip for a span marker, e.g. `Hook received [UTC] August 20, 2026 09:31:38 AM`.
- */
-export function formatSpanMarkerTooltip(
-  kind: SpanMarkerKind,
-  timeMs: number
-): string {
-  const time = formatUtcDateTime(timeMs);
+/** Prefix for the marker context-card relative time, e.g. "Hook received 5 hours ago". */
+export function spanMarkerKindLabel(kind: SpanMarkerKind): string {
   switch (kind) {
     case 'hook_received':
-      return `Hook received [UTC] ${time}`;
+      return 'Hook received';
     case 'attr_set':
-      return `Attribute set [UTC] ${time}`;
+      return 'Attribute set';
     default: {
       const _exhaustive: never = kind;
       return _exhaustive;

@@ -156,7 +156,17 @@ function ZoneDateTimeRow({
   );
 }
 
-function RelativeTimeContextCardContent({ date }: { date: number }): ReactNode {
+function prefixedRelativeTime(timeAgo: string, prefix?: string): string {
+  return prefix && timeAgo ? `${prefix} ${timeAgo}` : timeAgo;
+}
+
+function RelativeTimeContextCardContent({
+  date,
+  prefix,
+}: {
+  date: number;
+  prefix?: string;
+}): ReactNode {
   const localTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
   const timeAgo = useTimeAgo(date);
 
@@ -164,7 +174,7 @@ function RelativeTimeContextCardContent({ date }: { date: number }): ReactNode {
     <div className="flex flex-col gap-3 min-w-[300px]">
       <div className="flex flex-col gap-3">
         <span className="tabular-nums text-label-13 text-gray-900">
-          {timeAgo}
+          {prefixedRelativeTime(timeAgo, prefix)}
         </span>
       </div>
       <div className="flex flex-col gap-2">
@@ -177,11 +187,17 @@ function RelativeTimeContextCardContent({ date }: { date: number }): ReactNode {
 
 function DefaultTimeText({
   date,
+  prefix,
 }: {
   date: number | null | undefined;
+  prefix?: string;
 }): ReactNode {
   const shortTimeAgo = useShortTimeAgo(date);
-  return <span className="text-label-14 text-gray-900">{shortTimeAgo}</span>;
+  return (
+    <span className="text-label-14 text-gray-900">
+      {prefixedRelativeTime(shortTimeAgo, prefix)}
+    </span>
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -196,6 +212,8 @@ type RelativeTimeCardProps = Omit<
   date?: number | null;
   /** Custom content to render instead of the default relative time text. */
   children?: ReactNode;
+  /** Optional prefix for the relative-time line, e.g. "Hook received". */
+  prefix?: string;
 };
 
 /**
@@ -207,16 +225,21 @@ type RelativeTimeCardProps = Omit<
 export function RelativeTimeCard({
   date,
   children: _children,
+  prefix,
   ...props
 }: RelativeTimeCardProps): ReactNode {
   const children =
-    _children === undefined ? <DefaultTimeText date={date} /> : _children;
+    _children === undefined ? (
+      <DefaultTimeText date={date} prefix={prefix} />
+    ) : (
+      _children
+    );
 
   if (!date) return children;
 
   return (
     <ContextCardTrigger
-      content={<RelativeTimeContextCardContent date={date} />}
+      content={<RelativeTimeContextCardContent date={date} prefix={prefix} />}
       {...props}
     >
       {children}
@@ -238,10 +261,13 @@ export function TimestampTooltip({
   date,
   children,
   side = 'top',
+  prefix,
 }: {
   date: number | Date | string | null | undefined;
   children: ReactNode;
   side?: ContextCardTriggerProps['side'];
+  /** Optional prefix for the relative-time line, e.g. "Hook received". */
+  prefix?: string;
 }): ReactNode {
   const hasProvider = useHasContextCardProvider();
 
@@ -255,7 +281,7 @@ export function TimestampTooltip({
   if (ts == null || Number.isNaN(ts)) return <>{children}</>;
 
   const card = (
-    <RelativeTimeCard date={ts} side={side} asChild>
+    <RelativeTimeCard date={ts} side={side} prefix={prefix} asChild>
       {children}
     </RelativeTimeCard>
   );

@@ -7,8 +7,8 @@ import {
   computeSpanMarkers,
   computeSpanSegments,
   computeTimeMarkers,
-  formatSpanMarkerTooltip,
   getResourceClassNames,
+  spanMarkerKindLabel,
 } from './utils';
 
 /** Build a high-res timestamp tuple ([seconds, nanoseconds]) for a given ms. */
@@ -167,28 +167,10 @@ describe('computeSpanMarkers', () => {
   });
 });
 
-describe('formatSpanMarkerTooltip', () => {
-  const timeMs = Date.UTC(2026, 7, 20, 9, 31, 38);
-
-  it('labels hook resumptions with the UTC timestamp', () => {
-    expect(formatSpanMarkerTooltip('hook_received', timeMs)).toBe(
-      'Hook received [UTC] August 20, 2026 09:31:38 AM'
-    );
-  });
-
-  it('labels attribute writes with the UTC timestamp', () => {
-    expect(formatSpanMarkerTooltip('attr_set', timeMs)).toBe(
-      'Attribute set [UTC] August 20, 2026 09:31:38 AM'
-    );
-  });
-
-  it('uses 12-hour UTC hours at midnight and noon', () => {
-    expect(
-      formatSpanMarkerTooltip('hook_received', Date.UTC(2026, 0, 1, 0, 0, 0))
-    ).toBe('Hook received [UTC] January 1, 2026 12:00:00 AM');
-    expect(
-      formatSpanMarkerTooltip('attr_set', Date.UTC(2026, 0, 1, 12, 5, 6))
-    ).toBe('Attribute set [UTC] January 1, 2026 12:05:06 PM');
+describe('spanMarkerKindLabel', () => {
+  it('names hook resumptions and attribute writes', () => {
+    expect(spanMarkerKindLabel('hook_received')).toBe('Hook received');
+    expect(spanMarkerKindLabel('attr_set')).toBe('Attribute set');
   });
 });
 
