@@ -26,6 +26,7 @@ import {
   type EventResult,
   getQueueTopicPrefix,
   isLegacySpecVersion,
+  isSealedNoopEvent,
   isTerminalRunEventType,
   ROOT_RUN_ID_ATTRIBUTE,
   type RunInput,
@@ -2906,14 +2907,24 @@ export function workflowEntrypoint(
                       // reaches the server-supplied ceiling (undefined ⇒ no
                       // enforcement). The throw is caught below and written as
                       // run_failed / MAX_EVENTS_EXCEEDED.
-                      if (
-                        maxEventsLimit !== undefined &&
-                        eventLog.events.length >= maxEventsLimit
-                      ) {
-                        throw new MaxEventsExceededError(
-                          eventLog.events.length,
-                          maxEventsLimit
+                      // Sealed-log noops are excluded: the ceiling exists to
+                      // stop a runaway WORKFLOW, and a noop is written by the
+                      // backend to seal a position whose writer died. Counting
+                      // them would spend the user's event budget on the
+                      // backend's bookkeeping, and would make the limit a run
+                      // hits depend on how much write contention it happened
+                      // to see.
+                      if (maxEventsLimit !== undefined) {
+                        const workflowEventCount = eventLog.events.reduce(
+                          (n, e) => (isSealedNoopEvent(e) ? n : n + 1),
+                          0
                         );
+                        if (workflowEventCount >= maxEventsLimit) {
+                          throw new MaxEventsExceededError(
+                            workflowEventCount,
+                            maxEventsLimit
+                          );
+                        }
                       }
 
                       // Latency telemetry: judge TTFS eligibility against the
@@ -2924,11 +2935,18 @@ export function workflowEntrypoint(
                       // committed pre-step attr_set, and the detour it marks
                       // is subtracted via preStepAttrStartMs regardless of
                       // which invocation wrote it (see runtime/step-latency.ts).
+                      // noop is permitted for the same reason attr_set is: it
+                      // is not evidence the run had already made progress. A
+                      // seal says a concurrent writer died, which says nothing
+                      // about this invocation, and excluding it would silently
+                      // drop every contended run out of the TTFS dataset --
+                      // exactly the runs worth measuring.
                       invocationStartedClean ??= eventLog.events.every(
                         (e) =>
                           e.eventType === 'run_created' ||
                           e.eventType === 'run_started' ||
-                          e.eventType === 'attr_set'
+                          e.eventType === 'attr_set' ||
+                          isSealedNoopEvent(e)
                       );
 
                       runtimeLogger.debug('Starting workflow execution', {

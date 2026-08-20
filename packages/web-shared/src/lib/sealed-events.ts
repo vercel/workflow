@@ -1,4 +1,4 @@
-import type { Event } from '@workflow/world';
+import { type Event, isSealedNoopEvent as isSealedNoop } from '@workflow/world';
 
 /**
  * Sealed-position `noop` events (specVersion 7).
@@ -19,9 +19,14 @@ import type { Event } from '@workflow/world';
  * the run's.
  */
 export const SEALED_EVENT_MESSAGE =
-  'No-op events may be added by Workflow SDK to ensure correctness';
+  'No-op events are written by the backend to seal an abandoned log position';
 
-/** Whether `event` is a backend-written seal for an abandoned position. */
+/**
+ * Whether `event` is a backend-written seal for an abandoned position.
+ *
+ * Delegates to `@workflow/world` so the UI, the `node:vm` engine and the
+ * QuickJS engine cannot drift on what a seal is.
+ */
 export function isSealedNoopEvent(event: Pick<Event, 'eventType'>): boolean {
-  return event.eventType === 'noop';
+  return isSealedNoop(event);
 }

@@ -51,6 +51,7 @@ export {
   isHookEventRequiringExistence,
   isHookLifecycleEventType,
   isRunEventType,
+  isSealedNoopEvent,
   isStepEventType,
   isTerminalRunEventType,
   isTerminalStepEventType,

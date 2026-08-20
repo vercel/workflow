@@ -61,6 +61,13 @@ export const SPEC_VERSION_SUPPORTS_SLOT_IDENTITY = 6 as SpecVersion;
  * deterministic clock (see `EventsConsumer`). A reader below this version
  * would fail to parse the unknown event type, which is exactly what
  * `requiresNewerWorld` exists to catch.
+ *
+ * Note this is the READER contract only, so a World is spec-7 compliant by
+ * construction if it allocates each position at the commit that occupies it:
+ * no write can then leave a position empty, so it has no holes to seal and
+ * will never emit a `noop`. Pre-assigning positions ahead of the commit is
+ * what creates the obligation (see `building-a-world.mdx`), and only a World
+ * that does so needs the sealing half.
  */
 export const SPEC_VERSION_SUPPORTS_SEALED_LOG = 7 as SpecVersion;
 

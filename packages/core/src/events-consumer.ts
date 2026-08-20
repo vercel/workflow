@@ -1,4 +1,9 @@
-import { type Event, entityEventClass, envNumber } from '@workflow/world';
+import {
+  type Event,
+  entityEventClass,
+  envNumber,
+  isSealedNoopEvent,
+} from '@workflow/world';
 import { eventsLogger } from './logger.js';
 
 /**
@@ -331,7 +336,7 @@ export class EventsConsumer {
       // event's by the index it holds.
       this.drainParked();
       const currentEvent = this.events[this.eventIndex] ?? null;
-      if (currentEvent !== null && currentEvent.eventType === 'noop') {
+      if (currentEvent !== null && isSealedNoopEvent(currentEvent)) {
         this.skipSealedNoop(currentEvent);
         continue;
       }
