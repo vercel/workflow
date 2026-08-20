@@ -16,11 +16,12 @@ import {
   afterAll,
   assert,
   beforeAll,
-  beforeEach,
   describe,
   expect,
-  test,
+  type TestContext,
+  type test as vitestTest,
 } from 'vitest';
+import { createTaskCollector, getCurrentSuite } from 'vitest/suite';
 import { getTrustedSourcesHeaders } from '../../../scripts/trusted-sources-headers.mjs';
 import type { Run } from '../src/runtime';
 import {
@@ -32,11 +33,14 @@ import {
   resumeHook,
 } from '../src/runtime';
 import {
+  announceTestStart,
   assertUnsupportedTestsExist,
   cliCancel,
   cliHealthJson,
   cliInspectJson,
   cliInspectJsonUntil,
+  createPerTestState,
+  dumpTrackedRunDiagnostics,
   fetchManifest,
   getCollectedRunIds,
   getWorkflowMetadata,
@@ -45,10 +49,14 @@ import {
   hasWorkflowSourceMaps,
   isJsApp,
   isLocalDeployment,
+  noteTestSettled,
+  noteTestStarted,
   requireFixture,
-  setupRunTracking,
+  requireSupported,
+  runInTestState,
   setupWorld,
   startTracked,
+  summarizeLoad,
   trackRun,
   warmDeployment,
   writeDiagnosticsSidecar,
@@ -61,7 +69,12 @@ if (!deploymentUrl) {
 }
 
 const DISTRIBUTED_CLOCK_TOLERANCE_MS = 1_000;
-const RACE_WINNER_MAX_DURATION_MS = 5_000;
+// The race winner takes 1s; the loser would take 10s. The bound only has to
+// sit clearly below the loser to catch badly delayed or sequential
+// completion — under the concurrent suite, queue latency pushed the winner's
+// observed duration to ~6.5s on loaded local-dev lanes, so 5s was tight
+// enough to flake without being any better at catching the regression.
+const RACE_WINNER_MAX_DURATION_MS = 8_000;
 const EVENT_POLL_PAGE_SIZE = 100;
 
 function expectElapsedAtLeast(
@@ -144,6 +157,87 @@ const e2e = (fn: string) => {
  * Every test not marked here is in scope for cross-language conformance, and is
  * gated only by `e2e-conformance.json`. No-op for the JS workbench apps.
  */
+/**
+ * Every test in this suite runs through this handler wrapper, which owns the
+ * per-test harness plumbing the sequential suites do in a `beforeEach`
+ * (announce heartbeat, conformance gates, failure diagnostics).
+ *
+ * The suite runs concurrently, and vitest's `getCurrentTest()` is a plain
+ * module variable that is wrong after any `await`, so nothing per-test can
+ * live in module globals. The wrapper binds a per-test state (name, tracked
+ * runs, the test's own `skip`) via AsyncLocalStorage *around the handler
+ * call itself* — a direct call stack, so the store provably reaches the test
+ * body — and `trackRun`/`recordInfraEvent`/`requireFixture` read it
+ * ambiently with no call-site changes. (A `test.extend` auto fixture cannot
+ * do this: vitest resolves fixtures in a separate async context, so a store
+ * bound around `use()` never reaches the test body.) Failure diagnostics
+ * dump from the bound state, so a failing test reports its own runs, not a
+ * concurrent sibling's.
+ */
+const wrapE2EHandler =
+  (handler: (ctx: TestContext) => unknown) => (ctx: TestContext) => {
+    const state = createPerTestState(ctx.task.name, ctx.skip);
+    announceTestStart(ctx.task.name);
+    ctx.onTestFailed(
+      (result) => dumpTrackedRunDiagnostics(state, result.errors?.[0]?.message),
+      30_000 // Allow 30s for diagnostics fetching (default hookTimeout is 10s)
+    );
+    return runInTestState(state, async () => {
+      // Second conformance gate — inside the bound state so the skip
+      // targets this test.
+      requireSupported(ctx.task.name);
+      // Timed for the per-lane load summary (see summarizeLoad): under
+      // concurrency the interesting number is not pass/fail but how far
+      // per-test latency moved and whether CLI children dominate it.
+      const startedAt = Date.now();
+      noteTestStarted();
+      try {
+        return await handler(ctx);
+      } finally {
+        noteTestSettled(ctx.task.name, Date.now() - startedAt);
+      }
+    });
+  };
+
+/**
+ * Drop-in `test` that wraps every handler with {@link wrapE2EHandler} and
+ * then hands the call to the enclosing suite's own collector — exactly what
+ * vitest's top-level `test` does (`getCurrentSuite().test.fn.call(this, …)`).
+ *
+ * Delegating rather than calling `getCurrentSuite().task()` directly is
+ * load-bearing: the suite collector is where suite options are merged into
+ * each test (`Object.assign({}, suiteOptions, options)`), which is how
+ * `describe.concurrent` reaches its tests. Calling `task()` directly skips
+ * that merge, and the suite silently runs sequentially — caught in CI as
+ * lanes matching the serial baseline minute-for-minute.
+ *
+ * Built on `createTaskCollector`, so the whole chainable surface (`.skip`,
+ * `.only`, `.each`, `.runIf`, `.sequential`, …) keeps working.
+ */
+const test = createTaskCollector(function (
+  this: Record<string, unknown>,
+  name: string,
+  optionsOrFn?: unknown,
+  optionsOrTest?: unknown
+) {
+  let options: unknown = {};
+  let handler: (ctx: TestContext) => unknown = () => {};
+  if (typeof optionsOrTest === 'object' && optionsOrTest !== null) {
+    options = optionsOrTest;
+    handler = optionsOrFn as typeof handler;
+  } else if (typeof optionsOrTest === 'number') {
+    options = { timeout: optionsOrTest };
+    handler = optionsOrFn as typeof handler;
+  } else if (typeof optionsOrFn === 'object' && optionsOrFn !== null) {
+    options = optionsOrFn;
+    handler = optionsOrTest as typeof handler;
+  } else if (typeof optionsOrFn === 'function') {
+    handler = optionsOrFn as typeof handler;
+  }
+
+  getCurrentSuite().test.fn.call(this, name, options, wrapE2EHandler(handler));
+}) as typeof vitestTest;
+
 const testJsOnly = isJsApp() ? test : test.skip;
 const describeJsOnly = isJsApp() ? describe : describe.skip;
 
@@ -321,9 +415,13 @@ async function startWorkflowViaHttp(
   return run;
 }
 
-// NOTE: Temporarily disabling concurrent tests to avoid flakiness.
-// TODO: Re-enable concurrent tests after conf when we have more time to investigate.
-describe('e2e', () => {
+// Concurrent: ~128 serial tests were the dominant wall-clock cost per matrix
+// entry (~22 of 24 minutes on the Vercel lanes). The known blockers are
+// fixed: per-test attribution is concurrency-safe (see the e2eTracking
+// fixture), abort-fetch tests are hermetic, the fibonacci tree fits the
+// scheduler, and source-map assertions are positive-only. A test that
+// genuinely cannot share a deployment can opt out with `test.sequential`.
+describe.concurrent('e2e', () => {
   // Configure the World for the test runner process so that start() and
   // run.returnValue can communicate with the same backend as the workbench app.
   // Also warm the target before the first test starts a run: a fresh Vercel
@@ -346,13 +444,11 @@ describe('e2e', () => {
     );
   }, 150_000);
 
-  // Enable automatic run diagnostics on test failure
-  beforeEach((ctx) => {
-    setupRunTracking(ctx.task.name);
-  });
-
   // Write E2E metadata and diagnostics files
   afterAll(() => {
+    // First, so the numbers reach the log even if a later assertion in this
+    // hook throws.
+    process.stdout.write(summarizeLoad());
     writeE2EMetadata();
     writeDiagnosticsSidecar();
     writeInfraSidecar();
