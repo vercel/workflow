@@ -130,12 +130,15 @@ pnpm run test:e2e
 ### Event Log Race Repro
 
 `packages/core/e2e/event-log-race-repro.test.ts` is a dedicated harness for
-`CORRUPTED_EVENT_LOG`. It drives three scenarios against one deployment:
+`CORRUPTED_EVENT_LOG`. It drives four scenarios against one deployment:
 `step-storm` and `hook-storm` (concurrent replays of a single run racing the
-per-branch watchdog — `hook-storm` is the production shape), plus a `hook-sleep`
-control that provides the calibration baseline. Any outcome other than
-`completed` fails the run, except `infra`, which means the harness could not
-reach the deployment.
+per-branch watchdog — `hook-storm` is the production shape), `blocked-branch`
+(each branch parks on a launch step before its hook race, so a woken replay can
+hold a log that predates a sibling's launch completion and take the ordinal that
+sibling's wait is about to get — the class the wake-order fixes do not cover),
+plus a `hook-sleep` control that provides the calibration baseline. Any outcome
+other than `completed` fails the run, except `infra`, which means the harness
+could not reach the deployment.
 
 Run it locally against a locally started workbench app — no Vercel deployment,
 no credentials:

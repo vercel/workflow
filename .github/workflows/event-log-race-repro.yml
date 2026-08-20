@@ -259,6 +259,11 @@ jobs:
           EVENT_LOG_RACE_REPRO_WATCHDOG_MS: ${{ inputs.watchdog_ms }}
           EVENT_LOG_RACE_REPRO_STEP_DELAY_MS: ${{ inputs.step_delay_ms }}
           EVENT_LOG_RACE_REPRO_HOOK_RESUME_STAGGER_MS: ${{ inputs.hook_resume_stagger_ms }}
+          EVENT_LOG_RACE_REPRO_BLOCKED_BRANCH_ATTEMPTS: ${{ inputs.blocked_branch_attempts }}
+          EVENT_LOG_RACE_REPRO_LAUNCH_STAGGER_MS: ${{ inputs.launch_stagger_ms }}
+          EVENT_LOG_RACE_REPRO_RESUME_BURST_OFFSET_MS: ${{ inputs.resume_burst_offset_ms }}
+          EVENT_LOG_RACE_REPRO_RESUME_BURST_JITTER_MS: ${{ inputs.resume_burst_jitter_ms }}
+          EVENT_LOG_RACE_REPRO_BLOCKED_BRANCH_WATCHDOG_MS: ${{ inputs.blocked_branch_watchdog_ms }}
           EVENT_LOG_RACE_REPRO_POKE_INTERVAL_MS: ${{ inputs.poke_interval_ms }}
           EVENT_LOG_RACE_REPRO_POKE_MAX: ${{ inputs.poke_max }}
           EVENT_LOG_RACE_REPRO_POKE_DECAY_FACTOR: ${{ inputs.poke_decay_factor }}
