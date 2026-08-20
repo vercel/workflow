@@ -84,7 +84,7 @@ export function registerZstdDecoder(decoder: ZstdDecoder): void {
 /**
  * Decode a format-prefixed payload.
  */
-export function decodeFormatPrefix(data: Uint8Array): {
+export function decodeFormatPrefix(data: unknown): {
   format: SerializationFormatType;
   payload: Uint8Array;
 } {
