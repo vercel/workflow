@@ -57,7 +57,7 @@ const RESULT_PATH = path.resolve(
 const STORM_WORKFLOW_FILE = 'workflows/103_event_log_corruption_repro.ts';
 const CONTROL_WORKFLOW_FILE = 'workflows/101_hook_sleep_repro.ts';
 
-type Scenario = 'step-storm' | 'hook-storm' | 'hook-sleep';
+type Scenario = 'step-storm' | 'hook-storm' | 'blocked-branch' | 'hook-sleep';
 
 type Outcome =
   | 'completed'
@@ -76,6 +76,7 @@ type Outcome =
 interface ReproConfig {
   stepStormAttempts: number;
   hookStormAttempts: number;
+  blockedBranchAttempts: number;
   hookSleepAttempts: number;
   concurrency: number;
   /** Wall-clock budget for *launching* attempts. Once it is spent no new
@@ -118,6 +119,21 @@ interface ReproConfig {
    *  so the burst straddles `watchdogMs` and the straggler count varies. */
   hookResumeStaggerMs: number;
   hookResumeOffsetMs: number;
+  /** `blocked-branch`: per-index spacing of the launch step's duration, so a
+   *  round's launch completions commit spread out instead of in one batch. */
+  launchStaggerMs: number;
+  /** `blocked-branch`: delay from a round's hooks existing to the resume
+   *  burst. Aim it at the tail of the launch-completion spread — the burst has
+   *  to land while a sibling's launch `step_completed` is committing, so a
+   *  hook-woken replay can hold a log that ends just before it. */
+  resumeBurstOffsetMs: number;
+  /** `blocked-branch`: uniform jitter added to the burst offset per round, so
+   *  attempts sweep the window instead of betting on one alignment. */
+  resumeBurstJitterMs: number;
+  /** `blocked-branch`: watchdog for the hook race. Sized to normally LOSE to
+   *  the resume burst — the watchdog's role here is to enter a wait entity
+   *  into the race (the entity whose ordinal gets stolen), not to fire. */
+  blockedBranchWatchdogMs: number;
   /** `hook-sleep` control knobs. */
   iterations: number;
   sleepMs: number;
@@ -185,6 +201,10 @@ function envBoolean(name: string, fallback: boolean) {
 const config: ReproConfig = {
   stepStormAttempts: envNumber('EVENT_LOG_RACE_REPRO_STEP_STORM_ATTEMPTS', 6),
   hookStormAttempts: envNumber('EVENT_LOG_RACE_REPRO_HOOK_STORM_ATTEMPTS', 6),
+  blockedBranchAttempts: envNumber(
+    'EVENT_LOG_RACE_REPRO_BLOCKED_BRANCH_ATTEMPTS',
+    6
+  ),
   hookSleepAttempts: envNumber('EVENT_LOG_RACE_REPRO_ATTEMPTS', 2),
   // Cross-run concurrency is throughput only — the race being reproduced is
   // between concurrent replays *within* one run, driven by `rounds`/`width` and
@@ -224,6 +244,23 @@ const config: ReproConfig = {
   hookResumeOffsetMs: envNumber(
     'EVENT_LOG_RACE_REPRO_HOOK_RESUME_OFFSET_MS',
     0
+  ),
+  launchStaggerMs: envNumber('EVENT_LOG_RACE_REPRO_LAUNCH_STAGGER_MS', 300),
+  // Default aim: the last launch completes at roughly
+  // `stepDelayMs + (width - 1) * launchStaggerMs` after the round's suspension
+  // (2200 + 7*300 = 4300ms at the defaults) plus dispatch latency; the jitter
+  // sweeps the burst across that tail.
+  resumeBurstOffsetMs: envNumber(
+    'EVENT_LOG_RACE_REPRO_RESUME_BURST_OFFSET_MS',
+    4000
+  ),
+  resumeBurstJitterMs: envNumber(
+    'EVENT_LOG_RACE_REPRO_RESUME_BURST_JITTER_MS',
+    1200
+  ),
+  blockedBranchWatchdogMs: envNumber(
+    'EVENT_LOG_RACE_REPRO_BLOCKED_BRANCH_WATCHDOG_MS',
+    8000
   ),
   iterations: envNumber('EVENT_LOG_RACE_REPRO_ITERATIONS', 8),
   sleepMs: envNumber('EVENT_LOG_RACE_REPRO_SLEEP_MS', 5000),
@@ -766,6 +803,106 @@ async function runHookStormAttempt(attempt: number): Promise<ReproRunResult> {
   }
 }
 
+/**
+ * `blocked-branch`: each branch parks on a launch step BEFORE racing its hook
+ * against a watchdog, so a hook-woken replay can hold a log that ends just
+ * before a sibling's launch completion — that sibling then contributes zero
+ * correlation-id draws (not even its watchdog wait), and the woken branch's
+ * finalize takes the ordinal a fresher writer gives the sibling's wait. The
+ * driver's job is to land the whole resume burst (no stagger — the production
+ * shape was near-simultaneous callbacks) at the tail of the round's
+ * launch-completion spread, jittered per round so attempts sweep the window.
+ */
+async function runBlockedBranchAttempt(
+  attempt: number
+): Promise<ReproRunResult> {
+  const scenario: Scenario = 'blocked-branch';
+  const startedAt = Date.now();
+  const token = makeToken(scenario, attempt);
+
+  try {
+    const workflow = await getWorkflowMetadata(
+      deploymentUrl,
+      STORM_WORKFLOW_FILE,
+      'blockedBranchReproWorkflow'
+    );
+    const run = await start(
+      scenario,
+      STORM_WORKFLOW_FILE,
+      'blockedBranchReproWorkflow',
+      workflow,
+      [
+        {
+          ...stormInput(token),
+          launchStaggerMs: config.launchStaggerMs,
+          watchdogMs: config.blockedBranchWatchdogMs,
+        },
+      ]
+    );
+
+    const { runResult, state } = await drive(
+      run,
+      startedAt,
+      scenario,
+      async (driverState) => {
+        for (let round = 0; round < config.rounds; round += 1) {
+          if (driverState.done) return;
+
+          // Round `n`'s hooks only exist once round `n - 1` finished, so this
+          // wait doubles as the round barrier. The hooks are created by the
+          // round's first suspension, which is also when the launch steps
+          // dispatch — so the burst offset below is measured from (roughly)
+          // launch dispatch.
+          await waitForHook(`${token}:${round}:0`, run.runId, driverState);
+          const jitter =
+            config.resumeBurstJitterMs > 0
+              ? Math.floor(Math.random() * config.resumeBurstJitterMs)
+              : 0;
+          await sleep(config.resumeBurstOffsetMs + jitter);
+          if (driverState.done) return;
+
+          // One burst, no stagger: every resume both settles a branch and
+          // wakes its own invocation, and the invocations' event loads race
+          // the last launch completions' commits.
+          await Promise.all(
+            Array.from({ length: config.width }, async (_, index) => {
+              let hook: Awaited<ReturnType<typeof getHookByToken>>;
+              try {
+                hook = await waitForHook(
+                  `${token}:${round}:${index}`,
+                  run.runId,
+                  driverState,
+                  5000
+                );
+              } catch {
+                // The branch's watchdog already fired and disposed the hook.
+                driverState.resumesFailed += 1;
+                return;
+              }
+              await tryResume(driverState, hook, {
+                index,
+                round,
+                sentAt: Date.now(),
+              });
+            })
+          );
+        }
+      }
+    );
+
+    return await finishStormAttempt(
+      run,
+      runResult,
+      state,
+      attempt,
+      scenario,
+      token
+    );
+  } catch (err) {
+    return harnessFailure(scenario, attempt, token, startedAt, err);
+  }
+}
+
 async function finishStormAttempt(
   run: Run<unknown>,
   runResult: ReproRunResult,
@@ -963,6 +1100,7 @@ function summarizeByScenario(results: ReproRunResult[]) {
     {
       'step-storm': emptyOutcomeCounts(),
       'hook-storm': emptyOutcomeCounts(),
+      'blocked-branch': emptyOutcomeCounts(),
       'hook-sleep': emptyOutcomeCounts(),
     }
   );
@@ -979,6 +1117,7 @@ const collected: ReproRunResult[] = [];
 const plannedAttempts =
   config.stepStormAttempts +
   config.hookStormAttempts +
+  config.blockedBranchAttempts +
   config.hookSleepAttempts;
 let overallDeadline = Number.POSITIVE_INFINITY;
 let launchDeadline = Number.POSITIVE_INFINITY;
@@ -1097,6 +1236,34 @@ describe('event log race repro', { retry: 0 }, () => {
       );
     }
 
+    // blocked-branch: the burst must land inside the launch-completion spread
+    // (after the first completion, not after the watchdogs), or no replay can
+    // be missing a sibling's completion while holding a woken branch.
+    const lastLaunchMs =
+      config.stepDelayMs + (config.width - 1) * config.launchStaggerMs;
+    if (
+      config.resumeBurstOffsetMs + config.resumeBurstJitterMs <=
+      config.stepDelayMs
+    ) {
+      console.warn(
+        `[event-log-race-repro] blocked-branch resume burst (offset ${config.resumeBurstOffsetMs}ms ` +
+          `+ jitter ${config.resumeBurstJitterMs}ms) always lands before the first launch ` +
+          `completion (~${config.stepDelayMs}ms). No branch can be parked on a completion ` +
+          `the woken replays are missing.`
+      );
+    }
+    if (
+      config.resumeBurstOffsetMs >=
+      lastLaunchMs + config.blockedBranchWatchdogMs
+    ) {
+      console.warn(
+        `[event-log-race-repro] blocked-branch resume burst offset (${config.resumeBurstOffsetMs}ms) ` +
+          `lands after every watchdog deadline (last launch ~${lastLaunchMs}ms + ` +
+          `watchdog ${config.blockedBranchWatchdogMs}ms). Every branch will take the ` +
+          `recovery path and the resumes race nothing.`
+      );
+    }
+
     const sleepBudgetMs = config.iterations * config.sleepMs;
     const resumeCeilingMs = config.resumeDelayMs + config.resumeJitterMs;
     if (resumeCeilingMs >= sleepBudgetMs) {
@@ -1126,6 +1293,11 @@ describe('event log race repro', { retry: 0 }, () => {
         config.hookStormAttempts,
         config.concurrency,
         runHookStormAttempt
+      );
+      await runScenario(
+        config.blockedBranchAttempts,
+        config.concurrency,
+        runBlockedBranchAttempt
       );
       await runScenario(
         config.hookSleepAttempts,
