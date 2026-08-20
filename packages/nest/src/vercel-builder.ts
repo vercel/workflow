@@ -1,11 +1,11 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
-import { createRequire } from 'node:module';
 import { join, resolve } from 'node:path';
 import {
   createBaseBuilderConfig,
   VercelBuildOutputAPIBuilder,
 } from '@workflow/builders';
 import * as esbuild from 'esbuild';
+import { resolveAbsentNestPeers } from './nest-optional-peers.js';
 
 export interface NestVercelBuilderOptions {
   /**
@@ -44,6 +44,11 @@ export interface NestVercelBuilderOptions {
   runtime?: string;
   /** esbuild sourcemap mode for workflow bundles. */
   sourcemap?: boolean | 'inline' | 'linked' | 'external' | 'both';
+  /**
+   * Route prefix the app is served under, stamped into the generated flow route
+   * so the runtime generates matching callback URLs.
+   */
+  basePath?: string;
 }
 
 /**
@@ -75,7 +80,14 @@ export class NestVercelBuilder extends VercelBuildOutputAPIBuilder {
         dirs,
         runtime: options.runtime,
         sourcemap: options.sourcemap,
+        // A step that imports an application service pulls `@nestjs/common`
+        // into the workflow function, and `@nestjs/common` `require()`s its
+        // optional peers behind try/catch. Without this the build fails to
+        // resolve `class-validator` and friends in any app that does not
+        // install them.
+        externalPackages: resolveAbsentNestPeers(workingDir),
       }),
+      basePath: options.basePath,
       buildTarget: 'vercel-build-output-api',
     });
     this.#workingDir = workingDir;
@@ -104,17 +116,11 @@ export class NestVercelBuilder extends VercelBuildOutputAPIBuilder {
    * WorkflowModule's lazy import when `skipBuild` is false (never on Vercel),
    * so bundling esbuild/SWC/native binaries would only bloat the function.
    *
-   * NestJS `require()`s optional peers (validation, transports, cache, …)
-   * behind try/catch via its internal `loadPackage`. We externalize such a
-   * peer ONLY when it is not installed in the app: an installed peer is one the
-   * app actually uses (e.g. `class-validator` for `ValidationPipe`), so it must
-   * be bundled into the self-contained function rather than left as a bare
-   * `require()` that cannot resolve in the deployed `.func`. Uninstalled peers
-   * stay external so esbuild does not fail to resolve them and NestJS's
-   * try/catch tolerates their absence at runtime.
+   * NestJS's optional peers are handled by `resolveAbsentNestPeers`, which
+   * externalizes only the ones the app has not installed.
    */
   #resolveExternals(): string[] {
-    const alwaysExternal = [
+    return [
       'node:*',
       '@workflow/builders',
       '@swc/core',
@@ -127,47 +133,8 @@ export class NestVercelBuilder extends VercelBuildOutputAPIBuilder {
       // is not yet supported on Vercel — see the limitation called out in the
       // README's "Deploying to Vercel" section and the changeset.
       '*.node',
+      ...resolveAbsentNestPeers(this.#workingDir),
     ];
-
-    const optionalPeers = [
-      '@nestjs/websockets',
-      '@nestjs/microservices',
-      '@nestjs/platform-fastify',
-      '@nestjs/platform-socket.io',
-      'class-validator',
-      'class-transformer',
-      'cache-manager',
-      '@fastify/static',
-      '@grpc/grpc-js',
-      '@grpc/proto-loader',
-      'kafkajs',
-      'mqtt',
-      'nats',
-      'amqplib',
-      'amqp-connection-manager',
-      'ioredis',
-    ];
-
-    const require = createRequire(join(this.#workingDir, 'package.json'));
-    const isInstalled = (pkg: string): boolean => {
-      try {
-        require.resolve(pkg);
-        return true;
-      } catch {
-        return false;
-      }
-    };
-
-    const externalPeers: string[] = [];
-    for (const pkg of optionalPeers) {
-      // Installed => bundle it (the app uses it). Not installed => keep external
-      // (esbuild won't try to resolve it; NestJS tolerates it being absent).
-      if (!isInstalled(pkg)) {
-        externalPeers.push(pkg, `${pkg}/*`);
-      }
-    }
-
-    return [...alwaysExternal, ...externalPeers];
   }
 
   async #buildAppFunction(): Promise<void> {

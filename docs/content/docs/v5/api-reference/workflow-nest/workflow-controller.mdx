@@ -9,6 +9,10 @@ prerequisites:
 
 NestJS controller that handles the well-known workflow endpoints under `.well-known/workflow/v1`. It dynamically imports the generated workflow bundles and converts between Express/Fastify requests and the Web API `Request`/`Response` objects the workflow runtime expects. Both the Express and Fastify HTTP adapters are supported.
 
+The conversion preserves bytes in both directions: request bodies come from `req.rawBody` when the app is created with `{ rawBody: true }`, from a `Buffer`/string body left by a parser, or read directly from the request stream when no parser claimed the content type. Responses are written as bytes, and every `set-cookie` value is kept. See [Raw request bodies](/docs/getting-started/nestjs#raw-request-bodies).
+
+Handlers take `@Res()`, so the application's interceptors and exception filters do not wrap these routes. That is deliberate: the queue and third-party webhook senders key off the exact status and body the workflow runtime produces.
+
 [`WorkflowModule.forRoot()`](/docs/api-reference/workflow-nest/workflow-module) registers this controller automatically — you only register it yourself if you are not using `WorkflowModule`.
 
 ## Usage
@@ -35,6 +39,8 @@ export class AppModule {}
 
 | Route | Method | Description |
 | --- | --- | --- |
-| `/.well-known/workflow/v1/flow` | `POST` | Executes workflow and step work items via the combined handler in `workflows.mjs` (step registrations are imported from `steps.mjs` first). |
+| `/.well-known/workflow/v1/flow` | `POST`, `GET`, `HEAD`, `OPTIONS` | Executes workflow and step work items via the combined handler in `workflows.mjs` (step registrations are imported from `steps.mjs` first). `HEAD` is what local port detection probes to identify a workflow server, so all four methods are served. |
 | `/.well-known/workflow/v1/webhook/:token` | Any | Forwards webhook requests to the handler in `webhook.mjs`. |
 | `/.well-known/workflow/v1/manifest.json` | `GET` | Serves the workflow manifest. Responds with `404` unless the `WORKFLOW_PUBLIC_MANIFEST=1` environment variable is set. |
+
+A route whose bundle cannot be loaded answers `503` with a message naming the missing file and the build command that produces it, rather than surfacing a raw `ERR_MODULE_NOT_FOUND`.
