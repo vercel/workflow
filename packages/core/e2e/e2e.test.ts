@@ -1472,6 +1472,68 @@ describe('e2e', () => {
       );
     });
 
+    describe('serialization failures', () => {
+      test(
+        'step-argument serialization failure is catchable in workflow code',
+        { timeout: 60_000 },
+        async () => {
+          // Passing an unserializable value (a class instance with no serde
+          // model) to a step must fail THAT STEP — step_created +
+          // step_failed — not the whole run, so a try/catch around the step
+          // call observes the serialization error.
+          const run = await start(
+            await e2e('serializationErrorStepArgsCaught'),
+            []
+          );
+          const result = await run.returnValue;
+
+          expect(result.caught).toBe(true);
+          expect(result.messageIncludesStepArguments).toBe(true);
+
+          // The workflow completed (the error was caught) …
+          const { json: runData } = await cliInspectJson(`runs ${run.runId}`);
+          expect(runData.status).toBe('completed');
+
+          // … and the step itself is recorded as failed.
+          const { json: steps } = await cliInspectJson(
+            `steps --runId ${run.runId}`
+          );
+          const step = steps.find((s: any) =>
+            s.stepName.includes('acceptAnyValue')
+          );
+          expect(step.status).toBe('failed');
+        }
+      );
+
+      test(
+        'uncaught step-argument serialization failure fails the run as USER_ERROR without redelivery retries',
+        { timeout: 60_000 },
+        async () => {
+          // Regression coverage for the production failure mode where a
+          // step-argument serialization error caused the run to redeliver
+          // until "exceeded max deliveries (49/48)". The run must fail
+          // promptly (well within this test's timeout — 48 redeliveries
+          // with backoff would take many minutes) and classify as
+          // USER_ERROR, not MAX_DELIVERIES_EXCEEDED.
+          const run = await start(
+            await e2e('serializationErrorStepArgsUncaught'),
+            []
+          );
+          const error = await run.returnValue.catch((e: unknown) => e);
+
+          expect(WorkflowRunFailedError.is(error)).toBe(true);
+          assert(WorkflowRunFailedError.is(error));
+          expect(error.cause.code).toBe('USER_ERROR');
+          expect(error.cause.message).toContain(
+            'Failed to serialize step arguments'
+          );
+
+          const { json: runData } = await cliInspectJson(`runs ${run.runId}`);
+          expect(runData.status).toBe('failed');
+        }
+      );
+    });
+
     describe('not registered', () => {
       test(
         'WorkflowNotRegisteredError fails the run when workflow does not exist',
