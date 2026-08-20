@@ -113,11 +113,7 @@ import { runStepSingleFlight } from './runtime/step-single-flight.js';
 import { handleSuspension } from './runtime/suspension-handler.js';
 import { useQuickJSVm } from './runtime/vm-mode.js';
 import { getWaitContinuationDispatch } from './runtime/wait-continuation.js';
-import {
-  getWorld,
-  getWorldHandlers,
-  type WorldHandlers,
-} from './runtime/world.js';
+import { getWorld, type WorldHandlers } from './runtime/world.js';
 import { dehydrateRunError } from './serialization.js';
 import { remapErrorStack } from './source-map.js';
 import * as Attribute from './telemetry/semantic-conventions.js';
@@ -4664,7 +4660,7 @@ export function workflowEntrypoint(
           cachedHandler = await trace('workflow.route.init', async () => {
             const worldHandlers = await trace(
               'workflow.route.get_world_handlers',
-              async () => getWorldHandlers()
+              async () => getWorld()
             );
             return handler(worldHandlers);
           });

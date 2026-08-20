@@ -38,5 +38,6 @@ Returns a fetch-style request handler: `(req: Request) => Promise<Response>`.
 
 ## Related Functions
 
-- [`getWorldHandlers()`](/docs/api-reference/workflow-runtime/get-world-handlers) - The build-time World access this handler is built on.
+- [`getWorld()`](/docs/api-reference/workflow-runtime/get-world) - Resolve the runtime World instance this handler shares with workflow execution.
+- [`getWorldHandlers()`](/docs/api-reference/workflow-runtime/get-world-handlers) - Access build-time-safe World handlers for framework tooling.
 - [`healthCheck()`](/docs/api-reference/workflow-runtime/health-check) - Verify the entrypoint processes queue messages end-to-end.
