@@ -19,6 +19,31 @@ Runtime variables are read where workflows execute. Set them on the deployment o
 - Delay between status requests made by [`Run.returnValue`](/docs/api-reference/workflow-api/get-run) while a workflow run is not yet complete.
 - Increase it to reduce polling traffic at the cost of noticing completion later.
 - This variable is read by the process awaiting `Run.returnValue`, such as an E2E test runner, rather than by the workflow deployment.
+- Applies whenever the World cannot hold a read open. When it can, the wait below replaces most of this polling and the interval only paces retries.
+
+### `WORKFLOW_RETURN_VALUE_WAIT_MS`
+
+- Default: `50000`
+- Minimum: `1`
+- How long a single wait for a terminal run status may block, when the World supports waiting (`world.runs.waitForTerminalStatus()`). `Run.returnValue` re-issues the wait until the run finishes, so this bounds one request rather than the total wait.
+- `50000` is the largest value the Vercel World can actually request: it clamps the ask to its 60s per-request HTTP timeout minus 10s of headroom, so the budget always expires as a response carrying the run's current status rather than as a client-side timeout. Raising this alone has no effect; raise `WORKFLOW_REQUEST_TIMEOUT_MS` as well.
+- Read by the process awaiting `Run.returnValue`, like the interval above.
+
+### `WORKFLOW_RETURN_VALUE_MAX_LONG_POLLS`
+
+- Default: `10`
+- Minimum: `1`
+- How many consecutive waits `Run.returnValue` issues before falling back to interval polling for the rest of the await.
+- It never ends the await. A run that outlives the cap keeps being waited for, just on `WORKFLOW_RETURN_VALUE_POLL_INTERVAL_MS` instead.
+- Runs longer than roughly `WORKFLOW_RETURN_VALUE_MAX_LONG_POLLS` x `WORKFLOW_RETURN_VALUE_WAIT_MS` therefore spend most of their life interval polling, which costs more requests than continuing to wait would. Raise it if you routinely await long runs.
+- Read by the process awaiting `Run.returnValue`, like the interval above.
+
+### `WORKFLOW_RETURN_VALUE_LONG_POLL`
+
+- Default: enabled
+- Set to `0` or `false` to stop `Run.returnValue` from waiting and restore fixed-interval polling on `WORKFLOW_RETURN_VALUE_POLL_INTERVAL_MS` exactly.
+- The kill switch for the wait. Worlds that do not implement waiting are already on the interval path, so this changes nothing for them.
+- Read by the process awaiting `Run.returnValue`, like the interval above.
 
 ## Replay and queue delivery
 

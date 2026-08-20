@@ -151,6 +151,40 @@ const run = await world.runs.get(runId); // [!code highlight]
 
 **Returns:** `WorkflowRun` (or `WorkflowRunWithoutData` when `resolveData: 'none'`)
 
+### runs.waitForTerminalStatus()
+
+Optional. Long poll for a run to reach a terminal status (`completed`,
+`failed`, or `cancelled`) instead of re-reading it on an interval. This is what
+`await run.returnValue` uses, so a run's result reaches the awaiting side as
+soon as it finishes rather than at the next poll tick.
+
+```typescript lineNumbers
+const run = await world.runs.waitForTerminalStatus?.(runId, { // [!code highlight]
+  timeoutMs: 25_000, // [!code highlight]
+}); // [!code highlight]
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `runId` | `string` | The workflow run ID |
+| `params.timeoutMs` | `number` | Upper bound on the wait — the call returns earlier, the moment the run is terminal |
+| `params.signal` | `AbortSignal` | Abandons the wait |
+| `params.resolveData` | `'all' \| 'none'` | Whether to include input/output data. Default: `'all'` |
+
+**Returns:** the same `WorkflowRun` as `runs.get()` — terminal if the run
+finished within the budget, otherwise the latest snapshot. An expired budget is
+a normal return, not an error, and a missing run throws
+`WorkflowRunNotFoundError` exactly as `runs.get()` does.
+
+<Callout>
+  Not every backend can hold a read open, so this method is optional and may
+  also return a non-terminal snapshot before `timeoutMs` is up. Callers pace
+  their own retries — `await run.returnValue` keeps consecutive non-terminal
+  observations at least one `WORKFLOW_RETURN_VALUE_POLL_INTERVAL_MS` apart — and
+  worlds that omit the method are polled on that interval instead. Set
+  `WORKFLOW_RETURN_VALUE_LONG_POLL=0` to force interval polling everywhere.
+</Callout>
+
 ### runs.list()
 
 ```typescript lineNumbers

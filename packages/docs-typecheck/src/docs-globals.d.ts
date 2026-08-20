@@ -186,6 +186,8 @@ declare global {
     runs: {
       get: (...args: any[]) => Promise<any>;
       list: (...args: any[]) => Promise<any>;
+      // Optional on World, so reference snippets call it through `?.`
+      waitForTerminalStatus?: (...args: any[]) => Promise<any>;
     };
     steps: {
       get: (...args: any[]) => Promise<any>;

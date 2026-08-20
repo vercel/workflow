@@ -265,7 +265,9 @@ Platform-provided values such as `VERCEL_DEPLOYMENT_ID`, `VERCEL_PROJECT_ID`, an
 - Factory option: none
 - CLI flag: none
 - Default: `60000`
+- Clamp: `10000` to `120000` (values outside are clamped, with a warning)
 - Per-request timeout for Vercel World HTTP calls to workflow-server.
+- At the `10000` floor the run-status long poll disables itself, because its budget is this value minus 10s of headroom.
 
 ### `WORKFLOW_MAX_CHUNKS_PER_REQUEST`
 
