@@ -24,6 +24,7 @@
     "build": "turbo build --filter='./packages/*'",
     "test": "turbo test",
     "clean": "turbo clean",
+    "clean:artifacts": "bash scripts/clean-artifacts.sh",
     "typecheck": "turbo typecheck",
     "test:e2e": "vitest run packages/core/e2e/e2e.test.ts packages/core/e2e/e2e-agent.test.ts",
     "test:e2e:event-log-race-repro": "vitest run packages/core/e2e/event-log-race-repro.test.ts",
