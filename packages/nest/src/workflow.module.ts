@@ -238,8 +238,16 @@ export class WorkflowModule implements OnModuleInit, OnApplicationShutdown {
    * Without this the application reports a healthy startup and then answers
    * every workflow request with `ERR_MODULE_NOT_FOUND`, which is the shape of a
    * container image built without running `workflow-nest build`.
+   *
+   * Skipped on Vercel: there the workflow routes are served by the dedicated
+   * Build Output functions (`flow.func`, `webhook.func`) that
+   * `NestVercelBuilder` emits, not by the in-process `WorkflowController`. The
+   * catch-all `__nest.func` that boots this Nest app never contains the
+   * local-dev `.nestjs/workflow/*.mjs` bundles, so this assertion would always
+   * fail and reject `app.init()`, 500ing every request.
    */
   #assertBundlesExist(): void {
+    if (process.env.VERCEL) return;
     const missing = REQUIRED_BUNDLES.filter(
       (name) => !existsSync(join(this.options.outDir, name))
     );
