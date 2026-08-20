@@ -63,11 +63,33 @@ export const REQUEST_TIMEOUT_MS = 60_000;
 /**
  * Effective per-request timeout. Override via `WORKFLOW_REQUEST_TIMEOUT_MS`
  * (e.g. dialled down on an e2e deployment to exercise the timeout path).
+ *
+ * Clamped to `[10s, 120s]`, with a warning when a configured value is pulled
+ * into range:
+ *
+ * - **Floor.** Below ~10s this stops being a safety net and becomes the thing
+ *   that breaks working requests: a cold workflow-server route, a large event
+ *   page, or an ordinary tail-latency blip all exceed a few seconds, and the
+ *   resulting timeout is indistinguishable from a broken backend, so the
+ *   runtime redrives via the queue instead of making progress.
+ * - **Ceiling.** 120s is twice the default and matches the longest a backend
+ *   route holds a response (the stream read). Beyond that a hung request would
+ *   outlive the callers this deadline exists to protect, which is the failure
+ *   mode described on {@link REQUEST_TIMEOUT_MS}. Paths that legitimately
+ *   outlast it opt out entirely with `timeoutMs: null` rather than raising
+ *   this (see the streamer and the v4 events transport).
+ *
+ * Note the floor interacts with the run-status long poll: its budget is this
+ * value minus the long poll's 10s of headroom, so at exactly the floor
+ * the budget clamps to zero and `waitForTerminalStatus` degrades to a plain
+ * read. That is intended, and it means 10s is the value at which long polling
+ * turns itself off rather than a value that half-works.
  */
 export const getRequestTimeoutMs = (): number =>
   envNumber('WORKFLOW_REQUEST_TIMEOUT_MS', REQUEST_TIMEOUT_MS, {
     integer: true,
-    min: 1,
+    min: 10_000,
+    max: 120_000,
   });
 
 /**
