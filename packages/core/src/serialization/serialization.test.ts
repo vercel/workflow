@@ -269,7 +269,7 @@ describe('encrypt', () => {
 });
 
 describe('decrypt', () => {
-  it('uses one asynchronous contract for AES envelopes on Node', async () => {
+  it('uses the portable asynchronous contract for AES envelopes', async () => {
     const key = await makeKey();
     const data = encodeWithFormatPrefix(
       SerializationFormat.DEVALUE_V1,

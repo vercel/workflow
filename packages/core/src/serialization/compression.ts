@@ -138,9 +138,12 @@ async function pipeThroughTransform(
   writePromise.catch(() => {});
   const chunks: Uint8Array[] = [];
   let total = 0;
-  for await (const chunk of transform.readable) {
-    chunks.push(chunk);
-    total += chunk.length;
+  const reader = transform.readable.getReader();
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+    total += value.length;
   }
   await writePromise;
   const out = new Uint8Array(total);

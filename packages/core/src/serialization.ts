@@ -66,7 +66,11 @@ import {
   isInstanceOfPrototype,
   readProperty,
 } from './serialization/hardened.js';
-import { decodePayload, encodePayload } from './serialization/payload.js';
+import {
+  decodePayload,
+  encodePayload,
+  type PreparedReplayPayload,
+} from './serialization/payload.js';
 import {
   getClassReducers,
   getClassRevivers,
@@ -80,10 +84,6 @@ import {
   getStepFunctionReducer,
   getStepFunctionReviver,
 } from './serialization/reducers/step-function.js';
-import {
-  type PreparedReplayPayload,
-  prepareReplayPayload,
-} from './serialization/replay.js';
 import * as stepModule from './serialization/step.js';
 import {
   type FormatPrefix,
@@ -3376,14 +3376,14 @@ function getStepRevivers(
   };
 }
 
-async function prepareReplayPayloadWithTelemetry(
+async function decodeReplayPayloadWithTelemetry(
   value: unknown,
   key: DecryptionKey | undefined
 ): Promise<PreparedReplayPayload> {
   if (!(value instanceof Uint8Array)) return { legacy: value };
 
   const compressionStats: CompressionStats = {};
-  const prepared = await prepareReplayPayload(value, key, compressionStats);
+  const prepared = await decodePayload(value, key, compressionStats);
   await recordCompression(compressionStats, 'deserialize');
   return prepared;
 }
@@ -3514,7 +3514,7 @@ export async function hydrateWorkflowArguments(
   prepared?: PreparedReplayPayload
 ): Promise<any> {
   const payload =
-    prepared ?? (await prepareReplayPayloadWithTelemetry(value, key));
+    prepared ?? (await decodeReplayPayloadWithTelemetry(value, key));
   return deserializePreparedReplayPayload(payload, global, extraRevivers);
 }
 
@@ -3805,7 +3805,7 @@ export async function hydrateStepError(
   prepared?: PreparedReplayPayload
 ): Promise<unknown> {
   const payload =
-    prepared ?? (await prepareReplayPayloadWithTelemetry(value, key));
+    prepared ?? (await decodeReplayPayloadWithTelemetry(value, key));
   return deserializePreparedStepError(payload, global, extraRevivers);
 }
 
@@ -3915,7 +3915,7 @@ export async function hydrateStepReturnValue(
   prepared?: PreparedReplayPayload
 ): Promise<any> {
   const payload =
-    prepared ?? (await prepareReplayPayloadWithTelemetry(value, key));
+    prepared ?? (await decodeReplayPayloadWithTelemetry(value, key));
   return deserializePreparedReplayPayload(payload, global, extraRevivers);
 }
 

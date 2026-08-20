@@ -1,9 +1,9 @@
 import type { Event, WorkflowRun } from '@workflow/world';
 import type { DecryptionKey } from './serialization/encryption.js';
 import {
+  decodePayload,
   type PreparedReplayPayload,
-  prepareReplayPayload,
-} from './serialization/replay.js';
+} from './serialization/payload.js';
 
 const MAX_MEMOIZED_PRIMITIVE_LENGTH = 4096;
 type ReplayPayloadField = 'result' | 'error' | 'payload';
@@ -50,7 +50,7 @@ export class ReplayPayloadCache {
 
   constructor(
     private readonly encryptionKey: DecryptionKey | undefined,
-    private readonly preparer: typeof prepareReplayPayload = prepareReplayPayload
+    private readonly preparer: typeof decodePayload = decodePayload
   ) {}
 
   /**

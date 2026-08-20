@@ -25,7 +25,7 @@ async function captureError(action: () => Promise<unknown>): Promise<unknown> {
 
 describe('encryption', () => {
   describe('round-trip', () => {
-    it('uses one asynchronous contract on Node', async () => {
+    it('uses the portable asynchronous crypto contract', async () => {
       const key = await getKey();
       const plaintext = new TextEncoder().encode('hello, workflow');
       const ciphertext = await encrypt(key, plaintext);

@@ -231,7 +231,8 @@ export function hydrateData(value: unknown, revivers: Revivers): unknown {
       // Node.js (CLI, server o11y). In browsers there is no sync codec;
       // pass the data through untouched (like encrypted data) so async
       // consumers can route it through `hydrateDataWithKey`, which
-      // decompresses via DecompressionStream / a registered zstd decoder.
+      // decompresses via DecompressionStream or an explicitly supplied zstd
+      // decoder.
       const inflated = decompressSync(value);
       if (inflated === undefined) {
         return value;

@@ -5,12 +5,12 @@
  * - HKDF key derivation (deployment key + projectId + runId → per-run key)
  * - Cross-deployment key retrieval via the Vercel API
  *
- * The actual AES-GCM encrypt/decrypt operations are in @workflow/core/encryption
- * which is browser-compatible. This module is Node.js only (uses node:crypto
- * for HKDF and the Vercel API for key retrieval).
+ * The actual AES-GCM encrypt/decrypt operations are in @workflow/core/encryption.
+ * Key derivation uses the same global Web Crypto implementation; this module
+ * remains server-only because key retrieval depends on process state and the
+ * Vercel API.
  */
 
-import { webcrypto } from 'node:crypto';
 import type { WorkflowRun, World } from '@workflow/world';
 import * as z from 'zod';
 import { getDispatcher } from './http-client.js';
@@ -54,7 +54,7 @@ export async function deriveRunKey(
     throw new Error('projectId must be a non-empty string');
   }
 
-  const baseKey = await webcrypto.subtle.importKey(
+  const baseKey = await globalThis.crypto.subtle.importKey(
     'raw',
     deploymentKey,
     'HKDF',
@@ -67,7 +67,7 @@ export async function deriveRunKey(
   // Zero salt is acceptable per RFC 5869 Section 3.1 when the input key
   // material has high entropy (as is the case with our random deployment key).
   // The `info` parameter provides per-run context separation.
-  const derivedBits = await webcrypto.subtle.deriveBits(
+  const derivedBits = await globalThis.crypto.subtle.deriveBits(
     {
       name: 'HKDF',
       hash: 'SHA-256',
