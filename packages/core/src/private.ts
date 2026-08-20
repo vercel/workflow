@@ -160,7 +160,7 @@ export interface WorkflowOrchestratorContext {
    * call site passes one regardless: an id is then an ordinal over the whole
    * run and both replays of a run must draw in the same order.
    */
-  generateUlid: (scope?: string) => string;
+  generateUlid: (scope?: string | (() => string)) => string;
   generateNanoid: () => string;
   /**
    * Mints a hook token for a hook whose token the caller did not pin. Derived

@@ -30,8 +30,13 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
       // below compares only `stepName`: two replays that disagree about how many
       // times this step already ran must not mint the same id for calls that
       // pass different arguments, or the mismatch would go undetected.
+      //
+      // A thunk, not a string: fingerprinting stringifies the arguments, which
+      // both costs work and observably invokes argument getters, so it must
+      // not happen at all under the positional scheme, where the scope is
+      // ignored.
       const correlationId = `step_${ctx.generateUlid(
-        `step ${stepName} ${fingerprintValue(args)}`
+        () => `step ${stepName} ${fingerprintValue(args)}`
       )}`;
 
       const queueItem: StepInvocationQueueItem = {
