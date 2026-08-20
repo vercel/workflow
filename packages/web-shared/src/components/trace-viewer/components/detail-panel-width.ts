@@ -2,11 +2,11 @@
  * Width model for the span detail panel: the stored value is the user's
  * preferred width (absolute px, persisted to localStorage on explicit
  * interaction only), while the container-relative maximum is applied at
- * render time — so a width preferred on a wide screen survives a narrower
+ * render time, so a width preferred on a wide screen survives a narrower
  * session and restores when the viewer grows again.
  */
 
-/** Floor for the detail panel — matches the previous `clamp(280px, …)` floor. */
+/** Floor for the detail panel; matches the previous `clamp(280px, …)` floor. */
 export const PANEL_MIN_WIDTH = 280;
 
 /**
@@ -15,13 +15,13 @@ export const PANEL_MIN_WIDTH = 280;
  */
 export const PANEL_HARD_MAX_WIDTH = 1300;
 
-/** Default width — matches the previous fixed 360px column. */
+/** Default width; matches the previous fixed 360px column. */
 export const PANEL_DEFAULT_WIDTH = 360;
 
 /**
  * Width the main (event list + timeline) area keeps while the panel is
  * resized or the container shrinks. Below `PANEL_MIN_WIDTH + MAIN_MIN_WIDTH`
- * of container the panel gives way first, compressing below its own floor —
+ * of container the panel gives way first, compressing below its own floor:
  * the list and timeline stay usable at the panel's expense.
  */
 export const MAIN_MIN_WIDTH = 400;

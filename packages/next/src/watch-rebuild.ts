@@ -279,7 +279,7 @@ export const replaceSourceSnapshots = async ({
       try {
         sourceSnapshots.set(file, await readSnapshot(file));
       } catch {
-        // Unreadable (e.g. just deleted) files simply stay absent from the
+        // Unreadable (e.g. just deleted) files stay absent from the
         // freshly cleared map.
       }
     })
@@ -328,21 +328,21 @@ const captureSourceSnapshots = async ({
  * once when the baseline is refreshed from disk afterwards (the `rebuild`
  * callback owns both, in that order). An edit that lands between those reads
  * would be absorbed into the baseline without ever being built, and its
- * queued watcher event would then classify as a no-op — silently dropping
+ * queued watcher event would then classify as a no-op, silently dropping
  * the change until the next unrelated rebuild.
  *
  * To prevent that, the relevant files are re-read from disk immediately
  * before the rebuild starts, and files present both before and after get
  * that captured value restored. A mid-(multi-second-)rebuild edit then still
  * diffs against what the rebuild consumed, while a duplicate watcher event
- * for content the rebuild already consumed — watchers routinely emit several
- * events per edit, the triggering edit included — diffs equal and stays a
+ * for content the rebuild already consumed (watchers routinely emit several
+ * events per edit, the triggering edit included) diffs equal and stays a
  * no-op instead of cascading into back-to-back full rebuilds.
  *
  * The capture costs one serial read of the relevant set (~150-250ms at ~250
- * files) per full rediscovery. A zero-read formulation — cloning the live
+ * files) per full rediscovery. A zero-read formulation (cloning the live
  * baseline map and pinning the triggering batch to the snapshots
- * `classifyRebuild` read — was tried and reverted: writes landing in the
+ * `classifyRebuild` read) was tried and reverted: writes landing in the
  * capture window (test-teardown restores, multi-flush setup bursts) are
  * content the imminent build consumes anyway, and the clone un-absorbs them
  * into follow-up full rebuilds; with real-world multi-second rebuilds that
@@ -355,7 +355,7 @@ const captureSourceSnapshots = async ({
  * its queued add event forces the follow-up rebuild, and a new file the
  * build did consume gets a baseline matching what it consumed. What stays
  * narrowed rather than closed is a file created and then edited again within
- * one rebuild window — eviction-style conservatism was tried against that
+ * one rebuild window; eviction-style conservatism was tried against that
  * and rejected too: it turned every added file's routine duplicate watcher
  * events into redundant full rebuilds.
  */

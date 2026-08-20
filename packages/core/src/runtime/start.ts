@@ -45,7 +45,7 @@ import { assertWorldSupportsRuntimeProtocol } from './world-compatibility.js';
  * dehydrating workflow arguments. Kept tight on purpose: the probe is
  * an optimization (it lets the caller emit the framed byte-stream wire
  * format when the target supports it), and the fallback on timeout is
- * the legacy raw format which always works. Long delays here would just
+ * the legacy raw format which always works. Long delays here would
  * make `start({ deploymentId: ... })` slower for users whose target
  * deployments don't recognize the health check at all.
  */
@@ -83,7 +83,7 @@ function resolveLineageAttributes(): Record<string, string> | undefined {
 let hasWarnedLatestNoOp = false;
 
 /**
- * Reset the `deploymentId: 'latest'` no-op warn-once guard. Test-only —
+ * Reset the `deploymentId: 'latest'` no-op warn-once guard. Test-only,
  * exported so unit tests can exercise the warn path across `start()` calls.
  *
  * @internal
@@ -110,7 +110,7 @@ export interface StartOptionsBase {
    * run ID and routes the initial workflow message to the matching
    * regional queue. When omitted, the world falls back to its own
    * default (for `world-vercel`: the `VERCEL_REGION` environment
-   * variable, then the server-side default region `iad1` — a concrete,
+   * variable, then the server-side default region `iad1`; a concrete,
    * routable region is always chosen).
    *
    * Worlds without a regional dimension ignore this field.
@@ -180,7 +180,7 @@ export interface StartOptionsWithDeploymentId extends StartOptionsBase {
    * This is only meaningful in worlds with atomic, immutable deployments
    * (currently Vercel). In other worlds (local dev, Postgres) there is no
    * notion of multiple deployments to resolve between, so `'latest'` has no
-   * effect — a warning is logged and the run targets the current deployment.
+   * effect: a warning is logged and the run targets the current deployment.
    *
    * **Note:** When `deploymentId` is provided, the argument and return types become `unknown`
    * since there is no guarantee the types will be consistent across deployments.
@@ -295,12 +295,12 @@ export async function start<TArgs extends unknown[], TResult>(
       // resolveLatestDeploymentId(). Worlds without that concept (local dev,
       // self-hosted Postgres) have nothing to resolve between, so rather than
       // fail a run that works fine on Vercel, we warn and fall back to the
-      // current deployment — making 'latest' an effective no-op there.
+      // current deployment, making 'latest' an effective no-op there.
       if (deploymentId === 'latest') {
         if (world.resolveLatestDeploymentId) {
           deploymentId = await world.resolveLatestDeploymentId();
         } else {
-          // Warn once per process — see hasWarnedLatestNoOp above.
+          // Warn once per process; see hasWarnedLatestNoOp above.
           if (!hasWarnedLatestNoOp) {
             hasWarnedLatestNoOp = true;
             runtimeLogger.warn(
@@ -320,7 +320,7 @@ export async function start<TArgs extends unknown[], TResult>(
       // deployment starts (explicit deploymentId or 'latest' that resolves
       // to a different deployment) we probe the target via healthCheck to
       // learn its workflow-core version, then derive the capability. The
-      // probe has a tight timeout — on miss/failure we fall back to the
+      // probe has a tight timeout: on miss/failure we fall back to the
       // legacy raw byte format, which is universally readable.
       //
       // Worlds that don't expose the `streams` API (e.g. minimal test
@@ -357,14 +357,15 @@ export async function start<TArgs extends unknown[], TResult>(
       } else if (typeof world.streams?.get !== 'function') {
         framedByteStreams = false;
         targetSupportsCompression = false;
-        // No probe channel to the target — cannot attest the consumer honors
-        // `hookInput`, so leave the marker off (fail closed to sequential).
+        // No probe channel to the target, so we cannot attest the consumer
+        // honors `hookInput`; leave the marker off (fail closed to
+        // sequential).
         targetHookResumeInputVersion = undefined;
       } else {
         // Ask for this run's public key while we're here. The probe already
         // blocks `start()` on every cross-deployment call, and the responder
         // executes inside the target deployment where the key material is
-        // local — so the key comes back for free on a response we are
+        // local, so the key comes back for free on a response we are
         // already awaiting, and we can skip the key-lookup API request
         // entirely. Best-effort: on timeout or an older target, no key comes
         // back and we fall through to the regular lookup below.
@@ -382,7 +383,7 @@ export async function start<TArgs extends unknown[], TResult>(
         );
         // The responder runs inside the target deployment, so its
         // `hookResumeInputVersion` reflects the consumer. Undefined on an
-        // older target or a probe timeout — leaving the marker off.
+        // older target or a probe timeout, leaving the marker off.
         targetHookResumeInputVersion = probe?.hookResumeInputVersion;
       }
 
@@ -404,7 +405,7 @@ export async function start<TArgs extends unknown[], TResult>(
           );
         }
         // `normalizeAttributeChanges` treats `undefined` as "remove this
-        // key", which is meaningless at creation time — reject it up front
+        // key", which is meaningless at creation time. Reject it up front
         // so JS callers get a clear error instead of a downstream schema
         // failure (the types already forbid non-string values).
         for (const [key, value] of Object.entries(opts.attributes)) {
@@ -468,7 +469,7 @@ export async function start<TArgs extends unknown[], TResult>(
       //
       // Preferred: the capability probe already told us this run's public
       // key, so seal to it. That skips `getEncryptionKeyForRun`, which for a
-      // cross-deployment start is a `run-key` API request — the last one left
+      // cross-deployment start is a `run-key` API request, the last one left
       // on this path. It is also a privilege reduction: the caller ends up
       // able to write the arguments but not read them back, whereas fetching
       // the symmetric key grants full read access to a run it merely
@@ -533,19 +534,19 @@ export async function start<TArgs extends unknown[], TResult>(
       //
       // The two writes below go to different places by different routes:
       // `events.create` is attributed to THIS client's tenant, while the queue
-      // message is pinned to a deploymentId. When those disagree — a
-      // production-credentialed client pinning a preview deployment — the
+      // message is pinned to a deploymentId. When those disagree (a
+      // production-credentialed client pinning a preview deployment) the
       // preview consumer can't find the run in its own tenant, falls back to
       // resilient start, and re-creates it: one client-minted run id, two
       // environments, the production copy pending forever and the preview copy
       // executing. Worlds with a single tenant return undefined and the field
-      // is simply absent.
+      // is absent.
       const creatorEnvironment = world.getEnvironment?.();
 
       // If WORKFLOW_VM is set on the client starting the run, stamp the
       // engine choice into the run's executionContext so the run keeps
       // executing on the engine it started on (the same deployment can
-      // serve both VM engines). Unknown values throw — see
+      // serve both VM engines). Unknown values throw; see
       // getWorkflowVmFromEnv().
       const workflowVm = getWorkflowVmFromEnv();
 
@@ -559,7 +560,7 @@ export async function start<TArgs extends unknown[], TResult>(
         // resumeContext by the server) to decide whether the parallel fast
         // path is safe. For a cross-deployment start the consumer is the
         // target deployment, so we stamp the *target's* value carried back on
-        // the health-check probe — never the caller's. Omitted when we could
+        // the health-check probe, never the caller's. Omitted when we could
         // not attest the target (older target, timeout, or no probe channel),
         // which fails the resume gate closed to the sequential path.
         ...(targetHookResumeInputVersion !== undefined
@@ -625,7 +626,7 @@ export async function start<TArgs extends unknown[], TResult>(
         ),
       ]);
 
-      // Queue failure is always fatal — the run was not enqueued
+      // Queue failure is always fatal: the run was not enqueued
       if (queueResult.status === 'rejected') {
         throw queueResult.reason;
       }
@@ -641,7 +642,7 @@ export async function start<TArgs extends unknown[], TResult>(
           // In this case, we can safely return.
         } else if (isRetryableWorldError(err)) {
           // 429 (ThrottleError), 5xx, and transient transport failures
-          // (TRANSPORT/TIMEOUT) are retryable — the run was accepted via the
+          // (TRANSPORT/TIMEOUT) are retryable: the run was accepted via the
           // queue and creation will be re-tried by the runtime when it calls
           // run_started.
           resilientStart = true;

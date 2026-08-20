@@ -14,13 +14,13 @@ let _getPort: (() => Promise<number | undefined>) | undefined;
 
 // Per-process cache of the resolved port. The workflow server listens on a
 // stable port for the lifetime of the process, but `getPort()` rediscovers it
-// on every call by querying the OS for the process's listening sockets — on
+// on every call by querying the OS for the process's listening sockets. On
 // macOS that shells out to `lsof` (~60ms), which the runtime pays on EVERY
 // workflow replay or step invocation. Since the port does not change within a
 // process, resolve it once and reuse it. `_inFlight`
 // dedupes concurrent first calls so discovery never runs more than once.
 //
-// The first concrete port is pinned for the lifetime of the process — there is
+// The first concrete port is pinned for the lifetime of the process: there is
 // no per-call re-resolution. This is safe because the runtime only runs inside
 // the already-listening dev-server process, and `getPort()` -> `getAllPorts()`
 // returns a deterministic order, so repeated calls would resolve the same port
@@ -33,7 +33,7 @@ export async function getPortLazy(): Promise<number | undefined> {
   if (_cachedPort !== undefined) {
     return _cachedPort;
   }
-  // A discovery is already running — share it rather than starting a second.
+  // A discovery is already running, so share it rather than starting a second.
   if (_inFlight) {
     return _inFlight;
   }
@@ -61,7 +61,7 @@ export async function getPortLazy(): Promise<number | undefined> {
   _inFlight = resolver()
     .then((port) => {
       // Only cache a concrete port. A transient `undefined` (e.g. the server is
-      // not listening yet on the very first replay) must not poison the cache —
+      // not listening yet on the first replay) must not poison the cache:
       // leaving it unset lets the next call retry discovery.
       if (typeof port === 'number') {
         _cachedPort = port;

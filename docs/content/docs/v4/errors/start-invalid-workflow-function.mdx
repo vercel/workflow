@@ -17,17 +17,17 @@ related:
 
 This error occurs when `start()` receives a function that does not have Workflow SDK's generated workflow metadata. In practice, that usually means the function is missing `"use workflow"` or the file was never transformed by your framework integration.
 
-## Error Message
+## Error message
 
-```
+```text
 'start' received an invalid workflow function. Ensure the Workflow SDK is configured correctly and the function includes a 'use workflow' directive.
 ```
 
-## Why This Happens
+## Why this happens
 
 `start()` expects an imported workflow function, not just any async function. During compilation, Workflow SDK transforms files that contain `"use workflow"` and attaches generated metadata such as the workflow ID. If that transform never runs, or if you pass a wrapper function instead of the transformed export, `start()` cannot identify what to enqueue and throws this error.
 
-## Common Causes
+## Common causes
 
 ### Missing `"use workflow"`
 

@@ -39,7 +39,7 @@ export function getStepFunctionReducer(): Partial<Reducers> {
       // The reducer has to invoke this to read the step's captured closure
       // variables. The compiler-generated function is a sequence of lexical
       // reads and cannot perturb observable VM state, so reporting it would
-      // flag every step that captures a variable — but the property is
+      // flag every step that captures a variable. But the property is
       // reachable from workflow code, which can replace it with anything.
       // `step.ts` marks the function that came through `useStep` when it
       // builds the proxy, so this is checked rather than assumed; anything

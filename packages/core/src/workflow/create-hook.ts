@@ -26,7 +26,7 @@ import { getWorkflowMetadata } from './get-workflow-metadata.js';
 // executes inside the VM, so `Run` here is the plugin-compiled variant
 // whose methods are durable step proxies. No environment guard is
 // needed: the registry is keyed per-global, so a stray host-side import
-// of this module registers the host's `Run` on the host's registry —
+// of this module registers the host's `Run` on the host's registry,
 // which is the correct class for that context.
 //
 // The value import of `Run` also guarantees `runtime/run.js` is included

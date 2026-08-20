@@ -133,7 +133,7 @@ const RESOLVED_MODULES = new Set(Object.keys(compilerOptions.paths ?? {}));
 /**
  * Returns true if a missing-module diagnostic refers to a module we don't
  * expect to resolve (relative imports, framework deps, app aliases, etc.).
- * Returns false for modules in our paths mapping — those failures are real.
+ * Returns false for modules in our paths mapping; those failures are real.
  */
 function isExpectedMissingModule(diagnostic: ts.Diagnostic): boolean {
   const msg = ts.flattenDiagnosticMessageText(diagnostic.messageText, '\n');

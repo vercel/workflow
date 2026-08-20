@@ -10,21 +10,21 @@ related:
 ---
 
 <Callout>
-  **For users:** If you just want to use Workflow SDK with an existing framework, check out the [Getting Started](/docs/getting-started) guide instead. This page is for framework authors who want to integrate Workflow SDK with their framework or runtime.
+  **For users:** If you want to use Workflow SDK with an existing framework, check out the [Getting Started](/docs/getting-started) guide instead. This page is for framework authors who want to integrate Workflow SDK with their framework or runtime.
 </Callout>
 
-This guide walks you through building a framework integration for Workflow SDK using Bun as a concrete example. The same principles apply to any JavaScript runtime (Node.js, Deno, Cloudflare Workers, etc.).
+Build a framework integration for Workflow SDK using Bun as a concrete example. The same principles apply to JavaScript runtimes such as Node.js, Deno, and Cloudflare Workers.
 
 <Callout type="info">
   **Prerequisites:** Before building a framework integration, we recommend reading [How the Directives Work](/docs/how-it-works/code-transform) to understand the transformation system that powers Workflow SDK.
 </Callout>
 
-## What You'll Build
+## What you'll build
 
 A framework integration has two main components:
 
-1. **Build-time**: Generate workflow handler files (`flow.js`, `step.js`, `webhook.js`)
-2. **Runtime**: Expose these handlers as HTTP endpoints in your application server
+1. **Build time**: Generate workflow handler files (`flow.js`, `step.js`, and `webhook.js`).
+2. **Runtime**: Expose these handlers as HTTP endpoints in your application server.
 
 ```mermaid
 flowchart TD
@@ -46,9 +46,9 @@ flowchart TD
     style J fill:#a78bfa,stroke:#8b5cf6,color:#000
 ```
 
-The purple boxes are what you implement—everything else is provided by Workflow SDK.
+The purple boxes are what you implement; everything else is provided by Workflow SDK.
 
-## Example: Bun Integration
+## Example: Bun integration
 
 Let's build a complete integration for Bun. Bun is unique because it serves as both a runtime (needs code transformations) and a framework (provides `Bun.serve()` for HTTP routing).
 
@@ -56,9 +56,9 @@ Let's build a complete integration for Bun. Bun is unique because it serves as b
   A working example can be [found here](https://github.com/vercel/workflow-examples/tree/main/custom-adapter). For a production-ready reference, see the [Next.js integration](https://github.com/vercel/workflow/tree/main/packages/next).
 </Callout>
 
-### Step 1: Generate Handler Files
+### Step 1: Generate handler files
 
-Use the `workflow` CLI to generate the handler bundles. The CLI scans your `workflows/` directory and creates `flow.js`, `step.js`, and `webhook.js`.
+Use the Workflow CLI to generate the handler bundles. The CLI scans your `workflows/` directory and creates `flow.js`, `step.js`, and `webhook.js`.
 
 ```json title="package.json"
 {
@@ -74,13 +74,13 @@ Use the `workflow` CLI to generate the handler bundles. The CLI scans your `work
 
 **What gets generated:**
 
-- `/.well-known/workflow/v1/flow.js` - Handles workflow execution (workflow mode transform)
-- `/.well-known/workflow/v1/step.js` - Handles step execution (step mode transform)
-- `/.well-known/workflow/v1/webhook.js` - Handles webhook delivery
+- `/.well-known/workflow/v1/flow.js`: Handles workflow execution (workflow mode transform).
+- `/.well-known/workflow/v1/step.js`: Handles step execution (step mode transform).
+- `/.well-known/workflow/v1/webhook.js`: Handles webhook delivery.
 
 Each file exports a `POST` function that accepts Web standard `Request` objects.
 
-### Step 2: Add Client Mode Transform (Optional)
+### Step 2: Add client mode transform (optional)
 
 Client mode transforms your application code to provide better DX. Add a Bun plugin to apply this transformation at runtime:
 
@@ -131,7 +131,7 @@ preload = ["./workflow-plugin.ts"]
 
 **Why optional?** Without client mode, you can still use workflows by manually constructing IDs or referencing the build manifest.
 
-### Step 3: Expose HTTP Endpoints
+### Step 3: Expose HTTP endpoints
 
 Wire up the generated handlers to HTTP endpoints using `Bun.serve()`:
 
@@ -175,15 +175,15 @@ console.log(`Server listening on http://localhost:${server.port}`);
 
 **That's it!** Your Bun integration is complete.
 
-## Understanding the Endpoints
+## Understanding the endpoints
 
-Your integration must expose three HTTP endpoints. The generated handlers manage all protocol details—you just route requests.
+Your integration must expose three HTTP endpoints. The generated handlers manage all protocol details; you only route requests.
 
-### Workflow Endpoint
+### Workflow endpoint
 
 **Route:** `POST /.well-known/workflow/v1/flow`
 
-Executes workflow orchestration logic. The workflow function is "rendered" multiple times during execution—each time it progresses until it encounters the next step.
+Executes workflow orchestration logic. The workflow function is "rendered" multiple times during execution; each time it progresses until it encounters the next step.
 
 **Called when:**
 
@@ -192,27 +192,27 @@ Executes workflow orchestration logic. The workflow function is "rendered" multi
 - Resuming after a webhook or hook triggers
 - Recovering from failures
 
-### Step Endpoint
+### Step endpoint
 
 **Route:** `POST /.well-known/workflow/v1/step`
 
 Executes individual atomic operations within workflows. Each step runs exactly once per execution (unless retried due to failure). Steps have full runtime access (Node.js APIs, file system, databases, etc.).
 
-### Webhook Endpoint
+### Webhook endpoint
 
 **Route:** `POST /.well-known/workflow/v1/webhook/:token`
 
 Delivers webhook data to running workflows via [`createWebhook()`](/docs/api-reference/workflow/create-webhook). The `:token` parameter identifies which workflow run should receive the data.
 
 <Callout type="info">
-  The webhook file structure varies by framework. Next.js generates `webhook/[token]/route.js` to leverage App Router's dynamic routing, while other frameworks generate a single `webhook.js` handler.
+  The webhook file structure varies by framework. Next.js generates `webhook/[token]/route.js` to use App Router's dynamic routing, while other frameworks generate a single `webhook.js` handler.
 </Callout>
 
-## Adapting to Other Frameworks
+## Adapting to other frameworks
 
 The Bun example demonstrates the core pattern. To adapt for your framework:
 
-### Build-Time
+### Build time
 
 **Option 1: Use the CLI** (simplest)
 
@@ -261,7 +261,7 @@ class MyFrameworkBuilder extends BaseBuilder {
 
 If your framework supports virtual server routes and dev mode watching, make sure to adapt accordingly. Please open a PR to the Workflow SDK if the base builder class is missing necessary functionality.
 
-### Monorepos and Workspace Imports
+### Monorepos and workspace imports
 
 If your framework integration lives in a subdirectory and your workflows import code from sibling workspace packages, pass `projectRoot` to `BaseBuilder`. Use the smallest directory that contains every workspace package imported by your workflows.
 
@@ -299,7 +299,7 @@ framework.hooks.hook("build:before", async () => {
 });
 ```
 
-### Runtime (Client Mode)
+### Runtime (client mode)
 
 Add a loader/plugin for your bundler:
 
@@ -342,7 +342,7 @@ module.exports = {
 };
 ```
 
-### HTTP Server
+### HTTP server
 
 Route the three endpoints to the generated handlers. The exact implementation depends on your framework's routing API.
 
@@ -369,7 +369,7 @@ const server = Bun.serve({
 });
 ```
 
-Production framework integrations should handle this routing in the plugin instead of leaving it to the user, and this depends on each framework's unique implementaiton.
+Production framework integrations should handle this routing in the plugin instead of leaving it to the user. The approach depends on each framework's implementation.
 Check the Workflow SDK source code for examples of production framework implementations.
 In the future, the Workflow SDK will emit more routes under the `.well-known/workflow` namespace.
 
@@ -414,22 +414,22 @@ const flowTriggers = [getWorkflowQueueTrigger()];
 const stepTriggers = [STEP_QUEUE_TRIGGER];
 ```
 
-If your integration constructs the flow trigger object itself instead of calling `getWorkflowQueueTrigger()`, it must add `maxConcurrency: 1` to that trigger when sequential replays are enabled at build time (`WORKFLOW_SEQUENTIAL_REPLAYS=1` — the exported `isSequentialReplaysEnabled()` helper implements this check). The runtime half of the feature (per-run queue topics) activates from the environment variable alone — without the trigger half, those per-run topics are not serialized and the setting only adds queue-topic cardinality.
+If your integration constructs the flow trigger object itself instead of calling `getWorkflowQueueTrigger()`, it must add `maxConcurrency: 1` to that trigger when sequential replays are enabled at build time (`WORKFLOW_SEQUENTIAL_REPLAYS=1`; the exported `isSequentialReplaysEnabled()` helper implements this check). The runtime half of the feature (per-run queue topics) activates from the environment variable alone. Without the trigger half, those per-run topics are not serialized and the setting only adds queue-topic cardinality.
 
 
 ### Custom implementations
 
 For self-hosted or non-Vercel deployments, you are responsible for securing the handler endpoints:
 
-- **Framework middleware** — Add authentication (API keys, JWT, OIDC) in front of the `/.well-known/workflow/v1/*` routes
-- **Network-level security** — Deploy handlers behind a VPC, private network, or firewall rules so only your queue infrastructure can reach them
-- **Rate limiting** — Add request validation and rate limiting to prevent abuse
+- **Framework middleware**: Add authentication (API keys, JWT, and OIDC) in front of the `/.well-known/workflow/v1/*` routes.
+- **Network-level security**: Deploy handlers behind a VPC, private network, or firewall rules so only your queue infrastructure can reach them.
+- **Rate limiting**: Add request validation and rate limiting to prevent abuse.
 
 Learn more about [building custom Worlds](/worlds/building-a-world).
 
-## Testing Your Integration
+## Testing your integration
 
-### 1. Test Build Output
+### 1. Test build output
 
 Create a test workflow:
 
@@ -479,11 +479,11 @@ async function sendOnboardingEmail(user: { id: string; email: string }, callback
 
 Run your build and verify:
 
-- `.well-known/workflow/v1/flow.js` exists
-- `.well-known/workflow/v1/step.js` exists
-- `.well-known/workflow/v1/webhook.js` exists
+- `.well-known/workflow/v1/flow.js` exists.
+- `.well-known/workflow/v1/step.js` exists.
+- `.well-known/workflow/v1/webhook.js` exists.
 
-### 2. Test HTTP Endpoints
+### 2. Test HTTP endpoints
 
 Start your server and verify routes respond:
 
@@ -495,7 +495,7 @@ curl -X POST http://localhost:3000/.well-known/workflow/v1/webhook/test
 
 (Should respond but not trigger meaningful code without authentication/proper workflow run)
 
-### 3. Run a Workflow End-to-End
+### 3. Run a workflow end-to-end
 
 ```typescript
 import { start } from "workflow/api";

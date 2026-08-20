@@ -4,14 +4,14 @@
  * All serialized payloads are prefixed with a 4-byte format identifier that
  * allows the deserializer to determine how to decode the payload. This enables:
  *
- * 1. Self-describing payloads — the World layer is agnostic to serialization format
- * 2. Gradual migration — old runs keep working, new runs can use new formats
- * 3. Composability — encryption can wrap any format ("encr" wrapping "devl")
- * 4. Debugging — raw data inspection immediately reveals the format
+ * 1. Self-describing payloads: the World layer is agnostic to serialization format
+ * 2. Gradual migration: old runs keep working, new runs can use new formats
+ * 3. Composability: encryption can wrap any format ("encr" wrapping "devl")
+ * 4. Debugging: raw data inspection immediately reveals the format
  *
  * Format: [4 bytes: format identifier][payload]
  *
- * The format prefix is open-ended — any 4-character [a-z0-9] string is valid.
+ * The format prefix is open-ended: any 4-character [a-z0-9] string is valid.
  * This allows new codecs to be added without modifying this module.
  */
 
@@ -82,7 +82,7 @@ export function isEncrypted(data: Uint8Array | unknown): boolean {
  *
  * Unlike the legacy implementation which only accepted known formats
  * (`devl`, `encr`), this function accepts any valid format prefix
- * (`[a-z0-9]{4}`). This is intentional for forward compatibility —
+ * (`[a-z0-9]{4}`). This is intentional for forward compatibility, so
  * new codecs (e.g. `cbor`) can be added without modifying this module.
  * Callers are responsible for checking whether they support the returned
  * format and throwing an appropriate error if not (e.g. "Unsupported

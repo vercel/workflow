@@ -10,7 +10,7 @@ related:
 
 `WorkflowRunNotFoundError` is thrown when performing operations on a workflow run that does not exist. This includes calling methods like `run.status`, `run.cancel()`, or awaiting `run.returnValue` on a run whose ID does not match any known workflow run.
 
-Note that `getRun(id)` itself is synchronous and will not throw — the error is raised when subsequent operations on the run object discover the run is missing.
+Note that `getRun(id)` itself is synchronous and will not throw: the error is raised when subsequent operations on the run object discover the run is missing.
 
 ```typescript lineNumbers
 import { WorkflowRunNotFoundError } from "workflow/errors"
@@ -25,7 +25,7 @@ try {
 }
 ```
 
-## API Signature
+## API signature
 
 ### Properties
 
@@ -40,11 +40,11 @@ interface WorkflowRunNotFoundError {
 export default WorkflowRunNotFoundError;`}
 />
 
-### Static Methods
+### Static methods
 
 #### `WorkflowRunNotFoundError.is(value)`
 
-Type-safe check for `WorkflowRunNotFoundError` instances. Preferred over `instanceof` because it works across module boundaries and VM contexts.
+Type-safe check for `WorkflowRunNotFoundError` instances. Preferred over `instanceof` because it works across module boundaries and virtual machine contexts.
 
 ```typescript
 import { WorkflowRunNotFoundError } from "workflow/errors"

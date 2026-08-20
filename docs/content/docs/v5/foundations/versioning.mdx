@@ -121,9 +121,9 @@ export async function POST(request: Request) {
 
 ## Self upgrading workflows
 
-Some workflows are expected to run for a very long time. Scheduled loops, recurring jobs, agents, and chat sessions often should not stay on one deployment forever.
+Some workflows are expected to run for long periods. Scheduled loops, recurring jobs, agents, and chat sessions often should not stay on one deployment forever.
 
-Model those as a sequence of runs. Each run does a bounded piece of work, then starts the next run on the latest deployment and exits. This is similar to `continueAsNew` in other durable execution systems, but in Workflow SDK it is just [explicit recursion through `start()`](/cookbook/common-patterns/workflow-composition).
+Model those as a sequence of runs. Each run does a bounded piece of work, then starts the next run on the latest deployment and exits. This is similar to `continueAsNew` in other durable execution systems, but Workflow SDK uses [explicit recursion through `start()`](/cookbook/common-patterns/workflow-composition).
 
 ```typescript title="workflows/daily-digest.ts" lineNumbers
 import { sleep } from "workflow";

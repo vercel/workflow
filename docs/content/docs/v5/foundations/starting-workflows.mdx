@@ -11,7 +11,7 @@ related:
 
 Once you've defined your workflow functions, you need to trigger them to begin execution. This is done using the `start()` function from `workflow/api`, which enqueues a new workflow run and returns a `Run` object that you can use to track its progress.
 
-## The `start()` Function
+## The `start()` function
 
 The [`start()`](/docs/api-reference/workflow-api/start) function is used to programmatically trigger workflow executions from runtime contexts like API routes, Server Actions, or any server-side code. In v5, you can also call `start()` from inside a workflow function when you want to spawn a child run or continue work in a new run.
 
@@ -32,12 +32,12 @@ export async function POST(request: Request) {
 }
 ```
 
-**Key Points:**
+**Key points:**
 
-- `start()` returns immediately after enqueuing the workflow - it doesn't wait for completion
-- The first argument is your workflow function
-- The second argument is an array of arguments to pass to the workflow (optional if the workflow takes no arguments)
-- All arguments must be [serializable](/docs/foundations/serialization)
+- `start()` returns immediately after enqueuing the workflow. It doesn't wait for completion.
+- The first argument is your workflow function.
+- The second argument is an array of arguments to pass to the workflow. It is optional if the workflow takes no arguments.
+- All arguments must be [serializable](/docs/foundations/serialization).
 
 **Learn more**: [`start()` API Reference](/docs/api-reference/workflow-api/start)
 
@@ -45,7 +45,7 @@ export async function POST(request: Request) {
 For parent-child workflow patterns, see [Workflow Composition](/cookbook/common-patterns/workflow-composition). For long-lived workflows that intentionally hand off to newer deployments with `deploymentId: "latest"`, see [Versioning](/docs/foundations/versioning).
 </Callout>
 
-## The `Run` Object
+## The `Run` object
 
 When you call `start()`, it returns a [`Run`](/docs/api-reference/workflow-api/start#returns) object that provides access to the workflow's status and results.
 
@@ -65,12 +65,12 @@ const status = await run.status; // "running" | "completed" | "failed"
 const result = await run.returnValue;
 ```
 
-**Key Properties:**
+**Key properties:**
 
-- `runId` - Unique identifier for this workflow run
-- `status` - Current status of the workflow (async)
-- `returnValue` - The value returned by the workflow function (async, blocks until completion)
-- `readable` - ReadableStream for streaming updates from the workflow
+- `runId`: Unique identifier for this workflow run.
+- `status`: Current status of the workflow (async).
+- `returnValue`: The value returned by the workflow function (async, blocks until completion).
+- `readable`: `ReadableStream` for streaming updates from the workflow.
 
 <Callout type="info">
 Most `Run` properties are async getters that return promises. You need to `await` them to get their values. For a complete list of properties and methods, see the API reference below.
@@ -78,9 +78,9 @@ Most `Run` properties are async getters that return promises. You need to `await
 
 **Learn more**: [`Run` API Reference](/docs/api-reference/workflow-api/start#returns)
 
-## Common Patterns
+## Common patterns
 
-### Starting Workflows from Workflow Functions
+### Starting workflows from workflow functions
 
 You can also call `start()` directly inside workflow functions to spawn child workflows. For choosing between this and awaiting a workflow function directly, see [Workflow Composition](/cookbook/common-patterns/workflow-composition).
 
@@ -93,23 +93,23 @@ export async function parentWorkflow(inputValue: number) {
 
   const childRun = await start(childWorkflow, [inputValue]); // [!code highlight]
 
-  // childRun is a full Run object — use it like normal
+  // childRun is a full Run object; use it like normal
   const childResult = await childRun.returnValue;
   return { childRunId: childRun.runId, childResult };
 }
 ```
 
-When `start()` is called inside a workflow function, it automatically executes through an internal step to maintain deterministic replay. The returned `Run` object works just like it does outside workflows — properties like `.runId`, `.status`, `.returnValue`, and methods like `.cancel()` are all available. Each property access or method call executes as a separate step under the hood.
+When `start()` is called inside a workflow function, it automatically executes through an internal step to maintain deterministic replay. The returned `Run` object works the same as it does outside workflows: properties like `.runId`, `.status`, `.returnValue`, and methods like `.cancel()` are all available. Each property access or method call executes as a separate step under the hood.
 
 <Callout type="info">
 Inside workflow functions, each `Run` property access (e.g., `run.status`, `run.returnValue`) triggers a workflow step. This means each access is recorded in the event log and replayed deterministically.
 </Callout>
 
 <Callout type="warn">
-Awaiting `returnValue` polls the child run every second, and the polling step holds its worker slot open for as long as the child takes to finish. Worker-based Worlds must be sized to cover the peak number of these polls in flight. If the child workflow is long-running, spawn it without awaiting `returnValue` and have it resume a [hook](/docs/foundations/hooks) when it completes — see the [`startAndWait()` pattern](/cookbook/advanced/child-workflows).
+Awaiting `returnValue` polls the child run every second, and the polling step holds its worker slot open for as long as the child takes to finish. Worker-based Worlds must be sized to cover the peak number of these polls in flight. If the child workflow is long-running, spawn it without awaiting `returnValue` and have it resume a [hook](/docs/foundations/hooks) when it completes. See the [`startAndWait()` pattern](/cookbook/advanced/child-workflows).
 </Callout>
 
-### Fire and Forget
+### Fire and forget
 
 The most common pattern is to start a workflow and immediately return, letting it execute in the background:
 
@@ -129,7 +129,7 @@ export async function POST(request: Request) {
 }
 ```
 
-### Wait for Completion
+### Wait for completion
 
 If you need to wait for the workflow to complete before responding:
 
@@ -148,10 +148,10 @@ export async function POST(request: Request) {
 ```
 
 <Callout type="warn">
-Be cautious when waiting for `returnValue` - if your workflow takes a long time, your API route may timeout.
+Be cautious when waiting for `returnValue`. If your workflow takes a long time, your API route may time out.
 </Callout>
 
-### Stream Updates to Client
+### Stream updates to client
 
 Stream real-time updates from your workflow as it executes, without waiting for completion:
 
@@ -216,7 +216,7 @@ Streams are particularly useful for AI workflows where you want to show progress
 
 **Learn more**: [Streaming in Workflows](/docs/foundations/serialization#streaming)
 
-### Check Status Later
+### Check status later
 
 You can retrieve a workflow run later using its `runId` with [`getRun()`](/docs/api-reference/workflow-api/get-run):
 
@@ -242,9 +242,9 @@ export async function GET(request: Request) {
 }
 ```
 
-### Recursive and Repeating Workflows
+### Recursive and repeating workflows
 
-A workflow can start a new instance of itself. This is useful when a single long-running workflow would accumulate too many events — large event logs become slower to replay, more expensive to store, and harder to inspect in the UI. By breaking work into smaller runs that chain together, each run stays lean.
+A workflow can start a new instance of itself. This is useful when a single long-running workflow would accumulate too many events: large event logs become slower to replay, more expensive to store, and harder to inspect in the UI. By breaking work into smaller runs that chain together, each run stays lean.
 
 ```typescript lineNumbers
 import { start } from "workflow/api";
@@ -264,7 +264,7 @@ export async function processQueue(cursor?: string) {
 }
 ```
 
-This pattern also enables **repeating cron-like workflows**. A workflow can complete its work, sleep, and then schedule a new instance of itself — creating an indefinite chain without any single run growing too large:
+This pattern also enables **repeating cron-like workflows**. A workflow can complete its work, sleep, and then schedule a new instance of itself, creating an indefinite chain without any single run growing too large:
 
 ```typescript lineNumbers
 import { sleep } from "workflow";
@@ -286,7 +286,7 @@ export async function syncDashboard() {
 
 By default a chained run starts on the same deployment as its parent. For workflows that chain over long periods, pass [`deploymentId: "latest"`](/docs/api-reference/workflow-api/start#using-deploymentid-latest) so the next run picks up new code. [Versioning](/docs/foundations/versioning#self-upgrading-workflows) covers this pattern in full, including how the serialized state acts as the migration boundary between versions.
 
-## Next Steps
+## Next steps
 
 Now that you understand how to start workflows and track their execution:
 

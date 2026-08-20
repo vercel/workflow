@@ -9,7 +9,7 @@
  * node:util), which is also what made it bundleable into the VM before the
  * serde moved host-side.
  *
- * Produces and consumes the same wire format as the Node.js workflow.ts —
+ * Produces and consumes the same wire format as the Node.js workflow.ts:
  * format-prefixed devalue data ("devl" + devalue.stringify output).
  */
 

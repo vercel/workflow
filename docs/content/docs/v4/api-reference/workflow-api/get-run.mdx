@@ -9,7 +9,7 @@ related:
   - /docs/foundations/idempotency
 ---
 
-Retrieves the workflow run metadata and status information for a given run ID. This function provides immediate access to workflow run details without waiting for completion, making it ideal for status checking and monitoring.
+Retrieves workflow run metadata and status information for a given run ID. This function provides immediate access to workflow run details without waiting for completion.
 
 Use this function when you need to check workflow status, get timing information, or access workflow metadata without blocking on workflow completion.
 
@@ -23,7 +23,7 @@ import { getRun } from "workflow/api";
 const run = getRun("my-run-id");
 ```
 
-## API Signature
+## API signature
 
 ### Parameters
 
@@ -45,11 +45,11 @@ export default Run;`}
 showSections={["returns"]}
 />
 
-`run.returnValue` polls until the run completes, handling [`WorkflowRunNotCompletedError`](/docs/api-reference/workflow-errors/workflow-run-not-completed-error) internally, and throws [`WorkflowRunCancelledError`](/docs/api-reference/workflow-errors/workflow-run-cancelled-error) if the run was cancelled.
+`run.returnValue` polls until the run completes, handling [`WorkflowRunNotCompletedError`](/docs/api-reference/workflow-errors/workflow-run-not-completed-error) internally, and throws [`WorkflowRunCancelledError`](/docs/api-reference/workflow-errors/workflow-run-cancelled-error) if the run was canceled.
 
 #### WorkflowReadableStream
 
-`run.getReadable()` returns a `WorkflowReadableStream` — a standard `ReadableStream` extended with a `getTailIndex()` helper:
+`run.getReadable()` returns a `WorkflowReadableStream`, a standard `ReadableStream` extended with a `getTailIndex()` helper:
 
 <TSDoc
 definition={`
@@ -85,7 +85,7 @@ export default StopSleepResult;`}
 
 ## Examples
 
-### Check if a Run Exists
+### Check if a run exists
 
 Use the `exists` getter to check whether a workflow run exists without throwing a [`WorkflowRunNotFoundError`](/docs/api-reference/workflow-errors/workflow-run-not-found-error) when the run is not found:
 
@@ -114,7 +114,7 @@ export async function GET(req: Request) {
 }
 ```
 
-### Basic Status Check
+### Basic status check
 
 Check the current status of a workflow run:
 
@@ -143,7 +143,7 @@ export async function GET(req: Request) {
 }
 ```
 
-### Wake Up a Sleeping Workflow
+### Wake up a sleeping workflow
 
 Interrupt pending `sleep()` calls to resume a workflow early. This is useful for testing workflows or building custom UIs that let users skip wait periods:
 
@@ -172,6 +172,6 @@ const { stoppedCount } = await run.wakeUp({
 });
 ```
 
-## Related Functions
+## Related functions
 
-- [`start()`](/docs/api-reference/workflow-api/start) - Start a new workflow and get its run ID.
+- [`start()`](/docs/api-reference/workflow-api/start): Start a new workflow and get its run ID.

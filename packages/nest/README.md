@@ -18,9 +18,9 @@ npm install -D @swc/cli @swc/core
 pnpm add -D @swc/cli @swc/core
 ```
 
-## Quick Start
+## Quick start
 
-### 1. Initialize SWC Configuration
+### 1. Initialize SWC configuration
 
 After installing the package, run the init command to generate the SWC configuration:
 
@@ -66,7 +66,7 @@ import { WorkflowModule } from '@workflow/nest';
 export class AppModule {}
 ```
 
-### 4. Create Workflow Files
+### 4. Create workflow files
 
 Create workflow files in your `src/` directory with `"use workflow"` and `"use step"` directives:
 
@@ -86,7 +86,7 @@ export async function myWorkflow(input: string) {
 }
 ```
 
-### 5. Add Pre-build Scripts
+### 5. Add pre-build scripts
 
 Add scripts to regenerate configuration before builds:
 
@@ -99,7 +99,7 @@ Add scripts to regenerate configuration before builds:
 }
 ```
 
-## Configuration Options
+## Configuration options
 
 {/*@skip-typecheck: Shows WorkflowModule.forRoot options*/}
 
@@ -139,7 +139,7 @@ deployed workflow runs stay `pending` because nothing consumes the queue.
 Create a `_vercel/entry.ts` that default-exports a Node request handler backed by
 your NestJS app (the `_vercel/` prefix avoids colliding with Vercel's automatic
 `api/` function detection). Import `AppModule` from the **compiled** `dist/`
-output — `nest build` runs first and its SWC pass emits the decorator metadata
+output. `nest build` runs first, and its SWC pass emits the decorator metadata
 NestJS DI relies on; importing raw `src/` TypeScript would route the app back
 through esbuild, which does not emit `emitDecoratorMetadata`. Also import
 `reflect-metadata` at the top so DI metadata is registered:
@@ -193,29 +193,29 @@ the `VERCEL` env var is set (pass `--vercel` to force it locally):
 }
 ```
 
-`nest build` (via SWC) compiles your app — including the decorator metadata and
-the workflow client transform — and `@workflow/nest build` bundles the app plus
+`nest build` (via SWC) compiles your app, including the decorator metadata and
+the workflow client transform. Then, `@workflow/nest build` bundles the app and
 the workflow functions into `.vercel/output`.
 
 > **Note:** Native addons (`*.node`) are not bundled or traced into the deployed
 > function, so NestJS apps that depend on native modules are not yet supported by
 > `--vercel`.
 
-## How It Works
+## How it works
 
 The `@workflow/nest` package provides:
 
-1. **WorkflowModule** - A NestJS module that handles workflow bundle building and HTTP routing
-2. **WorkflowController** - Handles workflow and step execution requests at `.well-known/workflow/v1/`
-3. **NestLocalBuilder** - Builds workflow bundles (steps.mjs, workflows.mjs) from your source files. Exposed at the `@workflow/nest/builder` subpath (not the package root — the root entry stays free of build-time dependencies so importing `WorkflowModule` never drags the compiler into your runtime bundle).
-4. **NestVercelBuilder** - Emits a Vercel Build Output API directory for deploying on Vercel. Exposed at the `@workflow/nest/vercel-builder` subpath.
-5. **CLI** - Generates `.swcrc` configuration with the SWC plugin properly resolved, and builds workflow bundles / the Vercel Build Output
+1. **WorkflowModule**: A NestJS module that handles workflow bundle building and HTTP routing
+2. **WorkflowController**: Handles workflow and step execution requests at `.well-known/workflow/v1/`
+3. **NestLocalBuilder**: Builds workflow bundles (`steps.mjs` and `workflows.mjs`) from your source files. Exposed at the `@workflow/nest/builder` subpath (not the package root, which stays free of build-time dependencies so importing `WorkflowModule` never adds the compiler to your runtime bundle).
+4. **NestVercelBuilder**: Emits a Vercel Build Output API directory for deploying on Vercel. Exposed at the `@workflow/nest/vercel-builder` subpath.
+5. **CLI**: Generates `.swcrc` configuration with the SWC plugin resolved and builds workflow bundles or the Vercel Build Output
 
 ## Why the CLI?
 
 NestJS uses its own SWC builder that reads configuration from `.swcrc`. The Workflow SWC plugin needs to be referenced by path in this file. The CLI resolves the plugin path from `@workflow/nest`'s dependencies, eliminating the need for manual configuration or pnpm hoisting.
 
-### Technical Details
+### Technical details
 
 When you run `npx @workflow/nest init`, it:
 
@@ -229,11 +229,11 @@ This approach ensures:
 - No pnpm hoisting configuration required in `.npmrc`
 - The plugin is always resolved from the correct location
 
-### Why Workflows Must Be in `src/`
+### Why workflows must be in `src/`
 
 NestJS's SWC builder only compiles files within the `sourceRoot` directory (typically `src/`). For the workflow client-mode transform to work, workflow files must be in `src/` so they get compiled with the SWC plugin that attaches `workflowId` properties needed by `start()`.
 
-## API Reference
+## API reference
 
 ### WorkflowModule
 
@@ -255,7 +255,7 @@ WorkflowModule.forRoot({
 })
 ```
 
-### CLI Commands
+### CLI commands
 
 ```bash
 # Generate .swcrc configuration

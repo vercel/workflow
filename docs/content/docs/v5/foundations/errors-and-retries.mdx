@@ -1,6 +1,6 @@
 ---
 title: Errors & Retrying
-description: Customize retry behavior with FatalError and RetryableError for robust error handling.
+description: Customize retry behavior with FatalError and RetryableError.
 type: conceptual
 summary: Control how steps handle failures and customize retry behavior.
 prerequisites:
@@ -12,7 +12,7 @@ related:
 
 By default, errors thrown inside steps are retried. Additionally, Workflow SDK provides two new types of errors you can use to customize retries.
 
-## Default Retrying
+## Default retrying
 
 By default, steps retry up to 3 times on arbitrary errors. You can customize the number of retries by adding a `maxRetries` property to the step function.
 
@@ -42,9 +42,9 @@ Steps get enqueued immediately after a failure. Read on to see how this can be c
   more information.
 </Callout>
 
-## Intentional Errors
+## Intentional errors
 
-When your step needs to intentionally throw an error and skip retrying, simply throw a [`FatalError`](/docs/api-reference/workflow/fatal-error).
+When your step needs to intentionally throw an error and skip retrying, throw a [`FatalError`](/docs/api-reference/workflow/fatal-error).
 
 ```typescript lineNumbers
 import { FatalError } from "workflow";
@@ -67,7 +67,7 @@ async function callApi(endpoint: string) {
 }
 ```
 
-## Customize Retry Behavior
+## Customize retry behavior
 
 When you need to customize the delay on a retry, use [`RetryableError`](/docs/api-reference/workflow/retryable-error) and set the `retryAfter` property.
 
@@ -97,7 +97,7 @@ async function callApi(endpoint: string) {
 }
 ```
 
-## Advanced Example
+## Advanced example
 
 This final example combines everything we've learned, along with [`getStepMetadata`](/docs/api-reference/workflow/get-step-metadata).
 
@@ -139,7 +139,7 @@ callApi.maxRetries = 5; // Retry up to 5 times on failure (6 total attempts)
   step can run up to 4 times total (1 initial attempt + 3 retries).
 </Callout>
 
-## Serialization Failures
+## Serialization failures
 
 A step whose arguments or return value cannot be [serialized](/docs/foundations/serialization) fails like a step whose body threw a `FatalError`: the failure is deterministic, so it skips the retry loop, and a `try/catch` around the step call observes the `SerializationError`:
 
@@ -162,9 +162,9 @@ export async function myWorkflow(input: unknown) {
 }
 ```
 
-Uncaught, the run fails immediately with the `USER_ERROR` code — without retrying. See [serialization-failed](/docs/errors/serialization-failed) for common causes and fixes.
+Uncaught, the run fails immediately with the `USER_ERROR` code, without retrying. See [serialization-failed](/docs/errors/serialization-failed) for common causes and fixes.
 
-## Error Codes
+## Error codes
 
 When a workflow run fails, the error includes an `errorCode` that classifies the failure, alongside the original thrown value (preserved as `cause`):
 
@@ -194,10 +194,10 @@ try {
 | `RUNTIME_ERROR` | An internal runtime error such as a corrupted event log or missing data. If you see this, please [file an issue](https://github.com/vercel/workflow/issues) |
 
 <Callout type="info">
-  The error code is also available on the run entity via the CLI (`npx workflow inspect runs <runId>`) in the `error.code` field, and as an OTEL span attribute (`workflow.error.code`) for observability.
+  The error code is also available on the run entity through the Workflow CLI (`npx workflow inspect runs <runId>`) in the `error.code` field, and as an OpenTelemetry span attribute (`workflow.error.code`) for observability.
 </Callout>
 
-## Rolling Back Failed Steps
+## Rolling back failed steps
 
 When a workflow fails partway through, it can leave the system in an inconsistent state.
 A common pattern to address this is "rollbacks": for each successful step, record a corresponding rollback action that can undo it.

@@ -89,6 +89,6 @@ async function validatePayload(input: unknown) {
 
 ## Links
 
-- `docs/content/docs/foundations/errors-and-retries.mdx` — the canonical user-facing docs page.
-- `packages/core/src/private.ts:12-17` — `StepFunction.maxRetries` type definition.
-- `packages/errors/src/index.ts` — `RetryableError` and `FatalError` implementations.
+- `docs/content/docs/foundations/errors-and-retries.mdx`: The canonical user-facing docs page.
+- `packages/core/src/private.ts:12-17`: The `StepFunction.maxRetries` type definition.
+- `packages/errors/src/index.ts`: The `RetryableError` and `FatalError` implementations.

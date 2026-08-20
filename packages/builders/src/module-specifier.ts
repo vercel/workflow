@@ -411,7 +411,7 @@ export function resolveModuleSpecifier(
  * `@workflow/ai/agent@5.0.0-beta.5` as the same logical module).
  *
  * Colocated with `resolveModuleSpecifier` so the construction and parsing
- * stay in sync — see the `${pkg.name}${subpath}@${pkg.version}` and
+ * stay in sync; see the `${pkg.name}${subpath}@${pkg.version}` and
  * `${pkg.name}@${pkg.version}` paths above.
  */
 export function stripPackageVersion(specifier: string): string {

@@ -41,7 +41,7 @@ export function encodeFrame(
 /**
  * Async-iterable parser for a frame stream. Yields one `DecodedFrame`
  * per frame in source order, terminating at the sentinel frame whose
- * meta contains `_end: 1`. The sentinel frame itself IS yielded — the
+ * meta contains `_end: 1`. The sentinel frame itself IS yielded: the
  * caller inspects `meta._end` to detect end-of-stream and reads
  * `meta.next` for the pagination cursor.
  *
@@ -121,7 +121,7 @@ export async function* decodeFrames(
       if (bodyLen > 0 && !(await refill(bodyLen))) {
         throw new Error('decodeFrames: truncated body bytes');
       }
-      // Slice (not subarray) so the yielded body owns its bytes — later
+      // Slice (not subarray) so the yielded body owns its bytes, so later
       // reads into the buffer won't overwrite it; bodyLen 0 yields empty.
       yield { meta, body: buffer.slice(0, bodyLen) };
       take(bodyLen);
@@ -137,7 +137,7 @@ export async function* decodeFrames(
     // can hit the network (an H2 stream reset, or an H1 socket teardown),
     // and awaiting it here would block every early-exit caller (getEventV4,
     // every replay's list read) on that round-trip. Awaiting it previously
-    // hung indefinitely on the Next.js Vercel Function lanes specifically —
+    // hung indefinitely on the Next.js Vercel Function lanes specifically,
     // same class of bug as the abort-stream reader in #2807.
     closeQuietly(() => chunks.return?.());
   }
@@ -166,7 +166,7 @@ async function* readerToIterator(
     }
   } finally {
     // Cancel on early exit so the socket is released, not just unlocked.
-    // Fire-and-forget — see closeQuietly's call site above.
+    // Fire-and-forget; see closeQuietly's call site above.
     closeQuietly(() => reader.cancel());
   }
 }

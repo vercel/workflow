@@ -34,7 +34,7 @@ async function apiWorkflow() {
 }
 ```
 
-## API Signature
+## API signature
 
 ### Parameters
 
@@ -60,9 +60,9 @@ showSections={['returns']}
 
 ## Examples
 
-### Basic Usage
+### Basic usage
 
-Here's a simple example of how you can use `fetch` inside your workflow.
+Here's an example of how you can use `fetch` inside your workflow.
 
 ```typescript lineNumbers
 import { fetch } from "workflow"
@@ -87,13 +87,13 @@ async function apiWorkflow() {
 }
 ```
 
-We call `fetch()` with a URL and optional request options, just like the standard fetch API. The workflow runtime automatically handles the response serialization.
+We call `fetch()` with a URL and optional request options, like the standard fetch API. The workflow runtime automatically handles the response serialization.
 
-This API is provided as a convenience to easily use `fetch` in workflow, but often, you might want to extend and implement your own fetch for more powerful error handing and retry logic.
+This API is provided as a convenience to use `fetch` in workflow, but often, you might want to extend and implement your own fetch for more powerful error handing and retry logic.
 
-### Customizing Fetch Behavior
+### Customizing fetch behavior
 
-Here's an example of a custom fetch wrapper that provides more sophisticated error handling with custom retry logic. Call `globalThis.fetch` inside your own `"use step"` function — calling the workflow `fetch` imported from `workflow` would nest a step inside a step:
+The following custom fetch wrapper provides more advanced error handling with custom retry logic. Call `globalThis.fetch` inside your own `"use step"` function because calling the workflow `fetch` imported from `workflow` would nest a step inside a step:
 
 ```typescript lineNumbers
 import { FatalError, RetryableError } from "workflow"

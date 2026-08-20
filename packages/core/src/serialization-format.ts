@@ -46,7 +46,7 @@ export const SerializationFormat = {
   /** Encrypted payload (inner payload has its own format prefix after decryption) */
   ENCRYPTED: 'encr',
   /**
-   * Sealed payload — asymmetrically encrypted to a run's X25519 public key
+   * Sealed payload: asymmetrically encrypted to a run's X25519 public key
    * (inner payload has its own format prefix after opening).
    *
    * Written by cross-run writers that hold only the recipient run's public
@@ -144,7 +144,7 @@ export const ENCRYPTED_PLACEHOLDER = '\u{1F512} Encrypted';
 // ---------------------------------------------------------------------------
 
 /**
- * Check if a plain object is `{ expiredAt: "<ISO date>" }` — a single-key
+ * Check if a plain object is `{ expiredAt: "<ISO date>" }`: a single-key
  * object with a string `expiredAt` value.
  */
 function isExpiredObject(data: unknown): data is { expiredAt: string } {
@@ -178,16 +178,16 @@ export function isExpiredStub(data: unknown): boolean {
 }
 
 /**
- * Check if a binary value is ciphertext — either a symmetrically encrypted
+ * Check if a binary value is ciphertext: either a symmetrically encrypted
  * payload ('encr') or a sealed cross-run payload ('encp').
  *
  * This is the predicate display layers want: both schemes are opaque bytes
  * that must not be fed to the devalue parser, and both render as the same
  * "Encrypted" affordance in the CLI and web UI. Use {@link isSealedData} when
- * the *scheme* matters — notably when choosing a decryption path, since a
+ * the *scheme* matters, notably when choosing a decryption path, since a
  * sealed payload needs the run's private scalar rather than its symmetric key.
  *
- * Browser-safe — does not depend on the full serialization module.
+ * Browser-safe: does not depend on the full serialization module.
  */
 export function isEncryptedData(data: unknown): boolean {
   if (!(data instanceof Uint8Array) || data.length < FORMAT_PREFIX_LENGTH) {
@@ -204,7 +204,7 @@ export function isEncryptedData(data: unknown): boolean {
  * Check if a binary value has the 'encp' format prefix, indicating a sealed
  * (asymmetrically encrypted) cross-run payload.
  *
- * Browser-safe — does not depend on the full serialization module.
+ * Browser-safe: does not depend on the full serialization module.
  */
 export function isSealedData(data: unknown): boolean {
   if (!(data instanceof Uint8Array) || data.length < FORMAT_PREFIX_LENGTH) {
@@ -216,7 +216,7 @@ export function isSealedData(data: unknown): boolean {
 
 /**
  * Check if a binary value has a compression format prefix ('gzip' or 'zstd').
- * Browser-safe — does not depend on the full serialization module.
+ * Browser-safe: does not depend on the full serialization module.
  */
 export function isCompressedData(data: unknown): boolean {
   if (!(data instanceof Uint8Array) || data.length < FORMAT_PREFIX_LENGTH) {
@@ -234,7 +234,7 @@ interface NodeZlibDecode {
 }
 
 /**
- * Resolve `node:zlib` via `process.getBuiltinModule` — no static Node
+ * Resolve `node:zlib` via `process.getBuiltinModule`: no static Node
  * dependency, invisible to browser bundlers. Returns undefined off Node.
  */
 function getNodeZlib(): NodeZlibDecode | undefined {
@@ -253,7 +253,7 @@ function getNodeZlib(): NodeZlibDecode | undefined {
  * Synchronously decompress a `gzip`/`zstd` payload when running on Node.js.
  *
  * Returns `undefined` when sync decompression isn't available (e.g. in the
- * browser, or zstd on Node < 22.15) — callers fall back to leaving the data
+ * browser, or zstd on Node < 22.15); callers fall back to leaving the data
  * un-hydrated (the async `hydrateDataWithKey` path handles decompression in
  * browsers via `DecompressionStream` / a registered zstd decoder).
  */
@@ -270,7 +270,7 @@ function decompressSyncIfAvailable(
       return new Uint8Array(zlib.zstdDecompressSync(payload));
     }
   } catch {
-    // Fall through — treat as unavailable
+    // Fall through: treat as unavailable
   }
   return undefined;
 }
@@ -363,13 +363,13 @@ export type Revivers = Record<string, (value: any) => any>;
  *
  * Encrypted data is intentionally left as a `Uint8Array` so that consumers
  * (CLI, web UI) can detect it with `isEncryptedData()` and decide how to
- * handle it — the CLI replaces it with a styled placeholder, the web UI
+ * handle it: the CLI replaces it with a styled placeholder, the web UI
  * renders an "Encrypted" card with a Decrypt button that triggers
  * client-side decryption on demand.
  */
 export function hydrateData(value: unknown, revivers: Revivers): unknown {
   if (value instanceof Uint8Array) {
-    // Encrypted data passes through untouched — o11y layers detect it with
+    // Encrypted data passes through untouched: o11y layers detect it with
     // isEncryptedData() and handle display (web: named constructor object,
     // CLI: EncryptedDataRef with util.inspect.custom).
     if (isEncryptedData(value)) {
@@ -385,7 +385,7 @@ export function hydrateData(value: unknown, revivers: Revivers): unknown {
       format === SerializationFormat.GZIP ||
       format === SerializationFormat.ZSTD
     ) {
-      // Compressed payload — decompress synchronously when running on
+      // Compressed payload: decompress synchronously when running on
       // Node.js (CLI, server o11y). In browsers there is no sync codec;
       // pass the data through untouched (like encrypted data) so async
       // consumers can route it through `hydrateDataWithKey`, which
@@ -420,8 +420,8 @@ export function hydrateData(value: unknown, revivers: Revivers): unknown {
  * @param key - The run's key material. Pass `RunPayloadKeys` (from
  *   `deriveRunPayloadKeys`) to open both symmetric (`encr`) and sealed
  *   (`encp`) payloads; a bare `CryptoKey` opens only the symmetric ones.
- *   Typed as a read capability so a write-only seal target — which could open
- *   neither scheme — is rejected at compile time rather than failing here.
+ *   Typed as a read capability so a write-only seal target (which could open
+ *   neither scheme) is rejected at compile time rather than failing here.
  */
 export async function hydrateDataWithKey(
   value: unknown,
@@ -503,7 +503,7 @@ export const CLASS_INSTANCE_REF_TYPE = '__workflow_class_instance_ref__';
 /**
  * A class instance reference for o11y display.
  *
- * Browser-safe base class — no `util.inspect.custom`. Environment-specific
+ * Browser-safe base class: no `util.inspect.custom`. Environment-specific
  * rendering (CLI inspect, web component) is handled by each consumer.
  */
 export class ClassInstanceRef {
@@ -640,7 +640,7 @@ export const observabilityRevivers: Revivers = {
   // throws on the `["DOMException", ...]` tag and `hydrateStepIO`'s
   // try/catch leaves the raw flat-encoded string in the UI. AbortController
   // synthesizes a DOMException as the default `signal.reason` when abort()
-  // is called with no arg — so any abort that round-trips through a step
+  // is called with no arg, so any abort that round-trips through a step
   // boundary surfaces here. Reconstruct as a real DOMException when the
   // global is available (modern browsers + Node 18+), else fall back to
   // an Error preserving name/message/stack/cause for display.
@@ -811,7 +811,7 @@ function hydrateHookMetadata<T extends { hookId?: string; metadata?: any }>(
  * Dispatches by resource type (step, hook, event, workflow) and calls
  * `hydrateData` with the provided revivers for each data field.
  *
- * Each environment (web, CLI) provides its own revivers — this function
+ * Each environment (web, CLI) provides its own revivers; this function
  * only handles the dispatch logic and field mapping.
  */
 export function hydrateResourceIO<

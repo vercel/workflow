@@ -9,24 +9,24 @@ summary: Build a distributed abort controller that uses workflow streams and hoo
   text="Build a distributed AbortController backed by a durable workflow. Define `abortHook` with `defineHook<{ reason?: string }>()` from `workflow` and derive a deterministic token from the user-provided ID (for example `abort:${id}`). In the coordination workflow, create the hook with that token, then race the hook against `sleep(ttl)` from `workflow`; when either fires, write an abort message to the run's stream via `getWritable()` in a &quot;use step&quot; helper. In the client class, make `create()` idempotent by checking `getHookByToken(token)` from `workflow/api` before `start()`; implement `.signal` by reading the run's stream via `getRun(runId).readable` and triggering a local `AbortController`; implement `.abort(reason)` by resuming the hook so every process sharing the ID gets the signal. Add an API route for remote aborts and wire the UI cancel button to it. Verify same-process abort, cross-process abort, TTL expiry, and reconnecting to an existing controller."
 />
 
-Use this pattern when you need an `AbortController`-like interface that works across distributed systems. The controller uses a durable workflow to coordinate cancellation — calling `.abort()` on one machine triggers the `.signal` on any other machine.
+Use this pattern when you need an `AbortController`-like interface that works across distributed systems. The controller uses a durable workflow to coordinate cancellation: calling `.abort()` on one machine triggers the `.signal` on any other machine.
 
 ## When to use this
 
-- **Cross-process cancellation** — Cancel a long-running operation from a different server, worker, or edge function
-- **Durable cancellation** — The abort signal persists even if the process that created it crashes
-- **UI stop buttons** — Let users cancel operations running on the server from the browser
-- **Timeout coordination** — The built-in TTL auto-expires stale controllers
+- **Cross-process cancellation**: Cancel a long-running operation from a different server, worker, or edge function.
+- **Durable cancellation**: The abort signal persists even if the process that created it crashes.
+- **User interface (UI) stop buttons**: Let users cancel operations running on the server from the browser.
+- **Timeout coordination**: The built-in time to live (TTL) automatically expires stale controllers.
 
 ## Pattern
 
 The `DistributedAbortController` class encapsulates a workflow that:
-1. Accepts a user-provided unique ID (like a chat ID or task ID)
-2. Creates or reconnects to an existing workflow using that ID
-3. Waits for a hook signal OR TTL expiration
-4. Writes a cancellation message to the run's stream when triggered
+1. Accepts a user-provided unique ID, such as a chat ID or task ID.
+2. Creates or reconnects to an existing workflow using that ID.
+3. Waits for a hook signal or TTL expiration.
+4. Writes a cancellation message to the run's stream when triggered.
 
-### Core Implementation
+### Core implementation
 
 ```typescript lineNumbers
 import { defineHook, getWritable, sleep } from "workflow";
@@ -77,7 +77,7 @@ export async function abortControllerWorkflow(
   const startTime = Date.now();
   const hook = abortHook.create({ token: getAbortToken(id) });
 
-  // Race: manual abort OR TTL expiration // [!code highlight]
+  // Race: manual abort or TTL expiration // [!code highlight]
   const result = await Promise.race([
     hook.then((payload) => ({
       reason: payload.reason,
@@ -106,7 +106,7 @@ export async function abortControllerWorkflow(
 
 /**
  * A distributed abort controller that works across process boundaries.
- * Uses a semantically meaningful ID (like a chat ID or task ID) to coordinate.
+ * Uses a meaningful ID, such as a chat ID or task ID, to coordinate.
  */
 export class DistributedAbortController {
   private id: string;
@@ -122,8 +122,8 @@ export class DistributedAbortController {
    * If a controller with this ID already exists, reconnects to it.
    * Otherwise, starts a new workflow.
    *
-   * @param id - A unique, semantically meaningful ID (e.g., "chat:123")
-   * @param options.ttlMs - Time-to-live in ms (default: 24 hours)
+   * @param id - A unique, meaningful ID (for example, "chat:123")
+   * @param options.ttlMs - Time to live in ms (default: 24 hours)
    * @param options.graceMs - Grace period after abort (default: 1 hour)
    */
   static async create( // [!code highlight]
@@ -201,7 +201,7 @@ export class DistributedAbortController {
 }
 ```
 
-### Usage: Single Process
+### Usage: single process
 
 ```typescript lineNumbers
 import { DistributedAbortController } from "./distributed-abort-controller";
@@ -216,10 +216,10 @@ const response = await fetch("https://api.example.com/long-operation", {
 });
 
 // Later: abort the operation
-await controller.abort("User cancelled");
+await controller.abort("User canceled");
 ```
 
-### Usage: Cross-Process Coordination
+### Usage: cross-process coordination
 
 ```typescript lineNumbers
 import { DistributedAbortController } from "./distributed-abort-controller";
@@ -230,12 +230,12 @@ const controller = await DistributedAbortController.create("task:build-123");
 
 // Process B: Reconnect and abort (no run ID sharing needed!)
 const sameController = await DistributedAbortController.create("task:build-123"); // [!code highlight]
-await sameController.abort("Cancelled by admin");
+await sameController.abort("Canceled by admin");
 
 // Process C: Reconnect and listen
 const anotherRef = await DistributedAbortController.create("task:build-123");
 anotherRef.signal.addEventListener("abort", (e) => {
-  console.log("Task was cancelled:", (e.target as AbortSignal).reason);
+  console.log("Task was canceled:", (e.target as AbortSignal).reason);
 });
 ```
 
@@ -244,7 +244,7 @@ anotherRef.signal.addEventListener("abort", (e) => {
 ```typescript lineNumbers
 import { DistributedAbortController } from "./distributed-abort-controller";
 
-// Short-lived controller for a quick operation (5 minutes)
+// Short-lived controller for a brief operation (5 minutes)
 const shortLived = await DistributedAbortController.create("quick-task", {
   ttlMs: 5 * 60 * 1000,
 });
@@ -263,7 +263,7 @@ shortLived.signal.addEventListener("abort", (e) => {
 });
 ```
 
-### API Route for Remote Abort
+### API route for remote abort
 
 ```typescript lineNumbers
 import { DistributedAbortController } from "@/lib/distributed-abort-controller";
@@ -276,13 +276,13 @@ export async function POST(
   const { reason } = await request.json();
 
   const controller = await DistributedAbortController.create(id);
-  await controller.abort(reason || "Cancelled via API");
+  await controller.abort(reason || "Canceled via API");
 
   return Response.json({ success: true });
 }
 ```
 
-### Client Cancel Button
+### Client **Cancel** button
 
 ```tsx lineNumbers
 "use client";
@@ -306,17 +306,17 @@ export function CancelButton({ taskId }: { taskId: string }) {
 
 ## Tips
 
-- **Use semantic IDs** — Use meaningful IDs like `chat:123` or `task:abc` instead of random UUIDs
-- **Create is idempotent** — Calling `create()` with the same ID reconnects to the existing controller
-- **TTL auto-cleanup** — Workflows self-terminate after TTL expires; no manual cleanup needed
-- **Signal is a getter** — Each access to `.signal` creates a new listener; cache it if needed
-- **One-shot** — Once aborted or expired, the workflow completes; create a new controller for new operations
+- **Use meaningful IDs**: Use IDs like `chat:123` or `task:abc` instead of random UUIDs.
+- **Create controllers idempotently**: Calling `create()` with the same ID reconnects to the existing controller.
+- **Use TTL cleanup**: Workflows terminate after the TTL expires, so no manual cleanup is needed.
+- **Cache the signal if needed**: Each access to `.signal` creates a new listener.
+- **Treat controllers as one-shot**: Once aborted or expired, the workflow completes. Create a new controller for new operations.
 
 ## Key APIs
 
-- [`defineHook()`](/docs/api-reference/workflow/define-hook) — type-safe hook for the abort trigger
-- [`getWritable()`](/docs/api-reference/workflow/get-writable) — write abort messages to the stream
-- [`sleep()`](/docs/api-reference/workflow/sleep) — TTL timer for auto-expiration
-- [`start()`](/docs/api-reference/workflow-api/start) — start the abort controller workflow
-- [`getHookByToken()`](/docs/api-reference/workflow-api/get-hook-by-token) — find existing run by hook token
-- [`getRun()`](/docs/api-reference/workflow-api/get-run) — reconnect to the workflow's readable stream
+- [`defineHook()`](/docs/api-reference/workflow/define-hook): Defines a type-safe hook for the abort trigger.
+- [`getWritable()`](/docs/api-reference/workflow/get-writable): Writes abort messages to the stream.
+- [`sleep()`](/docs/api-reference/workflow/sleep): Provides the TTL timer for automatic expiration.
+- [`start()`](/docs/api-reference/workflow-api/start): Starts the abort controller workflow.
+- [`getHookByToken()`](/docs/api-reference/workflow-api/get-hook-by-token): Finds an existing run by hook token.
+- [`getRun()`](/docs/api-reference/workflow-api/get-run): Reconnects to the workflow's readable stream.

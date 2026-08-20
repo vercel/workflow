@@ -1,5 +1,5 @@
 /**
- * Spec version utilities for backwards compatibility.
+ * Spec version utilities for backward compatibility.
  *
  * Uses a branded type to ensure packages import the version constants
  * from @workflow/world rather than using arbitrary numbers.
@@ -17,7 +17,7 @@ export type SpecVersion = number & {
 
 /**
  * Legacy spec version (pre-event-sourcing). Also used for runs without specVersion.
- * This is the only true legacy version — specVersion 2+ all use the event-sourced model.
+ * This is the only true legacy version: specVersion 2+ all use the event-sourced model.
  */
 export const SPEC_VERSION_LEGACY = 1 as SpecVersion;
 

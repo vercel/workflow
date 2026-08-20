@@ -1,8 +1,8 @@
 ---
 title: Vercel World
-description: Fully-managed world for Vercel deployments with automatic storage, queuing, and authentication.
+description: Fully managed world for Vercel deployments with automatic storage, queuing, and authentication.
 type: integration
-summary: Deploy workflows to Vercel with fully-managed storage, queuing, and authentication.
+summary: Deploy workflows to Vercel with fully managed storage, queuing, and authentication.
 prerequisites:
   - /docs/deploying
 related:
@@ -11,9 +11,9 @@ related:
   - /worlds/postgres
 ---
 
-The Vercel World is a fully-managed workflow backend for applications deployed on Vercel. It provides scalable storage, distributed queuing, and automatic authentication with zero configuration.
+The Vercel World is a fully managed workflow backend for applications deployed on Vercel. It provides scalable storage, distributed queuing, and automatic authentication with zero configuration.
 
-When you deploy to Vercel, workflows automatically use the Vercel World - no setup required.
+When you deploy to Vercel, workflows automatically use the Vercel World with no setup required.
 
 ## Usage
 
@@ -23,12 +23,12 @@ Deploy your application to Vercel:
 vercel deploy
 ```
 
-That's it. Vercel automatically:
+Vercel automatically performs these tasks:
 
 - Selects the Vercel World backend
-- Configures authentication using OIDC tokens
+- Configures authentication using OpenID Connect (OIDC) tokens
 - Provisions storage and queuing infrastructure
-- Isolates data per environment (production, preview, development)
+- Isolates data per environment (production, preview, and development)
 
 <FluidComputeCallout />
 
@@ -36,19 +36,19 @@ That's it. Vercel automatically:
 
 For complete details on pricing, usage limits, and included allotments on Vercel, see the official Vercel documentation:
 
-- **[Vercel Workflow](https://vercel.com/docs/workflows)** — Pricing details, concepts, and observability for Workflow on Vercel
-- **[Vercel limits](https://vercel.com/docs/limits)** — Platform-wide limits including Workflow-specific constraints
-- **[Vercel Hobby plan](https://vercel.com/docs/plans/hobby)** — Free tier included usage for Workflow and other resources
+- **[Vercel Workflow](https://vercel.com/docs/workflows)**: Pricing details, concepts, and observability for Workflow on Vercel
+- **[Vercel limits](https://vercel.com/docs/limits)**: Platform-wide limits including Workflow-specific constraints
+- **[Vercel Hobby plan](https://vercel.com/docs/plans/hobby)**: Free tier included usage for Workflow and other resources
 
 For self-hosted deployments, use the [Postgres World](/worlds/postgres). For local development, use the [Local World](/worlds/local).
 
 ## Multi-region
 
-The Vercel World runs in every [Vercel Function region](https://vercel.com/docs/regions). Each workflow run is pinned to a single region at creation time: its stored state, queue dispatch, and streams are all served from that region — no cross-region round trips on the hot path. When your application is deployed in the run's region (the automatic case below), step execution is region-local too.
+The Vercel World runs in every [Vercel Functions region](https://vercel.com/docs/regions). Each workflow run is pinned to a single region at creation time. Its stored state, queue dispatch, and streams are served from that region, with no cross-region round trips on the hot path. When your application is deployed in the run's region, as described in [automatic region pinning](#automatic-region-pinning), step execution is also region-local.
 
 <Callout type="info">
   Multi-region requires `workflow` version **5.0.0-beta.33** or later.
-  The 4.x release line does not support region pinning — runs created by
+  The 4.x release line does not support region pinning. Runs created by
   4.x always live in `iad1`.
 </Callout>
 
@@ -57,11 +57,11 @@ The Vercel World runs in every [Vercel Function region](https://vercel.com/docs/
 No configuration is needed. A run is pinned to the region of the function that creates it:
 
 - Deploy your app to a single region (via [`regions`](https://vercel.com/docs/project-configuration/vercel-json#regions) in `vercel.json` or the project settings), and every run lives there.
-- Deploy to multiple regions for a globally distributed audience, and each run is pinned to the region that served the user who triggered it — workflow data and streaming stay close to that user.
+- Deploy to multiple regions for a globally distributed audience, and each run is pinned to the region that served the user who triggered it, so workflow data and streaming stay close to that user.
 
 ### Explicit region selection
 
-To pin a specific run somewhere else, pass the `region` option to [`start()`](/docs/api-reference/workflow-api/start):
+To pin a specific run to a different region, pass the `region` option to [`start()`](/docs/api-reference/workflow-api/start):
 
 ```typescript
 import { start } from "workflow/api";
@@ -72,32 +72,32 @@ const run = await start(myWorkflow, [input], { region: "sfo1" });
 
 <Callout type="warn">
   The `region` option controls where the run's **data is stored** and where
-  its **queue messages are dispatched from** — it does not deploy your code
+  its **queue messages are dispatched from**. It does not deploy your code
   there. Your workflow and step functions execute in the regions your
-  application is deployed to. For execution to actually happen in the
-  specified region, your app must be deployed there — via
+  application is deployed to. For execution to happen in the
+  specified region, your app must be deployed there, via
   [`regions`](https://vercel.com/docs/project-configuration/vercel-json#regions) in
-  `vercel.json` or the Function Regions setting in your project settings.
+  `vercel.json` or the **Function Regions** setting in your project settings.
   If it isn't, the run's data lives in the requested region but its steps
   execute in the nearest region your app is deployed to.
 </Callout>
 
 ### Good to know
 
-- Reads, hook resumes, and stream consumers can come from anywhere — the platform routes them to the run's region automatically.
+- Reads, hook resumes, and stream consumers can come from anywhere: the platform routes them to the run's region automatically.
 - Runs created by 4.x SDKs (and any runs that existed before you upgraded) live in `iad1` and are unaffected by an upgrade; there is no migration.
-- **Hook tokens are currently stored in `iad1`** for every run, regardless of the run's region: the token-to-run mapping that powers [`getHookByToken()`](/docs/api-reference/workflow-api/get-hook-by-token) and [`resumeHook()`](/docs/api-reference/workflow-api/resume-hook) lives there so tokens — which carry no region information — can always be resolved. Hook *payloads* are not affected: a received payload is recorded on the run's event log, which lives in the run's region like all other run data. This token placement may become a project-level setting in the future.
+- **Hook tokens are currently stored in `iad1`** for every run, regardless of the run's region: the token-to-run mapping that powers [`getHookByToken()`](/docs/api-reference/workflow-api/get-hook-by-token) and [`resumeHook()`](/docs/api-reference/workflow-api/resume-hook) lives there so tokens, which carry no region information, can always be resolved. Hook *payloads* are not affected: a received payload is recorded on the run's event log, which lives in the run's region like all other run data. This token placement may become a project-level setting in the future.
 
 ## Limitations
 
-- **No run migration** - A run's region is fixed at creation. Existing runs cannot be moved to a different region.
-- **Hook minimum retention** - [`experimental_minRetention`](/docs/api-reference/workflow/create-hook#keep-a-token-unavailable-after-the-run-ends) cannot exceed 30 days.
+- **No run migration**: A run's region is fixed at creation. Existing runs cannot be moved to a different region.
+- **Hook minimum retention**: [`experimental_minRetention`](/docs/api-reference/workflow/create-hook#keep-a-token-unavailable-after-the-run-ends) cannot exceed 30 days.
 
 ## Observability
 
 Workflow observability is built into the Vercel dashboard on your project page. It respects your existing authentication and project permission settings.
 
-The `workflow` CLI commands open a browser window deeplinked to the Vercel dashboard:
+The Workflow CLI commands open the relevant page in the Vercel dashboard:
 
 ```bash
 # List workflow runs (opens Vercel dashboard)
@@ -107,7 +107,7 @@ npx workflow inspect runs --backend vercel
 npx workflow web --backend vercel
 ```
 
-The CLI automatically retrieves authentication from the Vercel CLI (`vercel login`) and infers project/team IDs from your local Vercel project linking.
+The Workflow CLI automatically retrieves authentication from the Vercel CLI (`vercel login`) and infers project and team IDs from your local Vercel project linking.
 
 To use the local observability UI instead of the Vercel dashboard:
 
@@ -121,34 +121,34 @@ To override the automatic configuration:
 npx workflow inspect runs \
   --backend vercel \
   --env production \
-  --project my-project \
-  --team my-team \
-  --authToken <your-token>
+  --project your_project_name_here \
+  --team your_team_id_here \
+  --authToken your_auth_token_here
 ```
 
 Learn more in the [Observability](/docs/observability) documentation.
 
-## Testing & Compatibility
+## Testing & compatibility
 
 <WorldTestingPerformance worldId="vercel" />
 
 ## Configuration
 
-In a Vercel deployment, you do not configure the Vercel World yourself. The platform injects everything the runtime needs, including `VERCEL_DEPLOYMENT_ID`, `VERCEL_PROJECT_ID`, per-request OIDC tokens, and `VERCEL_DEPLOYMENT_KEY` for encryption.
+In a Vercel deployment, you do not configure the Vercel World yourself. The platform injects everything the runtime needs, including `VERCEL_DEPLOYMENT_ID`, `VERCEL_PROJECT_ID`, per-request OpenID Connect (OIDC) tokens, and `VERCEL_DEPLOYMENT_KEY` for encryption.
 
 Do not set those platform-provided values yourself.
 
-Most users never need to set the `WORKFLOW_VERCEL_*` variables below. They are only overrides for tools running outside Vercel, such as your laptop or CI, when those tools need to inspect or test a remote Vercel Workflow project and cannot infer the project, team, token, or target environment automatically.
+Most users never need to set the `WORKFLOW_VERCEL_*` variables below. They provide overrides for tools running outside Vercel, such as your laptop or continuous integration (CI), when those tools need to inspect or test a remote Vercel Workflow project and cannot infer the project, team, token, or target environment automatically.
 
 For example, you might set them when running `workflow inspect runs --backend vercel` from CI without an interactive `vercel login`, or when running tests against a specific preview deployment. In normal local development, the CLI infers these values from your `.vercel` directory and Vercel CLI login. In a deployed Vercel function, these variables have no effect on runtime configuration, and the runtime warns if they are set there.
 
 ### `WORKFLOW_VERCEL_ENV`
 
-The Vercel environment to target. Options: `production`, `preview`. Default: `production`.
+The Vercel environment to target. Valid options are `production` and `preview`. Default: `production`.
 
 ### `WORKFLOW_VERCEL_AUTH_TOKEN`
 
-Vercel API authentication token (secret — keep it in your environment, not in code). Falls back to `VERCEL_TOKEN`, then to your Vercel CLI login.
+Vercel API authentication token. This value is secret, so keep it in your environment instead of in code. Falls back to `VERCEL_TOKEN`, then to your Vercel CLI login.
 
 ### `WORKFLOW_VERCEL_PROJECT`
 
@@ -204,12 +204,12 @@ Experimental. Set `WORKFLOW_EVENTS_TRANSPORT=ws` to ship workflow run events to 
 
 The setting is ignored when the World is configured with `projectConfig` and therefore routes through the `api-workflow` proxy: that endpoint is an HTTP-only REST gateway and does not forward a WebSocket upgrade, so events stay on HTTP and a warning is logged once per process.
 
-Tracing is unaffected by the choice. Each event write emits an `http POST` client span whichever transport carries it, against the same `url.full` — on the WebSocket path that span is synthesized around the frame, since no HTTP request is made. Attributes tell the two apart:
+Tracing is unaffected by the choice. Each event write emits an `http POST` client span whichever transport carries it, against the same `url.full`. On the WebSocket path that span is synthesized around the frame, since no HTTP request is made. Attributes tell the two apart:
 
 | Attribute | HTTP | WebSocket |
 | --- | --- | --- |
 | `workflow.events.transport` | `http` | `ws` |
-| `workflow.event.type` | the event type, e.g. `step_started` | same |
+| `workflow.event.type` | the event type, for example `step_started` | same |
 | `network.protocol.name` | — | `websocket` |
 | `workflow.events.ws.url` | — | the socket the frame went over |
 | `workflow.events.ws.req_id` | — | per-connection request id, matching the server's log line |
@@ -243,9 +243,9 @@ WORKFLOW_TARGET_WORLD="./my-world.ts"
 
 On Vercel, workflow runs are pegged to the deployment that started them. This means:
 
-- Existing workflow runs continue executing on their original deployment, even as new code is deployed
-- New workflow runs start on the latest deployment
-- Code changes won't break in-flight workflows
+- Existing workflow runs continue executing on their original deployment, even as new code is deployed.
+- New workflow runs start on the latest deployment.
+- Code changes won't break in-flight workflows.
 
 This ensures long-running workflows complete reliably without being affected by subsequent deployments.
 
@@ -255,7 +255,7 @@ For the full model, including rerunning on latest and explicit upgrade boundarie
 
 ### Consumer function security
 
-Workflow handler functions on Vercel are not accessible through public endpoints. During the build step, the Workflow SDK registers the combined flow handler as only reachable by [Vercel Queue](https://vercel.com/docs/queues), using the `experimentalTriggers` configuration in `.vc-config.json`:
+Workflow handler functions on Vercel are not accessible through public endpoints. During the build step, the Workflow SDK registers the combined flow handler as only reachable by [Vercel Queue](https://vercel.com/docs/queues) using the `experimentalTriggers` configuration in `.vc-config.json`:
 
 ```json title=".vc-config.json (flow handler)"
 {
@@ -269,23 +269,23 @@ Workflow handler functions on Vercel are not accessible through public endpoints
 }
 ```
 
-Practically, this means:
+This configuration means:
 
-- You don't need to add authentication or authorization logic to workflow handlers
-- Unauthorized requests can never reach workflow or step execution
-- Only messages delivered through Vercel Queues can trigger execution
-- Handlers receive only a message ID that must be retrieved from Vercel's backend, making it impossible to craft custom payloads
+- You don't need to add authentication or authorization logic to workflow handlers.
+- Unauthorized requests cannot reach workflow or step execution.
+- Only messages delivered through Vercel Queues can trigger execution.
+- Handlers receive only a message ID that must be retrieved from Vercel's backend, preventing custom payloads.
 
 <Callout>
-  This configuration is managed entirely by the Workflow SDK build step. You should not need to write this yourself. If you are writing a custom integration, see [Framework Integrations — Security](/docs/how-it-works/framework-integrations#security) for more details.
+  This configuration is managed entirely by the Workflow SDK build step. You should not need to write this yourself. If you are writing a custom integration, see the [Security section of Framework Integrations](/docs/how-it-works/framework-integrations#security) for more details.
 </Callout>
 
-## How It Works
+## How it works
 
 The Vercel World uses Vercel's infrastructure for workflow execution:
 
-- **Storage** - Workflow data is stored in Vercel's cloud with automatic replication and [end-to-end encryption](/docs/how-it-works/encryption)
-- **Queuing** - Steps are distributed across serverless functions via [Vercel Queues](https://vercel.com/docs/queues) with automatic retries and [consumer function security](#consumer-function-security)
-- **Authentication** - OIDC tokens provide secure, automatic authentication
+- **Storage**: Workflow data is stored in Vercel's cloud with automatic replication and [end-to-end encryption](/docs/how-it-works/encryption).
+- **Queuing**: Steps are distributed across serverless functions through [Vercel Queues](https://vercel.com/docs/queues) with automatic retries and [consumer function security](#consumer-function-security).
+- **Authentication**: OIDC tokens provide secure, automatic authentication.
 
 For more details, see the [Vercel Workflow documentation](https://vercel.com/docs/workflows).

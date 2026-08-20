@@ -17,7 +17,7 @@ The Workflow SDK uses event sourcing to track all state changes in workflow exec
 
 This page explains the event sourcing model and entity lifecycles.
 
-## Event Sourcing Overview
+## Event sourcing overview
 
 Event sourcing is a persistence pattern where state changes are stored as a sequence of events rather than by updating records in place. The current state of any entity is reconstructed by replaying its events from the beginning.
 
@@ -37,15 +37,15 @@ In the Workflow SDK, the following entity types are managed through events:
 - **Hooks**: Suspension points that can receive external data (materialized in storage)
 - **Waits**: Sleep or delay operations (materialized in storage)
 
-## Entity Lifecycles
+## Entity lifecycles
 
-Each entity type follows a specific lifecycle defined by the events that can affect it. Events transition entities between states, and certain states are terminal—once reached, no further transitions are possible.
+Each entity type follows a specific lifecycle defined by the events that can affect it. Events transition entities between states, and certain states are terminal: once reached, no further transitions are possible.
 
 <Callout type="info">
 In the diagrams below, <span style={{color: '#8b5cf6', fontWeight: 'bold'}}>purple nodes</span> indicate terminal states that cannot be transitioned out of.
 </Callout>
 
-### Run Lifecycle
+### Run lifecycle
 
 A run represents a single execution of a workflow function. Runs begin in `pending` state when created, transition to `running` when execution starts, and end in one of three terminal states.
 
@@ -69,9 +69,9 @@ flowchart TD
 - `running`: Actively executing workflow code
 - `completed`: Finished successfully with an output value
 - `failed`: Terminated due to an unrecoverable error
-- `cancelled`: Explicitly cancelled by the user or system
+- `cancelled`: Explicitly canceled by the user or system
 
-### Step Lifecycle
+### Step lifecycle
 
 A step represents a single invocation of a step function. Steps can retry on failure, either transitioning back to `pending` via `step_retrying` or being re-executed directly with another `step_started` event.
 
@@ -104,7 +104,7 @@ When present, the `step_retrying` event moves a step back to `pending` state and
 - **Cleaner observability**: The event log explicitly shows retry transitions rather than consecutive `step_started` events
 - **Error history**: The error that triggered the retry is preserved for debugging
 
-### Hook Lifecycle
+### Hook lifecycle
 
 A hook represents a suspension point that can receive external data, created by [`createHook()`](/docs/api-reference/workflow/create-hook). Hooks enable workflows to pause and wait for external events, user interactions, or HTTP requests. Webhooks (created with [`createWebhook()`](/docs/api-reference/workflow/create-webhook)) are a higher-level abstraction built on hooks that adds automatic HTTP request/response handling.
 
@@ -127,7 +127,7 @@ flowchart TD
 - `disposed`: No longer accepting payloads (hook is deleted from storage)
 - `conflicted`: Hook creation failed because the token is already in use by another workflow
 
-Unlike other entities, hooks don't have a `status` field—the states above are conceptual. An "active" hook is one that exists in storage, while "disposed" means the hook has been deleted. When a `hook_disposed` event is created, the hook record is removed rather than updated.
+Unlike other entities, hooks don't have a `status` field; the states above are conceptual. An "active" hook is one that exists in storage, while "disposed" means the hook has been deleted. When a `hook_disposed` event is created, the hook record is removed rather than updated.
 
 While a hook is active, its token is reserved and cannot be used by other workflows. If a workflow attempts to create a hook with a token that is already in use by another active hook, a `hook_conflict` event is recorded instead of `hook_created`. Current worlds include the token and the run ID that currently owns it, though older persisted events or world implementations may only include the token. This causes `hook.getConflict()` to resolve with the conflicting run and the hook's payload promise to reject with a `HookConflictError`, which you can detect with `HookConflictError.is(error)`. See the [hook-conflict error](/docs/errors/hook-conflict) documentation for more details.
 
@@ -135,7 +135,7 @@ When a hook is disposed (either explicitly or when its workflow completes), the 
 
 See [Hooks & Webhooks](/docs/foundations/hooks) for more on how hooks and webhooks work.
 
-### Wait Lifecycle
+### Wait lifecycle
 
 A wait represents a sleep operation created by [`sleep()`](/docs/api-reference/workflow/sleep). Waits track when a delay period has elapsed.
 
@@ -153,10 +153,10 @@ flowchart TD
 - `completed`: Delay period has elapsed, workflow can resume
 
 <Callout type="info">
-Like Runs, Steps, and Hooks, waits are materialized as entities in storage. When a `wait_created` event is processed, a wait entity is created with status `waiting`. When a `wait_completed` event is processed, the wait entity is atomically transitioned to `completed` — this guarantees that a wait can only be completed exactly once, even if multiple concurrent invocations attempt to complete it simultaneously.
+Like Runs, Steps, and Hooks, waits are materialized as entities in storage. When a `wait_created` event is processed, a wait entity is created with status `waiting`. When a `wait_completed` event is processed, the wait entity is atomically transitioned to `completed`. This guarantees that a wait can only be completed exactly once, even if multiple concurrent invocations attempt to complete it simultaneously.
 </Callout>
 
-## Event Types Reference
+## Event types reference
 
 Events are categorized by the entity type they affect. Each event contains metadata including a timestamp and a `correlationId` that links the event to a specific entity:
 
@@ -165,7 +165,7 @@ Events are categorized by the entity type they affect. Each event contains metad
 - Wait events use the `waitId` as the correlation ID
 - Run events do not require a correlation ID since the `runId` itself identifies the entity
 
-### Run Events
+### Run events
 
 | Event | Description |
 |-------|-------------|
@@ -175,7 +175,7 @@ Events are categorized by the entity type they affect. Each event contains metad
 | `run_failed` | Transitions the run to `failed` state with error details and optional error code. |
 | `run_cancelled` | Transitions the run to `cancelled` state. Can be triggered from `pending` or `running` states. |
 
-### Step Events
+### Step events
 
 | Event | Description |
 |-------|-------------|
@@ -185,7 +185,7 @@ Events are categorized by the entity type they affect. Each event contains metad
 | `step_failed` | Transitions the step to `failed` state with error details. The step will not be retried. |
 | `step_retrying` | (Optional) Transitions the step back to `pending` state for retry. Contains the error that caused the retry and optional delay before the next attempt. When not emitted, retries appear as consecutive `step_started` events. |
 
-### Hook Events
+### Hook events
 
 | Event | Description |
 |-------|-------------|
@@ -194,14 +194,14 @@ Events are categorized by the entity type they affect. Each event contains metad
 | `hook_received` | Records that a payload was delivered to the hook. The hook remains `active` and can receive more payloads. |
 | `hook_disposed` | Deletes the hook from storage (conceptually transitioning to `disposed` state). The token is released for reuse by future workflows. |
 
-### Wait Events
+### Wait events
 
 | Event | Description |
 |-------|-------------|
 | `wait_created` | Creates a new wait in `waiting` state. Contains the timestamp when the wait should complete. |
 | `wait_completed` | Transitions the wait to `completed` state when the delay period has elapsed. |
 
-## Terminal States
+## Terminal states
 
 Terminal states represent the end of an entity's lifecycle. Once an entity reaches a terminal state, no further events can transition it to another state.
 
@@ -209,7 +209,7 @@ Terminal states represent the end of an entity's lifecycle. Once an entity reach
 
 - `completed`: Workflow finished successfully
 - `failed`: Workflow encountered an unrecoverable error
-- `cancelled`: Workflow was explicitly cancelled
+- `cancelled`: Workflow was explicitly canceled
 
 **Step terminal states:**
 
@@ -227,7 +227,7 @@ Terminal states represent the end of an entity's lifecycle. Once an entity reach
 
 Attempting to create an event that would transition an entity out of a terminal state will result in an error. This prevents inconsistent state and ensures the integrity of the event log.
 
-## Event Correlation
+## Event correlation
 
 Events use a `correlationId` to link related events together. For step, hook, and wait events, the correlation ID identifies the specific entity instance:
 
@@ -243,7 +243,7 @@ This correlation enables:
 - Building timelines of entity lifecycle transitions
 - Debugging by tracing the complete history of any entity
 
-### Request ID Correlation
+### Request ID correlation
 
 Some `World` implementations also attach a `requestId` to events for platform-log correlation. This is different from `correlationId`:
 
@@ -277,4 +277,4 @@ All entities in the Workflow SDK use a consistent ID format: a 4-character prefi
 
 - **Prefixes enable introspection**: Given any ID, you can immediately identify what type of entity it refers to. This makes debugging, logging, and cross-referencing entities across the system straightforward.
 
-- **ULIDs enable chronological ordering**: Unlike UUIDs, ULIDs encode a timestamp in their first 48 bits, making them lexicographically sortable by creation time. This property is essential for the event log—events are always stored and retrieved in the correct chronological order simply by sorting their IDs.
+- **ULIDs enable chronological ordering**: Unlike UUIDs, ULIDs encode a timestamp in their first 48 bits, making them lexicographically sortable by creation time. This property is essential for the event log: events are always stored and retrieved in the correct chronological order by sorting their IDs alone.

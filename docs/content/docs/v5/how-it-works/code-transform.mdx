@@ -10,12 +10,12 @@ related:
 ---
 
 <Callout>
-This is an advanced guide that dives into internals of the Workflow SDK directive and is not required reading to use workflows. To simply use the Workflow SDK, check out the [getting started](/docs/getting-started) guides for your framework.
+This is an advanced guide that dives into internals of the Workflow SDK directive and is not required reading to use workflows. To use the Workflow SDK, check out the [getting started](/docs/getting-started) guides for your framework.
 </Callout>
 
 Workflows use special directives to mark code for transformation by the Workflow SDK compiler. This page explains how `"use workflow"` and `"use step"` directives work, what transformations are applied, and why they're necessary for durable execution.
 
-## Directives Overview
+## Directives overview
 
 Workflows use two directives to mark functions for special handling:
 
@@ -44,7 +44,7 @@ async function createUser(email: string) {
 
 These directives trigger the `@workflow/swc-plugin` compiler to transform your code in different ways depending on the execution context.
 
-## The Three Transformation Modes
+## The three transformation modes
 
 The compiler operates in three distinct modes, transforming the same source code differently for each execution context:
 
@@ -60,7 +60,7 @@ flowchart LR
     D --> G["Your App Code<br/>(Enables `start`)"]
 ```
 
-### Comparison Table
+### Comparison table
 
 | Mode     | Used In    | Purpose                        | Runtime role | Required? |
 |----------|------------|--------------------------------|--------------|-----------|
@@ -68,9 +68,9 @@ flowchart LR
 | Workflow | Build time | Bundles workflow orchestrators | Executed by `.well-known/workflow/v1/flow` | Yes |
 | Client   | Build/Runtime | Provides workflow IDs and types to `start` | Your application code | Optional* |
 
-\* Client mode is **recommended** for better developer experience—it provides automatic ID generation and type safety. Without it, you must manually construct workflow IDs or use the build manifest.
+\* Client mode is **recommended** for better developer experience: it provides automatic ID generation and type safety. Without it, you must manually construct workflow IDs or use the build manifest.
 
-## Detailed Transformation Examples
+## Detailed transformation examples
 
 <Tabs items={["Step Mode", "Workflow Mode", "Client Mode"]}>
 <Tab value="Step Mode">
@@ -108,7 +108,7 @@ export async function createUser(email: string) {
 - The function is registered with the runtime via an inline IIFE (no imports needed)
 - Step functions run with full Node.js/Deno/Bun access
 
-**Why no transformation?** Step functions execute in your main runtime with full access to Node.js APIs, file system, databases, etc. They don't need any special handling—they just run normally.
+**Why no transformation?** Step functions execute in your main runtime with full access to Node.js APIs, file system, databases, etc. They don't need any special handling; they run normally.
 
 **ID Format:** Step IDs follow the pattern `step//{filepath}//{functionName}`, where the filepath is relative to your project root.
 
@@ -151,7 +151,7 @@ handleUserSignup.workflowId = "workflow//workflows/user.js//handleUserSignup"; /
 **What happens:**
 
 - Step function bodies are **replaced** with calls to `globalThis[Symbol.for("WORKFLOW_USE_STEP")]`
-- Workflow function bodies remain **intact**—they execute deterministically during replay
+- Workflow function bodies remain **intact**; they execute deterministically during replay
 - The workflow function gets a `workflowId` property for runtime identification
 - The `"use workflow"` directive is removed
 
@@ -195,7 +195,7 @@ handleUserSignup.workflowId = "workflow//workflows/user.js//handleUserSignup"; /
 - The `workflowId` property is added (same as workflow mode)
 - Step functions are not transformed in client mode
 
-**Why this transformation?** Workflow functions cannot be called directly from application code—they must be started using [`start()`](/docs/api-reference/workflow-api/start). The error prevents accidental direct execution while the `workflowId` property allows the `start()` function to identify which workflow to launch.
+**Why this transformation?** Workflow functions cannot be called directly from application code; they must be started using [`start()`](/docs/api-reference/workflow-api/start). The error prevents accidental direct execution while the `workflowId` property allows the `start()` function to identify which workflow to launch.
 
 The IDs are generated exactly like in workflow mode to ensure they can be directly referenced at runtime.
 
@@ -211,7 +211,7 @@ The IDs are generated exactly like in workflow mode to ensure they can be direct
 </Tab>
 </Tabs>
 
-## Generated Files
+## Generated files
 
 When you build your application, the Workflow SDK generates a combined flow handler, an internal step registration bundle, and a webhook handler. Exact filenames vary by framework.
 
@@ -269,24 +269,24 @@ Contains webhook handling logic for delivering external data to running workflow
 - Validates tokens and routes data to the correct workflow run
 - Resumes workflow execution after webhook delivery
 
-**Note:** The webhook file structure varies by framework. Next.js generates `webhook/[token]/route.js` to leverage App Router's dynamic routing, while other frameworks generate a single `webhook.js` or `webhook.mjs` handler.
+**Note:** The webhook file structure varies by framework. Next.js generates `webhook/[token]/route.js` to use App Router's dynamic routing, while other frameworks generate a single `webhook.js` or `webhook.mjs` handler.
 
-## Why Three Modes?
+## Why three modes?
 
 The multi-mode transformation enables the Workflow SDK's durable execution model:
 
-1. **Step Mode** (required) - Bundles executable step functions that can access the full runtime
-2. **Workflow Mode** (required) - Creates orchestration logic that can replay from event logs
-3. **Client Mode** (optional) - Prevents direct execution and enables type-safe workflow references
+1. **Step mode** (required): Bundles executable step functions that can access the full runtime.
+2. **Workflow mode** (required): Creates orchestration logic that can replay from event logs.
+3. **Client mode** (optional): Prevents direct execution and enables type-safe workflow references.
 
 This separation allows:
 
 - **Deterministic replay**: Workflows can be safely replayed from event logs without re-executing side effects
 - **Sandboxed orchestration**: Workflow logic runs in a controlled VM without direct runtime access
 - **Stateless execution**: Your compute can scale to zero and resume from any point in the workflow
-- **Type safety**: TypeScript works seamlessly with workflow references (when using client mode)
+- **Type safety**: TypeScript works with workflow references (when using client mode)
 
-## Determinism and Replay
+## Determinism and replay
 
 A key aspect of the transformation is maintaining **deterministic replay** for workflow functions.
 
@@ -296,7 +296,7 @@ A key aspect of the transformation is maintaining **deterministic replay** for w
 - No direct side effects (no API calls, no database writes, no file I/O)
 - Can use seeded random/time APIs provided by the VM (`Math.random()`, `Date.now()`, etc.)
 
-Because workflow functions are deterministic and have no side effects, they can be safely re-run multiple times to calculate what the next step should be. This is why workflow function bodies remain intact in workflow mode—they're pure orchestration logic.
+Because workflow functions are deterministic and have no side effects, they can be safely re-run multiple times to calculate what the next step should be. This is why workflow function bodies remain intact in workflow mode: they're pure orchestration logic.
 
 **Step functions can be non-deterministic:**
 
@@ -306,7 +306,7 @@ Because workflow functions are deterministic and have no side effects, they can 
 
 Learn more about [Workflows and Steps](/docs/foundations/workflows-and-steps).
 
-## ID Generation
+## ID generation
 
 The compiler generates stable IDs for workflows and steps based on file paths and function names:
 
@@ -328,15 +328,15 @@ The compiler generates stable IDs for workflows and steps based on file paths an
   Although IDs can change when files are moved or functions are renamed, Workflow SDK functions assume [atomic versioning](/docs/foundations/versioning) in the World. This means changing IDs won't break old workflows from running, but will prevent runs from being upgraded and will cause your workflow/step names to change in observability across deployments.
 </Callout>
 
-## Framework Integration
+## Framework integration
 
-These transformations are framework-agnostic—they output standard JavaScript that works anywhere.
+These transformations are framework-agnostic; they output standard JavaScript that works anywhere.
 
 **For users**: Your framework handles all transformations automatically. See the [Getting Started](/docs/getting-started) guide for your framework.
 
 **For framework authors**: Learn how to integrate these transformations into your framework in [Building Framework Integrations](/docs/how-it-works/framework-integrations).
 
-## Debugging Transformed Code
+## Debugging transformed code
 
 If you need to debug transformation issues, you can inspect the generated files:
 

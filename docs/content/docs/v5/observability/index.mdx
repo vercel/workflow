@@ -1,8 +1,8 @@
 ---
 title: Observability
-description: Inspect, monitor, and debug workflows through the CLI and Web UI with powerful observability tools.
+description: Inspect, monitor, and debug workflows through the CLI and web UI.
 type: overview
-summary: Inspect and debug workflow runs using the CLI and Web UI.
+summary: Inspect and debug workflow runs using the CLI and web UI.
 prerequisites:
   - /docs/foundations
 related:
@@ -10,9 +10,9 @@ related:
   - /docs/how-it-works/encryption
 ---
 
-Workflow SDK provides powerful tools to inspect, monitor, and debug your workflows through the CLI and Web UI. These tools allow you to inspect workflow runs, steps, webhooks, [events](/docs/how-it-works/event-sourcing), and stream output.
+Workflow SDK provides a Workflow CLI and web UI to inspect, monitor, and debug workflows. You can inspect workflow runs, steps, webhooks, [events](/docs/how-it-works/event-sourcing), and stream output.
 
-## Quick Start
+## Quick start
 
 ```bash
 npx workflow
@@ -33,10 +33,10 @@ npx workflow inspect runs
 ## Web UI
 
 Workflow SDK ships with a local web UI for inspecting your workflows. The CLI
-will locally serve the Web UI when using the `--web` flag.
+serves the web UI locally when you use the `--web` flag.
 
 ```bash
-# Launch Web UI for visual exploration
+# Launch the web UI for visual exploration
 npx workflow inspect runs --web
 ```
 
@@ -46,7 +46,7 @@ In the runs table, select one or more runs and choose **Cancel** to cancel the b
 
 To share a link to a specific run without opening a browser, use the `--url`
 flag. It prints the dashboard deep link to stdout and exits (no browser, no
-local server) — useful for scripts, PR comments, or automation. Add `--json` to
+local server), which is useful for scripts, PR comments, or automation. Add `--json` to
 get `{ "url": "..." }`.
 
 ```bash
@@ -68,9 +68,9 @@ If you're deploying workflows to a production environment, but want to inspect t
 Backends might require additional configuration. If you're missing environment variables, the World package should provide instructions on how to configure it.
 </Callout>
 
-### Vercel Backend
+### Vercel backend
 
-To inspect workflows running on Vercel, ensure you're logged in to the Vercel CLI and have linked your project. See [Vercel CLI authentication and project linking docs](https://vercel.com/docs/cli/project-linking) for more information. Then, simply specify the backend as `vercel`.
+To inspect workflows running on Vercel, ensure you're logged in to the Vercel CLI and have linked your project. See [Vercel CLI authentication and project linking docs](https://vercel.com/docs/cli/project-linking) for more information. Then, specify the backend as `vercel`.
 
 ```bash
 # Inspect workflows running on Vercel
@@ -79,6 +79,6 @@ npx workflow inspect runs --backend vercel
 
 When deployed to Vercel, workflow data is [encrypted end-to-end](/docs/how-it-works/encryption). Encrypted fields display as locked placeholders until you choose to decrypt them using the **Decrypt** button in the web UI or the `--decrypt` flag in the CLI.
 
-## More Observability Features
+## More observability features
 
 <AutoCards />

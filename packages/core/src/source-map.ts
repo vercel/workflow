@@ -10,7 +10,7 @@ const INLINE_SOURCE_MAP_MARKER =
  * present.
  *
  * Use this on the host side before evaluating workflow bundles inside
- * the QuickJS VM — the inline map can account for several MB of bundle
+ * the QuickJS VM: the inline map can account for several MB of bundle
  * text (measured ~30%+ of VM heap bytes on the example workbench's
  * bundle), and the VM never needs it; only host-side `remapErrorStack`
  * reads the map (and it can do so against the original, unstripped
@@ -107,7 +107,7 @@ function extractInlineSourceMapBase64(source: string): string | undefined {
  * Keyed by the bundle `code`. Insertion-ordered LRU capped at `MAX_TRACERS`,
  * mirroring `vm/script-cache.ts`: production serves a single build-time bundle
  * literal for the process lifetime, while dev/watch produces a new bundle
- * string per edit — the bound keeps the few most-recent ones and evicts the
+ * string per edit; the bound keeps the few most-recent ones and evicts the
  * rest instead of pinning every historical version.
  */
 const tracerCache = new Map<string, TraceMap | null>();
@@ -131,7 +131,7 @@ function getTraceMapForCode(workflowCode: string): TraceMap | null {
       // Use TraceMap (pure JS, no WASM required)
       tracer = new TraceMap(sourceMapData);
     } catch {
-      // Malformed inline map — treat as absent so we don't retry parsing it.
+      // Malformed inline map: treat as absent so we don't retry parsing it.
       tracer = null;
     }
   }

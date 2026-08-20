@@ -16,13 +16,13 @@ related:
 
 This error occurs when you try to create a hook with a token that is already in use by another active workflow run. Hook tokens must be unique across all running workflows in your project.
 
-## Error Message
+## Error message
 
-```
+```text
 Hook token "<token>" is already in use by another workflow
 ```
 
-## Why This Happens
+## Why this happens
 
 Hooks use tokens to identify incoming webhook payloads. When you create a hook with `createHook({ token: "my-token" })`, the Workflow runtime reserves that token for your workflow run. If another workflow run is already using that token, a conflict occurs.
 
@@ -31,9 +31,9 @@ This typically happens when:
 1. **Two workflows start simultaneously** with the same hardcoded token
 2. **A previous workflow run is still waiting** for a hook when a new run tries to use the same token
 
-## Common Causes
+## Common causes
 
-### Hardcoded Token Values
+### Hardcoded token values
 
 {/* @skip-typecheck: incomplete code sample */}
 ```typescript lineNumbers
@@ -61,7 +61,7 @@ export async function processPayment(orderId: string) {
 }
 ```
 
-### Omitting the Token (Auto-generated)
+### Omitting the token (auto-generated)
 
 The safest approach is to let the Workflow runtime generate a unique token automatically:
 
@@ -77,7 +77,7 @@ export async function processPayment() {
 }
 ```
 
-## Handling Hook Conflicts
+## Handling hook conflicts
 
 When a hook conflict occurs, awaiting the hook will throw a [`HookConflictError`](/docs/api-reference/workflow-errors/hook-conflict-error). The error exposes the token that conflicted and, for current worlds, the run ID that currently owns it. `conflictingRunId` remains optional for compatibility with older persisted events and world implementations, so guard it before delegating:
 
@@ -114,7 +114,7 @@ export async function processPayment(orderId: string) {
 
 This pattern is useful when you want to detect duplicate processing inside the workflow. Runtime APIs such as `resumeHook()` and `getRun()` must be called outside workflow functions, for example from an API route or in a step.
 
-### Delegate to the Active Run
+### Delegate to the active Run
 
 In idempotency flows, a conflict means another active run already owns the hook token. You can return the duplicate-processing payload from the workflow, resume the active hook to deliver the payload to the existing run, then use `getRun(result.runId)` to wait for, stream, or cancel the active run:
 
@@ -156,7 +156,7 @@ export async function POST(request: Request) {
 
 If the caller needs live output instead of the final result, return `activeRun.getReadable()` from the same branch. If the duplicate request should replace the active work, call `await activeRun.cancel()` after inspecting the run.
 
-## When Hook Tokens Are Released
+## When hook tokens are released
 
 Hook tokens are automatically released when:
 
@@ -166,7 +166,7 @@ Hook tokens are automatically released when:
 
 After a workflow completes, its hook tokens become available for reuse by other workflows.
 
-## Best Practices
+## Best practices
 
 1. **Use auto-generated tokens** when possible - they are guaranteed to be unique
 2. **Include unique identifiers** if you need custom tokens (order ID, user ID, etc.)

@@ -14,7 +14,7 @@ Workflow DevKit supports two cancellation mechanisms: **AbortSignal** for fine-g
 
 ## AbortSignal
 
-`AbortController` and `AbortSignal` work across workflow and step boundaries. Create an `AbortController` with `new AbortController()` in a workflow function, pass its signal to steps, and call `abort()` — using the standard [AbortController](https://developer.mozilla.org/en-US/docs/Web/API/AbortController) API you already know.
+`AbortController` and `AbortSignal` work across workflow and step boundaries. Create an `AbortController` with `new AbortController()` in a workflow function, pass its signal to steps, and call `abort()`, using the standard [AbortController](https://developer.mozilla.org/en-US/docs/Web/API/AbortController) API you already know.
 
 ```typescript lineNumbers
 import { sleep } from "workflow";
@@ -48,17 +48,17 @@ async function longRunningStep(signal: AbortSignal) {
 }
 ```
 
-No special imports, no wrapper functions — just the standard `AbortController` API.
+No special imports and no wrapper functions: the standard `AbortController` API.
 
 <Callout type="info">
-Cancellation is **cooperative**. Aborting a signal doesn't forcefully kill a step — it's up to the step's code to check `signal.aborted` or pass the signal to APIs like `fetch` that respect it. If a step ignores the signal, it runs to completion.
+Cancellation is **cooperative**. Aborting a signal doesn't forcefully kill a step: it's up to the step's code to check `signal.aborted` or pass the signal to APIs like `fetch` that respect it. If a step ignores the signal, it runs to completion.
 </Callout>
 
 <Callout type="info">
 To learn how `AbortController` works durably across workflow suspensions, replays, and step boundaries, see [How Cancellation Works](/docs/how-it-works/cancellation).
 </Callout>
 
-### Timeout with Cancellation
+### Timeout with cancellation
 
 Race a step against a timeout, and cancel the step if the timeout wins:
 
@@ -90,7 +90,7 @@ async function fetchUrl(url: string, signal: AbortSignal) {
 }
 ```
 
-### Cancelling Parallel Work
+### Cancelling parallel work
 
 When racing multiple steps, cancel the losers:
 
@@ -116,7 +116,7 @@ async function fetchUrl(url: string, signal: AbortSignal) {
 }
 ```
 
-### Passing Signal Through a Pipeline
+### Passing signal through a pipeline
 
 Pass the same signal to a chain of steps. Aborting cancels whichever step is currently running:
 
@@ -175,7 +175,7 @@ async function uploadData(data: ArrayBuffer, signal: AbortSignal) {
 }
 ```
 
-### Step-Initiated Abort
+### Step-initiated abort
 
 A step can receive the full `AbortController` and call `abort()` to cancel parallel work. This is useful for watchdog/monitor patterns where one step observes an external condition and cancels other in-flight steps:
 
@@ -220,7 +220,7 @@ async function monitorQuota(userId: string, controller: AbortController) {
 }
 ```
 
-### User-Triggered Cancellation with Hooks
+### User-triggered cancellation with hooks
 
 Combine hooks with abort controllers to let users cancel in-flight work from an external API:
 
@@ -266,23 +266,23 @@ export async function POST(request: Request) {
 }
 ```
 
-### How Steps Handle Abort
+### How steps handle abort
 
 When an `AbortSignal` is aborted, the behavior depends on how the step uses it:
 
 | Usage | Behavior on Abort |
 |-------|-------------------|
-| `fetch(url, { signal })` | Request is cancelled, throws `AbortError` |
+| `fetch(url, { signal })` | Request is canceled, throws `AbortError` |
 | `signal.throwIfAborted()` | Throws the abort reason |
 | `signal.aborted` check | Returns `true`, step can exit gracefully |
 | `signal.addEventListener('abort', fn)` | Callback fires, step can clean up |
 | Ignored | Step runs to completion (abort is cooperative) |
 
-### Abort Errors Skip Retries
+### Abort errors skip retries
 
 When a step throws due to an abort (e.g., `fetch` throws `AbortError`, or `signal.throwIfAborted()` throws), the error is automatically wrapped in a `FatalError`. This means the step **skips retries** and the error bubbles up to the workflow immediately.
 
-This is the correct behavior because an abort is an intentional cancellation — retrying the step would just result in another abort. You don't need to manually wrap abort errors in `FatalError`.
+This is the correct behavior because an abort is an intentional cancellation, so retrying the step would result in another abort. You don't need to manually wrap abort errors in `FatalError`.
 
 ```typescript lineNumbers
 import { sleep } from "workflow";
@@ -299,7 +299,7 @@ export async function workflow() {
     if (result === null) controller.abort();
     return result;
   } catch (err) {
-    // AbortError arrives as FatalError — no retries attempted // [!code highlight]
+    // AbortError arrives as FatalError; no retries attempted // [!code highlight]
     return { status: "cancelled" };
   }
 }
@@ -312,7 +312,7 @@ async function cancellableStep(signal: AbortSignal) {
 }
 ```
 
-### Passing AbortSignal as Workflow Input
+### Passing AbortSignal as workflow input
 
 You can pass an `AbortSignal` from external code into a workflow via `start()`:
 
@@ -329,15 +329,15 @@ export async function POST(request: Request) {
 }
 ```
 
-When the signal is serialized at the `start()` boundary, an event listener is attached to the external signal that writes the cancellation packet to the backing stream. This means the external `abort()` propagates into the workflow — but only while the originating process is still alive (same constraint as passing a `ReadableStream` as input).
+When the signal is serialized at the `start()` boundary, an event listener is attached to the external signal that writes the cancellation packet to the backing stream. This means the external `abort()` propagates into the workflow, but only while the originating process is still alive (same constraint as passing a `ReadableStream` as input).
 
 <Callout type="info">
 For reliable external cancellation that works regardless of process lifetime, prefer the [User-Triggered Cancellation with Hooks](#user-triggered-cancellation-with-hooks) pattern. Hooks are durable and don't depend on the caller's process staying alive.
 </Callout>
 
-## Run Cancellation
+## Run cancellation
 
-Run cancellation stops an entire workflow at the next suspension point. Unlike `AbortSignal`, it is not cooperative — the workflow does not continue executing after cancellation.
+Run cancellation stops an entire workflow at the next suspension point. Unlike `AbortSignal`, it is not cooperative: the workflow does not continue executing after cancellation.
 
 ```typescript title="app/api/cancel-run/route.ts" lineNumbers
 import { getRun } from "workflow/api";
@@ -353,10 +353,10 @@ export async function POST(request: Request) {
 ```
 
 <Callout type="info">
-Calling `run.cancel()` is the same action as clicking the **Cancel** button on a run in the observability UI — both produce identical `run_cancelled` events in the event log.
+Calling `run.cancel()` is the same action as clicking the **Cancel** button on a run in the observability UI; both produce identical `run_cancelled` events in the event log.
 </Callout>
 
-When a run is cancelled:
+When a run is canceled:
 - The workflow stops at its next suspension point (step call, hook await, or sleep)
 - A `run_cancelled` event is recorded in the [event log](/docs/how-it-works/event-sourcing)
 - All associated hooks are disposed and their tokens released
@@ -366,19 +366,19 @@ When a run is cancelled:
 Run cancellation does **not** automatically abort any outstanding `AbortSignal`s. Steps that are currently executing will run to completion. If you need in-flight cancellation of specific operations, use `AbortSignal`.
 </Callout>
 
-## AbortSignal vs. Run Cancellation
+## AbortSignal vs. run cancellation
 
 | | AbortSignal | Run Cancellation |
 |---|---|---|
 | **Scope** | Individual operations within a step | Entire workflow run |
 | **Triggered by** | Your code (`controller.abort()`) | External API (`run.cancel()`) |
-| **Cooperative** | Yes — steps must check the signal | No — workflow stops at the next suspension point |
+| **Cooperative** | Yes (steps must check the signal) | No (workflow stops at the next suspension point) |
 | **Granularity** | Can target specific steps or operations | All-or-nothing |
 | **In-flight steps** | Aborted immediately if using the signal | Run to completion |
 
 Use `AbortSignal` when you need fine-grained, in-flight cancellation of specific operations. Use run cancellation when you want to stop the entire workflow.
 
-## Best Practices
+## Best practices
 
 **Use `throwIfAborted()` before expensive work.** This throws the signal's abort reason if the signal is already aborted, preventing wasted compute:
 
@@ -448,12 +448,12 @@ export async function workflow() {
 }
 ```
 
-This is safe even if both steps have already completed — aborting a finished operation is a no-op.
+This is safe even if both steps have already completed, since aborting a finished operation is a no-op.
 
-## Related Documentation
+## Related documentation
 
-- [How Cancellation Works](/docs/how-it-works/cancellation) — Hook and stream backing, serialization internals
-- [Serialization](/docs/foundations/serialization) — Understanding serializable types
-- [Cookbook](/v5/cookbook) — Timeout, race, and other reliability patterns
-- [Hooks](/docs/foundations/hooks) — Pausing workflows for external events
-- [Errors and Retries](/docs/foundations/errors-and-retries) — Handling step failures
+- [How Cancellation Works](/docs/how-it-works/cancellation): Hook and stream backing, serialization internals
+- [Serialization](/docs/foundations/serialization): Understanding serializable types
+- [Cookbook](/v5/cookbook): Timeout, race, and other reliability patterns
+- [Hooks](/docs/foundations/hooks): Pausing workflows for external events
+- [Errors and Retries](/docs/foundations/errors-and-retries): Handling step failures

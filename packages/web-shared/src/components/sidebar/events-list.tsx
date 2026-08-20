@@ -242,7 +242,7 @@ function EventDataBlock({
   eventType: string;
   data: unknown;
 }) {
-  // Expired data — show a simple message instead of the raw stub.
+  // Expired data: show a message instead of the raw stub.
   // Check both the top-level eventData and nested sub-fields (result, input, etc.)
   // since the server stubs each ref field independently.
   if (isExpiredMarker(data) || hasOnlyExpiredFields(data, eventType)) {
@@ -264,7 +264,7 @@ function EventDataBlock({
     return <EncryptedDataBlock />;
   }
 
-  // Attribute changes — render the changed keys and the writer instead of
+  // Attribute changes: render the changed keys and the writer instead of
   // the raw JSON payload.
   if (eventType === 'attr_set') {
     return <AttrSetEventBlock data={data} />;

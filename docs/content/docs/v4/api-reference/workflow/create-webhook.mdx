@@ -11,10 +11,10 @@ related:
 
 Creates a webhook that can be used to suspend and resume a workflow run upon receiving an HTTP request.
 
-Webhooks provide a way for external systems to send HTTP requests directly to your workflow. Unlike hooks which accept arbitrary payloads, webhooks work with standard HTTP `Request` objects and can return HTTP `Response` objects.
+Webhooks provide a way for external systems to send HTTP requests directly to your workflow. Unlike hooks, which accept arbitrary payloads, webhooks work with standard HTTP `Request` objects and can return HTTP `Response` objects.
 
 <Callout type="warn">
-`createWebhook()` creates a public endpoint at `/.well-known/workflow/v1/webhook/:token`, and the token in that URL is the only authorization performed for incoming requests resuming that webhook. This is convenient for prototypes and simple resume links because it avoids creating another route, but if you need stronger security, prefer [`createHook()`](/docs/api-reference/workflow/create-hook) behind your own route and authorize the request before calling [`resumeHook()`](/docs/api-reference/workflow-api/resume-hook) to avoid unauthenticated workflow resumptions.
+`createWebhook()` creates a public endpoint at `/.well-known/workflow/v1/webhook/:token`, and the token in that URL is the only authorization performed for incoming requests resuming that webhook. This is convenient for prototypes and basic resume links because it avoids creating another route, but if you need stronger security, prefer [`createHook()`](/docs/api-reference/workflow/create-hook) behind your own route and authorize the request before calling [`resumeHook()`](/docs/api-reference/workflow-api/resume-hook) to avoid unauthenticated workflow resumptions.
 </Callout>
 
 ```ts lineNumbers
@@ -31,7 +31,7 @@ export async function webhookWorkflow() {
 }
 ```
 
-## API Signature
+## API signature
 
 ### Parameters
 
@@ -63,22 +63,22 @@ When using `createWebhook({ respondWith: 'manual' })`, the resolved request type
 <Callout type="info">
 Use the simplest option that satisfies the prompt:
 
-- `createWebhook()` — generated callback URL, and the default `202 Accepted` response is fine
-- `createWebhook({ respondWith: 'manual' })` — generated callback URL, but you must send a custom body, status, or headers
-- `createHook()` + `resumeHook()` — the app resumes from server-side code with a deterministic business token instead of a generated callback URL
+- `createWebhook()`: generated callback URL, and the default `202 Accepted` response is fine
+- `createWebhook({ respondWith: 'manual' })`: generated callback URL, but you must send a custom body, status, or headers
+- `createHook()` + `resumeHook()`: the app resumes from server-side code with a deterministic business token instead of a generated callback URL
 </Callout>
 
 <details>
 <summary>Common wrong turns</summary>
 
-- Do not use `respondWith: 'manual'` just because the flow has a callback URL.
+- A callback URL alone does not require `respondWith: 'manual'`.
 - Do not use `RequestWithResponse` unless you chose manual mode.
 - Do not invent a custom callback route when `webhook.url` is the intended callback surface.
 </details>
 
 ## Examples
 
-### Basic Usage
+### Basic usage
 
 Create a webhook that receives HTTP requests and logs the request details:
 
@@ -101,7 +101,7 @@ export async function basicWebhookWorkflow() {
 }
 ```
 
-### Responding to Webhook Requests (Manual Mode)
+### Responding to webhook requests (manual mode)
 
 Use this section only when the caller requires a non-default HTTP response. If `202 Accepted` is acceptable, use `createWebhook()` without `respondWith: "manual"`.
 
@@ -143,7 +143,7 @@ async function processData(data: any): Promise<void> {
 }
 ```
 
-### Waiting for Multiple Requests
+### Waiting for multiple requests
 
 You can also wait for multiple requests by using the `for await...of` syntax.
 
@@ -182,9 +182,9 @@ export async function eventCollectorWorkflow() {
 }
 ```
 
-## Related Functions
+## Related functions
 
-- [`createHook()`](/docs/api-reference/workflow/create-hook) — Use when the app resumes from server-side code with a deterministic business token.
-- [`resumeHook()`](/docs/api-reference/workflow-api/resume-hook) — Pairs with `createHook()` for deterministic server-side resume.
-- [`defineHook()`](/docs/api-reference/workflow/define-hook) — Type-safe hook helper.
-- [`resumeWebhook()`](/docs/api-reference/workflow-api/resume-webhook) — Low-level runtime API. Most integrations should call `webhook.url` directly instead of adding a custom callback route.
+- [`createHook()`](/docs/api-reference/workflow/create-hook): Use when the app resumes from server-side code with a deterministic business token.
+- [`resumeHook()`](/docs/api-reference/workflow-api/resume-hook): Pairs with `createHook()` for deterministic server-side resume.
+- [`defineHook()`](/docs/api-reference/workflow/define-hook): Type-safe hook helper.
+- [`resumeWebhook()`](/docs/api-reference/workflow-api/resume-webhook): Low-level runtime API. Most integrations should call `webhook.url` directly instead of adding a custom callback route.

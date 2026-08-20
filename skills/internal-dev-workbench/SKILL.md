@@ -3,7 +3,7 @@ name: internal-dev-workbench
 description: Spin up a portless + tmux dev session for the Workflow SDK that gives each git worktree isolated `<branch>.<name>.localhost` URLs for the Next.js workbench and the observability UI, plus a Claude statusline that surfaces those URLs. Use only when the user asks for a "portless dev session", a "tmux dev layout for workflow", "worktree-isolated dev URLs", or wants to wire workflow dev URLs into the Claude statusline. Do not activate for the generic "start the dev server" / "run pnpm dev" task.
 metadata:
   author: Pranay Prakash
-  version: '0.1'
+  version: '0.2'
 ---
 
 # internal-dev-workbench
@@ -16,14 +16,14 @@ This is **opt-in contributor tooling**. The repo's standard dev path (`pnpm dev`
 
 - `tmux` installed
 - `portless` installed globally (`npm i -g portless` or via Homebrew). Verify with `portless --version`.
-- Repo bootstrapped: `pnpm install && pnpm build`. The first run on a fresh worktree must complete both before any dev server can start (the workbench apps depend on built workspace packages — without `pnpm build` you get `MODULE_NOT_FOUND` for `workflow`).
+- Repo bootstrapped: `pnpm install && pnpm build`. The first run on a fresh worktree must complete both before any dev server can start (the workbench apps depend on built workspace packages; without `pnpm build` you get `MODULE_NOT_FOUND` for `workflow`).
 - `WORKFLOW_PUBLIC_MANIFEST=1` is required on the dev server when running e2e tests against it (otherwise `/.well-known/workflow/v1/manifest.json` is gated).
 
 ## Layout
 
-`main-vertical` — the dev server takes the left column; the right column stacks the observability UI on top of a scratchpad shell:
+With `main-vertical`, the dev server takes the left column; the right column stacks the observability UI on top of a scratchpad shell:
 
-```
+```text
 +----------------------+--------------------------+
 |                      |  PANE_OBS: workflow web  |
 |                      |  (observability UI       |
@@ -38,7 +38,7 @@ This is **opt-in contributor tooling**. The repo's standard dev path (`pnpm dev`
 
 ## Setup
 
-The session name **must** match the worktree's portless prefix — the basename of the current branch — so the statusline (and any other tooling that derives the prefix from the branch) can locate it. Always run `tmux ls` first to confirm there's no pre-existing session with that name; never kill an existing one.
+The session name **must** match the worktree's portless prefix (the basename of the current branch) so the statusline and any other tooling that derives the prefix from the branch can locate it. Always run `tmux ls` first to confirm there's no pre-existing session with that name; never kill an existing one.
 
 Pane indices in tmux depend on `pane-base-index` (0 by default, 1 with the common dotfile override). To stay correct under either, capture each pane's ID at split time with `-P -F '#{pane_id}'` and use those IDs as targets:
 
@@ -84,13 +84,13 @@ Once both servers are ready, `portless list` shows the routes. With `portless ru
 
 The skill ships a statusline helper at `skills/internal-dev-workbench/statusline.sh` that derives the worktree prefix from the current branch and emits a compact line:
 
-```
+```text
  dev  ·   obs  ·   tmux attach -t <worktree-prefix>
 ```
 
-The dev / obs labels (Nerd Font rocket / graph glyphs) are OSC 8 hyperlinks — clickable in iTerm2, Kitty, WezTerm, Terminal.app, Ghostty — styled bold + underlined + bright cyan so they read unambiguously as links. The tmux fragment (Nerd Font copy glyph) is bold bright green, signaling "copy this" rather than "click this". It's shown only when a session named exactly the worktree prefix exists, and it's printed as a full ready-to-paste `tmux attach -t <prefix>` invocation. The font must include Nerd Font glyphs for the icons to render correctly; without them you'll see substitution boxes but the layout still works. Each piece is independent — if portless has no `<prefix>.turbopack.localhost` route, the dev fragment is omitted, and so on. With nothing to show, the script prints nothing and the statusline stays silent.
+The dev / obs labels (Nerd Font rocket / graph glyphs) are OSC 8 hyperlinks that are clickable in iTerm2, Kitty, WezTerm, Terminal.app, and Ghostty. Bold, underlined, bright cyan styling identifies them as links. The tmux fragment (Nerd Font copy glyph) is bold bright green, signaling "copy this" rather than "click this". It's shown only when a session named exactly the worktree prefix exists, and it's printed as a full ready-to-paste `tmux attach -t <prefix>` invocation. The font must include Nerd Font glyphs for the icons to render correctly; without them you'll see substitution boxes, but the layout still works. Each piece is independent. If portless has no `<prefix>.turbopack.localhost` route, the dev fragment is omitted, and so on. With nothing to show, the script prints nothing and the statusline stays silent.
 
-Wire it into `~/.claude/settings.json` so it works across all sessions and worktrees. **Point the path at your primary checkout, not at a worktree** — worktrees get deleted, so any path like `~/github/vercel/workflow--<branch>/...` will break the day you remove that worktree:
+Wire it into `~/.claude/settings.json` so it works across all sessions and worktrees. **Point the path at your primary checkout, not at a worktree**. Worktrees get deleted, so any path like `~/github/vercel/workflow--<branch>/...` will break when you remove that worktree:
 
 ```json
 {
@@ -105,14 +105,14 @@ Adjust the prefix if your main checkout lives elsewhere. The script itself is wo
 
 Output rules:
 - Nothing to show (no matching portless route, no matching tmux session) → empty output.
-- Each piece appears independently — start a server but no tmux session and you'll see just the dev/obs fragments; the reverse shows just the tmux fragment.
+- Each piece appears independently. Start a server but no tmux session, and you'll see only the dev/obs fragments; the reverse shows only the tmux fragment.
 - No git context but routes exist → falls back to the first matching `turbopack`/`workflow-obs` route, no tmux indicator.
 
 If you already use a statusline and want to append the internal-dev-workbench info, run the helper and concatenate in your existing wrapper script instead of replacing `command` outright.
 
 ## Restarting after editing workflow files
 
-The workflow manifest is built at dev-server startup. New workflows or steps added to `workbench/example/workflows/*.ts` (and their symlinks in other workbenches) **do not appear at runtime** — even with HMR — until the dev server restarts.
+The workflow manifest is built at dev-server startup. New workflows or steps added to `workbench/example/workflows/*.ts` (and their symlinks in other workbenches) **do not appear at runtime**, even with HMR, until the dev server restarts.
 
 ```bash
 tmux send-keys -t "$PANE_DEV" C-c
@@ -158,9 +158,9 @@ Portless removes routes when each child process exits (Ctrl+C the panes first if
 
 ## Troubleshooting
 
-- **`MODULE_NOT_FOUND: 'workflow'`** in the dev pane — workspace packages haven't been built. Run `pnpm build` from the repo root, then restart the pane.
-- **Observability UI shows no runs** — verify the obs pane was started from inside `workbench/nextjs-turbopack` (or whichever workbench you want to inspect). The CLI reads the local World from the **current working directory**.
-- **react-router on `:5173` instead of the portless port** — happens when the obs pane uses `pnpm dev` from `packages/web`. Switch to the `pnpm workflow web --webPort $PORT` form above.
-- **Source-map warning on startup** (`failed to read input source map ... packages/serde/dist/index.js.map`) — benign; doesn't block dev.
-- **Stale workflow registration** after editing `99_e2e.ts` — restart the dev pane; HMR doesn't rebuild the manifest.
-- **Statusline shows nothing** — confirm `portless list` has at least one matching route, the path in `settings.json` is absolute, and the script is executable (`chmod +x`).
+- **`MODULE_NOT_FOUND: 'workflow'`** in the dev pane: Workspace packages haven't been built. Run `pnpm build` from the repo root, then restart the pane.
+- **Observability UI shows no runs**: Verify the obs pane was started from inside `workbench/nextjs-turbopack` (or whichever workbench you want to inspect). The CLI reads the local World from the **current working directory**.
+- **react-router on `:5173` instead of the portless port**: This happens when the obs pane uses `pnpm dev` from `packages/web`. Switch to the `pnpm workflow web --webPort $PORT` form above.
+- **Source-map warning on startup** (`failed to read input source map ... packages/serde/dist/index.js.map`): This warning is benign and doesn't block development.
+- **Stale workflow registration** after editing `99_e2e.ts`: Restart the dev pane; HMR doesn't rebuild the manifest.
+- **Statusline shows nothing**: Confirm `portless list` has at least one matching route, the path in `settings.json` is absolute, and the script is executable (`chmod +x`).

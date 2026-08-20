@@ -17,7 +17,7 @@ related:
 <Steps>
 
 <Step>
-## Create Your Next.js Project
+## Create your Next.js project
 
 Start by creating a new Next.js project. This command will create a new directory named `my-workflow-app` and set up a Next.js project inside it.
 
@@ -89,7 +89,7 @@ If your Next.js app has a [proxy handler](https://nextjs.org/docs/app/api-refere
 (formerly known as "middleware"), you'll need to update the matcher pattern to exclude Workflow's
 internal paths to prevent the proxy handler from running on them.
 
-If you see `[local world] Queue operation failed` with `Cannot perform ArrayBuffer.prototype.slice on a detached ArrayBuffer`, your proxy matcher is still intercepting Workflow's internal `POST /.well-known/workflow/v1/flow` request. This is especially easy to miss in Next.js 16, where `proxy.ts` replaced `middleware.ts`.
+If you see `[local world] Queue operation failed` with `Cannot perform ArrayBuffer.prototype.slice on a detached ArrayBuffer`, your proxy matcher is still intercepting Workflow's internal `POST /.well-known/workflow/v1/flow` request. This issue can be hard to spot in Next.js 16, where `proxy.ts` replaced `middleware.ts`.
 
 Add `.well-known/workflow/*` to your matcher exclusion list:
 
@@ -121,7 +121,7 @@ This ensures that internal Workflow paths are not intercepted by your middleware
 
 <Step>
 
-## Create Your First Workflow
+## Create your first workflow
 
 Create a new file for our first workflow:
 
@@ -144,12 +144,12 @@ export async function handleUserSignup(email: string) {
 
 ```
 
-We'll fill in those functions next, but let's take a look at this code:
+We'll fill in those functions next. The current code does the following:
 
 * We define a **workflow** function with the directive `"use workflow"`. Think of the workflow function as the _orchestrator_ of individual **steps**.
 * The Workflow SDK's `sleep` function allows us to suspend execution of the workflow without using up any resources. A sleep can be a few seconds, hours, days, or even months long.
 
-## Create Your Workflow Steps
+## Create your workflow steps
 
 Let's now define those missing functions.
 
@@ -204,7 +204,7 @@ We'll dive deeper into workflows, steps, and other ways to suspend or handle eve
 
 <Step>
 
-## Create Your Route Handler
+## Create your route handler
 
 To invoke your new workflow, we'll need to add your workflow to a `POST` API Route Handler, `app/api/signup/route.ts`, with the following code:
 
@@ -276,7 +276,7 @@ Check the [Deploying](/docs/deploying) section to learn how your workflows can b
 
 If you see this error when upgrading to Next.js 16.1 or later:
 
-```
+```text
 Build error occurred
 Error: Cannot find module 'next/dist/lib/server-external-packages.json'
 ```
@@ -315,7 +315,7 @@ Without this configuration, you may experience intermittent issues where workflo
 
 If you see this error:
 
-```
+```text
 'start' received an invalid workflow function. Ensure the Workflow SDK is configured correctly and the function includes a 'use workflow' directive.
 ```
 
@@ -326,7 +326,7 @@ Check both of these first:
 
 See [start-invalid-workflow-function](/docs/errors/start-invalid-workflow-function) for full examples and fixes.
 
-## Next Steps
+## Next steps
 
 * Learn more about the [Foundations](/docs/foundations).
 * Check [Errors](/docs/errors) if you encounter issues.

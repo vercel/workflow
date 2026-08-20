@@ -19,7 +19,7 @@ Workflow SDK's [webhook](/docs/api-reference/workflow/create-webhook) and [hook]
 
 If you need to react to external events programmatically, see the [hooks](/docs/foundations/hooks) documentation for more information. This part of the guide will focus on the human-in-the-loop pattern, which is a subset of the more general hook pattern.
 
-## How It Works
+## How it works
 
 <Steps>
 
@@ -45,9 +45,9 @@ The workflow receives the approval data and resumes execution.
 
 </Steps>
 
-While this demo will use a client side button for human approval, you could just as easily create a webhook and send the approval link over email or slack to resume the agent.
+While this demo uses a client-side button for human approval, you could instead create a webhook and send the approval link over email or Slack to resume the agent.
 
-## Creating a Booking Approval Tool
+## Creating a booking approval tool
 
 Add a tool that allows the agent to deliberately pause execution until a human approves or rejects a flight booking:
 
@@ -55,7 +55,7 @@ Add a tool that allows the agent to deliberately pause execution until a human a
 
 <Step>
 
-### Define the Hook
+### Define the hook
 
 Create a typed hook with a Zod schema for validation:
 
@@ -78,7 +78,7 @@ export const bookingApprovalHook = defineHook({
 
 <Step>
 
-### Implement the Tool
+### Implement the tool
 
 Create a tool that creates a hook instance using the tool call ID as the token. The UI will use this ID to submit the approval.
 
@@ -133,7 +133,7 @@ Note that the `defineHook().create()` function must be called from within a work
 
 <Step>
 
-### Create the API Route
+### Create the API route
 
 Create a new API endpoint that the UI will call to submit the approval decision:
 
@@ -158,7 +158,7 @@ export async function POST(request: Request) {
 
 <Step>
 
-### Create the Approval Component
+### Create the approval component
 
 Build a new component that reacts to the tool call data, and allows the user to approve or reject the booking:
 
@@ -253,7 +253,7 @@ export function BookingApproval({ toolCallId, input, output }: BookingApprovalPr
 
 <Step>
 
-### Show the Tool Status in the UI
+### Show the tool status in the UI
 
 Use the component we just created to render the tool call and approval controls in your chat interface:
 
@@ -332,7 +332,7 @@ export default function ChatPage() {
 
 </Steps>
 
-## Using Webhooks Directly
+## Using webhooks directly
 
 For simpler cases where you don't need type-safe validation or programmatic resumption, you can use [`createWebhook()`](/docs/api-reference/workflow/create-webhook) directly. This generates a unique URL that can be called to resume the workflow:
 
@@ -367,7 +367,7 @@ The webhook URL can be called directly with a POST request containing the approv
 - Payment provider callbacks
 - Email-based approval links
 
-## Related Documentation
+## Related documentation
 
 - [Hooks & Webhooks](/docs/foundations/hooks) - Complete guide to hooks and webhooks
 - [`createWebhook()` API Reference](/docs/api-reference/workflow/create-webhook) - Webhook configuration options

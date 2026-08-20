@@ -2,7 +2,7 @@ import { z } from 'zod';
 
 /**
  * Reserved key prefix for system-managed attributes. User code may not set
- * keys starting with `$` — those are blocked at validation time so the
+ * keys starting with `$`: those are blocked at validation time so the
  * namespace remains available for future system use.
  */
 export const RESERVED_ATTRIBUTE_KEY_PREFIX = '$';
@@ -42,7 +42,7 @@ export type AttributeChange = z.infer<typeof AttributeChangeSchema>;
 export const AttributeChangesSchema = z.array(AttributeChangeSchema);
 
 /**
- * Result returned by `runs.experimentalSetAttributes` — the post-merge
+ * Result returned by `runs.experimentalSetAttributes`: the post-merge
  * snapshot of all attributes on the run. Provided so callers (notably
  * `setAttributes` and observability emitters) do not need a follow-up read.
  */
@@ -53,7 +53,7 @@ export interface ExperimentalSetAttributesResult {
 export interface AttributeValidationContext {
   /**
    * Existing attribute keys on the run, used to enforce the per-run
-   * cap accurately against the post-merge total — an incoming change
+   * cap accurately against the post-merge total: an incoming change
    * that updates an already-present key contributes zero net adds.
    *
    * If omitted, the cap check assumes every non-null change is a fresh
@@ -162,7 +162,7 @@ export function validateAttributeValue(
 /**
  * Validate a batch of attribute changes. Throws `AttributeValidationError`
  * on the first violation found. Pass `existingKeys` (in `context`) so
- * the per-run cap check can use the real post-merge total — without it
+ * the per-run cap check can use the real post-merge total. Without it
  * the check is conservative and may reject an update to an
  * already-present key when the run is at the cap.
  */

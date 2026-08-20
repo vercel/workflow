@@ -33,7 +33,7 @@ export async function nameWorkflow() {
 }
 ```
 
-## API Signature
+## API signature
 
 ### Parameters
 
@@ -59,11 +59,11 @@ interface TypedHook<TInput, TOutput> {
 export default TypedHook;`}
 />
 
-`create()` is called inside a `"use workflow"` function to create the hook; `resume()` is called from runtime code (an API route or server action). When a `schema` is provided, `resume()` accepts the raw input type (`TInput`) and the workflow receives the validated and possibly transformed output type (`TOutput`); without a schema, `TOutput` defaults to `TInput`. `resume()` throws [`HookNotFoundError`](/docs/api-reference/workflow-errors/hook-not-found-error) if the token does not match an active hook — it does not return `null`.
+`create()` is called inside a `"use workflow"` function to create the hook; `resume()` is called from runtime code (an API route or server action). When a `schema` is provided, `resume()` accepts the raw input type (`TInput`) and the workflow receives the validated and possibly transformed output type (`TOutput`); without a schema, `TOutput` defaults to `TInput`. `resume()` throws [`HookNotFoundError`](/docs/api-reference/workflow-errors/hook-not-found-error) if the token does not match an active hook. It does not return `null`.
 
 ## Examples
 
-### Basic Type-Safe Hook Definition
+### Basic type-safe hook definition
 
 By defining the hook once with a specific payload type, you can reuse it in multiple workflows and API routes with automatic type safety.
 
@@ -88,7 +88,7 @@ export async function workflowWithApproval() {
 }
 ```
 
-### Resuming with Type Safety
+### Resuming with type safety
 
 Hooks can be resumed using the same defined hook and a token. By using the same hook, you can ensure that the payload matches the defined type when resuming a hook. `resume()` resolves to the resumed hook and throws [`HookNotFoundError`](/docs/api-reference/workflow-errors/hook-not-found-error) if the token does not match an active hook.
 
@@ -116,7 +116,7 @@ export async function POST(request: Request) {
 }
 ```
 
-### Validate and Transform with Schema
+### Validate and transform with schema
 
 You can provide runtime validation and transformation of hook payloads using the `schema` option. This option accepts any validator that conforms to the [Standard Schema v1](https://standardschema.dev) specification.
 
@@ -124,7 +124,7 @@ You can provide runtime validation and transformation of hook payloads using the
 Standard Schema is a standardized specification for schema validation libraries. Most popular validation libraries support it, including Zod, Valibot, ArkType, and Effect Schema. You can also write custom validators.
 </Callout>
 
-#### Using Zod with defineHook
+#### Using Zod with `defineHook`
 
 Here's an example using [Zod](https://zod.dev) to validate and transform hook payloads:
 
@@ -174,7 +174,7 @@ export async function POST(request: Request) {
 }
 ```
 
-#### Using Other Standard Schema Libraries
+#### Using other Standard Schema libraries
 
 The same pattern works with any Standard Schema v1 compliant library. Here's an example with [Valibot](https://valibot.dev):
 
@@ -190,7 +190,7 @@ export const approvalHook = defineHook({
 });
 ```
 
-### Customizing Tokens
+### Customizing tokens
 
 Tokens are used to identify a specific hook and for resuming a hook. You can customize the token to be more specific to a use case.
 
@@ -211,7 +211,7 @@ export async function slackBotWorkflow(channelId: string) {
 }
 ```
 
-## Related Functions
+## Related functions
 
-* [`createHook()`](/docs/api-reference/workflow/create-hook) - Create a hook in a workflow.
-* [`resumeHook()`](/docs/api-reference/workflow-api/resume-hook) - Resume a hook with a payload.
+- [`createHook()`](/docs/api-reference/workflow/create-hook): Create a hook in a workflow.
+- [`resumeHook()`](/docs/api-reference/workflow-api/resume-hook): Resume a hook with a payload.
