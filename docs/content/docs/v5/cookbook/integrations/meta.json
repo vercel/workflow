@@ -1,4 +1,4 @@
 {
   "title": "Integrations",
-  "pages": ["ai-sdk", "sandbox", "chat-sdk"]
+  "pages": ["ai-sdk", "sandbox", "chat-sdk", "mastra"]
 }
