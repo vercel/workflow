@@ -16,6 +16,14 @@ import {
 import { createContext } from './vm/index.js';
 import { replayWorkflow, resumeWorkflow, runWorkflow } from './workflow.js';
 
+// Pinned to the positional correlation-id scheme: this file relies on
+// literal positional-scheme correlation ids in its fixtures (111 occurrences),
+// which only the positional scheme mints. It keeps covering the opt-out
+// path; the call-site default is covered by callsite-correlation-ids.test.ts
+// with derived ids. Rewriting these fixtures is the prerequisite for
+// retiring the opt-out.
+process.env.WORKFLOW_CALLSITE_CORRELATION_IDS = '0';
+
 // No encryption key = encryption disabled
 const noEncryptionKey = undefined;
 

@@ -20,6 +20,14 @@ import {
 import { createContext } from '../vm/index.js';
 import { setWorld } from './world.js';
 
+// Pinned to the positional correlation-id scheme: this file relies on
+// literal positional-scheme correlation ids in its fixtures,
+// which only the positional scheme mints. It keeps covering the opt-out
+// path; the call-site default is covered by callsite-correlation-ids.test.ts
+// with derived ids. Rewriting these fixtures is the prerequisite for
+// retiring the opt-out.
+process.env.WORKFLOW_CALLSITE_CORRELATION_IDS = '0';
+
 vi.mock('@vercel/functions', () => ({
   waitUntil: vi.fn(),
 }));

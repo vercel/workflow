@@ -8,9 +8,10 @@ import {
 import { runWorkflow } from './workflow.js';
 
 /**
- * End-to-end coverage for `WORKFLOW_CALLSITE_CORRELATION_IDS=1`, the scheme that
+ * End-to-end coverage for call-site correlation ids — the default scheme, which
  * derives correlation ids from a call site rather than from the run's global
- * entity ordinal (see `correlation-id.ts`).
+ * entity ordinal (`WORKFLOW_CALLSITE_CORRELATION_IDS=0` opts back into the
+ * positional sequence; see `correlation-id.ts`).
  *
  * The pre-existing replay fixtures elsewhere in this suite pin literal
  * correlation ids that only the positional scheme mints, so they cover the
@@ -278,15 +279,17 @@ async function blockedBranchPrefixes(): Promise<{
   return { shorter, longer };
 }
 
-describe('positional correlation ids (default)', () => {
+describe('positional correlation ids (opt-out)', () => {
   const original = process.env.WORKFLOW_CALLSITE_CORRELATION_IDS;
 
   beforeEach(() => {
-    delete process.env.WORKFLOW_CALLSITE_CORRELATION_IDS;
+    process.env.WORKFLOW_CALLSITE_CORRELATION_IDS = '0';
   });
 
   afterEach(() => {
-    if (original !== undefined) {
+    if (original === undefined) {
+      delete process.env.WORKFLOW_CALLSITE_CORRELATION_IDS;
+    } else {
       process.env.WORKFLOW_CALLSITE_CORRELATION_IDS = original;
     }
   });
