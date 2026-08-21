@@ -836,6 +836,8 @@ export const AttributePanel = ({
   onRunClick,
   onDecrypt,
   isDecrypting = false,
+  isDecryptDisabled = false,
+  decryptDisabledReason,
   resource,
 }: {
   data: Record<string, unknown>;
@@ -852,6 +854,10 @@ export const AttributePanel = ({
   onDecrypt?: () => void;
   /** Whether decryption is currently in progress */
   isDecrypting?: boolean;
+  /** Whether decryption is unavailable */
+  isDecryptDisabled?: boolean;
+  /** Explains why decryption is unavailable */
+  decryptDisabledReason?: string;
   /** Resource type of the selected span — used to show targeted loading skeletons. */
   resource?: string;
 }) => {
@@ -943,6 +949,8 @@ export const AttributePanel = ({
     ? {
         onDecrypt,
         isDecrypting,
+        isDecryptDisabled,
+        decryptDisabledReason,
         hasEncryptedData: outerDecryptCtx?.hasEncryptedData,
       }
     : outerDecryptCtx;

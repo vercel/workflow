@@ -811,6 +811,10 @@ interface EventsListProps {
   onDecrypt?: () => void;
   /** Whether the encryption key is currently being fetched. */
   isDecrypting?: boolean;
+  /** Whether decryption is unavailable. */
+  isDecryptDisabled?: boolean;
+  /** Explains why decryption is unavailable. */
+  decryptDisabledReason?: string;
   /** Run-level hint: the run contains encrypted data (from probe). */
   hasEncryptedData?: boolean;
   /** Fetch events for an exact correlation or event ID. */
@@ -1288,6 +1292,8 @@ function EventListViewInner({
   onSortOrderChange,
   onDecrypt,
   isDecrypting = false,
+  isDecryptDisabled = false,
+  decryptDisabledReason,
   hasEncryptedData: hasEncryptedDataProp = false,
   onExactIdSearch,
   showSeparateEventOccurrenceTimestamps = false,
@@ -1647,7 +1653,16 @@ function EventListViewInner({
 
   return (
     <DecryptClickContext.Provider
-      value={onDecrypt ? { onDecrypt, isDecrypting } : undefined}
+      value={
+        onDecrypt
+          ? {
+              onDecrypt,
+              isDecrypting,
+              isDecryptDisabled,
+              decryptDisabledReason,
+            }
+          : undefined
+      }
     >
       <div className="h-full flex flex-col overflow-hidden">
         <style>{`@keyframes workflow-dot-pulse{0%{transform:scale(1);opacity:.7}70%,100%{transform:scale(2.2);opacity:0}}`}</style>
@@ -1743,6 +1758,8 @@ function EventListViewInner({
             <DecryptButton
               decrypted={!!encryptionKey}
               loading={isDecrypting}
+              disabled={isDecryptDisabled}
+              disabledReason={decryptDisabledReason}
               onClick={onDecrypt}
             />
           )}

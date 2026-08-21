@@ -261,6 +261,8 @@ export function TraceDetailPanel({
             encryptionKey={sidebar.encryptionKey}
             onDecrypt={sidebar.onDecrypt}
             isDecrypting={sidebar.isDecrypting}
+            isDecryptDisabled={sidebar.isDecryptDisabled}
+            decryptDisabledReason={sidebar.decryptDisabledReason}
             selectedSpan={selectedSpan}
             showSeparateEventOccurrenceTimestamps={
               sidebar.showSeparateEventOccurrenceTimestamps
