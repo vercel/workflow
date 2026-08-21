@@ -11,9 +11,12 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, '../../..');
 
 /**
- * The rule itself is covered in `@workflow/world-vercel`; this keeps
- * `@workflow/world-local` — bundled into the host build for the same reason —
- * honest in its own `turbo test` job.
+ * A local mirror of the sweep in `@workflow/utils`, which owns this rule and
+ * its own tests and checks every published world package. Repeated here so the
+ * signal arrives when you run just this package's tests.
+ *
+ * This package is bundled into the host application's server build, so one
+ * process holds one copy of each of its modules per bundler layer.
  */
 describe('module-scope state rule', () => {
   it('reports nothing for @workflow/world-local', () => {

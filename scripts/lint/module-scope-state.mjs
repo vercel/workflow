@@ -266,9 +266,18 @@ export function formatFindings(findings) {
     .map(
       (f) =>
         `${f.file}:${f.line}  ${f.keyword} ${f.name}  (${f.reason})\n` +
-        '    module-scope state is per bundler layer once this package is bundled.\n' +
-        `    Wrap it in globalSingleton() from @workflow/utils, or annotate the\n` +
-        `    declaration \`// per-copy-ok: <reason>\` if per-copy is intended.`
+        '    A bundler keys module identity on (resource, layer), so once this\n' +
+        '    package is bundled one process holds one copy of this module per\n' +
+        '    layer — Next.js alone builds instrument, app-route, ssr and edge.\n' +
+        '    This binding is therefore per-copy state, not a process singleton.\n' +
+        '\n' +
+        '    Hold it on the World instance if it is per-World, or on globalThis\n' +
+        '    via globalSingleton() from @workflow/utils if it is process-wide.\n' +
+        '    If per-copy is what you want, say why:\n' +
+        '      // per-copy-ok: <reason>\n' +
+        '\n' +
+        '    Background: packages/utils/src/global-singleton.ts, and\n' +
+        '    docs/content/worlds/v5/building-a-world.mdx#process-wide-state.'
     )
     .join('\n\n');
 }

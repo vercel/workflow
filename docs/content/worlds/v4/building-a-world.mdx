@@ -217,6 +217,60 @@ Streams are identified by a combination of `runId` and `name`. Each workflow run
 
 `getChunks` returns a paginated snapshot of currently available chunks (unlike `get` which returns a live `ReadableStream` that waits for new chunks). `getInfo` returns the tail index (last chunk index, 0-based, or `-1` when empty) and whether the stream is complete — useful for resolving negative `startIndex` values into absolute positions.
 
+## Process-wide state
+
+Hold state that must be process-wide on `globalThis`, not at module scope.
+
+A World is loaded in one of two ways, and only one of them gives your package a
+single module instance:
+
+- **Loaded at runtime.** `WORKFLOW_TARGET_WORLD=@your-org/world-foo` is resolved
+  with `require()` at runtime, so Node's module cache dedupes it and one process
+  holds one copy.
+- **Bundled.** The host application's bundler compiles your package into its
+  server build. Bundlers key module identity on `(resource, layer)`, and a
+  framework routinely builds several server layers — Next.js compiles
+  `instrument`, app-route, `ssr` and `edge` as separate module graphs. Your
+  package is then compiled into each one, so a single process holds several
+  copies of every one of your modules, each with its own module scope.
+
+The two built-in worlds are bundled. A custom world is not today, but that is a
+property of how it is loaded rather than of how it is written, and it can change
+under you — `@workflow/world-vercel` was external until it wasn't, and every
+module-scope variable in it silently became per-copy state.
+
+So a top-level `let` or a `const` holding a `Map` is not the singleton it looks
+like:
+
+```typescript
+// Wrong: one Map per copy. Writes from one part of the app are invisible to
+// another, and a mutex like this simply stops mutually excluding.
+const locks = new Map<string, Promise<void>>();
+```
+
+Reach for `globalThis` under a `Symbol.for()` key instead, so every copy shares
+one object:
+
+```typescript
+type WorldState = { locks: Map<string, Promise<void>> };
+
+const StateKey = Symbol.for('@your-org/world-foo//locks/v1');
+const store = globalThis as typeof globalThis &
+  Record<symbol, WorldState | undefined>;
+
+const state: WorldState = (store[StateKey] ??= { locks: new Map() });
+```
+
+Version the key. Two releases of your package can end up in one process, and a
+key without a version lets an older copy read a state object it does not
+understand.
+
+Better still, keep the state on the World instance your `createWorld()` returns
+— connection pools, caches, and open channels are usually per-World rather than
+per-process, and instance state cannot be duplicated by a bundler. Reserve the
+global for the few things that are genuinely process-wide: ID generators whose
+sequence must not fork, and log-once latches.
+
 ## Reference Implementations
 
 Study these implementations for guidance:

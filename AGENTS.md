@@ -442,6 +442,32 @@ The `executionContext` field on workflow runs is a flexible JSONB/CBOR object th
 ### Observability Data Hydration
 `packages/core/src/observability.ts` contains `hydrateResourceIO` which strips certain fields (like `executionContext`) before UI display. If you need to display data from stripped fields, extract it before the stripping occurs.
 
+### World packages must not hold mutable module state
+
+`@workflow/world-local` and `@workflow/world-vercel` are bundled into the host
+application's server build (see `VERCEL_WORLD_DEPENDENCY_PACKAGES` in
+`packages/next/src/index.ts`). Bundlers key module identity on
+`(resource, layer)`, and Next.js alone compiles `instrument`, app-route, `ssr`
+and `edge` as separate module graphs — so one process holds one copy of every
+module in these packages **per bundler layer**. A top-level `let`, or a `const`
+holding a `Map`, is per-copy state, not the process singleton it reads as. A
+duplicated mutex stops mutually excluding; a duplicated registry is a
+deterministic miss; duplicated ID generators can fork a sequence.
+
+Hold such state on the World instance where it is per-World, or on `globalThis`
+via `globalSingleton()` from `@workflow/utils` where it is genuinely
+process-wide. State that is deliberately per-copy needs a
+`// per-copy-ok: <why>` annotation. `scripts/lint/module-scope-state.mjs`
+enforces this across every published `packages/world-*`, run from
+`@workflow/utils`'s test suite (with a local mirror in each world package), so
+adding a new world package is covered automatically.
+
+Custom worlds loaded through `WORKFLOW_TARGET_WORLD` are deduped by Node's
+module cache and are safe today — but that is a property of how they are loaded,
+not of how they are written, and it changed for world-vercel in #3493. Keep them
+clean too. The author-facing version of this rule is in
+`docs/content/worlds/{v4,v5}/building-a-world.mdx`; keep both versions in sync.
+
 ### Trace context propagation (world-vercel HTTP requests)
 Every outgoing HTTP request from `@workflow/world-vercel` to workflow-server (or the queue) MUST explicitly inject W3C trace context so the server can parent its spans to the caller and traces stay correlated end to end. Call `injectTraceContextIntoHeaders(headers)` (from `packages/world-vercel/src/telemetry.ts`) on the outgoing headers, inside the client span when one exists — `makeRequest` in `utils.ts` is the reference implementation. It is a no-op when no OpenTelemetry SDK is registered.
 
