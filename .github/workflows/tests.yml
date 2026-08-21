@@ -983,6 +983,16 @@ jobs:
           APP_NAME: ${{ matrix.app.name }}
           WORKBENCH_APP_PATH: ${{ steps.prepare-workbench.outputs.workbench_app_path }}
 
+      # Asserts the shape of the manifest the step above just built. It needs
+      # its own invocation rather than another file in that one: local-build
+      # is what runs `pnpm build`, and vitest would run both files
+      # concurrently, against a manifest that does not exist yet.
+      - name: Run Manifest Tests
+        run: pnpm vitest run packages/core/e2e/manifest.test.ts
+        env:
+          APP_NAME: ${{ matrix.app.name }}
+          WORKBENCH_APP_PATH: ${{ steps.prepare-workbench.outputs.workbench_app_path }}
+
       - name: Run E2E Tests
         run: |
           export PROD_SERVER_LOG_PATH="$GITHUB_WORKSPACE/prod-server-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}.log"
