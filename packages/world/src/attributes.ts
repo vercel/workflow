@@ -5,7 +5,7 @@ import {
   ATTRIBUTE_VALUE_MAX_BYTES,
   type AttributeChange,
   AttributeValidationError,
-  validateAttributeChanges,
+  validateAttributeBatchConstraints,
 } from './attributes-validation.js';
 
 export * from './attributes-validation.js';
@@ -42,7 +42,7 @@ export const AttributeChangesSchema = z
       // Reserved keys are contextual: attr_set events may carry them when the
       // sibling allowReservedAttributes flag is set. Callers that prohibit the
       // reserved namespace enforce that through validateAttributeChanges.
-      validateAttributeChanges(changes, { allowReservedAttributes: true });
+      validateAttributeBatchConstraints(changes);
     } catch (error) {
       if (!(error instanceof AttributeValidationError)) throw error;
       context.addIssue({

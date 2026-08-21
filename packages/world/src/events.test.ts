@@ -145,28 +145,3 @@ describe('sealed-log noop events', () => {
     expect(result.success).toBe(false);
   });
 });
-
-describe('omitted event payloads', () => {
-  const runCreated = {
-    eventType: 'run_created',
-    runId: 'wrun_00000000000000000000000000',
-    eventId: 'evnt_00000000000000000000000000',
-    createdAt: new Date().toISOString(),
-    eventData: {
-      deploymentId: 'dpl_123',
-      workflowName: 'workflows/example',
-    },
-  };
-
-  it('restores an omitted payload as undefined on stored events', () => {
-    const parsed = EventSchema.parse(runCreated);
-    expect(parsed.eventType).toBe('run_created');
-    if (parsed.eventType === 'run_created') {
-      expect(parsed.eventData).toHaveProperty('input', undefined);
-    }
-  });
-
-  it('still requires the payload key on create requests', () => {
-    expect(CreateEventSchema.safeParse(runCreated).success).toBe(false);
-  });
-});

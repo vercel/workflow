@@ -75,13 +75,12 @@ function attributeCountDelta(
   return existingKeys === undefined || !existingKeys.has(key) ? 1 : 0;
 }
 
-export function validateAttributeChanges(
+/** Validates constraints that apply across a batch of individually valid changes. */
+export function validateAttributeBatchConstraints(
   changes: AttributeChange[],
   context: {
     /** Existing keys make the post-merge count exact. */
     existingKeys?: Iterable<string>;
-    /** Reserved `$` keys are only available to framework code. */
-    allowReservedAttributes?: boolean;
   } = {}
 ): void {
   const seenKeys = new Set<string>();
@@ -92,10 +91,7 @@ export function validateAttributeChanges(
         ? context.existingKeys
         : new Set(context.existingKeys);
   let postMergeCount = existingKeys?.size ?? 0;
-  for (const change of changes) {
-    const { key, value } = change;
-    assertValidAttributeKey(key, context.allowReservedAttributes === true);
-    assertValidAttributeValue(value);
+  for (const { key, value } of changes) {
     if (seenKeys.has(key)) {
       throw new AttributeValidationError(
         `Attribute key ${JSON.stringify(key)} appears more than once in the same batch`
@@ -109,6 +105,22 @@ export function validateAttributeChanges(
       `Run attribute count would exceed limit ${ATTRIBUTE_MAX_PER_RUN} (post-merge ${postMergeCount})`
     );
   }
+}
+
+export function validateAttributeChanges(
+  changes: AttributeChange[],
+  context: {
+    /** Existing keys make the post-merge count exact. */
+    existingKeys?: Iterable<string>;
+    /** Reserved `$` keys are only available to framework code. */
+    allowReservedAttributes?: boolean;
+  } = {}
+): void {
+  for (const { key, value } of changes) {
+    assertValidAttributeKey(key, context.allowReservedAttributes === true);
+    assertValidAttributeValue(value);
+  }
+  validateAttributeBatchConstraints(changes, context);
 }
 
 export function applyAttributeChanges(

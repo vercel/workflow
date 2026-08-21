@@ -323,12 +323,9 @@ const CreateEventV4PageSchema = z.union([
     hasMore: z.boolean(),
   }),
   z.object({
-    // Materialized writes omit page metadata entirely. Zod 4.4 correctly
-    // treats bare z.undefined() properties as required, so optionality must be
-    // explicit when the keys themselves may be absent.
-    events: z.undefined().optional(),
-    cursor: z.undefined().optional(),
-    hasMore: z.undefined().optional(),
+    events: z.undefined(),
+    cursor: z.undefined(),
+    hasMore: z.undefined(),
   }),
 ]);
 

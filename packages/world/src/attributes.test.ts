@@ -69,6 +69,14 @@ describe('attribute schemas', () => {
     ).toBe(false);
   });
 
+  it('rejects batches over the per-run cap', () => {
+    const changes = Array.from(
+      { length: ATTRIBUTE_MAX_PER_RUN + 1 },
+      (_, i) => ({ key: `k${i}`, value: 'v' })
+    );
+    expect(AttributeChangesSchema.safeParse(changes).success).toBe(false);
+  });
+
   it('leaves reserved-key policy to the contextual validator', () => {
     expect(
       AttributeChangesSchema.safeParse([

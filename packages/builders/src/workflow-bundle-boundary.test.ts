@@ -17,6 +17,7 @@ class TestBuilder extends BaseBuilder {
       inputFiles: [inputFile],
       outfile,
       bundleFinalOutput: false,
+      includeMetafile: true,
       discoveredEntries,
     });
   }
@@ -58,7 +59,7 @@ describe('workflow bundle boundary', () => {
       discoveredSerdeFiles: new Set(),
     };
 
-    const { interimBundleText } = await new TestBuilder(
+    const { interimBundleMetafile } = await new TestBuilder(
       config
     ).createWorkflowBundle(
       inputFile,
@@ -66,7 +67,12 @@ describe('workflow bundle boundary', () => {
       discoveredEntries
     );
 
-    expect(interimBundleText).toBeDefined();
-    expect(interimBundleText).not.toContain('/node_modules/zod');
+    expect(interimBundleMetafile).toBeDefined();
+    const inputs = Object.keys(interimBundleMetafile?.inputs ?? {}).map(
+      (input) => input.replaceAll('\\', '/')
+    );
+    expect(
+      inputs.filter((input) => input.includes('/node_modules/zod/'))
+    ).toEqual([]);
   });
 });
