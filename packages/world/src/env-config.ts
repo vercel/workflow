@@ -37,6 +37,10 @@ export interface EnvNumberOptions {
 const WarnedEnvValuesKey = Symbol.for('@workflow/world//warnedEnvValues/v1');
 const globalStore = globalThis as typeof globalThis &
   Record<symbol, Set<string> | undefined>;
+// The same globalThis-backed idiom as `packages/core/src/private.ts`. Keeping
+// the initializer an expression is also what
+// `scripts/lint/module-scope-state.mjs` recognizes as off-module state.
+// biome-ignore lint/suspicious/noAssignInExpressions: off-module state idiom
 const warnedEnvValues = (globalStore[WarnedEnvValuesKey] ??= new Set<string>());
 
 function warnOnce(key: string, message: string): void {
