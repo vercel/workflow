@@ -102,7 +102,7 @@ export const SPEC_VERSION_CURRENT =
   SPEC_VERSION_SUPPORTS_SEALED_LOG as SpecVersion;
 
 /**
- * Environment variable that opts new runs OUT of the sealed log.
+ * Environment variable that opts new runs IN to the sealed log.
  *
  * Read per `createWorld()` call rather than at module load, so a test or a
  * single process can create worlds in both modes.
@@ -110,28 +110,43 @@ export const SPEC_VERSION_CURRENT =
 export const SEALED_LOG_ENV_VAR = 'WORKFLOW_SEALED_LOG';
 
 /**
- * The spec version a World should stamp on the runs it creates: the sealed log
- * unless {@link SEALED_LOG_ENV_VAR} switches it off, in which case the
- * slot-identity version it supersedes.
+ * The spec version a World should stamp on the runs it creates: the
+ * slot-identity version unless {@link SEALED_LOG_ENV_VAR} opts in to the
+ * sealed log that supersedes it.
  *
- * Same shape, and the same reasoning, as the flag slot identity itself shipped
- * behind before going unconditional: default on, with one env var to put a
- * deployment back on the previous scheme without a release.
+ * Reading and stamping are separate stages of a spec bump, and this is the
+ * first of them: every build already reads a sealed log and skips `noop` (see
+ * {@link SPEC_VERSION_MAX_SUPPORTED}), while stamping stays behind the flag
+ * until the version is safe to mint everywhere. Two things have to be true
+ * before that default flips, and neither is yet:
  *
- * The fallback is a real fallback, not a formality. Turning this off has to
- * leave a World the runtime still admits, which is why
+ * - **Every reader in the fleet has to accept spec 7.** A runtime that pins
+ *   its own accepted range separately does not move with this constant. The
+ *   Python runtime validates `specVersion <= 6` and rejects a spec-7
+ *   `run_started` outright, so stamping 7 by default makes every run it serves
+ *   unrunnable.
+ * - **Pre-assigned positions have to be free of the stall they currently
+ *   cause.** Assigning a position before the write commits is what lets a
+ *   claim be abandoned, and abandoned claims are observably stranding runs:
+ *   spec-7 runs stall between a step outcome and the resume that should follow
+ *   it, and only the queue's own redelivery (order of ten minutes later) moves
+ *   them on. Measured against spec-6 runs on the same backend in the same
+ *   window, spec 7 stalls roughly 30x as often.
+ *
+ * The fallback is a real fallback, not a formality. Stamping the lower version
+ * has to leave a World the runtime still admits, which is why
  * `assertWorldSupportsRuntimeProtocol` floors at the slot-identity version
- * rather than at {@link SPEC_VERSION_CURRENT} because a kill switch that made
- * the runtime reject its own World would be no kill switch at all.
+ * rather than at {@link SPEC_VERSION_CURRENT} because a default that made the
+ * runtime reject its own World would be no default at all.
  *
  * Every World reads runs up to {@link SPEC_VERSION_MAX_SUPPORTED} whatever
- * this returns, so switching it off here does not make runs another process
- * created unreadable.
+ * this returns, so leaving it off here does not make runs another process
+ * created unreadable — including the spec-7 runs created while it was on.
  */
 export function mintedSpecVersion(
   env: Record<string, string | undefined> = process.env
 ): SpecVersion {
-  return envFlag(SEALED_LOG_ENV_VAR, true, env)
+  return envFlag(SEALED_LOG_ENV_VAR, false, env)
     ? SPEC_VERSION_CURRENT
     : SPEC_VERSION_SUPPORTS_SLOT_IDENTITY;
 }
