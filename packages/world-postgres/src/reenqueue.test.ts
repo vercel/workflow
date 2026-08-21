@@ -41,6 +41,52 @@ vi.mock('@workflow/world-local', async (importOriginal) => {
   };
 });
 
+// Persisted suspension state consulted by startup recovery (recovery.ts)
+// through the drizzle client. Reset in beforeEach; tests push rows to mark
+// runs as parked (hooks / waits) or runnable (non-terminal steps).
+const drizzleState = vi.hoisted(() => ({
+  steps: [] as Array<{ runId: string; status: string }>,
+  waits: [] as Array<{
+    runId: string;
+    status: string;
+    resumeAt: Date | null;
+  }>,
+  hooks: [] as Array<{ runId: string }>,
+}));
+
+vi.mock('./drizzle/index.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./drizzle/index.js')>();
+  const Schema = actual.Schema;
+  return {
+    ...actual,
+    createClient: vi.fn(() => ({
+      select: () => ({
+        from: (table: unknown) => ({
+          where: async () => {
+            if (table === Schema.steps) {
+              return drizzleState.steps
+                .filter(
+                  (step) =>
+                    step.status === 'pending' || step.status === 'running'
+                )
+                .map(({ runId }) => ({ runId }));
+            }
+            if (table === Schema.waits) {
+              return drizzleState.waits
+                .filter((wait) => wait.status === 'waiting')
+                .map(({ runId, resumeAt }) => ({ runId, resumeAt }));
+            }
+            if (table === Schema.hooks) {
+              return drizzleState.hooks.map(({ runId }) => ({ runId }));
+            }
+            throw new Error('Unexpected table in recovery query');
+          },
+        }),
+      }),
+    })),
+  };
+});
+
 vi.mock('./storage.js', () => ({
   createRunsStorage: vi.fn(),
   createEventsStorage: vi.fn(),
@@ -103,6 +149,9 @@ describe('re-enqueue active runs on start', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    drizzleState.steps = [];
+    drizzleState.waits = [];
+    drizzleState.hooks = [];
     runnerMock.promise = Promise.resolve();
     vi.mocked(makeWorkerUtils).mockResolvedValue(workerUtilsMock);
     vi.mocked(getWorkflowPort).mockResolvedValue(undefined);
@@ -252,6 +301,64 @@ describe('re-enqueue active runs on start', () => {
     expect(workerUtilsMock.addJob).toHaveBeenCalledTimes(2);
 
     await world.close();
+  });
+
+  it('skips runs durably parked on hooks or future waits during startup recovery', async () => {
+    mockRunsList({
+      running: [
+        { runId: 'wrun_hooked', workflowName: 'wfHook' },
+        { runId: 'wrun_sleeping', workflowName: 'wfSleep' },
+        { runId: 'wrun_active', workflowName: 'wfActive' },
+      ],
+    });
+    // wrun_hooked is suspended on an unresolved hook, wrun_sleeping on a
+    // wait that is not due for another hour. Only wrun_active has
+    // interrupted step work.
+    drizzleState.hooks.push({ runId: 'wrun_hooked' });
+    drizzleState.waits.push({
+      runId: 'wrun_sleeping',
+      status: 'waiting',
+      resumeAt: new Date(Date.now() + 60 * 60 * 1000),
+    });
+    drizzleState.steps.push({ runId: 'wrun_active', status: 'running' });
+
+    const world = createWorld({ connectionString: 'postgres://test', pool });
+    await world.start();
+
+    expect(workerUtilsMock.addJob).toHaveBeenCalledTimes(1);
+    expect(workerUtilsMock.addJob).toHaveBeenCalledWith(
+      'workflow_flows',
+      expect.objectContaining({ id: 'wfActive' }),
+      expect.anything()
+    );
+
+    await world.close();
+  });
+
+  it('recovers runs with a stable graphile job key so repeated boots do not accumulate duplicate jobs', async () => {
+    mockRunsList({
+      pending: [{ runId: 'wrun_AAA', workflowName: 'wfA' }],
+    });
+
+    // Boot the world twice without the recovery job being consumed,
+    // simulating repeated process restarts against the same database.
+    const world1 = createWorld({ connectionString: 'postgres://test', pool });
+    await world1.start();
+    await world1.close();
+
+    const world2 = createWorld({ connectionString: 'postgres://test', pool });
+    await world2.start();
+    await world2.close();
+
+    expect(workerUtilsMock.addJob).toHaveBeenCalledTimes(2);
+    const jobKeys = vi
+      .mocked(workerUtilsMock.addJob)
+      .mock.calls.map((call) => (call[2] as { jobKey?: string })?.jobKey);
+    // Same persisted job key on every boot: graphile-worker's job_key
+    // replace semantics collapse these into a single outstanding job,
+    // instead of the pre-fix behavior of a fresh message ID per boot.
+    expect(jobKeys[0]).toBe('startup-recovery:wrun_AAA');
+    expect(jobKeys[1]).toBe('startup-recovery:wrun_AAA');
   });
 
   it('closes owned resources in dependency order', async () => {
