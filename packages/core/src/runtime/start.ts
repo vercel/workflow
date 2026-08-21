@@ -1,4 +1,5 @@
 import { EntityConflictError, WorkflowRuntimeError } from '@workflow/errors';
+import { globalSingleton } from '@workflow/utils';
 import { workflowDisplayName } from '@workflow/utils/parse-name';
 import type { WorkflowInvokePayload, World } from '@workflow/world';
 import {
@@ -80,7 +81,13 @@ function resolveLineageAttributes(): Record<string, string> | undefined {
 // The warning that explains this only needs to fire once per process: a
 // workflow that hardcodes 'latest' for its Vercel deployment would otherwise
 // log it on every local/Postgres run, flooding tight dev loops.
-let hasWarnedLatestNoOp = false;
+// On `globalThis` (see `globalSingleton`) so "once per process" is not once
+// per bundler layer.
+const latestNoOpWarning = globalSingleton(
+  '@workflow/core//latestNoOpWarning',
+  1,
+  () => ({ warned: false })
+);
 
 /**
  * Reset the `deploymentId: 'latest'` no-op warn-once guard. Test-only,
@@ -89,7 +96,7 @@ let hasWarnedLatestNoOp = false;
  * @internal
  */
 export function _resetLatestNoOpWarnForTests(): void {
-  hasWarnedLatestNoOp = false;
+  latestNoOpWarning.warned = false;
 }
 
 export interface StartOptionsBase {
@@ -300,9 +307,9 @@ export async function start<TArgs extends unknown[], TResult>(
         if (world.resolveLatestDeploymentId) {
           deploymentId = await world.resolveLatestDeploymentId();
         } else {
-          // Warn once per process; see hasWarnedLatestNoOp above.
-          if (!hasWarnedLatestNoOp) {
-            hasWarnedLatestNoOp = true;
+          // Warn once per process; see latestNoOpWarning.warned above.
+          if (!latestNoOpWarning.warned) {
+            latestNoOpWarning.warned = true;
             runtimeLogger.warn(
               "deploymentId: 'latest' has no effect in this world and was ignored. " +
                 'It is only supported by worlds with atomic deployments, such as Vercel. ' +

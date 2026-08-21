@@ -1,5 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { globalSingleton } from '@workflow/utils';
 import type { Event } from '@workflow/world';
 import { EventSchema, HookSchema } from '@workflow/world';
 import { z } from 'zod';
@@ -196,12 +197,19 @@ export async function deleteHookByRunMarkerFile(
   await deleteJSON(path.join(byRunDir(basedir), `${fileId}.json`));
 }
 
-// Per-process ensure cache; only successful backfills are cached.
-const ensuredBasedirs = new Map<string, Promise<void>>();
+// Per-process ensure cache; only successful backfills are cached. On
+// `globalThis` rather than at module scope so "per-process" stays true when a
+// bundler puts several copies of this file in one process (see
+// `globalSingleton`), otherwise each copy runs the full scan again.
+const hookIndex = globalSingleton(
+  '@workflow/world-local//hookIndexEnsureCache',
+  1,
+  () => ({ ensuredBasedirs: new Map<string, Promise<void>>() })
+);
 
 /** Forget completed backfills (data-dir reset / tests). */
 export function resetHookIndexEnsureCache(): void {
-  ensuredBasedirs.clear();
+  hookIndex.ensuredBasedirs.clear();
 }
 
 /**
@@ -212,13 +220,13 @@ export function resetHookIndexEnsureCache(): void {
  */
 export async function ensureHookIndexes(basedir: string): Promise<void> {
   const key = path.resolve(basedir);
-  let pending = ensuredBasedirs.get(key);
+  let pending = hookIndex.ensuredBasedirs.get(key);
   if (!pending) {
     pending = ensureHookIndexesImpl(key).catch((error) => {
-      ensuredBasedirs.delete(key);
+      hookIndex.ensuredBasedirs.delete(key);
       throw error;
     });
-    ensuredBasedirs.set(key, pending);
+    hookIndex.ensuredBasedirs.set(key, pending);
   }
   return pending;
 }

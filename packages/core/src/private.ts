@@ -703,6 +703,9 @@ export function registerDeliveryBarrier(
  * so the context interface (constructed literally by many test harnesses)
  * needs no new field; entries drop with the context.
  */
+// per-copy-ok: keyed on the orchestrator context object, and a context is armed
+// and observed by the same copy that created it. Entries can never be looked up
+// from another copy because that copy has no reference to the key.
 const activeBarrierSafetyNets = new WeakSet<WorkflowOrchestratorContext>();
 
 /**

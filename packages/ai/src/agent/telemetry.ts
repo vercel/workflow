@@ -1,3 +1,4 @@
+import { globalSingleton } from '@workflow/utils';
 import type { TelemetrySettings } from './durable-agent.js';
 
 // Minimal OTel type shims so we don't depend on @opentelemetry/api at compile time.
@@ -38,24 +39,30 @@ interface OtelApi {
   SpanStatusCode: { ERROR: number };
 }
 
-// Lazy-loaded OTel API: self-initializes on first use (item 5)
-let otelApi: OtelApi | null = null;
-let otelLoadAttempted = false;
+// Lazy-loaded OTel API: self-initializes on first use (item 5).
+//
+// On `globalThis` rather than at module scope because this package is bundled
+// into the host application's server build, which gives one copy of this module
+// per bundler layer; per-copy state would re-attempt the import once per layer.
+const otel = globalSingleton('@workflow/ai//agentTelemetry', 1, () => ({
+  api: null as OtelApi | null,
+  loadAttempted: false,
+}));
 
 async function ensureOtelApi(): Promise<OtelApi | null> {
-  if (otelLoadAttempted) return otelApi;
-  otelLoadAttempted = true;
+  if (otel.loadAttempted) return otel.api;
+  otel.loadAttempted = true;
   try {
     // Dynamic import, since @opentelemetry/api is an optional peer dependency.
     // Use Function() to hide the import from bundlers that would fail at
     // compile time when the package is absent.
-    otelApi = await (Function(
+    otel.api = await (Function(
       'return import("@opentelemetry/api")'
     )() as Promise<OtelApi>);
   } catch {
-    otelApi = null;
+    otel.api = null;
   }
-  return otelApi;
+  return otel.api;
 }
 
 /**
@@ -64,9 +71,9 @@ async function ensureOtelApi(): Promise<OtelApi | null> {
  * don't need a separate init step.
  */
 function getTracer(telemetry?: TelemetrySettings): Tracer | null {
-  if (!telemetry?.isEnabled || !otelApi) return null;
+  if (!telemetry?.isEnabled || !otel.api) return null;
   if (telemetry.tracer) return telemetry.tracer as Tracer;
-  return otelApi.trace.getTracer('ai');
+  return otel.api.trace.getTracer('ai');
 }
 
 // ── Attribute helpers ──────────────────────────────────────────────────
@@ -130,11 +137,11 @@ function recordErrorOnSpan(span: Span, error: unknown): void {
       stack: error.stack,
     });
     span.setStatus({
-      code: otelApi?.SpanStatusCode.ERROR ?? 2,
+      code: otel.api?.SpanStatusCode.ERROR ?? 2,
       message: error.message,
     });
   } else {
-    span.setStatus({ code: otelApi?.SpanStatusCode.ERROR ?? 2 });
+    span.setStatus({ code: otel.api?.SpanStatusCode.ERROR ?? 2 });
   }
 }
 
@@ -172,12 +179,12 @@ export async function recordSpan<T>(options: {
   fn: (span?: Span) => PromiseLike<T> | T;
 }): Promise<T> {
   // Self-initialize on first call (item 5)
-  if (!otelLoadAttempted) {
+  if (!otel.loadAttempted) {
     await ensureOtelApi();
   }
 
   const tracer = getTracer(options.telemetry);
-  if (!tracer || !otelApi) {
+  if (!tracer || !otel.api) {
     return options.fn(undefined);
   }
 
@@ -192,11 +199,13 @@ export async function recordSpan<T>(options: {
     { attributes: attrs },
     async (span) => {
       // Capture current context so nested spans parent correctly (item 4).
-      // otelApi is guaranteed non-null here (checked before startActiveSpan).
-      const ctx = otelApi!.context.active();
+      // otel.api is guaranteed non-null here (checked before startActiveSpan).
+      const ctx = otel.api!.context.active();
 
       try {
-        const result = await otelApi!.context.with(ctx, () => options.fn(span));
+        const result = await otel.api!.context.with(ctx, () =>
+          options.fn(span)
+        );
         span.end();
         return result;
       } catch (error) {
@@ -228,12 +237,12 @@ export async function createSpan(options: {
   telemetry?: TelemetrySettings;
   attributes?: Attributes;
 }): Promise<SpanHandle | undefined> {
-  if (!otelLoadAttempted) {
+  if (!otel.loadAttempted) {
     await ensureOtelApi();
   }
 
   const tracer = getTracer(options.telemetry);
-  if (!tracer || !otelApi) return undefined;
+  if (!tracer || !otel.api) return undefined;
 
   const attrs = buildAttributes(
     options.name,
@@ -243,9 +252,9 @@ export async function createSpan(options: {
 
   // Capture the active context so the span parents under the caller's
   // current span, matching how recordSpan uses context.with().
-  const parentCtx = otelApi.context.active();
+  const parentCtx = otel.api.context.active();
   const span = tracer.startSpan(options.name, { attributes: attrs }, parentCtx);
-  const context = otelApi.trace.setSpan(parentCtx, span);
+  const context = otel.api.trace.setSpan(parentCtx, span);
   return { span, context };
 }
 
@@ -263,8 +272,8 @@ export function runInContext<T>(
   handle: SpanHandle | undefined,
   fn: () => T
 ): T {
-  if (!handle || !otelApi) return fn();
-  return otelApi.context.with(handle.context, fn);
+  if (!handle || !otel.api) return fn();
+  return otel.api.context.with(handle.context, fn);
 }
 
 /**

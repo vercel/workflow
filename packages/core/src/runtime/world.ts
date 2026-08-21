@@ -5,6 +5,16 @@ import {
   resolveWorkflowTargetWorld,
 } from '@workflow/utils';
 import type { World } from '@workflow/world';
+// Static imports, so these two are compiled into the host application's server
+// build. A bundler keys module identity on (resource, layer) and Next.js alone
+// builds `instrument`, app-route, `ssr` and `edge` layers, so one process holds
+// one copy of each of their modules *per layer*. Custom worlds below load
+// through `getRuntimeRequire()` and are deduped by Node's module cache instead.
+//
+// Neither package may therefore keep mutable state at module scope; both hold
+// it on `globalThis` via `globalSingleton()` from `@workflow/utils`, enforced
+// by `scripts/lint/module-scope-state.mjs`. See that helper's doc comment, and
+// `docs/content/worlds/*/building-a-world.mdx` for the rule world authors get.
 import { createWorld as createLocalWorld } from '@workflow/world-local';
 import { createWorld as createVercelWorld } from '@workflow/world-vercel';
 import { assertWorldSupportsRuntimeProtocol } from './world-compatibility.js';

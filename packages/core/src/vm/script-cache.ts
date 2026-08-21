@@ -1,4 +1,5 @@
 import { type Context, Script } from 'node:vm';
+import { globalSingleton } from '@workflow/utils';
 
 /**
  * Module-level cache of compiled workflow-bundle `vm.Script` objects.
@@ -60,7 +61,12 @@ import { type Context, Script } from 'node:vm';
  * source files in a bundle and is dropped wholesale when its parent `code`
  * entry is evicted.
  */
-const scriptCache = new Map<string, Map<string, Script>>();
+// On `globalThis` (see `globalSingleton`): compiling a bundle is the expensive
+// part this cache exists to skip, and per-copy caches would pay it once per
+// bundler layer that compiles a workflow.
+const scripts = globalSingleton('@workflow/core//vmScriptCache', 1, () => ({
+  byCode: new Map<string, Map<string, Script>>(),
+}));
 
 /**
  * Max number of distinct bundle (`code`) versions to retain. One is enough for
@@ -78,13 +84,13 @@ const MAX_BUNDLES = 8;
  * least-recently-used eviction candidate.
  */
 function touchBundle(code: string): Map<string, Script> | undefined {
-  const byFilename = scriptCache.get(code);
+  const byFilename = scripts.byCode.get(code);
   if (byFilename === undefined) {
     return undefined;
   }
   // Move to the most-recently-used position (end of insertion order).
-  scriptCache.delete(code);
-  scriptCache.set(code, byFilename);
+  scripts.byCode.delete(code);
+  scripts.byCode.set(code, byFilename);
   return byFilename;
 }
 
@@ -105,15 +111,15 @@ export function getCachedWorkflowScript(
   let byFilename = touchBundle(code);
   if (byFilename === undefined) {
     byFilename = new Map<string, Script>();
-    scriptCache.set(code, byFilename);
+    scripts.byCode.set(code, byFilename);
     // Evict the least-recently-used bundle(s) when over the cap. New bundles
     // are appended at the end, so the oldest live at the front.
-    while (scriptCache.size > MAX_BUNDLES) {
-      const oldest = scriptCache.keys().next().value;
+    while (scripts.byCode.size > MAX_BUNDLES) {
+      const oldest = scripts.byCode.keys().next().value;
       if (oldest === undefined) {
         break;
       }
-      scriptCache.delete(oldest);
+      scripts.byCode.delete(oldest);
     }
   }
   let script = byFilename.get(filename);
@@ -141,7 +147,7 @@ export function runCachedWorkflowScript(
  * compile-vs-cache behaviour in isolation; not used on the hot path.
  */
 export function clearWorkflowScriptCache(): void {
-  scriptCache.clear();
+  scripts.byCode.clear();
 }
 
 /**
@@ -149,5 +155,5 @@ export function clearWorkflowScriptCache(): void {
  * tests asserting the LRU bound; not used on the hot path.
  */
 export function workflowScriptCacheSize(): number {
-  return scriptCache.size;
+  return scripts.byCode.size;
 }

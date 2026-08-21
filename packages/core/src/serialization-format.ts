@@ -6,6 +6,7 @@
  * o11y, CLI o11y). It has NO Node.js dependencies.
  */
 
+import { globalSingleton } from '@workflow/utils';
 import { getEventDataRefFields } from '@workflow/world';
 import { parse, unflatten } from 'devalue';
 
@@ -280,9 +281,14 @@ function decompressSyncIfAvailable(
  * Web `DecompressionStream` has no zstd support. Node decodes via `node:zlib`
  * and never needs this. See `registerZstdDecoder`.
  */
-let zstdBrowserDecoder:
-  | ((payload: Uint8Array) => Promise<Uint8Array>)
-  | undefined;
+// On `globalThis` (see `globalSingleton`): the o11y host registers the decoder
+// once, and a per-copy slot would leave every other copy of this module without
+// one.
+const zstd = globalSingleton('@workflow/core//zstd.decoder', 1, () => ({
+  decoder: undefined as
+    | ((payload: Uint8Array) => Promise<Uint8Array>)
+    | undefined,
+}));
 
 /**
  * Register a browser zstd decoder (e.g. a WASM-backed one). The web o11y UI
@@ -292,7 +298,7 @@ let zstdBrowserDecoder:
 export function registerZstdDecoder(
   decoder: (payload: Uint8Array) => Promise<Uint8Array>
 ): void {
-  zstdBrowserDecoder = decoder;
+  zstd.decoder = decoder;
 }
 
 /**
@@ -307,7 +313,7 @@ async function decompressAsync(
   if (format === SerializationFormat.ZSTD) {
     const sync = decompressSyncIfAvailable(format, payload);
     if (sync) return sync;
-    if (zstdBrowserDecoder) return zstdBrowserDecoder(payload);
+    if (zstd.decoder) return zstd.decoder(payload);
     throw new Error(
       'zstd-compressed workflow data encountered but no zstd decoder is ' +
         'available. Node.js 22.15+ decodes natively; in the browser register ' +
