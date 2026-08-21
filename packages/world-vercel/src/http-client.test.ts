@@ -27,12 +27,15 @@ import {
   getEventsDispatcher,
   getNodeHttpAgents,
   getQueueDispatcher,
+  getRunStatusDispatcher,
+  getRunStatusNodeHttpAgents,
   getStreamCloseDispatcher,
   getStreamDispatcher,
   isRecyclableTransportError,
   NODE_HTTP_BODY_TIMEOUT_MS,
   NODE_HTTP_HEADERS_TIMEOUT_MS,
   noteEventsTransportOutcome,
+  RUN_STATUS_AGENT_OPTIONS,
   STREAM_AGENT_OPTIONS,
   STREAM_CLOSE_RETRY_OPTIONS,
   STREAM_RETRY_OPTIONS,
@@ -60,6 +63,21 @@ describe('getDispatcher', () => {
   it('returns the caller-supplied dispatcher when provided', () => {
     const custom = {};
     expect(getDispatcher({ dispatcher: custom })).toBe(custom);
+  });
+});
+
+describe('getRunStatusDispatcher', () => {
+  it('isolates held status reads from ordinary API traffic', () => {
+    expect(getRunStatusDispatcher()).toBe(getRunStatusDispatcher());
+    expect(getRunStatusDispatcher()).not.toBe(getDispatcher());
+    expect(RUN_STATUS_AGENT_OPTIONS.connections).toBeGreaterThan(
+      DEFAULT_AGENT_OPTIONS.connections
+    );
+  });
+
+  it('honors the caller-supplied dispatcher', () => {
+    const custom = {};
+    expect(getRunStatusDispatcher({ dispatcher: custom })).toBe(custom);
   });
 });
 
@@ -821,6 +839,7 @@ describe('node:http mode', () => {
     const custom = {};
     expect(getDispatcher({ dispatcher: custom })).toBe(custom);
     expect(getEventsDispatcher({ dispatcher: custom })).toBe(custom);
+    expect(getRunStatusDispatcher({ dispatcher: custom })).toBe(custom);
     expect(getStreamDispatcher({ dispatcher: custom })).toBe(custom);
     expect(getStreamCloseDispatcher({ dispatcher: custom })).toBe(custom);
   });
@@ -855,13 +874,16 @@ describe('node:http mode', () => {
   });
 
   // Keep-alive is the whole reason the pool exists, so it must outlive a
-  // single request. One pool serves every call site, because the four undici
-  // agents differ only in HTTP/2 and retry settings that Node's client has no
-  // equivalent for.
-  it('reuses one socket pool across calls', () => {
+  // single request. Held status reads use a separate pool so they cannot take
+  // every socket ordinary API traffic needs to make a run terminal.
+  it('reuses isolated socket pools across calls', () => {
     const agents = getNodeHttpAgents();
+    const runStatusAgents = getRunStatusNodeHttpAgents();
     expect(agents).toBeDefined();
+    expect(runStatusAgents).toBeDefined();
     expect(getNodeHttpAgents()).toBe(agents);
+    expect(getRunStatusNodeHttpAgents()).toBe(runStatusAgents);
+    expect(runStatusAgents).not.toBe(agents);
     expect(agents?.http.options.keepAlive).toBe(true);
     expect(agents?.https.options.keepAlive).toBe(true);
     // Sized from the same constants the undici agents use, not a second copy.
@@ -871,16 +893,21 @@ describe('node:http mode', () => {
     expect(agents?.https.options.keepAliveMsecs).toBe(
       DEFAULT_AGENT_OPTIONS.keepAliveTimeout
     );
+    expect(runStatusAgents?.https.options.maxSockets).toBe(
+      RUN_STATUS_AGENT_OPTIONS.connections
+    );
   });
 
   // Same rule as the dispatcher getters: supplying a dispatcher is an
   // instruction to use undici, so the request must stay on `fetch`.
   it('builds no pool when the caller supplied a dispatcher', () => {
     expect(getNodeHttpAgents({ dispatcher: {} })).toBeUndefined();
+    expect(getRunStatusNodeHttpAgents({ dispatcher: {} })).toBeUndefined();
   });
 
   it('builds no pool when the flag is off', () => {
     vi.stubEnv(NODE_HTTP_ENV_VAR, '0');
     expect(getNodeHttpAgents()).toBeUndefined();
+    expect(getRunStatusNodeHttpAgents()).toBeUndefined();
   });
 });

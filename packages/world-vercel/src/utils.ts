@@ -9,6 +9,8 @@ import type { z } from 'zod';
 import {
   getDispatcher,
   getNodeHttpAgents,
+  getRunStatusDispatcher,
+  getRunStatusNodeHttpAgents,
   NODE_HTTP_BODY_TIMEOUT_MS,
   NODE_HTTP_HEADERS_TIMEOUT_MS,
 } from './http-client.js';
@@ -405,6 +407,7 @@ export async function makeRequest<T>({
   data,
   onResponse,
   retryConnectTimeout = false,
+  transport = 'default',
 }: {
   endpoint: string;
   options?: Omit<RequestInit, 'body'>;
@@ -416,6 +419,8 @@ export async function makeRequest<T>({
   onResponse?: (response: Response) => void;
   /** Retry an idempotent read once when connecting timed out before a request was sent. */
   retryConnectTimeout?: boolean;
+  /** Internal transport pool selection for requests that may remain open. */
+  transport?: 'default' | 'run-status';
 }): Promise<T> {
   // Normalized once: `Request` used to do this uppercasing on the way into
   // `fetch`, and both the idempotency check and the curl repro read it.
@@ -483,7 +488,10 @@ export async function makeRequest<T>({
           // than leaving it on the undici behind `fetch`. `getNodeHttpAgents`
           // returns the pool only when no caller dispatcher was supplied, so
           // an explicit `config.dispatcher` still keeps the request on `fetch`.
-          const nodeAgents = getNodeHttpAgents(config);
+          const nodeAgents =
+            transport === 'run-status'
+              ? getRunStatusNodeHttpAgents(config)
+              : getNodeHttpAgents(config);
           // Both transports issue the same span against the same URL, so this
           // is the only thing that tells them apart in a trace.
           span?.setAttributes({
@@ -506,7 +514,10 @@ export async function makeRequest<T>({
                 new Request(url, { ...options, body, headers, signal }),
                 {
                   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici v7 dispatcher types don't match @types/node's RequestInit
-                  dispatcher: getDispatcher(config),
+                  dispatcher:
+                    transport === 'run-status'
+                      ? getRunStatusDispatcher(config)
+                      : getDispatcher(config),
                 } as any
               );
         } catch (error) {

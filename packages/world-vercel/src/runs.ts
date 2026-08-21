@@ -247,6 +247,7 @@ async function readRun(
     options: { method: 'GET', ...(signal ? { signal } : {}) },
     config,
     retryConnectTimeout: true,
+    ...(waitMs !== undefined ? { transport: 'run-status' as const } : {}),
     schema: (remoteRefBehavior === 'lazy'
       ? WorkflowRunWireWithRefsSchema
       : WorkflowRunWireSchema) as any,

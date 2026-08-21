@@ -8,9 +8,11 @@ import { Agent, type Dispatcher, RetryAgent, type RetryHandler } from 'undici';
 import type { APIConfig } from './utils.js';
 
 let _dispatcher: RetryAgent | undefined;
+let _runStatusDispatcher: RetryAgent | undefined;
 let _streamDispatcher: RetryAgent | undefined;
 let _streamCloseDispatcher: RetryAgent | undefined;
 let _nodeHttpAgents: NodeHttpAgents | undefined;
+let _runStatusNodeHttpAgents: NodeHttpAgents | undefined;
 
 /**
  * Shared between all agents — connection pooling only. `pipelining` is
@@ -110,6 +112,22 @@ export const DEFAULT_AGENT_OPTIONS = {
   allowH2: false,
   // HTTP/1.1 pipelining is disabled (pipelining: 1) because it causes
   // head-of-line blocking that deadlocks the webhook respondWith mechanism.
+  pipelining: 1,
+} as const;
+
+/**
+ * Dedicated pool for run-status long polls.
+ *
+ * A status wait can hold one HTTP/1.1 connection for up to 50 seconds. Sharing
+ * the default eight-connection pool lets eight concurrent `run.returnValue`
+ * awaits consume every socket and block the ordinary reads needed to finish
+ * those same runs. Keep the waits isolated and leave enough capacity for the
+ * runtime's concurrent-await shapes without changing the default pool's bound.
+ */
+export const RUN_STATUS_AGENT_OPTIONS = {
+  ...BASE_AGENT_OPTIONS,
+  connections: 32,
+  allowH2: false,
   pipelining: 1,
 } as const;
 
@@ -566,12 +584,11 @@ function resolveDispatcher(
  * Shared `node:http` / `node:https` connection pool for `WORKFLOW_NODE_HTTP`
  * mode, or `undefined` when the request should go over undici.
  *
- * There is one pool rather than the four the undici side maintains, because
- * the four differ only in the two things Node's core client cannot express:
- * HTTP/2 (with its multiplexing and receive windows) and a `RetryAgent` policy.
- * Strip those and the remaining configuration is `BASE_AGENT_OPTIONS`, which is
- * identical across all four, so splitting the pool would buy nothing but
- * fragmentation of the sockets.
+ * Ordinary requests share one pool rather than mirroring every undici agent,
+ * because those agents otherwise differ only in HTTP/2 and retry behavior that
+ * Node's core client cannot express. Held run-status reads are the exception:
+ * they use a second pool so a set of long polls cannot consume every ordinary
+ * request socket.
  *
  * Built on first use and then kept for the life of the process: keep-alive is
  * the point, and a pool rebuilt per request would open a connection per
@@ -589,10 +606,27 @@ export function getNodeHttpAgents(
   return _nodeHttpAgents;
 }
 
+/** Dedicated node:http pool for held run-status reads. */
+export function getRunStatusNodeHttpAgents(
+  config?: APIConfig
+): NodeHttpAgents | undefined {
+  if (config?.dispatcher) return undefined;
+  if (!isNodeHttpEnabled()) return undefined;
+  _runStatusNodeHttpAgents ??= createNodeHttpAgents({
+    maxSockets: RUN_STATUS_AGENT_OPTIONS.connections,
+    keepAliveMs: RUN_STATUS_AGENT_OPTIONS.keepAliveTimeout,
+  });
+  return _runStatusNodeHttpAgents;
+}
+
 /** Drop the shared node:http pool. Exported for tests; production keeps it. */
 export function _resetNodeHttpAgentsForTests(): void {
   if (_nodeHttpAgents) destroyNodeHttpAgents(_nodeHttpAgents);
+  if (_runStatusNodeHttpAgents) {
+    destroyNodeHttpAgents(_runStatusNodeHttpAgents);
+  }
   _nodeHttpAgents = undefined;
+  _runStatusNodeHttpAgents = undefined;
 }
 
 /**
@@ -602,6 +636,14 @@ export function _resetNodeHttpAgentsForTests(): void {
  */
 export function getDispatcher(config?: APIConfig): unknown {
   return resolveDispatcher(config, getDefaultDispatcher);
+}
+
+/**
+ * Resolves the dispatcher for held run-status reads. Caller overrides still
+ * win, but the built-in path never shares sockets with ordinary API traffic.
+ */
+export function getRunStatusDispatcher(config?: APIConfig): unknown {
+  return resolveDispatcher(config, getDefaultRunStatusDispatcher);
 }
 
 /**
@@ -756,6 +798,14 @@ function getDefaultDispatcher(): RetryAgent {
     RETRY_AGENT_OPTIONS
   );
   return _dispatcher;
+}
+
+function getDefaultRunStatusDispatcher(): RetryAgent {
+  _runStatusDispatcher ??= makeRetryDispatcher(
+    RUN_STATUS_AGENT_OPTIONS,
+    RETRY_AGENT_OPTIONS
+  );
+  return _runStatusDispatcher;
 }
 
 /**
