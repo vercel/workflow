@@ -156,7 +156,10 @@ export function createRunsStorage(
             const statuses = Array.isArray(params.status)
               ? params.status
               : [params.status];
-            if (statuses.length > 0 && !statuses.includes(run.status)) {
+            // Empty array matches no runs (mirrors SQL `IN ()` semantics
+            // in world-postgres). Callers who want "unfiltered" must omit
+            // the field.
+            if (!statuses.includes(run.status)) {
               return false;
             }
           }

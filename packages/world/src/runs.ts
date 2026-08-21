@@ -196,6 +196,10 @@ export interface ListWorkflowRunsParams {
    * The array form lets callers express set filters (e.g. "not terminal")
    * without restating the status vocabulary in application code — see
    * `TERMINAL_WORKFLOW_RUN_STATUSES` for the complement.
+   *
+   * **Empty-array semantics:** `status: []` matches no runs (mirrors SQL
+   * `IN ()`). To leave the filter unset, omit the field entirely — that
+   * behaviour is unchanged from single-status callers.
    */
   status?: WorkflowRunStatus | WorkflowRunStatus[];
   pagination?: PaginationOptions;
