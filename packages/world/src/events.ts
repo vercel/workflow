@@ -733,24 +733,63 @@ const AllEventsSchema = z.discriminatedUnion('eventType', [
   NoopEventSchema, // World-only: sealed-log filler for an abandoned slot
 ]);
 
+/**
+ * Worlds may omit a payload field when an event is read with
+ * `resolveData: 'none'`. Restore the field as `undefined` before validating a
+ * stored event so the strict serialized-data schema can still distinguish an
+ * omitted read payload from a malformed create request.
+ */
+function restoreOmittedEventPayload(value: unknown): unknown {
+  if (typeof value !== 'object' || value === null) return value;
+  const event = value as Record<string, unknown>;
+  if (typeof event.eventType !== 'string') return value;
+  const payloadField = getEventDataPayloadField(event.eventType);
+  if (payloadField === undefined) return value;
+
+  const eventData = event.eventData;
+  if (
+    eventData !== undefined &&
+    (typeof eventData !== 'object' || eventData === null)
+  ) {
+    return value;
+  }
+  if (
+    eventData !== undefined &&
+    Object.hasOwn(eventData as object, payloadField)
+  ) {
+    return value;
+  }
+
+  return {
+    ...event,
+    eventData: {
+      ...((eventData as Record<string, unknown> | undefined) ?? {}),
+      [payloadField]: undefined,
+    },
+  };
+}
+
 // Server response includes runId, eventId, and createdAt
 // specVersion is optional in database for backwards compatibility
-export const EventSchema = AllEventsSchema.and(
-  z.object({
-    runId: z.string(),
-    eventId: z.string(),
-    createdAt: z.coerce.date(),
-    occurredAt: z.coerce.date().optional(),
-    specVersion: z.number().optional(),
-    /**
-     * Lazy hook resume idempotency key, persisted on `hook_received` events so
-     * the queue consumer can detect that the producer's concurrent direct write
-     * already landed in the run_started preload and skip its own re-ensure.
-     * Mirrors {@link CreateEventParams.resumeId}; absent on all other events and
-     * on legacy (non-lazy) resumes.
-     */
-    resumeId: z.string().optional(),
-  })
+export const EventSchema = z.preprocess(
+  restoreOmittedEventPayload,
+  AllEventsSchema.and(
+    z.object({
+      runId: z.string(),
+      eventId: z.string(),
+      createdAt: z.coerce.date(),
+      occurredAt: z.coerce.date().optional(),
+      specVersion: z.number().optional(),
+      /**
+       * Lazy hook resume idempotency key, persisted on `hook_received` events so
+       * the queue consumer can detect that the producer's concurrent direct write
+       * already landed in the run_started preload and skip its own re-ensure.
+       * Mirrors {@link CreateEventParams.resumeId}; absent on all other events and
+       * on legacy (non-lazy) resumes.
+       */
+      resumeId: z.string().optional(),
+    })
+  )
 );
 
 // Inferred types
