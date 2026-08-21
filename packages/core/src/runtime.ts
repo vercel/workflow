@@ -114,11 +114,7 @@ import { runStepSingleFlight } from './runtime/step-single-flight.js';
 import { handleSuspension } from './runtime/suspension-handler.js';
 import { useQuickJSVm } from './runtime/vm-mode.js';
 import { getWaitContinuationDispatch } from './runtime/wait-continuation.js';
-import {
-  getWorld,
-  getWorldHandlers,
-  type WorldHandlers,
-} from './runtime/world.js';
+import { getWorld, type WorldHandlers } from './runtime/world.js';
 import { dehydrateRunError } from './serialization.js';
 import { remapErrorStack } from './source-map.js';
 import * as Attribute from './telemetry/semantic-conventions.js';
@@ -4683,9 +4679,19 @@ export function workflowEntrypoint(
       async (span) => {
         if (!cachedHandler) {
           cachedHandler = await trace('workflow.route.init', async () => {
+            // The full runtime World, not `getWorldHandlers()`. That accessor
+            // owns a second, build-time-safe cache, so calling it here built a
+            // second World in the same process: duplicate connection pools and
+            // queue workers for a stateful World, plus a second copy of that
+            // world package's modules once it is bundled, which is what
+            // silently demoted the events WebSocket transport to HTTP. #3665.
+            //
+            // The span keeps its original name. It is a distinct span from the
+            // per-request `workflow.route.get_world` at the top of the flow
+            // route, and renaming it would collide with that one.
             const worldHandlers = await trace(
               'workflow.route.get_world_handlers',
-              async () => getWorldHandlers()
+              async () => getWorld()
             );
             return handler(worldHandlers);
           });
