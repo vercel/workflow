@@ -298,6 +298,11 @@ const DEFER_BEHIND: Record<DeliveryKind, readonly DeliveryKind[]> = {
  * Those two MUST agree exactly, and the doc block on
  * {@link awaitEarlierDeliveries} stakes deadlock-freedom on it, so the
  * condition lives here rather than being spelled out twice.
+ *
+ * One deliberate exception: the log-order-draws turnstile in
+ * {@link quiesceEarlierCascades} waits on ANY lower armed entry, a strictly
+ * wider relation than this one. Why that width cannot deadlock the
+ * safety-net dispenser is argued at the turnstile itself.
  */
 function gatesOn(
   kind: DeliveryKind,
@@ -440,8 +445,10 @@ function computeResolvesOnItsOwn(
  * that way.)
  */
 /**
- * Whether correlation-id draw order is pinned to event-log order
- * (`WORKFLOW_LOG_ORDER_DRAWS=1`). Read per call so tests can flip it.
+ * Whether correlation-id draw order is pinned to event-log order. Default ON:
+ * only the literal string `WORKFLOW_LOG_ORDER_DRAWS=0` opts out — `=false`,
+ * `=off`, and every other value keep it enabled. Read per call so tests can
+ * flip it.
  *
  * Off, a delivery that had to defer yields ONE macrotask after its
  * predecessors resolve — enough for short consumers, but a woken branch whose
@@ -454,20 +461,47 @@ function computeResolvesOnItsOwn(
  * the dense log, stable under prefix extension, and concurrent writers'
  * duplicate creates identical (deduped) instead of colliding.
  */
-export function isLogOrderDrawsEnabled(): boolean {
+function isLogOrderDrawsEnabled(): boolean {
   return process.env.WORKFLOW_LOG_ORDER_DRAWS !== '0';
 }
 
 /**
+ * One quiescence turn: lets the entire pending microtask queue drain, then
+ * yields to the event loop once. `setImmediate` (check phase) is used where
+ * available because Node clamps `setTimeout(0)` to ~1ms while `setImmediate`
+ * costs ~20µs — and every branch-deciding delivery pays this turn at least
+ * once, so on a sequential replay the clamp is the whole cost. Timers still
+ * run between consecutive turns (the loop re-enters the event loop each
+ * iteration, passing through the timers phase), so chains parked on the
+ * safety-net dispenser's `setTimeout` cadence are not starved.
+ */
+function quiescenceTurn(delayMs: number): Promise<void> {
+  if (delayMs === 0 && typeof setImmediate === 'function') {
+    return new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  return new Promise<void>((resolve) => setTimeout(resolve, delayMs));
+}
+
+/**
  * Waits until the workflow can make no further progress without another
- * delivery: repeated (promise-queue drain + macrotask turn)s until a full
- * turn passes with no new correlation-id draws and no hydration in flight.
+ * delivery: repeated (promise-queue drain + event-loop turn)s until a full
+ * turn passes with no new ULID draws and no hydration in flight.
  *
- * Termination: each extra iteration requires the body to have drawn a new id
- * or started a hydration in the previous turn, and a body's progress between
- * deliveries is finite. The loop holds this delivery's own barrier registered
- * (its `markDelivered` has not run), so `isDeliveryIdle` stays false and no
- * suspension can preempt the cascade being waited out.
+ * Termination: each extra iteration requires a new ULID draw or a hydration
+ * started in the previous turn. `mintCount` counts EVERY draw from the run's
+ * sequence — correlation ids and the serialization-driven draws (stream ids
+ * minted through the `STABLE_ULID` global while dehydrating) — which is
+ * conservative in the safe direction: serialization draws only extend the
+ * wait, and both body progress and the serialization work one cascade can
+ * schedule are finite between deliveries, so the fixpoint is reached. The
+ * loop holds this delivery's own barrier registered (its `markDelivered` has
+ * not run), so `isDeliveryIdle` stays false and no suspension can preempt the
+ * cascade being waited out.
+ *
+ * A rejected `promiseQueue` settles immediately and forever, so looping at
+ * the normal cadence on a failed run would degenerate into a busy loop (the
+ * same hazard {@link ensureBarrierSafetyNet} documents). Iterations that
+ * observe the queue rejected back off to a 50ms tick instead.
  */
 async function quiesceEarlierCascades(
   ctx: WorkflowOrchestratorContext,
@@ -478,11 +512,11 @@ async function quiesceEarlierCascades(
     const pendingBefore = ctx.pendingDeliveries;
     // Settled or rejected, the queue snapshot only orders us behind work
     // already chained; a rejection is the run failing elsewhere.
-    await ctx.promiseQueue.then(
-      () => {},
-      () => {}
+    const queueRejected = await ctx.promiseQueue.then(
+      () => false,
+      () => true
     );
-    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    await quiescenceTurn(queueRejected ? 50 : 0);
     if (
       (ctx.mintCount ?? 0) !== mintsBefore ||
       pendingBefore !== 0 ||
@@ -498,6 +532,19 @@ async function quiesceEarlierCascades(
     // entries (buffered payloads nobody has claimed) do not block, exactly as
     // in `gatesOn`: their handover is claim-driven, which is body-position
     // determined and therefore already a function of the prefix.
+    //
+    // This is deliberately a WIDER waits-for relation than `gatesOn` (which,
+    // e.g., excludes wait→wait): under log-order draws EVERY branch-deciding
+    // delivery must resolve in log order, kinds included. The width is safe
+    // against the dispenser deadlock that `resolvesOnItsOwn` guards, because
+    // the one edge the wider relation adds — waiting on an armed entry that
+    // gatesOn does not model — always bottoms out at the same unarmed payload:
+    // a lower armed WAIT is non-self-resolving only when it is (transitively)
+    // parked behind an unclaimed buffered payload, and a wait gates on every
+    // lower hook and step directly, so the spinner here also gates on that
+    // payload through `gatesOn` and is itself reported non-self-resolving.
+    // The dispenser therefore stays unblocked and retires the chain head; see
+    // the parked-chain test in delivery-barrier-coverage.test.ts.
     let lowerArmed = false;
     for (const [index, entry] of ctx.pendingDeliveryBarriers ?? []) {
       if (index < eventIndex && entry.armed) {

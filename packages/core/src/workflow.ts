@@ -392,8 +392,12 @@ async function createWorkflowSession({
   // Correlation IDs must be replay-stable. `startedAt` differs between a turbo
   // delivery and a later server-backed replay, so use fixedTimestamp.
   // The draw counter is the progress metric for `quiesceEarlierCascades`
-  // (WORKFLOW_LOG_ORDER_DRAWS): a quiet macrotask turn is one that drew
-  // nothing.
+  // (WORKFLOW_LOG_ORDER_DRAWS): a quiet turn is one that drew nothing. It
+  // counts EVERY draw from this sequence — this same function is installed as
+  // the `STABLE_ULID` global below, which serialization draws stream ids
+  // from during dehydration — deliberately: quiescence must also wait out
+  // serialization-driven draws, and counting extra draws only extends the
+  // wait (see the termination note on `quiesceEarlierCascades`).
   let mintCount = 0;
   const generateUlid = () => {
     mintCount += 1;

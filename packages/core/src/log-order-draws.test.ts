@@ -207,6 +207,13 @@ describe('arrival-order draws (opt-out, WORKFLOW_LOG_ORDER_DRAWS=0)', () => {
     }
   });
 
+  // Deliberate CONTROL: asserts the arrival-order BUG still reproduces with
+  // the flag off. If this stops failing-to-bind (i.e. `rebound` comes back
+  // empty), the control is obsolete, not broken — most likely because
+  // positional rebinding was fixed independently of draw scheduling, e.g.
+  // call-site-addressed correlation ids (vercel/workflow#3179) landing, which
+  // removes the rebinding in BOTH modes. Delete this block then; do not chase
+  // it as a regression.
   it('rebinds an ordinal from a step to a wait under extension (the control)', async () => {
     const { shorter, longer } = await blockedBranchPrefixes();
     const stale = await blockedBranchEntities(shorter);

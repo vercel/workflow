@@ -80,6 +80,10 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
   });
   const ulid = monotonicFactory(() => context.globalThis.Math.random());
   const workflowStartedAt = context.globalThis.Date.now();
+  // Real-session parity: the log-order-draws quiescence fixpoint keys its
+  // progress metric on `mintCount`; without it the loop degrades to a single
+  // turn and this suite would only exercise a degraded variant.
+  let mintCount = 0;
   const promiseQueueHolder = { current: Promise.resolve() };
   const ctxRef: { current?: WorkflowOrchestratorContext } = {};
   const ctx: WorkflowOrchestratorContext = {
@@ -99,7 +103,13 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
       getPromiseQueue: () => promiseQueueHolder.current,
     }),
     invocationsQueue: new Map(),
-    generateUlid: () => ulid(workflowStartedAt),
+    generateUlid: () => {
+      mintCount += 1;
+      return ulid(workflowStartedAt);
+    },
+    get mintCount() {
+      return mintCount;
+    },
     generateNanoid: nanoid.customRandom(nanoid.urlAlphabet, 21, (size) =>
       new Uint8Array(size).map(() => 256 * context.globalThis.Math.random())
     ),
@@ -896,7 +906,15 @@ describe('log-order draws turnstile above a parked chain', () => {
   };
 
   it('terminates and suspends with log-order draws on', async () => {
-    await scenario();
+    // Pin the flag rather than inherit the ambient environment: a suite-wide
+    // WORKFLOW_LOG_ORDER_DRAWS=0 sweep would otherwise silently run the off
+    // path twice and this test would prove nothing about the turnstile.
+    vi.stubEnv('WORKFLOW_LOG_ORDER_DRAWS', '1');
+    try {
+      await scenario();
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it('terminates and suspends with log-order draws off', async () => {
