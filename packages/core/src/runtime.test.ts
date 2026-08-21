@@ -1061,7 +1061,7 @@ describe('workflowEntrypoint replay guards', () => {
   });
 
   it('retains when an attribute write beats a step that signals first', async () => {
-    const debug = vi
+    using debug = vi
       .spyOn(runtimeLogger, 'debug')
       .mockImplementation(() => undefined);
     const ops: Promise<any>[] = [];
@@ -1124,7 +1124,6 @@ describe('workflowEntrypoint replay guards', () => {
       .filter(([message]) => message === 'Starting workflow execution')
       .map(([, context]) => context?.executionMode);
     expect(executionModes).toEqual(['replay', 'retained']);
-    debug.mockRestore();
   });
 
   it('fails the run when the World rejects an attr_set event as invalid', async () => {
