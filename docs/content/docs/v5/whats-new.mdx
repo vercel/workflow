@@ -1,0 +1,185 @@
+---
+title: What's new in v5?
+description: Workflow SDK 5.0 highlights, breaking changes, and how to upgrade from 4.x.
+type: guide
+summary: See what changed in Workflow SDK 5.0 and how to move an app from 4.x.
+related:
+  - /docs/getting-started
+  - /docs/configuration
+  - /docs/foundations/cancellation
+---
+
+We recommend upgrading to v5 to get all of the performance, cost, and feature improvements listed below. Install the migration skill, then tell your agent to migrate your app from Workflow SDK v4 to v5.
+
+```bash
+npm install workflow@latest
+npx skills add https://github.com/vercel/workflow --skill migrating-workflow-v4-to-v5
+```
+
+<CopyPrompt text="Upgrade this app from Workflow SDK v4 to v5 using the migrating-workflow-v4-to-v5 skill. Bump `workflow` and every `@workflow/*` dependency to ^5.0.0, apply the skill's mechanical rewrites, and report the behavior changes it flags instead of silently changing them. Then verify: reinstall, rebuild, typecheck, run the test suite, and execute one workflow end to end." />
+
+<Callout type="info">
+  Workflow SDK v4 remains installable as `workflow@4` and receives stability
+  fixes. Switch to its documentation with the version picker in the sidebar.
+</Callout>
+
+## Highlights
+
+### Faster and cheaper runs
+
+The largest change in v5 has no API surface: the runtime does far less work per unit of progress. The time between calling `start()` and your first step body executing is now less than half of what it was in v4. This is made possible by many smaller optimizations:
+
+**A workflow invocation now does as much as it can in a single pass.** In 4.x, progress was largely deferred to the queue: an invocation would execute a step, hand back to the queue, and let a fresh invocation pick up the next one. v5 creates and executes several steps inline per suspension, in parallel, and only uses the queue for a wait, a hook, or when the function approaches its timeout.
+
+**The runtime avoids waiting on the persistence layer where it can determine that is safe for your workload.** The runtime skips many API calls when they aren't needed, such as requesting the event log on a run's first invocation. Step creation is folded into step execution rather than being its own round trip. The inline loop consumes the event-log delta from the previous step's write instead of re-listing events. Each optimization is gated on specific runtime conditions and can be turned off individually. See [Runtime tuning](/docs/configuration/runtime-tuning).
+
+**The workflow VM is kept alive across inline steps.** Within one invocation, a step-only suspension keeps the live VM and hydrated state, so the next iteration appends only the newly written events instead of rebuilding the sandbox and replaying the whole log. Step inputs made of plain data or standard built-ins keep this fast path; see [`WORKFLOW_RETAINED_VM`](/docs/configuration/runtime-tuning#workflow_retained_vm).
+
+**Resuming a hook takes one round trip instead of two.** `resumeHook()` writes the `hook_received` event and dispatches the queue message concurrently, with a `(runId, resumeId)` dedup constraint keeping the two writers converging on exactly one event. See [Resilient hook resumption](/docs/changelog/resilient-resume).
+
+**Payloads are compressed** before they are encrypted and sent to the API. Repetitive payloads compress heavily; AI token streams average around 80% smaller. That is less stored data and less to move over the network.
+
+On [Vercel Workflows](/worlds/vercel) these benefits compound to reduce compute costs by up to 80% for workflows made of many small steps, and storage cost by up to 70%, depending on the workload. Depending on your setup, you may see similar gains using self-hosted or third-party Worlds.
+
+How much work fits in one invocation now scales with the function's own limit: the inline budget is derived from the runtime deadline the World reports, so raising `maxDuration` widens it without configuration. See [`WORKFLOW_V2_TIMEOUT_MS`](/docs/configuration/runtime-tuning#workflow_v2_timeout_ms).
+
+### Multi-region support
+
+Workflow run IDs are now tagged with the compute region they were created in, or the region specified when calling `start()`. Worlds can use this to pin execution to that region.
+This is now the default when deploying to Vercel, and run data will automatically be co-located with the compute region that the run was started in.
+
+See [Multi-region on the Vercel World](/worlds/vercel#multi-region) for how automatic pinning works and how to [select a region explicitly](/worlds/vercel#explicit-region-selection), and [Building a World](/worlds/building-a-world) for adding regional placement to a custom World.
+
+### Inflight cancellation
+
+`AbortController` and `AbortSignal` are now serializable, and signals can be passed into steps, so a workflow can abandon in-flight work without waiting for a step to finish.
+
+```typescript lineNumbers
+import { sleep } from "workflow";
+
+export async function raceWithTimeout() {
+  "use workflow";
+
+  const controller = new AbortController(); // [!code highlight]
+
+  const result = await Promise.race([
+    fetchData(controller.signal), // [!code highlight]
+    sleep("10s").then(() => null),
+  ]);
+
+  if (result === null) {
+    controller.abort(); // [!code highlight]
+  }
+
+  return result;
+}
+
+async function fetchData(signal: AbortSignal) {
+  "use step";
+  const response = await fetch("https://api.example.com/data", { signal });
+  return response.json();
+}
+```
+
+The abort reaches a step that is already executing, not just the next one to start, so a `fetch()` in flight when the controller aborts is torn down. Cancellation stays cooperative: a step that ignores its signal still runs to completion.
+
+Cancelling from the outside gained detail too: [`run.cancel()`](/docs/api-reference/workflow-api/get-run) accepts a `cancelReason`, recorded on the cancellation event and shown in the run detail view. And cancellation now works in bulk: `workflow cancel` takes `--status pending|running` and `--workflowName` to cancel a batch in one operation, and the runs table in the web UI cancels every selected run in a single request. See [CLI and web UI](/docs/configuration/cli-and-web-ui).
+
+See [Cancellation](/docs/foundations/cancellation), [How cancellation works](/docs/how-it-works/cancellation), and the [in-flight cancellation changelog](https://vercel.com/changelog/workflow-sdk-now-supports-inflight-cancellation).
+
+### Run attributes
+
+Attach string metadata to a run with [`setAttributes()`](/docs/api-reference/workflow/set-attributes), or seed it at creation with the `attributes` option of [`start()`](/docs/api-reference/workflow-api/start), then search and filter runs by `key=value`. Attributes were available in beta and are generally available in v5 under their final names: the `experimental_setAttributes` alias is gone.
+
+Some attributes are set for you: a run started from inside another workflow or step is automatically tagged with the reserved `$parentRunId` and `$rootRunId` attributes, so a whole chain or fan-out of related runs can be found with a single attribute filter.
+
+Vercel Observability can search runs by attribute. `workflow inspect` and the local web UI read them from `world.analytics` on any World that implements it.
+
+See [Attributes](/docs/observability/attributes).
+
+### Richer serialization
+
+Everything that crosses a workflow/step boundary is serialized, and v5 widens what survives the trip with its identity intact. Errors, including your own classes and built-ins like `TypeError`, keep their class and `cause` chain through `WorkflowRunFailedError.cause`:
+
+```typescript lineNumbers
+import { WorkflowRunFailedError } from "workflow/errors";
+import { getRun } from "workflow/api";
+declare class PaymentDeclinedError extends Error {} // @setup
+
+try {
+  await getRun(runId).returnValue;
+} catch (error) {
+  if (
+    error instanceof WorkflowRunFailedError &&
+    error.cause instanceof PaymentDeclinedError // [!code highlight]
+  ) {
+    // your class, not a flattened generic Error
+  }
+}
+```
+
+Workflow function references and [`Run`](/docs/api-reference/workflow-api/get-run) handles are serializable too, so a step can receive a workflow function to `start()` or a run handle to await. And when a value cannot cross a boundary, the failure is precise instead of generic: dedicated [`SerializationError`](/docs/api-reference/workflow-errors) and structured context-violation errors name the offending value and where it was used.
+
+See [Serialization](/docs/foundations/serialization).
+
+### A redesigned trace viewer
+
+The trace viewer has been rebuilt with a visible timeline, a minimap, pan, zoom, debug functionality, a new JSON viewer, keyboard navigation, and more.
+
+Vercel Observability uses this trace viewer for all runs, v4 included, but with v5, you get the same new design for self-hosted UI and local debugging. See [Observability](/docs/observability).
+
+The local tooling around it grew as well: on [Nitro](/docs/getting-started/nitro) the dev server has the web UI built in at `/_workflow`, `workflow inspect runs` accepts `--since`/`--until` listing windows, run lookups by name search past the backend's default 24-hour window, and Worlds can surface their own run fields in `inspect` output. For example, the Vercel World shows each run's region. On any other framework, `createWorkflowWebHandler()` from `@workflow/web/handler` serves the same UI as one `Request` to `Response` handler under a base path of your choosing.
+
+Each run also carries more of the infrastructure it ran on. A step attempt records the compute instance that executed it, surfaced as **Compute Instance ID** in the run sidebar and as a `faas.instance` span attribute on flow and step spans, so a run that behaves oddly can be correlated with one warm instance. The sidebar also shows a copyable **Request ID** for looking the invocation up in your platform's logs.
+
+### Custom hook token retention
+
+A [Hook](/docs/foundations/hooks) token is normally reserved only while its workflow is running. Pass `experimental_minRetention` to [`createHook()`](/docs/api-reference/workflow/create-hook#keep-a-token-unavailable-after-the-run-ends) to keep the token unavailable for at least a given duration after the Hook is created, so a duplicate request arriving after the original run finished still collides instead of starting fresh work. This allows for durable [run idempotency](/docs/foundations/idempotency#run-idempotency) with custom durations.
+
+All three first-party Worlds now implement it: Vercel accepts up to 30 days, and the Local and Postgres Worlds default to the same ceiling (see [`WORKFLOW_LOCAL_HOOK_RETENTION_LIMIT_DAYS`](/docs/configuration/worlds) and its Postgres equivalent). A retained Hook remains readable with [`getHookByToken()`](/docs/api-reference/workflow-api/get-hook-by-token) after its run ends, but cannot be resumed.
+
+### Also new in 5.0
+
+- **`start()` from inside a workflow.** Spawn a child run or hand off to a new run directly in a workflow function, without wrapping it in a step. See [Starting workflows](/docs/foundations/starting-workflows).
+- **Stronger hook coordination.** `hook.getConflict()` resolves with the conflicting [`Run`](/docs/api-reference/workflow-api/get-run) rather than a bare `{ runId }`, so a duplicate can `await conflict.status`, `await conflict.returnValue`, or `await conflict.cancel()` directly. See [Run idempotency](/docs/foundations/idempotency#run-idempotency).
+- **Support for more frameworks.** [React Router](/docs/getting-started/react-router) (v7 and v8, via Nitro) and [NestJS](/docs/getting-started/nestjs) are now supported.
+- **A misrouted delivery no longer fails a run.** Runs are pinned to the deployment that created them. A delivery that arrives at a different deployment is now re-routed to the pinned one with backoff instead of failing, and only gives up with the new [`DEPLOYMENT_MISMATCH`](/docs/errors/deployment-mismatch) error once the recovery budget is spent. Nothing executes on the wrong deployment while this happens. In 4.x the same situation surfaced as an unexplained decryption failure.
+- **A run cannot be forked across environments.** `start()` stamps the environment it was called from onto the queue message, and a deployment refuses a delivery whose run was created in a different environment. Previously a preview client and a production deployment could each hold half of one run ID.
+- **An experimental QuickJS VM engine.** Set [`WORKFLOW_VM=quickjs`](/docs/configuration/runtime-tuning#workflow_vm) to run workflow functions in a QuickJS VM compiled to WebAssembly instead of `node:vm`, for platforms that do not provide `node:vm`. Replay semantics are identical, but the available globals are not: check the differences before switching an existing deployment.
+- **An opt-in WebSocket transport for event writes** on the Vercel World, via [`WORKFLOW_EVENTS_TRANSPORT=ws`](/docs/configuration/worlds). HTTP remains the default.
+- **An event arriving mid-replay no longer fails the run.** A hook resume or step completion landing while a replay is in flight used to be able to fail it with [`CORRUPTED_EVENT_LOG`](/docs/errors/corrupted-event-log). Writes now come back with the events the replay had not seen, and the event is held for whichever part of the workflow awaits it. A run only fails when the log is genuinely missing a position.
+
+## Breaking changes
+
+### Application code
+
+| Change | What to do |
+| --- | --- |
+| `runStep` removed from `workflow/api` | Call your step function directly; the compiler routes it through the step runtime. |
+| `hook.getConflict()` resolves with a `Run` | Replace `conflict.runId` round trips through `getRun()` inside a step with the accessors on `conflict` directly. `conflict.runId` still works. |
+| `experimental_setAttributes` removed | Import `setAttributes` instead, and `SetAttributesOptions` in place of `ExperimentalSetAttributesOptions`. The deprecated aliases are gone. |
+| [`getWorld()`](/docs/api-reference/workflow-runtime/get-world), [`getWorldHandlers()`](/docs/api-reference/workflow-runtime/get-world-handlers), and [`createWorld()`](/docs/api-reference/workflow-runtime/create-world) are async | They resolve a `Promise` now, so await the call before reaching for anything on it: `const world = await getWorld();` then `await world.start?.();`. This mainly affects the `instrumentation.ts` bootstrap that starts a World with background workers, such as the [Postgres World](/worlds/postgres#starting-the-world). Under TypeScript the old shape fails the build; in plain JavaScript it does not, and `.start` reads as `undefined` on a promise, so the worker never starts and nothing is logged. Writing `await getWorld()` is also valid on 4.x, so the change can be made before upgrading. |
+| Duplicate step or workflow IDs fail the build | 4.x resolved collisions across non-exported workspace files last-write-wins. If you start encountering build failures after upgrading, rename the colliding functions. |
+| The generated bundles are renamed, and the step route is gone | Only affects apps that wire the output of `workflow build` into their own server instead of using a framework integration. `flow.js` and `webhook.js` are now `flow.mjs` and `webhook.mjs` with named exports only, so a default import resolves to `undefined`. `step.js` became `__step_registrations.mjs`, an internal module that `flow.mjs` imports: delete the `POST /.well-known/workflow/v1/step` route rather than repointing it, because the flow handler now serves step deliveries too. See [Framework integrations](/docs/how-it-works/framework-integrations). |
+| Default trace mode is `linked` | Update dashboards that assume one trace per run, or set `WORKFLOW_TRACE_MODE=continuous`. |
+| The event-creation precondition guard is gone | `WORKFLOW_PRECONDITION_GUARD` no longer exists, and no World in the SDK rejects a write for a stale snapshot. Remove the variable if you set it. A replay that is behind now learns what it missed from the write it makes next instead of from a rejection, and [`PreconditionFailedError`](/docs/api-reference/workflow-errors/precondition-failed-error) remains only for a custom World that would still rather refuse. |
+| Event IDs are slot numbers, not ULIDs | An event ID is now its 1-based position in the run's log (`evnt_00000000000000000000000042`). It is unique only within a run, so pair it with the `runId` as a key, and it carries no timestamp: decoding one yields the Unix epoch rather than a creation time, so read `createdAt` off the event instead. Other entity IDs are unchanged. See [Event IDs](/docs/how-it-works/event-sourcing#event-ids). |
+| A per-run event limit is enforced | The World supplies the ceiling, which is 25,000 events on the Local and Vercel Worlds. A run that reaches it fails with `MAX_EVENTS_EXCEEDED`. Split unbounded loops into [child workflows](/cookbook/advanced/child-workflows). As a fallback, you can tune the ceiling. See [Limits](/docs/configuration/runtime-tuning#limits). |
+| Stream writes flush the first chunk immediately | The leading-edge flush window defaults to `0` instead of 10ms. Restore a window with `streamFlushIntervalMs` or `WORKFLOW_STREAM_FLUSH_INTERVAL_MS`. |
+| The workflow sandbox is stricter about nondeterminism | `WeakRef`, `FinalizationRegistry`, `Atomics.waitAsync`, and async `WebAssembly` compilation are no longer available inside workflow functions, and `crypto.subtle.digest` computes synchronously (same results, deterministic timing). Move code that needs them into a step. |
+| `Date()` without `new` returns a string inside workflow functions | This matches the language spec, and 4.x returned a `Date` object. Use `new Date()` where you need the object. Subclassing `Date` now works, so libraries like `TZDate` keep their identity across the sandbox boundary. |
+| `NestLocalBuilder` moved out of `@workflow/nest` root | Import it from `workflow/nest/builder`, so `WorkflowModule` no longer pulls the build toolchain into the runtime bundle. `NestVercelBuilder` lives at `workflow/nest/vercel-builder`. |
+| `workflow/internal/private` and `@workflow/core/private` removed | These were never public API. The compiler no longer emits imports from them, so regenerate build output rather than importing them yourself. |
+| The legacy trace viewer is gone from `@workflow/web-shared` | Only affects apps embedding the observability UI. `RunTraceView` and `WorkflowTraceViewer` are removed, and `NewTraceViewer` is now `TraceViewer` (module path `trace-viewer`). `Span`, `SpanEvent`, and `Trace` are still exported from the package root. |
+
+Runs created on 4.x keep executing on the deployment that created them, so upgrading a deployment does not migrate in-flight runs. One storage caveat is worth knowing about: failed runs stored by `@workflow/world-postgres` before the upgrade read back with `error: undefined`, because the payload lives in the legacy `error` text column rather than `errorJson`.
+
+## If you maintain a World
+
+The World interface, which defines the storage, queue, streaming, and analytics contract that a Workflow SDK deployment runs against, also changed in v5. Those changes are not visible from application code. If you implement `World` yourself or maintain a build integration that compiles workflow files, upgrade it alongside the SDK. See [Upgrading a World to v5](/worlds/upgrading-to-v5) for the full interface delta and the contract changes that affect existing implementations. There is a separate skill for that job because none of it applies to application code:
+
+```bash
+npx skills add https://github.com/vercel/workflow --skill migrating-world-v4-to-v5
+```
+
+Applications on the [Vercel](/worlds/vercel), [Local](/worlds/local), and [Postgres](/worlds/postgres) Worlds need nothing from that page: those implementations ship with the SDK and are already on the v5 spec.

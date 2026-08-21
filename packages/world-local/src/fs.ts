@@ -190,8 +190,8 @@ export function hasTag(fileId: string, tag: string): boolean {
  *
  * An untagged world's reads (`readJSONWithFallback`) can only resolve untagged
  * files, so when it lists entities for recovery it must skip files tagged by
- * other worlds (e.g. the vitest harness) sharing the same data directory —
- * otherwise it would re-enqueue runs it cannot subsequently read back.
+ * other worlds (e.g. the vitest harness) sharing the same data directory.
+ * Otherwise it would re-enqueue runs it cannot subsequently read back.
  */
 export function isUntagged(fileId: string): boolean {
   return !TAG_PATTERN.test(fileId);
@@ -294,7 +294,7 @@ export async function ensureDir(dirPath: string): Promise<void> {
   } catch (error) {
     // A filesystem that refuses the directory outright will refuse every write
     // into it too, and the caller's write would surface as a confusing ENOENT
-    // on the file rather than a missing directory. Report it here instead —
+    // on the file rather than a missing directory. Report it here instead,
     // unless the directory turns out to exist, in which case the failure was
     // incidental (a race, or an unsearchable parent that reads fine) and the
     // historical "ignore if already exists" behavior applies.
@@ -381,8 +381,8 @@ export async function writeJSON(
 /**
  * Writes data to a file using atomic write-rename pattern.
  *
- * Note: While this function uses temp files to avoid partial writes,
- * it does not provide protection against concurrent writes from multiple
+ * This function uses temporary files to avoid partial writes, but it does not
+ * protect against concurrent writes from multiple
  * processes. In a multi-writer scenario, the last writer wins.
  * For production use with multiple writers, consider using a proper
  * database or locking mechanism.
@@ -523,15 +523,15 @@ export async function writeExclusive(
  * to its visible destination via a hard link. The single `link(2)` call is
  * the linearization point:
  *
- *   - `'linked'`  — this call made the destination visible.
- *   - `'exists'`  — another writer published the destination first
+ *   - `'linked'`:  this call made the destination visible.
+ *   - `'exists'`:  another writer published the destination first
  *                   (same meaning as `writeExclusive` returning false).
- *   - `'missing'` — the staged file was concurrently unlinked, so the
+ *   - `'missing'`: the staged file was concurrently unlinked, so the
  *                   promotion atomically lost to whoever removed it and
  *                   the destination was never made visible.
  *
  * The staged file is left in place on success; callers unlink it
- * themselves (a leftover staged file is harmless — it is not at a
+ * themselves (a leftover staged file is harmless: it is not at a
  * reader-visible path).
  */
 export async function promoteExclusive(
@@ -617,8 +617,8 @@ interface PaginatedFileSystemQueryConfig<T> {
 }
 
 // Cursor formats:
-//   "timestamp|id"  — createdAt order, id for tie-breaking
-//   "key:<sortKey>" — sort-key order (see getSortKey)
+//   "timestamp|id":  createdAt order, id for tie-breaking
+//   "key:<sortKey>": sort-key order (see getSortKey)
 // A run never mixes the two, so a cursor never has to cross formats mid-scan.
 export const SORT_KEY_CURSOR_PREFIX = 'key:';
 
@@ -679,8 +679,8 @@ export async function paginatedFileSystemQuery<T extends { createdAt: Date }>(
 
   // Validate filePrefix (typically `${runId}-`) so request-derived prefixes
   // consistently reject unsafe characters. filePrefix is only used below to
-  // filter readdir() results by prefix — it doesn't participate in path
-  // construction — but keeping the validation rule uniform across the
+  // filter readdir() results by prefix (it doesn't participate in path
+  // construction), but keeping the validation rule uniform across the
   // storage layer avoids special cases and catches bad values earlier.
   if (filePrefix !== undefined) {
     assertSafeEntityId('filePrefix', filePrefix);
@@ -773,7 +773,7 @@ export async function paginatedFileSystemQuery<T extends { createdAt: Date }>(
           // We don't expect zod errors to happen, but if the JSON does get malformed,
           // we skip the item. Preferably, we'd have a way to mark items as malformed,
           // so that the UI can display them as such, with richer messaging. In the meantime,
-          // we just log a warning and skip the item.
+          // we log a warning and skip the item.
           if (error instanceof z.ZodError) {
             console.warn(
               `Skipping item ${fileId} due to malformed JSON: ${error.message}`
@@ -794,7 +794,7 @@ export async function paginatedFileSystemQuery<T extends { createdAt: Date }>(
       if (parsedCursor?.sortKey) {
         // Sort-key cursor: the key alone is the total order, so there is no
         // tie to break. An item without a key cannot be placed relative to
-        // the cursor at all — that would mean a run mixed the two schemes —
+        // the cursor at all (that would mean a run mixed the two schemes),
         // so keep it and let the comparator below order it.
         if (itemSortKey) {
           const comparison = itemSortKey.localeCompare(parsedCursor.sortKey);

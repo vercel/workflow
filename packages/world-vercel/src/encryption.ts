@@ -18,6 +18,16 @@ import { instrumentedFetch, resolveVercelApiToken } from './http-core.js';
 
 const KEY_BYTES = 32; // 256 bits = 32 bytes (AES-256)
 
+class RunKeyFetchError extends Error {
+  readonly status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = 'RunKeyFetchError';
+    this.status = status;
+  }
+}
+
 /**
  * Derive a per-run AES-256 encryption key using HKDF-SHA256.
  *
@@ -78,8 +88,9 @@ export async function deriveRunKey(
  * deployment key never leaves the API boundary. The returned key
  * is ready-to-use for AES-GCM encrypt/decrypt operations.
  *
- * Uses OIDC token authentication (for cross-deployment runtime calls like
- * resumeHook) or falls back to VERCEL_TOKEN (for external tooling like o11y).
+ * Uses OpenID Connect (OIDC) token authentication (for cross-deployment runtime
+ * calls like resumeHook) or falls back to VERCEL_TOKEN (for external tooling
+ * like observability).
  *
  * @param deploymentId - The deployment ID that holds the base key material
  * @param projectId - The project ID for HKDF context isolation
@@ -113,8 +124,8 @@ export async function fetchRunKey(
     params.set('teamId', options.teamId);
   }
   // 429/5xx retries are handled by the shared RetryAgent from getDispatcher().
-  // instrumentedFetch adds the OTEL client span + DEBUG logging the v3/v4
-  // paths have.
+  // instrumentedFetch adds the OpenTelemetry client span + DEBUG logging the
+  // v3/v4 paths have.
   const response = await instrumentedFetch({
     method: 'GET',
     url: `https://api.vercel.com/v1/workflow/run-key/${deploymentId}?${params}`,
@@ -131,8 +142,9 @@ export async function fetchRunKey(
       } catch {
         body = '<unable to read response body>';
       }
-      return new Error(
-        `Failed to fetch run key for ${runId} (deployment ${deploymentId}): HTTP ${res.status} ${res.statusText}${body ? ` — ${body}` : ''}`
+      return new RunKeyFetchError(
+        `Failed to fetch run key for ${runId} (deployment ${deploymentId}): HTTP ${res.status} ${res.statusText}${body ? ` — ${body}` : ''}`,
+        res.status
       );
     },
   });
@@ -170,7 +182,7 @@ export function createGetEncryptionKeyForRun(
 ): World['getEncryptionKeyForRun'] {
   if (!projectId) return undefined;
 
-  // VERCEL=1 is set inside Vercel serverless functions. When true, we can
+  // VERCEL=1 is set inside Vercel Functions. When true, we can
   // use the local deployment key for HKDF derivation. When false (e.g., e2e
   // test runner, CLI, external tooling), we must fetch the key from the API
   // even for same-deployment runs.

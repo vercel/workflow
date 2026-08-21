@@ -11,17 +11,17 @@ import { type Context, Script } from 'node:vm';
  * contains every workflow function in the app and registers them on
  * `globalThis.__private_workflows`. Previously each replay called
  * `vm.runInContext(workflowCode, context, { filename })`, which RE-PARSES and
- * RE-COMPILES the entire bundle every time — O(N) full re-parses for a
+ * RE-COMPILES the entire bundle every time: O(N) full re-parses for a
  * sequential workflow of N steps, plus the same parse cost repeated across
  * every invocation in the process.
  *
  * Compilation is a pure function of `(code, filename)`: a `vm.Script` carries
- * no realm/context state — it is only bound to a context at `runInContext`
+ * no realm/context state; it is only bound to a context at `runInContext`
  * time. So a single compiled `Script` can be reused across replays AND across
  * workflow invocations in the same process without affecting determinism: the
  * produced workflow function is identical to the previous re-parse-every-time
  * behaviour, with identical `filename` source attribution (see the precise
- * claim — and its one caveat — in `runWorkflow`).
+ * claim, and its one caveat, in `runWorkflow`).
  *
  * Keying
  * ------
@@ -30,7 +30,7 @@ import { type Context, Script } from 'node:vm';
  * attribution and surfaces in stack traces, where `remapErrorStack` keys on it
  * to map frames back to the user's source. Two workflows in the same bundle
  * share the same `code` but have different `filename`s, so they intentionally
- * compile to distinct `Script`s — collapsing them onto a single shared `Script`
+ * compile to distinct `Script`s; collapsing them onto a single shared `Script`
  * would misattribute one workflow's stack frames to another file. The cost of
  * keeping them distinct is that the whole bundle is compiled once per distinct
  * `filename` (not once per bundle); in practice that is bounded by the number
@@ -50,7 +50,7 @@ import { type Context, Script } from 'node:vm';
  * (skew protection runs old versions as separate processes), so there is a
  * single `code` key for the process lifetime. The bound exists for dev/watch
  * mode, where the dev route re-reads `workflowCode` from disk and re-invokes
- * the entrypoint on every edit — each edit produces a NEW bundle string, which
+ * the entrypoint on every edit: each edit produces a NEW bundle string, which
  * without a bound would pin every historical version forever (~0.8MB per edit,
  * growing monotonically with edit count). The dev path only ever needs the
  * latest bundle, so an LRU that keeps the few most-recent bundles and evicts
@@ -66,7 +66,7 @@ const scriptCache = new Map<string, Map<string, Script>>();
  * Max number of distinct bundle (`code`) versions to retain. One is enough for
  * production; a handful covers pathological dev hot-reload / repeated-rebuild
  * churn within a single long-lived process (e.g. a watch session or a test
- * file) without unbounded growth. Kept deliberately small — there is no value
+ * file) without unbounded growth. Kept deliberately small: there is no value
  * in retaining stale bundles, only a memory cost.
  */
 const MAX_BUNDLES = 8;

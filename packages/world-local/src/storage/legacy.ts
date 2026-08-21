@@ -58,7 +58,7 @@ async function publishLegacyHookReceived(
     }
     const promoted = await promoteExclusive(stagedPath, eventPath);
     if (promoted !== 'linked') {
-      // 'missing': a terminal transition reaped the staged file — the
+      // 'missing': a terminal transition reaped the staged file, the
       // atomic loss of the arbitration. 'exists' cannot happen for a
       // freshly generated ULID; treat it the same way rather than report
       // a publish that did not happen.
@@ -148,7 +148,7 @@ export async function handleLegacyEvent(
     case 'hook_received': {
       // Legacy: Store event only (no entity mutation)
       // - wait_completed: for replay purposes
-      // - hook_received: hooks exist via old system, just record the event
+      // - hook_received: hooks exist via the old system; record the event
       const eventId = `evnt_${monotonicUlid()}`;
       const now = new Date();
       const event: Event = {

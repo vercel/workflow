@@ -1,7 +1,7 @@
 /**
  * VM-compatible copy: identical semantics to step-function.ts before the host-side
  * hardening (#3257) made that module depend on `serialization/hardened.ts`
- * (which imports `node:util` and captures host intrinsics — meaningless
+ * (which imports `node:util` and captures host intrinsics, meaningless
  * and unbundleable inside the QuickJS VM, where the codec already runs in
  * the guest realm). The host/guest boundary hardening for the QuickJS
  * engine lands with the host-side serde (#3263), which retires this

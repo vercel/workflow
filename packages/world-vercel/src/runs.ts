@@ -270,7 +270,7 @@ const WAIT_TIMEOUT_HEADROOM_MS = 10_000;
  * attempts before the next one re-probes.
  *
  * A miss means the backend serving this base URL predates the route (or has it
- * rolled back), which is a property of the *backend*, not of the run — so it is
+ * rolled back), which is a property of the *backend*, not of the run, so it is
  * cached rather than re-learned per call. It expires so a client that outlives
  * a server roll-forward picks the fast path back up on its own.
  */
@@ -278,7 +278,7 @@ const LONG_POLL_UNSUPPORTED_TTL_MS = 5 * 60 * 1000;
 
 /**
  * Suppression deadline per base URL, because one process can hold worlds
- * pointed at different backends — the api.vercel.com proxy (with
+ * pointed at different backends: the api.vercel.com proxy (with
  * `projectConfig`) and workflow-server directly resolve to different hosts,
  * which can be on different versions. A miss against one must not disable the
  * fast path for the other. Bounded by construction: the key is the resolved
@@ -302,9 +302,9 @@ export function _resetRunStatusLongPollSupportForTests(): void {
  * Two shapes, for the same reason: the answer we want is a plain read either
  * way, and the fast path should stand down until it re-probes.
  *
- * - **The route is missing** (`404`/`405`/`501`). `404` is ambiguous — the run
- *   may not exist — which the plain read below disambiguates.
- * - **The hold did not survive** — the request timed out client-side
+ * - **The route is missing** (`404`/`405`/`501`). `404` is ambiguous (the run
+ *   may not exist), which the plain read below disambiguates.
+ * - **The hold did not survive**: the request timed out client-side
  *   (`TIMEOUT`), the connection was severed mid-hold (`TRANSPORT`), or an
  *   intermediary gave up on it (`504`). Holding a request open for ~25s is a
  *   new shape for this client, and it crosses gateways and egress proxies that
@@ -337,16 +337,16 @@ function isLongPollUnusable(error: WorkflowWorldError): boolean {
  *
  * Implements `Storage['runs'].waitForTerminalStatus`: resolves as soon as the
  * run is terminal, and otherwise with the latest snapshot once the budget
- * expires. Never throws on a timeout — a still-running run is an answer.
+ * expires. Never throws on a timeout, since a still-running run is an answer.
  *
  * Degrades in two places, because the adapter can outlive the server version
  * it was built against:
  *
  * - **Budget.** Clamped to leave {@link WAIT_TIMEOUT_HEADROOM_MS} under the
  *   adapter's per-request timeout, and the server clamps again to its own
- *   ceiling. A budget that clamps to zero is just a plain read.
- * - **Missing route.** A `404` is ambiguous — the run may not exist, or this
- *   server may not have the route — so it is resolved by falling back to the
+ *   ceiling. A budget that clamps to zero is a plain read.
+ * - **Missing route.** A `404` is ambiguous (the run may not exist, or this
+ *   server may not have the route), so it is resolved by falling back to the
  *   plain read, which is the answer we want either way: it raises
  *   `WorkflowRunNotFoundError` for a missing run, and returns the run when the
  *   *route* was what was missing. Only the latter (proof that the run exists
@@ -402,7 +402,7 @@ export async function waitForWorkflowRunTerminalStatus(
     );
   } catch (error) {
     // The caller cancelled on purpose. That is not a verdict on the route, so
-    // it propagates rather than degrading — otherwise an ordinary abort would
+    // it propagates rather than degrading; otherwise an ordinary abort would
     // both cost an extra read and switch the fast path off for every run in
     // this process. Checked first because an abort surfaces with the same
     // `TIMEOUT` code as a request that ran out of time on its own.
@@ -573,11 +573,11 @@ const ExperimentalSetAttributesResponseSchema = z.object({
 /**
  * Apply attribute changes to a workflow run. The body shape mirrors the
  * future `attr_set` event's `eventData.changes`, so the wire contract is
- * forward-compatible with the full 5.0.0 attributes feature — only the
+ * forward-compatible with the full 5.0.0 attributes feature; only the
  * endpoint path changes.
  *
  * `options.allowReservedAttributes` opts the request into permitting
- * `$`-prefixed keys (framework-only — see the SDK helper for details).
+ * `$`-prefixed keys (framework-only; see the SDK helper for details).
  * The flag is forwarded to the server via the request body.
  *
  * EXPERIMENTAL: tied to the MVP write-only attributes API. See

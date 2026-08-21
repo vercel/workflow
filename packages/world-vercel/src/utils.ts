@@ -36,14 +36,15 @@ import { version } from './version.js';
 
 /**
  * Inline workflow-server URL override. Must remain an empty string on
- * `main` — rewritten by external CI for branch-deployment testing.
+ * `main`. It is rewritten by external CI for branch-deployment testing.
  * Prefer `VERCEL_WORKFLOW_SERVER_URL` for deployment-time configuration.
  */
+// biome-ignore format: External CI replaces only this line with a deployment URL that may exceed the formatter width.
 export const WORKFLOW_SERVER_URL_OVERRIDE = '';
 
 /**
  * HTTP methods that are safe to transparently re-issue inside the adapter.
- * A retry re-sends the request, so it is only safe for idempotent reads — a
+ * A retry re-sends the request, so it is only safe for idempotent reads. A
  * write could be applied twice. Writes rely on the workflow runtime's
  * idempotent replay (and server-side correlation-id de-duplication) instead.
  */
@@ -51,7 +52,7 @@ const IDEMPOTENT_METHODS = new Set(['GET', 'HEAD']);
 
 /**
  * How many extra times to re-issue an idempotent request when reading or
- * decoding the response body fails transiently — a truncated/terminated
+ * decoding the response body fails transiently, such as a truncated/terminated
  * stream, a connection reset mid-body, or a gateway returning a non-CBOR/JSON
  * body. The shared `RetryAgent` (see `http-client.ts`) already retries
  * connection and 5xx failures, but body-consumption errors surface *after* it
@@ -86,7 +87,7 @@ const BODY_PARSE_RETRY_BASE_MS = 100;
  * redrive, instead of crashing the invocation or failing the run.
  *
  * The set is consulted on both paths, so adding `ETIMEDOUT` for the node:http
- * deadlines also classifies it on the undici path — where it is near
+ * deadlines also classifies it on the undici path, where it is near
  * unreachable, since undici's 10s `connectTimeout` fires long before the OS
  * raises `ETIMEDOUT` on a connect, and its own stalls surface as `UND_ERR_*`.
  * Deliberate either way: a socket that timed out is transient under any client.
@@ -148,7 +149,7 @@ const getWorkflowServerUrlOverride = (): string =>
 
 /**
  * Header the server reads to tighten its own limits (stream max-duration,
- * chunk-batch size, …) per request — only ever to a stricter value than the
+ * chunk-batch size, …) per request, only ever to a stricter value than the
  * deployment default. See `world-vercel`'s server counterpart.
  */
 const TEST_LIMIT_OVERRIDES_HEADER = 'x-workflow-test-limit-overrides';
@@ -159,9 +160,9 @@ const TEST_LIMIT_OVERRIDES_HEADER = 'x-workflow-test-limit-overrides';
  * The value is a JSON object of server-constant name → value (e.g.
  * `{"STREAM_MAX_DURATION_MS":5000}`) sent verbatim as
  * `x-workflow-test-limit-overrides`. The server validates and clamps it
- * (stricter-only), so a malformed value is harmlessly ignored there — we don't
+ * (stricter-only), so a malformed value is harmlessly ignored there. We don't
  * parse it here. Intended for a dedicated e2e deployment so the suite exercises
- * edge paths (stream reconnect, batch splitting) quickly; unset in production.
+ * edge paths (stream reconnect, batch splitting) without long waits; unset in production.
  */
 const getTestLimitOverridesHeader = (): string =>
   process.env.WORKFLOW_TEST_LIMIT_OVERRIDES?.trim() || '';
@@ -179,7 +180,7 @@ export interface APIConfig {
    * dispatcher from a different undici version. Callers may pass any undici
    * version's dispatcher, or any object implementing the dispatcher contract.
    *
-   * Note: when provided, this dispatcher replaces *every* default — including
+   * Note: when provided, this dispatcher replaces *every* default, including
    * the one used for stream writes (the `PUT` write/close path). Stream appends
    * are not idempotent, and undici's `RetryAgent` retries `PUT` on 5xx by
    * default, which can duplicate a chunk the server already persisted. A custom
@@ -230,7 +231,7 @@ export function serializeError<T extends { error?: SerializedData }>(
 /**
  * Joins User-Agent product tokens with spaces per the RFC 9110 `User-Agent`
  * grammar (`product *( RWS ( product / comment ) )`), skipping empty parts.
- * Never join UA products with `Headers.append()` — repeated header values
+ * Never join UA products with `Headers.append()`. Repeated header values
  * combine with `", "`, and a comma glued to a product token breaks
  * whitespace-delimited parsers on the receiving side.
  */
@@ -273,11 +274,11 @@ export const getHttpUrl = (
 /**
  * The environment this client's writes will be attributed to by the backend.
  *
- * Two distinct auth paths, two distinct sources — and this must mirror both
+ * Two distinct auth paths, two distinct sources. This must mirror both
  * exactly, because callers compare it against the environment a *different*
  * client reported to detect a cross-tenant fork (see `World.getEnvironment`):
  *
- * - **With `projectConfig`** (CLI, CI, the observability dashboard — anything
+ * - **With `projectConfig`** (CLI, CI, the observability dashboard, or anything
  *   going through the api.vercel.com proxy with a Vercel auth token): the proxy
  *   attributes the write to the `x-vercel-environment` header, so the answer is
  *   whatever {@link getHeaders} puts there. Both read this one function so they
@@ -287,7 +288,7 @@ export const getHttpUrl = (
  * - **Without `projectConfig`** (inside a Vercel deployment, authenticating
  *   with the per-request OIDC token): the backend reads the token's
  *   `environment` claim, which the platform mints as
- *   `customEnvironment?.slug ?? envTarget` — and `VERCEL_TARGET_ENV` is
+ *   `customEnvironment?.slug ?? envTarget`, and `VERCEL_TARGET_ENV` is
  *   populated from exactly the same pair (`customEnvironmentSlug ||
  *   envTarget`), so it matches the claim by construction. `VERCEL_ENV` alone
  *   would be wrong for Vercel *custom* environments: it reports `preview`
@@ -303,7 +304,7 @@ export const getHttpUrl = (
  *
  * Returns `undefined` when neither source is available (e.g. a bare Node
  * process with no Vercel env vars). `undefined` is the honest answer there and
- * callers skip their checks — guessing `'production'` would fabricate a
+ * callers skip their checks. Guessing `'production'` would fabricate a
  * mismatch against a genuine preview deployment.
  */
 export const resolveClientEnvironment = (
@@ -332,7 +333,7 @@ export const getHeaders = (
   }
   if (projectConfig) {
     // Derived from the same helper `getEnvironment` uses so the header and the
-    // value stamped into `runInput` can never disagree — a drift between them
+    // value stamped into `runInput` can never disagree. A drift between them
     // would make the cross-environment guard either miss a real fork or
     // reject a legitimate start.
     headers.set(
@@ -442,7 +443,7 @@ export async function makeRequest<T>({
 
       // Explicitly propagate the active trace context (traceparent /
       // tracestate / baggage) onto the outgoing request so workflow-server
-      // can parent its spans to this client span — without relying on the
+      // can parent its spans to this client span without relying on the
       // customer app having undici auto-instrumentation. No-ops when no
       // OTEL SDK is registered.
       await injectTraceContextIntoHeaders(headers);
@@ -455,7 +456,7 @@ export async function makeRequest<T>({
       }
 
       // Reading or decoding the response body can fail transiently even on a
-      // successful (2xx) response — a truncated/terminated stream, a
+      // successful (2xx) response, such as a truncated/terminated stream, a
       // connection reset mid-body, or a gateway returning a non-CBOR/JSON
       // body. The RetryAgent retries connection/5xx failures, but it has
       // already handed back the response by the time we consume the body, so

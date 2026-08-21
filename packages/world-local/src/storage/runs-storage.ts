@@ -35,7 +35,7 @@ import {
 /**
  * Internal extension of `ListWorkflowRunsParams` that adds a `fileIdFilter`
  * for scoping queries by raw filename (e.g., by tag suffix). Kept out of the
- * public `Storage['runs']['list']` surface — consumers of `@workflow/world`
+ * public `Storage['runs']['list']` surface: consumers of `@workflow/world`
  * must not see this option.
  */
 export interface LocalListWorkflowRunsParams extends ListWorkflowRunsParams {
@@ -66,7 +66,7 @@ export interface LocalRunsStorage {
 
 /**
  * Per-run in-process async mutex. Serializes concurrent writes that
- * touch the same run JSON file — both attribute writes via
+ * touch the same run JSON file: both attribute writes via
  * `experimentalSetAttributes` and run-lifecycle writes (run_started,
  * run_completed, run_failed, run_cancelled) acquire it. Without the
  * shared lock, an attribute write that lands between a lifecycle
@@ -138,7 +138,7 @@ export function createRunsStorage(
     get,
 
     /**
-     * Long poll for a terminal run status — see
+     * Long poll for a terminal run status. See
      * `Storage['runs'].waitForTerminalStatus`.
      *
      * Reads the run, and while it is non-terminal waits for either an
@@ -241,7 +241,7 @@ export function createRunsStorage(
         }
 
         // Server-side validation. The SDK validates before sending, but
-        // the world is the final authority — re-check so direct callers
+        // the world is the final authority: re-check so direct callers
         // (tests, other consumers) cannot bypass the limits.
         try {
           validateAttributeChanges(changes, {

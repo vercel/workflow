@@ -100,6 +100,9 @@ const compilerOptions: ts.CompilerOptions = {
     '@workflow/serde': [path.join(repoRoot, 'packages/serde/dist/index')],
     '@workflow/vitest': [path.join(repoRoot, 'packages/vitest/dist/index')],
     '@workflow/world': [path.join(repoRoot, 'packages/world/dist/index')],
+    '@workflow/world-local': [
+      path.join(repoRoot, 'packages/world-local/dist/index'),
+    ],
     '@workflow/world-sim': [
       path.join(repoRoot, 'packages/world-sim/dist/index'),
     ],
@@ -133,7 +136,7 @@ const RESOLVED_MODULES = new Set(Object.keys(compilerOptions.paths ?? {}));
 /**
  * Returns true if a missing-module diagnostic refers to a module we don't
  * expect to resolve (relative imports, framework deps, app aliases, etc.).
- * Returns false for modules in our paths mapping — those failures are real.
+ * Returns false for modules in our paths mapping; those failures are real.
  */
 function isExpectedMissingModule(diagnostic: ts.Diagnostic): boolean {
   const msg = ts.flattenDiagnosticMessageText(diagnostic.messageText, '\n');

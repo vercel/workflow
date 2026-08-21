@@ -51,6 +51,7 @@ export {
   isHookEventRequiringExistence,
   isHookLifecycleEventType,
   isRunEventType,
+  isSealedNoopEvent,
   isStepEventType,
   isTerminalRunEventType,
   isTerminalStepEventType,
@@ -136,7 +137,9 @@ export {
 export type { SpecVersion } from './spec-version.js';
 export {
   isLegacySpecVersion,
+  mintedSpecVersion,
   requiresNewerWorld,
+  SEALED_LOG_ENV_VAR,
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_LEGACY,
   SPEC_VERSION_MAX_SUPPORTED,
@@ -144,6 +147,7 @@ export {
   SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
   SPEC_VERSION_SUPPORTS_COMPRESSION,
   SPEC_VERSION_SUPPORTS_EVENT_SOURCING,
+  SPEC_VERSION_SUPPORTS_SEALED_LOG,
   SPEC_VERSION_SUPPORTS_SLOT_IDENTITY,
 } from './spec-version.js';
 export type * from './steps.js';

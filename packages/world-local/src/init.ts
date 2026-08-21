@@ -251,7 +251,7 @@ export async function ensureDataDir(dataDir: string): Promise<void> {
   );
   try {
     await writeFile(testFile, '');
-    // Clean up test file — ENOENT during cleanup is harmless (may race
+    // Clean up test file. ENOENT during cleanup is harmless (may race
     // with another process performing the same check concurrently)
     await unlink(testFile).catch((e: NodeJS.ErrnoException) => {
       if (e.code !== 'ENOENT') throw e;

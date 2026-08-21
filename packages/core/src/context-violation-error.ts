@@ -14,7 +14,7 @@ const INSPECT_CUSTOM = Symbol.for('nodejs.util.inspect.custom');
  * ANSI-framed string (for terminal display via `util.inspect` / `toString`).
  *
  * Keeping the pieces structured means we never have to strip ANSI back out
- * once it's in the message — we just don't put it there in the first place.
+ * once it's in the message because we don't put it there in the first place.
  */
 export interface FramedContent {
   /** Headline. `{ code: 'foo()' }` segments render as backticked inline code. */
@@ -83,7 +83,7 @@ export function renderPretty(c: FramedContent): string {
  *
  * - `.message` is **plain text** (no ANSI escape bytes). Structured logs,
  *   log drains, CBOR-serialized event data, and anything else that reads
- *   `err.message` / `err.stack` as a string gets clean output — no mojibake
+ *   `err.message` / `err.stack` as a string gets clean output: no mojibake
  *   in JSON, no `\x1B[...m` noise in Vercel logs.
  *
  * - The ANSI-framed version is rendered **lazily** via `toString()` and
@@ -92,12 +92,12 @@ export function renderPretty(c: FramedContent): string {
  *   attached to a structured log field, the consumer sees plain text.
  *
  * - `fatal = true` marks these as non-retryable. Calling `createHook()`
- *   from a step function will never succeed no matter how many retries —
- *   burning attempts just produces duplicated log output. The runtime's
+ *   from a step function will never succeed no matter how many retries.
+ *   Burning attempts produces duplicated log output. The runtime's
  *   `FatalError.is(err)` gate recognizes any error with `fatal: true`.
  */
 export abstract class ContextViolationError extends Error {
-  /** Non-retryable — see class doc. */
+  /** Non-retryable, see class doc. */
   readonly fatal = true;
 
   readonly #content: FramedContent;

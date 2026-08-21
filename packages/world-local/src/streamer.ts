@@ -99,7 +99,7 @@ function addChunkFilesByExtension(
  * per stream (`streams/chunks/<streamName>/`) so that listing a stream's
  * chunks costs O(chunks in that stream) rather than O(chunks in the whole
  * world). A tail reader polling for new chunks would otherwise `readdir` the
- * entire global chunks directory every 100ms — see vercel/workflow#2797.
+ * entire global chunks directory every 100ms. See vercel/workflow#2797.
  */
 function chunkDirForStream(chunksBaseDir: string, name: string): string {
   // Name becomes a path segment below; validate it can't escape chunksBaseDir.
@@ -114,7 +114,8 @@ function chunkDirForStream(chunksBaseDir: string, name: string): string {
  * the files live in. Handles tagged and legacy (.json) formats.
  *
  * Files are stored per-stream (`<chunkDir>/<chunkId><tagSuffix>.bin`), so the
- * key returned here is already the chunk id — no stream-name prefix to strip.
+ * key returned here is already the chunk id, with no stream-name prefix to
+ * strip.
  */
 async function listChunkFilesForStream(
   chunksBaseDir: string,
@@ -386,7 +387,7 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
             continue;
           }
 
-          // Collected enough data chunks — peek at the next file for EOF/hasMore
+          // Collected enough data chunks: peek at the next file for EOF/hasMore
           if (resultChunks.length >= limit) {
             if (isEofByte(await readFirstByte(filePath))) {
               streamDone = true;
@@ -458,8 +459,8 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
         // Tears down everything the reader holds open: both emitter listeners
         // and the filesystem poll interval. Assigned once listeners are wired
         // up in start(); called on cancel() and on terminal (EOF/close) paths.
-        // Kept robust (unconditional) so a cancel() while still reading from
-        // disk can't leak a listener/poll — a signal-bearing step opens one of
+        // Kept unconditional so a cancel() while still reading from
+        // disk can't leak a listener/poll: a signal-bearing step opens one of
         // these readers per invocation, so any leak accumulates fast.
         let teardown = () => {};
         let pollInterval: ReturnType<typeof setInterval> | null = null;
@@ -649,7 +650,7 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
 
             // If the reader was already cancelled/closed while we were reading
             // from disk above (start() yields at every await), don't arm the
-            // poll — cancel()'s teardown ran before this point and would leave
+            // poll: cancel()'s teardown ran before this point and would leave
             // the freshly-created interval orphaned.
             if (streamClosed) {
               teardown();

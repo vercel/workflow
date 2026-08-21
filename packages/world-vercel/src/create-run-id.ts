@@ -41,7 +41,7 @@ const runIds = globalSingleton(
  * Increment the bit immediately above the 11-bit metadata window of a
  * 26-char tagged ULID. The metadata occupies the top 11 bits of the
  * randomness section (all of byte 6 + the top 3 bits of byte 7), so the
- * next bit up is the lowest bit of the 48-bit timestamp (byte 5) — the
+ * next bit up is the lowest bit of the 48-bit timestamp (byte 5), so the
  * result is effectively the same ULID time-stamped 1ms later. This lets
  * us produce a strictly-larger ULID regardless of what region/version
  * metadata is subsequently stamped on top.
@@ -59,7 +59,7 @@ function bumpAboveMetadata(ulidStr: string): string {
     i--;
   }
   if (carry > 0) {
-    // 48-bit timestamp space exhausted — astronomically unlikely.
+    // 48-bit timestamp space exhausted, astronomically unlikely.
     throw new Error('ULID space exhausted');
   }
   return bytesToUlid(bytes);
@@ -82,9 +82,9 @@ function coerceRegion(value: unknown): RegionCode | null {
  * Resolve the effective region for a run, preferring an explicit value
  * supplied via the `start()` options bag over the `VERCEL_REGION`
  * environment variable. Falls back to {@link DEFAULT_REGION_CODE} (iad1)
- * when neither source yields a recognised region, so a run ID is always
+ * when neither source yields a recognized region, so a run ID is always
  * tagged with a concrete, routable region rather than the `unknown` (0)
- * sentinel — matching the server's default-region resolution.
+ * sentinel, matching the server's default-region resolution.
  */
 function resolveRegion(
   options: Readonly<Record<string, unknown>> | undefined
@@ -100,11 +100,11 @@ function resolveRegion(
  * `World.createRunId` implementation that mints region-tagged ULIDs.
  *
  * Region resolution order (first non-empty wins):
- *   1. `options.region` — explicit caller-supplied region forwarded by
+ *   1. `options.region`: explicit caller-supplied region forwarded by
  *      `start({ region })`.
- *   2. `process.env.VERCEL_REGION` — the region the current Vercel function
+ *   2. `process.env.VERCEL_REGION`: the region the current Vercel function
  *      is executing in.
- *   3. {@link DEFAULT_REGION_CODE} (iad1) — the server-side default region.
+ *   3. {@link DEFAULT_REGION_CODE} (iad1): the server-side default region.
  *      A run ID is therefore always tagged with a concrete, routable region;
  *      the `unknown` (0) sentinel is never minted here.
  *
@@ -137,8 +137,8 @@ export function createRunId(
  *
  * - Region-tagged IDs (minted by {@link createRunId}) decode to their
  *   embedded region.
- * - Untagged legacy IDs — and tagged IDs whose region code is unknown to
- *   this SDK version — resolve to {@link DEFAULT_REGION_CODE}: all
+ * - Untagged legacy IDs, and tagged IDs whose region code is unknown to
+ *   this SDK version, resolve to {@link DEFAULT_REGION_CODE}: all
  *   pre-tagging data lives there by convention, matching the backend's
  *   routing.
  * - Malformed IDs return `null` (never throws).
@@ -159,8 +159,8 @@ export function regionForRunId(runId: string): string | null {
  * `World.describeRun` implementation: Vercel-specific display fields
  * for a run.
  *
- * Currently a single field — `region`, decoded from the run ID's
- * region tag (see {@link regionForRunId}) — but the shape leaves room
+ * Currently a single field (`region`, decoded from the run ID's
+ * region tag; see {@link regionForRunId}), but the shape leaves room
  * for additional fields derived from other run-entity properties
  * (e.g. `executionContext`) without another interface change. A
  * `null` region means the run ID was present but undecodable;

@@ -145,6 +145,8 @@ export const StreamClickContext = createContext<
 export type DecryptClickContextValue = {
   onDecrypt: () => void;
   isDecrypting: boolean;
+  isDecryptDisabled?: boolean;
+  decryptDisabledReason?: string;
   hasEncryptedData?: boolean;
 };
 
@@ -167,7 +169,8 @@ function EncryptedInlineLabel() {
       <Button
         size="xs"
         className="align-baseline gap-x-1"
-        disabled={ctx.isDecrypting}
+        disabled={ctx.isDecrypting || ctx.isDecryptDisabled}
+        title={ctx.isDecryptDisabled ? ctx.decryptDisabledReason : undefined}
         onClick={(e) => {
           e.stopPropagation();
           ctx.onDecrypt();
@@ -842,7 +845,7 @@ export function collapseRefs(data: unknown): unknown {
   if (data instanceof Set) {
     return new Set(Array.from(data.values(), collapseRefs));
   }
-  // Only recurse into plain objects — leave class instances untouched
+  // Only recurse into plain objects; leave class instances untouched
   const proto = Object.getPrototypeOf(data);
   if (proto !== Object.prototype && proto !== null) return data;
   const result: Record<string, unknown> = {};
@@ -871,6 +874,10 @@ export interface DataInspectorProps {
   onDecrypt?: () => void;
   /** Whether decryption is currently in progress */
   isDecrypting?: boolean;
+  /** Whether decryption is unavailable */
+  isDecryptDisabled?: boolean;
+  /** Explains why decryption is unavailable */
+  decryptDisabledReason?: string;
 }
 
 export function DataInspector({
@@ -881,6 +888,8 @@ export function DataInspector({
   onRunClick,
   onDecrypt,
   isDecrypting = false,
+  isDecryptDisabled = false,
+  decryptDisabledReason,
 }: DataInspectorProps) {
   const collapsedData = useMemo(() => collapseRefs(data), [data]);
   const stableData = useStableInspectorData(collapsedData);
@@ -912,7 +921,14 @@ export function DataInspector({
   }
   if (onDecrypt) {
     content = (
-      <DecryptClickContext.Provider value={{ onDecrypt, isDecrypting }}>
+      <DecryptClickContext.Provider
+        value={{
+          onDecrypt,
+          isDecrypting,
+          isDecryptDisabled,
+          decryptDisabledReason,
+        }}
+      >
         {content}
       </DecryptClickContext.Provider>
     );

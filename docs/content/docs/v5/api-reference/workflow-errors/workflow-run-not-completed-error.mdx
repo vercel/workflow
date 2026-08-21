@@ -9,7 +9,7 @@ related:
 
 `WorkflowRunNotCompletedError` is thrown when requesting the result of a workflow run that has not completed yet. The run's current status (for example `pending` or `running`) is available on the error.
 
-[`run.returnValue()`](/docs/api-reference/workflow-api/get-run) handles this error internally — it polls until the run completes — so you will mainly encounter it when building custom polling logic on lower-level APIs.
+[`run.returnValue()`](/docs/api-reference/workflow-api/get-run) handles this error internally (it polls until the run completes), so you will mainly encounter it when building custom polling logic on lower-level APIs.
 
 ```typescript lineNumbers
 import { WorkflowRunNotCompletedError } from "workflow/errors"
@@ -25,7 +25,7 @@ try {
 }
 ```
 
-## API Signature
+## API signature
 
 ### Properties
 
@@ -42,11 +42,11 @@ interface WorkflowRunNotCompletedError {
 export default WorkflowRunNotCompletedError;`}
 />
 
-### Static Methods
+### Static methods
 
 #### `WorkflowRunNotCompletedError.is(value)`
 
-Type-safe check for `WorkflowRunNotCompletedError` instances. Preferred over `instanceof` because it works across module boundaries and VM contexts.
+Type-safe check for `WorkflowRunNotCompletedError` instances. Preferred over `instanceof` because it works across module boundaries and virtual machine contexts.
 
 ```typescript
 import { WorkflowRunNotCompletedError } from "workflow/errors"
