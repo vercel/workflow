@@ -275,6 +275,6 @@ All entities in the Workflow SDK use a consistent ID format: a 4-character prefi
 
 **Why this format?**
 
-- **Prefixes enable introspection**: Given any ID, you can immediately identify what type of entity it refers to. This makes debugging, logging, and cross-referencing entities across the system straightforward.
+- **Prefixes enable introspection**: Given any ID, you can immediately identify what type of entity it refers to. This helps you debug, log, and cross-reference entities across the system.
 
 - **ULIDs enable chronological ordering**: Unlike UUIDs, ULIDs encode a timestamp in their first 48 bits, making them lexicographically sortable by creation time. This property is essential for the event log: events are always stored and retrieved in the correct chronological order by sorting their IDs alone.

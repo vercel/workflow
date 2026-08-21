@@ -146,7 +146,7 @@ export interface AnalyticsListRunsParams {
    * Bound the listing to runs active between `startTime` and `endTime`
    * (ISO 8601 timestamps). Both must be provided together. A bounded window
    * lets the backend prune its scan, so the ClickHouse-backed Vercel
-   * implementation is significantly faster with one. Requesting a window
+   * implementation is faster with one. Requesting a window
    * older than the plan's observability lookback fails with
    * `observability-upgrade-required`.
    */

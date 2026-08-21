@@ -22,7 +22,7 @@ The runtime also previously called `world.runs.get(runId)` before `run_started`,
 - The queue invocation now receives all the run inputs (`input`, `deploymentId`, `workflowName`, `specVersion`, `executionContext`) via `runInput` so the runtime can create the run later if needed.
 - When the runtime re-enqueues itself, it does **not** pass these inputs: only the first queue cycle carries them.
 
-### `workflowEntrypoint()` changes
+### `workflowEntrypoint` changes
 
 - When calling `world.events.create` with `run_started`, we now also always pass the run input that was sent through the queue, if available. The world is responsible for creating the run if it doesn't already exist.
 

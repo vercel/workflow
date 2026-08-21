@@ -82,7 +82,7 @@ npx workflow inspect stream <stream-id> --run <run-id> --decrypt
 
 Without `--decrypt`, encrypted fields display as `🔒 Encrypted` placeholders.
 
-## Custom `World` implementations
+## Custom World implementations
 
 The core runtime encrypts data automatically when the `World` implementation provides a `getEncryptionKeyForRun()` method. The core runtime can call this method in two forms:
 

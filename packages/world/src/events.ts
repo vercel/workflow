@@ -31,6 +31,10 @@ export const EventTypeSchema = z.enum([
   // Wait lifecycle events
   'wait_created',
   'wait_completed',
+  // Sealed-log filler (specVersion >= 7): written ONLY by the World's backend
+  // to occupy a slot whose writer allocated it and died. Carries no workflow
+  // meaning; replay skips it (see EventsConsumer). Never user-creatable.
+  'noop',
 ]);
 export type EventType = z.infer<typeof EventTypeSchema>;
 
@@ -187,6 +191,23 @@ export const WAIT_EVENT_TYPES = WaitEventTypeSchema.options;
 
 export function isWaitEventType(eventType: string): eventType is WaitEventType {
   return WAIT_EVENT_TYPES.includes(eventType as WaitEventType);
+}
+
+/**
+ * Whether an event is a sealed-log filler occupying an abandoned slot.
+ *
+ * The single home for this test, deliberately: a noop is invisible to the run
+ * but it is a real row of the log, so *every* pass over a log has to decide
+ * whether it is walking positions (count it) or reconstructing what happened
+ * (skip it). The two replay engines and the observability trace builder each
+ * make that decision independently, and the one thing they must agree on is
+ * that a noop's `createdAt`, the sealer's wall clock, can postdate every real
+ * event around it but never becomes a time the run observed.
+ */
+export function isSealedNoopEvent(
+  event: Pick<Event, 'eventType'> | { eventType: string }
+): boolean {
+  return event.eventType === 'noop';
 }
 
 const ChildEntityCreationEventTypeSchema = EventTypeSchema.extract([
@@ -496,6 +517,25 @@ const HookConflictEventSchema = BaseEventSchema.extend({
   }),
 });
 
+/**
+ * Sealed-log filler event (specVersion >= 7). Written ONLY by the World's
+ * backend when it seals a slot whose writer allocated the position and died
+ * before committing (see `SPEC_VERSION_SUPPORTS_SEALED_LOG`). It occupies its
+ * slot, so density arithmetic and cursors count it, but carries no workflow
+ * meaning: replay steps over it without delivering it to any consumer and
+ * without advancing the deterministic clock. NOT user-creatable, and absent
+ * from `CreateEventSchema` for that reason.
+ */
+const NoopEventSchema = BaseEventSchema.extend({
+  eventType: z.literal('noop'),
+  eventData: z
+    .object({
+      sealed: z.boolean().optional(),
+    })
+    .passthrough()
+    .optional(),
+});
+
 const WaitCreatedEventSchema = BaseEventSchema.extend({
   eventType: z.literal('wait_created'),
   correlationId: z.string(),
@@ -690,6 +730,7 @@ const AllEventsSchema = z.discriminatedUnion('eventType', [
   // Wait lifecycle events
   WaitCreatedEventSchema,
   WaitCompletedEventSchema,
+  NoopEventSchema, // World-only: sealed-log filler for an abandoned slot
 ]);
 
 // Server response includes runId, eventId, and createdAt

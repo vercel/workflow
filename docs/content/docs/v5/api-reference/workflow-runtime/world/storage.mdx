@@ -214,7 +214,7 @@ To cancel a run, create a `run_cancelled` event through `world.events.create()` 
 
 To cancel a batch in one call, a world may implement the optional `runs.cancelMany({ runIds })`. It returns a summary plus a per-run outcome (`cancelled`, `already_cancelled`, `not_cancellable`, `not_found`, or `failed`). Backends that omit it fall back to per-run cancellation automatically.
 
-### `WorkflowRun` type
+### WorkflowRun type
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -245,7 +245,7 @@ const step = await world.steps.get(runId, stepId); // [!code highlight]
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `runId` | `string \| undefined` | The workflow run ID |
+| `runId` | `string` | The workflow run ID that owns the step |
 | `stepId` | `string` | The step ID |
 | `params.resolveData` | `'all' \| 'none'` | Whether to include input/output data. Default: `'all'` |
 
@@ -268,7 +268,7 @@ const result = await world.steps.list({ // [!code highlight]
 
 **Returns:** `{ data: Step[], cursor?: string }`
 
-### `Step` type
+### Step type
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -344,7 +344,7 @@ const result = await world.hooks.list({ // [!code highlight]
 
 **Returns:** `{ data: Hook[], cursor?: string }`
 
-### `Hook` type
+### Hook type
 
 | Field | Type | Description |
 |-------|------|-------------|

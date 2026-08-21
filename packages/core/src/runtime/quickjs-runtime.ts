@@ -30,11 +30,12 @@
  */
 
 import { SerializationError } from '@workflow/errors';
-import type {
-  Event,
-  RunInput,
-  WorkflowRun,
-  WorldCapabilities,
+import {
+  type Event,
+  isSealedNoopEvent,
+  type RunInput,
+  type WorkflowRun,
+  type WorldCapabilities,
 } from '@workflow/world';
 import * as nanoid from 'nanoid';
 import {
@@ -1817,6 +1818,18 @@ async function processEvents(
 ): Promise<boolean> {
   let resolved = false;
   for (const event of events) {
+    // A sealed-log noop occupies a slot whose writer died; the run never
+    // observed it. Step over it BEFORE the clock line below, not at the
+    // switch: its `createdAt` is the sealer's wall clock and can postdate
+    // every real event around it, so advancing to it would leak the sealer's
+    // schedule into replay. Because the clock is monotonic, every later
+    // Date.now() in the run with it. That would make a log whose hole was
+    // sealed replay differently from the same log whose hole its own writer
+    // filled, and differently from this log on the node:vm engine, which
+    // skips noops in `EventsConsumer` before `onConsumedEvent` feeds the
+    // clock. Same rule, both engines, one predicate.
+    if (isSealedNoopEvent(event)) continue;
+
     // Advance the VM's deterministic clock to this event's creation time
     // BEFORE resolving anything, so workflow code unblocked by this event
     // observes Date.now() at (or after, since the clock is monotonic) the time

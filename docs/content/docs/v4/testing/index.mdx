@@ -12,7 +12,7 @@ This guide covers two approaches:
 
 ## Unit testing steps
 
-Without the workflow compiler, the `"use step"` directive is a no-op. Your step functions run as regular JavaScript functions, making them straightforward to unit test with no special configuration.
+Without the workflow compiler, the `"use step"` directive is a no-op. Your step functions run as regular JavaScript functions, so you can unit test them without special configuration.
 
 ### Example steps
 
@@ -146,7 +146,7 @@ describe("calculateWorkflow", () => {
 
 ### Testing hooks and waits
 
-The real power of integration testing comes when testing workflow-only features. Hooks and waits can be resumed programmatically using the [`workflow/api`](/docs/api-reference/workflow-api) functions, making it straightforward to simulate external events in your tests.
+Integration testing is most useful for workflow-only features. You can resume hooks and waits programmatically using the [`workflow/api`](/docs/api-reference/workflow-api) functions to simulate external events in your tests.
 
 Given a workflow that waits for approval via a hook, then sleeps before publishing:
 

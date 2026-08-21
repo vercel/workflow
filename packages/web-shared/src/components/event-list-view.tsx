@@ -10,7 +10,10 @@ import type {
 } from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso';
-import { findDuplicateEventIds } from '../lib/duplicate-events';
+import {
+  DUPLICATE_EVENT_MESSAGE,
+  findDuplicateEventIds,
+} from '../lib/duplicate-events';
 import {
   type ExactIdSearchResult,
   type ExactWorkflowSearchIdKind,
@@ -18,13 +21,14 @@ import {
   parseExactWorkflowSearchId,
 } from '../lib/exact-event-search-id';
 import { isEncryptedMarker } from '../lib/hydration';
+import { isSealedNoopEvent, SEALED_EVENT_MESSAGE } from '../lib/sealed-events';
 import { useToast } from '../lib/toast';
 import { formatDuration } from '../lib/utils';
 import { AttrSetEventBlock } from './sidebar/attributes-block';
 import { ContextCardProvider } from './ui/context-card';
 import { DataInspector, DecryptClickContext } from './ui/data-inspector';
 import { DecryptButton } from './ui/decrypt-button';
-import { DuplicateEventTooltip } from './ui/duplicate-event-tooltip';
+import { EventNoticeTooltip } from './ui/duplicate-event-tooltip';
 import {
   ErrorStackBlock,
   isStructuredError,
@@ -141,6 +145,11 @@ function getStatusDotColor(eventType: string): string {
     eventType === 'hook_received'
   ) {
     return 'var(--ds-blue-700)';
+  }
+  // Sealed positions → dim gray, one step quieter than pending: the row is
+  // log filler the run never observed.
+  if (eventType === 'noop') {
+    return 'var(--ds-gray-500)';
   }
   // Created/pending → gray
   return 'var(--ds-gray-600)';
@@ -297,9 +306,10 @@ function isRunLevel(eventType: string): boolean {
     eventType === 'workflow_started' ||
     eventType === 'workflow_completed' ||
     eventType === 'workflow_failed' ||
-    // attr_set carries a dedup correlationId rather than a child entity ID,
-    // so it groups and labels with the run itself.
-    eventType === 'attr_set'
+    // attr_set and noop carry a dedup/positional correlationId rather than a
+    // child entity ID, so they group and label with the run itself.
+    eventType === 'attr_set' ||
+    eventType === 'noop'
   );
 }
 
@@ -898,6 +908,12 @@ export function EventRow({
     ? '__run__'
     : (event.correlationId ?? undefined);
 
+  const isSealed = isSealedNoopEvent(event);
+  const rowNotice = isDuplicate
+    ? DUPLICATE_EVENT_MESSAGE
+    : isSealed
+      ? SEALED_EVENT_MESSAGE
+      : undefined;
   const statusDotColor = getStatusDotColor(event.eventType);
   const createdAt = new Date(event.createdAt);
   const occurredAt = parseEventDate(event.occurredAt);
@@ -1111,11 +1127,11 @@ export function EventRow({
 
           {/* Event Type */}
           <div className="font-medium min-w-0 px-4" style={{ flex: '2 1 0%' }}>
-            <DuplicateEventTooltip isDuplicate={isDuplicate}>
+            <EventNoticeTooltip notice={rowNotice}>
               <span
                 className="inline-flex items-center gap-1.5"
                 style={{
-                  color: isDuplicate
+                  color: rowNotice
                     ? 'var(--ds-gray-700)'
                     : 'var(--ds-gray-900)',
                 }}
@@ -1153,7 +1169,7 @@ export function EventRow({
                 </span>
                 {formatEventType(event.eventType)}
               </span>
-            </DuplicateEventTooltip>
+            </EventNoticeTooltip>
           </div>
 
           {/* Name */}

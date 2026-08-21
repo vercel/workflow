@@ -39,6 +39,7 @@ import { version } from './version.js';
  * `main`. It is rewritten by external CI for branch-deployment testing.
  * Prefer `VERCEL_WORKFLOW_SERVER_URL` for deployment-time configuration.
  */
+// biome-ignore format: External CI replaces only this line with a deployment URL that may exceed the formatter width.
 export const WORKFLOW_SERVER_URL_OVERRIDE = '';
 
 /**

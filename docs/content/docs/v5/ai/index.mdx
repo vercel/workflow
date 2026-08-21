@@ -31,7 +31,7 @@ Aside from the usual challenges of getting your long-running tasks to be product
 - **Resumability**: Resuming streams requires not just storing your messages, but also storing streams, and piping them across services.
 - **Human-in-the-loop**: Your client, API, and async job orchestration need to work together to create, track, route to, and display human approval requests, or similar webhook operations.
 
-Workflow SDK provides all of these capabilities out of the box. Your agent becomes a workflow, your tools become steps, and the framework handles interplay with your existing infrastructure.
+Workflow SDK provides all of these capabilities without additional infrastructure. Your agent becomes a workflow, your tools become steps, and the framework handles interplay with your existing infrastructure.
 
 ## Getting started
 
@@ -272,7 +272,7 @@ export async function chatWorkflow(messages: UIMessage[]) {
 
   const agent = new WorkflowAgent({ // [!code highlight]
 
-    // If using AI Gateway, just specify the model name as a string:
+    // If using AI Gateway, specify the model name as a string:
     model: "bedrock/claude-4-5-haiku-20251001-v1", // [!code highlight]
 
     // ELSE if using a custom provider, pass the provider call as an argument:
@@ -389,7 +389,7 @@ With `"use step"`:
 
 </Steps>
 
-That's all you need to do to convert your basic AI SDK agent into a durable agent. If you run your development server, and send a chat message, you should see your agent respond just as before, but now with added durability and observability.
+Your basic AI SDK agent is now durable. Run your development server and send a chat message. The agent should respond as before, with added durability and observability.
 
 ## Observability
 

@@ -126,7 +126,7 @@ export const flightBookingTools = {
 ```
 
 <Callout type="info">
-Note that the `defineHook().create()` function must be called from within a workflow context, not from within a step. This is why `executeBookingApproval` does not have `"use step"` - it runs in the workflow context where hooks are available.
+Call `defineHook().create()` from within a workflow context, not from within a step. `executeBookingApproval` does not have `"use step"` because it runs in the workflow context where hooks are available.
 </Callout>
 
 </Step>

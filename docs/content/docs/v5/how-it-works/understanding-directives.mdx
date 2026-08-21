@@ -58,7 +58,7 @@ export async function onboardUser(userId: string) {
 **The key insight:** Workflows resume from suspension by replaying their code using cached step results from the [event log](/docs/how-it-works/event-sourcing). When a step like `await fetchUserData(userId)` is called:
 
 - **If already executed:** Returns the cached result immediately from the event log
-- **If not yet executed:** Suspends the workflow, enqueues the step for background execution, and resumes later with the result
+- **If not yet executed:** Suspends the workflow, executes the step (usually inline in the same invocation, or through the queue when the invocation runs out of inline budget or nears its timeout), then resumes with the result
 
 This replay mechanism requires deterministic code. If `Math.random()` weren't seeded, the first execution might return `0.7` (sending the email) but replay might return `0.3` (skipping it), thus breaking resumption. The Workflow SDK sandbox provides seeded `Math.random()` and `Date` to ensure consistent behavior across replays.
 
@@ -68,7 +68,7 @@ For a deeper dive into workflows and steps, see [Workflows and Steps](/docs/foun
 
 ## The core challenge
 
-This execution model enables powerful durability features - workflows can suspend for days, survive restarts, and resume from any point. However, it also requires a semantic boundary in the code that tells **the compiler, runtime, and developer** that execution semantics have changed.
+This execution model provides durability: workflows can suspend for days, survive restarts, and resume from any point. However, it also requires a semantic boundary in the code that tells **the compiler, runtime, and developer** that execution semantics have changed.
 
 The challenge: how do we mark this boundary in a way that:
 
@@ -77,7 +77,7 @@ The challenge: how do we mark this boundary in a way that:
 3. Allows static analysis of workflow structure
 4. Feels natural to JavaScript developers
 
-Let's look at where directives have been used before, and the alternatives we considered:
+Directives have prior uses, and we considered several alternatives:
 
 ## Prior art on directives
 
@@ -106,7 +106,7 @@ But we didn't get here immediately. This took some discovery to arrive at:
 
 ## Alternatives we explored
 
-Before settling on directives, we prototyped several other approaches. Each had significant limitations that made them unsuitable for production use.
+Before settling on directives, we prototyped several other approaches. Each had limitations that made them unsuitable for production use.
 
 ### Runtime-only "Suspense" API
 
@@ -220,7 +220,7 @@ We're big fans of [Effect.ts](https://effect.website/) and the power of generato
 
 **1. Syntax felt more like a DSL than JavaScript**
 
-Generators require a custom mental model that differs significantly from familiar async/await patterns. The `yield*` syntax and generator delegation were unfamiliar to many developers:
+Generators require a custom mental model that differs from familiar async/await patterns. The `yield*` syntax and generator delegation were unfamiliar to many developers:
 
 {/* @skip-typecheck: incomplete code sample */}
 ```typescript lineNumbers
@@ -282,7 +282,7 @@ We explored using file system conventions to identify workflows and steps, simil
   </Folder>
 </Files>
 
-With this approach, any function in the `workflows/` directory would be transformed as a workflow, and any function in `steps/` would be a step. No directives needed, just file locations.
+With this approach, any function in the `workflows/` directory would be transformed as a workflow, and any function in `steps/` would be a step. File locations would replace directives.
 
 **Why this could work:**
 
@@ -308,7 +308,7 @@ The directive approach solved all these issues: it works in any project structur
 
 ### Decorators
 
-We considered decorators, but they presented significant challenges both technical and ergonomic.
+We considered decorators, but they presented technical and ergonomic challenges.
 
 **Decorators are non-yet-standard and class-focused**
 
@@ -385,7 +385,7 @@ export const processOrder = async (orderId: string) => {
 };
 ```
 
-The benefit is that macros could enforce types and provide "Go To Definition" or other LSP features out of the box.
+The benefit is that macros could enforce types and provide "Go To Definition" or other LSP features without additional configuration.
 
 However, **the core problem remains: Workflows aren't runtime values**
 
@@ -527,7 +527,7 @@ export async function processOrder(orderId: string) {
 
 The `"use step"` directive maintains consistency. While steps run in the full Node.js runtime and *could* work without a directive, they need some way to signal to the workflow runtime that they're steps.
 
-We could have used a function wrapper just for steps:
+We could have used a function wrapper for steps:
 
 {/* @skip-typecheck: incomplete code sample */}
 ```typescript lineNumbers

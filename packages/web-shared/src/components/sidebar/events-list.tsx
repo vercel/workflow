@@ -2,7 +2,12 @@
 
 import { type Event, getEventDataRefFields } from '@workflow/world';
 import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { DUPLICATE_EVENT_MESSAGE } from '../../lib/duplicate-events';
 import { hasEncryptedFields, isExpiredMarker } from '../../lib/hydration';
+import {
+  isSealedNoopEvent,
+  SEALED_EVENT_MESSAGE,
+} from '../../lib/sealed-events';
 import {
   Collapsible,
   CollapsibleContent,
@@ -10,7 +15,7 @@ import {
   CollapsibleTrigger,
 } from '../ui/collapsible';
 import { RunClickContext, StreamClickContext } from '../ui/data-inspector';
-import { DuplicateEventTooltip } from '../ui/duplicate-event-tooltip';
+import { EventNoticeTooltip } from '../ui/duplicate-event-tooltip';
 import { ErrorCard } from '../ui/error-card';
 import { ErrorStackBlock, isStructuredError } from '../ui/error-stack-block';
 import { Skeleton } from '../ui/skeleton';
@@ -110,6 +115,11 @@ function EventItem({
     void loadEventData(true);
   }, [encryptionKey, loadEventData]);
 
+  const rowNotice = isDuplicate
+    ? DUPLICATE_EVENT_MESSAGE
+    : isSealedNoopEvent(event)
+      ? SEALED_EVENT_MESSAGE
+      : undefined;
   const createdAt = new Date(event.createdAt);
   const occurredAt = parseDateValue(event.occurredAt);
   const displayedCreatedAt = showSeparateEventOccurrenceTimestamps
@@ -139,15 +149,15 @@ function EventItem({
     >
       <CollapsibleTrigger className="px-3 py-2">
         <div className="flex w-full items-center justify-between gap-3">
-          <DuplicateEventTooltip isDuplicate={isDuplicate}>
+          <EventNoticeTooltip notice={rowNotice}>
             <span
               className={`text-label-12 font-mono ${
-                isDuplicate ? 'text-gray-700' : 'text-gray-1000'
+                rowNotice ? 'text-gray-700' : 'text-gray-1000'
               }`}
             >
               {event.eventType}
             </span>
-          </DuplicateEventTooltip>
+          </EventNoticeTooltip>
           <span className="shrink-0 text-label-13 text-gray-900">
             {displayedCreatedAtTime}
           </span>

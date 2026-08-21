@@ -242,7 +242,7 @@ After disposal, the hook will no longer receive events and the async iterator wi
 
 ## Understanding webhooks
 
-While hooks are powerful, they require you to manually handle HTTP requests and route them to workflows. **Webhooks** solve this by providing a higher-level abstraction built on top of hooks that:
+Hooks require you to manually handle HTTP requests and route them to workflows. **Webhooks** provide a higher-level abstraction built on top of hooks that:
 
 1. Automatically serializes the entire HTTP [`Request`](https://developer.mozilla.org/en-US/docs/Web/API/Request) object
 2. Provides an automatically addressable `url` property pointing to the generated webhook endpoint

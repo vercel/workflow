@@ -47,7 +47,7 @@ export async function brokenAgent(prompt: string) {
 }
 ```
 
-## The solution: step as factory
+## The solution: step-as-factory
 
 Instead of passing the model object, pass a **callback function** that returns the model. Marking that callback with `"use step"` tells the compiler to serialize the *function reference* (which is a string identifier) rather than its return value. The provider is only instantiated at execution time, inside the step's full Node.js runtime.
 

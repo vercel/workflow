@@ -75,7 +75,7 @@ Sometimes you deploy because the old code had a bug. The safest fix is usually e
 3. Cancel the old runs if they are still running.
 4. Rerun them on the latest deployment with the same inputs.
 
-This keeps the version boundary visible. The old run ends as cancelled or failed, and the replacement run starts fresh on the fixed deployment. This is a good fit for one-off, ad-hoc upgrades where you explicitly opt in to moving affected runs onto a new version.
+This keeps the version boundary visible. The old run ends as canceled or failed, and the replacement run starts fresh on the fixed deployment. This is a good fit for one-off, ad-hoc upgrades where you explicitly opt in to moving affected runs onto a new version.
 
 ```bash
 # Inspect affected runs and copy the exact workflowName value.

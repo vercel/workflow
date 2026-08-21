@@ -11,7 +11,7 @@ related:
   - /docs/how-it-works/event-sourcing
 ---
 
-The Workflow SDK is instrumented with [OpenTelemetry](https://opentelemetry.io) out of the box. It emits spans for workflow starts, every workflow and step invocation, and the HTTP calls it makes to the workflow backend, and it propagates trace context across queue deliveries so a run remains traceable end to end.
+The Workflow SDK includes [OpenTelemetry](https://opentelemetry.io) instrumentation. It emits spans for workflow starts, every workflow and step invocation, and the HTTP calls it makes to the workflow backend, and it propagates trace context across queue deliveries so a run remains traceable end to end.
 
 The SDK only depends on the OpenTelemetry **API**, never on an SDK or exporter. If your application does not register an OpenTelemetry SDK, all tracing code is a silent no-op with no overhead and no behavior change.
 
@@ -70,7 +70,7 @@ Stream spans are emitted by the SDK's world backend on the client that writes or
 
 ## Trace shape: one trace per invocation
 
-A single workflow run can span hours or days across many separate function invocations: every step completion, `sleep()` wake-up, and retry is a new queue delivery. Stitching all of that into one trace produces giant, slow-loading traces that most tracing backends truncate.
+A single workflow run can span hours or days across many separate function invocations: every `sleep()` wake-up, hook resume, retry, and queued step continuation is a new queue delivery. Stitching all of that into one trace produces giant, slow-loading traces that most tracing backends truncate.
 
 Instead, the SDK creates **one bounded trace per invocation**. Each `workflow.execute` (or background `step.execute`) span starts a new trace root and attaches two **span links**:
 
@@ -108,7 +108,7 @@ The `WORKFLOW_TRACE_MODE` environment variable controls the shape:
 | `continuous` | The run-origin context becomes the **parent** of every invocation, so the entire run shares one trace ID. |
 
 <Callout type="warn">
-This is a behavior change from v4, which always used `continuous`-style tracing. If you have dashboards or queries that assume one trace ID per run, either update them to use `workflow.run.id` and span links, or set `WORKFLOW_TRACE_MODE=continuous` to restore the previous shape. Note that in `linked` mode each invocation root makes its own sampling decision, and the number of root spans increases to one per invocation.
+This is a behavior change from v4, which always used `continuous`-style tracing. If you have dashboards or queries that assume one trace ID per run, either update them to use `workflow.run.id` and span links, or set `WORKFLOW_TRACE_MODE=continuous` to restore the previous shape. In `linked` mode, each invocation root makes its own sampling decision, and the number of root spans increases to one per invocation.
 </Callout>
 
 ## Context propagation

@@ -60,7 +60,7 @@ export const flightBookingTools = {
 ```
 
 <Callout type="info">
-  Note that the `sleep()` function must be called from within a workflow context, not from within a step. This is why `executeSleep` does not have `"use step"` - it runs in the workflow context where `sleep()` is available.
+  Call `sleep()` from within a workflow context, not from within a step. `executeSleep` does not have `"use step"` because it runs in the workflow context where `sleep()` is available.
 </Callout>
 
  This already makes the full sleep functionality available to the Agent!

@@ -80,7 +80,7 @@ stepFunction(controller.signal)
                 └─→ Background reader listens on stream for abort packet
 ```
 
-### 3. `abort()` called in workflow
+### 3. abort() called in workflow
 
 ```text
 controller.abort()
@@ -164,7 +164,7 @@ The `streamName` and `hookToken` are generated once at serialization time (in th
 
 **Into workflow context** (`getWorkflowRevivers`): Creates the durable AbortController with hook backing. Subscribes to the events consumer for the hook's correlation ID. If the event log contains a `hook_received` event, `signal.aborted` is `true`.
 
-### `abort()` in a step
+### abort() in a step
 
 When `abort()` is called on a deserialized `AbortController` inside a step:
 
@@ -174,7 +174,7 @@ When `abort()` is called on a deserialized `AbortController` inside a step:
 
 The step's `ops` array is awaited via `waitUntil(Promise.all(ops))` after the step function returns, the same mechanism used by [`getWritable()`](/docs/api-reference/workflow/get-writable). This keeps `abort()` synchronous from the caller's perspective while ensuring the async work completes.
 
-### Abort errors are wrapped in `FatalError`
+### Abort errors are wrapped in FatalError
 
 When a step throws due to an abort (whether from `fetch` throwing `AbortError`, `signal.throwIfAborted()`, or any other abort-induced error), the step executor wraps the error in `FatalError` before recording it in the event log. This ensures:
 
@@ -183,7 +183,7 @@ When a step throws due to an abort (whether from `fetch` throwing `AbortError`, 
 
 The wrapping happens in `runtime/step-executor.ts` during error hydration. When the step's thrown error is an `AbortError` (checked via `err.name === 'AbortError'`), it is treated as fatal regardless of the step's `maxRetries` configuration.
 
-### `abort()` in the workflow
+### abort() in the workflow
 
 When `abort()` is called in the workflow context:
 

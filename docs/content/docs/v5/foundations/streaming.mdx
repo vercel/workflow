@@ -1,8 +1,8 @@
 ---
 title: Streaming
-description: Stream data in real-time to clients for progress updates and incremental content delivery.
+description: Stream data in real time to clients for progress updates and incremental content delivery.
 type: conceptual
-summary: Stream real-time data to clients without waiting for workflow completion.
+summary: Stream data to clients in real time without waiting for workflow completion.
 prerequisites:
   - /docs/foundations/workflows-and-steps
 related:
@@ -10,7 +10,7 @@ related:
   - /docs/ai/resumable-streams
 ---
 
-Workflows can stream data in real-time to clients without waiting for the entire workflow to complete. This enables progress updates, AI-generated content, log messages, and other incremental data to be delivered as workflows execute.
+Workflows can stream data to clients in real time without waiting for the entire workflow to complete. Clients can receive progress updates, AI-generated content, log messages, and other incremental data as workflows execute.
 
 ## Getting started with `getWritable()`
 
@@ -80,7 +80,7 @@ Replace the function path with the path or glob for your streaming route. When t
 Cancellation applies to every function matching the configured path or glob, even if the route does not listen to `request.signal`. Any other work in that invocation which is not wrapped in [`waitUntil`](https://vercel.com/docs/functions/functions-api-reference/vercel-functions-package#waituntil) or [`after`](https://nextjs.org/docs/app/api-reference/functions/after) can be lost. Only enable it for routes that are safe to terminate when their client disconnects.
 </Callout>
 
-This setting prevents abandoned stream readers from consuming the rest of a function invocation. It does not extend the function's maximum duration: an actively connected streaming response can still reach the configured limit, at which point the client should reconnect to the durable stream.
+This setting prevents abandoned stream readers from consuming the rest of a function invocation. It does not extend the function's maximum duration. An actively connected streaming response can still reach the configured limit, at which point the client should reconnect to the durable stream.
 
 ### Resuming streams from a specific point
 
@@ -109,7 +109,7 @@ export async function GET(
 }
 ```
 
-This allows clients to reconnect and continue receiving data from where they left off, rather than restarting from the beginning.
+Clients can reconnect and continue receiving data from where they left off instead of restarting from the beginning.
 
 `startIndex` also supports **negative values** to read relative to the end of the stream. For example, `startIndex: -5` starts 5 chunks before the current end. This is useful when you want to show the most recent output without reading the entire stream history.
 
@@ -129,19 +129,20 @@ Because streams are live and continue receiving chunks, negative `startIndex` va
 
 ## Streams as data types
 
-[`ReadableStream`](https://developer.mozilla.org/en-US/docs/Web/API/ReadableStream) and [`WritableStream`](https://developer.mozilla.org/en-US/docs/Web/API/WritableStream) are standard Web Streams API types that Workflow SDK makes serializable. They follow the web standard, and Workflow SDK lets you pass them between functions while maintaining their streaming capabilities.
+[`ReadableStream`](https://developer.mozilla.org/en-US/docs/Web/API/ReadableStream) and [`WritableStream`](https://developer.mozilla.org/en-US/docs/Web/API/WritableStream) are standard Web Streams API types that Workflow SDK makes serializable. Workflow SDK lets you pass these standard types between functions while maintaining their streaming capabilities.
 
 Unlike regular values that are fully serialized to the [event log](/docs/how-it-works/event-sourcing), streams maintain their streaming capabilities when passed between functions.
 
 **Key properties:**
+
 - Stream references can be passed between workflow and step functions
 - Stream data flows directly without being stored in the event log
 - Streams preserve their state across workflow suspension points
 
 <Callout type="info">
-**How Streams Persist Across Workflow Suspensions**
+**How streams persist across workflow suspensions**
 
-Streams in Workflow SDK are backed by persistent, resumable storage provided by the "world" implementation. This is what enables streams to maintain their state even when workflows suspend and resume:
+Persistent, resumable storage from the World implementation lets Workflow SDK streams maintain their state when workflows suspend and resume:
 
 - **Vercel deployments**: Streams are backed by a performant Redis-based stream
 - **Local development**: Stream chunks are stored in the filesystem
@@ -149,9 +150,9 @@ Streams in Workflow SDK are backed by persistent, resumable storage provided by 
 
 ### Passing streams as arguments
 
-Since streams are serializable data types, you don't need to use the special [`getWritable()`](/docs/api-reference/workflow/get-writable). You can even wire your own streams through workflows, passing them as arguments from outside into steps.
+Because streams are serializable data types, you don't need to use [`getWritable()`](/docs/api-reference/workflow/get-writable). You can pass your own streams as arguments from outside a workflow into steps.
 
-Here's an example of passing a request body stream through a workflow to a step that processes it:
+The following example passes a request body stream through a workflow to a step that processes it:
 
 ```typescript title="app/api/upload/route.ts" lineNumbers
 import { start } from "workflow/api";
@@ -199,7 +200,7 @@ async function processInputStream(input: ReadableStream<Uint8Array>) {
 You cannot read from or write to streams directly within a workflow function. All stream operations must happen in step functions.
 </Callout>
 
-Workflow functions must be deterministic to support replay. Since streams bypass the [event log](/docs/how-it-works/event-sourcing) for performance, reading stream data in a workflow would break determinism because each replay could see different data. Requiring all stream operations to happen in steps ensures consistent behavior.
+Workflow functions must be deterministic to support replay. Streams bypass the [event log](/docs/how-it-works/event-sourcing) for performance, so reading stream data in a workflow would break determinism because each replay could see different data. Requiring all stream operations to happen in steps ensures consistent behavior.
 
 For more on determinism and replay, see [Workflows and Steps](/docs/foundations/workflows-and-steps).
 
@@ -514,6 +515,10 @@ async function uploadResult(stream: ReadableStream<Uint8Array>) {
 
 ## Best practices
 
+**Batching and first-chunk latency:**
+
+Writes are flushed immediately by default. The leading chunk of an idle stream dispatches as soon as it is written, and chunks arriving while a flush is in flight coalesce into the next batch. If you write bursts of many tiny chunks and prefer fewer round trips over first-chunk latency, set a group-commit window with the World's `streamFlushIntervalMs` option or the `WORKFLOW_STREAM_FLUSH_INTERVAL_MS` environment variable. See [Worlds configuration](/docs/configuration/worlds#streamflushintervalms).
+
 **Release locks properly:**
 
 ```typescript lineNumbers
@@ -530,7 +535,7 @@ Stream locks acquired in a step only apply within that step, not across other st
 </Callout>
 
 <Callout type="warn">
-If a lock is not released, the step function's HTTP request cannot terminate. Even though the step returns and the workflow continues, the underlying request will remain active until it times out, wasting compute resources unnecessarily.
+If a lock is not released, the invocation that ran the step cannot terminate. Even though the step returns and the workflow continues, the underlying request remains active until it times out and wastes compute resources.
 </Callout>
 
 **Close streams when done:**
@@ -599,17 +604,17 @@ export async function streamErrorWorkflow() {
 ```
 
 <Callout type="info">
-Stream errors don't trigger automatic retries for the producer step. Design your stream consumers to handle errors appropriately. Since the stream is already in an errored state, retrying the consumer won't help - use `FatalError` to fail the workflow immediately.
+Stream errors don't trigger automatic retries for the producer step. Design your stream consumers to handle errors. Because the stream is already in an errored state, retrying the consumer won't help. Use `FatalError` to fail the workflow immediately.
 </Callout>
 
 ## Related documentation
 
-- [`getWritable()` API Reference](/docs/api-reference/workflow/get-writable) - Get the workflow's writable stream
-- [`sleep()` API Reference](/docs/api-reference/workflow/sleep) - Pause workflow execution for a duration
-- [`start()` API Reference](/docs/api-reference/workflow-api/start) - Start workflows and access the `Run` object
-- [`getRun()` API Reference](/docs/api-reference/workflow-api/get-run) - Retrieve runs and their streams later
-- [world.streams](/docs/api-reference/workflow-runtime/world/streams) - Low-level stream read/write/close via World SDK
-- [WorkflowAgent](https://ai-sdk.dev/v7/docs/agents/workflow-agent#workflowagent) - AI agents with durable, resumable streaming support
-- [Errors and Retries](/docs/foundations/errors-and-retries) - Understanding error handling and retry behavior
-- [Serialization](/docs/foundations/serialization) - Understanding what data types can be passed in workflows
-- [Workflows and Steps](/docs/foundations/workflows-and-steps) - Core concepts of workflow execution
+- [`getWritable()` API reference](/docs/api-reference/workflow/get-writable): Get the workflow's writable stream
+- [`sleep()` API reference](/docs/api-reference/workflow/sleep): Pause workflow execution for a duration
+- [`start()` API reference](/docs/api-reference/workflow-api/start): Start workflows and access the `Run` object
+- [`getRun()` API reference](/docs/api-reference/workflow-api/get-run): Retrieve runs and their streams later
+- [`world.streams`](/docs/api-reference/workflow-runtime/world/streams): Use low-level stream read, write, and close operations through the World SDK
+- [`WorkflowAgent`](https://ai-sdk.dev/v7/docs/agents/workflow-agent#workflowagent): Build AI agents with durable, resumable streaming support
+- [Errors and retries](/docs/foundations/errors-and-retries): Understand error handling and retry behavior
+- [Serialization](/docs/foundations/serialization): Understand which data types you can pass in workflows
+- [Workflows and steps](/docs/foundations/workflows-and-steps): Learn the core concepts of workflow execution

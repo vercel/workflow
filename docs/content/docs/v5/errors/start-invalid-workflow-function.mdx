@@ -25,7 +25,7 @@ This error occurs when `start()` receives a function that does not have Workflow
 
 ## Why this happens
 
-`start()` expects an imported workflow function, not just any async function. During compilation, Workflow SDK transforms files that contain `"use workflow"` and attaches generated metadata such as the workflow ID. If that transform never runs, or if you pass a wrapper function instead of the transformed export, `start()` cannot identify what to enqueue and throws this error.
+`start()` expects an imported workflow function rather than any async function. During compilation, Workflow SDK transforms files that contain `"use workflow"` and attaches generated metadata such as the workflow ID. If that transform never runs, or if you pass a wrapper function instead of the transformed export, `start()` cannot identify what to enqueue and throws this error.
 
 ## Common causes
 

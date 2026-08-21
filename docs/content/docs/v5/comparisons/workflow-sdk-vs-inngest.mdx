@@ -33,7 +33,7 @@ related:
 | **Pricing** | SDK free; pay your platform | Per-execution: billed for the run **plus each step plus retries**; Pro from $99/mo, then ~$50 per 1M executions |
 | **Limits** | 50 MB payload; 2 GB/run; 10,000 steps ([Vercel World limits](https://vercel.com/docs/workflows/pricing)) | 1,000 steps/function; 4 MiB step payload; 32 MiB run state; runs up to 366 days |
 
-**What the limits mean in practice**: Inngest's caps are restrictive for real long-running AI workloads. An agent loop spends steps on every model and tool call, so 1,000 steps per function goes quickly; a single large language model response can approach the 4 MiB step-payload cap; and an accumulated conversation or context can outgrow 32 MiB of run state. The [Vercel World limits](https://vercel.com/docs/workflows/pricing) are 50 MB per payload and 2 GB of state per run.
+**What the limits mean in practice**: Inngest's caps are restrictive for real long-running AI workloads. An agent loop spends steps on every model and tool call, so it can consume 1,000 steps per function; a single large language model response can approach the 4 MiB step-payload cap; and an accumulated conversation or context can outgrow 32 MiB of run state. The [Vercel World limits](https://vercel.com/docs/workflows/pricing) are 50 MB per payload and 2 GB of state per run.
 
 ## Topology: co-located vs. invoked-over-HTTP
 
@@ -59,9 +59,9 @@ Inngest offers `step.ai.wrap()` (wrap Vercel AI SDK calls as durable steps), **A
 | `step.run()` | `"use step"` function | Named async function with Node.js access. |
 | `step.sleep()` / `step.sleepUntil()` | `sleep('5m')` / `sleep(date)` | Import from `workflow`. |
 | `step.waitForEvent()` | `createHook()` / `createWebhook()` | Token encodes the routing; no event schema. |
-| `step.invoke()` | `"use step"` wrappers around `start()` / `getRun()` | Spawn a child run. |
+| `step.invoke()` | [`start()`](/docs/foundations/starting-workflows) called directly from the workflow | Spawn a child run. |
 | `inngest.send()` / event triggers | `start()` from your app boundary | Start workflows directly. |
-| Retry config (`retries`) | `maxRetries`, `RetryableError`, `FatalError` | Retries live at the step boundary. |
+| Retry config (`retries`) / `RetryAfterError` | `maxRetries`, `RetryableError`, `FatalError` | Retries live at the step boundary. For custom backoff via `retryAfter`, see [Errors & Retrying](/docs/foundations/errors-and-retries#customize-retry-behavior). |
 | `step.realtime.publish()` / Realtime | `getWritable()` / named streams | Clients read from the stream. |
 
 The `createFunction` factory collapses into a plain exported function:

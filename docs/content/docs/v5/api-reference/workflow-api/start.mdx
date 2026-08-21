@@ -9,7 +9,7 @@ related:
   - /docs/foundations/idempotency
 ---
 
-`start()` enqueues a new workflow run and returns a `Run` object.
+Start/enqueue a new workflow run.
 
 ```typescript lineNumbers
 import { start } from "workflow/api";
@@ -52,17 +52,18 @@ Learn more about [`WorkflowReadableStreamOptions`](/docs/api-reference/workflow-
 
 ## Good to know
 
-- The `start()` function is used in runtime contexts to programmatically trigger workflow executions.
-- In v5, `start()` can also be called directly from a workflow function to spawn a child run or continue work in a new run. See [Workflow Composition](/cookbook/common-patterns/workflow-composition) and [Versioning](/docs/foundations/versioning).
-- This is different from calling workflow functions directly, which is the typical pattern in Next.js applications.
-- The function returns immediately after enqueuing the workflow. It doesn't wait for the workflow to complete.
-- Each call to `start()` creates a new workflow run. If retried requests must route to one active workflow, have the workflow create a deterministic hook token and use [`getHookByToken()`](/docs/api-reference/workflow-api/get-hook-by-token) to reuse an already-registered active hook. The lookup is not atomic with `start()`, so concurrent callers can still create extra runs before the hook is registered; handle that race inside the workflow by checking `await hook.getConflict()` before duplicate-sensitive work. On a conflict it resolves with the run that owns the token, so the duplicate can return the active owner to the caller. If duplicates must be rejected before a workflow body runs, keep a durable request record until native atomic start-and-hook registration exists. See [Idempotency](/docs/foundations/idempotency#run-idempotency).
-- All arguments must be [serializable](/docs/foundations/serialization).
-- When `deploymentId` is provided, the argument types and return type become `unknown` since there is no guarantee the workflow function's types will be consistent across different deployments.
-- `attributes` seeds plaintext run metadata as part of creation and requires a World implementing spec version 4 or later. Keys that start with `$` are reserved for framework and library code; framework-level callers can pass `allowReservedAttributes: true` to seed reserved keys, with the same semantics as the [`setAttributes`](/docs/api-reference/workflow/set-attributes) option of the same name.
+* Use the `start()` function in runtime contexts to programmatically trigger workflow executions.
+* In v5, you can also call `start()` directly from a workflow function to spawn a child run or continue work in a new run. See [Workflow Composition](/cookbook/common-patterns/workflow-composition) and [Versioning](/docs/foundations/versioning).
+* This is different from calling workflow functions directly, which is the typical pattern in Next.js applications.
+* The function returns immediately after enqueuing the workflow. It doesn't wait for the workflow to complete.
+* Each call to `start()` creates a new workflow run. If retried requests must route to one active workflow, have the workflow create a deterministic hook token and use [`getHookByToken()`](/docs/api-reference/workflow-api/get-hook-by-token) to reuse an already-registered active hook. The lookup is not atomic with `start()`, so concurrent callers can still create extra runs before the hook is registered. Handle that race inside the workflow by checking `await hook.getConflict()` before duplicate-sensitive work. On a conflict, it resolves with the run that owns the token, so the duplicate can return the active owner to the caller. If duplicates must be rejected before a workflow body runs, keep a durable request record until native atomic start-and-hook registration exists. See [Idempotency](/docs/foundations/idempotency#run-idempotency).
+* All arguments must be [serializable](/docs/foundations/serialization).
+* When you provide `deploymentId`, the argument types and return type become `unknown` because the workflow function's types may differ across deployments.
+* `attributes` seeds plaintext run metadata as part of creation and requires a World implementing spec version 4 or later. Keys that start with `$` are reserved for framework and library code; framework-level callers can pass `allowReservedAttributes: true` to seed reserved keys, with the same semantics as the [`setAttributes`](/docs/api-reference/workflow/set-attributes) option of the same name.
+* `region` pins the new run to a specific region on Worlds with a regional dimension. The [Vercel World](/worlds/vercel#explicit-region-selection) then serves the run's storage, queue dispatch, and streams from that region. When you omit `region`, the run is pinned to the region where it was created. Worlds without regions ignore the option.
 
 <Callout type="info">
-If `start()` throws `'start' received an invalid workflow function. Ensure the Workflow SDK is configured correctly and the function includes a 'use workflow' directive.`, the passed function was not transformed as a workflow. The two most common causes are a missing `"use workflow"` directive or missing framework integration. See [start-invalid-workflow-function](/docs/errors/start-invalid-workflow-function).
+If `start()` throws `'start' received an invalid workflow function. Ensure the Workflow SDK is configured correctly and the function includes a 'use workflow' directive.`, the compiler did not transform the passed function as a workflow. The two most common causes are a missing `"use workflow"` directive or missing framework integration. See [start-invalid-workflow-function](/docs/errors/start-invalid-workflow-function).
 </Callout>
 
 ## Examples
@@ -110,13 +111,13 @@ In Worlds without atomic, immutable deployments (such as local development or se
 <Callout type="warn">
 When using `deploymentId: "latest"`, the workflow run will execute on a potentially different deployment than the one calling `start()`. Be mindful of forward and backward compatibility:
 
-- **Workflow identity**: The workflow ID is derived from the function name and file path. If the latest deployment has renamed the workflow function or moved it to a different directory, the workflow ID will no longer match and the run will fail to start.
-- **Input and output compatibility**: The arguments passed to `start()` are serialized by the calling deployment but deserialized by the target deployment. Similarly, the workflow's return value is serialized by the target deployment but deserialized by the caller. If the workflow's expected arguments or return type have changed (e.g. added required fields, removed fields, or changed types), the run may fail or behave unexpectedly. Ensure that input and output schemas remain backward-compatible across deployments.
+- **Workflow identity**: The function name and file path determine the workflow ID. If the latest deployment has renamed the workflow function or moved it to a different directory, the workflow ID will no longer match and the run will fail to start.
+- **Input and output compatibility**: The calling deployment serializes the arguments passed to `start()`, and the target deployment deserializes them. Similarly, the target deployment serializes the workflow's return value, and the caller deserializes it. If the workflow's expected arguments or return type have changed (for example, added required fields, removed fields, or changed types), the run may fail or behave unexpectedly. Ensure that input and output schemas remain backward-compatible across deployments.
 </Callout>
 
 ### Inside a workflow function
 
-`start()` can be called directly from a workflow function to spawn a child run. It is step-backed, so the spawn records a deterministic step boundary in the parent's event log.
+Call `start()` directly from a workflow function to spawn a child run. It is step-backed, so the spawn records a deterministic step boundary in the parent's event log.
 
 ```typescript
 import { start } from "workflow/api";

@@ -391,7 +391,18 @@ async function createWorkflowSession({
   const ulid = monotonicFactory(() => vmGlobalThis.Math.random());
   // Correlation IDs must be replay-stable. `startedAt` differs between a turbo
   // delivery and a later server-backed replay, so use fixedTimestamp.
-  const generateUlid = () => ulid(fixedTimestamp);
+  // The draw counter is the progress metric for `quiesceEarlierCascades`
+  // (WORKFLOW_LOG_ORDER_DRAWS): a quiet turn is one that drew nothing. It
+  // counts EVERY draw from this sequence. This same function is installed as
+  // the `STABLE_ULID` global below, which serialization draws stream ids
+  // from during dehydration. This is deliberate because quiescence must also
+  // wait out serialization-driven draws, and counting extra draws only extends
+  // the wait (see the termination note on `quiesceEarlierCascades`).
+  let mintCount = 0;
+  const generateUlid = () => {
+    mintCount += 1;
+    return ulid(fixedTimestamp);
+  };
   const generateNanoid = nanoid.customRandom(nanoid.urlAlphabet, 21, (size) =>
     new Uint8Array(size).map(() => 256 * vmGlobalThis.Math.random())
   );
@@ -480,6 +491,9 @@ async function createWorkflowSession({
     eventsConsumer,
     generateUlid,
     generateNanoid,
+    get mintCount() {
+      return mintCount;
+    },
     invocationsQueue: new Map(),
     // Use getter/setter so the EventsConsumer's getPromiseQueue() always
     // sees the latest queue state as it's mutated by step/hook/sleep callbacks.

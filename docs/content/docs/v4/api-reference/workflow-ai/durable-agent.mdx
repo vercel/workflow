@@ -392,7 +392,7 @@ async function agentWithLibraryFeaturesWorkflow(userRequest: string) {
 }
 ```
 
-### Dynamic context with `prepareStep`
+### Dynamic context with prepareStep
 
 Use `prepareStep` to modify settings before each step in the agent loop:
 
@@ -436,7 +436,7 @@ async function agentWithPrepareStep(userMessage: string) {
 }
 ```
 
-### Message injection with `prepareStep`
+### Message injection with prepareStep
 
 Inject messages from external sources (like hooks) before each LLM call:
 
@@ -524,7 +524,7 @@ async function agentWithGenerationSettings() {
 }
 ```
 
-### Limiting steps with `maxSteps`
+### Limiting steps with maxSteps
 
 By default, the agent loops until completion. Use `maxSteps` to limit the number of LLM calls:
 

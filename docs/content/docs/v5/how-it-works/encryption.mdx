@@ -11,28 +11,32 @@ related:
 ---
 
 <Callout>
-This guide explains how Workflow SDK encrypts user data in the event log. Understanding these details is not required to use workflows: encryption is automatic and requires no code changes. For getting started, see the [getting started](/docs/getting-started) guides for your framework.
+Workflow SDK automatically encrypts user data in the event log without requiring code changes. To start using workflows, see the [getting started](/docs/getting-started) guide for your framework.
 </Callout>
 
-Workflow SDK supports automatic end-to-end encryption of all user data before it is written to the event log. When a `World` implementation provides encryption support, it is safe to pass sensitive data (such as API keys, tokens, or user credentials) as workflow inputs, step arguments, and return values. The storage backend only ever sees ciphertext.
+Workflow SDK supports automatic end-to-end encryption of all user data before writing it to the event log. When a `World` implementation provides encryption support, you can pass sensitive data, such as API keys, tokens, or user credentials, as workflow inputs, step arguments, and return values. The storage backend only sees ciphertext.
 
-Encryption support varies by `World` implementation. See the [Worlds](/worlds) page to check which worlds support this feature. `World` implementations opt into encryption by providing a `getEncryptionKeyForRun()` method; the core runtime will use it automatically when present.
+Encryption support varies by `World` implementation. See the [Worlds](/worlds) page to check which Worlds support this feature. `World` implementations opt into encryption by providing a `getEncryptionKeyForRun()` method. The core runtime uses it automatically when present.
 
 ## What is encrypted
 
 All user data flowing through the event log is encrypted:
 
-- **Workflow inputs**: arguments passed when starting a workflow
-- **Workflow return values**: the final output of a workflow
-- **Step inputs**: arguments passed to step functions
-- **Step return values**: the result returned by step functions
-- **Hook metadata**: data attached when creating a hook
-- **Hook payloads**: data received by hooks and webhooks
-- **Stream data**: each frame in a `ReadableStream` or `WritableStream`
+- **Workflow inputs**: Arguments passed when starting a workflow
+- **Workflow return values**: The final output of a workflow
+- **Step inputs**: Arguments passed to step functions
+- **Step return values**: The result returned by step functions
+- **Hook metadata**: Data attached when creating a hook
+- **Hook payloads**: Data received by hooks and webhooks
+- **Stream data**: Each frame in a `ReadableStream` or `WritableStream`
 
 Metadata such as workflow names, step names, entity IDs, timestamps, and lifecycle states are **not** encrypted. This allows the observability tools to display run structure and timelines without requiring decryption.
 
 ## How it works
+
+### Compression
+
+Payloads are compressed before encryption. A format prefix on the stored value records the compression codec (gzip, with zstd support in the format), and the inner payload keeps its own serialization format prefix after decompression. Repetitive payloads compress heavily. AI token streams average around 80% smaller, reducing storage and network transfer. Like encryption, compression is automatic and requires no code changes.
 
 ### Key management
 
@@ -45,7 +49,7 @@ For example, the [Vercel World](/worlds/vercel) provides unique keys per run and
 Data is encrypted using **AES-256-GCM** via the [Web Crypto API](https://developer.mozilla.org/en-US/docs/Web/API/Web_Crypto_API):
 
 - A random 12-byte nonce is generated for each encryption operation
-- The GCM authentication tag provides integrity verification; any tampering with the ciphertext is detected
+- The GCM authentication tag provides integrity verification and detects any ciphertext tampering
 - The same plaintext produces different ciphertext each time due to the random nonce
 
 ## Decrypting data
@@ -54,11 +58,11 @@ When viewing workflow runs through the observability tools, encrypted fields dis
 
 ### Permissions
 
-Decryption access is controlled by the `World` implementation. On Vercel, decryption follows the same permissions model as project environment variables: if you don't have permission to view environment variable values for a project, you won't be able to decrypt workflow data either. Each decryption request is recorded in your [Vercel audit log](https://vercel.com/docs/audit-log), giving your team full visibility into when and by whom workflow data was accessed.
+The `World` implementation controls decryption access. On Vercel, decryption follows the same permissions model as project environment variables. If you don't have permission to view environment variable values for a project, you can't decrypt its workflow data. Vercel records each decryption request in your [Vercel audit log](https://vercel.com/docs/audit-log), so your team can see when someone accessed workflow data and who accessed it.
 
 ### Web dashboard
 
-Click the **Decrypt** button in the run detail panel to decrypt all data fields. Decryption happens entirely in the browser via the Web Crypto API; the observability server retrieves the encryption key but never sees your plaintext data.
+Click the **Decrypt** button in the run detail panel to decrypt all data fields. Decryption happens entirely in the browser through the Web Crypto API. The observability server retrieves the encryption key but never sees your plaintext data.
 
 ### CLI
 
@@ -80,7 +84,7 @@ npx workflow inspect stream <stream-id> --run <run-id> --decrypt
 
 Without `--decrypt`, encrypted fields display as `🔒 Encrypted` placeholders.
 
-## Custom `World` implementations
+## Custom World implementations
 
 The core runtime encrypts data automatically when the `World` implementation provides a `getEncryptionKeyForRun()` method. The core runtime can call this method in two forms:
 
@@ -98,7 +102,7 @@ Use `getEncryptionKeyForRun(run)` when the run entity already exists. Use `getEn
 To add encryption support to a custom `World`:
 
 1. Implement `getEncryptionKeyForRun()` on your `World` class, handling both call shapes
-2. Return the raw 32-byte key as a `Uint8Array`; the core runtime uses it for AES-256-GCM operations
+2. Return the raw 32-byte key as a `Uint8Array`. The core runtime uses it for AES-256-GCM operations
 3. Ensure the same key is returned for the same run ID across invocations (for decryption during replay)
 
 ```typescript

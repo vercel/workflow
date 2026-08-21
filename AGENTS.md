@@ -76,7 +76,7 @@ cd packages/core && pnpm vitest run src/[filename].test.ts
 # NOTE: WORKFLOW_PUBLIC_MANIFEST=1 is required for e2e tests to access the workflow manifest
 cd workbench/nextjs-turbopack && WORKFLOW_PUBLIC_MANIFEST=1 pnpm dev > /tmp/nextjs-dev.log 2>&1 &
 
-# Step 2: Wait for server to be ready (usually 15 to 20s)
+# Step 2: Wait for server to be ready (usually 15-20 seconds)
 sleep 15
 
 # Step 3: Run the e2e tests from the project root
@@ -89,8 +89,8 @@ pkill -f "pnpm dev"
 DEPLOYMENT_URL="http://localhost:3000" APP_NAME="nextjs-turbopack" pnpm vitest run packages/core/e2e/e2e.test.ts -t "sleeping"
 
 # For running E2E locally against a deployed Vercel preview/production app:
-# The test matrix in .github/workflows/tests.yml is the source of truth.
-# Each app entry defines the project-id / project-slug needed below.
+# The test matrix in .github/workflows/tests.yml is the source of truth —
+# each app entry defines the project-id / project-slug needed below.
 #
 # Required environment variables (matches the CI `e2e-vercel-prod` job):
 # - DEPLOYMENT_URL: Full URL of the deployed app (e.g. a preview deployment URL)
@@ -100,8 +100,8 @@ DEPLOYMENT_URL="http://localhost:3000" APP_NAME="nextjs-turbopack" pnpm vitest r
 # - WORKFLOW_VERCEL_ENV: "preview" or "production"
 # - WORKFLOW_VERCEL_AUTH_TOKEN: Vercel auth token with access to the team
 # - WORKFLOW_VERCEL_TEAM: Vercel team ID (CI uses team_nO2mCG4W8IxPIeKoSsqwAxxB for labs)
-# - WORKFLOW_VERCEL_PROJECT: Vercel project ID (prj_...). See test matrix.
-# - WORKFLOW_VERCEL_PROJECT_SLUG: Vercel project slug. See test matrix.
+# - WORKFLOW_VERCEL_PROJECT: Vercel project ID (prj_...) — see test matrix
+# - WORKFLOW_VERCEL_PROJECT_SLUG: Vercel project slug — see test matrix
 # - VERCEL_OIDC_TOKEN:         Short-lived OIDC token used to bypass
 #                              deployment protection via Trusted Sources.
 #                              In CI this is auto-minted from the GitHub
@@ -137,8 +137,8 @@ control that provides the calibration baseline. Any outcome other than
 `completed` fails the run, except `infra`, which means the harness could not
 reach the deployment.
 
-Run it locally against a workbench app. No Vercel deployment or credentials are
-required:
+Run it against a locally started workbench app. No Vercel deployment or
+credentials are required:
 
 ```bash
 pnpm run test:e2e:event-log-race-repro:local              # world-postgres
@@ -216,7 +216,8 @@ One difference affects how you read a local result: in CI each replay gets its
 own Fluid invocation, while here every replay
 of every run shares one Next.js process. world-postgres gives that process (and
 the harness process) 50 embedded Graphile Worker slots each, and approximately
-100 replays in one heap saturates GC. Measured on a 12-core laptop, all 14 attempts came back
+100 replays in one heap saturates GC. Measured on a 12-core laptop, all 14
+attempts came back
 `stuck` with the server at 6.4 GB RSS and Postgres idle. The script therefore
 sets `WORKFLOW_POSTGRES_WORKER_CONCURRENCY=10` (override by exporting it) and
 raises the app's old-space limit (`--heap-mb`). If a local run reports `stuck`
@@ -333,7 +334,7 @@ Linting, formatting, and typechecking (`pnpm lint`, `pnpm format`, `pnpm typeche
 When a PR adds or updates docs pages (anything under `docs/content/`), add a "Docs Preview" section to the PR description with direct links to each changed page on the `workflow-docs` preview deployment:
 
 - Get the preview base URL from the `vercel[bot]` comment on the PR. Use the Preview link from the `workflow-docs` project row (e.g. `https://workflow-docs-git-<branch-slug>.vercel.sh`). Don't construct the URL by hand because Vercel's branch-slug normalization is not a direct substitution.
-- Map content paths to routes: `docs/content/docs/v4/<path>.mdx` is served at `/docs/<path>` (v4 is the default/latest version) and `docs/content/docs/v5/<path>.mdx` at `/v5/docs/<path>`.
+- Map content paths to routes: `docs/content/docs/v5/<path>.mdx` is served at `/docs/<path>` (v5 is the default/latest version) and `docs/content/docs/v4/<path>.mdx` at `/v4/docs/<path>` (v4 is the maintenance version).
 - When a change is scoped to a specific section of a page, link to its heading anchor (e.g. `/docs/foundations/hooks#checking-for-token-conflicts`) and verify the anchor matches a real heading in the MDX.
 - A table with one row per page (and one column per docs version, when both v4 and v5 were updated) works well.
 - The preview deployment sits behind deployment protection, so the links require Vercel team access. This is expected; include them anyway for reviewers.
@@ -355,7 +356,7 @@ Both branches trigger the release workflow (`.github/workflows/release.yml`) on 
 
 **Important:** Some directories are not fully maintained on the `stable` branch:
 
-- **`docs/`**: Only `docs/content/` is actively maintained on `stable`; the rest of the docs app is a minimal placeholder (documentation is deployed only from `main`). `docs/content/` is kept on `stable` because the Markdown files are bundled into npm packages via `prepack` scripts.
+- **`docs/`**: Only `docs/content/` is actively maintained on `stable`; the rest of the docs app is a minimal placeholder (documentation is deployed only from `main`). `docs/content/` is kept on `stable` because the markdown files are bundled into npm packages via `prepack` scripts.
 - **`skills/`**: Not maintained on `stable` at all. Skill files are unrelated to npm packaging, so there is no reason to keep them in sync on the release branch.
 
 When backporting changes to `stable`, any conflicts involving docs app files (outside of `docs/content/`) or `skills/` files should be resolved by keeping the `stable` branch version (discarding the incoming change from `main`). Conflicts in `docs/content/` should be resolved normally. The backport GitHub Action handles this automatically.

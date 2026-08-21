@@ -380,7 +380,7 @@ export async function processOrderWorkflow(
 }
 ```
 
-Note that [pass-by-value semantics](#pass-by-value-semantics) also apply to the `this` context of `"use step"` instance methods. Modifying instance properties inside a step method will not affect the original instance in the workflow. If you need to update instance state, return `this` from the step method and re-assign the variable in the workflow:
+[Pass-by-value semantics](#pass-by-value-semantics) also apply to the `this` context of `"use step"` instance methods. Modifying instance properties inside a step method will not affect the original instance in the workflow. If you need to update instance state, return `this` from the step method and re-assign the variable in the workflow:
 
 {/* @expect-error:2351 */}
 

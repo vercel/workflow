@@ -34,7 +34,7 @@ When creating a webhook with `createWebhook()`, you can specify how the webhook 
 export async function webhookWorkflow() {
   "use workflow";
 
-  const webhook = await createWebhook({
+  const webhook = createWebhook({
     respondWith: "automatic", // Error! // [!code highlight]
   });
 }
@@ -49,7 +49,7 @@ import { createWebhook } from "workflow";
 export async function webhookWorkflow() {
   "use workflow";
 
-  const webhook = await createWebhook({
+  const webhook = createWebhook({
     respondWith: "manual", // [!code highlight]
   });
 
@@ -67,7 +67,7 @@ export async function webhookWorkflow() {
 export async function webhookWorkflow() {
   "use workflow";
 
-  const webhook = await createWebhook({
+  const webhook = createWebhook({
     respondWith: { status: 200, body: "OK" }, // Error! // [!code highlight]
   });
 }
@@ -82,7 +82,7 @@ import { createWebhook } from "workflow";
 export async function webhookWorkflow() {
   "use workflow";
 
-  const webhook = await createWebhook({
+  const webhook = createWebhook({
     respondWith: new Response("OK", { status: 200 }), // [!code highlight]
   });
 }
@@ -96,7 +96,7 @@ export async function webhookWorkflow() {
 import { createWebhook } from "workflow";
 
 // Returns 202 Accepted automatically
-const webhook = await createWebhook();
+const webhook = createWebhook();
 const request = await webhook;
 // No need to send a response
 ```
@@ -107,7 +107,7 @@ const request = await webhook;
 import { createWebhook } from "workflow";
 
 // Manual response control
-const webhook = await createWebhook({
+const webhook = createWebhook({
   respondWith: "manual",
 });
 
@@ -131,7 +131,7 @@ await request.respondWith(
 import { createWebhook } from "workflow";
 
 // Immediate response
-const webhook = await createWebhook({
+const webhook = createWebhook({
   respondWith: new Response("Request received", { status: 200 }),
 });
 

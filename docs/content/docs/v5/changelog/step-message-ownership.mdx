@@ -11,7 +11,7 @@ description: Why inline step_started now records its owning queue message ID, wh
 > made, and why the alternatives were rejected. Kill switch:
 > `WORKFLOW_INLINE_OWNERSHIP=0`; lease tuning:
 > `WORKFLOW_INLINE_OWNERSHIP_LEASE_SECONDS` (see
-> [Runtime tuning](/v5/docs/configuration/runtime-tuning)).
+> [Runtime tuning](/docs/configuration/runtime-tuning)).
 
 ## What this change does
 
@@ -74,7 +74,7 @@ steady-state writes beyond one field on an event we already write.
 ID across redelivery attempts. That stability is exactly the property recovery needs: "a
 delivery whose ID matches the stamp" means "the queue redelivered the work that crashed":
 permission to re-execute. The requirement is now documented in the
-[Queue contract](/v5/docs/api-reference/workflow-runtime/world/queue); a World whose queue
+[Queue contract](/docs/api-reference/workflow-runtime/world/queue); a World whose queue
 mints fresh IDs per delivery degrades gracefully (the owner check never matches, so
 crashed steps recover via the delayed backstop instead of immediately): it never wedges
 and never duplicates.
@@ -173,7 +173,7 @@ On worlds with **no** invocation kill bound (world-local's single process, self-
 deployments), no constant is a death proof, which is why the in-process single-flight
 below is a required layer, not an optimization.
 
-## Why the non-owner action is a delayed backstop wake, not a skip, and not a step message
+## Why the non-owner action is a delayed backstop wake: not a skip, and not a step message
 
 The naive non-owner behavior is to *skip* the requeue. Rejected: a pure skip makes
 lease expiry useless, because nothing is scheduled to *observe* the expiry. If the owner

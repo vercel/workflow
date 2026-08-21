@@ -145,7 +145,7 @@ The `step/` directory is no longer generated.
 
 ### Parent→child polling holds worker slots
 
-`Run#returnValue` is implemented as a polling step: the workflow awaits the child run's terminal status inside a step body. In worker-based worlds (notably `world-postgres`), each such poll occupies a queue worker slot until the child run finishes. Parent workflows that fan out to many child runs (recursive workflows like `fibonacciWorkflow` are the obvious case) can therefore consume a large fraction of available workers merely holding positions in `Promise.all([...children.map(c => c.returnValue)])`.
+`Run#returnValue` is implemented as a polling step: the workflow awaits the child run's terminal status inside a step body. In worker-based Worlds (notably `world-postgres`), each such poll occupies a queue worker slot until the child run finishes. Parent workflows that fan out to many child runs, such as recursive workflows like `fibonacciWorkflow`, can therefore consume a large fraction of available workers while holding positions in `Promise.all([...children.map(c => c.returnValue)])`.
 
 If `queueConcurrency` is smaller than the peak number of concurrent parent polls plus the workers needed for any in-flight children, the system deadlocks: every slot is held by a parent waiting on a child, but no child can acquire a slot to start.
 

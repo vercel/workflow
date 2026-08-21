@@ -12,7 +12,7 @@ related:
 
 `WorkflowWorldError` is the base error class for failures originating from a workflow world (storage backend). World implementations (local, Postgres, Vercel) throw subclasses of this error when storage operations fail.
 
-You can use `instanceof WorkflowWorldError` to catch any world-related error regardless of the specific type. Note that the static `.is()` method only matches errors constructed directly as `WorkflowWorldError`. Use the subclass-specific `.is()` methods (e.g. `EntityConflictError.is()`) to match specific error types.
+You can use `instanceof WorkflowWorldError` to catch any World-related error regardless of the specific type. The static `.is()` method only matches errors constructed directly as `WorkflowWorldError`. Use the subclass-specific `.is()` methods (for example, `EntityConflictError.is()`) to match specific error types.
 
 <Callout>
 Most world errors are handled automatically by the Workflow runtime. You will typically only encounter these errors when interacting with world storage APIs directly or when there are infrastructure-level issues.

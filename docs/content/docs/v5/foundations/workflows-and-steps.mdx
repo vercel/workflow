@@ -115,7 +115,7 @@ export async function POST() {
 ```
 
 <Callout type="info">
-Keep in mind that calling a step function outside of a workflow function will not have retry semantics, nor will it be observable. Additionally, certain workflow-specific functions like [`getStepMetadata()`](/docs/api-reference/workflow/get-step-metadata) will throw an error when used inside a step that's called outside a workflow.
+Calling a step function outside a workflow function provides neither retry semantics nor observability. Additionally, certain workflow-specific functions like [`getStepMetadata()`](/docs/api-reference/workflow/get-step-metadata) will throw an error when used inside a step that's called outside a workflow.
 </Callout>
 
 ### Suspension and resumption
@@ -126,7 +126,7 @@ Workflow functions have the ability to automatically suspend while they wait on 
 
 There are multiple ways a workflow can suspend:
 
-- Waiting on a step function: the workflow yields while the step runs in the step runtime.
+- Waiting on a step function: the workflow yields while the step body runs. The step usually executes inline in the same invocation; when the invocation's inline budget is exhausted or its timeout approaches, the step is handed to the queue and the workflow resumes in a later invocation.
 - Using `sleep()` to pause for some fixed duration.
 - Awaiting on a promise returned by [`createWebhook()`](/docs/api-reference/workflow/create-webhook), which resumes the workflow when an external system passes data into the workflow.
 

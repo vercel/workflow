@@ -1,4 +1,9 @@
-import { type Event, entityEventClass, envNumber } from '@workflow/world';
+import {
+  type Event,
+  entityEventClass,
+  envNumber,
+  isSealedNoopEvent,
+} from '@workflow/world';
 import { eventsLogger } from './logger.js';
 
 /**
@@ -331,6 +336,10 @@ export class EventsConsumer {
       // event's by the index it holds.
       this.drainParked();
       const currentEvent = this.events[this.eventIndex] ?? null;
+      if (currentEvent !== null && isSealedNoopEvent(currentEvent)) {
+        this.skipSealedNoop(currentEvent);
+        continue;
+      }
       const consumed = this.offer(currentEvent);
       if (consumed) {
         this.eventIndex++;
@@ -538,6 +547,24 @@ export class EventsConsumer {
   private firstEventTypeOfClass(event: Event): Event['eventType'] | undefined {
     const key = this.eventClassKey(event);
     return key === undefined ? undefined : this.seenEventClasses.get(key);
+  }
+
+  /**
+   * Steps the walk over a sealed-log `noop` (specVersion >= 7): the World's
+   * backend wrote it to occupy a slot whose writer allocated the position and
+   * died, so the log's density arithmetic holds. It is invisible to the
+   * workflow: no consumer is offered it, no event class is recorded, and the
+   * deterministic clock does not advance, exactly as with
+   * {@link skipDuplicateEvent}, so a log that happens to contain one produces the same
+   * timestamps as a log that does not. (Its `createdAt` is the seal time,
+   * which can even postdate later slots' events; letting it touch the clock
+   * would leak the sealer's wall clock into replay.)
+   */
+  private skipSealedNoop(event: Event) {
+    this.eventIndex++;
+    eventsLogger.debug('Skipping sealed-log noop event', {
+      eventId: event.eventId,
+    });
   }
 
   /** Steps the walk over a repeat of an already-consumed class. */

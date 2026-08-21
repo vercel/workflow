@@ -68,9 +68,9 @@ The default output is:
   Production integrations should extend `BaseBuilder` from `@workflow/builders` so they can participate in the framework's build, watch, and routing lifecycle.
 </Callout>
 
-### 2. Add the client transform
+### 2. Add the app-code transform
 
-Client mode gives application code the workflow IDs used by `start()` and prevents accidental direct workflow execution.
+Applying the step-mode transform to application code gives it the workflow IDs used by `start()` and prevents accidental direct workflow execution. (Earlier releases used a separate `client` mode for this; it merged into `step` in 5.0.)
 
 {/* @skip-typecheck: incomplete code sample */}
 ```typescript title="workflow-plugin.ts" lineNumbers
@@ -91,7 +91,7 @@ plugin({
         jsc: {
           experimental: {
             plugins: [
-              [require.resolve("@workflow/swc-plugin"), { mode: "client" }],
+              [require.resolve("@workflow/swc-plugin"), { mode: "step" }],
             ],
           },
         },
