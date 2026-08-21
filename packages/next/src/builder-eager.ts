@@ -425,7 +425,7 @@ export async function getNextBuilderEager(
 
         // Known gap: the initial build has the same two-read shape (the
         // combined build above consumed sources, and this refresh re-reads
-        // them), but no pinning — and the watcher below attaches with
+        // them), but no pinning, and the watcher below attaches with
         // `ignoreInitial: true`, so an edit landing inside the startup window
         // is absorbed with no straggler event to recover it. Bounded by dev
         // server startup rather than recurring per rebuild; knowingly out of

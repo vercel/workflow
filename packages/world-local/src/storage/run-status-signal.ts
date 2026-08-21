@@ -7,7 +7,7 @@ import { envNumber } from '@workflow/world';
  * world-local's store is the filesystem, which has no change notification a
  * reader can subscribe to. So the wait is built from two halves:
  *
- * - **The emitter below**, signalled by the run-lifecycle writer
+ * - **The emitter below**, signaled by the run-lifecycle writer
  *   (`writeRunUnderLifecycleLock` in `events-storage.ts`) whenever it commits
  *   a terminal run. In the ordinary local-dev topology the workflow and the
  *   caller awaiting its result live in the same process, so this is the path
@@ -19,7 +19,7 @@ import { envNumber } from '@workflow/world';
  *   invocation, or several workers over one data dir), and the narrow window
  *   between a waiter's read and its subscribe.
  *
- * Neither half is trusted for the status itself — the waiter always re-reads
+ * Neither half is trusted for the status itself: the waiter always re-reads
  * the run file, so a missed or duplicated signal only ever costs latency.
  */
 
@@ -57,7 +57,7 @@ export function signalRunTerminal(runId: string): void {
 
 /**
  * Wait for the next in-process terminal signal for `runId`, the timeout, or an
- * abort — whichever comes first. Resolves either way; the caller decides what
+ * abort, whichever comes first. Resolves either way; the caller decides what
  * to do by re-reading the run.
  */
 export function waitForRunTerminalSignal(
@@ -84,7 +84,7 @@ export function waitForRunTerminalSignal(
     // invisible to it, and world-local's store is the filesystem, so between
     // two backstop reads a process whose only job is `await run.returnValue`
     // has no active handle at all. Unref'ing this timer let such a process
-    // drain its loop and exit 0 with the wait unsettled — silently returning
+    // drain its loop and exit 0 with the wait unsettled, silently returning
     // nothing for a run that was merely still going. The interval poll this
     // replaces (`Run#pollReturnValue`) sleeps on a ref'd timer for exactly
     // this reason, so keeping it ref'd is parity, not a new cost: a caller

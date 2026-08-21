@@ -10,14 +10,14 @@ related:
 ---
 
 <Callout type="warn">
-`DurableAgent` is deprecated. Use AI SDK's [`WorkflowAgent`](https://ai-sdk.dev/v7/docs/agents/workflow-agent#workflowagent) for new durable agents — see the [migration guide](https://ai-sdk.dev/v7/docs/agents/workflow-agent#migrating-from-durableagent).
+`DurableAgent` is deprecated. Use AI SDK's [`WorkflowAgent`](https://ai-sdk.dev/v7/docs/agents/workflow-agent#workflowagent) for new durable agents. See the [migration guide](https://ai-sdk.dev/v7/docs/agents/workflow-agent#migrating-from-durableagent).
 </Callout>
 
 This reference is kept for existing applications that still import `DurableAgent` from `@workflow/ai/agent`. Do not use `DurableAgent` for new code.
 
 For current examples and implementation guidance, see AI SDK's [`WorkflowAgent`](https://ai-sdk.dev/v7/docs/agents/workflow-agent#workflowagent) docs. For legacy code, the API surface below documents the existing `DurableAgent` exports.
 
-## API Signature
+## API signature
 
 ### Class
 
@@ -125,7 +125,7 @@ import type { StreamTextOnAbortCallback } from "@workflow/ai/agent";
 export default StreamTextOnAbortCallback;`}
 />
 
-### Advanced Types
+### Advanced types
 
 #### ToolCallRepairFunction
 
@@ -157,30 +157,30 @@ import type { OutputSpecification } from "@workflow/ai/agent";
 export default OutputSpecification;`}
 />
 
-## Key Features
+## Key features
 
-- **Durable Execution**: Agents can be interrupted and resumed without losing state
-- **Flexible Tool Implementation**: Tools can be implemented as workflow steps for automatic retries, or as regular workflow-level logic
-- **Stream Processing**: Handles streaming responses and tool calls in a structured way
-- **Workflow Native**: Fully integrated with Workflow SDK for production-grade reliability
-- **AI SDK Parity**: Supports the same options as AI SDK's `streamText` including generation settings, callbacks, and structured output
+- **Durable execution**: Agents can be interrupted and resumed without losing state.
+- **Flexible tool implementation**: Tools can be implemented as workflow steps for automatic retries or as regular workflow-level logic.
+- **Stream processing**: Handles streaming responses and tool calls in a structured way.
+- **Workflow native**: Fully integrated with Workflow SDK for production reliability.
+- **AI SDK parity**: Supports the same options as AI SDK's `streamText`, including generation settings, callbacks, and structured output.
 
-## Good to Know
+## Good to know
 
-- Tools can be implemented as workflow steps (using `"use step"` for automatic retries), or as regular workflow-level logic
-- Tools can use core library features like `sleep()` and Hooks within their `execute` functions
-- The agent processes tool calls iteratively until completion or `maxSteps` is reached
-- **Default `maxSteps` is unlimited** - set a value to limit the number of LLM calls
-- The `stream()` method returns `{ messages, steps, toolCalls, toolResults, experimental_output, uiMessages }` containing the full conversation history, step details, tool call details, optional structured output, and optionally accumulated UI messages
-- Use `collectUIMessages: true` to accumulate `UIMessage[]` during streaming, useful for persisting conversation state without re-reading the stream
-- The `prepareStep` callback runs before each step and can modify model, messages, generation settings, tool choice, and context
-- Generation settings (temperature, maxOutputTokens, etc.) can be set on the constructor and overridden per-stream call
-- Use `activeTools` to limit which tools are available for a specific stream call
-- The `onFinish` callback is called when all steps complete; `onAbort` is called if aborted
+- Tools can be implemented as workflow steps (using `"use step"` for automatic retries) or as regular workflow-level logic.
+- Tools can use core library features like `sleep()` and hooks within their `execute` functions.
+- The agent processes tool calls iteratively until completion or until `maxSteps` is reached.
+- **Default `maxSteps` is unlimited**: Set a value to limit the number of large language model (LLM) calls.
+- The `stream()` method returns `{ messages, steps, toolCalls, toolResults, experimental_output, uiMessages }` containing the full conversation history, step details, tool call details, optional structured output, and optionally accumulated user interface (UI) messages.
+- Use `collectUIMessages: true` to accumulate `UIMessage[]` during streaming, which is useful for persisting conversation state without re-reading the stream.
+- The `prepareStep` callback runs before each step and can modify the model, messages, generation settings, tool choice, and context.
+- Generation settings (`temperature`, `maxOutputTokens`, and others) can be set on the constructor and overridden per-stream call.
+- Use `activeTools` to limit which tools are available for a specific stream call.
+- The `onFinish` callback is called when all steps complete; `onAbort` is called if aborted.
 
 ## Examples
 
-### Basic Agent with Tools
+### Basic agent with tools
 
 ```typescript
 import { DurableAgent } from "@workflow/ai/agent";
@@ -222,7 +222,7 @@ async function weatherAgentWorkflow(userQuery: string) {
 }
 ```
 
-### Multiple Tools
+### Multiple tools
 
 ```typescript
 import { DurableAgent } from "@workflow/ai/agent";
@@ -271,7 +271,7 @@ async function multiToolAgentWorkflow(userQuery: string) {
 }
 ```
 
-### Multi-turn Conversation
+### Multi-turn conversation
 
 ```typescript
 import { DurableAgent } from "@workflow/ai/agent";
@@ -325,7 +325,7 @@ async function multiTurnAgentWorkflow() {
 }
 ```
 
-### Tools with Workflow Library Features
+### Tools with Workflow library features
 
 ```typescript
 import { DurableAgent } from "@workflow/ai/agent";
@@ -347,7 +347,7 @@ async function requestApproval({ message }: { message: string }) {
   // Note: No "use step" for this tool call either,
   // since hooks are awaited at the workflow level
 
-  // Utilize a Hook for Human-in-the-loop approval
+  // Use a Hook for Human-in-the-loop approval
   const hook = approvalHook.create({
     metadata: { message }
   });
@@ -392,7 +392,7 @@ async function agentWithLibraryFeaturesWorkflow(userRequest: string) {
 }
 ```
 
-### Dynamic Context with prepareStep
+### Dynamic context with prepareStep
 
 Use `prepareStep` to modify settings before each step in the agent loop:
 
@@ -436,7 +436,7 @@ async function agentWithPrepareStep(userMessage: string) {
 }
 ```
 
-### Message Injection with prepareStep
+### Message injection with prepareStep
 
 Inject messages from external sources (like hooks) before each LLM call:
 
@@ -486,7 +486,7 @@ async function agentWithMessageQueue(initialMessage: string) {
 }
 ```
 
-### Generation Settings
+### Generation settings
 
 Configure model generation parameters at the constructor or stream level:
 
@@ -524,7 +524,7 @@ async function agentWithGenerationSettings() {
 }
 ```
 
-### Limiting Steps with maxSteps
+### Limiting steps with maxSteps
 
 By default, the agent loops until completion. Use `maxSteps` to limit the number of LLM calls:
 
@@ -575,7 +575,7 @@ async function multiStepAgent() {
 }
 ```
 
-### Callbacks for Monitoring
+### Callbacks for monitoring
 
 Use callbacks to monitor streaming progress, handle errors, and react to completion:
 
@@ -616,7 +616,7 @@ async function agentWithCallbacks() {
 }
 ```
 
-### Structured Output
+### Structured output
 
 Parse structured data from the LLM response using `Output.object`:
 
@@ -651,7 +651,7 @@ async function agentWithStructuredOutput() {
 }
 ```
 
-### Tool Choice Control
+### Tool choice control
 
 Control when and which tools the model can use:
 
@@ -714,7 +714,7 @@ async function agentWithToolChoice() {
 }
 ```
 
-### Passing Context to Tools
+### Passing context to tools
 
 Use `experimental_context` to pass shared context to tool executions:
 
@@ -758,7 +758,7 @@ async function agentWithContext(userId: string) {
 }
 ```
 
-### Collecting UI Messages
+### Collecting UI messages
 
 Use `collectUIMessages` to accumulate `UIMessage[]` during streaming. This is useful when you need to persist the conversation without re-reading the run's output stream:
 
@@ -800,7 +800,7 @@ async function saveConversation(messages: UIMessage[]) {
 The `uiMessages` property is only available when `collectUIMessages` is set to `true`. When disabled, `uiMessages` is `undefined`.
 </Callout>
 
-### Machine-Readable Tool Results
+### Machine-readable tool results
 
 `stream()` returns tool call information you can inspect programmatically. Compare `toolCalls` with `toolResults` to find unresolved tool calls that need client-side handling:
 
@@ -857,7 +857,7 @@ async function agentWithToolInspection(userMessage: string) {
 `toolCalls` and `toolResults` reflect the *last step* of the agent loop. Tools without an `execute` function will appear in `toolCalls` but not in `toolResults`, which is how you detect calls that need client-side handling.
 </Callout>
 
-### Aborting Long-Running Streams
+### Aborting long-running streams
 
 Use `timeout` to abort a stream automatically after a fixed duration:
 
@@ -885,10 +885,10 @@ async function agentWithTimeout(userMessage: string) {
 }
 ```
 
-## See Also
+## See also
 
-- [Building Durable AI Agents](/docs/ai) - Complete guide to creating durable agents
-- [Queueing User Messages](/docs/ai/message-queueing) - Using prepareStep for message injection
-- [WorkflowChatTransport](/docs/api-reference/workflow-ai/workflow-chat-transport) - Transport layer for AI SDK streams
-- [Workflows and Steps](/docs/foundations/workflows-and-steps) - Understanding workflow fundamentals
-- [AI SDK Loop Control](https://ai-sdk.dev/docs/agents/loop-control) - AI SDK's agent loop control patterns
+- [Building Durable AI Agents](/docs/ai): Complete guide to creating durable agents
+- [Queueing User Messages](/docs/ai/message-queueing): Using `prepareStep` for message injection
+- [WorkflowChatTransport](/docs/api-reference/workflow-ai/workflow-chat-transport): Transport layer for AI SDK streams
+- [Workflows and Steps](/docs/foundations/workflows-and-steps): Understanding workflow fundamentals
+- [AI SDK Loop Control](https://ai-sdk.dev/docs/agents/loop-control): AI SDK's agent loop control patterns

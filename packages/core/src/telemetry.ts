@@ -48,7 +48,7 @@ export function getWorkflowTraceMode(): WorkflowTraceMode {
  * Returns whether a serialized trace carrier is usable, i.e. present and
  * non-empty. `serializeTraceCarrier()` returns `{}` when no OTEL SDK is
  * registered or no span is active, and `start()` always attaches the
- * carrier to the first queue message — so an empty carrier must be treated
+ * carrier to the first queue message, so an empty carrier must be treated
  * the same as an absent one wherever the trace-mode logic branches.
  */
 export function isUsableTraceCarrier(
@@ -61,7 +61,7 @@ export function isUsableTraceCarrier(
  * Returns the trace carrier to attach to messages the current invocation
  * enqueues. In `linked` mode the ORIGINAL run-origin carrier is forwarded
  * unchanged (when usable) so every future invocation links back to the same
- * origin; otherwise — `continuous` mode, or no usable incoming carrier —
+ * origin; otherwise (`continuous` mode, or no usable incoming carrier)
  * the current (active) context is serialized, so the trace keeps chaining
  * (continuous) or the first instrumented invocation becomes the de-facto
  * origin (linked).
@@ -81,7 +81,7 @@ export function getNextTraceCarrier(
  *
  * - In `linked` mode the invocation span is a CHILD of the local delivery
  *   (flow-route) context, so the only link is to the run-origin context
- *   from the message's trace carrier — connecting this bounded per-invocation
+ *   from the message's trace carrier, connecting this bounded per-invocation
  *   trace back to where the run was started. The run-origin context is a
  *   link, never a parent, and re-enqueues forward the original carrier
  *   unchanged, so the whole run is never stitched into one giant trace.
@@ -157,7 +157,7 @@ const OtelApi = once(async () => {
   // is intentional: esbuild-bundled targets (the CLI's
   // `vercel-build-output-api` build, Nitro, Astro) ship a self-contained
   // bundle with no node_modules, so the package must be *inlined* at build
-  // time for spans to work at runtime — a runtime-built specifier is opaque to
+  // time for spans to work at runtime; a runtime-built specifier is opaque to
   // esbuild and would silently disable tracing there. Bundlers that reject an
   // unresolvable static `import()` when the peer isn't installed (Rollup/Vite,
   // e.g. SvelteKit) instead externalize `@opentelemetry/api` in the workflow

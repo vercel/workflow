@@ -78,7 +78,7 @@ export function clampViewportToRoot(
 }
 
 // ---------------------------------------------------------------------------
-// Wheel gestures — shared between the timeline and the minimap
+// Wheel gestures: shared between the timeline and the minimap
 // ---------------------------------------------------------------------------
 
 /** Convert a wheel delta to pixel units (line-mode deltas arrive in lines). */
@@ -164,7 +164,7 @@ export function computeTimeMarkers(
 }
 
 // ---------------------------------------------------------------------------
-// Span gaps — time deltas between consecutive spans (Alt-key overlay)
+// Span gaps: time deltas between consecutive spans (Alt-key overlay)
 // ---------------------------------------------------------------------------
 
 export interface SpanGap {
@@ -254,8 +254,8 @@ export function computeSpanDelta(
   const deltaMs = laterStart - originMs;
 
   // Entirely outside the viewport. Compared in time-space (not clamped
-  // fractions) so a zero-delta point sitting exactly on a viewport edge —
-  // e.g. the root span selected at default zoom — still renders.
+  // fractions) so a zero-delta point sitting exactly on a viewport edge
+  // (e.g. the root span selected at default zoom) still renders.
   if (laterStart < viewStart || originMs > viewEnd) {
     return null;
   }
@@ -294,7 +294,7 @@ export const RESOURCE_CLASS_NAMES: Record<
     className: 'border-green-500 bg-green-200',
     errorClassName: 'border-red-500 bg-red-200',
   },
-  // Passive spans (hooks) stay gray — matches event-list icons and the minimap.
+  // Passive spans (hooks) stay gray; matches event-list icons and the minimap.
   hook: {
     className: 'border-gray-500 bg-gray-200',
     errorClassName: 'border-red-500 bg-red-200',
@@ -317,7 +317,7 @@ export function getResourceClassNames(resource: string): {
 }
 
 // ---------------------------------------------------------------------------
-// Span segments — split a timeline bar into colored sections by event state
+// Span segments: split a timeline bar into colored sections by event state
 // ---------------------------------------------------------------------------
 
 export type SegmentStatus =
@@ -603,7 +603,7 @@ export function computeSpanSegments(span: Span): Segment[] {
 }
 
 // ---------------------------------------------------------------------------
-// Span markers — point-in-time events rendered as ticks on top of a bar
+// Span markers: point-in-time events rendered as ticks on top of a bar
 // ---------------------------------------------------------------------------
 
 export type SpanMarkerKind = 'hook_received' | 'attr_set';
@@ -625,7 +625,7 @@ export function computeSpanMarkers(span: Span): SpanMarker[] {
 
 export interface OffscreenSide {
   count: number;
-  /** Nearest off-screen marker — the one a reveal jumps to. */
+  /** Nearest off-screen marker: the one a reveal jumps to. */
   nearestMs: number;
 }
 

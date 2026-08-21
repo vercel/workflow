@@ -38,7 +38,7 @@ interface OtelApi {
   SpanStatusCode: { ERROR: number };
 }
 
-// Lazy-loaded OTel API — self-initializes on first use (item 5)
+// Lazy-loaded OTel API: self-initializes on first use (item 5)
 let otelApi: OtelApi | null = null;
 let otelLoadAttempted = false;
 
@@ -46,7 +46,7 @@ async function ensureOtelApi(): Promise<OtelApi | null> {
   if (otelLoadAttempted) return otelApi;
   otelLoadAttempted = true;
   try {
-    // Dynamic import — @opentelemetry/api is an optional peer dependency.
+    // Dynamic import, since @opentelemetry/api is an optional peer dependency.
     // Use Function() to hide the import from bundlers that would fail at
     // compile time when the package is absent.
     otelApi = await (Function(
@@ -171,7 +171,7 @@ export async function recordSpan<T>(options: {
   attributes?: Attributes;
   fn: (span?: Span) => PromiseLike<T> | T;
 }): Promise<T> {
-  // Self-initialise on first call (item 5)
+  // Self-initialize on first call (item 5)
   if (!otelLoadAttempted) {
     await ensureOtelApi();
   }

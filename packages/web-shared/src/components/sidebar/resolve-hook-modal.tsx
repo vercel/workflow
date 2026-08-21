@@ -116,13 +116,13 @@ export function ResolveHookModal({
       aria-modal="true"
       aria-labelledby="resolve-hook-modal-title"
     >
-      {/* Backdrop — matches Geist dialog ::backdrop */}
+      {/* Backdrop: matches Geist dialog ::backdrop */}
       <div
         className="absolute inset-0 bg-black/70"
         onClick={isSubmitting ? undefined : onClose}
       />
 
-      {/* Modal card — matches Geist dialog.geist-dialog */}
+      {/* Modal card: matches Geist dialog.geist-dialog */}
       <div className="relative z-10 w-[480px] max-w-[calc(100%_-_32px)] overflow-hidden !border-none bg-background-100 text-gray-1000 material-menu">
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4">

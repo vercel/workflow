@@ -6,7 +6,7 @@ import { StepStatusSchema } from './steps.js';
 import { WaitStatusSchema } from './waits.js';
 
 /**
- * Timezone-naive datetime string, e.g. `2026-07-13 17:09:11.593` — the
+ * Timezone-naive datetime string, e.g. `2026-07-13 17:09:11.593`: the
  * shape ClickHouse-backed analytics endpoints serialize `DateTime64`
  * values as. Such values are UTC by convention but carry no designator.
  */
@@ -18,7 +18,7 @@ const NAIVE_DATETIME = /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?$/;
  * `z.coerce.date()` delegates to `new Date(value)`, which interprets a
  * naive string in the **process's local timezone**. That is only correct
  * when the process runs in UTC (e.g. the deployed observability web app's
- * server actions) and is wrong by the local UTC offset everywhere else —
+ * server actions) and is wrong by the local UTC offset everywhere else:
  * the CLI on a laptop, `workflow web --localUi`, tests. Normalizing naive
  * strings to an explicit `Z` designator makes parsing timezone-independent.
  * Values that already carry timezone information (a `Z` or `±hh:mm`
@@ -145,8 +145,8 @@ export interface AnalyticsListRunsParams {
   /**
    * Bound the listing to runs active between `startTime` and `endTime`
    * (ISO 8601 timestamps). Both must be provided together. A bounded window
-   * lets the backend prune its scan — the ClickHouse-backed Vercel
-   * implementation is significantly faster with one. Requesting a window
+   * lets the backend prune its scan, so the ClickHouse-backed Vercel
+   * implementation is faster with one. Requesting a window
    * older than the plan's observability lookback fails with
    * `observability-upgrade-required`.
    */

@@ -10,8 +10,6 @@ import type { DocsVersionId } from '@/lib/geistdocs/versions';
 import { WorldDetailToc } from './WorldDetailToc';
 import { WorldVersionSelect } from './WorldVersionSelect';
 
-const PAGE_SLUGS = ['building-a-world'];
-
 const VERSION_SOURCES = {
   v4: worldsSource,
   v5: v5WorldsSource,
@@ -22,13 +20,19 @@ const VERSION_PREFIXES = {
   v5: '/v5',
 } as const;
 
-export async function generateBuildingAWorldMetadata(
+/**
+ * Standalone guide pages in the worlds tree — the ones that are not a world
+ * detail page. They render outside the docs sidebar, so each is a bespoke
+ * route passing its own slug.
+ */
+export async function generateWorldsGuideMetadata(
+  slug: string,
   version: DocsVersionId
 ): Promise<Metadata> {
-  const page = VERSION_SOURCES[version].getPage(PAGE_SLUGS);
+  const page = VERSION_SOURCES[version].getPage([slug]);
 
   if (!page) {
-    return { title: 'Building a World | Workflow SDK' };
+    return { title: 'Worlds | Workflow SDK' };
   }
 
   const versionPrefix = VERSION_PREFIXES[version];
@@ -41,9 +45,9 @@ export async function generateBuildingAWorldMetadata(
       images: ['/og/worlds'],
     },
     alternates: {
-      canonical: '/worlds/building-a-world',
+      canonical: `/worlds/${slug}`,
       types: {
-        'text/markdown': `${versionPrefix}/worlds/building-a-world.md`,
+        'text/markdown': `${versionPrefix}/worlds/${slug}.md`,
       },
     },
     ...(isPreRelease
@@ -57,14 +61,16 @@ export async function generateBuildingAWorldMetadata(
   };
 }
 
-export async function BuildingAWorldPage({
+export async function WorldsGuidePage({
+  slug,
   version,
 }: {
+  slug: string;
   version: DocsVersionId;
 }) {
   const source = VERSION_SOURCES[version];
   const versionPrefix = VERSION_PREFIXES[version];
-  const page = source.getPage(PAGE_SLUGS);
+  const page = source.getPage([slug]);
 
   if (!page) {
     notFound();

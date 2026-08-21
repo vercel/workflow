@@ -24,14 +24,14 @@ async function getOtelApi(): Promise<typeof api | null> {
     // Static specifier is intentional: esbuild-bundled targets (the CLI's
     // `vercel-build-output-api` build, Nitro, Astro) ship a self-contained
     // bundle with no node_modules, so `@opentelemetry/api` (an optional peer)
-    // must be inlined at build time — a runtime-built specifier is opaque to
+    // must be inlined at build time. A runtime-built specifier is opaque to
     // esbuild and would silently disable tracing there. Bundlers that reject
     // an unresolvable static `import()` when the peer is absent (Rollup/Vite,
     // e.g. SvelteKit) externalize it in the framework integration instead.
     otelApiPromise = import('@opentelemetry/api').catch((error) => {
-      // A missing module is expected for apps without OTEL — but the same
+      // A missing module is expected for apps without OTEL, but the same
       // silent null also swallows bundler/resolution failures in apps that
-      // DO register a tracer, which then just lose every world-vercel span.
+      // DO register a tracer, which then lose every world-vercel span.
       // Surface the reason under DEBUG so that failure mode is diagnosable.
       if (
         typeof process !== 'undefined' &&
@@ -63,10 +63,10 @@ let otelDiagLogged = false;
 
 /**
  * One-shot runtime diagnostic (DEBUG=workflow:* only): prints how THIS module
- * instance of `@opentelemetry/api` sees the global registration — enough to
- * tell a noop tracer from a registered provider, and a missing registration
- * from an incompatible one. @workflow/core emits the same shape tagged
- * `core`, so a single deployment's logs show both views side by side.
+ * instance of `@opentelemetry/api` sees the global registration, which is
+ * enough to tell a noop tracer from a registered provider, and a missing
+ * registration from an incompatible one. @workflow/core emits the same shape
+ * tagged `core`, so a single deployment's logs show both views side by side.
  */
 function logOtelDiagnosticOnce(otel: typeof api, tracer: api.Tracer): void {
   if (otelDiagLogged || !workflowDebugEnabled()) return;
@@ -214,7 +214,7 @@ export const ErrorType = SemanticConvention<string>('error.type');
 /**
  * Application-layer protocol the request was carried over (standard OTEL:
  * network.protocol.name). Only set on the WS events transport, whose client
- * span is synthesized rather than produced by a real `fetch` — it is the
+ * span is synthesized rather than produced by a real `fetch`. It is the
  * attribute that keeps such a span honest about what actually went on the wire.
  */
 export const NetworkProtocolName = SemanticConvention<string>(
@@ -282,7 +282,7 @@ export const WorkflowEventsTransport = SemanticConvention<'http' | 'ws'>(
  * (workflow.http.transport): `undici` | `node-http`. Set on BOTH paths, for
  * the same reason as {@link WorkflowEventsTransport}: the two emit the same
  * client span against the same `url.full`, so without this attribute a trace
- * cannot say which transport carried the request — and `WORKFLOW_NODE_HTTP`
+ * cannot say which transport carried the request, and `WORKFLOW_NODE_HTTP`
  * is an opt-in whose whole point is being verified in a real deployment.
  */
 export const WorkflowHttpTransport = SemanticConvention<'undici' | 'node-http'>(

@@ -11,13 +11,13 @@ related:
 
 This error occurs when you provide an invalid value for the `respondWith` option when creating a webhook. The `respondWith` option must be either `"manual"` or a `Response` object.
 
-## Error Message
+## Error message
 
-```
+```text
 Invalid `respondWith` value: [value]
 ```
 
-## Why This Happens
+## Why this happens
 
 When creating a webhook with `createWebhook()`, you can specify how the webhook should respond to incoming HTTP requests using the `respondWith` option. This option only accepts specific values:
 
@@ -25,9 +25,9 @@ When creating a webhook with `createWebhook()`, you can specify how the webhook 
 2. A `Response` object - A pre-defined response to send immediately
 3. `undefined` (default) - Returns a `202 Accepted` response
 
-## Common Causes
+## Common causes
 
-### Using an Invalid String Value
+### Using an invalid string value
 
 ```typescript lineNumbers
 // Error - invalid string value
@@ -60,7 +60,7 @@ export async function webhookWorkflow() {
 }
 ```
 
-### Using a Non-Response Object
+### Using a non-Response object
 
 ```typescript lineNumbers
 // Error - plain object instead of Response
@@ -88,9 +88,9 @@ export async function webhookWorkflow() {
 }
 ```
 
-## Valid Usage Examples
+## Valid usage examples
 
-### Default Behavior (202 Response)
+### Default behavior (202 response)
 
 ```typescript lineNumbers
 import { createWebhook } from "workflow";
@@ -101,7 +101,7 @@ const request = await webhook;
 // No need to send a response
 ```
 
-### Manual Response
+### Manual response
 
 ```typescript lineNumbers
 import { createWebhook } from "workflow";
@@ -125,7 +125,7 @@ await request.respondWith(
 );
 ```
 
-### Pre-defined Response
+### Pre-defined response
 
 ```typescript lineNumbers
 import { createWebhook } from "workflow";
@@ -139,7 +139,7 @@ const request = await webhook;
 // Response already sent
 ```
 
-## Learn More
+## Learn more
 
 - [createWebhook() API Reference](/docs/api-reference/workflow/create-webhook)
 - [resumeWebhook() API Reference](/docs/api-reference/workflow-api/resume-webhook)

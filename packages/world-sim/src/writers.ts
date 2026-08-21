@@ -6,7 +6,7 @@
  * them**. The orchestrator loads the log, replays the workflow against it, and
  * commits what that decides; each step body writes its own result; a webhook
  * receiver writes a `hook_received` whenever it likes. Nothing sequences those
- * against each other, and the World API exposes no primitive that could — at
+ * against each other, and the World API exposes no primitive that could; at
  * most an optimistic fence, which is two checks and not isolation:
  *
  * - a watermark is a high-water mark on one class of write ("is there an
@@ -40,7 +40,7 @@
  *
  * `runTo` consults the history of points each writer has already reached before
  * arming anything. If the point has gone by it throws, naming the call it
- * happened at. The alternative — arm a watch and wait — is a hang: a held call
+ * happened at. The alternative (arm a watch and wait) is a hang: a held call
  * blocks its writer, and in the limit blocks the scheduler, so there is no
  * quiescence to fall back on and no timer to eventually fire. An edge-triggered
  * wait on an edge that has passed is the one way to lose the termination
@@ -49,8 +49,8 @@
  *
  * ## What is not offered
  *
- * Writers form a dependency graph — the orchestrator awaits its own step
- * bodies — so not every interleaving exists to be asked for, and an
+ * Writers form a dependency graph (the orchestrator awaits its own step
+ * bodies), so not every interleaving exists to be asked for, and an
  * unsatisfiable `runTo` can only be reported, not prevented. Each wait
  * therefore carries its own wall-clock budget and, on expiry, reports where
  * every writer was standing.
@@ -77,7 +77,7 @@ import type { SimWorld } from './world.js';
 
 /**
  * Thrown when a `runTo` names a point its writer has already gone past. Not a
- * simulator failure — a scenario that armed too late.
+ * simulator failure, but a scenario that armed too late.
  */
 export class AlreadyPassedError extends Error {
   override readonly name = 'AlreadyPassedError';
@@ -191,7 +191,7 @@ export function createWriters(deps: {
    * The watch hands over a `CallContext`, and a call is recorded once per phase
    * under the same `seq`, so the pair identifies the record. Searching from the
    * end finds it immediately in the normal case. A history that hit its cap has
-   * stopped recording, so fall back to "everything recorded is behind us" —
+   * stopped recording, so fall back to "everything recorded is behind us":
    * over-consuming is safe, under-consuming would report a spurious miss.
    */
   function ordinalReached(ctx: Held['ctx']): number {
@@ -225,7 +225,7 @@ export function createWriters(deps: {
      * before it are "already consumed" and do not count as already-passed:
      * asking twice for `step_completed` means the *next* one, which is what the
      * duplicate-delivery scenarios need. A consumed point with no successor is
-     * therefore not an error here — it is the per-`runTo` timeout's business.
+     * therefore not an error here; it is the per-`runTo` timeout's business.
      */
     let watermark = -1;
     let hold: { ctx: Held['ctx']; release(): void; done: boolean } | undefined;
@@ -309,11 +309,11 @@ export function createWriters(deps: {
 
       try {
         // Advancing a writer that is already held means "let it go, then stop
-        // it at the next thing" — the reading `runTo` after `runTo` invites.
+        // it at the next thing", the reading `runTo` after `runTo` invites.
         // The release happens *after* the watch is armed, and that order is
         // load-bearing: the released writer can reach the next point within the
-        // same turn — the `after` phase of the very call it was held in is the
-        // common case — and a watch armed afterwards would have missed it.
+        // same turn (the `after` phase of the call it was held in is the
+        // common case), and a watch armed afterwards would have missed it.
         await release();
         const reached = await armed.reached;
         watermark = ordinalReached(reached.ctx);
@@ -352,7 +352,7 @@ export function createWriters(deps: {
             phase: 'after',
             // "Committed" means committed. Without this a rejected create
             // matches too, and under the fence a `PreconditionFailedError` is
-            // routine — the script would resume believing a write is durable
+            // routine: the script would resume believing a write is durable
             // when it 412'd, and the watermark would consume the point, so the
             // retry's real commit would read as the *next* one.
             failed: false,

@@ -12,9 +12,9 @@ import { join } from 'pathe';
  * workflow builder's esbuild `external` option. RegExp and function entries
  * are skipped since esbuild's `external` only supports literal strings.
  *
- * Note: `externals.external` is on Nitro v2's options shape — v3 dropped it
- * in favour of `noExternals`. Reading it through a v2-shaped view lets us
- * still pick it up on v2 setups; on v3 the chained optional access just
+ * Note: `externals.external` is on Nitro v2's options shape; v3 dropped it
+ * in favor of `noExternals`. Reading it through a v2-shaped view lets us
+ * still pick it up on v2 setups; on v3 the chained optional access
  * returns undefined.
  */
 type NitroV2ExternalsOptions = { externals?: { external?: unknown[] } };
@@ -124,8 +124,8 @@ export class LocalBuilder extends BaseBuilder {
       stepsOutfile: join(this.#outDir, 'steps.mjs'),
       flowOutfile: join(this.#outDir, 'workflows.mjs'),
       format: 'esm',
-      // bundleFinalOutput: false — Nitro externalizes the workflow build dir
-      // during dev, and its own rollup pipeline handles bundling for prod.
+      // bundleFinalOutput: false, since Nitro externalizes the workflow build
+      // dir during dev, and its own rollup pipeline handles bundling for prod.
       // Using true causes "Dynamic require of X is not supported" errors
       // because esbuild wraps CJS require() calls in ESM output.
       bundleFinalOutput: false,

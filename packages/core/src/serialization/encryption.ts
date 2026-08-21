@@ -42,7 +42,7 @@ const RUN_KEYS_BRAND = Symbol.for('workflow.serialization.runKeys');
 /**
  * A write-only capability: seal payloads to a run's X25519 public key.
  *
- * This is what a *cross-run* writer holds — a hook resumption targeting
+ * This is what a *cross-run* writer holds: a hook resumption targeting
  * another run, or a child workflow writing into a parent's forwarded stream.
  * It carries no ability to decrypt anything, and because it is a distinct
  * nominal type it cannot be mistaken for symmetric key material.
@@ -69,9 +69,9 @@ export interface SealTarget {
  */
 export interface RunPayloadKeys {
   readonly [RUN_KEYS_BRAND]: true;
-  /** Symmetric AES-256-GCM key — the run's own `encr` payloads. */
+  /** Symmetric AES-256-GCM key: the run's own `encr` payloads. */
   readonly aes: CryptoKey;
-  /** X25519 keypair — opens `encp` payloads sealed to this run. */
+  /** X25519 keypair: opens `encp` payloads sealed to this run. */
   readonly keyPair: RunKeyPair;
   /** Additional authenticated data expected on sealed payloads. */
   readonly aad?: Uint8Array;
@@ -89,7 +89,7 @@ export interface RunPayloadKeys {
  * | ------------------ | ------- | -------------- | ------------------------ |
  * | `CryptoKey`        | `encr`  | `encr`         | same-run (legacy shape)  |
  * | {@link RunPayloadKeys} | `encr`  | `encr`, `encp` | the owning run, o11y     |
- * | {@link SealTarget} | `encp`  | —              | cross-run writers        |
+ * | {@link SealTarget} | `encp`  | (none)         | cross-run writers        |
  *
  * A run's own payloads deliberately stay symmetric even when the writer could
  * seal: sealing costs a fresh ECDH per envelope and 32 extra bytes, and buys
@@ -134,7 +134,7 @@ export function runPayloadKeys(
 }
 
 /**
- * Build the full key capability for a run from its raw 32-byte key material —
+ * Build the full key capability for a run from its raw 32-byte key material,
  * the value `World.getEncryptionKeyForRun()` returns.
  *
  * Use this anywhere a run reads its own event log: it yields a key that opens
@@ -199,8 +199,8 @@ export async function resolveEncryptionKey(
  * Encrypt a format-prefixed payload if a key is provided.
  *
  * Wraps the data with the `encr` prefix for symmetric keys, or the `encp`
- * prefix when handed a {@link SealTarget} — a cross-run writer that holds only
- * the recipient's public key.
+ * prefix when handed a {@link SealTarget}, a cross-run writer that holds
+ * only the recipient's public key.
  *
  * @param data - The format-prefixed serialized data
  * @param key - Encryption key (undefined to skip encryption)
@@ -217,7 +217,7 @@ export async function encrypt(
     return encodeWithFormatPrefix(SerializationFormat.SEALED, sealed);
   }
 
-  // Symmetric path — a run's own payloads, including when the caller holds
+  // Symmetric path: a run's own payloads, including when the caller holds
   // the full `RunPayloadKeys` bundle and *could* seal. See `PayloadKey`.
   const aesKey = isRunPayloadKeys(key) ? key.aes : key;
   const encrypted = await aesGcmEncrypt(aesKey, data);
@@ -229,7 +229,7 @@ export async function encrypt(
  *
  * Strips the `encr`/`encp` format prefix and recovers the inner payload.
  * Opening a sealed (`encp`) payload requires the run's X25519 keypair, so the
- * caller must supply {@link RunPayloadKeys} — a bare symmetric key cannot do
+ * caller must supply {@link RunPayloadKeys}; a bare symmetric key cannot do
  * it, and neither can a {@link SealTarget} (which is write-only by design).
  *
  * @param data - The potentially encrypted data
@@ -244,8 +244,8 @@ async function openSealedEnvelope(
   data: Uint8Array,
   key: PayloadKey | undefined
 ): Promise<Uint8Array> {
-  // Sealed payloads need the private scalar. Anything else — no key, a bare
-  // symmetric key, or a write-only seal target — cannot open them.
+  // Sealed payloads need the private scalar. Anything else (no key, a bare
+  // symmetric key, or a write-only seal target) cannot open them.
   if (!isRunPayloadKeys(key)) {
     throw new RuntimeDecryptionError(
       'Sealed data encountered but no run keypair is available. ' +

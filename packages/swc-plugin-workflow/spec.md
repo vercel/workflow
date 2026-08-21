@@ -1,21 +1,21 @@
-# Workflow Directives Specification
+# Workflow directives specification
 
 The `"use step"` and `"use workflow"` directives work similarly to `"use server"` in React. A function marked with `"use step"` represents a durable step that executes on the server. A function marked with `"use workflow"` represents a durable workflow that orchestrates steps.
 
-The SWC plugin has 3 modes: **Step mode**, **Workflow mode**, and **Detect mode**.
+The SWC plugin has three modes: **step mode**, **workflow mode**, and **detect mode**.
 
-## Directive Placement
+## Directive placement
 
 Directives can be placed:
 1. At the **top of a file** (module-level) to mark all exported async functions
 2. At the **start of a function body** to mark individual functions
 
 Directives must:
-- Be at the very beginning (above any other code, including imports for module-level)
+- Be at the beginning (above any other code, including imports for module-level)
 - Use single or double quotes (not backticks)
 - Comments before directives are allowed
 
-## JSON Manifest
+## JSON manifest
 
 All modes emit a JSON manifest comment at the top of the file containing metadata about discovered workflows, steps, and classes with custom serialization:
 
@@ -30,7 +30,7 @@ The manifest includes:
 
 This manifest is used by bundlers and the runtime to discover and register workflows, steps, and serializable classes.
 
-## ID Generation
+## ID generation
 
 IDs use the format `{type}//{modulePath}//{identifier}` where:
 - `type` is `workflow`, `step`, or `class`
@@ -39,7 +39,7 @@ IDs use the format `{type}//{modulePath}//{identifier}` where:
   - A **relative path** prefixed with `./` (e.g., `./src/jobs/order`) when no specifier is provided
 - `identifier` is the function/class name, with nested functions using `/` separators
 
-### Module Specifier Support
+### Module specifier support
 
 The plugin accepts an optional `moduleSpecifier` config option that allows IDs to be based on the 
 import specifier rather than the file path. This is useful for:
@@ -87,15 +87,15 @@ Note: File extensions are stripped from local paths for cleaner IDs.
 
 ---
 
-## Step Mode
+## Step mode
 
 In step mode, step function bodies are kept intact and registered using an inline IIFE that stores them in a global registry via `Symbol.for("@workflow/core//registeredSteps")`, with no module imports. Workflow functions throw an error if called directly (since they should only run in the workflow runtime).
 
-After the step-mode rewrite, the transform also runs a dead code elimination (DCE) pass. Because step bodies are preserved (unlike workflow mode where they are replaced with proxies), imports, helper functions, and other declarations referenced from step bodies are also preserved. However, code that is reachable only from workflow bodies that were replaced with throwing stubs can still be removed. A reference counts even when it appears only inside a destructuring-default initializer — e.g. `const { ttl = TTL } = options;` counts as a use of `TTL`, so the declaration is not stripped.
+After the step-mode rewrite, the transform also runs a dead code elimination (DCE) pass. Because step bodies are preserved (unlike workflow mode where they are replaced with proxies), imports, helper functions, and other declarations referenced from step bodies are also preserved. However, code that is reachable only from workflow bodies that were replaced with throwing stubs can still be removed. A reference counts even when it appears only inside a destructuring-default initializer. For example, `const { ttl = TTL } = options;` counts as a use of `TTL`, so the declaration is not stripped.
 
 Object property step functions are hoisted to module-level variables and the original call site is replaced with a reference to the hoisted variable, making `.stepId` accessible at the call site.
 
-### Basic Step Function
+### Basic step function
 
 Input:
 ```javascript
@@ -118,7 +118,7 @@ export async function add(a, b) {
 })(add, "step//./input//add");
 ```
 
-### Arrow Function Step
+### Arrow function step
 
 Input:
 ```javascript
@@ -141,7 +141,7 @@ export const multiply = async (a, b) => {
 })(multiply, "step//./input//multiply");
 ```
 
-### Workflow Functions in Step Mode
+### Workflow functions in step mode
 
 Workflow functions throw an error to prevent direct execution and have `workflowId` attached:
 
@@ -162,7 +162,7 @@ export async function myWorkflow(data) {
 myWorkflow.workflowId = "workflow//./input//myWorkflow";
 ```
 
-### Nested Steps in Workflows
+### Nested steps in workflows
 
 Steps defined inside workflow functions are hoisted to module level with prefixed names:
 
@@ -197,7 +197,7 @@ example.workflowId = "workflow//./input//example";
 })(example$innerStep, "step//./input//example/innerStep");
 ```
 
-### Steps in Nested Object Properties
+### Steps in nested object properties
 
 Step functions can be defined inside deeply nested object properties, including function call arguments. The plugin recursively processes nested objects to find step functions, generating compound paths for the step IDs.
 
@@ -257,7 +257,7 @@ Note: In step mode, nested object property step functions are hoisted and regist
 
 Note: The step ID includes the full path through nested objects (`vade/tools/VercelRequest/execute`), while the hoisted variable name uses `$` as the separator (`vade$tools$VercelRequest$execute`) to create a valid JavaScript identifier.
 
-#### Shorthand Method Syntax
+#### Shorthand method syntax
 
 Shorthand method syntax (non-arrow functions) is also supported in nested object properties:
 
@@ -300,9 +300,9 @@ export const vade = agent({
 
 Note: Shorthand methods are hoisted as regular function expressions (not arrow functions) to preserve `this` binding when called with `.call()` or `.apply()`. Closure variables are handled the same way as other step functions.
 
-### Closure Variables
+### Closure variables
 
-When nested steps capture closure variables, they are extracted using an inline IIFE that reads from the workflow step context storage via `Symbol.for("WORKFLOW_STEP_CONTEXT_STORAGE")`. Closure variable detection recursively walks the step function body — including nested function, arrow, method, getter/setter, and class bodies — and collects identifiers that are not parameters, local declarations, known globals, module-level imports, or module-level declarations. TypeScript expression wrappers (`as`, `satisfies`, `!`, type assertions, `const` assertions, instantiation expressions) are traversed to reach the inner expression. Module-level imports and declarations (functions, variables, classes) are excluded since they are available directly in the step bundle and should not be serialized as closure values:
+When nested steps capture closure variables, the plugin extracts them using an inline IIFE that reads from the workflow step context storage via `Symbol.for("WORKFLOW_STEP_CONTEXT_STORAGE")`. Closure variable detection recursively walks the step function body, including nested function, arrow, method, getter/setter, and class bodies. It collects identifiers that are not parameters, local declarations, known globals, module-level imports, or module-level declarations. TypeScript expression wrappers (`as`, `satisfies`, `!`, type assertions, `const` assertions, and instantiation expressions) are traversed to reach the inner expression. Module-level imports and declarations (functions, variables, and classes) are excluded because they are available directly in the step bundle and should not be serialized as closure values:
 
 Input:
 ```javascript
@@ -339,7 +339,7 @@ function wrapper(multiplier) {
 
 Note: The hoisted copy (`wrapper$_anonymousStep0`) uses an inline IIFE to extract closure variables from the workflow step context for workflow-driven execution, while the original function body is preserved in `wrapper()` with the directive stripped. This allows the enclosing function to work correctly when called directly (non-workflow), since JavaScript's normal closure semantics naturally capture `multiplier`.
 
-### Instance Method Step
+### Instance method step
 
 Instance methods can use `"use step"` if the class provides custom serialization methods. The `this` context is serialized when calling the step and deserialized before execution.
 
@@ -396,7 +396,7 @@ export class Counter {
 
 Note: Instance methods use `#` in the step ID (e.g., `Counter#add`) and are registered via `ClassName.prototype["methodName"]`.
 
-### Module-Level Directive
+### Module-level directive
 
 Input:
 ```javascript
@@ -434,13 +434,13 @@ export async function subtract(a, b) {
 
 ---
 
-## Workflow Mode
+## Workflow mode
 
 In workflow mode, step function bodies are replaced with a `globalThis[Symbol.for("WORKFLOW_USE_STEP")]` call. Workflow functions keep their bodies and are registered with `globalThis.__private_workflows.set()`.
 
-After the workflow-mode rewrite, the transform also runs a dead code elimination (DCE) pass. Because step bodies are replaced with step proxies, imports, helper functions, nested steps, and other pure statements that were only referenced from those original step bodies become eligible for removal. Exports and any identifiers still referenced by the transformed workflow code are preserved. A reference counts even when it appears only inside a destructuring-default initializer — e.g. `const { ttl = TTL } = options;` counts as a use of `TTL`, so the declaration is not stripped.
+After the workflow-mode rewrite, the transform also runs a dead code elimination (DCE) pass. Because step bodies are replaced with step proxies, imports, helper functions, nested steps, and other pure statements that were only referenced from those original step bodies become eligible for removal. Exports and any identifiers still referenced by the transformed workflow code are preserved. A reference counts even when it appears only inside a destructuring-default initializer. For example, `const { ttl = TTL } = options;` counts as a use of `TTL`, so the declaration is not stripped.
 
-### Step Functions
+### Step functions
 
 Input:
 ```javascript
@@ -456,7 +456,7 @@ Output:
 export var add = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//./input//add");
 ```
 
-### Workflow Functions
+### Workflow functions
 
 Input:
 ```javascript
@@ -478,7 +478,7 @@ myWorkflow.workflowId = "workflow//./input//myWorkflow";
 globalThis.__private_workflows.set("workflow//./input//myWorkflow", myWorkflow);
 ```
 
-### Nested Steps with Closures
+### Nested steps with closures
 
 When steps capture closure variables, a closure function is passed as the second argument:
 
@@ -515,11 +515,11 @@ globalThis.__private_workflows.set("workflow//./input//myWorkflow", myWorkflow);
 
 ---
 
-## Detect Mode
+## Detect mode
 
-Detect mode is a lightweight, non-transforming mode used during the build discovery phase. It walks the AST to find `"use workflow"`, `"use step"` directives and custom serialization classes, then emits the JSON manifest comment — but does **not** modify any code.
+Detect mode is a lightweight, non-transforming mode used during the build discovery phase. It walks the AST to find `"use workflow"` and `"use step"` directives and custom serialization classes, then emits the JSON manifest comment without modifying any code.
 
-This allows the build system to perform a fast regexp pre-scan to identify candidate files, then run the SWC plugin in detect mode only on those candidates to validate at the AST level. False positives (e.g. directive-like strings inside template literals) are eliminated because the plugin only recognises genuine directive expression statements.
+This allows the build system to perform a fast regular expression pre-scan to identify candidate files, then run the SWC plugin in detect mode only on those candidates to validate at the AST level. The plugin eliminates false positives (for example, directive-like strings inside template literals) because it recognizes only genuine directive expression statements.
 
 **Plugin Config:**
 ```json
@@ -538,11 +538,11 @@ Given the same input as the other mode examples, detect mode produces:
 
 ---
 
-## Static Methods
+## Static methods
 
 Static class methods can be marked with directives. Instance methods are **not supported**.
 
-### Static Step Method
+### Static step method
 
 Input:
 ```javascript
@@ -587,7 +587,7 @@ MyService.process = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//./input//
 })(MyService, "class//./input//MyService");
 ```
 
-### Static Workflow Method
+### Static workflow method
 
 Input:
 ```javascript
@@ -613,7 +613,7 @@ globalThis.__private_workflows.set("workflow//./input//JobRunner.runJob", JobRun
 
 ---
 
-## Custom Serialization
+## Custom serialization
 
 Classes can define custom serialization/deserialization using symbols. These are automatically registered for use across workflow boundaries.
 
@@ -657,7 +657,7 @@ export class Point {
 })(Point, "class//./input//Point");
 ```
 
-The registration is **inlined as a self-contained IIFE** that uses `Symbol.for("workflow-class-registry")` on `globalThis`. This ensures it works for 3rd-party packages that don't depend on the `workflow` package directly — no module imports are needed.
+The registration is **inlined as a self-contained IIFE** that uses `Symbol.for("workflow-class-registry")` on `globalThis`. This approach works for third-party packages that don't depend on the `workflow` package directly and requires no module imports.
 
 You can also use imported symbols from `@workflow/serde`:
 
@@ -670,11 +670,11 @@ export class Vector {
 }
 ```
 
-### CommonJS `require()` Patterns
+### CommonJS `require()` patterns
 
 The plugin also detects serialization symbols obtained via CommonJS `require()` calls. This handles code that has been pre-compiled from ESM to CommonJS by tools like TypeScript (`tsc`), esbuild, or tsup.
 
-**Namespace require** — when the entire module is assigned to a variable and symbols are accessed as properties:
+**Namespace require** applies when the entire module is assigned to a variable and symbols are accessed as properties:
 
 ```javascript
 const serde_1 = require("@workflow/serde");
@@ -691,7 +691,7 @@ class Sandbox {
 }
 ```
 
-**Destructured require** — when symbols are destructured directly from the `require()` call:
+**Destructured require** applies when symbols are destructured directly from the `require()` call:
 
 ```javascript
 const { WORKFLOW_SERIALIZE, WORKFLOW_DESERIALIZE } = require("@workflow/serde");
@@ -708,7 +708,7 @@ class Sandbox {
 }
 ```
 
-Both patterns produce the same output as the ESM import version — a `registerSerializationClass()` call is appended and the class is included in the manifest.
+Both patterns produce the same output as the ESM import version. The plugin appends a `registerSerializationClass()` call and includes the class in the manifest.
 
 Destructured require also supports renaming (analogous to `import { WORKFLOW_SERIALIZE as WS }`):
 
@@ -716,7 +716,7 @@ Destructured require also supports renaming (analogous to `import { WORKFLOW_SER
 const { WORKFLOW_SERIALIZE: WS, WORKFLOW_DESERIALIZE: WD } = require("@workflow/serde");
 ```
 
-### Class Expressions with Binding Names
+### Class expressions with binding names
 
 When a class expression is assigned to a variable, the plugin uses the variable name (binding name) for registration, not the internal class name. This is important because the internal class name is only accessible inside the class body.
 
@@ -803,7 +803,7 @@ Output (step mode):
 
 All references use `LanguageModel` (the binding name), not `_LanguageModel` (the internal class expression name). Only a single class registration IIFE is emitted. The step IDs also use the binding name.
 
-### Anonymous Class Expression Name Re-insertion
+### Anonymous class expression name re-insertion
 
 When a serializable class expression has no internal name (anonymous) but has a binding name from a variable declaration, the plugin re-inserts the binding name as the class expression's identifier. This handles the common case where upstream bundlers like esbuild/tsup transform `class Foo { ... }` into `var Foo = class { ... }` (stripping the class name).
 
@@ -848,12 +848,12 @@ var Shell = class Shell {
 ```
 
 Note that:
-- The class expression `class { ... }` becomes `class Shell { ... }` — the binding name is inserted
+- The class expression `class { ... }` becomes `class Shell { ... }` with the binding name inserted
 - For typical usage, behavior is preserved while ensuring the `.name` property survives subsequent bundling (an inner class name binding is introduced, which can differ in edge cases that depend on assigning to or shadowing that name inside the class body)
 - Classes that already have an internal name (e.g., `class _Bash { ... }`) are not modified
 - Only classes with serialization methods (`WORKFLOW_SERIALIZE` and `WORKFLOW_DESERIALIZE`) are affected
 
-### Anonymous Default Class Export Rewriting
+### Anonymous default class export rewriting
 
 When an anonymous class with serialization methods or step methods is exported as the default export, the plugin rewrites it into a `const` declaration + re-export so that the class has a binding name accessible at module scope. Without this, the generated registration code would reference an undefined variable.
 
@@ -887,12 +887,12 @@ export default __DefaultClass;
 
 Note that:
 - The anonymous class `export default class { ... }` is rewritten to `const __DefaultClass = class __DefaultClass { ... }; export default __DefaultClass;`
-- When the class has serialization methods, the class expression also gets the binding name re-inserted (e.g., `class __DefaultClass { ... }`). For step-only classes without serde, the class expression remains anonymous (e.g., `class { ... }`) — but the `const` binding name is what matters for module-scope registration code
+- When the class has serialization methods, the class expression also gets the binding name re-inserted (e.g., `class __DefaultClass { ... }`). For step-only classes without serde, the class expression remains anonymous (e.g., `class { ... }`), but the `const` binding name is what matters for module-scope registration code
 - The generated name `__DefaultClass` is used for all registrations (step, class, serde)
 - If `__DefaultClass` is already declared in scope, the name is suffixed (`__DefaultClass$1`, etc.)
-- Named default exports (e.g., `export default class MyService { ... }`) are NOT rewritten — the class name `MyService` is already in scope
+- Named default exports (e.g., `export default class MyService { ... }`) are not rewritten because the class name `MyService` is already in scope
 
-### File Discovery for Custom Serialization
+### File discovery for custom serialization
 
 Files containing classes with custom serialization are automatically discovered for transformation, even if they don't contain `"use step"` or `"use workflow"` directives. The discovery mechanism looks for:
 
@@ -902,7 +902,7 @@ Files containing classes with custom serialization are automatically discovered 
 
 This allows serialization classes to be defined in separate files (such as Next.js API routes or utility modules) and still be registered in the serialization system when the application is built.
 
-### Cross-Context Class Registration
+### Cross-context class registration
 
 Classes with custom serialization are automatically included in **all bundle contexts** (step and workflow) to ensure they can be properly serialized and deserialized when crossing execution boundaries:
 
@@ -921,7 +921,7 @@ This cross-registration happens automatically during the build process - no manu
 
 ---
 
-## Default Exports
+## Default exports
 
 Anonymous default exports are given the name `__default`:
 
@@ -946,7 +946,7 @@ export default __default;
 
 ---
 
-## Validation Errors
+## Validation errors
 
 The plugin emits errors for invalid usage:
 
@@ -963,7 +963,7 @@ The plugin emits errors for invalid usage:
 
 ---
 
-## Supported Function Forms
+## Supported function forms
 
 The plugin supports various function declaration styles. Step functions may be synchronous or asynchronous. Workflow functions must be async.
 
@@ -988,11 +988,11 @@ The plugin supports various function declaration styles. Step functions may be s
 
 ---
 
-## Getter Step Functions
+## Getter step functions
 
 Getters (property accessors) can be marked with `"use step"` to make property access trigger a step invocation. Unlike regular step functions, getters cannot be `async` syntactically, but the framework treats them as async steps. The pattern `await obj.prop` works when `prop` is a getter step.
 
-**Getters cannot be marked with `"use workflow"`** — only `"use step"` is supported.
+**Getters cannot be marked with `"use workflow"`**. Only `"use step"` is supported.
 
 ### Instance getter transformation
 
@@ -1059,7 +1059,7 @@ In workflow mode, after stripping `"use step"` methods and getters from a class 
 - **JS native private members**: `#field`, `#method()` (`ClassMember::PrivateMethod`, `ClassMember::PrivateProp`)
 - **TypeScript `private` members**: `private field`, `private method()` (`ClassMethod`/`ClassProp` with `accessibility: Private`)
 
-The algorithm is iterative: references are first collected from all public members, then the referenced set is expanded by scanning surviving private members' bodies for cross-references, repeating until the set stabilizes. This enables cascading elimination — a private field only referenced by a private method that is itself unreferenced will also be removed.
+The algorithm is iterative. It first collects references from all public members, then expands the referenced set by scanning surviving private members' bodies for cross-references until the set stabilizes. This process enables cascading elimination: a private field referenced only by an unreferenced private method is also removed.
 
 Input:
 ```typescript
@@ -1092,8 +1092,8 @@ export class Run {
   static [WORKFLOW_SERIALIZE](instance) { return { id: instance.id }; }
   static [WORKFLOW_DESERIALIZE](data) { return new Run(data.id); }
   id;
-  // private encryptionKeyPromise — ELIMINATED (only referenced by getEncryptionKey)
-  // private getEncryptionKey()   — ELIMINATED (only referenced by stripped getter)
+  // private encryptionKeyPromise: ELIMINATED (only referenced by getEncryptionKey)
+  // private getEncryptionKey(): ELIMINATED (only referenced by stripped getter)
   constructor(id) { this.id = id; }
 }
 // getter replaced with step proxy
@@ -1104,11 +1104,11 @@ Object.defineProperty(Run.prototype, "value", {
 });
 ```
 
-This optimization is critical for SDK classes like `Run` where private helper methods reference Node.js-only imports (encryption, world access, etc.) — eliminating them allows the downstream module-level DCE to also remove those imports from the workflow bundle.
+This optimization is critical for SDK classes like `Run`, where private helper methods reference Node.js-only imports (encryption, world access, and others). Eliminating the methods allows the downstream module-level DCE to also remove those imports from the workflow bundle.
 
 ---
 
-## Parameter Handling
+## Parameter handling
 
 The plugin supports complex parameter patterns including:
 
@@ -1120,7 +1120,7 @@ The plugin supports complex parameter patterns including:
 
 ---
 
-## Disposable Resources (`using` declarations)
+## Disposable resources (`using` declarations)
 
 The plugin supports directives inside functions that use TypeScript's `using` declarations (disposable resources). When TypeScript transforms `using` declarations, it wraps the function body in a try-catch-finally block:
 
@@ -1158,12 +1158,12 @@ The plugin detects this pattern and correctly identifies the directive inside th
 
 ---
 
-## Lexical `this` Capture in Nested Arrow Steps
+## Lexical `this` capture in nested arrow steps
 
 When a nested arrow-function step references `this` from an enclosing
 function/method scope, the plugin captures that `this` so the workflow
 runtime can rebind it inside the executing step body. This makes the
-following pattern work — the user's class is responsible for providing
+following pattern work. The user's class is responsible for providing
 custom serialization (`WORKFLOW_SERIALIZE` / `WORKFLOW_DESERIALIZE`) so the
 captured `this` can survive the workflow→step boundary:
 
@@ -1192,7 +1192,7 @@ export class ReadFileTool {
 }
 ```
 
-Output (Workflow Mode) — the proxy reference is wrapped with `.bind(this)`
+Output (workflow mode): The proxy reference is wrapped with `.bind(this)`
 so the runtime's step proxy captures the caller's `this` as `thisVal` on the
 invocation queue item:
 ```javascript
@@ -1206,7 +1206,7 @@ createTool(context) {
 }
 ```
 
-Output (Step Mode) — the step body is hoisted as a regular `function` (not
+Output (step mode): The step body is hoisted as a regular `function` (not
 an arrow) so the runtime's `stepFn.apply(thisVal, args)` can rebind `this`
 to the value that was captured at call time:
 ```javascript
@@ -1240,8 +1240,8 @@ instances without custom serialization will fail at proxy-invocation time.
   1. **Instance-method steps** on a class with custom serialization (e.g. `Counter#add`). Calling `instance.add(...)` captures `instance` as `thisVal` so the step body sees `this === instance`.
   2. **Nested arrow steps that lexically capture `this`** (see "Lexical `this` Capture in Nested Arrow Steps" above). The compiler emits `.bind(this)` on the proxy in workflow mode and hoists the body as a regular `function` in step mode so `stepFn.apply(thisVal, args)` rebinds correctly.
 
-  Other shapes (a top-level `async function` step that references `this`, an arrow step assigned to a module-level variable, etc.) compile without error but `this` will be whatever the caller of the step proxy passes — typically `null`/`undefined` — so referencing it is rarely useful.
-- `arguments` is allowed inside `function`-form step bodies (it reflects the positional arguments the runtime passes via `stepFn.apply(thisVal, args)`). It does **not** work inside arrow-form steps — arrows don't have their own `arguments` binding, and the compiler doesn't capture the enclosing scope's `arguments` the way it does for `this`. Use rest parameters (`...args`) instead if you need that pattern in an arrow step.
+  Other shapes (a top-level `async function` step that references `this`, an arrow step assigned to a module-level variable, etc.) compile without error. However, `this` will be whatever the caller of the step proxy passes, typically `null` or `undefined`, so referencing it is rarely useful.
+- `arguments` is allowed inside `function`-form step bodies (it reflects the positional arguments the runtime passes via `stepFn.apply(thisVal, args)`). It does **not** work inside arrow-form steps. Arrows don't have their own `arguments` binding, and the compiler doesn't capture the enclosing scope's `arguments` the way it does for `this`. Use rest parameters (`...args`) instead if you need that pattern in an arrow step.
 - `super` calls are not allowed in step functions
 - Imports from the module are excluded from closure variable detection
 - Module-level declarations (functions, variables, classes) are excluded from closure variable detection, since they are available directly in the step bundle and should not be serialized as closure values

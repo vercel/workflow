@@ -22,7 +22,7 @@ Workflow SDK makes your agents production-ready, by turning them into durable, r
 
 This guide walks you through converting a basic AI chat app into a durable AI agent using Workflow SDK.
 
-## Why Durable Agents?
+## Why durable agents?
 
 Aside from the usual challenges of getting your long-running tasks to be production-ready, building mature AI agents typically requires solving several **additional challenges**:
 
@@ -31,22 +31,22 @@ Aside from the usual challenges of getting your long-running tasks to be product
 - **Resumability**: Resuming streams requires not just storing your messages, but also storing streams, and piping them across services.
 - **Human-in-the-loop**: Your client, API, and async job orchestration need to work together to create, track, route to, and display human approval requests, or similar webhook operations.
 
-Workflow SDK provides all of these capabilities out of the box. Your agent becomes a workflow, your tools become steps, and the framework handles interplay with your existing infrastructure.
+Workflow SDK provides all of these capabilities without additional infrastructure. Your agent becomes a workflow, your tools become steps, and the framework handles interplay with your existing infrastructure.
 
-## Getting Started
+## Getting started
 
 To make an Agent durable, we first need an Agent, which we'll be setting up here. If you already have an app you'd like to follow along with, you can skip this section.
 
-For our example, we'll need an app with a simple chat interface and an API route calling an LLM, so that we can add Workflow SDK to it. We'll use the [Flight Booking Agent](https://github.com/vercel/workflow-examples/tree/main/flight-booking-app) example as a starting point, which comes with a chat interface built using Next.js, AI SDK, and Shadcn UI.
+For our example, we'll need an app with a basic chat interface and an API route calling an LLM, so that we can add Workflow SDK to it. We'll use the [Flight Booking Agent](https://github.com/vercel/workflow-examples/tree/main/flight-booking-app) example as a starting point, which comes with a chat interface built using Next.js, AI SDK, and Shadcn UI.
 
 <Steps>
 
 <Step>
 ### Clone example app
 
-We'll need an app with a simple chat interface and an API route calling an LLM, so that we can add Workflow SDK to it. For the follow-along steps, we'll use the [Flight Booking Agent](https://github.com/vercel/workflow-examples/tree/main/flight-booking-app) example as a starting point, which comes with a chat interface built using Next.js, AI SDK, and Shadcn UI.
+We'll need an app with a basic chat interface and an API route calling an LLM, so that we can add Workflow SDK to it. For the follow-along steps, we'll use the [Flight Booking Agent](https://github.com/vercel/workflow-examples/tree/main/flight-booking-app) example as a starting point, which comes with a chat interface built using Next.js, AI SDK, and Shadcn UI.
 
-If you have your own project, you can skip this step, and simply apply the changes of the following steps to your own project.
+If you have your own project, skip this step and apply the changes in the following steps to your project.
 
 ```bash
 git clone https://github.com/vercel/workflow-examples -b plain-ai-sdk
@@ -59,7 +59,7 @@ cd workflow-examples/flight-booking-app
 
 ### Set up API keys
 
-In order to connect to an LLM, we'll need to set up an API key. The easiest way to do this is to use Vercel Gateway (works with all providers at zero markup), or you can configure a custom provider.
+To connect to an LLM, set up an API key. You can use Vercel Gateway, which works with all providers at zero markup, or configure a custom provider.
 <Tabs items={['Gateway', 'Custom Provider']}>
 
 <Tab value="Gateway">
@@ -113,15 +113,15 @@ export async function POST(req: Request) {
 
 ### Get familiar with the code
 
-Let's take a moment to see what we're working with. Run the app with `npm run dev` and open [http://localhost:3000](http://localhost:3000) in your browser. You should see a simple chat interface to play with. Go ahead and give it a try.
+Run the app with `npm run dev` and open [http://localhost:3000](http://localhost:3000) in your browser. You should see a basic chat interface to test.
 
-The core code that makes all of this happen is quite simple. Here's a breakdown of the main parts. Note that there's no changes needed here, we're simply taking a look at the code to understand what's happening.
+The following sections break down the core code. You don't need to make changes yet.
 
 <Tabs items={['API Route', 'Tools', 'Client']}>
 
 <Tab value="API Route">
 
-Our API route makes a simple call to [AI SDK's `ToolLoopAgent` class](https://ai-sdk.dev/docs/agents/overview), which encapsulates the LLM call, tool execution loop, and stopping conditions on top of [AI SDK's `streamText` function](https://ai-sdk.dev/docs/reference/ai-sdk-core/stream-text#streamtext). This is also where we pass tools to the agent.
+Our API route calls [AI SDK's `ToolLoopAgent` class](https://ai-sdk.dev/docs/agents/overview), which encapsulates the LLM call, tool execution loop, and stopping conditions on top of [AI SDK's `streamText` function](https://ai-sdk.dev/docs/reference/ai-sdk-core/stream-text#streamtext). This is also where we pass tools to the agent.
 
 ```typescript title="app/api/chat/route.ts" lineNumbers
 import { ToolLoopAgent } from "ai";
@@ -170,7 +170,7 @@ async function searchFlights({ from, to, date }: { from: string; to: string; dat
 
 <Tab value="Client">
 
-Our `ChatPage` component has a lot of logic for nicely displaying the chat messages, but at it's core, it's simply managing input/output for the [`useChat` hook](https://ai-sdk.dev/docs/reference/ai-sdk-ui/use-chat#usechat) from AI SDK.
+Our `ChatPage` component contains logic for displaying chat messages, but its core responsibility is managing input and output for the [`useChat` hook](https://ai-sdk.dev/docs/reference/ai-sdk-ui/use-chat#usechat) from AI SDK.
 
 ```typescript title="app/chat.tsx" lineNumbers
 "use client";
@@ -228,7 +228,7 @@ Now that we have a basic agent using AI SDK, we can modify it to make it durable
 <Steps>
 <Step>
 
-### Install Dependencies
+### Install dependencies
 
 Add the Workflow SDK packages to your project:
 
@@ -253,7 +253,7 @@ export default withWorkflow(nextConfig);
 
 <Step>
 
-### Create a Workflow Function
+### Create a workflow function
 
 Move the agent logic into a separate function, which will serve as our workflow definition.
 
@@ -272,7 +272,7 @@ export async function chatWorkflow(messages: UIMessage[]) {
 
   const agent = new WorkflowAgent({ // [!code highlight]
 
-    // If using AI Gateway, just specify the model name as a string:
+    // If using AI Gateway, specify the model name as a string:
     model: "bedrock/claude-4-5-haiku-20251001-v1", // [!code highlight]
 
     // ELSE if using a custom provider, pass the provider call as an argument:
@@ -300,7 +300,7 @@ Key changes:
 </Step>
 
 <Step>
-### Update the API Route
+### Update the API route
 
 Remove the agent call that we just extracted, and replace it with a call to `start()` to run the workflow:
 
@@ -330,7 +330,7 @@ Key changes:
 </Step>
 
 <Step>
-### Convert Tools to Steps
+### Convert tools to steps
 
 Mark all tool definitions with `"use step"` to make them durable. This enables automatic retries and observability for each tool call:
 
@@ -389,7 +389,7 @@ With `"use step"`:
 
 </Steps>
 
-That's all you need to do to convert your basic AI SDK agent into a durable agent. If you run your development server, and send a chat message, you should see your agent respond just as before, but now with added durability and observability.
+Your basic AI SDK agent is now durable. Run your development server and send a chat message. The agent should respond as before, with added durability and observability.
 
 ## Observability
 
@@ -401,7 +401,7 @@ npx workflow web
 
 This opens a local dashboard showing all workflow runs and their status, as well as a trace viewer to inspect the workflow in detail, including retry attempts, and the data being passed between steps.
 
-## Next Steps
+## Next steps
 
 Now that you have a basic durable agent, it's a only a short step to add these additional features:
 
@@ -420,11 +420,11 @@ Now that you have a basic durable agent, it's a only a short step to add these a
   </Card>
 </Cards>
 
-## Complete Example
+## Complete example
 
 A complete example that includes all of the above, plus all of the "next steps" features is available on the main branch of the [Flight Booking Agent](https://github.com/vercel/workflow-examples/tree/main/flight-booking-app) example.
 
-## Related Documentation
+## Related documentation
 
 - [Tools](/docs/ai/defining-tools) - Patterns for defining tools for your agent
 - [`WorkflowAgent`](https://ai-sdk.dev/v7/docs/agents/workflow-agent#workflowagent) - AI SDK API for durable, resumable agents

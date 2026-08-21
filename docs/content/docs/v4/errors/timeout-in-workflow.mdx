@@ -15,19 +15,19 @@ related:
 
 This error occurs when you try to use `setTimeout()`, `setInterval()`, or related timing functions directly inside a workflow function.
 
-## Error Message
+## Error message
 
-```
+```text
 Timeout functions like "setTimeout" and "setInterval" are not supported in workflow functions. Use the "sleep" function from "workflow" for time-based delays.
 ```
 
-## Why This Happens
+## Why this happens
 
 Workflow functions run in a sandboxed environment where timing functions like `setTimeout()` and `setInterval()` are not available. These functions rely on asynchronous scheduling that would break the **deterministic replay** guarantees that workflows depend on.
 
 When a workflow suspends and later resumes, it replays from the event log. If timing functions were allowed, the replay would produce different results than the original execution.
 
-## Quick Fix
+## Quick fix
 
 Use the `sleep` function from the `workflow` package for time-based delays. Unlike `setTimeout()`, `sleep` is tracked in the event log and replays correctly.
 
@@ -59,7 +59,7 @@ export async function delayedWorkflow() {
 }
 ```
 
-## Unavailable Functions
+## Unavailable functions
 
 These timing functions cannot be used in workflow functions:
 
@@ -70,9 +70,9 @@ These timing functions cannot be used in workflow functions:
 - `clearInterval()`
 - `clearImmediate()`
 
-## Common Scenarios
+## Common scenarios
 
-### Polling with Delays
+### Polling with delays
 
 If you need to poll an external service with delays between requests:
 
@@ -102,7 +102,7 @@ async function checkStatus() {
 }
 ```
 
-### Scheduled Delays
+### Scheduled delays
 
 For workflows that need to wait for a specific duration:
 

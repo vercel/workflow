@@ -175,7 +175,7 @@ export const stepEventsToStepEntity = (
     return null;
   }
 
-  // Walk events in order to derive status, attempt count, and timestamps.
+  // Walk events to derive status, attempt count, and timestamps.
   // Handles both step_retrying and consecutive step_started as retry signals.
   let status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled' =
     'pending';
@@ -406,7 +406,7 @@ export function runToSpan(
     getEventTimestamp(terminalEvent) ?? run.completedAt ?? undefined;
   const endTime = completedAt ?? now;
 
-  // Only embed identification fields — not the full object with
+  // Only embed identification fields, not the full object with
   // input/output/error which may contain non-cloneable types. Lifecycle
   // timestamps are event-derived so detail rows align with the span timeline.
   const { input: _i, output: _o, error: _e, ...runIdentity } = run;

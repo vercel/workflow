@@ -23,7 +23,7 @@ export default defineConfig({
 });
 ```
 
-## API Signature
+## API signature
 
 ### Parameters
 
@@ -35,8 +35,8 @@ export default defineConfig({
 
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
-| `sourcemap` | `boolean \| 'inline' \| 'linked' \| 'external' \| 'both'` | `'inline'` (dev) / `false` (prod) | Controls source maps on generated workflow bundles. Accepts the same values as esbuild's `sourcemap` option. Defaults to `'inline'` in development and `false` in production (smaller function bundles — helps stay under the Vercel 250MB function size limit). Set it explicitly, or use the `WORKFLOW_SOURCEMAP` environment variable, to override in either environment. |
+| `sourcemap` | `boolean \| 'inline' \| 'linked' \| 'external' \| 'both'` | `'inline'` (dev) / `false` (prod) | Controls source maps on generated workflow bundles. Accepts the same values as esbuild's `sourcemap` option. Defaults to `'inline'` in development and `false` in production (smaller function bundles, which helps stay under the Vercel 250 MB function size limit). Set it explicitly, or use the `WORKFLOW_SOURCEMAP` environment variable, to override in either environment. |
 
 ### Returns
 
-Returns an array of Vite `Plugin` objects. Spread or pass the array directly to the `plugins` option of your Vite config — Vite flattens nested plugin arrays automatically.
+Returns an array of Vite `Plugin` objects. Spread or pass the array directly to the `plugins` option of your Vite config. Vite flattens nested plugin arrays automatically.

@@ -199,7 +199,7 @@ function EncryptedFieldBlock() {
 }
 
 /**
- * Inline display for an expired field — flat label indicating data is no longer available.
+ * Inline display for an expired field: flat label indicating data is no longer available.
  */
 function ExpiredFieldBlock() {
   return (
@@ -299,7 +299,7 @@ const attributeOrder: AttributeKey[] = [
 
 /**
  * Rank of an attribute in {@link attributeOrder}. Keys absent from that list
- * sort after every listed one rather than before them — `indexOf` reports a
+ * sort after every listed one rather than before them: `indexOf` reports a
  * miss as `-1`, which is truthy, so a `|| 0` fallback never fires.
  */
 const attributeOrderIndex = (attribute: string): number => {
@@ -449,7 +449,7 @@ const attributeToDisplayFn: Record<
   receivedCount: (value: unknown) => String(value),
   lastReceivedAt: localMillisecondTimeOrNull,
   disposedAt: localMillisecondTimeOrNull,
-  // Internal resume plumbing — not surfaced in the UI
+  // Internal resume plumbing, not surfaced in the UI
   resumeContext: (_value: unknown) => null,
   resumeId: (_value: unknown) => null,
   resumeCapabilities: (_value: unknown) => null,
@@ -467,14 +467,14 @@ const attributeToDisplayFn: Record<
   projectId: (_value: unknown) => null,
   environment: (_value: unknown) => null,
   executionContext: (_value: unknown) => null,
-  // Attributes — string-string metadata attached to the run.
+  // Attributes: string-string metadata attached to the run.
   // Rendered as key-value rows in its own collapsible section;
   // if empty/missing, hidden by the hasDisplayContent gate.
   attributes: (value: unknown) => {
     if (!hasDisplayContent(value)) return null;
     return <RunAttributesCard attributes={value as Record<string, string>} />;
   },
-  // Dates — wrapped with TimestampTooltip showing UTC/local + relative time
+  // Dates: wrapped with TimestampTooltip showing UTC/local + relative time
   occurredAt: timestampWithTooltipOrNull,
   createdAt: timestampWithTooltipOrNull,
   startedAt: timestampWithTooltipOrNull,
@@ -678,7 +678,7 @@ const attributeToDisplayFn: Record<
   },
   // Internal encryption plumbing: the run's X25519 public key, used by
   // cross-run writers to seal payloads to this run. Not actionable for users
-  // and not secret — hidden rather than rendered as 44 opaque base64 chars.
+  // and not secret, so hidden rather than rendered as 44 opaque base64 chars.
   encryptionPublicKey: (_value: unknown) => null,
 };
 
@@ -858,7 +858,7 @@ export const AttributePanel = ({
   isDecryptDisabled?: boolean;
   /** Explains why decryption is unavailable */
   decryptDisabledReason?: string;
-  /** Resource type of the selected span — used to show targeted loading skeletons. */
+  /** Resource type of the selected span, used to show targeted loading skeletons. */
   resource?: string;
 }) => {
   // Extract workflowCoreVersion from executionContext for display

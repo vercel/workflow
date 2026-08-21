@@ -3,7 +3,7 @@
  * (used by both the node:vm suspension handler and the QuickJS entrypoint).
  *
  * The world requires a `step_created` before any terminal step event, and
- * the step's real input is precisely what refused to serialize — so the
+ * the step's real input is precisely what refused to serialize, so the
  * finalization writes a placeholder input. The marker string makes the
  * placeholder distinguishable from a genuine zero-argument step in
  * `workflow inspect steps` and the observability UI: a reader sees
@@ -14,8 +14,8 @@ export const UNSERIALIZABLE_STEP_INPUT_MARKER =
 
 /**
  * Structural discriminator on the placeholder's top level. The
- * `{ args, closureVars, thisVal }` triple is built by the SDK — user code
- * never controls its top-level keys — so this flag cannot false-positive on
+ * `{ args, closureVars, thisVal }` triple is built by the SDK (user code
+ * never controls its top-level keys), so this flag cannot false-positive on
  * a legitimate input, unlike the display marker inside `args`.
  */
 const UNSERIALIZABLE_FLAG = '__workflowUnserializableStepInput';
@@ -43,7 +43,7 @@ export function unserializableStepInputPlaceholder(): Record<string, unknown> {
  * Finalization writes `step_created` (placeholder) and `step_failed` as two
  * separate durable writes; a crash or transient failure between them leaves
  * a pending step whose stored input is the placeholder. Redelivery then
- * dispatches that step through normal crash recovery — the executor calls
+ * dispatches that step through normal crash recovery: the executor calls
  * this before running user code and completes the intended failure (a fatal
  * SerializationError → `step_failed`) instead of silently invoking the step
  * body with placeholder arguments.

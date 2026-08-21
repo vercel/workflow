@@ -20,7 +20,7 @@
 - Separate Lambda function stubs that only served as Task state handlers
 - Task-token plumbing (`SendTaskSuccess`, `SendTaskFailure`, SQS queue setup) after converting to hooks/webhooks
 - IAM roles and CloudFormation/CDK resources for orchestrator-to-Lambda wiring
-- `"Next"` / `"End"` transition logic — replaced by `await` and `return`
+- `"Next"` / `"End"` transition logic, replaced by `await` and `return`
 
 ## Add
 

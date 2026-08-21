@@ -8,7 +8,7 @@
  *
  * The package leaves WASM sourcing to the caller; we resolve the shipped
  * `zstd.wasm` as a bundler asset (`new URL(..., import.meta.url)`, the same
- * pattern the trace-viewer Worker uses) and compile it once, lazily — the
+ * pattern the trace-viewer Worker uses) and compile it once, lazily: the
  * WASM is fetched only the first time a zstd payload is actually decoded.
  */
 import { registerZstdDecoder } from '@workflow/core/serialization-format';

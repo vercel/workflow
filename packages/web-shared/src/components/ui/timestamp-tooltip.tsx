@@ -208,7 +208,7 @@ type RelativeTimeCardProps = Omit<
 /**
  * Relative time label that reveals a context card with detailed UTC and local
  * timestamps on hover. Renders a default short relative time label (e.g.
- * "3 days ago") when `children` is omitted; renders just the children without
+ * "3 days ago") when `children` is omitted; renders only the children without
  * the hover card when `date` is nullish.
  */
 export function RelativeTimeCard({
@@ -233,7 +233,7 @@ export function RelativeTimeCard({
 }
 
 // ---------------------------------------------------------------------------
-// TimestampTooltip — convenience wrapper used across the observability UI
+// TimestampTooltip: convenience wrapper used across the observability UI
 // ---------------------------------------------------------------------------
 
 /**

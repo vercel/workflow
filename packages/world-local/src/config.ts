@@ -21,7 +21,7 @@ export type Config = {
   baseUrl?: string;
   /**
    * Whether start() should re-enqueue pending/running runs from storage.
-   * Defaults to true; the `WORKFLOW_LOCAL_RECOVER_ACTIVE_RUNS` env var is
+   * Defaults to true; the `WORKFLOW_LOCAL_RECOVER_ACTIVE_RUNS` environment variable is
    * used as a fallback when this option is unset. Test harnesses that always
    * start from a clean slate can disable recovery to avoid replaying stale
    * runs.
@@ -52,12 +52,12 @@ export const config = once<Config>(() => {
  * Resolves whether start() should re-enqueue pending/running runs from
  * storage, following the priority order:
  * 1. config.recoverActiveRuns (explicit factory option)
- * 2. WORKFLOW_LOCAL_RECOVER_ACTIVE_RUNS env var (`0`/`false` disables,
- *    `1`/`true` enables; read lazily to handle late env var setting)
+ * 2. WORKFLOW_LOCAL_RECOVER_ACTIVE_RUNS environment variable (`0`/`false` disables,
+ *    `1`/`true` enables; read lazily to handle late environment variable setting)
  * 3. Default: true
  *
- * An unrecognized env value falls through to the default — the env var is an
- * escape hatch, not a hard requirement.
+ * An unrecognized value falls through to the default: the environment variable
+ * is an escape hatch, not a hard requirement.
  */
 export function resolveRecoverActiveRuns(config: Partial<Config>): boolean {
   if (config.recoverActiveRuns !== undefined) {
@@ -80,9 +80,9 @@ export function resolveDirectBaseUrl(config: Partial<Config>): string {
 /**
  * Resolves the base URL for queue requests following the priority order:
  * 1. config.baseUrl (highest priority - full override from args)
- * 2. WORKFLOW_LOCAL_BASE_URL env var (checked directly to handle late env var setting)
+ * 2. WORKFLOW_LOCAL_BASE_URL environment variable (checked directly to handle late environment variable setting)
  * 3. config.port (explicit port override from args)
- * 4. PORT env var (explicit configuration)
+ * 4. PORT environment variable (explicit configuration)
  * 5. Auto-detected port via getPort (detect actual listening port)
  */
 export async function resolveBaseUrl(config: Partial<Config>): Promise<string> {
@@ -90,8 +90,8 @@ export async function resolveBaseUrl(config: Partial<Config>): Promise<string> {
     return config.baseUrl;
   }
 
-  // Check env var directly in case it was set after the config was cached
-  // This is important for CLI tools that set the env var after module import
+  // Check the environment variable directly in case it was set after the config was cached.
+  // CLI tools may set the environment variable after module import.
   if (process.env.WORKFLOW_LOCAL_BASE_URL) {
     return process.env.WORKFLOW_LOCAL_BASE_URL;
   }

@@ -64,7 +64,7 @@ function useSelectedSpanInfo(): SelectedSpanInfo | null {
  * The span detail aside: content, prev/next/close header, J/K navigation, and
  * the resizable left border with its width model (see detail-panel-width.ts).
  *
- * Always mounted — it renders null without a selection — so the panel width
+ * Always mounted (it renders null without a selection) so the panel width
  * survives closing and reopening within a session.
  */
 export function TraceDetailPanel({

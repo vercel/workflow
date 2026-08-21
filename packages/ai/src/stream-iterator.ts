@@ -6,7 +6,7 @@ const isBrowser = typeof window !== 'undefined';
  * pull→enqueue loop (common when replaying buffered data on reconnect)
  * starves the event loop and blocks paint until the stream ends.
  *
- * Only applies in browser environments — server-side consumers skip
+ * Only applies in browser environments: server-side consumers skip
  * the yield since there is no paint to unblock.
  */
 const yieldToMacrotask = (): Promise<void> | void =>

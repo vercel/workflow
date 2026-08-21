@@ -1,15 +1,15 @@
 /**
  * Replay verification: does the committed log actually regenerate the state?
  *
- * Everything else in this package checks the log's *shape* — ordering, entity
+ * Everything else in this package checks the log's *shape*: ordering, entity
  * rows folding back out of it, lifecycle rules. None of that answers the
  * question the durability model actually rests on: if a fresh process picked
  * up this log tomorrow, would it reconstruct the same run?
  *
  * The check is a cold start with the answer withheld. Take the finished log,
  * drop its terminal `run_*` event, load the rest into an empty world as
- * durable history, and deliver one queue message. The real runtime — the same
- * `workflowEntrypoint` a deployment serves — replays the workflow from the log
+ * durable history, and deliver one queue message. The real runtime (the same
+ * `workflowEntrypoint` a deployment serves) replays the workflow from the log
  * and must re-derive the event we removed, with the same output. No step body
  * re-executes (every `step_completed` is in the log, so the step consumer
  * resolves from it), so anything the replay produces came from the log alone.
@@ -19,7 +19,7 @@
  *  - The replay cannot follow the log: the runtime raises
  *    `ReplayDivergenceError`, retries its recovery replays, and then fails the
  *    run with `CorruptedEventLogError`. Surfaced here as `replay.diverged`.
- *  - The replay runs out of log before the workflow finishes, and suspends —
+ *  - The replay runs out of log before the workflow finishes, and suspends:
  *    the log did not contain enough to rebuild the run. `replay.suspended`.
  *  - The replay finishes but derives a different answer. `replay.output-differs`
  *    / `replay.log-differs`.
@@ -69,7 +69,7 @@ function splitAtTerminal(events: readonly Event[]): {
   };
 }
 
-/** `(eventType, correlationId)` — the part of a log that must be reproducible. */
+/** `(eventType, correlationId)`: the part of a log that must be reproducible. */
 function shape(events: readonly Event[]): string[] {
   return events.map((e) =>
     e.correlationId ? `${e.eventType}#${e.correlationId}` : e.eventType
@@ -106,15 +106,16 @@ export async function verifyReplay(
   }
 
   // A step that closed out after the run terminated cannot be re-derived by a
-  // replay — it was driven by an inline body that already ran, not by the log.
+  // replay, since it was driven by an inline body that already ran, not by the
+  // log.
   // Seed those as history too so the replay sees the same durable state a
   // fresh process would.
   const seeded = [...history, ...trailing];
 
   // The replay must happen at the instant the run ended, not whenever the
   // scenario happened to finish draining its queue. Replaying later is not
-  // wrong — the runtime would legitimately complete any wait that has since
-  // elapsed — but it answers a different question than "does this log
+  // wrong (the runtime would legitimately complete any wait that has since
+  // elapsed), but it answers a different question than "does this log
   // reproduce this run", and the comparison below would flag the difference as
   // a divergence when nothing diverged.
   //
@@ -229,7 +230,7 @@ async function describeRunError(error: unknown): Promise<string> {
   try {
     // Go through the real hydration path, not the observability one: a run
     // error is written by `dehydrateRunError` and may be compressed, which the
-    // synchronous o11y reviver cannot undo.
+    // synchronous observability reviver cannot undo.
     const { hydrateRunError } = await import('@workflow/core/serialization');
     const value = await hydrateRunError(error, 'wrun_replay', undefined);
     if (value instanceof Error) return `${value.name}: ${value.message}`;

@@ -31,7 +31,7 @@ export type DeploymentAffinityOutcome =
   | 'failed';
 
 /**
- * `spanAttributes` is present only on a misrouted delivery — mismatches are
+ * `spanAttributes` is present only on a misrouted delivery: mismatches are
  * rare, so the presence of `workflow.deployment.pinned_id` on a span *is* the
  * signal that one happened, and `recovered` separates the ones a re-route fixed
  * from the ones that kept misrouting.
@@ -65,7 +65,7 @@ function result(
 
 /**
  * Arguments handed to a call site's re-enqueue closure. The guard owns the
- * policy — counting, backoff, logging, telemetry, escalation — and the call
+ * policy (counting, backoff, logging, telemetry, escalation) and the call
  * site owns only the shape of the message it needs to put back on the queue.
  */
 export interface ReenqueueArgs {
@@ -86,9 +86,9 @@ export interface ReenqueueArgs {
  * Guards deployment affinity: a run may only execute on the deployment it is
  * pinned to.
  *
- * A run's `deploymentId` is fixed when it starts — the deployment that called
+ * A run's `deploymentId` is fixed when it starts: the deployment that called
  * `start()`, or whatever `start({ deploymentId })` resolved to (an explicit id
- * or `'latest'`) — and no replay or step execution may happen anywhere else:
+ * or `'latest'`). No replay or step execution may happen anywhere else:
  * the bundles here may not match the run's persisted history, and any step
  * dispatched from here derives the per-run encryption key from the wrong
  * deployment's master key, which surfaces as a `RuntimeDecryptionError` the
@@ -102,8 +102,8 @@ export interface ReenqueueArgs {
  * spent, mirroring how a replay divergence gets bounded recovery replays before
  * being recorded as a corrupted event log.
  *
- * Callers must pass a run entity they already have in hand — every call site
- * loads the run for other reasons — so the guard costs no extra round trip.
+ * Callers must pass a run entity they already have in hand (every call site
+ * loads the run for other reasons), so the guard costs no extra round trip.
  * (`world.getDeploymentId()` reads the ambient deployment id, e.g.
  * `VERCEL_DEPLOYMENT_ID`, and does not call the backend either.)
  *
@@ -144,7 +144,7 @@ export async function guardDeploymentAffinity({
    * Ordering barrier awaited once a mismatch is confirmed, before either
    * stopping action. Under turbo the `run_started` write is backgrounded, and
    * both outcomes hand the run off (to a `run_failed` here, or to the pinned
-   * deployment's own `run_started`) — so that write must have landed first.
+   * deployment's own `run_started`), so that write must have landed first.
    */
   beforeStop?: () => Promise<void>;
 }): Promise<DeploymentAffinityResult> {
@@ -214,7 +214,7 @@ export async function guardDeploymentAffinity({
       );
     } catch (failError) {
       // Run already reached a terminal state (a concurrent writer failed it, or
-      // it was cancelled/expired) — still stop. Anything else is a transient
+      // it was canceled/expired), so still stop. Anything else is a transient
       // persistence failure: rethrow so the queue redelivers and we try again.
       if (
         !EntityConflictError.is(failError) &&
@@ -228,7 +228,7 @@ export async function guardDeploymentAffinity({
 
   if (reenqueue && retryCount < maxRetries) {
     const attempt = retryCount + 1;
-    // Exponential, capped: 1s, 2s, 4s — cheap insurance against a hot
+    // Exponential, capped: 1s, 2s, 4s. Cheap insurance against a hot
     // re-enqueue loop, and time for a mid-flight routing change to settle.
     const delaySeconds = Math.min(2 ** retryCount, MAX_REROUTE_DELAY_SECONDS);
     try {
@@ -251,7 +251,7 @@ export async function guardDeploymentAffinity({
         throw reenqueueError;
       }
 
-      // The World explicitly classified the target as unavailable — deleted,
+      // The World explicitly classified the target as unavailable: deleted,
       // aged out of its retention window, or otherwise undiscoverable. Burning
       // the rest of the budget on a deployment that provably cannot be reached
       // only delays the failure, so fail now.
