@@ -204,6 +204,26 @@ describe('re-enqueue active runs on start', () => {
     await world.close();
   });
 
+  it('starts the worker without recovering active runs when disabled', async () => {
+    mockRunsList({
+      running: [{ runId: 'wrun_AAA', workflowName: 'wfA' }],
+    });
+
+    const world = createWorld({
+      connectionString: 'postgres://test',
+      pool,
+      recoverActiveRuns: false,
+    });
+    const list = vi.mocked(createRunsStorage).mock.results.at(-1)?.value.list;
+    await world.start();
+
+    expect(run).toHaveBeenCalledOnce();
+    expect(list).not.toHaveBeenCalled();
+    expect(workerUtilsMock.addJob).not.toHaveBeenCalled();
+
+    await world.close();
+  });
+
   it('does not enqueue anything when there are no active runs', async () => {
     mockRunsList({});
 

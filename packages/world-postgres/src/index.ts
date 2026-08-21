@@ -85,12 +85,14 @@ export function createWorld(
     }),
     async start() {
       await queue.start();
-      await reenqueueActiveRuns(
-        storage.runs,
-        queue.queue,
-        'world-postgres',
-        config.namespace
-      );
+      if (config.recoverActiveRuns !== false) {
+        await reenqueueActiveRuns(
+          storage.runs,
+          queue.queue,
+          'world-postgres',
+          config.namespace
+        );
+      }
     },
     async close() {
       await queue.close();

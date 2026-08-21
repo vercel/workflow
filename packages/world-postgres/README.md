@@ -58,6 +58,7 @@ const world = createWorld({
   connectionString: "postgres://username:password@localhost:5432/database",
   jobPrefix: "myapp", // optional
   queueConcurrency: 50, // optional
+  recoverActiveRuns: false, // optional; only when recovery is handled separately
   maxPoolSize: 10, // optional, overrides WORKFLOW_POSTGRES_MAX_POOL_SIZE when `pool` is omitted
 });
 
@@ -66,6 +67,11 @@ import { Pool } from "pg";
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 const worldFromPool = createWorld({ pool });
 ```
+
+With `recoverActiveRuns: false`, `start()` still starts the queue worker but
+skips the broad active-run scan. Use it only when recovery is handled
+separately; replica startup will no longer repair an active run with no
+runnable job.
 
 ### Application-managed Shutdown
 
@@ -97,6 +103,7 @@ An aborted HTTP request does not guarantee that its server-side handler stopped,
 | `pool`             | `pg.Pool` | —                                                                                      | Optional. When set, used for Drizzle, Graphile Worker, and stream writes. `world.close()` does not end it. |
 | `jobPrefix`        | `string`  | `process.env.WORKFLOW_POSTGRES_JOB_PREFIX`                                             | Optional prefix for queue job names                                                                  |
 | `queueConcurrency` | `number`  | `50`                                                                                   | Number of concurrent active step executions per process. Must be high enough to cover any parent→child workflow polling in flight — each `Run#returnValue` await holds a worker slot until the child run terminates. |
+| `recoverActiveRuns` | `boolean` | `true`                                                                                 | Whether `start()` re-enqueues every pending and running workflow run. Disabling this does not stop normal queue consumption. |
 | `applicationManagedShutdown` | `boolean` | `false`; `WORKFLOW_POSTGRES_APPLICATION_MANAGED_SHUTDOWN=1` enables it for the default package configuration | Whether the application coordinates shutdown and awaits `world.close()` instead of Graphile Worker responding automatically. |
 
 ## Environment Variables
