@@ -21,11 +21,19 @@
  * instrumenting the global `fetch` rather than by reading spans, and which a
  * transport whose purpose is to issue no request cannot appear in.
  *
- * The comparison is only exactly `'http'`, not "anything that isn't `'ws'`", so
- * an unrecognized value takes the default rather than silently pinning a
- * deployment to the old transport. The failure mode this whole path is prone to
- * is being quietly off while looking fine.
+ * `http` is the only value that opts out, rather than "anything that isn't
+ * `ws`". An unrecognized value takes the default instead of quietly pinning a
+ * deployment to the old transport.
+ *
+ * That opt-out is matched case-insensitively and trimmed, which is the one
+ * place this gate deliberately does *not* fail toward the default. Everything
+ * else here is written on the assumption that being quietly on the wrong
+ * transport is the failure mode to design against, and the reader most exposed
+ * to it is whoever is reaching for the escape hatch: plausibly mid-incident,
+ * plausibly typing `HTTP` into a dashboard field. Silently ignoring their
+ * opt-out because of case is the same bug this default flip is trying to stop
+ * shipping, pointed at the person least able to afford it.
  */
 export function isWsEventsTransportEnabled(): boolean {
-  return process.env.WORKFLOW_EVENTS_TRANSPORT !== 'http';
+  return process.env.WORKFLOW_EVENTS_TRANSPORT?.trim().toLowerCase() !== 'http';
 }
