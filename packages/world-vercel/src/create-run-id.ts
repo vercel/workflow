@@ -23,8 +23,8 @@ import {
  * On `globalThis` rather than at module scope because a bundler can put several
  * copies of this file in one process (see `globalSingleton`), and both halves of
  * the monotonicity guarantee are per-copy state. Two copies minting IDs in the
- * same millisecond — a page in the `ssr` graph and a route handler in the
- * app-route one both calling `start()` — would each advance their own factory
+ * same millisecond (a page in the `ssr` graph and a route handler in the
+ * app-route one both calling `start()`) would each advance their own factory
  * and compare against their own `lastRunId`, so the process could emit the same
  * ID twice, or emit them out of order.
  */

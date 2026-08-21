@@ -200,7 +200,7 @@ export async function deleteHookByRunMarkerFile(
 // Per-process ensure cache; only successful backfills are cached. On
 // `globalThis` rather than at module scope so "per-process" stays true when a
 // bundler puts several copies of this file in one process (see
-// `globalSingleton`) — otherwise each copy runs the full scan again.
+// `globalSingleton`), otherwise each copy runs the full scan again.
 const hookIndex = globalSingleton(
   '@workflow/world-local//hookIndexEnsureCache',
   1,

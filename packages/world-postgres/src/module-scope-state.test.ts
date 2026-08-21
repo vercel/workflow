@@ -15,7 +15,7 @@ const repoRoot = path.resolve(here, '../../..');
  * its own tests and checks every published world package. Repeated here so the
  * signal arrives when you run just this package's tests.
  *
- * This package is deduped today only because \`getRuntimeRequire()\` loads it —
+ * This package is deduped today only because `getRuntimeRequire()` loads it:
  * a property of how it is loaded, not of how it is written, and exactly what
  * changed for world-vercel in vercel/workflow#3493.
  */

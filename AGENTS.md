@@ -449,7 +449,7 @@ The `executionContext` field on workflow runs is a flexible JSONB/CBOR object th
 application's server build (see `VERCEL_WORLD_DEPENDENCY_PACKAGES` in
 `packages/next/src/index.ts`). Bundlers key module identity on
 `(resource, layer)`, and Next.js alone compiles `instrument`, app-route, `ssr`
-and `edge` as separate module graphs — so one process holds one copy of every
+and `edge` as separate module graphs, so one process holds one copy of every
 module in these packages **per bundler layer**. A top-level `let`, or a `const`
 holding a `Map`, is per-copy state, not the process singleton it reads as. A
 duplicated mutex stops mutually excluding; a duplicated registry is a
@@ -464,7 +464,7 @@ enforces this across every published `packages/world-*`, run from
 adding a new world package is covered automatically.
 
 Custom worlds loaded through `WORKFLOW_TARGET_WORLD` are deduped by Node's
-module cache and are safe today — but that is a property of how they are loaded,
+module cache and are safe today, but that is a property of how they are loaded,
 not of how they are written, and it changed for world-vercel in #3493. Keep them
 clean too. The author-facing version of this rule is in
 `docs/content/worlds/{v4,v5}/building-a-world.mdx`; keep both versions in sync.

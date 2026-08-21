@@ -19,7 +19,7 @@ describe('ws transport registry across module copies', () => {
    * Guards the test against becoming vacuous: if the two specifiers ever
    * collapsed to one module instance, every assertion below would pass for the
    * wrong reason. Class identity is module-scope state, so distinct classes
-   * means distinct instances — and is itself the thing that used to make the
+   * means distinct instances, and is itself the thing that used to make the
    * registry diverge.
    */
   it('imports two genuinely distinct instances of the module', () => {
@@ -31,7 +31,7 @@ describe('ws transport registry across module copies', () => {
    * became bundled rather than external, so one process holds one copy of this
    * module per bundler layer. The queue consumer opened its channel from the
    * `instrument` copy and the events write path looked it up from the route
-   * copy's own, empty `Map` — every event then silently fell back to HTTP for
+   * copy's own, empty `Map`. Every event then silently fell back to HTTP for
    * the life of the process.
    */
   it('finds a transport registered by the other copy', () => {

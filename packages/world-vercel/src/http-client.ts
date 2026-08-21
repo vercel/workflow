@@ -13,7 +13,7 @@ import type { APIConfig } from './utils.js';
  *
  * On `globalThis` rather than at module scope because a bundler can put several
  * copies of this file in one process (see `globalSingleton`). Per-copy pools
- * would mean per-copy keep-alive connections — a `register()` that warms the
+ * would mean per-copy keep-alive connections: a `register()` that warms the
  * world would warm a pool no route ever dispatches on, and every layer would
  * pay its own TCP and TLS handshake on its first request. The recycler's
  * failure accounting would be split the same way, so a wedged origin would have

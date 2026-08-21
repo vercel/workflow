@@ -5,13 +5,13 @@
  *
  * A module's top-level `const`/`let` is a singleton per *module instance*, not
  * per process, and a Next.js server routinely holds several instances of the
- * same file. Next compiles its server output into independent module graphs —
- * `instrument`, app-route, `ssr`, `edge` — and a bundled module is compiled
+ * same file. Next compiles its server output into independent module graphs
+ * (`instrument`, app-route, `ssr`, `edge`), and a bundled module is compiled
  * into each one separately, with its own module-scope bindings. Only a package
  * left in `serverExternalPackages` collapses to one instance, because that
  * emits a runtime `require()` and Node's module cache dedupes it.
  *
- * `@workflow/core` has always been bundled — hence the `Symbol.for` World cache
+ * `@workflow/core` has always been bundled, hence the `Symbol.for` World cache
  * in `runtime/world.ts`. `@workflow/world-vercel` was external until
  * vercel/workflow#3493 bundled it, and every module-scope singleton in it
  * quietly became one-per-layer. The visible casualty was the WS events
@@ -64,7 +64,7 @@
  * @param shapeVersion - Version of the state object's shape. Bump on an
  * incompatible change so copies expecting the old shape do not read the new
  * one. See "Shape versions" above.
- * @param create - Builds the initial state. Runs at most once per process —
+ * @param create - Builds the initial state. Runs at most once per process:
  * whichever copy asks first wins, so it must not close over anything
  * copy-specific.
  */

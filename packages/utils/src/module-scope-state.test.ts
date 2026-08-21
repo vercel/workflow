@@ -30,7 +30,7 @@ afterEach(() => {
 
 /**
  * Every published world package. Discovered rather than listed so a new world
- * is covered the day it is added — the point of the rule is the packages
+ * is covered the day it is added. The point of the rule is the packages
  * nobody has thought about yet. Private packages (`@workflow/world-sim`) are
  * out of scope: they are never bundled into a host application.
  */

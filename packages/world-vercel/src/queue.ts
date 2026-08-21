@@ -101,7 +101,7 @@ class DualTransport implements Transport<unknown> {
 }
 
 // per-copy-ok: both ends of this store live in the same `createQueueHandler`
-// closure — the `run()` wrapper and the `getStore()` read always come from the
+// closure: the `run()` wrapper and the `getStore()` read always come from the
 // same module copy, so the context never has to cross a copy boundary.
 const requestIdStorage = new AsyncLocalStorage<string | undefined>();
 

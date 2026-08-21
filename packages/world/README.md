@@ -9,8 +9,8 @@ Used internally by `@workflow/core` and world implementations. Should not be use
 ## Implementation constraint: no mutable module state
 
 A World implementation must not keep mutable state at module scope. Hold it on
-the World instance, or — when it is genuinely process-wide (an ID generator
-whose sequence must not fork, a log-once latch) — on `globalThis`, via
+the World instance, or, when it is genuinely process-wide (an ID generator
+whose sequence must not fork, a log-once latch), on `globalThis` via
 `globalSingleton()` from `@workflow/utils`.
 
 `@workflow/world-local` and `@workflow/world-vercel` are bundled into the host
@@ -21,7 +21,7 @@ in these packages *per layer*. A top-level `let`, or a `const` holding a `Map`,
 is therefore per-copy state rather than the singleton it reads as.
 
 A world loaded at runtime through `WORKFLOW_TARGET_WORLD` is deduped by Node's
-module cache and does not have this problem today — but that is a property of
+module cache and does not have this problem today, but that is a property of
 how it is loaded, not of how it is written, and it has changed before
 (vercel/workflow#3493). `scripts/lint/module-scope-state.mjs` enforces the rule
 across every published world package; see

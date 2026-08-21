@@ -79,7 +79,7 @@ export interface LocalRunsStorage {
  *
  * Held on `globalThis` rather than at module scope: a bundler can put several
  * copies of this file in one process (see `globalSingleton`), and a per-copy
- * lock table is not a lock — two copies would each believe they held the key
+ * lock table is not a lock: two copies would each believe they held the key
  * and interleave exactly the read-modify-write this exists to serialize.
  */
 const runLocks = globalSingleton(

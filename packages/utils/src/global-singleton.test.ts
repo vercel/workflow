@@ -36,8 +36,8 @@ describe('globalSingleton', () => {
 
   test('mutations are visible to every holder', () => {
     // The point of the helper: two module copies each call globalSingleton and
-    // then write through their own reference. A second `const` per copy — the
-    // bug this replaces — would make these two objects independent.
+    // then write through their own reference. A second `const` per copy (the
+    // bug this replaces) would make these two objects independent.
     const copyA = globalSingleton(NAME, 1, () => ({
       transports: new Map<string, string>(),
     }));

@@ -70,7 +70,7 @@ function workflowDebugEnabled(): boolean {
 }
 
 // per-copy-ok: this diagnostic reports how THIS module instance sees the
-// global OTel registration, so "once" is deliberately once per copy — with
+// global OTel registration, so "once" is deliberately once per copy. With
 // several copies in a process, each one's view is the thing worth seeing.
 let otelDiagLogged = false;
 

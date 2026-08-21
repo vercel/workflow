@@ -5,7 +5,7 @@
  * host application's server build (see `VERCEL_WORLD_DEPENDENCY_PACKAGES` in
  * `packages/next/src/index.ts`). A bundler keys module identity on
  * (resource, layer), so one process holds one copy of each of these modules
- * *per layer* — Next.js alone builds `instrument`, app-route, `ssr` and `edge`
+ * *per layer*. Next.js alone builds `instrument`, app-route, `ssr` and `edge`
  * layers, and code registered from `instrumentation.ts` therefore does not
  * share module scope with code that runs in a route handler.
  *
@@ -21,7 +21,7 @@
  * This rule fails the build on anything that reintroduces the pattern.
  *
  * Two escapes:
- *   - initialize the binding with `globalSingleton(...)` — the fix itself;
+ *   - initialize the binding with `globalSingleton(...)`, the fix itself;
  *   - annotate it `// per-copy-ok: <why per-copy is correct here>` when the
  *     state is deliberately per module instance (a diagnostic describing what
  *     *this* copy sees, for example).
@@ -69,7 +69,7 @@ function walkSourceFiles(dir, out = []) {
   return out;
 }
 
-/** `globalSingleton(...)` — including a namespaced `utils.globalSingleton(...)`. */
+/** `globalSingleton(...)`, including a namespaced `utils.globalSingleton(...)`. */
 function isGlobalSingletonCall(node) {
   if (!node) return false;
   if (ts.isAsExpression(node) || ts.isTypeAssertionExpression(node)) {
@@ -168,7 +168,7 @@ function increment(node) {
   return { name: node.operand.text, reason: 'reassigned' };
 }
 
-/** `x.set(…)`, `x.items.push(…)` — a call that mutates its receiver. */
+/** `x.set(…)`, `x.items.push(…)`: a call that mutates its receiver. */
 function mutatingCall(node) {
   if (
     !ts.isCallExpression(node) ||
@@ -268,7 +268,7 @@ export function formatFindings(findings) {
         `${f.file}:${f.line}  ${f.keyword} ${f.name}  (${f.reason})\n` +
         '    A bundler keys module identity on (resource, layer), so once this\n' +
         '    package is bundled one process holds one copy of this module per\n' +
-        '    layer — Next.js alone builds instrument, app-route, ssr and edge.\n' +
+        '    layer. Next.js alone builds instrument, app-route, ssr and edge.\n' +
         '    This binding is therefore per-copy state, not a process singleton.\n' +
         '\n' +
         '    Hold it on the World instance if it is per-World, or on globalThis\n' +
@@ -297,7 +297,7 @@ if (invokedDirectly) {
   for (const pkg of packages) {
     const findings = scanPackage(pkg);
     total += findings.length;
-    console.log(`\n${pkg} — ${findings.length}`);
+    console.log(`\n${pkg}: ${findings.length}`);
     if (findings.length > 0) console.log(formatFindings(findings));
   }
   console.log(`\nTOTAL ${total}`);

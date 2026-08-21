@@ -667,7 +667,7 @@ class WsEventsTransport {
  * Process-wide, not module-scope: `@workflow/world-vercel` is bundled into the
  * Next.js server output, so a plain `const` here would be one Map per bundler
  * layer. The queue consumer registers a channel from the `instrument` layer
- * copy and the write path looks it up from the route layer copy — a
+ * copy and the write path looks it up from the route layer copy: a
  * deterministic miss that silently demotes every event to HTTP. See
  * `globalSingleton`'s doc comment.
  *
