@@ -58,8 +58,8 @@ jobs:
             exit 1
           fi
 
-  wired-test-suites:
-    name: Wired Test Suites
+  no-unrun-tests:
+    name: No Unrun Tests
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Repo
@@ -73,8 +73,8 @@ jobs:
       # `turbo test` only runs a package's tests if that package declares a
       # `test` script, so a suite can exist for months without ever running.
       # See #3731.
-      - name: Check every test file is run by something
-        run: node scripts/check-test-suites-wired.mjs
+      - name: Check every test file is run by turbo test or a CI lane
+        run: node scripts/check-no-unrun-tests.mjs
 
   scripts-tests:
     name: CI Scripts Tests
