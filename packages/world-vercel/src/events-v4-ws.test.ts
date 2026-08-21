@@ -121,7 +121,10 @@ afterEach(() => {
  */
 describe('transport gate', () => {
   it('goes over HTTP, never touching the WS transport, when the gate is off', async () => {
-    delete process.env.WORKFLOW_EVENTS_TRANSPORT;
+    // "Off" is now an explicit opt-out rather than an absent variable, since
+    // the default flipped. Deleting it here would assert the opposite of what
+    // this test is named for.
+    process.env.WORKFLOW_EVENTS_TRANSPORT = 'http';
     const origin =
       WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
     const agent = new MockAgent();
