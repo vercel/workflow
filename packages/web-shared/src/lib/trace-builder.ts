@@ -23,6 +23,7 @@ import {
 } from '../components/workflow-traces/trace-span-construction';
 import { otelTimeToMs } from '../components/workflow-traces/trace-time-utils';
 import { findDuplicateEventIds } from './duplicate-events';
+import { isSealedNoopEvent } from './sealed-events';
 import type { Span } from './trace-types';
 
 /**
@@ -212,14 +213,18 @@ export function buildTrace(
   // Span geometry comes from what the run acted on. A repeat of a class the
   // log already records is read past by every replay, and letting one through
   // here would stretch a span to whenever a concurrent replay committed it.
-  // The event lists still show them, marked as repeats.
+  // Sealed-position noops are excluded for the same reason with a different
+  // clock: a noop's createdAt is the sealer's wall time, which can postdate
+  // every real event around it, so feeding it into span grouping or the
+  // latest-known-time bound would chart the sealer's schedule instead of the
+  // run's. The event lists still show both, marked with the reason.
   const duplicateEventIds = findDuplicateEventIds(events, {
     isCompleteHistory,
   });
-  const actedOnEvents =
-    duplicateEventIds.size === 0
-      ? events
-      : events.filter((event) => !duplicateEventIds.has(event.eventId));
+  const actedOnEvents = events.filter(
+    (event) =>
+      !duplicateEventIds.has(event.eventId) && !isSealedNoopEvent(event)
+  );
 
   const groupedEvents = groupEventsByCorrelation(actedOnEvents);
   const latestKnownTime = computeLatestKnownTime(actedOnEvents, run);

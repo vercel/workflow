@@ -57,7 +57,7 @@ export interface SelectedSpanInfo {
 /**
  * Panel component for workflow traces that displays entity details.
  *
- * This component is rendered OUTSIDE the trace viewer context — it
+ * This component is rendered OUTSIDE the trace viewer context: it
  * receives all data via props rather than reading from context.
  */
 export function EntityDetailPanel({

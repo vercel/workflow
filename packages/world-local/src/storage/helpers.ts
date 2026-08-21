@@ -106,7 +106,7 @@ export async function isRunTerminalCommitted(
       // Only ENOENT proves the marker is absent. This check is what
       // rejects a resume that staged AFTER the terminal reap passed, so a
       // swallowed EACCES/EMFILE here would let that resume promote its
-      // event after termination — propagate anything else and fail the
+      // event after termination, so propagate anything else and fail the
       // resume instead.
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
         throw error;
@@ -118,7 +118,7 @@ export async function isRunTerminalCommitted(
 
 /**
  * Directory holding staged (not yet reader-visible) `hook_received` events
- * for a run. Staging lives under `.locks` — outside the `events` directory —
+ * for a run. Staging lives under `.locks` (outside the `events` directory)
  * so no list/read path can ever observe an event that has not been promoted.
  *
  * Protocol (see the `hook_received` publish block in `events-storage.ts`):
@@ -158,11 +158,11 @@ export function pendingHookEventPath(
  * the terminal run state, so that:
  *
  *   - any staged event whose promotion has not happened yet is unlinked
- *     here, making its later `promoteExclusive` fail (`'missing'`) — the
+ *     here, making its later `promoteExclusive` fail (`'missing'`): the
  *     resume is rejected and its event is never reader-visible;
  *   - any event already promoted was, by construction, visible before this
- *     reap completed — i.e. before the run's terminal state and terminal
- *     event were written — so it legitimately precedes the termination;
+ *     reap completed (i.e. before the run's terminal state and terminal
+ *     event were written), so it legitimately precedes the termination;
  *   - any event staged after this reap started necessarily staged after the
  *     marker was committed, and the stage→promote path re-checks the marker
  *     between those two operations, so it self-rejects.
@@ -185,7 +185,7 @@ export async function reapPendingHookEvents(
       entries = await fs.readdir(dir);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-        // No staging directory — nothing was ever staged for this run.
+        // No staging directory: nothing was ever staged for this run.
         continue;
       }
       // Any other failure means staged files may remain, and this reap is
@@ -219,11 +219,11 @@ export async function reapPendingHookEvents(
  * reader-visible event of the run in the given tag's view.
  *
  * `events.list()` orders by `(createdAt, eventId)`, and both are normally
- * allocated at `createImpl()` entry — BEFORE the terminal transition's
+ * allocated at `createImpl()` entry, BEFORE the terminal transition's
  * marker + reap linearization point. A terminal invocation can therefore
  * allocate an older key, stall, lose the promote arbitration to a later
  * `hook_received` (legitimately), and then append its terminal event with
- * the stale key — replaying the accepted hook AFTER the terminal event.
+ * the stale key, replaying the accepted hook AFTER the terminal event.
  * Terminal transitions call this after their reap to re-derive the key at
  * the linearization point instead.
  *
@@ -233,12 +233,12 @@ export async function reapPendingHookEvents(
  * lexicographically greater than every visible eventId regardless of
  * another process's random ULID bits; and `createdAt` (same timestamp) is
  * >= every visible event's `createdAt`, which was stamped at that event's
- * `createImpl()` entry — before its publish, and thus before this call.
+ * `createImpl()` entry, before its publish, and thus before this call.
  * Equal-`createdAt` ties fall to the strictly-dominant eventId.
  *
  * ULID-numbered runs only. A slot-numbered run needs no temporal argument:
  * the next slot dominates every allocated one by construction, so its
- * terminal transition just draws from the run's slot allocator after the
+ * terminal transition draws from the run's slot allocator after the
  * reap. Callers pick the branch (see `mintDominantEventKey` in
  * events-storage.ts).
  */
@@ -257,7 +257,7 @@ export async function mintRunDominantEventKey(
         ts = maxTs + 1;
       }
     } catch {
-      // Malformed eventId in the log — fall back to the wall clock.
+      // Malformed eventId in the log: fall back to the wall clock.
     }
   }
   return { eventId: `evnt_${monotonicUlid(ts)}`, createdAt: new Date(ts) };
@@ -267,7 +267,7 @@ export async function mintRunDominantEventKey(
  * What a run's already-published event ids say about its identity scheme.
  *
  * A run keeps the scheme it was created under for its whole life (a log may
- * not mix ULID and slot ids — `events.list` sorts on the id, and the two
+ * not mix ULID and slot ids: `events.list` sorts on the id, and the two
  * schemes do not interleave), so the ids on disk are the authoritative pin.
  * `usesSlots` is false for a run with no events yet; the caller decides what a
  * brand-new run gets.
@@ -303,7 +303,7 @@ export async function scanRunEventIds(
   } catch (error) {
     // Only ENOENT ("no events directory yet") means there is provably
     // nothing visible. Any other failure would silently report an empty run,
-    // which would mint a colliding slot / a non-dominant ULID — let the
+    // which would mint a colliding slot / a non-dominant ULID, so let the
     // caller's retry re-run the scan instead.
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
       throw error;
@@ -441,7 +441,7 @@ export async function withHookTokenClaimLock<T>(
  * event. The claim pins the canonical eventId and records the payload digest
  * so a reused `resumeId` carrying a different payload can be rejected.
  *
- * Keyed on `(runId, resumeId)` — NOT on the hookId — so a reusable hook
+ * Keyed on `(runId, resumeId)` (NOT on the hookId) so a reusable hook
  * (AsyncIterable) that receives multiple distinct resumes each records its
  * own event, while the two writers of a single resume still collapse.
  */
@@ -479,7 +479,7 @@ export async function releaseHookTokenClaimIfOwnedBy(
  * `(token, runId, hookId)` triple. Identity is encoded in the
  * filename hash so different token lifetimes (e.g. the same token
  * reused by a later run after the first run was deleted) never
- * contend on a single sidecar — without per-lifetime identity, a
+ * contend on a single sidecar. Without per-lifetime identity, a
  * stale marker surviving prior-run cleanup could "leak" its
  * eventId into the new lifetime's recovery and cause divergent
  * publication.

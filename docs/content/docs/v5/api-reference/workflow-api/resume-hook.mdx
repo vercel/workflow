@@ -37,7 +37,7 @@ export async function POST(request: Request) {
 }
 ```
 
-## API Signature
+## API signature
 
 ### Parameters
 
@@ -50,7 +50,7 @@ showSections={["parameters"]}
 
 ### Returns
 
-Returns a `Promise<ResumedHook>` — a `Hook` extended with an optional `resilientResume` flag. Resolving means the resume was accepted and the workflow will continue, whether the `hook_received` event was written directly or, on the parallel fast path, delivered through the workflow queue for the runtime to materialize (see the [lazy hook resume changelog](/docs/changelog/resilient-resume)). `resilientResume` is `true` only when the direct event write failed transiently and the resume was recovered through the queue; on the happy path it is absent. The resolved hook:
+Returns a `Promise<ResumedHook>`, a `Hook` extended with an optional `resilientResume` flag. Resolving means the resume was accepted and the workflow will continue, whether the `hook_received` event was written directly or, on the parallel fast path, delivered through the workflow queue for the runtime to materialize (see the [lazy hook resume changelog](/docs/changelog/resilient-resume)). `resilientResume` is `true` only when the direct event write failed transiently and the resume was recovered through the queue; on the happy path it is absent. The resolved hook:
 
 <TSDoc
 definition={`
@@ -61,7 +61,7 @@ showSections={["returns"]}
 
 ## Examples
 
-### Basic API Route
+### Basic API route
 
 Using `resumeHook` in a basic API route to resume a hook:
 
@@ -84,7 +84,7 @@ export async function POST(request: Request) {
 }
 ```
 
-### With Type Safety
+### With type safety
 
 Defining a payload type and using `resumeHook` to resume a hook with type safety:
 
@@ -112,7 +112,7 @@ export async function POST(request: Request) {
 }
 ```
 
-### Server Action (Next.js)
+### Server action (Next.js)
 
 Using `resumeHook` in Next.js server actions to resume a hook:
 
@@ -131,7 +131,7 @@ export async function approveRequest(token: string, approved: boolean) {
 }
 ```
 
-### Webhook Handler
+### Webhook handler
 
 Using `resumeHook` in a generic webhook handler to resume a hook:
 
@@ -158,11 +158,11 @@ export async function POST(request: Request) {
 }
 ```
 
-### Resume or Start
+### Resume or start
 
-A common endpoint shape is "resume or start": one route that resumes the active workflow run for a business key if one exists, or starts a new run otherwise. This comes up when the workflow uses a deterministic hook token as its idempotency key — for example, one active run per order or conversation.
+A common endpoint shape is "resume or start": one route that resumes the active workflow run for a business key if one exists, or starts a new run otherwise. This comes up when the workflow uses a deterministic hook token as its idempotency key, for example, one active run per order or conversation.
 
-`resumeHook()` is the resume half of that flow. Try it first; if it throws `HookNotFoundError`, no active run owns the token yet, so start the workflow. One subtlety: `start()` returns before the new run executes and registers its hook, so you cannot resume immediately after starting. Retry the resume until the hook is registered — if you drop the payload and only start the workflow, the data from this request is lost.
+`resumeHook()` is the resume half of that flow. Try it first; if it throws `HookNotFoundError`, no active run owns the token yet, so start the workflow. One subtlety: `start()` returns before the new run executes and registers its hook, so you cannot resume immediately after starting. Retry the resume until the hook is registered: if you drop the payload and only start the workflow, the data from this request is lost.
 
 ```typescript lineNumbers
 import { resumeHook, start } from "workflow/api";
@@ -213,9 +213,9 @@ export async function POST(request: Request) {
 
 See [Run idempotency](/docs/foundations/idempotency#run-idempotency) for the full pattern, including how the workflow claims the token with `hook.getConflict()` and how concurrent starts converge on one active owner.
 
-## Related Functions
+## Related functions
 
-- [`getHookByToken()`](/docs/api-reference/workflow-api/get-hook-by-token) - Get hook details before resuming.
-- [`createHook()`](/docs/api-reference/workflow/create-hook) - Create a hook in a workflow.
-- [`defineHook()`](/docs/api-reference/workflow/define-hook) - Type-safe hook helper.
-- [Idempotency](/docs/foundations/idempotency) - Deduplicate step side effects and workflow starts.
+- [`getHookByToken()`](/docs/api-reference/workflow-api/get-hook-by-token): Get hook details before resuming.
+- [`createHook()`](/docs/api-reference/workflow/create-hook): Create a hook in a workflow.
+- [`defineHook()`](/docs/api-reference/workflow/define-hook): Type-safe hook helper.
+- [Idempotency](/docs/foundations/idempotency): Deduplicate step side effects and workflow starts.

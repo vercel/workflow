@@ -39,7 +39,7 @@ export function getClassReducers(): Partial<Reducers> {
         );
       }
 
-      // Custom serializers are workflow code by definition — the data only
+      // Custom serializers are workflow code by definition: the data only
       // exists behind them. Record the execution so retention-aware callers
       // can account for possible VM-state perturbation.
       recordGuestCode('method', `[WORKFLOW_SERIALIZE] (${classId})`);

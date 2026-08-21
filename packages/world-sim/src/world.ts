@@ -21,7 +21,7 @@
  *
  * Watches do not fire for calls made from inside another watch's action.
  * Without that rule, a watch on `events.create` would re-trigger on the
- * `hook_received` it just wrote, and any scenario using `deliverHook` would
+ * `hook_received` it wrote, and any scenario using `deliverHook` would
  * recurse forever.
  */
 
@@ -144,7 +144,7 @@ export function createSimWorld(options: SimWorldOptions = {}): SimWorld {
    * `external` and is not itself a call point.
    *
    * Async-context-scoped rather than a plain counter, because `asExternal`
-   * brackets whole operations — `scenario.ts` wraps all of `resumeHook`, which
+   * brackets whole operations: `scenario.ts` wraps all of `resumeHook`, which
    * spans several awaits. A counter is a global flag for that whole window, so
    * a step body committing concurrently gets read as the scenario's own call:
    * attributed `external`, skipped by `fireWatches` (a `runTo` armed on it waits
@@ -153,7 +153,7 @@ export function createSimWorld(options: SimWorldOptions = {}): SimWorld {
    * step's own `step_completed`, in the one scenario whose subject is the
    * writer column.
    *
-   * Deliberately *not* set for the duration of a watch action — see
+   * Deliberately *not* set for the duration of a watch action; see
    * `fireWatches`. A held action outlives the call it fired from, and a flag
    * held that long would silence every other writer.
    */
@@ -235,14 +235,14 @@ export function createSimWorld(options: SimWorldOptions = {}): SimWorld {
   /**
    * Which writer is responsible for an event.
    *
-   * Everything the *scenario* does is `external` — that check comes first,
+   * Everything the *scenario* does is `external`. That check comes first,
    * because a `run_cancelled` from an operator and a `run_cancelled` from the
-   * runtime are the same event type written by very different writers, and only
+   * runtime are the same event type written by different writers, and only
    * the call stack can tell them apart.
    *
    * Otherwise: a step's own result events belong to that step body, an
    * attribute write names its writer explicitly in the event, and everything
-   * else — the step and hook and wait *creations*, the run lifecycle — is the
+   * else (the step and hook and wait *creations*, the run lifecycle) is the
    * orchestrator committing at a suspension point.
    */
   function writerOfEvent(event: {
@@ -299,7 +299,7 @@ export function createSimWorld(options: SimWorldOptions = {}): SimWorld {
     const { match } = watch;
 
     // An unspecified phase means `after`, never "both". Matching both would
-    // fire every watch twice — and, worse, fire a `nth: 1` watch at `before`,
+    // fire every watch twice and, worse, fire a `nth: 1` watch at `before`,
     // where the effect it is keyed on has not happened yet and `ctx.event` is
     // absent. `before` is the case you opt into.
     if ((match.phase ?? 'after') !== ctx.phase) return false;
@@ -368,7 +368,7 @@ export function createSimWorld(options: SimWorldOptions = {}): SimWorld {
     }
 
     if (match.where) {
-      // A predicate that throws must not become a world-call failure — see the
+      // A predicate that throws must not become a world-call failure; see the
       // note on watch actions below. Treat it as "did not match" and report.
       try {
         if (!match.where(ctx, snapshot)) return false;
@@ -387,7 +387,7 @@ export function createSimWorld(options: SimWorldOptions = {}): SimWorld {
 
   async function fireWatches(ctx: CallContext): Promise<void> {
     // Calls the scenario itself makes are not call points: they would otherwise
-    // trip the very watches they were made from inside of.
+    // trip the watches they were made from inside of.
     if (isExternal()) return;
 
     // Iterate a copy: an action may dispose its own watch, or arm a new one.
@@ -410,7 +410,7 @@ export function createSimWorld(options: SimWorldOptions = {}): SimWorld {
       // it, so raising the depth for the duration would mean: for as long as one
       // writer is held, every *other* writer's call stops being a call point and
       // every event it commits is attributed to the scenario. Holding one step
-      // body would make its sibling both invisible and unsteerable — the exact
+      // body would make its sibling both invisible and unsteerable, the exact
       // interleaving the writer vocabulary exists to state. Scenario-originated
       // writes get their attribution from `asExternal` instead, which follows
       // the call chain rather than the wall clock.
@@ -502,7 +502,7 @@ export function createSimWorld(options: SimWorldOptions = {}): SimWorld {
    * This reconstructs the array the client has in memory, which is the whole
    * input to the fence. The runtime does not state it: `@workflow/core`
    * describes its snapshot as a slot count and the sim mints ULIDs, so the
-   * facade derives the pair the fence needs — the newest loaded position, and
+   * facade derives the pair the fence needs: the newest loaded position, and
    * how many events sit at or below it. Since the watermark *is* the maximum of
    * those times, the count is the size of the array. "I loaded N events, the
    * newest at T" is what lets the world spot a hole *behind* T, which no
@@ -534,7 +534,7 @@ export function createSimWorld(options: SimWorldOptions = {}): SimWorld {
    * count below the watermark it is paired with and reject current writes.
    *
    * A scan that starts without a cursor replaces the set rather than adding to
-   * it — that is the runtime re-reading the log from the beginning, and its
+   * it: that is the runtime re-reading the log from the beginning, and its
    * earlier view should not linger.
    */
   const deliveryCtx = new AsyncLocalStorage<Map<string, Set<string>>>();
@@ -634,7 +634,7 @@ export function createSimWorld(options: SimWorldOptions = {}): SimWorld {
       }
 
       // For a create by a writer that has already loaded the log, what that log
-      // held going in — so the caller can be credited with everything its own
+      // held going in, so the caller can be credited with everything its own
       // write appended, not just the event the call handed back. A
       // `step_started` claim also appends the `step_created` ahead of it, and a
       // client that did not count both would look like it was holding a hole it

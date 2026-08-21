@@ -12,13 +12,13 @@ import { listenChannel } from './streamer.js';
  * to hold the read until the run finishes, instead of re-reading it every
  * second and paying up to a full interval of quantization. Postgres already
  * has the primitive for that: the run-terminal write issues a `NOTIFY` (see
- * {@link notifyRunTerminal}) and the waiter is parked on a `LISTEN` for it —
+ * {@link notifyRunTerminal}) and the waiter is parked on a `LISTEN` for it,
  * the same mechanism `createStreamer` uses for stream chunks.
  *
  * The notification is a *signal only*: waiters re-read the run row, so a
  * duplicate or lost message can never produce a wrong answer. Because it can
- * be lost — a `NOTIFY` that fires between a waiter's read and its `LISTEN`, a
- * dropped listener connection — the wait is also backstopped by a periodic
+ * be lost (a `NOTIFY` that fires between a waiter's read and its `LISTEN`, or a
+ * dropped listener connection), the wait is also backstopped by a periodic
  * re-read ({@link getRunStatusPollIntervalMs}), which bounds the damage of a
  * miss to one interval.
  *
@@ -46,7 +46,7 @@ const RUN_STATUS_POLL_INTERVAL_MS = 1_000;
  *
  * The `NOTIFY` is what makes the wait fast; this only bounds how long a *lost*
  * notification can go unnoticed, so it is kept at the interval the SDK would
- * have polled at anyway — the wait is then never slower than the poll it
+ * have polled at anyway. The wait is then never slower than the poll it
  * replaces, and normally three orders of magnitude faster.
  */
 export function getRunStatusPollIntervalMs(): number {
@@ -71,14 +71,14 @@ export async function notifyRunTerminal(
   try {
     await drizzle.execute(sql`SELECT pg_notify(${RUN_STATUS_TOPIC}, ${runId})`);
   } catch {
-    // Intentionally ignored — see above.
+    // Intentionally ignored. See above.
   }
 }
 
 export interface RunStatusListener {
   /**
    * Resolve when `runId` is announced terminal, when `timeoutMs` elapses, or
-   * when `signal` aborts — whichever is first. The caller decides what
+   * when `signal` aborts, whichever is first. The caller decides what
    * happened by re-reading the run.
    */
   wait(runId: string, timeoutMs: number, signal?: AbortSignal): Promise<void>;
@@ -99,7 +99,7 @@ export function createRunStatusListener(pool: Pool): RunStatusListener {
 
   const ensureSubscribed = () => {
     if (subscription) return subscription;
-    // A failed LISTEN must be re-attemptable — a database restart or a brief
+    // A failed LISTEN must be re-attemptable. A database restart or a brief
     // network blip at process start would otherwise degrade every wait to
     // backstop polling for the lifetime of the process. Bounded by a backoff
     // so that a genuinely unavailable listener does not turn every waiting
@@ -111,7 +111,7 @@ export function createRunStatusListener(pool: Pool): RunStatusListener {
     }).catch(() => {
       // No listener connection available (pool options that don't permit a
       // second client, a database without LISTEN, a restarting server). Waits
-      // degrade to the backstop re-read — the behavior of a plain poll — and
+      // degrade to the backstop re-read (the behavior of a plain poll), and
       // the next wait past the backoff tries again.
       subscription = undefined;
       retrySubscribeAfter = Date.now() + LISTEN_RETRY_BACKOFF_MS;
@@ -126,7 +126,7 @@ export function createRunStatusListener(pool: Pool): RunStatusListener {
 
       const key = `run:${runId}` as const;
       // Kick off (or reuse) the shared subscription without awaiting it, so
-      // the listener below is registered in this same tick — a notification
+      // the listener below is registered in this same tick. A notification
       // delivered while the connection is still coming up then lands on this
       // waiter instead of slipping past it.
       void ensureSubscribed();

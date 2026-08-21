@@ -134,7 +134,7 @@ export const createWorld = async (): Promise<World> => {
 
   if (isVercelWorldTarget(targetWorld)) {
     // Warn if WORKFLOW_VERCEL_* env vars are set inside a Vercel serverless
-    // function (VERCEL=1) — they have no effect at runtime and likely indicate
+    // function (VERCEL=1): they have no effect at runtime and likely indicate
     // a misconfiguration (user manually added them as Vercel project env vars,
     // which is not needed). We gate on VERCEL=1 so the warning does not fire
     // when the CLI or web observability app sets these env vars intentionally.
@@ -161,7 +161,7 @@ export const createWorld = async (): Promise<World> => {
     });
   }
 
-  // Try require() first for custom worlds — this avoids Turbopack tracing
+  // Try require() first for custom worlds: this avoids Turbopack tracing
   // a dynamic import() that it can't statically resolve. Fall back to
   // dynamic import() for ESM-only packages.
   let mod: any;

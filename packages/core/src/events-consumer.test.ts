@@ -1167,3 +1167,164 @@ describe('EventsConsumer', () => {
     });
   });
 });
+
+describe('sealed-log noop events (specVersion 7)', () => {
+  function logEvent(eventType: Event['eventType'], id: string): Event {
+    return createMockEvent({ id, eventId: id, eventType } as Partial<Event>);
+  }
+
+  function consumerFor(ids: string[]) {
+    const seen: string[] = [];
+    const callback = (event: Event | null) => {
+      if (event && ids.includes(event.id) && !seen.includes(event.id)) {
+        seen.push(event.id);
+        return EventConsumerResult.Consumed;
+      }
+      return EventConsumerResult.NotConsumed;
+    };
+    return { seen, callback };
+  }
+
+  it('steps over a noop without offering it to any consumer', async () => {
+    // The backend sealed an abandoned slot between two real events. The walk
+    // must pass through it as if the position never had a writer: both real
+    // events land, nothing is reported unconsumed, and the callback is never
+    // even offered the noop.
+    const noop = logEvent('noop' as Event['eventType'], 'noop-1');
+    const before = logEvent('wait_created', 'wait-1');
+    const after = logEvent('wait_completed', 'wait-2');
+    const onUnconsumedEvent = vi.fn();
+    const offered: (string | null)[] = [];
+    const consumer = new EventsConsumer([before, noop, after], {
+      onUnconsumedEvent,
+      getPromiseQueue: () => Promise.resolve(),
+      isDeliveryIdle: () => true,
+    });
+    const reals = consumerFor(['wait-1', 'wait-2']);
+    consumer.subscribe((event) => {
+      offered.push(event === null ? null : event.id);
+      return reals.callback(event);
+    });
+
+    await vi.waitFor(() => {
+      expect(reals.seen).toEqual(['wait-1', 'wait-2']);
+    });
+    expect(consumer.eventIndex).toBe(3);
+    expect(onUnconsumedEvent).not.toHaveBeenCalled();
+    expect(offered).not.toContain('noop-1');
+  });
+
+  it('never advances the deterministic clock off a noop', async () => {
+    // A noop's createdAt is the SEALER's wall clock — it can postdate every
+    // real event around it. Letting it reach onConsumedEvent would leak that
+    // timestamp into replay Date.now() and diverge from a log whose hole was
+    // filled by the real writer instead.
+    const noop = createMockEvent({
+      id: 'noop-1',
+      eventId: 'noop-1',
+      eventType: 'noop',
+      createdAt: new Date(Date.now() + 60_000),
+    } as Partial<Event>);
+    const real = logEvent('wait_created', 'wait-1');
+    const onConsumedEvent = vi.fn();
+    const consumer = new EventsConsumer([noop, real], {
+      ...defaultOptions,
+      onConsumedEvent,
+    });
+    const reals = consumerFor(['wait-1']);
+    consumer.subscribe(reals.callback);
+
+    await vi.waitFor(() => {
+      expect(reals.seen).toEqual(['wait-1']);
+    });
+    expect(onConsumedEvent).toHaveBeenCalledTimes(1);
+    expect(onConsumedEvent).toHaveBeenCalledWith(real);
+  });
+
+  it('is scheduling-neutral: same offers, same tick, as the log without noops', async () => {
+    // The skip is a synchronous `continue` inside the walk pass — it consumes
+    // no extra micro- or macrotask. This pins that: a log with noops
+    // interleaved at the head, middle, and tail is fully consumed after the
+    // SAME single tick as its noop-free twin, and the sequence of events
+    // offered to consumers is byte-for-byte identical. Deterministic
+    // scheduling is what keeps replay ULID draws (and therefore correlation
+    // ids) stable across branches racing in Promise.all.
+    async function offersAfterOneTick(events: Event[]) {
+      const offered: (string | null)[] = [];
+      const consumer = new EventsConsumer(events, {
+        onUnconsumedEvent: vi.fn(),
+        getPromiseQueue: () => Promise.resolve(),
+        isDeliveryIdle: () => true,
+      });
+      consumer.subscribe((event) => {
+        offered.push(event === null ? null : event.id);
+        return event === null
+          ? EventConsumerResult.NotConsumed
+          : EventConsumerResult.Consumed;
+      });
+      // subscribe() schedules exactly one nextTick; the walk drains
+      // synchronously inside it. One tick must therefore finish either log.
+      await waitForNextTick();
+      return { offered, index: consumer.eventIndex, total: events.length };
+    }
+
+    const clean = await offersAfterOneTick([
+      logEvent('wait_created', 'w1'),
+      logEvent('wait_completed', 'w2'),
+    ]);
+    const sealed = await offersAfterOneTick([
+      logEvent('noop' as Event['eventType'], 'n0'),
+      logEvent('wait_created', 'w1'),
+      logEvent('noop' as Event['eventType'], 'n1'),
+      logEvent('noop' as Event['eventType'], 'n2'),
+      logEvent('wait_completed', 'w2'),
+      logEvent('noop' as Event['eventType'], 'n3'),
+    ]);
+
+    expect(clean.index).toBe(clean.total);
+    expect(sealed.index).toBe(sealed.total);
+    // Identical offer sequences — the noops were never offered at all, and
+    // both logs finished inside the same single tick.
+    expect(sealed.offered).toEqual(clean.offered);
+  });
+
+  it('consumes an all-noop log to the end without divergence', async () => {
+    const onUnconsumedEvent = vi.fn();
+    const consumer = new EventsConsumer(
+      [
+        logEvent('noop' as Event['eventType'], 'n1'),
+        logEvent('noop' as Event['eventType'], 'n2'),
+      ],
+      {
+        onUnconsumedEvent,
+        getPromiseQueue: () => Promise.resolve(),
+        isDeliveryIdle: () => true,
+      }
+    );
+    consumer.subscribe(() => EventConsumerResult.NotConsumed);
+
+    await vi.waitFor(() => {
+      expect(consumer.eventIndex).toBe(2);
+    });
+    expect(onUnconsumedEvent).not.toHaveBeenCalled();
+  });
+
+  it('handles a log that ends on a noop', async () => {
+    const real = logEvent('wait_created', 'wait-1');
+    const noop = logEvent('noop' as Event['eventType'], 'noop-1');
+    const onUnconsumedEvent = vi.fn();
+    const consumer = new EventsConsumer([real, noop], {
+      onUnconsumedEvent,
+      getPromiseQueue: () => Promise.resolve(),
+      isDeliveryIdle: () => true,
+    });
+    const reals = consumerFor(['wait-1']);
+    consumer.subscribe(reals.callback);
+
+    await vi.waitFor(() => {
+      expect(reals.seen).toEqual(['wait-1']);
+    });
+    expect(consumer.eventIndex).toBe(2);
+    expect(onUnconsumedEvent).not.toHaveBeenCalled();
+  });
+});

@@ -1,9 +1,9 @@
 /**
- * QuickJS VM integration with the Workflow DevKit.
+ * QuickJS WebAssembly (WASM) VM integration with the Workflow DevKit.
  *
  * This module provides the entry point for running workflows in the
- * QuickJS WASM VM engine instead of the `node:vm` engine. Both engines
- * implement the same event-replay execution model — every invocation:
+ * QuickJS VM engine instead of the `node:vm` engine. Both engines
+ * implement the same event-replay execution model, where every invocation:
  *
  * 1. Loads the full event log for the run
  * 2. Runs the workflow function from the top in a fresh QuickJS VM,
@@ -77,14 +77,14 @@ import { unserializableStepInputPlaceholder } from './unserializable-step.js';
 import { getWaitContinuationDispatch } from './wait-continuation.js';
 import { getWorld } from './world.js';
 
-/** Tiny ms timer using performance.now() — already monotonic on Node. */
+/** Tiny ms timer using performance.now(), already monotonic on Node. */
 function tick(): number {
   return performance.now();
 }
 
 /**
  * Returns true when the supplied preloaded events indicate this is the
- * first workflow handler invocation for the run — i.e. the log contains
+ * first workflow handler invocation for the run, i.e. the log contains
  * nothing beyond `run_created` / `run_started`. In that case the
  * preloaded events ARE the complete event log and the `events.list`
  * round-trips can be skipped entirely.
@@ -130,7 +130,7 @@ async function queueStepMessage(params: {
    * Publish purpose, used to bucket the idempotency key. Worlds retire
    * used keys (VQS retention TTL, world-postgres completed-keys cache),
    * so a key shared across purposes silently swallows the second
-   * publish — see wait-continuation.ts for the same hazard on wait
+   * publish. See wait-continuation.ts for the same hazard on wait
    * keys. `dispatch` is the plain background handoff (overflow / crash
    * recovery) and uses the step-identity-scoped dispatch key
    * (stepDispatchIdempotencyKey) so it stays mutually
@@ -178,7 +178,7 @@ async function queueStepMessage(params: {
     },
     {
       // The 'dispatch' key is step-identity-scoped (correlationId + hashed
-      // step name) — shared with the node engine's dispatch of the same step
+      // step name), shared with the node engine's dispatch of the same step
       // so the two stay mutually exclusive, without a revoked resilient
       // message absorbing a reassigned correlation id's legitimate dispatch.
       // See stepDispatchIdempotencyKey.
@@ -203,7 +203,7 @@ async function queueStepMessage(params: {
  * step_created (+ optional queueing), hook_created / hook_received (aborts),
  * attr_set, hook_disposed, and wait_created events.
  *
- * Steps are created but (usually) not queued here — queueing (or inline
+ * Steps are created but (usually) not queued here: queueing (or inline
  * execution) is the caller's decision. Used both for suspension
  * processing (the inline loop) and for the terminal drain (flushing
  * leftover side effects when the workflow completed or failed, mirroring
@@ -212,7 +212,7 @@ async function queueStepMessage(params: {
  * The one exception is resilient step dispatch: for step cids named in
  * `queueStepCids` (the caller's overflow steps) that pass the eligibility
  * gates, the step_created write is parallelized with the step's queue
- * publish — the message carries the serialized input (`stepInput`) so the
+ * publish: the message carries the serialized input (`stepInput`) so the
  * consumer can idempotently re-ensure the event if the direct write failed
  * transiently. Steps queued this way are reported in `queuedStepCids`; the
  * caller queues the rest itself.
@@ -243,7 +243,7 @@ async function dispatchPendingOps(params: {
    * Run-origin trace carrier accessor from runtime.ts. In the default
    * `linked` trace mode this returns the carrier of the run's ORIGIN
    * context (workflow.start), so every invocation links back to the
-   * start in a star — capturing the current context here instead would
+   * start in a star. Capturing the current context here instead would
    * chain invocations to each other and fragment the run view on async
    * queues.
    */
@@ -252,18 +252,18 @@ async function dispatchPendingOps(params: {
    * When true (the inline loop), a step carrying `serializationError` is
    * finalized as step_created (placeholder input) + step_failed so the
    * live-VM feed rejects the step's promise and workflow code can catch
-   * it — mirroring the node:vm engine's finalizeUnserializableStep. When
+   * it, mirroring the node:vm engine's finalizeUnserializableStep. When
    * false (the terminal drain), such steps are skipped entirely: the run
    * is already completing/failing, no replay follows the drain to observe
    * the failure, and a completed run carrying a failed step would read as
-   * a bug from the dashboard — matching the node:vm drain's behavior.
+   * a bug from the dashboard, matching the node:vm drain's behavior.
    */
   finalizeUnserializableSteps?: boolean;
   wfdiag: (checkpoint: string, fields: Record<string, unknown>) => void;
 }): Promise<{
   createdAttributeEvent: boolean;
   createdGetConflictHook: boolean;
-  /** Step cids already published via resilient dispatch — see above. */
+  /** Step cids already published via resilient dispatch. See above. */
   queuedStepCids: Set<string>;
   /**
    * Step cids finalized as failed because their input refused to
@@ -290,7 +290,7 @@ async function dispatchPendingOps(params: {
   // skips them in its own queueing pass.
   const queuedStepCids = new Set<string>();
   // Step cids finalized as step_created + step_failed because their input
-  // refused to serialize — see the `finalizeUnserializableSteps` param.
+  // refused to serialize. See the `finalizeUnserializableSteps` param.
   const failedSerializationStepCids = new Set<string>();
   // Resilient step dispatch eligibility, shared by every step op below (the
   // per-step input-size check is applied inside the op): feature enabled and
@@ -299,7 +299,7 @@ async function dispatchPendingOps(params: {
   // Unlike the node:vm suspension handler's gate (see
   // SuspensionHandlerParams.stepDispatch), there is NO precondition-guard
   // gate here: this engine's step_created writes are unguarded (no snapshot
-  // is attached), so a guard-enforcing World can never 412-reject them —
+  // is attached), so a guard-enforcing World can never 412-reject them:
   // the consumer's re-ensure therefore cannot materialize a step the guard
   // rejected. If this engine ever adopts guarded suspension writes, the
   // capability gate from the node:vm handler must be added here too.
@@ -315,7 +315,7 @@ async function dispatchPendingOps(params: {
   let createdGetConflictHook = false;
   // Set when a new attr_set event is written this invocation. The
   // workflow must be re-invoked to consume it (resolving the pending
-  // setAttributes() promise), so the entrypoint requeues immediately —
+  // setAttributes() promise), so the entrypoint requeues immediately,
   // same pattern as an elapsed wait.
   let createdAttributeEvent = false;
   const opsPromises: Promise<void>[] = [];
@@ -336,7 +336,7 @@ async function dispatchPendingOps(params: {
       // `hook.metadata` is the format-prefixed devalue bytes
       // produced by `globalThis[Symbol.for('workflow-serialize')]
       // (options.metadata)` inside the VM. Encrypt on the host
-      // side before writing — matches the node:vm engine's
+      // side before writing, which matches the node:vm engine's
       // `dehydrateStepArguments` flow.
       //
       // No pre-check via hooks.list: with deterministic correlationIds
@@ -386,7 +386,7 @@ async function dispatchPendingOps(params: {
           );
         }
       } catch (err) {
-        // Already created by a concurrent invocation — fall through
+        // Already created by a concurrent invocation, so fall through
         // to abort processing below (if any) instead of bailing.
         if (!EntityConflictError.is(err)) throw err;
       }
@@ -429,7 +429,7 @@ async function dispatchPendingOps(params: {
           await world.streams.write(runId, streamName, abortPayload);
           await world.streams.close(runId, streamName);
         } catch {
-          // Best-effort — the hook event provides the durable
+          // Best-effort: the hook event provides the durable
           // fallback.
           runtimeLogger.debug(
             'QuickJS runtime: failed to write abort stream packet',
@@ -471,7 +471,7 @@ async function dispatchPendingOps(params: {
   // code order within each group, mirroring the node:vm suspension
   // handler (hookItemsByToken): a dispose() of an earlier hook must
   // release the token before a later same-token hook's creation is
-  // validated by the world — parallel dispatch would otherwise record a
+  // validated by the world: parallel dispatch would otherwise record a
   // spurious hook_conflict against the run's own disposed hook (e.g. a
   // dispose→recreate loop reusing one token). Different tokens have no
   // claim interaction, so token groups run in parallel with each other
@@ -488,7 +488,7 @@ async function dispatchPendingOps(params: {
     ) {
       key = (op as PendingHook).token;
     } else if (op.type === 'hook_dispose' && !op.hasCreatedEvent) {
-      // Per-op fallback group when the token is unknown — no ordering
+      // Per-op fallback group when the token is unknown: no ordering
       // guarantees, matching the previous parallel behavior.
       key = (op as PendingHookDispose).token ?? `__cid:${op.correlationId}`;
     }
@@ -525,13 +525,13 @@ async function dispatchPendingOps(params: {
         (async () => {
           // The step's input refused to serialize while dumping the VM's
           // pending ops (see PendingStep.serializationError). Finalize it
-          // as step_created (placeholder input — the world requires the
+          // as step_created (placeholder input, since the world requires the
           // step entity before a terminal event) + step_failed carrying
           // the SerializationError, so the live-VM feed rejects the
           // step's promise and workflow code can catch it. Never queue an
           // execution message for it. Mirrors the node:vm engine's
           // finalizeUnserializableStep. In the terminal drain
-          // (finalizeUnserializableSteps unset), skip entirely — see the
+          // (finalizeUnserializableSteps unset), skip entirely: see the
           // param docs.
           if (step.serializationError) {
             if (!params.finalizeUnserializableSteps) {
@@ -608,7 +608,7 @@ async function dispatchPendingOps(params: {
           // by `globalThis[Symbol.for('workflow-serialize')]({args,
           // closureVars, thisVal})` inside the VM. The VM has no
           // access to the CryptoKey, so encryption is applied here
-          // on the host side — matching what
+          // on the host side, matching what
           // `dehydrateStepArguments` does in the node:vm engine.
           const encryptedInput = await encryptSerializedData(
             step.input,
@@ -616,7 +616,7 @@ async function dispatchPendingOps(params: {
           );
 
           // Resilient step dispatch: fire the step_created write and the
-          // step's queue publish in parallel — the message carries the
+          // step's queue publish in parallel: the message carries the
           // same serialized input (`stepInput`) so the consumer can
           // idempotently re-ensure the event if the direct write failed
           // transiently. Mirrors the node:vm suspension handler and the
@@ -664,15 +664,15 @@ async function dispatchPendingOps(params: {
             if (createResult.status === 'rejected') {
               const err = createResult.reason;
               if (EntityConflictError.is(err)) {
-                // Concurrent invocation wrote it first — the message is
+                // Concurrent invocation wrote it first: the message is
                 // already out; its duplicate publish dedupes on the
                 // shared step-identity-scoped idempotency key.
                 return;
               }
               if (isRetryableWorldError(err)) {
                 // Resilient: the write failed transiently (429 / 5xx /
-                // transport) but the step message — carrying the same
-                // serialized input — was published, so the consumer
+                // transport) but the step message (carrying the same
+                // serialized input) was published, so the consumer
                 // idempotently re-ensures the step_created before
                 // executing.
                 runtimeLogger.warn(
@@ -712,7 +712,7 @@ async function dispatchPendingOps(params: {
             throw err;
           }
 
-          // NOTE: step queueing is otherwise the caller's decision — the
+          // NOTE: step queueing is otherwise the caller's decision: the
           // inline loop executes fresh steps in the live VM and only
           // queues the overflow / retry / backstop cases (see
           // queueStepMessage).
@@ -738,7 +738,7 @@ async function dispatchPendingOps(params: {
             createdAttributeEvent = true;
           } catch (err) {
             if (EntityConflictError.is(err)) {
-              // Event already exists (concurrent invocation) — the
+              // Event already exists (concurrent invocation), but the
               // replay still needs to consume it, so requeue.
               createdAttributeEvent = true;
               return;
@@ -786,12 +786,12 @@ async function dispatchPendingOps(params: {
  * This replaces the `node:vm` replay path (runWorkflow + EventsConsumer)
  * with a QuickJS VM invocation that performs the same full event replay.
  *
- * KNOWN GAP — slot snapshot: unlike the node:vm path, no event write in
+ * KNOWN GAP (slot snapshot): unlike the node:vm path, no event write in
  * this file carries {@link CreateEventParams.eventCount}, so a World never
  * learns which events the writer had not seen and never reports them back.
  * The engine currently relies on per-(runId, correlationId) event
  * uniqueness (EntityConflictError dedup) alone. This is a deliberate
- * simplification while the engine is experimental — wiring the snapshot is
+ * simplification while the engine is experimental: wiring the snapshot is
  * tracked follow-up work; anyone adding new write paths here should not
  * assume parity with the node engine on this axis.
  */
@@ -802,8 +802,8 @@ export async function runWorkflowWithQuickJS(params: {
   /**
    * Events returned inline by `events.create('run_started', ...)` or by
    * the lazy hook fast path's `hook_received` preload. When they indicate
-   * a first invocation — or when `preloadedEventsComplete` attests they
-   * are the complete log — they are used as the event log instead of
+   * a first invocation, or when `preloadedEventsComplete` attests they
+   * are the complete log, they are used as the event log instead of
    * fetching via `events.list`, matching the node:vm engine's fast path.
    */
   preloadedEvents?: Event[];
@@ -854,8 +854,8 @@ export async function runWorkflowWithQuickJS(params: {
   /**
    * Queue namespace resolved at route registration (runtime.ts). Must be
    * threaded into every message publish: the builders bake the namespace
-   * into generated routes, so consumers listen on `__<ns>_wkf_workflow_*`
-   * — a publish without it lands on `__wkf_workflow_*` and is never
+   * into generated routes, so consumers listen on `__<ns>_wkf_workflow_*`.
+   * A publish without it lands on `__wkf_workflow_*` and is never
    * picked up.
    */
   namespace?: string;
@@ -931,7 +931,7 @@ export async function runWorkflowWithQuickJS(params: {
   // (e.g. "workflow//./workflows/1_simple//simple")
   const workflowId = workflowName;
 
-  // Resolve the encryption key up front — needed to decrypt event
+  // Resolve the encryption key up front: needed to decrypt event
   // payloads inside the VM and to encrypt event payloads written below.
   // Resolve the FULL capability (symmetric AES key + X25519 keypair), not
   // just `importKey(rawKey)`: a run reading its own event log can encounter
@@ -939,7 +939,7 @@ export async function runWorkflowWithQuickJS(params: {
   // wrote to it (sealing is presence-gated on the run's published
   // encryptionPublicKey, which the shared start() path stamps regardless of
   // engine). A bare symmetric key cannot open those and would wedge the run
-  // right after hook_received — the node:vm engine resolves the same full
+  // right after hook_received. The node:vm engine resolves the same full
   // capability via memoizeEncryptionKey.
   const rawKey = await world.getEncryptionKeyForRun?.(workflowRun);
   const encryptionKey = rawKey ? await deriveRunPayloadKeys(rawKey) : undefined;
@@ -974,7 +974,7 @@ export async function runWorkflowWithQuickJS(params: {
       eventsFetchedPages++;
       allEvents.push(...response.data);
       // Update the cursor to the last successfully fetched page's cursor.
-      // Only update when we got results — the final empty-page response
+      // Only update when we got results: the final empty-page response
       // returns cursor=null which we must NOT use (it would reset the cursor).
       if (response.cursor) {
         cursor = response.cursor;
@@ -986,7 +986,7 @@ export async function runWorkflowWithQuickJS(params: {
   }
 
   // Event-limit guard: fail a runaway run once its log reaches the
-  // server-supplied ceiling — same enforcement point as the node:vm
+  // server-supplied ceiling, the same enforcement point as the node:vm
   // engine's replay loop.
   if (maxEventsLimit !== undefined && events.length >= maxEventsLimit) {
     throw new MaxEventsExceededError(events.length, maxEventsLimit);
@@ -1043,7 +1043,7 @@ export async function runWorkflowWithQuickJS(params: {
   }
 
   // Resolve the workflow server port so `getWorkflowMetadata().url` inside
-  // the VM matches what the step-side handler reports. Skipped on Vercel —
+  // the VM matches what the step-side handler reports. Skipped on Vercel:
   // the VM reads VERCEL_URL directly in that environment.
   const isVercel = process.env.VERCEL_URL !== undefined;
   const port = isVercel ? undefined : await getPortLazy();
@@ -1108,7 +1108,7 @@ export async function runWorkflowWithQuickJS(params: {
   //      hook_received for aborts) and complete elapsed waits.
   //   2. Feed all newly recorded events (attr_set, hook_created, elapsed
   //      wait_completed, terminals written by concurrent invocations, ...)
-  //      into the LIVE VM via session.continueWithEvents — resuming
+  //      into the LIVE VM via session.continueWithEvents, resuming
   //      execution exactly where it left off, no fresh-VM re-replay.
   //      Cheap progress is fed BEFORE running step bodies so promise
   //      chains that are not gated on steps (hook.getConflict(),
@@ -1117,7 +1117,7 @@ export async function runWorkflowWithQuickJS(params: {
   //   3. Once no cheap progress remains, execute up to
   //      getMaxInlineSteps() steps created by THIS invocation inline (no
   //      queue round-trip), in parallel, with the replay budget paused
-  //      during step bodies — mirroring the node:vm engine's inline
+  //      during step bodies, mirroring the node:vm engine's inline
   //      replay loop. Overflow and retry/throttled steps are queued for
   //      background execution. A delayed wait-continuation message is
   //      enqueued for the soonest pending wait first, so racing timers
@@ -1135,14 +1135,14 @@ export async function runWorkflowWithQuickJS(params: {
   const executedStepIds = new Set<string>();
   // Steps for which THIS invocation already sent a queue message.
   const queuedStepIds = new Set<string>();
-  // Aborts THIS invocation already recorded (hook_received written) —
-  // guards against re-recording when the VM-side flag has not been
+  // Aborts THIS invocation already recorded (hook_received written).
+  // Guards against re-recording when the VM-side flag has not been
   // cleared yet within the same iteration.
   const recordedAbortIds = new Set<string>();
   // Waits for which THIS invocation already completed/scheduled work.
   const completedWaitIds2 = new Set<string>();
   // Inline-ownership state per step correlationId, derived from every
-  // event this invocation observes (initial log + every feed) — the
+  // event this invocation observes (initial log + every feed): the
   // quickjs analog of the replay-derived ownership on the node engine's
   // StepInvocationQueueItem (see step-ownership.ts). Latest-wins:
   // events arrive in log order, so a later step_started overwrites the
@@ -1192,7 +1192,7 @@ export async function runWorkflowWithQuickJS(params: {
   let runGone = false;
   // Set when this invocation wrote an event the workflow must consume to
   // make progress (attr_set, getConflict-awaited hook_created) and the
-  // loop has not yet read it back — eventually-consistent listings can
+  // loop has not yet read it back, since eventually-consistent listings can
   // return 0 new events right after a write. If it is still set when the
   // loop exits suspended, the entrypoint requeues immediately instead of
   // exiting awaiting_external with the unblocking event already written
@@ -1233,7 +1233,7 @@ export async function runWorkflowWithQuickJS(params: {
       // each continueWithEvents, so a single invocation can otherwise grow
       // the log arbitrarily far past the operator's limit (the node engine
       // re-checks per replay for the same reason). `seenEventIds` counts
-      // every event this invocation has observed — initial log + all
+      // every event this invocation has observed: initial log + all
       // feeds.
       if (maxEventsLimit !== undefined && seenEventIds.size >= maxEventsLimit) {
         throw new MaxEventsExceededError(seenEventIds.size, maxEventsLimit);
@@ -1242,7 +1242,7 @@ export async function runWorkflowWithQuickJS(params: {
 
       // Select this turn's inline candidates BEFORE dispatch: fresh steps
       // (no step_created yet) that this invocation hasn't already handled.
-      // Their step_created is deliberately NOT written by dispatch — the
+      // Their step_created is deliberately NOT written by dispatch: the
       // inline claim below is a lazy step_started carrying the input,
       // which the world applies as an atomic create-claim. A concurrent
       // invocation racing on the same fresh step loses that claim with
@@ -1258,7 +1258,7 @@ export async function runWorkflowWithQuickJS(params: {
       );
       // Steps whose input refused to serialize (see
       // PendingStep.serializationError) never execute: they must not be
-      // inline-claimed (a lazy step_started would need the very input that
+      // inline-claimed (a lazy step_started would need the input that
       // failed) nor queued. Dispatch below finalizes them as step_created
       // + step_failed instead; only healthy steps compete for inline
       // slots and overflow.
@@ -1287,13 +1287,13 @@ export async function runWorkflowWithQuickJS(params: {
       // Steps beyond the inline cap are handed to the queue in the same
       // turn their step_created is written. Where eligible, the dispatch
       // below parallelizes each overflow step's step_created write with
-      // its queue publish (resilient step dispatch — the message carries
+      // its queue publish (resilient step dispatch: the message carries
       // `stepInput` so the consumer can re-ensure the event); the rest
       // are queued right after, in parallel. This must all happen BEFORE
-      // the event feed below: the feed always observes those very
+      // the event feed below: the feed always observes those
       // step_created writes as unseen events and `continue`s, so a
       // handoff placed after it is unreachable on the only iteration
-      // that still classifies these steps as fresh — next turn they carry
+      // that still classifies these steps as fresh: next turn they carry
       // hasCreatedEvent and would never be queued at all (the wedge behind
       // promiseRaceStressTestWorkflow hanging in the quickjs CI legs). The
       // step-identity-scoped idempotency key makes repeats harmless.
@@ -1321,8 +1321,8 @@ export async function runWorkflowWithQuickJS(params: {
       // written but no execution message anywhere: if the feed below
       // doesn't surface them (eventually-consistent listing) and the loop
       // exits, nothing would ever re-invoke the run to observe the
-      // failure. Raise the requeue signal — same mechanism as inline
-      // terminals — and mark the steps handled so later turns don't
+      // failure. Raise the requeue signal (same mechanism as inline
+      // terminals) and mark the steps handled so later turns don't
       // re-finalize or backstop-queue them.
       if (dispatched.failedSerializationStepCids.size > 0) {
         pendingRequeueSignal = true;
@@ -1385,7 +1385,7 @@ export async function runWorkflowWithQuickJS(params: {
       {
         const newEvents = await fetchUnseenEvents();
         if (newEvents.length > 0) {
-          // The listing caught up with this invocation's writes — any
+          // The listing caught up with this invocation's writes, so any
           // attr_set / getConflict hook_created has been (or is being)
           // consumed by the live VM, so no external requeue is needed.
           pendingRequeueSignal = false;
@@ -1404,13 +1404,13 @@ export async function runWorkflowWithQuickJS(params: {
         }
       }
 
-      // 3. No cheap progress left — execute steps inline.
+      // 3. No cheap progress left, so execute steps inline.
       const stepOps = pendingOperations.filter(
         (op): op is PendingStep => op.type === 'step'
       );
       // Steps created by an EARLIER invocation (or an earlier turn) that
       // are still pending, with no work owned by THIS invocation. Mirror
-      // the node engine's ownership decision table (step-ownership.ts) —
+      // the node engine's ownership decision table (step-ownership.ts),
       // NOT a deliveryAttempt gate: worlds advance the attempt counter on
       // routine redeliveries (world-local counts every handled response),
       // so attempt > 1 is the common case and would fire backstops at
@@ -1486,7 +1486,7 @@ export async function runWorkflowWithQuickJS(params: {
       }
 
       if (inlineCandidates.length === 0) {
-        // No in-process progress possible — the run awaits an external
+        // No in-process progress possible: the run awaits an external
         // stimulus (hook payload, queued step, wait timer).
         break;
       }
@@ -1494,7 +1494,7 @@ export async function runWorkflowWithQuickJS(params: {
       // Racing timers must fire on time while step bodies block this
       // invocation: enqueue a delayed continuation for the soonest
       // pending wait (a separate invocation writes its wait_completed at
-      // the right log position — same mechanism as the node:vm engine's
+      // the right log position, the same mechanism as the node:vm engine's
       // wait-continuation dispatch).
       let soonestWait: { correlationId: string; seconds: number } | undefined;
       for (const op of pendingOperations) {
@@ -1502,7 +1502,7 @@ export async function runWorkflowWithQuickJS(params: {
         const wait = op as PendingWait;
         if (scheduledWaitContinuations.has(wait.correlationId)) continue;
         // Waits whose wait_completed THIS invocation already wrote (the
-        // elapsed-wait pass above) are done — the event just hasn't fed
+        // elapsed-wait pass above) are done: the event just hasn't fed
         // back into the VM yet. No continuation needed.
         if (completedWaitIds2.has(wait.correlationId)) continue;
         const resumeMs = new Date(wait.resumeAt).getTime() - Date.now();
@@ -1512,14 +1512,14 @@ export async function runWorkflowWithQuickJS(params: {
         // whose deadline falls between this iteration's elapsed-wait
         // pass (which saw it as still pending and wrote nothing) and
         // this sweep would otherwise get NEITHER a wait_completed NOR a
-        // continuation — and the inline batch below then blocks this
+        // continuation, and the inline batch below then blocks this
         // invocation for the full step duration with no wake armed
         // anywhere. For `Promise.race(step, sleep)` that silently hands
         // the race to the step: the sleep's wait_completed is never
         // written and the run completes with the wrong winner. The
         // window between the two checks spans this iteration's dispatch
         // + feed round-trips, so on network-backed worlds (world-vercel)
-        // a short sleep lands in it routinely — observed as a ~50%
+        // a short sleep lands in it routinely, observed as a ~50%
         // sleepWinsRaceWorkflow failure rate in the Vercel e2e legs,
         // while world-local's sub-ms round-trips masked it locally. The
         // continuation invocation's pre-VM elapsed check writes the
@@ -1551,11 +1551,11 @@ export async function runWorkflowWithQuickJS(params: {
       }
 
       // Execute the inline batch in parallel. The replay budget is
-      // paused while step bodies run — step duration is bounded by the
+      // paused while step bodies run: step duration is bounded by the
       // platform function duration, not the replay timeout. NOTE (by
       // design): with the budget parked per batch, the only bound on how
       // many inline steps one invocation can chain is the platform's
-      // function timeout — the SDK deliberately imposes no cap of its
+      // function timeout: the SDK deliberately imposes no cap of its
       // own, matching the node:vm engine, where a long sequential
       // workflow likewise runs step-by-step until the platform reclaims
       // the invocation and a redelivery resumes from the log.
@@ -1580,7 +1580,7 @@ export async function runWorkflowWithQuickJS(params: {
                   runSpecVersion: workflowRun.specVersion,
                   // Lazy inline claim: step_created is deferred (dispatch
                   // skipped it) and this step_started carries the input,
-                  // so the world creates the step atomically —
+                  // so the world creates the step atomically:
                   // exactly-one-owner. A concurrent claimant gets
                   // EntityConflictError → { type: 'skipped' } and never
                   // runs the body. Mirrors the node engine's inline path.
@@ -1592,7 +1592,7 @@ export async function runWorkflowWithQuickJS(params: {
                   // flight in this invocation and arm a delayed backstop
                   // instead of immediately requeueing the step.
                   ownerMessageId,
-                  // A lazy step is brand-new by construction — first
+                  // A lazy step is brand-new by construction: first
                   // attempt.
                   authoritativeAttempt: 1,
                 }))()
@@ -1609,7 +1609,7 @@ export async function runWorkflowWithQuickJS(params: {
         const outcome = outcomes[i];
         executedStepIds.add(step.correlationId);
         if (outcome.type === 'retry' || outcome.type === 'throttled') {
-          // Hand the step to the queue with the requested backoff —
+          // Hand the step to the queue with the requested backoff:
           // background delivery drives the retry from here.
           queuedStepIds.add(step.correlationId);
           await queueStepMessage({
@@ -1621,7 +1621,7 @@ export async function runWorkflowWithQuickJS(params: {
             namespace,
             nextTraceCarrier,
             // Suffixed key: this step was inline-claimed, so no dispatch
-            // publish exists under the dispatch key — but suffixing
+            // publish exists under the dispatch key, but suffixing
             // keeps the retry enqueueable even if a world retired a
             // historical key for this step (see the purpose docs above).
             purpose: 'retry:1',
@@ -1649,8 +1649,8 @@ export async function runWorkflowWithQuickJS(params: {
       // park the run 'running' with all its steps complete. Raise the
       // requeue signal so the suspended exit schedules a fresh immediate
       // invocation whose fresh read picks the terminals up. Outcomes that
-      // wrote no terminal ('skipped' — a concurrent claimant owns the
-      // body; 'gone', retry/throttled — a queue message exists) don't
+      // wrote no terminal ('skipped': a concurrent claimant owns the
+      // body; 'gone', retry/throttled: a queue message exists) don't
       // need it, but signaling on them too only costs a no-op invocation
       // in an already-rare lag window.
       const newEvents = await fetchUnseenEvents();
@@ -1691,7 +1691,7 @@ export async function runWorkflowWithQuickJS(params: {
 
     // Flush leftover pending side effects (abort recordings, system-hook
     // disposals, fire-and-forget attribute/hook events) BEFORE writing
-    // run_completed — mirrors the node:vm engine's drainPendingQueueItems.
+    // run_completed. Mirrors the node:vm engine's drainPendingQueueItems.
     // Drain failures are swallowed: the workflow's own outcome is the
     // source of truth.
     if (result.completed.drainOperations?.length) {
@@ -1772,7 +1772,7 @@ export async function runWorkflowWithQuickJS(params: {
     });
 
     if (runGone) {
-      // The run no longer exists (expired / deleted) — nothing to drive.
+      // The run no longer exists (expired / deleted), so nothing to drive.
       wfdiag('exit_suspended', { action: 'run_gone' });
       return;
     }
@@ -1781,13 +1781,13 @@ export async function runWorkflowWithQuickJS(params: {
     // visibility-redelivery of the current message. Redelivering the
     // CURRENT message is a trap: a hook-resume delivery carries
     // `hookInput`, and its redelivery re-runs the lazy-resume re-ensure
-    // in the handler prologue — if the workflow disposed that hook
+    // in the handler prologue: if the workflow disposed that hook
     // during this invocation (dispose → sleep), a world that rejects
     // the re-ensure would ack the message as "nothing left to resume"
     // and the continuation it carried is silently lost. A fresh message
     // carries only `runId`, so its delivery always reaches replay (and
     // under turbo a reschedule would re-engage turbo against a stale
-    // preloaded log — see the reinvoke() docs in runtime.ts).
+    // preloaded log: see the reinvoke() docs in runtime.ts).
     const requeueImmediately = async (): Promise<void> => {
       await queueMessage(
         world,
@@ -1802,7 +1802,7 @@ export async function runWorkflowWithQuickJS(params: {
 
     if (budget.isExhausted()) {
       // The loop stopped on the replay budget with progress still
-      // possible — continue in a fresh invocation.
+      // possible, so continue in a fresh invocation.
       wfdiag('exit_suspended', { action: 'budget_exhausted_requeue' });
       await requeueImmediately();
       return;
@@ -1843,7 +1843,7 @@ export async function runWorkflowWithQuickJS(params: {
       // terminals) but the eventually-consistent listing never returned
       // them before the loop exited. Without a requeue the run would
       // park awaiting_external with its unblocking events already
-      // durably written and no future invocation coming — requeue
+      // durably written and no future invocation coming, so requeue
       // immediately so a fresh read picks them up. In the common case
       // the loop's own feed observes the writes and clears this flag, so
       // this only fires when the read actually lagged.
@@ -1856,7 +1856,7 @@ export async function runWorkflowWithQuickJS(params: {
       // Delayed continuation for the soonest pending wait the loop has
       // not already scheduled. The dispatch helper handles delay
       // clamping (long waits chain across hops) and idempotency-key
-      // dedup of re-observations of the same pending wait — see
+      // dedup of re-observations of the same pending wait. See
       // runtime/wait-continuation.ts.
       wfdiag('exit_suspended', {
         action: 'schedule_wait_timeout',
@@ -1885,11 +1885,11 @@ export async function runWorkflowWithQuickJS(params: {
       pendingOpsCount: pendingOperations.length,
     });
   } else if (result.failed) {
-    // Workflow failed — remap stack trace using inline source maps.
+    // Workflow failed, so remap stack trace using inline source maps.
     // Frames carry the run's workflowId as their filename on the fresh
     // path, but the workflow-independent BASELINE_BUNDLE_FILENAME on the
     // snapshot path (the name is baked into the shared baseline's
-    // compiled code at hydrate) — remap against both. remapErrorStack
+    // compiled code at hydrate), so remap against both. remapErrorStack
     // early-exits on a cheap includes() when a filename has no frames.
     let errorStack = result.failed.stack;
     if (errorStack) {
@@ -1909,7 +1909,7 @@ export async function runWorkflowWithQuickJS(params: {
     //
     // The VM serializes errors as `{ name, message, stack }`, so we
     // reconstruct a host-side Error of the correct class based on the
-    // VM-side `name` — specific WorkflowRuntimeError subclasses need
+    // VM-side `name`: specific WorkflowRuntimeError subclasses need
     // to be preserved so classifyRunError() tags them as RUNTIME_ERROR.
     const reconstructed: Error =
       result.failed.name === 'WorkflowNotRegisteredError'
@@ -1932,7 +1932,7 @@ export async function runWorkflowWithQuickJS(params: {
       ...Attribute.QuickJSOutcome('failed'),
     });
 
-    // Flush leftover pending side effects before writing run_failed —
+    // Flush leftover pending side effects before writing run_failed,
     // same drain semantics as the completed branch.
     if (result.failed.drainOperations?.length) {
       try {
@@ -1963,7 +1963,7 @@ export async function runWorkflowWithQuickJS(params: {
     //     cause chain, plain object, primitive, etc.) using the VM's
     //     workflow-serialize. Pass those bytes through directly so
     //     type identity, cause chains, and non-Error throws survive.
-    //     We just need to apply encryption if configured (the VM's
+    //     Apply encryption if configured (the VM's
     //     serializer doesn't have access to the encryption key).
     //   * Legacy fallback: reconstruct an Error from the host-visible
     //     {name, message, stack} fields and run it through
@@ -1972,7 +1972,7 @@ export async function runWorkflowWithQuickJS(params: {
     let dehydratedError: Uint8Array;
     if (result.failed.valueBytes) {
       // Hydrate the VM-side bytes, remap the error stack with the
-      // host-side source map (the VM can't do this — it lacks both the
+      // host-side source map (the VM can't do this: it lacks both the
       // source map and `remapErrorStack`), and re-dehydrate. This
       // preserves the original value's type identity / cause chain
       // while fixing up frames to point at the user's source files.
@@ -1990,7 +1990,7 @@ export async function runWorkflowWithQuickJS(params: {
         ) {
           const parsedName = parseWorkflowName(workflowName);
           const filename = parsedName?.moduleSpecifier || workflowName;
-          // Both filename spaces — see the failed-branch comment above.
+          // Both filename spaces. See the failed-branch comment above.
           (hydrated as { stack?: string }).stack = remapErrorStack(
             remapErrorStack(
               (hydrated as { stack: string }).stack,
@@ -2010,7 +2010,7 @@ export async function runWorkflowWithQuickJS(params: {
           if (typeof nodeStack === 'string') {
             const parsedName = parseWorkflowName(workflowName);
             const filename = parsedName?.moduleSpecifier || workflowName;
-            // Both filename spaces — see the failed-branch comment above.
+            // Both filename spaces. See the failed-branch comment above.
             (node as { stack?: string }).stack = remapErrorStack(
               remapErrorStack(nodeStack, filename, workflowCode),
               BASELINE_BUNDLE_FILENAME,
@@ -2026,7 +2026,7 @@ export async function runWorkflowWithQuickJS(params: {
         );
       } catch (rehydrateErr) {
         // If hydration / re-dehydration fails for any reason, fall
-        // back to passing through the original VM bytes (just apply
+        // back to passing through the original VM bytes (applying
         // encryption if configured). Better to lose source-mapped
         // frames than to lose the error entirely.
         runtimeLogger.warn(

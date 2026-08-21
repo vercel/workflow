@@ -82,8 +82,8 @@ interface SimCreateParams {
    * the runtime no longer states it: `@workflow/core` describes its snapshot as
    * a slot count, and the sim mints ULIDs, so there is nothing on the wire for
    * the fence to read. The reconstruction is the same derivation the client
-   * used to make — the newest loaded position, and how many events sit at or
-   * below it — which is what lets the fence spot a hole *behind* the watermark
+   * used to make (the newest loaded position, and how many events sit at or
+   * below it), which is what lets the fence spot a hole *behind* the watermark
    * that no comparison against the watermark alone can see.
    *
    * See `SimStoreOptions.preconditionGuard` and `SimWorldOptions.countGuard`.
@@ -113,7 +113,7 @@ interface RunEventIndex {
  * exactness argument: pruning always drops the oldest id, so `total - above` is
  * exact whenever the window still reaches back past the snapshot. The one case
  * it refuses to evaluate is a pruned window whose every retained id is above
- * the snapshot — the dropped ids may have been above it too.
+ * the snapshot, since the dropped ids may have been above it too.
  */
 function countRecordedAtOrBelow(
   index: RunEventIndex,
@@ -135,8 +135,8 @@ export interface SimStoreOptions {
    * `WorldCapabilities.preconditionGuard`: reject a replay-context write whose
    * snapshot predates the newest externally-originated event.
    *
-   * Off by default. Turning it on is the point of a simulation — it lets a
-   * scenario check that the runtime recovers from a 412 fence — but it also
+   * Off by default. Turning it on is the point of a simulation (it lets a
+   * scenario check that the runtime recovers from a 412 fence), but it also
    * changes which runtime fast paths engage, so it is never implicit.
    */
   preconditionGuard?: boolean;
@@ -176,8 +176,8 @@ export interface StaleRead {
 
 export interface SimStore extends Storage {
   /**
-   * Load a previously committed log into an empty store, verbatim — same
-   * event ids, same timestamps — and fold the entity state back out of it.
+   * Load a previously committed log into an empty store, verbatim (same
+   * event ids, same timestamps), and fold the entity state back out of it.
    *
    * This is the "cold start" primitive: it reconstructs the durable state a
    * fresh process would find, without re-validating writes that were already
@@ -198,7 +198,7 @@ export interface SimStore extends Storage {
   /**
    * The same events in the order they were *committed*, which is the order this
    * array was appended to. Differs from `allEvents` exactly when a write was
-   * minted before another and committed after it — so the two together are what
+   * minted before another and committed after it, so the two together are what
    * `log.monotonic-order` compares.
    */
   allEventsInCommitOrder(runId?: string): Event[];
@@ -329,7 +329,7 @@ export function createSimStore(options: SimStoreOptions): SimStore {
   const externalWriteMarker = new Map<string, number>();
   /**
    * Per run: the tail of the log, for the count guard. Records *every* event,
-   * replay-origin included — the corruption it guards against is one replay
+   * replay-origin included: the corruption it guards against is one replay
    * racing another, which the out-of-band marker cannot see by construction.
    */
   const runEventIndex = new Map<string, RunEventIndex>();
@@ -386,7 +386,7 @@ export function createSimStore(options: SimStoreOptions): SimStore {
     };
     index.recentEventIds.push(event.eventId);
     // Keep the window in mint order, so "oldest id" and "oldest event" stay the
-    // same thing — `countRecordedAtOrBelow`'s exactness argument depends on it.
+    // same thing: `countRecordedAtOrBelow`'s exactness argument depends on it.
     index.recentEventIds.sort((a, b) => a.localeCompare(b));
     if (index.recentEventIds.length > RUN_EVENT_INDEX_WINDOW) {
       index.recentEventIds.shift();
@@ -458,7 +458,7 @@ export function createSimStore(options: SimStoreOptions): SimStore {
    *
    * The single copy of the event → entity state machine. Both paths into the
    * store end here: `create` runs its validation and then calls this, and
-   * `seedFromLog` calls it with no validation at all — those events were
+   * `seedFromLog` calls it with no validation at all, since those events were
    * accepted once already, and re-litigating them would reject legitimate
    * history (a `step_completed` recorded after the run was cancelled, say).
    *
@@ -774,7 +774,7 @@ export function createSimStore(options: SimStoreOptions): SimStore {
       // loaded: a hole, which the marker comparison above passes by
       // construction because the missing event is *older* than the newest one
       // the caller did see. A `null` count is indeterminate (the window pruned
-      // past the snapshot) and is never treated as stale — the guard is
+      // past the snapshot) and is never treated as stale: the guard is
       // deliberately one-sided.
       if (options.countGuard) {
         const index = runEventIndex.get(runId);
@@ -877,8 +877,8 @@ export function createSimStore(options: SimStoreOptions): SimStore {
         }
         if (currentRun && isTerminalWorkflowRunStatus(currentRun.status)) {
           // A terminal run still accepts the terminal write of a step that was
-          // already running when the run ended — that write is how an inline
-          // step reports back — but nothing else.
+          // already running when the run ended (that write is how an inline
+          // step reports back), but nothing else.
           if (validatedStep.status !== 'running') {
             throw new RunExpiredError(
               `Cannot modify non-running step on run in terminal state "${currentRun.status}"`
@@ -906,14 +906,14 @@ export function createSimStore(options: SimStoreOptions): SimStore {
     } as Event;
 
     // `run_started`'s eventData is a bootstrap payload for the resilient path
-    // above, not log content — the canonical copy lives on `run_created`.
+    // above, not log content: the canonical copy lives on `run_created`.
     if (data.eventType === 'run_started' && 'eventData' in event) {
       delete (event as Record<string, unknown>).eventData;
     }
 
     // ---- Per-event-type validation ----------------------------------------
     // Everything the write path *refuses*. What it does to the entity rows is
-    // `applyEvent` below — the same fold the seed path runs.
+    // `applyEvent` below: the same fold the seed path runs.
     switch (data.eventType) {
       case 'run_created': {
         if (runs.has(runId)) {
@@ -927,7 +927,7 @@ export function createSimStore(options: SimStoreOptions): SimStore {
       case 'run_started': {
         if (currentRun?.status === 'running') {
           // Idempotent: a concurrent invocation already started the run. No
-          // event is appended — replay must not see two `run_started`.
+          // event is appended, since replay must not see two `run_started`.
           return { run: clone(currentRun), maxEvents: MAX_EVENTS_PER_RUN };
         }
         break;
@@ -947,8 +947,8 @@ export function createSimStore(options: SimStoreOptions): SimStore {
         const owner = tokenOwners.get(token);
         if (owner && owner !== data.correlationId) {
           // Someone else holds the token. This is not an error for the
-          // *caller* — the workflow needs to observe it and fail its awaited
-          // hook — so it is journaled as a `hook_conflict` event instead.
+          // *caller* (the workflow needs to observe it and fail its awaited
+          // hook), so it is journaled as a `hook_conflict` event instead.
           const conflict = append({
             eventType: 'hook_conflict',
             runId,
@@ -1063,7 +1063,7 @@ export function createSimStore(options: SimStoreOptions): SimStore {
     //   the same unit as a caller's newest loaded position or a caller holding
     //   exactly this event would compare as older and 412 forever.
     // - The write is forward-only. Concurrent out-of-band events can commit out
-    //   of position order — the whole subject of these scenarios — and letting a
+    //   of position order (the whole subject of these scenarios), and letting a
     //   late-committing older event drag the mark backwards would silently
     //   disarm the guard for the newer one.
     if (

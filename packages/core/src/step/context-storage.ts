@@ -10,7 +10,7 @@ import type { StepMetadata } from './get-step-metadata.js';
  * Holds the user-facing `WritableStream` and the shared `FlushableStreamState`
  * driving the background pipe to the workflow server. Re-used so repeat calls
  * to `getWritable()` within the same step return the same handle instead of
- * spawning racing pipes — see https://github.com/vercel/workflow/issues/2058.
+ * spawning racing pipes; see https://github.com/vercel/workflow/issues/2058.
  */
 export interface CachedWritable {
   writable: WritableStream<any>;
@@ -37,14 +37,14 @@ export type StepContext = {
    * The canonical case is a step-initiated `AbortController.abort()`: the
    * durable `hook_received` event records the cancellation in the workflow's
    * event log. If it is flushed in the background (like `ops`), the workflow
-   * continuation enqueued by `step_completed` can run — and advance past the
-   * abort, dispatching a later step with a stale, non-aborted `signal` — before
+   * continuation enqueued by `step_completed` can run (and advance past the
+   * abort, dispatching a later step with a stale, non-aborted `signal`) before
    * the `hook_received` event exists. Awaiting these inline before completion
    * guarantees the abort is ordered ahead of any continuation that observes the
    * step's result. Unlike these, `ops` holds best-effort real-time stream
    * writes that should fire ASAP and are intentionally left in the background.
    *
-   * Contract: producers MUST NOT push a promise that can reject — these are
+   * Contract: producers MUST NOT push a promise that can reject; these are
    * awaited only to enforce ordering, never to surface an outcome. A rejection
    * here would propagate as an infra error (queue re-delivery), not the
    * user-code failure path, so each producer swallows its own errors (see
@@ -62,7 +62,7 @@ export type StepContext = {
   /**
    * Turbo mode only: a promise that resolves once the backgrounded
    * `run_started` has landed (the run exists). Set when the step body runs
-   * optimistically — before `run_started`/`step_started` are confirmed — so a
+   * optimistically (before `run_started`/`step_started` are confirmed), so a
    * direct step-body world write (e.g. `setAttributes`, which
    * resolves to a host-side `attr_set` create) can gate on it and never race
    * ahead of the run's creation. `undefined` outside turbo and on the await

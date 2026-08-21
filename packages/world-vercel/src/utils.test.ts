@@ -722,98 +722,110 @@ describe('makeRequest transport errors', () => {
 // origin instead, covering the two contracts the runtime branches on: a
 // failed request has to stay retryable, and a typed error status has to keep
 // producing the same typed error whichever transport carried it.
-describe('makeRequest over node:http', () => {
-  const schema = z.object({ value: z.string() });
-  const originalEnv = process.env;
-  let server: Server | undefined;
+// These run against a loopback origin, which they select through
+// `VERCEL_WORKFLOW_SERVER_URL`. The inline `WORKFLOW_SERVER_URL_OVERRIDE`
+// constant WINS over that env var by design, so while a branch-testing
+// override is pinned there is no way for these to reach their own server and
+// every request leaves the machine. Skipped in that case rather than left to
+// fail confusingly; they run again the moment the override goes back to ''.
+describe.skipIf(WORKFLOW_SERVER_URL_OVERRIDE !== '')(
+  'makeRequest over node:http',
+  () => {
+    const schema = z.object({ value: z.string() });
+    const originalEnv = process.env;
+    let server: Server | undefined;
 
-  beforeEach(() => {
-    process.env = { ...originalEnv };
-    delete process.env.VERCEL_OIDC_TOKEN;
-    process.env[NODE_HTTP_ENV_VAR] = '1';
-  });
-
-  afterEach(async () => {
-    process.env = originalEnv;
-    const toClose = server;
-    server = undefined;
-    if (toClose) {
-      toClose.closeAllConnections();
-      await new Promise((resolve) => toClose.close(resolve));
-    }
-  });
-
-  /** Start a loopback origin and point the client at it. */
-  async function listen(handler: RequestListener): Promise<void> {
-    server = createServer(handler);
-    await new Promise<void>((resolve) =>
-      server?.listen(0, '127.0.0.1', resolve)
-    );
-    const { port } = server.address() as AddressInfo;
-    process.env.VERCEL_WORKFLOW_SERVER_URL = `http://127.0.0.1:${port}`;
-  }
-
-  it('maps a dropped socket to a retryable TRANSPORT error', async () => {
-    await listen((request) => request.socket.destroy());
-
-    // Node raises ECONNRESET on the error itself rather than on a `cause`, so
-    // this only passes if getTransientTransportCode reads the top-level code.
-    await expect(
-      makeRequest({
-        endpoint: '/v3/runs/wrun_test/events',
-        options: { method: 'GET' },
-        schema,
-      })
-    ).rejects.toMatchObject({ name: 'WorkflowWorldError', code: 'TRANSPORT' });
-  });
-
-  it('maps a 412 response to PreconditionFailedError', async () => {
-    await listen((request, response) => {
-      request.resume();
-      response.statusCode = 412;
-      response.setHeader('content-type', 'application/cbor');
-      response.end(
-        encode({
-          success: false,
-          error: 'precondition-failed',
-          code: 'precondition-failed',
-          message: 'precondition-failed',
-        })
-      );
+    beforeEach(() => {
+      process.env = { ...originalEnv };
+      delete process.env.VERCEL_OIDC_TOKEN;
+      process.env[NODE_HTTP_ENV_VAR] = '1';
     });
 
-    await expect(
-      makeRequest({
+    afterEach(async () => {
+      process.env = originalEnv;
+      const toClose = server;
+      server = undefined;
+      if (toClose) {
+        toClose.closeAllConnections();
+        await new Promise((resolve) => toClose.close(resolve));
+      }
+    });
+
+    /** Start a loopback origin and point the client at it. */
+    async function listen(handler: RequestListener): Promise<void> {
+      server = createServer(handler);
+      await new Promise<void>((resolve) =>
+        server?.listen(0, '127.0.0.1', resolve)
+      );
+      const { port } = server.address() as AddressInfo;
+      process.env.VERCEL_WORKFLOW_SERVER_URL = `http://127.0.0.1:${port}`;
+    }
+
+    it('maps a dropped socket to a retryable TRANSPORT error', async () => {
+      await listen((request) => request.socket.destroy());
+
+      // Node raises ECONNRESET on the error itself rather than on a `cause`, so
+      // this only passes if getTransientTransportCode reads the top-level code.
+      await expect(
+        makeRequest({
+          endpoint: '/v3/runs/wrun_test/events',
+          options: { method: 'GET' },
+          schema,
+        })
+      ).rejects.toMatchObject({
+        name: 'WorkflowWorldError',
+        code: 'TRANSPORT',
+      });
+    });
+
+    it('maps a 412 response to PreconditionFailedError', async () => {
+      await listen((request, response) => {
+        request.resume();
+        response.statusCode = 412;
+        response.setHeader('content-type', 'application/cbor');
+        response.end(
+          encode({
+            success: false,
+            error: 'precondition-failed',
+            code: 'precondition-failed',
+            message: 'precondition-failed',
+          })
+        );
+      });
+
+      await expect(
+        makeRequest({
+          endpoint: '/v3/runs/wrun_test/events',
+          options: { method: 'POST' },
+          data: { eventType: 'run_completed' },
+          schema,
+        })
+      ).rejects.toBeInstanceOf(PreconditionFailedError);
+    });
+
+    it('round-trips a CBOR POST body to the origin', async () => {
+      let seen: { method?: string; length?: string } = {};
+      await listen((request, response) => {
+        seen = {
+          method: request.method,
+          length: request.headers['content-length'],
+        };
+        request.resume();
+        response.setHeader('content-type', 'application/cbor');
+        response.end(encode({ value: 'ok' }));
+      });
+
+      const result = await makeRequest({
         endpoint: '/v3/runs/wrun_test/events',
         options: { method: 'POST' },
         data: { eventType: 'run_completed' },
         schema,
-      })
-    ).rejects.toBeInstanceOf(PreconditionFailedError);
-  });
+      });
 
-  it('round-trips a CBOR POST body to the origin', async () => {
-    let seen: { method?: string; length?: string } = {};
-    await listen((request, response) => {
-      seen = {
-        method: request.method,
-        length: request.headers['content-length'],
-      };
-      request.resume();
-      response.setHeader('content-type', 'application/cbor');
-      response.end(encode({ value: 'ok' }));
+      expect(result).toEqual({ value: 'ok' });
+      expect(seen.method).toBe('POST');
+      // A declared length, not a chunked body: some origins reject the latter.
+      expect(Number(seen.length)).toBeGreaterThan(0);
     });
-
-    const result = await makeRequest({
-      endpoint: '/v3/runs/wrun_test/events',
-      options: { method: 'POST' },
-      data: { eventType: 'run_completed' },
-      schema,
-    });
-
-    expect(result).toEqual({ value: 'ok' });
-    expect(seen.method).toBe('POST');
-    // A declared length, not a chunked body: some origins reject the latter.
-    expect(Number(seen.length)).toBeGreaterThan(0);
-  });
-});
+  }
+);

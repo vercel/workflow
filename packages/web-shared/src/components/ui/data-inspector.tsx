@@ -842,7 +842,7 @@ export function collapseRefs(data: unknown): unknown {
   if (data instanceof Set) {
     return new Set(Array.from(data.values(), collapseRefs));
   }
-  // Only recurse into plain objects — leave class instances untouched
+  // Only recurse into plain objects; leave class instances untouched
   const proto = Object.getPrototypeOf(data);
   if (proto !== Object.prototype && proto !== null) return data;
   const result: Record<string, unknown> = {};

@@ -2,8 +2,8 @@
  * In-process retry for event POSTs.
  *
  * undici's `RetryAgent` never retries a POST (a non-idempotent method), so a
- * trivially-recoverable transport blip — `UND_ERR_REQ_RETRY`, `ECONNRESET`, a
- * socket/headers timeout, a transient 5xx — bubbles straight out of an event
+ * trivially-recoverable transport blip (`UND_ERR_REQ_RETRY`, `ECONNRESET`, a
+ * socket/headers timeout, a transient 5xx) bubbles straight out of an event
  * write. For a `step_completed`/`step_failed` write that means the queue message
  * is not acked, it redelivers, the workflow replays, and the step's user code is
  * re-executed with `attempt++` even though it already ran to completion once.
@@ -12,7 +12,7 @@
  * idempotent *in outcome*: the entity handlers run before the event-log row is
  * inserted, and state transitions are conditional writes that exclude
  * already-terminal states. A retry whose original already landed therefore
- * throws before any row is written and surfaces as a 409 for most types — which
+ * throws before any row is written and surfaces as a 409 for most types, which
  * the SDK maps to `EntityConflictError` and existing callers already handle (e.g.
  * the step executor swallows it as `{ type: 'skipped' }`). The two non-conflict
  * cases still resolve as plain success the caller already handles: `run_started`
@@ -24,18 +24,18 @@
  * idempotent-on-retry, and leaves the rest at a single attempt. The three
  * excluded types are NOT safe to blindly retry:
  *
- *   - `step_started`  — its handler does an unconditional `attempt += 1` with a
+ *   - `step_started`:  its handler does an unconditional `attempt += 1` with a
  *                       `.where()` that only excludes terminal states, so a
  *                       retried start double-increments the attempt counter.
- *   - `step_retrying` — re-applies `pending` (idempotent state) but its handler
+ *   - `step_retrying`: re-applies `pending` (idempotent state) but its handler
  *                       does NOT throw on a duplicate, so a retry appends a
  *                       second event-log row.
- *   - `hook_received` — an ORDINARY hook write has no server-side guard, so a
+ *   - `hook_received`: an ORDINARY hook write has no server-side guard, so a
  *                       retry appends a duplicate row and can re-deliver the
  *                       payload. The atomic lazy-resume shape (resumeId +
- *                       resumePayloadDigest) IS guarded — the server's
+ *                       resumePayloadDigest) IS guarded (the server's
  *                       (runId, resumeId) claim converges a retry on the same
- *                       canonical event — so those writes opt back into the
+ *                       canonical event), so those writes opt back into the
  *                       standard policy via
  *                       {@link EventPostRetryOptions.idempotentHookResume}.
  *
@@ -45,20 +45,20 @@
  *
  * A 429 (`ThrottleError`) is handled by a separate in-process policy that
  * applies to EVERY event type: a genuine application 429 means the server
- * rejected the write outright — nothing landed — so none of the duplicate-row /
+ * rejected the write outright (nothing landed), so none of the duplicate-row /
  * attempt-double-count hazards above apply (the same definitive-no-write
  * reasoning `STREAM_RETRY_OPTIONS` uses to retry 429 on stream PUTs). Firewall
  * challenges never reach here as `ThrottleError`: `errorForResponse` maps a
  * 429 + `x-vercel-mitigated: challenge` to a transport `WorkflowWorldError`
  * instead (see isFirewallChallenge429), so throttle retries cannot hot-loop
  * against the firewall. Each retry honors the server's `retryAfter`, and the
- * cumulative wait is capped by THROTTLE_RETRY_BUDGET_MS — beyond that the
+ * cumulative wait is capped by THROTTLE_RETRY_BUDGET_MS; beyond that the
  * ThrottleError surfaces and the queue's redelivery takes over, exactly as
  * before this policy existed.
  *
  * This is the *only* retry loop on the event-write path, for both transports.
- * The WebSocket transport raises `code: 'TRANSPORT'` — the shape `utils.ts`
- * produces for a failed `fetch` — so it lands here rather than carrying a
+ * The WebSocket transport raises `code: 'TRANSPORT'` (the shape `utils.ts`
+ * produces for a failed `fetch`), so it lands here rather than carrying a
  * second policy blind to `EVENT_RETRY_ELIGIBILITY`.
  */
 
@@ -79,7 +79,7 @@ type WorkflowEventType = z.infer<typeof EventTypeSchema>;
 export interface EventRetryPolicy {
   /** Whether a failed POST of this event type may be retried in-process. */
   retryable: boolean;
-  /** Why — kept in code so the validated classification is self-documenting. */
+  /** Why, kept in code so the validated classification is self-documenting. */
   reason: string;
 }
 
@@ -150,7 +150,7 @@ export const EVENT_RETRY_ELIGIBILITY = {
     retryable: true,
     reason: 'correlationId constraint reuses eventId (idempotent replay)',
   },
-  // NOT safe to retry — see the module comment.
+  // NOT safe to retry; see the module comment.
   step_started: {
     retryable: false,
     reason: 'unconditional attempt increment → a retry double-counts attempts',
@@ -172,6 +172,12 @@ export const EVENT_RETRY_ELIGIBILITY = {
     retryable: false,
     reason: 'server-originated; never POSTed by the SDK',
   },
+  // Server-originated sealed-log filler (specVersion 7); the SDK never
+  // POSTs it. The server's read path writes it to seal an abandoned slot.
+  noop: {
+    retryable: false,
+    reason: 'server-originated; never POSTed by the SDK',
+  },
 } satisfies Record<WorkflowEventType, EventRetryPolicy>;
 
 /** Up to this many retries after the initial attempt (3 attempts total). */
@@ -180,7 +186,7 @@ export const MAX_EVENT_POST_RETRIES = 2;
 /**
  * Cumulative in-process wait budget for 429 (`ThrottleError`) retries, per
  * event POST. Bounds the "no attempt tracking" failure mode: a server that
- * keeps 429ing cannot pin the invocation — once the budget cannot cover the
+ * keeps 429ing cannot pin the invocation: once the budget cannot cover the
  * next `retryAfter`, the ThrottleError surfaces and the queue's (delivery-
  * counted, backed-off) redelivery takes over. Sized so a couple of attempts
  * fit at the Retry-After magnitudes the backend sends under write contention
@@ -190,7 +196,7 @@ export const MAX_EVENT_POST_RETRIES = 2;
 export const THROTTLE_RETRY_BUDGET_MS = 30_000;
 /** Backoff when a 429 carries no usable Retry-After. */
 const DEFAULT_THROTTLE_RETRY_AFTER_SECONDS = 1;
-/** Base backoff; doubles per attempt. Kept tiny — the goal is riding out a
+/** Base backoff; doubles per attempt. Kept tiny: the goal is riding out a
  * brief blip inline, not waiting out an outage (that falls through to the
  * queue's redelivery). */
 export const EVENT_POST_RETRY_BASE_MS = 100;
@@ -215,11 +221,11 @@ const TRANSIENT_CODES = new Set([
   'UND_ERR_BODY_TIMEOUT',
   // Names (undici/Node surface these on the error or its cause).
   // `TimeoutError` is our own per-request deadline (`AbortSignal.timeout` in
-  // makeRequest) — a genuinely ambiguous failure worth retrying. We deliberately
+  // makeRequest), a genuinely ambiguous failure worth retrying. We deliberately
   // do NOT include `AbortError`: that is how an external/caller-supplied
   // cancellation surfaces (makeRequest composes the caller's signal via
-  // `AbortSignal.any`), and re-issuing a write the caller asked to cancel —
-  // stalling the abort by the full backoff budget — would be wrong.
+  // `AbortSignal.any`), and re-issuing a write the caller asked to cancel
+  // (stalling the abort by the full backoff budget) would be wrong.
   'TimeoutError',
   'RequestRetryError',
 ]);
@@ -241,11 +247,11 @@ function collectErrorMarkers(err: unknown, depth = 0): string[] {
  * Whether a failed event POST should be retried as a transient failure.
  * Retries transient/ambiguous transport failures and transient 5xx; never
  * retries a definitive response (409/410/425/429 and other 4xx). 429 is not
- * "transient" in this classification — `withEventPostRetry` gives it its own
+ * "transient" in this classification: `withEventPostRetry` gives it its own
  * budgeted, Retry-After-honoring policy.
  */
 export function isRetryableEventPostError(err: unknown): boolean {
-  // Definitive, server-considered outcomes — never retried as *transient*.
+  // Definitive, server-considered outcomes, never retried as *transient*.
   // (425 is left to the runtime's retry-after handling; 429 has its own
   // in-process policy in withEventPostRetry, gated by THROTTLE_RETRY_BUDGET_MS
   // rather than this transient classification.)
@@ -259,7 +265,7 @@ export function isRetryableEventPostError(err: unknown): boolean {
   }
 
   if (WorkflowWorldError.is(err)) {
-    // Body parsed past the response but the write may have landed — safe to
+    // Body parsed past the response but the write may have landed: safe to
     // retry for eligible events (a landed original re-surfaces as 409).
     if (err.code === 'PARSE_ERROR') return true;
     // A transport failure the world layer already classified as transient:
@@ -282,7 +288,7 @@ export function isRetryableEventPostError(err: unknown): boolean {
       // Transient server errors; 4xx are definitive and not retried.
       return err.status >= 500 && err.status <= 599;
     }
-    // No status (e.g. a timeout wrapped by makeRequest) — fall through to the
+    // No status (e.g. a timeout wrapped by makeRequest): fall through to the
     // transport-marker check on the error/cause chain.
   }
 
@@ -293,7 +299,7 @@ const sleep = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
 
 /** Gated like the rest of world-vercel's HTTP layer (`DEBUG=workflow:*`). Keeps
- * in-process retries visible during a latency/outage investigation — otherwise a
+ * in-process retries visible during a latency/outage investigation; otherwise a
  * step that quietly rode out a blip and one that exhausted its retries and fell
  * through to queue redelivery look identical in logs/traces. */
 const RETRY_DEBUG_ENABLED =
@@ -323,9 +329,9 @@ export interface EventPostRetryOptions {
   /**
    * Narrow opt-in for `hook_received` writes carrying the atomic lazy-resume
    * idempotency pair (`resumeId` + `resumePayloadDigest`). Those writes are
-   * deduplicated server-side by the `(runId, resumeId)` claim — a retry whose
+   * deduplicated server-side by the `(runId, resumeId)` claim (a retry whose
    * original landed converges on the same canonical event instead of
-   * appending a duplicate row — so they get the standard transient retry
+   * appending a duplicate row), so they get the standard transient retry
    * policy. Legacy `hook_received` (no pair, or an incomplete one) stays
    * single-attempt per {@link EVENT_RETRY_ELIGIBILITY}; definitive 4xx
    * responses stay non-retryable regardless.
@@ -334,15 +340,15 @@ export interface EventPostRetryOptions {
   /**
    * Batch POST retry verdict, set by `createWorkflowRunEventBatch` from the
    * batch's CONTENTS. `true` means every event in the batch converges on a
-   * retry of a committed attempt — entity-conditioned events (creates,
+   * retry of a committed attempt: entity-conditioned events (creates,
    * terminal transitions) re-reject with 409, and a `step_started` is fenced
-   * by its born-running pair's create-claim — so the whole POST gets the
+   * by its born-running pair's create-claim, so the whole POST gets the
    * standard transient retry policy and a re-send converges to per-event
    * 409s with nothing written twice. `false` means at least one event does
    * NOT converge (a standalone bare `step_started` re-increments `attempt`,
    * a `step_retrying` re-patches its step), so the batch runs
    * single-attempt and recovery is left to queue redelivery. When set (a
-   * batch call), this verdict REPLACES the per-type matrix entirely — the
+   * batch call), this verdict REPLACES the per-type matrix entirely: the
    * matrix classifies single posts and its entry for any one type says
    * nothing about a mixed batch. Definitive 4xx responses stay
    * non-retryable regardless.
@@ -353,8 +359,9 @@ export interface EventPostRetryOptions {
 /**
  * Per-POST throttle-wait accounting. The returned function waits out a 429's
  * `retryAfter` in-process (so the caller can re-attempt), or rethrows the
- * ThrottleError once the cumulative wait would exceed THROTTLE_RETRY_BUDGET_MS
- * — at which point the queue's delivery-counted redelivery takes over.
+ * ThrottleError once the cumulative wait would exceed
+ * THROTTLE_RETRY_BUDGET_MS, at which point the queue's delivery-counted
+ * redelivery takes over.
  */
 function createThrottleWaiter(
   eventType: WorkflowEventType
@@ -407,7 +414,7 @@ function isEligibleForTransientRetry(
 /**
  * Run an event POST, retrying transient transport failures in-process when the
  * event type is idempotent-on-retry, and 429 throttles in-process for every
- * event type (a 429 is a definitive no-write — see the module comment) while
+ * event type (a 429 is a definitive no-write; see the module comment) while
  * the cumulative `retryAfter` wait fits THROTTLE_RETRY_BUDGET_MS. Other
  * definitive responses run/throw on the first attempt, preserving existing
  * behavior.
