@@ -15,8 +15,8 @@ import {
 import { resolveSectionChildren } from '../lib/geistdocs/section-children';
 import {
   source,
-  v4Source,
-  v4WorldsSource,
+  v5Source,
+  v5WorldsSource,
   worldsSource,
 } from '../lib/geistdocs/source';
 import { getWorldIds } from '../lib/worlds-data';
@@ -70,9 +70,9 @@ async function getSharedUrls(): Promise<Map<string, UrlMeta>> {
   for (const path of [
     '/',
     '/docs',
-    '/v4/docs',
+    '/v5/docs',
     '/cookbook',
-    '/v4/cookbook',
+    '/v5/cookbook',
     '/worlds',
     '/worlds/compare',
     '/llms.txt',
@@ -105,21 +105,20 @@ async function listFilesRecursive(dir: string, prefix = ''): Promise<string[]> {
 /**
  * Build the two URL spaces links are resolved against.
  *
- * v5 space — how hrefs resolve when rendered on a v5 (unversioned, current)
- * page:
- *   /docs/X        → v5 page X
- *   /cookbook/X    → v5 cookbook page
- *   /v4/docs/X     → v4 page X (explicit cross-version link)
- *   /v4/cookbook/X → v4 cookbook page
+ * v4 space — how hrefs resolve when rendered on a v4 (unversioned) page:
+ *   /docs/X        → v4 page X
+ *   /cookbook/X    → v4 cookbook page
+ *   /v5/docs/X     → v5 page X (explicit cross-version link)
+ *   /v5/cookbook/X → v5 cookbook page
  *
- * v4 space — how hrefs resolve when rendered on a /v4 page. The v4 routes
- * rewrite /docs/... hrefs (inline links and Card hrefs) to /v4/docs/... at
- * render time, so an unversioned /docs/X href on a v4 page resolves to the
- * v4 page X — it is broken unless X exists in the v4 content tree:
- *   /docs/X        → v4 page X (rewritten at render time)
- *   /cookbook/X    → v5 cookbook page (not rewritten)
- *   /v4/docs/X     → v4 page X
- *   /v4/cookbook/X → v4 cookbook page
+ * v5 space — how hrefs resolve when rendered on a /v5 page. The v5 routes
+ * rewrite /docs/... hrefs (inline links and Card hrefs) to /v5/docs/... at
+ * render time, so an unversioned /docs/X href on a v5 page resolves to the
+ * v5 page X — it is broken unless X exists in the v5 content tree:
+ *   /docs/X        → v5 page X (rewritten at render time)
+ *   /cookbook/X    → v4 cookbook page (not rewritten)
+ *   /v5/docs/X     → v5 page X
+ *   /v5/cookbook/X → v5 cookbook page
  */
 function buildSpaces(
   v4Pages: LoadedPage[],
@@ -132,43 +131,43 @@ function buildSpaces(
   const v5Space: Scanned = { urls: new Map(shared), fallbackUrls: [] };
 
   // World docs are versioned like the docs trees and rendered at /worlds/*
-  // (v5/current) and /v4/worlds/* (maintenance). They follow the same URL
-  // resolution model: on v4 pages, unversioned /worlds/... hrefs are
-  // rewritten to /v4/worlds/... at render time. Unlike the manifest-derived
+  // (v4/current) and /v5/worlds/* (pre-release). They follow the same URL
+  // resolution model: on v5 pages, unversioned /worlds/... hrefs are
+  // rewritten to /v5/worlds/... at render time. Unlike the manifest-derived
   // entries in getSharedUrls, these carry heading hashes.
-  for (const { page, hashes } of worldsV5Pages) {
-    v5Space.urls.set(page.url, { hashes });
-  }
   for (const { page, hashes } of worldsV4Pages) {
-    const meta = { hashes };
-    v5Space.urls.set(`/v4${page.url}`, meta);
-    v4Space.urls.set(`/v4${page.url}`, meta);
-    v4Space.urls.set(page.url, meta);
+    v4Space.urls.set(page.url, { hashes });
   }
-
-  for (const { page, hashes } of v5Pages) {
+  for (const { page, hashes } of worldsV5Pages) {
     const meta = { hashes };
+    v4Space.urls.set(`/v5${page.url}`, meta);
+    v5Space.urls.set(`/v5${page.url}`, meta);
     v5Space.urls.set(page.url, meta);
-    const cookbookUrl = rewriteCookbookUrl(page.url);
-    if (cookbookUrl !== page.url) {
-      // /docs/cookbook/X is served at /cookbook/X — valid in both spaces
-      // (cookbook links are not version-rewritten on v4 pages).
-      v5Space.urls.set(cookbookUrl, meta);
-      v4Space.urls.set(cookbookUrl, meta);
-    }
   }
 
   for (const { page, hashes } of v4Pages) {
     const meta = { hashes };
-    v5Space.urls.set(`/v4${page.url}`, meta);
-    v4Space.urls.set(`/v4${page.url}`, meta);
-    // On v4 pages, unversioned /docs/... hrefs are rewritten to /v4/docs/...
-    // at render time, so they resolve to the v4 page.
     v4Space.urls.set(page.url, meta);
     const cookbookUrl = rewriteCookbookUrl(page.url);
     if (cookbookUrl !== page.url) {
-      v5Space.urls.set(`/v4${cookbookUrl}`, meta);
-      v4Space.urls.set(`/v4${cookbookUrl}`, meta);
+      // /docs/cookbook/X is served at /cookbook/X — valid in both spaces
+      // (cookbook links are not version-rewritten on v5 pages).
+      v4Space.urls.set(cookbookUrl, meta);
+      v5Space.urls.set(cookbookUrl, meta);
+    }
+  }
+
+  for (const { page, hashes } of v5Pages) {
+    const meta = { hashes };
+    v4Space.urls.set(`/v5${page.url}`, meta);
+    v5Space.urls.set(`/v5${page.url}`, meta);
+    // On v5 pages, unversioned /docs/... hrefs are rewritten to /v5/docs/...
+    // at render time, so they resolve to the v5 page.
+    v5Space.urls.set(page.url, meta);
+    const cookbookUrl = rewriteCookbookUrl(page.url);
+    if (cookbookUrl !== page.url) {
+      v4Space.urls.set(`/v5${cookbookUrl}`, meta);
+      v5Space.urls.set(`/v5${cookbookUrl}`, meta);
     }
   }
 
@@ -181,15 +180,9 @@ function buildSpaces(
  * concrete URLs already in the space, so a redirect never blanket-validates
  * URLs whose destination doesn't exist.
  *
- * Destinations are resolved against the v5 space, which is the real HTTP URL
- * space (unprefixed URLs are served by the current version, /v4 ones by the
- * maintenance version). Redirects are matched by the server before a page
- * renders, so the render-time /docs → /v4/docs href rewriting never applies
- * to them — a /v5/... link on a v4 page still lands on the v5 page.
- *
- * Sources under /docs are only reachable from v5 pages (on v4 pages the
- * render-time rewrite turns /docs/... into /v4/docs/..., which skips the
- * redirect), so they are only added to the v5 space.
+ * Sources under /docs are only reachable from v4 pages (on v5 pages the
+ * render-time rewrite turns /docs/... into /v5/docs/..., which skips the
+ * redirect), so they are only added to the v4 space.
  */
 async function applyRedirects(v4Space: Scanned, v5Space: Scanned) {
   const redirects = (await nextConfig.redirects?.()) ?? [];
@@ -199,23 +192,18 @@ async function applyRedirects(v4Space: Scanned, v5Space: Scanned) {
 
     const spaces =
       src.startsWith('/docs') && !src.startsWith('/docs/cookbook')
-        ? [v5Space]
+        ? [v4Space]
         : [v4Space, v5Space];
 
     for (const space of spaces) {
-      applyRedirectToSpace(space, src, dest, v5Space);
+      applyRedirectToSpace(space, src, dest);
     }
   }
 }
 
-function applyRedirectToSpace(
-  space: Scanned,
-  src: string,
-  dest: string,
-  httpSpace: Scanned
-) {
+function applyRedirectToSpace(space: Scanned, src: string, dest: string) {
   if (!src.includes(':')) {
-    const meta = httpSpace.urls.get(dest);
+    const meta = space.urls.get(dest);
     if (meta) space.urls.set(src, meta);
     return;
   }
@@ -225,7 +213,7 @@ function applyRedirectToSpace(
   // Expand by swapping prefixes against known URLs.
   const srcPrefix = src.slice(0, src.indexOf('/:'));
   const destPrefix = dest.slice(0, dest.indexOf('/:'));
-  for (const [url, meta] of [...httpSpace.urls]) {
+  for (const [url, meta] of [...space.urls]) {
     if (url.startsWith(`${destPrefix}/`)) {
       space.urls.set(srcPrefix + url.slice(destPrefix.length), meta);
     }
@@ -283,7 +271,7 @@ function getFrontmatterRefs(raw: string): string[] {
 
 /**
  * Validate frontmatter `related` and `prerequisites` references. These are
- * version-relative: a /docs/... reference on a v4 page must exist in the v4
+ * version-relative: a /docs/... reference on a v5 page must exist in the v5
  * content tree (matching how the page's links resolve when rendered).
  */
 function checkFrontmatterRefs(
@@ -315,10 +303,10 @@ function checkFrontmatterRefs(
 async function checkLinks() {
   const [v4Pages, v5Pages, worldsV4Pages, worldsV5Pages, shared] =
     await Promise.all([
-      loadPages(v4Source),
       loadPages(source),
-      loadPages(v4WorldsSource),
+      loadPages(v5Source),
       loadPages(worldsSource),
+      loadPages(v5WorldsSource),
       getSharedUrls(),
     ]);
 
@@ -350,9 +338,9 @@ async function checkLinks() {
         checkRelativePaths: 'as-url',
       }),
       // World pages resolve links version-relative, exactly like docs pages:
-      // v5 world pages against the v5 space, v4 world pages against the v4
+      // v4 world pages against the v4 space, v5 world pages against the v5
       // space (where unversioned /docs and /worlds hrefs are render-rewritten
-      // into the /v4 view).
+      // into the /v5 view).
       validateFiles(toFileObjects(worldsV4Pages), {
         scanned: v4Space,
         markdown,

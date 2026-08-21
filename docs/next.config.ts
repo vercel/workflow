@@ -25,31 +25,9 @@ const config: NextConfig = {
         permanent: true,
       },
       {
-        source: '/v4/docs',
-        destination: '/v4/docs/getting-started',
+        source: '/v5/docs',
+        destination: '/v5/docs/getting-started',
         permanent: false,
-      },
-      // v5 is the current version and is served unprefixed, so the whole /v5
-      // URL space (used while v5 was a pre-release) maps onto its unprefixed
-      // equivalent. Rules further down that move an unprefixed path (the
-      // api-reference restructure, the world docs) apply on the following hop.
-      //
-      // v4 content also links here on purpose: hrefs on a /v4 page are
-      // rewritten into the /v4 view at render time, so a /v5/... href is the
-      // only way for v4 content to point at the current version's page.
-      //
-      // Bare /v5 needs its own rule: `:path*` matches zero segments, but the
-      // expanded destination is then the empty string, which Next.js emits as
-      // an empty Location header.
-      {
-        source: '/v5',
-        destination: '/',
-        permanent: true,
-      },
-      {
-        source: '/v5/:path*',
-        destination: '/:path*',
-        permanent: true,
       },
       {
         source: '/docs/cookbook',
@@ -79,7 +57,7 @@ const config: NextConfig = {
       // Redirect old world docs to the /worlds routes. The world pages
       // (and Building a World) were removed from the versioned docs trees;
       // content/worlds/{v4,v5} is the canonical source, served at /worlds/*
-      // (current) and /v4/worlds/* (maintenance).
+      // (current) and /v5/worlds/* (pre-release).
       {
         source: '/docs/deploying/world/local-world',
         destination: '/worlds/local',
@@ -96,18 +74,18 @@ const config: NextConfig = {
         permanent: true,
       },
       {
-        source: '/v4/docs/deploying/world/local-world',
-        destination: '/v4/worlds/local',
+        source: '/v5/docs/deploying/world/local-world',
+        destination: '/v5/worlds/local',
         permanent: true,
       },
       {
-        source: '/v4/docs/deploying/world/postgres-world',
-        destination: '/v4/worlds/postgres',
+        source: '/v5/docs/deploying/world/postgres-world',
+        destination: '/v5/worlds/postgres',
         permanent: true,
       },
       {
-        source: '/v4/docs/deploying/world/vercel-world',
-        destination: '/v4/worlds/vercel',
+        source: '/v5/docs/deploying/world/vercel-world',
+        destination: '/v5/worlds/vercel',
         permanent: true,
       },
       {
@@ -116,20 +94,20 @@ const config: NextConfig = {
         permanent: true,
       },
       {
-        source: '/v4/docs/deploying/building-a-world',
-        destination: '/v4/worlds/building-a-world',
+        source: '/v5/docs/deploying/building-a-world',
+        destination: '/v5/worlds/building-a-world',
         permanent: true,
       },
       // The worlds listing and compare pages are unversioned; send the
-      // version-prefixed URLs (reachable via the render-time /v4 link
-      // rewrite on maintenance pages) to the canonical routes.
+      // version-prefixed URLs (reachable via the render-time /v5 link
+      // rewrite on pre-release pages) to the canonical routes.
       {
-        source: '/v4/worlds',
+        source: '/v5/worlds',
         destination: '/worlds',
         permanent: false,
       },
       {
-        source: '/v4/worlds/compare',
+        source: '/v5/worlds/compare',
         destination: '/worlds/compare',
         permanent: false,
       },
@@ -248,16 +226,18 @@ const config: NextConfig = {
       // setAttributes graduated from experimental_setAttributes; the API
       // reference page moved with it.
       {
-        source: '/docs/api-reference/workflow/experimental-set-attributes',
-        destination: '/docs/api-reference/workflow/set-attributes',
+        source: '/v5/docs/api-reference/workflow/experimental-set-attributes',
+        destination: '/v5/docs/api-reference/workflow/set-attributes',
         permanent: true,
       },
-      // setAttributes is v5-only, so neither the graduated nor the
-      // experimental path has a page in the v4 tree; both land on the
-      // section index.
+      // setAttributes is v5-only, so the unversioned path has no page yet.
+      // Land on the section index directly (no redirect chain through the
+      // /docs/api-reference/workflow/set-attributes fallback below). Point
+      // this at /docs/api-reference/workflow/set-attributes once v5 becomes
+      // the default version.
       {
-        source: '/v4/docs/api-reference/workflow/experimental-set-attributes',
-        destination: '/v4/docs/api-reference/workflow',
+        source: '/docs/api-reference/workflow/experimental-set-attributes',
+        destination: '/docs/api-reference/workflow',
         permanent: false,
       },
       {
@@ -277,8 +257,8 @@ const config: NextConfig = {
         permanent: true,
       },
       {
-        source: '/v4/docs/api-reference/workflow-api/world/observability',
-        destination: '/v4/docs/api-reference/workflow-observability',
+        source: '/v5/docs/api-reference/workflow-api/world/observability',
+        destination: '/v5/docs/api-reference/workflow-observability',
         permanent: true,
       },
       {
@@ -287,8 +267,8 @@ const config: NextConfig = {
         permanent: true,
       },
       {
-        source: '/v4/docs/api-reference/workflow-api/get-world',
-        destination: '/v4/docs/api-reference/workflow-runtime/get-world',
+        source: '/v5/docs/api-reference/workflow-api/get-world',
+        destination: '/v5/docs/api-reference/workflow-runtime/get-world',
         permanent: true,
       },
       {
@@ -297,8 +277,8 @@ const config: NextConfig = {
         permanent: true,
       },
       {
-        source: '/v4/docs/api-reference/workflow-api/world',
-        destination: '/v4/docs/api-reference/workflow-runtime/world',
+        source: '/v5/docs/api-reference/workflow-api/world',
+        destination: '/v5/docs/api-reference/workflow-runtime/world',
         permanent: true,
       },
       {
@@ -307,113 +287,99 @@ const config: NextConfig = {
         permanent: true,
       },
       {
-        source: '/v4/docs/api-reference/workflow-api/world/:path*',
-        destination: '/v4/docs/api-reference/workflow-runtime/world/:path*',
+        source: '/v5/docs/api-reference/workflow-api/world/:path*',
+        destination: '/v5/docs/api-reference/workflow-runtime/world/:path*',
         permanent: true,
       },
       // --- Version-switcher fallbacks ---
-      // The version switcher adds or drops the /v4 route prefix without
-      // checking that the page exists in the target version, so pages that
-      // live in only one docs tree 404 on switch. Each rule below covers a
-      // page missing from one version and lands on the nearest equivalent
+      // The version switcher swaps the /v5 route prefix without checking
+      // that the page exists in the target version, so pages that exist in
+      // only one docs tree 404 on switch. Each rule below covers a page
+      // missing from one version and lands on the nearest equivalent
       // (usually the section index). All are temporary redirects: they must
-      // be revisited when content is backported, and the /v4 ones can be
-      // dropped wholesale once the v4 docs are retired.
+      // be revisited when content is backported or when v5 becomes the
+      // default version (which swaps the trees served at /docs).
       //
       // Pages that exist only in v5 (v5 -> v4 switch):
       {
-        source: '/v4/docs/whats-new',
-        destination: '/v4/docs',
+        source: '/docs/api-reference/workflow/set-attributes',
+        destination: '/docs/api-reference/workflow',
         permanent: false,
       },
       {
-        source: '/v4/docs/api-reference/workflow/set-attributes',
-        destination: '/v4/docs/api-reference/workflow',
+        source: '/docs/api-reference/workflow-errors/precondition-failed-error',
+        destination: '/docs/api-reference/workflow-errors',
         permanent: false,
       },
       {
-        source:
-          '/v4/docs/api-reference/workflow-errors/precondition-failed-error',
-        destination: '/v4/docs/api-reference/workflow-errors',
-        permanent: false,
-      },
-      {
-        source: '/v4/docs/api-reference/workflow-runtime/world/analytics',
-        destination: '/v4/docs/api-reference/workflow-runtime/world',
+        source: '/docs/api-reference/workflow-runtime/world/analytics',
+        destination: '/docs/api-reference/workflow-runtime/world',
         permanent: false,
       },
       {
         source:
-          '/v4/docs/changelog/(attributes-mvp|eager-processing|step-message-ownership)',
-        destination: '/v4/docs/changelog',
+          '/docs/changelog/(attributes-mvp|eager-processing|step-message-ownership)',
+        destination: '/docs/changelog',
         permanent: false,
       },
       {
-        source: '/v4/docs/configuration',
-        destination: '/v4/docs/deploying',
+        source: '/docs/configuration',
+        destination: '/docs/deploying',
         permanent: false,
       },
       {
-        source: '/v4/docs/configuration/:path*',
-        destination: '/v4/docs/deploying',
+        source: '/docs/configuration/:path*',
+        destination: '/docs/deploying',
         permanent: false,
       },
       {
-        source: '/v4/docs/errors/abort-signal-timeout-in-workflow',
-        destination: '/v4/docs/errors',
+        source: '/docs/errors/abort-signal-timeout-in-workflow',
+        destination: '/docs/errors',
         permanent: false,
       },
       {
-        source: '/v4/docs/foundations/cancellation',
-        destination: '/v4/docs/foundations',
+        source: '/docs/foundations/cancellation',
+        destination: '/docs/foundations',
         permanent: false,
       },
       // v4 has no how-it-works index page; foundations is the closest
       // conceptual landing for the v5 cancellation internals page.
       {
-        source: '/v4/docs/how-it-works/cancellation',
-        destination: '/v4/docs/foundations',
+        source: '/docs/how-it-works/cancellation',
+        destination: '/docs/foundations',
         permanent: false,
       },
       {
-        source: '/v4/docs/getting-started/react-router',
-        destination: '/v4/docs/getting-started',
+        source: '/docs/getting-started/react-router',
+        destination: '/docs/getting-started',
         permanent: false,
       },
       {
-        source: '/v4/docs/getting-started/react-router/:path*',
-        destination: '/v4/docs/getting-started',
+        source: '/docs/getting-started/react-router/:path*',
+        destination: '/docs/getting-started',
         permanent: false,
       },
       {
         source:
-          '/v4/docs/internal/(nitro-native-build|nitro-web-ui|serializable-abort-controller)',
-        destination: '/v4/docs/internal',
+          '/docs/internal/(nitro-native-build|nitro-web-ui|serializable-abort-controller)',
+        destination: '/docs/internal',
         permanent: false,
       },
       {
-        source: '/v4/docs/observability/(attributes|tracing)',
-        destination: '/v4/docs/observability',
-        permanent: false,
-      },
-      // The World upgrade guide describes the v4 -> v5 spec move, so it has no
-      // v4 counterpart; the World spec it starts from is documented in the v4
-      // Building a World page.
-      {
-        source: '/v4/worlds/upgrading-to-v5',
-        destination: '/v4/worlds/building-a-world',
+        source: '/docs/observability/(attributes|tracing)',
+        destination: '/docs/observability',
         permanent: false,
       },
       // Pages that exist only in v4 (v4 -> v5 switch):
       {
-        source: '/docs/api-reference/workflow-runtime/step-entrypoint',
-        destination: '/docs/api-reference/workflow-runtime',
+        source: '/v5/docs/api-reference/workflow-runtime/step-entrypoint',
+        destination: '/v5/docs/api-reference/workflow-runtime',
         permanent: false,
       },
-      // /cookbook/advanced has no index page; fall back to the root.
+      // /v5/cookbook/advanced has no index page; fall back to the root.
       {
-        source: '/cookbook/advanced/distributed-abort-controller',
-        destination: '/cookbook',
+        source: '/v5/cookbook/advanced/distributed-abort-controller',
+        destination: '/v5/cookbook',
         permanent: false,
       },
     ];

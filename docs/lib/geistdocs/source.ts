@@ -31,7 +31,7 @@ const rewriteLocalDocsUrlForVersion = (url: string, versionPrefix: string) => {
     return replacePathPrefix(url, DOCS_PREFIX, `${versionPrefix}/docs`);
   }
 
-  // World docs are versioned like the docs trees (/worlds vs /v4/worlds), so
+  // World docs are versioned like the docs trees (/worlds vs /v5/worlds), so
   // links authored against the raw /worlds/... space get the same treatment.
   if (versionPrefix && hasPathPrefix(url, WORLDS_PREFIX)) {
     return replacePathPrefix(url, WORLDS_PREFIX, `${versionPrefix}/worlds`);
@@ -112,32 +112,32 @@ const expandAutoCards = (
 
 const versionedSources = createVersionedSources({
   config,
-  current: 'v5',
+  current: 'v4',
   versions: [
     {
-      id: 'v5',
-      label: 'v5 (Latest)',
-      docs: v5docs,
+      id: 'v4',
+      label: 'v4 (Latest)',
+      docs: v4docs,
       baseUrl: '/docs',
       markdown: {
         transform: (markdown, { page }) =>
           rewriteDocsUrlsForVersion(
-            expandAutoCards(markdown, 'v5', page.url),
+            expandAutoCards(markdown, 'v4', page.url),
             ''
           ),
       },
     },
     {
-      id: 'v4',
-      label: 'v4 (Maintenance)',
-      docs: v4docs,
+      id: 'v5',
+      label: 'v5 (Pre-release)',
+      docs: v5docs,
       baseUrl: '/docs',
-      routePrefix: '/v4',
+      routePrefix: '/v5',
       markdown: {
         transform: (markdown, { page }) =>
           rewriteDocsUrlsForVersion(
-            expandAutoCards(markdown, 'v4', page.url),
-            '/v4'
+            expandAutoCards(markdown, 'v5', page.url),
+            '/v5'
           ),
       },
     },
@@ -249,71 +249,71 @@ export const cookbookSource = createCookbookRouteSource(
   }
 );
 
-export const v4GeistdocsSource = createDocsRouteSource(
-  versionedSources.byId.v4,
+export const v5GeistdocsSource = createDocsRouteSource(
+  versionedSources.byId.v5,
   {
-    id: 'v4-docs',
-    label: 'v4 Docs',
-    versionPrefix: '/v4',
+    id: 'v5-docs',
+    label: 'v5 Docs',
+    versionPrefix: '/v5',
   }
 );
 
-export const v4CookbookSource = createCookbookRouteSource(
-  versionedSources.byId.v4,
+export const v5CookbookSource = createCookbookRouteSource(
+  versionedSources.byId.v5,
   {
-    id: 'v4-cookbook',
-    label: 'v4 Cookbook',
-    versionPrefix: '/v4',
+    id: 'v5-cookbook',
+    label: 'v5 Cookbook',
+    versionPrefix: '/v5',
   }
 );
 
-// Canonical World docs, versioned like the docs trees: v5 (current) is served
-// at /worlds/*, v4 at /v4/worlds/*. These pages are rendered by the worlds app
+// Canonical World docs, versioned like the docs trees: v4 (current) is served
+// at /worlds/*, v5 at /v5/worlds/*. These pages are rendered by the worlds app
 // routes (not the docs layout), but the bundles are included in the source
 // lists so they stay covered by search, llms.txt, sitemap(.md), and the
 // markdown export routes.
 export const worldsSourceBundle = createSource({
   config,
-  docs: worldsV5Docs,
+  docs: worldsV4Docs,
   baseUrl: '/worlds',
   id: 'worlds',
   label: 'Worlds',
 });
 
-const v4WorldsBundleRaw = createSource({
+const v5WorldsBundleRaw = createSource({
   config,
-  docs: worldsV4Docs,
+  docs: worldsV5Docs,
   baseUrl: '/worlds',
-  id: 'v4-worlds',
-  label: 'v4 Worlds',
+  id: 'v5-worlds',
+  label: 'v5 Worlds',
   markdown: {
-    // Match the v4 docs markdown export: links authored against the raw
-    // /docs/... and /worlds/... spaces are rewritten into the /v4 view.
-    transform: (markdown) => rewriteDocsUrlsForVersion(markdown, '/v4'),
+    // Match the v5 docs markdown export: links authored against the raw
+    // /docs/... and /worlds/... spaces are rewritten into the /v5 view.
+    transform: (markdown) => rewriteDocsUrlsForVersion(markdown, '/v5'),
   },
 });
 
-// Route/list surfaces see the v4 worlds pages in their public /v4/worlds/...
-// URL space (the raw loader keeps /worlds/... URLs, mirroring how the v4 docs
+// Route/list surfaces see the v5 worlds pages in their public /v5/worlds/...
+// URL space (the raw loader keeps /worlds/... URLs, mirroring how the v5 docs
 // source is wrapped by createDocsRouteSource).
-export const v4WorldsSourceBundle: GeistdocsSourceBundle = {
-  ...v4WorldsBundleRaw,
-  baseUrl: '/v4/worlds',
+export const v5WorldsSourceBundle: GeistdocsSourceBundle = {
+  ...v5WorldsBundleRaw,
+  baseUrl: '/v5/worlds',
   source: {
-    ...v4WorldsBundleRaw.source,
+    ...v5WorldsBundleRaw.source,
     getPage: ((slug?: string[], lang?: string) => {
-      const page = v4WorldsBundleRaw.source.getPage(slug, lang);
-      return page ? withUrl(page, `/v4${page.url}`) : undefined;
+      const page = v5WorldsBundleRaw.source.getPage(slug, lang);
+      return page ? withUrl(page, `/v5${page.url}`) : undefined;
     }) as Source['getPage'],
     getPages: ((lang?: string) =>
-      v4WorldsBundleRaw.source
+      v5WorldsBundleRaw.source
         .getPages(lang)
-        .map((page) => withUrl(page, `/v4${page.url}`))) as Source['getPages'],
+        .map((page) => withUrl(page, `/v5${page.url}`))) as Source['getPages'],
   },
 };
 
 export const worldsSource = worldsSourceBundle.source;
-export const v4WorldsSource = v4WorldsBundleRaw.source;
+export const v5WorldsSource = v5WorldsBundleRaw.source;
 
 export const currentSources = [
   geistdocsSource,
@@ -323,13 +323,13 @@ export const currentSources = [
 export const allSources = [
   geistdocsSource,
   cookbookSource,
-  v4GeistdocsSource,
-  v4CookbookSource,
+  v5GeistdocsSource,
+  v5CookbookSource,
   worldsSourceBundle,
-  v4WorldsSourceBundle,
+  v5WorldsSourceBundle,
 ];
 
 export const source = versionedSources.current.source;
-export const v4Source = versionedSources.byId.v4.source;
+export const v5Source = versionedSources.byId.v5.source;
 export const getPageImage = versionedSources.current.getPageImage;
 export const getLLMText = versionedSources.current.getPageMarkdown;

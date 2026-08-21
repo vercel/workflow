@@ -5,7 +5,7 @@ import {
   type RecipeCategory,
   recipes,
 } from '../cookbook-tree';
-import { source, v4Source } from './source';
+import { source, v5Source } from './source';
 
 const COOKBOOK_DOCS_PREFIX_RE = /\/docs\/cookbook(?=\/|$)/g;
 
@@ -18,8 +18,8 @@ export function rewriteCookbookUrl(url: string): string {
 
 /**
  * Rewrite a fumadocs source URL (`/docs/cookbook/...`) to the public cookbook
- * URL for a given version prefix. Pass '' for v5 (`/cookbook/...`) or '/v4'
- * for v4 (`/v4/cookbook/...`).
+ * URL for a given version prefix. Pass '' for v4 (`/cookbook/...`) or '/v5'
+ * for v5 (`/v5/cookbook/...`).
  */
 export function rewriteCookbookUrlForVersion(
   url: string,
@@ -42,13 +42,13 @@ function isCookbookFolder(node: Node): boolean {
 /**
  * Return the docs page tree with cookbook nodes removed.
  * Used by the docs layout so the sidebar never shows cookbook entries.
- * Pass 'v4' to use the v4 source tree; defaults to 'v5' (the current version).
+ * Pass 'v5' to use the v5 source tree; defaults to 'v4'.
  */
 export function getDocsTreeWithoutCookbook(
   lang: string,
-  version: 'v4' | 'v5' = 'v5'
+  version: 'v4' | 'v5' = 'v4'
 ): Root {
-  const src = version === 'v4' ? v4Source : source;
+  const src = version === 'v5' ? v5Source : source;
   const fullTree = src.pageTree[lang];
   return {
     ...fullTree,
@@ -70,7 +70,7 @@ function createRecipePage(
   slug: string,
   versionPrefix: string
 ): PageNode {
-  const versionId = versionPrefix ? versionPrefix.replace(/^\//, '') : 'v5';
+  const versionId = versionPrefix ? versionPrefix.replace(/^\//, '') : 'v4';
   const recipe = recipes[slug];
   const versionedRecipe = {
     ...recipe,
@@ -89,8 +89,8 @@ function createCategoryFolder(
   category: RecipeCategory,
   versionPrefix: string
 ): FolderNode {
-  // Derive version ID from prefix: '/v4' → 'v4', '' → 'v5'
-  const versionId = versionPrefix ? versionPrefix.replace(/^\//, '') : 'v5';
+  // Derive version ID from prefix: '/v5' → 'v5', '' → 'v4'
+  const versionId = versionPrefix ? versionPrefix.replace(/^\//, '') : 'v4';
   const categoryRecipes = Object.values(recipes).filter(
     (recipe) =>
       recipe.category === category && !recipe.skipVersions?.includes(versionId)
@@ -107,15 +107,15 @@ function createCategoryFolder(
 
 /**
  * Build a standalone cookbook sidebar tree from cookbook-tree metadata.
- * Pass a versionPrefix (e.g. '/v4') to produce version-prefixed sidebar URLs.
+ * Pass a versionPrefix (e.g. '/v5') to produce version-prefixed sidebar URLs.
  */
 export function getCookbookTree(lang: string, versionPrefix = ''): Root {
-  const src = versionPrefix ? v4Source : source;
+  const src = versionPrefix ? v5Source : source;
   const fullTree = src.pageTree[lang];
 
   return {
     ...fullTree,
-    $id: `cookbook__root__${versionPrefix ? versionPrefix.replace(/^\//, '') : 'v5'}`,
+    $id: `cookbook__root__${versionPrefix ? versionPrefix.replace(/^\//, '') : 'v4'}`,
     name: 'Cookbook',
     children: [
       createOverviewPage(versionPrefix),

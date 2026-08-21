@@ -1,20 +1,20 @@
 import { DocsLayout } from '@/components/geistdocs/docs-layout';
-import { MaintenanceBanner } from '@/components/geistdocs/maintenance-banner';
+import { PreReleaseBanner } from '@/components/geistdocs/pre-release-banner';
 import { getCookbookTree } from '@/lib/geistdocs/cookbook-source';
-import { MAINTENANCE_VERSION } from '@/lib/geistdocs/versions';
+import { PRE_RELEASE_VERSION } from '@/lib/geistdocs/versions';
 
 const Layout = async ({
   children,
   params,
-}: LayoutProps<'/[lang]/v4/cookbook'>) => {
+}: LayoutProps<'/[lang]/v5/cookbook'>) => {
   const { lang } = await params;
   return (
     <div className="bg-background-200">
-      <MaintenanceBanner pathname={`/${lang}/v4/cookbook`} />
+      <PreReleaseBanner pathname={`/${lang}/v5/cookbook`} />
       <DocsLayout
-        currentVersion={MAINTENANCE_VERSION.id}
+        currentVersion={PRE_RELEASE_VERSION.id}
         lang={lang}
-        tree={getCookbookTree(lang, MAINTENANCE_VERSION.prefix)}
+        tree={getCookbookTree(lang, PRE_RELEASE_VERSION.prefix)}
       >
         {children}
       </DocsLayout>
