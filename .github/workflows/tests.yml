@@ -650,23 +650,19 @@ jobs:
     # builds remotely on Vercel's own infra — the exact same pipeline the
     # GitHub App uses for e2e-vercel-prod's deployments — so none of that
     # applies here.
-    # Opt-in on PRs, unconditional on main. Three real `vercel deploy`s per
-    # run is too much to charge every unrelated PR in the repo for a transport
-    # that is off by default; main still gets the signal on every commit.
-    # `workflow-server-test` counts as opt-in too — that label exists to test
-    # workflow-server changes, which is where the WS protocol lives.
-    #
-    # `on.pull_request.types` has no `labeled`, so a label added to an already
-    # open PR takes effect on the next push, not immediately.
+    # Runs on every PR. It was opt-in behind `ws-transport-test` when four real
+    # `vercel deploy`s were too much to charge an unrelated PR for a transport
+    # that was off by default. That reasoning expired with the default: every
+    # deployment now uses WebSockets, so this stopped being a cost charged for
+    # someone else's feature and became the only check that the feature works.
     name: E2E Vercel WS Transport Test (${{ matrix.app.name }})
     runs-on: ubuntu-latest
     timeout-minutes: 30
     needs: ci-scope
-    if: >-
-      ${{ needs.ci-scope.outputs.fast-path != 'true'
-      && (github.event_name != 'pull_request'
-      || contains(github.event.pull_request.labels.*.name, 'ws-transport-test')
-      || contains(github.event.pull_request.labels.*.name, 'workflow-server-test')) }}
+    # Mirrors e2e-vercel-prod and the HTTP lane: this is the only lane that
+    # *asserts* the socket carried the events, since e2e-vercel-prod inherits
+    # the default but checks nothing.
+    if: ${{ needs.ci-scope.outputs.fast-path != 'true' }}
     permissions:
       id-token: write
       contents: read
@@ -1670,12 +1666,6 @@ jobs:
           FAST_PATH: ${{ needs.ci-scope.outputs.fast-path }}
           VALIDATION_FAST_PATH: ${{ needs.ci-scope.outputs.validation-fast-path }}
           HAS_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
-          # e2e-vercel-ws-transport runs on main and on labelled PRs only, so
-          # its status is required in exactly those cases and must be allowed
-          # to be `skipped` otherwise.
-          WS_REQUIRED: ${{ github.event_name != 'pull_request'
-            || contains(github.event.pull_request.labels.*.name, 'ws-transport-test')
-            || contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
         run: |
           FAILED_JOBS=()
 
@@ -1713,11 +1703,7 @@ jobs:
             [[ "$UNIT_STATUS" == "success" ]] || FAILED_JOBS+=("unit ($UNIT_STATUS)")
             [[ "$BUILD_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-package-build ($BUILD_STATUS)")
             [[ "$VERCEL_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-vercel-prod ($VERCEL_STATUS)")
-            if [[ "$WS_REQUIRED" == "true" ]]; then
-              [[ "$VERCEL_WS_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-vercel-ws-transport ($VERCEL_WS_STATUS)")
-            else
-              [[ "$VERCEL_WS_STATUS" == "skipped" ]] || echo "Warning: e2e-vercel-ws-transport ran unlabelled ($VERCEL_WS_STATUS)"
-            fi
+            [[ "$VERCEL_WS_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-vercel-ws-transport ($VERCEL_WS_STATUS)")
             [[ "$VERCEL_HTTP_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-vercel-http-transport ($VERCEL_HTTP_STATUS)")
             [[ "$LOCAL_DEV_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-local-dev ($LOCAL_DEV_STATUS)")
             [[ "$LOCAL_PROD_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-local-prod ($LOCAL_PROD_STATUS)")
