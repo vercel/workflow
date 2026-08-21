@@ -54,7 +54,16 @@ afterEach(() => {
  *
  * Adding a package that runs in the host server means adding it here.
  */
-const BUNDLED_RUNTIME_PACKAGES = ['core', 'world', 'ai', 'nest'];
+const BUNDLED_RUNTIME_PACKAGES = [
+  'core',
+  'workflow',
+  'world',
+  'utils',
+  'errors',
+  'serde',
+  'ai',
+  'nest',
+];
 
 function bundledPackages(): string[] {
   const packages = path.join(repoRoot, 'packages');
@@ -80,7 +89,7 @@ describe('module-scope state rule', () => {
   it('finds the packages to check', () => {
     // Guards the sweep below against silently checking nothing.
     expect(bundled.map((dir) => path.basename(dir))).toEqual(
-      expect.arrayContaining(['world-local', 'world-vercel', 'core'])
+      expect.arrayContaining(['world-local', 'world-vercel', 'core', 'utils'])
     );
   });
 
