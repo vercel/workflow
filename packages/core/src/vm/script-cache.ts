@@ -28,15 +28,10 @@ import { globalSingleton } from '@workflow/utils';
  * Keyed by `filename` then `code`. The `filename` is part of the key on
  * purpose, NOT as a dedupe key: it is baked into the compiled script's source
  * attribution and surfaces in stack traces, where `remapErrorStack` keys on it
- * to map frames back to the user's source. Two workflows in the same bundle
- * share the same `code` but have different `filename`s, so they intentionally
- * compile to distinct `Script`s; collapsing them onto a single shared `Script`
- * would misattribute one workflow's stack frames to another file. The cost of
- * keeping them distinct is that the whole bundle is compiled once per distinct
- * `filename` (not once per bundle); in practice that is bounded by the number
- * of source files that define a workflow, and because V8 lazily compiles
- * function bodies the duplicated work is the (cheap) top-level parse, not full
- * per-workflow codegen.
+ * to map frames back to the user's source. A legacy monolithic bundle can use
+ * the same `code` under several source filenames, so those combinations must
+ * compile to distinct `Script`s; collapsing them would misattribute stack
+ * frames. Per-source bundles normally have one filename each.
  *
  * We use a nested Map (filename -> code -> Script) so development builds can
  * retain the current bundle for every workflow source while independently
