@@ -58,6 +58,24 @@ jobs:
             exit 1
           fi
 
+  wired-test-suites:
+    name: Wired Test Suites
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+
+      # `turbo test` only runs a package's tests if that package declares a
+      # `test` script, so a suite can exist for months without ever running.
+      # See #3731.
+      - name: Check every test file is run by something
+        run: node scripts/check-test-suites-wired.mjs
+
   scripts-tests:
     name: CI Scripts Tests
     runs-on: ubuntu-latest
