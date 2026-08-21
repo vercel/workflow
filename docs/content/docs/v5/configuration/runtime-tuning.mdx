@@ -140,6 +140,16 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 - Delay before a re-invocation caused by a rejected event creation.
 - Unlike an in-process restart, which re-reads immediately, a re-invocation only happens once the in-process budget failed to catch up — so the delay gives the other writers a moment to quiesce.
 
+### `WORKFLOW_LOG_ORDER_DRAWS`
+
+- Default: enabled
+- Experimental. Pins correlation-ID draw order to event-log order: a branch-deciding delivery (a step result, hook payload, or wait completion) resolves to the workflow only after every earlier-in-log delivery's continuation has fully quiesced, and never ahead of a lower-slot delivery that is committed to happening.
+- Without it, a delivery that resolves while an earlier delivery's continuation is still a few microtask hops from its next step/hook/wait call can overtake it on the run's shared correlation-ID sequence. Draw order — and therefore correlation IDs — then depends on how much of the event log a replay had loaded, and two concurrent replays holding different-length prefixes can bind one ID to two different entities, failing the run with `CORRUPTED_EVENT_LOG`.
+- Costs one event-loop turn (roughly 15-20 microseconds via `setImmediate`) per branch-deciding delivery during replay, more when continuations genuinely overlap. Measured on a 100-step sequential replay: about 2ms added end to end.
+- Only applies to the default Node.js VM engine. `WORKFLOW_VM=quickjs` has its own event feed and correlation-ID sequence and is unaffected by this setting.
+- Correlation IDs of runs created before the setting changed are not affected on platforms where a run keeps replaying on the deployment it started on. Elsewhere, only change it while no runs are in flight.
+- Set `0` to opt back into arrival-order delivery resolution. Only the literal value `0` opts out; `false` or `off` leave it enabled.
+
 ## Inline execution
 
 ### `WORKFLOW_V2_TIMEOUT_MS`
