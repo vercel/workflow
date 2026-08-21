@@ -41,3 +41,6 @@ packages/swc-plugin-workflow/build-hash.json
 workbench/nextjs-*/public/.well-known/workflow
 workbench/sveltekit/static/.well-known/workflow
 
+# Per-run e2e diagnostics sidecars written to the repo root by the harness
+# (writeDiagnosticsSidecar in packages/core/e2e/utils.ts)
+e2e-diagnostics-*.json
