@@ -21,25 +21,32 @@ describe('spec version constants', () => {
   });
 
   describe('mintedSpecVersion', () => {
-    it('stamps the sealed-log version by default', () => {
-      expect(mintedSpecVersion({})).toBe(SPEC_VERSION_CURRENT);
-      expect(mintedSpecVersion({})).toBe(SPEC_VERSION_SUPPORTS_SEALED_LOG);
+    it('stamps the slot-identity version by default', () => {
+      // Stamping trails reading. Until every reader in the fleet accepts
+      // spec 7 — the Python runtime still caps at 6 — and pre-assigned
+      // positions stop stranding runs, a new run gets the version the whole
+      // fleet can already serve.
+      expect(mintedSpecVersion({})).toBe(SPEC_VERSION_SUPPORTS_SLOT_IDENTITY);
+      expect(mintedSpecVersion({})).not.toBe(SPEC_VERSION_SUPPORTS_SEALED_LOG);
     });
 
-    it('falls back to slot identity when switched off', () => {
-      for (const off of ['0', 'false']) {
-        expect(mintedSpecVersion({ [SEALED_LOG_ENV_VAR]: off })).toBe(
-          SPEC_VERSION_SUPPORTS_SLOT_IDENTITY
+    it('stamps the sealed-log version when opted in', () => {
+      for (const on of ['1', 'true']) {
+        expect(mintedSpecVersion({ [SEALED_LOG_ENV_VAR]: on })).toBe(
+          SPEC_VERSION_CURRENT
+        );
+        expect(mintedSpecVersion({ [SEALED_LOG_ENV_VAR]: on })).toBe(
+          SPEC_VERSION_SUPPORTS_SEALED_LOG
         );
       }
     });
 
-    it('stays on by default for an unset or malformed value', () => {
-      // A flag is an escape hatch, not a hard requirement: a typo must not
-      // silently move a deployment onto the older identity scheme.
-      for (const raw of ['', '1', 'true', 'yes-please']) {
+    it('stays off for an unset, empty, or malformed value', () => {
+      // Opting in is deliberate: a typo must not silently move a deployment
+      // onto a scheme its readers may not accept.
+      for (const raw of ['', '0', 'false', 'yes-please']) {
         expect(mintedSpecVersion({ [SEALED_LOG_ENV_VAR]: raw })).toBe(
-          SPEC_VERSION_CURRENT
+          SPEC_VERSION_SUPPORTS_SLOT_IDENTITY
         );
       }
     });
