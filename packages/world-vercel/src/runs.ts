@@ -1,4 +1,5 @@
 import { WorkflowRunNotFoundError, WorkflowWorldError } from '@workflow/errors';
+import { globalSingleton } from '@workflow/utils';
 import {
   type AttributeChange,
   type BulkCancelWorkflowRunsRequest,
@@ -283,11 +284,15 @@ const LONG_POLL_UNSUPPORTED_TTL_MS = 5 * 60 * 1000;
  * fast path for the other. Bounded by construction: the key is the resolved
  * base URL, of which a process has a handful at most.
  */
-const longPollUnsupportedUntilByBaseUrl = new Map<string, number>();
+const longPoll = globalSingleton(
+  '@workflow/world-vercel//runStatusLongPollSupport',
+  1,
+  () => ({ unsupportedUntilByBaseUrl: new Map<string, number>() })
+);
 
 /** Test-only: forget that the long-poll route was unavailable. @internal */
 export function _resetRunStatusLongPollSupportForTests(): void {
-  longPollUnsupportedUntilByBaseUrl.clear();
+  longPoll.unsupportedUntilByBaseUrl.clear();
 }
 
 /**
@@ -379,7 +384,7 @@ export async function waitForWorkflowRunTerminalStatus(
   );
 
   const { baseUrl } = getHttpUrl(config);
-  const unsupportedUntil = longPollUnsupportedUntilByBaseUrl.get(baseUrl) ?? 0;
+  const unsupportedUntil = longPoll.unsupportedUntilByBaseUrl.get(baseUrl) ?? 0;
 
   if (waitMs === 0 || Date.now() < unsupportedUntil) {
     return getWorkflowRun(id, { resolveData }, config);
@@ -410,7 +415,7 @@ export async function waitForWorkflowRunTerminalStatus(
 
     // Throws WorkflowRunNotFoundError when the run is what was missing.
     const run = await getWorkflowRun(id, { resolveData }, config);
-    longPollUnsupportedUntilByBaseUrl.set(
+    longPoll.unsupportedUntilByBaseUrl.set(
       baseUrl,
       Date.now() + LONG_POLL_UNSUPPORTED_TTL_MS
     );

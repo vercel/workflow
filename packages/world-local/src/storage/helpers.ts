@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { WorkflowWorldError } from '@workflow/errors';
+import { globalSingleton } from '@workflow/utils';
 import { eventIdToSlot } from '@workflow/world';
 import { lock } from 'proper-lockfile';
 import { decodeTime, monotonicFactory } from 'ulid';
@@ -502,10 +503,23 @@ export function hookRecoveryMarkerPath(
 }
 
 /**
- * Create a monotonic ULID factory that ensures ULIDs are always increasing
- * even when generated within the same millisecond.
+ * Monotonic ULID source: IDs are always increasing even when generated within
+ * the same millisecond.
+ *
+ * The factory lives on `globalThis` rather than at module scope because a
+ * bundler can put several copies of this file in one process (see
+ * `globalSingleton`). These IDs name events (`evnt_…`), so two copies each
+ * advancing their own sequence could mint the same event ID twice in one
+ * millisecond, or mint them out of order.
  */
-export const monotonicUlid = monotonicFactory(() => Math.random());
+const ulids = globalSingleton(
+  '@workflow/world-local//storageMonotonicUlid',
+  1,
+  () => ({ next: monotonicFactory(() => Math.random()) })
+);
+
+export const monotonicUlid = (seedTime?: number): string =>
+  ulids.next(seedTime);
 
 /**
  * Creates a function to extract createdAt date from a filename based on ULID.

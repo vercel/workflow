@@ -1,6 +1,7 @@
 import { EventEmitter } from 'node:events';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { globalSingleton } from '@workflow/utils';
 import type {
   GetChunksOptions,
   StreamChunksResponse,
@@ -19,9 +20,16 @@ import {
   writeJSON,
 } from './fs.js';
 
-// Create a monotonic ULID factory that ensures ULIDs are always increasing
-// even when generated within the same millisecond
-const monotonicUlid = monotonicFactory(() => Math.random());
+// Monotonic ULID source for chunk IDs: always increasing even within one
+// millisecond. On `globalThis` rather than at module scope because a bundler
+// can put several copies of this file in one process (see `globalSingleton`),
+// and two copies advancing their own sequences can mint the same `chnk_` ID.
+const chunkIds = globalSingleton(
+  '@workflow/world-local//streamerMonotonicUlid',
+  1,
+  () => ({ next: monotonicFactory(() => Math.random()) })
+);
+const monotonicUlid = (seedTime?: number): string => chunkIds.next(seedTime);
 
 // Schema for the run-to-streams mapping file
 const RunStreamsSchema = z.object({

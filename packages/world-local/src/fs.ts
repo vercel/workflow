@@ -1,6 +1,7 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { EntityConflictError, WorkflowWorldError } from '@workflow/errors';
+import { globalSingleton } from '@workflow/utils';
 import type { PaginatedResponse } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
 import { z } from 'zod';
@@ -9,7 +10,24 @@ import {
   UnwritableDataDirError,
 } from './build-target-mismatch.js';
 
-const ulid = monotonicFactory(() => Math.random());
+/**
+ * Temp-file suffixes for atomic writes, and the write-path caches below.
+ *
+ * On `globalThis` rather than at module scope because a bundler can put several
+ * copies of this file in one process (see `globalSingleton`): per-copy monotonic
+ * factories can hand two writers the same suffix in the same millisecond, and
+ * per-copy caches make the syscalls they exist to skip happen once per copy.
+ */
+const fsState = globalSingleton('@workflow/world-local//fs', 1, () => ({
+  ulid: monotonicFactory(() => Math.random()),
+  // In-memory cache of created files to avoid expensive fs.access() calls.
+  // Safe because we only write once per file path (no overwrites without an
+  // explicit flag).
+  createdFilesCache: new Set<string>(),
+  // Writes repeatedly target a small fixed set of entity directories. Once one
+  // exists in this process, avoid another recursive mkdir syscall per event.
+  createdDirectoriesCache: new Set<string>(),
+}));
 
 /**
  * Truncate a possibly-untrusted value for inclusion in an error message.
@@ -129,19 +147,12 @@ export async function withWindowsRetry<T>(
   throw new Error('Retry loop exited unexpectedly');
 }
 
-// In-memory cache of created files to avoid expensive fs.access() calls
-// This is safe because we only write once per file path (no overwrites without explicit flag)
-const createdFilesCache = new Set<string>();
-// Writes repeatedly target a small fixed set of entity directories. Once one
-// exists in this process, avoid another recursive mkdir syscall per event.
-const createdDirectoriesCache = new Set<string>();
-
 /**
  * Clear write-path caches. Useful for testing or when files are deleted externally.
  */
 export function clearCreatedFilesCache(): void {
-  createdFilesCache.clear();
-  createdDirectoriesCache.clear();
+  fsState.createdFilesCache.clear();
+  fsState.createdDirectoriesCache.clear();
 }
 
 export { ulidToDate } from '@workflow/world';
@@ -274,12 +285,12 @@ export async function listTaggedFilesByExtension(
 
 export async function ensureDir(dirPath: string): Promise<void> {
   const resolvedPath = path.resolve(dirPath);
-  if (createdDirectoriesCache.has(resolvedPath)) {
+  if (fsState.createdDirectoriesCache.has(resolvedPath)) {
     return;
   }
   try {
     await fs.mkdir(resolvedPath, { recursive: true });
-    createdDirectoriesCache.add(resolvedPath);
+    fsState.createdDirectoriesCache.add(resolvedPath);
   } catch (error) {
     // A filesystem that refuses the directory outright will refuse every write
     // into it too, and the caller's write would surface as a confusing ENOENT
@@ -320,7 +331,7 @@ async function withEnsuredDirectory<T>(
 
     // A dev server may outlive an external cleanup of its data directory.
     // Forget the cached directory and retry once after recreating it.
-    createdDirectoriesCache.delete(path.resolve(dirPath));
+    fsState.createdDirectoriesCache.delete(path.resolve(dirPath));
     await ensureDir(dirPath);
     return operation();
   }
@@ -384,7 +395,7 @@ export async function write(
   if (!opts?.overwrite) {
     // Fast path: check in-memory cache first to avoid expensive fs.access() calls
     // This provides significant performance improvement when creating many files
-    if (createdFilesCache.has(filePath)) {
+    if (fsState.createdFilesCache.has(filePath)) {
       throw new EntityConflictError(
         `File ${filePath} already exists and 'overwrite' is false`
       );
@@ -394,7 +405,7 @@ export async function write(
     try {
       await fs.access(filePath);
       // File exists on disk, add to cache for future checks
-      createdFilesCache.add(filePath);
+      fsState.createdFilesCache.add(filePath);
       throw new EntityConflictError(
         `File ${filePath} already exists and 'overwrite' is false`
       );
@@ -406,7 +417,7 @@ export async function write(
     }
   }
 
-  const tempPath = `${filePath}.tmp.${ulid()}`;
+  const tempPath = `${filePath}.tmp.${fsState.ulid()}`;
   let tempFileCreated = false;
   try {
     await withEnsuredDirectory(path.dirname(filePath), async () => {
@@ -415,7 +426,7 @@ export async function write(
       await withWindowsRetry(() => fs.rename(tempPath, filePath));
     });
     // Track this file in cache so future writes know it exists
-    createdFilesCache.add(filePath);
+    fsState.createdFilesCache.add(filePath);
   } catch (error) {
     // Only try to clean up temp file if it was actually created
     if (tempFileCreated) {
@@ -482,7 +493,7 @@ export async function writeExclusive(
   filePath: string,
   data: string
 ): Promise<boolean> {
-  const tempPath = `${filePath}.tmp.${ulid()}`;
+  const tempPath = `${filePath}.tmp.${fsState.ulid()}`;
   let tempFileCreated = false;
 
   try {

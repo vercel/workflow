@@ -1,3 +1,4 @@
+import { globalSingleton } from '@workflow/utils';
 import { isNodeHttpEnabled } from '@workflow/world';
 import {
   createNodeHttpAgents,
@@ -7,10 +8,23 @@ import {
 import { Agent, type Dispatcher, RetryAgent, type RetryHandler } from 'undici';
 import type { APIConfig } from './utils.js';
 
-let _dispatcher: RetryAgent | undefined;
-let _streamDispatcher: RetryAgent | undefined;
-let _streamCloseDispatcher: RetryAgent | undefined;
-let _nodeHttpAgents: NodeHttpAgents | undefined;
+/**
+ * This module's process-wide state: the shared connection pools.
+ *
+ * On `globalThis` rather than at module scope because a bundler can put several
+ * copies of this file in one process (see `globalSingleton`). Per-copy pools
+ * would mean per-copy keep-alive connections — a `register()` that warms the
+ * world would warm a pool no route ever dispatches on, and every layer would
+ * pay its own TCP and TLS handshake on its first request. The recycler's
+ * failure accounting would be split the same way, so a wedged origin would have
+ * to be detected once per copy.
+ */
+const pools = globalSingleton('@workflow/world-vercel//httpPools', 1, () => ({
+  dispatcher: undefined as RetryAgent | undefined,
+  streamDispatcher: undefined as RetryAgent | undefined,
+  streamCloseDispatcher: undefined as RetryAgent | undefined,
+  nodeHttpAgents: undefined as NodeHttpAgents | undefined,
+}));
 
 /**
  * Shared between all agents — connection pooling only. `pipelining` is
@@ -522,9 +536,11 @@ export function createDispatcherRecycler(
  * black-holed HTTP/2 session self-healing. See createDispatcherRecycler and
  * EVENTS_RECYCLE_AFTER_CONSECUTIVE_FAILURES.
  */
-const eventsRecycler = createDispatcherRecycler(
-  () => createEventsDispatcher(),
-  'events transport'
+const eventsRecycler = globalSingleton(
+  '@workflow/world-vercel//eventsDispatcherRecycler',
+  1,
+  () =>
+    createDispatcherRecycler(() => createEventsDispatcher(), 'events transport')
 );
 
 /**
@@ -582,17 +598,17 @@ export function getNodeHttpAgents(
 ): NodeHttpAgents | undefined {
   if (config?.dispatcher) return undefined;
   if (!isNodeHttpEnabled()) return undefined;
-  _nodeHttpAgents ??= createNodeHttpAgents({
+  pools.nodeHttpAgents ??= createNodeHttpAgents({
     maxSockets: BASE_AGENT_OPTIONS.connections,
     keepAliveMs: BASE_AGENT_OPTIONS.keepAliveTimeout,
   });
-  return _nodeHttpAgents;
+  return pools.nodeHttpAgents;
 }
 
 /** Drop the shared node:http pool. Exported for tests; production keeps it. */
 export function _resetNodeHttpAgentsForTests(): void {
-  if (_nodeHttpAgents) destroyNodeHttpAgents(_nodeHttpAgents);
-  _nodeHttpAgents = undefined;
+  if (pools.nodeHttpAgents) destroyNodeHttpAgents(pools.nodeHttpAgents);
+  pools.nodeHttpAgents = undefined;
 }
 
 /**
@@ -751,11 +767,11 @@ export function createStreamDispatcher(
  *   the `Retry-After` header when present.
  */
 function getDefaultDispatcher(): RetryAgent {
-  _dispatcher ??= makeRetryDispatcher(
+  pools.dispatcher ??= makeRetryDispatcher(
     DEFAULT_AGENT_OPTIONS,
     RETRY_AGENT_OPTIONS
   );
-  return _dispatcher;
+  return pools.dispatcher;
 }
 
 /**
@@ -773,12 +789,14 @@ function getDefaultDispatcher(): RetryAgent {
  * at once.
  */
 function getDefaultStreamDispatcher(): RetryAgent {
-  _streamDispatcher ??= createStreamDispatcher(STREAM_RETRY_OPTIONS);
-  return _streamDispatcher;
+  pools.streamDispatcher ??= createStreamDispatcher(STREAM_RETRY_OPTIONS);
+  return pools.streamDispatcher;
 }
 
 /** Shared agent for the idempotent stream close (5xx retriable). */
 function getDefaultStreamCloseDispatcher(): RetryAgent {
-  _streamCloseDispatcher ??= createStreamDispatcher(STREAM_CLOSE_RETRY_OPTIONS);
-  return _streamCloseDispatcher;
+  pools.streamCloseDispatcher ??= createStreamDispatcher(
+    STREAM_CLOSE_RETRY_OPTIONS
+  );
+  return pools.streamCloseDispatcher;
 }

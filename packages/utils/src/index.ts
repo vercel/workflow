@@ -1,4 +1,8 @@
 export {
+  globalSingleton,
+  resetGlobalSingletonForTest,
+} from './global-singleton.js';
+export {
   formatStepName,
   formatWorkflowName,
   parseClassName,

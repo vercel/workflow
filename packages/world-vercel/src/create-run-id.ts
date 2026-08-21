@@ -1,3 +1,4 @@
+import { globalSingleton } from '@workflow/utils';
 import { monotonicFactory } from 'ulid';
 import { bytesToUlid, ulidToBytes } from './run-id/codec.js';
 import { decode, encode } from './run-id/index.js';
@@ -8,21 +9,33 @@ import {
 } from './run-id/regions.js';
 
 /**
- * Underlying monotonic ULID factory. {@link encode} overwrites only the
- * top 11 bits of the randomness section, so the factory's same-millisecond
- * bottom-bit increments survive encoding and consecutive IDs with the same
- * region/version metadata are naturally monotonic. The per-process check in
- * {@link createRunId} exists for the remaining edge case: the metadata
- * changing (e.g. a different `region`) within a single millisecond.
+ * This module's process-wide state: the monotonic ULID factory and the last
+ * emitted run ID (the encoded/tagged form), which together enforce strict
+ * lexicographic monotonicity across calls within a single process even when
+ * the region/version metadata changes between same-millisecond calls.
+ *
+ * {@link encode} overwrites only the top 11 bits of the randomness section, so
+ * the factory's same-millisecond bottom-bit increments survive encoding and
+ * consecutive IDs with the same region/version metadata are naturally monotonic
+ * on their own. The `lastRunId` comparison covers the remaining edge case: the
+ * metadata changing (e.g. a different `region`) within a single millisecond.
+ *
+ * On `globalThis` rather than at module scope because a bundler can put several
+ * copies of this file in one process (see `globalSingleton`), and both halves of
+ * the monotonicity guarantee are per-copy state. Two copies minting IDs in the
+ * same millisecond — a page in the `ssr` graph and a route handler in the
+ * app-route one both calling `start()` — would each advance their own factory
+ * and compare against their own `lastRunId`, so the process could emit the same
+ * ID twice, or emit them out of order.
  */
-const ulid = monotonicFactory();
-
-/**
- * Last emitted run ID (the encoded/tagged form), used to enforce strict
- * lexicographic monotonicity across calls within a single process even
- * when the region/version metadata changes between same-millisecond calls.
- */
-let lastRunId: string | undefined;
+const runIds = globalSingleton(
+  '@workflow/world-vercel//runIdFactory',
+  1,
+  () => ({
+    ulid: monotonicFactory(),
+    lastRunId: undefined as string | undefined,
+  })
+);
 
 /**
  * Increment the bit immediately above the 11-bit metadata window of a
@@ -109,13 +122,13 @@ export function createRunId(
 ): string {
   const region = resolveRegion(options);
   const regionId = REGION_IDS[region];
-  let candidate = encode(ulid(), regionId);
-  if (lastRunId !== undefined) {
-    while (candidate <= lastRunId) {
-      candidate = encode(bumpAboveMetadata(lastRunId), regionId);
+  let candidate = encode(runIds.ulid(), regionId);
+  if (runIds.lastRunId !== undefined) {
+    while (candidate <= runIds.lastRunId) {
+      candidate = encode(bumpAboveMetadata(runIds.lastRunId), regionId);
     }
   }
-  lastRunId = candidate;
+  runIds.lastRunId = candidate;
   return candidate;
 }
 
