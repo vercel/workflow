@@ -130,12 +130,15 @@ pnpm run test:e2e
 ### Event log race repro
 
 `packages/core/e2e/event-log-race-repro.test.ts` is a dedicated harness for
-`CORRUPTED_EVENT_LOG`. It drives three scenarios against one deployment:
+`CORRUPTED_EVENT_LOG`. It drives four scenarios against one deployment:
 `step-storm` and `hook-storm` (concurrent replays of a single run racing the
-per-branch watchdog; `hook-storm` is the production shape), plus a `hook-sleep`
-control that provides the calibration baseline. Any outcome other than
-`completed` fails the run, except `infra`, which means the harness could not
-reach the deployment.
+per-branch watchdog; `hook-storm` is the production shape), `blocked-branch`
+(each branch parks on a launch step before its hook race, so a woken replay can
+hold a log that predates a sibling's launch completion and take the ordinal that
+sibling's wait is about to get; it covers the class the wake-order fixes miss),
+plus a `hook-sleep` control that provides the calibration baseline. Any outcome
+other than `completed` fails the run, except `infra`, which means the harness
+could not reach the deployment.
 
 Run it against a locally started workbench app. No Vercel deployment or
 credentials are required:
@@ -199,18 +202,34 @@ say whether the run was racing or starving.
 Two properties of the harness made that starvation self-sustaining, and both are
 now bounded. If you change either, know what you are giving up:
 
-* **The poke pump is capped** (`EVENT_LOG_RACE_REPRO_POKE_MAX`, default 64).
-  `step-storm`'s pressure is a wall-clock cadence, so a slow run collected *more*
-  out-of-band writes per unit of progress than a fast one, and each one appends a
-  `hook_received` that every later replay re-reads. Unbounded on a 4-core runner
-  that reached approximately 270 pokes per run and no run ever finished; a healthy
-  6-round run sends 35-41, so the cap clips runaways only.
+* **The poke pump decays** (`EVENT_LOG_RACE_REPRO_POKE_MAX`, default 64, then
+  `POKE_DECAY_FACTOR`, default 8). `step-storm`'s pressure is a wall-clock
+  cadence, so a slow run collected *more* out-of-band writes per unit of progress
+  than a fast one, and each one appends a `hook_received` that every later replay
+  re-reads. Unbounded on a 4-core runner it reached approximately 270 pokes per
+  run and no run ever finished. A healthy 6-round run sends 35-41 and never
+  reaches the budget. The pump slows rather than stopping, so a saturated run's
+  later rounds still get out-of-band writes; a hard stop left the back half of a
+  160s CI run unpressured. The lanes were never comparable on this axis anyway:
+  each Vercel resume pays a network round trip, so that lane's pump achieves an
+  effective 2.3s interval (35-44 pokes per run) where localhost runs the full
+  750ms, and the decayed rate is what brings the local lanes near it.
 * **Runs abandoned at `runTimeoutMs` are canceled.** They used to keep replaying
   in the same app process for the rest of the job. That is how world-local's
   `hook-storm` came to report six `stuck` runs with `resumesSent: 0`. Every one
   of them starved behind the previous scenario's six abandoned `step-storm` runs
   and never created a hook for the driver to resume, so the scenario measured
   nothing about hooks at all.
+
+The local script also raises `EVENT_LOG_RACE_REPRO_RUN_TIMEOUT_MS` to 480000
+(export your own to override). A local lane runs the same storm about twice as
+slowly as the Vercel lane. Measured on 4-core runners at the default scale,
+`step-storm` takes 194-203s on world-local and 168-175s on world-postgres
+against Vercel's 85-100s, so the harness' 240000 default left the local lanes at
+approximately 83% of their own timeout, close enough that a slow runner turns a
+lane that reproduces into a lane full of `stuck`. It is the one scale knob the
+script sets, because it is the one whose meaning depends on everything sharing a
+process.
 
 One difference affects how you read a local result: in CI each replay gets its
 own Fluid invocation, while here every replay
@@ -225,6 +244,22 @@ rather than `CORRUPTED_EVENT_LOG`, suspect the machine before the SDK.
 world-local saturates the same single process from its own in-process queue,
 which defaults to 1,000 deliveries in flight, so the script holds it at the same
 number via `WORKFLOW_LOCAL_QUEUE_CONCURRENCY`.
+
+What the local lanes are *not* is a throughput bug in the two Worlds. Under
+saturation world-local logged zero failed deliveries, zero handler errors and
+zero exhausted messages across three 14-run passes: its semaphore parks a
+message *before* the delivery fetch, so queue waiting never consumes the
+transport timeout and there is no retry amplification to find. It is a bounded
+FIFO doing what it says, and the ceiling it hits is one Node process serving
+what the Vercel lane spreads across Fluid instances. Two things about these
+Worlds are nonetheless worth fixing on their own merits, and neither is what
+made the lanes red: world-local defaults to **1000** in-flight deliveries (the
+comment above it says the limit exists to avoid overwhelming the process, and
+the repro script has to override it to 10), world-postgres to 50 embedded
+workers *per process*; and neither World has world-vercel's per-run replay
+serialization, which is itself opt-in there behind
+`WORKFLOW_SEQUENTIAL_REPLAYS` (vercel/workflow#2193), so a run's concurrent
+wakes each replay the whole log.
 
 world-local's storms come out clean far more often than world-postgres's, so the
 default scale says even less there: the corruption it does produce needs a
