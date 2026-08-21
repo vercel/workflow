@@ -17,11 +17,11 @@ vi.mock('../telemetry.js', () => ({
   })),
 }));
 
+import { ReplayPayloadCache } from '../replay-payload-cache.js';
 import {
   dehydrateStepReturnValue,
   hydrateStepReturnValue,
 } from '../serialization.js';
-import { ReplayPayloadCache } from '../replay-payload-cache.js';
 
 function makeCompressibleValue(items = 200) {
   return {

@@ -86,15 +86,15 @@ import {
 } from './serialization/reducers/step-function.js';
 import * as stepModule from './serialization/step.js';
 import {
+  recordCompression,
+  recordGuestCodeExecutions,
+} from './serialization/telemetry.js';
+import {
   type FormatPrefix,
   isFormatPrefix,
   SerializationFormat,
   type SerializationFormatType,
 } from './serialization/types.js';
-import {
-  recordCompression,
-  recordGuestCodeExecutions,
-} from './serialization/telemetry.js';
 import * as workflowModule from './serialization/workflow.js';
 import { contextStorage } from './step/context-storage.js';
 import {
