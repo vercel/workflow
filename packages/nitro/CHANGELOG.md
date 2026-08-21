@@ -447,9 +447,9 @@
 
 ### Minor Changes
 
-- [#1842](https://github.com/vercel/workflow/pull/1842) [`6dd5c72`](https://github.com/vercel/workflow/commit/6dd5c72d8acd1377670da1b4a24abd6f3bea2f61) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Add `sourcemap` option to builders for disabling or customising source map emission on generated workflow bundles. Accepts the same values as esbuild's `sourcemap` option: `true`, `false`, `'inline'`, `'linked'`, `'external'`, `'both'`. Can also be set via the `WORKFLOW_SOURCEMAP` environment variable.
+- [#1842](https://github.com/vercel/workflow/pull/1842) [`6dd5c72`](https://github.com/vercel/workflow/commit/6dd5c72d8acd1377670da1b4a24abd6f3bea2f61) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Add a `sourcemap` option to builders for disabling or customizing source map emission on generated workflow bundles. It accepts the same values as esbuild's `sourcemap` option: `true`, `false`, `'inline'`, `'linked'`, `'external'`, and `'both'`. You can also set it through the `WORKFLOW_SOURCEMAP` environment variable.
 
-  Setting `sourcemap: false` drops inline source maps from the step, workflow and webhook bundles, and skips the source-map-support runtime shim on the Vercel step function — helpful for staying under the Vercel 250MB function size limit.
+  Setting `sourcemap: false` drops inline source maps from the step, workflow, and webhook bundles and skips the source-map-support runtime shim on the Vercel step function. This can help keep the function under Vercel's 250 MB size limit.
 
   Exposed per framework: `nitro.options.workflow.sourcemap`, `NestBuilderOptions.sourcemap`, `withWorkflow({ workflows: { sourcemap } })`, and the `sourcemap` option on `workflowPlugin()` for SvelteKit and Astro.
 

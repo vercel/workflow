@@ -146,7 +146,7 @@
 
 - [#2853](https://github.com/vercel/workflow/pull/2853) [`df7e71d`](https://github.com/vercel/workflow/commit/df7e71de1c8e5407221219235f941c9fb58b6707) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Use the Windows-safe generated-file writer for step registration output.
 
-- [#1947](https://github.com/vercel/workflow/pull/1947) [`25b1509`](https://github.com/vercel/workflow/commit/25b1509e19badb6498927d3fc0d6f23b65329396) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Externalize the optional `@opentelemetry/api` peer in the Rollup/Vite framework builds (SvelteKit, Nitro, Nuxt, Astro, Vite) only when it isn't installed, so a build no longer fails with "failed to resolve import '@opentelemetry/api'". When the peer is present it is bundled/resolved as before, so tracing keeps working — including in self-contained outputs like Nitro's `.output/server`.
+- [#1947](https://github.com/vercel/workflow/pull/1947) [`25b1509`](https://github.com/vercel/workflow/commit/25b1509e19badb6498927d3fc0d6f23b65329396) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Externalize the optional `@opentelemetry/api` peer in the Rollup/Vite framework builds (SvelteKit, Nitro, Nuxt, Astro, and Vite) only when it isn't installed, so a build no longer fails with "failed to resolve import '@opentelemetry/api'". When the peer is present, it is bundled or resolved as before, so tracing keeps working, including in self-contained outputs like Nitro's `.output/server`.
 
 - Updated dependencies [[`f28150c`](https://github.com/vercel/workflow/commit/f28150c62667f069dbe3c47e83102fef499ab92b), [`84df8f3`](https://github.com/vercel/workflow/commit/84df8f3a05bb52ae4a8c45c9238b91e6958f300b), [`4dce2ae`](https://github.com/vercel/workflow/commit/4dce2aeca283d3aee152dab0082563373ac6b633), [`145835b`](https://github.com/vercel/workflow/commit/145835b6475f7fcc7e9983b2c7080f3433018ec9), [`9958424`](https://github.com/vercel/workflow/commit/9958424f22903299e3fe556ab298bd3aaa45c6ac), [`6603628`](https://github.com/vercel/workflow/commit/66036282b5d18c9bef4dea4275782bc977842606), [`48fcc4e`](https://github.com/vercel/workflow/commit/48fcc4efcc7e6c639c51ce4f8971d4d3b1ebdd23), [`36c63af`](https://github.com/vercel/workflow/commit/36c63af4a88adc4f404decc54b1f2130d444d264), [`2c6ee61`](https://github.com/vercel/workflow/commit/2c6ee614b50d12ed850e7589cf296150b2143a56)]:
   - @workflow/core@5.0.0-beta.30
@@ -323,7 +323,7 @@
 
 ### Patch Changes
 
-- [#2018](https://github.com/vercel/workflow/pull/2018) [`f5f6d0e`](https://github.com/vercel/workflow/commit/f5f6d0ede6c44ec7cc6a861a78f5ec4ff26910ee) Thanks [@pranaygp](https://github.com/pranaygp)! - Generate per-file IDs for non-exported workspace package files (previously they collapsed to `name@version` and silently overwrote each other at runtime) and fail the build when two transformed files emit the same step or workflow ID — collisions that used to register silently last-write-wins now surface as a build error.
+- [#2018](https://github.com/vercel/workflow/pull/2018) [`f5f6d0e`](https://github.com/vercel/workflow/commit/f5f6d0ede6c44ec7cc6a861a78f5ec4ff26910ee) Thanks [@pranaygp](https://github.com/pranaygp)! - Generate per-file IDs for non-exported workspace package files (previously they collapsed to `name@version` and silently overwrote each other at runtime) and fail the build when two transformed files emit the same step or workflow ID. Collisions that used to register silently with last-write-wins behavior now surface as a build error.
 
 - Updated dependencies [[`bf44d4d`](https://github.com/vercel/workflow/commit/bf44d4dd0ac8891732f5a254b37e8f165b71a10d), [`4670c4b`](https://github.com/vercel/workflow/commit/4670c4b92d7386dfd74728538c7e24fe8c07b0af), [`eb976db`](https://github.com/vercel/workflow/commit/eb976db35bb2cd7591d6a7f3bfa20a69b1c0ad89), [`a813382`](https://github.com/vercel/workflow/commit/a813382216e1c5d3a2f90dc97d205f17ff3f4cd0)]:
   - @workflow/core@5.0.0-beta.14
@@ -400,9 +400,9 @@
 
 ### Minor Changes
 
-- [#1842](https://github.com/vercel/workflow/pull/1842) [`6dd5c72`](https://github.com/vercel/workflow/commit/6dd5c72d8acd1377670da1b4a24abd6f3bea2f61) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Add `sourcemap` option to builders for disabling or customising source map emission on generated workflow bundles. Accepts the same values as esbuild's `sourcemap` option: `true`, `false`, `'inline'`, `'linked'`, `'external'`, `'both'`. Can also be set via the `WORKFLOW_SOURCEMAP` environment variable.
+- [#1842](https://github.com/vercel/workflow/pull/1842) [`6dd5c72`](https://github.com/vercel/workflow/commit/6dd5c72d8acd1377670da1b4a24abd6f3bea2f61) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Add a `sourcemap` option to builders for disabling or customizing source map emission on generated workflow bundles. It accepts the same values as esbuild's `sourcemap` option: `true`, `false`, `'inline'`, `'linked'`, `'external'`, and `'both'`. You can also set it through the `WORKFLOW_SOURCEMAP` environment variable.
 
-  Setting `sourcemap: false` drops inline source maps from the step, workflow and webhook bundles, and skips the source-map-support runtime shim on the Vercel step function — helpful for staying under the Vercel 250MB function size limit.
+  Setting `sourcemap: false` drops inline source maps from the step, workflow, and webhook bundles and skips the source-map-support runtime shim on the Vercel step function. This can help keep the function under Vercel's 250 MB size limit.
 
   Exposed per framework: `nitro.options.workflow.sourcemap`, `NestBuilderOptions.sourcemap`, `withWorkflow({ workflows: { sourcemap } })`, and the `sourcemap` option on `workflowPlugin()` for SvelteKit and Astro.
 
@@ -412,7 +412,7 @@
 
 - [#1885](https://github.com/vercel/workflow/pull/1885) [`e0ec429`](https://github.com/vercel/workflow/commit/e0ec429bb3baa4b3cb96373149a78dd514ebfe18) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Fix `Package subpath ... is not defined by "exports"` runtime errors when step files reach project-local helpers via tsconfig `paths` / esbuild aliases / self-referencing package names.
 
-  Such helpers are now bundled inline rather than externalized as relative paths. Externalization was unsafe because the helper's source on disk could contain further alias imports, and Node's ESM loader at runtime doesn't know about build-time path mappings — leading to errors like `Package subpath './lib/foo' is not defined by "exports"` (or `ERR_MODULE_NOT_FOUND`) once the helper was loaded.
+  Such helpers are now bundled inline rather than externalized as relative paths. Externalization was unsafe because the helper's source on disk could contain further alias imports, and Node's ESM loader at runtime doesn't know about build-time path mappings. This caused errors like `Package subpath './lib/foo' is not defined by "exports"` (or `ERR_MODULE_NOT_FOUND`) once the helper was loaded.
 
 - [#1849](https://github.com/vercel/workflow/pull/1849) [`1203dae`](https://github.com/vercel/workflow/commit/1203dae70c802eef114909e9476e19ec528550cd) Thanks [@pranaygp](https://github.com/pranaygp)! - Friendlier workflow error messages. New `SerializationError`, `WorkflowBuildError`, and structured context-violation classes (e.g. `NotInWorkflowContextError`) with actionable hints and docs links applied to user-facing throw sites; `FatalError.is()` recognizes any error with `fatal: true` so context violations and serialization failures now fail fast instead of burning retry attempts. Runtime logs are namespaced under `[workflow-sdk]` and gain `errorAttribution` (`user` vs `sdk`) plus class-aware hints
 
@@ -445,7 +445,7 @@
 
 - [#1857](https://github.com/vercel/workflow/pull/1857) [`baba580`](https://github.com/vercel/workflow/commit/baba580794f636fa371d86634a2eac7bf367da12) Thanks [@ijjk](https://github.com/ijjk)! - Write Next.js workflow diagnostics manifests inside the Next.js dist directory and only use `.vercel/output/diagnostics` for the Vercel Build Output API builder.
 
-- [#1686](https://github.com/vercel/workflow/pull/1686) [`417c493`](https://github.com/vercel/workflow/commit/417c4930be3d21768c7efd4d224510a33d8c468c) Thanks [@TooTallNate](https://github.com/TooTallNate)! - **BREAKING CHANGE**: Remove `client` transform mode from SWC plugin. The `client` and `step` modes were nearly identical — both preserved step function bodies, replaced workflow bodies with throw stubs, and emitted the same JSON manifest. The only differences were the step registration mechanism (simple property assignment vs. IIFE) and whether DCE ran. Step mode now absorbs all client-mode behaviors: hoisted variable references for object property steps (so `.stepId` is accessible), and dead code elimination. All integrations that previously used `mode: 'client'` now use `mode: 'step'`.
+- [#1686](https://github.com/vercel/workflow/pull/1686) [`417c493`](https://github.com/vercel/workflow/commit/417c4930be3d21768c7efd4d224510a33d8c468c) Thanks [@TooTallNate](https://github.com/TooTallNate)! - **BREAKING CHANGE**: Remove `client` transform mode from SWC plugin. The `client` and `step` modes were nearly identical: both preserved step function bodies, replaced workflow bodies with throw stubs, and emitted the same JSON manifest. The only differences were the step registration mechanism (simple property assignment vs. IIFE) and whether DCE ran. Step mode now absorbs all client-mode behaviors: hoisted variable references for object property steps (so `.stepId` is accessible) and dead code elimination. All integrations that previously used `mode: 'client'` now use `mode: 'step'`.
 
 - Updated dependencies [[`7d07fab`](https://github.com/vercel/workflow/commit/7d07fab692ba79d0339b093a45f5beecb219639e), [`417c493`](https://github.com/vercel/workflow/commit/417c4930be3d21768c7efd4d224510a33d8c468c), [`e295bae`](https://github.com/vercel/workflow/commit/e295bae417bd072f8e18e8d07c76d90d40ae7cec)]:
   - @workflow/core@5.0.0-beta.3
@@ -476,7 +476,7 @@
 ### Patch Changes
 
 - [#1669](https://github.com/vercel/workflow/pull/1669) [`dc0c0dc`](https://github.com/vercel/workflow/commit/dc0c0dce7f4ef1a0919d7ecc7efe076564871d0c) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Fix step bundle discovery and externalization for SDK serde classes
-  - Broaden `importParents` tracking to all imports (not just file extensions) so `parentHasChild()` works through bare specifier imports
+  - Broaden `importParents` tracking to all imports (not only file extensions) so `parentHasChild()` works through bare specifier imports
   - Include `workflow/runtime` in discovery inputs so SDK serde classes like `Run` are always discovered
   - Bundle node_modules deps instead of externalizing with broken relative paths
 

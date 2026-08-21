@@ -76,7 +76,7 @@ cd packages/core && pnpm vitest run src/[filename].test.ts
 # NOTE: WORKFLOW_PUBLIC_MANIFEST=1 is required for e2e tests to access the workflow manifest
 cd workbench/nextjs-turbopack && WORKFLOW_PUBLIC_MANIFEST=1 pnpm dev > /tmp/nextjs-dev.log 2>&1 &
 
-# Step 2: Wait for server to be ready (usually 15-20 seconds)
+# Step 2: Wait for server to be ready (usually 15 to 20s)
 sleep 15
 
 # Step 3: Run the e2e tests from the project root
@@ -89,8 +89,8 @@ pkill -f "pnpm dev"
 DEPLOYMENT_URL="http://localhost:3000" APP_NAME="nextjs-turbopack" pnpm vitest run packages/core/e2e/e2e.test.ts -t "sleeping"
 
 # For running E2E locally against a deployed Vercel preview/production app:
-# The test matrix in .github/workflows/tests.yml is the source of truth —
-# each app entry defines the project-id / project-slug needed below.
+# The test matrix in .github/workflows/tests.yml is the source of truth.
+# Each app entry defines the project-id / project-slug needed below.
 #
 # Required environment variables (matches the CI `e2e-vercel-prod` job):
 # - DEPLOYMENT_URL: Full URL of the deployed app (e.g. a preview deployment URL)
@@ -100,8 +100,8 @@ DEPLOYMENT_URL="http://localhost:3000" APP_NAME="nextjs-turbopack" pnpm vitest r
 # - WORKFLOW_VERCEL_ENV: "preview" or "production"
 # - WORKFLOW_VERCEL_AUTH_TOKEN: Vercel auth token with access to the team
 # - WORKFLOW_VERCEL_TEAM: Vercel team ID (CI uses team_nO2mCG4W8IxPIeKoSsqwAxxB for labs)
-# - WORKFLOW_VERCEL_PROJECT: Vercel project ID (prj_...) — see test matrix
-# - WORKFLOW_VERCEL_PROJECT_SLUG: Vercel project slug — see test matrix
+# - WORKFLOW_VERCEL_PROJECT: Vercel project ID (prj_...). See test matrix.
+# - WORKFLOW_VERCEL_PROJECT_SLUG: Vercel project slug. See test matrix.
 # - VERCEL_OIDC_TOKEN:         Short-lived OIDC token used to bypass
 #                              deployment protection via Trusted Sources.
 #                              In CI this is auto-minted from the GitHub
@@ -203,8 +203,8 @@ now bounded. If you change either, know what you are giving up:
   `step-storm`'s pressure is a wall-clock cadence, so a slow run collected *more*
   out-of-band writes per unit of progress than a fast one, and each one appends a
   `hook_received` that every later replay re-reads. Unbounded on a 4-core runner
-  that reached ~270 pokes per run and no run ever finished; a healthy 6-round run
-  sends 35-41, so the cap clips runaways only.
+  that reached approximately 270 pokes per run and no run ever finished; a healthy
+  6-round run sends 35-41, so the cap clips runaways only.
 * **Runs abandoned at `runTimeoutMs` are canceled.** They used to keep replaying
   in the same app process for the rest of the job. That is how world-local's
   `hook-storm` came to report six `stuck` runs with `resumesSent: 0`. Every one
@@ -215,14 +215,14 @@ now bounded. If you change either, know what you are giving up:
 One difference affects how you read a local result: in CI each replay gets its
 own Fluid invocation, while here every replay
 of every run shares one Next.js process. world-postgres gives that process (and
-the harness process) 50 embedded Graphile Worker slots each, and ~100 replays in
-one heap saturates GC. Measured on a 12-core laptop, all 14 attempts came back
+the harness process) 50 embedded Graphile Worker slots each, and approximately
+100 replays in one heap saturates GC. Measured on a 12-core laptop, all 14 attempts came back
 `stuck` with the server at 6.4 GB RSS and Postgres idle. The script therefore
 sets `WORKFLOW_POSTGRES_WORKER_CONCURRENCY=10` (override by exporting it) and
 raises the app's old-space limit (`--heap-mb`). If a local run reports `stuck`
 rather than `CORRUPTED_EVENT_LOG`, suspect the machine before the SDK.
 world-local saturates the same single process from its own in-process queue,
-which defaults to 1000 deliveries in flight, so the script holds it at the same
+which defaults to 1,000 deliveries in flight, so the script holds it at the same
 number via `WORKFLOW_LOCAL_QUEUE_CONCURRENCY`.
 
 world-local's storms come out clean far more often than world-postgres's, so the

@@ -90,7 +90,7 @@ with the team and wider community. By participating, you agree to our
 
 ## Security
 
-If you believe you have found a security vulnerability in Workflow SDK, we encourage you to **_responsibly disclose this and not open a public issue_**.
+If you find a security vulnerability in Workflow SDK, **_disclose it responsibly instead of opening a public issue_**.
 
 To participate in our Open Source Software Bug Bounty program, please email
 [responsible.disclosure@vercel.com](mailto:responsible.disclosure@vercel.com).

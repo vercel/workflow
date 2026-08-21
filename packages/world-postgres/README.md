@@ -94,7 +94,7 @@ An aborted HTTP request does not guarantee that its server-side handler stopped,
 | ------------------ | --------- | -------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
 | `connectionString` | `string`  | `process.env.WORKFLOW_POSTGRES_URL`, `process.env.DATABASE_URL`, or `'postgres://world:world@localhost:5432/world'` | Used only when `pool` is omitted, to construct an internal pool                                      |
 | `maxPoolSize`      | `number`  | `process.env.WORKFLOW_POSTGRES_MAX_POOL_SIZE` or `pg.Pool` default (`10`)              | Optional. Sets the internal `pg.Pool` max size when `createWorld()` creates the pool                |
-| `pool`             | `pg.Pool` | —                                                                                      | Optional. When set, used for Drizzle, Graphile Worker, and stream writes. `world.close()` does not end it. |
+| `pool`             | `pg.Pool` | Not applicable                                                                         | Optional. When set, used for Drizzle, Graphile Worker, and stream writes. `world.close()` does not end it. |
 | `jobPrefix`        | `string`  | `process.env.WORKFLOW_POSTGRES_JOB_PREFIX`                                             | Optional prefix for queue job names                                                                  |
 | `queueConcurrency` | `number`  | `50`                                                                                   | Number of concurrent active step executions per process. Must be high enough to cover any parent→child workflow polling in flight because each `Run#returnValue` await holds a worker slot until the child run terminates. |
 | `applicationManagedShutdown` | `boolean` | `false`; `WORKFLOW_POSTGRES_APPLICATION_MANAGED_SHUTDOWN=1` enables it for the default package configuration | Whether the application coordinates shutdown and awaits `world.close()` instead of Graphile Worker responding automatically. |
@@ -119,7 +119,7 @@ For higher worker concurrency, Graphile Worker recommends setting `maxPoolSize` 
 
 This package uses PostgreSQL with the following components:
 
-- **graphile-worker**: For queue processing and job management
+- **Graphile Worker**: For queue processing and job management
 - **Drizzle ORM**: For database operations and schema management
 - **pg** (node-postgres): For PostgreSQL client connections. Drizzle and Graphile Worker share a `pg.Pool`, while LISTEN uses a dedicated `pg.Client` created from the same connection options.
 
@@ -150,11 +150,11 @@ The CLI and runtime World automatically load the connection string from:
 
 The setup creates the following tables:
 
-- `workflow_runs` - Stores workflow execution runs
-- `workflow_events` - Stores workflow events
-- `workflow_steps` - Stores individual workflow steps
-- `workflow_hooks` - Stores webhook hooks
-- `workflow_stream_chunks` - Stores streaming data chunks
+- `workflow_runs`: Stores workflow execution runs
+- `workflow_events`: Stores workflow events
+- `workflow_steps`: Stores individual workflow steps
+- `workflow_hooks`: Stores webhook hooks
+- `workflow_stream_chunks`: Stores streaming data chunks
 
 You can also access the schema programmatically:
 
@@ -175,12 +175,12 @@ and its token can be reused. If the token is never reused, the expired
 
 ## Features
 
-- **Durable Storage**: Stores workflow runs, events, steps, hooks, and webhooks in PostgreSQL
-- **Queue Processing**: Uses graphile-worker as the durable queue and executes jobs over the workflow HTTP routes
-- **Durable Delays**: Re-schedules waits and retries in PostgreSQL
+- **Durable storage**: Stores workflow runs, events, steps, hooks, and webhooks in PostgreSQL
+- **Queue processing**: Uses Graphile Worker as the durable queue and executes jobs over the workflow HTTP routes
+- **Durable delays**: Reschedules waits and retries in PostgreSQL
 - **Streaming**: Real-time event streaming capabilities
-- **Health Checks**: Built-in connection health monitoring
-- **Configurable Concurrency**: Adjustable worker concurrency for queue processing
+- **Health checks**: Built-in connection health monitoring
+- **Configurable concurrency**: Adjustable worker concurrency for queue processing
 
 ## Queue behavior
 

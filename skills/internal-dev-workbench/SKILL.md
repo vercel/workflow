@@ -31,7 +31,7 @@ With `main-vertical`, the dev server takes the left column; the right column sta
 |  (Next.js dev)       |   workbench app)         |
 |                      +--------------------------+
 |                      |  PANE_SH: zsh scratchpad |
-|                      |  (repo root — for build, |
+|                      |  (repo root, for build, |
 |                      |   tests, e2e, git, etc.) |
 +----------------------+--------------------------+
 ```

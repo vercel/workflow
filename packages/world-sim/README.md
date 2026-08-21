@@ -40,7 +40,7 @@ The second column names the writer. The indented `hook_received` is written by
 the scenario (`ext`) from *inside* the `events.create` call that committed
 `step_started`, while the orchestrator is held in it. Advance a different
 writer instead, such as `sim.writer.step('reserveInventory')`, and the same workflow,
-same input and same output produce a different log, which is the point.
+same input, and same output produce a different log, which is the point.
 
 ---
 
@@ -71,7 +71,7 @@ barriers, and faking those would change the interleavings we came to observe).
 
 Consequence: **scenarios terminate**. A month-long sleep costs microseconds. A
 hook nobody delivers drains the queue and is reported as a *stall*, naming the
-token that was never sent, instead of hanging. Delivery count, virtual span and
+token that was never sent, instead of hanging. Delivery count, virtual span, and
 wall time are all capped as a backstop.
 
 ## Consistency checking
@@ -193,7 +193,7 @@ const spec: ScenarioSpec = {
   // The prose `name` beside it is free to be reworded.
   id: 'b-lands-first',
   name: 'stepB lands in the log before stepA',
-  // Named from the build manifest — no client transform needed.
+  // Named from the build manifest; no client transform is needed.
   workflow: 'twoStepsWorkflow',
   input: ['x'],
   script: async (sim) => {
@@ -201,7 +201,7 @@ const spec: ScenarioSpec = {
     const b = sim.writer.step('stepB');
 
     // Calling an advance starts watching for its point; awaiting it waits for
-    // the writer to get there. Start both watches, then await both — asking
+    // the writer to get there. Start both watches, then await both. Asking
     // for a point that has already gone by is an error, not a wait.
     const watchA = a.runToEventProduced('step_completed');
     const watchB = b.runToEventCommitted('step_completed');
@@ -262,7 +262,7 @@ Events are referred to one way and one way only: **by log position**, so a claim
 about the output is one a reader can check against it.
 
 `#12` is the twelfth event in the log sorted the way `events.list` sorts it,
-`(createdAt, eventId)`; `@7` is the resource created at position 7. Ids in
+`(createdAt, eventId)`; `@7` is the resource created at position 7. IDs in
 violation messages are rewritten to positions on the way out.
 
 The trace prints in **commit** order and is numbered in **log** order, so a run
@@ -308,7 +308,7 @@ vocabulary is per-writer rather than per-invocation.
 `sim.writer.anyStep()` and `sim.writer.any()` are handles that match more than
 one writer, whichever reaches the advance first. A handle is a *name*, not a
 live object, so `sim.writer.step('slow')` can be taken before that step exists.
-`sim.writer.seen()` lists the ids observed so far, in first-appearance order.
+`sim.writer.seen()` lists the IDs observed so far, in first-appearance order.
 
 ### Advances
 
@@ -330,7 +330,7 @@ const script: ScenarioScript = async (sim) => {
   const reserve = sim.writer.step('reserveInventory');
 
   // Hold just after step_started is committed and before the orchestrator is
-  // resumed — the window the whole instrument exists for.
+  // resumed, which is the window the whole instrument exists for.
   await wf.runToEventCommitted('step_started', 'reserveInventory');
   sim.check('no payload yet', !sim.world.events().some((e) => e.eventType === 'hook_received'));
   await sim.deliverHook('approval:doc-1', { approved: true });
@@ -410,7 +410,7 @@ A withholding hides something from readers without holding the writer that
 produced it. An advance stops one thread; a withholding lets every thread run
 and changes what storage answers.
 
-| method | writer | description |
+| Method | Writer | Description |
 | --- | --- | --- |
 | `sim.withholdNextEvent(reads?)` | whichever commits next | Hide the next event committed to storage from the next `reads` event-log reads (default 1). Call it immediately before the write to hide. |
 | `sim.beginHookDelivery(token, payload)` | `external` | Begin an external hook delivery and return `commit()`, which writes it at the log tail. |
@@ -499,7 +499,7 @@ The module map is [DESIGN.md §1](./DESIGN.md#1-module-map).
 Four things worth knowing before you start:
 
 **The package entry is the scenario surface, not the whole package.**
-`index.ts` exports what it takes to write a scenario, play it and render the
+`index.ts` exports what it takes to write a scenario, play it, and render the
 result. The construction kit (`createSimWorld`, `createSimStore`, `driveQueue`,
 `verifyReplay`, `checkInvariants`, and the clock) is imported from its own module,
 so adding an option to one of them is not a change to the package's public
@@ -507,10 +507,10 @@ signature. Promote a name to the entry when something outside the package needs
 it, not before.
 
 **Anything a scenario can observe has to survive replay.** `verifyReplay`
-re-plays the log in a fresh world, so a store rule that is not applied there
+replays the log in a fresh world, so a store rule that is not applied there
 turns every scenario using it red for the wrong reason.
 
-**Tests come in two shapes.** `src/*.test.ts` are vitest units against the
+**Tests come in two shapes.** `src/*.test.ts` are Vitest units against the
  pieces in isolation. Copy `store.test.ts` for anything that changes what the
  log looks like. The scenario book is the integration test; run it before and
  after and diff the counts.

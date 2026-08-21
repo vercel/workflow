@@ -18,6 +18,8 @@ npm install -D @swc/cli @swc/core
 pnpm add -D @swc/cli @swc/core
 ```
 
+<a id="quick-start"></a>
+
 ## Quick start
 
 ### 1. Initialize SWC configuration
@@ -56,7 +58,7 @@ In your `app.module.ts`:
 
 {/*@skip-typecheck: Shows WorkflowModule import*/}
 
-```typescript
+```ts
 import { Module } from '@nestjs/common';
 import { WorkflowModule } from '@workflow/nest';
 
@@ -72,7 +74,7 @@ Create workflow files in your `src/` directory with `"use workflow"` and `"use s
 
 {/*@skip-typecheck: Shows workflow file*/}
 
-```typescript
+```ts
 // src/workflows/example.ts
 export async function myStep(data: string) {
   'use step';
@@ -103,7 +105,7 @@ Add scripts to regenerate configuration before builds:
 
 {/*@skip-typecheck: Shows WorkflowModule.forRoot options*/}
 
-```typescript
+```ts
 WorkflowModule.forRoot({
   // Directory to scan for workflow files (default: ['src'])
   dirs: ['src'],
@@ -146,7 +148,7 @@ through esbuild, which does not emit `emitDecoratorMetadata`. Also import
 
 {/*@skip-typecheck: Shows the Vercel entry module shape*/}
 
-```typescript
+```ts
 // _vercel/entry.ts
 import 'reflect-metadata';
 import { NestFactory } from '@nestjs/core';
@@ -175,7 +177,7 @@ The Vercel Build Output already contains the compiled workflow bundles, so tell
 
 {/*@skip-typecheck: Shows WorkflowModule.forRoot on Vercel*/}
 
-```typescript
+```ts
 WorkflowModule.forRoot({ skipBuild: Boolean(process.env.VERCEL) })
 ```
 
@@ -239,7 +241,7 @@ NestJS's SWC builder only compiles files within the `sourceRoot` directory (typi
 
 {/*@skip-typecheck: Shows WorkflowModule usage*/}
 
-```typescript
+```ts
 import { WorkflowModule } from '@workflow/nest';
 
 // Basic usage

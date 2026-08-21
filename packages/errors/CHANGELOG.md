@@ -40,7 +40,7 @@
 
 ### Patch Changes
 
-- [#2986](https://github.com/vercel/workflow/pull/2986) [`fe12b84`](https://github.com/vercel/workflow/commit/fe12b847291912cf9e47143ee10c73828dbdf1a1) Thanks [@shalabhc](https://github.com/shalabhc)! - Enforce a server-supplied per-run event limit (default 25K)
+- [#2986](https://github.com/vercel/workflow/pull/2986) [`fe12b84`](https://github.com/vercel/workflow/commit/fe12b847291912cf9e47143ee10c73828dbdf1a1) Thanks [@shalabhc](https://github.com/shalabhc)! - Enforce a server-supplied per-run event limit (default 25,000).
 
 - [#2946](https://github.com/vercel/workflow/pull/2946) [`eb8fdb9`](https://github.com/vercel/workflow/commit/eb8fdb979748f54a94289530ee7ac155feddddcc) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - The `WORKFLOW_PRECONDITION_GUARD` event-creation guard is now on by default; opt out with `WORKFLOW_PRECONDITION_GUARD=0`.
 
@@ -114,7 +114,7 @@
 
 ### Patch Changes
 
-- [#1915](https://github.com/vercel/workflow/pull/1915) [`540a2ef`](https://github.com/vercel/workflow/commit/540a2efb99c137b0d60c7368376e9533ea662a4c) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Replace the `chalk` import in `@workflow/errors/ansi` with a tiny inline ANSI shim. `@workflow/errors/ansi` is reachable from the workflow-VM bundle (via `@workflow/core/workflow` → `context-errors` → `context-violation-error` → here), and `chalk` pulls in `supports-color`, which calls `require('os')` at module load — crashing every workflow with `ReferenceError: require is not defined` in the sandboxed VM.
+- [#1915](https://github.com/vercel/workflow/pull/1915) [`540a2ef`](https://github.com/vercel/workflow/commit/540a2efb99c137b0d60c7368376e9533ea662a4c) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Replace the `chalk` import in `@workflow/errors/ansi` with a tiny inline ANSI shim. `@workflow/errors/ansi` is reachable from the workflow-VM bundle (via `@workflow/core/workflow` → `context-errors` → `context-violation-error` → here), and `chalk` pulls in `supports-color`, which calls `require('os')` at module load. This crashed every workflow with `ReferenceError: require is not defined` in the sandboxed VM.
 
 - [#1849](https://github.com/vercel/workflow/pull/1849) [`1203dae`](https://github.com/vercel/workflow/commit/1203dae70c802eef114909e9476e19ec528550cd) Thanks [@pranaygp](https://github.com/pranaygp)! - Friendlier workflow error messages. New `SerializationError`, `WorkflowBuildError`, and structured context-violation classes (e.g. `NotInWorkflowContextError`) with actionable hints and docs links applied to user-facing throw sites; `FatalError.is()` recognizes any error with `fatal: true` so context violations and serialization failures now fail fast instead of burning retry attempts. Runtime logs are namespaced under `[workflow-sdk]` and gain `errorAttribution` (`user` vs `sdk`) plus class-aware hints
 

@@ -6,7 +6,7 @@ metadata:
   version: '1.11'
 ---
 
-## *CRITICAL*: Always use correct `workflow` documentation
+## *Critical*: Always use correct `workflow` documentation
 
 Your knowledge of `workflow` is outdated.
 
@@ -131,7 +131,7 @@ export async function myWorkflow() {
 
 **Note:** `DurableAgent` from `@workflow/ai` handles the fetch assignment automatically.
 
-## DurableAgent — AI agents in workflows
+## DurableAgent: AI agents in workflows
 
 Use `DurableAgent` to build AI agents that maintain state and survive interruptions. It handles the workflow sandbox automatically (no manual `globalThis.fetch` needed).
 
@@ -188,7 +188,7 @@ Use `start()` to launch workflows from API routes. **`start()` cannot be called 
 ```typescript
 import { start } from "workflow/api";
 
-// From an API route — works directly
+// From an API route; works directly
 export async function POST() {
   const run = await start(myWorkflow, [arg1, arg2]);
   return Response.json({ runId: run.runId });
@@ -219,7 +219,7 @@ export async function parentWorkflow() {
 
 `start()` returns immediately and doesn't wait for the workflow to complete. Use `run.returnValue` to await completion.
 
-## Hooks — pause & resume with external events
+## Hooks: pause & resume with external events
 
 Hooks let workflows wait for external data. Use `createHook()` inside a workflow and `resumeHook()` from API routes. Deterministic tokens are for `createHook()` + `resumeHook()` (server-side) only. `createWebhook()` always generates random tokens, so do not pass a `token` option to `createWebhook()`.
 
@@ -346,7 +346,7 @@ export class Point {
 
 **When to avoid serde:** If a class is fundamentally inseparable from Node.js APIs (every method needs `fs`, `net`, etc.) and cannot meaningfully exist as a shell in the workflow sandbox, keep it entirely in step functions and pass plain data objects across boundaries instead.
 
-### Validating Serde compliance
+### Validating serde compliance
 
 Use these tools to verify classes are correctly set up:
 
@@ -438,7 +438,7 @@ async function emitAgentThought(thought: string) {
 
 async function emitAgentResult(result: string) {
   "use step";
-  // Important results go to the default stream for easy replay
+  // Important results go to the default stream for replay
   const writer = getWritable<AgentOutput>().getWriter();
   try {
     await writer.write({ type: "result", content: result });
@@ -532,11 +532,11 @@ clickable link (PR comment, Slack message, debugging summary) rather than open a
 UI. (`--web` opens the dashboard; `--url` only prints the link.)
 
 ```bash
-# Vercel run — prints the Vercel dashboard URL for the run
+# Vercel run: prints the Vercel dashboard URL for the run
 npx workflow inspect run <run_id> --backend vercel --project <project> --team <team> --url
 npx workflow web <run_id> --backend vercel --project <project> --team <team> --env preview --url
 
-# Local run — prints the local web UI deep link
+# Local run: prints the local web UI deep link
 npx workflow inspect run <run_id> --url
 
 # Machine-readable: --url --json prints { "url": "..." } to stdout
@@ -673,7 +673,7 @@ const run = await world.runs.get(runId, { resolveData: 'all' | 'none' });
 // Cancel via event creation (no cancel() method on runs)
 await world.events.create(runId, { eventType: 'run_cancelled' });
 
-// Steps — runId is top-level, NOT inside pagination
+// Steps: runId is top-level, NOT inside pagination
 const { data, cursor } = await world.steps.list({ runId, pagination: { cursor }, resolveData: 'all' | 'none' });
 const step = await world.steps.get(runId, stepId, { resolveData: 'all' | 'none' });
 
@@ -694,7 +694,7 @@ const streamNames = await world.streams.list(runId);
 const chunks = await world.streams.getChunks(runId, name, { limit, cursor });
 const info = await world.streams.getInfo(runId, name);
 
-// Queue (methods live directly on world — internal SDK infrastructure)
+// Queue (methods live directly on world as internal SDK infrastructure)
 await world.queue(queueName, payload, opts);
 const deploymentId = await world.getDeploymentId();
 ```
@@ -709,11 +709,11 @@ Controls whether input/output data is **included** in the response. Accepts `'al
 - **Use `'all'`** (or omit) when you need to inspect actual step I/O data, then **always hydrate**
 
 ```typescript
-// Lightweight status check — no I/O loaded
+// Lightweight status check with no I/O loaded
 const run = await world.runs.get(runId, { resolveData: 'none' });
 console.log(run.status); // 'running' | 'completed' | 'failed' | 'cancelled'
 
-// Full inspection — resolveData includes data, hydrateResourceIO deserializes it
+// Full inspection: resolveData includes data, hydrateResourceIO deserializes it
 const step = await world.steps.get(runId, stepId); // defaults to 'all'
 const hydrated = hydrateResourceIO(step, observabilityRevivers);
 ```
@@ -774,10 +774,10 @@ Three error strategies for different failure modes:
 ```typescript
 import { FatalError, RetryableError } from "workflow";
 
-// Permanent failure — workflow terminates
+// Permanent failure, so the workflow terminates
 throw new FatalError("Invalid input: missing required field");
 
-// Transient failure — will retry
+// Transient failure, so it will retry
 throw new RetryableError("API rate limited", { retryAfter: "5m" });
 
 // Mixed criticality parallel execution

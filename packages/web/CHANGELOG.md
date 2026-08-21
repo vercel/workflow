@@ -2,56 +2,56 @@
 
 ## 5.0.0-beta.43
 
-### Patch Changes
+### Patch changes
 
 - Updated dependencies [[`04e060a`](https://github.com/vercel/workflow/commit/04e060a0ecc247a3291714d8396430fa9d96bccc)]:
   - @workflow/world-local@5.0.0-beta.37
 
 ## 5.0.0-beta.42
 
-### Patch Changes
+### Patch changes
 
 - Updated dependencies [[`de2a86c`](https://github.com/vercel/workflow/commit/de2a86c61c843a04c292e54e9c439553b3da02c5), [`dc85865`](https://github.com/vercel/workflow/commit/dc85865718fdf5e4abdb5ad8edf715ec956bf07d), [`0f4b35f`](https://github.com/vercel/workflow/commit/0f4b35f62945327417013060f6e5de5111fe6ff1)]:
   - @workflow/world-local@5.0.0-beta.36
 
 ## 5.0.0-beta.41
 
-### Patch Changes
+### Patch changes
 
 - Updated dependencies [[`a8db185`](https://github.com/vercel/workflow/commit/a8db185c3b19b3dab971f51aa076aead81ed26ea), [`6786db9`](https://github.com/vercel/workflow/commit/6786db99538ef57c872d861ecfb28d99ae857d6d), [`22349e9`](https://github.com/vercel/workflow/commit/22349e95fd85a112cbec3f425900b74bf5ccc77f), [`65139ac`](https://github.com/vercel/workflow/commit/65139acfd7118d3b73672435a6e1c47115f6e23f)]:
   - @workflow/world-local@5.0.0-beta.35
 
 ## 5.0.0-beta.40
 
-### Minor Changes
+### Minor changes
 
 - [#3349](https://github.com/vercel/workflow/pull/3349) [`371f06e`](https://github.com/vercel/workflow/commit/371f06e5ac777b2c91df479d99a53dcc186b9929) Thanks [@karthikscale3](https://github.com/karthikscale3)! - The runs table now bulk-cancels selected runs in a single request via `bulkCancelRuns`, caps a batch at 500 runs, and reports a single outcome-summary toast.
 
 - [#3280](https://github.com/vercel/workflow/pull/3280) [`de1905f`](https://github.com/vercel/workflow/commit/de1905f15c0a31f272966ac518ebf272864ea5c6) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - **Breaking:** `events.listByCorrelationId` and `analytics.events.listByCorrelationId` now require a `runId`. A correlation id is unique within its run, not across runs, so an unscoped lookup answered with one event per run that numbered a step or wait the same.
 
-### Patch Changes
+### Patch changes
 
 - Updated dependencies [[`1222aab`](https://github.com/vercel/workflow/commit/1222aab74da39b4a7ae93e6c5ecc2dc4707b68d0), [`de1905f`](https://github.com/vercel/workflow/commit/de1905f15c0a31f272966ac518ebf272864ea5c6), [`e6f1b6f`](https://github.com/vercel/workflow/commit/e6f1b6f5489da19f736fcd86a06a03d8247e5b78)]:
   - @workflow/world-local@5.0.0-beta.34
 
 ## 5.0.0-beta.39
 
-### Major Changes
+### Major changes
 
 - [#3298](https://github.com/vercel/workflow/pull/3298) [`d06b55e`](https://github.com/vercel/workflow/commit/d06b55e64195d9e4b87521b8010967d16139cabc) Thanks [@mitul-s](https://github.com/mitul-s)! - Rename `new-trace-viewer` to `trace-viewer` and the public `NewTraceViewer` export to `TraceViewer`.
 
-### Patch Changes
+### Patch changes
 
 - Updated dependencies [[`31f92df`](https://github.com/vercel/workflow/commit/31f92df10d295cf09c93aadd35380209c137326c), [`2677653`](https://github.com/vercel/workflow/commit/2677653759aa34c5c9fe28950fe1a02cec294551), [`aa78a7e`](https://github.com/vercel/workflow/commit/aa78a7e63c73e170f32143b22e01e796a537c405), [`f05f642`](https://github.com/vercel/workflow/commit/f05f642e89d7fe0af6e3d007621b0aa05f996a5b)]:
   - @workflow/world-local@5.0.0-beta.33
 
 ## 5.0.0-beta.38
 
-### Minor Changes
+### Minor changes
 
 - [#2548](https://github.com/vercel/workflow/pull/2548) [`25715d4`](https://github.com/vercel/workflow/commit/25715d4521164836d7f2eb2493b73d13ec595b10) Thanks [@pranaygp](https://github.com/pranaygp)! - Add a framework-agnostic `@workflow/web/handler` export (`createWorkflowWebHandler`) that serves the observability UI as a single Web `Request`→`Response` handler under a configurable base path, plus a `@workflow/web/registry` for embedded-dashboard discovery.
 
-### Patch Changes
+### Patch changes
 
 - [#3197](https://github.com/vercel/workflow/pull/3197) [`e181f64`](https://github.com/vercel/workflow/commit/e181f64b72a52ed1ff2f7fd2fdc352dacbb576d2) Thanks [@mitul-s](https://github.com/mitul-s)! - Tighten stream list, chunk viewer, and shared loading skeleton styling to match the trace view.
 
@@ -60,7 +60,7 @@
 
 ## 5.0.0-beta.37
 
-### Patch Changes
+### Patch changes
 
 - [#3146](https://github.com/vercel/workflow/pull/3146) [`e8bc7d6`](https://github.com/vercel/workflow/commit/e8bc7d6aadcdb5f89de1be71cfcafe5e9085ed25) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Let observability tooling decrypt sealed (`encp`) payloads: key resolution now yields the run's full key capability, and `hydrateDataWithKey` dispatches on the envelope format.
 
@@ -71,14 +71,14 @@
 
 ## 5.0.0-beta.36
 
-### Patch Changes
+### Patch changes
 
 - Updated dependencies [[`7d29bab`](https://github.com/vercel/workflow/commit/7d29babaef6d048153631d9ee7241b4b0953f9d3), [`850777a`](https://github.com/vercel/workflow/commit/850777a03bc1ad85fa7333d5e15a55a353ed6d23)]:
   - @workflow/world-local@5.0.0-beta.30
 
 ## 5.0.0-beta.35
 
-### Patch Changes
+### Patch changes
 
 - Updated dependencies [[`f72184d`](https://github.com/vercel/workflow/commit/f72184dc836cb5e04ae689e99802f6fa869f487a)]:
   - @workflow/world-local@5.0.0-beta.29
@@ -87,7 +87,7 @@
 
 ## 5.0.0-beta.33
 
-### Patch Changes
+### Patch changes
 
 - Updated dependencies []:
   - @workflow/world-local@5.0.0-beta.28
@@ -96,14 +96,14 @@
 
 ## 5.0.0-beta.31
 
-### Patch Changes
+### Patch changes
 
 - Updated dependencies [[`7a1ea5a`](https://github.com/vercel/workflow/commit/7a1ea5a45afd07601934a2f3ff1d1044f3bd9db8)]:
   - @workflow/world-local@5.0.0-beta.27
 
 ## 5.0.0-beta.30
 
-### Patch Changes
+### Patch changes
 
 - [#2790](https://github.com/vercel/workflow/pull/2790) [`145835b`](https://github.com/vercel/workflow/commit/145835b6475f7fcc7e9983b2c7080f3433018ec9) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Centralize workflow event type classifiers and event-data payload field helpers.
 
@@ -112,14 +112,14 @@
 
 ## 5.0.0-beta.29
 
-### Patch Changes
+### Patch changes
 
 - Updated dependencies [[`79a9813`](https://github.com/vercel/workflow/commit/79a9813f25eb907809fcd329accb76ac4d274480)]:
   - @workflow/world-local@5.0.0-beta.25
 
 ## 5.0.0-beta.28
 
-### Patch Changes
+### Patch changes
 
 - [#2647](https://github.com/vercel/workflow/pull/2647) [`1518c48`](https://github.com/vercel/workflow/commit/1518c4860822986436711ec14b1b5b16192fefb5) Thanks [@karthikscale3](https://github.com/karthikscale3)! - The runs, steps, and events observability list views now read from the
   metadata-only `world.analytics` namespace when the configured backend provides
@@ -127,7 +127,7 @@
   still loaded lazily per event on the runtime path. Hooks listing, detail views,
   payload resolution, streams, and mutations are unchanged.
 
-- [#2652](https://github.com/vercel/workflow/pull/2652) [`ae51f45`](https://github.com/vercel/workflow/commit/ae51f45166298e855885330b2f1d4e1f8d729faa) Thanks [@karthikscale3](https://github.com/karthikscale3)! - The hooks list now reads from the metadata-only `world.analytics` namespace when the backend provides one (falling back to the runtime storage APIs otherwise). A hook's secret token is no longer included in list rows — it is fetched one hook at a time via `world.hooks.get` only when the user copies the token or resumes the hook.
+- [#2652](https://github.com/vercel/workflow/pull/2652) [`ae51f45`](https://github.com/vercel/workflow/commit/ae51f45166298e855885330b2f1d4e1f8d729faa) Thanks [@karthikscale3](https://github.com/karthikscale3)! - The hooks list now reads from the metadata-only `world.analytics` namespace when the backend provides one (falling back to the runtime storage APIs otherwise). A hook's secret token is no longer included in list rows. It is fetched one hook at a time via `world.hooks.get` only when the user copies the token or resumes the hook.
 
 - [#2804](https://github.com/vercel/workflow/pull/2804) [`cdfac39`](https://github.com/vercel/workflow/commit/cdfac39e07e2d15c95f7ab9ff8d244b8677931bd) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Fix `workflow web` for local and postgres backends after static world-target injection. The web server now constructs the local world directly and resolves other world packages from the inspected project, instead of calling the `createWorld()` static-injection stub (which throws when no build plugin aliased it).
 
@@ -138,7 +138,7 @@
 
 ## 5.0.0-beta.27
 
-### Patch Changes
+### Patch changes
 
 - [#2680](https://github.com/vercel/workflow/pull/2680) [`89f4726`](https://github.com/vercel/workflow/commit/89f4726b7308b02e8898c1e564b2c94272df6f4f) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Decompress gzip- and zstd-prefixed serialized data returned from Vercel Workflow storage, and route OSS web hydration through the async WASM-capable path for compressed payloads.
 
@@ -146,11 +146,11 @@
 
 ## 5.0.0-beta.25
 
-### Patch Changes
+### Patch changes
 
 - [`8393716`](https://github.com/vercel/workflow/commit/8393716687c77ec46c724cd48335aa7ea9176c8b) - Fix the run trace detail panel flickering its Input/Output sections when navigating between spans. Span detail is now driven by a single selection-derived state machine (`useSelectedSpanDetail`) whose loading state stays in phase with the selected span, replacing the fetch flag that lagged selection by a few renders.
 
-- [#2632](https://github.com/vercel/workflow/pull/2632) [`7c1e2a2`](https://github.com/vercel/workflow/commit/7c1e2a2c7e837ef76bafc771811c8f320d8c4053) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix run and event observability pages hanging (~16s) and showing no data in the bundled server build, caused by HTTP/2 requests failing to reach `node:http2`.
+- [#2632](https://github.com/vercel/workflow/pull/2632) [`7c1e2a2`](https://github.com/vercel/workflow/commit/7c1e2a2c7e837ef76bafc771811c8f320d8c4053) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix run and event observability pages hanging (approximately 16s) and showing no data in the bundled server build, caused by HTTP/2 requests failing to reach `node:http2`.
 
 ## 5.0.0-beta.24
 
@@ -158,7 +158,7 @@
 
 ## 5.0.0-beta.22
 
-### Patch Changes
+### Patch changes
 
 - [#2582](https://github.com/vercel/workflow/pull/2582) [`6855282`](https://github.com/vercel/workflow/commit/685528259ddf93c17f544c2bed841088d0973dcb) Thanks [@mitul-s](https://github.com/mitul-s)! - Add helper text that indicates keyboard shortcuts
 
@@ -180,7 +180,7 @@
 
 ## 5.0.0-beta.13
 
-### Patch Changes
+### Patch changes
 
 - [#2301](https://github.com/vercel/workflow/pull/2301) [`bb6ff9a`](https://github.com/vercel/workflow/commit/bb6ff9ac99b17f1720d929d1fd2c03d5b6029ea7) Thanks [@pranaygp](https://github.com/pranaygp)! - Update vulnerable package dependencies to patched releases.
 
@@ -188,15 +188,15 @@
 
 ## 5.0.0-beta.11
 
-### Patch Changes
+### Patch changes
 
-- [#2200](https://github.com/vercel/workflow/pull/2200) [`f0f002a`](https://github.com/vercel/workflow/commit/f0f002ae05e6b4a66eb72e1b1c48fda1bcd0f412) Thanks [@mitul-s](https://github.com/mitul-s)! - Fix new trace viewer getting stuck on the first page: re-wire pagination so it auto-loads pages up to an event cap and scroll-loads the rest for very large runs.
+- [#2200](https://github.com/vercel/workflow/pull/2200) [`f0f002a`](https://github.com/vercel/workflow/commit/f0f002ae05e6b4a66eb72e1b1c48fda1bcd0f412) Thanks [@mitul-s](https://github.com/mitul-s)! - Fix new trace viewer getting stuck on the first page: re-wire pagination so it auto-loads pages up to an event cap and scroll-loads the rest for large runs.
 
 - [#2164](https://github.com/vercel/workflow/pull/2164) [`0606949`](https://github.com/vercel/workflow/commit/0606949e4a5c79b8382da5ece916501e85202e92) Thanks [@mitul-s](https://github.com/mitul-s)! - Add a loading skeleton to the new trace viewer that matches the real layout's dimensions, and start with the detail panel closed instead of pre-selecting the first span. The skeleton is also exported as `TraceViewerSkeleton` for consumers that need to render it standalone.
 
 ## 5.0.0-beta.10
 
-### Patch Changes
+### Patch changes
 
 - [#2107](https://github.com/vercel/workflow/pull/2107) [`ad5c068`](https://github.com/vercel/workflow/commit/ad5c068d7fa3e9d2696edacecbb823c2af92201c) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Allow lookup of exact step ID (`step_`), wait ID (`wait_`), hook ID (`hook_`), or event ID (`evnt_`) in the event list UI.
 
@@ -210,7 +210,7 @@
 
 ## 5.0.0-beta.5
 
-### Patch Changes
+### Patch changes
 
 - [#1955](https://github.com/vercel/workflow/pull/1955) [`f20c706`](https://github.com/vercel/workflow/commit/f20c70672e4f9c4aad60779ba9624521a5403cc7) Thanks [@mitul-s](https://github.com/mitul-s)! - Show hook name on trace viewer + no toast on decrypt
 
@@ -220,19 +220,19 @@
 
 ## 5.0.0-beta.4
 
-### Patch Changes
+### Patch changes
 
 - [#1883](https://github.com/vercel/workflow/pull/1883) [`640a050`](https://github.com/vercel/workflow/commit/640a0505b88ff5499994155fd7360179cb9abf4f) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Polish the new trace viewer: add detail pane, middle-truncate component, timeline tweaks, and various UI cleanups.
 
 ## 5.0.0-beta.3
 
-### Patch Changes
+### Patch changes
 
 - [#1852](https://github.com/vercel/workflow/pull/1852) [`9ea1254`](https://github.com/vercel/workflow/commit/9ea125427f4d96acf142b8b8deca0594e7ee1e7b) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Decode UTF-8 typed array stream chunks in the web stream viewer.
 
 ## 5.0.0-beta.2
 
-### Patch Changes
+### Patch changes
 
 - [#1732](https://github.com/vercel/workflow/pull/1732) [`c57eeff`](https://github.com/vercel/workflow/commit/c57eeff0ce37c86f58dad5c35c433b36fc9d3952) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Support standalone deploy to vercel
 
@@ -246,7 +246,7 @@
 
 ## 5.0.0-beta.1
 
-### Major Changes
+### Major changes
 
 - [#1293](https://github.com/vercel/workflow/pull/1293) [`66d49c0`](https://github.com/vercel/workflow/commit/66d49c0db608b034c8fc1b4087a047e0be067b77) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - **BREAKING CHANGE**: Restructure stream methods on World interface to use `world.streams.*` namespace with `runId` as the first parameter. `writeToStream(name, runId, chunk)` → `streams.write(runId, name, chunk)`, `writeToStreamMulti` → `streams.writeMulti`, `closeStream` → `streams.close`, `readFromStream` → `streams.get(runId, name, startIndex?)`, `listStreamsByRunId` → `streams.list(runId)`.
 
@@ -254,25 +254,25 @@
 
 ## 5.0.0-beta.0
 
-### Major Changes
+### Major changes
 
 - [#1642](https://github.com/vercel/workflow/pull/1642) [`c5cdfc0`](https://github.com/vercel/workflow/commit/c5cdfc00751c5bef36c4be748d819081b934fbcd) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Initial v5 beta release
 
 ## 4.1.0-beta.47
 
-### Patch Changes
+### Patch changes
 
 - [#1590](https://github.com/vercel/workflow/pull/1590) [`74c4cdb`](https://github.com/vercel/workflow/commit/74c4cdb6519802e3d56760e971507ffb93bc945b) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix server crash on unmatched routes (e.g. /robots.txt, /favicon.ico)
 
 ## 4.1.0-beta.46
 
-### Patch Changes
+### Patch changes
 
 - [#1542](https://github.com/vercel/workflow/pull/1542) [`c488877`](https://github.com/vercel/workflow/commit/c488877727d693e761ecbaae1e86bac4fb1f1e2c) Thanks [@karthikscale3](https://github.com/karthikscale3)! - fix: switch web stream reader from readFromStream to getStreamChunks
 
 ## 4.1.0-beta.45
 
-### Patch Changes
+### Patch changes
 
 - [#1492](https://github.com/vercel/workflow/pull/1492) [`dab106a`](https://github.com/vercel/workflow/commit/dab106acd3556f49db295108a3cdccc8058a7b92) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Hide the workflow graph viewer tab
 
@@ -280,7 +280,7 @@
 
 ## 4.1.0-beta.44
 
-### Patch Changes
+### Patch changes
 
 - [#1340](https://github.com/vercel/workflow/pull/1340) [`84599b7`](https://github.com/vercel/workflow/commit/84599b7ec5c19207082523609f1b3508a1a18bd7) Thanks [@pranaygp](https://github.com/pranaygp)! - Add error code classification (`USER_ERROR`, `RUNTIME_ERROR`) to `run_failed` events, improve queue and schema validation error logging
 
@@ -288,7 +288,7 @@
 
 ## 4.1.0-beta.43
 
-### Patch Changes
+### Patch changes
 
 - [#1381](https://github.com/vercel/workflow/pull/1381) [`7b9b3c1`](https://github.com/vercel/workflow/commit/7b9b3c1a484a4effff2190ac9899a2608704f375) Thanks [@karthikscale3](https://github.com/karthikscale3)! - web-shared: Timestamp tooltips, toast adapter, improved skeletons, and encrypted data detection for lazy-loaded events
   web: Add toast for decryption
@@ -297,7 +297,7 @@
 
 ## 4.1.0-beta.42
 
-### Patch Changes
+### Patch changes
 
 - [#1346](https://github.com/vercel/workflow/pull/1346) [`73c12f1`](https://github.com/vercel/workflow/commit/73c12f14dabb465e2074e2aebbcd231a4d91bc09) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Fix `ERR_UNSUPPORTED_ESM_URL_SCHEME` on Windows by converting absolute file paths to `file://` URLs before passing them to dynamic `import()`
 
@@ -307,7 +307,7 @@
 
 ## 4.1.0-beta.41
 
-### Patch Changes
+### Patch changes
 
 - [#1322](https://github.com/vercel/workflow/pull/1322) [`d5bc418`](https://github.com/vercel/workflow/commit/d5bc418816748ab2b5109ca7b082f3be427c326b) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Update readme to call out self-hosting limitations
 
@@ -315,7 +315,7 @@
 
 ## 4.1.0-beta.40
 
-### Patch Changes
+### Patch changes
 
 - [#1261](https://github.com/vercel/workflow/pull/1261) [`887cc2b`](https://github.com/vercel/workflow/commit/887cc2bd55b904c696083d87ab32a9fc03d619a8) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Refactor trace viewer to build spans entirely from events instead of fetching Steps and Hooks as separate resources.
 
@@ -325,13 +325,13 @@
 
 ## 4.1.0-beta.39
 
-### Patch Changes
+### Patch changes
 
 - [#1288](https://github.com/vercel/workflow/pull/1288) [`5e4ef65`](https://github.com/vercel/workflow/commit/5e4ef657cf34c04d6d12b9823fb7fca8885c2f90) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Use `world.events.get(eventId)` instead of `listByCorrelationId` for loading individual event data in run detail view.
 
 ## 4.1.0-beta.38
 
-### Patch Changes
+### Patch changes
 
 - [#1278](https://github.com/vercel/workflow/pull/1278) [`1eaff36`](https://github.com/vercel/workflow/commit/1eaff36f197bcaefacac2e89a08c90e735a67644) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Ensure data resolution failure does not prevent run from being inspected in UI
 
@@ -339,19 +339,19 @@
 
 ## 4.1.0-beta.37
 
-### Patch Changes
+### Patch changes
 
 - [#1256](https://github.com/vercel/workflow/pull/1256) [`bbe40ff`](https://github.com/vercel/workflow/commit/bbe40ff00a5e372b040aec8fc7640c54d08c5636) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Add encryption-aware o11y for CLI and web UI
 
 ## 4.1.0-beta.36
 
-### Patch Changes
+### Patch changes
 
 - [#1217](https://github.com/vercel/workflow/pull/1217) [`e55c636`](https://github.com/vercel/workflow/commit/e55c63678b15b6687cc77efca705ee9fb40fabc3) Thanks [@pranaygp](https://github.com/pranaygp)! - Upgrade dependencies across all packages
 
 ## 4.1.0-beta.35
 
-### Patch Changes
+### Patch changes
 
 - [#1182](https://github.com/vercel/workflow/pull/1182) [`f0823dc`](https://github.com/vercel/workflow/commit/f0823dc79b74e76176974230cecaccd705a8da75) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Fix traceviewer pagination issues
 
@@ -361,7 +361,7 @@
 
 ## 4.1.0-beta.34
 
-### Patch Changes
+### Patch changes
 
 - [#999](https://github.com/vercel/workflow/pull/999) [`ea3254e`](https://github.com/vercel/workflow/commit/ea3254e7ce28cef6b9b829ac7ad379921dd41ed9) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Separate project ID and project name into distinct env vars (WORKFLOW_VERCEL_PROJECT and WORKFLOW_VERCEL_PROJECT_NAME)
 
@@ -373,7 +373,7 @@
 
 ## 4.1.0-beta.33
 
-### Patch Changes
+### Patch changes
 
 - [#1005](https://github.com/vercel/workflow/pull/1005) [`7653e6b`](https://github.com/vercel/workflow/commit/7653e6bfdbfe29624a5cbc1477b299f6aca3a0f0) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Migrate `@workflow/web` from Next.js to React Router v7 framework mode. Replace child process spawning in the CLI with in-process Express server. Switch RPC transport from JSON to CBOR.
 
@@ -383,13 +383,13 @@
 
 ## 4.1.0-beta.32
 
-### Patch Changes
+### Patch changes
 
 - [#927](https://github.com/vercel/workflow/pull/927) [`f090de1`](https://github.com/vercel/workflow/commit/f090de1eb48ad8ec3fd776e9d084310d56a7ac29) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Added subpatch exports for runtime modules to allow direct imports in core. Refactored web-shared to be a thin package that exported UI components and world-actions. Updated web package to consume the UI components and world-actions from web-shared.
 
 ## 4.1.0-beta.31
 
-### Minor Changes
+### Minor changes
 
 - [#621](https://github.com/vercel/workflow/pull/621) [`4966b72`](https://github.com/vercel/workflow/commit/4966b728a8c8ac339fd98ed91af222f406479fae) Thanks [@pranaygp](https://github.com/pranaygp)! - **BREAKING**: Storage interface is now read-only; all mutations go through `events.create()`
   - Remove `cancel`, `pause`, `resume` from `runs`
@@ -399,19 +399,19 @@
   - Remove `fatal` field from `step_failed` (terminal failure is now implicit)
   - Add `step_retrying` event with error info for retriable failures
 
-### Patch Changes
+### Patch changes
 
 - [#814](https://github.com/vercel/workflow/pull/814) [`b16a682`](https://github.com/vercel/workflow/commit/b16a6828af36a2d5adb38fb6a6d1253657001ac8) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Move "parse-name" into the `utils` package
 
 ## 4.0.1-beta.30
 
-### Patch Changes
+### Patch changes
 
 - [#816](https://github.com/vercel/workflow/pull/816) [`5ba82ec`](https://github.com/vercel/workflow/commit/5ba82ec4b105d11538be6ad65449986eaf945916) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Add button to run queue based health checks
 
 ## 4.0.1-beta.29
 
-### Patch Changes
+### Patch changes
 
 - [#806](https://github.com/vercel/workflow/pull/806) [`d30e5c0`](https://github.com/vercel/workflow/commit/d30e5c0249018083bdd63ac84408449003399099) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - [web] Add view to display a list of all events
 
@@ -419,19 +419,19 @@
 
 ## 4.0.1-beta.28
 
-### Patch Changes
+### Patch changes
 
 - [#774](https://github.com/vercel/workflow/pull/774) [`abdca8f`](https://github.com/vercel/workflow/commit/abdca8fd526f3c83c7da7b96a0522f9552e2bd2f) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Improve display of configuration information. Fix opening of Vercel backend when using `--localUi`. Fix world caching in multi-tenant environments. Fix flicker in run table when refreshing. Improve contributor experience by adding `--observabilityCwd` flag to easily iterate on web UI from another directory. Polish navbar UI.
 
 ## 4.0.1-beta.27
 
-### Patch Changes
+### Patch changes
 
 - [#737](https://github.com/vercel/workflow/pull/737) [`adb9312`](https://github.com/vercel/workflow/commit/adb93121fc0d4790e949f79eec1c375af207bf13) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Tidy up wake-up and re-enqueue controls
 
 ## 4.0.1-beta.26
 
-### Patch Changes
+### Patch changes
 
 - [#747](https://github.com/vercel/workflow/pull/747) [`3fb57e1`](https://github.com/vercel/workflow/commit/3fb57e14c8bd3948599625bdf911b88db5842320) Thanks [@pranaygp](https://github.com/pranaygp)! - Use env variables instead of query params for world config (like WORKFLOW_TARGET_WORLD)
 
@@ -439,7 +439,7 @@
 
 ## 4.0.1-beta.25
 
-### Patch Changes
+### Patch changes
 
 - [#751](https://github.com/vercel/workflow/pull/751) [`dd3db13`](https://github.com/vercel/workflow/commit/dd3db13d5498622284ed97c1a273d2942478b167) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Remove the unused paused/resumed run events and states
   - Remove `run_paused` and `run_resumed` event types
@@ -449,63 +449,63 @@
 
 ## 4.0.1-beta.24
 
-### Patch Changes
+### Patch changes
 
-- [#716](https://github.com/vercel/workflow/pull/716) [`0da8e54`](https://github.com/vercel/workflow/commit/0da8e543742ad160dedc28f998cfe16fe1e3fd84) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Allow selecting and cancelling multiple runs from table view
+- [#716](https://github.com/vercel/workflow/pull/716) [`0da8e54`](https://github.com/vercel/workflow/commit/0da8e543742ad160dedc28f998cfe16fe1e3fd84) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Allow selecting and canceling multiple runs from table view
 
 - [#717](https://github.com/vercel/workflow/pull/717) [`8bc4e5f`](https://github.com/vercel/workflow/commit/8bc4e5fe3ccd67ccdd39737d3d30ad4268215a27) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Refresh run table on stale re-focus
 
 ## 4.0.1-beta.23
 
-### Patch Changes
+### Patch changes
 
 - [#703](https://github.com/vercel/workflow/pull/703) [`9b1640d`](https://github.com/vercel/workflow/commit/9b1640d76e7e759446058d65272011071bb250d2) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Use `pluralize()` util function
 
 ## 4.0.1-beta.22
 
-### Patch Changes
+### Patch changes
 
 - [#694](https://github.com/vercel/workflow/pull/694) [`f989613`](https://github.com/vercel/workflow/commit/f989613d7020f987fba2c74f2e49c8d47ff74a29) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Add error boundaries around tabs in run detail view
 
 ## 4.0.1-beta.21
 
-### Patch Changes
+### Patch changes
 
 - [#455](https://github.com/vercel/workflow/pull/455) [`e3f0390`](https://github.com/vercel/workflow/commit/e3f0390469b15f54dee7aa9faf753cb7847a60c6) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Added Control Flow Graph extraction from Workflows and extended manifest.json's schema to incorporate the graph structure into it. Refactored manifest generation to pass manifest as a parameter instead of using instance state. Add e2e tests for manifest validation across all builders.
 
 ## 4.0.1-beta.20
 
-### Patch Changes
+### Patch changes
 
 - [#674](https://github.com/vercel/workflow/pull/674) [`4bc98ff`](https://github.com/vercel/workflow/commit/4bc98ff4a15a090e2233c18b75e0a1b5dd2e9ff1) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Move ErrorBoundary component from web to web-shared and use in sidebar detail view.
 
 ## 4.0.1-beta.19
 
-### Patch Changes
+### Patch changes
 
 - [#656](https://github.com/vercel/workflow/pull/656) [`ef22f82`](https://github.com/vercel/workflow/commit/ef22f82c9ead53744bac23fa12ed6bfbb1aba0bb) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Allow resuming hooks with payloads from the UI
 
 ## 4.0.1-beta.18
 
-### Patch Changes
+### Patch changes
 
 - [#646](https://github.com/vercel/workflow/pull/646) [`f396833`](https://github.com/vercel/workflow/commit/f39683370dc187273bd8aa5108e11e49dffe027a) Thanks [@adriandlam](https://github.com/adriandlam)! - Fix missing next.config.ts inside built @workflow/web package
 
 ## 4.0.1-beta.17
 
-### Patch Changes
+### Patch changes
 
 - [#582](https://github.com/vercel/workflow/pull/582) [`05ea678`](https://github.com/vercel/workflow/commit/05ea6789e5773d5b4ee16dce4a800e613261f452) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Add buttons to wake up workflow from sleep or scheduling issues
 
 ## 4.0.1-beta.16
 
-### Patch Changes
+### Patch changes
 
 - [#604](https://github.com/vercel/workflow/pull/604) [`6265534`](https://github.com/vercel/workflow/commit/6265534d6be2cba54265ef23b94a0810d9e25c9c) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Bump next.js to address CVE-2025-55184
 
 ## 4.0.1-beta.15
 
-### Patch Changes
+### Patch changes
 
 - [#575](https://github.com/vercel/workflow/pull/575) [`161c54c`](https://github.com/vercel/workflow/commit/161c54ca13e0c36220640e656b7abe4ff282dbb0) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Add Web and CLI UI for listing and viewing streams
 
@@ -515,7 +515,7 @@
 
 ## 4.0.1-beta.14
 
-### Patch Changes
+### Patch changes
 
 - 14daedd: Refine span viewer panel UI: reduced font sizes and spacing, added connecting lines in detail cards, improved attribute layout with bordered containers. Improve status badge with colored indicators and optional duration, add overlay mode to copyable text, simplify stream detail back navigation
 - 4aecb99: Add workflow graph visualization to observability UI and o11y migration to nuqs for url state management
@@ -524,13 +524,13 @@
 
 ## 4.0.1-beta.13
 
-### Patch Changes
+### Patch changes
 
 - ca27c0f: Update to latest Next.js
 
 ## 4.0.1-beta.12
 
-### Patch Changes
+### Patch changes
 
 - 109fe59: Add PostgreSQL backend support in web UI settings
 - 10c5b91: Update Next.js version to 16
@@ -538,32 +538,32 @@
 
 ## 4.0.1-beta.11
 
-### Patch Changes
+### Patch changes
 
 - b97b6bf: Lock all dependencies in our packages
 
 ## 4.0.1-beta.10
 
-### Patch Changes
+### Patch changes
 
 - 11469d8: Update default fallback path for connecting to local world
 - 00efdfb: Improve trace viewer load times and loading animation
 
 ## 4.0.1-beta.9
 
-### Patch Changes
+### Patch changes
 
 - 0b3e89e: Fix event data serialization for observability
 
 ## 4.0.1-beta.8
 
-### Patch Changes
+### Patch changes
 
 - 7db9e94: Fix hook events not displaying on trace viewer if there's multiple hook_received events
 
 ## 4.0.1-beta.7
 
-### Patch Changes
+### Patch changes
 
 - 2ae7426: Clean up loading animation on trace viewer
 - f973954: Update license to Apache 2.0
@@ -571,7 +571,7 @@
 
 ## 4.0.1-beta.6
 
-### Patch Changes
+### Patch changes
 
 - 8f63385: Add readme section about self-hosting observability UI
 - 20d51f0: Add optional `retryAfter` property to `Step` interface
@@ -579,21 +579,21 @@
 
 ## 4.0.1-beta.5
 
-### Patch Changes
+### Patch changes
 
 - 0f845af: Alias workflow web to workflow inspect runs --web, hide trace viewer search for small runs
 - ffb7af3: Web: make error handling local/inline to where it's used, unify API error responses
 
 ## 4.0.1-beta.4
 
-### Patch Changes
+### Patch changes
 
 - dbf2207: Web: refactor active/hover styles from trace viewer to avoid color conflicts
 - eadf588: Add button to re-run workflows
 
 ## 4.0.1-beta.3
 
-### Patch Changes
+### Patch changes
 
 - 731adff: Fix run data not updating live on run detail view
 - 22917ab: Web: fix resource detail sidebar briefly showing old data when updating selection
@@ -602,18 +602,18 @@
 
 ## 4.0.1-beta.2
 
-### Patch Changes
+### Patch changes
 
 - f5f171f: Refactor trace-viewer API, fix visibility of tiny traces
 
 ## 4.0.1-beta.1
 
-### Patch Changes
+### Patch changes
 
 - e46294f: Add "license" and "repository" fields to `package.json` file
 
 ## 4.0.1-beta.0
 
-### Patch Changes
+### Patch changes
 
 - fcf63d0: Initial publish
