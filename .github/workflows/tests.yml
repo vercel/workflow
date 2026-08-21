@@ -824,14 +824,32 @@ jobs:
     # shape of the durabench bug this stack came out of, so this lane is
     # unconditional and required rather than label-gated like the WS one.
     #
-    # Two apps, not the WS lane's four. Each row is a real `vercel deploy`
-    # charged to every PR in the repo, which is why the WS lane is opt-in
-    # at four; two is what keeps an always-on lane affordable. The pair is
-    # chosen for runtime diversity — nextjs-turbopack is the only fixture
-    # emitting OTEL spans, so it is the one that can show *which* transport
-    # ran, and express covers the non-Next server path. The WS lane's
-    # vite-specific rationale (native `ws` accelerators resolving to a stub)
-    # is WS-only and does not apply here.
+    # Six apps, chosen by server shape rather than by count. Before the flip
+    # HTTP was the default, so all 28 e2e-vercel-prod lane-runs covered it;
+    # after the flip they cover WebSockets instead and this lane is the whole
+    # of the HTTP coverage. Each row is a real `vercel deploy` charged to
+    # every PR, so the full 14 is too expensive, but two was too thin for a
+    # transport that is still supported.
+    #
+    # The shapes, one fixture each:
+    #   example          - baseline, no framework server
+    #   nextjs-turbopack - Next; also the only fixture emitting OTEL spans,
+    #                      so the only one that can show which transport ran
+    #   vite             - Vite SSR
+    #   express          - Node req/res server
+    #   nitro            - Nitro/h3, which also covers nuxt
+    #   hono             - fetch-API Request/Response server, a genuinely
+    #                      different mount shape from express
+    #
+    # Omitted because they duplicate a shape already here: nextjs-webpack
+    # (same runtime as turbopack, different bundler), nuxt (nitro), fastify
+    # and nest (both express-shaped), astro and tanstack-start (adapter
+    # variants). `python` is omitted because it has no conformance gate and
+    # needs routes this suite does not serve - see the e2e-python job.
+    #
+    # The first four deliberately match the WS lane's matrix, so the same
+    # fixture is exercised on both transports and a failure on one can be
+    # compared against the other.
     #
     # Deploys itself with `vercel deploy` rather than `--prebuilt` for the
     # same reasons documented on e2e-vercel-ws-transport above.
@@ -849,12 +867,24 @@ jobs:
       fail-fast: false
       matrix:
         app:
+          - name: "example"
+            project-id: "prj_xWq20Dd860HHAfzMjK2Mb6TPVxMa"
+            project-slug: "example-workflow"
           - name: "nextjs-turbopack"
             project-id: "prj_yjkM7UdHliv8bfxZ1sMJQf1pMpdi"
             project-slug: "example-nextjs-workflow-turbopack"
+          - name: "vite"
+            project-id: "prj_uLIcNZNDmETulAvj5h0IcDHi5432"
+            project-slug: "workbench-vite-workflow"
           - name: "express"
             project-id: "prj_cCZjpBy92VRbKHHbarDMhOHtkuIr"
             project-slug: "workbench-express-workflow"
+          - name: "nitro"
+            project-id: "prj_e7DZirYdLrQKXNrlxg7KmA6ABx8r"
+            project-slug: "workbench-nitro-workflow"
+          - name: "hono"
+            project-id: "prj_p0GIEsfl53L7IwVbosPvi9rPSOYW"
+            project-slug: "workbench-hono-workflow"
     env:
       TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
       TURBO_TEAM: ${{ vars.TURBO_TEAM }}
