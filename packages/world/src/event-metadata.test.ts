@@ -3,6 +3,7 @@ import {
   entityEventClass,
   getEventDataPayloadField,
   getEventDataRefFields,
+  isSealedNoopEvent,
 } from './event-metadata.js';
 
 describe('event metadata', () => {
@@ -24,5 +25,10 @@ describe('event metadata', () => {
     expect(getEventDataPayloadField('unknown')).toBeUndefined();
     expect(getEventDataRefFields('constructor')).toEqual([]);
     expect(entityEventClass('toString')).toBeUndefined();
+  });
+
+  it('identifies sealed-log filler events without loading event schemas', () => {
+    expect(isSealedNoopEvent({ eventType: 'noop' })).toBe(true);
+    expect(isSealedNoopEvent({ eventType: 'run_started' })).toBe(false);
   });
 });

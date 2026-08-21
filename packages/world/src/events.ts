@@ -143,23 +143,6 @@ export function isWaitEventType(eventType: string): eventType is WaitEventType {
   return WAIT_EVENT_TYPES.includes(eventType as WaitEventType);
 }
 
-/**
- * Whether an event is a sealed-log filler occupying an abandoned slot.
- *
- * The single home for this test, deliberately: a noop is invisible to the run
- * but it is a real row of the log, so *every* pass over a log has to decide
- * whether it is walking positions (count it) or reconstructing what happened
- * (skip it). The two replay engines and the observability trace builder each
- * make that decision independently, and the one thing they must agree on is
- * that a noop's `createdAt`, the sealer's wall clock, can postdate every real
- * event around it but never becomes a time the run observed.
- */
-export function isSealedNoopEvent(
-  event: Pick<Event, 'eventType'> | { eventType: string }
-): boolean {
-  return event.eventType === 'noop';
-}
-
 const ChildEntityCreationEventTypeSchema = EventTypeSchema.extract([
   'step_created',
   'hook_created',

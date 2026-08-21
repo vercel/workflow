@@ -7,6 +7,23 @@ function getOwnProperty<T extends object>(
   return Object.hasOwn(object, key) ? object[key as keyof T] : undefined;
 }
 
+/**
+ * Whether an event is a sealed-log filler occupying an abandoned slot.
+ *
+ * The single home for this test, deliberately: a noop is invisible to the run
+ * but it is a real row of the log, so every pass over a log has to decide
+ * whether it is walking positions (count it) or reconstructing what happened
+ * (skip it). The replay engines and observability trace builder must agree
+ * that a noop's `createdAt` — the sealer's wall clock, which can postdate every
+ * real event around it — never becomes a time the run observed.
+ *
+ * Keeping the classifier in this schema-free module lets replay code make that
+ * decision without pulling the event validation graph into workflow bundles.
+ */
+export function isSealedNoopEvent(event: { eventType: string }): boolean {
+  return event.eventType === 'noop';
+}
+
 /** Groups events that are mutually exclusive outcomes for one entity. */
 const ENTITY_EVENT_CLASS_BY_TYPE = {
   step_created: 'step_created',

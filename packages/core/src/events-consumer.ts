@@ -1,9 +1,9 @@
+import type { Event } from '@workflow/world';
+import { envNumber } from '@workflow/world/env-config';
 import {
-  type Event,
   entityEventClass,
-  envNumber,
   isSealedNoopEvent,
-} from '@workflow/world';
+} from '@workflow/world/event-metadata';
 import { eventsLogger } from './logger.js';
 
 /**
