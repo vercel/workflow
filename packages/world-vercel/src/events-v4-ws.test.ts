@@ -108,6 +108,7 @@ beforeEach(() => {
 
 afterEach(() => {
   delete process.env.WORKFLOW_EVENTS_TRANSPORT;
+  delete process.env.WORKFLOW_INTERNAL_EVENTS_TRANSPORT_STRICT;
 });
 
 /**
@@ -119,6 +120,90 @@ afterEach(() => {
  * would sail through with every HTTP assertion still green, because the
  * two transports are built to be indistinguishable at the result layer.
  */
+/**
+ * Strict mode exists because an event written over HTTP and one written over
+ * the socket produce the same run outcome, so the WS e2e lane passes either
+ * way. These pin the two halves that make it usable: it fires on the one event
+ * type that should never fall back, and it stays out of the way of the several
+ * that legitimately do.
+ */
+describe('strict fallback (WORKFLOW_INTERNAL_EVENTS_TRANSPORT_STRICT)', () => {
+  const httpReply = (path: string) => {
+    const origin =
+      WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
+    const agent = new MockAgent();
+    agent.disableNetConnect();
+    agent
+      .get(origin)
+      .intercept({ path, method: 'POST' })
+      .reply(200, materializedBody(), {
+        headers: {
+          'x-wf-event-id': 'evnt_1',
+          'x-wf-run-id': 'wrun_1',
+          'x-wf-created-at': CREATED_AT,
+        },
+      });
+    return agent;
+  };
+
+  it('fails a step_completed that falls back while the gate is on', async () => {
+    process.env.WORKFLOW_INTERNAL_EVENTS_TRANSPORT_STRICT = '1';
+    // No channel for this run: exactly the state that used to demote the write
+    // to HTTP without a trace.
+    // `Once`, matching the rest of this file: a permanent override
+    // leaks into every later test, since clearAllMocks resets calls, not
+    // implementations.
+    resolveWsTransportMock.mockReturnValueOnce(null);
+
+    await expect(
+      createWorkflowRunEventV4(input, { token: 'test-token' })
+    ).rejects.toThrow(/fell back to the HTTP events transport/);
+  });
+
+  it('leaves step_started alone, which falls back legitimately', async () => {
+    process.env.WORKFLOW_INTERNAL_EVENTS_TRANSPORT_STRICT = '1';
+    // `Once`, matching the rest of this file: a permanent override
+    // leaks into every later test, since clearAllMocks resets calls, not
+    // implementations.
+    resolveWsTransportMock.mockReturnValueOnce(null);
+    // Not in the strict set on purpose: after vercel/workflow#3732 a write
+    // issued before the socket finishes connecting takes HTTP by design, and
+    // on a cold instance that can be the first step_started of a run.
+    const agent = httpReply('/api/v4/runs/wrun_1/events/step_started');
+
+    // The claim is only that strict mode did not block the fallback, so this
+    // asserts on that and on the request having been made. Decoding the reply
+    // is not the point and `materializedBody` is shaped for step_completed —
+    // building a second fixture here would test the fixture, not the gate.
+    const error = await createWorkflowRunEventV4(
+      { ...input, eventType: 'step_started' },
+      { token: 'test-token', dispatcher: agent }
+    ).catch((err: unknown) => err);
+
+    expect(String(error)).not.toMatch(/fell back to the HTTP events transport/);
+    agent.assertNoPendingInterceptors();
+  });
+
+  it('is off unless the value is exactly 1 or true', async () => {
+    // The opposite asymmetry from the transport gate, on purpose: strict mode
+    // fails runs, so it must not be acquired by a typo.
+    process.env.WORKFLOW_INTERNAL_EVENTS_TRANSPORT_STRICT = 'yes';
+    // `Once`, matching the rest of this file: a permanent override
+    // leaks into every later test, since clearAllMocks resets calls, not
+    // implementations.
+    resolveWsTransportMock.mockReturnValueOnce(null);
+    const agent = httpReply('/api/v4/runs/wrun_1/events/step_completed');
+
+    const result = await createWorkflowRunEventV4(input, {
+      token: 'test-token',
+      dispatcher: agent,
+    });
+
+    expect(result.event.eventId).toBe('evnt_1');
+    agent.assertNoPendingInterceptors();
+  });
+});
+
 describe('transport gate', () => {
   it('goes over HTTP, never touching the WS transport, when the gate is off', async () => {
     // "Off" is now an explicit opt-out rather than an absent variable, since

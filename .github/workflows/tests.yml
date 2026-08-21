@@ -744,8 +744,14 @@ jobs:
           # production-adjacent projects, and this shouldn't ever silently
           # start deploying to their production aliases if a future edit
           # changes flags around this call.
+          # Strict mode turns a silent HTTP demotion into a failed run, so this
+          # lane actually asserts the socket carried traffic instead of only
+          # asserting the feature was harmless. Scoped to `step_completed` —
+          # see STRICT_WS_EVENT_TYPES in events-v4.ts for why the other event
+          # types fall back legitimately. Never set on e2e-vercel-prod.
           URL=$(vercel deploy --yes --target=preview \
             -e WORKFLOW_EVENTS_TRANSPORT=ws \
+            -e WORKFLOW_INTERNAL_EVENTS_TRANSPORT_STRICT=1 \
             --scope="$WS_TEAM_ID" --token="$WS_VERCEL_TOKEN")
           echo "url=$URL" >> "$GITHUB_OUTPUT"
           # Best-effort: only used by the runtime-logs capture on failure,

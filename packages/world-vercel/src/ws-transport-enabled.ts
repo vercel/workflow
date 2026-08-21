@@ -37,3 +37,19 @@
 export function isWsEventsTransportEnabled(): boolean {
   return process.env.WORKFLOW_EVENTS_TRANSPORT?.trim().toLowerCase() !== 'http';
 }
+
+/**
+ * Whether a WS fallback that should not happen must fail loudly instead of
+ * quietly writing over HTTP. Internal, undocumented, and meant for the WS e2e
+ * lane, which otherwise passes whether or not the socket carried anything.
+ *
+ * Note the asymmetry with the gate above, which is deliberate and the opposite
+ * way round. There, an unrecognized value takes the default, because the risk
+ * is a deployment quietly sitting on the wrong transport. Here an unrecognized
+ * value means *off*, because the risk runs the other way: this turns a silent
+ * degradation into a failed run, and nobody should acquire that by typo.
+ */
+export function isWsEventsTransportStrict(): boolean {
+  const raw = process.env.WORKFLOW_INTERNAL_EVENTS_TRANSPORT_STRICT;
+  return raw === '1' || raw === 'true';
+}
