@@ -36,7 +36,7 @@ type LoggerOptions = {
 
 /**
  * Lightweight `DEBUG=` pattern matcher. Replaces the `debug` package, which
- * was previously a static dependency of this module — that import path
+ * was previously a static dependency of this module: that import path
  * pulled `debug/src/node` and its dynamic `require('tty')` into the
  * generated Next.js webpack flow route, breaking the V2 combined-bundle
  * build with `Dynamic require of "tty" is not supported`. Keeping this
@@ -94,8 +94,8 @@ function createLogger(namespace: string, options: LoggerOptions = {}): Logger {
         // single string so the runtime's `console.error` / `util.inspect`
         // doesn't quote-escape multi-line stacks or paragraph hints inside
         // a JSON-y object dump. The framing line stays at the top with the
-        // structured fields right under it; the stack body — with framework
-        // internal frames collapsed — sits at the bottom. See log-format.ts.
+        // structured fields right under it; the stack body (with framework
+        // internal frames collapsed) sits at the bottom. See log-format.ts.
         if (level === 'error' || level === 'warn') {
           const out = level === 'error' ? console.error : console.warn;
           out(composeLogLine('[workflow-sdk]', message, merged));

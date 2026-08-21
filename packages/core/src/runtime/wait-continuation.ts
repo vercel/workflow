@@ -10,7 +10,7 @@
  * The continuation is keyed on the wait's correlationId: while a wait is
  * pending, every replay pass over the run re-observes it (e.g., once per
  * step completion in `Promise.all([steps..., sleep()])`), and without
- * dedupe each pass would enqueue another delayed continuation — each one
+ * dedupe each pass would enqueue another delayed continuation: each one
  * a spurious full replay when the wait elapses, and each a fresh message
  * that resets the delivery-attempt runaway guard. A key is attached in
  * all cases: some worlds (e.g. world-postgres) serialize key-less
@@ -29,7 +29,7 @@
  * situations exist, each with its own key variation:
  *
  * - Waits longer than the maximum queue delay are chained: the delay is
- *   clamped to `WAIT_CONTINUATION_MAX_DELAY_SECONDS` (23h — VQS messages
+ *   clamped to `WAIT_CONTINUATION_MAX_DELAY_SECONDS` (23h: VQS messages
  *   have a 24h retention limit, and one hour of buffer matches
  *   world-vercel's own clamp for delayed re-enqueues), so the
  *   continuation intentionally fires early, re-observes the wait, and
@@ -37,7 +37,7 @@
  *   (`ceil(timeoutSeconds / maxDelay)`): stable for every re-observation
  *   within the same hop window (so passes dedupe), decremented at each
  *   hop delivery (so the chain always advances). Worlds without a delay
- *   limit (world-postgres, world-local) simply take the same ≤23h hops.
+ *   limit (world-postgres, world-local) take the same ≤23h hops.
  *
  * - Near-elapsed waits (≤2s remaining) get a second-bucketed suffix. A
  *   continuation delivered marginally early (clock skew between the
@@ -108,11 +108,11 @@ export function getWaitContinuationDispatch(
 ): WaitContinuationDispatch {
   const maxDelaySeconds = getWaitContinuationMaxDelaySeconds();
   // The near-elapsed branch returns the full remaining time as the delay, so
-  // its threshold can never exceed the max delay — otherwise a wait between the
+  // its threshold can never exceed the max delay. Otherwise a wait between the
   // max and the threshold would be dispatched with a delay above the max. Cap
   // the threshold at the max so every branch yields a delay within it. (With
-  // defaults — threshold 2s, max 82_800s — this is a no-op; it only bites when
-  // the max is tuned down below the threshold for testing.)
+  // defaults, threshold 2s and max 82_800s, this is a no-op; it only bites
+  // when the max is tuned down below the threshold for testing.)
   const nearElapsedThreshold = Math.min(
     getNearElapsedWaitThresholdSeconds(),
     maxDelaySeconds

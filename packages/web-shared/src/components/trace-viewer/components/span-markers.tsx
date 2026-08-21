@@ -4,7 +4,12 @@ import { ArrowLeft, ArrowRight } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { cn } from '../../../lib/cn';
 import { TimestampTooltip } from '../../ui/timestamp-tooltip';
-import type { SpanMarker } from '../utils';
+import type { SpanMarker, SpanMarkerKind } from '../utils';
+
+const MARKER_KIND_PREFIX: Record<SpanMarkerKind, string> = {
+  hook_received: 'Hook received',
+  attr_set: 'Attribute set',
+};
 
 // ---------------------------------------------------------------------------
 // Marker projection
@@ -12,8 +17,9 @@ import type { SpanMarker } from '../utils';
 
 export interface VisibleMarker {
   leftPct: number;
-  /** Absolute (epoch) timestamp in ms — for the tooltip. */
+  /** Absolute (epoch) timestamp in ms, for the tooltip. */
   timeMs: number;
+  kind: SpanMarkerKind;
 }
 
 /**
@@ -37,6 +43,7 @@ export function projectMarkers(
       {
         leftPct: ((m.timeMs - visibleStartMs) / visibleDurationMs) * 100,
         timeMs: m.timeMs,
+        kind: m.kind,
       },
     ];
   });
@@ -48,7 +55,7 @@ const MARKER_MIN_GAP_PX = 16;
 /**
  * Thin out ticks that would visually collide: walk left-to-right and keep each
  * one unless it sits within MARKER_MIN_GAP_PX of the last kept tick. Well-spaced
- * markers survive even when a tight cluster elsewhere on the bar gets thinned —
+ * markers survive even when a tight cluster elsewhere on the bar gets thinned;
  * zoom in to resolve a cluster.
  */
 export function cullCollidingMarkers(
@@ -80,13 +87,11 @@ function MarkerTick({ className }: { className?: string }): ReactNode {
 }
 
 /**
- * Point-in-time markers overlaid on a bar — one vertical tick per event (hook
+ * Point-in-time markers overlaid on a bar: one vertical tick per event (hook
  * resumptions and attribute writes), centered on the bar. Each tick sits inside
- * a larger hit target and, on hover, shows the shared `TimestampTooltip` card
- * (the same light Geist card used for every other timestamp in the app, e.g. the
- * attribute panel and event list) so the time reads consistently with the rest
- * of the product. The position is clamped a hair inside the bar so an edge
- * marker never jams the rounded corner.
+ * a larger hit target and, on hover, shows the shared relative-time context
+ * card, prefixed with the event kind. The position is clamped a hair inside
+ * the bar so an edge marker never jams the rounded corner.
  */
 export function MarkerLayer({
   markers,
@@ -95,13 +100,13 @@ export function MarkerLayer({
 }): ReactNode {
   return (
     <>
-      {markers.map((m) => (
+      {markers.map((m, index) => (
         <span
-          key={m.timeMs}
+          key={`${m.timeMs}-${index}`}
           className="pointer-events-auto absolute top-0 bottom-0 z-10 flex w-8 -translate-x-1/2 items-center justify-center"
           style={{ left: `clamp(8px, ${m.leftPct}%, calc(100% - 8px))` }}
         >
-          <TimestampTooltip date={m.timeMs}>
+          <TimestampTooltip date={m.timeMs} prefix={MARKER_KIND_PREFIX[m.kind]}>
             <span className="flex h-6 w-8 items-center justify-center">
               <MarkerTick className="h-3" />
             </span>
@@ -147,7 +152,7 @@ export function OffscreenMarkerIndicator({
       aria-label={label}
       title={label}
       onClick={(e) => {
-        // Don't let the row's onClick fire — revealing shouldn't also
+        // Don't let the row's onClick fire, since revealing shouldn't also
         // change the span selection.
         e.stopPropagation();
         onReveal?.(targetMs);

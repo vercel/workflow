@@ -5,6 +5,7 @@ import {
   FatalError,
   RetryableError,
   RunExpiredError,
+  SerializationError,
   ThrottleError,
   TooEarlyError,
   WorkflowRuntimeError,
@@ -31,6 +32,7 @@ import {
 import { runtimeLogger, stepLogger } from '../logger.js';
 import { getStepFunction } from '../private.js';
 import type { PayloadKey } from '../serialization/encryption.js';
+import { formatSerializationError } from '../serialization/errors.js';
 import {
   cancelAbortReaders,
   dehydrateStepError,
@@ -68,6 +70,7 @@ import {
   type StepLatencyEventData,
   type StepLatencyTracking,
 } from './step-latency.js';
+import { isUnserializableStepInputPlaceholder } from './unserializable-step.js';
 import { safeWaitUntil } from './wait-until.js';
 
 export const DEFAULT_STEP_MAX_RETRIES = 3;
@@ -129,7 +132,7 @@ export interface StepExecutorParams {
    * Pre-claimed inline start: the suspension handler committed (or lost) this
    * step's `step_created` + `step_started` pair inside its batched fan-out
    * write, so the start this executor would otherwise send has already been
-   * decided. `owned: false` returns `{ type: 'skipped' }` before any write —
+   * decided. `owned: false` returns `{ type: 'skipped' }` before any write,
    * the same outcome as losing the lazy claim's atomic create. `owned: true`
    * skips both start paths (no start write at all) and runs the body against
    * the claimed step. Mutually exclusive with `lazyStepInput`: the input
@@ -139,11 +142,11 @@ export interface StepExecutorParams {
   /**
    * Inline step ownership: the queue message ID of the invocation this
    * executeStep call runs in (from the queue handler's meta). When set, the
-   * `step_started` this call sends is stamped with it — on the lazy paths
+   * `step_started` this call sends is stamped with it: on the lazy paths
    * (where `lazyStepInput` is present) and on the owned-recovery
    * payload-less start (where it is not; the re-stamp keeps a recovered
    * step readable as owned by this message, since ownership derives from
-   * the LATEST start — so a recovery start is never bare). Wake
+   * the LATEST start, so a recovery start is never bare). Wake
    * replays that observe an actively-owned step suppress the immediate
    * requeue and enqueue a delayed backstop instead. Omitted on the
    * background-step path, whose bare start intentionally clears ownership
@@ -170,7 +173,7 @@ export interface StepExecutorParams {
    * It matters most on the lazy inline path, where the `step_started` claim is
    * the step's FIRST durable write (its `step_created` is deferred): without a
    * seed the claim would name no position at all, and a replay working from a
-   * stale view could claim — and then commit — a step scheduled without
+   * stale view could claim (and then commit) a step scheduled without
    * observing an event it never loaded.
    *
    * A World that fences rejects a stale claim with `PreconditionFailedError`
@@ -188,7 +191,7 @@ export interface StepExecutorParams {
    * stale-sensitive (an open hook means an out-of-band event can make the
    * scheduling view stale): the guard's 412 fence can reject a stale claim's
    * durable writes, but it cannot un-run a body that optimistic start began
-   * before the claim settled — awaiting the claim extends the fence to user
+   * before the claim settled; awaiting the claim extends the fence to user
    * code. Wins over `forceOptimisticStart` and the env flag.
    */
   suppressOptimisticStart?: boolean;
@@ -204,8 +207,8 @@ export interface StepExecutorParams {
    * Turbo mode only: a promise that resolves once the backgrounded
    * `run_started` has landed. When set, the lazy/optimistic `step_started` is
    * chained on it so the step is never created before its run exists. The body
-   * still runs immediately against locally-synthesized state — only the network
-   * write waits — so the `run_started` round-trip overlaps the body. `undefined`
+   * still runs immediately against locally-synthesized state (only the network
+   * write waits), so the `run_started` round-trip overlaps the body. `undefined`
    * outside turbo, where `run_started` was already awaited up front.
    */
   runReadyBarrier?: Promise<unknown>;
@@ -214,7 +217,7 @@ export interface StepExecutorParams {
    * by the orchestrator. When set, this executor computes the final values
    * against the wall clock taken immediately before user code runs and
    * attaches them to the step's terminal event. Set only for the first step of
-   * an inline batch, and only on first-attempt executions that qualify — see
+   * an inline batch, and only on first-attempt executions that qualify; see
    * runtime/step-latency.ts.
    */
   latencyTracking?: StepLatencyTracking;
@@ -224,12 +227,12 @@ export interface StepExecutorParams {
    * executor closes the measurement against the `step_started` claim and the
    * wall clock taken immediately before user code, and attaches the total plus
    * its phase breakdown to this step's `step.execute` span. Set by the runtime
-   * for exactly one step per resumption — see runtime/resume-latency.ts.
+   * for exactly one step per resumption; see runtime/resume-latency.ts.
    */
   resumeTracking?: ResumeTtrTracking;
   /**
    * Authoritative attempt number for this execution, used to bound retries
-   * against `maxRetries` BEFORE the body runs. In order to also catch
+   * against `maxRetries` BEFORE the body runs. To also catch
    * step timeouts (which we can't have catch handlers for), we determine
    * the attempt count based as follows:
    * - Inline (combined handler): the number of `step_started` events already
@@ -261,13 +264,13 @@ export type PreclaimedInlineStart =
        */
       step: StartedStep;
       /**
-       * `Date.now()` taken right before the batch POST that carried the pair
-       * — the claim's "start POST sent" instant, anchoring RSFS exactly like
+       * `Date.now()` taken right before the batch POST that carried the pair:
+       * the claim's "start POST sent" instant, anchoring RSFS exactly like
        * the lazy claim's own POST would.
        */
       batchPostSentAtMs?: number;
       /**
-       * `Date.now()` taken right after that batch POST returned — the
+       * `Date.now()` taken right after that batch POST returned: the
        * claim's completion instant (T6 of the hook-resume TTR window).
        */
       claimCompletedAtMs?: number;
@@ -321,7 +324,7 @@ export type StepExecutionResult =
  * Executes a single step: creates step_started event, hydrates input,
  * runs the step function, creates step_completed/step_failed/step_retrying events.
  *
- * Does NOT queue workflow continuation messages — the caller decides what to do next.
+ * Does NOT queue workflow continuation messages; the caller decides what to do next.
  * Used by the combined workflow handler for step execution.
  */
 export async function executeStep(
@@ -367,7 +370,7 @@ export async function executeStep(
     if (knownSlot === undefined) {
       // The caller scheduled this step without naming a position, so there is
       // no snapshot to advance and the writes below send none. Not the same as
-      // a run without positions: every run has them, this executor just was not
+      // a run without positions: every run has them, this executor was not
       // told which one it started from.
       return;
     }
@@ -429,7 +432,7 @@ export async function executeStep(
 
     // A pre-claimed start that LOST the batched pair's atomic create-claim: a
     // concurrent writer owns this step. Same outcome as losing the lazy
-    // claim (EntityConflictError → skipped), decided before ANY write — the
+    // claim (EntityConflictError → skipped), decided before ANY write, the
     // unregistered-step fallback below included, since a step this handler
     // does not own is not its to fail.
     if (params.preclaimedStart && params.preclaimedStart.owned === false) {
@@ -442,7 +445,7 @@ export async function executeStep(
         ...Attribute.StepSkipped(true),
         // `running`, not `completed`: the pair's 409 says the step already
         // EXISTS, and the writer that won the create-claim is executing it.
-        // The other skip site below is a genuine terminal-state conflict —
+        // The other skip site below is a genuine terminal-state conflict;
         // tagging both `completed` would make the attribute read 100%
         // `completed` and lose the only distinction worth querying it for.
         ...Attribute.StepSkipReason('running'),
@@ -458,7 +461,7 @@ export async function executeStep(
 
     const stepFn = getStepFunction(stepName);
     if (!stepFn || typeof stepFn !== 'function') {
-      // Step function not registered — fail the step immediately (not the run).
+      // Step function not registered: fail the step immediately (not the run).
       // Create a step_failed event so
       // the workflow can handle it gracefully via try/catch in user code.
       const errorMessage = `Step "${stepName}" is not registered in the current deployment. This usually indicates a build or bundling issue that caused the step to not be included in the deployment.`;
@@ -470,7 +473,7 @@ export async function executeStep(
       // On the lazy inline path the suspension handler deferred this step's
       // `step_created`, expecting executeStep to materialize the step via a
       // lazy `step_started` carrying its input. We never get that far for an
-      // unregistered step, so the step entity does not exist yet — writing
+      // unregistered step, so the step entity does not exist yet, and writing
       // `step_failed` straight away would hit the world's "step must exist"
       // ordering guard and wedge the run. Send the lazy `step_started` first
       // (it creates the step + synthetic `step_created` atomically and keeps
@@ -481,7 +484,7 @@ export async function executeStep(
       if (params.lazyStepInput !== undefined) {
         try {
           // Turbo: this lazy `step_started` must not precede the backgrounded
-          // `run_started`. Order it after the run-ready barrier (best-effort —
+          // `run_started`. Order it after the run-ready barrier (best-effort:
           // a barrier rejection means the run doesn't exist, and the create
           // below surfaces the real error). No-op outside turbo.
           if (params.runReadyBarrier) {
@@ -497,7 +500,7 @@ export async function executeStep(
                 workflowName,
                 input: params.lazyStepInput,
                 // Stamped for consistency even though this step terminal-fails
-                // immediately below — the log should never show an unowned
+                // immediately below; the log should never show an unowned
                 // lazy start.
                 ...(params.ownerMessageId !== undefined
                   ? { ownerMessageId: params.ownerMessageId }
@@ -592,7 +595,7 @@ export async function executeStep(
       } catch (err) {
         if (EntityConflictError.is(err)) {
           // Step already reached a terminal state (a concurrent handler or an
-          // earlier delivery failed/completed it) — nothing to do.
+          // earlier delivery failed/completed it), so nothing to do.
           runtimeLogger.info(
             'Tried failing step for exceeded retries, but step has already finished.',
             {
@@ -666,12 +669,12 @@ export async function executeStep(
     // Optimistic inline start: when we hold the step input locally (lazy inline
     // path) and the optimization is enabled, fire `step_started` WITHOUT
     // awaiting and run the body against locally-synthesized state. A lazy step
-    // is always brand-new ⇒ attempt 1, no prior error, started now — so we
+    // is always brand-new ⇒ attempt 1, no prior error, started now, so we
     // don't need the server round-trip to begin. We reconcile the in-flight
     // `step_started` before any terminal write (`reconcileOptimisticStart`): if
     // it lost the atomic create-claim (409) or the run is gone/throttled, we
     // discard the body result. Running the body before confirming ownership can
-    // execute a step more than once when handlers race — inline step bodies
+    // execute a step more than once when handlers race, so inline step bodies
     // must be idempotent; disable via WORKFLOW_OPTIMISTIC_INLINE_START=0.
     //
     // Turbo mode passes `forceOptimisticStart` to enable this regardless of the
@@ -683,11 +686,11 @@ export async function executeStep(
     const optimisticStart =
       // A pre-claimed start already settled its claim in the suspension
       // batch; there is nothing to fire optimistically (lazyStepInput is
-      // also absent on that path — this term is documentation).
+      // also absent on that path; this term is documentation).
       params.preclaimedStart === undefined &&
       params.lazyStepInput !== undefined &&
       // Stale-sensitive guarded batches await the claim so the 412 fence
-      // covers the body, not just durable writes — see
+      // covers the body, not just durable writes; see
       // StepExecutorParams.suppressOptimisticStart.
       params.suppressOptimisticStart !== true &&
       (isOptimisticInlineStartEnabled() ||
@@ -700,11 +703,11 @@ export async function executeStep(
     // this one included.
     const startEventParams = stepStartedEventParams;
     // `Date.now()` taken immediately before the `step_started` create is
-    // issued (either path below) — anchors RSFS's end point. See
+    // issued (either path below); anchors RSFS's end point. See
     // StepLatencyEventData.rsfs and the call sites below.
     let stepStartPostSentAtMs: number | undefined;
     // `Date.now()` taken once the `step_started` response has returned and the
-    // claim succeeded — T6 of the hook-resume TTR window. Only the await path
+    // claim succeeded: T6 of the hook-resume TTR window. Only the await path
     // can set it: optimistic inline start deliberately does not wait for the
     // claim before running the body, so at T7 it has no completion instant and
     // the TTR breakdown reports no `step_claim_ms` (see
@@ -721,7 +724,7 @@ export async function executeStep(
     // output. Returns undefined when we own the step and may write its terminal
     // event. A non-translatable rejection is rethrown (so a transient
     // step_started failure propagates to the queue handler for redelivery,
-    // exactly as on the await path). Idempotent — safe to call more than once.
+    // exactly as on the await path). Idempotent: safe to call more than once.
     const reconcileOptimisticStart = async (): Promise<
       StepExecutionResult | undefined
     > => {
@@ -737,7 +740,7 @@ export async function executeStep(
       // Pre-claimed inline start: the suspension handler's batched fan-out
       // already committed this step's `step_created` + `step_started` pair,
       // so this execution owns a started attempt-1 step without sending a
-      // start of its own — the body begins straight off the batch commit and
+      // start of its own: the body begins straight off the batch commit and
       // the terminal write below has no in-flight claim to reconcile. The
       // batch timestamps stand in for the claim's: the POST instant anchors
       // RSFS, the response instant is TTR's claim completion (T6).
@@ -752,7 +755,7 @@ export async function executeStep(
       // barrier is undefined and this is a plain create.
       const startedPromise = (params.runReadyBarrier ?? Promise.resolve()).then(
         () => {
-          // Taken right before the create fires, not before the barrier —
+          // Taken right before the create fires, not before the barrier:
           // RSFS measures the run_started-to-POST stretch, and the barrier
           // wait IS part of that stretch under turbo.
           stepStartPostSentAtMs = Date.now();
@@ -765,13 +768,13 @@ export async function executeStep(
                 stepName,
                 workflowName,
                 input: params.lazyStepInput,
-                // Inline-ownership stamp — see StepExecutorParams.ownerMessageId.
+                // Inline-ownership stamp; see StepExecutorParams.ownerMessageId.
                 ...(params.ownerMessageId !== undefined
                   ? { ownerMessageId: params.ownerMessageId }
                   : {}),
               },
             },
-            // Guard the claim — see StepExecutorParams.slotSnapshot. A
+            // Guard the claim; see StepExecutorParams.slotSnapshot. A
             // stale (412) rejection surfaces via reconcileOptimisticStart as a
             // non-translatable error: the body result is discarded and the
             // rejection propagates to the caller.
@@ -806,7 +809,7 @@ export async function executeStep(
       try {
         // Inline-ownership stamp: present on the lazy paths AND on the
         // owned-recovery payload-less start (a redelivery of the owning
-        // message re-executing its step must re-stamp — ownership derives
+        // message re-executing its step must re-stamp, since ownership derives
         // from the latest start, so an unstamped recovery start would read
         // as "unowned" to a later wake). Only the background-step path
         // passes no ownerMessageId: its start is the bare one, clearing
@@ -831,7 +834,7 @@ export async function executeStep(
                   }
                 : { stepName, ...ownershipStamp },
           },
-          // Guard the claim — see StepExecutorParams.slotSnapshot. A
+          // Guard the claim; see StepExecutorParams.slotSnapshot. A
           // stale (412) rejection is intentionally NOT translated by
           // startErrorToResult below, so it propagates to the caller for a
           // fresh replay.
@@ -861,7 +864,7 @@ export async function executeStep(
     let result: unknown;
 
     // Check max retries AFTER step_started (attempt was just incremented).
-    // Only enforce when the step has a previous error — this distinguishes
+    // Only enforce when the step has a previous error; this distinguishes
     // actual retries (failed → retry) from concurrent inline starts
     // execution loop can cause multiple handlers to step_started the same
     // step simultaneously, inflating the attempt counter without any failure).
@@ -887,7 +890,7 @@ export async function executeStep(
             await getEncryptionKey()
           );
         } catch {
-          // Ignore — best-effort cause attachment.
+          // Ignore: best-effort cause attachment.
         }
       }
       try {
@@ -943,15 +946,15 @@ export async function executeStep(
 
     // Backfill RSFS onto the already-computed telemetry once the optimistic
     // turbo start has settled. On that path the step-start POST fires inside
-    // the run-ready barrier's `.then`, so `stepStartPostSentAtMs` — and
-    // therefore RSFS — is usually still unset when `latencyEventData` is
+    // the run-ready barrier's `.then`, so `stepStartPostSentAtMs` (and
+    // therefore RSFS) is usually still unset when `latencyEventData` is
     // first computed just before user code (the barrier is still in flight
     // for any non-trivial `run_started` round-trip, which is exactly the
     // slow-run_started case RSFS exists to measure). By the time
     // `reconcileOptimisticStart()` has awaited the barrier the POST timestamp
     // is known, so we patch RSFS in before the terminal event is written.
     // Without this, slow-run_started samples are dropped, biasing RSFS
-    // percentiles low (missing-not-at-random). Recomputes only RSFS —
+    // percentiles low (missing-not-at-random). Recomputes only RSFS;
     // TTFS/STSO stay anchored to `executionStartTime` as computed above.
     const backfillOptimisticRsfs = (): void => {
       if (!latencyEventData || latencyEventData.rsfs !== undefined) return;
@@ -1000,6 +1003,23 @@ export async function executeStep(
         }
       );
 
+      // Finalization of an unserializable-argument step writes step_created
+      // (placeholder input) and step_failed as two separate durable writes.
+      // A crash or transient failure between them leaves this step pending
+      // with the placeholder stored as its input, and normal crash recovery
+      // then dispatches it here. NEVER run user code with placeholder
+      // arguments; complete the intended failure instead. The
+      // SerializationError is fatal (`fatal: true`), so the catch below
+      // writes step_failed without retries, exactly what the interrupted
+      // finalization was about to do.
+      if (isUnserializableStepInputPlaceholder(hydratedInput)) {
+        const { message, hint } = formatSerializationError(
+          'step arguments',
+          undefined
+        );
+        throw new SerializationError(message, { hint });
+      }
+
       const args = hydratedInput.args;
       const thisVal = hydratedInput.thisVal ?? null;
       const workflowBaseUrl = createWorkflowBaseUrl(
@@ -1012,7 +1032,7 @@ export async function executeStep(
       // Wrap only stepFn.apply() (user step code) so cleanup below runs on
       // BOTH success and failure. A user-code throw is captured here and
       // re-raised after cancelAbortReaders, so it still flows to the outer
-      // catch (step_failed/step_retrying) — but the abort-stream reader is
+      // catch (step_failed/step_retrying), but the abort-stream reader is
       // torn down first. Without this, a throwing/retrying signal-bearing
       // step would leak a real-time abort reader per attempt.
       let userCodeError: unknown;
@@ -1055,7 +1075,7 @@ export async function executeStep(
        * Close the hook-resume TTR measurement (see runtime/resume-latency.ts).
        *
        * Called from INSIDE `contextStorage.run`, immediately before
-       * `stepFn.apply()` — deliberately not alongside the step-latency
+       * `stepFn.apply()`, deliberately not alongside the step-latency
        * telemetry above. `executionStartTime` is taken before the inner
        * `step.execute` span and the step context are established, and
        * `step_prepare_ms` is documented to include exactly that setup, so
@@ -1120,7 +1140,7 @@ export async function executeStep(
                 : undefined,
             },
             () => {
-              // The last instant before user code — T7 of the resume window.
+              // The last instant before user code: T7 of the resume window.
               reportResumeTtr();
               return stepFn.apply(thisVal, args);
             }
@@ -1142,7 +1162,7 @@ export async function executeStep(
       // arguments (a serialized AbortSignal opens a real-time abort reader for
       // the step's duration). Without this the reader's `read()` promise never
       // settles, so the `ops` flush below always loses the 500ms race and the
-      // step reports `hasPendingOps` — forcing the inline loop to queue a
+      // step reports `hasPendingOps`, forcing the inline loop to queue a
       // continuation and paying a full round-trip per signal-bearing step.
       // Runs unconditionally (success or failure) so a throwing step doesn't
       // leak the reader.
@@ -1221,7 +1241,7 @@ export async function executeStep(
       }
 
       // Optimistic start: the body ran before `step_started` was confirmed.
-      // Reconcile it now — if we lost the create-claim (or the run is
+      // Reconcile it now: if we lost the create-claim (or the run is
       // gone/throttled) discard this result and don't write step_completed.
       // Reconcile before draining preCompletionOps: a discarded result means
       // the winning handler owns the outcome (and re-fires any abort
@@ -1229,7 +1249,7 @@ export async function executeStep(
       if (optimisticStart) {
         const reconcile = await reconcileOptimisticStart();
         if (reconcile) return reconcile;
-        // Barrier resolved — the step-start POST timestamp is now known, so
+        // Barrier resolved: the step-start POST timestamp is now known, so
         // RSFS can be attached to the step_completed event below.
         backfillOptimisticRsfs();
       }
@@ -1242,7 +1262,7 @@ export async function executeStep(
       // StepContext.preCompletionOps).
       //
       // Tradeoff: correctness requires the hook be durable before completion,
-      // so — unlike the background `ops` flush above — this cannot be capped
+      // so, unlike the background `ops` flush above, this cannot be capped
       // with a resolve-on-timeout race. A slow resume therefore adds its
       // latency to a step that aborts a controller, and a true hang holds
       // completion until the platform/queue execution timeout fires; the queue
@@ -1252,7 +1272,7 @@ export async function executeStep(
       }
     } catch (err: unknown) {
       // Optimistic start: the body threw before `step_started` was confirmed.
-      // Reconcile first — if we lost the create-claim (or the run is
+      // Reconcile first: if we lost the create-claim (or the run is
       // gone/throttled) the body error is moot; discard it and don't write a
       // terminal event (the winning handler owns the outcome). Reconcile
       // before draining preCompletionOps for the same reason as the success
@@ -1260,12 +1280,12 @@ export async function executeStep(
       if (optimisticStart) {
         const reconcile = await reconcileOptimisticStart();
         if (reconcile) return reconcile;
-        // Barrier resolved — attach RSFS to the step_failed event(s) below.
+        // Barrier resolved: attach RSFS to the step_failed event(s) below.
         backfillOptimisticRsfs();
       }
 
       // Order any must-be-durable ops (e.g. a step-initiated abort's
-      // hook_received event) ahead of step_failed too — a step that aborts and
+      // hook_received event) ahead of step_failed too: a step that aborts and
       // then throws must still have the abort recorded before the failure
       // continuation observes it. Same latency tradeoff and no-reject contract
       // as the success path above. See StepContext.preCompletionOps.

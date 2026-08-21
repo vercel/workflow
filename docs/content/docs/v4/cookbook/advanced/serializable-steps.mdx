@@ -10,7 +10,7 @@ related:
 ---
 
 <CopyPrompt
-  text="Make this non-serializable dependency usable inside a durable workflow with the step-as-factory pattern. Instead of passing the object (AI SDK model, cloud SDK client) into the workflow, export a factory that returns an async callback marked with &quot;use step&quot; which constructs and returns the object at execution time, for example `export function openai(...args) { return async () => { &quot;use step&quot;; return openaiProvider(...args); }; }`. Pass the factory across the workflow boundary — the compiler serializes the function reference, not the instance — and invoke it inside steps where full Node.js access is available. Keep the factory's constructor arguments serializable. Verify the workflow builds, replays deterministically, and the dependency is only instantiated during step execution."
+  text="Make this non-serializable dependency usable inside a durable workflow with the step-as-factory pattern. Instead of passing the object (AI SDK model, cloud SDK client) into the workflow, export a factory that returns an async callback marked with &quot;use step&quot; which constructs and returns the object at execution time, for example `export function openai(...args) { return async () => { &quot;use step&quot;; return openaiProvider(...args); }; }`. Pass the factory across the workflow boundary (the compiler serializes the function reference, not the instance) and invoke it inside steps where full Node.js access is available. Keep the factory's constructor arguments serializable. Verify the workflow builds, replays deterministically, and the dependency is only instantiated during step execution."
 />
 
 <Callout>
@@ -21,12 +21,12 @@ This is an advanced guide. It dives into workflow internals and is not required 
 
 Workflow functions run inside a sandboxed VM where every value that crosses a function boundary must be serializable. There are two ways to get a non-serializable object across that boundary, depending on whether you own the class:
 
-- **You own the class** — implement the [`WORKFLOW_SERIALIZE` / `WORKFLOW_DESERIALIZE` protocol](/docs/foundations/serialization#custom-class-serialization). The instance becomes a first-class serializable value: you can pass it as a workflow input, return it from a step, and call `"use step"` instance methods on it directly. This is the right tool when the class is yours to modify.
-- **You don't own the class** — you can't add methods to `openai("gpt-4o")` from `@ai-sdk/openai` or `new S3Client({...})` from `@aws-sdk/client-s3`. Instead, wrap construction in a `"use step"` factory function and pass the factory across the boundary. That's what this page covers.
+- **You own the class**: implement the [`WORKFLOW_SERIALIZE` / `WORKFLOW_DESERIALIZE` protocol](/docs/foundations/serialization#custom-class-serialization). The instance becomes a first-class serializable value: you can pass it as a workflow input, return it from a step, and call `"use step"` instance methods on it directly. This is the right tool when the class is yours to modify.
+- **You don't own the class**: you can't add methods to `openai("gpt-4o")` from `@ai-sdk/openai` or `new S3Client({...})` from `@aws-sdk/client-s3`. Instead, wrap construction in a `"use step"` factory function and pass the factory across the boundary. That's what this page covers.
 
-## The Problem
+## The problem
 
-AI SDK model providers — `openai("gpt-4o")`, `anthropic("claude-sonnet-4-20250514")`, etc. — return complex objects with methods, closures, and internal state. Passing one directly into a step causes a serialization error, and you can't bolt `WORKFLOW_SERIALIZE` onto a third-party class.
+AI SDK model providers (`openai("gpt-4o")`, `anthropic("claude-sonnet-4-20250514")`, etc.) return complex objects with methods, closures, and internal state. Passing one directly into a step causes a serialization error, and you can't bolt `WORKFLOW_SERIALIZE` onto a third-party class.
 
 ```typescript lineNumbers
 import { openai } from "@ai-sdk/openai";
@@ -39,7 +39,7 @@ export async function brokenAgent(prompt: string) {
 
   const writable = getWritable<UIMessageChunk>();
   const agent = new DurableAgent({
-    // This fails — the model object is not serializable
+    // This fails: the model object is not serializable
     model: openai("gpt-4o"),
   });
 
@@ -47,9 +47,9 @@ export async function brokenAgent(prompt: string) {
 }
 ```
 
-## The Solution: Step-as-Factory
+## The solution: step-as-factory
 
-Instead of passing the model object, pass a **callback function** that returns the model. Marking that callback with `"use step"` tells the compiler to serialize the *function reference* (which is just a string identifier) rather than its return value. The provider is only instantiated at execution time, inside the step's full Node.js runtime.
+Instead of passing the model object, pass a **callback function** that returns the model. Marking that callback with `"use step"` tells the compiler to serialize the *function reference* (which is a string identifier) rather than its return value. The provider is only instantiated at execution time, inside the step's full Node.js runtime.
 
 ```typescript lineNumbers
 import { openai as openaiProvider } from "@ai-sdk/openai";
@@ -63,12 +63,12 @@ export function openai(...args: Parameters<typeof openaiProvider>) {
 }
 ```
 
-The `DurableAgent` receives a function (`() => Promise<LanguageModel>`) instead of a model object. When the agent needs to call the LLM, it invokes the factory inside a step where the real provider can be constructed with full Node.js access.
+The `DurableAgent` receives a function (`() => Promise<LanguageModel>`) instead of a model object. When the agent needs to call the large language model (LLM), it invokes the factory inside a step where the real provider can be constructed with full Node.js access.
 
-## How `@workflow/ai` Uses This
+## How `@workflow/ai` uses this
 
 <Callout type="warn">
-`@workflow/ai`'s pre-wrapped providers and `DurableAgent` are deprecated. AI SDK's [`WorkflowAgent`](https://ai-sdk.dev/v7/docs/agents/workflow-agent#workflowagent) resolves models from AI Gateway model strings (e.g. `"openai/gpt-4o"`), which usually removes the need for a model factory — see the [migration guide](https://ai-sdk.dev/v7/docs/agents/workflow-agent#migrating-from-durableagent). The serialization pattern on this page still applies to any non-serializable dependency you own (for example, cloud SDK clients).
+`@workflow/ai`'s pre-wrapped providers and `DurableAgent` are deprecated. AI SDK's [`WorkflowAgent`](https://ai-sdk.dev/v7/docs/agents/workflow-agent#workflowagent) resolves models from AI Gateway model strings (for example, `"openai/gpt-4o"`), which usually removes the need for a model factory; see the [migration guide](https://ai-sdk.dev/v7/docs/agents/workflow-agent#migrating-from-durableagent). The serialization pattern on this page still applies to any non-serializable dependency you own (for example, cloud SDK clients).
 </Callout>
 
 The `@workflow/ai` package ships pre-wrapped providers for all major AI SDK backends. Each one follows the same pattern:
@@ -105,14 +105,14 @@ export async function chatAgent(prompt: string) {
 }
 ```
 
-## Writing Your Own Serializable Wrapper
+## Writing your own serializable wrapper
 
 Apply the same pattern to any non-serializable dependency. The key rule: **the outer function captures serializable arguments, and the inner `"use step"` function constructs the real object at runtime**.
 
 ```typescript lineNumbers
 import type { S3Client as S3ClientType } from "@aws-sdk/client-s3";
 
-// The arguments (region, bucket) are plain strings — serializable
+// The arguments (region, bucket) are plain strings, which are serializable
 export function createS3Client(region: string) {
   return async (): Promise<S3ClientType> => {
     "use step";
@@ -141,15 +141,15 @@ async function uploadFile(
 }
 ```
 
-## Why This Works
+## Why this works
 
-1. **Compiler transformation**: `"use step"` tells the SWC plugin to extract the function into a separate bundle. The workflow VM only sees a serializable reference (function ID + captured arguments).
-2. **Closure tracking**: The compiler tracks which variables the step function closes over. Only serializable values (strings, numbers, plain objects) can be captured.
-3. **Deferred construction**: The actual provider/client is only constructed when the step executes in the Node.js runtime — never in the sandboxed workflow VM.
+1. **Compiler transformation**: `"use step"` tells the SWC plugin to extract the function into a separate bundle. The workflow VM only sees a serializable reference (function ID and captured arguments).
+2. **Closure tracking**: The compiler tracks which variables the step function closes over. The function can capture only serializable values, such as strings, numbers, and plain objects.
+3. **Deferred construction**: The step constructs the provider or client only when it executes in the Node.js runtime, never in the sandboxed workflow VM.
 
 ## Key APIs
 
-- [`"use step"`](/docs/foundations/workflows-and-steps#step-functions) — marks a function for extraction and serialization
-- [`"use workflow"`](/docs/foundations/workflows-and-steps#workflow-functions) — declares the orchestrator function
-- [`WorkflowAgent`](https://ai-sdk.dev/v7/docs/agents/workflow-agent#workflowagent) — AI SDK's durable agent (resolves models via AI Gateway strings; replaces `DurableAgent`)
-- [Custom class serialization](/docs/foundations/serialization#custom-class-serialization) — the companion pattern for classes you own (`WORKFLOW_SERIALIZE` / `WORKFLOW_DESERIALIZE`)
+- [`"use step"`](/docs/foundations/workflows-and-steps#step-functions): Marks a function for extraction and serialization.
+- [`"use workflow"`](/docs/foundations/workflows-and-steps#workflow-functions): Declares the orchestrator function.
+- [`WorkflowAgent`](https://ai-sdk.dev/v7/docs/agents/workflow-agent#workflowagent): Provides AI SDK's durable agent, resolves models through AI Gateway strings, and replaces `DurableAgent`.
+- [Custom class serialization](/docs/foundations/serialization#custom-class-serialization): Provides the companion pattern for classes you own (`WORKFLOW_SERIALIZE` and `WORKFLOW_DESERIALIZE`).

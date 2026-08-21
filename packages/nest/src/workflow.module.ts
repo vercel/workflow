@@ -27,8 +27,8 @@ const DEFAULT_OUT_DIR = '.nestjs/workflow';
  * controller that serves the `.well-known/workflow/v1` routes and, in local
  * dev, rebuilds the workflow bundles on init.
  *
- * The build toolchain (`@workflow/builders`, esbuild, SWC) is imported lazily
- * — only when a build actually runs (`skipBuild` false). Importing this module
+ * The build toolchain (`@workflow/builders`, esbuild, SWC) is imported lazily,
+ * only when a build actually runs (`skipBuild` false). Importing this module
  * must stay free of build-time dependencies so the runtime app can be bundled
  * into a serverless function without dragging in the compiler.
  */

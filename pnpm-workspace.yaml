@@ -62,6 +62,7 @@ minimumReleaseAgeExclude:
   - '@workflow/*'
   - 'esbuild'
   - '@esbuild/*'
+  - '@sveltejs/load-config'
   - 'quickjs-wasi'
   # The CI canary lanes pin `next` to a fresh canary at install time
   # (see "Setup canary" in .github/workflows/tests.yml); canaries are

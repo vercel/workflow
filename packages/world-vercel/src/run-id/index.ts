@@ -14,7 +14,7 @@
  *
  * Net effect: 80 bits of ULID randomness become 69 bits (still ~5.9 × 10²⁰
  * distinct values per millisecond), and the maximum representable timestamp
- * drops from year ~10895 down to year ~5429 — neither limit is practically
+ * drops from year ~10895 down to year ~5429; neither limit is practically
  * relevant.
  *
  * Tagged ULIDs remain valid ULIDs. Because the metadata sits at the **top**
@@ -30,7 +30,7 @@
  *
  * Changing the metadata mid-millisecond can still invert ordering relative
  * to a previous emission with different metadata; the {@link encode}
- * function itself does not enforce any ordering invariants — that is the
+ * function itself does not enforce any ordering invariants: that is the
  * caller's responsibility (see the `createRunId` helper used by `start()`).
  *
  * @example
@@ -79,7 +79,7 @@ export interface EncodeOptions {
   /**
    * Encoding format version to embed. Must be in the range 0..31. Defaults to
    * {@link CURRENT_VERSION} (1). Version 0 is reserved as a sentinel meaning
-   * "no metadata encoded" — callers should not normally emit it.
+   * "no metadata encoded", so callers should not normally emit it.
    */
   version?: number;
 }
@@ -98,7 +98,7 @@ interface DecodedRunIdBase {
 }
 
 /**
- * Decode result for a ULID whose tag bit was set — the metadata fields
+ * Decode result for a ULID whose tag bit was set: the metadata fields
  * carry the values that `encode` wrote.
  */
 export interface TaggedDecodedRunId extends DecodedRunIdBase {
@@ -211,7 +211,7 @@ export function encode(
  * valid ULID; check {@link DecodedRunId.tagged} to determine whether the
  * input was actually tagged by this scheme.
  *
- * The returned {@link DecodedRunId.ulid} has only the tag bit cleared — the
+ * The returned {@link DecodedRunId.ulid} has only the tag bit cleared: the
  * 11 metadata bits at the top of the randomness section remain in place, so
  * `decode(encode(u, r)).ulid` is *not* byte-identical to `u` (the top 11
  * randomness bits of `u` were overwritten by `encode`), but

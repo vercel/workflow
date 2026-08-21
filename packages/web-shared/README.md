@@ -31,15 +31,15 @@ and pass data + callbacks into these components. If you need world run helpers, 
 
 > **Security notice:** If you implement server-side data fetching using `@workflow/world-vercel` or similar backends,
 > ensure that user-supplied IDs (runId, stepId, etc.) are validated before passing them to world functions.
-> The server actions in `@workflow/web` do not include authentication — see that package's README for details on securing self-hosted deployments.
+> The server actions in `@workflow/web` do not include authentication. See that package's README for details on securing self-hosted deployments.
 
 ## Styling
 
-In order for tailwind classes to be picked up correctly, you might need to configure your NextJS app
-to use the correct CSS processor. E.g. if you're using PostCSS with TailwindCSS, you can do the following:
+To detect Tailwind CSS classes correctly, you might need to configure your Next.js app
+to use the correct CSS processor. For example, with PostCSS and Tailwind CSS:
 
 ```tsx
-// postcss.config.mjs in your NextJS app
+// postcss.config.mjs in your Next.js app
 const config = {
   plugins: ['@tailwindcss/postcss'],
 };

@@ -75,7 +75,7 @@ function* repairPart(
  * - The same stream is read across reconnects, and a stream-producing step can
  *   run more than once (retry/redelivery, or the concurrent-worker duplication
  *   tracked in vercel/workflow#2331 and #2039). Either can interleave or
- *   duplicate chunks on the shared stream — e.g. a `finish-step` landing in the
+ *   duplicate chunks on the shared stream, e.g. a `finish-step` landing in the
  *   middle of another execution's text part.
  *
  * Since the content is still flowing and only the framing is damaged, repairing

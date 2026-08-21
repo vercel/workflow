@@ -22,7 +22,7 @@ As an example, we'll extend out Flight Booking Agent to use emit more granular p
 
 <Step>
 
-### Define Your Data Part Type
+### Define your data part type
 
 First, define a TypeScript type for your custom data part. This ensures type safety across your tool and client code:
 
@@ -44,7 +44,7 @@ The `type` field must be a string starting with `data-` followed by your custom 
 
 <Step>
 
-### Emit Updates from Your Tool
+### Emit updates from your tool
 
 Use [`getWritable()`](/docs/api-reference/workflow/get-writable) inside a step function to get a handle to the stream. This is the same stream that the LLM and other tools calls are writing to, so we can inject out own data packets directly.
 
@@ -95,7 +95,7 @@ Key points:
 </Step>
 
 <Step>
-### Handle Data Parts in the Client
+### Handle data parts in the client
 
 Update your chat component to detect and render the custom data parts. Data parts are stored in the message's `parts` array alongside text and tool invocation parts:
 
@@ -143,7 +143,7 @@ The pattern is:
 
 Now, when you run the agent to search for flights, you'll see the flight results pop up one after another. This will be most useful if you have tool calls that take minutes to complete, and you need to show granular progress updates to the user.
 
-## Related Documentation
+## Related documentation
 
 - [Building Durable AI Agents](/docs/ai) - Complete guide to durable agents
 - [`getWritable()` API Reference](/docs/api-reference/workflow/get-writable) - Stream API details

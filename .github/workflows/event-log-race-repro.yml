@@ -43,11 +43,29 @@ on:
       hook_resume_stagger_ms:
         description: 'hook-storm: per-index delay inside a round resume burst. width * this should exceed watchdog_ms'
         required: false
+      blocked_branch_attempts:
+        description: 'Number of blocked-branch runs (launch step before the hook/watchdog race; resume burst aimed at the launch-completion tail)'
+        required: false
+      launch_stagger_ms:
+        description: 'blocked-branch: per-index spacing of launch step durations, so a round completions commit spread out'
+        required: false
+      resume_burst_offset_ms:
+        description: 'blocked-branch: delay from a round hooks existing to the resume burst. Aim at step_delay_ms + (width-1) * launch_stagger_ms'
+        required: false
+      resume_burst_jitter_ms:
+        description: 'blocked-branch: uniform jitter on the burst offset, so rounds sweep the window'
+        required: false
+      blocked_branch_watchdog_ms:
+        description: 'blocked-branch: hook-race watchdog. Size it to normally lose to the burst; it exists to enter a wait into the race'
+        required: false
       poke_interval_ms:
         description: 'step-storm: cadence of out-of-band resumes to the never-read poke hook'
         required: false
       poke_max:
-        description: 'step-storm: ceiling on poke resumes per run, so a slow run cannot collect unbounded out-of-band writes. Raise it with budget_ms when soaking'
+        description: 'step-storm: pokes at full cadence per run before the pump decays, so a slow run cannot bury itself in out-of-band writes'
+        required: false
+      poke_decay_factor:
+        description: 'step-storm: multiplier applied to poke_interval_ms once poke_max is spent (1 disables the decay)'
         required: false
       run_timeout_ms:
         description: 'Per-run timeout before classifying as stuck'
@@ -133,8 +151,14 @@ jobs:
           EVENT_LOG_RACE_REPRO_WATCHDOG_MS: ${{ inputs.watchdog_ms }}
           EVENT_LOG_RACE_REPRO_STEP_DELAY_MS: ${{ inputs.step_delay_ms }}
           EVENT_LOG_RACE_REPRO_HOOK_RESUME_STAGGER_MS: ${{ inputs.hook_resume_stagger_ms }}
+          EVENT_LOG_RACE_REPRO_BLOCKED_BRANCH_ATTEMPTS: ${{ inputs.blocked_branch_attempts }}
+          EVENT_LOG_RACE_REPRO_LAUNCH_STAGGER_MS: ${{ inputs.launch_stagger_ms }}
+          EVENT_LOG_RACE_REPRO_RESUME_BURST_OFFSET_MS: ${{ inputs.resume_burst_offset_ms }}
+          EVENT_LOG_RACE_REPRO_RESUME_BURST_JITTER_MS: ${{ inputs.resume_burst_jitter_ms }}
+          EVENT_LOG_RACE_REPRO_BLOCKED_BRANCH_WATCHDOG_MS: ${{ inputs.blocked_branch_watchdog_ms }}
           EVENT_LOG_RACE_REPRO_POKE_INTERVAL_MS: ${{ inputs.poke_interval_ms }}
           EVENT_LOG_RACE_REPRO_POKE_MAX: ${{ inputs.poke_max }}
+          EVENT_LOG_RACE_REPRO_POKE_DECAY_FACTOR: ${{ inputs.poke_decay_factor }}
           EVENT_LOG_RACE_REPRO_RUN_TIMEOUT_MS: ${{ inputs.run_timeout_ms }}
           EVENT_LOG_RACE_REPRO_BUDGET_MS: ${{ inputs.budget_ms }}
 
@@ -235,8 +259,14 @@ jobs:
           EVENT_LOG_RACE_REPRO_WATCHDOG_MS: ${{ inputs.watchdog_ms }}
           EVENT_LOG_RACE_REPRO_STEP_DELAY_MS: ${{ inputs.step_delay_ms }}
           EVENT_LOG_RACE_REPRO_HOOK_RESUME_STAGGER_MS: ${{ inputs.hook_resume_stagger_ms }}
+          EVENT_LOG_RACE_REPRO_BLOCKED_BRANCH_ATTEMPTS: ${{ inputs.blocked_branch_attempts }}
+          EVENT_LOG_RACE_REPRO_LAUNCH_STAGGER_MS: ${{ inputs.launch_stagger_ms }}
+          EVENT_LOG_RACE_REPRO_RESUME_BURST_OFFSET_MS: ${{ inputs.resume_burst_offset_ms }}
+          EVENT_LOG_RACE_REPRO_RESUME_BURST_JITTER_MS: ${{ inputs.resume_burst_jitter_ms }}
+          EVENT_LOG_RACE_REPRO_BLOCKED_BRANCH_WATCHDOG_MS: ${{ inputs.blocked_branch_watchdog_ms }}
           EVENT_LOG_RACE_REPRO_POKE_INTERVAL_MS: ${{ inputs.poke_interval_ms }}
           EVENT_LOG_RACE_REPRO_POKE_MAX: ${{ inputs.poke_max }}
+          EVENT_LOG_RACE_REPRO_POKE_DECAY_FACTOR: ${{ inputs.poke_decay_factor }}
           EVENT_LOG_RACE_REPRO_RUN_TIMEOUT_MS: ${{ inputs.run_timeout_ms }}
           EVENT_LOG_RACE_REPRO_BUDGET_MS: ${{ inputs.budget_ms }}
 

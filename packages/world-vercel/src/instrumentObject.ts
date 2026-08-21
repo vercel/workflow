@@ -135,7 +135,7 @@ export function instrumentObject<T extends object>(prefix: string, o: T): T {
           }
         }
 
-        // Batch writes describe themselves by size and per-type shape —
+        // Batch writes describe themselves by size and per-type shape,
         // deliberately NOT workflow.event.type, which names a single event
         // write and would misleadingly tag the whole batch with its first
         // event. These live here (the world.events.createBatch span), not on
@@ -156,8 +156,8 @@ export function instrumentObject<T extends object>(prefix: string, o: T): T {
               'workflow.batch.size': events.length,
               // Sorted by type, so the same batch composition always renders
               // the same string. Map iteration is first-seen order, which
-              // depends on frame order — a pre-claimed fold leads with a
-              // pair while a pure eager fold leads with its creates — and an
+              // depends on frame order (a pre-claimed fold leads with a
+              // pair while a pure eager fold leads with its creates), and an
               // unstable string is not groupable as a telemetry dimension.
               'workflow.batch.shape': [...counts]
                 .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))

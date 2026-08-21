@@ -11,7 +11,7 @@ related:
   - /docs/api-reference/workflow-errors/workflow-world-error
 ---
 
-[`setAttributes`](/docs/api-reference/workflow/set-attributes) attaches plaintext string metadata to the current workflow run. These attributes are displayed in observability CLI/UI, and can be used to search and filter runs through the [Analytics API](/docs/api-reference/workflow-runtime/world/analytics).
+[`setAttributes`](/docs/api-reference/workflow/set-attributes) attaches plaintext string metadata to the current workflow run. These attributes appear in the Workflow CLI and web UI, and you can use them to search and filter runs through the [Analytics API](/docs/api-reference/workflow-runtime/world/analytics).
 
 You can also seed any attributes directly when starting a run:
 
@@ -76,13 +76,13 @@ Each `setAttributes` call appears on the trace timeline as a diamond marker at t
 
 ![Trace timeline with attr_set diamond markers on the run row](/screenshots/attributes/trace-timeline.png)
 
-Expanding an `attr_set` event — in the run sidebar or the Events tab — shows the changed keys, removed keys, and whether the write came from the workflow body or a step (with the attempt number):
+Expanding an `attr_set` event (in the run sidebar or the Events tab) shows the changed keys, removed keys, and whether the write came from the workflow body or a step (with the attempt number):
 
 ![Expanded attr_set events showing changes and the writer](/screenshots/attributes/run-details-attr-set-events.png)
 
 ## Searching and filtering by attributes
 
-The [Analytics API](/docs/api-reference/workflow-runtime/world/analytics) can discover which attribute keys exist and filter run listings by them. The `analytics` namespace is optional on `World` — feature-detect it before use; it is absent on local, Postgres, and other custom Worlds:
+The [Analytics API](/docs/api-reference/workflow-runtime/world/analytics) can discover which attribute keys exist and filter run listings by them. The `analytics` namespace is optional on `World`, so feature-detect it before use; it is absent on local, Postgres, and other custom Worlds:
 
 ```typescript lineNumbers
 import { getWorld } from "workflow/runtime";

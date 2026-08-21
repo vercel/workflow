@@ -29,6 +29,8 @@ export interface SidebarDataContextValue {
   encryptionKey?: Uint8Array;
   onDecrypt?: () => void;
   isDecrypting?: boolean;
+  isDecryptDisabled?: boolean;
+  decryptDisabledReason?: string;
   hasEncryptedData?: boolean;
   /** Show occurredAt separately instead of folding it into the Created timestamp. */
   showSeparateEventOccurrenceTimestamps?: boolean;

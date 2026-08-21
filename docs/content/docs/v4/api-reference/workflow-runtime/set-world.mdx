@@ -20,7 +20,7 @@ setWorld(customWorld); // [!code highlight]
 const world = await getWorld(); // resolves customWorld
 ```
 
-## API Signature
+## API signature
 
 ### Parameters
 
@@ -32,7 +32,7 @@ const world = await getWorld(); // resolves customWorld
 
 This function does not return a value.
 
-## Example: Reset After Environment Changes
+## Example: Reset after environment changes
 
 ```typescript lineNumbers
 import { setWorld, getWorld } from "workflow/runtime";
@@ -43,7 +43,7 @@ setWorld(undefined); // clear the cached instance // [!code highlight]
 const world = await getWorld(); // reinitialized with new configuration
 ```
 
-## Related Functions
+## Related functions
 
 - [`getWorld()`](/docs/api-reference/workflow-runtime/get-world) - Resolve the cached World instance.
 - [`createWorld()`](/docs/api-reference/workflow-runtime/create-world) - Construct a fresh World from environment configuration.

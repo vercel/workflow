@@ -28,8 +28,8 @@ export const CANCELLABLE_STATUSES = [
 
 /**
  * Guidance printed when more runs match the filters than were fetched. Bulk
- * cancel is deliberately single-batch and user-paced — no cursors or async
- * jobs — so the user re-runs to cancel the next batch.
+ * cancel is deliberately single-batch and user-paced (no cursors or async
+ * jobs), so the user re-runs to cancel the next batch.
  */
 export const HAS_MORE_GUIDANCE =
   'More runs match these filters. Re-run this command to cancel the next batch,\n' +
@@ -164,7 +164,7 @@ export async function performBulkCancel(
     }
     // The analytics backend defaults its listing to a recent window
     // (trailing 24h on the Vercel backend), but bulk cancel must match
-    // across the plan's whole observability window — a run can sleep or
+    // across the plan's whole observability window: a run can sleep or
     // wait on a hook for days without emitting recent events. Probe for
     // the plan window bounds first, then match across them.
     const probe = await analytics.runs.list({

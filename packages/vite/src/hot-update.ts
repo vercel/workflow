@@ -30,7 +30,7 @@ export function workflowHotUpdatePlugin(
 ): Plugin {
   const { builder, enqueue } = options;
 
-  // Default enqueue just runs the function directly
+  // Default enqueue runs the function directly
   const runBuild = enqueue ?? ((fn: () => Promise<void>) => fn());
 
   return {
