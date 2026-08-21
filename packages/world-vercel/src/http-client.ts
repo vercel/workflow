@@ -7,6 +7,7 @@ import {
 } from '@workflow/world/node-http.js';
 import { Agent, type Dispatcher, RetryAgent, type RetryHandler } from 'undici';
 import type { APIConfig } from './utils.js';
+import { version } from './version.js';
 
 /**
  * This module's process-wide state: the shared connection pools.
@@ -538,7 +539,13 @@ export function createDispatcherRecycler(
  * EVENTS_RECYCLE_AFTER_CONSECUTIVE_FAILURES.
  */
 const eventsRecycler = globalSingleton(
-  '@workflow/world-vercel//eventsDispatcherRecycler',
+  // Version-keyed for the same reason as the WS registry in `ws-transport.ts`:
+  // this holds a recycler closed over *this* copy's `createEventsDispatcher`,
+  // so an unversioned key would silently apply one published version's undici
+  // and HTTP/2 options, and its failure accounting, to another's requests. The
+  // plain connection pools above stay unversioned: sharing a keep-alive pool
+  // across copies is the point, and they hold no module-local behavior.
+  `@workflow/world-vercel//eventsDispatcherRecycler@${version}`,
   1,
   () =>
     createDispatcherRecycler(() => createEventsDispatcher(), 'events transport')

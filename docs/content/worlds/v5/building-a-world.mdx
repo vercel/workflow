@@ -421,6 +421,11 @@ Version the key. Two releases of your package can end up in one process, and a
 key without a version lets an older copy read a state object it does not
 understand.
 
+Inside this repository, `globalSingleton()` from `@workflow/utils` does exactly
+this and is what the first-party worlds use; the hand-rolled form above is
+written out so a world published outside this repository does not need the
+dependency. `scripts/lint/module-scope-state.mjs` accepts either.
+
 Better still, keep the state on the World instance your `createWorld()` returns.
 Connection pools, caches, and open channels are usually per-World rather than
 per-process, and instance state cannot be duplicated by a bundler. Reserve the

@@ -12,14 +12,21 @@ import {
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, '../../..');
 
-/** A throwaway package directory holding a single `src/state.ts`. */
+/** A throwaway package directory holding the given `src/` files. */
 const tempPackages: string[] = [];
-function packageWith(source: string): string {
+function packageWithFiles(files: Record<string, string>): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'module-scope-state-'));
   tempPackages.push(dir);
   fs.mkdirSync(path.join(dir, 'src'));
-  fs.writeFileSync(path.join(dir, 'src', 'state.ts'), source);
+  for (const [name, source] of Object.entries(files)) {
+    fs.writeFileSync(path.join(dir, 'src', name), source);
+  }
   return dir;
+}
+
+/** The common case: one `src/state.ts`. */
+function packageWith(source: string): string {
+  return packageWithFiles({ 'state.ts': source });
 }
 
 afterEach(() => {
@@ -147,6 +154,97 @@ describe('module-scope state rule', () => {
       ].join('\n')
     );
     expect(scanPackage(dir, dir)).toEqual([]);
+  });
+
+  it('ignores a table filled once at module evaluation', () => {
+    // Every copy computes the same bytes at init, so per-copy costs memory and
+    // nothing else. Only a write that can happen later, per request, diverges.
+    const dir = packageWith(
+      [
+        'const BASE64_LOOKUP = new Uint8Array(256);',
+        'for (let i = 0; i < 64; i++) BASE64_LOOKUP[i] = i;',
+        'export function decode(i: number) {',
+        '  return BASE64_LOOKUP[i];',
+        '}',
+        '',
+      ].join('\n')
+    );
+    expect(scanPackage(dir, dir)).toEqual([]);
+  });
+
+  it('accepts state hand-rolled onto globalThis, through an alias', () => {
+    // The shape `docs/content/worlds/*/building-a-world.mdx` documents for
+    // custom world authors, and the one `packages/core` already uses.
+    const dir = packageWith(
+      [
+        'type WorldState = { locks: Map<string, Promise<void>> };',
+        "const StateKey = Symbol.for('@your-org/world-foo//locks/v1');",
+        'const store = globalThis as typeof globalThis &',
+        '  Record<symbol, WorldState | undefined>;',
+        'const state: WorldState = (store[StateKey] ??= { locks: new Map() });',
+        'export function open(id: string) {',
+        '  state.locks.set(id, Promise.resolve());',
+        '}',
+        '',
+      ].join('\n')
+    );
+    expect(scanPackage(dir, dir)).toEqual([]);
+  });
+
+  it('flags a static class field, which is module state with a namespace', () => {
+    const dir = packageWith(
+      [
+        'export class Registry {',
+        '  static transports = new Map<string, number>();',
+        '  static open(id: string) {',
+        '    Registry.transports.set(id, 1);',
+        '  }',
+        '}',
+        '',
+      ].join('\n')
+    );
+    expect(scanPackage(dir, dir)).toMatchObject([
+      { name: 'Registry.transports', keyword: 'static' },
+    ]);
+  });
+
+  it('flags an exported empty collection filled from another file', () => {
+    // The shipped bug's exact shape, with the registry and its mutators split
+    // across files. A single-file walk cannot see the write, so the export plus
+    // the empty initializer is the signal.
+    const dir = packageWithFiles({
+      'registry.ts': 'export const transports = new Map<string, number>();\n',
+      'consumer.ts': [
+        "import { transports } from './registry.js';",
+        'export function open(id: string) {',
+        '  transports.set(id, 1);',
+        '}',
+        '',
+      ].join('\n'),
+    });
+    expect(scanPackage(dir, dir)).toMatchObject([
+      { name: 'transports', reason: 'exported empty collection' },
+    ]);
+  });
+
+  it('leaves a non-empty exported lookup table alone', () => {
+    const dir = packageWith("export const LIMITS = new Map([['a', 1]]);\n");
+    expect(scanPackage(dir, dir)).toEqual([]);
+  });
+
+  it('scans `.mts` sources', () => {
+    // `@workflow/world-testing` is authored in `.mts`; while the walk was
+    // `.ts`-only its entry in the sweep below passed vacuously.
+    const dir = packageWithFiles({
+      'state.mts': [
+        'const counts = new Map<string, number>();',
+        'export function bump(id: string) {',
+        '  counts.set(id, 1);',
+        '}',
+        '',
+      ].join('\n'),
+    });
+    expect(scanPackage(dir, dir)).toMatchObject([{ name: 'counts' }]);
   });
 
   it('does not accept a bare `per-copy-ok` with no reason', () => {

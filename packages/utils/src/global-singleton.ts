@@ -88,7 +88,7 @@ export function globalSingleton<T extends object>(
  * Drop the process-wide state for `name`, so the next {@link globalSingleton}
  * call rebuilds it.
  *
- * A test seam. Production code should reset fields on the state object instead:
+ * @internal A test seam. Production code should reset fields on the state object instead:
  * other copies of the module hold a reference to the object this discards, and
  * would keep writing to the orphan.
  */

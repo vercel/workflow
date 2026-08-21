@@ -21,10 +21,23 @@
  * This rule fails the build on anything that reintroduces the pattern.
  *
  * Two escapes:
- *   - initialize the binding with `globalSingleton(...)`, the fix itself;
+ *   - initialize the binding from `globalSingleton(...)` or from `globalThis`
+ *     directly, the fix itself;
  *   - annotate it `// per-copy-ok: <why per-copy is correct here>` when the
  *     state is deliberately per module instance (a diagnostic describing what
  *     *this* copy sees, for example).
+ *
+ * What it sees: `const`/`let` statements and `static` class fields, mutated
+ * from inside a function body. Writes in top-level statements are ignored,
+ * because they run identically in every copy at module evaluation, so a
+ * precomputed lookup table is not a finding. An *exported* binding initialized
+ * to an empty collection is a finding on its own, since the code that fills it
+ * is often in another file.
+ *
+ * What it does not see: a write to an imported binding, resolved across files.
+ * That needs whole-package resolution. The exported-empty-collection rule above
+ * is the cheap approximation, and it is why exporting a mutable registry is
+ * reported even when this file never writes to it.
  *
  * Usage: node scripts/lint/module-scope-state.mjs <packageDir> [...]
  */
@@ -60,10 +73,11 @@ function walkSourceFiles(dir, out = []) {
       walkSourceFiles(full, out);
       continue;
     }
-    if (!entry.name.endsWith('.ts')) continue;
-    if (entry.name.endsWith('.test.ts') || entry.name.endsWith('.d.ts')) {
-      continue;
-    }
+    // `.mts`/`.cts` as well as `.ts`: `@workflow/world-testing` is authored in
+    // `.mts`, and skipping those extensions made its sweep pass vacuously.
+    if (!/\.(ts|mts|cts)$/.test(entry.name)) continue;
+    if (/\.(test|spec)\.(ts|mts|cts)$/.test(entry.name)) continue;
+    if (/\.d\.(ts|mts|cts)$/.test(entry.name)) continue;
     out.push(full);
   }
   return out;
@@ -82,6 +96,54 @@ function isGlobalSingletonCall(node) {
     return callee.name.text === SINGLETON_HELPER;
   }
   return false;
+}
+
+/**
+ * Whether an initializer reaches `globalThis`, so the hand-rolled
+ * `const store = globalThis as …` / `const x = (globalThis[Key] ??= …)` shape is
+ * accepted alongside `globalSingleton()`. Both park the state off-module, which
+ * is the property this rule is actually checking for; `packages/core`'s step
+ * registry and the pattern documented for custom world authors in
+ * `docs/content/worlds/*\/building-a-world.mdx` are both written this way.
+ */
+function isGlobalThisBacked(node, aliases = new Set()) {
+  if (!node) return false;
+  if (ts.isIdentifier(node)) {
+    return node.text === 'globalThis' || aliases.has(node.text);
+  }
+  if (
+    ts.isAsExpression(node) ||
+    ts.isTypeAssertionExpression(node) ||
+    ts.isNonNullExpression(node) ||
+    ts.isParenthesizedExpression(node) ||
+    ts.isPropertyAccessExpression(node) ||
+    ts.isElementAccessExpression(node)
+  ) {
+    return isGlobalThisBacked(node.expression, aliases);
+  }
+  if (ts.isBinaryExpression(node)) {
+    // `globalThis[Key] ??= {…}` and friends.
+    return (
+      isGlobalThisBacked(node.left, aliases) ||
+      isGlobalThisBacked(node.right, aliases)
+    );
+  }
+  return false;
+}
+
+/**
+ * Names in this file that are themselves globalThis-backed, so a binding
+ * derived from one is too. The documented pattern takes two statements: an
+ * alias for `globalThis`, then the state read off it.
+ */
+function globalThisAliases(declared) {
+  const aliases = new Set();
+  for (const binding of declared.values()) {
+    if (isGlobalThisBacked(binding.declaration.initializer, aliases)) {
+      aliases.add(binding.name);
+    }
+  }
+  return aliases;
 }
 
 /**
@@ -112,20 +174,49 @@ function perCopyReason(statement, text) {
   return undefined;
 }
 
-/** Module-scope `const`/`let` bindings in `source`, keyed by name. */
+/**
+ * Module-scope bindings in `source`, keyed by the name a mutation would be
+ * attributed to.
+ *
+ * Covers `const`/`let` statements and `static` class fields. A static field is
+ * module-scope state wearing a class as its namespace: `Registry.transports`
+ * duplicates per copy exactly like a top-level `const` would, and is attributed
+ * to the class name because that is how it is written to.
+ */
 function collectDeclarations(source) {
   const declared = new Map();
   for (const statement of source.statements) {
-    if (!ts.isVariableStatement(statement)) continue;
-    const isConst =
-      (statement.declarationList.flags & ts.NodeFlags.Const) !== 0;
-    for (const declaration of statement.declarationList.declarations) {
-      if (!ts.isIdentifier(declaration.name)) continue;
-      declared.set(declaration.name.text, {
-        name: declaration.name.text,
-        isConst,
-        declaration,
+    if (ts.isVariableStatement(statement)) {
+      const isConst =
+        (statement.declarationList.flags & ts.NodeFlags.Const) !== 0;
+      for (const declaration of statement.declarationList.declarations) {
+        if (!ts.isIdentifier(declaration.name)) continue;
+        declared.set(declaration.name.text, {
+          name: declaration.name.text,
+          isConst,
+          declaration,
+          statement,
+        });
+      }
+      continue;
+    }
+    if (!ts.isClassDeclaration(statement) || !statement.name) continue;
+    for (const member of statement.members) {
+      if (!ts.isPropertyDeclaration(member) || !ts.isIdentifier(member.name)) {
+        continue;
+      }
+      const isStatic = member.modifiers?.some(
+        (m) => m.kind === ts.SyntaxKind.StaticKeyword
+      );
+      if (!isStatic) continue;
+      // Keyed on the class name: writes read as `Registry.transports.set(…)`,
+      // which `rootIdentifier` attributes to `Registry`.
+      declared.set(statement.name.text, {
+        name: `${statement.name.text}.${member.name.text}`,
+        isConst: false,
+        declaration: member,
         statement,
+        keyword: 'static',
       });
     }
   }
@@ -202,6 +293,41 @@ function mutationIn(node) {
   );
 }
 
+/**
+ * An empty collection literal: `new Map()`, `new Set()`, `[]`. A module-scope
+ * binding initialized to one and *exported* is a registry something fills, and
+ * the filling is often in another file, which this single-file walk cannot see.
+ * That is the shipped bug's exact shape, so the emptiness plus the export is
+ * treated as the signal. A non-empty initializer is a lookup table and is left
+ * alone.
+ */
+function isEmptyCollection(node) {
+  if (!node) return false;
+  if (ts.isArrayLiteralExpression(node)) return node.elements.length === 0;
+  if (!ts.isNewExpression(node) || !ts.isIdentifier(node.expression)) {
+    return false;
+  }
+  const collections = new Set(['Map', 'Set', 'WeakMap', 'WeakSet']);
+  if (!collections.has(node.expression.text)) return false;
+  return !node.arguments || node.arguments.length === 0;
+}
+
+function isExported(statement) {
+  return Boolean(
+    statement.modifiers?.some((m) => m.kind === ts.SyntaxKind.ExportKeyword)
+  );
+}
+
+const FUNCTION_LIKE = new Set([
+  ts.SyntaxKind.FunctionDeclaration,
+  ts.SyntaxKind.FunctionExpression,
+  ts.SyntaxKind.ArrowFunction,
+  ts.SyntaxKind.MethodDeclaration,
+  ts.SyntaxKind.Constructor,
+  ts.SyntaxKind.GetAccessor,
+  ts.SyntaxKind.SetAccessor,
+]);
+
 function scanFile(file, repoRoot) {
   const text = fs.readFileSync(file, 'utf8');
   const source = ts.createSourceFile(
@@ -213,27 +339,44 @@ function scanFile(file, repoRoot) {
 
   const declared = collectDeclarations(source);
   if (declared.size === 0) return [];
+  const aliases = globalThisAliases(declared);
 
-  /** name -> how it was first seen changing. */
+  /** key -> how it was first seen changing. */
   const mutations = new Map();
-  const visit = (node) => {
-    const mutation = mutationIn(node);
-    if (
-      mutation?.name &&
-      declared.has(mutation.name) &&
-      !mutations.has(mutation.name)
-    ) {
-      mutations.set(mutation.name, mutation.reason);
+  // Only mutations inside a function body count. A write in a top-level
+  // statement runs once per copy at module evaluation and produces the same
+  // value in each, so a precomputed lookup table is not the hazard this rule
+  // is looking for; divergence needs a write that happens later, per request.
+  const visit = (node, inFunction) => {
+    if (inFunction) {
+      const mutation = mutationIn(node);
+      if (
+        mutation?.name &&
+        declared.has(mutation.name) &&
+        !mutations.has(mutation.name)
+      ) {
+        mutations.set(mutation.name, mutation.reason);
+      }
     }
-    ts.forEachChild(node, visit);
+    const nowInFunction = inFunction || FUNCTION_LIKE.has(node.kind);
+    ts.forEachChild(node, (child) => visit(child, nowInFunction));
   };
-  visit(source);
+  visit(source, false);
 
   const findings = [];
-  for (const binding of declared.values()) {
-    const how = mutations.get(binding.name);
+  for (const [key, binding] of declared) {
+    const initializer = binding.declaration.initializer;
+    let how = mutations.get(key);
+    if (
+      !how &&
+      isExported(binding.statement) &&
+      isEmptyCollection(initializer)
+    ) {
+      how = 'exported empty collection';
+    }
     if (!how) continue; // never changes: one copy per layer is harmless
-    if (isGlobalSingletonCall(binding.declaration.initializer)) continue;
+    if (isGlobalSingletonCall(initializer)) continue;
+    if (isGlobalThisBacked(initializer, aliases)) continue;
     if (perCopyReason(binding.statement, text)) continue;
 
     const { line } = source.getLineAndCharacterOfPosition(
@@ -243,7 +386,7 @@ function scanFile(file, repoRoot) {
       file: path.relative(repoRoot, file),
       line: line + 1,
       name: binding.name,
-      keyword: binding.isConst ? 'const' : 'let',
+      keyword: binding.keyword ?? (binding.isConst ? 'const' : 'let'),
       reason: how,
     });
   }

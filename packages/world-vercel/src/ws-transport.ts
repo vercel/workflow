@@ -39,6 +39,7 @@ import {
   WorkflowWsReconnectAttempt,
 } from './telemetry.js';
 import { type APIConfig, getHttpConfig, getHttpUrl } from './utils.js';
+import { version } from './version.js';
 import { isWsEventsTransportEnabled } from './ws-transport-enabled.js';
 
 export interface WsFrameReply {
@@ -678,7 +679,18 @@ class WsEventsTransport {
  * the same noise the latch exists to prevent.
  */
 const wsState = globalSingleton(
-  '@workflow/world-vercel//wsEventsTransports',
+  // Keyed by package version, unlike the state that holds only plain data.
+  // Two different published versions of this package can share one process (a
+  // transitive dependency pinning an older `@workflow/core`, which depends on
+  // this package by exact version), and this Map holds `WsEventsTransport`
+  // instances. An unversioned key would hand one version's write path an object
+  // built by the other version's class, and `events-v4.ts` would then frame and
+  // parse against a protocol the other copy may not share. There is no version
+  // negotiation on this socket to catch that. `shapeVersion` cannot express it:
+  // the container shape is stable, the hazard is in the contents. Two versions
+  // therefore keep separate registries, which costs a second socket and is what
+  // happened before this package was bundled anyway.
+  `@workflow/world-vercel//wsEventsTransports@${version}`,
   1,
   () => ({
     transports: new Map<string, WsEventsTransport>(),

@@ -469,6 +469,17 @@ not of how they are written, and it changed for world-vercel in #3493. Keep them
 clean too. The author-facing version of this rule is in
 `docs/content/worlds/{v4,v5}/building-a-world.mdx`; keep both versions in sync.
 
+The sweep stops at the world packages, and that boundary is narrower than the
+hazard. `@workflow/core` is statically imported into the same server build and
+has always been bundled, so the same duplication applies to it: it reports
+non-zero today. Those findings were spot-checked as wasteful rather than wrong
+(the step registry is already `globalThis`-backed, the compile and single-flight
+caches are only reached from `/flow` so they stay in one layer, and the rest
+cost a duplicated encoder or a repeated warn-once log), which is why core is not
+gated yet. `@workflow/next` and `@workflow/cli` are in the same position.
+Widening the sweep is tracked in #3729. Treat a *new* mutable module-scope
+binding in core as suspect even though nothing fails the build.
+
 ### Trace context propagation (world-vercel HTTP requests)
 Every outgoing HTTP request from `@workflow/world-vercel` to workflow-server (or the queue) MUST explicitly inject W3C trace context so the server can parent its spans to the caller and traces stay correlated end to end. Call `injectTraceContextIntoHeaders(headers)` (from `packages/world-vercel/src/telemetry.ts`) on the outgoing headers, inside the client span when one exists. `makeRequest` in `utils.ts` is the reference implementation. It is a no-op when no OpenTelemetry SDK is registered.
 
