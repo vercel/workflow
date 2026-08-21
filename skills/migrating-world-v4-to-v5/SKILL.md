@@ -3,7 +3,7 @@ name: migrating-world-v4-to-v5
 description: Upgrades a custom Workflow SDK World implementation from the v4 spec to v5. Use when a package implements the `World` interface from `@workflow/world` and is moving to 5.x — event IDs that are ULIDs rather than slot positions, `Event id is not slot-numbered` at replay time, a `specVersion` the runtime refuses, `writeToStream` / `closeStream` / `readFromStream` as top-level World methods, `steps.get` or `events.listByCorrelationId` without a `runId`, a `'step'` queue kind or `__wkf_step_*` topics, a `preconditionGuard` capability, or a `createLocalWorld` / `createVercelWorld` factory.
 metadata:
   author: Vercel Inc.
-  version: '0.1.0'
+  version: '0.2.0'
 ---
 
 # Migrating a World from the v4 spec to v5
@@ -75,24 +75,36 @@ Then return the skipped span whenever the committed slot exceeds `eventCount + 1
 
 ## Step 2 — declare the spec version
 
-`specVersion` is the protocol version the World implements, and the number stamped on every run it creates. Import the constant:
+`specVersion` is the protocol version the World implements, and the number stamped on every run it creates. Call the helper rather than importing a constant:
 
 ```ts
-import { SPEC_VERSION_CURRENT } from '@workflow/world';
+import { mintedSpecVersion } from '@workflow/world';
 
 export function createWorld(): World {
   return {
-    specVersion: SPEC_VERSION_CURRENT,
+    specVersion: mintedSpecVersion(),
     // ...
   };
 }
 ```
 
-The runtime checks this against `[SPEC_VERSION_CURRENT, SPEC_VERSION_MAX_SUPPORTED]` before it creates or replays anything and refuses a World outside that range, naming both the range and what the World declared. The floor sits where it does because slot-numbered IDs are required: a World declaring less allocates IDs the runtime cannot read positions out of.
+The runtime checks the declaration against a supported range before it creates or replays anything, and refuses a World outside it, naming both the range and what the World declared. The floor is the version that introduced slot-numbered IDs, because a World below it allocates IDs the runtime cannot read positions out of. The ceiling is the highest version the runtime can read.
 
-Replace a literal with the constant even when the numbers currently agree. A literal leaves the World a version behind the next bump and gets it rejected by the runtime it ships alongside. `SPEC_VERSION_SUPPORTS_SLOT_IDENTITY` is a literal by another name for this purpose: it names the version that introduced slots rather than the version to declare.
+`mintedSpecVersion()` is a function because the version a World stamps is a deployment choice: it answers with the sealed-log version by default, and one below it when `WORKFLOW_SEALED_LOG=0` opts new runs out. Both are inside the accepted range. Call it inside `createWorld()` rather than caching it at module load, so one process can create Worlds in both modes.
 
-Runs carry their own spec version, persisted at creation, and keep it for life. Read it off the run rather than assuming every run matches what the World declares today.
+Report any of these as findings rather than leaving them:
+
+- A hard-coded number. It leaves the World a version behind the next bump and gets it rejected by the runtime it ships alongside.
+- `SPEC_VERSION_CURRENT` or `SPEC_VERSION_SUPPORTS_SLOT_IDENTITY` used as the declaration. Both are literals by another name here, since neither follows the sealed-log setting.
+- Code that assumes every run matches what the World declares today. A run's version is persisted at creation and kept for life, so read it off the run.
+
+### The sealed log and `noop`
+
+The sealed-log version permits one alternative to allocating a position at the commit (step 1): hand positions out from a per-run counter *before* the commit, so concurrent writers never race for one, then restore density at read time by writing a `noop` event into any position provably abandoned. A `noop` occupies its position and means nothing — replay steps over it without delivering it and without advancing the deterministic clock.
+
+For most migrations this is a no-op, and say so rather than skipping it: **a World that allocates at the commit is already compliant** and will never emit a `noop`, because no write can leave a position empty. Only build the sealing half if the World pre-assigns positions, and then it must also never return a page with an interior hole — return the dense prefix below the hole and let the next page pick up once the position resolves.
+
+The half that always applies is the reader's: `noop` is not user-creatable, never sent to `events.create()`, and only the World's own read path may write one. If the World validates event types on read, make sure `noop` parses.
 
 ## Step 3 — apply the mechanical rewrites
 
@@ -143,9 +155,14 @@ These change no signature. A World ported by types alone compiles and then behav
 
 None of this is required, and the runtime routes around each absence. Report what the World is missing rather than implementing everything unprompted.
 
-`capabilities` (`hookRetention.active`, `hookResumeDedup`, `deploymentAffinity`, `maxConcurrency`), `analytics`, `runs.experimentalSetAttributes`, `runs.cancelMany`, `getRuntimeDeadline()`, `getEnvironment()`, `createRunId()`, `describeRun()`, `getEncryptionKeyForRun()`, `resolveLatestDeploymentId()`, `close()`.
+`capabilities` (`hookRetention.active`, `hookResumeDedup`, `deploymentAffinity`, `maxConcurrency`), `analytics`, `runs.experimentalSetAttributes`, `runs.cancelMany`, `runs.waitForTerminalStatus()`, `events.createBatch()`, `getRuntimeDeadline()`, `getEnvironment()`, `createRunId()`, `describeRun()`, `getEncryptionKeyForRun()`, `resolveLatestDeploymentId()`, `close()`.
 
-Two are worth raising unprompted because their absence is felt rather than reported. Without `getRuntimeDeadline()` the inline replay budget is a flat two minutes, so a host with a long function timeout does less work per invocation than it could. Without `close()`, CLI commands and short-lived processes cannot exit cleanly without `process.exit()`.
+Four are worth raising unprompted because their absence is felt rather than reported:
+
+- Without `getRuntimeDeadline()` the inline replay budget is a flat two minutes, so a host with a long function timeout does less work per invocation than it could.
+- Without `close()`, CLI commands and short-lived processes cannot exit cleanly without `process.exit()`.
+- Without `events.createBatch()`, a suspension's `step_created` and `wait_created` writes each take their own round trip. Implementing the method *is* the declaration — there is no flag — so it must be atomic per attempt, leaving nothing behind on a lost race, or be left out entirely. It cannot express `run_created`, `run_started`, `run_cancelled`, `hook_created`, `hook_disposed` or `attr_set`, and a World rejects the whole batch when one arrives.
+- Without `runs.waitForTerminalStatus()`, `await run.returnValue` falls back to polling on an interval instead of long-polling.
 
 ## Step 6 — the rollout
 

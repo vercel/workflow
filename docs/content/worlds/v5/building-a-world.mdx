@@ -128,7 +128,12 @@ interface Storage {
     
     // Create an event for an existing run
     create(runId: string, data: CreateEventRequest, params?: CreateEventParams): Promise<EventResult>;
-    
+
+    // Optional: append an ordered list of events in one durable write, with a
+    // per-event outcome for each. Implementing it is the declaration; there is
+    // no capability flag.
+    createBatch?(runId: string, events: BatchEventRequest[], params?: CreateEventBatchParams): Promise<EventBatchResult>;
+
     list(params: ListEventsParams): Promise<PaginatedResponse<Event>>;
     listByCorrelationId(params: ListEventsByCorrelationIdParams): Promise<PaginatedResponse<Event>>;
   };
@@ -147,6 +152,8 @@ interface Storage {
 1. Persist the event to the event log
 2. Atomically update the affected entity (run, step, or hook)
 3. Return both the created event and the updated entity
+
+**Batch Writes:** `events.createBatch()` is optional, and implementing it is what declares it — the runtime folds a suspension's `step_created` and `wait_created` writes into batches only when the method exists, and otherwise takes the single-event path unchanged. Implement it with real atomicity per attempt, so a lost race leaves nothing behind, or do not implement it at all. The events land in request order at consecutive positions, and a concurrent writer may push the whole batch above the caller's view of the log; no skipped-event report accompanies the result, so a position-tracking caller compares the committed positions against what it expected and reloads. Reject the whole batch, with a request-level error, for `run_created`, `run_started`, `run_cancelled`, `hook_created`, `hook_disposed`, `attr_set`, for more events targeting one entity than a single write can express, and for a batch over your own size caps. The one legal same-entity pair is `step_created` followed by `step_started`, which creates the step born-running, and there the input must ride the `step_created`.
 
 **Run Creation:** For `run_created` events, the `runId` parameter may be a client-provided string or `null`. When `null`, your World generates and returns a new `runId`.
 
