@@ -2,7 +2,7 @@
 
 ## 5.0.0-beta.43
 
-### Patch changes
+### Patch Changes
 
 - Updated dependencies []:
   - @workflow/builders@5.0.0-beta.43
@@ -11,7 +11,7 @@
 
 ## 5.0.0-beta.42
 
-### Patch changes
+### Patch Changes
 
 - Updated dependencies []:
   - @workflow/builders@5.0.0-beta.42
@@ -20,7 +20,7 @@
 
 ## 5.0.0-beta.41
 
-### Patch changes
+### Patch Changes
 
 - Updated dependencies [[`4ec7aca`](https://github.com/vercel/workflow/commit/4ec7acaa7196a6f2f5025a65f05d5bdaaf5705ba), [`264ddff`](https://github.com/vercel/workflow/commit/264ddff67b3cfceea24235ee6d865c48e7982727)]:
   - @workflow/builders@5.0.0-beta.41
@@ -29,7 +29,7 @@
 
 ## 5.0.0-beta.40
 
-### Patch changes
+### Patch Changes
 
 - Updated dependencies []:
   - @workflow/builders@5.0.0-beta.40
@@ -38,7 +38,7 @@
 
 ## 5.0.0-beta.39
 
-### Patch changes
+### Patch Changes
 
 - Updated dependencies []:
   - @workflow/builders@5.0.0-beta.39
@@ -47,7 +47,7 @@
 
 ## 5.0.0-beta.38
 
-### Patch changes
+### Patch Changes
 
 - [#3142](https://github.com/vercel/workflow/pull/3142) [`a09d001`](https://github.com/vercel/workflow/commit/a09d00135bd96f22bd1ae1dee6b5a6f797b7d804) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Revert the static workflow world target injection: the world package is again resolved at runtime from `WORKFLOW_TARGET_WORLD` instead of being aliased into host bundles at build time.
 
@@ -58,7 +58,7 @@
 
 ## 5.0.0-beta.37
 
-### Patch changes
+### Patch Changes
 
 - [#3166](https://github.com/vercel/workflow/pull/3166) [`0d6ec43`](https://github.com/vercel/workflow/commit/0d6ec438770f42cb3c512e97c27ec551c957de32) Thanks [@TooTallNate](https://github.com/TooTallNate)! - The generated webhook route now passes the incoming request directly to its handler instead of copying it into a new `Request`, so the request body is no longer read before the handler runs.
 
@@ -69,7 +69,7 @@
 
 ## 5.0.0-beta.36
 
-### Patch changes
+### Patch Changes
 
 - Updated dependencies [[`927b61a`](https://github.com/vercel/workflow/commit/927b61ab419e98c027c077af81273e73650cb94f)]:
   - @workflow/builders@5.0.0-beta.36
@@ -78,7 +78,7 @@
 
 ## 5.0.0-beta.35
 
-### Patch changes
+### Patch Changes
 
 - Updated dependencies [[`a00d169`](https://github.com/vercel/workflow/commit/a00d16947085f8e94cf191c4d8850121cf201a94)]:
   - @workflow/builders@5.0.0-beta.35
@@ -87,7 +87,7 @@
 
 ## 5.0.0-beta.34
 
-### Patch changes
+### Patch Changes
 
 - Updated dependencies []:
   - @workflow/builders@5.0.0-beta.34
@@ -96,7 +96,7 @@
 
 ## 5.0.0-beta.33
 
-### Patch changes
+### Patch Changes
 
 - Updated dependencies [[`a4d8de0`](https://github.com/vercel/workflow/commit/a4d8de03e6381d170ccf0c76ed77e05dc5545456)]:
   - @workflow/builders@5.0.0-beta.33
@@ -105,7 +105,7 @@
 
 ## 5.0.0-beta.32
 
-### Patch changes
+### Patch Changes
 
 - Updated dependencies []:
   - @workflow/builders@5.0.0-beta.32
@@ -114,7 +114,7 @@
 
 ## 5.0.0-beta.31
 
-### Patch changes
+### Patch Changes
 
 - Updated dependencies []:
   - @workflow/builders@5.0.0-beta.31
@@ -123,7 +123,7 @@
 
 ## 5.0.0-beta.30
 
-### Patch changes
+### Patch Changes
 
 - Updated dependencies [[`df7e71d`](https://github.com/vercel/workflow/commit/df7e71de1c8e5407221219235f941c9fb58b6707), [`25b1509`](https://github.com/vercel/workflow/commit/25b1509e19badb6498927d3fc0d6f23b65329396)]:
   - @workflow/builders@5.0.0-beta.30
@@ -132,7 +132,7 @@
 
 ## 5.0.0-beta.29
 
-### Patch changes
+### Patch Changes
 
 - Updated dependencies []:
   - @workflow/builders@5.0.0-beta.29
@@ -141,7 +141,7 @@
 
 ## 5.0.0-beta.28
 
-### Patch changes
+### Patch Changes
 
 - [#2752](https://github.com/vercel/workflow/pull/2752) [`0f557d5`](https://github.com/vercel/workflow/commit/0f557d5ae4b5ede07fd371988c6d0afda194555d) Thanks [@ijjk](https://github.com/ijjk)! - Statically inject the configured world package into host bundles instead of selecting worlds dynamically at runtime.
 
@@ -152,7 +152,7 @@
 
 ## 5.0.0-beta.27
 
-### Patch changes
+### Patch Changes
 
 - [#2725](https://github.com/vercel/workflow/pull/2725) [`532b0e1`](https://github.com/vercel/workflow/commit/532b0e10d6c3105aa86dc871a7a206f784d5a22d) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Share framework project root detection across Astro, Next.js, and SvelteKit.
 
@@ -163,7 +163,7 @@
 
 ## 5.0.0-beta.26
 
-### Patch changes
+### Patch Changes
 
 - Updated dependencies []:
   - @workflow/builders@5.0.0-beta.26
@@ -172,7 +172,7 @@
 
 ## 5.0.0-beta.25
 
-### Patch changes
+### Patch Changes
 
 - Updated dependencies [[`55e2110`](https://github.com/vercel/workflow/commit/55e211086d81c03f57d4f6bf56521b7c8cabdcc3)]:
   - @workflow/builders@5.0.0-beta.25
@@ -181,7 +181,7 @@
 
 ## 5.0.0-beta.24
 
-### Patch changes
+### Patch Changes
 
 - Updated dependencies [[`3fd4cc5`](https://github.com/vercel/workflow/commit/3fd4cc5f3a852da08cc173b5254905e3b03df7ba)]:
   - @workflow/builders@5.0.0-beta.24
@@ -190,7 +190,7 @@
 
 ## 5.0.0-beta.23
 
-### Patch changes
+### Patch Changes
 
 - Updated dependencies [[`2bf5257`](https://github.com/vercel/workflow/commit/2bf5257f97fc4fea036717a7882dfd39bf2b3804)]:
   - @workflow/builders@5.0.0-beta.23
@@ -199,7 +199,7 @@
 
 ## 5.0.0-beta.22
 
-### Patch changes
+### Patch Changes
 
 - Updated dependencies []:
   - @workflow/builders@5.0.0-beta.22
@@ -208,7 +208,7 @@
 
 ## 5.0.0-beta.21
 
-### Patch changes
+### Patch Changes
 
 - Updated dependencies [[`5291f15`](https://github.com/vercel/workflow/commit/5291f1549fee4d8b042cc03b6696fd8b6cb798fc), [`b713d84`](https://github.com/vercel/workflow/commit/b713d8417b1334abd1e30bdc50701d0d96dee39d), [`57cccaf`](https://github.com/vercel/workflow/commit/57cccaf3734f4afa8218e1ea729a9bb886c691f3)]:
   - @workflow/builders@5.0.0-beta.21
@@ -217,7 +217,7 @@
 
 ## 5.0.0-beta.20
 
-### Patch changes
+### Patch Changes
 
 - Updated dependencies [[`37312ed`](https://github.com/vercel/workflow/commit/37312edd0a9ae973113c9ef8d5fe6a25b603063a)]:
   - @workflow/builders@5.0.0-beta.20
@@ -226,7 +226,7 @@
 
 ## 5.0.0-beta.19
 
-### Patch changes
+### Patch Changes
 
 - Updated dependencies []:
   - @workflow/builders@5.0.0-beta.19
@@ -235,7 +235,7 @@
 
 ## 5.0.0-beta.18
 
-### Patch changes
+### Patch Changes
 
 - [#2457](https://github.com/vercel/workflow/pull/2457) [`b92dfbb`](https://github.com/vercel/workflow/commit/b92dfbb94dabdeefd53bd9499a78174ac6bb2156) Thanks [@pranaygp](https://github.com/pranaygp)! - Bump the `astro` dev dependency to 6.4.6 to resolve CVE-2026-54299 (GHSA-2pvr-wf23-7pc7, host header SSRF in prerendered error page fetch).
 
@@ -247,7 +247,7 @@
 
 ## 5.0.0-beta.17
 
-### Patch changes
+### Patch Changes
 
 - Updated dependencies [[`c48d27b`](https://github.com/vercel/workflow/commit/c48d27b4f83996e68d1a48eeeeebe4a58a045a61)]:
   - @workflow/builders@5.0.0-beta.17
@@ -256,7 +256,7 @@
 
 ## 5.0.0-beta.16
 
-### Patch changes
+### Patch Changes
 
 - Updated dependencies [[`011d482`](https://github.com/vercel/workflow/commit/011d482808793e8deb0e8523a9c16af129490ee6)]:
   - @workflow/builders@5.0.0-beta.16
@@ -265,7 +265,7 @@
 
 ## 5.0.0-beta.15
 
-### Patch changes
+### Patch Changes
 
 - Updated dependencies []:
   - @workflow/builders@5.0.0-beta.15
@@ -274,7 +274,7 @@
 
 ## 5.0.0-beta.14
 
-### Patch changes
+### Patch Changes
 
 - Updated dependencies [[`4670c4b`](https://github.com/vercel/workflow/commit/4670c4b92d7386dfd74728538c7e24fe8c07b0af), [`f5f6d0e`](https://github.com/vercel/workflow/commit/f5f6d0ede6c44ec7cc6a861a78f5ec4ff26910ee)]:
   - @workflow/builders@5.0.0-beta.14
@@ -283,7 +283,7 @@
 
 ## 5.0.0-beta.13
 
-### Patch changes
+### Patch Changes
 
 - Updated dependencies []:
   - @workflow/builders@5.0.0-beta.13
@@ -292,7 +292,7 @@
 
 ## 5.0.0-beta.12
 
-### Patch changes
+### Patch Changes
 
 - Updated dependencies []:
   - @workflow/builders@5.0.0-beta.12
@@ -301,7 +301,7 @@
 
 ## 5.0.0-beta.11
 
-### Patch changes
+### Patch Changes
 
 - Updated dependencies []:
   - @workflow/builders@5.0.0-beta.11
@@ -310,7 +310,7 @@
 
 ## 5.0.0-beta.10
 
-### Patch changes
+### Patch Changes
 
 - Updated dependencies []:
   - @workflow/builders@5.0.0-beta.10
@@ -319,7 +319,7 @@
 
 ## 5.0.0-beta.9
 
-### Patch changes
+### Patch Changes
 
 - Updated dependencies []:
   - @workflow/builders@5.0.0-beta.9
@@ -328,7 +328,7 @@
 
 ## 5.0.0-beta.8
 
-### Patch changes
+### Patch Changes
 
 - [#1799](https://github.com/vercel/workflow/pull/1799) [`503a929`](https://github.com/vercel/workflow/commit/503a929d347df46eb0ad63b068da7781762d0dc8) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Use inline sourcemaps for all workspace packages; published packages no longer ship external `.js.map` files.
 
@@ -339,7 +339,7 @@
 
 ## 5.0.0-beta.7
 
-### Patch changes
+### Patch Changes
 
 - Updated dependencies []:
   - @workflow/builders@5.0.0-beta.7
@@ -348,7 +348,7 @@
 
 ## 5.0.0-beta.6
 
-### Patch changes
+### Patch Changes
 
 - Updated dependencies []:
   - @workflow/builders@5.0.0-beta.6
@@ -357,17 +357,17 @@
 
 ## 5.0.0-beta.5
 
-### Minor changes
+### Minor Changes
 
-- [#1842](https://github.com/vercel/workflow/pull/1842) [`6dd5c72`](https://github.com/vercel/workflow/commit/6dd5c72d8acd1377670da1b4a24abd6f3bea2f61) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Add `sourcemap` option to builders for disabling or customizing source map emission on generated workflow bundles. Accepts the same values as esbuild's `sourcemap` option: `true`, `false`, `'inline'`, `'linked'`, `'external'`, `'both'`. Can also be set via the `WORKFLOW_SOURCEMAP` environment variable.
+- [#1842](https://github.com/vercel/workflow/pull/1842) [`6dd5c72`](https://github.com/vercel/workflow/commit/6dd5c72d8acd1377670da1b4a24abd6f3bea2f61) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Add `sourcemap` option to builders for disabling or customising source map emission on generated workflow bundles. Accepts the same values as esbuild's `sourcemap` option: `true`, `false`, `'inline'`, `'linked'`, `'external'`, `'both'`. Can also be set via the `WORKFLOW_SOURCEMAP` environment variable.
 
-  Setting `sourcemap: false` drops inline source maps from the step, workflow, and webhook bundles and skips the source-map-support runtime shim on the Vercel step function. This helps keep the function under Vercel's 250 MB size limit.
+  Setting `sourcemap: false` drops inline source maps from the step, workflow and webhook bundles, and skips the source-map-support runtime shim on the Vercel step function — helpful for staying under the Vercel 250MB function size limit.
 
   Exposed per framework: `nitro.options.workflow.sourcemap`, `NestBuilderOptions.sourcemap`, `withWorkflow({ workflows: { sourcemap } })`, and the `sourcemap` option on `workflowPlugin()` for SvelteKit and Astro.
 
   Minor semantics change: when the `sourcemap` option (or `WORKFLOW_SOURCEMAP`) is set explicitly, it now applies to **all** generated bundles. Previously, the final workflow wrapper and webhook bundles could only be toggled via the legacy `WORKFLOW_EMIT_SOURCEMAPS_FOR_DEBUGGING=1` env var, which continues to work but is narrower in scope.
 
-### Patch changes
+### Patch Changes
 
 - [#1338](https://github.com/vercel/workflow/pull/1338) [`8ea1532`](https://github.com/vercel/workflow/commit/8ea1532e48ed86ef9a66231e474851bed85c737a) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Merge flow and step routes into a single combined handler that executes steps inline when possible, reducing function invocations and queue overhead.
 
@@ -379,7 +379,7 @@
 
 ## 5.0.0-beta.4
 
-### Patch changes
+### Patch Changes
 
 - Updated dependencies []:
   - @workflow/builders@5.0.0-beta.4
@@ -388,7 +388,7 @@
 
 ## 5.0.0-beta.3
 
-### Patch changes
+### Patch Changes
 
 - Updated dependencies [[`baba580`](https://github.com/vercel/workflow/commit/baba580794f636fa371d86634a2eac7bf367da12), [`417c493`](https://github.com/vercel/workflow/commit/417c4930be3d21768c7efd4d224510a33d8c468c)]:
   - @workflow/builders@5.0.0-beta.3
@@ -398,7 +398,7 @@
 
 ## 5.0.0-beta.2
 
-### Patch changes
+### Patch Changes
 
 - [#1769](https://github.com/vercel/workflow/pull/1769) [`5a42964`](https://github.com/vercel/workflow/commit/5a4296412f151c255a8d08c8870e511222c7c472) Thanks [@tomdale](https://github.com/tomdale)! - Embed source content in published sourcemaps.
 
@@ -412,7 +412,7 @@
 
 ## 5.0.0-beta.1
 
-### Patch changes
+### Patch Changes
 
 - Updated dependencies [[`d040182`](https://github.com/vercel/workflow/commit/d0401829320c2880a0a5c2404ed9dede94eb17a0), [`dc0c0dc`](https://github.com/vercel/workflow/commit/dc0c0dce7f4ef1a0919d7ecc7efe076564871d0c), [`e436242`](https://github.com/vercel/workflow/commit/e4362421abf9c864c9c1064866ddfc16560649cb), [`0a86de3`](https://github.com/vercel/workflow/commit/0a86de3afd1b51efff32e1c3cefd7f384d1b2d8d), [`32a17b4`](https://github.com/vercel/workflow/commit/32a17b4033dea3d9fd496e77142c675b06f0e016), [`66585fd`](https://github.com/vercel/workflow/commit/66585fd46723604a632d08b6c973d5a95582b1af), [`89d242f`](https://github.com/vercel/workflow/commit/89d242fae2233c52153315d63e1eacb4c0ca5527), [`ebb0a4a`](https://github.com/vercel/workflow/commit/ebb0a4a4e366eb1be1d385bf1eedbbe27371c9a9)]:
   - @workflow/swc-plugin@5.0.0-beta.1
@@ -422,11 +422,11 @@
 
 ## 5.0.0-beta.0
 
-### Major changes
+### Major Changes
 
 - [#1642](https://github.com/vercel/workflow/pull/1642) [`c5cdfc0`](https://github.com/vercel/workflow/commit/c5cdfc00751c5bef36c4be748d819081b934fbcd) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Initial v5 beta release
 
-### Patch changes
+### Patch Changes
 
 - Updated dependencies [[`35b539b`](https://github.com/vercel/workflow/commit/35b539b146015fd63ad71e0d08614de96d34aa45), [`372abba`](https://github.com/vercel/workflow/commit/372abba55fc6d3d9ba8f6926d38e05d7a6d99011), [`bab8cdd`](https://github.com/vercel/workflow/commit/bab8cddf98e1d4ca897fbfc9cc1fb51a3333c695), [`c5cdfc0`](https://github.com/vercel/workflow/commit/c5cdfc00751c5bef36c4be748d819081b934fbcd)]:
   - @workflow/builders@5.0.0-beta.0
@@ -436,7 +436,7 @@
 
 ## 4.0.0-beta.52
 
-### Patch changes
+### Patch Changes
 
 - Updated dependencies [[`f5d2aef`](https://github.com/vercel/workflow/commit/f5d2aef58ff6d655989d00e4b9a8712d856bdca0), [`3308701`](https://github.com/vercel/workflow/commit/3308701b341f5b4d7007d5bca97cbbb6e4af222f)]:
   - @workflow/builders@4.0.1-beta.69
@@ -445,7 +445,7 @@
 
 ## 4.0.0-beta.51
 
-### Patch changes
+### Patch Changes
 
 - Updated dependencies [[`d1330cf`](https://github.com/vercel/workflow/commit/d1330cfebca1b2f552bd80c06e37bff4fba1b79e), [`5d22e61`](https://github.com/vercel/workflow/commit/5d22e61446d5146887f8c268d305ea42e3f67b09), [`7c996a7`](https://github.com/vercel/workflow/commit/7c996a76c59cb88fa58d15942218b308d1cd100f), [`443a9e6`](https://github.com/vercel/workflow/commit/443a9e62f938b91cd818106155d384329cf5c82c)]:
   - @workflow/builders@4.0.1-beta.68
@@ -455,7 +455,7 @@
 
 ## 4.0.0-beta.50
 
-### Patch changes
+### Patch Changes
 
 - Updated dependencies []:
   - @workflow/builders@4.0.1-beta.67
@@ -464,7 +464,7 @@
 
 ## 4.0.0-beta.49
 
-### Patch changes
+### Patch Changes
 
 - Updated dependencies [[`6dc1b78`](https://github.com/vercel/workflow/commit/6dc1b785822af5c1dc3b4a2a9b1dcb7f626cf5ff)]:
   - @workflow/builders@4.0.1-beta.66
@@ -473,7 +473,7 @@
 
 ## 4.0.0-beta.48
 
-### Patch changes
+### Patch Changes
 
 - Updated dependencies [[`a3b7c48`](https://github.com/vercel/workflow/commit/a3b7c480e058e9070d2ecb8b84b38bbf2081840a), [`d119c74`](https://github.com/vercel/workflow/commit/d119c740d095ae601598bc2a62e6269e06f70f3e)]:
   - @workflow/builders@4.0.1-beta.65
@@ -482,7 +482,7 @@
 
 ## 4.0.0-beta.47
 
-### Patch changes
+### Patch Changes
 
 - Updated dependencies [[`52db376`](https://github.com/vercel/workflow/commit/52db376c39ef322e8e458c0f81ccc67c9ab2b301)]:
   - @workflow/builders@4.0.1-beta.64
@@ -491,7 +491,7 @@
 
 ## 4.0.0-beta.46
 
-### Patch changes
+### Patch Changes
 
 - Updated dependencies [[`beccbc4`](https://github.com/vercel/workflow/commit/beccbc4298f434a4ffb9563c4f832f2230016f40), [`77fd9ad`](https://github.com/vercel/workflow/commit/77fd9ad3556544a0efd7d6c4d00eedfc03dc10e5), [`5010ebe`](https://github.com/vercel/workflow/commit/5010ebe7c5f8e2f4921e99cc22c7360ae0d49097), [`992d768`](https://github.com/vercel/workflow/commit/992d768f8026846bc2587892fc06e998d8c1fd8e), [`6cce021`](https://github.com/vercel/workflow/commit/6cce021503b80db49fea1d0085ecb304678cfc8a), [`977b7e9`](https://github.com/vercel/workflow/commit/977b7e97edabd9b4fb800a5f6e1037dc78ca3c61)]:
   - @workflow/builders@4.0.1-beta.63
@@ -501,7 +501,7 @@
 
 ## 4.0.0-beta.45
 
-### Patch changes
+### Patch Changes
 
 - Updated dependencies [[`5d95abf`](https://github.com/vercel/workflow/commit/5d95abf9413462e82759bf68ab985e794ce05756), [`3cc2943`](https://github.com/vercel/workflow/commit/3cc29431b266832dd3d9b735da455d2b11612ea7)]:
   - @workflow/swc-plugin@4.1.0-beta.20
@@ -511,7 +511,7 @@
 
 ## 4.0.0-beta.44
 
-### Patch changes
+### Patch Changes
 
 - Updated dependencies []:
   - @workflow/builders@4.0.1-beta.61
@@ -520,7 +520,7 @@
 
 ## 4.0.0-beta.43
 
-### Patch changes
+### Patch Changes
 
 - Updated dependencies [[`d72c822`](https://github.com/vercel/workflow/commit/d72c82220f0c56bb26edbc918e485b8bd14c959b)]:
   - @workflow/builders@4.0.1-beta.60
@@ -530,7 +530,7 @@
 
 ## 4.0.0-beta.42
 
-### Patch changes
+### Patch Changes
 
 - Updated dependencies []:
   - @workflow/builders@4.0.1-beta.59
@@ -539,7 +539,7 @@
 
 ## 4.0.0-beta.41
 
-### Patch changes
+### Patch Changes
 
 - Updated dependencies []:
   - @workflow/builders@4.0.1-beta.58
@@ -548,7 +548,7 @@
 
 ## 4.0.0-beta.40
 
-### Patch changes
+### Patch Changes
 
 - Updated dependencies []:
   - @workflow/builders@4.0.1-beta.57
@@ -557,7 +557,7 @@
 
 ## 4.0.0-beta.39
 
-### Patch changes
+### Patch Changes
 
 - Updated dependencies []:
   - @workflow/builders@4.0.1-beta.56
@@ -566,7 +566,7 @@
 
 ## 4.0.0-beta.38
 
-### Patch changes
+### Patch Changes
 
 - Updated dependencies []:
   - @workflow/builders@4.0.1-beta.55
@@ -575,7 +575,7 @@
 
 ## 4.0.0-beta.37
 
-### Patch changes
+### Patch Changes
 
 - Updated dependencies [[`809339b`](https://github.com/vercel/workflow/commit/809339ba1c8362529c9fc198f7921f19fe91f233), [`a9fea91`](https://github.com/vercel/workflow/commit/a9fea9132ef3797dbda7683c36cc86ff2bd82f1f)]:
   - @workflow/builders@4.0.1-beta.54
@@ -584,7 +584,7 @@
 
 ## 4.0.0-beta.36
 
-### Patch changes
+### Patch Changes
 
 - [#1217](https://github.com/vercel/workflow/pull/1217) [`e55c636`](https://github.com/vercel/workflow/commit/e55c63678b15b6687cc77efca705ee9fb40fabc3) Thanks [@pranaygp](https://github.com/pranaygp)! - Upgrade dependencies across all packages
 
@@ -595,7 +595,7 @@
 
 ## 4.0.0-beta.35
 
-### Patch changes
+### Patch Changes
 
 - Updated dependencies []:
   - @workflow/builders@4.0.1-beta.52
@@ -604,7 +604,7 @@
 
 ## 4.0.0-beta.34
 
-### Patch changes
+### Patch Changes
 
 - Updated dependencies []:
   - @workflow/builders@4.0.1-beta.51
@@ -613,7 +613,7 @@
 
 ## 4.0.0-beta.33
 
-### Patch changes
+### Patch Changes
 
 - Updated dependencies []:
   - @workflow/builders@4.0.1-beta.50
@@ -622,7 +622,7 @@
 
 ## 4.0.0-beta.32
 
-### Patch changes
+### Patch Changes
 
 - Updated dependencies [[`1c11573`](https://github.com/vercel/workflow/commit/1c1157340d88c60c7c80c0789c111050b809ab77), [`29347b7`](https://github.com/vercel/workflow/commit/29347b79eae8181d02ed1e52183983adc56425fd)]:
   - @workflow/builders@4.0.1-beta.49
@@ -631,7 +631,7 @@
 
 ## 4.0.0-beta.31
 
-### Patch changes
+### Patch Changes
 
 - Updated dependencies []:
   - @workflow/builders@4.0.1-beta.48
@@ -640,7 +640,7 @@
 
 ## 4.0.0-beta.30
 
-### Patch changes
+### Patch Changes
 
 - Updated dependencies [[`94760b4`](https://github.com/vercel/workflow/commit/94760b4640dde4ed84ff0932994ce9a47b1954ad)]:
   - @workflow/builders@4.0.1-beta.47
@@ -649,7 +649,7 @@
 
 ## 4.0.0-beta.29
 
-### Patch changes
+### Patch Changes
 
 - Updated dependencies [[`3d770d5`](https://github.com/vercel/workflow/commit/3d770d53855ce7c8522d4f0afbdbc123eae6c1ee), [`054e40c`](https://github.com/vercel/workflow/commit/054e40c91be615809c71d3ad29573c78c4491825), [`a5935ab`](https://github.com/vercel/workflow/commit/a5935abec7c7e57b2a89c629203d567cd7ac76a7), [`1adcc6a`](https://github.com/vercel/workflow/commit/1adcc6a618562e0b31ae53d10f9f6aa797107705)]:
   - @workflow/builders@4.0.1-beta.46
@@ -659,7 +659,7 @@
 
 ## 4.0.0-beta.28
 
-### Patch changes
+### Patch Changes
 
 - Updated dependencies [[`2d1d69f`](https://github.com/vercel/workflow/commit/2d1d69f4ca7be9cf6d01aa2dfb9b031d74ba166c), [`ef23b0b`](https://github.com/vercel/workflow/commit/ef23b0be770bbb5ccca015fb2564953fe6a761d7), [`fcfaf8b`](https://github.com/vercel/workflow/commit/fcfaf8bbaa912b1767c646592e539d5f98cd1e9c)]:
   - @workflow/builders@4.0.1-beta.45
@@ -669,7 +669,7 @@
 
 ## 4.0.0-beta.27
 
-### Patch changes
+### Patch Changes
 
 - [#963](https://github.com/vercel/workflow/pull/963) [`661724c`](https://github.com/vercel/workflow/commit/661724c01e78691abad26fa99bd44f254a70f2dd) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Expose workflow manifest via HTTP when `WORKFLOW_PUBLIC_MANIFEST=1`
 
@@ -681,7 +681,7 @@
 
 ## 4.0.0-beta.26
 
-### Patch changes
+### Patch Changes
 
 - Updated dependencies [[`f40532a`](https://github.com/vercel/workflow/commit/f40532a8720b9b0ecb3cf4983cbfd86065503567)]:
   - @workflow/builders@4.0.1-beta.43
@@ -689,7 +689,7 @@
 
 ## 4.0.0-beta.25
 
-### Patch changes
+### Patch Changes
 
 - [#800](https://github.com/vercel/workflow/pull/800) [`4ad3fcd`](https://github.com/vercel/workflow/commit/4ad3fcd0a362f3d83a6c272dec6362fe9a562c63) Thanks [@alandotcom](https://github.com/alandotcom)! - Pass runtime option to Vercel Build Output API functions
 
@@ -701,7 +701,7 @@
 
 ## 4.0.0-beta.24
 
-### Patch changes
+### Patch Changes
 
 - Updated dependencies []:
   - @workflow/builders@4.0.1-beta.41
@@ -709,7 +709,7 @@
 
 ## 4.0.0-beta.23
 
-### Patch changes
+### Patch Changes
 
 - Updated dependencies [[`1843704`](https://github.com/vercel/workflow/commit/1843704b83d5aaadcf1e4f5f1c73c150bd0bd2a3)]:
   - @workflow/swc-plugin@4.0.1-beta.14
@@ -719,7 +719,7 @@
 
 ## 4.0.0-beta.22
 
-### Patch changes
+### Patch Changes
 
 - Updated dependencies []:
   - @workflow/builders@4.0.1-beta.39
@@ -727,7 +727,7 @@
 
 ## 4.0.0-beta.21
 
-### Patch changes
+### Patch Changes
 
 - Updated dependencies [[`7906429`](https://github.com/vercel/workflow/commit/7906429541672049821ec8b74452c99868db6290), [`a2fc53a`](https://github.com/vercel/workflow/commit/a2fc53a0dc2df0648ae9e7fd59aae044a612ebcb)]:
   - @workflow/swc-plugin@4.0.1-beta.13
@@ -737,7 +737,7 @@
 
 ## 4.0.0-beta.20
 
-### Patch changes
+### Patch Changes
 
 - Updated dependencies []:
   - @workflow/builders@4.0.1-beta.37
@@ -745,7 +745,7 @@
 
 ## 4.0.0-beta.19
 
-### Patch changes
+### Patch Changes
 
 - Updated dependencies []:
   - @workflow/builders@4.0.1-beta.36
@@ -753,7 +753,7 @@
 
 ## 4.0.0-beta.18
 
-### Patch changes
+### Patch Changes
 
 - Updated dependencies [[`4d6f797`](https://github.com/vercel/workflow/commit/4d6f797274331b2efa69576dda7361ef7f704edf), [`505063c`](https://github.com/vercel/workflow/commit/505063cbb9ef04af8531c2cd3cd3840b5d272f82)]:
   - @workflow/builders@4.0.1-beta.35
@@ -761,7 +761,7 @@
 
 ## 4.0.0-beta.17
 
-### Patch changes
+### Patch Changes
 
 - Updated dependencies [[`d552374`](https://github.com/vercel/workflow/commit/d552374b13945c76cbffccfcfdef38f4e3b5a97c)]:
   - @workflow/builders@4.0.1-beta.34
@@ -769,7 +769,7 @@
 
 ## 4.0.0-beta.16
 
-### Patch changes
+### Patch Changes
 
 - [#705](https://github.com/vercel/workflow/pull/705) [`7ff68d1`](https://github.com/vercel/workflow/commit/7ff68d1753c43b14d161d249f6745de6beddd99b) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Pass `tsconfig` to esbuild for support of "paths" aliases
 
@@ -779,7 +779,7 @@
 
 ## 4.0.0-beta.15
 
-### Patch changes
+### Patch Changes
 
 - Updated dependencies []:
   - @workflow/builders@4.0.1-beta.32
@@ -787,7 +787,7 @@
 
 ## 4.0.0-beta.14
 
-### Patch changes
+### Patch Changes
 
 - Updated dependencies [[`e3f0390`](https://github.com/vercel/workflow/commit/e3f0390469b15f54dee7aa9faf753cb7847a60c6)]:
   - @workflow/builders@4.0.1-beta.31
@@ -795,7 +795,7 @@
 
 ## 4.0.0-beta.13
 
-### Patch changes
+### Patch Changes
 
 - Updated dependencies [[`ea3afce`](https://github.com/vercel/workflow/commit/ea3afce222ff9c2f90d99414fae275ef5f54b431)]:
   - @workflow/builders@4.0.1-beta.30
@@ -803,7 +803,7 @@
 
 ## 4.0.0-beta.12
 
-### Patch changes
+### Patch Changes
 
 - Updated dependencies []:
   - @workflow/builders@4.0.1-beta.29
@@ -811,7 +811,7 @@
 
 ## 4.0.0-beta.11
 
-### Patch changes
+### Patch Changes
 
 - Updated dependencies []:
   - @workflow/builders@4.0.1-beta.28
@@ -819,7 +819,7 @@
 
 ## 4.0.0-beta.10
 
-### Patch changes
+### Patch Changes
 
 - Updated dependencies []:
   - @workflow/builders@4.0.1-beta.27
@@ -827,7 +827,7 @@
 
 ## 4.0.0-beta.9
 
-### Patch changes
+### Patch Changes
 
 - Updated dependencies []:
   - @workflow/builders@4.0.1-beta.26
@@ -835,7 +835,7 @@
 
 ## 4.0.0-beta.8
 
-### Patch changes
+### Patch Changes
 
 - Updated dependencies []:
   - @workflow/builders@4.0.1-beta.25
@@ -843,7 +843,7 @@
 
 ## 4.0.0-beta.7
 
-### Patch changes
+### Patch Changes
 
 - [#503](https://github.com/vercel/workflow/pull/503) [`19c271c`](https://github.com/vercel/workflow/commit/19c271c0725f263ebbcbd87e68240547c1acbe2f) Thanks [@adriandlam](https://github.com/adriandlam)! - Refactor request converter code in SvelteKit and Astro builder to @workflow/builders
 
@@ -855,7 +855,7 @@
 
 ## 4.0.0-beta.6
 
-### Patch changes
+### Patch Changes
 
 - Updated dependencies [fc774e5]
 - Updated dependencies [21cff15]
@@ -869,13 +869,13 @@
 
 ## 4.0.0-beta.5
 
-### Patch changes
+### Patch Changes
 
 - @workflow/builders@4.0.1-beta.22
 
 ## 4.0.0-beta.4
 
-### Patch changes
+### Patch Changes
 
 - ac7997b: Update to latest swc/core and preserve JSX
 - Updated dependencies [ac7997b]
@@ -885,7 +885,7 @@
 
 ## 4.0.0-beta.3
 
-### Patch changes
+### Patch Changes
 
 - Updated dependencies [555d7a6]
   - @workflow/swc-plugin@4.0.1-beta.10
@@ -894,7 +894,7 @@
 
 ## 4.0.0-beta.2
 
-### Patch changes
+### Patch Changes
 
 - 1ac5592: Add @workflow/astro package
 - Updated dependencies [d53bf90]
