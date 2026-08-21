@@ -1,5 +1,5 @@
 import type { World } from '@workflow/world';
-import { SPEC_VERSION_CURRENT } from '@workflow/world';
+import { mintedSpecVersion } from '@workflow/world';
 import { createAnalytics } from './analytics.js';
 import { createRunId, describeRun } from './create-run-id.js';
 import { createGetEncryptionKeyForRun } from './encryption.js';
@@ -39,7 +39,7 @@ export function createWorld(config?: APIConfig): World {
     // version that introduced slots: a bump has to move this declaration with
     // it, or the runtime's compatibility floor rises past the adapter shipped
     // alongside it and rejects it (see `assertWorldSupportsRuntimeProtocol`).
-    specVersion: SPEC_VERSION_CURRENT,
+    specVersion: mintedSpecVersion(),
     capabilities: {
       hookRetention: { active: true },
       // Vercel Queues supports maxConcurrency-limited consumers, which

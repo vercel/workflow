@@ -800,3 +800,178 @@ describe('step result delivery ordering across replays', () => {
     });
   });
 });
+
+/**
+ * Sealed-log noops (specVersion 7) injected into the exact scenario above —
+ * the one this file exists for, where delivery ORDER between adjacent events
+ * decides which branch draws which correlation id. If skipping a noop cost an
+ * extra microtask hop, or shifted the walk relative to the promise queue, it
+ * would surface here as the same divergence the production incident produced.
+ * The noops are deliberately placed in the hop-count-sensitive gap (between
+ * `wait_completed` and `step_completed`) as well as at the head and tail.
+ */
+describe('sealed-log noop events in a scheduling-sensitive replay', () => {
+  const resumeAt = new Date('2026-07-27T12:00:05.000Z');
+
+  function noopAt(id: string): Event {
+    return {
+      eventId: id,
+      runId: 'wrun_test',
+      eventType: 'noop',
+      eventData: { sealed: true },
+      // Deliberately far in the future: a noop's createdAt is the sealer's
+      // wall clock. It must not leak into the replay clock (asserted by the
+      // run completing identically; the clock rule itself is pinned in
+      // events-consumer.test.ts).
+      createdAt: new Date('2030-01-01T00:00:00.000Z'),
+    } as unknown as Event;
+  }
+
+  async function buildEventLog(): Promise<Event[]> {
+    const ops: Promise<any>[] = [];
+    const stepAResult = await dehydrateStepReturnValue(
+      'ok',
+      'wrun_test',
+      undefined,
+      ops
+    );
+
+    return [
+      noopAt('evnt_n0'),
+      {
+        eventId: 'evnt_0',
+        runId: 'wrun_test',
+        eventType: 'step_created',
+        correlationId: `step_${CORR_IDS[0]}`,
+        eventData: { stepName: 'stepA' },
+        createdAt: new Date(),
+      },
+      {
+        eventId: 'evnt_1',
+        runId: 'wrun_test',
+        eventType: 'wait_created',
+        correlationId: `wait_${CORR_IDS[1]}`,
+        eventData: { resumeAt },
+        createdAt: new Date(),
+      },
+      {
+        eventId: 'evnt_2',
+        runId: 'wrun_test',
+        eventType: 'step_started',
+        correlationId: `step_${CORR_IDS[0]}`,
+        eventData: { stepName: 'stepA' },
+        createdAt: new Date(),
+      },
+      {
+        eventId: 'evnt_3',
+        runId: 'wrun_test',
+        eventType: 'wait_completed',
+        correlationId: `wait_${CORR_IDS[1]}`,
+        eventData: { resumeAt },
+        createdAt: new Date(),
+      },
+      // The sensitive gap: the wait branch's resume and the step branch's
+      // resume race on microtask hops from exactly this adjacency.
+      noopAt('evnt_n1'),
+      noopAt('evnt_n2'),
+      {
+        eventId: 'evnt_4',
+        runId: 'wrun_test',
+        eventType: 'step_completed',
+        correlationId: `step_${CORR_IDS[0]}`,
+        eventData: { stepName: 'stepA', result: stepAResult },
+        createdAt: new Date(),
+      },
+      {
+        eventId: 'evnt_5',
+        runId: 'wrun_test',
+        eventType: 'step_created',
+        correlationId: `step_${CORR_IDS[2]}`,
+        eventData: { stepName: 'afterSleep' },
+        createdAt: new Date(),
+      },
+      noopAt('evnt_n3'),
+      {
+        eventId: 'evnt_6',
+        runId: 'wrun_test',
+        eventType: 'step_created',
+        correlationId: `step_${CORR_IDS[3]}`,
+        eventData: { stepName: 'afterStep' },
+        createdAt: new Date(),
+      },
+      noopAt('evnt_n4'),
+    ];
+  }
+
+  function workflowBody(ctx: WorkflowOrchestratorContext) {
+    const useStep = createUseStep(ctx);
+    const sleep = createSleep(ctx);
+
+    return async () => {
+      const stepA = useStep('stepA');
+      const afterStep = useStep('afterStep');
+      const afterSleep = useStep('afterSleep');
+
+      const branchStep = (async () => {
+        await stepA();
+        await afterStep();
+      })();
+      const branchSleep = (async () => {
+        await sleep(resumeAt);
+        await afterSleep();
+      })();
+
+      await Promise.all([branchStep, branchSleep]);
+    };
+  }
+
+  it('replays the noop-bearing log with the ordering the noop-free log encodes', async () => {
+    const hydration = delayHydration();
+    const spy = await hydration.install();
+    try {
+      const events = await buildEventLog();
+      const ctx = setupWorkflowContext(events);
+      const { error } = await runWithDiscontinuation(ctx, workflowBody(ctx));
+
+      expect(error).toBeDefined();
+      if (!WorkflowSuspension.is(error)) {
+        throw error;
+      }
+      // Identical outcome to the noop-free scenario above: the sleep branch
+      // resumed first and drew CORR_IDS[2], both follow-up steps are pending,
+      // and every event — noops included — was walked to the end.
+      expect(pendingStepNames(ctx).sort()).toEqual(['afterSleep', 'afterStep']);
+      expect(ctx.eventsConsumer.eventIndex).toBe(events.length);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('keeps that ordering on a later replay sharing the payload cache', async () => {
+    const hydration = delayHydration();
+    const spy = await hydration.install();
+    try {
+      const cache = new ReplayPayloadCache(undefined);
+
+      const first = setupWorkflowContext(await buildEventLog(), cache);
+      const firstRun = await runWithDiscontinuation(first, workflowBody(first));
+      expect(WorkflowSuspension.is(firstRun.error)).toBe(true);
+
+      // The second replay resolves the memoized primitive step result in
+      // fewer hops — the exact asymmetry the incident exploited. The noops
+      // must not tip it.
+      const second = setupWorkflowContext(await buildEventLog(), cache);
+      const secondRun = await runWithDiscontinuation(
+        second,
+        workflowBody(second)
+      );
+      expect(WorkflowSuspension.is(secondRun.error)).toBe(true);
+      expect(pendingStepNames(second).sort()).toEqual([
+        'afterSleep',
+        'afterStep',
+      ]);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+});

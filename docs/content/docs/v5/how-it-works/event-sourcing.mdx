@@ -199,6 +199,12 @@ Events are categorized by the entity type they affect. Each event contains metad
 | `wait_created` | Creates a new wait in `waiting` state. Contains the timestamp when the wait should complete. |
 | `wait_completed` | Transitions the wait to `completed` state when the delay period has elapsed. |
 
+### System Events
+
+| Event | Description |
+|-------|-------------|
+| `noop` | Seals an abandoned log position (specVersion 7 and above). Written only by the backend, never by workflow code — the create endpoints reject it. See [Sealed positions](#sealed-positions-noop-events). |
+
 ## Terminal States
 
 Terminal states represent the end of an entity's lifecycle. Once an entity reaches a terminal state, no further events can transition it to another state.
@@ -262,6 +268,20 @@ The remaining event types belong to no class and are never skipped:
 Both kinds of skip are logged at `debug`, so neither reaches the console unless you run with `DEBUG=workflow:runtime:*`. A duplicate is a permanent feature of the log: every later replay re-reads it and lands on the same check, so anything printed unconditionally would print once per replay for the life of the run, and there is nothing to act on either way. A repeat that decides a class differently — a `step_failed` behind a `step_completed`, or the reverse — gets its own message, because unlike a re-commit of the same outcome there is no reading in which both writers were right.
 
 The observability UI greys out the events it can identify this way, with the reason on hover. Its set is narrower than the runtime's: it reads the log without consumer state, and a consumer for an entity that is still open legitimately claims a repeat — each retry of a step writes another `step_started`. So it marks a repeat only once no consumer can remain for it: past a terminal event for the same entity, or a second `run_started`, of which the log records one per run. On a partial view of the log — one page of a paginated list, or search results — it marks nothing, since which copy came first is a property of the whole log.
+
+## Sealed Positions (noop events)
+
+Runs at specVersion 7 and above live in a *sealed log*: the backend hands each write its position from a per-run sequencer **before** the write commits, so concurrent writers hold distinct positions and never race one another for a slot. This is how new runs are created by default; [`WORKFLOW_SEALED_LOG=0`](/docs/configuration/runtime-tuning#workflow_sealed_log) puts a deployment back on the previous scheme. Every runtime *reads* a sealed log regardless, and a run's version is fixed at creation, so changing the setting never affects a run already in flight. The trade is that a writer can claim a position and then die — a crashed process, a cancelled transaction — leaving a hole that no writer will ever fill, and a hole reads exactly like an event the reader failed to load.
+
+The backend restores the dense log at read time by **sealing** such positions: once a hole is provably abandoned (bounded by the commit time of later positions — positions are handed out in order, so a committed later position proves how long the hole has been open), the backend writes a `noop` event into it. A `noop` occupies its position — length-based completeness checks, cursors, and pagination all count it — and means nothing:
+
+- It is **never offered to any consumer** during replay. The walk steps over it in the same synchronous pass that delivers the events around it, so its presence cannot perturb delivery order, promise scheduling, or which branch of a `Promise.all` resumes first.
+- It **never advances the deterministic clock**. A `noop`'s `createdAt` is the *sealer's* wall clock — it can even postdate events at higher positions — and letting it feed the replay clock would make a log containing a seal replay differently from one whose hole was filled by its original writer. Same rule, and same mechanism, as skipped duplicates above.
+- Its `correlationId` is `noop_` followed by the sealed position's zero-padded digits — deterministic, so any two sealers racing for the same hole mint the identical event, and recognizable at a glance in the log.
+
+A sealed position races its original writer at the same uniqueness fence as every other write, and losing that race is the good outcome: the real event landed first, and readers get it instead. A live writer that gets sealed over simply re-derives a fresh position and commits there — the same recovery as losing any other write race — so sealing can cost a retry, never a wrong log.
+
+`noop` is not user-creatable: it does not exist in the create schemas, and backends reject it on every create endpoint. Only a backend's own read path writes one.
 
 ## Event Correlation
 
