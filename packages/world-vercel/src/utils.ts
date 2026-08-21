@@ -39,6 +39,7 @@ import { version } from './version.js';
  *
  * Example: 'https://workflow-server-git-branch-name.vercel.sh'
  */
+// biome-ignore format: External CI replaces only this line with a deployment URL that may exceed the formatter width.
 export const WORKFLOW_SERVER_URL_OVERRIDE = '';
 
 /**
