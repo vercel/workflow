@@ -361,12 +361,23 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
             let lastChunkId = '';
             let offset = startIndex ?? 0;
             let buffer = [] as StreamChunkEvent[] | null;
+            // Set by the first EOF marker. A producer that retries a
+            // terminal write (lost ACK, overlapping attempts) can append
+            // data and EOF rows after it; `enqueue`/`close` on the already
+            // closed controller would throw out of `start()`, erroring the
+            // stream and discarding every chunk still queued, so rows past
+            // the first EOF are ignored instead.
+            let closed = false;
 
             function enqueue(msg: {
               id: string;
               data: Uint8Array;
               eof: boolean;
             }) {
+              if (closed) {
+                return;
+              }
+
               if (lastChunkId >= msg.id) {
                 // already sent or out of order
                 return;
@@ -381,6 +392,7 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
                 controller.enqueue(new Uint8Array(msg.data));
               }
               if (msg.eof) {
+                closed = true;
                 controller.close();
               }
               lastChunkId = msg.id;
