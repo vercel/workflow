@@ -10,9 +10,10 @@ import {
 } from './tooltip';
 
 /**
- * Explains why an event row is shown greyed out — a repeat the runtime read
- * past ({@link DUPLICATE_EVENT_MESSAGE}), a backend seal for an abandoned
- * position (`SEALED_EVENT_MESSAGE`), or any other notice a list attaches.
+ * Explains why an event row is shown greyed out, whether it is a repeat the
+ * runtime read past ({@link DUPLICATE_EVENT_MESSAGE}), a backend seal for an
+ * abandoned position (`SEALED_EVENT_MESSAGE`), or any other notice a list
+ * attaches.
  *
  * Renders `children` untouched when `notice` is absent, so a call site can
  * wrap an event label unconditionally. Mounts its own {@link TooltipProvider}

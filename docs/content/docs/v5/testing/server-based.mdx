@@ -9,9 +9,9 @@ The [Vitest plugin](/docs/testing#integration-testing-with-the-vitest-plugin) ru
 - Reproducing behavior that only occurs in a specific framework's runtime (e.g. Next.js, Nitro)
 - Testing webhook endpoints that receive real HTTP requests
 
-This guide shows how to set up integration tests that spawn a dev server as a sidecar process. The example below uses [Nitro](https://v3.nitro.build), but the same pattern works with any supported server framework. It is meant as a starting point — customize the server setup to match your own deployment environment.
+This guide shows how to set up integration tests that spawn a dev server as a sidecar process. The example below uses [Nitro](https://v3.nitro.build), but the same pattern works with any supported server framework. It is meant as a starting point; customize the server setup to match your own deployment environment.
 
-## Vitest Configuration
+## Vitest configuration
 
 Create a Vitest config with the `workflow()` Vite plugin for code transforms and a `globalSetup` script that manages the server lifecycle:
 
@@ -36,7 +36,7 @@ export default defineConfig({
 Note the import path: `workflow/vite` (not `@workflow/vitest`). The Vite plugin handles code transforms but does not set up in-process execution. The server handles workflow execution instead.
 </Callout>
 
-## Global Setup Script
+## Global setup script
 
 The `globalSetup` script starts a dev server before tests run and tears it down afterwards. This example uses [Nitro](https://v3.nitro.build), but you can use any server framework that supports the workflow runtime.
 
@@ -154,9 +154,9 @@ The setup script sets `WORKFLOW_LOCAL_BASE_URL` so the workflow runtime sends fl
 You can use any server framework that supports the workflow runtime. The example above uses [Nitro](https://v3.nitro.build), but you could also use [Next.js](https://nextjs.org), [Hono](https://hono.dev), or any other supported server.
 </Callout>
 
-## Writing Tests
+## Writing tests
 
-Tests are written the same way as [in-process integration tests](/docs/testing#writing-integration-tests). You can use the same programmatic APIs — [`start()`](/docs/api-reference/workflow-api/start), [`resumeHook()`](/docs/api-reference/workflow-api/resume-hook), [`resumeWebhook()`](/docs/api-reference/workflow-api/resume-webhook), and [`getRun().wakeUp()`](/docs/api-reference/workflow-api/get-run) — to control workflow execution:
+Tests are written the same way as [in-process integration tests](/docs/testing#writing-integration-tests). You can use the same programmatic APIs ([`start()`](/docs/api-reference/workflow-api/start), [`resumeHook()`](/docs/api-reference/workflow-api/resume-hook), [`resumeWebhook()`](/docs/api-reference/workflow-api/resume-webhook), and [`getRun().wakeUp()`](/docs/api-reference/workflow-api/get-run)) to control workflow execution:
 
 ```typescript title="workflows/calculate.server.test.ts" lineNumbers
 import { describe, it, expect } from "vitest";
@@ -199,10 +199,10 @@ describe("approvalWorkflow", () => {
 ```
 
 <Callout type="info">
-In server-based tests, the `waitForSleep()` and `waitForHook()` helpers from `@workflow/vitest` are not available since there is no in-process world. Instead, use the programmatic APIs directly — you may need to add short delays or polling to ensure the workflow has reached the desired state before resuming.
+In server-based tests, the `waitForSleep()` and `waitForHook()` helpers from `@workflow/vitest` are not available since there is no in-process world. Instead, use the programmatic APIs directly. You may need to add short delays or polling to ensure the workflow has reached the desired state before resuming.
 </Callout>
 
-## Running Tests
+## Running tests
 
 Add a script to your `package.json`:
 
@@ -215,12 +215,12 @@ Add a script to your `package.json`:
 }
 ```
 
-## When to Use This Approach
+## When to use this approach
 
 | Scenario | Recommended approach |
 | --- | --- |
 | Testing workflow logic, steps, hooks, retries | [In-process plugin](/docs/testing) |
 | Testing HTTP middleware or authentication | Server-based |
 | Testing webhook endpoints with real HTTP | Server-based |
-| CI/CD pipeline testing | [In-process plugin](/docs/testing) |
+| Continuous integration and continuous delivery (CI/CD) pipeline testing | [In-process plugin](/docs/testing) |
 | Reproducing framework-specific behavior | Server-based |

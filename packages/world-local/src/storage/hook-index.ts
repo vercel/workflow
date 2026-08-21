@@ -21,7 +21,7 @@ import { hashToken } from './helpers.js';
  * Durable secondary indexes for hook lookups. Event files are keyed by
  * `{runId}-{eventId}`, so answering "find the live hook_created event
  * for this token/hookId" used to require scanning the entire global
- * event log — O(total history) on every first-time hook creation.
+ * event log: O(total history) on every first-time hook creation.
  *
  * Indexes maintained here:
  *   - `hooks/token-index/{sha256(token)}/{eventId}[.tag].json` → `{runId}`
@@ -31,7 +31,7 @@ import { hashToken } from './helpers.js';
  *
  * Crash-ordering invariant: entries are written BEFORE the write they
  * index (event publish / entity write), so a crash can only leave a
- * dangling entry pointing at a write that never landed — readers skip
+ * dangling entry pointing at a write that never landed. Readers skip
  * those. A committed event/entity invisible to the index cannot occur.
  *
  * Pre-index data directories are handled by a one-time backfill
@@ -206,7 +206,7 @@ export function resetHookIndexEnsureCache(): void {
 
 /**
  * One-time backfill of the indexes for data directories created before
- * they existed — a single full scan, guarded by a completion marker.
+ * they existed: a single full scan, guarded by a completion marker.
  * Concurrent backfills are safe: all writes are idempotent
  * `writeExclusive` calls with byte-identical content.
  */
@@ -239,7 +239,7 @@ async function ensureHookIndexesImpl(basedir: string): Promise<void> {
     await fs.access(markerPath);
     return;
   } catch {
-    // Marker absent — backfill below.
+    // Marker absent, so backfill below.
   }
 
   const eventsDir = path.join(basedir, 'events');

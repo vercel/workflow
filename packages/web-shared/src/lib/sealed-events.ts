@@ -6,8 +6,8 @@ import { type Event, isSealedNoopEvent as isSealedNoop } from '@workflow/world';
  * A sealed-log backend hands each write its position before the write
  * commits, so a writer that dies after claiming a position leaves a hole.
  * The backend closes a provably abandoned hole by writing a `noop` event
- * into it — a log-only row the run itself never observes: replay steps over
- * it without offering it to any consumer and without advancing the
+ * into it, creating a log-only row the run itself never observes. Replay steps
+ * over it without offering it to any consumer and without advancing the
  * deterministic clock.
  *
  * The observability UI mirrors that treatment. A `noop` appears in event

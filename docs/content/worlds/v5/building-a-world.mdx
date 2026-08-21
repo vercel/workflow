@@ -16,24 +16,24 @@ related:
 A **World** is the abstraction that allows workflows to run on any infrastructure. It handles workflow storage, step execution queuing, and data streaming. This guide explains the World interface and how to implement your own.
 
 <Callout>
-  Before building a custom World, check the [Worlds Ecosystem](/worlds) page — there may already be a community implementation for your infrastructure.
+  Before building a custom World, check the [Worlds ecosystem](/worlds) page. There may already be a community implementation for your infrastructure.
 </Callout>
 
 <Callout type="info">
-  **Reference Implementation:** The [Postgres World source code](https://github.com/vercel/workflow/tree/main/packages/world-postgres) is a production-ready example of how to implement the World interface with a database backend and graphile-worker for queuing.
+  **Reference implementation:** The [Postgres World source code](https://github.com/vercel/workflow/tree/main/packages/world-postgres) is a production-ready example of implementing the World interface with a database backend and Graphile Worker for queuing.
 </Callout>
 
 <Callout type="info">
-  Already have a World on the 4.x spec? See [Upgrading a World to v5](/worlds/upgrading-to-v5) for the interface delta and the contract changes, rather than reading this guide top to bottom.
+  If you have a World on the 4.x spec, see [Upgrading a World to v5](/worlds/upgrading-to-v5) for the interface and contract changes.
 </Callout>
 
 ## What is a World?
 
 A World connects workflows to the infrastructure that powers them. The World interface abstracts three core responsibilities:
 
-1. **Storage** — Persisting workflow runs, steps, hooks, and the event log
-2. **Queue** — Enqueuing and processing workflow and step invocations
-3. **Streamer** — Managing real-time data streams between workflows and clients
+1. **Storage**: Persists workflow runs, steps, hooks, and the event log
+2. **Queue**: Enqueues and processes workflow and step invocations
+3. **Streamer**: Manages real-time data streams between workflows and clients
 
 {/* @skip-typecheck - interface definition, not runnable code */}
 ```typescript
@@ -60,18 +60,18 @@ interface World extends Storage, Queue, Streamer {
 
 `specVersion` is required. See [Declaring the spec version](#declaring-the-spec-version).
 
-The optional `capabilities` object advertises additional behavior, and every capability **fails closed**: a missing member means "unsupported", and the runtime keeps its conservative behavior. Set `hookRetention.active` to `true` only when the World implements Hook token retention. Set `maxConcurrency` only when the World's queue supports `maxConcurrency`-limited consumption (used by `WORKFLOW_SEQUENTIAL_REPLAYS=1`).
+The optional `capabilities` object advertises additional behavior, and every capability **fails closed**. A missing member means "unsupported," and the runtime keeps its conservative behavior. Set `hookRetention.active` to `true` only when the World implements hook token retention. Set `maxConcurrency` only when the World's queue supports `maxConcurrency`-limited consumption, which `WORKFLOW_SEQUENTIAL_REPLAYS=1` uses.
 
-Note what is deliberately *not* in there. [Slot-numbered event IDs](#event-id-allocation) are a requirement of this contract rather than a capability, so there is no flag to set and no fallback path if you skip them.
+[Slot-numbered event IDs](#event-id-allocation) are a contract requirement rather than a capability, so there is no flag or fallback path.
 
 The remaining optional members:
 
-- `analytics` provides metadata-only listings of runs, steps, events, hooks, waits, and attributes for observability surfaces — `workflow inspect` and the local web UI read from it, including attribute search. See [Analytics Interface](#analytics-interface-optional).
+- `analytics` provides metadata-only listings of runs, steps, events, hooks, waits, and attributes for observability surfaces. `workflow inspect` and the local web UI read from it, including for attribute search. See [Analytics interface](#analytics-interface-optional).
 - `start()` initializes background tasks (for example, queue polling); `close()` releases resources like connection pools and listeners.
 - `getEncryptionKeyForRun()` returns the AES-256 key used to encrypt data for a run; if it is not implemented, encryption is disabled.
-- `createRunId()` mints the ID for a new run. Implementations may embed world-specific metadata as long as the result stays a valid ULID — this is how [multi-region placement](/worlds/vercel#multi-region) works: `@workflow/world-vercel` reads `options.region` (the `start()` options bag) and embeds a region tag. When omitted, the runtime generates a standard monotonic ULID.
+- `createRunId()` mints the ID for a new run. Implementations may embed World-specific metadata as long as the result remains a valid ULID. This is how [multi-region placement](/worlds/vercel#multi-region) works. `@workflow/world-vercel` reads `options.region` from the `start()` options and embeds a region tag. When omitted, the runtime generates a standard monotonic ULID.
 - `describeRun()` returns world-specific display fields for a run (for example, a region decoded from its ID) that tooling like `workflow inspect` renders as extra columns. It must be cheap, tolerate missing fields, and never throw.
-- `processExitTriggersQueueRedelivery` tells the runtime how to handle an exhausted replay budget: `true` means it exits and relies on queue redelivery; `false` (or absent) means it writes `run_failed` best-effort and returns.
+- `processExitTriggersQueueRedelivery` tells the runtime how to handle an exhausted replay budget. When `true`, it exits and relies on queue redelivery. When `false` or absent, it attempts to write `run_failed` and returns.
 
 ### Declaring the spec version
 
@@ -91,15 +91,15 @@ export function createWorld(): World {
 
 The runtime checks this before it creates or replays anything and throws if the version is outside the range it supports, naming both the range and what your World declared. A version below the range means your World allocates event IDs the runtime cannot read positions out of; above it means your World speaks a protocol this runtime has not learned.
 
-Using the constant is what keeps that check passing across upgrades: it moves with the `@workflow/world` version your package resolves, so a spec bump raises your declaration and the runtime's requirement together. A hard-coded number leaves your World a version behind the next bump, and the runtime rejects it. Keep `@workflow/world` in the same release channel as the `workflow` version your users install.
+Using the constant keeps that check passing across upgrades. It moves with the `@workflow/world` version your package resolves, so a spec bump raises your declaration and the runtime's requirement together. A hard-coded number leaves your World a version behind the next bump, and the runtime rejects it. Keep `@workflow/world` in the same release channel as the `workflow` version your users install.
 
-## The Event Log Model
+## The event log model
 
-Workflow storage is built on an **append-only event log**. All state changes happen through events — you never modify runs, steps, or hooks directly. Instead, you create events that update the materialized state.
+Workflow storage uses an **append-only event log**. All state changes happen through events. Instead of modifying runs, steps, or hooks directly, you create events that update the materialized state.
 
 Events fall into three categories: run lifecycle events, step lifecycle events, and hook lifecycle events. See the [Event Sourcing](/docs/how-it-works/event-sourcing) documentation for a complete list of event types and their semantics.
 
-## Storage Interface
+## Storage interface
 
 The Storage interface provides read access to materialized entities and write access through events:
 
@@ -110,7 +110,7 @@ interface Storage {
     get(id: string, params?: GetWorkflowRunParams): Promise<WorkflowRun>;
     list(params?: ListWorkflowRunsParams): Promise<PaginatedResponse<WorkflowRun>>;
     // Optional: backs setAttributes(). Omitting it means run attributes are
-    // unsupported on this World — the SDK helper no-ops with a warning.
+    // unsupported on this World. The SDK helper no-ops with a warning.
     experimentalSetAttributes?(runId: string, changes: AttributeChange[], options?: { allowReservedAttributes?: boolean }): Promise<ExperimentalSetAttributesResult>;
 
     // Optional: long poll for a terminal status (see below)
@@ -141,40 +141,41 @@ interface Storage {
 }
 ```
 
-### Key Implementation Details
+### Key implementation details
 
-**Event Creation:** When `events.create()` is called, your implementation must:
+**Event creation:** When `events.create()` is called, your implementation must:
+
 1. Persist the event to the event log
 2. Atomically update the affected entity (run, step, or hook)
 3. Return both the created event and the updated entity
 
-**Run Creation:** For `run_created` events, the `runId` parameter may be a client-provided string or `null`. When `null`, your World generates and returns a new `runId`.
+**Run creation:** For `run_created` events, the `runId` parameter may be a client-provided string or `null`. When `null`, your World generates and returns a new `runId`.
 
-**Hook Tokens:** Hook tokens must be unique. If a `hook_created` event conflicts with an active Hook or a token still reserved after its run ended, return a `hook_conflict` event and include the owner's run ID as `eventData.conflictingRunId`.
+**Hook tokens:** Hook tokens must be unique. If a `hook_created` event conflicts with an active hook or a token still reserved after its run ended, return a `hook_conflict` event and include the owner's run ID as `eventData.conflictingRunId`.
 
-Keep the owning Run available for at least as long as its token remains unavailable, because conflicts return that Run.
+Keep the owning run available for at least as long as its token remains unavailable because conflicts return that run.
 
-**Automatic Hook Cleanup:** When a run ends, remove its live Hooks. Make each token available unless its `tokenRetentionUntil` is still in the future. A `hook_disposed` event always makes the token available immediately.
+**Automatic hook cleanup:** When a run ends, remove its live hooks. Make each token available unless its `tokenRetentionUntil` is still in the future. A `hook_disposed` event always makes the token available immediately.
 
-### Optional: Waiting for a Terminal Run Status
+### Optional: waiting for a terminal run status
 
-`await run.returnValue` has to find out when a run finished. Without help it re-reads the run every second, so a run that finishes just after a read is reported up to a second late. Implement `runs.waitForTerminalStatus(id, { timeoutMs, signal, resolveData })` and the runtime asks once and is answered the moment the run ends.
+`await run.returnValue` must determine when a run finishes. Without help, it rereads the run every second, so it reports a run that finishes just after a read up to 1s late. Implement `runs.waitForTerminalStatus(id, { timeoutMs, signal, resolveData })` so the runtime asks once and receives an answer when the run ends.
 
 The contract is deliberately forgiving, because "wait" means something different in every store:
 
 - Resolve as soon as the run's status is terminal, returning the same entity `get` returns.
-- Resolve no later than roughly `timeoutMs` with the latest snapshot, whatever its status. **A timeout is a normal return, never an error** — a run that is still running is a legitimate answer, and the runtime simply asks again.
-- `timeoutMs` is an upper bound, not a lower one: returning a non-terminal snapshot early is allowed, and the runtime paces its own retries.
-- Fail exactly like `get` — a missing run throws `WorkflowRunNotFoundError`.
+- Resolve no later than roughly `timeoutMs` with the latest snapshot, whatever its status. **A timeout is a normal return, never an error.** A run that is still running is a valid response, and the runtime asks again.
+- `timeoutMs` is an upper bound, not a lower one. You may return a nonterminal snapshot early, and the runtime paces its own retries.
+- Fail exactly like `get`. A missing run throws `WorkflowRunNotFoundError`.
 
-How you wait is up to your store. The reference worlds use, respectively, a server-side long poll (`world-vercel` holds `GET /v2/runs/:runId/status` open), `LISTEN`/`NOTIFY` (`world-postgres`), and an in-process emitter over the run files (`world-local`). Whatever the mechanism, treat the notification as a *signal only* and re-read the run before answering, and back the wait with a periodic re-read so a lost notification costs latency rather than hanging until the budget expires.
+Choose a waiting mechanism that fits your store. The reference Worlds use a server-side long poll (`world-vercel` holds `GET /v2/runs/:runId/status` open), `LISTEN`/`NOTIFY` (`world-postgres`), and an in-process emitter over the run files (`world-local`), respectively. Treat the notification only as a *signal*, and reread the run before responding. Back the wait with a periodic reread so a lost notification increases latency instead of causing a hang until the budget expires.
 
-Omitting the method is a supported choice — a store with no change notification, or a deterministic simulator like `world-sim` where a real wait would stall a virtual clock, simply leaves it off and the runtime keeps interval-polling `get`. Nothing else degrades; there is no capability to declare.
+Omitting the method is supported. A store with no change notification, or a deterministic simulator such as `world-sim` where a real wait would stall a virtual clock, can leave it out. The runtime continues polling `get` at intervals, and no other behavior degrades. There is no capability to declare.
 
-### Event ID Allocation
+### Event ID allocation
 
 <Callout type="warn">
-  **Required.** Your World assigns every event ID, and every ID must be a position in its run's log. The runtime reads a position out of every ID it loads and fails the run when it cannot, so a World whose IDs are anything else — a ULID, a UUID, a database sequence shared across runs — cannot replay a single workflow. There is no capability flag and no fallback path.
+  **Required.** Your World assigns every event ID, and every ID must be a position in its run's log. The runtime reads a position from every ID it loads and fails the run when it cannot. A World whose IDs use another format, such as a ULID, UUID, or database sequence shared across runs, cannot replay a workflow. There is no capability flag or fallback path.
 </Callout>
 
 An ID is `evnt_` followed by the event's 1-based position in that run's log, zero-padded to 26 characters, so the run's first event is `evnt_00000000000000000000000001`. Use `slotToEventId()` from `@workflow/world` to format one.
@@ -184,36 +185,36 @@ Two properties have to hold, and both are about what a reader can conclude from 
 - **Uniqueness.** Two writers racing to append must not both take a position. Settle it where the store settles it, with a unique constraint on `(runId, eventId)` or a conditional write, rather than reading the maximum and adding one in your own process.
 - **Density.** Positions run from 1 with no holes, which is what lets a reader tell a complete log from a truncated one by its length alone. A writer that loses a race must re-derive its position from the store and take the next free one. Incrementing a local number after a loss leaves a permanent hole, and the runtime treats a hole as a log it cannot safely replay across.
 
-Allocate the position **at the commit**, in the same operation that appends the event. That is what makes a reader's log a *prefix* of the run's log rather than a prefix with a hole in it: nothing can land behind a position a reader has already passed. Handing a position out earlier — in a request handler, say — and committing later breaks the property every replay depends on, and is the one case where you may need [a stale-write rejection](#optional-rejecting-a-stale-write) to compensate.
+Allocate the position **at the commit** in the same operation that appends the event. This makes a reader's log a *prefix* of the run's log rather than a prefix with a hole. Nothing can land behind a position that a reader has passed. Assigning a position earlier, such as in a request handler, and committing later breaks the property that every replay depends on. This is the one case where you may need [a stale-write rejection](#optional-rejecting-a-stale-write) to compensate.
 
 #### Optional: pre-assigned positions and `noop` sealing
 
-Spec version 7 legitimizes one alternative to allocate-at-commit, for Worlds whose store makes commit-time allocation a contention bottleneck: hand positions out from a per-run atomic counter **before** the commit, and restore density at read time. Pre-assignment means concurrent writers hold distinct positions and never race for one — but a writer that claims a position and dies leaves a permanent hole. A World that allocates this way MUST therefore **seal** provably abandoned positions by writing a `noop` event into them (racing the original writer at the same uniqueness fence — losing that race means the real event landed, which is success), and MUST NOT return a page with an interior hole: return the dense prefix below the hole and let the caller's next page pick up past it once the position resolves to an event or a seal.
+Spec version 7 supports one alternative to allocate-at-commit for Worlds whose stores make commit-time allocation a contention bottleneck. Assign positions from a per-run atomic counter **before** the commit, and restore density at read time. With preassignment, concurrent writers hold distinct positions and never race for one. However, a writer that claims a position and stops leaves a permanent hole. A World that allocates this way MUST **seal** provably abandoned positions by writing a `noop` event into them. The seal races the original writer at the same uniqueness fence, and losing that race means the real event landed successfully. The World MUST NOT return a page with an interior hole. Return the dense prefix below the hole, and let the caller's next page continue past it after the position resolves to an event or a seal.
 
-The runtime's side of the contract: it skips `noop` events during replay — never delivered to a consumer, never advancing the deterministic clock — so a sealed log replays identically to one whose holes were filled by their writers. `noop` is not user-creatable and is never sent to `events.create()`; only your own read path may write one. Worlds that allocate at the commit (a synchronous counter, a unique-constraint append) keep perfect density by construction and never need any of this — `world-local` and `world-postgres` never seal, and a World that allocates at the commit is spec-7 compliant with no work.
+The runtime skips `noop` events during replay. It never delivers them to a consumer or uses them to advance the deterministic clock, so a sealed log replays identically to one whose writers filled the holes. `noop` isn't user-creatable and is never sent to `events.create()`. Only your read path may write one. Worlds that allocate at the commit, through a synchronous counter or unique-constraint append, maintain perfect density and don't need sealing. `world-local` and `world-postgres` never seal, and a World that allocates at the commit is spec 7 compliant without additional work.
 
-Note the version a World stamps comes from `mintedSpecVersion()`: 7 by default, and the slot-identity version when [`WORKFLOW_SEALED_LOG=0`](/docs/configuration/runtime-tuning#workflow_sealed_log) switches it off. Declare `mintedSpecVersion()` rather than a literal so your World moves with the fleet, and note that a run created at spec 7 may be read by a runtime other than the one that created it — the reader has to understand `noop` before anything stamps 7 in that environment.
+The version a World stamps comes from `mintedSpecVersion()`: 7 by default or the slot-identity version when [`WORKFLOW_SEALED_LOG=0`](/docs/configuration/runtime-tuning#workflow_sealed_log) disables it. Declare `mintedSpecVersion()` instead of a literal so your World moves with the fleet. A runtime other than the one that created a spec 7 run may read it, so readers must understand `noop` before anything stamps 7 in that environment.
 
 `events.create()` params carry `eventCount`: how many events the writer held in the log it replayed from, which is the position it expects to land on minus one. Attempt `eventCount + 1`. When that position is taken, **do not reject the write**. Advance to the next free position, commit there, and return the events occupying the positions you skipped over on the success response, in `events` with a matching `cursor` and `hasMore`. The writer merges them into its own log and replays once, rather than paying a second round trip to discover it was behind. A caller with a stale count is the normal case for a fan-out, and rejecting it would serialize writes the runtime issues in parallel.
 
-### Optional: Rejecting a Stale Write
+### Optional: rejecting a stale write
 
 A replay writes events derived from the event log it loaded, so a write made from an event log that no longer matches the store can commit events no correct replay would produce. Rejecting one means answering `events.create()` with a `PreconditionFailedError` when the run's log already holds more events than the caller's `eventCount` says it had loaded.
 
-No World in this repository does. Reporting is the better mechanism, and the reason it is *sufficient* rather than merely cheaper is worth stating, because it is what removed the need to reject at all: a reader's log is a prefix of the run's log rather than a prefix with a hole in it, replay is deterministic on a prefix, and the writer's next write brings back what it missed. A shorter log therefore means a run that has not caught up, never a run that will decide differently.
+No World in this repository does. Reporting is the better mechanism because it removes the need to reject, not only because it costs less. A reader's log is a prefix of the run's log rather than a prefix with a hole in it, replay is deterministic on a prefix, and the writer's next write brings back what it missed. A shorter log therefore means a run that has not caught up, never a run that will decide differently.
 
-That leaves rejecting worth implementing in one case — your store allocates positions somewhere other than the commit, so it cannot report the skipped span reliably and refusing a stale write is safer than accepting one out of order.
+Implement rejection when your store allocates positions outside the commit and cannot reliably report the skipped span. Refusing a stale write is then safer than accepting one out of order.
 
 Two rules make this safe:
 
-- **Only reject on evidence.** If your record of a run's events is incomplete, expired, or cannot answer the question, accept the creation. A rejection must always mean a real discrepancy, because the runtime responds to one by discarding a replay.
-- **Accept a creation that carries no `eventCount`.** It came from a caller with no loaded log to be stale (a queued step body, an out-of-band writer), not from a caller claiming the log is empty.
+- **Only reject on evidence.** If your record of a run's events is incomplete, expired, or cannot answer the question, accept the creation. A rejection must always indicate a real discrepancy because the runtime responds by discarding a replay.
+- **Accept a creation that carries no `eventCount`.** It came from a caller with no loaded log that could be stale, such as a queued step body or out-of-band writer, rather than a caller claiming the log is empty.
 
-A rejection may optionally carry the events the caller was missing, as `{ events, cursor }` on the error's `details`. Only include them when you can prove the set is complete — that those events fully account for the discrepancy and are not truncated — and that every one of them belongs to the run being written. The runtime merges them straight into the replay's event log, so anything else there is worse than no delta at all. Otherwise omit them, and the runtime performs a full reload instead.
+A rejection may include the events the caller was missing as `{ events, cursor }` on the error's `details`. Include them only when you can prove that the set fully accounts for the discrepancy, isn't truncated, and contains only events from the run being written. The runtime merges them directly into the replay's event log, so incorrect data is worse than no delta. Otherwise, omit them, and the runtime performs a full reload.
 
-The runtime handles a rejection wherever it can arrive: it restarts the replay in-process from a corrected log, and re-invokes with a fresh replay once that budget is spent. It never retries the rejected write as-is, because a replay working from a corrected log derives different events. Nothing has to be declared for that to work — there is no capability to set.
+The runtime handles a rejection wherever it arrives. It restarts the replay in-process from a corrected log and invokes a fresh replay after spending that budget. It never retries the rejected write as-is because a replay working from a corrected log derives different events. This behavior requires no declaration or capability.
 
-## Queue Interface
+## Queue interface
 
 The Queue interface handles asynchronous workflow execution, including queued step work:
 
@@ -235,12 +236,12 @@ interface Queue {
 }
 ```
 
-### Queue Names
+### Queue names
 
 Queue names follow a specific pattern:
-- `__wkf_workflow_<name>` — For workflow orchestration and queued step invocations
+- `__wkf_workflow_<name>`: Used for workflow orchestration and queued step invocations
 
-### Message Payloads
+### Message payloads
 
 Workflow orchestration and step execution use the same payload. `stepId` and `stepName` identify a queued step invocation:
 
@@ -258,16 +259,16 @@ interface WorkflowInvokePayload {
 
 The SDK also sends an internal `HealthCheckPayload` through the same workflow queue.
 
-### Implementation Considerations
+### Implementation considerations
 
 - Messages must be delivered at-least-once
 - Support configurable retry policies
 - Track attempt counts for observability
 - Implement idempotency using the `idempotencyKey` option when provided
-- Honor the `delaySeconds` option — waits (`sleep()`) are delivered as ordinary delayed continuations on the workflow queue, so a World that ignores `delaySeconds` redelivers immediately and busy-loops every sleeping run
+- Honor the `delaySeconds` option. Waits (`sleep()`) are delivered as ordinary delayed continuations on the workflow queue, so a World that ignores `delaySeconds` redelivers immediately and causes every sleeping run to enter a busy loop
 - Optionally honor the `region` option, a routing hint naming the region a message should be dispatched in; Worlds without a regional dimension ignore it
 
-## Streamer Interface
+## Streamer interface
 
 The Streamer interface enables real-time data streaming:
 
@@ -323,13 +324,13 @@ interface Streamer {
 Streams are identified by a combination of `runId` and `name`. Each workflow run can have multiple named streams.
 `writeMulti()` is an optional optimization for batching multiple writes.
 
-`getChunks` returns a paginated snapshot of currently available chunks (unlike `get` which returns a live `ReadableStream` that waits for new chunks). `getInfo` returns the tail index (last chunk index, 0-based, or `-1` when empty) and whether the stream is complete — useful for resolving negative `startIndex` values into absolute positions.
+`getChunks` returns a paginated snapshot of currently available chunks, unlike `get`, which returns a live `ReadableStream` that waits for new chunks. `getInfo` returns the tail index (last chunk index, 0-based, or `-1` when empty) and whether the stream is complete. Use this information to resolve negative `startIndex` values into absolute positions.
 
-## Analytics Interface (Optional)
+## Analytics interface (optional)
 
 The optional `analytics` namespace provides **metadata-only** access to runs and their related records. It is intended for observability and discovery surfaces such as dashboards, `workflow inspect`, and the local web UI. Implementations can optimize these queries independently of payload storage.
 
-Tooling feature-detects this namespace. When `world.analytics` is available, tooling prefers it for listings and attribute search; otherwise, it uses the Storage APIs. Among the first-party Worlds, only the [Vercel World](/worlds/vercel) currently implements it. The Local and Postgres Worlds leave it `undefined`.
+Tooling detects whether this namespace is available. When `world.analytics` is available, tooling prefers it for listings and attribute search. Otherwise, it uses the Storage APIs. Among the first-party Worlds, only the [Vercel World](/worlds/vercel) currently implements it. The Local and Postgres Worlds leave it `undefined`.
 
 {/* @skip-typecheck - interface definition, not runnable code */}
 ```typescript
@@ -372,14 +373,14 @@ If you implement this namespace, observe the following requirements:
 
 See the [Analytics API reference](/docs/api-reference/workflow-runtime/world/analytics) for per-method parameters, row shapes, and `pageInfo` semantics.
 
-## Reference Implementations
+## Reference implementations
 
 Study these implementations for guidance:
 
-- **[Local World](https://github.com/vercel/workflow/tree/main/packages/world-local)** — Filesystem-based, great for understanding the basics
-- **[Postgres World](https://github.com/vercel/workflow/tree/main/packages/world-postgres)** — Database-backed with graphile-worker for queuing
+- **[Local World](https://github.com/vercel/workflow/tree/main/packages/world-local)**: A file-system-based implementation for understanding the basics
+- **[Postgres World](https://github.com/vercel/workflow/tree/main/packages/world-postgres)**: A database-backed implementation with Graphile Worker for queuing
 
-## Testing Your World
+## Testing your World
 
 Workflow SDK includes an E2E test suite that validates World implementations. Once your World is published to npm:
 
@@ -387,14 +388,14 @@ Workflow SDK includes an E2E test suite that validates World implementations. On
 2. Open a PR to the Workflow repository
 3. CI will automatically run the E2E test suite against your implementation
 
-Your world will then appear on the [Worlds Ecosystem](/worlds) page with its compatibility status and performance benchmarks.
+Your World will then appear on the [Worlds ecosystem](/worlds) page with its compatibility status and performance benchmarks.
 
-## Publishing Your World
+## Publishing your World
 
-1. **Package your World** — Export a default World instance from your package
-2. **Publish to npm** — Publish your package to npm
-3. **Add to the manifest** — Submit a PR adding your world to [`worlds-manifest.json`](https://github.com/vercel/workflow/blob/main/worlds-manifest.json)
-4. **Document configuration** — Clearly document any required environment variables
+1. **Package your World**: Export a default World instance from your package
+2. **Publish to npm**: Publish your package to npm
+3. **Add to the manifest**: Submit a PR adding your World to [`worlds-manifest.json`](https://github.com/vercel/workflow/blob/main/worlds-manifest.json)
+4. **Document configuration**: Document any required environment variables
 
 ```json
 // worlds-manifest.json entry

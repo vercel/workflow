@@ -12,7 +12,7 @@ import type {
 /**
  * Every World method the simulation can be paused on. These names are the
  * scheduling vocabulary: the requirement is that the deterministic sequence be
- * expressed "from whatever the world api is", so a call point is always
+ * expressed "from whatever the World API is", so a call point is always
  * `(one writer, one of these calls, before|after)`.
  */
 export type WorldCallName =
@@ -52,15 +52,15 @@ export type CallPhase = 'before' | 'after';
  * The simulation's whole subject is concurrent writers to one event log, so
  * every intercepted call is attributed to one. There are three kinds:
  *
- *  - `'orchestrator'` — the workflow function and the machinery around it: the
+ *  - `'orchestrator'`: the workflow function and the machinery around it, the
  *    suspension handler committing `step_created` / `step_started` /
  *    `hook_created` / `wait_created`, the run lifecycle writes, and the event
  *    log *reads* that decide what to do next. One per queue delivery.
- *  - `` `step:${shortName}` `` — one step body. Several are in flight at once
+ *  - `` `step:${shortName}` ``: one step body. Several are in flight at once
  *    inside a single delivery, each an independently advanceable async context,
  *    each writing its own `step_completed` / `step_failed`. This is the writer
  *    pair that corrupts a log with no out-of-band event involved at all.
- *  - `'external'` — the scenario itself, standing in for everything a real
+ *  - `'external'`: the scenario itself, standing in for everything a real
  *    deployment does out of band: a webhook receiver calling `resumeHook`, an
  *    operator cancelling a run.
  *
@@ -68,8 +68,8 @@ export type CallPhase = 'before' | 'after';
  * limitation and not worth fixing: a scenario that needs to tell them apart
  * should give them distinct names.
  *
- * The run's very first call — the `runs.create` that `start()` makes before any
- * workflow code exists — is attributed to `'orchestrator'` rather than
+ * The run's first call (the `runs.create` that `start()` makes before any
+ * workflow code exists) is attributed to `'orchestrator'` rather than
  * `'external'`. Formally the client is out of band, but a scenario reads
  * `wf.runToEventCommitted('run_created')` as "let the run get created", and
  * giving that call to a different writer than every other step of the run's own
@@ -81,7 +81,7 @@ export type WriterId = 'orchestrator' | 'external' | (string & {});
  * What the simulation knows at a call point.
  *
  * `phase: 'after'` means the call's effect is committed to the store but the
- * awaiting caller has not been resumed yet — this is the window the
+ * awaiting caller has not been resumed yet: this is the window the
  * requirement calls out ("the world will add the hook before returning from
  * whatever call commits the step started").
  */
@@ -134,7 +134,7 @@ export interface ObservedPoint {
   /**
    * Nesting depth at which the point occurred. Depth > 0 means it happened
    * inside another call the scenario was already inside, where a hold is not
-   * possible — worth distinguishing in an error message.
+   * possible, which is worth distinguishing in an error message.
    */
   depth: number;
   /**
@@ -144,8 +144,8 @@ export interface ObservedPoint {
    *
    * Recorded so the level-triggered check agrees with `CallMatch.failed`. A
    * `runToEventCommitted` that ignored this would count a rejected write as the
-   * commit it was waiting for — routine under the fence, where a 412 is an
-   * expected step on the way to a successful retry.
+   * commit it was waiting for, which is routine under the fence, where a 412
+   * is an expected step on the way to a successful retry.
    */
   failed: boolean;
 }
@@ -175,9 +175,9 @@ export interface WorldSnapshot {
   /**
    * Every intercepted world call that threw, in order.
    *
-   * Rejections are the visible mechanism behind a run that self-corrects — a
+   * Rejections are the visible mechanism behind a run that self-corrects (a
    * `PreconditionFailedError` from the optimistic-concurrency fence, an
-   * `EntityConflictError` from a write against an already-terminal run — so
+   * `EntityConflictError` from a write against an already-terminal run), so
    * they are recorded unconditionally rather than left to a scenario to
    * instrument.
    */
@@ -206,7 +206,7 @@ export interface PendingMessageView {
 export interface CallMatch {
   call?: WorldCallName | WorldCallName[];
   /**
-   * Which side of the call to match. Defaults to `'after'` — the window where
+   * Which side of the call to match. Defaults to `'after'`: the window where
    * the effect is committed but the caller has not been resumed, which is the
    * one worth injecting into. Set `'before'` to act ahead of the write.
    */
@@ -240,7 +240,7 @@ export interface RunToOptions {
   correlationId?: string;
   /**
    * Extra condition on world state, evaluated at the candidate point. Use it
-   * for "once two steps have completed" — a condition about the world rather
+   * for "once two steps have completed": a condition about the world rather
    * than about one event.
    */
   where?: (world: WorldSnapshot) => boolean;
@@ -252,7 +252,7 @@ export interface RunToOptions {
 
 /** A writer stopped at a point, waiting to be let go. */
 export interface Held {
-  /** The writer actually caught — concrete even when the handle was `anyStep()`. */
+  /** The writer actually caught: concrete even when the handle was `anyStep()`. */
   writer: WriterId;
   /** What the world was asked to do, and (once committed) what it did. */
   ctx: CallContext;
@@ -288,8 +288,8 @@ export interface Held {
 export interface Writer {
   readonly id: WriterId;
   /**
-   * Stop once the event has crossed the world boundary — fully formed,
-   * attributed to this writer, already in the trace — and before it is assigned
+   * Stop once the event has crossed the world boundary (fully formed,
+   * attributed to this writer, already in the trace) and before it is assigned
    * a position in the event log.
    *
    * A write that commits to storage while this one is held sorts ahead of it.
@@ -338,8 +338,8 @@ export interface WriterHandles {
  * Everything the scenario script can do to the world.
  *
  * These are the only sanctioned sources of external input. Anything a real
- * deployment could do out-of-band — a webhook arriving, an operator
- * cancelling a run, time passing — has an entry here, so the scenario script
+ * deployment could do out-of-band (a webhook arriving, an operator
+ * cancelling a run, time passing) has an entry here, so the scenario script
  * is a complete description of what happened.
  */
 export interface ScenarioApi {
@@ -374,8 +374,8 @@ export interface ScenarioApi {
    * one reason: the delivery loop is serial, so while a script holds an inline
    * step body the loop is stopped inside that same delivery and no timer can
    * fire. Every interleaving in which a `wait_completed` lands *while a step
-   * result is still outstanding* is therefore unreachable from the loop alone
-   * — and that is not an exotic corner, it is what
+   * result is still outstanding* is therefore unreachable from the loop
+   * alone, and that is not an exotic corner, it is what
    * `Promise.race([step, sleep])` does whenever the step is slower than the
    * sleep.
    *
@@ -383,11 +383,11 @@ export interface ScenarioApi {
    * which is what a real queue does with two messages for the same run.
    * Concurrency in this simulator is otherwise structural rather than
    * scheduled, so this is the one place a script creates some; it stays
-   * deterministic because the script decides both when it starts and — through
-   * the writer it is holding — when the other delivery resumes.
+   * deterministic because the script decides both when it starts and (through
+   * the writer it is holding) when the other delivery resumes.
    *
-   * `select` receives the pending messages in the loop's own order — earliest
-   * `readyAt`, then enqueue order — and returns a `messageId`. The default
+   * `select` receives the pending messages in the loop's own order (earliest
+   * `readyAt`, then enqueue order) and returns a `messageId`. The default
    * takes the first, i.e. exactly what the loop would have done next. A script
    * that wants a timer specifically should say so rather than rely on the
    * default: a hook delivery enqueues a flow message too, and it will usually
@@ -399,11 +399,11 @@ export interface ScenarioApi {
   ): Promise<boolean>;
   /**
    * Hide the next event this scenario commits from the following `reads`
-   * event-log reads, modelling one concurrent writer the reader missed.
+   * event-log reads, modeling one concurrent writer the reader missed.
    *
    * Call it immediately before the write you want hidden. This is the only way
    * a serial simulation can produce "a write derived from an incomplete event
-   * load" — the precondition a real deployment reaches through concurrency.
+   * load", the precondition a real deployment reaches through concurrency.
    */
   withholdNextEvent(reads?: number): void;
   /** Record a free-text marker in the scenario trace. */
@@ -440,7 +440,7 @@ export interface Parked {
  *
  * The scenario vocabulary is writers: name them, advance them one point at a
  * time, and the interleaving is the script's control flow rather than a race.
- * `park` / `until` / `during` are the primitive underneath — reach for them for
+ * `park` / `until` / `during` are the primitive underneath; reach for them for
  * a point no writer op names, such as a plain world *read*.
  */
 export interface Tempo extends ScenarioApi {
@@ -450,7 +450,7 @@ export interface Tempo extends ScenarioApi {
    * Wait until a world call reaches a matching point, and hold it there.
    *
    * Everything that writer would go on to do is suspended while the call is
-   * parked: the caller is blocked inside the world. That is the point —
+   * parked: the caller is blocked inside the world. That is the point:
    * whatever the script does next is guaranteed to land before the call
    * returns.
    *
@@ -470,11 +470,11 @@ export interface Tempo extends ScenarioApi {
 
 /**
  * A scenario body. Runs concurrently with the delivery loop, starting before
- * the run does so it can hold the very first world call.
+ * the run does so it can hold the first world call.
  */
 export type ScenarioScript = (sim: Tempo) => void | Promise<void>;
 
-/** One line of the scenario trace — either a world event or a simulation action. */
+/** One line of the scenario trace: either a world event or a simulation action. */
 export type TraceEntry =
   | {
       kind: 'event';

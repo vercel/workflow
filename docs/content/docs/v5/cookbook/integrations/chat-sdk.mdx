@@ -1,8 +1,8 @@
 ---
 title: Chat SDK
-description: Make Chat SDK bot sessions durable — one workflow run per conversation thread, with hooks bridging inbound platform events into long-running agent logic.
+description: Make Chat SDK bot sessions durable, with one workflow run per conversation thread and hooks bridging inbound platform events into long-running agent logic.
 type: guide
-summary: Chat SDK normalizes Slack, Teams, Discord, Telegram and friends into one thread/message model. Workflow SDK gives each thread a durable run that owns multi-turn state, can sleep for hours, and survives restarts.
+summary: Chat SDK normalizes Slack, Teams, Discord, Telegram, and similar platforms into one thread and message model. Workflow SDK gives each thread a durable run that owns multi-turn state, can sleep for hours, and survives restarts.
 related:
   - /docs/cookbook/integrations/ai-sdk
   - /docs/cookbook/integrations/sandbox
@@ -15,13 +15,13 @@ related:
   text="Make this Chat SDK bot durable with Workflow SDK. Install/use `workflow`. Create one exported workflow function with &quot;use workflow&quot; per chat thread. Store the Chat SDK thread ID, Workflow run ID, and any serialized conversation state in the project data store. Use `defineHook()` from `workflow` for incoming turns and call `resumeHook()` from `workflow/api` from the Chat SDK webhook or message handler. Put provider calls, database writes, and outbound platform messages in &quot;use step&quot; helper functions. Start a new run with `start(workflowFn, [initialThreadState])` when no run exists, otherwise resume the existing hook. Use `getRun(runId)` for status, cancellation, or stream reads. Verify first message, follow-up message, restart/reconnect, duplicate webhook, and failed-send retry behavior."
 />
 
-[Chat SDK](https://chat-sdk.dev/) is a unified TypeScript SDK for building bots across Slack, Microsoft Teams, Google Chat, Discord, Telegram, GitHub, Linear, and WhatsApp. Write the bot once, deploy to every platform. It handles webhook verification, event normalization, subscriptions, and cross-platform features like cards and modals.
+[Chat SDK](https://chat-sdk.dev/) is a unified TypeScript SDK for building bots across Slack, Microsoft Teams, Google Chat, Discord, Telegram, GitHub, Linear, and WhatsApp. A single bot can support each platform. Chat SDK handles webhook verification, event normalization, subscriptions, and cross-platform features such as cards and modals.
 
 Workflow SDK complements it by making bot **sessions** durable. Each conversation thread maps to a long-running workflow run that:
 
 - Owns multi-turn state in the durable event log instead of Redis-by-hand bookkeeping
 - Can `sleep()` for hours or days waiting for a user reply, an approval, or a scheduled follow-up
-- Survives deploys, cold starts, and crashes — the session picks up from the last step on replay
+- Survives deploys, cold starts, and crashes: the session picks up from the last step on replay
 - Receives follow-up messages via hooks, so the bot stays responsive while the workflow is still running
 
 <Callout type="info">
@@ -30,9 +30,9 @@ One thread mapped to one workflow run also means the thread stays on the deploym
 
 The rest of this page covers the integration pattern. For a full Slack + Next.js + Redis walkthrough, see the [Durable chat sessions guide](https://chat-sdk.dev/docs/guides/durable-chat-sessions-nextjs) on chat-sdk.dev.
 
-## How It Fits Together
+## How it fits together
 
-Chat SDK owns the edge — webhook verification, event routing, `thread.post()` / `thread.stream()`. Workflow owns the session — state, loops, sleeps, retries. They meet at exactly two points:
+Chat SDK owns the edge: webhook verification, event routing, `thread.post()` / `thread.stream()`. Workflow owns the session: state, loops, sleeps, retries. They meet at exactly two points:
 
 ```mermaid
 flowchart TD
@@ -44,8 +44,8 @@ flowchart TD
     E --> F["&quot;use step&quot; helpers<br/>thread.post(), thread.subscribe(), thread.setState(), …"]
 ```
 
-- **Inbound** — Chat SDK handlers decide whether to `start(workflow, [thread, message])` or `resumeHook(runId, { message })`. The `runId` lives in Chat SDK's thread state (Redis, Postgres, or any state adapter).
-- **Outbound** — the workflow calls Chat SDK APIs (`thread.post()`, `thread.subscribe()`, `thread.setState()`) from inside step functions. Never from the top level of a workflow file — adapter packages use Node-only modules that aren't available in the workflow sandbox.
+- **Inbound**: Chat SDK handlers decide whether to `start(workflow, [thread, message])` or `resumeHook(runId, { message })`. The `runId` lives in Chat SDK's thread state (Redis, Postgres, or any state adapter).
+- **Outbound**: the workflow calls Chat SDK APIs (`thread.post()`, `thread.subscribe()`, `thread.setState()`) from inside step functions. Never from the top level of a workflow file, since adapter packages use Node-only modules that aren't available in the workflow sandbox.
 
 ## Why Workflow + Chat SDK
 
@@ -60,11 +60,11 @@ Workflow replaces all of that with a single durable function. The bot can:
 - Schedule a follow-up message 24 hours later via `sleep("24h")`
 - Pause on sandbox snapshot, resume when the user sends the next command (see the [Sandbox integration](/docs/cookbook/integrations/sandbox))
 
-Because the session *is* a workflow run, its history is recoverable from the event log — no separate message store to keep in sync.
+Because the session *is* a workflow run, its history is recoverable from the event log, so there's no separate message store to keep in sync.
 
-## The Pattern: One Thread = One Workflow Run
+## The pattern: one thread = one workflow run
 
-Three files. The bot definition is separate from the workflow so adapter packages stay out of the workflow sandbox.
+This pattern uses three files. The bot definition is separate from the workflow so adapter packages stay out of the workflow sandbox.
 
 <Tabs items={['Bot Setup', 'Workflow', 'Event Handlers']}>
 
@@ -125,7 +125,7 @@ async function postAssistantMessage(
 
 async function runTurn(text: string) {
   "use step";
-  // Your AI SDK call, database lookup, tool loop, etc.
+  // Your AI SDK call, database lookup, tool loop, and other operations.
   return `You said: ${text}`;
 }
 
@@ -157,7 +157,7 @@ export async function durableChatSession(payload: string) {
   if (!(await handleMessage(thread, message))) return;
 
   // Each hook resumption is one turn. The workflow stays suspended between
-  // messages — zero compute cost while idle.
+  // messages: zero compute cost while idle.
   while (true) {
     const { message: nextRaw } = await hook; // [!code highlight]
     const next = Message.fromJSON(nextRaw);
@@ -204,7 +204,7 @@ async function startSession(thread: Thread<ThreadState>, message: Message) {
 async function routeTurn(thread: Thread<ThreadState>, message: Message) {
   const state = await thread.state;
 
-  // No run yet, or the previous run finished — start fresh.
+  // No run yet, or the previous run finished: start fresh.
   if (!state?.runId || !(await getRun(state.runId).exists)) {
     await startSession(thread, message);
     return;
@@ -217,7 +217,7 @@ async function routeTurn(thread: Thread<ThreadState>, message: Message) {
   } catch (err) {
     const msg = err instanceof Error ? err.message.toLowerCase() : "";
     if (msg.includes("not found") || msg.includes("expired")) {
-      // Stale runId — start a new session rather than dropping the message.
+      // Stale runId: start a new session rather than dropping the message.
       await startSession(thread, message);
       return;
     }
@@ -260,30 +260,30 @@ export async function POST(
 
 </Tabs>
 
-## How It Works
+## How it works
 
-1. **Thread state stores the `runId`.** Chat SDK's state adapter (Redis, Postgres, memory) holds `{ runId }` per thread. That's the only piece of glue between the two SDKs.
-2. **First mention → `start()`.** Handler serializes `thread` + `message` with `toJSON()`, passes them through `start(durableChatSession, [payload])`, stashes the returned `runId` in thread state.
-3. **Subsequent messages → `resumeHook()`.** Handler looks up the `runId`, serializes the new message, and resumes the workflow's hook. The workflow picks up on the next `await hook` iteration.
-4. **Workflow posts back via steps.** All Chat SDK side effects (`thread.post`, `thread.subscribe`, `thread.setState`) happen inside `"use step"` helpers that dynamically import the bot. This keeps adapter packages outside the workflow sandbox.
-5. **Session ends — two ways.** The workflow returns normally (user said `done`, approval granted, etc.), or the workflow throws. Either way the run completes; the next inbound message with the stale `runId` falls through to `startSession()`.
+1. **Thread state stores the `runId`**: Chat SDK's state adapter (Redis, Postgres, or memory) holds `{ runId }` per thread. This state connects the two SDKs.
+2. **The first mention calls `start()`**: The handler serializes `thread` and `message` with `toJSON()`, passes them through `start(durableChatSession, [payload])`, and stores the returned `runId` in thread state.
+3. **Subsequent messages call `resumeHook()`**: The handler looks up the `runId`, serializes the new message, and resumes the workflow's hook. The workflow continues on the next `await hook` iteration.
+4. **The workflow posts through steps**: All Chat SDK side effects (`thread.post`, `thread.subscribe`, and `thread.setState`) happen inside `"use step"` helpers that dynamically import the bot. This keeps adapter packages outside the workflow sandbox.
+5. **The session ends in two ways**: The workflow returns normally when the user sends `done` or an approval is granted, or the workflow throws. Either way, the run completes. The next inbound message with the stale `runId` falls through to `startSession()`.
 
 The workflow is fully durable between turns: `await hook` suspends with zero compute cost, and platform webhooks can fire from anywhere without concern for which server instance handled the previous turn.
 
-## Extending the Pattern
+## Extending the pattern
 
-Because the session is just a workflow, everything else from the cookbook composes naturally:
+Because the session is a workflow, everything else from the cookbook composes naturally:
 
-- **Stream AI SDK responses into the thread.** Use the [AI SDK integration](/docs/cookbook/integrations/ai-sdk) pattern inside a step, then pass `result.fullStream` to `thread.post()` — Chat SDK handles platform-specific streaming (Slack edit-in-place, Telegram message-per-chunk, etc.).
+- **Stream AI SDK responses into the thread.** Use the [AI SDK integration](/docs/cookbook/integrations/ai-sdk) pattern inside a step, then pass `result.fullStream` to `thread.post()`. Chat SDK handles platform-specific streaming, including Slack edit-in-place and Telegram message-per-chunk.
 - **Give the bot a sandbox.** Combine with the [Sandbox integration](/docs/cookbook/integrations/sandbox): each thread gets its own persistent sandbox session, snapshots on idle, resumes on the next message. That's effectively a coding-agent bot.
 - **Human-in-the-loop approvals.** `Promise.race([hook, approvalHook])` inside the workflow, post buttons in the thread via [cards](https://chat-sdk.dev/docs/cards), resume `approvalHook` from `bot.onAction(...)`.
-- **Scheduled follow-ups.** `sleep("24h")` before a proactive check-in. Surviving restarts is free.
+- **Scheduled follow-ups.** Call `sleep("24h")` before a proactive check-in. The workflow preserves the timer across restarts.
 
 ## Pitfalls
 
 ### Don't import the bot at the top of workflow files
 
-Adapter packages (`@chat-adapter/slack`, `@chat-adapter/telegram`, etc.) depend on Node-only modules that aren't available in the workflow bundler's sandbox. Keep `import { bot } from "@/lib/bot"` inside `"use step"` functions with `await import(...)`. Use `reviver` from `chat` for deserialization inside the workflow — it's standalone and has no adapter dependencies.
+Adapter packages such as `@chat-adapter/slack` and `@chat-adapter/telegram` depend on Node-only modules that aren't available in the workflow bundler's sandbox. Keep `import { bot } from "@/lib/bot"` inside `"use step"` functions with `await import(...)`. Use `reviver` from `chat` for deserialization inside the workflow: it's standalone and has no adapter dependencies.
 
 ### Register the bot as a singleton
 
@@ -307,14 +307,14 @@ One `chatTurnHook.create({ token: workflowRunId })` per workflow run, reused eve
 
 ### Platform timeouts are separate from workflow timeouts
 
-Slack wants a 200 within 3 seconds. The webhook handler returns immediately after `resumeHook` (which is fast) — the workflow then runs in the background and posts back via `thread.post`. Don't try to `await` the whole turn inside the webhook handler; that's what breaks in the naive integration.
+Slack requires an HTTP 200 response within 3s. The webhook handler returns after `resumeHook`, then the workflow runs in the background and posts through `thread.post`. Don't `await` the whole turn inside the webhook handler because that synchronous integration exceeds the platform timeout.
 
 ## Key APIs
 
-- [`Chat`](https://chat-sdk.dev/docs/api/chat) / [`Thread`](https://chat-sdk.dev/docs/api/thread) / [`Message`](https://chat-sdk.dev/docs/api/message) — Chat SDK primitives. `toJSON()` / `fromJSON()` / `reviver` are the serialization layer.
-- [`start()`](/docs/api-reference/workflow-api/start) — start a new session workflow. Store the returned `runId` in thread state.
-- [`resumeHook()`](/docs/api-reference/workflow-api/resume-hook) — forward a new platform message to the running workflow.
-- [`getRun()`](/docs/api-reference/workflow-api/get-run) — `run.exists` before resuming, to detect stale `runId`s.
-- [`defineHook()`](/docs/api-reference/workflow/define-hook) — per-turn suspension point inside the workflow.
-- [`registerSingleton()`](https://chat-sdk.dev/docs/api/chat) — makes the bot resolvable from inside step functions.
-- [Idempotency](/docs/foundations/idempotency) — protect duplicate-sensitive first messages and side effects.
+- [`Chat`](https://chat-sdk.dev/docs/api/chat) / [`Thread`](https://chat-sdk.dev/docs/api/thread) / [`Message`](https://chat-sdk.dev/docs/api/message): Chat SDK primitives. `toJSON()` / `fromJSON()` / `reviver` are the serialization layer.
+- [`start()`](/docs/api-reference/workflow-api/start): start a new session workflow. Store the returned `runId` in thread state.
+- [`resumeHook()`](/docs/api-reference/workflow-api/resume-hook): forward a new platform message to the running workflow.
+- [`getRun()`](/docs/api-reference/workflow-api/get-run): `run.exists` before resuming, to detect stale `runId`s.
+- [`defineHook()`](/docs/api-reference/workflow/define-hook): per-turn suspension point inside the workflow.
+- [`registerSingleton()`](https://chat-sdk.dev/docs/api/chat): makes the bot resolvable from inside step functions.
+- [Idempotency](/docs/foundations/idempotency): protect duplicate-sensitive first messages and side effects.

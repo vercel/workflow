@@ -432,7 +432,7 @@ const TimelineBar = memo(function TimelineBar({
   );
 
   // Markers that fall outside the visible window (scrolled off while zoomed in)
-  // — surfaced as edge indicators so they aren't silently lost.
+  // are surfaced as edge indicators so they aren't silently lost.
   const offscreen = useMemo<OffscreenMarkers>(
     () =>
       geometry.mode.kind === 'full'
@@ -543,7 +543,7 @@ export { TimelineBar };
 // ---------------------------------------------------------------------------
 
 // Horizontal distance between the anchor bar's measured edge and the vertical
-// guide — also the width of the connector stub bridging the two.
+// guide; also the width of the connector stub bridging the two.
 const MEASURE_GUIDE_OUTSET_PX = 4;
 
 const DeltaMeasureLine = memo(function DeltaMeasureLine({
@@ -567,7 +567,7 @@ const DeltaMeasureLine = memo(function DeltaMeasureLine({
   // It sits just outside the anchor bar's measured edge (so it doesn't blend
   // into the bar's border), joined to the bar by a short horizontal stub. The
   // line runs from the elbow corner (the guide's x) to the hovered span's
-  // measured edge — pulled short of the edge arrow when the hovered span is
+  // measured edge, pulled short of the edge arrow when the hovered span is
   // fully off-screen.
   const guideTop = Math.min(anchorCenterY, lineY);
   const guideBottom = Math.max(anchorCenterY, lineY);
@@ -675,7 +675,7 @@ export function TimelineHeader({
 export interface TimelineHover {
   /** Pointer x as a fraction of the timeline's content width, in [0, 1]. */
   fraction: number;
-  /** Row index under the pointer; may be past the last row — not validated. */
+  /** Row index under the pointer; may be past the last row (not validated). */
   rowIndex: number;
 }
 

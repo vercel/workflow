@@ -49,8 +49,8 @@ export function createWorld(config?: APIConfig): World {
       // Vercel deployments are atomic and immutable, so a deployment id names
       // one fixed build for its whole lifetime.
       deploymentAffinity: true,
-      // NOTE: the backend half of resumeHook()'s parallel fast path — that
-      // the server enforces the `(runId, resumeId)` dedup constraint — is
+      // NOTE: the backend half of resumeHook()'s parallel fast path (that
+      // the server enforces the `(runId, resumeId)` dedup constraint) is
       // NO LONGER a static world capability here. It is attested per-lookup by
       // the server via `Hook.resumeCapabilities.hookResumeDedupVersion`
       // (response-only, recomputed every by-token read). This lets a server

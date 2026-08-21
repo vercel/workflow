@@ -246,7 +246,7 @@ export function buildDurationMap(
       type === 'workflow_started'
     ) {
       startedTimes.set(key, ts);
-      // The queued duration is anchored on the first start event only —
+      // The queued duration is anchored on the first start event only, since
       // subsequent step_started events come from retries.
       if (!firstStartedTimes.has(key)) {
         firstStartedTimes.set(key, ts);
@@ -314,7 +314,7 @@ function isRunLevel(eventType: string): boolean {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// Tree gutter — fixed-width, shows branch lines only for the selected group
+// Tree gutter: fixed-width, shows branch lines only for the selected group
 // ──────────────────────────────────────────────────────────────────────────
 
 /** Fixed gutter width: 20px root area + 16px for one branch lane */
@@ -465,7 +465,7 @@ function TreeGutter({
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// Copyable cell — shows a copy button on hover
+// Copyable cell: shows a copy button on hover
 // ──────────────────────────────────────────────────────────────────────────
 
 function CopyableCell({
@@ -557,7 +557,7 @@ function deepParseJson(value: unknown): unknown {
   }
   if (value !== null && typeof value === 'object') {
     // Preserve objects with custom constructors (e.g., encrypted markers,
-    // class instance refs) — don't destructure them into plain objects
+    // class instance refs); don't destructure them into plain objects
     if (value.constructor !== Object) {
       return value;
     }
@@ -645,13 +645,13 @@ function PayloadBlock({
     );
   }
 
-  // Attribute changes — render the changed keys and the writer instead of
+  // Attribute changes: render the changed keys and the writer instead of
   // the raw JSON payload.
   if (eventType === 'attr_set') {
     return <AttrSetEventBlock data={cleaned} />;
   }
 
-  // Cancellation reason — render the free-text reason as a readable line
+  // Cancellation reason: render the free-text reason as a readable line
   // instead of a raw JSON payload (the only field run_cancelled carries).
   if (eventType === 'run_cancelled') {
     const cancelReason =
@@ -1079,7 +1079,7 @@ export function EventRow({
           isLaneEnd={isLaneEnd}
         />
 
-        {/* Content area — dims when unrelated */}
+        {/* Content area: dims when unrelated */}
         <div
           className="flex items-center flex-1 min-w-0"
           style={{ opacity: contentOpacity, transition: 'opacity 150ms' }}
@@ -1197,10 +1197,10 @@ export function EventRow({
         </div>
       </div>
 
-      {/* Expanded details — tree lines continue through this area */}
+      {/* Expanded details: tree lines continue through this area */}
       {isExpanded && (
         <div className="flex">
-          {/* Continuation gutter — lane line continues if not at lane end */}
+          {/* Continuation gutter: lane line continues if not at lane end */}
           <TreeGutter
             isFirst={false}
             isLast={isLast}
@@ -1432,7 +1432,7 @@ function EventListViewInner({
     });
   }, []);
 
-  // Event data cache — ref avoids re-renders when cache updates
+  // Event data cache: ref avoids re-renders when cache updates
   const eventDataCacheRef = useRef<Map<string, unknown>>(new Map());
   const cacheEventData = useCallback((eventId: string, data: unknown) => {
     eventDataCacheRef.current.set(eventId, data);
@@ -1870,7 +1870,7 @@ function EventListViewInner({
           />
         )}
 
-        {/* Fixed footer — count + load more */}
+        {/* Fixed footer: count + load more */}
         <div
           className="relative flex-shrink-0 flex items-center h-10 border-t px-4 text-label-12"
           style={{

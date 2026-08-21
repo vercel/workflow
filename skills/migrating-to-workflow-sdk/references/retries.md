@@ -4,7 +4,7 @@ Canonical reference for how the Workflow SDK models step-level retries. Load thi
 
 The SDK exposes exactly three knobs. Nothing else is configurable at the step boundary.
 
-## 1. Attempt count — `stepFn.maxRetries = N`
+## 1. Attempt count: `stepFn.maxRetries = N`
 
 Set retry count as a property on the step function. It is a count only; it does not configure backoff.
 
@@ -20,10 +20,10 @@ chargePayment.maxRetries = 5;
 ```
 
 - Default is implementation-defined; pick an explicit value if the source framework specified one.
-- No options object is accepted. `stepFn.maxRetries = N` is the only supported syntax.
+- The API does not accept an options object. `stepFn.maxRetries = N` is the only supported syntax.
 - `maxRetries` controls *attempts*, not delay between attempts.
 
-## 2. Delay between attempts — `new RetryableError(msg, { retryAfter })`
+## 2. Delay between attempts: `new RetryableError(msg, { retryAfter })`
 
 Push the next retry into the future by throwing `RetryableError` with a `retryAfter` value (milliseconds, duration string, or Date). Use this when the source framework specified exponential backoff, a fixed delay, or a custom backoff policy.
 
@@ -45,7 +45,7 @@ callRateLimitedApi.maxRetries = 10;
 - There is no built-in exponential-backoff helper. If the source used one, compute the delay in userland and pass it as `retryAfter`.
 - Automatic VQS scheduling handles the default retry cadence when `retryAfter` is not provided.
 
-## 3. Give up — `throw new FatalError(msg)`
+## 3. Give up: `throw new FatalError(msg)`
 
 Abort retries immediately. Use this for non-recoverable errors such as validation failures or 4xx responses that will never succeed.
 
@@ -89,6 +89,6 @@ async function validatePayload(input: unknown) {
 
 ## Links
 
-- `docs/content/docs/foundations/errors-and-retries.mdx` — the canonical user-facing docs page.
-- `packages/core/src/private.ts:12-17` — `StepFunction.maxRetries` type definition.
-- `packages/errors/src/index.ts` — `RetryableError` and `FatalError` implementations.
+- `docs/content/docs/foundations/errors-and-retries.mdx`: The canonical user-facing docs page.
+- `packages/core/src/private.ts:12-17`: The `StepFunction.maxRetries` type definition.
+- `packages/errors/src/index.ts`: The `RetryableError` and `FatalError` implementations.

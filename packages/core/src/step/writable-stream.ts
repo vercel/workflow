@@ -32,10 +32,10 @@ export interface WorkflowWritableStreamOptions {
 }
 
 /**
- * Retrieves a writable stream that is associated with the current workflow.
+ * Retrieves the writable stream associated with the current workflow.
  *
- * The writable stream is intended to be used within step functions to write
- * data that can be read outside the workflow by using the readable method of getRun.
+ * Use the writable stream within step functions to write data. Read the data
+ * outside the workflow by using the readable method of `getRun`.
  *
  * @param options - Optional configuration for the writable stream
  * @returns The writable stream associated with the current workflow run
@@ -59,8 +59,8 @@ export function getWritable<W = any>(
 
   // Cache the writable per (runId, namespace) within the step context.
   //
-  // The previous behavior — constructing a fresh TransformStream and
-  // background pipe on every call — produced non-deterministic chunk
+  // The previous behavior (constructing a fresh TransformStream and
+  // background pipe on every call) produced non-deterministic chunk
   // ordering when callers acquired a new writer per write (e.g. a
   // per-chunk loop). Each pipe flushed to the same (runId, name) server
   // stream independently, and on Vercel the 50-100ms HTTP latency
@@ -123,7 +123,7 @@ export function getWritable<W = any>(
   // server stream. Calling `start(child, [args, theWritable])` from
   // the same step uses these tags to emit `{ name, runId }` in the
   // dehydrated descriptor, so the child's reviver can open the
-  // writable against the original `(runId, name)` directly — no
+  // writable against the original `(runId, name)` directly, with no
   // in-process bridge tied to this step's lifetime.
   Object.defineProperty(serialize.writable, STREAM_NAME_SYMBOL, {
     value: name,

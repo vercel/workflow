@@ -1,5 +1,5 @@
 /**
- * Spec version utilities for backwards compatibility.
+ * Spec version utilities for backward compatibility.
  *
  * Uses a branded type to ensure packages import the version constants
  * from @workflow/world rather than using arbitrary numbers.
@@ -19,7 +19,7 @@ export type SpecVersion = number & {
 
 /**
  * Legacy spec version (pre-event-sourcing). Also used for runs without specVersion.
- * This is the only true legacy version — specVersion 2+ all use the event-sourced model.
+ * This is the only true legacy version: specVersion 2+ all use the event-sourced model.
  */
 export const SPEC_VERSION_LEGACY = 1 as SpecVersion;
 
@@ -55,7 +55,7 @@ export const SPEC_VERSION_SUPPORTS_SLOT_IDENTITY = 6 as SpecVersion;
 /**
  * Runs at this spec version or later live in a "sealed log": their slot
  * positions are pre-assigned by a per-run sequencer on the World's backend,
- * so concurrent writers never race each other for a position — and a position
+ * so concurrent writers never race each other for a position. A position
  * whose writer died is filled ("sealed") by the backend with a `noop` event.
  * What the version gates is the READER contract that makes that safe: a
  * reader at this version knows a `noop` occupies its slot and carries no
@@ -121,8 +121,8 @@ export const SEALED_LOG_ENV_VAR = 'WORKFLOW_SEALED_LOG';
  * The fallback is a real fallback, not a formality. Turning this off has to
  * leave a World the runtime still admits, which is why
  * `assertWorldSupportsRuntimeProtocol` floors at the slot-identity version
- * rather than at {@link SPEC_VERSION_CURRENT} — a kill switch that made the
- * runtime reject its own World would be no kill switch at all.
+ * rather than at {@link SPEC_VERSION_CURRENT} because a kill switch that made
+ * the runtime reject its own World would be no kill switch at all.
  *
  * Every World reads runs up to {@link SPEC_VERSION_MAX_SUPPORTED} whatever
  * this returns, so switching it off here does not make runs another process
@@ -144,7 +144,7 @@ export function mintedSpecVersion(
  * can we still read?", and they come apart in exactly the release order a spec
  * bump follows: a reader that can already handle the next version raises this
  * ceiling first, and stamping follows only once the version is safe to mint
- * everywhere. Sealed-log support is at that first stage — every build reads
+ * everywhere. Sealed-log support is at that first stage. Every build reads
  * spec 7 and skips `noop`, while {@link mintedSpecVersion} still has to be
  * turned on before anything creates a spec-7 run.
  */

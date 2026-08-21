@@ -13,7 +13,7 @@ type WorldSpecVersionMetadata = Pick<World, 'specVersion'>;
  * The accepted range is
  * `[SPEC_VERSION_SUPPORTS_SLOT_IDENTITY, SPEC_VERSION_MAX_SUPPORTED]`. Below
  * the floor means an old World package paired with a new runtime, which cannot
- * serve the protocol this runtime speaks — a World that does not number events
+ * serve the protocol this runtime speaks. A World that does not number events
  * by position allocates ids the runtime cannot read positions out of. Above the
  * ceiling means a World built against a newer spec than this runtime knows how
  * to read.

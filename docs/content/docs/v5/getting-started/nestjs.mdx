@@ -13,11 +13,11 @@ related:
   text="In this NestJS app, run `npm i workflow @workflow/nest` and `npm i -D @swc/cli @swc/core`. Configure `nest-cli.json` with `compilerOptions.builder: &quot;swc&quot;` and `deleteOutDir: true`. Run `npx @workflow/nest init`, add `.swcrc` to `.gitignore`, and set package scripts `prebuild: &quot;npx @workflow/nest init --force&quot;` and `start:dev: &quot;npx @workflow/nest init --force && nest start --watch&quot;`. Import `WorkflowModule.forRoot()` from `@workflow/nest` in `src/app.module.ts` (use `{ moduleType: &quot;commonjs&quot;, distDir: &quot;dist&quot; }` if compiling CommonJS). Create `src/workflows/user-signup.ts` with `&quot;use workflow&quot;`, `sleep`, and `&quot;use step&quot;` helpers. Add a `POST /signup` controller method that reads `email`, calls `start(handleUserSignup, [email])` from `workflow/api`, and returns JSON. Run `npm run start:dev`, call `curl -X POST --json '{&quot;email&quot;:&quot;hello@example.com&quot;}' http://localhost:3000/signup`, and inspect with `npx workflow web` or `npx workflow inspect runs`."
 />
 
-This guide will walk through setting up your first workflow in a NestJS app. Along the way, you'll learn more about the concepts that are fundamental to using the Workflow SDK in your own projects.
+Set up your first durable workflow in a NestJS app and learn the core Workflow SDK concepts.
 
 <Callout>
 NestJS integration is experimental. Deployment to Vercel is supported via the
-`workflow-nest build --vercel` command — see [Deploy to Vercel](#deploy-to-vercel) below.
+`workflow-nest build --vercel` command. See [Deploy to Vercel](#deploy-to-vercel) below.
 </Callout>
 
 ---
@@ -25,7 +25,7 @@ NestJS integration is experimental. Deployment to Vercel is supported via the
 <Steps>
 
 <Step>
-## Create Your NestJS Project
+## Create your NestJS project
 
 Start by creating a new NestJS project using the NestJS CLI.
 
@@ -46,7 +46,7 @@ cd my-workflow-app
 npm i workflow @workflow/nest
 ```
 
-### Choose Your Module Format
+### Choose your module format
 
 NestJS projects using `@workflow/nest` can compile as either ESM or CommonJS. Choose the setup that matches your SWC output instead of assuming ESM is required.
 
@@ -112,7 +112,7 @@ Ensure your `nest-cli.json` has SWC as the builder:
 }
 ```
 
-### Initialize SWC Configuration
+### Initialize SWC configuration
 
 Run the init command to generate the SWC configuration:
 
@@ -143,10 +143,10 @@ Add scripts to regenerate the SWC configuration before builds:
 <Accordion type="single" collapsible>
   <AccordionItem value="typescript-intellisense" className="[&_h3]:my-0">
     <AccordionTrigger className="[&_p]:my-0 text-lg [&_p]:text-foreground">
-      Setup IntelliSense for TypeScript (Optional)
+      Set up IntelliSense for TypeScript (optional)
     </AccordionTrigger>
     <AccordionContent className="[&_p]:my-2">
-To enable helpful hints in your IDE, setup the workflow plugin in `tsconfig.json`:
+To enable helpful hints in your IDE, set up the workflow plugin in `tsconfig.json`:
 
 ```json title="tsconfig.json" lineNumbers
 {
@@ -208,7 +208,7 @@ The `WorkflowModule` handles workflow bundle building and provides HTTP routing 
 
 <Step>
 
-## Create Your First Workflow
+## Create your first workflow
 
 Create a new file for our first workflow in the `src/workflows` directory:
 
@@ -241,14 +241,14 @@ export async function handleUserSignup(email: string) {
 }
 ```
 
-We'll fill in those functions next, but let's take a look at this code:
+We'll fill in those functions next, but first review this code:
 
 - We define a **workflow** function with the directive `"use workflow"`. Think of the workflow function as the _orchestrator_ of individual **steps**.
 - The Workflow SDK's `sleep` function allows us to suspend execution of the workflow without using up any resources. A sleep can be a few seconds, hours, days, or even months long.
 
-## Create Your Workflow Steps
+## Create your workflow steps
 
-Let's now define those missing functions.
+Define the missing functions.
 
 ```typescript title="src/workflows/user-signup.ts" lineNumbers
 import { FatalError } from "workflow";
@@ -302,7 +302,7 @@ Taking a look at this code:
 
 <Step>
 
-## Create Your Controller
+## Create your controller
 
 To invoke your new workflow, update your controller with a new endpoint:
 
@@ -426,7 +426,7 @@ execute instead of staying `pending`.
 
 ---
 
-## Configuration Options
+## Configuration options
 
 The `WorkflowModule.forRoot()` method accepts optional configuration:
 
@@ -456,7 +456,7 @@ WorkflowModule.forRoot({
   // development, false in production).
   // Accepts the same values as esbuild's sourcemap option: true, false,
   // 'inline', 'linked', 'external', 'both'. Set to false for smaller
-  // function bundles (useful for staying under the Vercel 250MB function
+  // function bundles (useful for staying under the Vercel 250 MB function
   // size limit) at the cost of stack traces pointing at generated code.
   // Can also be set via the WORKFLOW_SOURCEMAP environment variable.
   sourcemap: 'inline',
@@ -469,7 +469,7 @@ WorkflowModule.forRoot({
 
 If you see this error:
 
-```
+```text
 'start' received an invalid workflow function. Ensure the Workflow SDK is configured correctly and the function includes a 'use workflow' directive.
 ```
 
@@ -479,7 +479,8 @@ Check both of these first:
 2. Your NestJS app imports and registers the `WorkflowModule`.
 
 See [start-invalid-workflow-function](/docs/errors/start-invalid-workflow-function) for full examples and fixes.
-## Next Steps
+
+## Next steps
 
 - Learn more about the [Foundations](/docs/foundations).
 - Check [Errors](/docs/errors) if you encounter issues.

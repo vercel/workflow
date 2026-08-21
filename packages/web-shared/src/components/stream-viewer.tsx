@@ -30,7 +30,7 @@ interface StreamViewerProps {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// Chunk row — memoized to prevent remounts during polling
+// Chunk row: memoized to prevent remounts during polling
 // ──────────────────────────────────────────────────────────────────────────
 
 const ChunkRow = React.memo(function ChunkRow({ chunk }: { chunk: Chunk }) {

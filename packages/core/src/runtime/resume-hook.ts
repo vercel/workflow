@@ -49,7 +49,7 @@ const generateResumeId = monotonicFactory();
  * message at ~256 KiB, and the message also carries the runId, hookId, token,
  * resumeId, digest, and trace carrier alongside CBOR framing overhead. Staying
  * well under that ceiling keeps the queue publish from rejecting an oversized
- * message — which, on the parallel path, would persist `hook_received` but never
+ * message, which, on the parallel path, would persist `hook_received` but never
  * re-trigger the run. Above this size we fall back to the sequential path, whose
  * queue message carries only the run ID (the payload lives in the event log).
  */
@@ -61,7 +61,7 @@ const MAX_INLINE_RESUME_PAYLOAD_BYTES = 128 * 1024;
  * the queue `hookInput`, so both writers of the same `resumeId` record an
  * identical digest on the server's `(runId, resumeId)` constraint. Hashing the
  * already-serialized bytes (not the raw value) keeps producer and consumer in
- * lockstep — the consumer forwards this string without recomputing.
+ * lockstep: the consumer forwards this string without recomputing.
  */
 async function computeResumePayloadDigest(bytes: Uint8Array): Promise<string> {
   const digest = await crypto.subtle.digest('SHA-256', bytes);
@@ -110,8 +110,8 @@ function resumeContextFromRun(run: WorkflowRun): HookResumeContext {
 
 /**
  * Resolve resume context for a hook. Uses the stored `resumeContext` when
- * present (fast path — no run read); otherwise fetches the run and synthesizes
- * it. Does NOT resolve the encryption key — callers do that separately. Only
+ * present (fast path, no run read); otherwise fetches the run and synthesizes
+ * it. Does NOT resolve the encryption key; callers do that separately. Only
  * the fallback path can gate key work behind a local terminal-run check (it
  * has the fetched run); the fast path's stored context carries no status, so
  * seal/serialization work may run before the receiving side rejects
@@ -131,7 +131,7 @@ async function resolveHookResumeInfo(hook: Hook): Promise<HookResumeInfo> {
 
 /**
  * Resolve the run's symmetric key for a payload WRITE, as a bare `CryptoKey`
- * (`importKey`) — the `encr` write fallback used when the run published no
+ * (`importKey`): the `encr` write fallback used when the run published no
  * public key to seal to. Writing needs only the AES key, not the read-side
  * keypair. On the fast path this needs only `runId` + `deploymentId` (no run
  * entity); on the fallback path the already fetched run is reused.
@@ -159,7 +159,7 @@ async function getHookByTokenWithKey(token: string): Promise<{
   // Only a hook that actually carries metadata needs the run's key resolved
   // here: hydrating that metadata is a READ, so derive the full RunPayloadKeys
   // (which opens sealed `encp` metadata, not just symmetric `encr`). The common
-  // default webhook — createWebhook() with no `respondWith` — stores no
+  // default webhook (createWebhook() with no `respondWith`) stores no
   // metadata, so it skips this entirely: no ~350ms `run-key` API round trip,
   // and, crucially, no resolved key handed to `resumeHook`, leaving it free to
   // seal the payload to the run's published public key instead. Metadata-
@@ -205,8 +205,8 @@ export async function getHookByToken(token: string): Promise<Hook> {
  *
  * On the parallel fast path, `resumeHook()` writes the `hook_received` event and
  * dispatches the workflow queue message concurrently. When the direct event
- * write fails *transiently* — a 429/5xx, a transport error, or an expected
- * `(runId, resumeId)` conflict with its own re-ensuring consumer — but the queue
+ * write fails *transiently* (a 429/5xx, a transport error, or an expected
+ * `(runId, resumeId)` conflict with its own re-ensuring consumer) but the queue
  * dispatch succeeds, the resume is still guaranteed: the queue consumer
  * idempotently materializes the `hook_received` event from the payload carried
  * on the message before replay. In that recovered case the returned hook carries
@@ -253,8 +253,8 @@ export async function resumeHook<T = any>(
   encryptionKeyOverride?: PayloadKey
 ): Promise<ResumedHook> {
   // Public entry point. It never attests hook freshness, so a Hook object
-  // supplied here — which may carry a `resumeCapabilities` cached before a
-  // server rollback or kill switch — is ignored by the dynamic-dedup gate and
+  // supplied here (which may carry a `resumeCapabilities` cached before a
+  // server rollback or kill switch) is ignored by the dynamic-dedup gate and
   // fails closed to the sequential path. Only `resumeWebhook`, which fetches
   // the hook by token in-line during the same resume, reaches the internal
   // implementation with the fresh attestation set. Keeping the freshness flag
@@ -262,7 +262,7 @@ export async function resumeHook<T = any>(
   // `true` and reactivating dynamic dedup against a rolled-back backend.
   //
   // T0 of the hook-resume TTR window is taken HERE, at the public entry point,
-  // rather than inside the implementation — see the parameter's doc comment.
+  // rather than inside the implementation; see the parameter's doc comment.
   return resumeHookImpl(
     tokenOrHook,
     payload,
@@ -284,8 +284,8 @@ export async function resumeHook<T = any>(
  * @param resumeRequestedAtMs - T0 of the hook-resume TTR window (see
  *   runtime/resume-latency.ts), stamped by the PUBLIC entry point the caller
  *   used. It is a parameter rather than a local because `resumeWebhook` does
- *   real work before it gets here — the by-token lookup, the run-key
- *   resolution that hydrates hook metadata, and the `respondWith` setup — and
+ *   real work before it gets here (the by-token lookup, the run-key
+ *   resolution that hydrates hook metadata, and the `respondWith` setup) and
  *   stamping locally would silently exclude all of it, so the two entry points
  *   would report the same metric over different windows.
  */
@@ -325,7 +325,7 @@ async function resumeHookImpl<T = any>(
         // fallback path (which fetched the run). On the fast path the terminal
         // check happens server-side: `hook_received` against an ended run is
         // rejected, which the catch around `world.events.create` below re-keys
-        // to HookNotFoundError — same public contract, no run pre-fetch.
+        // to HookNotFoundError: same public contract, no run pre-fetch.
         if (info.run && isTerminalWorkflowRunStatus(info.run.status)) {
           throw new HookNotFoundError(hook.token);
         }
@@ -343,7 +343,7 @@ async function resumeHookImpl<T = any>(
         //
         // Preferred path: seal to the run's published X25519 public key, which
         // the stored `resumeContext` carries inline. On the fast path this is
-        // the whole win — no run read AND no `getEncryptionKeyForRun`, whose
+        // the whole win: no run read AND no `getEncryptionKeyForRun`, whose
         // ~350ms `run-key` API round trip dominates cross-deployment hook
         // resumption latency. (On the fallback path the key is synthesized
         // from the fetched run, which also carries it.)
@@ -357,7 +357,7 @@ async function resumeHookImpl<T = any>(
         // is itself the gate. A run only carries one if the runtime that
         // created it could also open a sealed payload, and runs are pinned to
         // their creating deployment, so presence is a more reliable attestation
-        // than a version compare — and it stays correct even when package
+        // than a version compare, and it stays correct even when package
         // versions drift.
         let payloadKey: PayloadKey | undefined;
         const runPublicKey = encryptionKeyOverride
@@ -453,12 +453,12 @@ async function resumeHookImpl<T = any>(
         //    so changing it generally requires redeploying the workflow
         //    deployment. (The backend can independently drop new resumes to the
         //    sequential path fleet-wide by ceasing to attest dedup support on
-        //    the by-token lookup — see the backend-dedup condition below.)
+        //    the by-token lookup; see the backend-dedup condition below.)
         //  - backend dedup: the live backend must enforce the
         //    `(runId, resumeId)` constraint, or the two writers would commit two
         //    `hook_received` events. Fail closed. Attested by EITHER a fresh,
         //    response-only `hook.resumeCapabilities.hookResumeDedupVersion` from
-        //    the by-token lookup (world-vercel — recomputed every read, so a
+        //    the by-token lookup (world-vercel: recomputed every read, so a
         //    server rollback or kill switch drops to sequential immediately) OR
         //    the static `world.capabilities.hookResumeDedup` (world-local, whose
         //    adapter and backend ship together). The response-only capability is
@@ -479,8 +479,8 @@ async function resumeHookImpl<T = any>(
         //  - raw bytes: the dehydrated payload must be a `Uint8Array` (the
         //    content digest that keys the dedup constraint is over these bytes).
         //  - size: a payload above the queue's message ceiling would fail the
-        //    publish — which, on the parallel path, would persist the event but
-        //    never re-trigger the run — so oversized payloads stay sequential
+        //    publish (which, on the parallel path, would persist the event but
+        //    never re-trigger the run), so oversized payloads stay sequential
         //    (their queue message carries only the run ID).
         const parallelResumeDisabled =
           process.env.WORKFLOW_DISABLE_LAZY_HOOK_RESUME === '1';
@@ -540,7 +540,7 @@ async function resumeHookImpl<T = any>(
         // treated as "hook gone" for historical / conflict-shaped-rejection
         // compatibility: there is no queue message in flight, so a conflict has
         // no re-ensuring consumer to converge on. The PARALLEL path handles 409
-        // differently (see below) — it published the queue message before the
+        // differently (see below): it published the queue message before the
         // conflict, so the consumer will converge the event.
         const isHookGoneError = (err: unknown): boolean =>
           HookNotFoundError.is(err) ||
@@ -569,7 +569,7 @@ async function resumeHookImpl<T = any>(
 
           // T1 of the TTR window. Stamped immediately before the publish so
           // `producer_prep` covers exactly the work above it (hook lookup,
-          // key resolution, serialization, and — on this path — the awaited
+          // key resolution, serialization, and, on this path, the awaited
           // `hook_received` write, which is genuinely serial here).
           const queuePublishRequestedAtMs = Date.now();
           await world.queue(
@@ -599,7 +599,7 @@ async function resumeHookImpl<T = any>(
         span?.setAttributes({ 'workflow.hook.resume_id': resumeId });
 
         // Wrapped in a thunk purely so T1 of the TTR window is stamped at the
-        // exact instant the publish is requested — after the racing
+        // exact instant the publish is requested, after the racing
         // `hook_received` write has been kicked off, which is where the
         // additive `producer_prep` phase must end. The two calls still start
         // in the same turn and race exactly as before.
@@ -644,7 +644,7 @@ async function resumeHookImpl<T = any>(
           publishInvocation(),
         ]);
 
-        // Queue failure is always fatal — the run was not re-triggered, so no
+        // Queue failure is always fatal: the run was not re-triggered, so no
         // consumer will re-ensure the event.
         if (queueResult.status === 'rejected') {
           throw queueResult.reason;
@@ -666,7 +666,7 @@ async function resumeHookImpl<T = any>(
           if (EntityConflictError.is(err) || isRetryableWorldError(err)) {
             // Resilient. Two shapes reach here, both non-terminal:
             //   - EntityConflict (409): this write raced its own re-ensuring
-            //     consumer (or a redrive) on the shared `resumeId` — the run is
+            //     consumer (or a redrive) on the shared `resumeId`; the run is
             //     NOT gone, and the consumer converges on the one committed
             //     event. Unlike the sequential path, a 409 here is expected
             //     concurrency, not a vanished hook.
@@ -759,8 +759,8 @@ export async function resumeWebhook(
   token: string,
   request: Request
 ): Promise<Response> {
-  // T0 of the hook-resume TTR window. Everything below — the by-token lookup,
-  // the run-key resolution it may trigger, and the `respondWith` setup — is
+  // T0 of the hook-resume TTR window. Everything below (the by-token lookup,
+  // the run-key resolution it may trigger, and the `respondWith` setup) is
   // real producer-side latency on this path, so the window has to open here
   // and not inside `resumeHookImpl`; otherwise webhook resumes would report a
   // systematically shorter total than `resumeHook` ones into the same metric.
@@ -804,7 +804,7 @@ export async function resumeWebhook(
 
   // `hook` was just fetched via `getHookByTokenWithKey` (a fresh by-token
   // lookup) above, so its response-only `resumeCapabilities` reflects the live
-  // backend — call the internal implementation with the fresh attestation so
+  // backend. Call the internal implementation with the fresh attestation so
   // the parallel fast path stays available without a second GET. (The public
   // `resumeHook` never sets this, so a caller cannot forge it.)
   await resumeHookImpl(hook, request, encryptionKey, true, resumeRequestedAtMs);
