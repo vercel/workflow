@@ -1,3 +1,4 @@
+import { globalSingleton } from '@workflow/utils';
 import { envNumber } from '@workflow/world';
 import { runtimeLogger } from '../logger.js';
 
@@ -73,15 +74,23 @@ export const MAX_REPLAY_TIMEOUT_MS = 780_000;
 
 // Track which raw env var values we've already warned about so the warning
 // log only fires once per process (the function may be called many times).
-const warnedReplayTimeoutValues = new Set<string>();
+//
+// On `globalThis` rather than at module scope so "once per process" survives
+// bundling: this package is compiled into the host application's server build
+// once per bundler layer, and per-copy sets warn once per layer instead.
+const warned = globalSingleton('@workflow/core//envWarnings', 1, () => ({
+  replayTimeoutValues: new Set<string>(),
+  maxInlineStepsValues: new Set<string>(),
+  maxEventsValues: new Set<string>(),
+}));
 
 function warnOnce(
   raw: string,
   message: string,
   data: Record<string, unknown>
 ): void {
-  if (warnedReplayTimeoutValues.has(raw)) return;
-  warnedReplayTimeoutValues.add(raw);
+  if (warned.replayTimeoutValues.has(raw)) return;
+  warned.replayTimeoutValues.add(raw);
   runtimeLogger.warn(message, data);
 }
 
@@ -132,7 +141,7 @@ export function getReplayTimeoutMs(): number {
  * @internal
  */
 export function _resetReplayTimeoutWarnCacheForTests(): void {
-  warnedReplayTimeoutValues.clear();
+  warned.replayTimeoutValues.clear();
 }
 
 // Number of queue delivery attempts to allow before permanently failing a run
@@ -175,9 +184,6 @@ export const MIN_MAX_INLINE_STEPS = 1;
  */
 export const MAX_MAX_INLINE_STEPS = 16;
 
-// Warn-once cache for WORKFLOW_MAX_INLINE_STEPS, keyed by raw env value.
-const warnedMaxInlineStepsValues = new Set<string>();
-
 /**
  * Resolve the effective max number of inline steps for the current process.
  *
@@ -191,8 +197,8 @@ export function getMaxInlineSteps(): number {
   if (!raw) return MAX_INLINE_STEPS;
   const parsed = Number(raw);
   if (!Number.isInteger(parsed) || parsed <= 0) {
-    if (!warnedMaxInlineStepsValues.has(raw)) {
-      warnedMaxInlineStepsValues.add(raw);
+    if (!warned.maxInlineStepsValues.has(raw)) {
+      warned.maxInlineStepsValues.add(raw);
       runtimeLogger.warn(
         'Ignoring WORKFLOW_MAX_INLINE_STEPS: not a positive integer; using default',
         { raw, defaultValue: MAX_INLINE_STEPS }
@@ -202,8 +208,8 @@ export function getMaxInlineSteps(): number {
   }
   if (parsed < MIN_MAX_INLINE_STEPS) return MIN_MAX_INLINE_STEPS;
   if (parsed > MAX_MAX_INLINE_STEPS) {
-    if (!warnedMaxInlineStepsValues.has(raw)) {
-      warnedMaxInlineStepsValues.add(raw);
+    if (!warned.maxInlineStepsValues.has(raw)) {
+      warned.maxInlineStepsValues.add(raw);
       runtimeLogger.warn('WORKFLOW_MAX_INLINE_STEPS above maximum; clamped', {
         raw,
         clampedValue: MAX_MAX_INLINE_STEPS,
@@ -287,8 +293,6 @@ export function isBatchTransitionsEnabled(): boolean {
  */
 export const MAX_BATCH_FANOUT_EVENTS = 32;
 
-const warnedMaxEventsValues = new Set<string>();
-
 /**
  * Optional client-side override for the server-supplied per-run event ceiling.
  * When set to a positive integer, the runtime clamps the server's limit *down*
@@ -304,8 +308,8 @@ export function getMaxEventsOverride(): number | undefined {
   if (!raw) return undefined;
   const parsed = Number(raw);
   if (!Number.isInteger(parsed) || parsed <= 0) {
-    if (!warnedMaxEventsValues.has(raw)) {
-      warnedMaxEventsValues.add(raw);
+    if (!warned.maxEventsValues.has(raw)) {
+      warned.maxEventsValues.add(raw);
       runtimeLogger.warn(
         'Ignoring WORKFLOW_MAX_EVENTS_OVERRIDE: not a positive integer; using server limit',
         { raw }

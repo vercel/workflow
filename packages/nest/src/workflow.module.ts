@@ -4,6 +4,7 @@ import {
   type OnModuleDestroy,
   type OnModuleInit,
 } from '@nestjs/common';
+import { globalSingleton } from '@workflow/utils';
 import { join } from 'pathe';
 import type { NestBuilderOptions } from './builder.js';
 import {
@@ -34,8 +35,19 @@ const DEFAULT_OUT_DIR = '.nestjs/workflow';
  */
 @Module({})
 export class WorkflowModule implements OnModuleInit, OnModuleDestroy {
-  private static options: WorkflowModuleOptions | null = null;
-  private static outDir: string | null = null;
+  // On `globalThis` rather than in static fields: a bundler can compile this
+  // module into the host build more than once (see `globalSingleton`), and
+  // `forRoot()` would then configure one copy while the module lifecycle hooks
+  // read another. Static fields are module-scope state with a class for a
+  // namespace, and duplicate exactly the same way.
+  private static readonly state = globalSingleton(
+    '@workflow/nest//moduleConfig',
+    1,
+    () => ({
+      options: null as WorkflowModuleOptions | null,
+      outDir: null as string | null,
+    })
+  );
 
   /**
    * Configure the WorkflowModule with options.
@@ -56,8 +68,8 @@ export class WorkflowModule implements OnModuleInit, OnModuleDestroy {
     // Configure the controller with the output directory
     configureWorkflowController(outDir);
 
-    WorkflowModule.options = options;
-    WorkflowModule.outDir = outDir;
+    WorkflowModule.state.options = options;
+    WorkflowModule.state.outDir = outDir;
 
     return {
       module: WorkflowModule,
@@ -73,7 +85,7 @@ export class WorkflowModule implements OnModuleInit, OnModuleDestroy {
   }
 
   async onModuleInit() {
-    const options = WorkflowModule.options;
+    const options = WorkflowModule.state.options;
     if (!options || options.skipBuild) {
       return;
     }
@@ -84,13 +96,13 @@ export class WorkflowModule implements OnModuleInit, OnModuleDestroy {
     ]);
     const builder = new NestLocalBuilder({
       ...options,
-      outDir: WorkflowModule.outDir ?? undefined,
+      outDir: WorkflowModule.state.outDir ?? undefined,
     });
     await createBuildQueue()(() => builder.build());
   }
 
   async onModuleDestroy() {
     // Cleanup if needed
-    WorkflowModule.options = null;
+    WorkflowModule.state.options = null;
   }
 }

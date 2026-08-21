@@ -85,6 +85,7 @@
   "dependencies": {
     "@ai-sdk/provider": "^3.0.0",
     "@workflow/serde": "workspace:^",
+    "@workflow/utils": "workspace:*",
     "zod": "catalog:"
   },
   "optionalDependencies": {

@@ -44,6 +44,7 @@
  */
 
 import { types } from 'node:util';
+import { globalSingleton } from '@workflow/utils';
 import type { StringifyOperations } from 'devalue';
 import { defaultStringifyOperations } from 'devalue';
 
@@ -83,7 +84,12 @@ export interface GuestCodeStats {
   executions: GuestCodeExecution[];
 }
 
+// per-copy-ok: both are set and cleared by `withGuestCodeStats` around a single
+// synchronous call, so the sink is only ever read by the same copy that armed
+// it. A shared slot would let two copies recording concurrently clobber each
+// other's sink.
 let activeStats: GuestCodeStats | null = null;
+// per-copy-ok: same scope as `activeStats` above, armed and cleared together.
 let reportedProxies: WeakSet<object> | null = null;
 
 /**
@@ -121,17 +127,24 @@ export function withGuestCodeStats<T>(
  * report entry, never incorrect output; closing it means branding at the
  * compiler, which does not belong here.
  */
-const useStepClosureFns = new WeakSet<object>();
+// On `globalThis` (see `globalSingleton`): functions cross module copies freely,
+// so a closure marked by one copy would not be recognized by another, costing a
+// report entry for no reason.
+const useStepClosures = globalSingleton(
+  '@workflow/core//useStepClosures.fns',
+  1,
+  () => ({ fns: new WeakSet<object>() })
+);
 
 /** Marks a function as having been passed to `useStep`. */
 export function markUseStepClosureFn<T extends object>(fn: T): T {
-  useStepClosureFns.add(fn);
+  useStepClosures.fns.add(fn);
   return fn;
 }
 
 /** Whether `fn` was marked by {@link markUseStepClosureFn}. */
 export function isUseStepClosureFn(fn: unknown): boolean {
-  return typeof fn === 'function' && useStepClosureFns.has(fn as object);
+  return typeof fn === 'function' && useStepClosures.fns.has(fn as object);
 }
 
 export function recordGuestCode(

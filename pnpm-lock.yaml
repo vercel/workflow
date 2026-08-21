@@ -293,6 +293,9 @@ importers:
       '@workflow/serde':
         specifier: workspace:^
         version: link:../serde
+      '@workflow/utils':
+        specifier: workspace:*
+        version: link:../utils
       zod:
         specifier: 'catalog:'
         version: 4.3.6
@@ -706,6 +709,9 @@ importers:
       '@workflow/swc-plugin':
         specifier: workspace:*
         version: link:../swc-plugin-workflow
+      '@workflow/utils':
+        specifier: workspace:*
+        version: link:../utils
       esbuild:
         specifier: 'catalog:'
         version: 0.28.1

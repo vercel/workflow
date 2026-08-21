@@ -1,16 +1,27 @@
 import { readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { All, Controller, Get, Post, Req, Res } from '@nestjs/common';
+import { globalSingleton } from '@workflow/utils';
 import { join } from 'pathe';
 
-// Module-level state for configuration
-let configuredOutDir: string | null = null;
+// Configuration, set once at bootstrap and read on every request.
+//
+// On `globalThis` rather than at module scope because a bundler can compile
+// this module into the host application's build more than once (see
+// `globalSingleton`), and the copy that `configureWorkflowController()` writes
+// would then not be the copy the request path reads, leaving the controller
+// unconfigured for the life of the process.
+const controllerConfig = globalSingleton(
+  '@workflow/nest//controllerConfig',
+  1,
+  () => ({ outDir: null as string | null })
+);
 
 /**
  * Configure the workflow controller with the output directory
  */
 export function configureWorkflowController(outDir: string): void {
-  configuredOutDir = outDir;
+  controllerConfig.outDir = outDir;
 }
 
 /**
@@ -72,12 +83,12 @@ async function sendWebResponse(
 }
 
 function getOutDir(): string {
-  if (!configuredOutDir) {
+  if (!controllerConfig.outDir) {
     throw new Error(
       'WorkflowController not configured. Call configureWorkflowController first.'
     );
   }
-  return configuredOutDir;
+  return controllerConfig.outDir;
 }
 
 /**

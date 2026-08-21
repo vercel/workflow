@@ -1,4 +1,5 @@
 import { originalPositionFor, TraceMap } from '@jridgewell/trace-mapping';
+import { globalSingleton } from '@workflow/utils';
 
 /** Marker prefix of an inline source map comment emitted by bundlers. */
 const INLINE_SOURCE_MAP_MARKER =
@@ -110,15 +111,20 @@ function extractInlineSourceMapBase64(source: string): string | undefined {
  * string per edit; the bound keeps the few most-recent ones and evicts the
  * rest instead of pinning every historical version.
  */
-const tracerCache = new Map<string, TraceMap | null>();
+// On `globalThis` (see `globalSingleton`): the cache exists to avoid re-parsing
+// one build-time bundle for the life of the process, which per-copy state would
+// do once per bundler layer.
+const tracers = globalSingleton('@workflow/core//sourceMapTracers', 1, () => ({
+  byCode: new Map<string, TraceMap | null>(),
+}));
 const MAX_TRACERS = 8;
 
 function getTraceMapForCode(workflowCode: string): TraceMap | null {
-  const cached = tracerCache.get(workflowCode);
+  const cached = tracers.byCode.get(workflowCode);
   if (cached !== undefined) {
     // Move to most-recently-used position (end of insertion order).
-    tracerCache.delete(workflowCode);
-    tracerCache.set(workflowCode, cached);
+    tracers.byCode.delete(workflowCode);
+    tracers.byCode.set(workflowCode, cached);
     return cached;
   }
 
@@ -136,13 +142,13 @@ function getTraceMapForCode(workflowCode: string): TraceMap | null {
     }
   }
 
-  tracerCache.set(workflowCode, tracer);
+  tracers.byCode.set(workflowCode, tracer);
   // Evict the least-recently-used entries when over the cap. New entries are
   // appended at the end, so the oldest live at the front.
-  while (tracerCache.size > MAX_TRACERS) {
-    const oldest = tracerCache.keys().next().value;
+  while (tracers.byCode.size > MAX_TRACERS) {
+    const oldest = tracers.byCode.keys().next().value;
     if (oldest === undefined) break;
-    tracerCache.delete(oldest);
+    tracers.byCode.delete(oldest);
   }
   return tracer;
 }

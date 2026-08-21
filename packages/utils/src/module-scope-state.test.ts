@@ -36,35 +36,55 @@ afterEach(() => {
 });
 
 /**
- * Every published world package. Discovered rather than listed so a new world
- * is covered the day it is added. The point of the rule is the packages
- * nobody has thought about yet. Private packages (`@workflow/world-sim`) are
- * out of scope: they are never bundled into a host application.
+ * Packages that end up inside the host application's server build, where a
+ * bundler compiles one copy of every module per layer.
+ *
+ * Every published `world-*` is discovered rather than listed, so a new world is
+ * covered the day it is added; private ones (`@workflow/world-sim`) are out of
+ * scope because nothing bundles them into an application. The rest are named,
+ * because "does this package run inside the host's server bundle" is a
+ * judgement rather than something to infer from the directory name.
+ *
+ * Deliberately absent, and why:
+ *   - `next`, `builders`, `sveltekit`: build-time code. The build is one
+ *     process with one module graph.
+ *   - `cli`: its own process.
+ *   - `web`, `web-shared`: the observability UI, not the host's server.
+ *   - `vitest`: the test runner's process.
+ *
+ * Adding a package that runs in the host server means adding it here.
  */
-function publishedWorldPackages(): string[] {
+const BUNDLED_RUNTIME_PACKAGES = ['core', 'world', 'ai', 'nest'];
+
+function bundledPackages(): string[] {
   const packages = path.join(repoRoot, 'packages');
-  return fs
+  const published = (dir: string) => {
+    const manifest = path.join(dir, 'package.json');
+    if (!fs.existsSync(manifest)) return false;
+    return !JSON.parse(fs.readFileSync(manifest, 'utf8')).private;
+  };
+  const worlds = fs
     .readdirSync(packages)
     .filter((name) => name.startsWith('world-'))
     .map((name) => path.join(packages, name))
-    .filter((dir) => {
-      const manifest = path.join(dir, 'package.json');
-      if (!fs.existsSync(manifest)) return false;
-      return !JSON.parse(fs.readFileSync(manifest, 'utf8')).private;
-    });
+    .filter(published);
+  const named = BUNDLED_RUNTIME_PACKAGES.map((name) =>
+    path.join(packages, name)
+  );
+  return [...worlds, ...named];
 }
 
 describe('module-scope state rule', () => {
-  const worlds = publishedWorldPackages();
+  const bundled = bundledPackages();
 
-  it('finds the world packages to check', () => {
+  it('finds the packages to check', () => {
     // Guards the sweep below against silently checking nothing.
-    expect(worlds.map((dir) => path.basename(dir))).toEqual(
-      expect.arrayContaining(['world-local', 'world-vercel'])
+    expect(bundled.map((dir) => path.basename(dir))).toEqual(
+      expect.arrayContaining(['world-local', 'world-vercel', 'core'])
     );
   });
 
-  it.each(worlds)('reports nothing for %s', (dir) => {
+  it.each(bundled)('reports nothing for %s', (dir) => {
     const findings = scanPackage(dir, repoRoot);
     expect(findings, formatFindings(findings)).toEqual([]);
   });

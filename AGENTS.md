@@ -469,16 +469,18 @@ not of how they are written, and it changed for world-vercel in #3493. Keep them
 clean too. The author-facing version of this rule is in
 `docs/content/worlds/{v4,v5}/building-a-world.mdx`; keep both versions in sync.
 
-The sweep stops at the world packages, and that boundary is narrower than the
-hazard. `@workflow/core` is statically imported into the same server build and
-has always been bundled, so the same duplication applies to it: it reports
-non-zero today. Those findings were spot-checked as wasteful rather than wrong
-(the step registry is already `globalThis`-backed, the compile and single-flight
-caches are only reached from `/flow` so they stay in one layer, and the rest
-cost a duplicated encoder or a repeated warn-once log), which is why core is not
-gated yet. `@workflow/next` and `@workflow/cli` are in the same position.
-Widening the sweep is tracked in #3729. Treat a *new* mutable module-scope
-binding in core as suspect even though nothing fails the build.
+The sweep covers every package that ends up inside the host application's
+server build: all published `packages/world-*` (discovered at runtime, so a new
+world is covered the day it is added) plus `core`, `world`, `ai` and `nest`,
+which are named in `BUNDLED_RUNTIME_PACKAGES` in
+`packages/utils/src/module-scope-state.test.ts`. Adding a package that runs in
+the host server means adding it to that list: "does this run inside the host's
+server bundle" is a judgement, not something to infer from a directory name.
+
+Deliberately outside the sweep, because a single module graph makes the hazard
+impossible: `next`, `builders` and `sveltekit` (build-time code), `cli` (its own
+process), `web` and `web-shared` (the observability UI), `vitest` (the test
+runner's process), and private packages such as `world-sim`.
 
 ### Trace context propagation (world-vercel HTTP requests)
 Every outgoing HTTP request from `@workflow/world-vercel` to workflow-server (or the queue) MUST explicitly inject W3C trace context so the server can parent its spans to the caller and traces stay correlated end to end. Call `injectTraceContextIntoHeaders(headers)` (from `packages/world-vercel/src/telemetry.ts`) on the outgoing headers, inside the client span when one exists. `makeRequest` in `utils.ts` is the reference implementation. It is a no-op when no OpenTelemetry SDK is registered.

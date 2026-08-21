@@ -1,6 +1,6 @@
 import type * as api from '@opentelemetry/api';
 import type { Span, SpanKind, SpanOptions } from '@opentelemetry/api';
-import { once } from '@workflow/utils';
+import { globalSingleton, once } from '@workflow/utils';
 import { WorkflowSuspension } from './global.js';
 import { runtimeLogger } from './logger.js';
 import * as Attr from './telemetry/semantic-conventions.js';
@@ -23,8 +23,16 @@ import * as Attr from './telemetry/semantic-conventions.js';
  */
 export type WorkflowTraceMode = 'linked' | 'continuous';
 
-/** Unrecognized `WORKFLOW_TRACE_MODE` values we already warned about. */
-const warnedUnrecognizedTraceModes = new Set<string>();
+/**
+ * Unrecognized `WORKFLOW_TRACE_MODE` values we already warned about. On
+ * `globalThis` (see `globalSingleton`) so the warning stays once per process
+ * rather than once per bundler layer.
+ */
+const traceModeWarnings = globalSingleton(
+  '@workflow/core//traceModeWarnings',
+  1,
+  () => ({ unrecognized: new Set<string>() })
+);
 
 /**
  * Resolves the active trace mode from the `WORKFLOW_TRACE_MODE` env var.
@@ -35,8 +43,12 @@ const warnedUnrecognizedTraceModes = new Set<string>();
 export function getWorkflowTraceMode(): WorkflowTraceMode {
   const value = process.env.WORKFLOW_TRACE_MODE;
   if (value === 'continuous') return 'continuous';
-  if (value && value !== 'linked' && !warnedUnrecognizedTraceModes.has(value)) {
-    warnedUnrecognizedTraceModes.add(value);
+  if (
+    value &&
+    value !== 'linked' &&
+    !traceModeWarnings.unrecognized.has(value)
+  ) {
+    traceModeWarnings.unrecognized.add(value);
     runtimeLogger.warn(
       `Unrecognized WORKFLOW_TRACE_MODE value "${value}"; expected "linked" or "continuous". Falling back to "linked".`
     );
@@ -198,6 +210,9 @@ const StepExecutionDurationHistogram = once(async () => {
  * of `@opentelemetry/api` sees the global registration, so a deployment's
  * logs show the two packages' views side by side.
  */
+// per-copy-ok: this diagnostic reports how THIS module instance sees the global
+// OTel registration, which is the whole point of the log. With several copies
+// in a process, each one's view is what is worth seeing.
 let otelDiagLogged = false;
 function logOtelDiagnosticOnce(otel: typeof api, tracer: api.Tracer): void {
   const debugEnabled =

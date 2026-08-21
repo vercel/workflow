@@ -27,7 +27,17 @@ export interface EnvNumberOptions {
 
 // Raw "name=value" pairs already warned about, so a bad env var warns once
 // per process rather than on every (lazy) read.
-const warnedEnvValues = new Set<string>();
+//
+// On `globalThis` rather than at module scope so "per process" survives
+// bundling: this package is compiled into the host application's server build,
+// which gives one copy of this module per bundler layer, and a per-copy Set
+// would warn once per layer. Hand-rolled rather than `globalSingleton()` from
+// `@workflow/utils` because this package deliberately carries no dependencies;
+// the two are equivalent and the rule accepts both.
+const WarnedEnvValuesKey = Symbol.for('@workflow/world//warnedEnvValues/v1');
+const globalStore = globalThis as typeof globalThis &
+  Record<symbol, Set<string> | undefined>;
+const warnedEnvValues = (globalStore[WarnedEnvValuesKey] ??= new Set<string>());
 
 function warnOnce(key: string, message: string): void {
   if (warnedEnvValues.has(key)) return;
