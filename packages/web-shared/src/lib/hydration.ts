@@ -7,7 +7,9 @@
  */
 
 import {
+  deriveRunPayloadKeys,
   extractClassName,
+  hydrateDataWithKey,
   hydrateResourceIO as hydrateResourceIOGeneric,
   isEncryptedData,
   isExpiredStub,
@@ -17,6 +19,15 @@ import {
   serializedInstanceToRef,
 } from '@workflow/core/serialization-format';
 import { getEventDataRefFields } from '@workflow/world';
+
+const browserHydrationOptions = {
+  zstdDecoder: async (payload: Uint8Array): Promise<Uint8Array> => {
+    const { decompressZstdInBrowser } = await import(
+      './zstd-browser-decoder.js'
+    );
+    return decompressZstdInBrowser(payload);
+  },
+};
 
 // Re-export types and utilities that consumers need
 export {
@@ -479,29 +490,14 @@ export async function hydrateResourceIOWithKey<T>(
  * Async hydration for web display.
  *
  * This follows the same resource-field mapping as {@link hydrateResourceIO},
- * but can also inflate compressed browser payloads through the registered
- * zstd WASM decoder. When a key is provided, encrypted fields are decrypted
- * first and then inflated/hydrated.
+ * but can also inflate compressed browser payloads through the zstd WASM
+ * decoder. When a key is provided, encrypted fields are decrypted first and
+ * then inflated/hydrated.
  */
 export async function hydrateResourceIOAsync<T>(
   resource: T,
   key?: Uint8Array
 ): Promise<T> {
-  const { hydrateDataWithKey, deriveRunPayloadKeys } = await import(
-    '@workflow/core/serialization-format'
-  );
-  // Payloads may be zstd-compressed (the Web DecompressionStream has no zstd);
-  // register the WASM-backed browser decoder before hydrating. Idempotent and
-  // lazy — the WASM is only compiled when a zstd payload is actually decoded.
-  const { ensureZstdDecoderRegistered } = await import(
-    './zstd-browser-decoder.js'
-  );
-  ensureZstdDecoderRegistered();
-  // Resolve the *full* key capability, not just the symmetric key: a run's
-  // event log can contain sealed ('encp') payloads that another run wrote to
-  // it (a cross-deployment hook resumption, say), and opening those needs the
-  // run's X25519 scalar in addition to its AES key. Both are derived from the
-  // same 32 bytes the key-retrieval endpoint returns.
   // Resolve the *full* key capability, not just the symmetric key: a run's
   // event log can contain sealed ('encp') payloads that another run wrote to
   // it (a cross-deployment hook resumption, say), and opening those needs the
@@ -514,11 +510,18 @@ export async function hydrateResourceIOAsync<T>(
     // Already-hydrated: encrypted marker with stored bytes
     if (isEncryptedMarker(value)) {
       const raw = (value as any).__encryptedData as Uint8Array;
-      return cryptoKey ? hydrateDataWithKey(raw, revivers, cryptoKey) : value;
+      return cryptoKey
+        ? hydrateDataWithKey(raw, revivers, cryptoKey, browserHydrationOptions)
+        : value;
     }
     // Raw Uint8Array: may be encrypted, compressed, or plain devalue.
     if (value instanceof Uint8Array) {
-      return hydrateDataWithKey(value, revivers, cryptoKey);
+      return hydrateDataWithKey(
+        value,
+        revivers,
+        cryptoKey,
+        browserHydrationOptions
+      );
     }
     // Not serialized — return as-is.
     return value;

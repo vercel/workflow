@@ -20,6 +20,7 @@ export {
 // Re-export composable encryption
 export {
   type CryptoKey,
+  type DecryptionKey,
   decrypt,
   type EncryptionKeyParam,
   encrypt,
@@ -40,6 +41,7 @@ export type {
   Reducers,
   Revivers,
   SerializableSpecial,
+  SerializationFormatType,
 } from './types.js';
 export { isFormatPrefix, SerializationFormat } from './types.js';
 

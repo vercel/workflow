@@ -10,14 +10,12 @@
  * compression runs at every step boundary so the write CPU is a per-step
  * tax. zstd requires `node:zlib` >= 22.15 (Web `CompressionStream` has no
  * zstd), so on a runtime without it we fall back to gzip via the portable
- * `CompressionStream`. `WORKFLOW_COMPRESSION_CODEC=gzip` forces the
- * portable codec.
+ * `CompressionStream`. `WORKFLOW_COMPRESSION_CODEC=gzip` forces gzip.
  *
  * Read side: dispatch on the format prefix, so both 'zstd' and 'gzip'
  * payloads are always decodable regardless of which codec wrote them.
- * (The browser o11y read path decodes zstd via a registered WASM decoder —
- * see `serialization-format.ts`; this module's `decompress` is the Node
- * runtime/replay path and uses `node:zlib`.)
+ * (The browser o11y read path passes a WASM decoder explicitly — see
+ * `serialization-format.ts`; the Node runtime/replay path uses `node:zlib`.)
  *
  * Layering order with encryption: compression is applied BEFORE
  * encryption (encr(zstd(devl))) — encrypted bytes are high-entropy and
@@ -32,6 +30,10 @@
  *   archives, etc.) from wasted CPU and size inflation.
  */
 
+import {
+  decompressSerializedDataSync,
+  getNativeCompressionCodec,
+} from '@workflow/world/serialization-compression.js';
 import {
   decodeFormatPrefix,
   encodeWithFormatPrefix,
@@ -77,9 +79,8 @@ function isCompressionDisabledByEnv(): boolean {
 }
 
 /**
- * Optional codec override (`WORKFLOW_COMPRESSION_CODEC=gzip|zstd`). Lets an
- * operator pin the portable codec (gzip) — useful for A/B comparisons or
- * runtimes where zstd read support isn't yet everywhere.
+ * Optional codec override (`WORKFLOW_COMPRESSION_CODEC=gzip|zstd`). Useful
+ * for A/B comparisons or runtimes where zstd read support isn't everywhere.
  */
 function codecOverrideFromEnv(): 'gzip' | 'zstd' | undefined {
   try {
@@ -90,44 +91,30 @@ function codecOverrideFromEnv(): 'gzip' | 'zstd' | undefined {
   }
 }
 
-interface NodeZlib {
-  zstdCompressSync?: (data: Uint8Array, opts?: unknown) => Uint8Array;
-  zstdDecompressSync?: (data: Uint8Array) => Uint8Array;
-  constants?: Record<string, number>;
-}
+const nativeGzip = getNativeCompressionCodec('gzip');
+const nativeZstd = getNativeCompressionCodec('zstd');
 
-/**
- * Resolve `node:zlib` via `process.getBuiltinModule` — no static import, so
- * this module stays bundler-safe for browser/edge targets (where it returns
- * undefined and we fall back to gzip).
- */
-function getNodeZlib(): NodeZlib | undefined {
-  try {
-    return (
-      globalThis as {
-        process?: { getBuiltinModule?: (id: string) => NodeZlib };
-      }
-    ).process?.getBuiltinModule?.('node:zlib');
-  } catch {
-    return undefined;
-  }
+/** Runtime-specific zstd decoder used when native Node support is unavailable. */
+export type ZstdDecoder = (
+  payload: Uint8Array
+) => Uint8Array | Promise<Uint8Array>;
+
+export interface DecompressionOptions {
+  zstdDecoder?: ZstdDecoder;
 }
 
 function isZstdAvailable(): boolean {
-  const z = getNodeZlib();
-  return (
-    typeof z?.zstdCompressSync === 'function' &&
-    typeof z?.zstdDecompressSync === 'function'
-  );
+  return nativeZstd !== undefined;
 }
 
 /**
  * gzip via the web-standard `CompressionStream` (Node 18+, browsers, edge).
  */
-function isGzipAvailable(): boolean {
+function canCompressGzip(): boolean {
   return (
-    typeof CompressionStream === 'function' &&
-    typeof DecompressionStream === 'function'
+    nativeGzip !== undefined ||
+    (typeof CompressionStream === 'function' &&
+      typeof DecompressionStream === 'function')
   );
 }
 
@@ -168,34 +155,44 @@ async function pipeThroughTransform(
   return out;
 }
 
-async function gzipBytes(data: Uint8Array): Promise<Uint8Array> {
+function gzipBytes(data: Uint8Array): Promise<Uint8Array> {
   return pipeThroughTransform(data, new CompressionStream('gzip'));
 }
 
-async function gunzipBytes(data: Uint8Array): Promise<Uint8Array> {
+async function gzip(data: Uint8Array): Promise<Uint8Array> {
+  return nativeGzip ? nativeGzip.compress(data) : gzipBytes(data);
+}
+
+function gunzipBytes(data: Uint8Array): Promise<Uint8Array> {
   return pipeThroughTransform(data, new DecompressionStream('gzip'));
 }
 
 function zstdBytes(data: Uint8Array): Uint8Array {
-  const z = getNodeZlib();
-  const level = z?.constants?.ZSTD_c_compressionLevel;
-  const opts =
-    level !== undefined ? { params: { [level]: ZSTD_LEVEL } } : undefined;
-  // biome-ignore lint/style/noNonNullAssertion: guarded by isZstdAvailable()
-  return new Uint8Array(z!.zstdCompressSync!(data, opts));
+  if (!nativeZstd) {
+    throw new Error('zstd compression is not available in this runtime');
+  }
+  return nativeZstd.compress(data, ZSTD_LEVEL);
 }
 
-function unzstdBytes(data: Uint8Array): Uint8Array {
-  const z = getNodeZlib();
-  if (!z?.zstdDecompressSync) {
-    throw new Error(
-      'Compressed (zstd) workflow data encountered but node:zlib zstd ' +
-        'support is not available in this runtime (requires Node.js 22.15+). ' +
-        'In the browser, register a zstd decoder via registerZstdDecoder ' +
-        '(serialization-format.ts).'
-    );
-  }
-  return new Uint8Array(z.zstdDecompressSync(data));
+async function decompressZstd(
+  payload: Uint8Array,
+  decoder?: ZstdDecoder
+): Promise<Uint8Array> {
+  if (nativeZstd) return nativeZstd.decompress(payload);
+  if (decoder) return decoder(payload);
+  throw new Error(
+    'Compressed (zstd) workflow data encountered but no zstd decoder is ' +
+      'available. Node.js 22.15+ decodes natively; in the browser ' +
+      'pass one in DecompressionOptions.'
+  );
+}
+
+async function decompressGzip(payload: Uint8Array): Promise<Uint8Array> {
+  if (nativeGzip) return nativeGzip.decompress(payload);
+  if (typeof DecompressionStream === 'function') return gunzipBytes(payload);
+  throw new Error(
+    'Compressed (gzip) workflow data encountered but no gzip decoder is available.'
+  );
 }
 
 /**
@@ -246,10 +243,10 @@ function recordStats(
  */
 function selectWriteCodec(): 'zstd' | 'gzip' | 'none' {
   const override = codecOverrideFromEnv();
-  if (override === 'gzip') return isGzipAvailable() ? 'gzip' : 'none';
+  if (override === 'gzip') return canCompressGzip() ? 'gzip' : 'none';
   // Default and explicit 'zstd' both prefer zstd, then fall back to gzip.
   if (isZstdAvailable()) return 'zstd';
-  if (isGzipAvailable()) return 'gzip';
+  if (canCompressGzip()) return 'gzip';
   return 'none';
 }
 
@@ -267,13 +264,22 @@ function selectWriteCodec(): 'zstd' | 'gzip' | 'none' {
  * @returns The compressed data with a codec prefix, or the original data
  *   when compression is disabled, unavailable, or not worthwhile.
  */
-export async function compress(
-  data: Uint8Array | unknown,
+export function compress(
+  data: Uint8Array,
   enabled: boolean,
   stats?: CompressionStats
-): Promise<Uint8Array | unknown> {
+): Promise<Uint8Array>;
+export function compress(
+  data: unknown,
+  enabled: boolean,
+  stats?: CompressionStats
+): Promise<unknown>;
+export async function compress(
+  data: unknown,
+  enabled: boolean,
+  stats?: CompressionStats
+): Promise<unknown> {
   if (!(data instanceof Uint8Array)) return data;
-  // From here `data` is binary, so every return path records stats.
   if (
     !enabled ||
     data.length < COMPRESSION_MIN_BYTES ||
@@ -289,16 +295,18 @@ export async function compress(
     return data;
   }
 
-  const compressed = codec === 'zstd' ? zstdBytes(data) : await gzipBytes(data);
-  const format =
-    codec === 'zstd' ? SerializationFormat.ZSTD : SerializationFormat.GZIP;
-  const wrappedLength = 4 + compressed.length; // format prefix + payload
+  const compressed = codec === 'zstd' ? zstdBytes(data) : await gzip(data);
+  const wrappedLength = 4 + compressed.length;
   if (wrappedLength >= data.length * (1 - COMPRESSION_MIN_SAVINGS_RATIO)) {
     recordStats(stats, 'none', data.length, data.length);
     return data;
   }
+
   recordStats(stats, codec, data.length, wrappedLength);
-  return encodeWithFormatPrefix(format, compressed);
+  return encodeWithFormatPrefix(
+    codec === 'zstd' ? SerializationFormat.ZSTD : SerializationFormat.GZIP,
+    compressed
+  );
 }
 
 /**
@@ -306,45 +314,65 @@ export async function compress(
  * Dispatches on the prefix ('zstd' or 'gzip') and inflates the inner
  * payload (which carries its own format prefix, e.g. 'devl').
  *
- * Non-compressed data (including non-binary legacy data) is returned
- * unchanged, so this is safe to apply unconditionally on read paths.
+ * Non-compressed data is returned unchanged.
  */
+export function decompress(
+  data: Uint8Array,
+  stats?: CompressionStats,
+  options?: DecompressionOptions
+): Promise<Uint8Array>;
+export function decompress(
+  data: unknown,
+  stats?: CompressionStats,
+  options?: DecompressionOptions
+): Promise<unknown>;
 export async function decompress(
-  data: Uint8Array | unknown,
-  stats?: CompressionStats
-): Promise<Uint8Array | unknown> {
+  data: unknown,
+  stats?: CompressionStats,
+  options?: DecompressionOptions
+): Promise<unknown> {
   if (!(data instanceof Uint8Array)) return data;
   const prefix = peekFormatPrefix(data);
 
-  if (prefix === SerializationFormat.ZSTD) {
-    const { payload } = decodeFormatPrefix(data);
-    const inflated = unzstdBytes(payload);
-    recordStats(stats, 'zstd', inflated.length, data.length);
-    return inflated;
+  const codec =
+    prefix === SerializationFormat.ZSTD
+      ? 'zstd'
+      : prefix === SerializationFormat.GZIP
+        ? 'gzip'
+        : undefined;
+  if (!codec) {
+    recordStats(stats, 'none', data.length, data.length);
+    return data;
   }
 
-  if (prefix === SerializationFormat.GZIP) {
-    if (!isGzipAvailable()) {
-      throw new Error(
-        'Compressed (gzip) workflow data encountered but DecompressionStream ' +
-          'is not available in this runtime. Node.js 18+, browsers, and edge ' +
-          'runtimes all support it.'
-      );
-    }
-    const { payload } = decodeFormatPrefix(data);
-    const inflated = await gunzipBytes(payload);
-    recordStats(stats, 'gzip', inflated.length, data.length);
-    return inflated;
-  }
+  const { payload } = decodeFormatPrefix(data);
+  const inflated = await (codec === 'zstd'
+    ? decompressZstd(payload, options?.zstdDecoder)
+    : decompressGzip(payload));
+  recordStats(stats, codec, inflated.length, data.length);
+  return inflated;
+}
 
-  recordStats(stats, 'none', data.length, data.length);
-  return data;
+/**
+ * Decompress without starting a portable asynchronous codec. Observability's
+ * synchronous hydration path uses this to leave browser data untouched until
+ * its async hydration path is requested.
+ */
+export function decompressSync(data: Uint8Array): Uint8Array | undefined {
+  try {
+    return decompressSerializedDataSync(data);
+  } catch {
+    // Observability hydration is best-effort: preserve corrupt bytes so the
+    // event remains inspectable instead of failing the CLI/server response.
+    return undefined;
+  }
 }
 
 /**
  * Check if data is compressed (has a 'zstd' or 'gzip' format prefix).
  */
-export function isCompressed(data: Uint8Array | unknown): boolean {
+export function isCompressed(data: unknown): boolean {
+  if (!(data instanceof Uint8Array)) return false;
   const prefix = peekFormatPrefix(data);
   return (
     prefix === SerializationFormat.ZSTD || prefix === SerializationFormat.GZIP

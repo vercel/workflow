@@ -180,8 +180,9 @@ export function aesKeyOf(key: PayloadKey | undefined): CryptoKey | undefined {
 }
 
 /**
- * Encryption key parameter type. Accepts a resolved key, undefined (no encryption),
- * a promise, or a resolver that can defer fetching the key until data needs it.
+ * A stream may receive a resolved key, an in-flight lookup, or a lazy lookup
+ * that should not start until the first frame arrives. It resolves this input
+ * only once.
  */
 export type EncryptionKeyParam =
   | PayloadKey
@@ -206,10 +207,18 @@ export async function resolveEncryptionKey(
  * @param key - Encryption key (undefined to skip encryption)
  * @returns The encrypted data with its format prefix, or the original data if no key
  */
-export async function encrypt(
-  data: Uint8Array | unknown,
+export function encrypt(
+  data: Uint8Array,
   key: PayloadKey | undefined
-): Promise<Uint8Array | unknown> {
+): Promise<Uint8Array>;
+export function encrypt(
+  data: unknown,
+  key: PayloadKey | undefined
+): Promise<unknown>;
+export async function encrypt(
+  data: unknown,
+  key: PayloadKey | undefined
+): Promise<unknown> {
   if (!key || !(data instanceof Uint8Array)) return data;
 
   if (isSealTarget(key)) {
@@ -225,24 +234,12 @@ export async function encrypt(
 }
 
 /**
- * Decrypt a format-prefixed payload if it's encrypted or sealed.
- *
- * Strips the `encr`/`encp` format prefix and recovers the inner payload.
- * Opening a sealed (`encp`) payload requires the run's X25519 keypair, so the
- * caller must supply {@link RunPayloadKeys} — a bare symmetric key cannot do
- * it, and neither can a {@link SealTarget} (which is write-only by design).
- *
- * @param data - The potentially encrypted data
- * @param key - Encryption key (undefined to skip decryption)
- * @returns The decrypted inner payload, or the original data if not encrypted
- */
-/**
  * Open a sealed (`encp`) envelope. Split out from {@link decrypt} to keep
  * each scheme's error handling readable on its own.
  */
 async function openSealedEnvelope(
   data: Uint8Array,
-  key: PayloadKey | undefined
+  key: DecryptionKey | undefined
 ): Promise<Uint8Array> {
   // Sealed payloads need the private scalar. Anything else — no key, a bare
   // symmetric key, or a write-only seal target — cannot open them.
@@ -265,22 +262,46 @@ async function openSealedEnvelope(
   try {
     return await openSealed(key.keyPair, payload, key.aad);
   } catch (error) {
-    // The sealed-box layer only sees the stripped payload, so it cannot
-    // record the outer envelope prefix. Enrich it here before rethrowing.
-    if (RuntimeDecryptionError.is(error) && error.context) {
-      error.context.formatPrefix = SerializationFormat.SEALED;
-    }
-    throw error;
+    throw addFormatPrefix(error, SerializationFormat.SEALED);
   }
 }
 
-export async function decrypt(
-  data: Uint8Array | unknown,
-  key: PayloadKey | undefined
-): Promise<Uint8Array | unknown> {
-  // Non-binary data is returned as-is.
-  if (!(data instanceof Uint8Array)) return data;
+function requireAesDecryptionKey(
+  data: Uint8Array,
+  key: DecryptionKey | undefined
+): CryptoKey {
+  const aesKey = aesKeyOf(key);
+  if (aesKey) return aesKey;
 
+  throw new RuntimeDecryptionError(
+    'Encrypted data encountered but no encryption key is available. ' +
+      'Encryption is not configured or no key was provided for this run.',
+    {
+      context: {
+        operation: 'decrypt',
+        byteLength: data.byteLength,
+        formatPrefix: 'encr',
+      },
+    }
+  );
+}
+
+/**
+ * Decrypt a format-prefixed payload if it is encrypted or sealed.
+ */
+export function decrypt(
+  data: Uint8Array,
+  key: DecryptionKey | undefined
+): Promise<Uint8Array>;
+export function decrypt(
+  data: unknown,
+  key: DecryptionKey | undefined
+): Promise<unknown>;
+export async function decrypt(
+  data: unknown,
+  key: DecryptionKey | undefined
+): Promise<unknown> {
+  if (!(data instanceof Uint8Array)) return data;
   const format = peekFormatPrefix(data);
 
   if (format === SerializationFormat.SEALED) {
@@ -290,33 +311,19 @@ export async function decrypt(
   // If the data is not encrypted, return it unchanged.
   if (format !== SerializationFormat.ENCRYPTED) return data;
 
-  // If the data is encrypted but no symmetric key is available, fail fast.
-  const aesKey = aesKeyOf(key);
-  if (!aesKey) {
-    throw new RuntimeDecryptionError(
-      'Encrypted data encountered but no encryption key is available. ' +
-        'Encryption is not configured or no key was provided for this run.',
-      {
-        context: {
-          operation: 'decrypt',
-          byteLength: data.byteLength,
-          formatPrefix: 'encr',
-        },
-      }
-    );
-  }
+  const aesKey = requireAesDecryptionKey(data, key);
 
   const { payload } = decodeFormatPrefix(data);
   try {
     return await aesGcmDecrypt(aesKey, payload);
   } catch (error) {
-    // The low-level AES layer only sees the stripped payload, so it cannot
-    // record the outer envelope prefix. This layer peeked it (`encr`), so
-    // enrich the diagnostic context with the real format prefix before
-    // rethrowing.
-    if (RuntimeDecryptionError.is(error) && error.context) {
-      error.context.formatPrefix = format;
-    }
-    throw error;
+    throw addFormatPrefix(error, format);
   }
+}
+
+function addFormatPrefix(error: unknown, format: string): unknown {
+  if (RuntimeDecryptionError.is(error) && error.context) {
+    error.context.formatPrefix = format;
+  }
+  return error;
 }

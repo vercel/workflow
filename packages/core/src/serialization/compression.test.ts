@@ -99,11 +99,16 @@ describe('compression layer (compress/decompress)', () => {
     expect(result).toBe(original);
   });
 
-  it('decompress passes non-compressed and non-binary data through', async () => {
+  it('decompress passes non-compressed bytes through', async () => {
     const plain = textEncoder.encode('devl"hello"');
     expect(await decompress(plain)).toBe(plain);
-    const legacy = [1, 2, 3];
-    expect(await decompress(legacy)).toBe(legacy);
+  });
+
+  it('passes legacy non-binary values through unchanged', async () => {
+    const value = { legacy: true };
+    expect(await compress(value, true)).toBe(value);
+    expect(await decompress(value)).toBe(value);
+    expect(isCompressed(value)).toBe(false);
   });
 });
 
@@ -163,12 +168,6 @@ describe('CompressionStats telemetry sink', () => {
     expect(stats.compressed).toBe(false);
     expect(stats.uncompressedBytes).toBe(original.length);
     expect(stats.storedBytes).toBe(original.length);
-  });
-
-  it('does not record for non-binary (legacy) data', async () => {
-    const stats: CompressionStats = {};
-    await compress({ not: 'binary' }, true, stats);
-    expect(stats.recorded).toBeFalsy();
   });
 
   it('records the inflate on the read path', async () => {
@@ -333,26 +332,32 @@ describe('codec selection (zstd preferred, gzip fallback)', () => {
       textEncoder.encode(JSON.stringify(makeCompressibleValue()))
     ) as Uint8Array;
     const stats: CompressionStats = {};
-    const compressed = await compress(original, true, stats);
+    const compression = compress(original, true, stats);
+    expect(compression).toBeInstanceOf(Promise);
+    const compressed = await compression;
     expect(isCompressed(compressed)).toBe(true);
     expect(peekFormatPrefix(compressed)).toBe(SerializationFormat.ZSTD);
     expect(stats.codec).toBe('zstd');
   });
 
-  it('WORKFLOW_COMPRESSION_CODEC=gzip forces the portable codec', async () => {
+  it('WORKFLOW_COMPRESSION_CODEC=gzip forces gzip', async () => {
     process.env.WORKFLOW_COMPRESSION_CODEC = 'gzip';
     const original = encodeWithFormatPrefix(
       SerializationFormat.DEVALUE_V1,
       textEncoder.encode(JSON.stringify(makeCompressibleValue()))
     ) as Uint8Array;
     const stats: CompressionStats = {};
-    const compressed = await compress(original, true, stats);
+    const compression = compress(original, true, stats);
+    expect(compression).toBeInstanceOf(Promise);
+    const compressed = await compression;
     expect(peekFormatPrefix(compressed)).toBe(SerializationFormat.GZIP);
     expect(stats.codec).toBe('gzip');
 
     // Read path still inflates gzip and reports the codec.
     const readStats: CompressionStats = {};
-    const inflated = (await decompress(compressed, readStats)) as Uint8Array;
+    const result = decompress(compressed, readStats);
+    expect(result).toBeInstanceOf(Promise);
+    const inflated = await result;
     expect(inflated).toEqual(original);
     expect(readStats.codec).toBe('gzip');
   });
@@ -413,6 +418,15 @@ describe('o11y hydration of compressed payloads', () => {
     expect(isCompressedData(data)).toBe(true);
     const hydrated = hydrateData(data, {});
     expect(hydrated).toEqual(value);
+  });
+
+  it('hydrateData leaves a corrupt compressed payload available for inspection', () => {
+    const data = encodeWithFormatPrefix(
+      SerializationFormat.GZIP,
+      new Uint8Array([1, 2, 3])
+    );
+
+    expect(hydrateData(data, {})).toBe(data);
   });
 
   it('hydrateDataWithKey decompresses encrypted + compressed payloads', async () => {

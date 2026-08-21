@@ -17,6 +17,7 @@ vi.mock('../telemetry.js', () => ({
   })),
 }));
 
+import { ReplayPayloadCache } from '../replay-payload-cache.js';
 import {
   dehydrateStepReturnValue,
   hydrateStepReturnValue,
@@ -101,5 +102,30 @@ describe('compression telemetry attributes', () => {
     expect(attrs['workflow.serialization.stored_bytes']).toBe(
       attrs['workflow.serialization.uncompressed_bytes']
     );
+  });
+
+  it('records read-path attributes when the replay cache prepares payloads', async () => {
+    const data = await dehydrateStepReturnValue(
+      makeCompressibleValue(),
+      'wrun_test',
+      undefined,
+      [],
+      globalThis,
+      false,
+      false,
+      true
+    );
+
+    recordedAttributes.length = 0;
+    await new ReplayPayloadCache(undefined).prepareEventPayload(
+      'evnt_test',
+      'result',
+      data
+    );
+
+    const attrs = lastAttrs();
+    expect(attrs['workflow.serialization.operation']).toBe('deserialize');
+    expect(attrs['workflow.serialization.compressed']).toBe(true);
+    expect(attrs['workflow.serialization.codec']).toBe('zstd');
   });
 });

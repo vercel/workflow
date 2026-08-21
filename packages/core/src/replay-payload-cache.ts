@@ -1,13 +1,21 @@
 import type { Event, WorkflowRun } from '@workflow/world';
-import type { PayloadKey } from './serialization/encryption.js';
+import type { CompressionStats } from './serialization/compression.js';
+import type { DecryptionKey } from './serialization/encryption.js';
 import {
+  decodePayload,
   type PreparedReplayPayload,
-  prepareReplayPayload,
-  type ReplayPayloadPreparer,
-} from './serialization.js';
+} from './serialization/payload.js';
+import { recordCompression } from './serialization/telemetry.js';
 
 const MAX_MEMOIZED_PRIMITIVE_LENGTH = 4096;
 type ReplayPayloadField = 'result' | 'error' | 'payload';
+
+/** Copy a view only when retaining it would also retain unrelated bytes. */
+function compactOwnedBytes(data: Uint8Array): Uint8Array {
+  return data.byteOffset === 0 && data.byteLength === data.buffer.byteLength
+    ? data
+    : new Uint8Array(data);
+}
 
 function isMemoizablePrimitive(value: unknown): boolean {
   if (value === null) return true;
@@ -43,8 +51,8 @@ export class ReplayPayloadCache {
   private nextUnscannedEventIndex = 0;
 
   constructor(
-    private readonly encryptionKey: PayloadKey | undefined,
-    private readonly preparer: ReplayPayloadPreparer = prepareReplayPayload
+    private readonly encryptionKey: DecryptionKey | undefined,
+    private readonly preparer: typeof decodePayload = decodePayload
   ) {}
 
   /**
@@ -173,7 +181,9 @@ export class ReplayPayloadCache {
     cacheKey: string,
     value: unknown
   ): Promise<PreparedReplayPayload> {
-    if (!(value instanceof Uint8Array)) return this.runPreparation(value);
+    if (!(value instanceof Uint8Array)) {
+      return Promise.resolve({ data: value });
+    }
 
     const preparation = this.ensurePreparation(cacheKey, value);
     void preparation.catch(() => {
@@ -197,9 +207,18 @@ export class ReplayPayloadCache {
     return preparation;
   }
 
-  /** Normalize synchronous and asynchronous preparers to one promise contract. */
-  private async runPreparation(value: unknown): Promise<PreparedReplayPayload> {
-    return this.preparer(value, this.encryptionKey);
+  /** Compact prepared bytes before retaining them for the invocation. */
+  private async runPreparation(
+    value: Uint8Array
+  ): Promise<PreparedReplayPayload> {
+    const compressionStats: CompressionStats = {};
+    const prepared = await this.preparer(
+      value,
+      this.encryptionKey,
+      compressionStats
+    );
+    await recordCompression(compressionStats, 'deserialize');
+    return { data: compactOwnedBytes(prepared) };
   }
 
   private workflowInputKey(runId: string): string {

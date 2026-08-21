@@ -8,14 +8,10 @@
 import { SerializationError } from '@workflow/errors';
 import type { CodecOptions } from './codec.js';
 import { devalueCodec } from './codec-devalue.js';
-import { compress, decompress } from './compression.js';
-import {
-  decrypt as decryptData,
-  encrypt as encryptData,
-  type PayloadKey,
-} from './encryption.js';
+import type { DecryptionKey, PayloadKey } from './encryption.js';
 import { formatSerializationError, rethrowIfRuntimeError } from './errors.js';
 import { decodeFormatPrefix, encodeWithFormatPrefix } from './format.js';
+import { decodePayload, encodePayload } from './payload.js';
 import { SerializationFormat } from './types.js';
 
 /**
@@ -25,20 +21,19 @@ export async function serialize(
   value: unknown,
   encryptionKey?: PayloadKey,
   options?: CodecOptions
-): Promise<Uint8Array | unknown> {
+): Promise<Uint8Array> {
   try {
     const payload = devalueCodec.serialize(value, 'step', options);
     const prefixed = encodeWithFormatPrefix(
       SerializationFormat.DEVALUE_V1,
       payload
-    ) as Uint8Array;
-    // Compress before encrypting — encrypted bytes don't compress.
-    const compressed = await compress(
+    );
+    return await encodePayload(
       prefixed,
-      options?.compression === true,
+      encryptionKey,
+      options?.compression ?? false,
       options?.compressionStats
     );
-    return encryptData(compressed, encryptionKey);
   } catch (error) {
     rethrowIfRuntimeError(error);
     const { message, hint } = formatSerializationError('step value', error);
@@ -50,25 +45,25 @@ export async function serialize(
  * Deserialize a value for the step execution environment.
  */
 export async function deserialize(
-  data: Uint8Array | unknown,
-  encryptionKey?: PayloadKey,
+  data: unknown,
+  encryptionKey?: DecryptionKey,
   options?: CodecOptions
 ): Promise<unknown> {
-  const decrypted = await decompress(
-    await decryptData(data, encryptionKey),
-    options?.compressionStats
-  );
-
-  if (!(decrypted instanceof Uint8Array)) {
+  if (!(data instanceof Uint8Array)) {
     if (devalueCodec.deserializeLegacy) {
-      return devalueCodec.deserializeLegacy(decrypted, 'step', options);
+      return devalueCodec.deserializeLegacy(data, 'step', options);
     }
     throw new Error(
       'Cannot deserialize non-binary data without legacy support'
     );
   }
 
-  const { format, payload } = decodeFormatPrefix(decrypted);
+  const prepared = await decodePayload(
+    data,
+    encryptionKey,
+    options?.compressionStats
+  );
+  const { format, payload } = decodeFormatPrefix(prepared);
 
   if (format === SerializationFormat.DEVALUE_V1) {
     return devalueCodec.deserialize(payload, 'step', options);

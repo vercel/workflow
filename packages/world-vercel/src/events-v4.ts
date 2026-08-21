@@ -34,6 +34,7 @@ import {
   type ListEventsByCorrelationIdParams,
   type ListEventsParams,
   type PaginatedResponse,
+  peekSerializationFormat,
   StructuredErrorSchema,
   WaitSchema,
   WorkflowRunSchema,
@@ -65,7 +66,6 @@ import {
   recordClientSpanStatus,
   withHttpClientSpan,
 } from './http-core.js';
-import { hasSerializedDataFormatPrefix } from './serialized-data.js';
 import { deserializeStep, StepWireSchema } from './steps.js';
 import {
   ErrorType,
@@ -374,9 +374,12 @@ const CreateEventV4PageSchema = z.union([
     hasMore: z.boolean(),
   }),
   z.object({
-    events: z.undefined(),
-    cursor: z.undefined(),
-    hasMore: z.undefined(),
+    // Materialized writes omit page metadata entirely. Zod 4.4 correctly
+    // treats bare z.undefined() properties as required, so optionality must be
+    // explicit when the keys themselves may be absent.
+    events: z.undefined().optional(),
+    cursor: z.undefined().optional(),
+    hasMore: z.undefined().optional(),
   }),
 ]);
 
@@ -436,7 +439,7 @@ const legacyStructuredErrorEventTypes = new Set<EventType>([
 ]);
 
 function decodeLegacyStructuredError(payload: Uint8Array): unknown {
-  if (hasSerializedDataFormatPrefix(payload)) return payload;
+  if (peekSerializationFormat(payload) !== null) return payload;
 
   try {
     const parsed = StructuredErrorSchema.safeParse(decode(payload.slice()));

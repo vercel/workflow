@@ -3,50 +3,19 @@
  */
 
 import type { RuntimeDecryptionErrorContext } from '@workflow/errors';
+import {
+  type FormatPrefix,
+  isFormatPrefix,
+  SerializationFormat,
+  type SerializationFormatType,
+} from '@workflow/world/serialization-format.js';
 
-// ---- Format Prefix ----
-
-/**
- * A format prefix is exactly 4 lowercase alphanumeric characters [a-z0-9].
- *
- * This is a branded string type — use `isFormatPrefix()` to validate
- * at runtime. The `SerializationFormat` object provides well-known
- * constants, but codecs may define additional prefixes.
- */
-export type FormatPrefix = string & { readonly __brand: 'FormatPrefix' };
-
-/**
- * Runtime type guard for format prefix strings.
- *
- * Validates that a string is exactly 4 characters of [a-z0-9].
- */
-export function isFormatPrefix(value: string): value is FormatPrefix {
-  return value.length === 4 && /^[a-z0-9]{4}$/.test(value);
-}
-
-/**
- * Well-known format prefix constants. Codecs may define additional ones.
- */
-export const SerializationFormat = {
-  /** devalue stringify/parse with TextEncoder/TextDecoder */
-  DEVALUE_V1: 'devl' as FormatPrefix,
-  /** Encrypted payload (inner payload has its own format prefix) */
-  ENCRYPTED: 'encr' as FormatPrefix,
-  /**
-   * Sealed payload — asymmetrically encrypted to a run's X25519 public key
-   * (inner payload has its own format prefix).
-   *
-   * Used for *cross-run* writes (hook payloads, forwarded stream frames),
-   * where the writer holds only the recipient run's public key and therefore
-   * cannot decrypt. A run's own payloads continue to use {@link ENCRYPTED}.
-   * See `sealed-box.ts` for the construction.
-   */
-  SEALED: 'encp' as FormatPrefix,
-  /** Gzip-compressed payload (inner payload has its own format prefix) */
-  GZIP: 'gzip' as FormatPrefix,
-  /** Zstandard-compressed payload (inner payload has its own format prefix) */
-  ZSTD: 'zstd' as FormatPrefix,
-} as const;
+export {
+  type FormatPrefix,
+  isFormatPrefix,
+  SerializationFormat,
+  type SerializationFormatType,
+};
 
 // ---- Serializable Types ----
 

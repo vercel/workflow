@@ -25,7 +25,6 @@ import {
   isObservabilityUpgradeRequiredError,
 } from './errors.js';
 import {
-  type EncryptionKeyResolver,
   hydrateResourceIO,
   isEncryptedRef,
   isExpiredRef,
@@ -33,15 +32,18 @@ import {
 import { resolveTimeWindow } from './time-window.js';
 
 /**
- * Create an EncryptionKeyResolver from a World instance.
- * Returns null if decrypt is false — encrypted data will show as a placeholder.
+ * Create a run-key lookup from a World instance.
+ * Returns undefined when encrypted data should remain a placeholder.
  *
  * The resolver fetches the full WorkflowRun (cached per runId) so that the
  * World can inspect deployment-specific fields for key resolution.
  */
-function createResolver(world: World, decrypt: boolean): EncryptionKeyResolver {
-  if (!decrypt) return null;
-  if (!world.getEncryptionKeyForRun) return null;
+function createResolver(
+  world: World,
+  decrypt: boolean
+): ((runId: string) => Promise<Uint8Array | undefined>) | undefined {
+  if (!decrypt) return;
+  if (!world.getEncryptionKeyForRun) return;
   const cache = new Map<string, Promise<Uint8Array | undefined>>();
   return (runId: string) => {
     let cached = cache.get(runId);

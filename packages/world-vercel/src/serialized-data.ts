@@ -1,72 +1,25 @@
 import { WorkflowWorldError } from '@workflow/errors';
-
-const FORMAT_PREFIX_LENGTH = 4;
-const DEVALUE_FORMAT_PREFIX = 'devl';
-const ENCRYPTED_FORMAT_PREFIX = 'encr';
-const GZIP_FORMAT_PREFIX = 'gzip';
-const ZSTD_FORMAT_PREFIX = 'zstd';
-const formatDecoder = new TextDecoder();
-
-const SERIALIZED_DATA_FORMAT_PREFIXES = new Set([
-  DEVALUE_FORMAT_PREFIX,
-  ENCRYPTED_FORMAT_PREFIX,
-  GZIP_FORMAT_PREFIX,
-  ZSTD_FORMAT_PREFIX,
-]);
-
-interface NodeZlibDecode {
-  gunzipSync?: (data: Uint8Array) => Uint8Array;
-  zstdDecompressSync?: (data: Uint8Array) => Uint8Array;
-}
-
-function getNodeZlib(): NodeZlibDecode | undefined {
-  try {
-    return (
-      globalThis as {
-        process?: { getBuiltinModule?: (id: string) => NodeZlibDecode };
-      }
-    ).process?.getBuiltinModule?.('node:zlib');
-  } catch {
-    return undefined;
-  }
-}
-
-function peekFormatPrefix(value: unknown): string | null {
-  if (
-    !(value instanceof Uint8Array) ||
-    value.byteLength < FORMAT_PREFIX_LENGTH
-  ) {
-    return null;
-  }
-  return formatDecoder.decode(value.subarray(0, FORMAT_PREFIX_LENGTH));
-}
-
-export function hasSerializedDataFormatPrefix(value: unknown): boolean {
-  const format = peekFormatPrefix(value);
-  return format !== null && SERIALIZED_DATA_FORMAT_PREFIXES.has(format);
-}
-
-function decompress(format: string, payload: Uint8Array): Uint8Array {
-  const zlib = getNodeZlib();
-  const decompress =
-    format === ZSTD_FORMAT_PREFIX ? zlib?.zstdDecompressSync : zlib?.gunzipSync;
-
-  if (!decompress) {
-    throw new WorkflowWorldError(
-      `Received ${format}-compressed workflow data, but this Node.js runtime does not support ${format} decompression. Use a compatible Node.js runtime or request unresolved data.`
-    );
-  }
-
-  return new Uint8Array(decompress(payload));
-}
+import { decompressSerializedDataSync } from '@workflow/world/serialization-compression.js';
+import {
+  peekSerializationFormat,
+  SerializationFormat,
+} from '@workflow/world/serialization-format.js';
 
 export function normalizeSerializedData(value: unknown): unknown {
-  const format = peekFormatPrefix(value);
-  if (format !== ZSTD_FORMAT_PREFIX && format !== GZIP_FORMAT_PREFIX) {
+  const format = peekSerializationFormat(value);
+  if (
+    format !== SerializationFormat.ZSTD &&
+    format !== SerializationFormat.GZIP
+  ) {
     return value;
   }
   const bytes = value as Uint8Array;
-  return decompress(format, bytes.subarray(FORMAT_PREFIX_LENGTH));
+  const decompressed = decompressSerializedDataSync(bytes);
+  if (decompressed) return decompressed;
+
+  throw new WorkflowWorldError(
+    `Received ${format}-compressed workflow data, but this Node.js runtime does not support ${format} decompression. Use a compatible Node.js runtime or request unresolved data.`
+  );
 }
 
 export function normalizeWorkflowRunData<T extends Record<string, unknown>>(

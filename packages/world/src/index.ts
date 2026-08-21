@@ -112,6 +112,15 @@ export {
   LegacySerializedDataSchemaV1,
   SerializedDataSchema,
 } from './serialization.js';
+export {
+  type FormatPrefix,
+  isFormatPrefix,
+  isSerializationFormat,
+  peekSerializationFormat,
+  SERIALIZATION_FORMAT_PREFIX_LENGTH,
+  SerializationFormat,
+  type SerializationFormatType,
+} from './serialization-format.js';
 export type * from './shared.js';
 export type {
   GetChunksOptions,

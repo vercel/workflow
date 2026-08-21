@@ -66,6 +66,7 @@ describe('isFormatPrefix', () => {
   it('should reject strings that are too long', () => {
     expect(isFormatPrefix('abcde')).toBe(false);
     expect(isFormatPrefix('abcdef')).toBe(false);
+    expect(isFormatPrefix('abcd\n')).toBe(false);
   });
 
   it('should reject uppercase characters', () => {
@@ -116,7 +117,7 @@ describe('encodeWithFormatPrefix', () => {
     const encoded = encodeWithFormatPrefix(
       SerializationFormat.DEVALUE_V1,
       payload
-    ) as Uint8Array;
+    );
 
     expect(encoded.length).toBe(4 + 3);
     // First 4 bytes should be 'devl'
@@ -125,20 +126,11 @@ describe('encodeWithFormatPrefix', () => {
     expect(Array.from(encoded.subarray(4))).toEqual([1, 2, 3]);
   });
 
-  it('should return non-Uint8Array values unchanged', () => {
-    const str = 'hello';
-    expect(encodeWithFormatPrefix(SerializationFormat.DEVALUE_V1, str)).toBe(
-      str
+  it('passes legacy non-binary values through unchanged', () => {
+    const value = { legacy: true };
+    expect(encodeWithFormatPrefix(SerializationFormat.DEVALUE_V1, value)).toBe(
+      value
     );
-
-    const num = 42;
-    expect(encodeWithFormatPrefix(SerializationFormat.DEVALUE_V1, num)).toBe(
-      num
-    );
-
-    expect(
-      encodeWithFormatPrefix(SerializationFormat.DEVALUE_V1, null)
-    ).toBeNull();
   });
 
   it('should handle empty payload', () => {
@@ -146,7 +138,7 @@ describe('encodeWithFormatPrefix', () => {
     const encoded = encodeWithFormatPrefix(
       SerializationFormat.DEVALUE_V1,
       payload
-    ) as Uint8Array;
+    );
     expect(encoded.length).toBe(4);
   });
 
@@ -156,7 +148,7 @@ describe('encodeWithFormatPrefix', () => {
     const encoded = encodeWithFormatPrefix(
       SerializationFormat.DEVALUE_V1,
       payload
-    ) as Uint8Array;
+    );
     expect(encoded.length).toBe(4 + 100000);
   });
 });
@@ -167,20 +159,17 @@ describe('decodeFormatPrefix', () => {
     const encoded = encodeWithFormatPrefix(
       SerializationFormat.DEVALUE_V1,
       payload
-    ) as Uint8Array;
+    );
 
     const decoded = decodeFormatPrefix(encoded);
     expect(decoded.format).toBe('devl');
     expect(decoded.payload).toEqual(new Uint8Array([1, 2, 3]));
   });
 
-  it('should handle legacy non-binary data', () => {
-    const legacyData = [1, 'hello', { a: 2 }];
-    const decoded = decodeFormatPrefix(legacyData);
-    expect(decoded.format).toBe('devl');
-    expect(decoded.payload).toEqual(
-      new TextEncoder().encode(JSON.stringify(legacyData))
-    );
+  it('maps legacy non-binary values to the devalue format', () => {
+    const decoded = decodeFormatPrefix({ legacy: true });
+    expect(decoded.format).toBe(SerializationFormat.DEVALUE_V1);
+    expect(new TextDecoder().decode(decoded.payload)).toBe('{"legacy":true}');
   });
 
   it('should throw for data too short', () => {
@@ -203,7 +192,7 @@ describe('decodeFormatPrefix', () => {
     const encoded = encodeWithFormatPrefix(
       SerializationFormat.ENCRYPTED,
       payload
-    ) as Uint8Array;
+    );
 
     const decoded = decodeFormatPrefix(encoded);
     expect(decoded.format).toBe('encr');
@@ -212,6 +201,10 @@ describe('decodeFormatPrefix', () => {
 });
 
 describe('peekFormatPrefix', () => {
+  it('returns null for legacy non-binary values', () => {
+    expect(peekFormatPrefix('legacy')).toBeNull();
+    expect(peekFormatPrefix(null)).toBeNull();
+  });
   it('should return prefix for valid format-prefixed data', () => {
     const payload = new Uint8Array([1, 2, 3]);
     const encoded = encodeWithFormatPrefix(
@@ -220,13 +213,6 @@ describe('peekFormatPrefix', () => {
     ) as Uint8Array;
 
     expect(peekFormatPrefix(encoded)).toBe('devl');
-  });
-
-  it('should return null for non-binary data', () => {
-    expect(peekFormatPrefix('not binary')).toBeNull();
-    expect(peekFormatPrefix(42)).toBeNull();
-    expect(peekFormatPrefix(null)).toBeNull();
-    expect(peekFormatPrefix(undefined)).toBeNull();
   });
 
   it('should return null for data too short', () => {
@@ -286,11 +272,9 @@ describe('encrypt', () => {
     expect(result).toBe(data);
   });
 
-  it('should return non-Uint8Array data unchanged even with key', async () => {
-    const key = await makeKey();
-    const data = 'string data';
-    const result = await encrypt(data, key);
-    expect(result).toBe(data);
+  it('passes legacy non-binary data through even when a key is present', async () => {
+    const data = { legacy: true };
+    expect(await encrypt(data, await makeKey())).toBe(data);
   });
 
   it('should encrypt and add encr prefix when key provided', async () => {
@@ -298,7 +282,7 @@ describe('encrypt', () => {
     const data = encodeWithFormatPrefix(
       SerializationFormat.DEVALUE_V1,
       new Uint8Array([1, 2, 3])
-    ) as Uint8Array;
+    );
 
     const encrypted = await encrypt(data, key);
     expect(encrypted).toBeInstanceOf(Uint8Array);
@@ -307,10 +291,22 @@ describe('encrypt', () => {
 });
 
 describe('decrypt', () => {
-  it('should return non-binary data unchanged', async () => {
-    const data = [1, 2, 3];
-    const result = await decrypt(data, undefined);
-    expect(result).toBe(data);
+  it('uses the portable asynchronous contract for AES envelopes', async () => {
+    const key = await makeKey();
+    const data = encodeWithFormatPrefix(
+      SerializationFormat.DEVALUE_V1,
+      new Uint8Array([1, 2, 3])
+    ) as Uint8Array;
+    const encrypted = (await encrypt(data, key)) as Uint8Array;
+
+    const decrypted = decrypt(encrypted, key);
+    expect(decrypted).toBeInstanceOf(Promise);
+    expect(await decrypted).toEqual(data);
+  });
+
+  it('passes legacy non-binary data through unchanged', async () => {
+    const data = { legacy: true };
+    expect(await decrypt(data, undefined)).toBe(data);
   });
 
   it('should return non-encrypted binary data unchanged', async () => {
@@ -364,7 +360,7 @@ describe('decrypt', () => {
     const tampered = new Uint8Array(encrypted);
     tampered[tampered.length - 1] ^= 0xff;
 
-    const error = await decrypt(tampered, key).catch((e) => e);
+    const error = await decrypt(tampered, key).catch((caught) => caught);
     expect(RuntimeDecryptionError.is(error)).toBe(true);
     expect(error.context).toMatchObject({
       operation: 'decrypt',
@@ -403,8 +399,8 @@ describe('sealed envelopes', () => {
     )) as Uint8Array;
 
     expect(peekFormatPrefix(sealed)).toBe(SerializationFormat.SEALED);
-    // Sealed data must not be mistaken for symmetrically encrypted data by
-    // anything dispatching on the prefix.
+    // `isEncrypted` remains the symmetric-envelope predicate. Display callers
+    // use `isEncryptedData` when both encrypted formats should match.
     expect(isEncrypted(sealed)).toBe(false);
   });
 
@@ -454,7 +450,7 @@ describe('sealed envelopes', () => {
       // A bare CryptoKey is the legacy "symmetric only" shape. It has no
       // scalar, so it cannot open a sealed payload — and must say so clearly
       // rather than failing an auth tag somewhere deeper.
-      const error = await decrypt(sealed, aes).catch((e) => e);
+      const error = await decrypt(sealed, aes).catch((caught) => caught);
       expect(RuntimeDecryptionError.is(error)).toBe(true);
       expect(error.message).toMatch(/no run keypair is available/);
       expect(error.context).toMatchObject({
@@ -488,7 +484,7 @@ describe('sealed envelopes', () => {
       // A seal target carries no symmetric capability, so it must be treated
       // exactly like "no key" rather than silently coerced.
       const error = await decrypt(encrypted, sealTo(keyPair.publicKey)).catch(
-        (e) => e
+        (caught) => caught
       );
       expect(RuntimeDecryptionError.is(error)).toBe(true);
       expect(error.message).toMatch(/no encryption key is available/);

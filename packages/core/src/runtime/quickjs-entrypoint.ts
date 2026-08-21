@@ -43,7 +43,6 @@ import {
   dehydrateStepArguments,
   dehydrateStepError,
   hydrateRunError,
-  maybeEncrypt,
 } from '../serialization.js';
 import { remapErrorStack, stripInlineSourceMap } from '../source-map.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
@@ -76,6 +75,15 @@ import { runStepSingleFlight } from './step-single-flight.js';
 import { unserializableStepInputPlaceholder } from './unserializable-step.js';
 import { getWaitContinuationDispatch } from './wait-continuation.js';
 import { getWorld } from './world.js';
+
+function requireSerializedStepInput(step: PendingStep): Uint8Array {
+  if (step.input === undefined) {
+    throw new Error(
+      `QuickJS pending step ${step.correlationId} is missing serialized input`
+    );
+  }
+  return step.input;
+}
 
 /** Tiny ms timer using performance.now() — already monotonic on Node. */
 function tick(): number {
@@ -345,6 +353,12 @@ async function dispatchPendingOps(params: {
       // EntityConflictError, which we swallow below. This drops one
       // network round-trip per pending hook.
       try {
+        if (
+          hook.metadata !== undefined &&
+          !(hook.metadata instanceof Uint8Array)
+        ) {
+          throw new TypeError('QuickJS hook metadata must be binary');
+        }
         const encryptedMetadata =
           typeof hook.metadata === 'undefined'
             ? undefined
@@ -611,7 +625,7 @@ async function dispatchPendingOps(params: {
           // on the host side — matching what
           // `dehydrateStepArguments` does in the node:vm engine.
           const encryptedInput = await encryptSerializedData(
-            step.input,
+            requireSerializedStepInput(step),
             encryptionKey
           );
 
@@ -1585,7 +1599,7 @@ export async function runWorkflowWithQuickJS(params: {
                   // EntityConflictError → { type: 'skipped' } and never
                   // runs the body. Mirrors the node engine's inline path.
                   lazyStepInput: await encryptSerializedData(
-                    step.input,
+                    requireSerializedStepInput(step),
                     encryptionKey
                   ),
                   // Ownership stamp: wake replays see the body as in
@@ -2036,10 +2050,10 @@ export async function runWorkflowWithQuickJS(params: {
             message: (rehydrateErr as Error)?.message,
           }
         );
-        dehydratedError = (await maybeEncrypt(
+        dehydratedError = await encryptSerializedData(
           result.failed.valueBytes,
           encryptionKey
-        )) as Uint8Array;
+        );
       }
     } else {
       if (errorStack) {

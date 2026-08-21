@@ -27,8 +27,8 @@ import { monotonicFactory } from 'ulid';
 import { runtimeLogger } from '../logger.js';
 import { bytesToBase64, deriveRunKeyPair } from '../sealed-box.js';
 import {
+  type DecryptionKey,
   deriveRunPayloadKeys,
-  type PayloadKey,
 } from '../serialization/encryption.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { getSpanKind, trace } from '../telemetry.js';
@@ -1247,8 +1247,8 @@ export function getQueueOverhead(message: { requestedAt?: Date }) {
 export function memoizeEncryptionKey(
   world: World,
   runOrId: WorkflowRun | string
-): () => Promise<PayloadKey | undefined> {
-  let cached: Promise<PayloadKey | undefined> | undefined;
+): () => Promise<DecryptionKey | undefined> {
+  let cached: Promise<DecryptionKey | undefined> | undefined;
   return () => {
     if (!cached) {
       cached = (async () => {

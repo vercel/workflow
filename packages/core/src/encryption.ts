@@ -1,11 +1,11 @@
 import { RuntimeDecryptionError, WorkflowRuntimeError } from '@workflow/errors';
 
 /**
- * Browser-compatible AES-256-GCM encryption module.
+ * Portable AES-256-GCM encryption using the Web Crypto API.
  *
- * Uses the Web Crypto API (`globalThis.crypto.subtle`) which works in
- * both modern browsers and Node.js 20+. This module is intentionally
- * free of Node.js-specific imports so it can be bundled for the browser.
+ * This module is the crypto implementation boundary for every runtime. Callers
+ * depend only on `importKey`, `encrypt`, and `decrypt`, so their implementation
+ * can change later without leaking runtime-specific key types into serialization.
  *
  * The World interface (`getEncryptionKeyForRun`) returns a raw 32-byte
  * AES-256 key. Callers should use `importKey()` once to convert it to a
@@ -13,9 +13,8 @@ import { RuntimeDecryptionError, WorkflowRuntimeError } from '@workflow/errors';
  * operations within the same run. This avoids repeated `importKey()`
  * calls on every encrypt/decrypt invocation.
  *
- * Wire format: `[nonce (12 bytes)][ciphertext + auth tag]`
- * The `encr` format prefix is NOT part of this module — it's added/stripped
- * by the serialization layer in `maybeEncrypt`/`maybeDecrypt`.
+ * Wire format: `[nonce (12 bytes)][ciphertext + auth tag]`. The serialization
+ * encryption module owns the outer `encr` format prefix.
  */
 
 // CryptoKey is a global type in browsers and Node.js 20+, but TypeScript's
@@ -140,30 +139,27 @@ export async function encrypt(
  * @param aad - Optional additional authenticated data. Must match the bytes
  *   passed to {@link encrypt} exactly, otherwise the GCM tag fails to verify
  *   and a {@link RuntimeDecryptionError} is thrown.
- * @returns Decrypted plaintext
+ * @returns Decrypted plaintext.
  */
 export async function decrypt(
   key: CryptoKey,
   data: Uint8Array,
   aad?: Uint8Array
 ): Promise<Uint8Array> {
-  const minLength = NONCE_LENGTH + TAG_LENGTH / 8; // nonce + auth tag
+  const minLength = NONCE_LENGTH + TAG_BYTES;
   if (data.byteLength < minLength) {
     throw new RuntimeDecryptionError(
       `Encrypted data too short: expected at least ${minLength} bytes, got ${data.byteLength}`,
       {
-        context: {
-          operation: 'decrypt',
-          byteLength: data.byteLength,
-        },
+        context: { operation: 'decrypt', byteLength: data.byteLength },
       }
     );
   }
+
   const nonce = data.subarray(0, NONCE_LENGTH);
-  const ciphertext = data.subarray(NONCE_LENGTH);
-  let plaintext: ArrayBuffer;
+  const ciphertextAndTag = data.subarray(NONCE_LENGTH);
   try {
-    plaintext = await globalThis.crypto.subtle.decrypt(
+    const plaintext = await globalThis.crypto.subtle.decrypt(
       {
         name: 'AES-GCM',
         iv: nonce,
@@ -171,26 +167,16 @@ export async function decrypt(
         ...(aad ? { additionalData: aad } : {}),
       },
       key,
-      ciphertext
+      ciphertextAndTag
     );
+    return new Uint8Array(plaintext);
   } catch (cause) {
-    // The most common shape we see in the wild is a DOMException with
-    // `name: 'OperationError'` and message "The operation failed for
-    // an operation-specific reason" — this is what Web Crypto throws
-    // when the GCM auth tag does not verify. Re-throw as
-    // RuntimeDecryptionError, attaching diagnostic context (byte length)
-    // that the bare DOMException lacks.
-    const causeMsg = cause instanceof Error ? cause.message : String(cause);
     throw new RuntimeDecryptionError(
-      `AES-256-GCM decryption failed: ${causeMsg}`,
+      `AES-256-GCM decryption failed: ${cause instanceof Error ? cause.message : String(cause)}`,
       {
         cause,
-        context: {
-          operation: 'decrypt',
-          byteLength: data.byteLength,
-        },
+        context: { operation: 'decrypt', byteLength: data.byteLength },
       }
     );
   }
-  return new Uint8Array(plaintext);
 }

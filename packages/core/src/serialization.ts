@@ -34,13 +34,10 @@ import {
   decodeRunPublicKey,
 } from './sealed-box.js';
 import * as clientModule from './serialization/client.js';
-import {
-  type CompressionStats,
-  compress,
-  decompress,
-} from './serialization/compression.js';
+import type { CompressionStats } from './serialization/compression.js';
 import {
   aesKeyOf,
+  type DecryptionKey,
   decrypt,
   deriveRunPayloadKeys,
   type EncryptionKeyParam,
@@ -70,6 +67,11 @@ import {
   readProperty,
 } from './serialization/hardened.js';
 import {
+  decodePayload,
+  encodePayload,
+  type PreparedReplayPayload,
+} from './serialization/payload.js';
+import {
   getClassReducers,
   getClassRevivers,
 } from './serialization/reducers/class.js';
@@ -84,9 +86,14 @@ import {
 } from './serialization/reducers/step-function.js';
 import * as stepModule from './serialization/step.js';
 import {
+  recordCompression,
+  recordGuestCodeExecutions,
+} from './serialization/telemetry.js';
+import {
   type FormatPrefix,
   isFormatPrefix,
   SerializationFormat,
+  type SerializationFormatType,
 } from './serialization/types.js';
 import * as workflowModule from './serialization/workflow.js';
 import { contextStorage } from './step/context-storage.js';
@@ -106,8 +113,7 @@ import {
   STREAM_TYPE_SYMBOL,
   WEBHOOK_RESPONSE_WRITABLE,
 } from './symbols.js';
-import * as Attr from './telemetry/semantic-conventions.js';
-import { getActiveSpan, getSpanKind, recordElapsedSpan } from './telemetry.js';
+import { getSpanKind, recordElapsedSpan } from './telemetry.js';
 import { getAbortStreamId } from './util.js';
 import { WorkflowAbortSignal } from './workflow/abort-controller.js';
 
@@ -115,6 +121,7 @@ import { WorkflowAbortSignal } from './workflow/abort-controller.js';
 // so existing consumers of `@workflow/core/serialization` keep working.
 export {
   SerializationFormat,
+  type SerializationFormatType,
   type FormatPrefix,
   isFormatPrefix,
   encodeWithFormatPrefix,
@@ -123,10 +130,9 @@ export {
   isEncrypted,
   encrypt,
   decrypt,
-  compress,
-  decompress,
   type EncryptionKeyParam,
   // Sealed-box ('encp') key variants — see serialization/encryption.ts.
+  type DecryptionKey,
   type PayloadKey,
   type RunPayloadKeys,
   type SealTarget,
@@ -138,10 +144,25 @@ export {
   aesKeyOf,
 };
 
-// Re-export the legacy SerializationFormatType for backwards compatibility.
-// New code should use FormatPrefix from './serialization/types.js'.
-export type SerializationFormatType =
-  (typeof SerializationFormat)[keyof typeof SerializationFormat];
+export { compress, decompress } from './serialization/compression.js';
+export type { PreparedReplayPayload } from './serialization/payload.js';
+
+/** @deprecated Use `encrypt` instead. */
+export async function maybeEncrypt(
+  data: Uint8Array,
+  key: PayloadKey | undefined
+): Promise<Uint8Array> {
+  return encrypt(data, key);
+}
+
+/** @deprecated Use `decrypt` instead. */
+export async function maybeDecrypt(
+  data: Uint8Array | unknown,
+  key: PayloadKey | undefined
+): Promise<Uint8Array | unknown> {
+  if (!(data instanceof Uint8Array)) return data;
+  return decrypt(data, key as DecryptionKey | undefined);
+}
 
 /**
  * Default ULID generator for contexts where VM's seeded `stableUlid` isn't available.
@@ -202,72 +223,6 @@ function unwrapSerializationCause(error: unknown): unknown {
   return error;
 }
 
-/**
- * Emit compression telemetry onto the active span after a (de)serialize.
- *
- * The compression layer populates `stats` only when it actually ran (binary
- * data on a spec >= 5 path); legacy / v1Compat paths leave it unrecorded, so
- * this no-ops for them and avoids the `getActiveSpan` lookup. Attributes land
- * on whatever span is active — typically the dedicated `step.dehydrate` /
- * `step.hydrate` span, otherwise the enclosing run/start span.
- */
-async function recordCompression(
-  stats: CompressionStats,
-  operation: 'serialize' | 'deserialize'
-): Promise<void> {
-  if (!stats.recorded) return;
-  // Telemetry must never break the serialize/deserialize data path — a
-  // missing/failing tracer is purely an observability loss.
-  try {
-    const span = await getActiveSpan();
-    if (!span) return;
-    const uncompressedBytes = stats.uncompressedBytes ?? 0;
-    const storedBytes = stats.storedBytes ?? 0;
-    span.setAttributes({
-      ...Attr.SerializationOperation(operation),
-      ...Attr.SerializationCompressed(stats.compressed ?? false),
-      ...Attr.SerializationCodec(stats.codec ?? 'none'),
-      ...Attr.SerializationUncompressedBytes(uncompressedBytes),
-      ...Attr.SerializationStoredBytes(storedBytes),
-      ...(stats.compressed && uncompressedBytes > 0
-        ? Attr.SerializationCompressionRatio(
-            1 - storedBytes / uncompressedBytes
-          )
-        : {}),
-    });
-  } catch {
-    // ignore telemetry failures
-  }
-}
-
-/**
- * Emits OTel span attributes for workflow (guest) code executions that the
- * hardened serializer could not avoid (getters, proxies, custom
- * serializers). No-ops when serialization was fully side-effect free —
- * the common case. Same never-break-the-data-path contract as
- * `recordCompression` above.
- */
-async function recordGuestCodeExecutions(stats: GuestCodeStats): Promise<void> {
-  if (stats.executions.length === 0) return;
-  try {
-    const span = await getActiveSpan();
-    if (!span) return;
-    const details = [
-      ...new Set(
-        stats.executions.map((e) =>
-          e.detail ? `${e.kind} (${e.detail})` : e.kind
-        )
-      ),
-    ];
-    span.setAttributes({
-      ...Attr.SerializationGuestCodeExecutions(stats.executions.length),
-      ...Attr.SerializationGuestCodeDetails(details),
-    });
-  } catch {
-    // ignore telemetry failures
-  }
-}
-
 export function getSerializeStream(
   reducers: Partial<Reducers>,
   cryptoKey: EncryptionKeyParam
@@ -302,7 +257,7 @@ export function getSerializeStream(
         let prefixed = encodeWithFormatPrefix(
           SerializationFormat.DEVALUE_V1,
           payload
-        ) as Uint8Array;
+        );
 
         // Encrypt the frame payload if a key is provided.
         // The length header remains in the clear so the deserializer can
@@ -322,9 +277,9 @@ export function getSerializeStream(
           prefixed = encodeWithFormatPrefix(
             SerializationFormat.SEALED,
             await sealSession.seal(prefixed)
-          ) as Uint8Array;
+          );
         } else if (keyState.key) {
-          prefixed = (await encrypt(prefixed, keyState.key)) as Uint8Array;
+          prefixed = await encrypt(prefixed, keyState.key);
         }
 
         // Write length-prefixed frame: [4-byte length][prefixed data]
@@ -419,10 +374,8 @@ export function getDeserializeStream(
         // A sealed frame needs the run's keypair; a symmetric frame needs an
         // AES key. Report the shortfall precisely — "no key at all" and "the
         // wrong kind of key" have very different causes.
-        const usable = sealed
-          ? isRunPayloadKeys(keyState.key)
-          : aesKeyOf(keyState.key) !== undefined;
-        if (!usable) {
+        const aesKey = aesKeyOf(keyState.key);
+        if (sealed ? !isRunPayloadKeys(keyState.key) : !aesKey) {
           controller.error(
             new RuntimeDecryptionError(
               sealed
@@ -449,7 +402,7 @@ export function getDeserializeStream(
           // with the one-shot path.
           decrypted = sealed
             ? await openSession!.open(decodeFormatPrefix(frameData).payload)
-            : ((await decrypt(frameData, keyState.key)) as Uint8Array);
+            : await decrypt(frameData, aesKey);
         } catch (error) {
           // The low-level crypto layer only sees the stripped payload, so it
           // cannot record the outer envelope prefix. We peeked it here, so
@@ -3378,79 +3331,30 @@ function getStepRevivers(
   };
 }
 
-// ============================================================================
-// Encryption Helpers
-// ============================================================================
-// These delegate to the modular `encrypt`/`decrypt` from `./serialization/encryption.js`
-// but are kept as named exports for backwards compatibility with existing consumers.
+async function decodeReplayPayloadWithTelemetry(
+  value: unknown,
+  key: DecryptionKey | undefined
+): Promise<PreparedReplayPayload> {
+  if (!(value instanceof Uint8Array)) return { data: value };
 
-/**
- * Encrypt data if the world supports encryption.
- * Returns original data if encryption is not available.
- *
- * @deprecated Use `encrypt` from `./serialization/encryption.js` instead.
- */
-export async function maybeEncrypt(
-  data: Uint8Array,
-  key: PayloadKey | undefined
-): Promise<Uint8Array> {
-  return (await encrypt(data, key)) as Uint8Array;
+  const compressionStats: CompressionStats = {};
+  const data = await decodePayload(value, key, compressionStats);
+  await recordCompression(compressionStats, 'deserialize');
+  return { data };
 }
 
 /**
- * Decrypt data if it has the 'encr' prefix.
- *
- * @deprecated Use `decrypt` from `./serialization/encryption.js` instead.
- */
-export async function maybeDecrypt(
-  data: Uint8Array | unknown,
-  key: PayloadKey | undefined
-): Promise<Uint8Array | unknown> {
-  return decrypt(data, key);
-}
-
-/**
- * Replay hydration has two stages:
- *
- * 1. Host-side preparation decrypts and decompresses persisted data. That work
- *    is independent of a workflow VM and can be cached across replay VMs.
- * 2. Deserialization revives the prepared representation against the current
- *    VM's globals. It must run again for every VM to produce fresh object graphs
- *    and correctly scoped Workflow objects.
- *
- * `data` is the boundary between those stages. For current-format payloads it
- * is still format-prefixed serialized bytes, not a live JavaScript value.
- */
-export interface PreparedReplayPayload {
-  readonly data: unknown;
-}
-
-/**
- * Swappable implementation of the host-side preparation stage. Supporting
- * both direct and promised results lets a future synchronous Node decryptor use
- * the same cache contract as today's asynchronous Web Crypto implementation.
+ * @deprecated Replay preparation is an internal cache concern. Retained for
+ * compatibility with existing `@workflow/core/serialization` consumers.
  */
 export type ReplayPayloadPreparer = (
   value: unknown,
   key: PayloadKey | undefined
 ) => PreparedReplayPayload | Promise<PreparedReplayPayload>;
 
-/**
- * Decrypt and decompress persisted data without parsing it into JavaScript.
- * Legacy non-binary values pass through unchanged for their consumer to revive.
- */
-export const prepareReplayPayload: ReplayPayloadPreparer = async (
-  value,
-  key
-) => {
-  const compressionStats: CompressionStats = {};
-  const prepared = await decompress(
-    await decrypt(value, key),
-    compressionStats
-  );
-  await recordCompression(compressionStats, 'deserialize');
-  return { data: prepared };
-};
+/** @deprecated Replay preparation is performed by `ReplayPayloadCache`. */
+export const prepareReplayPayload: ReplayPayloadPreparer = (value, key) =>
+  decodeReplayPayloadWithTelemetry(value, key as DecryptionKey | undefined);
 
 /**
  * Parse a prepared workflow argument or successful step/hook payload using the
@@ -3533,7 +3437,7 @@ export async function dehydrateWorkflowArguments(
   v1Compat = false,
   framedByteStreams = false,
   compression = false
-): Promise<Uint8Array | unknown> {
+): Promise<unknown> {
   if (v1Compat) {
     const str = stringify(
       value,
@@ -3569,18 +3473,16 @@ export async function dehydrateWorkflowArguments(
  * payload skips host-side decrypt/decompress but always performs VM revival.
  */
 export async function hydrateWorkflowArguments(
-  value: Uint8Array | unknown,
+  value: unknown,
   _runId: string,
-  key: PayloadKey | undefined,
+  key: DecryptionKey | undefined,
   global: Record<string, any> = globalThis,
   extraRevivers: Record<string, (value: any) => any> = {},
   prepared?: PreparedReplayPayload
 ): Promise<any> {
-  return deserializePreparedReplayPayload(
-    prepared ?? (await prepareReplayPayload(value, key)),
-    global,
-    extraRevivers
-  );
+  const payload =
+    prepared ?? (await decodeReplayPayloadWithTelemetry(value, key));
+  return deserializePreparedReplayPayload(payload, global, extraRevivers);
 }
 
 /**
@@ -3602,7 +3504,7 @@ export async function dehydrateWorkflowReturnValue(
    * runtime/suspension-handler.ts passes one for step-input dehydration.
    */
   guestCodeStatsOut?: GuestCodeStats
-): Promise<Uint8Array | unknown> {
+): Promise<unknown> {
   if (v1Compat) {
     const str = stringify(value, getWorkflowReducers(global));
     return revive(str);
@@ -3637,9 +3539,9 @@ export async function dehydrateWorkflowReturnValue(
  * of a completed workflow run.
  */
 export async function hydrateWorkflowReturnValue(
-  value: Uint8Array | unknown,
+  value: unknown,
   runId: string,
-  key: PayloadKey | undefined,
+  key: DecryptionKey | undefined,
   ops: Promise<void>[] = [],
   global: Record<string, any> = globalThis,
   extraRevivers: Record<string, (value: any) => any> = {}
@@ -3672,7 +3574,7 @@ export async function dehydrateStepArguments(
   compression = false,
   /** See `dehydrateWorkflowReturnValue`. */
   guestCodeStatsOut?: GuestCodeStats
-): Promise<Uint8Array | unknown> {
+): Promise<unknown> {
   if (v1Compat) {
     const str = stringify(value, getWorkflowReducers(global));
     return revive(str);
@@ -3704,9 +3606,9 @@ export async function dehydrateStepArguments(
  * from the database at the start of the step execution.
  */
 export async function hydrateStepArguments(
-  value: Uint8Array | unknown,
+  value: unknown,
   runId: string,
-  key: PayloadKey | undefined,
+  key: DecryptionKey | undefined,
   ops: Promise<any>[] = [],
   global: Record<string, any> = globalThis,
   extraRevivers: Record<string, (value: any) => any> = {},
@@ -3757,7 +3659,7 @@ export async function dehydrateStepReturnValue(
   // the backgrounded `run_started`. Threaded into the step reducers' stream
   // sink. Undefined outside turbo / on the await path.
   runReadyBarrier?: Promise<unknown>
-): Promise<Uint8Array | unknown> {
+): Promise<unknown> {
   if (v1Compat) {
     const str = stringify(
       value,
@@ -3831,18 +3733,14 @@ export async function dehydrateStepError(
     const serialized = encodeWithFormatPrefix(
       SerializationFormat.DEVALUE_V1,
       payload
-    ) as Uint8Array;
-    // Compress before encrypting — encrypted bytes don't compress.
+    );
     const compressionStats: CompressionStats = {};
-    const compressed = await compress(
+    const encrypted = await encodePayload(
       serialized,
+      key,
       compression,
       compressionStats
     );
-    const encrypted = (await maybeEncrypt(
-      compressed as Uint8Array,
-      key
-    )) as Uint8Array;
     await recordCompression(compressionStats, 'serialize');
     return encrypted;
   } catch (error) {
@@ -3866,18 +3764,16 @@ export async function dehydrateStepError(
  * @returns The hydrated thrown value, ready to reject the step promise
  */
 export async function hydrateStepError(
-  value: Uint8Array | unknown,
+  value: unknown,
   _runId: string,
-  key: PayloadKey | undefined,
+  key: DecryptionKey | undefined,
   global: Record<string, any> = globalThis,
   extraRevivers: Record<string, (value: any) => any> = {},
   prepared?: PreparedReplayPayload
 ): Promise<unknown> {
-  return deserializePreparedStepError(
-    prepared ?? (await prepareReplayPayload(value, key)),
-    global,
-    extraRevivers
-  );
+  const payload =
+    prepared ?? (await decodeReplayPayloadWithTelemetry(value, key));
+  return deserializePreparedStepError(payload, global, extraRevivers);
 }
 
 /**
@@ -3904,18 +3800,14 @@ export async function dehydrateRunError(
     const serialized = encodeWithFormatPrefix(
       SerializationFormat.DEVALUE_V1,
       payload
-    ) as Uint8Array;
-    // Compress before encrypting — encrypted bytes don't compress.
+    );
     const compressionStats: CompressionStats = {};
-    const compressed = await compress(
+    const encrypted = await encodePayload(
       serialized,
+      key,
       compression,
       compressionStats
     );
-    const encrypted = (await maybeEncrypt(
-      compressed as Uint8Array,
-      key
-    )) as Uint8Array;
     await recordCompression(compressionStats, 'serialize');
     return encrypted;
   } catch (error) {
@@ -3938,33 +3830,24 @@ export async function dehydrateRunError(
  * @returns The hydrated thrown value, ready to be consumed by the client
  */
 export async function hydrateRunError(
-  value: Uint8Array | unknown,
+  value: unknown,
   runId: string,
-  key: PayloadKey | undefined,
+  key: DecryptionKey | undefined,
   ops: Promise<void>[] = [],
   global: Record<string, any> = globalThis,
   extraRevivers: Record<string, (value: any) => any> = {}
 ): Promise<unknown> {
-  const compressionStats: CompressionStats = {};
-  const decrypted = await decompress(
-    await decrypt(value, key),
-    compressionStats
-  );
-  await recordCompression(compressionStats, 'deserialize');
-
-  if (!(decrypted instanceof Uint8Array)) {
-    // See the matching note in `hydrateStepError`: this branch is for
-    // devalue flattened arrays from legacy callers; current SDK versions
-    // always emit a Uint8Array, and a misshapen value here intentionally
-    // throws via `unflatten` so the surrounding try/catch in o11y helpers
-    // surfaces the issue rather than masking it.
-    return unflatten(decrypted as any[], {
+  if (!(value instanceof Uint8Array)) {
+    return unflatten(value as any[], {
       ...getExternalRevivers(global, ops, runId, key),
       ...extraRevivers,
     });
   }
 
-  const { format, payload } = decodeFormatPrefix(decrypted);
+  const compressionStats: CompressionStats = {};
+  const prepared = await decodePayload(value, key, compressionStats);
+  await recordCompression(compressionStats, 'deserialize');
+  const { format, payload } = decodeFormatPrefix(prepared);
 
   if (format === SerializationFormat.DEVALUE_V1) {
     const str = new TextDecoder().decode(payload);
@@ -3991,18 +3874,16 @@ export async function hydrateRunError(
  * of a `step_completed` event.
  */
 export async function hydrateStepReturnValue(
-  value: Uint8Array | unknown,
+  value: unknown,
   _runId: string,
-  key: PayloadKey | undefined,
+  key: DecryptionKey | undefined,
   global: Record<string, any> = globalThis,
   extraRevivers: Record<string, (value: any) => any> = {},
   prepared?: PreparedReplayPayload
 ): Promise<any> {
-  return deserializePreparedReplayPayload(
-    prepared ?? (await prepareReplayPayload(value, key)),
-    global,
-    extraRevivers
-  );
+  const payload =
+    prepared ?? (await decodeReplayPayloadWithTelemetry(value, key));
+  return deserializePreparedReplayPayload(payload, global, extraRevivers);
 }
 
 // ---- Helpers to extract stream/Request/Response reducers and revivers ----

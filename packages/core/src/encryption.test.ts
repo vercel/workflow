@@ -14,9 +14,18 @@ async function getOtherKey(): Promise<CryptoKey> {
   return importKey(OTHER_RAW_KEY);
 }
 
+async function captureError(action: () => Promise<unknown>): Promise<unknown> {
+  try {
+    await action();
+  } catch (error) {
+    return error;
+  }
+  throw new Error('Expected operation to fail');
+}
+
 describe('encryption', () => {
   describe('round-trip', () => {
-    it('encrypt() + decrypt() returns the original plaintext', async () => {
+    it('uses the portable asynchronous crypto contract', async () => {
       const key = await getKey();
       const plaintext = new TextEncoder().encode('hello, workflow');
       const ciphertext = await encrypt(key, plaintext);
@@ -24,8 +33,9 @@ describe('encryption', () => {
       // Ciphertext is longer than plaintext: 12-byte nonce + 16-byte GCM tag.
       expect(ciphertext.byteLength).toBe(plaintext.byteLength + 12 + 16);
 
-      const decoded = await decrypt(key, ciphertext);
-      expect(new TextDecoder().decode(decoded)).toBe('hello, workflow');
+      const decoded = decrypt(key, ciphertext);
+      expect(decoded).toBeInstanceOf(Promise);
+      expect(new TextDecoder().decode(await decoded)).toBe('hello, workflow');
     });
   });
 
@@ -42,20 +52,15 @@ describe('encryption', () => {
       const key = await getKey();
       // 12-byte nonce + 16-byte tag = 28 bytes minimum. 10 bytes is too short.
       const tooShort = new Uint8Array(10).fill(0);
-      const error = await decrypt(key, tooShort).catch((e) => e);
+      const error = await captureError(() => decrypt(key, tooShort));
       expect(RuntimeDecryptionError.is(error)).toBe(true);
-      expect(error.message).toMatch(/Encrypted data too short/);
-      expect(error.context).toMatchObject({
-        operation: 'decrypt',
-        byteLength: 10,
+      expect(error).toMatchObject({
+        message: expect.stringMatching(/Encrypted data too short/),
+        context: { operation: 'decrypt', byteLength: 10 },
       });
     });
 
     it('throws RuntimeDecryptionError (not a bare OperationError) on auth-tag failure', async () => {
-      // GCM auth-tag verification failure surfaces from Node's Web
-      // Crypto API as `OperationError: The operation failed for an
-      // operation-specific reason at AESCipherJob.onDone`. The
-      // encryption module must rewrap this as a RuntimeDecryptionError.
       const key = await getKey();
       const plaintext = new TextEncoder().encode('hello, workflow');
       const ciphertext = await encrypt(key, plaintext);
@@ -64,16 +69,14 @@ describe('encryption', () => {
       const tampered = new Uint8Array(ciphertext);
       tampered[tampered.length - 1] ^= 0xff;
 
-      const error = await decrypt(key, tampered).catch((e) => e);
+      const error = await captureError(() => decrypt(key, tampered));
       expect(RuntimeDecryptionError.is(error)).toBe(true);
-      expect(error.cause).toBeDefined();
-      // The original DOMException carries name OperationError on Node 20+,
-      // which is what the wrapping is meant to capture as cause.
-      const cause = error.cause as { name?: string };
-      expect(cause?.name).toBe('OperationError');
-      expect(error.context).toMatchObject({
-        operation: 'decrypt',
-        byteLength: tampered.byteLength,
+      expect(error).toMatchObject({
+        cause: expect.anything(),
+        context: {
+          operation: 'decrypt',
+          byteLength: tampered.byteLength,
+        },
       });
     });
 
@@ -85,11 +88,9 @@ describe('encryption', () => {
         new TextEncoder().encode('secret')
       );
 
-      const error = await decrypt(readerKey, ciphertext).catch((e) => e);
+      const error = await captureError(() => decrypt(readerKey, ciphertext));
       expect(RuntimeDecryptionError.is(error)).toBe(true);
-      // Wrong key → auth tag mismatch → same OperationError as ciphertext corruption.
-      const cause = error.cause as { name?: string };
-      expect(cause?.name).toBe('OperationError');
+      expect(error).toMatchObject({ cause: expect.anything() });
     });
 
     it('does not record a formatPrefix at the low-level layer', async () => {
@@ -100,13 +101,14 @@ describe('encryption', () => {
       // The serialization layer attaches the real envelope prefix.
       const key = await getKey();
       const bogus = new Uint8Array(28).fill(0x41); // 28 bytes, passes length check
-      const error = await decrypt(key, bogus).catch((e) => e);
+      const error = await captureError(() => decrypt(key, bogus));
       expect(RuntimeDecryptionError.is(error)).toBe(true);
-      expect(error.context).toMatchObject({
-        operation: 'decrypt',
-        byteLength: 28,
+      expect(error).toMatchObject({
+        context: { operation: 'decrypt', byteLength: 28 },
       });
-      expect(error.context.formatPrefix).toBeUndefined();
+      expect(error).not.toMatchObject({
+        context: { formatPrefix: expect.anything() },
+      });
     });
   });
 
