@@ -12,7 +12,7 @@ related:
 
 No world in this repository throws it. A stale replay does not need to be refused: its log is a prefix rather than a prefix with a hole in it, replay is deterministic on a prefix, and the write it makes next comes back carrying the events it was pushed past (see [Stale reads](/docs/configuration/runtime-tuning#stale-reads-and-why-nothing-has-to-be-rejected)). The error and the runtime's handling of it remain for a world that would rather refuse than report — one that allocates positions somewhere other than the commit, and so cannot report a gap reliably. Event creations that carry no position are never rejected with it.
 
-A world rejects only on evidence and accepts the creation whenever it cannot decide, so this error always means the snapshot really was stale — but not receiving it does not prove the snapshot was current.
+A World rejects only on evidence and accepts the creation whenever it cannot decide, so this error always means the snapshot really was stale — but not receiving it does not prove the snapshot was current.
 
 <Callout>
 The Workflow runtime handles this error automatically: it restarts the replay in the same invocation from a corrected event log, and re-invokes the run for a fresh replay only once its in-process restart budget is spent. It never retries the rejected creation as-is, because a replay working from a corrected log derives different events. You will only encounter it when interacting with world storage APIs directly.

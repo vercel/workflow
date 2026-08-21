@@ -47,9 +47,9 @@ For self-hosted deployments, use the [Postgres World](/worlds/postgres). For loc
 The Vercel World runs in every [Vercel Function region](https://vercel.com/docs/regions). Each workflow run is pinned to a single region at creation time: its stored state, queue dispatch, and streams are all served from that region — no cross-region round trips on the hot path. When your application is deployed in the run's region (the automatic case below), step execution is region-local too.
 
 <Callout type="info">
-  Multi-region requires `workflow` version **5.0.0-beta.33** or later.
-  The 4.x release line does not support region pinning — runs created by
-  4.x always live in `iad1`.
+  Multi-region requires `workflow` version **5.0.0** or later. The 4.x
+  release line does not support region pinning — runs created by 4.x always
+  live in `iad1`.
 </Callout>
 
 ### Automatic region pinning
@@ -96,6 +96,8 @@ const run = await start(myWorkflow, [input], { region: "sfo1" });
 ## Observability
 
 Workflow observability is built into the Vercel dashboard on your project page. It respects your existing authentication and project permission settings.
+
+The Vercel World implements the optional [`world.analytics`](/docs/api-reference/workflow-runtime/world/analytics) interface, backed by the same observability data pipeline as the dashboard. Two behaviors are specific to this implementation: listings scan significantly faster when bounded with a `startTime`/`endTime` window, and the queryable window is capped by your plan's observability lookback — requesting an older window fails with `observability-upgrade-required`, and responses carry `pageInfo` (current and maximum lookback) so tools can size date ranges.
 
 The `workflow` CLI commands open a browser window deeplinked to the Vercel dashboard:
 

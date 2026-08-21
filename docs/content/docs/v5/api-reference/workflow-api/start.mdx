@@ -60,6 +60,7 @@ Learn more about [`WorkflowReadableStreamOptions`](/docs/api-reference/workflow-
 * All arguments must be [serializable](/docs/foundations/serialization).
 * When `deploymentId` is provided, the argument types and return type become `unknown` since there is no guarantee the workflow function's types will be consistent across different deployments.
 * `attributes` seeds plaintext run metadata as part of creation and requires a World implementing spec version 4 or later. Keys that start with `$` are reserved for framework and library code; framework-level callers can pass `allowReservedAttributes: true` to seed reserved keys, with the same semantics as the [`setAttributes`](/docs/api-reference/workflow/set-attributes) option of the same name.
+* `region` pins the new run to a specific region on Worlds with a regional dimension. On the [Vercel World](/worlds/vercel#explicit-region-selection) the run's storage, queue dispatch, and streams are then served from that region; when omitted, the run is pinned to the region it was created in. Worlds without regions ignore the option.
 
 <Callout type="info">
 If `start()` throws `'start' received an invalid workflow function. Ensure the Workflow SDK is configured correctly and the function includes a 'use workflow' directive.`, the passed function was not transformed as a workflow. The two most common causes are a missing `"use workflow"` directive or missing framework integration. See [start-invalid-workflow-function](/docs/errors/start-invalid-workflow-function).

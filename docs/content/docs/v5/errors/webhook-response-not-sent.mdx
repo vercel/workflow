@@ -36,7 +36,7 @@ The webhook infrastructure waits for a response to be sent, and if none is provi
 export async function webhookWorkflow() {
   "use workflow";
 
-  const webhook = await createWebhook({
+  const webhook = createWebhook({
     respondWith: "manual",
   });
 
@@ -59,7 +59,7 @@ import { createWebhook } from "workflow";
 export async function webhookWorkflow() {
   "use workflow";
 
-  const webhook = await createWebhook({
+  const webhook = createWebhook({
     respondWith: "manual",
   });
 
@@ -81,7 +81,7 @@ export async function webhookWorkflow() {
 export async function webhookWorkflow() {
   "use workflow";
 
-  const webhook = await createWebhook({
+  const webhook = createWebhook({
     respondWith: "manual",
   });
 
@@ -104,7 +104,7 @@ import { createWebhook } from "workflow";
 export async function webhookWorkflow() {
   "use workflow";
 
-  const webhook = await createWebhook({
+  const webhook = createWebhook({
     respondWith: "manual",
   });
 
@@ -126,7 +126,7 @@ export async function webhookWorkflow() {
 export async function webhookWorkflow() {
   "use workflow";
 
-  const webhook = await createWebhook({
+  const webhook = createWebhook({
     respondWith: "manual",
   });
 
@@ -149,7 +149,7 @@ import { createWebhook } from "workflow";
 export async function webhookWorkflow() {
   "use workflow";
 
-  const webhook = await createWebhook({
+  const webhook = createWebhook({
     respondWith: "manual",
   });
 
@@ -179,7 +179,7 @@ import { createWebhook } from "workflow";
 export async function webhookWorkflow() {
   "use workflow";
 
-  const webhook = await createWebhook(); // [!code highlight]
+  const webhook = createWebhook(); // [!code highlight]
   const request = await webhook;
 
   // Process request asynchronously

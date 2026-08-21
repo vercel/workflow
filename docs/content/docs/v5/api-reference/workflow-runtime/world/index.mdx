@@ -43,6 +43,8 @@ const world = await getWorld(); // [!code highlight]
   The World SDK is the low-level foundation that higher-level functions like [`getRun()`](/docs/api-reference/workflow-api/get-run) and [`start()`](/docs/api-reference/workflow-api/start) are built on. Use it when you need capabilities beyond what those functions provide.
 </Callout>
 
+Beyond these namespaces, the `World` interface carries a handful of top-level members aimed at World authors — `specVersion`, `capabilities`, lifecycle hooks (`start()`/`close()`), `getEncryptionKeyForRun()`, and the optional `createRunId()` / `describeRun()` hooks behind regional run placement and world-specific `inspect` output. Those are documented in [Building a World](/worlds/building-a-world).
+
 ## Data Hydration
 
 Step input/output data is serialized using the [devalue](https://github.com/Rich-Harris/devalue) format. To display this data in your UI, use the hydration utilities from `workflow/observability`:

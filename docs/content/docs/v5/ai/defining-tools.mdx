@@ -23,7 +23,6 @@ Just like in regular AI SDK tool definitions, tool in WorkflowAgent are called w
 When you tool needs access to the full message history, you can access it via the `messages` property of the tool call context:
 
 ```typescript title="tools.ts" lineNumbers
-import { Experimental_Agent as Agent } from "ai";
 import type { ModelMessage } from "ai";
 
 async function getWeather(

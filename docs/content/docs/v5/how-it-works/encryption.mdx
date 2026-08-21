@@ -34,6 +34,10 @@ Metadata such as workflow names, step names, entity IDs, timestamps, and lifecyc
 
 ## How It Works
 
+### Compression
+
+Payloads are compressed before they are encrypted. A format prefix on the stored value records the compression codec (gzip, with zstd support in the format), and the inner payload keeps its own serialization format prefix after decompression. Repetitive payloads compress heavily — AI token streams average around 80% smaller — which means less stored data and less to move over the network. Like encryption itself, this is automatic and requires no code changes.
+
 ### Key Management
 
 Each workflow run is encrypted with its own unique key, provided by the `World` implementation via `getEncryptionKeyForRun()`. How the key is generated and stored is up to the `World`.

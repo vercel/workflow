@@ -126,7 +126,7 @@ Workflow functions have the ability to automatically suspend while they wait on 
 
 There are multiple ways a workflow can suspend:
 
-- Waiting on a step function: the workflow yields while the step runs in the step runtime.
+- Waiting on a step function: the workflow yields while the step body runs. The step usually executes inline in the same invocation; when the invocation's inline budget is exhausted or its timeout approaches, the step is handed to the queue and the workflow resumes in a later invocation.
 - Using `sleep()` to pause for some fixed duration.
 - Awaiting on a promise returned by [`createWebhook()`](/docs/api-reference/workflow/create-webhook), which resumes the workflow when an external system passes data into the workflow.
 

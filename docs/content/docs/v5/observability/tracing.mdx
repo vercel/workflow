@@ -70,7 +70,7 @@ Stream spans are emitted by the SDK's world backend on the client that writes or
 
 ## Trace shape: one trace per invocation
 
-A single workflow run can span hours or days across many separate function invocations: every step completion, `sleep()` wake-up, and retry is a new queue delivery. Stitching all of that into one trace produces giant, slow-loading traces that most tracing backends truncate.
+A single workflow run can span hours or days across many separate function invocations: every `sleep()` wake-up, hook resume, retry, and queued step continuation is a new queue delivery. Stitching all of that into one trace produces giant, slow-loading traces that most tracing backends truncate.
 
 Instead, the SDK creates **one bounded trace per invocation**. Each `workflow.execute` (or background `step.execute`) span starts a new trace root and attaches two **span links**:
 

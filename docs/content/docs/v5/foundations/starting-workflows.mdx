@@ -38,6 +38,7 @@ export async function POST(request: Request) {
 - The first argument is your workflow function
 - The second argument is an array of arguments to pass to the workflow (optional if the workflow takes no arguments)
 - All arguments must be [serializable](/docs/foundations/serialization)
+- On Worlds with a regional dimension, the optional `region` option pins the new run's storage, queuing, and streams to a specific region — see [Multi-region on the Vercel World](/worlds/vercel#multi-region)
 
 **Learn more**: [`start()` API Reference](/docs/api-reference/workflow-api/start)
 

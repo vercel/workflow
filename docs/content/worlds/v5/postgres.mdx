@@ -23,12 +23,10 @@ Install the Postgres World package in your workflow project:
 ```
 
 <Callout type="info">
-Use the same release channel for `workflow` and `@workflow/world-postgres`. If
-your app uses a beta or other prerelease Workflow version, install the matching
-prerelease Postgres World package, such as
-`npm install @workflow/world-postgres@beta`. Mismatched versions fail before
-starting a run with an error that names the spec versions the runtime supports
-and the one the World declares.
+Keep `workflow` and `@workflow/world-postgres` on the same major version and release
+cycle. If your app uses a prerelease Workflow version, install the matching prerelease Postgres
+World package. Mismatched versions fail before starting a run with an error that names the
+spec versions the runtime supports and the one the World declares.
 </Callout>
 
 Configure the required environment variables to use the world and point it to your PostgreSQL database:

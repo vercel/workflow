@@ -7,6 +7,7 @@ prerequisites:
   - /docs/deploying
   - /docs/foundations/workflows-and-steps
 related:
+  - /worlds/upgrading-to-v5
   - /worlds/local
   - /worlds/postgres
   - /worlds/vercel
@@ -20,6 +21,10 @@ A **World** is the abstraction that allows workflows to run on any infrastructur
 
 <Callout type="info">
   **Reference Implementation:** The [Postgres World source code](https://github.com/vercel/workflow/tree/main/packages/world-postgres) is a production-ready example of how to implement the World interface with a database backend and graphile-worker for queuing.
+</Callout>
+
+<Callout type="info">
+  Already have a World on the 4.x spec? See [Upgrading a World to v5](/worlds/upgrading-to-v5) for the interface delta and the contract changes, rather than reading this guide top to bottom.
 </Callout>
 
 ## What is a World?
@@ -36,21 +41,37 @@ interface WorldCapabilities {
   hookRetention?: {
     active: boolean;
   };
+  maxConcurrency?: boolean;
 }
 
 interface World extends Storage, Queue, Streamer {
   specVersion: number;
   capabilities?: WorldCapabilities;
+  analytics?: Analytics;
   start?(): Promise<void>;
   close?(): Promise<void>;
   getEncryptionKeyForRun?(run: WorkflowRun): Promise<Uint8Array | undefined>;
   getEncryptionKeyForRun?(runId: string, context?: Record<string, unknown>): Promise<Uint8Array | undefined>;
+  createRunId?(options?: Readonly<Record<string, unknown>>): string;
+  describeRun?(run: Readonly<Record<string, unknown>>): Record<string, string | null> | null | Promise<Record<string, string | null> | null>;
+  processExitTriggersQueueRedelivery?: boolean;
 }
 ```
 
 `specVersion` is required. See [Declaring the spec version](#declaring-the-spec-version).
 
-The optional `capabilities` object advertises additional behavior. Set `hookRetention.active` to `true` only when the World implements Hook token retention. Note what is *not* in there: [slot-numbered event IDs](#event-id-allocation) are a requirement of this contract, not a capability to opt into. The optional `start()` method initializes background tasks (for example, queue polling). The optional `close()` method releases resources like connection pools and listeners. The optional `getEncryptionKeyForRun()` method returns the AES-256 key used to encrypt data for a run; if it is not implemented, encryption is disabled.
+The optional `capabilities` object advertises additional behavior, and every capability **fails closed**: a missing member means "unsupported", and the runtime keeps its conservative behavior. Set `hookRetention.active` to `true` only when the World implements Hook token retention. Set `maxConcurrency` only when the World's queue supports `maxConcurrency`-limited consumption (used by `WORKFLOW_SEQUENTIAL_REPLAYS=1`).
+
+Note what is deliberately *not* in there. [Slot-numbered event IDs](#event-id-allocation) are a requirement of this contract rather than a capability, so there is no flag to set and no fallback path if you skip them.
+
+The remaining optional members:
+
+- `analytics` provides metadata-only listings of runs, steps, events, hooks, waits, and attributes for observability surfaces — `workflow inspect` and the local web UI read from it, including attribute search. See [Analytics Interface](#analytics-interface-optional).
+- `start()` initializes background tasks (for example, queue polling); `close()` releases resources like connection pools and listeners.
+- `getEncryptionKeyForRun()` returns the AES-256 key used to encrypt data for a run; if it is not implemented, encryption is disabled.
+- `createRunId()` mints the ID for a new run. Implementations may embed world-specific metadata as long as the result stays a valid ULID — this is how [multi-region placement](/worlds/vercel#multi-region) works: `@workflow/world-vercel` reads `options.region` (the `start()` options bag) and embeds a region tag. When omitted, the runtime generates a standard monotonic ULID.
+- `describeRun()` returns world-specific display fields for a run (for example, a region decoded from its ID) that tooling like `workflow inspect` renders as extra columns. It must be cheap, tolerate missing fields, and never throw.
+- `processExitTriggersQueueRedelivery` tells the runtime how to handle an exhausted replay budget: `true` means it exits and relies on queue redelivery; `false` (or absent) means it writes `run_failed` best-effort and returns.
 
 ### Declaring the spec version
 
@@ -88,13 +109,16 @@ interface Storage {
   runs: {
     get(id: string, params?: GetWorkflowRunParams): Promise<WorkflowRun>;
     list(params?: ListWorkflowRunsParams): Promise<PaginatedResponse<WorkflowRun>>;
+    // Optional: backs setAttributes(). Omitting it means run attributes are
+    // unsupported on this World — the SDK helper no-ops with a warning.
+    experimentalSetAttributes?(runId: string, changes: AttributeChange[], options?: { allowReservedAttributes?: boolean }): Promise<ExperimentalSetAttributesResult>;
 
     // Optional: long poll for a terminal status (see below)
     waitForTerminalStatus?(id: string, params?: WaitForTerminalRunStatusParams): Promise<WorkflowRun>;
   };
 
   steps: {
-    get(runId: string | undefined, stepId: string, params?: GetStepParams): Promise<Step>;
+    get(runId: string, stepId: string, params?: GetStepParams): Promise<Step>;
     list(params: ListWorkflowRunStepsParams): Promise<PaginatedResponse<Step>>;
   };
 
@@ -232,6 +256,8 @@ The SDK also sends an internal `HealthCheckPayload` through the same workflow qu
 - Support configurable retry policies
 - Track attempt counts for observability
 - Implement idempotency using the `idempotencyKey` option when provided
+- Honor the `delaySeconds` option — waits (`sleep()`) are delivered as ordinary delayed continuations on the workflow queue, so a World that ignores `delaySeconds` redelivers immediately and busy-loops every sleeping run
+- Optionally honor the `region` option, a routing hint naming the region a message should be dispatched in; Worlds without a regional dimension ignore it
 
 ## Streamer Interface
 
@@ -290,6 +316,53 @@ Streams are identified by a combination of `runId` and `name`. Each workflow run
 `writeMulti()` is an optional optimization for batching multiple writes.
 
 `getChunks` returns a paginated snapshot of currently available chunks (unlike `get` which returns a live `ReadableStream` that waits for new chunks). `getInfo` returns the tail index (last chunk index, 0-based, or `-1` when empty) and whether the stream is complete — useful for resolving negative `startIndex` values into absolute positions.
+
+## Analytics Interface (Optional)
+
+The optional `analytics` namespace provides **metadata-only** access to runs and their related records. It is intended for observability and discovery surfaces such as dashboards, `workflow inspect`, and the local web UI. Implementations can optimize these queries independently of payload storage.
+
+Tooling feature-detects this namespace. When `world.analytics` is available, tooling prefers it for listings and attribute search; otherwise, it uses the Storage APIs. Among the first-party Worlds, only the [Vercel World](/worlds/vercel) currently implements it. The Local and Postgres Worlds leave it `undefined`.
+
+{/* @skip-typecheck - interface definition, not runnable code */}
+```typescript
+interface Analytics {
+  runs: {
+    get(runId: string): Promise<AnalyticsRun>;
+    list(params?: AnalyticsListRunsParams): Promise<PaginatedResponse<AnalyticsRun>>;
+  };
+  attributes: {
+    // Distinct attribute keys observed on runs in the window, with run
+    // counts and first/last-seen timestamps, ordered alphabetically.
+    list(params?: AnalyticsListAttributesParams): Promise<PaginatedResponse<AnalyticsAttributeKey>>;
+  };
+  steps: {
+    get(runId: string, stepId: string): Promise<AnalyticsStep>;
+    list(params: AnalyticsListRunScopedParams): Promise<PaginatedResponse<AnalyticsStep>>;
+  };
+  events: {
+    get(runId: string, eventId: string): Promise<AnalyticsEvent>;
+    list(params: AnalyticsListEventsParams): Promise<PaginatedResponse<AnalyticsEvent>>;
+    listByCorrelationId(params: AnalyticsListEventsByCorrelationIdParams): Promise<PaginatedResponse<AnalyticsEvent>>;
+  };
+  hooks: {
+    get(hookId: string, params?: { runId?: string }): Promise<AnalyticsHook>;
+    list(params: AnalyticsListHooksParams): Promise<PaginatedResponse<AnalyticsHook>>;
+  };
+  waits: {
+    get(runId: string, waitId: string): Promise<AnalyticsWait>;
+    list(params: AnalyticsListWaitsParams): Promise<PaginatedResponse<AnalyticsWait>>;
+  };
+}
+```
+
+If you implement this namespace, observe the following requirements:
+
+- **Metadata only.** Analytics responses must not include run inputs or outputs, step data, hook tokens, or other payload data. The `Analytics*` schemas exported by `@workflow/world` define the complete set of permitted fields. Payload retrieval remains exclusively available through the Storage APIs.
+- **Attribute filters use the latest value.** `runs.list({ attributes })` evaluates each filter against the run's most recently written value for that key. A request may contain up to eight key-value pairs. Reserved `$`-prefixed attributes are valid filters, although users cannot write them directly.
+- **Time boundaries must be paired.** `startTime` and `endTime` may either both be omitted or both be supplied. Responses may include `pageInfo` describing retention and the available query window. Implementations with retention limits should return this information so tooling can present valid date ranges.
+- **Results may be eventually consistent.** Analytics records may lag live workflow state. Consumers use this namespace for discovery and listing; Storage remains the authoritative interface for current workflow state and payload access.
+
+See the [Analytics API reference](/docs/api-reference/workflow-runtime/world/analytics) for per-method parameters, row shapes, and `pageInfo` semantics.
 
 ## Reference Implementations
 
