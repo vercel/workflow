@@ -31,6 +31,7 @@
  * the v3 path.
  */
 
+import assert from 'node:assert/strict';
 import { HookNotFoundError, WorkflowWorldError } from '@workflow/errors';
 import {
   type AnyEventRequest,
@@ -62,15 +63,10 @@ import {
   getEventsByCorrelationIdV4,
   getEventV4,
   getWorkflowRunEventsV4,
-  type ListEventsV4Params,
 } from './events-v4.js';
 import { decode as decodeRunId } from './run-id/index.js';
 import { cancelWorkflowRunV1, createWorkflowRunV1 } from './runs.js';
-import {
-  type APIConfig,
-  DEFAULT_RESOLVE_DATA_OPTION,
-  makeRequest,
-} from './utils.js';
+import { type APIConfig, makeRequest } from './utils.js';
 
 function validateWorkflowRunIdTimestamp(id: string): string | null {
   const raw = id.startsWith('wrun_') ? id.slice('wrun_'.length) : id;
@@ -436,26 +432,17 @@ export async function getEvent(
 }
 
 export async function getWorkflowRunEvents(
-  params: ListEventsParams | ListEventsByCorrelationIdParams,
+  params: ListEventsParams,
   config?: APIConfig
 ): Promise<PaginatedResponse<Event>> {
-  const { pagination, resolveData = DEFAULT_RESOLVE_DATA_OPTION } = params;
-  // `resolveData: 'none'` leaves payload refs unresolved, so the backend can
-  // skip reading and streaming their contents. The validated lazy descriptors
-  // remain on the returned events.
-  const listParams: ListEventsV4Params = {
-    ...pagination,
-    remoteRefBehavior: resolveData === 'none' ? 'lazy' : 'resolve',
-  };
+  return getWorkflowRunEventsV4(params, config);
+}
 
-  const result = await ('correlationId' in params
-    ? getEventsByCorrelationIdV4(
-        params.correlationId,
-        params.runId,
-        listParams,
-        config
-      )
-    : getWorkflowRunEventsV4(params.runId, listParams, config));
+export async function getWorkflowRunEventsByCorrelationId(
+  params: ListEventsByCorrelationIdParams,
+  config?: APIConfig
+): Promise<PaginatedResponse<Event>> {
+  const result = await getEventsByCorrelationIdV4(params, config);
 
   // A correlation id is unique per run, not globally — a slot-numbered run
   // numbers its own steps, so `step_…001` names the first step of every such
@@ -464,10 +451,7 @@ export async function getWorkflowRunEvents(
   // `hasMore`/`cursor` stay the backend's, so a page that filters down to
   // nothing is still followed by the next one.
   return {
-    data:
-      'correlationId' in params
-        ? result.events.filter((event) => event.runId === params.runId)
-        : result.events,
+    data: result.data.filter((event) => event.runId === params.runId),
     // The cursor is present even on the final page because it is also the
     // incremental-load resume point. `hasMore` is the pagination signal.
     cursor: result.cursor,
@@ -769,32 +753,12 @@ async function createWorkflowRunEventInner(
         'v4 createEvent: run_started stream is missing run_started'
       );
     }
-
-    let attributes = runCreated.eventData.attributes ?? {};
-    let updatedAt = runStarted.createdAt;
-    for (const event of result.events) {
-      if (event.eventType === 'attr_set') {
-        attributes = applyAttributeChanges(attributes, event.eventData.changes);
-        updatedAt = event.createdAt;
-      }
-    }
+    const run = reconstructRunFromReplayEvents(result.events);
+    assert(run);
 
     return {
       event: runStarted,
-      run: {
-        runId: runCreated.runId,
-        status: 'running',
-        deploymentId: runCreated.eventData.deploymentId,
-        workflowName: runCreated.eventData.workflowName,
-        specVersion: runCreated.specVersion,
-        executionContext: runCreated.eventData.executionContext,
-        input: runCreated.eventData.input,
-        attributes,
-        encryptionPublicKey: runCreated.eventData.encryptionPublicKey,
-        startedAt: runStarted.createdAt,
-        createdAt: runCreated.createdAt,
-        updatedAt,
-      },
+      run,
       events: result.events,
       cursor: result.cursor,
       hasMore: result.hasMore,
@@ -810,23 +774,15 @@ async function createWorkflowRunEventInner(
   ) {
     // Lazy hook resume: the queue consumer's idempotent re-ensure doubles
     // as the invocation's setup request. A supporting server streams the
-    // complete replay log back in this response with resolved frame bodies
-    // — the SERVER owns that resolution (the preload contract requires
+    // complete replay log back in this response with resolved frame bodies.
+    // The SERVER owns that resolution (the preload contract requires
     // replay-ready bytes; v4 has no /refs endpoint to hydrate a lazy
     // descriptor during replay), so the request keeps hook_received's lazy
-    // default. Against an older server this makes the CBOR fallback
-    // lightweight: it answers the mutation without resolving and echoing
-    // an S3-backed hook payload the runtime would discard anyway.
+    // default.
     const outcome = await createHookReceivedPreloadEventV4(
       { ...input, remoteRefBehavior: 'lazy' },
       config
     );
-    if (outcome.kind === 'materialized') {
-      // Older server (or optimization declined): the write still succeeded
-      // and this is its normal materialized result. The runtime sees no
-      // replay preload on it and falls back to the run_started setup.
-      return outcome.result;
-    }
     const { canonicalEventId, maxEvents, events, cursor, hasMore } = outcome;
     const canonicalEvent = events.find(
       (event) => event.eventId === canonicalEventId

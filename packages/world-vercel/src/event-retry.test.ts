@@ -9,6 +9,7 @@ import { EventTypeSchema } from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   EVENT_RETRY_ELIGIBILITY,
+  EventPostResponseError,
   isRetryableEventPostError,
   MAX_EVENT_POST_RETRIES,
   THROTTLE_RETRY_BUDGET_MS,
@@ -101,6 +102,19 @@ describe('isRetryableEventPostError', () => {
         new WorkflowWorldError('parse', { code: 'PARSE_ERROR' })
       )
     ).toBe(true);
+  });
+
+  it('does not repeat a POST to repair a failed response continuation', () => {
+    const transport = new WorkflowWorldError('continuation failed', {
+      code: 'TRANSPORT',
+    });
+    expect(
+      isRetryableEventPostError(
+        new EventPostResponseError('POST response already accepted', {
+          cause: transport,
+        })
+      )
+    ).toBe(false);
   });
 
   it('retries a TRANSPORT failure from either transport', () => {

@@ -31,7 +31,9 @@ import {
   EventTypeSchema,
   getEventDataPayloadField,
   HookSchema,
-  type PaginationOptions,
+  type ListEventsByCorrelationIdParams,
+  type ListEventsParams,
+  type PaginatedResponse,
   StructuredErrorSchema,
   WaitSchema,
   WorkflowRunSchema,
@@ -39,13 +41,19 @@ import {
 import { decode } from 'cbor-x';
 import { z } from 'zod';
 import {
+  EventPostResponseError,
+  isRetryableEventRequestError,
+} from './event-retry.js';
+import {
   type DecodedFrame,
   decodeFrames,
   encodeFrame,
+  IncompleteFrameError,
   V4_FRAME_CONTENT_TYPE,
 } from './frames.js';
 import {
   getEventsDispatcher,
+  isRecyclableTransportError,
   noteEventsTransportOutcome,
 } from './http-client.js';
 import {
@@ -94,32 +102,41 @@ import { isWsEventsTransportEnabled } from './ws-transport-enabled.js';
  * stays on HTTP/1.1 because H2 deadlocks the queue's webhook respondWith
  * mechanism — see http-client.ts.
  *
- * No per-request timeout: a LIST response streams the full event-log page, which
- * for a large run can legitimately take a while to drain — a whole-request
- * deadline would abort it mid-stream.
+ * Event streams opt out of the whole-request timeout because a large replay
+ * page can legitimately take a while to drain. Materialized single and batch
+ * writes keep the normal request deadline.
  */
-async function fetchV4(
-  url: string,
-  init: { method: string; headers: Headers; body?: Uint8Array },
-  config: APIConfig | undefined,
-  opName: string,
-  attributes?: Record<string, string | number | string[]>
+interface V4Request {
+  url: string;
+  init: { method: string; headers: Headers; body?: Uint8Array };
+  config?: APIConfig;
+  opName: string;
+  /** Disable the whole-request deadline while the caller drains frames. */
+  streamResponse?: boolean;
+  attributes?: Record<string, string | number | string[]>;
+}
+
+function instrumentedV4Fetch(
+  request: V4Request,
+  options?: {
+    dispatcher?: ReturnType<typeof getEventsDispatcher>;
+    deferTransportSuccess?: boolean;
+    onTransportOutcome?: (error?: unknown) => void;
+  }
 ): Promise<Response> {
-  const dispatcher = getEventsDispatcher(config);
+  const { url, init, config, opName, attributes } = request;
   return instrumentedFetch({
-    method: init.method,
+    ...init,
     url,
-    headers: init.headers,
-    body: init.body,
-    dispatcher,
+    dispatcher: options?.dispatcher ?? getEventsDispatcher(config),
     attributes,
     // Repeated transport failures retire the shared events pool and the next
     // request builds a fresh one. undici keeps a black-holed HTTP/2 session in
     // service indefinitely, so without this every request routed onto it fails
     // until the compute instance is recycled — see noteEventsTransportOutcome.
-    onTransportOutcome: (error) =>
-      noteEventsTransportOutcome(dispatcher, error),
-    timeoutMs: null,
+    onTransportOutcome: options?.onTransportOutcome,
+    deferTransportSuccess: options?.deferTransportSuccess,
+    timeoutMs: request.streamResponse ? null : undefined,
     logLabel: opName,
     // Read the body as bytes, not text: a CBOR error body (the fence 412
     // carries event payloads back) does not survive a UTF-8 decode.
@@ -132,6 +149,43 @@ async function fetchV4(
         url
       ),
   });
+}
+
+/**
+ * Keep transport accounting scoped to the full response body. Protocol errors
+ * prove that the origin answered and therefore count as transport success;
+ * incomplete bodies preserve/report the transport failure instead.
+ */
+async function withV4ResponseBody<T>(
+  request: V4Request,
+  consume: (response: Response) => Promise<T>
+): Promise<T> {
+  const dispatcher = getEventsDispatcher(request.config);
+  let outcomeReported = false;
+  const report = (error?: unknown) => {
+    outcomeReported = true;
+    noteEventsTransportOutcome(dispatcher, error);
+  };
+
+  try {
+    const response = await instrumentedV4Fetch(request, {
+      dispatcher,
+      deferTransportSuccess: true,
+      onTransportOutcome: report,
+    });
+    const result = await consume(response);
+    report();
+    return result;
+  } catch (error) {
+    if (!outcomeReported) {
+      const incomplete =
+        error instanceof IncompleteFrameError ||
+        error instanceof PartialEventStreamError ||
+        isRecyclableTransportError(error);
+      report(incomplete ? error : undefined);
+    }
+    throw error;
+  }
 }
 
 const EVENT_ID_HEADER = 'x-wf-event-id';
@@ -687,18 +741,18 @@ export function throwForErrorResponse(
  * The frame meta's `eventType` remains authoritative — the backend
  * cross-checks the two and logs (but does not reject) a mismatch.
  */
-async function postWorkflowRunEventV4(
+async function workflowRunEventV4Request(
   input: CreateEventV4InputBase & {
     eventType: EventType;
     skipPreload?: true;
   },
-  responseType: 'materialized' | 'event-stream',
+  eventStream: boolean,
   config?: APIConfig
-) {
+): Promise<V4Request> {
   const { baseUrl, headers: baseHeaders } = await getHttpConfig(config);
   const headers = new Headers(baseHeaders);
   headers.set('Content-Type', 'application/octet-stream');
-  if (responseType === 'event-stream') {
+  if (eventStream) {
     headers.set('Accept', V4_FRAME_CONTENT_TYPE);
   }
 
@@ -708,12 +762,13 @@ async function postWorkflowRunEventV4(
   );
 
   const url = eventsV4Url(baseUrl, input.runId, input.eventType);
-  return fetchV4(
+  return {
     url,
-    { method: 'POST', headers, body: frame },
+    init: { method: 'POST', headers, body: frame },
     config,
-    'createEvent',
-    {
+    opName: 'createEvent',
+    streamResponse: eventStream,
+    attributes: {
       ...WorkflowEventsTransport('http'),
       ...WorkflowEventType(input.eventType),
       ...WorkflowClientVersion(`@workflow/world-vercel/${version}`),
@@ -721,7 +776,21 @@ async function postWorkflowRunEventV4(
       ...(input.optimizations !== undefined
         ? StepLatencyOptimizations(input.optimizations)
         : {}),
-    }
+    },
+  };
+}
+
+async function withWorkflowRunEventResponseBody<T>(
+  input: CreateEventV4InputBase & {
+    eventType: EventType;
+    skipPreload?: true;
+  },
+  config: APIConfig | undefined,
+  consume: (response: Response) => Promise<T>
+): Promise<T> {
+  return withV4ResponseBody(
+    await workflowRunEventV4Request(input, true, config),
+    consume
   );
 }
 
@@ -742,14 +811,16 @@ export async function createWorkflowRunEventV4<T extends EventType>(
     if (reply) return decodeCreateEventResponse(reply, input.eventType);
   }
 
-  const response = await postWorkflowRunEventV4(input, 'materialized', config);
-
-  const contentType = response.headers.get('content-type');
-  if (contentType?.startsWith(V4_FRAME_CONTENT_TYPE)) {
-    throw new Error('v4 createEvent: unexpected event page');
-  }
-
-  return decodeCreateEventResponse(response, input.eventType);
+  return withV4ResponseBody(
+    await workflowRunEventV4Request(input, false, config),
+    async (response) => {
+      const contentType = response.headers.get('content-type');
+      if (contentType?.startsWith(V4_FRAME_CONTENT_TYPE)) {
+        throw new Error('v4 createEvent: unexpected event page');
+      }
+      return decodeCreateEventResponse(response, input.eventType);
+    }
+  );
 }
 
 /** Takes `FrameResponseLike` rather than `Response` because the WS branch has
@@ -784,16 +855,13 @@ export async function createWorkflowRunStartedEventV4(
   input: CreateEventV4InputBase,
   config?: APIConfig
 ) {
-  const response = await postWorkflowRunEventV4(
+  const { responseHeaders, ...replay } = await postReplayLogEvent(
     { ...input, eventType: 'run_started' },
-    'event-stream',
     config
   );
-  const events: Event[] = [];
-  const page = await consumeEventFrameStream(response, 'createEvent', events);
-  assert(page.cursor, 'v4 createEvent: event stream missing cursor');
+  assert(replay.cursor, 'v4 createEvent: event stream missing cursor');
   const maxEvents = MaxEventsHeaderSchema.safeParse(
-    response.headers.get(MAX_EVENTS_HEADER)
+    responseHeaders.get(MAX_EVENTS_HEADER)
   );
   if (!maxEvents.success) {
     throw new WorkflowWorldError('v4 createEvent: invalid max-events header', {
@@ -802,7 +870,7 @@ export async function createWorkflowRunStartedEventV4(
     });
   }
 
-  return { events, ...page, maxEvents: maxEvents.data };
+  return { ...replay, maxEvents: maxEvents.data };
 }
 
 /** One event of a v4 batch POST, index-aligned with the response results. */
@@ -890,17 +958,25 @@ export async function createWorkflowRunEventsBatchV4(
   // span carries only wire-level facts. workflow.event.type is deliberately
   // absent — it names a single event write, and tagging a batch with its
   // first event's type misclassifies the traffic.
-  const response = await fetchV4(
-    url,
-    { method: 'POST', headers, body },
-    config,
-    'createEventBatch',
+  return withV4ResponseBody(
     {
-      ...WorkflowEventsTransport('http'),
-      'workflow.batch.bytes': body.byteLength,
-    }
+      url,
+      init: { method: 'POST', headers, body },
+      config,
+      opName: 'createEventBatch',
+      attributes: {
+        ...WorkflowEventsTransport('http'),
+        'workflow.batch.bytes': body.byteLength,
+      },
+    },
+    (response) => decodeCreateEventBatchResponse(response, input.events)
   );
+}
 
+async function decodeCreateEventBatchResponse(
+  response: Response,
+  events: CreateEventBatchV4Event[]
+): Promise<CreateEventBatchV4Result> {
   const bodyBytes = new Uint8Array(await response.arrayBuffer());
   const decoded =
     bodyBytes.byteLength > 0
@@ -914,12 +990,12 @@ export async function createWorkflowRunEventsBatchV4(
   // failing loudly here is safe for the retry wrapper to re-send.
   if (
     !Array.isArray(decoded.results) ||
-    decoded.results.length !== input.events.length
+    decoded.results.length !== events.length
   ) {
     throw new WorkflowWorldError(
       `v4 createEventBatch: response \`results\` length ` +
         `(${Array.isArray(decoded.results) ? decoded.results.length : 'non-array'}) ` +
-        `!= ${input.events.length} submitted frames`,
+        `!= ${events.length} submitted frames`,
       { code: 'SCHEMA_VALIDATION' }
     );
   }
@@ -943,7 +1019,7 @@ export async function createWorkflowRunEventsBatchV4(
       // Success items validate against the SAME per-type schema the single
       // POST uses, so a batched write and its single-path twin return
       // byte-equivalent bodies to the caller.
-      const eventType = input.events[index].eventType;
+      const eventType = events[index].eventType;
       const parsed = CreateEventV4BodySchemas[eventType].safeParse(raw);
       if (!parsed.success) {
         throw new WorkflowWorldError(
@@ -1186,73 +1262,41 @@ async function postEventFrameOverWs(
   );
 }
 
-/**
- * Result of a `hook_received` POST that opted into the replay-log preload,
- * discriminated on `kind` (keyed on the response content type).
- */
-export type HookReceivedPreloadV4Result =
-  /** The server streamed the replay log back as v4 frames. */
-  | (ListEventsV4Result & {
-      kind: 'stream';
-      /**
-       * The canonical event this write created or converged on (the resume
-       * claim winner's — ours or the producer's), named by the
-       * event-id response header. Undefined when the server did not send it.
-       */
-      canonicalEventId: string | undefined;
-      /** Per-run event ceiling from the response header, when present. */
-      maxEvents: number | undefined;
-    })
-  /**
-   * The server answered with the normal materialized CBOR body instead —
-   * an older server, or one that declined the optimization. The
-   * hook_received write itself has still succeeded; callers must not
-   * re-post it.
-   */
-  | {
-      kind: 'materialized';
-      result: EventResult<'hook_received'> & { event: Event };
-    };
+interface ReplayLog {
+  events: Event[];
+  cursor: string | null;
+  hasMore: boolean;
+}
 
 /**
  * POST /api/v4/runs/:runId/events/hook_received with the v4-frame `Accept`,
- * consuming either response mode.
+ * consuming the replay-log response.
  *
- * A server that supports the lazy-hook replay stream answers the consumer's
- * idempotent re-ensure with the run's complete replay log as v4 frames —
- * the same event-frame sequence LIST uses, ending with the `_end` sentinel.
- * A truncated stream (EOF without the sentinel) throws; the write is
- * deduplicated by the server's `(runId, resumeId)` constraint, so retrying
- * the whole request is safe and converges on the same canonical event.
+ * The consumer's idempotent re-ensure always answers with the run's replay log
+ * as v4 frames. A truncated stream resumes with a GET after its last validated
+ * event. If it fails before producing any event, the outer POST retry remains
+ * safe because the server deduplicates `(runId, resumeId)` and returns the
+ * canonical event.
  */
 export async function createHookReceivedPreloadEventV4(
   input: CreateEventV4InputBase,
   config?: APIConfig
-): Promise<HookReceivedPreloadV4Result> {
-  const response = await postWorkflowRunEventV4(
+): Promise<
+  ReplayLog & {
+    canonicalEventId: string | undefined;
+    maxEvents: number | undefined;
+  }
+> {
+  const { responseHeaders, ...replay } = await postReplayLogEvent(
     { ...input, eventType: 'hook_received' },
-    'event-stream',
     config
   );
-
-  const contentType = response.headers.get('content-type');
-  if (!contentType?.startsWith(V4_FRAME_CONTENT_TYPE)) {
-    return {
-      kind: 'materialized',
-      result: await decodeCreateEventResponse(response, 'hook_received'),
-    };
-  }
-
-  const events: Event[] = [];
-  const page = await consumeEventFrameStream(response, 'createEvent', events);
   const maxEvents = MaxEventsHeaderSchema.safeParse(
-    response.headers.get(MAX_EVENTS_HEADER)
+    responseHeaders.get(MAX_EVENTS_HEADER)
   );
   return {
-    kind: 'stream',
-    events,
-    ...page,
-    canonicalEventId: response.headers.get(EVENT_ID_HEADER) ?? undefined,
+    ...replay,
+    canonicalEventId: responseHeaders.get(EVENT_ID_HEADER) ?? undefined,
     maxEvents: maxEvents.success ? maxEvents.data : undefined,
   };
 }
@@ -1284,108 +1328,138 @@ export async function getEventV4(
   const url =
     `${baseUrl}/v4/runs/${encodeURIComponent(runId)}/events/${encodeURIComponent(eventId)}` +
     `?remoteRefBehavior=${remoteRefBehavior}`;
-  const response = await fetchV4(
-    url,
-    { method: 'GET', headers },
-    config,
-    'getEvent'
+  return withV4ResponseBody(
+    {
+      url,
+      init: { method: 'GET', headers },
+      config,
+      opName: 'getEvent',
+      streamResponse: true,
+    },
+    async (response) => {
+      // GET emits one frame without a sentinel.
+      for await (const frame of decodeFrames(
+        eventFrameChunks(response, 'getEvent')
+      )) {
+        return decodeEventFrame(frame);
+      }
+      throw new IncompleteFrameError(
+        `v4 getEvent: empty frame stream for ${eventId}`
+      );
+    }
   );
-  const contentType = response.headers.get('content-type');
-  if (!contentType?.startsWith(V4_FRAME_CONTENT_TYPE)) {
-    throw new Error(
-      `v4 getEvent: expected ${V4_FRAME_CONTENT_TYPE}, got ${contentType ?? '(none)'}`
-    );
-  }
-
-  // fetch's `Response.body` is a web ReadableStream, which is async-iterable
-  // on Node (readableStream async iteration, since v16.5.0) — feed it straight
-  // to decodeFrames. The cast is only because TS's lib `ReadableStream` type
-  // omits the async iterator. Do NOT round-trip through `node:stream`
-  // Readable.toWeb: a dynamic `import('node:stream')` resolves to an empty
-  // module namespace in Next.js webpack server bundles and crashes.
-  const chunks = response.body as unknown as AsyncIterable<Uint8Array>;
-
-  // GET emits a single frame (no sentinel); decodeFrames returns at EOF
-  // after yielding it.
-  for await (const frame of decodeFrames(chunks)) {
-    return decodeEventFrame(frame);
-  }
-  throw new Error(`v4 getEvent: empty frame stream for ${eventId}`);
 }
 
-export interface ListEventsV4Params extends PaginationOptions {
-  /**
-   * Whether the backend resolves payload bytes into each frame body.
-   * `resolve` (default) streams the bytes; `lazy` emits empty-body frames
-   * (the ref descriptor stays in the frame meta) — for metadata-only
-   * listings that would otherwise download every payload just to discard
-   * it.
-   */
-  remoteRefBehavior?: 'resolve' | 'lazy';
-}
-
-export interface ListEventsV4Result {
-  events: Event[];
-  /** Trailing event-log cursor, or null when the stream contained no events. */
-  cursor: string | null;
-  /** Explicit "another page of results exists" flag from the sentinel. */
-  hasMore: boolean;
-}
-
-async function consumeEventFrameStream(
+function eventFrameChunks(
   response: Response,
-  opName: string,
-  events: Event[]
-): Promise<Pick<ListEventsV4Result, 'cursor' | 'hasMore'>> {
+  opName: string
+): AsyncIterable<Uint8Array> {
   const contentType = response.headers.get('content-type');
   if (!contentType?.startsWith(V4_FRAME_CONTENT_TYPE)) {
     throw new Error(
       `v4 ${opName}: expected ${V4_FRAME_CONTENT_TYPE}, got ${contentType ?? '(none)'}`
     );
   }
-
-  const chunks = response.body as unknown as AsyncIterable<Uint8Array>;
-
-  for await (const frame of decodeFrames(chunks)) {
-    if (frame.meta._end === 1) {
-      const end = EventStreamEndSchema.parse(frame.meta);
-      return { cursor: end.next ?? null, hasMore: end.hasMore };
-    }
-    if (Object.keys(frame.meta).some((key) => key.startsWith('_'))) {
-      throw new Error(`v4 ${opName}: unexpected control frame`);
-    }
-    events.push(decodeEventFrame(frame));
+  if (!response.body) {
+    throw new IncompleteFrameError(`v4 ${opName}: response body is missing`);
   }
 
-  throw new Error(
+  // fetch's `Response.body` is a web ReadableStream, which is async-iterable
+  // on Node. The cast is only because TS's lib `ReadableStream` type omits the
+  // async iterator. A node:stream conversion breaks in Next.js webpack server
+  // bundles, where that dynamic import resolves to an empty namespace.
+  return response.body as unknown as AsyncIterable<Uint8Array>;
+}
+
+class PartialEventStreamError extends WorkflowWorldError {
+  constructor(message: string, cause?: unknown) {
+    super(message, { code: 'TRANSPORT', cause });
+  }
+}
+
+const MAX_PARTIAL_EVENT_STREAM_RETRIES = 3;
+
+async function consumeEventFrameStream(
+  response: Response,
+  opName: string,
+  events: Event[]
+): Promise<{ cursor: string | null; hasMore: boolean }> {
+  try {
+    for await (const frame of decodeFrames(
+      eventFrameChunks(response, opName)
+    )) {
+      if (frame.meta._end === 1) {
+        const end = EventStreamEndSchema.parse(frame.meta);
+        return {
+          cursor: end.next ?? null,
+          hasMore: end.hasMore,
+        };
+      }
+      if (Object.keys(frame.meta).some((key) => key.startsWith('_'))) {
+        throw new Error(`v4 ${opName}: unexpected control frame`);
+      }
+      events.push(decodeEventFrame(frame));
+    }
+  } catch (cause) {
+    if (!(cause instanceof IncompleteFrameError)) throw cause;
+    throw new PartialEventStreamError(
+      `v4 ${opName}: event frame stream failed after ${events.length} events`,
+      cause
+    );
+  }
+
+  throw new PartialEventStreamError(
     `v4 ${opName}: frame stream ended without the end-of-stream sentinel ` +
       `(${events.length} events read) — truncated response?`
   );
 }
 
-/**
- * Drive a v4 frame-stream list response into an in-memory page. Used by
- * both the by-runId and by-correlationId list endpoints — the wire
- * shape is identical, only the URL differs.
- *
- * `headers` come from the caller's single getHttpConfig resolution (the
- * same call that produced the baseUrl in `url`) so each LIST resolves
- * auth exactly once.
- */
-async function consumeListFrameStream(
-  url: string,
-  headers: Headers,
-  config: APIConfig | undefined,
-  opName: string,
-  events: Event[]
-): Promise<Pick<ListEventsV4Result, 'cursor' | 'hasMore'>> {
-  const response = await fetchV4(
-    url,
-    { method: 'GET', headers },
-    config,
-    opName
-  );
-  return consumeEventFrameStream(response, opName, events);
+/** POST a replay log and continue only an actually incomplete response body. */
+async function postReplayLogEvent(
+  input: CreateEventV4InputBase & {
+    eventType: 'run_started' | 'hook_received';
+  },
+  config?: APIConfig
+): Promise<ReplayLog & { responseHeaders: Headers }> {
+  const events: Event[] = [];
+  let responseHeaders: Headers | undefined;
+  try {
+    const page = await withWorkflowRunEventResponseBody(
+      input,
+      config,
+      (response) => {
+        responseHeaders = response.headers;
+        return consumeEventFrameStream(response, 'createEvent', events);
+      }
+    );
+    assert(responseHeaders);
+    return { events, ...page, responseHeaders };
+  } catch (error) {
+    if (!(error instanceof PartialEventStreamError)) throw error;
+    const lastEvent = events.at(-1);
+    if (!lastEvent) throw error;
+    assert(responseHeaders);
+    const continuationCursor = `eid:${lastEvent.eventId}`;
+
+    try {
+      const suffix = await getWorkflowRunEventsV4(
+        { runId: input.runId, pagination: { cursor: continuationCursor } },
+        config
+      );
+      events.push(...suffix.data);
+      return {
+        events,
+        cursor: suffix.cursor ?? continuationCursor,
+        hasMore: suffix.hasMore,
+        responseHeaders,
+      };
+    } catch (cause) {
+      throw new EventPostResponseError(
+        `v4 createEvent: replay continuation failed for run ${input.runId}`,
+        { cause }
+      );
+    }
+  }
 }
 
 /**
@@ -1393,20 +1467,29 @@ async function consumeListFrameStream(
  * Shared by the runId and correlationId list query builders so both send
  * `remoteRefBehavior` identically.
  */
-function appendListParams(sp: URLSearchParams, params: ListEventsV4Params) {
-  if (params.cursor) sp.set('cursor', params.cursor);
-  if (params.limit !== undefined) sp.set('limit', String(params.limit));
-  if (params.sortOrder) sp.set('sortOrder', params.sortOrder);
-  if (params.remoteRefBehavior) {
-    sp.set('remoteRefBehavior', params.remoteRefBehavior);
-  }
+function appendListParams(
+  sp: URLSearchParams,
+  params: ListEventsParams | ListEventsByCorrelationIdParams,
+  cursor: string | null
+) {
+  const { limit, sortOrder } = params.pagination ?? {};
+  if (cursor) sp.set('cursor', cursor);
+  if (limit !== undefined) sp.set('limit', String(limit));
+  if (sortOrder) sp.set('sortOrder', sortOrder);
+  sp.set(
+    'remoteRefBehavior',
+    params.resolveData === 'none' ? 'lazy' : 'resolve'
+  );
 }
 
-function paginationToQuery(params: ListEventsV4Params): string {
+function paginationToQuery(
+  params: ListEventsParams,
+  cursor: string | null
+): string {
   const sp = new URLSearchParams();
   // The World API uses an omitted limit for a complete event log.
-  if (params.limit === undefined) sp.set('returnAll', 'true');
-  appendListParams(sp, params);
+  if (params.pagination?.limit === undefined) sp.set('returnAll', 'true');
+  appendListParams(sp, params, cursor);
   return `?${sp.toString()}`;
 }
 
@@ -1421,37 +1504,39 @@ function paginationToQuery(params: ListEventsV4Params): string {
  * after its last validated event instead of downloading accepted frames again.
  */
 export async function getWorkflowRunEventsV4(
-  runId: string,
-  params: ListEventsV4Params = {},
+  params: ListEventsParams,
   config?: APIConfig
-): Promise<ListEventsV4Result> {
+): Promise<PaginatedResponse<Event>> {
   const { baseUrl, headers } = await getHttpConfig(config);
   const events: Event[] = [];
-  let cursor = params.cursor;
+  let cursor = params.pagination?.cursor ?? null;
 
-  while (true) {
+  for (let retries = 0; ; retries++) {
     const url =
-      `${baseUrl}/v4/runs/${encodeURIComponent(runId)}/events` +
-      paginationToQuery({ ...params, cursor });
+      `${baseUrl}/v4/runs/${encodeURIComponent(params.runId)}/events` +
+      paginationToQuery(params, cursor);
     try {
-      const page = await consumeListFrameStream(
-        url,
-        headers,
-        config,
-        'listEvents',
-        events
+      const result = await withV4ResponseBody(
+        {
+          url,
+          init: { method: 'GET', headers },
+          config,
+          opName: 'listEvents',
+          streamResponse: true,
+        },
+        (response) => consumeEventFrameStream(response, 'listEvents', events)
       );
-      return { events, ...page };
+      return { data: events, cursor: result.cursor, hasMore: result.hasMore };
     } catch (error) {
       const lastEvent = events.at(-1);
       if (
-        params.limit !== undefined ||
-        !lastEvent ||
-        `eid:${lastEvent.eventId}` === cursor
+        retries === MAX_PARTIAL_EVENT_STREAM_RETRIES ||
+        params.pagination?.limit !== undefined ||
+        !isRetryableEventRequestError(error)
       ) {
         throw error;
       }
-      cursor = `eid:${lastEvent.eventId}`;
+      if (lastEvent) cursor = `eid:${lastEvent.eventId}`;
     }
   }
 }
@@ -1471,24 +1556,26 @@ export async function getWorkflowRunEventsV4(
  * the page by run id.
  */
 export async function getEventsByCorrelationIdV4(
-  correlationId: string,
-  runId: string,
-  params: ListEventsV4Params = {},
+  params: ListEventsByCorrelationIdParams,
   config?: APIConfig
-): Promise<ListEventsV4Result> {
+): Promise<PaginatedResponse<Event>> {
   const { baseUrl, headers } = await getHttpConfig(config);
   const sp = new URLSearchParams();
-  sp.set('correlationId', correlationId);
-  sp.set('runId', runId);
-  appendListParams(sp, params);
+  sp.set('correlationId', params.correlationId);
+  sp.set('runId', params.runId);
+  appendListParams(sp, params, params.pagination?.cursor ?? null);
   const url = `${baseUrl}/v4/events?${sp.toString()}`;
   const events: Event[] = [];
-  const page = await consumeListFrameStream(
-    url,
-    headers,
-    config,
-    'listEventsByCorrelationId',
-    events
+  const result = await withV4ResponseBody(
+    {
+      url,
+      init: { method: 'GET', headers },
+      config,
+      opName: 'listEventsByCorrelationId',
+      streamResponse: true,
+    },
+    (response) =>
+      consumeEventFrameStream(response, 'listEventsByCorrelationId', events)
   );
-  return { events, ...page };
+  return { data: events, cursor: result.cursor, hasMore: result.hasMore };
 }

@@ -4,6 +4,8 @@ import {
   type DecodedFrame,
   decodeFrames,
   encodeFrame,
+  IncompleteFrameError,
+  InvalidFrameError,
   V4_FRAME_CONTENT_TYPE,
 } from './frames.js';
 
@@ -174,7 +176,36 @@ describe('decodeFrames', () => {
   it('throws when the stream ends mid-frame', async () => {
     const partial = encodeFrame({ x: 1 }, new Uint8Array(100)).slice(0, 20);
     const stream = streamOf(partial, 1024);
-    await expect(drainFrames(stream)).rejects.toThrow(/truncated/);
+    await expect(drainFrames(stream)).rejects.toBeInstanceOf(
+      IncompleteFrameError
+    );
+  });
+
+  it('distinguishes invalid CBOR metadata from an incomplete response', async () => {
+    const invalidMeta = new Uint8Array([0, 0, 0, 1, 0x01, 0, 0, 0, 0]);
+
+    await expect(drainFrames(streamOf(invalidMeta, 9))).rejects.toBeInstanceOf(
+      InvalidFrameError
+    );
+  });
+
+  it('classifies a source read failure as an incomplete response', async () => {
+    const cause = new Error('socket reset');
+    async function* failingSource(): AsyncGenerator<Uint8Array> {
+      yield new Uint8Array([0, 0]);
+      throw cause;
+    }
+
+    await expect(
+      (async () => {
+        for await (const _frame of decodeFrames(failingSource())) {
+          // drain
+        }
+      })()
+    ).rejects.toMatchObject({
+      name: 'IncompleteFrameError',
+      cause,
+    });
   });
 
   it('preserves CBOR types in meta (numbers, booleans, arrays)', async () => {

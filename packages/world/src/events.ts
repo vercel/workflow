@@ -1182,6 +1182,7 @@ export interface ListEventsByCorrelationIdParams {
    * event id alone is not.
    */
   runId: string;
+  /** Omit `limit` to return every remaining event. */
   pagination?: PaginationOptions;
   resolveData?: ResolveData;
 }
