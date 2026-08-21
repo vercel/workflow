@@ -111,7 +111,10 @@ import {
   stepLeaseRemainingSeconds,
 } from './runtime/step-ownership.js';
 import { runStepSingleFlight } from './runtime/step-single-flight.js';
-import { handleSuspension } from './runtime/suspension-handler.js';
+import {
+  handleSuspension,
+  type SuspensionSerializationBlocker,
+} from './runtime/suspension-handler.js';
 import { useQuickJSVm } from './runtime/vm-mode.js';
 import { getWaitContinuationDispatch } from './runtime/wait-continuation.js';
 import { getWorld, type WorldHandlers } from './runtime/world.js';
@@ -512,6 +515,74 @@ function openHookAndWaitState(events: Event[]): {
     }
   }
   return { openHook: hooks.size > 0, openWait: waits.size > 0 };
+}
+
+type RetentionDecision =
+  | { retain: true }
+  | {
+      retain: false;
+      reason:
+        | 'disabled'
+        | 'serialization_executed_workflow_code'
+        | 'no_step_driver'
+        | 'unsupported_suspension_item'
+        | 'open_wait';
+    };
+
+/**
+ * The complete retained-VM policy for a suspension boundary.
+ *
+ * Every item type accepted here must use the suspension-generation guard when
+ * signaling. Otherwise a signal scheduled at boundary N could suspend the VM
+ * after it has already resumed into boundary N+1. Waits and attributes are not
+ * guarded, so they remain unretainable. A step is required to drive the next
+ * inline iteration; hook-only suspensions park normally.
+ *
+ * `hasOpenWait` is lazy because checking it scans the loaded event log. Keep it
+ * last so cheap rejection reasons avoid that work.
+ */
+function getRetentionDecision({
+  suspension,
+  serializationBlockers,
+  hasOpenWait,
+}: {
+  suspension: WorkflowSuspension;
+  serializationBlockers: SuspensionSerializationBlocker[];
+  hasOpenWait: () => boolean;
+}): RetentionDecision {
+  if (!isVmRetentionEnabled()) {
+    return { retain: false, reason: 'disabled' };
+  }
+  if (serializationBlockers.length > 0) {
+    return {
+      retain: false,
+      reason: 'serialization_executed_workflow_code',
+    };
+  }
+  if (suspension.stepCount === 0) {
+    return { retain: false, reason: 'no_step_driver' };
+  }
+  if (
+    !suspension.items.every((item) => {
+      switch (item.type) {
+        case 'step':
+        case 'hook':
+          return true;
+        case 'wait':
+        case 'attribute':
+          return false;
+        default:
+          item satisfies never;
+          throw new Error('Unknown workflow suspension item');
+      }
+    })
+  ) {
+    return { retain: false, reason: 'unsupported_suspension_item' };
+  }
+  if (hasOpenWait()) {
+    return { retain: false, reason: 'open_wait' };
+  }
+  return { retain: true };
 }
 
 type ReplayEventLog =
@@ -3258,28 +3329,15 @@ export function workflowEntrypoint(
                           return openHookAndWaitState(eventLog.events);
                         });
 
-                        if (
-                          retainedSession &&
-                          (!isVmRetentionEnabled() ||
-                            !suspensionResult.serializationWasPassive ||
-                            err.stepCount === 0 ||
-                            !err.steps.every((item) => {
-                              switch (item.type) {
-                                case 'step':
-                                case 'hook':
-                                  return true;
-                                case 'wait':
-                                case 'attribute':
-                                  return false;
-                                default:
-                                  item satisfies never;
-                                  throw new Error(
-                                    'Unknown workflow suspension item'
-                                  );
-                              }
-                            }) ||
-                            openHookWait.value.openWait)
-                        ) {
+                        const retentionDecision = retainedSession
+                          ? getRetentionDecision({
+                              suspension: err,
+                              serializationBlockers:
+                                suspensionResult.serializationBlockers,
+                              hasOpenWait: () => openHookWait.value.openWait,
+                            })
+                          : undefined;
+                        if (retentionDecision?.retain === false) {
                           retainedSession = null;
                         }
                         preStepBlockingMs += suspensionResult.hookCreationMs;
@@ -3299,6 +3357,25 @@ export function workflowEntrypoint(
                             suspensionResult.hasAwaitedHookCreation,
                           hasAttributeEvents:
                             suspensionResult.hasAttributeEvents,
+                          ...(retentionDecision
+                            ? {
+                                workflowVmRetention: retentionDecision.retain
+                                  ? 'retained'
+                                  : 'replay',
+                              }
+                            : {}),
+                          ...(retentionDecision?.retain === false
+                            ? {
+                                workflowVmRetentionReason:
+                                  retentionDecision.reason,
+                              }
+                            : {}),
+                          ...(suspensionResult.serializationBlockers.length > 0
+                            ? {
+                                serializationBlockers:
+                                  suspensionResult.serializationBlockers,
+                              }
+                            : {}),
                         });
 
                         // Hook conflict: break loop, re-invoke via queue

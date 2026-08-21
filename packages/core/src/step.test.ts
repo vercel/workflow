@@ -150,11 +150,11 @@ describe('createUseStep', () => {
     expect((error as WorkflowSuspension).message).toBe(
       '1 step has not been run yet'
     );
-    // Compare Map values with WorkflowSuspension.steps array
+    // Compare Map values with WorkflowSuspension.items array
     expect([...ctx.invocationsQueue.values()]).toEqual(
-      (error as WorkflowSuspension).steps
+      (error as WorkflowSuspension).items
     );
-    expect((error as WorkflowSuspension).steps).toMatchInlineSnapshot(`
+    expect((error as WorkflowSuspension).items).toMatchInlineSnapshot(`
       [
         {
           "args": [
@@ -196,11 +196,11 @@ describe('createUseStep', () => {
     expect((error as WorkflowSuspension).message).toBe(
       '3 steps have not been run yet'
     );
-    // Compare Map values with WorkflowSuspension.steps array
+    // Compare Map values with WorkflowSuspension.items array
     expect([...ctx.invocationsQueue.values()]).toEqual(
-      (error as WorkflowSuspension).steps
+      (error as WorkflowSuspension).items
     );
-    expect((error as WorkflowSuspension).steps).toMatchInlineSnapshot(`
+    expect((error as WorkflowSuspension).items).toMatchInlineSnapshot(`
       [
         {
           "args": [
@@ -1014,7 +1014,7 @@ describe('AbortController hook integration', () => {
       );
 
       // The suspension should contain the hook with abortRequested
-      const hookItem = suspension.steps.find((s) => s.type === 'hook');
+      const hookItem = suspension.items.find((s) => s.type === 'hook');
       expect(hookItem).toBeDefined();
       expect(hookItem?.type).toBe('hook');
       if (hookItem?.type === 'hook') {
@@ -1116,7 +1116,7 @@ describe('AbortController hook integration', () => {
       );
 
       // The handler should see a hook that needs both creation and abort
-      const hookItem = suspension.steps.find((s) => s.type === 'hook');
+      const hookItem = suspension.items.find((s) => s.type === 'hook');
       expect(hookItem).toBeDefined();
       if (hookItem?.type === 'hook') {
         expect(hookItem.hasCreatedEvent).toBeFalsy();

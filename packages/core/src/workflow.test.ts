@@ -256,7 +256,7 @@ describe('runWorkflow', () => {
       suspension: WorkflowSuspension,
       result: number
     ): Promise<void> => {
-      const step = suspension.steps[0];
+      const step = suspension.items[0];
       assert(step?.type === 'step');
       const base = {
         runId: run.runId,
@@ -1700,7 +1700,7 @@ describe('runWorkflow', () => {
       assert(error);
       expect(error.name).toEqual('WorkflowSuspension');
       expect(error.message).toEqual('1 step has not been run yet');
-      expect((error as WorkflowSuspension).steps).toEqual([
+      expect((error as WorkflowSuspension).items).toEqual([
         {
           type: 'step',
           stepName: 'add',
@@ -1761,7 +1761,7 @@ describe('runWorkflow', () => {
       expect(error.name).toEqual('WorkflowSuspension');
       // step_started no longer removes from queue - step stays in queue for re-enqueueing
       expect(error.message).toEqual('1 step has not been run yet');
-      expect((error as WorkflowSuspension).steps).toHaveLength(1);
+      expect((error as WorkflowSuspension).items).toHaveLength(1);
     });
 
     it('should throw `WorkflowSuspension` for multiple steps with `Promise.all()`', async () => {
@@ -1802,7 +1802,7 @@ describe('runWorkflow', () => {
       assert(error);
       expect(error.name).toEqual('WorkflowSuspension');
       expect(error.message).toEqual('2 steps have not been run yet');
-      expect((error as WorkflowSuspension).steps).toEqual([
+      expect((error as WorkflowSuspension).items).toEqual([
         {
           type: 'step',
           stepName: 'add',
@@ -2159,10 +2159,10 @@ describe('runWorkflow', () => {
       assert(error);
       expect(error.name).toEqual('WorkflowSuspension');
       expect(error.message).toEqual('1 hook has not been created yet');
-      expect((error as WorkflowSuspension).steps).toHaveLength(1);
-      expect((error as WorkflowSuspension).steps[0].type).toEqual('hook');
+      expect((error as WorkflowSuspension).items).toHaveLength(1);
+      expect((error as WorkflowSuspension).items[0].type).toEqual('hook');
       // createHook() should always set isWebhook: false
-      expect((error as WorkflowSuspension).steps[0] as any).toHaveProperty(
+      expect((error as WorkflowSuspension).items[0] as any).toHaveProperty(
         'isWebhook',
         false
       );
@@ -2813,8 +2813,8 @@ describe('runWorkflow', () => {
       assert(error);
       expect(error.name).toEqual('WorkflowSuspension');
       expect(error.message).toEqual('1 hook has not been created yet');
-      expect((error as WorkflowSuspension).steps).toHaveLength(1);
-      expect((error as WorkflowSuspension).steps[0].type).toEqual('hook');
+      expect((error as WorkflowSuspension).items).toHaveLength(1);
+      expect((error as WorkflowSuspension).items[0].type).toEqual('hook');
     });
 
     it('should handle hook with custom token', async () => {
@@ -2916,8 +2916,8 @@ describe('runWorkflow', () => {
       assert(error);
       expect(error.name).toEqual('WorkflowSuspension');
       expect(error.message).toEqual('1 hook has not been created yet');
-      expect((error as WorkflowSuspension).steps).toHaveLength(1);
-      expect((error as WorkflowSuspension).steps[0].type).toEqual('hook');
+      expect((error as WorkflowSuspension).items).toHaveLength(1);
+      expect((error as WorkflowSuspension).items[0].type).toEqual('hook');
     });
 
     it('should resolve hook.getConflict() with null on hook_created without waiting for hook payload data', async () => {
@@ -4067,8 +4067,8 @@ describe('runWorkflow', () => {
       assert(error);
       expect(error.name).toEqual('WorkflowSuspension');
       expect(error.message).toEqual('1 wait has not been created yet');
-      expect((error as WorkflowSuspension).steps).toHaveLength(1);
-      expect((error as WorkflowSuspension).steps[0].type).toEqual('wait');
+      expect((error as WorkflowSuspension).items).toHaveLength(1);
+      expect((error as WorkflowSuspension).items[0].type).toEqual('wait');
     });
 
     it('should handle multiple simultaneous sleeps with Promise.all()', async () => {
@@ -4222,8 +4222,8 @@ describe('runWorkflow', () => {
       }
       assert(error);
       expect(error.name).toEqual('WorkflowSuspension');
-      expect((error as WorkflowSuspension).steps).toHaveLength(1);
-      expect((error as WorkflowSuspension).steps[0].type).toEqual('wait');
+      expect((error as WorkflowSuspension).items).toHaveLength(1);
+      expect((error as WorkflowSuspension).items[0].type).toEqual('wait');
     });
 
     it('should handle sleep combined with steps', async () => {
@@ -4755,9 +4755,9 @@ describe('runWorkflow', () => {
       // Should suspend to create the step
       assert(error);
       expect(error.name).toEqual('WorkflowSuspension');
-      expect((error as WorkflowSuspension).steps).toHaveLength(1);
+      expect((error as WorkflowSuspension).items).toHaveLength(1);
 
-      const step = (error as WorkflowSuspension).steps[0];
+      const step = (error as WorkflowSuspension).items[0];
       expect(step).toMatchObject({
         type: 'step',
         stepName: 'step//input.js//_anonymousStep0',
@@ -4805,9 +4805,9 @@ describe('runWorkflow', () => {
       // Should suspend to create the step
       assert(error);
       expect(error.name).toEqual('WorkflowSuspension');
-      expect((error as WorkflowSuspension).steps).toHaveLength(1);
+      expect((error as WorkflowSuspension).items).toHaveLength(1);
 
-      const step = (error as WorkflowSuspension).steps[0];
+      const step = (error as WorkflowSuspension).items[0];
       expect(step).toMatchObject({
         type: 'step',
         stepName: 'add',

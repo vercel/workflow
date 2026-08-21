@@ -837,7 +837,7 @@ describe('resilient step dispatch', () => {
   });
 });
 
-describe('serializationWasPassive', () => {
+describe('serializationBlockers', () => {
   /** An object with a VM-realm getter — exactly what the sink records. */
   function vmGetterObject() {
     return runInNewContext(
@@ -874,7 +874,7 @@ describe('serializationWasPassive', () => {
     });
   }
 
-  it('reports safe for plain data and supported built-ins', async () => {
+  it('reports no blockers for plain data and supported built-ins', async () => {
     const result = await runStep([
       { nested: [{ ok: true }, 'text', 42n], flag: false },
       new Map([['k', new Set([1])]]),
@@ -883,27 +883,50 @@ describe('serializationWasPassive', () => {
       /pattern/gi,
       new URL('https://example.com/'),
     ]);
-    expect(result.serializationWasPassive).toBe(true);
+    expect(result.serializationBlockers).toEqual([]);
   });
 
-  it('reports unsafe for an Error argument (stack materialization)', async () => {
+  it('reports the blocker for an Error argument (stack materialization)', async () => {
     // Serializing an error reads `stack`, an own engine accessor whose first
     // invocation formats-and-caches the trace and runs any
     // `Error.prepareStackTrace` — neither is repeated by a cold replay, so
     // the boundary must demote.
     const result = await runStep([new Error('lazy stack')]);
-    expect(result.serializationWasPassive).toBe(false);
+    expect(result.serializationBlockers).toContainEqual({
+      source: 'step_input',
+      correlationId: 'step_1',
+      kind: 'getter',
+      detail: 'stack',
+    });
   });
 
-  it('reports unsafe when serializing an argument executes a getter', async () => {
-    const value = vmGetterObject();
-    const result = await runStep([{ deep: [value] }]);
-    expect(result.serializationWasPassive).toBe(false);
+  it('reports every getter executed while serializing step input', async () => {
+    const result = await runStep([
+      { deep: [vmGetterObject(), vmGetterObject()] },
+    ]);
+    expect(result.serializationBlockers).toEqual([
+      {
+        source: 'step_input',
+        correlationId: 'step_1',
+        kind: 'getter',
+        detail: 'lazy',
+      },
+      {
+        source: 'step_input',
+        correlationId: 'step_1',
+        kind: 'getter',
+        detail: 'lazy',
+      },
+    ]);
   });
 
-  it('reports unsafe when an argument is a proxy', async () => {
+  it('reports a proxy encountered in step input', async () => {
     const result = await runStep([new Proxy({ a: 1 }, {})]);
-    expect(result.serializationWasPassive).toBe(false);
+    expect(result.serializationBlockers).toContainEqual({
+      source: 'step_input',
+      correlationId: 'step_1',
+      kind: 'proxy',
+    });
   });
 
   it.each([
@@ -930,14 +953,25 @@ describe('serializationWasPassive', () => {
   ] satisfies [
     string,
     QueueItem,
-  ][])('reports unsafe for %s', async (_, item) => {
-    expect((await runSuspension(item)).serializationWasPassive).toBe(false);
+  ][])('reports the serialization source for %s', async (_, item) => {
+    const result = await runSuspension(item);
+    expect(result.serializationBlockers).toContainEqual(
+      expect.objectContaining({
+        source:
+          item.correlationId === 'hook_unsafe_metadata'
+            ? 'hook_metadata'
+            : 'hook_abort',
+        correlationId: item.correlationId,
+        kind: 'getter',
+        detail: 'lazy',
+      })
+    );
   });
 
   it('still serializes recorded inputs successfully (bytes are unaffected)', async () => {
     const value = vmGetterObject();
     const result = await runStep([value]);
-    expect(result.serializationWasPassive).toBe(false);
+    expect(result.serializationBlockers).not.toEqual([]);
     // The step is still prepared for execution as usual (a single uncreated
     // step always lands in the lazy inline slice).
     expect(result.lazyInlineSteps).toHaveLength(1);

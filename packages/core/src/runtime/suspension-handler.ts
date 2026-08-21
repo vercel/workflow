@@ -34,7 +34,10 @@ import type {
   WorkflowSuspension,
 } from '../global.js';
 import { runtimeLogger } from '../logger.js';
-import type { GuestCodeStats } from '../serialization/hardened.js';
+import type {
+  GuestCodeExecution,
+  GuestCodeStats,
+} from '../serialization/hardened.js';
 import {
   dehydrateStepArguments,
   dehydrateStepError,
@@ -284,8 +287,17 @@ export interface SuspensionHandlerResult {
    * durably creating the user's hooks doesn't count as runtime overhead.
    */
   hookCreationMs: number;
-  /** Whether serializing new step and hook data was passive. */
-  serializationWasPassive: boolean;
+  /**
+   * Every workflow-code execution observed while serializing suspension data.
+   * A non-empty array means the retained VM may have diverged from cold replay
+   * and must be discarded. Keep the complete report for retention diagnostics.
+   */
+  serializationBlockers: SuspensionSerializationBlocker[];
+}
+
+export interface SuspensionSerializationBlocker extends GuestCodeExecution {
+  source: 'step_input' | 'hook_metadata' | 'hook_abort';
+  correlationId: string;
 }
 
 async function createHookEvent({
@@ -483,16 +495,16 @@ export async function handleSuspension({
     return result;
   };
   // Separate queue items by type
-  const stepItems = suspension.steps.filter(
+  const stepItems = suspension.items.filter(
     (item): item is StepInvocationQueueItem => item.type === 'step'
   );
-  const allHookItems = suspension.steps.filter(
+  const allHookItems = suspension.items.filter(
     (item): item is HookInvocationQueueItem => item.type === 'hook'
   );
-  const waitItems = suspension.steps.filter(
+  const waitItems = suspension.items.filter(
     (item): item is WaitInvocationQueueItem => item.type === 'wait'
   );
-  const attributeItems = suspension.steps.filter(
+  const attributeItems = suspension.items.filter(
     (item): item is AttributeInvocationQueueItem => item.type === 'attribute'
   );
 
@@ -529,8 +541,11 @@ export async function handleSuspension({
   const compression =
     (run.specVersion ?? 0) >= SPEC_VERSION_SUPPORTS_COMPRESSION;
 
-  let serializationWasPassive = true;
-  async function dehydrateInput(value: unknown): Promise<SerializedData> {
+  const serializationBlockers: SuspensionSerializationBlocker[] = [];
+  async function dehydrateInput(
+    value: unknown,
+    context: Pick<SuspensionSerializationBlocker, 'source' | 'correlationId'>
+  ): Promise<SerializedData> {
     const stats: GuestCodeStats = { executions: [] };
     try {
       return (await dehydrateStepArguments(
@@ -543,7 +558,12 @@ export async function handleSuspension({
         stats
       )) as SerializedData;
     } finally {
-      if (stats.executions.length > 0) serializationWasPassive = false;
+      serializationBlockers.push(
+        ...stats.executions.map((execution) => ({
+          ...context,
+          ...execution,
+        }))
+      );
     }
   }
 
@@ -612,7 +632,10 @@ export async function handleSuspension({
             const hookMetadata =
               typeof queueItem.metadata === 'undefined'
                 ? undefined
-                : await dehydrateInput(queueItem.metadata);
+                : await dehydrateInput(queueItem.metadata, {
+                    source: 'hook_metadata',
+                    correlationId: queueItem.correlationId,
+                  });
             const hookEvent: CreateEventRequest = {
               eventType: 'hook_created' as const,
               specVersion: SPEC_VERSION_CURRENT,
@@ -660,10 +683,16 @@ export async function handleSuspension({
       hooksNeedingAbort.map(async (queueItem) => {
         try {
           // Dehydrate the abort payload for storage
-          const abortPayload = await dehydrateInput({
-            aborted: true,
-            reason: queueItem.abortReason,
-          });
+          const abortPayload = await dehydrateInput(
+            {
+              aborted: true,
+              reason: queueItem.abortReason,
+            },
+            {
+              source: 'hook_abort',
+              correlationId: queueItem.correlationId,
+            }
+          );
 
           // Create hook_received event with abort payload
           await createGuarded({
@@ -1012,11 +1041,17 @@ export async function handleSuspension({
       const stepOp = (async () => {
         let dehydratedInput: SerializedData;
         try {
-          dehydratedInput = await dehydrateInput({
-            args: queueItem.args,
-            closureVars: queueItem.closureVars,
-            thisVal: queueItem.thisVal,
-          });
+          dehydratedInput = await dehydrateInput(
+            {
+              args: queueItem.args,
+              closureVars: queueItem.closureVars,
+              thisVal: queueItem.thisVal,
+            },
+            {
+              source: 'step_input',
+              correlationId: queueItem.correlationId,
+            }
+          );
         } catch (err) {
           if (!SerializationError.is(err)) {
             // e.g. RuntimeDecryptionError: an SDK fault, not a user value
@@ -1807,7 +1842,7 @@ export async function handleSuspension({
     hasAttributeEvents: attributeItems.length > 0,
     hasHookEvents: hooksNeedingCreation.length > 0,
     hookCreationMs,
-    serializationWasPassive,
+    serializationBlockers,
     reportedEventCount: reportedEvents,
   };
 }

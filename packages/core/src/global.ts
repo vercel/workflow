@@ -77,7 +77,7 @@ export type QueueItem =
  * onto the queue.
  */
 export class WorkflowSuspension extends Error {
-  steps: QueueItem[];
+  items: QueueItem[];
   globalThis: typeof globalThis;
   stepCount: number;
   hookCount: number;
@@ -86,9 +86,9 @@ export class WorkflowSuspension extends Error {
   hookDisposedCount: number;
   abortCount: number;
 
-  constructor(stepsInput: Map<string, QueueItem>, global: typeof globalThis) {
+  constructor(itemsInput: Map<string, QueueItem>, global: typeof globalThis) {
     // Convert Map to array for iteration and storage
-    const steps = [...stepsInput.values()];
+    const items = [...itemsInput.values()];
 
     // Single-pass counting for efficiency
     let stepCount = 0;
@@ -97,7 +97,7 @@ export class WorkflowSuspension extends Error {
     let attributeCount = 0;
     let hookDisposedCount = 0;
     let abortCount = 0;
-    for (const item of steps) {
+    for (const item of items) {
       if (item.type === 'step') stepCount++;
       else if (item.type === 'hook') {
         if (item.disposed) hookDisposedCount++;
@@ -163,7 +163,7 @@ export class WorkflowSuspension extends Error {
         : '0 steps have not been run yet'; // Default case for empty array
     super(description);
     this.name = 'WorkflowSuspension';
-    this.steps = steps;
+    this.items = items;
     this.globalThis = global;
     this.stepCount = stepCount;
     this.hookCount = hookCount;
