@@ -150,7 +150,7 @@ function getStatusDotColor(eventType: string): string {
  * Build a map from correlationId (stepId) → display name using step_created
  * events, and parse the workflow name from the run.
  */
-function buildNameMaps(
+export function buildNameMaps(
   events: Event[] | null,
   run: WorkflowRun | null
 ): {
@@ -164,7 +164,9 @@ function buildNameMaps(
     for (const event of events) {
       if (event.eventType === 'step_created' && event.correlationId) {
         const stepName = event.eventData?.stepName ?? '';
-        const parsed = parseStepName(String(stepName));
+        const parsed =
+          parseStepName(String(stepName)) ??
+          parseWorkflowName(String(stepName));
         correlationNameMap.set(
           event.correlationId,
           parsed?.shortName ?? stepName

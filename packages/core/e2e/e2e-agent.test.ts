@@ -10,14 +10,14 @@
  *   2. DEPLOYMENT_URL=http://localhost:3000 APP_NAME=nextjs-turbopack \
  *      pnpm vitest run packages/core/e2e/e2e-agent.test.ts
  */
-import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import type { Run } from '../src/runtime';
-import { start as rawStart } from '../src/runtime';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import type { Run, start as rawStart } from '../src/runtime';
 import {
   getWorkflowMetadata,
   setupRunTracking,
   setupWorld,
-  trackRun,
+  startTracked,
+  writeInfraSidecar,
 } from './utils';
 
 const deploymentUrl = process.env.DEPLOYMENT_URL;
@@ -28,10 +28,12 @@ if (!deploymentUrl) {
 async function start<T>(
   ...args: Parameters<typeof rawStart<T>>
 ): Promise<Run<T>> {
-  const run = await rawStart<T>(...args);
-  trackRun(run);
-  return run;
+  return startTracked<T>(...args);
 }
+
+afterAll(() => {
+  writeInfraSidecar();
+});
 
 // Next.js canary builds (16.2.0-canary.100+) have a regression where
 // @workflow/ai step files are missing from the step bundle, causing

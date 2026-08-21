@@ -192,7 +192,9 @@ Vercel Queues can delay messages for up to 7 days, capped by the message TTL. Be
 
 ### `WORKFLOW_REQUEST_TIMEOUT_MS`
 
-Per-request timeout, in milliseconds, for Vercel World HTTP calls to workflow-server. Default: `60000`. Minimum: `1`.
+Per-request timeout, in milliseconds, for Vercel World HTTP calls to workflow-server. Default: `60000`. Clamped to `10000`-`120000`; a value outside that range is pulled into it and warns once.
+
+Below the floor the deadline starts cancelling requests that would have succeeded, since a cold route or a large event page can take seconds, and a cancelled request is redriven through the queue rather than making progress. The ceiling matches the longest a backend route holds a response. Requests that legitimately outlast it (stream reads and writes, event batches) opt out of the deadline entirely rather than relying on this value.
 
 ### `WORKFLOW_MAX_CHUNKS_PER_REQUEST`
 

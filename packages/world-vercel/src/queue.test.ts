@@ -11,19 +11,9 @@ import {
 const {
   mockSend,
   MockConsumerDiscoveryError,
-  MockDuplicateMessageError,
   MockQueueClient,
   mockHandleCallback,
 } = vi.hoisted(() => {
-  class MockDuplicateMessageError extends Error {
-    public readonly idempotencyKey?: string;
-    constructor(message: string, idempotencyKey?: string) {
-      super(message);
-      this.name = 'DuplicateMessageError';
-      this.idempotencyKey = idempotencyKey;
-    }
-  }
-
   class MockConsumerDiscoveryError extends Error {
     constructor(message: string) {
       super(message);
@@ -46,7 +36,6 @@ const {
   return {
     mockSend,
     MockConsumerDiscoveryError,
-    MockDuplicateMessageError,
     MockQueueClient,
     mockHandleCallback,
   };
@@ -55,7 +44,6 @@ const {
 vi.mock('@vercel/queue', () => ({
   QueueClient: MockQueueClient,
   ConsumerDiscoveryError: MockConsumerDiscoveryError,
-  DuplicateMessageError: MockDuplicateMessageError,
 }));
 
 vi.mock('./utils.js', () => ({
@@ -266,13 +254,10 @@ describe('createQueue', () => {
       }
     });
 
-    it('should silently handle idempotency key conflicts', async () => {
-      mockSend.mockRejectedValue(
-        new MockDuplicateMessageError(
-          'Duplicate idempotency key detected',
-          'my-key'
-        )
-      );
+    it('returns the message id for a repeated idempotency key', async () => {
+      // Repeated keys are accepted and deduplicated after the send, so the
+      // caller sees an ordinary message id rather than a conflict.
+      mockSend.mockResolvedValue({ messageId: 'msg-456' });
 
       const originalEnv = process.env.VERCEL_DEPLOYMENT_ID;
       process.env.VERCEL_DEPLOYMENT_ID = 'dpl_test';
@@ -285,7 +270,12 @@ describe('createQueue', () => {
           { idempotencyKey: 'my-key' }
         );
 
-        expect(result.messageId).toBe('msg_duplicate_my-key');
+        expect(result.messageId).toBe('msg-456');
+        expect(mockSend).toHaveBeenCalledWith(
+          expect.any(String),
+          expect.anything(),
+          expect.objectContaining({ idempotencyKey: 'my-key' })
+        );
       } finally {
         if (originalEnv !== undefined) {
           process.env.VERCEL_DEPLOYMENT_ID = originalEnv;

@@ -10,10 +10,11 @@
  * `DEBUG` logging, x-vercel diagnostic headers, and the status → typed-error
  * mapping the runtime branches on.
  *
- * This module is the single source of truth for that envelope. It depends only
- * on `telemetry.js`, `@workflow/errors`, and `@vercel/oidc` so it can be
- * imported by both `utils.ts` and `events-v4.ts` without an import cycle —
- * dispatchers are passed in by the caller rather than imported here.
+ * This module is the single source of truth for that envelope. Undici
+ * dispatchers are passed in by the caller rather than resolved here, so it can
+ * be imported by both `utils.ts` and `events-v4.ts` without an import cycle.
+ * The one thing it does reach for is `http-client.js`'s shared node:http pool,
+ * which is safe: `http-client.ts` imports nothing from `utils.ts` but a type.
  */
 
 import type { Span } from '@opentelemetry/api';
@@ -28,6 +29,12 @@ import {
   WorkflowWorldError,
 } from '@workflow/errors';
 import { envNumber } from '@workflow/world';
+import { nodeHttpFetch } from '@workflow/world/node-http.js';
+import {
+  getNodeHttpAgents,
+  NODE_HTTP_BODY_TIMEOUT_MS,
+  NODE_HTTP_HEADERS_TIMEOUT_MS,
+} from './http-client.js';
 import {
   ErrorType,
   getSpanKind,
@@ -41,6 +48,7 @@ import {
   ServerPort,
   trace,
   UrlFull,
+  WorkflowHttpTransport,
 } from './telemetry.js';
 
 /**
@@ -55,11 +63,33 @@ export const REQUEST_TIMEOUT_MS = 60_000;
 /**
  * Effective per-request timeout. Override via `WORKFLOW_REQUEST_TIMEOUT_MS`
  * (e.g. dialled down on an e2e deployment to exercise the timeout path).
+ *
+ * Clamped to `[10s, 120s]`, with a warning when a configured value is pulled
+ * into range:
+ *
+ * - **Floor.** Below ~10s this stops being a safety net and becomes the thing
+ *   that breaks working requests: a cold workflow-server route, a large event
+ *   page, or an ordinary tail-latency blip all exceed a few seconds, and the
+ *   resulting timeout is indistinguishable from a broken backend, so the
+ *   runtime redrives via the queue instead of making progress.
+ * - **Ceiling.** 120s is twice the default and matches the longest a backend
+ *   route holds a response (the stream read). Beyond that a hung request would
+ *   outlive the callers this deadline exists to protect, which is the failure
+ *   mode described on {@link REQUEST_TIMEOUT_MS}. Paths that legitimately
+ *   outlast it opt out entirely with `timeoutMs: null` rather than raising
+ *   this (see the streamer and the v4 events transport).
+ *
+ * Note the floor interacts with the run-status long poll: its budget is this
+ * value minus the long poll's 10s of headroom, so at exactly the floor
+ * the budget clamps to zero and `waitForTerminalStatus` degrades to a plain
+ * read. That is intended, and it means 10s is the value at which long polling
+ * turns itself off rather than a value that half-works.
  */
 export const getRequestTimeoutMs = (): number =>
   envNumber('WORKFLOW_REQUEST_TIMEOUT_MS', REQUEST_TIMEOUT_MS, {
     integer: true,
-    min: 1,
+    min: 10_000,
+    max: 120_000,
   });
 
 /**
@@ -364,7 +394,7 @@ export interface HttpClientSpanOptions {
    */
   spanName?: string;
   /** Extra attributes merged on top of the standard HTTP attributes. */
-  attributes?: Record<string, string | number>;
+  attributes?: Record<string, string | number | string[]>;
 }
 
 /**
@@ -538,14 +568,38 @@ export async function instrumentedFetch(
       const start = Date.now();
       let response: Response;
       try {
-        response = await fetch(url, {
-          method,
-          headers,
-          body,
-          signal,
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici dispatcher type doesn't match @types/node's RequestInit
-          dispatcher,
-        } as any);
+        // With no dispatcher to honour, `WORKFLOW_NODE_HTTP` takes the request
+        // off undici altogether rather than leaving it on the undici behind
+        // `fetch`. A dispatcher the caller supplied is an instruction to use
+        // undici, so it keeps the request on `fetch`.
+        const nodeAgents = dispatcher ? undefined : getNodeHttpAgents();
+        // Both transports issue the same span against the same URL, so this is
+        // the only thing that tells them apart in a trace.
+        span?.setAttributes({
+          ...WorkflowHttpTransport(nodeAgents ? 'node-http' : 'undici'),
+        });
+        response = nodeAgents
+          ? await nodeHttpFetch(url, {
+              method,
+              headers,
+              body,
+              signal,
+              agents: nodeAgents,
+              // Match undici's per-phase defaults (which the undici agents
+              // inherit implicitly): without these the node:http path arms no
+              // stalled-socket deadline, and a `timeoutMs: null` caller would
+              // have no deadline at all.
+              headersTimeoutMs: NODE_HTTP_HEADERS_TIMEOUT_MS,
+              bodyTimeoutMs: NODE_HTTP_BODY_TIMEOUT_MS,
+            })
+          : await fetch(url, {
+              method,
+              headers,
+              body,
+              signal,
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici dispatcher type doesn't match @types/node's RequestInit
+              dispatcher,
+            } as any);
       } catch (error) {
         const elapsed = Date.now() - start;
         // Report the raw error, before the timeout mapping below rewraps it: the

@@ -58,6 +58,30 @@ export async function POST() {
 
 When a client makes a request to this endpoint, they'll receive each message as it's written, without waiting for the workflow to complete.
 
+### Avoiding Function Timeouts After Client Disconnects
+
+On Vercel, `run.readable` and `run.getReadable()` reconnect to Workflow's stream storage while the workflow is still running. By default, a client disconnect does not terminate the Vercel Function serving the stream. If a user closes the page or stops the request, the function can therefore keep reconnecting until it reaches its maximum duration and fails with `FUNCTION_INVOCATION_TIMEOUT`.
+
+For streaming routes using the Node.js runtime, opt in to [request cancellation](https://vercel.com/docs/functions/functions-api-reference#enable-cancellation) in `vercel.json`:
+
+```json filename="vercel.json"
+{
+  "functions": {
+    "app/api/stream/route.ts": {
+      "supportsCancellation": true
+    }
+  }
+}
+```
+
+Replace the function path with the path or glob for your streaming route. When the downstream client disconnects, Vercel terminates the matching function invocation instead of leaving its stream reader running. The workflow run and its durable stream continue independently, so the client can reconnect through another route invocation later.
+
+<Callout type="warn">
+Cancellation applies to every function matching the configured path or glob, even if the route does not listen to `request.signal`. Any other work in that invocation which is not wrapped in [`waitUntil`](https://vercel.com/docs/functions/functions-api-reference/vercel-functions-package#waituntil) or [`after`](https://nextjs.org/docs/app/api-reference/functions/after) can be lost. Only enable it for routes that are safe to terminate when their client disconnects.
+</Callout>
+
+This setting prevents abandoned stream readers from consuming the rest of a function invocation. It does not extend the function's maximum duration: an actively connected streaming response can still reach the configured limit, at which point the client should reconnect to the durable stream.
+
 ### Resuming Streams from a Specific Point
 
 Use `run.getReadable({ startIndex })` to resume a stream from a specific position. This is useful for reconnecting after timeouts or network interruptions:

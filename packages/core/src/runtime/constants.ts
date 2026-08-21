@@ -254,6 +254,39 @@ export function isResilientStepDispatchEnabled(): boolean {
   return process.env.WORKFLOW_RESILIENT_STEP_DISPATCH === '1';
 }
 
+/**
+ * Whether batched event transitions are enabled: the suspension handler folds
+ * a clean fan-out's `step_created` + `wait_created` writes into one
+ * `world.events.createBatch` call (one durable write, per-event outcomes)
+ * instead of one write per event. Only engages when the World implements the
+ * optional `events.createBatch` AND the run is on slot identity
+ * (specVersion >= 6) AND the suspension carries no attribute/hook writes and
+ * no resilient step dispatch — everything else keeps the single-event path
+ * byte-for-byte.
+ *
+ * Reads `process.env.WORKFLOW_BATCH_TRANSITIONS` lazily. Default **ON**;
+ * disabled only by an explicit `'0'` / `'false'` (case-insensitive) — the
+ * operator escape hatch that restores the exact prior one-write-per-event
+ * path, mirroring `WORKFLOW_TURBO`'s kill-switch shape.
+ */
+export function isBatchTransitionsEnabled(): boolean {
+  const raw = process.env.WORKFLOW_BATCH_TRANSITIONS;
+  if (raw === undefined || raw === '') return true;
+  return !(raw === '0' || raw.toLowerCase() === 'false');
+}
+
+/**
+ * Ceiling on events per `createBatch` call from the batched fan-out fold.
+ * Mirrors the server's transaction budgets with a comfortable margin: each
+ * fan-out event costs 2 transaction items server-side (entity + event row)
+ * against the 100-item DynamoDB cap, and inline payloads count against a
+ * 768 KB byte budget — 32 events stays well under both, and a fan-out larger
+ * than this simply commits in successive batches (split batches lose
+ * cross-batch atomicity, which is exactly today's per-event-write crash
+ * surface — every batch still converges on retry via per-event 409s).
+ */
+export const MAX_BATCH_FANOUT_EVENTS = 32;
+
 const warnedMaxEventsValues = new Set<string>();
 
 /**

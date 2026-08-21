@@ -139,6 +139,31 @@ callApi.maxRetries = 5; // Retry up to 5 times on failure (6 total attempts)
   step can run up to 4 times total (1 initial attempt + 3 retries).
 </Callout>
 
+## Serialization Failures
+
+A step whose arguments or return value cannot be [serialized](/docs/foundations/serialization) fails like a step whose body threw a `FatalError`: the failure is deterministic, so it skips the retry loop, and a `try/catch` around the step call observes the `SerializationError`:
+
+```typescript lineNumbers
+async function someStep(input: unknown) {
+  "use step";
+  return input;
+}
+
+export async function myWorkflow(input: unknown) {
+  "use workflow";
+
+  try {
+    await someStep(input);
+  } catch (err) {
+    if ((err as Error).name === "SerializationError") {
+      // e.g. `Failed to serialize step arguments at path "..."`
+    }
+  }
+}
+```
+
+Uncaught, the run fails immediately with the `USER_ERROR` code — without retrying. See [serialization-failed](/docs/errors/serialization-failed) for common causes and fixes.
+
 ## Error Codes
 
 When a workflow run fails, the error includes an `errorCode` that classifies the failure, alongside the original thrown value (preserved as `cause`):

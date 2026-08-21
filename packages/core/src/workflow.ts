@@ -391,7 +391,18 @@ async function createWorkflowSession({
   const ulid = monotonicFactory(() => vmGlobalThis.Math.random());
   // Correlation IDs must be replay-stable. `startedAt` differs between a turbo
   // delivery and a later server-backed replay, so use fixedTimestamp.
-  const generateUlid = () => ulid(fixedTimestamp);
+  // The draw counter is the progress metric for `quiesceEarlierCascades`
+  // (WORKFLOW_LOG_ORDER_DRAWS): a quiet turn is one that drew nothing. It
+  // counts EVERY draw from this sequence — this same function is installed as
+  // the `STABLE_ULID` global below, which serialization draws stream ids
+  // from during dehydration — deliberately: quiescence must also wait out
+  // serialization-driven draws, and counting extra draws only extends the
+  // wait (see the termination note on `quiesceEarlierCascades`).
+  let mintCount = 0;
+  const generateUlid = () => {
+    mintCount += 1;
+    return ulid(fixedTimestamp);
+  };
   const generateNanoid = nanoid.customRandom(nanoid.urlAlphabet, 21, (size) =>
     new Uint8Array(size).map(() => 256 * vmGlobalThis.Math.random())
   );
@@ -429,6 +440,14 @@ async function createWorkflowSession({
         )
       );
     },
+    // Both branches log at `debug`, so neither reaches the console unless
+    // `DEBUG` matches. A duplicate is a permanent feature of the log: every
+    // later replay re-reads it and lands here again, so anything the logger
+    // prints unconditionally would print once per replay for the life of the
+    // run. There is also nothing to act on. Ignoring the event is the correct
+    // outcome, not a degraded one, and no user change makes the straggler go
+    // away. What the levels are for is diagnosis after the fact, which is
+    // exactly what `DEBUG=workflow:runtime:debug` is for.
     onDuplicateEvent: (event, firstEventType) => {
       const details = {
         workflowRunId: workflowRun.runId,
@@ -443,19 +462,19 @@ async function createWorkflowSession({
         // is still correct and still deterministic (replay reads the first one
         // at the same position every time), but unlike a re-commit of the same
         // outcome there is no reading of this where both writers were right,
-        // so the discarded outcome is worth an error in the run's logs.
-        runtimeLogger.error(
-          'Ignoring event that decides an already-decided outcome differently',
+        // so the discarded outcome gets its own message.
+        runtimeLogger.debug(
+          'Ignoring inert event that decides an already-decided outcome differently',
           details
         );
         return;
       }
-      // Not an error: the first event of this class decided the outcome at a
-      // lower log position and replay reads that one. Logged because a
-      // straggler is still evidence of two replays writing for the same
-      // entity, which is worth seeing when diagnosing a run.
-      runtimeLogger.info(
-        'Ignoring event that repeats a class already in the event log',
+      // The first event of this class decided the outcome at a lower log
+      // position and replay reads that one. Recorded because a straggler is
+      // still evidence of two replays writing for the same entity, which is
+      // worth seeing when diagnosing a run.
+      runtimeLogger.debug(
+        'Ignoring inert event that repeats a class already in the event log',
         details
       );
     },
@@ -472,6 +491,9 @@ async function createWorkflowSession({
     eventsConsumer,
     generateUlid,
     generateNanoid,
+    get mintCount() {
+      return mintCount;
+    },
     invocationsQueue: new Map(),
     // Use getter/setter so the EventsConsumer's getPromiseQueue() always
     // sees the latest queue state as it's mutated by step/hook/sleep callbacks.

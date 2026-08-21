@@ -62,12 +62,16 @@ import { deserializeStep, StepWireSchema } from './steps.js';
 import {
   ErrorType,
   NetworkProtocolName,
+  StepLatencyOptimizations,
+  StepStsoMs,
+  WorkflowClientVersion,
   WorkflowEventsTransport,
   WorkflowEventType,
   WorkflowWsRequestId,
   WorkflowWsUrl,
 } from './telemetry.js';
 import { type APIConfig, getHttpConfig, getHttpUrl } from './utils.js';
+import { version } from './version.js';
 import type { WsFrameReply } from './ws-transport.js';
 import { isWsEventsTransportEnabled } from './ws-transport-enabled.js';
 
@@ -99,7 +103,7 @@ async function fetchV4(
   init: { method: string; headers: Headers; body?: Uint8Array },
   config: APIConfig | undefined,
   opName: string,
-  attributes?: Record<string, string | number>
+  attributes?: Record<string, string | number | string[]>
 ): Promise<Response> {
   const dispatcher = getEventsDispatcher(config);
   return instrumentedFetch({
@@ -709,6 +713,11 @@ async function postWorkflowRunEventV4(
     {
       ...WorkflowEventsTransport('http'),
       ...WorkflowEventType(input.eventType),
+      ...WorkflowClientVersion(`@workflow/world-vercel/${version}`),
+      ...(input.stso !== undefined ? StepStsoMs(input.stso) : {}),
+      ...(input.optimizations !== undefined
+        ? StepLatencyOptimizations(input.optimizations)
+        : {}),
     }
   );
 }
@@ -791,6 +800,169 @@ export async function createWorkflowRunStartedEventV4(
   }
 
   return { events, ...page, maxEvents: maxEvents.data };
+}
+
+/** One event of a v4 batch POST, index-aligned with the response results. */
+export type CreateEventBatchV4Event = CreateEventV4InputBase & {
+  eventType: EventType;
+};
+
+export interface CreateEventBatchV4Input {
+  runId: string;
+  /** Events in request order — the order they land in the run's log. */
+  events: CreateEventBatchV4Event[];
+}
+
+/**
+ * One event's outcome in a batch response. `error === undefined`
+ * discriminates success; a success item carries the same materialized body
+ * its single-event POST would have returned (validated against the same
+ * per-type schema).
+ */
+export type CreateEventBatchV4ItemResult =
+  | ({ status: 200; error?: undefined; message?: undefined } & EventResult &
+      Record<'event', Event>)
+  | { status: number; error: string; message: string; event?: undefined };
+
+export interface CreateEventBatchV4Result {
+  results: CreateEventBatchV4ItemResult[];
+}
+
+const BatchItemFailureSchema = z.object({
+  status: z.number().int(),
+  error: z.string(),
+  message: z.string(),
+});
+
+/**
+ * POST /api/v4/runs/:runId/events/batch
+ *
+ * Appends an ordered batch of events to one run's log in a single durable
+ * write with per-event outcomes. The body is the events' single-POST frames
+ * back-to-back (byte-identical framing, no batch-level meta); the response is
+ * HTTP 200 CBOR `{ results }` whenever the batch was processed, one entry per
+ * frame in request order.
+ *
+ * Slot-identity runs only — an older server 404s the route and a pre-slot
+ * run is rejected with a 400. There is NO automatic fallback to single-event
+ * posts on either: the runtime never sends a batch for a pre-slot run (it
+ * gates on the run's spec version), and against a backend without the route
+ * the batch fails and the suspension redelivers until the operator disables
+ * batching via `WORKFLOW_BATCH_TRANSITIONS=0`. Ambiguous failures (timeouts,
+ * resets, 5xx, malformed responses) never convert to single posts either —
+ * the wrapper either re-sends the SAME batch (only when its shape is
+ * retry-convergent; see `createWorkflowRunEventBatch`) or surfaces the error
+ * for queue redelivery, whose replay re-derives an idempotent batch.
+ *
+ * HTTP-only by design: the WS event transport streams one frame per message
+ * and has no batch framing, so a WS-configured deployment still sends
+ * batches over HTTP (single-event writes keep their configured transport).
+ */
+export async function createWorkflowRunEventsBatchV4(
+  input: CreateEventBatchV4Input,
+  config?: APIConfig
+): Promise<CreateEventBatchV4Result> {
+  assert(input.events.length > 0, 'v4 createEventBatch: empty batch');
+  const { baseUrl, headers: baseHeaders } = await getHttpConfig(config);
+  const headers = new Headers(baseHeaders);
+  // Match the single-event POST content type — the batch route runs on the
+  // same authed + v4 middleware chain and the frame bytes are identical.
+  headers.set('Content-Type', 'application/octet-stream');
+
+  const frames = input.events.map((event) =>
+    encodeFrame(buildPostFrameMeta(event), event.payload ?? new Uint8Array(0))
+  );
+  let total = 0;
+  for (const frame of frames) total += frame.byteLength;
+  const body = new Uint8Array(total);
+  let offset = 0;
+  for (const frame of frames) {
+    body.set(frame, offset);
+    offset += frame.byteLength;
+  }
+
+  const url = `${baseUrl}/v4/runs/${encodeURIComponent(input.runId)}/events/batch`;
+  // Batch identity attributes (size, per-type shape) live on the
+  // world.events.createBatch span (see instrumentObject); this transport
+  // span carries only wire-level facts. workflow.event.type is deliberately
+  // absent — it names a single event write, and tagging a batch with its
+  // first event's type misclassifies the traffic.
+  const response = await fetchV4(
+    url,
+    { method: 'POST', headers, body },
+    config,
+    'createEventBatch',
+    {
+      ...WorkflowEventsTransport('http'),
+      'workflow.batch.bytes': body.byteLength,
+    }
+  );
+
+  const bodyBytes = new Uint8Array(await response.arrayBuffer());
+  const decoded =
+    bodyBytes.byteLength > 0
+      ? (decode(bodyBytes) as { results?: unknown[] })
+      : {};
+  // A 200 MUST carry exactly one outcome per submitted frame, in request
+  // order — callers index `results` positionally. A missing / non-array /
+  // short `results` is a server protocol violation; silently coercing it
+  // would masquerade as per-event failures and hide the server bug. The
+  // batch POST is idempotent-on-retry (per-event entity conditions), so
+  // failing loudly here is safe for the retry wrapper to re-send.
+  if (
+    !Array.isArray(decoded.results) ||
+    decoded.results.length !== input.events.length
+  ) {
+    throw new WorkflowWorldError(
+      `v4 createEventBatch: response \`results\` length ` +
+        `(${Array.isArray(decoded.results) ? decoded.results.length : 'non-array'}) ` +
+        `!= ${input.events.length} submitted frames`,
+      { code: 'SCHEMA_VALIDATION' }
+    );
+  }
+
+  const results = decoded.results.map(
+    (raw, index): CreateEventBatchV4ItemResult => {
+      const failure = BatchItemFailureSchema.safeParse(raw);
+      if (failure.success && failure.data.status !== 200) {
+        return failure.data;
+      }
+      // Success requires the LITERAL 200: an item with a non-200 status that
+      // failed the failure schema (e.g. missing error/message) must not fall
+      // through and be re-labeled a success by the body parse below.
+      if ((raw as { status?: unknown } | null)?.status !== 200) {
+        throw new WorkflowWorldError(
+          `v4 createEventBatch: result at index ${index} is neither a ` +
+            'success (status 200) nor a well-formed failure',
+          { code: 'SCHEMA_VALIDATION' }
+        );
+      }
+      // Success items validate against the SAME per-type schema the single
+      // POST uses, so a batched write and its single-path twin return
+      // byte-equivalent bodies to the caller.
+      const eventType = input.events[index].eventType;
+      const parsed = CreateEventV4BodySchemas[eventType].safeParse(raw);
+      if (!parsed.success) {
+        throw new WorkflowWorldError(
+          `v4 createEventBatch: invalid result body at index ${index} (${eventType})`,
+          { code: 'SCHEMA_VALIDATION', cause: parsed.error }
+        );
+      }
+      // Results are consumed positionally; an item whose committed event is
+      // of a different type than the frame submitted at this index is a
+      // server protocol violation, same as a wrong-length results array.
+      if (parsed.data.event.eventType !== eventType) {
+        throw new WorkflowWorldError(
+          `v4 createEventBatch: result at index ${index} carries a ` +
+            `${parsed.data.event.eventType} event, expected ${eventType}`,
+          { code: 'SCHEMA_VALIDATION' }
+        );
+      }
+      return { status: 200, ...parsed.data };
+    }
+  );
+
+  return { results };
 }
 
 /** The only two members a decoded transport result is read for. `fetch`'s
@@ -930,6 +1102,11 @@ async function postEventFrameOverWs(
       attributes: {
         ...WorkflowEventsTransport('ws'),
         ...WorkflowEventType(input.eventType),
+        ...WorkflowClientVersion(`@workflow/world-vercel/${version}`),
+        ...(input.stso !== undefined ? StepStsoMs(input.stso) : {}),
+        ...(input.optimizations !== undefined
+          ? StepLatencyOptimizations(input.optimizations)
+          : {}),
         ...NetworkProtocolName('websocket'),
         ...WorkflowWsUrl(wsUrl),
       },

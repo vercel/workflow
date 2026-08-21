@@ -58,7 +58,7 @@ interface World extends Storage, Queue, Streamer {
 }
 ```
 
-The required `specVersion` declares which Workflow protocol spec version the World implements. The runtime accepts the range from its own `SPEC_VERSION_CURRENT` up to `SPEC_VERSION_MAX_SUPPORTED` and refuses to create or replay runs outside it, so import the constant from `@workflow/world` rather than hardcoding a number, and re-check it on SDK upgrades.
+`specVersion` is required. See [Declaring the spec version](#declaring-the-spec-version).
 
 The optional `capabilities` object advertises additional behavior, and every capability **fails closed**: a missing member means "unsupported", and the runtime keeps its conservative behavior. Set `hookRetention.active` to `true` only when the World implements Hook token retention. Set `maxConcurrency` only when the World's queue supports `maxConcurrency`-limited consumption (used by `WORKFLOW_SEQUENTIAL_REPLAYS=1`).
 
@@ -72,6 +72,26 @@ The remaining optional members:
 - `createRunId()` mints the ID for a new run. Implementations may embed world-specific metadata as long as the result stays a valid ULID — this is how [multi-region placement](/worlds/vercel#multi-region) works: `@workflow/world-vercel` reads `options.region` (the `start()` options bag) and embeds a region tag. When omitted, the runtime generates a standard monotonic ULID.
 - `describeRun()` returns world-specific display fields for a run (for example, a region decoded from its ID) that tooling like `workflow inspect` renders as extra columns. It must be cheap, tolerate missing fields, and never throw.
 - `processExitTriggersQueueRedelivery` tells the runtime how to handle an exhausted replay budget: `true` means it exits and relies on queue redelivery; `false` (or absent) means it writes `run_failed` best-effort and returns.
+
+### Declaring the spec version
+
+`specVersion` is the protocol version your World implements, and the version stamped on every run it creates. Export `SPEC_VERSION_CURRENT` from `@workflow/world` rather than writing a number:
+
+{/* @skip-typecheck - partial World, the other members are elided */}
+```typescript
+import { SPEC_VERSION_CURRENT } from '@workflow/world';
+
+export function createWorld(): World {
+  return {
+    specVersion: SPEC_VERSION_CURRENT,
+    // ...
+  };
+}
+```
+
+The runtime checks this before it creates or replays anything and throws if the version is outside the range it supports, naming both the range and what your World declared. A version below the range means your World allocates event IDs the runtime cannot read positions out of; above it means your World speaks a protocol this runtime has not learned.
+
+Using the constant is what keeps that check passing across upgrades: it moves with the `@workflow/world` version your package resolves, so a spec bump raises your declaration and the runtime's requirement together. A hard-coded number leaves your World a version behind the next bump, and the runtime rejects it. Keep `@workflow/world` in the same release channel as the `workflow` version your users install.
 
 ## The Event Log Model
 
@@ -92,6 +112,9 @@ interface Storage {
     // Optional: backs setAttributes(). Omitting it means run attributes are
     // unsupported on this World — the SDK helper no-ops with a warning.
     experimentalSetAttributes?(runId: string, changes: AttributeChange[], options?: { allowReservedAttributes?: boolean }): Promise<ExperimentalSetAttributesResult>;
+
+    // Optional: long poll for a terminal status (see below)
+    waitForTerminalStatus?(id: string, params?: WaitForTerminalRunStatusParams): Promise<WorkflowRun>;
   };
 
   steps: {
@@ -132,6 +155,21 @@ interface Storage {
 Keep the owning Run available for at least as long as its token remains unavailable, because conflicts return that Run.
 
 **Automatic Hook Cleanup:** When a run ends, remove its live Hooks. Make each token available unless its `tokenRetentionUntil` is still in the future. A `hook_disposed` event always makes the token available immediately.
+
+### Optional: Waiting for a Terminal Run Status
+
+`await run.returnValue` has to find out when a run finished. Without help it re-reads the run every second, so a run that finishes just after a read is reported up to a second late. Implement `runs.waitForTerminalStatus(id, { timeoutMs, signal, resolveData })` and the runtime asks once and is answered the moment the run ends.
+
+The contract is deliberately forgiving, because "wait" means something different in every store:
+
+- Resolve as soon as the run's status is terminal, returning the same entity `get` returns.
+- Resolve no later than roughly `timeoutMs` with the latest snapshot, whatever its status. **A timeout is a normal return, never an error** — a run that is still running is a legitimate answer, and the runtime simply asks again.
+- `timeoutMs` is an upper bound, not a lower one: returning a non-terminal snapshot early is allowed, and the runtime paces its own retries.
+- Fail exactly like `get` — a missing run throws `WorkflowRunNotFoundError`.
+
+How you wait is up to your store. The reference worlds use, respectively, a server-side long poll (`world-vercel` holds `GET /v2/runs/:runId/status` open), `LISTEN`/`NOTIFY` (`world-postgres`), and an in-process emitter over the run files (`world-local`). Whatever the mechanism, treat the notification as a *signal only* and re-read the run before answering, and back the wait with a periodic re-read so a lost notification costs latency rather than hanging until the budget expires.
+
+Omitting the method is a supported choice — a store with no change notification, or a deterministic simulator like `world-sim` where a real wait would stall a virtual clock, simply leaves it off and the runtime keeps interval-polling `get`. Nothing else degrades; there is no capability to declare.
 
 ### Event ID Allocation
 

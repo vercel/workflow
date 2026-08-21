@@ -43,14 +43,6 @@ export interface ReplayCheckInput {
   events: readonly Event[];
   handler: (req: Request) => Promise<Response>;
   limits: Required<ScenarioLimits>;
-  /**
-   * Replay under the same log rules as the run being checked. It cannot change
-   * the outcome — the replay seeds a finished log and writes only at a clock
-   * past its tail, so nothing it appends can be overtaken — but a replay
-   * playing by different rules than the run it verifies is a trap worth not
-   * setting.
-   */
-  appendOnlyLog?: boolean;
 }
 
 export interface ReplayCheckResult {
@@ -133,10 +125,7 @@ export async function verifyReplay(
   const replayClock = createVirtualClock(terminal.createdAt.getTime() + 1);
   const uninstallClock = replayClock.install();
 
-  const replayWorld = createSimWorld({
-    clock: replayClock,
-    appendOnlyLog: input.appendOnlyLog,
-  });
+  const replayWorld = createSimWorld({ clock: replayClock });
   replayWorld.store.seedFromLog(seeded);
   replayWorld.registerHandler(WORKFLOW_QUEUE_PREFIX, handler);
   replayWorld.setScenarioApi(() => {

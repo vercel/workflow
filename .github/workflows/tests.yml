@@ -377,6 +377,22 @@ jobs:
           - name: "tanstack-start"
             project-id: "prj_643jeVugTMq5ivsOFQHcbLG1qcnu"
             project-slug: "workbench-tanstack-start-workflow"
+          - name: "python"
+            project-id: "prj_MtdPMACTDJnukz8LzWM65Fob0IVU"
+            project-slug: "workbench-python-workflow"
+        exclude:
+          # `vm` selects the JS engine the workflow body runs on. There is no
+          # Python meaning to that axis — the Python app has one runtime — so
+          # only the `node` half of the pair is a real configuration.
+          #
+          # GitHub Actions matches an `exclude` entry by deep equality on every
+          # key it names, so the whole `app` object has to be repeated verbatim.
+          # Keep it in sync with the entry above.
+          - vm: quickjs
+            app:
+              name: "python"
+              project-id: "prj_MtdPMACTDJnukz8LzWM65Fob0IVU"
+              project-slug: "workbench-python-workflow"
     env:
       TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
       TURBO_TEAM: ${{ vars.TURBO_TEAM }}
@@ -495,6 +511,8 @@ jobs:
             e2e-vercel-prod-${{ matrix.app.name }}-${{ matrix.vm }}.json
             e2e-metadata-${{ matrix.app.name }}-vercel.json
             e2e-failures-${{ matrix.app.name }}-vercel.json
+            e2e-flaky-${{ matrix.app.name }}-vercel.json
+            e2e-infra-${{ matrix.app.name }}-vercel.json
             e2e-diagnostics-${{ matrix.app.name }}-vercel.json
             e2e-runtime-logs-${{ matrix.app.name }}-vercel.json
           retention-days: 7
@@ -599,6 +617,8 @@ jobs:
             e2e-vercel-multi-region-nextjs-turbopack.json
             e2e-metadata-nextjs-turbopack-vercel.json
             e2e-failures-nextjs-turbopack-vercel.json
+            e2e-flaky-nextjs-turbopack-vercel.json
+            e2e-infra-nextjs-turbopack-vercel.json
             e2e-diagnostics-nextjs-turbopack-vercel.json
             e2e-runtime-logs-nextjs-turbopack-vercel.json
           retention-days: 7
@@ -778,6 +798,8 @@ jobs:
             e2e-vercel-ws-transport-${{ matrix.app.name }}.json
             e2e-metadata-${{ matrix.app.name }}-vercel.json
             e2e-failures-${{ matrix.app.name }}-vercel.json
+            e2e-flaky-${{ matrix.app.name }}-vercel.json
+            e2e-infra-${{ matrix.app.name }}-vercel.json
             e2e-diagnostics-${{ matrix.app.name }}-vercel.json
             e2e-runtime-logs-${{ matrix.app.name }}-vercel.json
           retention-days: 7
@@ -841,8 +863,8 @@ jobs:
         env:
           APP_NAME: ${{ matrix.app.name }}
         run: |
-          cat packages/next/package.json | jq '.dependencies.next|="16.3.0-canary.2"' > packages/next/package.json.new && mv packages/next/package.json.new packages/next/package.json
-          cat "workbench/$APP_NAME/package.json" | jq '.dependencies.next|="16.3.0-canary.2"' > "workbench/$APP_NAME/package.json.new" && mv "workbench/$APP_NAME/package.json.new" "workbench/$APP_NAME/package.json"
+          cat packages/next/package.json | jq '.dependencies.next|="16.3.1-canary.17"' > packages/next/package.json.new && mv packages/next/package.json.new packages/next/package.json
+          cat "workbench/$APP_NAME/package.json" | jq '.dependencies.next|="16.3.1-canary.17"' > "workbench/$APP_NAME/package.json.new" && mv "workbench/$APP_NAME/package.json.new" "workbench/$APP_NAME/package.json"
           pnpm install --no-frozen-lockfile
 
       - name: Install Dependencies
@@ -892,7 +914,10 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: e2e-results-local-dev-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}
-          path: e2e-local-dev-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}.json
+          path: |
+            e2e-local-dev-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}.json
+            e2e-flaky-${{ matrix.app.name }}-local.json
+            e2e-infra-${{ matrix.app.name }}-local.json
           retention-days: 7
           if-no-files-found: ignore
 
@@ -928,8 +953,8 @@ jobs:
         env:
           APP_NAME: ${{ matrix.app.name }}
         run: |
-          cat packages/next/package.json | jq '.dependencies.next|="16.3.0-canary.2"' > packages/next/package.json.new && mv packages/next/package.json.new packages/next/package.json
-          cat "workbench/$APP_NAME/package.json" | jq '.dependencies.next|="16.3.0-canary.2"' > "workbench/$APP_NAME/package.json.new" && mv "workbench/$APP_NAME/package.json.new" "workbench/$APP_NAME/package.json"
+          cat packages/next/package.json | jq '.dependencies.next|="16.3.1-canary.17"' > packages/next/package.json.new && mv packages/next/package.json.new packages/next/package.json
+          cat "workbench/$APP_NAME/package.json" | jq '.dependencies.next|="16.3.1-canary.17"' > "workbench/$APP_NAME/package.json.new" && mv "workbench/$APP_NAME/package.json.new" "workbench/$APP_NAME/package.json"
           pnpm install --no-frozen-lockfile
 
       - name: Install Dependencies
@@ -981,7 +1006,10 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: e2e-results-local-prod-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}
-          path: e2e-local-prod-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}.json
+          path: |
+            e2e-local-prod-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}.json
+            e2e-flaky-${{ matrix.app.name }}-local.json
+            e2e-infra-${{ matrix.app.name }}-local.json
           retention-days: 7
           if-no-files-found: ignore
 
@@ -1034,8 +1062,8 @@ jobs:
         env:
           APP_NAME: ${{ matrix.app.name }}
         run: |
-          cat packages/next/package.json | jq '.dependencies.next|="16.3.0-canary.2"' > packages/next/package.json.new && mv packages/next/package.json.new packages/next/package.json
-          cat "workbench/$APP_NAME/package.json" | jq '.dependencies.next|="16.3.0-canary.2"' > "workbench/$APP_NAME/package.json.new" && mv "workbench/$APP_NAME/package.json.new" "workbench/$APP_NAME/package.json"
+          cat packages/next/package.json | jq '.dependencies.next|="16.3.1-canary.17"' > packages/next/package.json.new && mv packages/next/package.json.new packages/next/package.json
+          cat "workbench/$APP_NAME/package.json" | jq '.dependencies.next|="16.3.1-canary.17"' > "workbench/$APP_NAME/package.json.new" && mv "workbench/$APP_NAME/package.json.new" "workbench/$APP_NAME/package.json"
           pnpm install --no-frozen-lockfile
 
       - name: Install Dependencies
@@ -1090,7 +1118,122 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: e2e-results-local-postgres-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}
-          path: e2e-local-postgres-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}.json
+          path: |
+            e2e-local-postgres-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}.json
+            e2e-flaky-${{ matrix.app.name }}-local.json
+            e2e-infra-${{ matrix.app.name }}-local.json
+          retention-days: 7
+          if-no-files-found: ignore
+
+  # Cross-language conformance: the same TypeScript e2e suite, driven against the
+  # Python workbench app instead of a JavaScript one. Deliberately its own job
+  # rather than a `getTestMatrix` row — every step in the two local lanes is JS
+  # toolchain (`pnpm dev` / `pnpm start`, the canary `next` patch, `dev.test.ts`
+  # and `local-build.test.ts`, and the per-framework `DEV_TEST_CONFIG` of
+  # compiler-generated paths), and none of it has a Python counterpart. The
+  # `e2e-vercel-prod` lane, whose rows only need a URL, does carry `python` as an
+  # ordinary matrix row.
+  #
+  # What this lane protects is the gate, not the fixtures it happens to run: a
+  # test that stops skipping correctly, or a fixture declared in
+  # `e2e-conformance.json` that the app stops registering, fails here and nowhere
+  # else.
+  e2e-python:
+    name: E2E Python Conformance
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    if: ${{ needs.ci-scope.outputs.fast-path != 'true' && !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
+    needs: [ci-scope, e2e-package-build]
+
+    env:
+      TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
+      TURBO_TEAM: ${{ vars.TURBO_TEAM }}
+      WORKFLOW_PUBLIC_MANIFEST: '1'
+
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Setup environment
+        uses: ./.github/actions/setup-workflow-dev
+        with:
+          build-packages: 'false'
+
+      # The Python app needs nothing from `packages/`, but the driver does: the
+      # vitest suite imports `@workflow/core` and shells out to the `workflow`
+      # CLI to inspect runs.
+      - name: Download shared package builds
+        uses: actions/download-artifact@v4
+        with:
+          name: e2e-package-build-artifacts
+          path: packages
+
+      # Pinned rather than floating to latest: `uv sync --locked` below is only
+      # a meaningful gate if the tool reading the lock is a known quantity.
+      # Pinning here rather than via `[tool.uv] required-version` is deliberate
+      # — that key would also bind the uv that `@vercel/python` bundles on the
+      # build image, which we do not control.
+      - name: Setup uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: '0.12.2'
+          enable-cache: true
+          cache-dependency-glob: workbench/python/uv.lock
+
+      # `--locked` rather than `--frozen`: a `pyproject.toml` edit that was never
+      # relocked should fail the job, not be silently ignored.
+      - name: Install Python dependencies
+        working-directory: workbench/python
+        run: uv sync --locked
+
+      - name: Run E2E Tests
+        run: |
+          APP_LOG="$GITHUB_WORKSPACE/python-app.log"
+          rm -f "$APP_LOG"
+          (cd workbench/python && uv run uvicorn app:app --port 3000 > "$APP_LOG" 2>&1) &
+
+          for _ in $(seq 1 30); do
+            if curl -sf http://localhost:3000/.well-known/workflow/v1/manifest.json -o /dev/null; then
+              echo "app is up"
+              break
+            fi
+            sleep 1
+          done
+          curl -sf http://localhost:3000/.well-known/workflow/v1/manifest.json | head -c 2000
+          echo
+
+          # Only `e2e.test.ts` — `e2e-agent.test.ts` (which `pnpm test:e2e` also
+          # runs) has no conformance gate and needs routes this app does not serve.
+          pnpm vitest run packages/core/e2e/e2e.test.ts \
+            --reporter=verbose --reporter=json \
+            --reporter=./packages/core/e2e/github-reporter.ts \
+            --outputFile=e2e-conformance-python.json
+        env:
+          NODE_OPTIONS: "--enable-source-maps"
+          APP_NAME: "python"
+          WORKBENCH_APP_PATH: ${{ github.workspace }}/workbench/python
+          DEPLOYMENT_URL: "http://localhost:3000"
+
+      - name: Print Python app logs
+        if: always()
+        run: cat "$GITHUB_WORKSPACE/python-app.log" || true
+
+      - name: Generate E2E summary
+        if: always()
+        run: node .github/scripts/aggregate-e2e-results.js . --job-name "E2E Python Conformance" >> $GITHUB_STEP_SUMMARY || true
+
+      - name: Upload E2E results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-results-conformance-python
+          path: |
+            e2e-conformance-python.json
+            e2e-flaky-python-local.json
+            e2e-infra-python-local.json
+            e2e-diagnostics-python-local.json
           retention-days: 7
           if-no-files-found: ignore
 
@@ -1244,7 +1387,10 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: e2e-results-windows-nextjs-turbopack-${{ matrix.vm }}
-          path: e2e-windows-nextjs-turbopack-${{ matrix.vm }}.json
+          path: |
+            e2e-windows-nextjs-turbopack-${{ matrix.vm }}.json
+            e2e-flaky-nextjs-turbopack-local.json
+            e2e-infra-nextjs-turbopack-local.json
           retention-days: 7
           if-no-files-found: ignore
 
@@ -1308,7 +1454,7 @@ jobs:
   summary:
     name: E2E Summary
     runs-on: ubuntu-latest
-    needs: [ci-scope, e2e-vercel-prod, e2e-vercel-ws-transport, e2e-local-dev, e2e-local-prod, e2e-local-postgres, e2e-windows]
+    needs: [ci-scope, e2e-vercel-prod, e2e-vercel-ws-transport, e2e-local-dev, e2e-local-prod, e2e-local-postgres, e2e-python, e2e-windows]
     if: always() && !cancelled() && needs.ci-scope.outputs.fast-path != 'true'
     timeout-minutes: 10
 
@@ -1344,7 +1490,7 @@ jobs:
   e2e-required-check:
     name: E2E Required Check
     runs-on: ubuntu-latest
-    needs: [ci-scope, unit, e2e-package-build, e2e-vercel-prod, e2e-vercel-ws-transport, e2e-local-dev, e2e-local-prod, e2e-local-postgres, e2e-windows]
+    needs: [ci-scope, unit, e2e-package-build, e2e-vercel-prod, e2e-vercel-ws-transport, e2e-local-dev, e2e-local-prod, e2e-local-postgres, e2e-python, e2e-windows]
     if: always()
     timeout-minutes: 5
 
@@ -1358,6 +1504,7 @@ jobs:
           LOCAL_DEV_STATUS: ${{ needs.e2e-local-dev.result }}
           LOCAL_PROD_STATUS: ${{ needs.e2e-local-prod.result }}
           POSTGRES_STATUS: ${{ needs.e2e-local-postgres.result }}
+          PYTHON_STATUS: ${{ needs.e2e-python.result }}
           WINDOWS_STATUS: ${{ needs.e2e-windows.result }}
           FAST_PATH: ${{ needs.ci-scope.outputs.fast-path }}
           VALIDATION_FAST_PATH: ${{ needs.ci-scope.outputs.validation-fast-path }}
@@ -1394,6 +1541,7 @@ jobs:
             [[ "$LOCAL_DEV_STATUS" == "skipped" ]] || echo "Warning: e2e-local-dev was not skipped ($LOCAL_DEV_STATUS)"
             [[ "$LOCAL_PROD_STATUS" == "skipped" ]] || echo "Warning: e2e-local-prod was not skipped ($LOCAL_PROD_STATUS)"
             [[ "$POSTGRES_STATUS" == "skipped" ]] || echo "Warning: e2e-local-postgres was not skipped ($POSTGRES_STATUS)"
+            [[ "$PYTHON_STATUS" == "skipped" ]] || echo "Warning: e2e-python was not skipped ($PYTHON_STATUS)"
             [[ "$WINDOWS_STATUS" == "skipped" ]] || echo "Warning: e2e-windows was not skipped ($WINDOWS_STATUS)"
           else
             echo "Standard PR - checking all jobs"
@@ -1408,6 +1556,7 @@ jobs:
             [[ "$LOCAL_DEV_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-local-dev ($LOCAL_DEV_STATUS)")
             [[ "$LOCAL_PROD_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-local-prod ($LOCAL_PROD_STATUS)")
             [[ "$POSTGRES_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-local-postgres ($POSTGRES_STATUS)")
+            [[ "$PYTHON_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-python ($PYTHON_STATUS)")
             [[ "$WINDOWS_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-windows ($WINDOWS_STATUS)")
           fi
 

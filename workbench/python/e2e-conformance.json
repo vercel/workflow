@@ -1,0 +1,19 @@
+{
+  "$comment": [
+    "Which `workflows/99_e2e` fixtures this app implements, and which individual",
+    "tests its runtime cannot pass yet. Format and ratcheting rules:",
+    "`packages/core/e2e/e2e-conformance.example.json`.",
+    "",
+    "Grow the list as fixtures are ported to `workflows/99_e2e.py`, one at a time,",
+    "and only once the test passes. Never shrink it without saying why."
+  ],
+  "language": "python",
+  "fixtures": [
+    "addTenWorkflow",
+    "nullByteWorkflow",
+    "parallelSleepWorkflow",
+    "promiseAllWorkflow",
+    "sleepInLoopWorkflow",
+    "sleepingWorkflow"
+  ]
+}

@@ -23,6 +23,7 @@ import {
   runTerminalMarkerPath,
 } from './helpers.js';
 import { deleteAllHooksForRun } from './hooks-storage.js';
+import { signalRunTerminal } from './run-status-signal.js';
 
 /**
  * Terminal-run guard + publish for a legacy `hook_received`, mirroring the
@@ -129,6 +130,11 @@ export async function handleLegacyEvent(
       };
       const runPath = resolveWithinBase(basedir, 'runs', `${runId}.json`);
       await writeJSON(runPath, run, { overwrite: true });
+      // Wake `runs.waitForTerminalStatus` waiters. This shortcut writes the
+      // run directly rather than through `writeRunUnderLifecycleLock`, so
+      // without this a legacy run's cancellation is only noticed by the
+      // backstop re-read.
+      signalRunTerminal(runId);
       await deleteAllHooksForRun(basedir, runId);
       // Return without event (legacy behavior skips event storage)
       // Type assertion: EventResult expects WorkflowRun, filterRunData may return WorkflowRunWithoutData

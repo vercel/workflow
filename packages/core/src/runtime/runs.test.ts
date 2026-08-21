@@ -28,6 +28,7 @@ import { registerSerializationClass } from '../class-serialization.js';
 import {
   dehydrateRunError,
   dehydrateStepReturnValue,
+  dehydrateWorkflowReturnValue,
   hydrateStepReturnValue,
 } from '../serialization.js';
 import { getReturnValuePollIntervalMs, Run } from './run.js';
@@ -243,6 +244,24 @@ describe('Run.exists', () => {
   });
 });
 
+describe('Run.status', () => {
+  afterEach(() => {
+    setWorld(undefined as unknown as World);
+  });
+
+  it('reads metadata without resolving run payloads', async () => {
+    const world = createMockWorld();
+    setWorld(world);
+
+    await expect(new Run('wrun_123').status).resolves.toBe('running');
+
+    expect(world.runs.get).toHaveBeenCalledOnce();
+    expect(world.runs.get).toHaveBeenCalledWith('wrun_123', {
+      resolveData: 'none',
+    });
+  });
+});
+
 describe('Run.getReadable', () => {
   afterEach(() => {
     setWorld(undefined as unknown as World);
@@ -431,6 +450,38 @@ describe('Run.returnValue polling interval', () => {
   });
 });
 
+describe('Run.returnValue payload resolution', () => {
+  afterEach(() => {
+    setWorld(undefined as unknown as World);
+  });
+
+  it('polls metadata before resolving a completed run payload', async () => {
+    const output = await dehydrateWorkflowReturnValue(
+      42,
+      'wrun_123',
+      undefined
+    );
+    const world = createMockWorld({
+      run: {
+        status: 'completed',
+        output,
+        completedAt: new Date(),
+      },
+    });
+    setWorld(world);
+
+    await expect(new Run<number>('wrun_123').returnValue).resolves.toBe(42);
+
+    expect(world.runs.get).toHaveBeenCalledTimes(2);
+    expect(world.runs.get).toHaveBeenNthCalledWith(1, 'wrun_123', {
+      resolveData: 'none',
+    });
+    expect(world.runs.get).toHaveBeenNthCalledWith(2, 'wrun_123', {
+      resolveData: 'all',
+    });
+  });
+});
+
 describe('Run.returnValue when run.status === "failed"', () => {
   // Register the FatalError class so the run-error serialization pipeline
   // can find it during hydration (the SWC plugin does this in production).
@@ -478,7 +529,8 @@ describe('Run.returnValue when run.status === "failed"', () => {
       'wrun_failed',
       undefined
     );
-    setWorld(makeFailedRunWorld(serialized, 'USER_ERROR'));
+    const world = makeFailedRunWorld(serialized, 'USER_ERROR');
+    setWorld(world);
 
     const run = new Run('wrun_failed');
     let caught: WorkflowRunFailedError | undefined;
@@ -499,6 +551,13 @@ describe('Run.returnValue when run.status === "failed"', () => {
     expect(cause).toBeInstanceOf(FatalError);
     expect((cause as FatalError).message).toBe('boom');
     expect((cause as FatalError).fatal).toBe(true);
+    expect(world.runs.get).toHaveBeenCalledTimes(2);
+    expect(world.runs.get).toHaveBeenNthCalledWith(1, 'wrun_failed', {
+      resolveData: 'none',
+    });
+    expect(world.runs.get).toHaveBeenNthCalledWith(2, 'wrun_failed', {
+      resolveData: 'all',
+    });
   });
 
   it('should preserve a plain Error cause through hydration', async () => {
