@@ -425,13 +425,13 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
               .where(and(eq(streams.streamId, name)))
               .orderBy(streams.chunkId);
 
-            // Resolve negative offset relative to the data chunk count
-            // (excluding the trailing EOF marker, if present)
+            // Resolve negative offset relative to the data chunk count: the
+            // rows before the first EOF marker. Rows after it (a retried
+            // terminal write) are ignored by `enqueue`, so they must not
+            // count here either.
             if (typeof offset === 'number' && offset < 0) {
-              const dataCount =
-                chunks.length > 0 && chunks[chunks.length - 1].eof
-                  ? chunks.length - 1
-                  : chunks.length;
+              const firstEof = chunks.findIndex((chunk) => chunk.eof);
+              const dataCount = firstEof === -1 ? chunks.length : firstEof;
               offset = Math.max(0, dataCount + offset);
             }
 

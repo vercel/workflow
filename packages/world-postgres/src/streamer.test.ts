@@ -102,4 +102,40 @@ describe('streams.get()', () => {
       await streamer.close();
     }
   }, 5_000);
+
+  it.each([
+    [-1, 'e\n'],
+    [-2, 'd\ne\n'],
+  ])(
+    'a negative start index (%i) counts data chunks up to the first EOF only',
+    async (startIndex, expected) => {
+      // The negative offset used to resolve against every row, including the
+      // ones after the first EOF, so `-1` on A…E + EOF + duplicate-E skipped
+      // the last valid chunk and returned nothing.
+      const rows: Row[] = ['a', 'b', 'c', 'd', 'e'].map((text, i) => ({
+        id: `chnk_0${i}`,
+        eof: false,
+        data: Buffer.from(`${text}\n`),
+      }));
+      rows.push(
+        { id: 'chnk_10', eof: true, data: Buffer.alloc(0) },
+        { id: 'chnk_11', eof: false, data: Buffer.from('e\n') }
+      );
+      const streamer = createStreamer(
+        { options: {} } as unknown as Pool,
+        fakeDrizzle(rows)
+      );
+      try {
+        const stream = await streamer.streams.get(
+          'run_1',
+          'stream-1',
+          startIndex
+        );
+        await expect(drain(stream)).resolves.toBe(expected);
+      } finally {
+        await streamer.close();
+      }
+    },
+    5_000
+  );
 });
