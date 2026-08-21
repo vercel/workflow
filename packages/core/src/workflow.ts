@@ -134,6 +134,18 @@ export async function runWorkflow(
     const workflowDiscontinuation = withResolvers<void>();
 
     const ulid = monotonicFactory(() => vmGlobalThis.Math.random());
+    // The draw counter is the progress metric for `quiesceEarlierCascades`
+    // (WORKFLOW_LOG_ORDER_DRAWS): a quiet turn is one that drew nothing. It
+    // counts EVERY draw from this sequence, including the serialization draws
+    // that mint stream ids through the `STABLE_ULID` global below, which is
+    // deliberate: quiescence must also wait out serialization-driven draws,
+    // and counting extra draws only extends the wait (see the termination note
+    // on `quiesceEarlierCascades`).
+    let mintCount = 0;
+    const countingUlid = (seedTime?: number) => {
+      mintCount += 1;
+      return ulid(seedTime);
+    };
     const generateNanoid = nanoid.customRandom(nanoid.urlAlphabet, 21, (size) =>
       new Uint8Array(size).map(() => 256 * vmGlobalThis.Math.random())
     );
@@ -170,8 +182,11 @@ export async function runWorkflow(
       globalThis: vmGlobalThis,
       onWorkflowError: workflowDiscontinuation.reject,
       eventsConsumer,
-      generateUlid: () => ulid(+startedAt),
+      generateUlid: () => countingUlid(+startedAt),
       generateNanoid,
+      get mintCount() {
+        return mintCount;
+      },
       invocationsQueue: new Map(),
       // Use getter/setter so the EventsConsumer's getPromiseQueue() always
       // sees the latest queue state as it's mutated by step/hook/sleep callbacks.
@@ -234,7 +249,7 @@ export async function runWorkflow(
     // @ts-expect-error - `@types/node` says symbol is not valid, but it does work
     vmGlobalThis[WORKFLOW_CONTEXT_SYMBOL] = ctx;
     // @ts-expect-error - `@types/node` says symbol is not valid, but it does work
-    vmGlobalThis[STABLE_ULID] = ulid;
+    vmGlobalThis[STABLE_ULID] = countingUlid;
 
     // NOTE: Will have a config override to use the custom fetch step.
     //       For now `fetch` must be explicitly imported from `workflow`.
