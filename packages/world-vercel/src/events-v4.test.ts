@@ -14,6 +14,7 @@ import { MockAgent } from 'undici';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { splitEventDataForV4 } from './events.js';
 import {
+  createWorkflowRunEventsBatchV4,
   createWorkflowRunEventV4,
   createWorkflowRunStartedEventV4,
   getEventsByCorrelationIdV4,
@@ -1898,9 +1899,9 @@ describe('v4 POST frame meta forwards every field the splitter produces', () => 
 
 /**
  * The recycler in http-client only sees transport failures the v4 client
- * reports to it. A streamed response resolves `fetch()` as soon as headers
- * arrive, before its body can fail, so the body consumer must own the success
- * report or that early success erases every later stream failure.
+ * reports to it. A response resolves `fetch()` as soon as headers arrive,
+ * before its body can fail, so the body consumer must own the success report
+ * or that early success erases every later body failure.
  */
 describe('v4 transport reports failures to the events recycler', () => {
   // There is only an undici pool to retire while the adapter owns one:
@@ -1924,28 +1925,63 @@ describe('v4 transport reports failures to the events recycler', () => {
       }),
     });
 
-  it('rebuilds the shared pool after repeated response-body timeouts', async () => {
-    vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
-      const body = new ReadableStream({
-        start(controller) {
-          controller.error(wedgedSessionError());
-        },
-      });
-      return new Response(body, {
-        headers: { 'content-type': V4_FRAME_CONTENT_TYPE },
-      });
+  const failedBodyResponse = () => {
+    const body = new ReadableStream({
+      start(controller) {
+        controller.error(wedgedSessionError());
+      },
     });
+    return new Response(body);
+  };
 
-    // No `dispatcher` in the config: the request must resolve the shared one,
-    // which is what the recycler owns.
+  it('counts failed single, batch, and framed response bodies', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    fetchSpy
+      .mockImplementationOnce(async () => failedBodyResponse())
+      .mockImplementationOnce(async () => failedBodyResponse())
+      .mockImplementationOnce(async () => {
+        const response = failedBodyResponse();
+        return new Response(response.body, {
+          headers: { 'content-type': V4_FRAME_CONTENT_TYPE },
+        });
+      });
+
     const before = getEventsDispatcher({ token: 'test-token' });
 
     await expect(
-      getWorkflowRunEventsV4({ runId: 'wrun_1' }, { token: 'test-token' })
+      createWorkflowRunEventV4(
+        {
+          runId: 'wrun_1',
+          eventType: 'step_completed',
+          specVersion: 2,
+          correlationId: 'step_1',
+          payload: new TextEncoder().encode('"result"'),
+        },
+        { token: 'test-token' }
+      )
+    ).rejects.toThrow();
+    await expect(
+      createWorkflowRunEventsBatchV4(
+        {
+          runId: 'wrun_1',
+          events: [
+            {
+              runId: 'wrun_1',
+              eventType: 'step_completed',
+              specVersion: 2,
+              correlationId: 'step_1',
+              payload: new TextEncoder().encode('"result"'),
+            },
+          ],
+        },
+        { token: 'test-token' }
+      )
+    ).rejects.toThrow();
+    await expect(
+      getEventV4('wrun_1', 'evnt_1', 'resolve', { token: 'test-token' })
     ).rejects.toThrow();
 
-    // The bounded GET retry loop produces enough consecutive body failures to
-    // retire the wedged pool within this one logical read.
     expect(getEventsDispatcher({ token: 'test-token' })).not.toBe(before);
+    expect(fetchSpy).toHaveBeenCalledTimes(3);
   });
 });

@@ -530,7 +530,7 @@ const eventsRecycler = createDispatcherRecycler(
 /**
  * Record the transport-level outcome of a v4 events request so a wedged
  * connection pool gets retired. No-ops for a caller-supplied dispatcher. Called
- * by `fetchV4`; see DispatcherRecycler.note.
+ * by `withV4ResponseBody`; see DispatcherRecycler.note.
  */
 export function noteEventsTransportOutcome(
   dispatcher: unknown,

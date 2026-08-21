@@ -111,6 +111,8 @@ interface V4Request {
   init: { method: string; headers: Headers; body?: Uint8Array };
   config?: APIConfig;
   opName: string;
+  /** Disable the whole-request deadline while the caller drains frames. */
+  streamResponse?: boolean;
   attributes?: Record<string, string | number | string[]>;
 }
 
@@ -134,7 +136,7 @@ function instrumentedV4Fetch(
     // until the compute instance is recycled — see noteEventsTransportOutcome.
     onTransportOutcome: options?.onTransportOutcome,
     deferTransportSuccess: options?.deferTransportSuccess,
-    timeoutMs: options?.deferTransportSuccess ? null : undefined,
+    timeoutMs: request.streamResponse ? null : undefined,
     logLabel: opName,
     // Read the body as bytes, not text: a CBOR error body (the fence 412
     // carries event payloads back) does not survive a UTF-8 decode.
@@ -146,16 +148,6 @@ function instrumentedV4Fetch(
         opName,
         url
       ),
-  });
-}
-
-/** Materialized responses are transport-complete once their headers arrive. */
-function fetchV4(request: V4Request): Promise<Response> {
-  const dispatcher = getEventsDispatcher(request.config);
-  return instrumentedV4Fetch(request, {
-    dispatcher,
-    onTransportOutcome: (error) =>
-      noteEventsTransportOutcome(dispatcher, error),
   });
 }
 
@@ -775,6 +767,7 @@ async function workflowRunEventV4Request(
     init: { method: 'POST', headers, body: frame },
     config,
     opName: 'createEvent',
+    streamResponse: eventStream,
     attributes: {
       ...WorkflowEventsTransport('http'),
       ...WorkflowEventType(input.eventType),
@@ -785,16 +778,6 @@ async function workflowRunEventV4Request(
         : {}),
     },
   };
-}
-
-async function postWorkflowRunEventV4(
-  input: CreateEventV4InputBase & {
-    eventType: EventType;
-    skipPreload?: true;
-  },
-  config?: APIConfig
-): Promise<Response> {
-  return fetchV4(await workflowRunEventV4Request(input, false, config));
 }
 
 async function withWorkflowRunEventResponseBody<T>(
@@ -828,14 +811,16 @@ export async function createWorkflowRunEventV4<T extends EventType>(
     if (reply) return decodeCreateEventResponse(reply, input.eventType);
   }
 
-  const response = await postWorkflowRunEventV4(input, config);
-
-  const contentType = response.headers.get('content-type');
-  if (contentType?.startsWith(V4_FRAME_CONTENT_TYPE)) {
-    throw new Error('v4 createEvent: unexpected event page');
-  }
-
-  return decodeCreateEventResponse(response, input.eventType);
+  return withV4ResponseBody(
+    await workflowRunEventV4Request(input, false, config),
+    async (response) => {
+      const contentType = response.headers.get('content-type');
+      if (contentType?.startsWith(V4_FRAME_CONTENT_TYPE)) {
+        throw new Error('v4 createEvent: unexpected event page');
+      }
+      return decodeCreateEventResponse(response, input.eventType);
+    }
+  );
 }
 
 /** Takes `FrameResponseLike` rather than `Response` because the WS branch has
@@ -973,17 +958,25 @@ export async function createWorkflowRunEventsBatchV4(
   // span carries only wire-level facts. workflow.event.type is deliberately
   // absent — it names a single event write, and tagging a batch with its
   // first event's type misclassifies the traffic.
-  const response = await fetchV4({
-    url,
-    init: { method: 'POST', headers, body },
-    config,
-    opName: 'createEventBatch',
-    attributes: {
-      ...WorkflowEventsTransport('http'),
-      'workflow.batch.bytes': body.byteLength,
+  return withV4ResponseBody(
+    {
+      url,
+      init: { method: 'POST', headers, body },
+      config,
+      opName: 'createEventBatch',
+      attributes: {
+        ...WorkflowEventsTransport('http'),
+        'workflow.batch.bytes': body.byteLength,
+      },
     },
-  });
+    (response) => decodeCreateEventBatchResponse(response, input.events)
+  );
+}
 
+async function decodeCreateEventBatchResponse(
+  response: Response,
+  events: CreateEventBatchV4Event[]
+): Promise<CreateEventBatchV4Result> {
   const bodyBytes = new Uint8Array(await response.arrayBuffer());
   const decoded =
     bodyBytes.byteLength > 0
@@ -997,12 +990,12 @@ export async function createWorkflowRunEventsBatchV4(
   // failing loudly here is safe for the retry wrapper to re-send.
   if (
     !Array.isArray(decoded.results) ||
-    decoded.results.length !== input.events.length
+    decoded.results.length !== events.length
   ) {
     throw new WorkflowWorldError(
       `v4 createEventBatch: response \`results\` length ` +
         `(${Array.isArray(decoded.results) ? decoded.results.length : 'non-array'}) ` +
-        `!= ${input.events.length} submitted frames`,
+        `!= ${events.length} submitted frames`,
       { code: 'SCHEMA_VALIDATION' }
     );
   }
@@ -1026,7 +1019,7 @@ export async function createWorkflowRunEventsBatchV4(
       // Success items validate against the SAME per-type schema the single
       // POST uses, so a batched write and its single-path twin return
       // byte-equivalent bodies to the caller.
-      const eventType = input.events[index].eventType;
+      const eventType = events[index].eventType;
       const parsed = CreateEventV4BodySchemas[eventType].safeParse(raw);
       if (!parsed.success) {
         throw new WorkflowWorldError(
@@ -1341,6 +1334,7 @@ export async function getEventV4(
       init: { method: 'GET', headers },
       config,
       opName: 'getEvent',
+      streamResponse: true,
     },
     async (response) => {
       // GET emits one frame without a sentinel.
@@ -1528,6 +1522,7 @@ export async function getWorkflowRunEventsV4(
           init: { method: 'GET', headers },
           config,
           opName: 'listEvents',
+          streamResponse: true,
         },
         (response) => consumeEventFrameStream(response, 'listEvents', events)
       );
@@ -1577,6 +1572,7 @@ export async function getEventsByCorrelationIdV4(
       init: { method: 'GET', headers },
       config,
       opName: 'listEventsByCorrelationId',
+      streamResponse: true,
     },
     (response) =>
       consumeEventFrameStream(response, 'listEventsByCorrelationId', events)
