@@ -208,6 +208,78 @@ describe('module-scope state rule', () => {
     ]);
   });
 
+  it('reports each static field on a class separately', () => {
+    // Keyed `Class.field`, not by the class: keying on the bare class name let
+    // the second static overwrite the first, so one of the two went unreported
+    // and the survivor was labelled with the other one's mutation.
+    const dir = packageWith(
+      [
+        'export class Registry {',
+        '  static transports = new Map<string, number>();',
+        '  static latch = false;',
+        '  static open(id: string) {',
+        '    Registry.transports.set(id, 1);',
+        '  }',
+        '  static mark() {',
+        '    Registry.latch = true;',
+        '  }',
+        '}',
+        '',
+      ].join('\n')
+    );
+    expect(scanPackage(dir, dir)).toMatchObject([
+      { name: 'Registry.transports', keyword: 'static', reason: '`.set()`' },
+      { name: 'Registry.latch', keyword: 'static', reason: 'field written' },
+    ]);
+  });
+
+  it('resolves `this` to the class inside a static member', () => {
+    const dir = packageWith(
+      [
+        'export class Counters {',
+        '  static hits = new Map<string, number>();',
+        '  static bump(id: string) {',
+        '    this.hits.set(id, 1);',
+        '  }',
+        '}',
+        '',
+      ].join('\n')
+    );
+    expect(scanPackage(dir, dir)).toMatchObject([
+      { name: 'Counters.hits', keyword: 'static' },
+    ]);
+  });
+
+  it('ignores an instance field, which is per-instance not per-copy', () => {
+    const dir = packageWith(
+      [
+        'export class Session {',
+        '  seen = new Map<string, number>();',
+        '  mark(id: string) {',
+        '    this.seen.set(id, 1);',
+        '  }',
+        '}',
+        '',
+      ].join('\n')
+    );
+    expect(scanPackage(dir, dir)).toEqual([]);
+  });
+
+  it('flags a field incremented with `++`, like one written with `+=`', () => {
+    const dir = packageWith(
+      [
+        'const state = { count: 0 };',
+        'export function bump() {',
+        '  state.count++;',
+        '}',
+        '',
+      ].join('\n')
+    );
+    expect(scanPackage(dir, dir)).toMatchObject([
+      { name: 'state', reason: 'field written' },
+    ]);
+  });
+
   it('flags an exported empty collection filled from another file', () => {
     // The shipped bug's exact shape, with the registry and its mutators split
     // across files. A single-file walk cannot see the write, so the export plus

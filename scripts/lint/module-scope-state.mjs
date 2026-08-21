@@ -180,8 +180,9 @@ function perCopyReason(statement, text) {
  *
  * Covers `const`/`let` statements and `static` class fields. A static field is
  * module-scope state wearing a class as its namespace: `Registry.transports`
- * duplicates per copy exactly like a top-level `const` would, and is attributed
- * to the class name because that is how it is written to.
+ * duplicates per copy exactly like a top-level `const` would. Static fields are
+ * keyed `Class.field`, so a class with several of them yields one entry each and
+ * every finding names the field that is actually written.
  */
 function collectDeclarations(source) {
   const declared = new Map();
@@ -209,10 +210,13 @@ function collectDeclarations(source) {
         (m) => m.kind === ts.SyntaxKind.StaticKeyword
       );
       if (!isStatic) continue;
-      // Keyed on the class name: writes read as `Registry.transports.set(…)`,
-      // which `rootIdentifier` attributes to `Registry`.
-      declared.set(statement.name.text, {
-        name: `${statement.name.text}.${member.name.text}`,
+      // Keyed `Class.field`, which is what `memberPath` reads off a write like
+      // `Registry.transports.set(…)`. Keying on the bare class name would let a
+      // second static field overwrite the first, and would then attach one
+      // field's mutation to the other field's declaration.
+      const key = `${statement.name.text}.${member.name.text}`;
+      declared.set(key, {
+        name: key,
         isConst: false,
         declaration: member,
         statement,
@@ -221,6 +225,68 @@ function collectDeclarations(source) {
     }
   }
   return declared;
+}
+
+/**
+ * The class `this` refers to, when `this` *is* the class: inside a `static`
+ * member. Undefined inside an instance member, where `this` is an instance and
+ * the state it holds is per-instance rather than per-copy, and undefined inside
+ * a nested `function`, which rebinds `this`.
+ */
+function staticClassOf(node) {
+  for (let n = node.parent; n; n = n.parent) {
+    if (ts.isFunctionDeclaration(n) || ts.isFunctionExpression(n)) {
+      return undefined;
+    }
+    const isMember =
+      ts.isMethodDeclaration(n) ||
+      ts.isPropertyDeclaration(n) ||
+      ts.isGetAccessorDeclaration(n) ||
+      ts.isSetAccessorDeclaration(n) ||
+      ts.isClassStaticBlockDeclaration(n);
+    if (!isMember) continue;
+    const isStatic =
+      ts.isClassStaticBlockDeclaration(n) ||
+      n.modifiers?.some((m) => m.kind === ts.SyntaxKind.StaticKeyword);
+    if (!isStatic) return undefined;
+    return ts.isClassDeclaration(n.parent) && n.parent.name
+      ? n.parent.name.text
+      : undefined;
+  }
+  return undefined;
+}
+
+/**
+ * The `Root.field` prefix of a member chain, or undefined when there is no named
+ * first property. Lets a write to `Registry.transports.set(…)` be attributed to
+ * the static field `Registry.transports`, which `rootIdentifier` alone cannot
+ * distinguish from a write to any other static on the same class. `this.field`
+ * inside a static member resolves to the class, where `this` is the class.
+ */
+function memberPath(node) {
+  const segments = [];
+  let current = node;
+  while (
+    ts.isPropertyAccessExpression(current) ||
+    ts.isElementAccessExpression(current) ||
+    ts.isNonNullExpression(current) ||
+    ts.isParenthesizedExpression(current)
+  ) {
+    if (ts.isPropertyAccessExpression(current)) {
+      segments.unshift(current.name.text);
+    } else if (ts.isElementAccessExpression(current)) {
+      // A computed key names no field, so the chain stops being addressable.
+      segments.unshift(undefined);
+    }
+    current = current.expression;
+  }
+  const root = ts.isIdentifier(current)
+    ? current.text
+    : current.kind === ts.SyntaxKind.ThisKeyword
+      ? staticClassOf(current)
+      : undefined;
+  if (!root || segments[0] === undefined) return undefined;
+  return `${root}.${segments[0]}`;
 }
 
 /** `x = …`, `x.field = …`, `x += …`. */
@@ -239,24 +305,42 @@ function assignment(node) {
     ts.isPropertyAccessExpression(node.left) ||
     ts.isElementAccessExpression(node.left)
   ) {
-    return { name: rootIdentifier(node.left), reason: 'field written' };
+    return {
+      name: rootIdentifier(node.left),
+      target: node.left,
+      reason: 'field written',
+    };
   }
   return undefined;
 }
 
-/** `x++`, `--x`. */
+/** `x++`, `--x`, `x.field++`. */
 function increment(node) {
   if (!ts.isPrefixUnaryExpression(node) && !ts.isPostfixUnaryExpression(node)) {
     return undefined;
   }
   if (
-    (node.operator !== ts.SyntaxKind.PlusPlusToken &&
-      node.operator !== ts.SyntaxKind.MinusMinusToken) ||
-    !ts.isIdentifier(node.operand)
+    node.operator !== ts.SyntaxKind.PlusPlusToken &&
+    node.operator !== ts.SyntaxKind.MinusMinusToken
   ) {
     return undefined;
   }
-  return { name: node.operand.text, reason: 'reassigned' };
+  if (ts.isIdentifier(node.operand)) {
+    return { name: node.operand.text, reason: 'reassigned' };
+  }
+  // `state.count++` mutates just as much as `state.count += 1`, which
+  // `assignment` already reports.
+  if (
+    ts.isPropertyAccessExpression(node.operand) ||
+    ts.isElementAccessExpression(node.operand)
+  ) {
+    return {
+      name: rootIdentifier(node.operand),
+      target: node.operand,
+      reason: 'field written',
+    };
+  }
+  return undefined;
 }
 
 /** `x.set(…)`, `x.items.push(…)`: a call that mutates its receiver. */
@@ -270,6 +354,7 @@ function mutatingCall(node) {
   }
   return {
     name: rootIdentifier(node.expression.expression),
+    target: node.expression.expression,
     reason: `\`.${node.expression.name.text}()\``,
   };
 }
@@ -283,7 +368,11 @@ function deletion(node) {
   ) {
     return undefined;
   }
-  return { name: rootIdentifier(node.expression), reason: 'field deleted' };
+  return {
+    name: rootIdentifier(node.expression),
+    target: node.expression,
+    reason: 'field deleted',
+  };
 }
 
 /** How `node` changes a binding, if it changes one at all. */
@@ -328,6 +417,22 @@ const FUNCTION_LIKE = new Set([
   ts.SyntaxKind.SetAccessor,
 ]);
 
+/**
+ * Record how `mutation` changes a declared binding, most specific key first:
+ * `Registry.transports` before `Registry`, so a class carrying several static
+ * fields attributes each write to the field that actually took it. Only the
+ * first sighting of a binding is kept, which is the one the finding cites.
+ */
+function recordMutation(mutation, declared, mutations) {
+  if (!mutation) return;
+  const path = mutation.target ? memberPath(mutation.target) : undefined;
+  for (const key of [path, mutation.name]) {
+    if (!key || !declared.has(key)) continue;
+    if (!mutations.has(key)) mutations.set(key, mutation.reason);
+    return;
+  }
+}
+
 function scanFile(file, repoRoot) {
   const text = fs.readFileSync(file, 'utf8');
   const source = ts.createSourceFile(
@@ -348,16 +453,7 @@ function scanFile(file, repoRoot) {
   // value in each, so a precomputed lookup table is not the hazard this rule
   // is looking for; divergence needs a write that happens later, per request.
   const visit = (node, inFunction) => {
-    if (inFunction) {
-      const mutation = mutationIn(node);
-      if (
-        mutation?.name &&
-        declared.has(mutation.name) &&
-        !mutations.has(mutation.name)
-      ) {
-        mutations.set(mutation.name, mutation.reason);
-      }
-    }
+    if (inFunction) recordMutation(mutationIn(node), declared, mutations);
     const nowInFunction = inFunction || FUNCTION_LIKE.has(node.kind);
     ts.forEachChild(node, (child) => visit(child, nowInFunction));
   };
