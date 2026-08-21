@@ -70,4 +70,36 @@ describe('streams.get()', () => {
       await streamer.close();
     }
   });
+
+  it.each([
+    5, 6,
+  ])('a start index at or past the data count (%i) closes at the first EOF instead of consuming it', async (startIndex) => {
+    // Offsets count data chunks (`getInfo` reports tailIndex = dataCount - 1),
+    // so the EOF marker must never be skipped as if it were data: before this
+    // guard the marker was swallowed, the post-EOF duplicate came back as
+    // live data, and with no later EOF the stream never closed.
+    const rows: Row[] = ['a', 'b', 'c', 'd', 'e'].map((text, i) => ({
+      id: `chnk_0${i}`,
+      eof: false,
+      data: Buffer.from(`${text}\n`),
+    }));
+    rows.push(
+      { id: 'chnk_10', eof: true, data: Buffer.alloc(0) },
+      { id: 'chnk_11', eof: false, data: Buffer.from('e\n') }
+    );
+    const streamer = createStreamer(
+      { options: {} } as unknown as Pool,
+      fakeDrizzle(rows)
+    );
+    try {
+      const stream = await streamer.streams.get(
+        'run_1',
+        'stream-1',
+        startIndex
+      );
+      await expect(drain(stream)).resolves.toBe('');
+    } finally {
+      await streamer.close();
+    }
+  }, 5_000);
 });

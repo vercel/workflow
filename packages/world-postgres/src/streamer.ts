@@ -383,7 +383,12 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
                 return;
               }
 
-              if (offset > 0) {
+              // The EOF marker is not a data chunk (`getInfo`'s tailIndex
+              // excludes it), so it never counts toward `offset`: a start
+              // index at or past the data count must still close the
+              // stream rather than consume the marker and then hang, or
+              // surface rows written after it.
+              if (offset > 0 && !msg.eof) {
                 offset--;
                 return;
               }
