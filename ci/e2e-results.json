@@ -1,5 +1,5 @@
 {
-  "lastUpdated": "2026-08-20T20:43:25.420Z",
+  "lastUpdated": "2026-08-21T05:05:04.292Z",
   "commit": "9454d51db0d52d6be9bafea9c70ab6fc3a1ceba4",
   "branch": "main",
   "type": "e2e",
@@ -25,8 +25,8 @@
     "vercel": {
       "status": "partial",
       "total": 4320,
-      "passed": 3360,
-      "failed": 218,
+      "passed": 3371,
+      "failed": 207,
       "skipped": 742,
       "frameworks": {},
       "progress": 78
