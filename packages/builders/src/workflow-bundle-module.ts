@@ -9,24 +9,6 @@ export function isWorkflowBundleFileName(fileName: string): boolean {
   return WORKFLOW_BUNDLE_FILE.test(fileName);
 }
 
-export function findWorkflowBundleFileNames(routeCode: string): string[] {
-  const prefix = `./${WORKFLOW_BUNDLE_DIRECTORY}/`;
-  const fileNames = new Set<string>();
-  const loaderPatterns = [
-    /import\(\s*(['"])([^'"]+)\1\s*\)/g,
-    /\.bundleFile\s*=\s*(['"])([^'"]+)\1/g,
-  ];
-  for (const pattern of loaderPatterns) {
-    for (const match of routeCode.matchAll(pattern)) {
-      const specifier = match[2];
-      if (!specifier.startsWith(prefix)) continue;
-      const fileName = specifier.slice(prefix.length);
-      if (isWorkflowBundleFileName(fileName)) fileNames.add(fileName);
-    }
-  }
-  return [...fileNames];
-}
-
 export function workflowBundleFileName(index: number, code: string): string {
   const hash = createHash('sha256').update(code).digest('hex').slice(0, 16);
   return `${index}-${hash}.mjs`;

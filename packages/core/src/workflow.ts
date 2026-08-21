@@ -1083,11 +1083,11 @@ async function createWorkflowSession({
   // and the filename preserves workflow source attribution in stack traces.
   // The bundle registers workflows on `globalThis.__private_workflows`.
   runCachedWorkflowScript(workflowCode, filename, context);
-  const workflowFn = runCachedWorkflowScript(
-    `globalThis.__private_workflows?.get(${JSON.stringify(workflowRun.workflowName)})`,
-    filename,
-    context
-  );
+  const workflowFn = (
+    vmGlobalThis as typeof globalThis & {
+      __private_workflows?: Map<string, unknown>;
+    }
+  ).__private_workflows?.get(workflowRun.workflowName);
 
   if (typeof workflowFn !== 'function') {
     throw new WorkflowNotRegisteredError(workflowRun.workflowName);

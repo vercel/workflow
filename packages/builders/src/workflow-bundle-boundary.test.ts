@@ -267,7 +267,7 @@ export async function alsoFirst() { "use workflow"; return 2; }`
     expect(secondCode).toContain('HybridSerde');
   });
 
-  it('changes the lazy module URL after a watch rebuild', async () => {
+  it('refreshes the generated VM bundle after a watch rebuild', async () => {
     const repoRoot = resolve(import.meta.dirname, '../../..');
     const workingDir = join(repoRoot, 'workbench/nextjs-turbopack');
     const outputDir = mkdtempSync(join(workingDir, '.workflow-watch-'));
@@ -322,7 +322,6 @@ export async function renamedAfterWatch() { "use workflow"; return "rename-me"; 
       const currentFile = currentFiles[0];
       assert(currentFile);
       expect(currentFile).not.toBe(oldFile);
-      expect(route).toContain(`workflow-bundles/${currentFile}`);
       expect(route).toContain('Promise.resolve');
       expect(route).toContain('renamedAfterWatch');
       expect(route).not.toContain('removedAfterWatch');

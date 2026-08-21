@@ -90,9 +90,7 @@ describe('extractWorkflowGraphs', () => {
     await mkdir(bundlesDir);
     await writeFile(
       bundlePath,
-      `const first = import('./workflow-bundles/0.mjs');
-const second = import('./workflow-bundles/1.mjs');
-const unrelated = './workflow-bundles/9.mjs';`
+      'const routeDoesNotNeedToDescribeItsLazyBundles = true;'
     );
 
     const bundle = (file: string, name: string) =>

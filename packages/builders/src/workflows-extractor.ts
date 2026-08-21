@@ -1,4 +1,4 @@
-import { readFile } from 'node:fs/promises';
+import { readdir, readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import type {
   ArrowFunctionExpression,
@@ -16,7 +16,7 @@ import type {
 import { parseSync } from '@swc/core';
 import {
   deserializeWorkflowBundle,
-  findWorkflowBundleFileNames,
+  isWorkflowBundleFileName,
   WORKFLOW_BUNDLE_DIRECTORY,
 } from './workflow-bundle-module.js';
 
@@ -240,9 +240,14 @@ export async function extractWorkflowGraphs(bundlePath: string): Promise<{
   };
 }> {
   try {
-    const bundleCode = await readFile(bundlePath, 'utf8');
     const lazyBundleDir = join(dirname(bundlePath), WORKFLOW_BUNDLE_DIRECTORY);
-    const lazyBundleFiles = findWorkflowBundleFileNames(bundleCode).sort(
+    const lazyBundleFiles = await readdir(lazyBundleDir)
+      .then((files) => files.filter(isWorkflowBundleFileName))
+      .catch((error: NodeJS.ErrnoException) => {
+        if (error.code === 'ENOENT') return [];
+        throw error;
+      });
+    lazyBundleFiles.sort(
       (left, right) => Number.parseInt(left, 10) - Number.parseInt(right, 10)
     );
     const graphs: Record<string, Record<string, ManifestWorkflowEntry>> = {};
@@ -264,6 +269,7 @@ export async function extractWorkflowGraphs(bundlePath: string): Promise<{
     };
 
     if (lazyBundleFiles.length === 0) {
+      const bundleCode = await readFile(bundlePath, 'utf8');
       const bundleAst = parseSync(bundleCode, {
         syntax: 'ecmascript',
         target: 'es2022',
