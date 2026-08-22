@@ -320,7 +320,10 @@ jobs:
   e2e-vercel-prod:
     name: E2E Vercel Prod Tests (${{ matrix.app.name }} - ${{ matrix.vm }})
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # The quickjs lanes run the WASM engine and have outgrown 30 minutes as
+    # the suite grew (nextjs-turbopack quickjs was killed mid-final-group,
+    # all tests passing, on three consecutive attempts on 2026-08-18).
+    timeout-minutes: 40
     needs: ci-scope
     if: ${{ needs.ci-scope.outputs.fast-path != 'true' }}
     permissions:
