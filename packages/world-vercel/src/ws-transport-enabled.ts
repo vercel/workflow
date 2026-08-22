@@ -8,19 +8,48 @@
  */
 
 /**
- * HTTP unless `WORKFLOW_EVENTS_TRANSPORT=ws`. Only `createWorkflowRunEventV4`
+ * WS unless `WORKFLOW_EVENTS_TRANSPORT=http`. Only `createWorkflowRunEventV4`
  * (POST) is wired to it. GET/LIST aren't on the hot per-step path, and LIST's
  * streamed, sentinel-terminated multi-frame response doesn't map onto a single
  * WS message.
  *
- * **Known gap: WS writes open no client span.** The upgrade carries W3C trace
- * context (see `resolveUpgradeHeaders`), so server spans still join the caller's
- * trace, but the HTTP branch's `instrumentedFetch` also opens an OTEL CLIENT
- * span per write and routes through the global `fetch` that Vercel's
- * outgoing-requests view instruments; the WS branch has neither, and individual
- * frames carry no `traceparent` of their own. Acceptable behind a flag;
- * per-write instrumentation is a prerequisite for defaulting to it.
+ * This file used to name a prerequisite for defaulting on: that a WS write opens
+ * no client span. That is met. `postEventFrameOverWs` opens one per frame,
+ * carrying `workflow.events.transport: 'ws'`, `network.protocol.name` and the
+ * `workflow.events.ws.req_id` that joins it to the server's log line. What
+ * remains absent is Vercel's *outgoing requests* view, which is built by
+ * instrumenting the global `fetch` rather than by reading spans, and which a
+ * transport whose purpose is to issue no request cannot appear in.
+ *
+ * `http` is the only value that opts out, rather than "anything that isn't
+ * `ws`". An unrecognized value takes the default instead of quietly pinning a
+ * deployment to the old transport.
+ *
+ * That opt-out is matched case-insensitively and trimmed, which is the one
+ * place this gate deliberately does *not* fail toward the default. Everything
+ * else here is written on the assumption that being quietly on the wrong
+ * transport is the failure mode to design against, and the reader most exposed
+ * to it is whoever is reaching for the escape hatch: plausibly mid-incident,
+ * plausibly typing `HTTP` into a dashboard field. Silently ignoring their
+ * opt-out because of case is the same bug this default flip is trying to stop
+ * shipping, pointed at the person least able to afford it.
  */
 export function isWsEventsTransportEnabled(): boolean {
-  return process.env.WORKFLOW_EVENTS_TRANSPORT === 'ws';
+  return process.env.WORKFLOW_EVENTS_TRANSPORT?.trim().toLowerCase() !== 'http';
+}
+
+/**
+ * Whether a WS fallback that should not happen must fail loudly instead of
+ * quietly writing over HTTP. Internal, undocumented, and meant for the WS e2e
+ * lane, which otherwise passes whether or not the socket carried anything.
+ *
+ * Note the asymmetry with the gate above, which is deliberate and the opposite
+ * way round. There, an unrecognized value takes the default, because the risk
+ * is a deployment quietly sitting on the wrong transport. Here an unrecognized
+ * value means *off*, because the risk runs the other way: this turns a silent
+ * degradation into a failed run, and nobody should acquire that by typo.
+ */
+export function isWsEventsTransportStrict(): boolean {
+  const raw = process.env.WORKFLOW_INTERNAL_EVENTS_TRANSPORT_STRICT;
+  return raw === '1' || raw === 'true';
 }

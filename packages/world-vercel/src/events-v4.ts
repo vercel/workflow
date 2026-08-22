@@ -73,7 +73,10 @@ import {
 import { type APIConfig, getHttpConfig, getHttpUrl } from './utils.js';
 import { version } from './version.js';
 import type { WsFrameReply } from './ws-transport.js';
-import { isWsEventsTransportEnabled } from './ws-transport-enabled.js';
+import {
+  isWsEventsTransportEnabled,
+  isWsEventsTransportStrict,
+} from './ws-transport-enabled.js';
 
 /**
  * Issue an instrumented v4 request through the global `fetch`, NOT undici's
@@ -731,6 +734,47 @@ async function postWorkflowRunEventV4(
  * frames, which has no representation in a protocol that pairs one reply frame
  * with one request frame.
  */
+/**
+ * Event types that must never reach HTTP once the gate is on, and so are worth
+ * failing a run over when `WORKFLOW_INTERNAL_EVENTS_TRANSPORT_STRICT` is set.
+ *
+ * Only `step_completed`, and the narrowness is the point. Most fallback is
+ * legitimate and routine:
+ *
+ * - `run_created` is written by `start()` from a request handler that never
+ *   opens a channel, so it is always HTTP.
+ * - `run_started` is the runtime's first write and frequently lands before the
+ *   channel is registered; measured at 34% HTTP on a healthy deployment.
+ * - `step_created` and `wait_created` mostly fold into `events.createBatch`,
+ *   which is not wired to the socket at all, so they rarely take this path.
+ * - Any write after the invocation released its claim falls back by design.
+ *
+ * `step_completed` is issued after a step body has run, by which point the
+ * channel has long been registered and the socket is up. It was 100% ws across
+ * every WS-enabled deployment measured, on two SDK versions. If one of these
+ * goes over HTTP while the gate is on, a socket that should be carrying traffic
+ * is not — which is exactly the failure that stayed invisible for days, because
+ * an event written over HTTP produces the same run outcome as one written over
+ * the socket.
+ */
+const STRICT_WS_EVENT_TYPES: ReadonlySet<string> = new Set(['step_completed']);
+
+/**
+ * Deliberately a plain `Error`: `isRetryableEventPostError` only treats errors
+ * carrying a transient marker as retryable, so this fails the write outright
+ * rather than burning the retry budget on a condition no retry can fix.
+ */
+function assertWsFallbackAllowed(eventType: EventType): void {
+  if (!isWsEventsTransportStrict()) return;
+  if (!STRICT_WS_EVENT_TYPES.has(eventType)) return;
+  throw new Error(
+    `world-vercel: ${eventType} fell back to the HTTP events transport while ` +
+      'the WS gate was on. WORKFLOW_INTERNAL_EVENTS_TRANSPORT_STRICT is set, ' +
+      'so this is a failure rather than a silent demotion: no channel was ' +
+      'resolvable for this run at write time.'
+  );
+}
+
 export async function createWorkflowRunEventV4<T extends EventType>(
   input: CreateEventV4Input & { eventType: T },
   config?: APIConfig
@@ -740,6 +784,7 @@ export async function createWorkflowRunEventV4<T extends EventType>(
     // failed, so fall through to HTTP.
     const reply = await postEventFrameOverWs(input, config);
     if (reply) return decodeCreateEventResponse(reply, input.eventType);
+    assertWsFallbackAllowed(input.eventType);
   }
 
   const response = await postWorkflowRunEventV4(input, 'materialized', config);
