@@ -1,10 +1,10 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, realpathSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { VercelBuildOutputConfig } from './types.js';
 import { VercelBuildOutputAPIBuilder } from './vercel-build-output-api.js';
 
@@ -22,7 +22,10 @@ function getFlowFuncDir(workingDir: string): string {
   );
 }
 
-function createBuilder(workingDir: string): VercelBuildOutputAPIBuilder {
+function createBuilder(
+  workingDir: string,
+  onAfterBundle?: VercelBuildOutputConfig['onAfterBundle']
+): VercelBuildOutputAPIBuilder {
   const config: VercelBuildOutputConfig = {
     buildTarget: 'vercel-build-output-api',
     workingDir,
@@ -31,6 +34,7 @@ function createBuilder(workingDir: string): VercelBuildOutputAPIBuilder {
     workflowsBundlePath: join(workingDir, 'unused-workflows.mjs'),
     webhookBundlePath: join(workingDir, 'unused-webhook.mjs'),
     suppressCreateManifestLogs: true,
+    onAfterBundle,
   };
   return new VercelBuildOutputAPIBuilder(config);
 }
@@ -96,6 +100,7 @@ describe('VercelBuildOutputAPIBuilder ESM output', () => {
   });
 
   afterEach(() => {
+    vi.unstubAllEnvs();
     rmSync(workingDir, { recursive: true, force: true });
   });
 
@@ -187,6 +192,63 @@ export async function gaxWorkflow(): Promise<string> {
       expect(
         webhookBundle.match(/var __dirname = __pathDirname\(__filename\);/g)
       ).toHaveLength(1);
+    }
+  );
+
+  it(
+    'runs the bundle hook after the webhook output and before the public manifest copy',
+    { timeout: BUILD_TIMEOUT },
+    async () => {
+      vi.stubEnv('WORKFLOW_PUBLIC_MANIFEST', '1');
+      await writeWorkflowRuntimeStub(workingDir);
+      await write(
+        join(workingDir, 'src/workflows/example.ts'),
+        `export async function exampleStep(): Promise<string> {
+  'use step';
+  return 'ok';
+}
+
+export async function exampleWorkflow(): Promise<string> {
+  'use workflow';
+  return exampleStep();
+}
+`
+      );
+
+      const workflowGeneratedDir = join(
+        workingDir,
+        '.vercel/output/functions/.well-known/workflow/v1'
+      );
+      const webhookPath = join(
+        workflowGeneratedDir,
+        'webhook/[token].func/index.mjs'
+      );
+      const publicManifestPath = join(
+        workingDir,
+        '.vercel/output/static/.well-known/workflow/v1/manifest.json'
+      );
+      let hookObservation:
+        | {
+            artifactPathsExist: boolean;
+            webhookExists: boolean;
+            publicManifestExists: boolean;
+          }
+        | undefined;
+
+      await createBuilder(workingDir, ({ artifacts }) => {
+        hookObservation = {
+          artifactPathsExist: artifacts.every(({ path }) => existsSync(path)),
+          webhookExists: existsSync(webhookPath),
+          publicManifestExists: existsSync(publicManifestPath),
+        };
+      }).build();
+
+      expect(hookObservation).toEqual({
+        artifactPathsExist: true,
+        webhookExists: true,
+        publicManifestExists: false,
+      });
+      expect(existsSync(publicManifestPath)).toBe(true);
     }
   );
 });

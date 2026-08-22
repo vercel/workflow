@@ -331,11 +331,18 @@ describe('watching a scope', () => {
         (target) => !existsSync(target) || !statSync(target).isDirectory()
       )
     ).toEqual([]);
-    // The route root, its nested directory, the project root (for the
-    // root-entrypoint candidates) and the directory holding the tracked module.
-    expect(new Set(targets.map(canonical))).toEqual(
-      new Set([root, p('app'), p('app/dashboard'), p('workflows')])
-    );
+    const targetSet = new Set(targets.map(canonical));
+    // The route root, the project root (for the root-entrypoint candidates),
+    // and the directory holding the tracked module must all be watched. On
+    // platforms with native recursive directory watches, Watchpack keeps the
+    // nested route directory inside the route-root watch instead of opening a
+    // second OS watcher for it.
+    for (const target of [root, p('app'), p('workflows')]) {
+      expect(targetSet).toContain(target);
+    }
+    if (process.platform !== 'darwin' && process.platform !== 'win32') {
+      expect(targetSet).toContain(p('app/dashboard'));
+    }
   });
 
   test('reports edits to a tracked module outside the route roots', async () => {

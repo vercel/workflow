@@ -1,5 +1,9 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
-import { BaseBuilder, createBaseBuilderConfig } from '@workflow/builders';
+import {
+  BaseBuilder,
+  createBaseBuilderConfig,
+  type WorkflowAfterBundleHook,
+} from '@workflow/builders';
 import { join } from 'pathe';
 import { rewriteTsImportsInContent } from './cjs-rewrite.js';
 
@@ -51,6 +55,8 @@ export interface NestBuilderOptions {
    * Can also be set via the `WORKFLOW_SOURCEMAP` environment variable.
    */
   sourcemap?: boolean | 'inline' | 'linked' | 'external' | 'both';
+  /** Runs after the workflow bundles and manifest have been written. */
+  onAfterBundle?: WorkflowAfterBundleHook;
   /**
    * Route prefix the workflow endpoints are served under, stamped into the
    * generated flow route so the runtime generates matching callback URLs.
@@ -76,6 +82,7 @@ export class NestLocalBuilder extends BaseBuilder {
         watch: false,
         dirs,
         sourcemap: options.sourcemap,
+        onAfterBundle: options.onAfterBundle,
       }),
       basePath: options.basePath,
       // Use 'standalone' as base target - we handle the specific bundling ourselves
