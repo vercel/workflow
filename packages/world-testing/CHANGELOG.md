@@ -1,5 +1,19 @@
 # @workflow/world-testing
 
+## 5.0.0-beta.44
+
+### Patch Changes
+
+- [#3728](https://github.com/vercel/workflow/pull/3728) [`f771585`](https://github.com/vercel/workflow/commit/f771585486b3019c8d68211b158dfeffc9e5ebe8) Thanks [@pranaygp](https://github.com/pranaygp)! - Annotate the test server's per-run invocation counter as deliberately per-copy, so it passes the module-scope state rule.
+
+- [#3737](https://github.com/vercel/workflow/pull/3737) [`7e48e7b`](https://github.com/vercel/workflow/commit/7e48e7b4de5e26a4ea18a1a0d8c9c819cf878ee4) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - The event-id conformance test now floors a run's stamped `specVersion` at `mintedSpecVersion()` rather than `SPEC_VERSION_CURRENT`, so a World is not failed for stamping the version it was told to stamp while a spec bump is staged.
+
+- Updated dependencies [[`5b5a926`](https://github.com/vercel/workflow/commit/5b5a926f8850ec5d967e090cc0500028fd53e2ef), [`9b1b8c7`](https://github.com/vercel/workflow/commit/9b1b8c711104fd507327aafc8cb965738f315e29), [`f771585`](https://github.com/vercel/workflow/commit/f771585486b3019c8d68211b158dfeffc9e5ebe8), [`f771585`](https://github.com/vercel/workflow/commit/f771585486b3019c8d68211b158dfeffc9e5ebe8), [`9454d51`](https://github.com/vercel/workflow/commit/9454d51db0d52d6be9bafea9c70ab6fc3a1ceba4), [`7b79ba3`](https://github.com/vercel/workflow/commit/7b79ba37cc97e858ceb8b2474e03bbc404b555a0), [`bf9de1c`](https://github.com/vercel/workflow/commit/bf9de1cd81eda1b1721b857364070c0ce70d1e58)]:
+  - @workflow/core@5.0.0-beta.44
+  - workflow@5.0.0-beta.44
+  - @workflow/world@5.0.0-beta.29
+  - @workflow/cli@5.0.0-beta.44
+
 ## 5.0.0-beta.43
 
 ### Patch Changes
