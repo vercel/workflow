@@ -870,31 +870,6 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
       // skipped when this is already set.
       let value: { createdAt: Date } | undefined;
 
-      // Handle step_created event: create step entity
-      if (data.eventType === 'step_created') {
-        const eventData = (data as any).eventData as {
-          stepName: string;
-          input: any;
-        };
-        const [stepValue] = await drizzle
-          .insert(Schema.steps)
-          .values({
-            runId: effectiveRunId,
-            stepId: data.correlationId!,
-            stepName: eventData.stepName,
-            input: eventData.input as SerializedContent,
-            status: 'pending',
-            attempt: 0,
-            // Propagate specVersion from the event to the step entity
-            specVersion: effectiveSpecVersion,
-          })
-          .onConflictDoNothing()
-          .returning();
-        if (stepValue) {
-          step = deserializeStepError(compact(stepValue));
-        }
-      }
-
       // Handle step_started event: increment attempt and set the step to
       // running, then write the matching event log entry in the same
       // transaction. The guarded UPDATE takes the step row lock; keeping the
@@ -1465,17 +1440,103 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
 
       try {
         if (!value) {
-          [value] = await drizzle
-            .insert(events)
-            .values({
-              runId: effectiveRunId,
-              eventId: getEventId(),
-              correlationId: data.correlationId,
-              eventType: data.eventType,
-              eventData: storedEventData,
-              specVersion: effectiveSpecVersion,
-            })
-            .returning({ createdAt: events.createdAt });
+          // Handle step_created event: create the step entity and append its
+          // event log entry in ONE transaction. Committed separately (as this
+          // used to be), a crash between the two writes leaves a step row with
+          // no matching `step_created` event, which no replay can reconstruct.
+          if (data.eventType === 'step_created') {
+            const eventData = (data as any).eventData as {
+              stepName: string;
+              input: any;
+            };
+            const created = await drizzle.transaction(async (tx) => {
+              let [stepValue] = await tx
+                .insert(Schema.steps)
+                .values({
+                  runId: effectiveRunId,
+                  stepId: data.correlationId!,
+                  stepName: eventData.stepName,
+                  input: eventData.input as SerializedContent,
+                  status: 'pending',
+                  attempt: 0,
+                  // Propagate specVersion from the event to the step entity
+                  specVersion: effectiveSpecVersion,
+                })
+                .onConflictDoNothing()
+                .returning();
+              if (!stepValue) {
+                const [existingEvent] = await tx
+                  .select({ eventId: events.eventId })
+                  .from(events)
+                  .where(
+                    and(
+                      eq(events.runId, effectiveRunId),
+                      eq(events.correlationId, data.correlationId!),
+                      eq(events.eventType, 'step_created')
+                    )
+                  )
+                  .limit(1);
+                if (existingEvent) {
+                  throw new EntityConflictError(
+                    `step_created for correlationId "${data.correlationId}" already exists in run "${effectiveRunId}"`
+                  );
+                }
+
+                // A row without its matching event was left by the old
+                // non-transactional path. Keep the row and complete the
+                // missing event inside this transaction so existing orphans
+                // remain recoverable while new partial writes cannot escape.
+                [stepValue] = await tx
+                  .select()
+                  .from(Schema.steps)
+                  .where(
+                    and(
+                      eq(Schema.steps.runId, effectiveRunId),
+                      eq(Schema.steps.stepId, data.correlationId!)
+                    )
+                  )
+                  .limit(1);
+                if (!stepValue) {
+                  throw new EntityConflictError(
+                    `step_created for correlationId "${data.correlationId}" already exists in run "${effectiveRunId}"`
+                  );
+                }
+              }
+
+              const [eventValue] = await tx
+                .insert(events)
+                .values({
+                  runId: effectiveRunId,
+                  eventId: getEventId(),
+                  correlationId: data.correlationId,
+                  eventType: data.eventType,
+                  eventData: storedEventData,
+                  specVersion: effectiveSpecVersion,
+                })
+                .returning({ createdAt: events.createdAt });
+              if (!eventValue) {
+                throw new EntityConflictError(
+                  `step_created for run "${effectiveRunId}" could not be created`
+                );
+              }
+              return { eventValue, stepValue };
+            });
+
+            step = deserializeStepError(compact(created.stepValue));
+            value = created.eventValue;
+          } else {
+            [value] = await drizzle
+              .insert(events)
+              .values({
+                runId: effectiveRunId,
+                eventId: getEventId(),
+                correlationId: data.correlationId,
+                eventType: data.eventType,
+                eventData: storedEventData,
+                specVersion: effectiveSpecVersion,
+              })
+              .returning({ createdAt: events.createdAt });
+          }
         }
       } catch (err) {
         // Translate unique-violation on the entity-creation partial index
