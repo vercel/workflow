@@ -1,3 +1,5 @@
+import type { WorkflowAfterBundleHook } from '@workflow/builders';
+
 export interface ModuleOptions {
   /** @internal */
   _vite?: boolean;
@@ -35,6 +37,14 @@ export interface ModuleOptions {
    * Can also be set via the `WORKFLOW_SOURCEMAP` environment variable.
    */
   sourcemap?: boolean | 'inline' | 'linked' | 'external' | 'both';
+
+  /**
+   * Runs after the workflow bundles and manifest have been written.
+   *
+   * This is useful for integrations that derive deployment metadata from the
+   * authoritative Workflow SDK manifest.
+   */
+  onAfterBundle?: WorkflowAfterBundleHook;
 
   /**
    * Embed the workflow observability dashboard in-process on this server,

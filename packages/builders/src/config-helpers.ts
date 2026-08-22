@@ -3,7 +3,11 @@ import { readFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { findUp } from 'find-up';
 import JSON5 from 'json5';
-import type { SourcemapMode, WorkflowConfig } from './types.js';
+import type {
+  SourcemapMode,
+  WorkflowAfterBundleHook,
+  WorkflowConfig,
+} from './types.js';
 
 export interface DecoratorOptions {
   decorators: boolean;
@@ -99,6 +103,7 @@ export function createBaseBuilderConfig(options: {
   externalPackages?: string[];
   runtime?: string;
   sourcemap?: SourcemapMode;
+  onAfterBundle?: WorkflowAfterBundleHook;
 }): Omit<WorkflowConfig, 'buildTarget'> {
   return {
     dirs: options.dirs ?? ['workflows'],
@@ -111,6 +116,7 @@ export function createBaseBuilderConfig(options: {
     externalPackages: options.externalPackages,
     runtime: options.runtime,
     sourcemap: options.sourcemap,
+    onAfterBundle: options.onAfterBundle,
   };
 }
 

@@ -144,4 +144,26 @@ describe('workflowPlugin', () => {
       },
     ]);
   });
+
+  it('passes the after-bundle hook to the builder', async () => {
+    const configPath = join(workingDir, 'svelte.config.js');
+    await writeFile(configPath, 'export default {};');
+    mocks.loadConfig.mockResolvedValue({
+      config: {},
+      configFilePath: configPath,
+      configSource: 'svelte',
+    });
+    const onAfterBundle = vi.fn();
+
+    const [plugins] = workflowPlugin({ onAfterBundle });
+    await plugins;
+
+    expect(mocks.builderConfigs).toEqual([
+      {
+        routesDir: join(workingDir, 'src/routes'),
+        workingDir,
+        onAfterBundle,
+      },
+    ]);
+  });
 });
