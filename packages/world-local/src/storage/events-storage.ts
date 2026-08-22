@@ -509,6 +509,60 @@ function withInProcessLock<T>(
 }
 
 /**
+ * Path of the exclusive-create claim that records one half of a wait's
+ * lifecycle. These live under `.locks/`, which the terminal reap
+ * (`deleteAllWaitsForRun`) does not touch, so they outlive the wait entity
+ * and remain the durable record of what already happened to the wait.
+ */
+function waitClaimPath(
+  basedir: string,
+  waitCompositeKey: string,
+  claim: 'created' | 'completed',
+  tag?: string
+): string {
+  return resolveWithinBase(
+    basedir,
+    '.locks',
+    'waits',
+    tag ? `${waitCompositeKey}.${claim}.${tag}` : `${waitCompositeKey}.${claim}`
+  );
+}
+
+/**
+ * Whether a `wait_created` claim exists for the wait. Used after the terminal
+ * reap has removed the entity, where the claim is the only remaining proof
+ * that the wait was ever created. Both the tagged and untagged paths are
+ * checked, mirroring `readJSONWithFallback`'s lookup of the entity itself.
+ */
+async function waitCreatedClaimExists(
+  basedir: string,
+  waitCompositeKey: string,
+  tag?: string
+): Promise<boolean> {
+  const candidates = tag
+    ? [
+        waitClaimPath(basedir, waitCompositeKey, 'created', tag),
+        waitClaimPath(basedir, waitCompositeKey, 'created'),
+      ]
+    : [waitClaimPath(basedir, waitCompositeKey, 'created')];
+  for (const claimPath of candidates) {
+    try {
+      await fs.access(claimPath);
+      return true;
+    } catch (error) {
+      // Only ENOENT proves the claim is absent. Anything else (EACCES,
+      // EMFILE) would make a wait that WAS created look like one that never
+      // was, turning a legitimate completion into a permanent rejection —
+      // propagate instead.
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+        throw error;
+      }
+    }
+  }
+  return false;
+}
+
+/**
  * Helper function to delete all waits associated with a workflow run.
  * Called when a run reaches a terminal state.
  */
@@ -2502,17 +2556,8 @@ export function createEventsStorage(
           // surfaces as EntityConflictError (replaces a prior TOCTOU
           // read-then-check that could let both writers through).
           const waitCompositeKey = `${effectiveRunId}-${data.correlationId}`;
-          const waitCreatedLockName = tag
-            ? `${waitCompositeKey}.created.${tag}`
-            : `${waitCompositeKey}.created`;
-          const waitCreatedLockPath = resolveWithinBase(
-            basedir,
-            '.locks',
-            'waits',
-            waitCreatedLockName
-          );
           const waitCreatedClaimed = await writeExclusive(
-            waitCreatedLockPath,
+            waitClaimPath(basedir, waitCompositeKey, 'created', tag),
             ''
           );
           if (!waitCreatedClaimed) {
@@ -2542,14 +2587,11 @@ export function createEventsStorage(
           // Uses writeExclusive on a lock file to atomically prevent concurrent
           // invocations from both completing the same wait (TOCTOU race).
           const waitCompositeKey = `${effectiveRunId}-${data.correlationId}`;
-          const waitLockName = tag
-            ? `${waitCompositeKey}.completed.${tag}`
-            : `${waitCompositeKey}.completed`;
-          const lockPath = resolveWithinBase(
+          const lockPath = waitClaimPath(
             basedir,
-            '.locks',
-            'waits',
-            waitLockName
+            waitCompositeKey,
+            'completed',
+            tag
           );
           const claimed = await writeExclusive(lockPath, '');
           if (!claimed) {
@@ -2565,25 +2607,49 @@ export function createEventsStorage(
             tag
           );
           if (!existingWait) {
-            // Clean up the lock file we just claimed — the wait doesn't exist
-            await fs.unlink(lockPath).catch(() => {});
-            throw new WorkflowWorldError(
-              `Wait "${data.correlationId}" not found`
+            // A terminal run has already had its waits reaped
+            // (`deleteAllWaitsForRun`), and the `run.resources-released`
+            // invariant says they must stay reaped. The wait's completion
+            // still has to reach the LOG though: a `wait_created` with no
+            // `wait_completed` reads as an open wait forever, so replay and
+            // observability both see a run that terminated while still
+            // sleeping. Record the event and mutate nothing — the run is
+            // terminal, so there is no entity left to agree with it.
+            //
+            // Dedup survives the reap: the `.completed` claim above lives
+            // under `.locks/`, which `deleteAllWaitsForRun` does not touch,
+            // so a duplicate completion still loses the claim and conflicts.
+            // Deliberately keep the claim (no unlink) on this path for the
+            // same reason. The sibling `.created` claim survives the reap too,
+            // so it — not the reaped entity — is what proves the wait ever
+            // existed; without it this is a completion for a wait that was
+            // never created and stays a rejection.
+            const reapedWaitCreated =
+              currentRun !== null &&
+              isTerminalWorkflowRunStatus(currentRun.status) &&
+              (await waitCreatedClaimExists(basedir, waitCompositeKey, tag));
+            if (!reapedWaitCreated) {
+              // Clean up the lock file we just claimed — the wait doesn't exist
+              await fs.unlink(lockPath).catch(() => {});
+              throw new WorkflowWorldError(
+                `Wait "${data.correlationId}" not found`
+              );
+            }
+          } else {
+            // The lock file (writeExclusive above) already prevents concurrent
+            // completions — no additional status check needed.
+            wait = {
+              ...existingWait,
+              status: 'completed',
+              completedAt: now,
+              updatedAt: now,
+            };
+            await writeJSON(
+              taggedPath(basedir, 'waits', waitCompositeKey, tag),
+              wait,
+              { overwrite: true }
             );
           }
-          // The lock file (writeExclusive above) already prevents concurrent
-          // completions — no additional status check needed.
-          wait = {
-            ...existingWait,
-            status: 'completed',
-            completedAt: now,
-            updatedAt: now,
-          };
-          await writeJSON(
-            taggedPath(basedir, 'waits', waitCompositeKey, tag),
-            wait,
-            { overwrite: true }
-          );
         }
         // Note: hook_received events are stored in the event log but don't
         // modify the Hook entity (which doesn't have a payload field)

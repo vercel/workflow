@@ -2876,6 +2876,65 @@ describe('Storage (Postgres integration)', () => {
       expect(result.status).toBe('failed');
     });
 
+    it('should allow wait_completed for a wait the terminal transition deleted', async () => {
+      // The wait's continuation fires after the run ended (a raced
+      // `Promise.race([sleep, hook])` whose hook won). Its completion still
+      // belongs in the log: a wait_created with no wait_completed reads as an
+      // open wait forever. The deleted row stays deleted, and a redelivery of
+      // the same continuation still conflicts.
+      const run = await createRun(events, {
+        deploymentId: 'deployment-123',
+        workflowName: 'test-workflow',
+        input: new Uint8Array(),
+      });
+      await events.create(run.runId, {
+        eventType: 'wait_created',
+        correlationId: 'wait_deleted',
+        eventData: { resumeAt: new Date('2099-01-01') },
+      });
+      await updateRun(events, run.runId, 'run_completed', {
+        output: new Uint8Array([1]),
+      });
+
+      const result = await events.create(run.runId, {
+        eventType: 'wait_completed',
+        correlationId: 'wait_deleted',
+      });
+      expect(result.event.eventType).toBe('wait_completed');
+      expect(result.wait).toBeUndefined();
+
+      const waitRows = await drizzle
+        .select()
+        .from(DrizzleSchema.waits)
+        .where(eq(DrizzleSchema.waits.runId, run.runId));
+      expect(waitRows).toEqual([]);
+
+      await expect(
+        events.create(run.runId, {
+          eventType: 'wait_completed',
+          correlationId: 'wait_deleted',
+        })
+      ).rejects.toMatchObject({ name: 'EntityConflictError' });
+    });
+
+    it('should reject wait_completed on a terminal run for a wait that never existed', async () => {
+      const run = await createRun(events, {
+        deploymentId: 'deployment-123',
+        workflowName: 'test-workflow',
+        input: new Uint8Array(),
+      });
+      await updateRun(events, run.runId, 'run_completed', {
+        output: new Uint8Array([1]),
+      });
+
+      await expect(
+        events.create(run.runId, {
+          eventType: 'wait_completed',
+          correlationId: 'wait_never_created',
+        })
+      ).rejects.toThrow(/not found/i);
+    });
+
     it('should auto-delete hooks when run completes (postgres-specific behavior)', async () => {
       const run = await createRun(events, {
         deploymentId: 'deployment-123',

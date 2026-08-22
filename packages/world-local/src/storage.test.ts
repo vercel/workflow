@@ -4856,6 +4856,109 @@ describe('Storage', () => {
         /not found/i
       );
     });
+
+    it('should allow wait_completed for a wait the terminal transition reaped', async () => {
+      // The wait's continuation fires after the run ended (a raced
+      // `Promise.race([sleep, hook])` whose hook won). Its completion still
+      // belongs in the log: a wait_created with no wait_completed reads as an
+      // open wait forever. The reaped entity stays reaped.
+      const run = await createRun(storage, {
+        deploymentId: 'deployment-123',
+        workflowName: 'test-workflow',
+        input: new Uint8Array(),
+      });
+      await createWait(storage, run.runId, {
+        waitId: 'wait_reaped',
+        resumeAt: new Date('2099-01-01'),
+      });
+      await updateRun(storage, run.runId, 'run_completed', {
+        output: new Uint8Array([3]),
+      });
+
+      const result = await storage.events.create(run.runId, {
+        eventType: 'wait_completed',
+        specVersion: SPEC_VERSION_CURRENT,
+        correlationId: 'wait_reaped',
+      });
+
+      expect(result.event?.eventType).toBe('wait_completed');
+      expect(result.event?.correlationId).toBe('wait_reaped');
+      // No entity is resurrected — a terminal run holds no waits.
+      expect(result.wait).toBeUndefined();
+      await expect(
+        fs.access(path.join(testDir, 'waits', `${run.runId}-wait_reaped.json`))
+      ).rejects.toMatchObject({ code: 'ENOENT' });
+
+      const events = await storage.events.list({ runId: run.runId });
+      expect(
+        events.data.filter((e) => e.eventType === 'wait_completed')
+      ).toHaveLength(1);
+    });
+
+    it('should reject a duplicate wait_completed after the terminal reap', async () => {
+      // The `.completed` claim lives under `.locks/`, which the reap does not
+      // touch, so redelivery of the wait's continuation still conflicts.
+      const run = await createRun(storage, {
+        deploymentId: 'deployment-123',
+        workflowName: 'test-workflow',
+        input: new Uint8Array(),
+      });
+      await createWait(storage, run.runId, {
+        waitId: 'wait_reaped_twice',
+        resumeAt: new Date('2099-01-01'),
+      });
+      await updateRun(storage, run.runId, 'run_completed', {
+        output: new Uint8Array([3]),
+      });
+
+      const waitCompleted = {
+        eventType: 'wait_completed' as const,
+        specVersion: SPEC_VERSION_CURRENT,
+        correlationId: 'wait_reaped_twice',
+      };
+      await storage.events.create(run.runId, waitCompleted);
+
+      await expect(
+        storage.events.create(run.runId, waitCompleted)
+      ).rejects.toMatchObject({ name: 'EntityConflictError' });
+    });
+
+    it('should reject wait_completed on a terminal run for a wait that never existed', async () => {
+      // Without a `wait_created` claim there is nothing the reap could have
+      // removed — this is a completion for a wait that never was.
+      const run = await createRun(storage, {
+        deploymentId: 'deployment-123',
+        workflowName: 'test-workflow',
+        input: new Uint8Array(),
+      });
+      await updateRun(storage, run.runId, 'run_completed', {
+        output: new Uint8Array([3]),
+      });
+
+      await expect(
+        storage.events.create(run.runId, {
+          eventType: 'wait_completed',
+          specVersion: SPEC_VERSION_CURRENT,
+          correlationId: 'wait_never_created',
+        })
+      ).rejects.toThrow(/not found/i);
+    });
+
+    it('should still reject wait_completed for a missing wait on a live run', async () => {
+      const run = await createRun(storage, {
+        deploymentId: 'deployment-123',
+        workflowName: 'test-workflow',
+        input: new Uint8Array(),
+      });
+
+      await expect(
+        storage.events.create(run.runId, {
+          eventType: 'wait_completed',
+          specVersion: SPEC_VERSION_CURRENT,
+          correlationId: 'wait_absent',
+        })
+      ).rejects.toThrow(/not found/i);
+    });
   });
 
   describe('disallowed operations on terminal runs', () => {

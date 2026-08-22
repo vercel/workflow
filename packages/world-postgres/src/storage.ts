@@ -319,6 +319,34 @@ async function reportSkippedSlots(
   };
 }
 
+/**
+ * What the event log says about a wait whose row has been reaped by the run's
+ * terminal transition. The log is the only surviving record at that point, so
+ * it is what a post-terminal `wait_completed` is validated against: `created`
+ * is the proof the wait existed, `completed` is the duplicate check the
+ * (deleted) row would otherwise have made.
+ */
+async function readReapedWaitLogState(
+  db: DrizzleLike,
+  runId: string,
+  correlationId: string
+): Promise<{ created: boolean; completed: boolean }> {
+  const rows = await db
+    .select({ eventType: Schema.events.eventType })
+    .from(Schema.events)
+    .where(
+      and(
+        eq(Schema.events.runId, runId),
+        eq(Schema.events.correlationId, correlationId),
+        inArray(Schema.events.eventType, ['wait_created', 'wait_completed'])
+      )
+    );
+  return {
+    created: rows.some((row) => row.eventType === 'wait_created'),
+    completed: rows.some((row) => row.eventType === 'wait_completed'),
+  };
+}
+
 function getHookRetentionLimitMs(): number {
   const days = Number(
     process.env.WORKFLOW_POSTGRES_HOOK_RETENTION_LIMIT_DAYS ?? 30
@@ -2050,11 +2078,50 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
             waitId,
           });
           if (!existing) {
-            throw new WorkflowWorldError(
-              `Wait "${data.correlationId}" not found`
-            );
-          }
-          if (existing.status === 'completed') {
+            // A terminal run has already had its waits deleted (see the
+            // `isTerminalRunEventType` reap above), and they must stay
+            // deleted. The wait's completion still has to reach the LOG
+            // though: a `wait_created` with no `wait_completed` reads as an
+            // open wait forever, so replay and observability both see a run
+            // that terminated while still sleeping. Record the event and
+            // mutate nothing — the run is terminal, so there is no entity
+            // left to agree with it.
+            //
+            // Dedup moves to the log for the same reason: the row that
+            // normally rejects a duplicate completion is gone. Both halves
+            // are read — without a `wait_created` this is a completion for a
+            // wait that never existed, and stays a rejection.
+            //
+            // This read-then-write is not atomic (the partial unique index on
+            // `workflow_events` does not cover `wait_completed`), so two
+            // writers landing inside the same window could both record one.
+            // The window needs two deliveries of the same wait's continuation
+            // — one idempotency key, one message — to be in flight at the same
+            // instant, and the cost is a duplicate event on a run that will
+            // never replay for a decision again. Widening the index would mean
+            // rebuilding it as unique over existing history, which is a much
+            // worse trade than this.
+            const reaped =
+              currentRun &&
+              isTerminalWorkflowRunStatus(currentRun.status) &&
+              data.correlationId !== undefined
+                ? await readReapedWaitLogState(
+                    drizzle,
+                    effectiveRunId,
+                    data.correlationId
+                  )
+                : { created: false, completed: false };
+            if (reaped.completed) {
+              throw new EntityConflictError(
+                `Wait "${data.correlationId}" already completed`
+              );
+            }
+            if (!reaped.created) {
+              throw new WorkflowWorldError(
+                `Wait "${data.correlationId}" not found`
+              );
+            }
+          } else if (existing.status === 'completed') {
             throw new EntityConflictError(
               `Wait "${data.correlationId}" already completed`
             );

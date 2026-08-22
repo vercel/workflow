@@ -27,6 +27,7 @@ import {
   getQueueTopicPrefix,
   isLegacySpecVersion,
   isTerminalRunEventType,
+  isTerminalWorkflowRunStatus,
   ROOT_RUN_ID_ATTRIBUTE,
   type RunInput,
   resolveQueueNamespace,
@@ -67,6 +68,7 @@ import {
   guardDeploymentAffinity,
   type ReenqueueArgs,
 } from './runtime/deployment-guard.js';
+import { completeDueWaits } from './runtime/due-waits.js';
 import {
   absorbSkippedSlotReport,
   appendUniqueEvents,
@@ -2070,6 +2072,17 @@ export function workflowEntrypoint(
                               eventType: terminalEvent.eventType,
                             }
                           );
+                          // The preload is the complete log (that is what
+                          // `usableReplayPreload` attests), so a due wait is
+                          // visible right here — record its completion before
+                          // consuming the delivery. See runtime/due-waits.ts.
+                          await completeDueWaits({
+                            world,
+                            runId,
+                            events: result.events,
+                            specVersion: result.run.specVersion,
+                            requestId,
+                          });
                           return;
                         }
                         workflowRun = result.run;
@@ -2300,6 +2313,22 @@ export function workflowEntrypoint(
                           // so that we actually exit here without replaying the workflow at all, in the case
                           // the replaying the workflow is itself failing.
 
+                          // Terminal: no replay, no suspension dispatch — but
+                          // a wait this delivery may have been scheduled for
+                          // still gets its completion recorded before the
+                          // message is acknowledged. See runtime/due-waits.ts.
+                          if (isTerminalWorkflowRunStatus(result.run.status)) {
+                            await completeDueWaits({
+                              world,
+                              runId,
+                              events:
+                                eventLog.type === 'ready'
+                                  ? eventLog.events
+                                  : undefined,
+                              specVersion: result.run.specVersion,
+                              requestId,
+                            });
+                          }
                           return;
                         }
                       } catch (err) {
@@ -2316,6 +2345,17 @@ export function workflowEntrypoint(
                             'Run already finished during setup, skipping',
                             { workflowRunId: runId, message: err.message }
                           );
+                          // Same as the non-running branch above: the run is
+                          // done, but a due wait's completion is this
+                          // delivery's job and is not skipped with the rest.
+                          // The log has to be read here — the rejection
+                          // carried no preload.
+                          await completeDueWaits({
+                            world,
+                            runId,
+                            specVersion: workflowRun?.specVersion,
+                            requestId,
+                          });
                           return;
                         } else {
                           const errorCode = getWorkflowSetupErrorCode(err);
@@ -2735,7 +2775,20 @@ export function workflowEntrypoint(
                       // derived from these events, so checking the log here
                       // gives us the same signal as a runs.get() round-trip
                       // without the extra request per loop iteration.
+                      //
+                      // A wait that has come due is still completed first: the
+                      // delivery may BE that wait's continuation, and the
+                      // completion belongs in the log whether or not there is
+                      // anything left to replay (see runtime/due-waits.ts).
+                      // Only then is the message acknowledged.
                       if (hasRecordedTerminalRunEvent(eventLog.events, runId)) {
+                        await completeDueWaits({
+                          world,
+                          runId,
+                          events: eventLog.events,
+                          specVersion: workflowRun?.specVersion,
+                          requestId,
+                        });
                         return;
                       }
 

@@ -1220,9 +1220,35 @@ export function createSimStore(options: SimStoreOptions): SimStore {
       case 'wait_completed': {
         const existing = waits.get(waitKey(runId, data.correlationId));
         if (!existing) {
-          throw new WorkflowWorldError(
-            `Wait "${data.correlationId}" not found`
-          );
+          // A terminal run has had its waits released
+          // (`releaseRunResources`), and the `run.resources-released`
+          // invariant says they stay released. The wait's completion still
+          // has to reach the LOG though: a `wait_created` with no
+          // `wait_completed` reads as an open wait forever, so replay and
+          // observability both see a run that terminated while still
+          // sleeping. Append the event; `applyEvent` is total and touches no
+          // row for a wait that isn't there.
+          //
+          // With the row gone the log is what both checks read: a
+          // `wait_created` is the proof the wait existed, a `wait_completed`
+          // is the duplicate the row would otherwise have caught.
+          const released =
+            currentRun && isTerminalWorkflowRunStatus(currentRun.status)
+              ? eventsForRun(runId).filter(
+                  (e) => e.correlationId === data.correlationId
+                )
+              : [];
+          if (released.some((e) => e.eventType === 'wait_completed')) {
+            throw new EntityConflictError(
+              `Wait "${data.correlationId}" already completed`
+            );
+          }
+          if (!released.some((e) => e.eventType === 'wait_created')) {
+            throw new WorkflowWorldError(
+              `Wait "${data.correlationId}" not found`
+            );
+          }
+          break;
         }
         if (existing.status === 'completed') {
           throw new EntityConflictError(

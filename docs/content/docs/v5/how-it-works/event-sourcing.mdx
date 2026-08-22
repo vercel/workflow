@@ -199,6 +199,8 @@ Events are categorized by the entity type they affect. Each event contains metad
 | `wait_created` | Creates a new wait in `waiting` state. Contains the timestamp when the wait should complete. |
 | `wait_completed` | Transitions the wait to `completed` state when the delay period has elapsed. |
 
+A wait's `wait_completed` is recorded when the wait comes due, even if the run finished first — a `Promise.race([sleep('1h'), hook])` whose hook won still records the sleep's completion an hour later. Only the log entry is written in that case: the run is terminal, so nothing is replayed and the wait entity itself stays released. Without it a `wait_created` with no matching `wait_completed` would read as a run that ended while still sleeping.
+
 ## Terminal States
 
 Terminal states represent the end of an entity's lifecycle. Once an entity reaches a terminal state, no further events can transition it to another state.

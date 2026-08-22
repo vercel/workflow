@@ -389,6 +389,52 @@ describe('sim store', () => {
         })
       ).resolves.toMatchObject({ run: { status: 'cancelled' } });
     });
+
+    it('accepts the completion of a wait the run released, once', async () => {
+      // The wait's continuation fires after the run ended. Its completion
+      // still belongs in the log — a `wait_created` with no `wait_completed`
+      // reads as an open wait forever — but the released row stays released.
+      await store.events.create(RUN, {
+        eventType: 'wait_created',
+        specVersion: SPEC,
+        correlationId: 'wait_1',
+        eventData: { resumeAt: new Date('2099-01-01') },
+      });
+      await store.events.create(RUN, {
+        eventType: 'run_completed',
+        specVersion: SPEC,
+        eventData: {},
+      });
+
+      const waitCompleted = {
+        eventType: 'wait_completed' as const,
+        specVersion: SPEC,
+        correlationId: 'wait_1',
+      };
+      const result = await store.events.create(RUN, waitCompleted);
+      expect(result.event?.eventType).toBe('wait_completed');
+      expect(result.wait).toBeUndefined();
+
+      await expect(
+        store.events.create(RUN, waitCompleted)
+      ).rejects.toBeInstanceOf(EntityConflictError);
+    });
+
+    it('rejects the completion of a wait that never existed', async () => {
+      await store.events.create(RUN, {
+        eventType: 'run_completed',
+        specVersion: SPEC,
+        eventData: {},
+      });
+
+      await expect(
+        store.events.create(RUN, {
+          eventType: 'wait_completed',
+          specVersion: SPEC,
+          correlationId: 'wait_never',
+        })
+      ).rejects.toThrow(/not found/i);
+    });
   });
 
   describe('pagination', () => {
