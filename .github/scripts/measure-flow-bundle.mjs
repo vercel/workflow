@@ -431,7 +431,14 @@ function main() {
     app: args.app,
     commit: args.commit ?? null,
     fingerprint: {
+      // Node ships zlib, so its major version can move the gzip numbers, and
+      // the OS moves the raw ones: the same hono build produces 55 files under
+      // .output/server on a Linux runner and 54 on macOS. CI always runs
+      // ubuntu-latest, so these only ever differ when someone measures
+      // somewhere else, which is exactly the comparison worth refusing.
       nodeMajor: process.versions.node.split('.')[0],
+      platform: process.platform,
+      arch: process.arch,
       ...Object.fromEntries(
         FINGERPRINT_ENV.map((key) => [key, process.env[key] ?? null])
       ),
