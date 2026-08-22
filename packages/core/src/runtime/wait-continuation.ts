@@ -1,6 +1,12 @@
 /**
  * Wait-continuation dispatch: delay + idempotency-key selection.
  *
+ * !! PROBE BRANCH — NOT FOR MERGE !!
+ * Dedupe is disabled: every key gets a unique suffix, so no enqueue is ever
+ * collapsed. The rest of this comment describes the behaviour this branch
+ * deliberately removes; read it as the rationale under test, not as what the
+ * code now does. See `uniqueSuffix` below.
+ *
  * When V2 suspension processing observes a pending wait, it enqueues a
  * delayed "continuation" message that fires once the wait elapses and
  * drives the next replay (which completes the wait via the "complete
@@ -101,6 +107,22 @@ export interface WaitContinuationDispatch {
  * (floored at 1s by the suspension handler); `waitCorrelationId`
  * identifies the wait so repeated suspension passes dedupe.
  */
+/**
+ * PROBE (not for merge): makes every continuation key unique, disabling
+ * dedupe.
+ *
+ * A key is still attached because its absence is not neutral — some worlds
+ * (world-postgres) serialize key-less workflow messages per run, which would
+ * park the continuation behind the handler's own inline step execution. This
+ * keeps a key and only removes its collapsing property.
+ *
+ * The counter covers two enqueues within the same millisecond in one process;
+ * `Math.random` covers concurrent processes.
+ */
+let probeCounter = 0;
+const uniqueSuffix = (now: number): string =>
+  `${now}-${(probeCounter++).toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+
 export function getWaitContinuationDispatch(
   timeoutSeconds: number,
   waitCorrelationId: string,
@@ -120,7 +142,7 @@ export function getWaitContinuationDispatch(
   if (timeoutSeconds <= nearElapsedThreshold) {
     return {
       delaySeconds: timeoutSeconds,
-      idempotencyKey: `${waitCorrelationId}:${Math.floor(now / 1000)}`,
+      idempotencyKey: `${waitCorrelationId}:${uniqueSuffix(now)}`,
     };
   }
 
@@ -128,6 +150,8 @@ export function getWaitContinuationDispatch(
   return {
     delaySeconds: Math.min(timeoutSeconds, maxDelaySeconds),
     idempotencyKey:
-      hop === 1 ? waitCorrelationId : `${waitCorrelationId}:hop-${hop}`,
+      hop === 1
+        ? `${waitCorrelationId}:${uniqueSuffix(now)}`
+        : `${waitCorrelationId}:hop-${hop}:${uniqueSuffix(now)}`,
   };
 }
