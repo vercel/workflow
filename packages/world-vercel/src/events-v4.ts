@@ -22,7 +22,7 @@
  */
 
 import assert from 'node:assert/strict';
-import { WorkflowWorldError } from '@workflow/errors';
+import { CorruptedEventLogError, WorkflowWorldError } from '@workflow/errors';
 import {
   type Event,
   type EventResult,
@@ -375,6 +375,24 @@ const EventStreamEndSchema = z.object({
   next: z.string().optional(),
   hasMore: z.boolean(),
 });
+
+/**
+ * Terminal error frame. The backend sends this when it cannot finish a frame
+ * stream and retrying will not help — the response already committed to `200`
+ * with its first byte, so there is no status code left to carry the failure.
+ */
+const EventStreamErrorSchema = z.object({
+  _error: z.literal(1),
+  code: z.string(),
+  message: z.string().optional(),
+});
+
+/**
+ * An event's payload object is gone from the backend's blob storage. The
+ * event row still references it, so every later read of this log fails the
+ * same way.
+ */
+const PAYLOAD_MISSING_ERROR_CODE = 'payload-missing';
 
 // Stable runtimes stored these errors as CBOR StructuredError objects rather
 // than the format-prefixed serialized bytes emitted by current runtimes.
@@ -1378,6 +1396,49 @@ export interface ListEventsV4Result {
   hasMore: boolean;
 }
 
+/**
+ * Turn a terminal error frame into the error the runtime should act on.
+ *
+ * `payload-missing` means an event's stored payload is gone, so this run can
+ * never replay: it must fail, not retry. That distinction is the whole point
+ * of the frame. Without it a permanent failure arrived as a truncated body,
+ * which is what a dropped socket looks like too, so the runtime kept
+ * redelivering the same doomed replay (one production run re-read a single
+ * missing payload 12,932 times in 26 minutes).
+ *
+ * `CorruptedEventLogError` is the right shape for it: the log references a
+ * payload nothing can produce, `isRetryableWorldError` leaves it alone, and
+ * `classifyRunError` already maps it to `CORRUPTED_EVENT_LOG`.
+ *
+ * An unrecognized code keeps the conservative reading — a `WorkflowWorldError`
+ * with no retryable code, so it is terminal rather than a redelivery loop, and
+ * a future code can be handled explicitly without a client release being
+ * required first.
+ */
+function streamErrorFrameToError(
+  meta: Record<string, unknown>,
+  opName: string
+): Error {
+  const parsed = EventStreamErrorSchema.safeParse(meta);
+  if (!parsed.success) {
+    return new WorkflowWorldError(
+      `v4 ${opName}: malformed terminal error frame`,
+      { code: 'SCHEMA_VALIDATION', cause: parsed.error }
+    );
+  }
+  const { code, message } = parsed.data;
+  const detail = message ?? '(no detail)';
+  if (code === PAYLOAD_MISSING_ERROR_CODE) {
+    return new CorruptedEventLogError(
+      `the event log references a payload that no longer exists in storage: ${detail}`
+    );
+  }
+  return new WorkflowWorldError(
+    `v4 ${opName}: stream ended with terminal error "${code}": ${detail}`,
+    { code: 'INVALID_RESPONSE' }
+  );
+}
+
 async function consumeEventFrameStream(
   response: Response,
   opName: string,
@@ -1396,6 +1457,9 @@ async function consumeEventFrameStream(
     if (frame.meta._end === 1) {
       const end = EventStreamEndSchema.parse(frame.meta);
       return { cursor: end.next ?? null, hasMore: end.hasMore };
+    }
+    if (frame.meta._error === 1) {
+      throw streamErrorFrameToError(frame.meta, opName);
     }
     if (Object.keys(frame.meta).some((key) => key.startsWith('_'))) {
       throw new Error(`v4 ${opName}: unexpected control frame`);

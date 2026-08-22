@@ -199,6 +199,18 @@ describe('isRetryableWorldError', () => {
     ).toBe(true);
   });
 
+  it('does NOT treat a lost event payload as retryable', () => {
+    // The world layer raises this when the backend reports that an event's
+    // stored payload is gone (`payload-missing` terminal frame). Redelivering
+    // re-reads the same absent object forever, which is what turned one lost
+    // payload into 12,932 reads of the same run in 26 minutes.
+    expect(
+      isRetryableWorldError(
+        new CorruptedEventLogError('payload no longer exists in storage')
+      )
+    ).toBe(false);
+  });
+
   it('does NOT treat 4xx (other than 429) as retryable', () => {
     expect(
       isRetryableWorldError(
