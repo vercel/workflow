@@ -286,6 +286,40 @@ export const WorkflowInvokePayloadSchema = z.object({
   serverErrorRetryCount: z.number().int().optional(),
   /** Number of times this message has been re-routed after a deployment mismatch */
   deploymentMismatchRetryCount: z.number().int().nonnegative().optional(),
+  /**
+   * The wait this message is the delayed continuation for, and which attempt
+   * in that wait's chain it is.
+   *
+   * Present only on wait-continuation messages. It exists so the invocation a
+   * continuation wakes can recognize itself as that continuation: if the wait
+   * is STILL pending when it replays — the continuation arrived before its
+   * deadline — then its own idempotency key is already spent, and re-enqueueing
+   * under the same key is silently dropped by the world's dedupe window. The
+   * attempt number is what makes the next key fresh, so an early delivery
+   * costs one extra hop instead of losing the wait's timer permanently.
+   *
+   * Counted on the message for the same reason as
+   * {@link WorkflowInvokePayloadSchema.shape.preconditionReinvocations}: the
+   * budget has to survive across invocations, and a fresh enqueue resets
+   * anything the queue tracks itself. Absent on the first continuation, so a
+   * producer that predates this field is indistinguishable from attempt 0 and
+   * a consumer that predates it simply ignores the field.
+   */
+  /**
+   * `.catch(undefined)` for the reason `hookResumeTiming` has it: this field
+   * must never be able to fail the parse of the invocation payload. A
+   * malformed value would otherwise throw on every delivery of the message
+   * and burn the run's delivery budget. Degrading to `undefined` reads as
+   * "not a continuation", which costs at worst the pre-attempt behavior for
+   * that one wait rather than killing the run.
+   */
+  waitContinuation: z
+    .object({
+      correlationId: z.string(),
+      attempt: z.number().int().nonnegative(),
+    })
+    .optional()
+    .catch(undefined),
   /** Step ID for inline step execution in combined handler. If provided, the flow execution
    * will jump directly to execute the step with the given ID before doing an event replay. */
   stepId: z.string().optional(),
