@@ -50,11 +50,25 @@
  * Mid-range waits (more than the near-elapsed threshold, at most one
  * hop) use the bare correlationId: every re-observation targets the same
  * deadline, so deduping to the first message is semantically lossless.
- * Host clock skew beyond the near-elapsed threshold could in principle
- * deliver such a continuation early enough to re-observe its wait and
- * lose the re-enqueue to the burnt key; the threshold is the skew
- * tolerance we accept for the benefit of exactly-one continuation per
- * wait.
+ *
+ * That last case used to be the one hole in the scheme, and it was not
+ * theoretical. Any delivery early enough to re-observe its own wait as
+ * pending burns the bare key on the way in: the re-enqueue is dropped by
+ * the dedupe window, nothing else is scheduled to wake the run, and no
+ * backstop exists for a wait the way inline step ownership provides one
+ * for a step. The run sleeps forever. Waits over the threshold have zero
+ * tolerance for it, which is why an infrastructure change in delivery
+ * timing was able to strand runs across every published SDK version at
+ * once, all of them keyed this way.
+ *
+ * So the key is no longer derived from the wait alone. A continuation
+ * carries the wait it was armed for and its attempt number
+ * ({@link WorkflowInvokePayload.waitContinuation}), and an invocation
+ * that recognizes itself as the continuation for a wait that is still
+ * pending arms the next one at `attempt + 1`. Attempts advance ONLY when
+ * an early delivery actually happens, so the normal path is untouched:
+ * attempt 0 keys exactly as before, and every re-observation within one
+ * attempt still collapses to a single message.
  */
 
 import { envNumber } from '@workflow/world';
@@ -100,11 +114,37 @@ export interface WaitContinuationDispatch {
  * message. `timeoutSeconds` is the time until the wait's `resumeAt`
  * (floored at 1s by the suspension handler); `waitCorrelationId`
  * identifies the wait so repeated suspension passes dedupe.
+ *
+ * `attempt` is the number of continuations already spent on this wait, taken
+ * from the incoming message when this invocation IS one of them (see
+ * {@link WorkflowInvokePayload.waitContinuation}). It only ever moves when a
+ * continuation arrived before its wait elapsed, which is exactly when the
+ * previous key is spent and re-using it would drop the message. Attempt 0
+ * keys identically to the scheme before attempts existed, so the ordinary
+ * path — arm once, deliver once, complete — is byte-for-byte unchanged.
  */
 export function getWaitContinuationDispatch(
   timeoutSeconds: number,
   waitCorrelationId: string,
-  now: number = Date.now()
+  now: number = Date.now(),
+  attempt = 0
+): WaitContinuationDispatch {
+  const dispatch = waitContinuationDispatchForAttemptZero(
+    timeoutSeconds,
+    waitCorrelationId,
+    now
+  );
+  if (attempt <= 0) return dispatch;
+  return {
+    delaySeconds: dispatch.delaySeconds,
+    idempotencyKey: `${dispatch.idempotencyKey}:a${attempt}`,
+  };
+}
+
+function waitContinuationDispatchForAttemptZero(
+  timeoutSeconds: number,
+  waitCorrelationId: string,
+  now: number
 ): WaitContinuationDispatch {
   const maxDelaySeconds = getWaitContinuationMaxDelaySeconds();
   // The near-elapsed branch returns the full remaining time as the delay, so
