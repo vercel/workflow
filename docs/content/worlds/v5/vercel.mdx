@@ -202,7 +202,9 @@ Maximum stream chunks written in one Vercel World request. Larger batches are sp
 
 ### `WORKFLOW_EVENTS_TRANSPORT`
 
-Experimental. Set `WORKFLOW_EVENTS_TRANSPORT=ws` to ship workflow run events to the Vercel World over a WebSocket instead of one HTTP request each. Default: `http`.
+Workflow run events ship to the Vercel World over a WebSocket instead of one HTTP request each. Default: `ws`.
+
+Set `WORKFLOW_EVENTS_TRANSPORT=http` to opt out. Only that exact value disables the WebSocket — any other value, including unset or empty, takes it — so a typo fails toward the default rather than silently pinning a deployment to HTTP.
 
 The setting is ignored when the World is configured with `projectConfig` and therefore routes through the `api-workflow` proxy: that endpoint is an HTTP-only REST gateway and does not forward a WebSocket upgrade, so events stay on HTTP and a warning is logged once per process.
 

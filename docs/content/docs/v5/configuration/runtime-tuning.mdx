@@ -279,7 +279,7 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 
 Node's own modules do less than the client they replace, so enabling this drops the per-call-site tuning the Worlds configure:
 
-- Event-log requests lose HTTP/2, so concurrent reads and writes no longer share one connection, and the enlarged HTTP/2 receive windows no longer apply. This is the largest difference, and it slows down replays that read a big event log. It does not apply to event writes on [`WORKFLOW_EVENTS_TRANSPORT=ws`](/docs/configuration/worlds#workflow_events_transport), which take neither transport.
+- Event-log requests lose HTTP/2, so concurrent reads and writes no longer share one connection, and the enlarged HTTP/2 receive windows no longer apply. This is the largest difference, and it slows down replays that read a big event log. It does not apply to event writes on the [WebSocket events transport](/docs/configuration/worlds#workflow_events_transport), which is the default and takes neither transport.
 - Requests lose their transport-level retry. Failures still surface to the layers above, which retry event writes and redeliver queue messages, so nothing is silently dropped, but a failure that a same-connection retry would have hidden now costs a full redelivery.
 - Stream close loses its retry of retriable server errors. A transient failure at close can leave a stream marked closing until the run expires, where it would previously have resolved on the retry.
 

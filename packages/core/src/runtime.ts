@@ -114,11 +114,7 @@ import { runStepSingleFlight } from './runtime/step-single-flight.js';
 import { handleSuspension } from './runtime/suspension-handler.js';
 import { useQuickJSVm } from './runtime/vm-mode.js';
 import { getWaitContinuationDispatch } from './runtime/wait-continuation.js';
-import {
-  getWorld,
-  getWorldHandlers,
-  type WorldHandlers,
-} from './runtime/world.js';
+import { getWorld, type WorldHandlers } from './runtime/world.js';
 import { dehydrateRunError } from './serialization.js';
 import { remapErrorStack } from './source-map.js';
 import * as Attribute from './telemetry/semantic-conventions.js';
@@ -680,6 +676,7 @@ export function workflowEntrypoint(
           hookInput,
           stepInput,
           hookResumeTiming,
+          waitContinuation,
         } = WorkflowInvokePayloadSchema.parse(message_);
 
         // --- Hook-resume TTR telemetry (runtime/resume-latency.ts) ---
@@ -2691,6 +2688,11 @@ export function workflowEntrypoint(
                           maxEventsLimit,
                           namespace,
                           nextTraceCarrier,
+                          // Lets the entrypoint recognize itself as the
+                          // continuation for a specific wait, so a delivery
+                          // that arrives before its wait elapses re-arms
+                          // under a fresh key instead of losing the timer.
+                          waitContinuation,
                           // Inline-step ownership plumbing: redeliveries of
                           // this message drive crash recovery for steps an
                           // earlier invocation claimed inline (see the
@@ -3656,6 +3658,18 @@ export function workflowEntrypoint(
                           );
                         }
                         if (suspensionResult.waitTimeout) {
+                          // One higher than the incoming continuation's when
+                          // this invocation IS the continuation for this same
+                          // wait and the wait is still pending: that delivery
+                          // spent the key, so re-arming under it would be
+                          // dropped by the world's dedupe window and the wait
+                          // would lose its only timer. Every other case is
+                          // attempt 0 and keys as before.
+                          const waitAttempt =
+                            waitContinuation?.correlationId ===
+                            suspensionResult.waitTimeout.correlationId
+                              ? waitContinuation.attempt + 1
+                              : 0;
                           dispatches.push(
                             queueMessage(
                               world,
@@ -3664,10 +3678,17 @@ export function workflowEntrypoint(
                                 runId,
                                 traceCarrier,
                                 requestedAt: new Date(),
+                                waitContinuation: {
+                                  correlationId:
+                                    suspensionResult.waitTimeout.correlationId,
+                                  attempt: waitAttempt,
+                                },
                               },
                               getWaitContinuationDispatch(
                                 suspensionResult.waitTimeout.seconds,
-                                suspensionResult.waitTimeout.correlationId
+                                suspensionResult.waitTimeout.correlationId,
+                                Date.now(),
+                                waitAttempt
                               )
                             )
                           );
@@ -4683,9 +4704,19 @@ export function workflowEntrypoint(
       async (span) => {
         if (!cachedHandler) {
           cachedHandler = await trace('workflow.route.init', async () => {
+            // The full runtime World, not `getWorldHandlers()`. That accessor
+            // owns a second, build-time-safe cache, so calling it here built a
+            // second World in the same process: duplicate connection pools and
+            // queue workers for a stateful World, plus a second copy of that
+            // world package's modules once it is bundled, which is what
+            // silently demoted the events WebSocket transport to HTTP. #3665.
+            //
+            // The span keeps its original name. It is a distinct span from the
+            // per-request `workflow.route.get_world` at the top of the flow
+            // route, and renaming it would collide with that one.
             const worldHandlers = await trace(
               'workflow.route.get_world_handlers',
-              async () => getWorldHandlers()
+              async () => getWorld()
             );
             return handler(worldHandlers);
           });

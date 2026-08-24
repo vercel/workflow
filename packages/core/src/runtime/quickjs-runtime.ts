@@ -30,6 +30,7 @@
  */
 
 import { SerializationError } from '@workflow/errors';
+import { globalSingleton } from '@workflow/utils';
 import {
   type Event,
   isSealedNoopEvent,
@@ -1048,16 +1049,25 @@ type CompiledExtension = Omit<ExtensionDescriptor, 'wasm'> & {
  * only needs to happen once per process. The promise is cached (not the
  * result) so concurrent first invocations share a single compilation.
  */
-let compiledAssetsPromise:
-  | Promise<{
-      wasm: object;
-      extensions: CompiledExtension[];
-    }>
-  | undefined;
+// On `globalThis` (see `globalSingleton`): the comment above says once per
+// process, and module scope would make it once per bundler layer, recompiling
+// the ~600 KB runtime binary for each.
+const quickjsAssets = globalSingleton(
+  '@workflow/core//quickjsCompiledAssets',
+  1,
+  () => ({
+    promise: undefined as
+      | Promise<{
+          wasm: object;
+          extensions: CompiledExtension[];
+        }>
+      | undefined,
+  })
+);
 
 function getCompiledAssets() {
-  if (!compiledAssetsPromise) {
-    compiledAssetsPromise = (async () => {
+  if (!quickjsAssets.promise) {
+    quickjsAssets.promise = (async () => {
       const [wasm, ...extensionModules] = await Promise.all([
         WebAssemblyGlobal.compile(quickjsWasm),
         ...quickjsExtensions.map((ext) =>
@@ -1074,11 +1084,11 @@ function getCompiledAssets() {
     })();
     // On failure, clear the cache so a later invocation can retry rather
     // than being stuck with a rejected promise forever.
-    compiledAssetsPromise.catch(() => {
-      compiledAssetsPromise = undefined;
+    quickjsAssets.promise.catch(() => {
+      quickjsAssets.promise = undefined;
     });
   }
-  return compiledAssetsPromise;
+  return quickjsAssets.promise;
 }
 
 /**
@@ -1177,19 +1187,28 @@ type BaselineEntry =
     }
   | { state: 'ineligible'; reason: string };
 
-const baselineCache = new Map<string, Promise<BaselineEntry>>();
+// On `globalThis` (see `globalSingleton`): a snapshot is expensive to build and
+// is keyed by bundle, so per-copy caches would build the same baseline once per
+// bundler layer while each enforcing its own bound.
+const baselines = globalSingleton(
+  '@workflow/core//quickjsBaselines',
+  1,
+  () => ({
+    byKey: new Map<string, Promise<BaselineEntry>>(),
+  })
+);
 const BASELINE_CACHE_MAX_ENTRIES = 4;
 
 /** Test-only: reset the baseline cache between test cases. */
 export function __clearBaselineSnapshotCacheForTests(): void {
-  baselineCache.clear();
+  baselines.byKey.clear();
 }
 
 /** Test-only: observe how a bundle was classified. */
 export async function __peekBaselineEntryForTests(
   workflowCode: string
 ): Promise<BaselineEntry | undefined> {
-  return baselineCache.get(workflowCode);
+  return baselines.byKey.get(workflowCode);
 }
 
 /**
@@ -1313,15 +1332,15 @@ function getBaselineEntry(
   workflowCode: string,
   workflowId: string
 ): Promise<BaselineEntry> {
-  let entry = baselineCache.get(workflowCode);
+  let entry = baselines.byKey.get(workflowCode);
   if (!entry) {
-    if (baselineCache.size >= BASELINE_CACHE_MAX_ENTRIES) {
-      const oldest = baselineCache.keys().next().value;
-      if (oldest !== undefined) baselineCache.delete(oldest);
+    if (baselines.byKey.size >= BASELINE_CACHE_MAX_ENTRIES) {
+      const oldest = baselines.byKey.keys().next().value;
+      if (oldest !== undefined) baselines.byKey.delete(oldest);
     }
     entry = prepareBaselineSnapshot(workflowCode, workflowId);
-    baselineCache.set(workflowCode, entry);
-    entry.catch(() => baselineCache.delete(workflowCode));
+    baselines.byKey.set(workflowCode, entry);
+    entry.catch(() => baselines.byKey.delete(workflowCode));
   }
   return entry;
 }
@@ -2453,6 +2472,9 @@ function markCreated(vm: QuickJS, cidJs: string, opType?: string): void {
  * its bytes are computed once even though the op is re-collected on every
  * suspension it stays pending through.
  */
+// per-copy-ok: keyed on the VM instance, and a VM is created and driven by one
+// copy. Another copy holds no reference to the key, so a shared map could never
+// be read from it.
 const pendingByteCache = new WeakMap<QuickJS, Map<string, Uint8Array>>();
 
 function ensurePendingByteCache(vm: QuickJS): Map<string, Uint8Array> {

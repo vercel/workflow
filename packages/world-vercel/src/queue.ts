@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { Transport } from '@vercel/queue';
 import { ConsumerDiscoveryError, QueueClient } from '@vercel/queue';
+import { globalSingleton } from '@workflow/utils';
 import {
   MessageId,
   type Queue,
@@ -99,6 +100,9 @@ class DualTransport implements Transport<unknown> {
   }
 }
 
+// per-copy-ok: both ends of this store live in the same `createQueueHandler`
+// closure: the `run()` wrapper and the `getStore()` read always come from the
+// same module copy, so the context never has to cross a copy boundary.
 const requestIdStorage = new AsyncLocalStorage<string | undefined>();
 
 const MessageWrapper = z.object({
@@ -338,7 +342,14 @@ function getHeadersFromPayload(
  */
 const FLOW_TOPIC_PATTERN = /^__([a-z][a-z0-9]*_)?wkf_workflow_/;
 
-let loggedSequentialReplays = false;
+// Logged at most once per process; a field rather than a module-level `let`
+// because a bundler can put several copies of this file in one process and
+// "once" should not become once per copy (see `globalSingleton`).
+const queueLogs = globalSingleton(
+  '@workflow/world-vercel//queueLogLatches',
+  1,
+  () => ({ loggedSequentialReplays: false })
+);
 
 /**
  * Whether sequential replays are enabled (`WORKFLOW_SEQUENTIAL_REPLAYS=1`).
@@ -356,8 +367,8 @@ function getPhysicalQueueName(
   if (!isSequentialReplaysEnabled() || !FLOW_TOPIC_PATTERN.test(queueName)) {
     return queueName;
   }
-  if (!loggedSequentialReplays) {
-    loggedSequentialReplays = true;
+  if (!queueLogs.loggedSequentialReplays) {
+    queueLogs.loggedSequentialReplays = true;
     // One-time breadcrumb so a half-applied configuration (env var set without
     // a maxConcurrency-bearing flow trigger, or vice versa) is diagnosable
     // from function logs. Must go to stderr: this code also runs inside CLI

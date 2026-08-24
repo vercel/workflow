@@ -8,6 +8,7 @@ import {
 } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { globalSingleton } from '@workflow/utils';
 
 /** Package name - hardcoded since it doesn't change */
 const PACKAGE_NAME = '@workflow/world-local';
@@ -17,7 +18,13 @@ interface PackageInfo {
   version: string;
 }
 
-let cachedPackageInfo: PackageInfo | null = null;
+// On `globalThis` rather than at module scope so several copies of this file
+// in one process share the resolved manifest (see `globalSingleton`).
+const packageInfo = globalSingleton(
+  '@workflow/world-local//packageInfo',
+  1,
+  () => ({ cached: null as PackageInfo | null })
+);
 
 /**
  * Get the directory path for this module.
@@ -39,8 +46,8 @@ function getModuleDir(): string | null {
  * returns 'bundled' as the version.
  */
 export async function getPackageInfo(): Promise<PackageInfo> {
-  if (cachedPackageInfo) {
-    return cachedPackageInfo;
+  if (packageInfo.cached) {
+    return packageInfo.cached;
   }
 
   const moduleDir = getModuleDir();
@@ -50,19 +57,19 @@ export async function getPackageInfo(): Promise<PackageInfo> {
         path.join(moduleDir, '../package.json'),
         'utf-8'
       );
-      cachedPackageInfo = JSON.parse(content) as PackageInfo;
-      return cachedPackageInfo;
+      packageInfo.cached = JSON.parse(content) as PackageInfo;
+      return packageInfo.cached;
     } catch {
       // Fall through to bundled fallback
     }
   }
 
   // Bundled context - package.json not accessible
-  cachedPackageInfo = {
+  packageInfo.cached = {
     name: PACKAGE_NAME,
     version: 'bundled',
   };
-  return cachedPackageInfo;
+  return packageInfo.cached;
 }
 
 /** Filename for storing version information in the data directory */

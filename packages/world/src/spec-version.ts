@@ -118,6 +118,21 @@ export const SEALED_LOG_ENV_VAR = 'WORKFLOW_SEALED_LOG';
  * behind before going unconditional: default on, with one env var to put a
  * deployment back on the previous scheme without a release.
  *
+ * What default-on rests on is the density requirement in
+ * `Storage['events']`: a reader's log must be a PREFIX of the run's log, so
+ * that the number of events it holds tells it whether it has the whole thing.
+ * A sealed log satisfies that by repair rather than by construction — a
+ * position is handed out before its write commits, so a read can land while
+ * one is still empty — and it is only equivalent if a read that cannot see
+ * past such a position waits for it to be filled or sealed instead of
+ * reporting a log that ends there. It has to be the READ that waits, because
+ * a shorter prefix is a legal log state and nothing downstream can tell the
+ * two apart. The first rollout of this default shipped without that: the
+ * backend's in-request poll budget was shorter than the age a position must
+ * reach before it can be sealed, so the read always gave up and truncated,
+ * and a replay took a step whose completion sat above the gap to be still
+ * running — then sat on it for a full inline-ownership lease.
+ *
  * The fallback is a real fallback, not a formality. Turning this off has to
  * leave a World the runtime still admits, which is why
  * `assertWorldSupportsRuntimeProtocol` floors at the slot-identity version

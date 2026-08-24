@@ -1,3 +1,4 @@
+import { globalSingleton } from '@workflow/utils';
 import { runtimeLogger } from '../logger.js';
 import type { StepExecutionResult } from './step-executor.js';
 
@@ -29,7 +30,16 @@ import type { StepExecutionResult } from './step-executor.js';
  * multi-instance self-hosted worlds (mitigate by raising
  * `WORKFLOW_INLINE_OWNERSHIP_LEASE_SECONDS`).
  */
-const inFlightSteps = new Map<string, Promise<StepExecutionResult>>();
+// On `globalThis` (see `globalSingleton`), not module scope: a per-copy map is
+// not single-flight. Two invocations reaching this module through different
+// bundler layers would each believe they were the only one in the process and
+// both run the step body, degrading in-process dedup to the cross-process
+// residual the doc above scopes out.
+const singleFlight = globalSingleton(
+  '@workflow/core//stepSingleFlight',
+  1,
+  () => ({ inFlight: new Map<string, Promise<StepExecutionResult>>() })
+);
 
 /**
  * Run `execute` unless an execution for the same run + step correlation ID is
@@ -46,7 +56,7 @@ export async function runStepSingleFlight(
   execute: () => Promise<StepExecutionResult>
 ): Promise<StepExecutionResult> {
   const key = `${runId}:${correlationId}`;
-  const existing = inFlightSteps.get(key);
+  const existing = singleFlight.inFlight.get(key);
   if (existing) {
     // warn (always printed, unlike debug/info): the single-flight is
     // absorbing what would have been a duplicate execution, typically a
@@ -68,10 +78,10 @@ export async function runStepSingleFlight(
   }
 
   const promise = execute();
-  inFlightSteps.set(key, promise);
+  singleFlight.inFlight.set(key, promise);
   try {
     return await promise;
   } finally {
-    inFlightSteps.delete(key);
+    singleFlight.inFlight.delete(key);
   }
 }
