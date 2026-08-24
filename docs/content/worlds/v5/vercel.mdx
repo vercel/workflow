@@ -200,6 +200,12 @@ Below the floor the deadline starts canceling requests that would have succeeded
 
 Maximum stream chunks written in one Vercel World request. Larger batches are split across multiple requests. Default: `1000`. Minimum: `1`.
 
+### `WORKFLOW_STREAMS_TRANSPORT`
+
+Experimental stream-write transport capability. Default: `http`. Set `WORKFLOW_STREAMS_TRANSPORT=ws` to advertise support for `workflow-stream-ws/v1` when it becomes available. The server authoritatively accepts or declines every upgrade; a decline goes directly to HTTP. Reads remain HTTP and demand-driven.
+
+This setting does not own tenant rollout policy and does not infer server support from package versions. HTTP remains the compatibility path. The protocol route (`/websockets/v1`) is versioned independently from REST v2/v4 and persisted workflow `specVersion` values. Drain/de-opt control semantics are a rollout prerequisite and are intentionally not part of this capability gate.
+
 ### `WORKFLOW_EVENTS_TRANSPORT`
 
 Workflow run events ship to the Vercel World over a WebSocket instead of one HTTP request each. Default: `ws`.
