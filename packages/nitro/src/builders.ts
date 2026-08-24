@@ -67,23 +67,28 @@ export class LocalBuilder extends BaseBuilder {
     const inputFiles = await this.getInputFiles();
     await mkdir(this.#outDir, { recursive: true });
 
-    const { manifest: workflowsManifest } = await this.createWorkflowsBundle({
-      outfile: join(this.#outDir, 'workflows.mjs'),
-      bundleFinalOutput: false,
-      format: 'esm',
-      inputFiles,
-    });
+    const { manifest: workflowsManifest, interimBundleCtx } =
+      await this.createWorkflowsBundle({
+        outfile: join(this.#outDir, 'workflows.mjs'),
+        bundleFinalOutput: false,
+        format: 'esm',
+        inputFiles,
+      });
 
-    const { manifest: stepsManifest } = await this.createStepsBundle({
-      outfile: join(this.#outDir, 'steps.mjs'),
-      externalizeNonSteps: true,
-      // In dev, Nitro dynamically imports the generated workflow files from
-      // disk, so there is no later Rollup pass to resolve externalized local
-      // TypeScript imports. In prod, Nitro/Rollup handles those imports.
-      bundleTransitiveLocalStepDependencies: this.config.watch,
-      format: 'esm',
-      inputFiles,
-    });
+    const { manifest: stepsManifest, context: stepsContext } =
+      await this.createStepsBundle({
+        outfile: join(this.#outDir, 'steps.mjs'),
+        externalizeNonSteps: true,
+        // In dev, Nitro dynamically imports the generated workflow files from
+        // disk, so there is no later Rollup pass to resolve externalized local
+        // TypeScript imports. In prod, Nitro/Rollup handles those imports.
+        bundleTransitiveLocalStepDependencies: this.config.watch,
+        format: 'esm',
+        inputFiles,
+      });
+
+    // Close the temporary esbuild build contexts once bundling is done.
+    await Promise.all([stepsContext?.dispose(), interimBundleCtx?.dispose()]);
 
     const webhookRouteFile = join(this.#outDir, 'webhook.mjs');
 
