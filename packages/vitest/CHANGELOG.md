@@ -1,5 +1,16 @@
 # @workflow/vitest
 
+## 4.0.20
+
+### Patch Changes
+
+- Updated dependencies [[`e331cd6`](https://github.com/vercel/workflow/commit/e331cd6aa9c5b578caa9770cb2889e306bd493e6)]:
+  - @workflow/world-local@4.3.0
+  - @workflow/world@4.4.0
+  - @workflow/core@4.8.4
+  - @workflow/builders@4.1.9
+  - @workflow/rollup@4.0.19
+
 ## 4.0.19
 
 ### Patch Changes

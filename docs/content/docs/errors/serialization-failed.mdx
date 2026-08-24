@@ -25,6 +25,34 @@ This error can appear when:
 - Serializing step arguments
 - Serializing step return values
 
+## Where the Error Surfaces
+
+Where you observe the failure depends on which boundary it crosses:
+
+- **Workflow arguments** — `start()` throws synchronously in your application code.
+- **Step arguments** — the *step* fails, exactly like a step whose body threw a `FatalError`: no retries (the failure is deterministic), and a `try/catch` around the step call in your workflow code observes it. The step's recorded input shows `[input unavailable: step argument serialization failed]`, since the real arguments are precisely what refused to serialize.
+- **Workflow return values** — the workflow body has already returned, so nothing can catch it; the run fails.
+
+```typescript lineNumbers
+async function stepWithBadArguments(value: unknown) {
+  "use step";
+  return value;
+}
+
+export async function processWorkflow(someValue: unknown) {
+  "use workflow";
+
+  try {
+    await stepWithBadArguments(someValue);
+  } catch (err) {
+    // (err as Error).message starts with
+    // "Failed to serialize step arguments"
+  }
+}
+```
+
+Uncaught, the error propagates out of the workflow body and the run fails immediately with the error code `USER_ERROR` — it does not retry.
+
 ## Why This Happens
 
 Workflows persist their state using an event log. Every value that crosses execution boundaries must be:

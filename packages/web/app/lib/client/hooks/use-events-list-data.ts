@@ -180,6 +180,7 @@ export function useEventsListData(
 
         const { error: fetchError, result } = await unwrapServerActionResult(
           fetchEventsByCorrelationId(env, id, {
+            runId,
             cursor: nextCursor,
             sortOrder,
             limit: 100,

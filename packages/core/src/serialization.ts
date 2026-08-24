@@ -213,7 +213,10 @@ const defaultUlid = monotonicFactory();
  * Extracts path, value, and reason from devalue's DevalueError when available.
  * Logs the problematic value to the console for better debugging.
  */
-function formatSerializationError(context: string, error: unknown): string {
+export function formatSerializationError(
+  context: string,
+  error: unknown
+): string {
   // Use "returning" for return values, "passing" for arguments/inputs
   const verb = context.includes('return value') ? 'returning' : 'passing';
 

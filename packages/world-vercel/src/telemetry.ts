@@ -162,3 +162,15 @@ export const WorkflowRunId = SemanticConvention<string>('workflow.run.id');
 
 /** Unique identifier for the step instance */
 export const StepId = SemanticConvention<string>('step.id');
+
+/**
+ * HTTP client library the request was issued through
+ * (workflow.http.transport): `undici` | `node-http`. Set on BOTH paths,
+ * deliberately: the two emit the same client span against the same `url.full`,
+ * so without this attribute a trace cannot say which transport carried the
+ * request — and `WORKFLOW_NODE_HTTP` is an opt-in whose whole point is being
+ * verified in a real deployment.
+ */
+export const WorkflowHttpTransport = SemanticConvention<'undici' | 'node-http'>(
+  'workflow.http.transport'
+);

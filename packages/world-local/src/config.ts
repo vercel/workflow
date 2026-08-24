@@ -21,8 +21,10 @@ export type Config = {
   baseUrl?: string;
   /**
    * Whether start() should re-enqueue pending/running runs from storage.
-   * Defaults to true. Test harnesses that always start from a clean slate can
-   * disable recovery to avoid replaying stale runs.
+   * Defaults to true; the `WORKFLOW_LOCAL_RECOVER_ACTIVE_RUNS` env var is
+   * used as a fallback when this option is unset. Test harnesses that always
+   * start from a clean slate can disable recovery to avoid replaying stale
+   * runs.
    */
   recoverActiveRuns?: boolean;
   /**
@@ -45,6 +47,27 @@ export const config = once<Config>(() => {
 
   return { dataDir, baseUrl };
 });
+
+/**
+ * Resolves whether start() should re-enqueue pending/running runs from
+ * storage, following the priority order:
+ * 1. config.recoverActiveRuns (explicit factory option)
+ * 2. WORKFLOW_LOCAL_RECOVER_ACTIVE_RUNS env var (`0`/`false` disables,
+ *    `1`/`true` enables; read lazily to handle late env var setting)
+ * 3. Default: true
+ *
+ * An unrecognized env value falls through to the default — the env var is an
+ * escape hatch, not a hard requirement.
+ */
+export function resolveRecoverActiveRuns(config: Partial<Config>): boolean {
+  if (config.recoverActiveRuns !== undefined) {
+    return config.recoverActiveRuns;
+  }
+  const raw = process.env.WORKFLOW_LOCAL_RECOVER_ACTIVE_RUNS?.toLowerCase();
+  if (raw === '0' || raw === 'false') return false;
+  if (raw === '1' || raw === 'true') return true;
+  return true;
+}
 
 export function resolveDirectBaseUrl(config: Partial<Config>): string {
   return (
