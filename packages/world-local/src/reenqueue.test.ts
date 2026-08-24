@@ -92,7 +92,7 @@ describe('re-enqueue active runs on start', () => {
   it('re-enqueues runs to the active queue namespace', async () => {
     vi.stubEnv('WORKFLOW_QUEUE_NAMESPACE', 'custom');
 
-    const world1 = createWorld({ dataDir });
+    const world1 = createLocalWorld({ dataDir });
     await world1.start();
 
     const pendingRun = await createRun(world1, {
@@ -103,7 +103,7 @@ describe('re-enqueue active runs on start', () => {
 
     await world1.close();
 
-    const world2 = createWorld({ dataDir });
+    const world2 = createLocalWorld({ dataDir });
     const namespacedRunIds: string[] = [];
     const unnamespacedRunIds: string[] = [];
     const namespacedHandler = world2.createQueueHandler(
