@@ -13,7 +13,7 @@ import {
 } from '@workflow/world';
 import { decode, encode } from 'cbor-x';
 import { z } from 'zod/v4';
-import { getDispatcher } from './http-client.js';
+import { getQueueDispatcher } from './http-client.js';
 import { type APIConfig, getHeaders, getHttpUrl } from './utils.js';
 
 /**
@@ -204,7 +204,7 @@ export function createQueue(config?: APIConfig): Queue {
 
   const clientOptions = {
     region,
-    dispatcher: getDispatcher(config),
+    dispatcher: getQueueDispatcher(config),
     transport: dualTransport,
     ...(usingProxy && {
       // final path will be /queues-proxy/api/v3/topic/...
@@ -328,9 +328,14 @@ export function createQueue(config?: APIConfig): Queue {
         // with jitter so an outage or poison message cannot hot-loop or
         // redrive in lockstep. Workflow handlers are event-sourced and must
         // remain idempotent because queue retries can happen close together.
-        retry: (_error, { deliveryCount }) => ({
-          afterSeconds: getHandlerErrorRetryAfterSeconds(deliveryCount),
-        }),
+        retry: (error, { messageId, deliveryCount }) => {
+          const afterSeconds = getHandlerErrorRetryAfterSeconds(deliveryCount);
+          console.error(
+            `[workflow] Queue handler failed for message "${messageId}" on delivery attempt ${deliveryCount}; retrying in ${afterSeconds}s:`,
+            error
+          );
+          return { afterSeconds };
+        },
       }
     );
 

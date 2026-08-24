@@ -1,5 +1,45 @@
 # @workflow/world-local
 
+## 4.3.0
+
+### Minor Changes
+
+- [#3461](https://github.com/vercel/workflow/pull/3461) [`e331cd6`](https://github.com/vercel/workflow/commit/e331cd6aa9c5b578caa9770cb2889e306bd493e6) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Add `WORKFLOW_NODE_HTTP` to run the Vercel and Local World HTTP layers on Node's built-in `node:http` and `node:https` modules instead of their usual HTTP client library.
+
+### Patch Changes
+
+- Updated dependencies [[`e331cd6`](https://github.com/vercel/workflow/commit/e331cd6aa9c5b578caa9770cb2889e306bd493e6)]:
+  - @workflow/world@4.4.0
+  - @workflow/errors@4.2.1
+
+## 4.2.4
+
+### Patch Changes
+
+- [#3215](https://github.com/vercel/workflow/pull/3215) [`2fe2d88`](https://github.com/vercel/workflow/commit/2fe2d88fd7f5abe72051a18aa9cb1de1b6db65eb) Thanks [@AndrewBarba](https://github.com/AndrewBarba)! - Retry transient `EPERM` unlink failures on Windows when deleting hook and entity JSON files. A concurrent reader briefly holding a file open made `deleteJSON` throw a share-violation `EPERM`, which surfaced as a failed operation — for example a failed `run.cancel()` while `deleteAllHooksForRun` raced hook polling.
+
+- Updated dependencies [[`72ea6c8`](https://github.com/vercel/workflow/commit/72ea6c8edefb01a03acd25bef5efd4cdb9e03fa1)]:
+  - @workflow/errors@4.2.1
+  - @workflow/world@4.3.1
+
+## 4.2.3
+
+### Patch Changes
+
+- Updated dependencies [[`12e4ef7`](https://github.com/vercel/workflow/commit/12e4ef7ea1777a0af1d69db7cf069a6a5da131c7)]:
+  - @workflow/world@4.3.0
+  - @workflow/errors@4.2.0
+
+## 4.2.2
+
+### Patch Changes
+
+- [#2732](https://github.com/vercel/workflow/pull/2732) [`2213c91`](https://github.com/vercel/workflow/commit/2213c91731f6d47373f4ba4c516c39ec2cc0fa94) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Respect framework base paths when routing workflow traffic and expose health checks on generated Next.js workflow routes.
+
+- Updated dependencies [[`2213c91`](https://github.com/vercel/workflow/commit/2213c91731f6d47373f4ba4c516c39ec2cc0fa94)]:
+  - @workflow/utils@4.1.4
+  - @workflow/errors@4.1.5
+
 ## 4.2.1
 
 ### Patch Changes

@@ -29,6 +29,9 @@ vi.mock('graphile-worker', () => ({
 
 vi.mock('@workflow/utils/get-port', () => ({
   getWorkflowPort: vi.fn(),
+  // stepEntrypoint (imported from the core dist bundle below) calls
+  // getPortLazy(), which imports getPort from this same module.
+  getPort: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock('@workflow/world-local', async (importOriginal) => {

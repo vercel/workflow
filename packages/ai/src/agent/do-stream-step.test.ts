@@ -187,8 +187,8 @@ describe('doStreamStep', () => {
       { sendStart: false }
     );
 
-    expect(result.step.toolCalls).toHaveLength(1);
-    expect(result.step.toolCalls[0]?.input).toBe('{"city":"San Francisco"');
+    expect(result.toolCalls).toHaveLength(1);
+    expect(result.toolCalls[0]?.input).toBe('{"city":"San Francisco"');
     expect(writtenChunks).toContainEqual(
       expect.objectContaining({
         type: 'tool-input-available',
@@ -197,5 +197,59 @@ describe('doStreamStep', () => {
         input: '{"city":"San Francisco"',
       })
     );
+  });
+
+  it('merges partial response-metadata chunks instead of overwriting', async () => {
+    const writable = new WritableStream<UIMessageChunk>({
+      write: async () => {},
+    });
+
+    const timestamp = new Date('2026-06-24T00:00:00.000Z');
+    const model = {
+      provider: 'mock-provider',
+      modelId: 'mock-model',
+      doStream: async () => ({
+        stream: new ReadableStream({
+          start(controller) {
+            controller.enqueue({ type: 'stream-start', warnings: [] });
+            // First chunk carries id + timestamp but no modelId.
+            controller.enqueue({
+              type: 'response-metadata',
+              id: 'resp-1',
+              timestamp,
+            });
+            // Later partial chunk carries only modelId — must not drop the
+            // id/timestamp established above.
+            controller.enqueue({
+              type: 'response-metadata',
+              modelId: 'resolved-model',
+            });
+            controller.enqueue({
+              type: 'finish',
+              finishReason: 'stop',
+              usage: {
+                inputTokens: { total: 10, noCache: 10 },
+                outputTokens: { total: 5, text: 5, reasoning: 0 },
+              },
+            });
+            controller.close();
+          },
+        }),
+      }),
+    };
+
+    const result = await doStreamStep(
+      [{ role: 'user', content: [{ type: 'text', text: 'test' }] }],
+      async () => model as any,
+      writable,
+      undefined,
+      { sendStart: false }
+    );
+
+    expect(result.raw.responseMetadata).toEqual({
+      id: 'resp-1',
+      modelId: 'resolved-model',
+      timestamp,
+    });
   });
 });

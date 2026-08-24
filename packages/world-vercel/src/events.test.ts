@@ -112,6 +112,87 @@ describe('createWorkflowRunEvent with v1Compat', () => {
 });
 
 /**
+ * The optimistic-concurrency precondition guard (see runtime/helpers.ts
+ * withPreconditionRetry): a replay-context create carries `stateUpdatedAt`
+ * (the ULID time of the latest event the runtime has loaded) so the backend
+ * can reject a stale write with 412. Locks in that the field reaches the v4
+ * frame meta, and is omitted entirely when the caller has no loaded snapshot.
+ */
+describe('createWorkflowRunEvent stateUpdatedAt wire field', () => {
+  it('includes stateUpdatedAt in the v4 frame meta when provided', async () => {
+    const agent = mockAgent();
+    let capturedMeta: Record<string, unknown> | undefined;
+
+    agent
+      .get(ORIGIN)
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events/run_started',
+        method: 'POST',
+      })
+      .reply(
+        200,
+        (opts: { body?: unknown }) => {
+          capturedMeta = decodePostedMeta(opts.body);
+          return encode({ run: { runId: 'wrun_1', status: 'running' } });
+        },
+        {
+          headers: {
+            'x-wf-event-id': 'evnt_1',
+            'x-wf-run-id': 'wrun_1',
+            'x-wf-created-at': '2026-06-10T00:00:00.000Z',
+          },
+        }
+      );
+
+    await createWorkflowRunEvent(
+      'wrun_1',
+      { eventType: 'run_started', specVersion: 2 } as AnyEventRequest,
+      { stateUpdatedAt: 1_700_000_000_000 },
+      { token: 'test-token', dispatcher: agent }
+    );
+
+    expect(capturedMeta?.stateUpdatedAt).toBe(1_700_000_000_000);
+    agent.assertNoPendingInterceptors();
+  });
+
+  it('omits stateUpdatedAt from the v4 frame meta when not provided', async () => {
+    const agent = mockAgent();
+    let capturedMeta: Record<string, unknown> | undefined;
+
+    agent
+      .get(ORIGIN)
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events/run_started',
+        method: 'POST',
+      })
+      .reply(
+        200,
+        (opts: { body?: unknown }) => {
+          capturedMeta = decodePostedMeta(opts.body);
+          return encode({ run: { runId: 'wrun_1', status: 'running' } });
+        },
+        {
+          headers: {
+            'x-wf-event-id': 'evnt_1',
+            'x-wf-run-id': 'wrun_1',
+            'x-wf-created-at': '2026-06-10T00:00:00.000Z',
+          },
+        }
+      );
+
+    await createWorkflowRunEvent(
+      'wrun_1',
+      { eventType: 'run_started', specVersion: 2 } as AnyEventRequest,
+      undefined,
+      { token: 'test-token', dispatcher: agent }
+    );
+
+    expect('stateUpdatedAt' in (capturedMeta ?? {})).toBe(false);
+    agent.assertNoPendingInterceptors();
+  });
+});
+
+/**
  * The split's meta allowlist IS the eventData wire contract on v4. The
  * type-level `assertEventDataWireContractExhaustive` guard in events.ts
  * fails the build if a schema field is routed to neither the payload body
@@ -595,6 +676,73 @@ describe('getWorkflowRunEvents remoteRefBehavior mapping', () => {
       result.data[0] as { eventData?: Record<string, unknown> }
     ).eventData;
     expect(eventData?.input).toEqual(body);
+    agent.assertNoPendingInterceptors();
+  });
+});
+
+describe('getWorkflowRunEvents correlation run scope', () => {
+  function listResponse(runIds: string[]): Buffer {
+    return Buffer.concat([
+      ...runIds.map((runId, index) =>
+        encodeFrame(
+          {
+            eventId: `evnt_${index}`,
+            runId,
+            eventType: 'step_started',
+            correlationId: 'step_1',
+            createdAt: '2026-06-10T00:00:00.000Z',
+          },
+          new Uint8Array(0)
+        )
+      ),
+      encodeFrame({ _end: 1 }, new Uint8Array(0)),
+    ]);
+  }
+
+  it('sends runId on correlation lookups and filters an older server response', async () => {
+    const agent = mockAgent();
+    agent
+      .get(ORIGIN)
+      .intercept({
+        path: '/api/v4/events',
+        method: 'GET',
+        query: {
+          correlationId: 'step_1',
+          runId: 'wrun_1',
+          remoteRefBehavior: 'resolve',
+        },
+      })
+      .reply(200, listResponse(['wrun_1', 'wrun_other']), {
+        headers: { 'content-type': V4_FRAME_CONTENT_TYPE },
+      });
+
+    const result = await getWorkflowRunEvents(
+      { correlationId: 'step_1', runId: 'wrun_1' },
+      { token: 'test-token', dispatcher: agent }
+    );
+
+    expect(result.data.map((event) => event.runId)).toEqual(['wrun_1']);
+    agent.assertNoPendingInterceptors();
+  });
+
+  it('keeps the legacy correlation request shape without runId', async () => {
+    const agent = mockAgent();
+    agent
+      .get(ORIGIN)
+      .intercept({
+        path: '/api/v4/events',
+        method: 'GET',
+        query: { correlationId: 'step_1', remoteRefBehavior: 'resolve' },
+      })
+      .reply(200, listResponse(['wrun_1']), {
+        headers: { 'content-type': V4_FRAME_CONTENT_TYPE },
+      });
+
+    await getWorkflowRunEvents(
+      { correlationId: 'step_1' },
+      { token: 'test-token', dispatcher: agent }
+    );
+
     agent.assertNoPendingInterceptors();
   });
 });

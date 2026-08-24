@@ -1,5 +1,23 @@
 # @workflow/world
 
+## 4.4.0
+
+### Minor Changes
+
+- [#3461](https://github.com/vercel/workflow/pull/3461) [`e331cd6`](https://github.com/vercel/workflow/commit/e331cd6aa9c5b578caa9770cb2889e306bd493e6) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Add `WORKFLOW_NODE_HTTP` to run the Vercel and Local World HTTP layers on Node's built-in `node:http` and `node:https` modules instead of their usual HTTP client library.
+
+## 4.3.1
+
+### Patch Changes
+
+- [#2986](https://github.com/vercel/workflow/pull/2986) [`72ea6c8`](https://github.com/vercel/workflow/commit/72ea6c8edefb01a03acd25bef5efd4cdb9e03fa1) Thanks [@shalabhc](https://github.com/shalabhc)! - Enforce a server-supplied per-run event limit (default 25K)
+
+## 4.3.0
+
+### Minor Changes
+
+- [#3079](https://github.com/vercel/workflow/pull/3079) [`12e4ef7`](https://github.com/vercel/workflow/commit/12e4ef7ea1777a0af1d69db7cf069a6a5da131c7) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Add an optimistic-concurrency guard for event creation (on by default; opt out with `WORKFLOW_PRECONDITION_GUARD=0`): replay-context event creations send a `stateUpdatedAt` snapshot timestamp, and the runtime reloads the event log and retries (then falls back to a fresh re-invocation) when the backend reports a newer out-of-band event with a 412 `PreconditionFailedError`. Backends without guard support ignore the snapshot, so this is backward-compatible and fails open.
+
 ## 4.2.1
 
 ### Patch Changes

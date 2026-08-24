@@ -3,6 +3,7 @@ import { PostgreSqlContainer } from '@testcontainers/postgresql';
 import type { Hook, Step, WorkflowRun } from '@workflow/world';
 import { SPEC_VERSION_CURRENT } from '@workflow/world';
 import { encode } from 'cbor-x';
+import { eq } from 'drizzle-orm';
 import { Pool } from 'pg';
 import { decodeTime } from 'ulid';
 import {
@@ -871,6 +872,16 @@ describe('Storage (Postgres integration)', () => {
         expect(result.data[1].runId).toBe(run2.runId);
         expect(result.data[2].eventId).toBe(result3.event.eventId);
         expect(result.data[2].runId).toBe(testRunId);
+
+        const scopedResult = await events.listByCorrelationId({
+          correlationId,
+          runId: testRunId,
+          pagination: {},
+        });
+        expect(scopedResult.data.map((event) => event.runId)).toEqual([
+          testRunId,
+          testRunId,
+        ]);
       });
 
       it('should return empty list for non-existent correlation ID', async () => {
@@ -1244,7 +1255,105 @@ describe('Storage (Postgres integration)', () => {
           stepName: 'test-step',
           input: new Uint8Array(),
         })
-      ).rejects.toMatchObject({ name: 'EntityConflictError' });
+      ).rejects.toMatchObject({
+        name: 'EntityConflictError',
+        message: `step_created for correlationId "step_seq_dup" already exists in run "${testRunId}"`,
+      });
+    });
+
+    it('recovers an orphaned step row before a plain step_started event', async () => {
+      const stepId = 'step_orphan';
+      await drizzle.insert(DrizzleSchema.steps).values({
+        runId: testRunId,
+        stepId,
+        stepName: 'test-step',
+        input: new Uint8Array(),
+        status: 'pending',
+        attempt: 0,
+        specVersion: SPEC_VERSION_CURRENT,
+      });
+
+      const recovered = await createStep(events, testRunId, {
+        stepId,
+        stepName: 'test-step',
+        input: new Uint8Array(),
+      });
+      expect(recovered.stepId).toBe(stepId);
+
+      await updateStep(events, testRunId, stepId, 'step_started');
+
+      const evts = await events.list({
+        runId: testRunId,
+        pagination: {},
+      });
+      expect(
+        evts.data
+          .filter((event) => event.correlationId === stepId)
+          .map((event) => event.eventType)
+      ).toEqual(['step_created', 'step_started']);
+    });
+
+    it('rolls back the step entity when the matching event insert fails', async () => {
+      await pool.query(`
+        CREATE FUNCTION workflow.reject_step_created_event_for_test()
+        RETURNS trigger
+        LANGUAGE plpgsql
+        AS $$
+        BEGIN
+          IF NEW.type = 'step_created'
+            AND NEW.correlation_id = 'step_partial_write'
+          THEN
+            RAISE EXCEPTION 'forced step_created event insert failure';
+          END IF;
+          RETURN NEW;
+        END;
+        $$;
+
+        CREATE TRIGGER reject_step_created_event_for_test
+        BEFORE INSERT ON workflow.workflow_events
+        FOR EACH ROW
+        EXECUTE FUNCTION workflow.reject_step_created_event_for_test();
+      `);
+
+      try {
+        await expect(
+          createStep(events, testRunId, {
+            stepId: 'step_partial_write',
+            stepName: 'test-step',
+            input: new Uint8Array(),
+          })
+        ).rejects.toMatchObject({
+          cause: {
+            message: expect.stringMatching(
+              /forced step_created event insert failure/
+            ),
+          },
+        });
+
+        const stepRows = await drizzle
+          .select({ stepId: DrizzleSchema.steps.stepId })
+          .from(DrizzleSchema.steps)
+          .where(eq(DrizzleSchema.steps.stepId, 'step_partial_write'));
+        expect(stepRows).toEqual([]);
+
+        const evts = await events.list({
+          runId: testRunId,
+          pagination: {},
+        });
+        expect(
+          evts.data.filter(
+            (event) =>
+              event.eventType === 'step_created' &&
+              event.correlationId === 'step_partial_write'
+          )
+        ).toHaveLength(0);
+      } finally {
+        await pool.query(`
+          DROP TRIGGER reject_step_created_event_for_test
+            ON workflow.workflow_events;
+          DROP FUNCTION workflow.reject_step_created_event_for_test();
+        `);
+      }
     });
 
     it('should reject duplicate wait_created with EntityConflictError', async () => {
@@ -2353,6 +2462,177 @@ describe('Storage (Postgres integration)', () => {
         { result: new Uint8Array([1]) }
       );
       expect(result.status).toBe('completed');
+    });
+
+    // A resume racing its hook's disposal must never be journaled AFTER
+    // hook_disposed. Once that order is in the log, no replay of the owning run
+    // can consume the delivery — the run retired that hook's consumer at the
+    // disposal — so it strands, every replay reports divergence, and the run
+    // escalates to CorruptedEventLogError. See vercel/workflow#2781, which
+    // fixed the same ordering for world-local.
+    describe('hook_received vs. hook_disposed ordering (#2781)', () => {
+      const eventTypesFor = async (runId: string) => {
+        const listed = await events.list({ runId, pagination: {} });
+        return listed.data.map((event) => event.eventType);
+      };
+
+      it('rejects hook_received once the disposal has committed', async () => {
+        const hook = await createHook(events, testRunId, {
+          hookId: 'hook_order_after_dispose',
+          token: 'order-after-dispose',
+        });
+        await events.create(testRunId, {
+          eventType: 'hook_received',
+          correlationId: hook.hookId,
+          eventData: { payload: new Uint8Array([1]) },
+        });
+        await events.create(testRunId, {
+          eventType: 'hook_disposed',
+          correlationId: hook.hookId,
+        });
+
+        await expect(
+          events.create(testRunId, {
+            eventType: 'hook_received',
+            correlationId: hook.hookId,
+            eventData: { payload: new Uint8Array([2]) },
+          })
+        ).rejects.toMatchObject({ name: 'HookNotFoundError' });
+
+        // Asserted on the log, not only on the throw: a rejection that still
+        // journaled the row would leave the run corrupted exactly as before.
+        expect(await eventTypesFor(testRunId)).toEqual([
+          'run_created',
+          'hook_created',
+          'hook_received',
+          'hook_disposed',
+        ]);
+      });
+
+      it('rejects a resume that passed its unlocked check mid-disposal', async () => {
+        // The regression guard. The unlocked existence read near the top of
+        // `create` cannot see a disposal that commits after it, so what has to
+        // hold is the locked re-check inside hook_received's transaction.
+        //
+        // Forced deterministically: an outside transaction takes the hook's row
+        // lock (as the disposal's DELETE does) and holds it while the resume
+        // runs. With the re-check in place the resume blocks on that lock and,
+        // once the holder deletes and commits, observes the hook gone. Without
+        // it the resume never takes the lock and journals its hook_received
+        // while the hook is being deleted — the ordering this rejects.
+        //
+        // The holder needs its OWN pool: the suite's pool is `max: 1`, so
+        // sharing it would make the resume wait for a free connection instead of
+        // for the row lock, and the test would pass whether or not the re-check
+        // exists.
+        const hook = await createHook(events, testRunId, {
+          hookId: 'hook_order_mid_dispose',
+          token: 'order-mid-dispose',
+        });
+
+        const holderPool = new Pool({
+          connectionString: process.env.DATABASE_URL,
+          max: 1,
+        });
+        let signalLocked!: () => void;
+        const locked = new Promise<void>((resolve) => {
+          signalLocked = resolve;
+        });
+        let releaseHolder!: () => void;
+        const release = new Promise<void>((resolve) => {
+          releaseHolder = resolve;
+        });
+
+        try {
+          const holder = createClient(holderPool).transaction(async (tx) => {
+            await tx
+              .select({ hookId: DrizzleSchema.hooks.hookId })
+              .from(DrizzleSchema.hooks)
+              .where(eq(DrizzleSchema.hooks.hookId, hook.hookId))
+              .for('update')
+              .limit(1);
+            signalLocked();
+            await release;
+            await tx
+              .delete(DrizzleSchema.hooks)
+              .where(eq(DrizzleSchema.hooks.hookId, hook.hookId));
+          });
+
+          await locked;
+          const resume = events.create(testRunId, {
+            eventType: 'hook_received',
+            correlationId: hook.hookId,
+            eventData: { payload: new Uint8Array([1]) },
+          });
+          // Long enough for the resume to clear the unlocked check and reach the
+          // locked one, where it blocks until the holder commits.
+          await new Promise((resolve) => setTimeout(resolve, 250));
+          releaseHolder();
+          await holder;
+
+          await expect(resume).rejects.toMatchObject({
+            name: 'HookNotFoundError',
+          });
+        } finally {
+          await holderPool.end();
+        }
+
+        expect(await eventTypesFor(testRunId)).toEqual([
+          'run_created',
+          'hook_created',
+        ]);
+      });
+
+      it('still accepts a hook_received while the hook is live', async () => {
+        // The lock must not reject an ordinary delivery: nothing holds the
+        // hook's row while it is alive, so the re-check finds it every time.
+        const hook = await createHook(events, testRunId, {
+          hookId: 'hook_order_live',
+          token: 'order-live',
+        });
+
+        const first = await events.create(testRunId, {
+          eventType: 'hook_received',
+          correlationId: hook.hookId,
+          eventData: { payload: new Uint8Array([1]) },
+        });
+        const second = await events.create(testRunId, {
+          eventType: 'hook_received',
+          correlationId: hook.hookId,
+          eventData: { payload: new Uint8Array([2]) },
+        });
+
+        expect(first.event.eventType).toBe('hook_received');
+        expect(second.event.eventType).toBe('hook_received');
+        expect(await eventTypesFor(testRunId)).toEqual([
+          'run_created',
+          'hook_created',
+          'hook_received',
+          'hook_received',
+        ]);
+      });
+
+      it('appends hook_disposed and deletes the hook together', async () => {
+        // The disposal's own half of the guard: the delete and the event are one
+        // transaction, so the log never holds a disposal whose hook survived,
+        // nor a deleted hook whose disposal is missing.
+        const hook = await createHook(events, testRunId, {
+          hookId: 'hook_order_atomic_dispose',
+          token: 'order-atomic-dispose',
+        });
+
+        const disposed = await events.create(testRunId, {
+          eventType: 'hook_disposed',
+          correlationId: hook.hookId,
+        });
+
+        expect(disposed.event.eventType).toBe('hook_disposed');
+        const rows = await drizzle
+          .select({ hookId: DrizzleSchema.hooks.hookId })
+          .from(DrizzleSchema.hooks)
+          .where(eq(DrizzleSchema.hooks.hookId, hook.hookId));
+        expect(rows).toHaveLength(0);
+      });
     });
 
     it('should reject hook_disposed before hook_created', async () => {

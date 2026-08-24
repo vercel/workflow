@@ -1,5 +1,45 @@
 # @workflow/world-postgres
 
+## 4.3.4
+
+### Patch Changes
+
+- [#3645](https://github.com/vercel/workflow/pull/3645) [`0f7f498`](https://github.com/vercel/workflow/commit/0f7f498c2f51557dcb270a5651785604c8369a46) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Reject a hook resume that races the hook's disposal, instead of journaling it after `hook_disposed` and corrupting the owning run's event log.
+
+- Updated dependencies [[`e331cd6`](https://github.com/vercel/workflow/commit/e331cd6aa9c5b578caa9770cb2889e306bd493e6)]:
+  - @workflow/world-local@4.3.0
+  - @workflow/world@4.4.0
+  - @workflow/errors@4.2.1
+
+## 4.3.3
+
+### Patch Changes
+
+- Updated dependencies [[`72ea6c8`](https://github.com/vercel/workflow/commit/72ea6c8edefb01a03acd25bef5efd4cdb9e03fa1), [`2fe2d88`](https://github.com/vercel/workflow/commit/2fe2d88fd7f5abe72051a18aa9cb1de1b6db65eb)]:
+  - @workflow/errors@4.2.1
+  - @workflow/world@4.3.1
+  - @workflow/world-local@4.2.4
+
+## 4.3.2
+
+### Patch Changes
+
+- Updated dependencies [[`12e4ef7`](https://github.com/vercel/workflow/commit/12e4ef7ea1777a0af1d69db7cf069a6a5da131c7)]:
+  - @workflow/world@4.3.0
+  - @workflow/errors@4.2.0
+  - @workflow/world-local@4.2.3
+
+## 4.3.1
+
+### Patch Changes
+
+- [#2732](https://github.com/vercel/workflow/pull/2732) [`2213c91`](https://github.com/vercel/workflow/commit/2213c91731f6d47373f4ba4c516c39ec2cc0fa94) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Respect framework base paths when routing workflow traffic and expose health checks on generated Next.js workflow routes.
+
+- Updated dependencies [[`2213c91`](https://github.com/vercel/workflow/commit/2213c91731f6d47373f4ba4c516c39ec2cc0fa94)]:
+  - @workflow/utils@4.1.4
+  - @workflow/world-local@4.2.2
+  - @workflow/errors@4.1.5
+
 ## 4.3.0
 
 ### Minor Changes

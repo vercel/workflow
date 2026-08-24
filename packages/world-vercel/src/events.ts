@@ -48,6 +48,7 @@ import {
   type WorkflowRun,
 } from '@workflow/world';
 import { decode } from 'cbor-x';
+import { withEventPostRetry } from './event-retry.js';
 import {
   createWorkflowRunEventV4,
   type DecodedV4Event,
@@ -521,8 +522,14 @@ export async function getWorkflowRunEvents(
       | 'resolve',
   };
 
+  const runId = 'correlationId' in params ? params.runId : undefined;
   const result = await ('correlationId' in params
-    ? getEventsByCorrelationIdV4(params.correlationId, wirePagination, config)
+    ? getEventsByCorrelationIdV4(
+        params.correlationId,
+        wirePagination,
+        config,
+        runId
+      )
     : getWorkflowRunEventsV4(params.runId, wirePagination, config));
 
   const events = result.events.map((listed) =>
@@ -530,7 +537,12 @@ export async function getWorkflowRunEvents(
   );
 
   return {
-    data: events,
+    // Older servers may ignore the runId query parameter. Keep the client
+    // filter as a compatibility guard until every server honors it.
+    data:
+      runId !== undefined
+        ? events.filter((event) => event.runId === runId)
+        : events,
     cursor: result.next ?? null,
     hasMore: Boolean(result.next),
   } as PaginatedResponse<Event>;
@@ -543,7 +555,18 @@ export async function createWorkflowRunEvent(
   config?: APIConfig
 ): Promise<EventResult> {
   try {
-    return await createWorkflowRunEventInner(id, data, params, config);
+    // Retry transient transport failures (UND_ERR_REQ_RETRY, ECONNRESET,
+    // socket/headers timeouts, transient 5xx) in-process for event types that
+    // are idempotent-on-retry. A write that landed but whose response was lost
+    // re-surfaces as a 409 (or plain success for run_started) the callers
+    // already handle, so this avoids a needless step re-execution on the next
+    // queue delivery. Non-retryable types (step_started, step_retrying,
+    // hook_received) run once. See ./event-retry for the validated per-event
+    // classification.
+    return await withEventPostRetry(
+      () => createWorkflowRunEventInner(id, data, params, config),
+      data.eventType
+    );
   } catch (err) {
     // 404 on hook_disposed / hook_received → already-disposed hook.
     if (
@@ -627,6 +650,9 @@ async function createWorkflowRunEventInner(
       specVersion: data.specVersion ?? 2,
       ...(data.correlationId ? { correlationId: data.correlationId } : {}),
       ...(params?.requestId ? { vercelId: params.requestId } : {}),
+      ...(params?.stateUpdatedAt !== undefined
+        ? { stateUpdatedAt: params.stateUpdatedAt }
+        : {}),
       occurredAt: params?.occurredAt ?? new Date(),
       remoteRefBehavior,
       payload,
@@ -670,5 +696,9 @@ async function createWorkflowRunEventInner(
       : undefined,
     cursor: body.cursor ?? undefined,
     hasMore: body.hasMore,
+    // Server-supplied per-run event ceiling; absent from older servers.
+    ...(typeof body.maxEvents === 'number'
+      ? { maxEvents: body.maxEvents }
+      : {}),
   };
 }

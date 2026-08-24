@@ -7,9 +7,7 @@ import {
   stat,
   writeFile,
 } from 'node:fs/promises';
-import { createRequire } from 'node:module';
-import { dirname, join, resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { join, resolve } from 'node:path';
 import {
   BaseBuilder,
   createBaseBuilderConfig,
@@ -27,7 +25,7 @@ const SVELTEKIT_VIRTUAL_MODULES = [
 ];
 
 export class SvelteKitBuilder extends BaseBuilder {
-  #routesDir: string | undefined;
+  #routesDir: string;
 
   constructor(config: Partial<SvelteKitConfig> & { routesDir?: string } = {}) {
     const workingDir = resolve(config.workingDir || process.cwd());
@@ -38,9 +36,7 @@ export class SvelteKitBuilder extends BaseBuilder {
       'src/routes',
     ];
     const projectRoot = config.projectRoot ?? resolveProjectRoot(workingDir);
-    const routesDir = config.routesDir
-      ? resolve(workingDir, config.routesDir)
-      : undefined;
+    const routesDir = resolve(workingDir, config.routesDir ?? 'src/routes');
     super({
       ...createBaseBuilderConfig({
         workingDir,
@@ -236,13 +232,16 @@ export const POST = async ({request}) => {
       ''
     );
 
-    // Replace all HTTP method exports with SvelteKit-compatible handlers
+    // Replace all HTTP method exports with SvelteKit-compatible handlers.
+    // The `request` from SvelteKit is already a standard `Request`, so it is
+    // handed to the webhook handler as-is. Notably it must NOT be copied via
+    // a normalizer that buffers the body: this is a public route where the
+    // token is checked inside `handler`, so the body must stay unread until
+    // the token has been accepted.
     webhookRouteContent = webhookRouteContent.replace(
       /export const GET = handler;\nexport const POST = handler;\nexport const PUT = handler;\nexport const PATCH = handler;\nexport const DELETE = handler;\nexport const HEAD = handler;\nexport const OPTIONS = handler;/,
-      `${NORMALIZE_REQUEST_CODE}
-const createSvelteKitHandler = (method) => async ({ request, params, platform }) => {
-  const normalRequest = await normalizeRequest(request);
-  const response = await handler(normalRequest, params.token);
+      `const createSvelteKitHandler = (method) => async ({ request, params, platform }) => {
+  const response = await handler(request, params.token);
   return response;
 };
 
@@ -259,30 +258,9 @@ export const OPTIONS = createSvelteKitHandler('OPTIONS');`
   }
 
   private async loadRoutesDirectory(): Promise<string> {
-    const routesDir =
-      this.#routesDir ?? (await loadSvelteKitRoutesDir(this.config.workingDir));
-    await assertDirectory(routesDir);
-    return routesDir;
+    await assertDirectory(this.#routesDir);
+    return this.#routesDir;
   }
-}
-
-export async function loadSvelteKitRoutesDir(
-  workingDir: string
-): Promise<string> {
-  const require = createRequire(join(workingDir, 'package.json'));
-  const packageJsonPath = require.resolve('@sveltejs/kit/package.json');
-  const loaderPath = join(dirname(packageJsonPath), 'src/core/config/index.js');
-
-  // SvelteKit's internal config loader
-  const { load_config } = await import(pathToFileURL(loaderPath).href);
-  const config = await load_config({ cwd: workingDir });
-  const routesDir = config.kit?.files?.routes;
-  if (routesDir == null || typeof routesDir !== 'string') {
-    throw new Error(
-      'Expected SvelteKit config loader to return kit.files.routes as a string.'
-    );
-  }
-  return routesDir;
 }
 
 async function assertDirectory(path: string): Promise<void> {

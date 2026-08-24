@@ -13,7 +13,7 @@ catalog:
   '@vercel/functions': ^3.4.3
   '@vercel/oidc': 3.2.0
   '@vercel/queue': 0.3.1
-  '@vitest/coverage-v8': ^4.0.18
+  '@vitest/coverage-v8': ^4.1.10
   ai: 6.0.116
   esbuild: ^0.28.1
   nitro: 3.0.260610-beta
@@ -21,7 +21,7 @@ catalog:
   typescript: ^6.0.3
   ulid: ~3.0.1
   undici: 7.28.0
-  vitest: ^4.0.18
+  vitest: ^4.1.10
   zod: ~4.3.6
 
 minimumReleaseAge: 2880
@@ -33,8 +33,19 @@ minimumReleaseAgeExclude:
   - '@workflow/*'
   - esbuild
   - '@esbuild/*'
+  - '@sveltejs/load-config'
 
 onlyBuiltDependencies:
   - esbuild
+
+overrides:
+  rfc6902: 5.1.2
+  devalue: 5.8.1
+  '@sveltejs/acorn-typescript': 1.0.10
+  # postcss < 8.5.18 is vulnerable to CVE-2026-45623 and GHSA-r28c-9q8g-f849
+  # (arbitrary file read / .map disclosure via attacker-controlled
+  # sourceMappingURL). Forces transitive pins (e.g. next.js's postcss@8.4.31)
+  # onto a patched version.
+  'postcss@<8.5.18': 8.5.22
 
 savePrefix: ''

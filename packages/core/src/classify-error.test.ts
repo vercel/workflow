@@ -1,6 +1,7 @@
 import {
   CorruptedEventLogError,
   HookConflictError,
+  MaxEventsExceededError,
   ReplayDivergenceError,
   RUN_ERROR_CODES,
   RuntimeDecryptionError,
@@ -18,6 +19,12 @@ describe('classifyRunError', () => {
     expect(
       classifyRunError(new CorruptedEventLogError('corrupted event log'))
     ).toBe(RUN_ERROR_CODES.CORRUPTED_EVENT_LOG);
+  });
+
+  it('classifies MaxEventsExceededError as MAX_EVENTS_EXCEEDED', () => {
+    expect(classifyRunError(new MaxEventsExceededError(25_100, 25_000))).toBe(
+      RUN_ERROR_CODES.MAX_EVENTS_EXCEEDED
+    );
   });
 
   it('classifies ReplayDivergenceError as REPLAY_DIVERGENCE', () => {

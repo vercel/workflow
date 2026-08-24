@@ -1,5 +1,72 @@
 # @workflow/world-vercel
 
+## 4.7.0
+
+### Minor Changes
+
+- [#3461](https://github.com/vercel/workflow/pull/3461) [`e331cd6`](https://github.com/vercel/workflow/commit/e331cd6aa9c5b578caa9770cb2889e306bd493e6) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Add `WORKFLOW_NODE_HTTP` to run the Vercel and Local World HTTP layers on Node's built-in `node:http` and `node:https` modules instead of their usual HTTP client library.
+
+### Patch Changes
+
+- Updated dependencies [[`e331cd6`](https://github.com/vercel/workflow/commit/e331cd6aa9c5b578caa9770cb2889e306bd493e6)]:
+  - @workflow/world@4.4.0
+  - @workflow/errors@4.2.1
+
+## 4.6.2
+
+### Patch Changes
+
+- [#3370](https://github.com/vercel/workflow/pull/3370) [`30da024`](https://github.com/vercel/workflow/commit/30da02423f9b4eb9916c7ede93d5928bb5d4bc04) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Recover from HTTP/2 connections that stop delivering event requests, and make `WORKFLOW_H2_MULTIPLEX=0` disable HTTP/2 on the events path entirely
+
+## 4.6.1
+
+### Patch Changes
+
+- [#3233](https://github.com/vercel/workflow/pull/3233) [`7fd2e4a`](https://github.com/vercel/workflow/commit/7fd2e4a4e0cbe26416f5ea83ed928c07ab9893f5) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Cancel the v4 event frame stream when a reader stops early, so the response body's undici connection returns to the pool instead of leaking.
+
+- [#2986](https://github.com/vercel/workflow/pull/2986) [`72ea6c8`](https://github.com/vercel/workflow/commit/72ea6c8edefb01a03acd25bef5efd4cdb9e03fa1) Thanks [@shalabhc](https://github.com/shalabhc)! - Enforce a server-supplied per-run event limit (default 25K)
+
+- [#3233](https://github.com/vercel/workflow/pull/3233) [`7fd2e4a`](https://github.com/vercel/workflow/commit/7fd2e4a4e0cbe26416f5ea83ed928c07ab9893f5) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Event-log requests now multiplex over a single HTTP/2 connection instead of opening one connection per in-flight request
+
+- [#3233](https://github.com/vercel/workflow/pull/3233) [`7fd2e4a`](https://github.com/vercel/workflow/commit/7fd2e4a4e0cbe26416f5ea83ed928c07ab9893f5) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Raise HTTP/2 receive windows on the events client, slightly decreasing read latency
+
+- [#3233](https://github.com/vercel/workflow/pull/3233) [`7fd2e4a`](https://github.com/vercel/workflow/commit/7fd2e4a4e0cbe26416f5ea83ed928c07ab9893f5) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Retry stream close on retriable 5xx. Close is idempotent on the server (unlike chunk appends, which keep their no-5xx retry policy), and the server may return retriable 503s expecting the writer to close again.
+
+- [#3233](https://github.com/vercel/workflow/pull/3233) [`7fd2e4a`](https://github.com/vercel/workflow/commit/7fd2e4a4e0cbe26416f5ea83ed928c07ab9893f5) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Enable HTTP/2 for the events API and stream write requests.
+
+- [#3233](https://github.com/vercel/workflow/pull/3233) [`7fd2e4a`](https://github.com/vercel/workflow/commit/7fd2e4a4e0cbe26416f5ea83ed928c07ab9893f5) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Unify HTTP request handling into a shared core, extending OTEL client spans, trace-context propagation, and `DEBUG` logging to the v4 events, stream, and Vercel API request paths
+
+- Updated dependencies [[`72ea6c8`](https://github.com/vercel/workflow/commit/72ea6c8edefb01a03acd25bef5efd4cdb9e03fa1)]:
+  - @workflow/errors@4.2.1
+  - @workflow/world@4.3.1
+
+## 4.6.0
+
+### Minor Changes
+
+- [#3079](https://github.com/vercel/workflow/pull/3079) [`12e4ef7`](https://github.com/vercel/workflow/commit/12e4ef7ea1777a0af1d69db7cf069a6a5da131c7) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Add an optimistic-concurrency guard for event creation (on by default; opt out with `WORKFLOW_PRECONDITION_GUARD=0`): replay-context event creations send a `stateUpdatedAt` snapshot timestamp, and the runtime reloads the event log and retries (then falls back to a fresh re-invocation) when the backend reports a newer out-of-band event with a 412 `PreconditionFailedError`. Backends without guard support ignore the snapshot, so this is backward-compatible and fails open.
+
+### Patch Changes
+
+- [#3169](https://github.com/vercel/workflow/pull/3169) [`9d8b293`](https://github.com/vercel/workflow/commit/9d8b293f88205ed7b1b343a947e765670da317e3) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Bound HTTP requests with a 30s headers/body timeout instead of undici's 5-minute default, and retry transport timeouts and other transient failures in-process, so a stalled connection no longer leaves a run silently paused for ~5 minutes until the queue redelivers it. Override with `WORKFLOW_VERCEL_HEADERS_TIMEOUT_MS` / `WORKFLOW_VERCEL_BODY_TIMEOUT_MS`.
+
+- Updated dependencies [[`12e4ef7`](https://github.com/vercel/workflow/commit/12e4ef7ea1777a0af1d69db7cf069a6a5da131c7)]:
+  - @workflow/world@4.3.0
+  - @workflow/errors@4.2.0
+
+## 4.5.1
+
+### Patch Changes
+
+- [#2959](https://github.com/vercel/workflow/pull/2959) [`aac6ea5`](https://github.com/vercel/workflow/commit/aac6ea53ecb1a281b187652fc4bb7db6596f5d4f) Thanks [@alangenfeld](https://github.com/alangenfeld)! - Log the underlying queue handler error before retrying a failed delivery.
+
+- [#3013](https://github.com/vercel/workflow/pull/3013) [`7c0266f`](https://github.com/vercel/workflow/commit/7c0266f193065a045e2b36b3072b1dc1d08c07fb) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Retry transient connection timeouts so Eve can resume existing workflow runs after brief network failures.
+
+- [#2998](https://github.com/vercel/workflow/pull/2998) [`8eb110c`](https://github.com/vercel/workflow/commit/8eb110ca2ec0923ad21d51e745925da74c9f0284) Thanks [@ruiconti](https://github.com/ruiconti)! - Append caller-provided user-agent tokens to the world-vercel user-agent instead of discarding them.
+
+- Updated dependencies []:
+  - @workflow/errors@4.1.5
+
 ## 4.5.0
 
 ### Minor Changes

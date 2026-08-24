@@ -11,14 +11,20 @@ import type {
   LanguageModelV3ToolCall,
   LanguageModelV3ToolResult,
   LanguageModelV3ToolResultPart,
+  SharedV3ProviderOptions,
 } from '@ai-sdk/provider';
-import type { StepResult, ToolSet, UIMessageChunk } from 'ai';
+import type { ToolSet, UIMessageChunk } from 'ai';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-// Mock doStreamStep
-vi.mock('./do-stream-step.js', () => ({
-  doStreamStep: vi.fn(),
-}));
+// Mock doStreamStep but keep the rest of the module (notably
+// `normalizeFinishReason`, which buildStepResult uses).
+vi.mock(import('./do-stream-step.js'), async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    doStreamStep: vi.fn(),
+  };
+});
 
 // Import after mocking
 const { streamTextIterator } = await import('./stream-text-iterator.js');
@@ -35,36 +41,38 @@ function createMockWritable(): WritableStream<UIMessageChunk> {
 }
 
 /**
- * Helper to create a minimal step result for testing
+ * Helper to create a mock `doStreamStep` result. Inputs are described in
+ * StepResult-style terms (finishReason, reasoning) and translated to the
+ * raw aggregate shape that `doStreamStep` actually returns; the iterator
+ * reconstructs the StepResult via buildStepResult().
  */
-function createMockStepResult(
-  overrides: Partial<StepResult<ToolSet>> = {}
-): StepResult<ToolSet> {
+function createMockResult(
+  overrides: {
+    toolCalls?: LanguageModelV3ToolCall[];
+    finishReason?: string;
+    reasoning?: Array<{
+      text: string;
+      providerOptions?: SharedV3ProviderOptions;
+    }>;
+    text?: string;
+  } = {}
+) {
   return {
-    content: [],
-    text: '',
-    reasoning: [],
-    reasoningText: undefined,
-    files: [],
-    sources: [],
-    toolCalls: [],
-    staticToolCalls: [],
-    dynamicToolCalls: [],
-    toolResults: [],
-    staticToolResults: [],
-    dynamicToolResults: [],
-    finishReason: 'stop',
-    usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
-    warnings: [],
-    request: { body: '' },
-    response: {
-      id: 'test',
-      timestamp: new Date(),
-      modelId: 'test',
-      messages: [],
+    toolCalls: overrides.toolCalls ?? [],
+    raw: {
+      text: overrides.text ?? '',
+      reasoning: (overrides.reasoning ?? []).map((r) => ({
+        text: r.text,
+        ...(r.providerOptions != null
+          ? { providerMetadata: r.providerOptions }
+          : {}),
+      })),
+      files: [],
+      sources: [],
+      rawFinishReason: overrides.finishReason,
     },
-    providerMetadata: {},
-    ...overrides,
+    uiChunks: undefined,
+    providerExecutedToolResults: new Map(),
   };
 }
 
@@ -96,19 +104,19 @@ describe('streamTextIterator', () => {
       // First call returns tool-calls with providerMetadata
       // Second call (after tool results) should receive the updated prompt
       vi.mocked(doStreamStep)
-        .mockResolvedValueOnce({
-          toolCalls: [toolCallWithMetadata],
-          finish: { finishReason: 'tool-calls' },
-          step: createMockStepResult({ finishReason: 'tool-calls' }),
-        })
+        .mockResolvedValueOnce(
+          createMockResult({
+            toolCalls: [toolCallWithMetadata],
+            finishReason: 'tool-calls',
+          })
+        )
         .mockImplementationOnce(async (prompt) => {
           // Capture the prompt on the second call to verify providerOptions
           capturedPrompt = prompt;
-          return {
+          return createMockResult({
             toolCalls: [],
-            finish: { finishReason: 'stop' },
-            step: createMockStepResult({ finishReason: 'stop' }),
-          };
+            finishReason: 'stop',
+          });
         });
 
       const iterator = streamTextIterator({
@@ -177,18 +185,18 @@ describe('streamTextIterator', () => {
       };
 
       vi.mocked(doStreamStep)
-        .mockResolvedValueOnce({
-          toolCalls: [toolCallWithoutMetadata],
-          finish: { finishReason: 'tool-calls' },
-          step: createMockStepResult({ finishReason: 'tool-calls' }),
-        })
+        .mockResolvedValueOnce(
+          createMockResult({
+            toolCalls: [toolCallWithoutMetadata],
+            finishReason: 'tool-calls',
+          })
+        )
         .mockImplementationOnce(async (prompt) => {
           capturedPrompt = prompt;
-          return {
+          return createMockResult({
             toolCalls: [],
-            finish: { finishReason: 'stop' },
-            step: createMockStepResult({ finishReason: 'stop' }),
-          };
+            finishReason: 'stop',
+          });
         });
 
       const iterator = streamTextIterator({
@@ -256,18 +264,18 @@ describe('streamTextIterator', () => {
       ];
 
       vi.mocked(doStreamStep)
-        .mockResolvedValueOnce({
-          toolCalls,
-          finish: { finishReason: 'tool-calls' },
-          step: createMockStepResult({ finishReason: 'tool-calls' }),
-        })
+        .mockResolvedValueOnce(
+          createMockResult({
+            toolCalls,
+            finishReason: 'tool-calls',
+          })
+        )
         .mockImplementationOnce(async (prompt) => {
           capturedPrompt = prompt;
-          return {
+          return createMockResult({
             toolCalls: [],
-            finish: { finishReason: 'stop' },
-            step: createMockStepResult({ finishReason: 'stop' }),
-          };
+            finishReason: 'stop',
+          });
         });
 
       const iterator = streamTextIterator({
@@ -358,18 +366,18 @@ describe('streamTextIterator', () => {
       ];
 
       vi.mocked(doStreamStep)
-        .mockResolvedValueOnce({
-          toolCalls,
-          finish: { finishReason: 'tool-calls' },
-          step: createMockStepResult({ finishReason: 'tool-calls' }),
-        })
+        .mockResolvedValueOnce(
+          createMockResult({
+            toolCalls,
+            finishReason: 'tool-calls',
+          })
+        )
         .mockImplementationOnce(async (prompt) => {
           capturedPrompt = prompt;
-          return {
+          return createMockResult({
             toolCalls: [],
-            finish: { finishReason: 'stop' },
-            step: createMockStepResult({ finishReason: 'stop' }),
-          };
+            finishReason: 'stop',
+          });
         });
 
       const iterator = streamTextIterator({
@@ -448,18 +456,18 @@ describe('streamTextIterator', () => {
       };
 
       vi.mocked(doStreamStep)
-        .mockResolvedValueOnce({
-          toolCalls: [toolCallWithOpenAIMetadata],
-          finish: { finishReason: 'tool-calls' },
-          step: createMockStepResult({ finishReason: 'tool-calls' }),
-        })
+        .mockResolvedValueOnce(
+          createMockResult({
+            toolCalls: [toolCallWithOpenAIMetadata],
+            finishReason: 'tool-calls',
+          })
+        )
         .mockImplementationOnce(async (prompt) => {
           capturedPrompt = prompt;
-          return {
+          return createMockResult({
             toolCalls: [],
-            finish: { finishReason: 'stop' },
-            step: createMockStepResult({ finishReason: 'stop' }),
-          };
+            finishReason: 'stop',
+          });
         });
 
       const iterator = streamTextIterator({
@@ -523,18 +531,18 @@ describe('streamTextIterator', () => {
       };
 
       vi.mocked(doStreamStep)
-        .mockResolvedValueOnce({
-          toolCalls: [toolCallWithMixedOpenAIMetadata],
-          finish: { finishReason: 'tool-calls' },
-          step: createMockStepResult({ finishReason: 'tool-calls' }),
-        })
+        .mockResolvedValueOnce(
+          createMockResult({
+            toolCalls: [toolCallWithMixedOpenAIMetadata],
+            finishReason: 'tool-calls',
+          })
+        )
         .mockImplementationOnce(async (prompt) => {
           capturedPrompt = prompt;
-          return {
+          return createMockResult({
             toolCalls: [],
-            finish: { finishReason: 'stop' },
-            step: createMockStepResult({ finishReason: 'stop' }),
-          };
+            finishReason: 'stop',
+          });
         });
 
       const iterator = streamTextIterator({
@@ -600,18 +608,18 @@ describe('streamTextIterator', () => {
       };
 
       vi.mocked(doStreamStep)
-        .mockResolvedValueOnce({
-          toolCalls: [toolCallWithMixedProviders],
-          finish: { finishReason: 'tool-calls' },
-          step: createMockStepResult({ finishReason: 'tool-calls' }),
-        })
+        .mockResolvedValueOnce(
+          createMockResult({
+            toolCalls: [toolCallWithMixedProviders],
+            finishReason: 'tool-calls',
+          })
+        )
         .mockImplementationOnce(async (prompt) => {
           capturedPrompt = prompt;
-          return {
+          return createMockResult({
             toolCalls: [],
-            finish: { finishReason: 'stop' },
-            step: createMockStepResult({ finishReason: 'stop' }),
-          };
+            finishReason: 'stop',
+          });
         });
 
       const iterator = streamTextIterator({
@@ -673,24 +681,22 @@ describe('streamTextIterator', () => {
       };
 
       vi.mocked(doStreamStep)
-        .mockResolvedValueOnce({
-          toolCalls: [toolCall],
-          finish: { finishReason: 'tool-calls' },
-          step: createMockStepResult({
+        .mockResolvedValueOnce(
+          createMockResult({
+            toolCalls: [toolCall],
             finishReason: 'tool-calls',
             reasoning: [
               { type: 'reasoning', text: 'Let me think about this...' },
               { type: 'reasoning', text: 'I should use the test tool.' },
             ],
-          }),
-        })
+          })
+        )
         .mockImplementationOnce(async (prompt) => {
           capturedPrompt = prompt;
-          return {
+          return createMockResult({
             toolCalls: [],
-            finish: { finishReason: 'stop' },
-            step: createMockStepResult({ finishReason: 'stop' }),
-          };
+            finishReason: 'stop',
+          });
         });
 
       const iterator = streamTextIterator({
@@ -751,10 +757,9 @@ describe('streamTextIterator', () => {
       };
 
       vi.mocked(doStreamStep)
-        .mockResolvedValueOnce({
-          toolCalls: [toolCall],
-          finish: { finishReason: 'tool-calls' },
-          step: createMockStepResult({
+        .mockResolvedValueOnce(
+          createMockResult({
+            toolCalls: [toolCall],
             finishReason: 'tool-calls',
             reasoning: [
               {
@@ -765,15 +770,14 @@ describe('streamTextIterator', () => {
                 },
               },
             ],
-          }),
-        })
+          })
+        )
         .mockImplementationOnce(async (prompt) => {
           capturedPrompt = prompt;
-          return {
+          return createMockResult({
             toolCalls: [],
-            finish: { finishReason: 'stop' },
-            step: createMockStepResult({ finishReason: 'stop' }),
-          };
+            finishReason: 'stop',
+          });
         });
 
       const iterator = streamTextIterator({
@@ -829,21 +833,19 @@ describe('streamTextIterator', () => {
       };
 
       vi.mocked(doStreamStep)
-        .mockResolvedValueOnce({
-          toolCalls: [toolCall],
-          finish: { finishReason: 'tool-calls' },
-          step: createMockStepResult({
+        .mockResolvedValueOnce(
+          createMockResult({
+            toolCalls: [toolCall],
             finishReason: 'tool-calls',
             reasoning: [],
-          }),
-        })
+          })
+        )
         .mockImplementationOnce(async (prompt) => {
           capturedPrompt = prompt;
-          return {
+          return createMockResult({
             toolCalls: [],
-            finish: { finishReason: 'stop' },
-            step: createMockStepResult({ finishReason: 'stop' }),
-          };
+            finishReason: 'stop',
+          });
         });
 
       const iterator = streamTextIterator({
@@ -891,11 +893,10 @@ describe('streamTextIterator', () => {
 
       vi.mocked(doStreamStep).mockImplementationOnce(async (prompt) => {
         capturedPrompt = prompt;
-        return {
+        return createMockResult({
           toolCalls: [],
-          finish: { finishReason: 'stop' },
-          step: createMockStepResult({ finishReason: 'stop' }),
-        };
+          finishReason: 'stop',
+        });
       });
 
       const iterator = streamTextIterator({
@@ -929,11 +930,10 @@ describe('streamTextIterator', () => {
 
       vi.mocked(doStreamStep).mockImplementationOnce(async (prompt) => {
         capturedPrompt = prompt;
-        return {
+        return createMockResult({
           toolCalls: [],
-          finish: { finishReason: 'stop' },
-          step: createMockStepResult({ finishReason: 'stop' }),
-        };
+          finishReason: 'stop',
+        });
       });
 
       // prepareStep returns both system and messages — system should NOT be lost
@@ -980,11 +980,10 @@ describe('streamTextIterator', () => {
 
       vi.mocked(doStreamStep).mockImplementationOnce(async (prompt) => {
         capturedPrompt = prompt;
-        return {
+        return createMockResult({
           toolCalls: [],
-          finish: { finishReason: 'stop' },
-          step: createMockStepResult({ finishReason: 'stop' }),
-        };
+          finishReason: 'stop',
+        });
       });
 
       // Messages already include a system message — prepareStep's system should replace it
@@ -1036,19 +1035,17 @@ describe('streamTextIterator', () => {
       vi.mocked(doStreamStep)
         .mockImplementationOnce(async (prompt) => {
           capturedPrompts.push([...prompt]);
-          return {
+          return createMockResult({
             toolCalls: [toolCall],
-            finish: { finishReason: 'tool-calls' },
-            step: createMockStepResult({ finishReason: 'tool-calls' }),
-          };
+            finishReason: 'tool-calls',
+          });
         })
         .mockImplementationOnce(async (prompt) => {
           capturedPrompts.push([...prompt]);
-          return {
+          return createMockResult({
             toolCalls: [],
-            finish: { finishReason: 'stop' },
-            step: createMockStepResult({ finishReason: 'stop' }),
-          };
+            finishReason: 'stop',
+          });
         });
 
       const iterator = streamTextIterator({
@@ -1111,38 +1108,18 @@ describe('streamTextIterator', () => {
       };
 
       vi.mocked(doStreamStep)
-        .mockResolvedValueOnce({
-          toolCalls: [malformedToolCall],
-          finish: { finishReason: 'tool-calls' },
-          step: createMockStepResult({
+        .mockResolvedValueOnce(
+          createMockResult({
+            toolCalls: [malformedToolCall],
             finishReason: 'tool-calls',
-            toolCalls: [
-              {
-                type: 'tool-call',
-                toolCallId: 'call-1',
-                toolName: 'testTool',
-                input: '{"query":"test"',
-                dynamic: true as const,
-              },
-            ],
-            dynamicToolCalls: [
-              {
-                type: 'tool-call',
-                toolCallId: 'call-1',
-                toolName: 'testTool',
-                input: '{"query":"test"',
-                dynamic: true as const,
-              },
-            ],
-          }),
-        })
+          })
+        )
         .mockImplementationOnce(async (prompt) => {
           capturedPrompt = prompt;
-          return {
+          return createMockResult({
             toolCalls: [],
-            finish: { finishReason: 'stop' },
-            step: createMockStepResult({ finishReason: 'stop' }),
-          };
+            finishReason: 'stop',
+          });
         });
 
       const iterator = streamTextIterator({

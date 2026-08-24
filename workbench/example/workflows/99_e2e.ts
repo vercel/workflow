@@ -1209,6 +1209,54 @@ export async function errorFatalCatchable() {
   }
 }
 
+// ---
+
+/**
+ * A class instance with no registered serde model cannot cross the
+ * workflow/step boundary — the serializer rejects non-POJO instances.
+ * Used by the serialization-error tests below.
+ */
+class UnserializableValue {
+  secret = 'not-serializable';
+}
+
+async function acceptAnyValue(value: unknown) {
+  'use step';
+  return { received: value !== undefined };
+}
+
+/**
+ * Test: step ARGUMENTS that cannot be serialized. The suspension handler
+ * fails the step (step_created + step_failed) instead of failing the run
+ * from the outside, so a try/catch around the step call observes the
+ * serialization error — same shape as catching a step-body failure.
+ */
+export async function serializationErrorStepArgsCaught() {
+  'use workflow';
+  try {
+    await acceptAnyValue(new UnserializableValue());
+    return { caught: false } as any;
+  } catch (err: any) {
+    return {
+      caught: true,
+      messageIncludesStepArguments:
+        typeof err?.message === 'string' &&
+        err.message.includes('Failed to serialize step arguments'),
+    };
+  }
+}
+
+/**
+ * Test: uncaught step-argument serialization failure fails the run as a
+ * fatal USER_ERROR immediately — no queue-redelivery retry loop.
+ */
+export async function serializationErrorStepArgsUncaught() {
+  'use workflow';
+  // Don't catch — the serialization error propagates and fails the run.
+  await acceptAnyValue(new UnserializableValue());
+  return { caught: false };
+}
+
 // ------------------------------------------------------------
 // SECTION 4: NOT REGISTERED ERRORS
 // Tests for step/workflow not registered in the current deployment

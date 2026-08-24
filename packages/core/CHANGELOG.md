@@ -1,5 +1,80 @@
 # @workflow/core
 
+## 4.8.4
+
+### Patch Changes
+
+- Updated dependencies [[`e331cd6`](https://github.com/vercel/workflow/commit/e331cd6aa9c5b578caa9770cb2889e306bd493e6)]:
+  - @workflow/world-vercel@4.7.0
+  - @workflow/world-local@4.3.0
+  - @workflow/world@4.4.0
+  - @workflow/errors@4.2.1
+
+## 4.8.3
+
+## 4.8.2
+
+### Patch Changes
+
+- [#3372](https://github.com/vercel/workflow/pull/3372) [`e822a6a`](https://github.com/vercel/workflow/commit/e822a6a173707183325cf76b58f6522df4c5d08e) Thanks [@ar-tama](https://github.com/ar-tama)! - Fix `Date` subclassing inside workflow functions. The deterministic `Date` override in the workflow VM now forwards `new.target` via `Reflect.construct`, so subclasses like `TZDate` from `@date-fns/tz` keep their identity, methods, and fields. Calling `Date()` without `new` now returns the (fixed) time string per spec, instead of a `Date` object.
+
+- [#3139](https://github.com/vercel/workflow/pull/3139) [`6f301ba`](https://github.com/vercel/workflow/commit/6f301ba396f92181f2982bc901d2f90216450787) Thanks [@pranaygp](https://github.com/pranaygp)! - Deliver step results, wait completions and hook payloads in strict event-log order relative to one another, preventing replay divergence (`CORRUPTED_EVENT_LOG`) when a step completion is adjacent in the log to a `wait_completed` or `hook_received` that a concurrent branch is awaiting.
+
+- [#3439](https://github.com/vercel/workflow/pull/3439) [`86bc000`](https://github.com/vercel/workflow/commit/86bc00050fc6ac93e372f753260046b8f64c52ba) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Stop reporting replay divergence for an event the workflow is still on its way to consuming, by waiting for in-flight step and hook deliveries instead of a fixed delay
+
+## 4.8.1
+
+### Patch Changes
+
+- Updated dependencies [[`30da024`](https://github.com/vercel/workflow/commit/30da02423f9b4eb9916c7ede93d5928bb5d4bc04)]:
+  - @workflow/world-vercel@4.6.2
+
+## 4.8.0
+
+### Minor Changes
+
+- [#2986](https://github.com/vercel/workflow/pull/2986) [`72ea6c8`](https://github.com/vercel/workflow/commit/72ea6c8edefb01a03acd25bef5efd4cdb9e03fa1) Thanks [@shalabhc](https://github.com/shalabhc)! - Enforce a server-supplied per-run event limit (default 25K)
+
+### Patch Changes
+
+- Updated dependencies [[`7fd2e4a`](https://github.com/vercel/workflow/commit/7fd2e4a4e0cbe26416f5ea83ed928c07ab9893f5), [`72ea6c8`](https://github.com/vercel/workflow/commit/72ea6c8edefb01a03acd25bef5efd4cdb9e03fa1), [`7fd2e4a`](https://github.com/vercel/workflow/commit/7fd2e4a4e0cbe26416f5ea83ed928c07ab9893f5), [`7fd2e4a`](https://github.com/vercel/workflow/commit/7fd2e4a4e0cbe26416f5ea83ed928c07ab9893f5), [`7fd2e4a`](https://github.com/vercel/workflow/commit/7fd2e4a4e0cbe26416f5ea83ed928c07ab9893f5), [`2fe2d88`](https://github.com/vercel/workflow/commit/2fe2d88fd7f5abe72051a18aa9cb1de1b6db65eb), [`7fd2e4a`](https://github.com/vercel/workflow/commit/7fd2e4a4e0cbe26416f5ea83ed928c07ab9893f5), [`7fd2e4a`](https://github.com/vercel/workflow/commit/7fd2e4a4e0cbe26416f5ea83ed928c07ab9893f5)]:
+  - @workflow/world-vercel@4.6.1
+  - @workflow/errors@4.2.1
+  - @workflow/world@4.3.1
+  - @workflow/world-local@4.2.4
+
+## 4.7.0
+
+### Minor Changes
+
+- [#3079](https://github.com/vercel/workflow/pull/3079) [`12e4ef7`](https://github.com/vercel/workflow/commit/12e4ef7ea1777a0af1d69db7cf069a6a5da131c7) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Add an optimistic-concurrency guard for event creation (on by default; opt out with `WORKFLOW_PRECONDITION_GUARD=0`): replay-context event creations send a `stateUpdatedAt` snapshot timestamp, and the runtime reloads the event log and retries (then falls back to a fresh re-invocation) when the backend reports a newer out-of-band event with a 412 `PreconditionFailedError`. Backends without guard support ignore the snapshot, so this is backward-compatible and fails open.
+
+### Patch Changes
+
+- Updated dependencies [[`12e4ef7`](https://github.com/vercel/workflow/commit/12e4ef7ea1777a0af1d69db7cf069a6a5da131c7), [`9d8b293`](https://github.com/vercel/workflow/commit/9d8b293f88205ed7b1b343a947e765670da317e3)]:
+  - @workflow/world-vercel@4.6.0
+  - @workflow/world@4.3.0
+  - @workflow/errors@4.2.0
+  - @workflow/world-local@4.2.3
+
+## 4.6.2
+
+## 4.6.1
+
+### Patch Changes
+
+- [#2996](https://github.com/vercel/workflow/pull/2996) [`0422a0e`](https://github.com/vercel/workflow/commit/0422a0e51b3299bbd8570e0055419659b8ba3fe1) Thanks [@joeyhotz](https://github.com/joeyhotz)! - Cache self-hosted step port discovery per process.
+
+- [#2687](https://github.com/vercel/workflow/pull/2687) [`b1d1a06`](https://github.com/vercel/workflow/commit/b1d1a066a5710fbd5f97b69ae4dd8a4d892b4d57) Thanks [@Osamaali313](https://github.com/Osamaali313)! - Fix `extractStreamIds` overflowing the stack on circular references
+
+- [#2732](https://github.com/vercel/workflow/pull/2732) [`2213c91`](https://github.com/vercel/workflow/commit/2213c91731f6d47373f4ba4c516c39ec2cc0fa94) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Respect framework base paths when routing workflow traffic and expose health checks on generated Next.js workflow routes.
+
+- Updated dependencies [[`aac6ea5`](https://github.com/vercel/workflow/commit/aac6ea53ecb1a281b187652fc4bb7db6596f5d4f), [`2213c91`](https://github.com/vercel/workflow/commit/2213c91731f6d47373f4ba4c516c39ec2cc0fa94), [`7c0266f`](https://github.com/vercel/workflow/commit/7c0266f193065a045e2b36b3072b1dc1d08c07fb), [`8eb110c`](https://github.com/vercel/workflow/commit/8eb110ca2ec0923ad21d51e745925da74c9f0284)]:
+  - @workflow/world-vercel@4.5.1
+  - @workflow/utils@4.1.4
+  - @workflow/world-local@4.2.2
+  - @workflow/errors@4.1.5
+
 ## 4.6.0
 
 ### Minor Changes

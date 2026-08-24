@@ -1,5 +1,10 @@
 import cp from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
+import { rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { setTimeout } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { WorkflowRunSchema } from '@workflow/world';
 import chalk, { type ChalkInstance } from 'chalk';
@@ -20,12 +25,26 @@ type Control = z.infer<typeof Control>;
 type Files = keyof typeof manifest.workflows;
 type Workflows<F extends Files> = keyof (typeof manifest.workflows)[F];
 
-export async function startServer(opts: { world: string }) {
+export async function startServer(opts: {
+  world: string;
+  env?: Record<string, string | undefined>;
+}) {
   let serverPath = new URL('./server.mts', import.meta.url);
 
   if (!existsSync(serverPath)) {
     serverPath = new URL('./server.mjs', import.meta.url);
   }
+
+  // Give each spawned server its own data directory. The Local World's default
+  // (untagged) `.workflow-data` dir is otherwise shared by every concurrently
+  // running test file's server, and its startup recovery sweep re-enqueues
+  // every untagged run it finds — including runs still mid-flight in another
+  // test's server — dispatching them against the same on-disk event log and
+  // racing the run's actual owner into spurious `ReplayDivergenceError`s.
+  const dataDir = join(
+    tmpdir(),
+    `workflow-world-testing-${process.pid}-${randomUUID()}`
+  );
 
   const proc = cp.spawn('node', [fileURLToPath(serverPath)], {
     stdio: ['ignore', 'pipe', 'pipe', 'pipe'],
@@ -33,10 +52,35 @@ export async function startServer(opts: { world: string }) {
       ...process.env,
       WORKFLOW_TARGET_WORLD: opts.world,
       CONTROL_FD: '3',
+      WORKFLOW_LOCAL_DATA_DIR: dataDir,
+      ...(opts.env ?? {}),
     },
   });
-  onTestFinished(() => {
-    proc.kill();
+  onTestFinished(async () => {
+    // Wait for the child to actually exit before removing its data directory:
+    // `kill()` only requests termination, and on Windows `rm()` fails with
+    // EPERM/EBUSY while the server still holds file handles in `dataDir`.
+    if (proc.exitCode === null && proc.signalCode === null) {
+      const exited = new Promise<void>((resolve) => {
+        proc.once('exit', () => resolve());
+      });
+      proc.kill();
+      // Bounded, so a child that refuses to die can't hang test teardown.
+      await Promise.race([
+        exited,
+        setTimeout(5_000, undefined, { ref: false }),
+      ]);
+    }
+    // Windows can hold the handles for a moment past exit, hence the retries.
+    // A leaked temp dir is not worth failing an otherwise passing test over.
+    await rm(dataDir, {
+      recursive: true,
+      force: true,
+      maxRetries: 10,
+      retryDelay: 100,
+    }).catch((err) => {
+      console.warn(`Failed to remove test data dir ${dataDir}:`, err);
+    });
   });
 
   const stdio = [] as { stream: ChalkInstance; chunk: string }[];

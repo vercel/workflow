@@ -1,5 +1,142 @@
 # workflow
 
+## 4.8.4
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/cli@4.3.8
+  - @workflow/core@4.8.4
+  - @workflow/errors@4.2.1
+  - @workflow/next@4.1.8
+  - @workflow/nitro@4.1.10
+  - @workflow/typescript-plugin@4.0.3
+  - @workflow/astro@4.0.19
+  - @workflow/nest@4.0.20
+  - @workflow/rollup@4.0.19
+  - @workflow/sveltekit@4.0.19
+  - @workflow/nuxt@4.0.20
+
+## 4.8.3
+
+### Patch Changes
+
+- Updated dependencies [[`598d712`](https://github.com/vercel/workflow/commit/598d712173ff3bb7f5d0f98d1c1a560a2ed0b308)]:
+  - @workflow/sveltekit@4.0.18
+  - @workflow/core@4.8.3
+  - @workflow/cli@4.3.7
+  - @workflow/next@4.1.7
+  - @workflow/nitro@4.1.9
+  - @workflow/typescript-plugin@4.0.3
+  - @workflow/astro@4.0.18
+  - @workflow/nest@4.0.19
+  - @workflow/rollup@4.0.18
+  - @workflow/nuxt@4.0.19
+
+## 4.8.2
+
+### Patch Changes
+
+- Updated dependencies [[`e822a6a`](https://github.com/vercel/workflow/commit/e822a6a173707183325cf76b58f6522df4c5d08e), [`6f301ba`](https://github.com/vercel/workflow/commit/6f301ba396f92181f2982bc901d2f90216450787), [`86bc000`](https://github.com/vercel/workflow/commit/86bc00050fc6ac93e372f753260046b8f64c52ba)]:
+  - @workflow/core@4.8.2
+  - @workflow/cli@4.3.6
+  - @workflow/next@4.1.6
+  - @workflow/nitro@4.1.8
+  - @workflow/typescript-plugin@4.0.3
+  - @workflow/astro@4.0.17
+  - @workflow/nest@4.0.18
+  - @workflow/rollup@4.0.17
+  - @workflow/sveltekit@4.0.17
+  - @workflow/nuxt@4.0.18
+
+## 4.8.1
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/cli@4.3.5
+  - @workflow/core@4.8.1
+  - @workflow/next@4.1.5
+  - @workflow/nitro@4.1.7
+  - @workflow/typescript-plugin@4.0.3
+  - @workflow/astro@4.0.16
+  - @workflow/nest@4.0.17
+  - @workflow/rollup@4.0.16
+  - @workflow/sveltekit@4.0.16
+  - @workflow/nuxt@4.0.17
+
+## 4.8.0
+
+### Patch Changes
+
+- Updated dependencies [[`72ea6c8`](https://github.com/vercel/workflow/commit/72ea6c8edefb01a03acd25bef5efd4cdb9e03fa1), [`7fd2e4a`](https://github.com/vercel/workflow/commit/7fd2e4a4e0cbe26416f5ea83ed928c07ab9893f5), [`7fd2e4a`](https://github.com/vercel/workflow/commit/7fd2e4a4e0cbe26416f5ea83ed928c07ab9893f5)]:
+  - @workflow/errors@4.2.1
+  - @workflow/core@4.8.0
+  - @workflow/nitro@4.1.6
+  - @workflow/sveltekit@4.0.15
+  - @workflow/cli@4.3.4
+  - @workflow/next@4.1.4
+  - @workflow/typescript-plugin@4.0.3
+  - @workflow/nuxt@4.0.16
+  - @workflow/astro@4.0.15
+  - @workflow/nest@4.0.16
+  - @workflow/rollup@4.0.15
+
+## 4.7.0
+
+### Minor Changes
+
+- [#3079](https://github.com/vercel/workflow/pull/3079) [`12e4ef7`](https://github.com/vercel/workflow/commit/12e4ef7ea1777a0af1d69db7cf069a6a5da131c7) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Add an optimistic-concurrency guard for event creation (on by default; opt out with `WORKFLOW_PRECONDITION_GUARD=0`): replay-context event creations send a `stateUpdatedAt` snapshot timestamp, and the runtime reloads the event log and retries (then falls back to a fresh re-invocation) when the backend reports a newer out-of-band event with a 412 `PreconditionFailedError`. Backends without guard support ignore the snapshot, so this is backward-compatible and fails open.
+
+### Patch Changes
+
+- Updated dependencies [[`12e4ef7`](https://github.com/vercel/workflow/commit/12e4ef7ea1777a0af1d69db7cf069a6a5da131c7), [`f2714c5`](https://github.com/vercel/workflow/commit/f2714c50bbb7d5c80bfa8924f663dd75cf933304)]:
+  - @workflow/core@4.7.0
+  - @workflow/errors@4.2.0
+  - @workflow/astro@4.0.14
+  - @workflow/sveltekit@4.0.14
+  - @workflow/cli@4.3.3
+  - @workflow/next@4.1.3
+  - @workflow/nitro@4.1.5
+  - @workflow/typescript-plugin@4.0.3
+  - @workflow/nest@4.0.15
+  - @workflow/rollup@4.0.14
+  - @workflow/nuxt@4.0.15
+
+## 4.6.2
+
+### Patch Changes
+
+- Updated dependencies [[`58fb594`](https://github.com/vercel/workflow/commit/58fb594768abc0c05f6327193867b908e8a60ef4)]:
+  - @workflow/next@4.1.2
+  - @workflow/core@4.6.2
+  - @workflow/cli@4.3.2
+  - @workflow/nitro@4.1.4
+  - @workflow/typescript-plugin@4.0.3
+  - @workflow/astro@4.0.13
+  - @workflow/nest@4.0.14
+  - @workflow/rollup@4.0.13
+  - @workflow/sveltekit@4.0.13
+  - @workflow/nuxt@4.0.14
+
+## 4.6.1
+
+### Patch Changes
+
+- Updated dependencies [[`0422a0e`](https://github.com/vercel/workflow/commit/0422a0e51b3299bbd8570e0055419659b8ba3fe1), [`b1d1a06`](https://github.com/vercel/workflow/commit/b1d1a066a5710fbd5f97b69ae4dd8a4d892b4d57), [`ad99be5`](https://github.com/vercel/workflow/commit/ad99be51029d4eb871c7a130d3e0d44ad3b4b232), [`2213c91`](https://github.com/vercel/workflow/commit/2213c91731f6d47373f4ba4c516c39ec2cc0fa94), [`3b46dab`](https://github.com/vercel/workflow/commit/3b46dab14801c735848d90d173cf57c4fa132bc9), [`8bfee36`](https://github.com/vercel/workflow/commit/8bfee36c31e336b3558fa3f1767b9c6eabbd8808), [`89983d9`](https://github.com/vercel/workflow/commit/89983d9ea74f3b1056923aa99d9150fd82d1895f)]:
+  - @workflow/core@4.6.1
+  - @workflow/next@4.1.1
+  - @workflow/astro@4.0.12
+  - @workflow/sveltekit@4.0.12
+  - @workflow/utils@4.1.4
+  - @workflow/nitro@4.1.3
+  - @workflow/cli@4.3.1
+  - @workflow/typescript-plugin@4.0.3
+  - @workflow/nest@4.0.13
+  - @workflow/rollup@4.0.12
+  - @workflow/errors@4.1.5
+  - @workflow/nuxt@4.0.13
+
 ## 4.6.0
 
 ### Minor Changes

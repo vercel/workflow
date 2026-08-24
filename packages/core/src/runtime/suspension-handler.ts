@@ -3,9 +3,12 @@ import {
   EntityConflictError,
   HookNotFoundError,
   RunExpiredError,
+  RuntimeDecryptionError,
 } from '@workflow/errors';
 import {
+  type CreateEventParams,
   type CreateEventRequest,
+  type EventResult,
   type SerializedData,
   SPEC_VERSION_CURRENT,
   type WorkflowRun,
@@ -22,7 +25,12 @@ import { runtimeLogger } from '../logger.js';
 import { dehydrateStepArguments } from '../serialization.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { serializeTraceCarrier } from '../telemetry.js';
-import { queueMessage } from './helpers.js';
+import {
+  type MutableEventLog,
+  queueMessage,
+  withPreconditionRetry,
+} from './helpers.js';
+import { unserializableStepInputPlaceholder } from './unserializable-step.js';
 
 /**
  * Extracts W3C trace context headers from a trace carrier for HTTP propagation.
@@ -47,30 +55,53 @@ export interface SuspensionHandlerParams {
   run: WorkflowRun;
   span?: Span;
   requestId?: string;
+  /**
+   * The runtime's loaded event log. Each event creation is sent with this
+   * snapshot's `stateUpdatedAt` and, if the backend rejects it as stale (412),
+   * the log is reloaded in place and the create is retried — see
+   * `withPreconditionRetry`. Guarding per-create (rather than the whole
+   * suspension) ensures a retry never re-issues an already-created event.
+   */
+  eventLog?: MutableEventLog;
 }
 
 export interface SuspensionHandlerResult {
   timeoutSeconds?: number;
+  /**
+   * Correlation IDs of steps whose arguments failed to serialize. Each was
+   * finalized here as `step_created` (with a placeholder input — the real
+   * input is precisely what refused to serialize) followed by `step_failed`
+   * carrying the serialization error, so the next replay rejects the step's
+   * promise and a try/catch around the step call observes the error —
+   * exactly like a step-body failure. No step-execution message is
+   * dispatched for these, so an immediate re-invocation is scheduled
+   * (`timeoutSeconds: 0`): when the failed step was the only pending work,
+   * nothing else would ever wake the run to observe the terminal event.
+   */
+  failedStepCorrelationIds?: Set<string>;
 }
 
 async function createHookEvent({
-  world,
   runId,
   hookEvent,
   queueItem,
   requestId,
+  createEvent,
 }: {
-  world: World;
   runId: string;
   hookEvent: CreateEventRequest;
   queueItem: HookInvocationQueueItem;
   requestId?: string;
+  createEvent: (
+    data: CreateEventRequest,
+    params?: CreateEventParams
+  ) => Promise<EventResult>;
 }): Promise<{
   hasHookConflict: boolean;
   hasAwaitedHookCreation: boolean;
 }> {
   try {
-    const result = await world.events.create(runId, hookEvent, {
+    const result = await createEvent(hookEvent, {
       requestId,
     });
 
@@ -130,10 +161,28 @@ export async function handleSuspension({
   run,
   span,
   requestId,
+  eventLog,
 }: SuspensionHandlerParams): Promise<SuspensionHandlerResult> {
   const runId = run.runId;
   const workflowName = run.workflowName;
   const workflowStartedAt = run.startedAt ? +run.startedAt : Date.now();
+
+  // Create an event with the optimistic-concurrency guard when the caller
+  // supplied a loaded event log; otherwise create it directly (callers without
+  // a replay snapshot, e.g. tests). The guard reloads + retries on a stale
+  // (412) rejection, keeping `eventLog` current in place. All suspension events
+  // are non-run_created events on this run's `runId`.
+  const createGuarded = (
+    data: CreateEventRequest,
+    params?: CreateEventParams
+  ): Promise<EventResult> => {
+    if (!eventLog) {
+      return world.events.create(runId, data, params);
+    }
+    return withPreconditionRetry(runId, eventLog, (stateUpdatedAt) =>
+      world.events.create(runId, data, { ...params, stateUpdatedAt })
+    );
+  };
   // Separate queue items by type
   const stepItems = suspension.steps.filter(
     (item): item is StepInvocationQueueItem => item.type === 'step'
@@ -195,11 +244,11 @@ export async function handleSuspension({
     const results = await Promise.all(
       hookEvents.map(({ hookEvent, queueItem }) =>
         createHookEvent({
-          world,
           runId,
           hookEvent,
           queueItem,
           requestId,
+          createEvent: createGuarded,
         })
       )
     );
@@ -222,7 +271,7 @@ export async function handleSuspension({
           },
         };
         try {
-          await world.events.create(runId, hookDisposedEvent, { requestId });
+          await createGuarded(hookDisposedEvent, { requestId });
         } catch (err) {
           if (EntityConflictError.is(err)) {
             // Hook was already disposed by a concurrent invocation — safe to skip
@@ -265,6 +314,113 @@ export async function handleSuspension({
       .map((queueItem) => queueItem.correlationId)
   );
 
+  // Correlation IDs of steps finalized as failed because their arguments
+  // refused to serialize — see finalizeUnserializableStep below.
+  const failedStepCorrelationIds = new Set<string>();
+
+  /**
+   * A step whose arguments fail to serialize is deterministic: every replay
+   * re-derives the same unserializable value, so redelivering the
+   * orchestrator message can never succeed. Instead of rejecting the whole
+   * suspension (which fails the run from the outside, where no user code can
+   * observe it), treat it exactly like a step-body failure: write
+   * `step_created` with a placeholder input (every World requires the step
+   * entity to exist before a terminal step event, and the real input is
+   * precisely what refused to serialize) followed by `step_failed` carrying
+   * the serialization error. The next replay rejects the step's promise with
+   * it, so a try/catch around the step call observes the error; uncaught, it
+   * propagates out of the workflow body and fails the run as a USER_ERROR —
+   * without burning queue redeliveries either way.
+   */
+  const finalizeUnserializableStep = async (
+    queueItem: StepInvocationQueueItem,
+    error: Error
+  ): Promise<void> => {
+    runtimeLogger.warn(
+      'Step arguments failed to serialize; failing the step so the ' +
+        'workflow can observe the error',
+      {
+        workflowRunId: runId,
+        correlationId: queueItem.correlationId,
+        stepName: queueItem.stepName,
+        error: error.message,
+      }
+    );
+    // Marker placeholder (not empty args): byte-identical-to-zero-args would
+    // make `workflow inspect steps` show "no arguments" for the one step
+    // whose entire problem was its arguments.
+    const placeholderInput = (await dehydrateStepArguments(
+      unserializableStepInputPlaceholder(),
+      runId,
+      encryptionKey,
+      suspension.globalThis
+    )) as SerializedData;
+    try {
+      await createGuarded(
+        {
+          eventType: 'step_created' as const,
+          specVersion: SPEC_VERSION_CURRENT,
+          correlationId: queueItem.correlationId,
+          eventData: {
+            stepName: queueItem.stepName,
+            workflowName: run.workflowName,
+            input: placeholderInput,
+          },
+        },
+        { requestId }
+      );
+    } catch (createErr) {
+      if (EntityConflictError.is(createErr)) {
+        // A concurrent handler already created the step — the failure is
+        // deterministic, so it is racing toward the same step_failed below.
+        runtimeLogger.info('Step already exists, continuing', {
+          workflowRunId: runId,
+          correlationId: queueItem.correlationId,
+          message: createErr.message,
+        });
+      } else if (RunExpiredError.is(createErr)) {
+        // Run already finished — nothing to observe the failure.
+        return;
+      } else {
+        throw createErr;
+      }
+    }
+    try {
+      await createGuarded(
+        {
+          eventType: 'step_failed' as const,
+          specVersion: SPEC_VERSION_CURRENT,
+          correlationId: queueItem.correlationId,
+          eventData: {
+            stepName: queueItem.stepName,
+            // The message carries the framed serialization hint; the step
+            // consumer rejects the step's promise with a FatalError built
+            // from it, exactly like any other step failure.
+            error: error.message,
+            stack: error.stack,
+          },
+        },
+        { requestId }
+      );
+    } catch (failErr) {
+      if (EntityConflictError.is(failErr) || RunExpiredError.is(failErr)) {
+        // Step already terminal (a concurrent handler wrote the same
+        // deterministic failure) or the run already finished.
+        runtimeLogger.info(
+          'Tried failing step, but step or run has already finished.',
+          {
+            workflowRunId: runId,
+            correlationId: queueItem.correlationId,
+            message: failErr.message,
+          }
+        );
+      } else {
+        throw failErr;
+      }
+    }
+    failedStepCorrelationIds.add(queueItem.correlationId);
+  };
+
   // Process steps and waits in parallel
   // Each step: create event (if needed) -> queue message
   // Each wait: create event (if needed)
@@ -276,16 +432,32 @@ export async function handleSuspension({
       (async () => {
         // Create step event if not already created
         if (stepsNeedingCreation.has(queueItem.correlationId)) {
-          const dehydratedInput = await dehydrateStepArguments(
-            {
-              args: queueItem.args,
-              closureVars: queueItem.closureVars,
-              thisVal: queueItem.thisVal,
-            },
-            runId,
-            encryptionKey,
-            suspension.globalThis
-          );
+          let dehydratedInput: Uint8Array | unknown;
+          try {
+            dehydratedInput = await dehydrateStepArguments(
+              {
+                args: queueItem.args,
+                closureVars: queueItem.closureVars,
+                thisVal: queueItem.thisVal,
+              },
+              runId,
+              encryptionKey,
+              suspension.globalThis
+            );
+          } catch (err) {
+            if (RuntimeDecryptionError.is(err)) {
+              // An SDK fault, not a user value problem. Keep its identity
+              // (RUNTIME_ERROR) and current fail-the-suspension behavior.
+              throw err;
+            }
+            // Every other failure out of dehydrateStepArguments is a
+            // serialization failure on the step's own arguments.
+            await finalizeUnserializableStep(
+              queueItem,
+              err instanceof Error ? err : new Error(String(err))
+            );
+            return;
+          }
           const stepEvent: CreateEventRequest = {
             eventType: 'step_created' as const,
             specVersion: SPEC_VERSION_CURRENT,
@@ -297,7 +469,7 @@ export async function handleSuspension({
             },
           };
           try {
-            await world.events.create(runId, stepEvent, { requestId });
+            await createGuarded(stepEvent, { requestId });
           } catch (err) {
             if (EntityConflictError.is(err)) {
               runtimeLogger.info('Step already exists, continuing', {
@@ -352,7 +524,7 @@ export async function handleSuspension({
             },
           };
           try {
-            await world.events.create(runId, waitEvent, { requestId });
+            await createGuarded(waitEvent, { requestId });
           } catch (err) {
             if (EntityConflictError.is(err)) {
               runtimeLogger.info('Wait already exists, continuing', {
@@ -397,7 +569,25 @@ export async function handleSuspension({
     ...Attribute.WorkflowStepsCreated(stepItems.length),
     ...Attribute.WorkflowHooksCreated(hooksNeedingCreation.length),
     ...Attribute.WorkflowWaitsCreated(waitItems.length),
+    ...(failedStepCorrelationIds.size > 0
+      ? Attribute.WorkflowStepsFailedSerialization(
+          failedStepCorrelationIds.size
+        )
+      : {}),
   });
+
+  // Steps whose arguments failed to serialize were finalized above as
+  // step_created + step_failed (see finalizeUnserializableStep). No
+  // step-execution message is dispatched for them, so when such a step is
+  // the only pending work nothing would ever wake the run again — schedule
+  // an immediate re-invocation. The replay rejects the step's promise with
+  // the serialization error, which a try/catch around the step call
+  // observes; uncaught, it propagates out of the workflow body and fails
+  // the run as a USER_ERROR. Healthy sibling steps were already queued
+  // above, so they execute in parallel invocations regardless.
+  if (failedStepCorrelationIds.size > 0) {
+    return { timeoutSeconds: 0, failedStepCorrelationIds };
+  }
 
   // If any hook conflicts occurred, re-enqueue the workflow immediately
   // On the next iteration, the hook consumer will see the hook_conflict event

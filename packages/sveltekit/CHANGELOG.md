@@ -1,5 +1,87 @@
 # @workflow/sveltekit
 
+## 4.0.19
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@4.1.9
+  - @workflow/rollup@4.0.19
+  - @workflow/vite@4.0.19
+
+## 4.0.18
+
+### Patch Changes
+
+- [#3474](https://github.com/vercel/workflow/pull/3474) [`598d712`](https://github.com/vercel/workflow/commit/598d712173ff3bb7f5d0f98d1c1a560a2ed0b308) Thanks [@dummdidumm](https://github.com/dummdidumm)! - Load SvelteKit route configuration through `@sveltejs/load-config`, including projects that configure SvelteKit exclusively in `vite.config`.
+
+- Updated dependencies []:
+  - @workflow/builders@4.1.8
+  - @workflow/rollup@4.0.18
+  - @workflow/vite@4.0.18
+
+## 4.0.17
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@4.1.7
+  - @workflow/rollup@4.0.17
+  - @workflow/vite@4.0.17
+
+## 4.0.16
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@4.1.6
+  - @workflow/rollup@4.0.16
+  - @workflow/vite@4.0.16
+
+## 4.0.15
+
+### Patch Changes
+
+- [#3233](https://github.com/vercel/workflow/pull/3233) [`7fd2e4a`](https://github.com/vercel/workflow/commit/7fd2e4a4e0cbe26416f5ea83ed928c07ab9893f5) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix HTTP/2 requests failing in SvelteKit production builds (undici's bundled `node:http2` could not load, falling back to a stub).
+
+- Updated dependencies []:
+  - @workflow/builders@4.1.5
+  - @workflow/rollup@4.0.15
+  - @workflow/vite@4.0.15
+
+## 4.0.14
+
+### Patch Changes
+
+- [#3166](https://github.com/vercel/workflow/pull/3166) [`f2714c5`](https://github.com/vercel/workflow/commit/f2714c50bbb7d5c80bfa8924f663dd75cf933304) Thanks [@TooTallNate](https://github.com/TooTallNate)! - The generated webhook route now passes the incoming request directly to its handler instead of copying it into a new `Request`, so the request body is no longer read before the handler runs.
+
+- Updated dependencies []:
+  - @workflow/builders@4.1.4
+  - @workflow/rollup@4.0.14
+  - @workflow/vite@4.0.14
+
+## 4.0.13
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@4.1.3
+  - @workflow/rollup@4.0.13
+  - @workflow/vite@4.0.13
+
+## 4.0.12
+
+### Patch Changes
+
+- [#2732](https://github.com/vercel/workflow/pull/2732) [`2213c91`](https://github.com/vercel/workflow/commit/2213c91731f6d47373f4ba4c516c39ec2cc0fa94) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Respect framework base paths when routing workflow traffic and expose health checks on generated Next.js workflow routes.
+
+- [#2814](https://github.com/vercel/workflow/pull/2814) [`89983d9`](https://github.com/vercel/workflow/commit/89983d9ea74f3b1056923aa99d9150fd82d1895f) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Avoid recursively loading Vite config while resolving SvelteKit routes during workflow plugin import.
+
+- Updated dependencies [[`f1f7e1d`](https://github.com/vercel/workflow/commit/f1f7e1dc25c7346f2ac65e3e8a0a15a6e4fd7ccd), [`2213c91`](https://github.com/vercel/workflow/commit/2213c91731f6d47373f4ba4c516c39ec2cc0fa94)]:
+  - @workflow/builders@4.1.2
+  - @workflow/rollup@4.0.12
+  - @workflow/vite@4.0.12
+
 ## 4.0.11
 
 ### Patch Changes

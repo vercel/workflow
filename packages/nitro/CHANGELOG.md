@@ -1,5 +1,97 @@
 # @workflow/nitro
 
+## 4.1.10
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/core@4.8.4
+  - @workflow/web@4.1.20
+  - @workflow/builders@4.1.9
+  - @workflow/rollup@4.0.19
+  - @workflow/vite@4.0.19
+
+## 4.1.9
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/core@4.8.3
+  - @workflow/builders@4.1.8
+  - @workflow/web@4.1.19
+  - @workflow/rollup@4.0.18
+  - @workflow/vite@4.0.18
+
+## 4.1.8
+
+### Patch Changes
+
+- Updated dependencies [[`e822a6a`](https://github.com/vercel/workflow/commit/e822a6a173707183325cf76b58f6522df4c5d08e), [`6f301ba`](https://github.com/vercel/workflow/commit/6f301ba396f92181f2982bc901d2f90216450787), [`86bc000`](https://github.com/vercel/workflow/commit/86bc00050fc6ac93e372f753260046b8f64c52ba)]:
+  - @workflow/core@4.8.2
+  - @workflow/builders@4.1.7
+  - @workflow/web@4.1.18
+  - @workflow/rollup@4.0.17
+  - @workflow/vite@4.0.17
+
+## 4.1.7
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/core@4.8.1
+  - @workflow/web@4.1.17
+  - @workflow/builders@4.1.6
+  - @workflow/rollup@4.0.16
+  - @workflow/vite@4.0.16
+
+## 4.1.6
+
+### Patch Changes
+
+- [#3233](https://github.com/vercel/workflow/pull/3233) [`7fd2e4a`](https://github.com/vercel/workflow/commit/7fd2e4a4e0cbe26416f5ea83ed928c07ab9893f5) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix HTTP/2 requests failing in production builds (Vite/Nitro, TanStack Start) where undici's bundled `node:http2` could not load and fell back to a stub.
+
+- Updated dependencies [[`72ea6c8`](https://github.com/vercel/workflow/commit/72ea6c8edefb01a03acd25bef5efd4cdb9e03fa1), [`7fd2e4a`](https://github.com/vercel/workflow/commit/7fd2e4a4e0cbe26416f5ea83ed928c07ab9893f5)]:
+  - @workflow/core@4.8.0
+  - @workflow/web@4.1.16
+  - @workflow/builders@4.1.5
+  - @workflow/rollup@4.0.15
+  - @workflow/vite@4.0.15
+
+## 4.1.5
+
+### Patch Changes
+
+- Updated dependencies [[`12e4ef7`](https://github.com/vercel/workflow/commit/12e4ef7ea1777a0af1d69db7cf069a6a5da131c7)]:
+  - @workflow/core@4.7.0
+  - @workflow/builders@4.1.4
+  - @workflow/web@4.1.15
+  - @workflow/rollup@4.0.14
+  - @workflow/vite@4.0.14
+
+## 4.1.4
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/core@4.6.2
+  - @workflow/builders@4.1.3
+  - @workflow/web@4.1.14
+  - @workflow/rollup@4.0.13
+  - @workflow/vite@4.0.13
+
+## 4.1.3
+
+### Patch Changes
+
+- [#2925](https://github.com/vercel/workflow/pull/2925) [`8bfee36`](https://github.com/vercel/workflow/commit/8bfee36c31e336b3558fa3f1767b9c6eabbd8808) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Skip Workflow transforms for generated Nitro build artifacts.
+
+- Updated dependencies [[`0422a0e`](https://github.com/vercel/workflow/commit/0422a0e51b3299bbd8570e0055419659b8ba3fe1), [`f1f7e1d`](https://github.com/vercel/workflow/commit/f1f7e1dc25c7346f2ac65e3e8a0a15a6e4fd7ccd), [`b1d1a06`](https://github.com/vercel/workflow/commit/b1d1a066a5710fbd5f97b69ae4dd8a4d892b4d57), [`2213c91`](https://github.com/vercel/workflow/commit/2213c91731f6d47373f4ba4c516c39ec2cc0fa94)]:
+  - @workflow/core@4.6.1
+  - @workflow/builders@4.1.2
+  - @workflow/web@4.1.13
+  - @workflow/rollup@4.0.12
+  - @workflow/vite@4.0.12
+
 ## 4.1.2
 
 ### Patch Changes

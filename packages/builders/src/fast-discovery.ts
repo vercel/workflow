@@ -152,26 +152,6 @@ function stripImportSpecifierQuery(specifier: string): string {
   return endIndex === -1 ? specifier : specifier.slice(0, endIndex);
 }
 
-function shouldSkipFastDiscoveryImport(specifier: string): boolean {
-  if (NODE_BUILTIN_SPECIFIERS.has(specifier)) {
-    return true;
-  }
-
-  const pathLikeSpecifier = stripImportSpecifierQuery(specifier);
-  if (isRelativeOrAbsoluteSpecifier(pathLikeSpecifier)) {
-    return false;
-  }
-
-  if (!pathLikeSpecifier.includes('/')) {
-    return false;
-  }
-
-  const extension = extname(pathLikeSpecifier);
-  return (
-    extension !== '' && !FAST_DISCOVERY_SOURCE_EXTENSION_SET.has(extension)
-  );
-}
-
 function matchTsconfigPathAlias(
   specifier: string,
   alias: TsconfigPathAlias
@@ -815,7 +795,7 @@ export async function fastDiscoverEntries({
     specifier: string,
     forceFollowImports: boolean
   ): Promise<void> => {
-    if (shouldSkipFastDiscoveryImport(specifier)) {
+    if (NODE_BUILTIN_SPECIFIERS.has(specifier)) {
       return;
     }
     if (!(await shouldFollowImportsFromFile(filePath, forceFollowImports))) {

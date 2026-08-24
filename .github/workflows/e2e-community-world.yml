@@ -125,7 +125,8 @@ jobs:
 
       - name: Run E2E Tests
         run: |
-          cd workbench/${{ inputs.app-name }} && pnpm dev &
+          export DEV_SERVER_LOG_PATH="$GITHUB_WORKSPACE/dev-server-$APP_NAME-$WORLD_ID.log"
+          (cd "workbench/$APP_NAME" && pnpm dev 2>&1 | tee "$DEV_SERVER_LOG_PATH") &
           cd "$GITHUB_WORKSPACE"
           echo "Waiting for dev server to start..." && sleep 15
 
