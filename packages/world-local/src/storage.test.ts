@@ -643,6 +643,50 @@ describe('Storage', () => {
         expect(page2.data).toHaveLength(2);
         expect(page2.data[0].runId).not.toBe(page1.data[0].runId);
       });
+
+      it('filters by a single status', async () => {
+        await createRun(storage, {
+          deploymentId: 'deployment-1',
+          workflowName: 'w1',
+          input: new Uint8Array(),
+        });
+        const result = await storage.runs.list({ status: 'pending' });
+        expect(result.data).toHaveLength(1);
+        expect(result.data[0]!.status).toBe('pending');
+      });
+
+      it('filters by an array of statuses (matches any)', async () => {
+        await createRun(storage, {
+          deploymentId: 'deployment-1',
+          workflowName: 'w1',
+          input: new Uint8Array(),
+        });
+        const result = await storage.runs.list({
+          status: ['pending', 'running'],
+        });
+        expect(result.data).toHaveLength(1);
+        expect(['pending', 'running']).toContain(result.data[0]!.status);
+      });
+
+      it('returns no runs when status is an empty array (matches SQL `IN ()`)', async () => {
+        await createRun(storage, {
+          deploymentId: 'deployment-1',
+          workflowName: 'w1',
+          input: new Uint8Array(),
+        });
+        const result = await storage.runs.list({ status: [] });
+        expect(result.data).toHaveLength(0);
+      });
+
+      it('leaves the filter unset when status field is omitted', async () => {
+        await createRun(storage, {
+          deploymentId: 'deployment-1',
+          workflowName: 'w1',
+          input: new Uint8Array(),
+        });
+        const result = await storage.runs.list({});
+        expect(result.data).toHaveLength(1);
+      });
     });
   });
 

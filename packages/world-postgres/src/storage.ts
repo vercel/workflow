@@ -476,7 +476,9 @@ export function createRunsStorage(
           and(
             map(fromCursor, (c) => lt(runs.runId, c)),
             map(params?.workflowName, (wf) => eq(runs.workflowName, wf)),
-            map(params?.status, (wf) => eq(runs.status, wf))
+            map(params?.status, (s) =>
+              Array.isArray(s) ? inArray(runs.status, s) : eq(runs.status, s)
+            )
           )
         )
         .orderBy(desc(runs.runId))
