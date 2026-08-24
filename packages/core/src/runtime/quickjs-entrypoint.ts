@@ -455,6 +455,13 @@ async function dispatchPendingOps(params: {
         eventType: 'hook_disposed',
         specVersion: SPEC_VERSION_CURRENT,
         correlationId: op.correlationId,
+        // The hook's token, which the node:vm engine has always sent. A world
+        // that keys a hook's token claim separately from the hook itself needs
+        // it to release both, and the only alternative is for it to look the
+        // token up first. Omitted rather than sent as undefined when the op
+        // carries none, so a world that reads it cannot tell the difference
+        // between this engine and a client too old to send one.
+        ...(op.token === undefined ? {} : { eventData: { token: op.token } }),
       });
     } catch (err) {
       if (EntityConflictError.is(err)) return;
