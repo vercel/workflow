@@ -53,3 +53,18 @@ export function isWsEventsTransportStrict(): boolean {
   const raw = process.env.WORKFLOW_INTERNAL_EVENTS_TRANSPORT_STRICT;
   return raw === '1' || raw === 'true';
 }
+
+/**
+ * Advertise the experimental v1 stream-write protocol only when explicitly
+ * requested. This is a client capability signal, not an entitlement: the
+ * server authoritatively accepts or declines every upgrade, and a decline
+ * falls back directly to the HTTP stream writer.
+ *
+ * HTTP is the compatibility path and the default. This deliberately has no
+ * package-version or tenant-policy heuristic; rollout policy belongs to the
+ * server. v1 is `/websockets/v1`, independently versioned from REST v2/v4 and
+ * persisted workflow spec versions.
+ */
+export function isWsStreamsTransportEnabled(): boolean {
+  return process.env.WORKFLOW_STREAMS_TRANSPORT === 'ws';
+}
