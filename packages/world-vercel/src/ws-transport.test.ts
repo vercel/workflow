@@ -1006,10 +1006,13 @@ describe('transport selection', () => {
       expect(sockets).toHaveLength(0);
     });
 
-    it('scopes the channel to one run and memoizes it per URL', () => {
+    it('scopes the channel to one run and memoizes it per URL', async () => {
       process.env.WORKFLOW_EVENTS_TRANSPORT = 'ws';
       openWsChannel('wrun_1', directConfig);
       openWsChannel('wrun_2', directConfig);
+      // Resolution now requires an open socket, not merely a claimed channel.
+      await tick();
+      for (const socket of sockets) socket.open();
 
       const first = resolveWsTransport('wrun_1', directConfig);
       const second = resolveWsTransport('wrun_1', directConfig);
@@ -1021,11 +1024,33 @@ describe('transport selection', () => {
       );
     });
 
-    it('returns null once the channel is closed', () => {
+    it('withholds the channel until the handshake completes', async () => {
+      // The contract this change exists for. Measured on a WS-enabled
+      // deployment, `run_started` — the write that routinely lands mid-connect
+      // — cost p50 269ms / p95 3.77s when it waited for the socket, against
+      // p50 79ms / p95 134ms when it fell back to HTTP, while every write
+      // issued after the socket was up cost ~65ms. Waiting made the first
+      // write of a run slower than not using the socket at all.
+      process.env.WORKFLOW_EVENTS_TRANSPORT = 'ws';
+      openWsChannel('wrun_1', directConfig);
+      await tick();
+
+      // The socket exists and is mid-handshake: claimed, but not writable.
+      expect(sockets).toHaveLength(1);
+      expect(sockets[0].readyState).toBe(0);
+      expect(resolveWsTransport('wrun_1', directConfig)).toBeNull();
+
+      sockets[0].open();
+      expect(resolveWsTransport('wrun_1', directConfig)).not.toBeNull();
+    });
+
+    it('returns null once the channel is closed', async () => {
       // What makes a late write — one the runtime issues after the invocation
       // that opened the channel has returned — fall back instead of failing.
       process.env.WORKFLOW_EVENTS_TRANSPORT = 'ws';
       const release = openWsChannel('wrun_1', directConfig);
+      await tick();
+      sockets[0]?.open();
       expect(resolveWsTransport('wrun_1', directConfig)).not.toBeNull();
 
       release?.();

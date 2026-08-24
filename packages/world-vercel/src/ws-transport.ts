@@ -301,6 +301,25 @@ class WsEventsTransport {
     conn?.ws.close(1000, reason);
   }
 
+  /**
+   * Whether a write can go out *now*, without waiting on a handshake.
+   *
+   * This is deliberately narrower than "does this run have a channel". The
+   * write path uses it to decide between the socket and HTTP, and the honest
+   * answer during a connect is HTTP: measured on a WS-enabled deployment,
+   * `run_started` — the one write that routinely lands mid-handshake — cost
+   * p50 269ms / p95 3.77s over the socket against p50 79ms / p95 134ms when it
+   * fell back, while every write issued after the socket was up cost ~65ms.
+   * Waiting for the handshake made the first write of a run slower than not
+   * using the socket at all.
+   *
+   * A reconnect reads as not-ready for the same reason: the frames that would
+   * queue behind it are better served by the transport that needs no setup.
+   */
+  get isReadyForWrites(): boolean {
+    return this.connection?.ws.readyState === WebSocket.OPEN;
+  }
+
   private ensureConnected(): Promise<Connection> {
     const conn = this.connection;
     if (conn && conn.ws.readyState === WebSocket.OPEN) {
@@ -919,5 +938,9 @@ export function resolveWsTransport(
   const wsUrl = resolveChannelUrl(runId, config);
   if (!wsUrl) return null;
   const transport = wsState.transports.get(wsUrl);
-  return transport ? { transport, wsUrl } : null;
+  // Membership answers "does this run have a channel"; `isReadyForWrites` adds
+  // "and can it take a frame without a handshake first". Both have to hold:
+  // see the getter for why a mid-connect write is better off on HTTP.
+  if (!transport || !transport.isReadyForWrites) return null;
+  return { transport, wsUrl };
 }
