@@ -1080,6 +1080,9 @@ describe('workflowEntrypoint replay guards', () => {
       startedAt: new Date('2024-01-01T00:00:00.000Z'),
       deploymentId: 'test-deployment',
     };
+    // Register the step consumer first so it schedules the accepted
+    // suspension. The later attribute signal must be dropped by its new
+    // generation guard after the retained session resumes.
     const workflowCode = `
       const setAttributes = globalThis[Symbol.for("WORKFLOW_SET_ATTRIBUTES")];
       const useStep = globalThis[Symbol.for("WORKFLOW_USE_STEP")];
@@ -1111,9 +1114,9 @@ describe('workflowEntrypoint replay guards', () => {
     expect(queueCalls).toEqual([]);
     // Under lazy inline start the step that loses the attribute race is NOT
     // eagerly created: its step_created is deferred for a lazy step_started
-    // that never fires, because the attribute-resolving replay decides the
-    // race before any step executes. So the losing step leaves no events at
-    // all — strictly less event-log garbage than the eager model.
+    // that never fires, because the attribute-resolving retained execution
+    // decides the race before any step executes. So the losing step leaves no
+    // events at all — strictly less event-log garbage than the eager model.
     expect(createdEvents).not.toContainEqual(
       expect.objectContaining({ eventType: 'step_created' })
     );
