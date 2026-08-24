@@ -1,5 +1,6 @@
 import path from 'node:path';
 import { WorkflowRunNotFoundError } from '@workflow/errors';
+import { globalSingleton } from '@workflow/utils';
 import type {
   AttributeChange,
   ExperimentalSetAttributesResult,
@@ -34,7 +35,7 @@ import {
 /**
  * Internal extension of `ListWorkflowRunsParams` that adds a `fileIdFilter`
  * for scoping queries by raw filename (e.g., by tag suffix). Kept out of the
- * public `Storage['runs']['list']` surface — consumers of `@workflow/world`
+ * public `Storage['runs']['list']` surface: consumers of `@workflow/world`
  * must not see this option.
  */
 export interface LocalListWorkflowRunsParams extends ListWorkflowRunsParams {
@@ -65,7 +66,7 @@ export interface LocalRunsStorage {
 
 /**
  * Per-run in-process async mutex. Serializes concurrent writes that
- * touch the same run JSON file — both attribute writes via
+ * touch the same run JSON file: both attribute writes via
  * `experimentalSetAttributes` and run-lifecycle writes (run_started,
  * run_completed, run_failed, run_cancelled) acquire it. Without the
  * shared lock, an attribute write that lands between a lifecycle
@@ -75,27 +76,36 @@ export interface LocalRunsStorage {
  * Lifecycle writers acquire the lock and re-read the run file inside
  * the critical section to pick up any attributes that landed since
  * their pre-validation read.
+ *
+ * Held on `globalThis` rather than at module scope: a bundler can put several
+ * copies of this file in one process (see `globalSingleton`), and a per-copy
+ * lock table is not a lock: two copies would each believe they held the key
+ * and interleave exactly the read-modify-write this exists to serialize.
  */
-const runFileLocks = new Map<string, Promise<unknown>>();
+const runLocks = globalSingleton(
+  '@workflow/world-local//runFileLocks',
+  1,
+  () => ({ byKey: new Map<string, Promise<unknown>>() })
+);
 
 export function withRunFileLock<T>(
   key: string,
   fn: () => Promise<T>
 ): Promise<T> {
-  const prev = runFileLocks.get(key);
+  const prev = runLocks.byKey.get(key);
   const taskBox: { task?: Promise<T> } = {};
   const task = (async () => {
     if (prev) await prev.catch(() => undefined);
     try {
       return await fn();
     } finally {
-      if (runFileLocks.get(key) === taskBox.task) {
-        runFileLocks.delete(key);
+      if (runLocks.byKey.get(key) === taskBox.task) {
+        runLocks.byKey.delete(key);
       }
     }
   })();
   taskBox.task = task;
-  runFileLocks.set(key, task);
+  runLocks.byKey.set(key, task);
   return task;
 }
 
@@ -128,7 +138,7 @@ export function createRunsStorage(
     get,
 
     /**
-     * Long poll for a terminal run status — see
+     * Long poll for a terminal run status. See
      * `Storage['runs'].waitForTerminalStatus`.
      *
      * Reads the run, and while it is non-terminal waits for either an
@@ -231,7 +241,7 @@ export function createRunsStorage(
         }
 
         // Server-side validation. The SDK validates before sending, but
-        // the world is the final authority — re-check so direct callers
+        // the world is the final authority: re-check so direct callers
         // (tests, other consumers) cannot bypass the limits.
         try {
           validateAttributeChanges(changes, {

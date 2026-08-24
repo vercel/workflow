@@ -9,7 +9,7 @@ related:
   - /docs/foundations/cancellation
 ---
 
-We recommend upgrading to v5 to get all of the performance, cost, and feature improvements listed below. It's as simple as installing the migration skill and telling your agent to migrate your app from Workflow SDK v4 to v5.
+We recommend upgrading to v5 to get all of the performance, cost, and feature improvements listed below. Install the migration skill, then tell your agent to migrate your app from Workflow SDK v4 to v5.
 
 ```bash
 npm install workflow@latest
@@ -29,9 +29,9 @@ npx skills add https://github.com/vercel/workflow --skill migrating-workflow-v4-
 
 The largest change in v5 has no API surface: the runtime does far less work per unit of progress. The time between calling `start()` and your first step body executing is now less than half of what it was in v4. This is made possible by many smaller optimizations:
 
-**A workflow invocation now does as much as it can in a single pass.** In 4.x, progress was largely deferred to the queue: an invocation would execute a step, hand back to the queue, and let a fresh invocation pick up the next one. v5 creates and executes steps inline — several per suspension, in parallel — and only uses the queue when it really has to: a wait, a hook, or the function is approaching its timeout.
+**A workflow invocation now does as much as it can in a single pass.** In 4.x, progress was largely deferred to the queue: an invocation would execute a step, hand back to the queue, and let a fresh invocation pick up the next one. v5 creates and executes several steps inline per suspension, in parallel, and only uses the queue for a wait, a hook, or when the function approaches its timeout.
 
-**The runtime avoids waiting on the persistence layer where it can determine that is safe for your workload.** Many API calls are now simply skipped when not needed, like requesting the event-log on a run's first invocation. Step creation is folded into step execution rather than being its own round trip. The inline loop consumes the event-log delta from the previous step's write instead of re-listing events. Each optimization is gated on specific runtime conditions, and can be turned off individually — see [Runtime tuning](/docs/configuration/runtime-tuning).
+**The runtime avoids waiting on the persistence layer where it can determine that is safe for your workload.** The runtime skips many API calls when they aren't needed, such as requesting the event log on a run's first invocation. Step creation is folded into step execution rather than being its own round trip. The inline loop consumes the event-log delta from the previous step's write instead of re-listing events. Each optimization is gated on specific runtime conditions and can be turned off individually. See [Runtime tuning](/docs/configuration/runtime-tuning).
 
 **The workflow VM is kept alive across inline steps.** Within one invocation, a step-only suspension keeps the live VM and hydrated state, so the next iteration appends only the newly written events instead of rebuilding the sandbox and replaying the whole log. Step inputs made of plain data or standard built-ins keep this fast path; see [`WORKFLOW_RETAINED_VM`](/docs/configuration/runtime-tuning#workflow_retained_vm).
 
@@ -103,7 +103,7 @@ See [Attributes](/docs/observability/attributes).
 
 ### Richer serialization
 
-Everything that crosses a workflow/step boundary is serialized, and v5 widens what survives the trip with its identity intact. Errors — including your own classes and built-ins like `TypeError` — keep their class and `cause` chain through `WorkflowRunFailedError.cause`:
+Everything that crosses a workflow/step boundary is serialized, and v5 widens what survives the trip with its identity intact. Errors, including your own classes and built-ins like `TypeError`, keep their class and `cause` chain through `WorkflowRunFailedError.cause`:
 
 ```typescript lineNumbers
 import { WorkflowRunFailedError } from "workflow/errors";
@@ -128,11 +128,11 @@ See [Serialization](/docs/foundations/serialization).
 
 ### A redesigned trace viewer
 
-The trace viewer has been rebuilt from the ground up, with an easily visible timeline, a minimap, pan, zoom, debug functionality, a new JSON viewer, keyboard navigation, and more.
+The trace viewer has been rebuilt with a visible timeline, a minimap, pan, zoom, debug functionality, a new JSON viewer, keyboard navigation, and more.
 
 Vercel Observability uses this trace viewer for all runs, v4 included, but with v5, you get the same new design for self-hosted UI and local debugging. See [Observability](/docs/observability).
 
-The local tooling around it grew as well: on [Nitro](/docs/getting-started/nitro) the dev server has the web UI built in at `/_workflow`, `workflow inspect runs` accepts `--since`/`--until` listing windows, run lookups by name search past the backend's default 24-hour window, and Worlds can surface their own run fields in `inspect` output — the Vercel World shows each run's region. On any other framework, `createWorkflowWebHandler()` from `@workflow/web/handler` serves the same UI as one `Request` to `Response` handler under a base path of your choosing.
+The local tooling around it grew as well: on [Nitro](/docs/getting-started/nitro) the dev server has the web UI built in at `/_workflow`, `workflow inspect runs` accepts `--since`/`--until` listing windows, run lookups by name search past the backend's default 24-hour window, and Worlds can surface their own run fields in `inspect` output. For example, the Vercel World shows each run's region. On any other framework, `createWorkflowWebHandler()` from `@workflow/web/handler` serves the same UI as one `Request` to `Response` handler under a base path of your choosing.
 
 Each run also carries more of the infrastructure it ran on. A step attempt records the compute instance that executed it, surfaced as **Compute Instance ID** in the run sidebar and as a `faas.instance` span attribute on flow and step spans, so a run that behaves oddly can be correlated with one warm instance. The sidebar also shows a copyable **Request ID** for looking the invocation up in your platform's logs.
 
@@ -150,7 +150,7 @@ All three first-party Worlds now implement it: Vercel accepts up to 30 days, and
 - **A misrouted delivery no longer fails a run.** Runs are pinned to the deployment that created them. A delivery that arrives at a different deployment is now re-routed to the pinned one with backoff instead of failing, and only gives up with the new [`DEPLOYMENT_MISMATCH`](/docs/errors/deployment-mismatch) error once the recovery budget is spent. Nothing executes on the wrong deployment while this happens. In 4.x the same situation surfaced as an unexplained decryption failure.
 - **A run cannot be forked across environments.** `start()` stamps the environment it was called from onto the queue message, and a deployment refuses a delivery whose run was created in a different environment. Previously a preview client and a production deployment could each hold half of one run ID.
 - **An experimental QuickJS VM engine.** Set [`WORKFLOW_VM=quickjs`](/docs/configuration/runtime-tuning#workflow_vm) to run workflow functions in a QuickJS VM compiled to WebAssembly instead of `node:vm`, for platforms that do not provide `node:vm`. Replay semantics are identical, but the available globals are not: check the differences before switching an existing deployment.
-- **An opt-in WebSocket transport for event writes** on the Vercel World, via [`WORKFLOW_EVENTS_TRANSPORT=ws`](/docs/configuration/worlds). HTTP remains the default.
+- **Event writes ship over a WebSocket** on the Vercel World, instead of one HTTP request each. This is the default; set [`WORKFLOW_EVENTS_TRANSPORT=http`](/worlds/vercel#workflow_events_transport) to opt out, which only that exact value does, so a typo fails toward the socket rather than pinning a deployment to HTTP. Tracing is unaffected: each write still emits an `http POST` client span, synthesized around the frame, with the transport on `workflow.events.transport`.
 - **`await run.returnValue` waits instead of polling.** Reading a run's result long-polls the World until the run reaches a terminal status, rather than asking again on a fixed interval. A result is observed as soon as it exists, and an idle wait costs one open request instead of a request per tick. Worlds that do not implement the long poll keep the interval.
 - **An event arriving mid-replay no longer fails the run.** A hook resume or step completion landing while a replay is in flight used to be able to fail it with [`CORRUPTED_EVENT_LOG`](/docs/errors/corrupted-event-log). Writes now come back with the events the replay had not seen, and the event is held for whichever part of the workflow awaits it. A run only fails when the log is genuinely missing a position.
 
@@ -169,7 +169,7 @@ All three first-party Worlds now implement it: Vercel accepts up to 30 days, and
 | Default trace mode is `linked` | Update dashboards that assume one trace per run, or set `WORKFLOW_TRACE_MODE=continuous`. |
 | The event-creation precondition guard is gone | `WORKFLOW_PRECONDITION_GUARD` no longer exists, and no World in the SDK rejects a write for a stale snapshot. Remove the variable if you set it. A replay that is behind now learns what it missed from the write it makes next instead of from a rejection, and [`PreconditionFailedError`](/docs/api-reference/workflow-errors/precondition-failed-error) remains only for a custom World that would still rather refuse. |
 | Event IDs are slot numbers, not ULIDs | An event ID is now its 1-based position in the run's log (`evnt_00000000000000000000000042`). It is unique only within a run, so pair it with the `runId` as a key, and it carries no timestamp: decoding one yields the Unix epoch rather than a creation time, so read `createdAt` off the event instead. Other entity IDs are unchanged. See [Event IDs](/docs/how-it-works/event-sourcing#event-ids). |
-| A per-run event limit is enforced | The World supplies the ceiling — 25,000 events on the Local and Vercel Worlds — and a run that reaches it fails with `MAX_EVENTS_EXCEEDED`. Split unbounded loops into [child workflows](/cookbook/advanced/child-workflows). As a fallback, the ceiling can be tuned — see [Limits](/docs/configuration/runtime-tuning#limits). |
+| A per-run event limit is enforced | The World supplies the ceiling, which is 25,000 events on the Local and Vercel Worlds. A run that reaches it fails with `MAX_EVENTS_EXCEEDED`. Split unbounded loops into [child workflows](/cookbook/advanced/child-workflows). As a fallback, you can tune the ceiling. See [Limits](/docs/configuration/runtime-tuning#limits). |
 | Stream writes flush the first chunk immediately | The leading-edge flush window defaults to `0` instead of 10ms. Restore a window with `streamFlushIntervalMs` or `WORKFLOW_STREAM_FLUSH_INTERVAL_MS`. |
 | The workflow sandbox is stricter about nondeterminism | `WeakRef`, `FinalizationRegistry`, `Atomics.waitAsync`, and async `WebAssembly` compilation are no longer available inside workflow functions, and `crypto.subtle.digest` computes synchronously (same results, deterministic timing). Move code that needs them into a step. |
 | `Date()` without `new` returns a string inside workflow functions | This matches the language spec, and 4.x returned a `Date` object. Use `new Date()` where you need the object. Subclassing `Date` now works, so libraries like `TZDate` keep their identity across the sandbox boundary. |
@@ -181,7 +181,7 @@ Runs created on 4.x keep executing on the deployment that created them, so upgra
 
 ## If you maintain a World
 
-The World interface — the storage, queue, streaming, and analytics contract that a Workflow SDK deployment runs against — also changed in v5, and those changes are not visible from application code. If you implement `World` yourself, or maintain a build integration that compiles workflow files, upgrade it alongside the SDK: see [Upgrading a World to v5](/worlds/upgrading-to-v5) for the full interface delta and the contract changes that affect existing implementations. There is a separate skill for that job, since none of it applies to application code:
+The World interface, which defines the storage, queue, streaming, and analytics contract that a Workflow SDK deployment runs against, also changed in v5. Those changes are not visible from application code. If you implement `World` yourself or maintain a build integration that compiles workflow files, upgrade it alongside the SDK. See [Upgrading a World to v5](/worlds/upgrading-to-v5) for the full interface delta and the contract changes that affect existing implementations. There is a separate skill for that job because none of it applies to application code:
 
 ```bash
 npx skills add https://github.com/vercel/workflow --skill migrating-world-v4-to-v5

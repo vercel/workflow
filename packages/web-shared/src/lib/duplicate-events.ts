@@ -162,7 +162,7 @@ function foldDuplicates(ordered: readonly Event[]): Set<string> {
  * `isCompleteHistory` must be false whenever the caller holds a subset of the
  * run's log: one page of a paginated list, or the result of a search. Which
  * occurrence of a class came first is a property of the whole log, so on a
- * subset the earlier event may simply be missing, and the fold would report
+ * subset the earlier event may be missing, and the fold would report
  * the surviving one. Nothing is classified in that case.
  *
  * Two other things make the answer unknowable and yield the same empty result:

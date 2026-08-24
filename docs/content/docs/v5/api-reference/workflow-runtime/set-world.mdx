@@ -20,7 +20,7 @@ setWorld(customWorld); // [!code highlight]
 const world = await getWorld(); // resolves customWorld
 ```
 
-## API Signature
+## API signature
 
 ### Parameters
 
@@ -32,9 +32,9 @@ const world = await getWorld(); // resolves customWorld
 
 This function does not return a value.
 
-## Example: Inject a Specific World
+## Example: inject a specific World
 
-The target World is selected at build time (via `WORKFLOW_TARGET_WORLD` when the app was built) and statically injected into the bundle — changing the environment variable at runtime has no effect. To use a different World at runtime, construct it explicitly with the World package's `createWorld()` factory and inject it:
+The build selects the target World via `WORKFLOW_TARGET_WORLD` and statically injects it into the bundle. Changing the environment variable at runtime has no effect. To use a different World at runtime, construct it explicitly with the World package's `createWorld()` factory and inject it:
 
 ```typescript lineNumbers
 import { setWorld } from "workflow/runtime";
@@ -45,7 +45,7 @@ setWorld(createWorld({ dataDir: "/tmp/workflow-test" })); // [!code highlight]
 
 Calling `setWorld(undefined)` afterwards restores the build-injected World on the next `getWorld()` call.
 
-## Related Functions
+## Related functions
 
-- [`getWorld()`](/docs/api-reference/workflow-runtime/get-world) - Resolve the cached World instance.
-- [`createWorld()`](/docs/api-reference/workflow-runtime/create-world) - Construct a fresh instance of the build-injected World.
+- [`getWorld()`](/docs/api-reference/workflow-runtime/get-world): Resolve the cached World instance.
+- [`createWorld()`](/docs/api-reference/workflow-runtime/create-world): Construct a fresh instance of the build-injected World.

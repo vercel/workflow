@@ -1,5 +1,5 @@
 ---
-title: How the Directives Work
+title: How the directives work
 description: Deep dive into the internals of how Workflow SDK directives transform your code.
 type: conceptual
 summary: Learn how the compiler transforms directive-annotated code into three execution modes.
@@ -10,12 +10,12 @@ related:
 ---
 
 <Callout>
-This is an advanced guide that dives into internals of the Workflow SDK directive and is not required reading to use workflows. To simply use the Workflow SDK, check out the [getting started](/docs/getting-started) guides for your framework.
+This advanced guide covers the internals of Workflow SDK directives. To start using Workflow SDK, see the [getting started](/docs/getting-started) guide for your framework.
 </Callout>
 
-Workflows use special directives to mark code for transformation by the Workflow SDK compiler. This page explains how `"use workflow"` and `"use step"` directives work, what transformations are applied, and why they're necessary for durable execution.
+Workflows use special directives to mark code for transformation by the Workflow SDK compiler. The `"use workflow"` and `"use step"` directives apply the transformations required for durable execution.
 
-## Directives Overview
+## Directives overview
 
 Workflows use two directives to mark functions for special handling:
 
@@ -43,7 +43,7 @@ async function createUser(email: string) {
 
 These directives trigger the `@workflow/swc-plugin` compiler to transform your code in different ways depending on the execution context.
 
-## The Three Transformation Modes
+## The three transformation modes
 
 The compiler operates in three distinct modes, transforming the same source code differently for each execution context:
 
@@ -60,7 +60,7 @@ flowchart LR
     D --> I["Build manifest<br/>(discovery)"]
 ```
 
-### Comparison Table
+### Comparison table
 
 | Mode     | Used In    | Purpose                        | Runtime role | Required? |
 |----------|------------|--------------------------------|--------------|-----------|
@@ -72,7 +72,7 @@ flowchart LR
   Earlier releases had a separate **client mode** for application code. In 5.0 it merged into step mode, which produces the same app-code behavior (workflow functions throw on direct calls and carry `workflowId` for `start()`) while also registering step functions. Build integrations that passed `mode: "client"` now pass `mode: "step"`.
 </Callout>
 
-## Detailed Transformation Examples
+## Detailed transformation examples
 
 <Tabs items={["Step Mode", "Workflow Mode", "Detect Mode"]}>
 <Tab value="Step Mode">
@@ -119,12 +119,12 @@ handleUserSignup.workflowId = "workflow//workflows/user.js//handleUserSignup"; /
 - Step function bodies are kept completely intact (no transformation)
 - Each step function is registered with the runtime via an inline IIFE (no imports needed)
 - Step functions run with full Node.js/Deno/Bun access
-- Workflow function bodies are **replaced** with an error throw, and a `workflowId` property is attached — workflow functions must be launched with [`start()`](/docs/api-reference/workflow-api/start), never called directly, and the ID is what `start()` uses to identify the workflow
+- Workflow function bodies are **replaced** with an error throw, and a `workflowId` property is attached. Launch workflow functions with [`start()`](/docs/api-reference/workflow-api/start) instead of calling them directly. The ID identifies the workflow to `start()`
 - A dead-code-elimination pass removes code reachable only from the replaced workflow bodies
 
-**Why no step transformation?** Step functions execute in your main runtime with full access to Node.js APIs, file system, databases, etc. They don't need any special handling—they just run normally.
+**Why no step transformation?** Step functions execute in your main runtime with full access to Node.js APIs, the file system, databases, and other resources. They run normally without special handling.
 
-**ID Format:** Step IDs follow the pattern `step//{filepath}//{functionName}`, where the filepath is relative to your project root.
+**ID format:** Step IDs follow the pattern `step//{filepath}//{functionName}`, where the file path is relative to your project root.
 
 </Tab>
 <Tab value="Workflow Mode">
@@ -164,7 +164,7 @@ handleUserSignup.workflowId = "workflow//workflows/user.js//handleUserSignup"; /
 **What happens:**
 
 - Step function bodies are **replaced** with calls to `globalThis[Symbol.for("WORKFLOW_USE_STEP")]`
-- Workflow function bodies remain **intact**—they execute deterministically during replay
+- Workflow function bodies remain **intact**, so they execute deterministically during replay
 - The workflow function gets a `workflowId` property for runtime identification
 - The `"use workflow"` directive is removed
 
@@ -172,9 +172,9 @@ handleUserSignup.workflowId = "workflow//workflows/user.js//handleUserSignup"; /
 
 1. Checks if the step has already been executed (in the event log)
 2. If yes: Returns the cached result
-3. If no: Suspends the replay and executes the step — usually inline in the same invocation, with the run only handed back to the queue when the invocation's inline budget is exhausted or its timeout approaches
+3. If no: Suspends the replay and executes the step, usually inline in the same invocation. The runtime returns the run to the queue only when the invocation's inline budget is exhausted or its timeout approaches
 
-**ID Format:** Workflow IDs follow the pattern `workflow//{filepath}//{functionName}`. The `workflowId` property is attached to the function to allow [`start()`](/docs/api-reference/workflow-api/start) to work at runtime.
+**ID format:** Workflow IDs follow the pattern `workflow//{filepath}//{functionName}`. The `workflowId` property is attached to the function so [`start()`](/docs/api-reference/workflow-api/start) works at runtime.
 
 </Tab>
 <Tab value="Detect Mode">
@@ -206,11 +206,11 @@ export async function handleUserSignup(email: string) {
 
 **What happens:**
 
-- The code is **not modified** — detect mode only walks the AST
+- The code is **not modified**. Detect mode only walks the AST
 - Discovered workflows, steps, and custom-serialization classes are emitted as a JSON manifest comment
 - The build uses this to decide which files feed the step and workflow bundles
 
-**Why a separate mode?** The build system first runs a fast regexp pre-scan to find candidate files containing directive-like strings, then runs detect mode on those candidates to validate at the AST level. False positives — for example, a directive-like string inside a template literal — are eliminated because the plugin only recognizes genuine directive statements.
+**Why a separate mode?** The build system first runs a fast regular expression pre-scan to find candidate files containing directive-like strings. It then runs detect mode on those candidates to validate them at the abstract syntax tree (AST) level. The plugin eliminates false positives, such as a directive-like string inside a template literal, because it only recognizes genuine directive statements.
 
 <Callout type="info">
   **Working without the app-code loader:** Frameworks apply the step-mode transform to application code by default, which is what gives `start(handleUserSignup)` its automatic IDs and type safety. If your setup can't run the loader, you can instead construct workflow IDs manually using the pattern `workflow//{filepath}//{functionName}`, look them up in the build manifest, and pass them to `start()` as strings.
@@ -219,7 +219,7 @@ export async function handleUserSignup(email: string) {
 </Tab>
 </Tabs>
 
-## Generated Files
+## Generated files
 
 When you build your application, the Workflow SDK generates a combined flow handler, an internal step registration bundle, and a webhook handler. Exact filenames vary by framework.
 
@@ -232,7 +232,7 @@ Contains all workflow functions transformed in **workflow mode**. This file is i
 All workflow code is bundled together and embedded as a string inside `flow.js`. When a workflow needs to execute, this bundled code is run inside a **Node.js VM** (virtual machine) to ensure:
 
 - **Determinism**: The same inputs always produce the same outputs
-- **Side-effect prevention**: Direct access to Node.js APIs, file system, network, etc. is blocked
+- **Side-effect prevention**: Direct access to Node.js APIs, the file system, the network, and other resources is blocked
 - **Sandboxed execution**: Workflow orchestration logic is isolated from the main runtime
 
 **Build-time validation:**
@@ -268,7 +268,7 @@ Contains all step functions transformed in **step mode**. The combined flow hand
 This module must not be exposed as an HTTP endpoint.
 
 <Callout type="info">
-  **Changed in 5.0:** in 4.x the step bundle was served as its own HTTP route at `POST /.well-known/workflow/v1/step`, with step messages delivered on a separate `__wkf_step_*` queue topic. v5 merged both into the combined flow handler — the step bundle became a registration module imported by `flow.js`, and step messages arrive on the shared workflow queue. See the [v4 version of this page](/v4/docs/how-it-works/code-transform) for the old layout.
+  **Changed in 5.0:** In 4.x, the step bundle was served as its own HTTP route at `POST /.well-known/workflow/v1/step`, with step messages delivered on a separate `__wkf_step_*` queue topic. v5 merged both into the combined flow handler. The step bundle became a registration module imported by `flow.js`, and step messages arrive on the shared workflow queue. See the [v4 version of this page](/v4/docs/how-it-works/code-transform) for the old layout.
 </Callout>
 
 ### `webhook.js`
@@ -281,24 +281,24 @@ Contains webhook handling logic for delivering external data to running workflow
 - Validates tokens and routes data to the correct workflow run
 - Resumes workflow execution after webhook delivery
 
-**Note:** The webhook file structure varies by framework. Next.js generates `webhook/[token]/route.js` to leverage App Router's dynamic routing, while other frameworks generate a single `webhook.js` or `webhook.mjs` handler.
+The webhook file structure varies by framework. Next.js generates `webhook/[token]/route.js` to use App Router's dynamic routing, while other frameworks generate a single `webhook.js` or `webhook.mjs` handler.
 
-## Why Three Modes?
+## Why three modes?
 
 The multi-mode transformation enables the Workflow SDK's durable execution model:
 
-1. **Step Mode** (required) - Bundles executable step functions that can access the full runtime, and doubles as the app-code transform that prevents direct workflow execution and enables type-safe `start()` references
-2. **Workflow Mode** (required) - Creates orchestration logic that can replay from event logs
-3. **Detect Mode** (build-internal) - Discovers directive-marked functions for the build without touching the code
+1. **Step mode** (required): Bundles executable step functions that can access the full runtime and serves as the application-code transform that prevents direct workflow execution and enables type-safe `start()` references
+2. **Workflow mode** (required): Creates orchestration logic that can replay from event logs
+3. **Detect mode** (build-internal): Discovers directive-marked functions for the build without changing the code
 
 This separation allows:
 
 - **Deterministic replay**: Workflows can be safely replayed from event logs without re-executing side effects
 - **Sandboxed orchestration**: Workflow logic runs in a controlled VM without direct runtime access
 - **Stateless execution**: Your compute can scale to zero and resume from any point in the workflow
-- **Type safety**: TypeScript works seamlessly with workflow references passed to `start()`
+- **Type safety**: TypeScript supports workflow references passed to `start()`
 
-## Determinism and Replay
+## Determinism and replay
 
 A key aspect of the transformation is maintaining **deterministic replay** for workflow functions.
 
@@ -308,7 +308,7 @@ A key aspect of the transformation is maintaining **deterministic replay** for w
 - No direct side effects (no API calls, no database writes, no file I/O)
 - Can use seeded random/time APIs provided by the VM (`Math.random()`, `Date.now()`, etc.)
 
-Because workflow functions are deterministic and have no side effects, they can be safely re-run multiple times to calculate what the next step should be. This is why workflow function bodies remain intact in workflow mode—they're pure orchestration logic.
+Because workflow functions are deterministic and have no side effects, they can be safely rerun multiple times to calculate the next step. Workflow function bodies remain intact in workflow mode because they're pure orchestration logic.
 
 **Step functions can be non-deterministic:**
 
@@ -318,7 +318,7 @@ Because workflow functions are deterministic and have no side effects, they can 
 
 Learn more about [Workflows and Steps](/docs/foundations/workflows-and-steps).
 
-## ID Generation
+## ID generation
 
 The compiler generates stable IDs for workflows and steps based on file paths and function names:
 
@@ -340,15 +340,15 @@ The compiler generates stable IDs for workflows and steps based on file paths an
   Although IDs can change when files are moved or functions are renamed, Workflow SDK functions assume [atomic versioning](/docs/foundations/versioning) in the World. This means changing IDs won't break old workflows from running, but will prevent runs from being upgraded and will cause your workflow/step names to change in observability across deployments.
 </Callout>
 
-## Framework Integration
+## Framework integration
 
-These transformations are framework-agnostic—they output standard JavaScript that works anywhere.
+These transformations are framework-agnostic. They output standard JavaScript that works anywhere.
 
 **For users**: Your framework handles all transformations automatically. See the [Getting Started](/docs/getting-started) guide for your framework.
 
 **For framework authors**: Learn how to integrate these transformations into your framework in [Building Framework Integrations](/docs/how-it-works/framework-integrations).
 
-## Debugging Transformed Code
+## Debugging transformed code
 
 If you need to debug transformation issues, you can inspect the generated files:
 

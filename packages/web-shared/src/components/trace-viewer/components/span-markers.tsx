@@ -17,7 +17,7 @@ const MARKER_KIND_PREFIX: Record<SpanMarkerKind, string> = {
 
 export interface VisibleMarker {
   leftPct: number;
-  /** Absolute (epoch) timestamp in ms — for the tooltip. */
+  /** Absolute (epoch) timestamp in ms, for the tooltip. */
   timeMs: number;
   kind: SpanMarkerKind;
 }
@@ -55,7 +55,7 @@ const MARKER_MIN_GAP_PX = 16;
 /**
  * Thin out ticks that would visually collide: walk left-to-right and keep each
  * one unless it sits within MARKER_MIN_GAP_PX of the last kept tick. Well-spaced
- * markers survive even when a tight cluster elsewhere on the bar gets thinned —
+ * markers survive even when a tight cluster elsewhere on the bar gets thinned;
  * zoom in to resolve a cluster.
  */
 export function cullCollidingMarkers(
@@ -87,7 +87,7 @@ function MarkerTick({ className }: { className?: string }): ReactNode {
 }
 
 /**
- * Point-in-time markers overlaid on a bar — one vertical tick per event (hook
+ * Point-in-time markers overlaid on a bar: one vertical tick per event (hook
  * resumptions and attribute writes), centered on the bar. Each tick sits inside
  * a larger hit target and, on hover, shows the shared relative-time context
  * card, prefixed with the event kind. The position is clamped a hair inside
@@ -152,7 +152,7 @@ export function OffscreenMarkerIndicator({
       aria-label={label}
       title={label}
       onClick={(e) => {
-        // Don't let the row's onClick fire — revealing shouldn't also
+        // Don't let the row's onClick fire, since revealing shouldn't also
         // change the span selection.
         e.stopPropagation();
         onReveal?.(targetMs);

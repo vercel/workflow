@@ -29,11 +29,11 @@ import { hydrateStepReturnValue } from '../serialization.js';
  * token, for resolution through `hook.getConflict()`.
  *
  * The instance is created through the serialization class registry on
- * the VM's globalThis — the same channel that revives serialized `Run`
+ * the VM's globalThis, the same channel that revives serialized `Run`
  * instances (e.g. `start()` return values crossing from a step into the
  * workflow). The registered class is the VM bundle's plugin-compiled
- * `Run`, whose methods are durable step proxies — safe to call from
- * workflow code — and construction goes through its
+ * `Run`, whose methods are durable step proxies (safe to call from
+ * workflow code), and construction goes through its
  * `WORKFLOW_DESERIALIZE` hook, exactly as the `Instance` reviver would.
  *
  * Returns `null` when a real `Run` cannot be constructed: the conflict
@@ -69,7 +69,7 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
     // (or `undefined`/`null`) to get a generated one, or be an
     // explicit non-empty string. An empty string is almost always an
     // accidental value (e.g. an unset variable) and would otherwise slip
-    // through the `??` below — which only falls back for nullish values — and
+    // through the `??` below (which only falls back for nullish values) and
     // be used as a meaningless, non-deterministic token.
     if (options.token === '') {
       throw new Error(
@@ -148,7 +148,7 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
     // Lazy-resume dedup: `resumeHook()` mints a `resumeId` per resume
     // attempt and stamps it on the `hook_received` event. When the direct
     // event write fails transiently, the runtime materializes the event from
-    // the queue payload instead — and because `hook_received` has no
+    // the queue payload instead, and because `hook_received` has no
     // storage-level uniqueness constraint, concurrent redelivery of the same
     // queue message can commit that materialization twice. Two rows for ONE
     // resume attempt then share a `resumeId` (distinct resume attempts never
@@ -156,7 +156,7 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
     // pure function of the persisted event log, keeping replay deterministic.
     //
     // Scope: this is defense-in-depth over the persisted log, not a
-    // cross-invocation exactly-once guarantee — an invocation replaying a
+    // cross-invocation exactly-once guarantee: an invocation replaying a
     // snapshot taken before the duplicate row committed only sees one row,
     // so two CONCURRENT invocations can each deliver from their own
     // snapshot. Every replay from a log containing both rows (i.e. all
@@ -282,7 +282,7 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
 
       if (event.eventType === 'hook_received') {
         // Drop duplicate deliveries of the same resume attempt (same
-        // `resumeId` — see `seenResumeIds` above). Events without a
+        // `resumeId`; see `seenResumeIds` above). Events without a
         // `resumeId` (older SDKs, legacy spec versions) are never deduped.
         //
         // Dedup off the top-level `resumeId` the backend hoists onto the event
@@ -302,7 +302,7 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
         // Register a 'hook' delivery barrier at this event's log index so a
         // later-in-log `wait_completed` or step result is delivered only after
         // this hook, and so this hook is delivered only after every
-        // earlier-in-log `wait_completed` and step result — keeping any
+        // earlier-in-log `wait_completed` and step result, keeping any
         // `Promise.race` (or concurrent-branch ULID allocation) deterministic
         // and aligned with the committed event log, regardless of
         // microtask-hop count, hydration time, or race-argument order.
@@ -322,7 +322,7 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
         if (hasWaitingConsumer) {
           // A consumer is already awaiting, so this payload's delivery is
           // pinned to this log position: capture the deferral HERE, while
-          // consuming the event, not at the end of the hydration slot below —
+          // consuming the event, not at the end of the hydration slot below:
           // same reasoning as step.ts. An earlier step or hook whose slot runs
           // first on this serial queue has usually delivered, and so
           // deregistered its barrier, before this slot ends. Read then, it
@@ -332,7 +332,7 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
           // window is consumed before any slot runs, so capturing at
           // consumption time sees all of them.
           //
-          // The BUFFERED branch below deliberately does NOT do this — see the
+          // The BUFFERED branch below deliberately does NOT do this; see the
           // comment on `claim()`.
           const earlierDelivered = awaitEarlierDeliveries(
             ctx,
@@ -387,7 +387,7 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
           // at this log position and park the OUTCOME (value or error) for a
           // later `iterator.next()` / `await hook` claim. We capture the
           // outcome rather than eagerly resolving/rejecting a promise no
-          // consumer has attached to — a rejected unclaimed promise (e.g. a
+          // consumer has attached to: a rejected unclaimed promise (e.g. a
           // buffered encrypted payload with no key) would otherwise surface
           // as an unhandled rejection and crash the process. `claim()` builds
           // the consumer-facing promise on demand.
@@ -406,8 +406,8 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
             // claim time, rather than when the event was consumed. A buffered
             // payload's delivery genuinely happens when the workflow reads the
             // hook, which may be many deliveries later; a consumption-time
-            // snapshot would make the claim wait on — and pay the macrotask
-            // yield for — barriers that were relevant to a moment this payload
+            // snapshot would make the claim wait on (and pay the macrotask
+            // yield for) barriers that were relevant to a moment this payload
             // never participated in. That is not theoretical: it stalls the
             // second payload in the e2e `hookWithSleepWorkflow` long enough
             // for the run to suspend before delivering it.
@@ -495,7 +495,7 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
           // The payload was hydrated through a promiseQueue slot at its log
           // position (buffering branch above). `claim()` builds the
           // consumer-facing promise from that outcome, deferring behind any
-          // earlier-in-log wait or step and marking this hook delivered — so
+          // earlier-in-log wait or step and marking this hook delivered, so
           // resolution order stays anchored to the event log, not this later
           // claim site.
           return nextDelivery.claim();
@@ -565,7 +565,7 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
       }
       isDisposed = true;
 
-      // If the event log already contains hook_disposed, this is a replay — no-op
+      // If the event log already contains hook_disposed, this is a replay: no-op
       if (hasDisposedEvent) {
         return;
       }

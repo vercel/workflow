@@ -59,6 +59,10 @@ export {
   STREAM_REF_TYPE,
   truncateId,
 } from './lib/hydration';
+export {
+  isSealedNoopEvent,
+  SEALED_EVENT_MESSAGE,
+} from './lib/sealed-events';
 export type { DecodedStreamChunkSource } from './lib/stream-display';
 export type { ToastAdapter } from './lib/toast';
 export { ToastProvider, useToast } from './lib/toast';

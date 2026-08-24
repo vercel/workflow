@@ -161,7 +161,7 @@ export function createAnalytics(config?: APIConfig): Analytics {
         searchParams.set('correlationId', params.correlationId);
         appendPagination(searchParams, params.pagination);
 
-        // A correlation id is unique per run, not globally — a slot-numbered
+        // A correlation id is unique per run, not globally: a slot-numbered
         // run numbers its own steps, so `step_…001` names the first step of
         // every such run. The run-scoped endpoint takes the same
         // correlation-id filter, so scoping costs nothing here.

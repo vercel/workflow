@@ -3,14 +3,14 @@
  * variables.
  *
  * Several SDK constants (timeouts, retry counts, stream buffering, …) are
- * useful to tune per-deployment — most notably to dial them down on a
+ * useful to tune per-deployment, most notably to dial them down on a
  * dedicated e2e deployment so the test suite exercises edge paths (reconnects,
  * batch splitting, retries) that otherwise only trigger after long durations
  * or large payloads.
  *
  * `envNumber` reads `process.env[name]` lazily (so tests and deployments can
  * override per invocation), clamps to an optional `[min, max]` range, and
- * never throws — an env override is an escape hatch, not a hard requirement,
+ * never throws: an env override is an escape hatch, not a hard requirement,
  * so an invalid value falls back to the constant's compiled-in default. A
  * misconfigured value warns once per process so the mistake is observable
  * without spamming logs.
@@ -27,7 +27,21 @@ export interface EnvNumberOptions {
 
 // Raw "name=value" pairs already warned about, so a bad env var warns once
 // per process rather than on every (lazy) read.
-const warnedEnvValues = new Set<string>();
+//
+// On `globalThis` rather than at module scope so "per process" survives
+// bundling: this package is compiled into the host application's server build,
+// which gives one copy of this module per bundler layer, and a per-copy Set
+// would warn once per layer. Hand-rolled rather than `globalSingleton()` from
+// `@workflow/utils` because this package deliberately carries no dependencies;
+// the two are equivalent and the rule accepts both.
+const WarnedEnvValuesKey = Symbol.for('@workflow/world//warnedEnvValues/v1');
+const globalStore = globalThis as typeof globalThis &
+  Record<symbol, Set<string> | undefined>;
+// The same globalThis-backed idiom as `packages/core/src/private.ts`. Keeping
+// the initializer an expression is also what
+// `scripts/lint/module-scope-state.mjs` recognizes as off-module state.
+// biome-ignore lint/suspicious/noAssignInExpressions: off-module state idiom
+const warnedEnvValues = (globalStore[WarnedEnvValuesKey] ??= new Set<string>());
 
 function warnOnce(key: string, message: string): void {
   if (warnedEnvValues.has(key)) return;
@@ -78,8 +92,8 @@ export function envNumber(
  * Matches the convention the runtime flags already use (`WORKFLOW_TURBO`,
  * `WORKFLOW_SLOT_IDENTITY`, …): unset or empty takes `fallback`, and the only
  * values that force a side are `0` / `false` and `1` / `true`
- * (case-insensitive). Anything else falls back rather than throwing — a flag is
- * an escape hatch, not a hard requirement — and warns once per process.
+ * (case-insensitive). Anything else falls back rather than throwing (a flag is
+ * an escape hatch, not a hard requirement) and warns once per process.
  */
 export function envFlag(
   name: string,
@@ -112,7 +126,7 @@ export function getMaxEventsPerRun(): number {
 }
 
 /**
- * Reset the warn-once cache. Test-only — exported so unit tests can exercise
+ * Reset the warn-once cache. Test-only, exported so unit tests can exercise
  * the warning path repeatedly without sharing state across cases.
  *
  * @internal

@@ -7,7 +7,7 @@ related:
   - /docs/foundations/versioning
 ---
 
-`RunNotSupportedError` is thrown when reading a workflow run whose data was written with a newer workflow spec version than the running SDK supports. This typically means the run was created by a newer version of the `workflow` package — upgrade the package to process it.
+`RunNotSupportedError` is thrown when reading a workflow run whose data was written with a newer workflow spec version than the running SDK supports. This typically means the run was created by a newer version of the `workflow` package. Upgrade the package to process it.
 
 ```typescript lineNumbers
 import { RunNotSupportedError } from "workflow/errors"
@@ -25,7 +25,7 @@ try {
 }
 ```
 
-## API Signature
+## API signature
 
 ### Properties
 
@@ -42,11 +42,11 @@ interface RunNotSupportedError {
 export default RunNotSupportedError;`}
 />
 
-### Static Methods
+### Static methods
 
 #### `RunNotSupportedError.is(value)`
 
-Type-safe check for `RunNotSupportedError` instances. Preferred over `instanceof` because it works across module boundaries and VM contexts.
+Type-safe check for `RunNotSupportedError` instances. Preferred over `instanceof` because it works across module boundaries and virtual machine contexts.
 
 ```typescript
 import { RunNotSupportedError } from "workflow/errors"

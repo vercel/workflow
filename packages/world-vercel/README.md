@@ -8,7 +8,7 @@ Used by default for deployments on Vercel. Authentication and API endpoints are 
 
 ## Custom dispatcher
 
-HTTP requests (including the queue) default to a shared undici `RetryAgent` that handles connection pooling and retries. Pass a custom `dispatcher` to override it — e.g. to tune undici on newer Node runtimes:
+HTTP requests (including the queue) default to a shared undici `RetryAgent` that handles connection pooling and retries. Pass a custom `dispatcher` to override it, for example, to tune undici on newer Node.js runtimes:
 
 ```ts
 import { Agent } from 'undici';

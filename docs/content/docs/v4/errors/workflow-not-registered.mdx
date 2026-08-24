@@ -12,19 +12,19 @@ related:
 
 This error occurs when the Workflow runtime tries to execute a workflow function that is not registered in the current deployment. When this happens, the run fails with a `RUNTIME_ERROR` error code. The underlying error class is [`WorkflowNotRegisteredError`](/docs/api-reference/workflow-errors/workflow-not-registered-error).
 
-## Error Message
+## Error message
 
-```
+```text
 Workflow "<workflowName>" is not registered in the current deployment.
 This usually means a run was started against a deployment that does not
 have this workflow, or there was a build/bundling issue.
 ```
 
-## Why This Happens
+## Why this happens
 
 This error means the deployment that received the workflow execution request does not have the specified workflow function in its bundle. This is an **infrastructure error**, not a user code error.
 
-## Common Causes
+## Common causes
 
 ### Run started against a deployment without the workflow
 
@@ -57,7 +57,7 @@ Something went wrong during the build process that caused the workflow function 
 - The workflow function is not exported from the workflow file
 - An esbuild or SWC plugin error silently excluded the workflow
 
-## How to Resolve
+## How to resolve
 
 1. **If the workflow was renamed or moved:** Deploy with the workflow restored to its original name and location, then retry the run. Alternatively, start a new run using the updated workflow name against the current deployment.
 

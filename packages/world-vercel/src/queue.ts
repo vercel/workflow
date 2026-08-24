@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { Transport } from '@vercel/queue';
 import { ConsumerDiscoveryError, QueueClient } from '@vercel/queue';
+import { globalSingleton } from '@workflow/utils';
 import {
   MessageId,
   type Queue,
@@ -99,6 +100,9 @@ class DualTransport implements Transport<unknown> {
   }
 }
 
+// per-copy-ok: both ends of this store live in the same `createQueueHandler`
+// closure: the `run()` wrapper and the `getStore()` read always come from the
+// same module copy, so the context never has to cross a copy boundary.
 const requestIdStorage = new AsyncLocalStorage<string | undefined>();
 
 const MessageWrapper = z.object({
@@ -143,13 +147,13 @@ const HANDLER_ERROR_RETRY_AFTER_SECONDS = 1;
 // Ceiling for the per-redelivery backoff. This value is the `retry-after` we
 // hand to VQS, which clamps it into [5s, MAX_SQS_DELAY_SECONDS=900s] for the
 // first 32 deliveries and then applies its own exponential growth (also capped
-// at 900s) — see vqs-server `calculateBackoffDelay`. Capping our base at 60s
+// at 900s); see vqs-server `calculateBackoffDelay`. Capping our base at 60s
 // (the old value) wasted that headroom: a run stuck behind a sustained backend
 // outage exhausted its delivery budget in ~3.7h. Ramping to the 900s ceiling
 // instead stretches survival to ~9–10h (across `MAX_QUEUE_DELIVERIES` = 48
 // attempts), so transient outages don't fail otherwise-healthy runs. Spanning
 // the full ~24h message-visibility window would require a higher delivery cap,
-// not a higher ceiling — VQS clamps every hop at 900s, so going above it here
+// not a higher ceiling: VQS clamps every hop at 900s, so going above it here
 // is pointless.
 const HANDLER_ERROR_MAX_RETRY_AFTER_SECONDS = 900;
 const HANDLER_ERROR_RETRY_JITTER_RATIO = 0.25;
@@ -172,7 +176,7 @@ function getHandlerErrorRetryAfterSeconds(deliveryCount: number): number {
 /**
  * Default region used when no explicit override, no tagged run ID, and no
  * `VERCEL_REGION` env var are available. `iad1` preserves the historical
- * behaviour from before per-message regional routing existed.
+ * behavior from before per-message regional routing existed.
  */
 const FALLBACK_REGION = 'iad1';
 
@@ -195,8 +199,8 @@ function getRunIdFromPayload(payload: QueuePayload): string | undefined {
 /**
  * Bind this run's events channel to one invocation of the flow route. This is
  * the only pair of calls that opens one: nothing else in the SDK does, so every
- * other writer — `start()` writing `run_created` from an arbitrary request
- * handler, where a lone write would not repay a handshake — stays on HTTP.
+ * other writer (`start()` writing `run_created` from an arbitrary request
+ * handler, where a lone write would not repay a handshake) stays on HTTP.
  *
  * Both halves are no-ops on the HTTP default, and the gate is checked before the
  * import so a deployment on the default never loads `ws`.
@@ -212,7 +216,7 @@ const wsEventsChannelForInvocation = (
     /**
      * Unawaited and failure-proof: callers treat the handshake as free. The
      * refcount therefore rises a microtask late, so a write racing the import
-     * finds no channel and goes over HTTP — one frame, not the invocation,
+     * finds no channel and goes over HTTP: one frame, not the invocation,
      * since `close` awaits this same promise and so cannot release ahead of
      * the claim it is releasing.
      */
@@ -228,8 +232,8 @@ const wsEventsChannelForInvocation = (
      * stops the process exiting and keeps a server invocation pinned.
      *
      * Releases the claim the open returned rather than re-resolving the run,
-     * which is what keeps a channel this invocation never opened — a later
-     * invocation's, registered under the same URL after ours was evicted — out
+     * which is what keeps a channel this invocation never opened (a later
+     * invocation's, registered under the same URL after ours was evicted) out
      * of reach of our release.
      */
     async close(): Promise<void> {
@@ -269,12 +273,12 @@ function regionFromTaggedRunId(runId: string | undefined): string | undefined {
  *   1. Explicit `opts.region` override.
  *   2. Region embedded in the payload's tagged run ID.
  *   3. `VERCEL_REGION` environment variable.
- *   4. {@link FALLBACK_REGION} (preserves pre-regional behaviour).
+ *   4. {@link FALLBACK_REGION} (preserves pre-regional behavior).
  *
  * The `opts.region` override and `VERCEL_REGION` are arbitrary strings, so
  * each is validated against the known region table and ignored (falling
  * through to the next source) when it isn't a routable region code. This keeps
- * a bad override — e.g. `start({ region: 'xyz9' })` — from
+ * a bad override (e.g. `start({ region: 'xyz9' })`) from
  * clobbering the payload-derived region with an undeliverable destination.
  */
 function resolveTargetRegion(
@@ -311,15 +315,15 @@ function getHeadersFromPayload(
 /**
  * Resolves the physical VQS topic for a message.
  *
- * Normally this is just the logical queue name. When
+ * Normally this is the logical queue name. When
  * `WORKFLOW_SEQUENTIAL_REPLAYS` is enabled, messages on flow (workflow)
  * topics get a payload-dependent physical topic. VQS scopes `maxConcurrency`
  * per concrete topic, so combined with `maxConcurrency: 1` on the flow
  * trigger:
  *
  * - Orchestrator replays (`WorkflowInvokePayload` without a `stepId`) get a
- *   per-run topic — at most one replay per run at a time.
- * - Inline step executions (`WorkflowInvokePayload` WITH a `stepId` — they
+ *   per-run topic: at most one replay per run at a time.
+ * - Inline step executions (`WorkflowInvokePayload` WITH a `stepId`; they
  *   ride the flow topic in the combined handler model) get a per-step topic
  *   so steps keep full parallelism across a run; only redeliveries of the
  *   same step serialize.
@@ -338,11 +342,18 @@ function getHeadersFromPayload(
  */
 const FLOW_TOPIC_PATTERN = /^__([a-z][a-z0-9]*_)?wkf_workflow_/;
 
-let loggedSequentialReplays = false;
+// Logged at most once per process; a field rather than a module-level `let`
+// because a bundler can put several copies of this file in one process and
+// "once" should not become once per copy (see `globalSingleton`).
+const queueLogs = globalSingleton(
+  '@workflow/world-vercel//queueLogLatches',
+  1,
+  () => ({ loggedSequentialReplays: false })
+);
 
 /**
  * Whether sequential replays are enabled (`WORKFLOW_SEQUENTIAL_REPLAYS=1`).
- * Mirrors `isSequentialReplaysEnabled` in `@workflow/builders` — world-vercel
+ * Mirrors `isSequentialReplaysEnabled` in `@workflow/builders`; world-vercel
  * must not depend on the build-time package, so the check is duplicated.
  */
 function isSequentialReplaysEnabled(): boolean {
@@ -356,8 +367,8 @@ function getPhysicalQueueName(
   if (!isSequentialReplaysEnabled() || !FLOW_TOPIC_PATTERN.test(queueName)) {
     return queueName;
   }
-  if (!loggedSequentialReplays) {
-    loggedSequentialReplays = true;
+  if (!queueLogs.loggedSequentialReplays) {
+    queueLogs.loggedSequentialReplays = true;
     // One-time breadcrumb so a half-applied configuration (env var set without
     // a maxConcurrency-bearing flow trigger, or vice versa) is diagnosable
     // from function logs. Must go to stderr: this code also runs inside CLI
@@ -443,7 +454,7 @@ export function createQueue(config?: APIConfig): Queue {
     // we decode it from the payload's tagged run ID so messages produced by
     // `start()` land in the same region the run was created in. Falls back
     // to the `VERCEL_REGION` env var, then `iad1` to preserve historical
-    // behaviour for legacy / untagged run IDs.
+    // behavior for legacy / untagged run IDs.
     const region = resolveTargetRegion(payload, opts);
 
     const client = new QueueClient({
@@ -548,15 +559,15 @@ export function createQueue(config?: APIConfig): Queue {
           }
         } finally {
           // The only point in the SDK that knows an invocation has no writes
-          // left. In a `finally` so a failed handler closes too — the retry
-          // arrives as a new invocation and opens its own channel.
+          // left. In a `finally` so a failed handler closes too, since the
+          // retry arrives as a new invocation and opens its own channel.
           await wsEvents.close();
         }
       },
       {
         // Without an explicit retry directive, @vercel/queue leaves failed
         // handler messages invisible until the default 300s visibility timeout
-        // expires. Start retrying quickly, then back off by delivery count
+        // expires. Start retrying after 1s, then back off by delivery count
         // with jitter so an outage or poison message cannot hot-loop or
         // redrive in lockstep. Workflow handlers are event-sourced and must
         // remain idempotent because queue retries can happen close together.
@@ -579,7 +590,7 @@ export function createQueue(config?: APIConfig): Queue {
   };
 
   // `start()` resolves the current deployment before writing anything, so this
-  // is where a Vercel world running outside a deployment fails — ahead of any
+  // is where a Vercel world running outside a deployment fails: ahead of any
   // state write, and regardless of whether credentials happen to be valid.
   const getDeploymentId: Queue['getDeploymentId'] = async () => {
     const deploymentId = process.env.VERCEL_DEPLOYMENT_ID;

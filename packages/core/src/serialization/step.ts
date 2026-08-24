@@ -32,7 +32,7 @@ export async function serialize(
       SerializationFormat.DEVALUE_V1,
       payload
     ) as Uint8Array;
-    // Compress before encrypting — encrypted bytes don't compress.
+    // Compress before encrypting, since encrypted bytes don't compress.
     const compressed = await compress(
       prefixed,
       options?.compression === true,

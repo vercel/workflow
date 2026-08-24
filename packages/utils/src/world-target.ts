@@ -6,7 +6,7 @@ export type WorkflowEnvironment = Record<string, string | undefined>;
  *
  * `VERCEL_DEPLOYMENT_ID` is the signal for "running inside a Vercel
  * deployment": Vercel sets it in every deployed function, and nothing else
- * does. Broader signals like `VERCEL=1` are deliberately not consulted —
+ * does. Broader signals like `VERCEL=1` are deliberately not consulted:
  * `vercel env pull` writes that into `.env.local`, so a production server
  * started on a developer machine would resolve to the Vercel world and then
  * fail for want of a deployment ID.

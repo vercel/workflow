@@ -1,8 +1,8 @@
 ---
 title: Workflow SDK vs trigger.dev
-description: How the Workflow SDK compares to trigger.dev — deterministic event-log replay versus CRIU process checkpoint/restore, plus a concept-mapping migration guide.
+description: How the Workflow SDK compares to trigger.dev, including deterministic event-log replay versus CRIU process checkpoint/restore and a concept-mapping migration guide.
 type: conceptual
-summary: trigger.dev achieves durability by snapshotting the process (CRIU), so code has no determinism constraints. The Workflow SDK uses event-log replay and runs in your existing app.
+summary: trigger.dev achieves durability by snapshotting the process with Checkpoint/Restore in Userspace (CRIU), so code has no determinism constraints. The Workflow SDK uses event-log replay and runs in your existing app.
 prerequisites:
   - /docs/foundations/workflows-and-steps
 related:
@@ -11,10 +11,10 @@ related:
   - /docs/ai
 ---
 
-[trigger.dev](https://trigger.dev) is an open-source, TypeScript-first durable task platform. Its defining trait is *how* it achieves durability: instead of replaying code, it **snapshots the whole process** (CRIU checkpoint/restore) at each wait point and restores it later. That single design choice drives most of the differences with the Workflow SDK.
+[trigger.dev](https://trigger.dev) is an open-source, TypeScript-first durable task platform. Instead of replaying code, it **snapshots the whole process** with Checkpoint/Restore in Userspace (CRIU) at each wait point and restores it later. This design drives most of the differences with the Workflow SDK.
 
 <Callout type="info">
-**Choose the Workflow SDK** when you want durable orchestration that runs in your existing app, a portable open-source backend you can fully self-host, TypeScript *and* Python, and broad framework support. **Choose trigger.dev** when you want a managed task platform with no determinism constraints (code runs as-is), and you're TypeScript-only.
+**Choose the Workflow SDK** when you want durable orchestration that runs in your existing app, a portable open-source backend you can self-host, TypeScript and Python, and broad framework support. **Choose trigger.dev** when you want a managed task platform with no determinism constraints and use only TypeScript.
 </Callout>
 
 ## At a glance
@@ -22,30 +22,30 @@ related:
 | | Workflow SDK | trigger.dev |
 | --- | --- | --- |
 | **Category** | Open-source durable-functions SDK that runs in your app | Durable task platform with its own runtime (Cloud or self-hosted) |
-| **Durability model** | Event log + **deterministic replay** (workflow body must be deterministic) | **Process checkpoint/restore (CRIU)** — snapshots memory/CPU/FDs; **no determinism constraints**, code runs as-is |
+| **Durability model** | Event log + **deterministic replay** (workflow body must be deterministic) | **Process checkpoint/restore (CRIU)**: snapshots memory, CPU, and file descriptors; **no determinism constraints**, code runs as-is |
 | **Authoring** | `"use workflow"` / `"use step"` in your existing app | `task()` / `schemaTask()` deployed to trigger.dev as a separate target (Docker image) |
-| **Languages** | TypeScript / JS (Python beta) | **TypeScript / JS only** |
+| **Languages** | TypeScript / JavaScript (Python beta) | **TypeScript / JavaScript only** |
 | **Where it runs** | Co-located with your app (Vercel managed or self-host) | trigger.dev's run engine (isolated containers) |
-| **Versioning** | Runs pinned to immutable deployment — safe by default | **Atomic versioning** — runs lock to their deploy version; new deploys never touch in-flight runs (same safety property) |
-| **AI & streaming** | `WorkflowAgent` in the AI SDK; native resumable streaming | First-class: AI SDK tools, native `useChat` transport, resumable Realtime, durable multi-turn Sessions, HITL via `wait.forToken` |
+| **Versioning** | Runs pinned to immutable deployment, safe by default | **Atomic versioning**: runs lock to their deploy version; new deploys never touch in-flight runs (same safety property) |
+| **AI and streaming** | `WorkflowAgent` in the AI SDK; native resumable streaming | AI SDK tools, native `useChat` transport, resumable Realtime, durable multi-turn Sessions, human-in-the-loop (HITL) via `wait.forToken` |
 | **Concurrency control** | Enforce in steps / at the publisher | First-class queues + concurrency keys |
-| **Portability** | Apache-2.0; World abstraction; runs anywhere Node runs | Apache-2.0; self-host on Docker/K8s — but CRIU needs a compatible host (heavier than plain Docker); TS-only |
+| **Portability** | Apache-2.0; World abstraction; runs anywhere Node runs | Apache-2.0; self-host on Docker/Kubernetes, but CRIU needs a compatible host (heavier than plain Docker); TypeScript-only |
 | **Pricing** | SDK free; pay your platform | Cloud: compute-seconds + per-run ($0.0000338/s Small + $0.000025/run); no charge while checkpointed |
-| **Limits** | 50 MB payload; 2 GB/run; no duration cap ([Vercel World limits](https://vercel.com/docs/workflows/pricing)) | 3 MB payload / 10 MB output; 14-day max run TTL; CPU-time-based max duration |
+| **Limits** | 50 MB payload; 2 GB/run; no duration cap ([Vercel World limits](https://vercel.com/docs/workflows/pricing)) | 3 MB payload / 10 MB output; 14-day maximum run lifetime; CPU-time-based maximum duration |
 
-**What the limits mean in practice:** trigger.dev caps task payloads at 3 MB and outputs at 10 MB — large model contexts and transcripts need external storage — and the 14-day run TTL means human-in-the-loop flows that wait longer than two weeks can't complete in one run. The [Vercel World limits](https://vercel.com/docs/workflows/pricing) are 50 MB payloads, 2 GB of state per run, and no run-duration cap.
+**What the limits mean in practice**: trigger.dev caps task payloads at 3 MB and outputs at 10 MB (large model contexts and transcripts need external storage), and the 14-day maximum run time means human-in-the-loop flows that wait longer than two weeks can't complete in one run. The [Vercel World limits](https://vercel.com/docs/workflows/pricing) are 50 MB payloads, 2 GB of state per run, and no run-duration cap.
 
 ## The core difference: checkpoint/restore vs. replay
 
-trigger.dev freezes the entire OS process with CRIU when a task hits a wait point, then restores it later — so there's **no replay and no determinism rule**: you can call `Date.now()` or `Math.random()` anywhere, and prior steps don't re-execute. The cost is an execution model that requires CRIU-capable infrastructure (which makes self-hosting heavier than a plain container) and runs on trigger.dev's runtime as a separate deploy target.
+trigger.dev freezes the entire operating system process with CRIU when a task hits a wait point, then restores it later, so there's **no replay and no determinism rule**: you can call `Date.now()` or `Math.random()` anywhere, and prior steps don't re-execute. The cost is an execution model that requires CRIU-capable infrastructure (which makes self-hosting heavier than a plain container) and runs on trigger.dev's runtime as a separate deploy target.
 
 The Workflow SDK reconstructs state by **replaying the workflow function** against its event log. That requires the workflow body to be deterministic (side effects go in `"use step"` functions), but it runs inside your existing app and deployment with no special host requirements, and the [World abstraction](/worlds/building-a-world) lets you swap the storage/queue/stream layers.
 
-Notably, **both pin runs to a version** so deploys never corrupt in-flight work — trigger.dev via atomic version-locking, the Workflow SDK via immutable-deployment pinning.
+Notably, **both pin runs to a version** so deploys never corrupt in-flight work: trigger.dev via atomic version-locking, the Workflow SDK via immutable-deployment pinning.
 
 ## AI agents
 
-Both invest heavily in AI. trigger.dev offers AI SDK tool wrapping, a native `useChat` transport over its Realtime layer, resumable streaming, and durable multi-turn Sessions. The Workflow SDK offers `WorkflowAgent` directly inside the AI SDK plus native [resumable streaming](/docs/ai/resumable-streams). Both support human-in-the-loop (trigger.dev's `wait.forToken`, the Workflow SDK's hooks). The deciding factors are usually language (trigger.dev is TS-only; the Workflow SDK adds Python) and whether you want the agent to run in your app vs. on a dedicated platform.
+trigger.dev offers AI SDK tool wrapping, a native `useChat` transport over its Realtime layer, resumable streaming, and durable multi-turn Sessions. The Workflow SDK offers `WorkflowAgent` directly inside the AI SDK plus native [resumable streaming](/docs/ai/resumable-streams). Both support human-in-the-loop workflows (trigger.dev's `wait.forToken` and the Workflow SDK's hooks). Key differences are language support (trigger.dev is TypeScript-only; the Workflow SDK adds Python) and whether the agent runs in your app or on a dedicated platform.
 
 ## Migrating from trigger.dev
 
@@ -59,10 +59,10 @@ Both invest heavily in AI. trigger.dev offers AI SDK tool wrapping, a native `us
 | `triggerAndWait()` | [`start()`](/docs/foundations/starting-workflows) called directly from the workflow, then await the returned `Run` | Spawn + collect. |
 | `batch.triggerAndWait()` | `Promise.all` over collected `Run` handles | Standard concurrency. |
 | `metadata.stream()` / Realtime | `getWritable()` / named streams | Clients read from the stream. |
-| Run tags / `metadata.set()` | [`setAttributes()`](/docs/api-reference/workflow/set-attributes) / `attributes` option on `start()` | Filter runs by `key=value` — see [Attributes](/docs/observability/attributes). |
+| Run tags / `metadata.set()` | [`setAttributes()`](/docs/api-reference/workflow/set-attributes) / `attributes` option on `start()` | Filter runs by `key=value`. See [Attributes](/docs/observability/attributes). |
 | `AbortTaskRunError` | `FatalError` | Stops retries immediately. |
 
-The `task()` factory collapses into a plain function — and because the workflow body is replayed, move side effects into steps:
+The `task()` factory collapses into a plain function, and because the workflow body is replayed, move side effects into steps:
 
 ```typescript title="workflows/order.ts"
 export async function processOrder(orderId: string) {
@@ -79,7 +79,7 @@ async function loadOrder(orderId: string) {
 ```
 
 <Callout type="warn">
-trigger.dev's `run` body has full Node.js access. The Workflow SDK's `"use workflow"` body runs in a sandboxed VM — side effects (`fetch`, `Date.now()`, `Math.random()`, DB access) must live inside `"use step"` functions. Orchestration stays in the workflow body.
+trigger.dev's `run` body has full Node.js access. The Workflow SDK's `"use workflow"` body runs in a sandboxed virtual machine (VM). Side effects (`fetch`, `Date.now()`, `Math.random()`, and database access) must live inside `"use step"` functions. Orchestration stays in the workflow body.
 </Callout>
 
 <Callout type="info">

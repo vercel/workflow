@@ -1,7 +1,8 @@
 # world-sim: design
 
-How `@workflow/world-sim` is built and why it is built that way. The package
-README is the introduction; this is the implementation.
+`@workflow/world-sim` models runtime interleavings with a deterministic World,
+scheduler, and scenario runner. Its implementation follows the constraints and
+tradeoffs below; the package README provides an introduction.
 
 Two workspaces:
 
@@ -17,7 +18,7 @@ Two workspaces:
 | module | responsibility |
 |---|---|
 | `world.ts` | the `World` implementation; wraps every method as a call point and attributes it to a writer |
-| `store.ts` | in-memory event store — the event → entity state machine, plus the write-time guards |
+| `store.ts` | in-memory event store: the event → entity state machine, plus the write-time guards |
 | `queue.ts` | deterministic queue: records messages, never delivers on its own |
 | `clock.ts` | virtual clock; patches `Date.now()` readings, not timers |
 | `ids.ts` | deterministic ULID minting from (virtual time, counter) |
@@ -27,10 +28,10 @@ Two workspaces:
 | `scenario.ts` | runs one `ScenarioSpec` end to end and produces a `ScenarioResult` |
 | `replay.ts` | cold-start replay verification of a finished log |
 | `invariants.ts` | consistency checks re-derived from the event log alone |
-| `report.ts` | renders a scenario; log positions for every event reference, colour only when the destination is a terminal |
+| `report.ts` | renders a scenario; log positions for every event reference, color only when the destination is a terminal |
 | `streams.ts` | in-memory streamer |
 | `build.ts` | bundles a project's workflows so the runtime can be handed real compiled code. Its own entry (`@workflow/world-sim/build`), because it reaches a compiler and playing a scenario should not |
-| `load.ts` | loads a built bundle's flow handler — the half of the old `build.ts` that needs no compiler |
+| `load.ts` | loads a built bundle's flow handler, the half of the old `build.ts` that needs no compiler |
 | `types.ts` | the public vocabulary |
 
 ---
@@ -52,7 +53,7 @@ return a fixed timestamp advanced only from each consumed event's `createdAt`.
 A pass is therefore a pure function of (workflow code, run identity, event log
 prefix). Stated precisely: **same log prefix → same decisions.** That is the
 whole basis of durability, and it is also the property the simulator exists to
-attack — the interesting bug class is not "the workflow behaved randomly" but
+attack. The interesting bug class is not "the workflow behaved randomly" but
 "the decisions and the persisted log disagree", which requires the decisions to
 have been made against a *different* log than the one that ended up durable.
 
@@ -67,7 +68,7 @@ This is why a flipped branch is dangerous. It does not produce a different
 step; it produces *a different step wearing the same name badge*. The runtime's
 divergence check is a step-name comparison at the same ordinal:
 
-```
+```text
 Replay divergence: step event step_created for step_…445J belongs to
 "…//settle", but the current step consumer is "…//recoverFirst"
 ```
@@ -80,14 +81,14 @@ differs is what the consumer finds. On replay the log holds
 `step_created` / `step_started` / `step_completed` for that correlation id, so
 the consumer hydrates the recorded result and the step body is never called.
 First time through, the consumer reaches the end of the log, returns
-`NotConsumed`, and the promise never resolves — so the workflow cannot proceed.
+`NotConsumed`, and the promise never resolves, so the workflow cannot proceed.
 
 When nothing can make further progress a `WorkflowSuspension` is raised
 carrying the whole `invocationsQueue`. The runtime commits the pending
 `*_created` events, executes what it can, and runs the workflow again from the
 top against a longer log:
 
-```
+```text
 load log → run workflow from top → suspend → commit + execute → run from top → …
 ```
 
@@ -98,7 +99,7 @@ message**, so the run wakes up. Payloads landing before the workflow awaits are
 buffered in a `payloadsQueue`, which is why a duplicate delivery is absorbed
 rather than lost.
 
-There is no hook state a workflow can read — the surface is `token`,
+There is no hook state a workflow can read. The surface is `token`,
 `getConflict()`, `dispose()`, `then`, `[Symbol.asyncIterator]`. The only way to
 observe a hook is to attach a continuation and see whether it resolves, which
 is a *timing* observation, not a state read. That is why the scenario API
@@ -165,13 +166,13 @@ type CallPhase = 'before' | 'after';
 after `step_started` is durable and before the workflow resumes".
 
 Neither phase produces the opposite order, and a write is not atomic, so the
-opposite order is reachable: a real backend mints the event id *first* —
-DynamoDB does not generate ids, and that id is the log's sort key — and only
+opposite order is reachable: a real backend mints the event ID *first*.
+DynamoDB does not generate IDs, and that ID is the log's sort key. Only
 then attempts the storage write. Between the two the event has a position but
 no visibility, and a write that commits in that window sorts **behind** it.
 
 That gap is the point, not a detail. It is the only way to produce an event
-*behind* a position a reader has already read past — a complete, consistent log
+*behind* a position a reader has already read past: a complete, consistent log
 prefix that is simply missing an event still in flight. No high-water-mark fence
 can represent that shape.
 
@@ -184,15 +185,15 @@ phase would have been a second way to say the same thing, and it went unused.
 
 Calls made from inside another watch's action are not call points. Without
 that rule a watch on `events.create` would re-trigger on the `hook_received`
-it just wrote, and every scenario using `deliverHook` would recurse forever.
+the action wrote, and every scenario using `deliverHook` would recurse forever.
 The depth is tracked and surfaced in the trace, so a line committed from inside
 a held call is visibly at depth > 0.
 
-A related rule is easy to get wrong: the depth counter must be raised only by
-`asExternal`, which brackets exactly one call. Raising it for the whole
+A related rule is error-prone: only `asExternal` may raise the depth counter.
+It brackets exactly one call. Raising the counter for the whole
 duration of a watch *action* is correct for something that returns immediately
-and wrong for a hold, which does not return until the scenario releases it —
-under that rule, holding one writer makes every other writer's call stop being
+and wrong for a hold, which does not return until the scenario releases it.
+Under that rule, holding one writer makes every other writer's call stop being
 a call point, so a held step body's sibling becomes invisible and unsteerable.
 
 ### Writer attribution is derived, not instrumented
@@ -222,16 +223,16 @@ The writer is printed as a column in every event stream, so a rendered log says
 read the virtual clock. Timers are deliberately **not** patched:
 `@workflow/core` uses `setTimeout(fn, 0)` as a macrotask barrier in several
 ordering-sensitive places (`events-consumer.ts`, `private.ts`), and swapping
-those for fake timers would change the very interleavings the simulation exists
+those for fake timers would change the interleavings the simulation exists
 to observe. Real zero-delay timers stay real; only the *readings* of wall time
 move.
 
 The clock never moves on its own. Only the scheduler calls `advanceTo` /
 `advanceBy`, so two runs of a scenario see the same sequence of timestamps.
 
-### Ids
+### IDs
 
-Every id is a function of (virtual time, per-scenario counter) — never
+Every ID is a function of (virtual time, per-scenario counter), never
 `Math.random()` or the host clock. They still have to be real ULIDs, because
 `@workflow/world` validates run ids with `z.string().ulid()` and decodes the
 embedded timestamp, so the encoding is standard Crockford base32 with the
@@ -248,13 +249,13 @@ production, useless for a simulation.
 
 Here `queue()` only *records*. Delivery happens when the scheduler asks, and it
 always takes the same message: the minimum by `(readyAtMs, enqueueSeq)`. Delays
-are virtual — a message 23 hours out is delivered by jumping the clock.
+are virtual. The scheduler delivers a message 23 hours out by jumping the clock.
 `ScenarioSpec.selectNext` can override the choice to pin an order the default
 would not produce.
 
 ### Scheduler
 
-```
+```text
 take the next message → jump the clock to its delivery time → hand it to the
 flow handler → wait → repeat until the queue is empty or a budget stops it
 ```
@@ -268,7 +269,7 @@ scenario would report a spurious stall.
 The scheduler lives apart from `scenario.ts` because two things drive it: a
 scenario, and the replay verification that cold-starts a second world.
 
-**One delivery at a time.** This is the deliberate limit of the model — see
+**One delivery at a time.** This is the deliberate limit of the model. See
 §9.
 
 ---
@@ -283,7 +284,7 @@ staged/promoted hook events, canonical event-id pinning after a crash). One
 delivery at a time in one process means those races cannot occur, and their
 absence keeps the file small enough to audit.
 
-What is deliberately kept is every validation that *rejects* an event —
+The store deliberately keeps every validation that *rejects* an event:
 terminal-run guards, step lifecycle ordering, hook token uniqueness, wait
 duplication. Those rejections are the observable contract the runtime is
 written against; a simulation that relaxed them would agree with the runtime
@@ -293,15 +294,15 @@ about nothing interesting.
 
 The fence is off by default and set per scenario
 (`ScenarioSpec.preconditionGuard`, which flows into `SimWorldOptions`), which is
-how a scenario can be run one flag apart from its neighbour. `countGuard`
+how a scenario can be run one flag apart from its neighbor. `countGuard`
 **follows the fence** unless a spec says otherwise, because a World that fences
-arms both halves — see below.
+arms both halves. See below.
 
 **`preconditionGuard`** rejects a replay-context write whose snapshot predates
 the newest externally-originated event. It is a store option here and not a
 World capability: the runtime assumes any World may refuse a stale write, so a
 scenario can change what the store does about one but never what the runtime
-expects. It does not describe what world-vercel does to a run either — a
+expects. It also does not describe what world-vercel does to a run. A
 slot-identity run has no snapshot to reject, because the World allocates the
 event's position at commit time and reports the positions the write skipped
 over. What the sim's fence covers is the 412 *reception* path the runtime keeps
@@ -309,11 +310,11 @@ for Worlds that do fence, and the predicate itself.
 
 Its predicate is narrower than the bug class, and the reason is its *shape*,
 not the event type it watches. The marker advances on `hook_received` **or**
-`step_completed`, but it is a **high-water mark** — the newest such write — and
+`step_completed`, but it is a **high-water mark**, the newest such write, and
 the test is `snapshot.updatedAt < marker`, strictly. So it detects a log truncated
 at the end and is blind to a hole in the middle: when the withheld event is
 *older* than one the reader can see, the reader's snapshot is never strictly
-older than the mark. The hook direction is caught for the mirror-image reason —
+older than the mark. The hook direction is caught for the mirror-image reason:
 the withheld `hook_received` is the newest out-of-band write and the
 orchestrator's snapshot predates the sleep, so the fence fires and the run
 reconciles.
@@ -358,12 +359,12 @@ the only shape it ever ran against. Both differences are deliberate, and both
 mean a fenced green here is a claim about the *predicate*, not about any
 deployment of it:
 
-- The server's retained-id window is a FIFO in **insertion (commit) order** —
-  its Lua script prunes with `table.remove(ids, 1)`, oldest-inserted — while
+- The server's retained-ID window is a FIFO in **insertion (commit) order**.
+  Its Lua script prunes with `table.remove(ids, 1)`, oldest-inserted, while
   `pruneRunEventIndex` here sorts by id and drops the smallest, i.e. mint order.
   The two differ exactly when commits happen out of mint order, which is these
   scenarios' whole subject, and they differ in *when*
-  `countRecordedAtOrBelow` goes indeterminate once a run passes 16 events.
+  `countRecordedAtOrBelow` becomes indeterminate once a run passes 16 events.
 - Production's watermark is best-effort: region-local Redis, failing open on
   Redis errors, and blind to a webhook served in another region entirely (see
   `outside-event-tracker.ts`'s own docs). The sim's is exact and in-process.
@@ -395,7 +396,7 @@ the top of `createImpl` (`packages/world-local/src/storage/events-storage.ts`)
 and writes the file much later, so two concurrent creates take positions N and
 N+1 and can land in the opposite order. Postgres does the same via `nextval`
 before `COMMIT`. `world-local` defends this with `mintRunDominantEventKey`
-(`src/storage/helpers.ts`) — but only for terminal run events;
+(`src/storage/helpers.ts`), but only for terminal run events;
 `wait_completed` gets no re-derivation.
 
 One withheld read poisons a whole invocation, which is worth knowing when
@@ -404,7 +405,7 @@ cursor, fetching only events written strictly *after* that position. A withheld
 event sitting before the cursor can never re-enter that invocation's view.
 Incremental reads make the hole permanent.
 
-**`beginHookDelivery(token, payload)`** returns an `InFlightWrite` — a write
+**`beginHookDelivery(token, payload)`** returns an `InFlightWrite`, a write
 held between mint and commit, with `eventId` already fixed and `commit()`
 still pending. Unlike a held writer, nothing is blocked meanwhile, because the
 receiver is a separate process from the run's invocation. Holding an *inline*
@@ -421,7 +422,7 @@ it was held re-mints and takes the tail.
 
 That single move collapses both faults above into the same, weaker one. A hold
 between mint and commit can no longer open a hole, because the held write is not
-claiming a position while it waits — it has none until it lands. And
+claiming a position while it waits because it has none until it lands.
 `withholdNextEvent` degrades from serving a read *around* the withheld event to
 stopping it *at* the event, because a hole is not expressible in a log whose
 order is its commit order. Both leave the reader short rather than wrong, and
@@ -429,7 +430,7 @@ short is precisely what the fence's watermark was designed to catch.
 
 Off by default: the sim exists to model the world that exists, and production
 mints at the boundary because DynamoDB does not generate ids. The value of the
-switch is differential — play the book both ways and the diff separates "fails
+switch is differential. Play the book both ways, and the diff separates "fails
 because of the mint-before-commit window" from "fails for some other reason".
 No scenario in the book sets it; it is meant to be driven from
 `RunScenarioOptions` or `pnpm sim --append-only`.
@@ -476,7 +477,7 @@ seen once more.
 
 ### Scripting
 
-`ScenarioApi` is the complete set of sanctioned external inputs — anything a
+`ScenarioApi` is the complete set of sanctioned external inputs. Anything a
 real deployment could do out-of-band has an entry, so the script is a complete
 description of what happened:
 
@@ -485,7 +486,7 @@ description of what happened:
 
 `Tempo` adds the steering: `writer` handles, plus the raw `park` / `until` /
 `during` primitives. The vocabulary is borrowed from Python's `blanket`, which
-does the same for `threading` primitives — the call *parks*, the script issues
+does the same for `threading` primitives: the call *parks*, the script issues
 the *permit*, and the resulting order of permits is the *tempo*.
 
 ### Writers
@@ -503,7 +504,7 @@ before the step exists and binds to whichever writer shows up under it.
 
 Two implementation details of `release()` matter to scenario authors. It is
 guarded by a `done` flag so double release is a no-op. And it awaits a full
-macrotask turn before resolving — without that, `await release()` returns while
+macrotask turn before resolving. Otherwise, `await release()` returns while
 the resumed call is still queued as a microtask, and a scenario reading the log
 on the next line sees the state it was trying to leave.
 
@@ -513,7 +514,7 @@ It consults the history of points the writer has already reached *before*
 arming anything, and throws `AlreadyPassedError` naming the call it happened at
 if the point has gone by.
 
-The alternative — arm a watch and wait — is a hang. A held call blocks its
+The alternative, arming a watch and waiting, causes a hang. A held call blocks its
 writer, and when that writer is the one the scheduler is inside, it blocks the
 loop; so there is no quiescence to fall back on and no timer to eventually
 fire. An edge-triggered wait on an edge that has passed is the one way to lose
@@ -527,8 +528,8 @@ Three consequences:
   starting the second yields the event loop, and the other writer may sail past.
 - **`runTo` on an already-held writer releases it first**, and arms the new
   watch *before* releasing. That order is load-bearing: the released writer can
-  reach the next point within the same turn — the `after` phase of the very
-  call it was held in is the common case — and a watch armed afterwards would
+  reach the next point within the same turn. The `after` phase of the call it
+  was held in is the common case, and a watch armed afterwards would
   miss it. The same rule applies to authors sequencing two writers: arm B
   before releasing A.
 - **A call is two records, so `seq` cannot order them.** The `before` and
@@ -536,13 +537,13 @@ Three consequences:
   own `ordinal` and the level check compares against that.
 
 A watermark tracks how far each writer has been advanced. Points at or before
-it are "already consumed" and do not count as already-passed — asking twice for
+it are "already consumed" and do not count as already-passed. Asking twice for
 `step_completed` means the *next* one, which is what the duplicate-delivery
 scenarios need.
 
 ### What is not offered
 
-Writers form a dependency graph — the orchestrator awaits its own step bodies —
+Writers form a dependency graph because the orchestrator awaits its own step bodies,
 so not every interleaving exists to be asked for, and an unsatisfiable `runTo`
 can only be reported, not prevented. The runtime's await graph is not visible
 from here, so true deadlock detection is out of reach; the substitute is a
@@ -569,15 +570,15 @@ deadline can offer. It is clamped to `maxWallMs` so lowering the global budget
 does not require remembering to lower this one.
 
 The scenario's global deadline must **not** be `unref`'d. An unref'd timer does
-not hold the event loop open, so a total deadlock — every writer held, scheduler
-blocked inside a held call, script awaiting the impossible — empties the loop
+not hold the event loop open. A total deadlock, with every writer held, the scheduler
+blocked inside a held call, and the script awaiting the impossible, empties the loop
 and exits Node with a bare "unsettled top-level await" instead of firing the
 watchdog, which is precisely the case the watchdog exists for. The `finally`
 already clears it, so it cannot outlive a scenario.
 
 Stream readers get the same treatment: a reader that parked on an unfinished
 stream would deadlock the scenario, so readers park on a promise the *writer*
-resolves and `abortOpenReaders()` releases any still parked at teardown —
+resolves and `abortOpenReaders()` releases any still parked at teardown,
 turning a hang into a reported diagnostic.
 
 Outcomes are `WorkflowRunStatus | 'stalled' | 'budget-exceeded' | 'error'`. A
@@ -592,14 +593,14 @@ Two independent checkers run over every scenario.
 
 ### Invariants
 
-The store enforces most rules at write time by rejecting bad events — but "the
+The store enforces most rules at write time by rejecting bad events, but "the
 store rejected it" and "the log is actually consistent" are different claims,
 and only the second is worth trusting. So `invariants.ts` re-derives everything
 from the event log alone and compares against the entity rows.
 
 25 rules, grouped:
 
-```
+```text
 log.monotonic-order          log.unique-event-id
 run.created-first            run.created-once           run.terminal-is-last
 run.entity-matches-log       run.attributes-match-log   run.output-materialized
@@ -613,7 +614,7 @@ wait.created-once            wait.completed-after-created
 wait.completed-once          wait.resume-at-stable
 ```
 
-A violation is a bug somewhere — in the runtime that produced the sequence, in
+A violation indicates a bug in the runtime that produced the sequence, in
 the store that accepted it, or in the scenario that injected something
 impossible. Which one is a question for the reader; the checker's job is only
 to notice.
@@ -626,8 +627,8 @@ would it reconstruct the same run?
 
 The check is a **cold start with the answer withheld**. Take the finished log,
 drop its terminal `run_*` event, load the rest into an empty world as durable
-history, and deliver one queue message. The real runtime — the same
-`workflowEntrypoint` a deployment serves — replays from the log and must
+history, and deliver one queue message. The real runtime (the same
+`workflowEntrypoint` a deployment serves) replays from the log and must
 re-derive the event that was removed, with the same output. No step body
 re-executes, since every `step_completed` is in the log and the step consumer
 resolves from it, so anything the replay produces came from the log alone.
@@ -642,7 +643,7 @@ equivalent. Six failure ids:
 `replay.diverged` is the runtime raising `ReplayDivergenceError`, exhausting
 its recovery replays, and failing the run with `CorruptedEventLogError`.
 `replay.suspended` means the replay ran out of log before the workflow
-finished — the log did not contain enough to rebuild the run.
+finished because the log did not contain enough to rebuild the run.
 
 ---
 
@@ -650,17 +651,17 @@ finished — the log did not contain enough to rebuild the run.
 
 Measured on branch `sim-world`.
 
-**Unit tests** — 72 passing across 8 files (`pnpm --filter @workflow/world-sim test`).
+**Unit tests:** 72 passing across 8 files (`pnpm --filter @workflow/world-sim test`).
 
-**Scenarios** — `pnpm sim` in `workbench/sim-world`:
+**Scenarios:** `pnpm sim` in `workbench/sim-world`:
 
-```
+```text
 41 scenario(s): 38 passed, 3 failed, 3 consistency violation(s)
 ```
 
 And the same book against an append-only log (`pnpm sim --append-only`):
 
-```
+```text
 41 scenario(s): 41 passed, 0 failed, 0 consistency violation(s)
 ```
 
@@ -671,14 +672,14 @@ because the correct answer itself changes.
 There was a seventh red until recently, `unclaimed-payload-under-fork`, and it
 was a different animal: it tripped a `sim.check` rather than the replay
 invariant, and it was red in *both* worlds, because nothing was wrong with its
-log's positions — the runtime handed the workflow two resolutions in an order
+log's positions. The runtime handed the workflow two resolutions in an order
 the log did not record, so live and replay ran the same code, made the same
 mistake, and agreed. Only the log disagreeing with itself caught it. #3406
 fixed the delivery-barrier ordering and it is now green in both worlds; the
 scenario stays as that fix's regression test.
 
 With the fence forced off (`pnpm sim --no-fence`), violations go to **5**
-mint-ordered and stay at **0** append-only — see §5.
+mint-ordered and stay at **0** append-only. See §5.
 
 Replay verification across the book: **36 `ok`, 3 `MISMATCH`, 2 `skipped`**
 (skipped where the run did not reach a terminal status).
@@ -695,9 +696,9 @@ two means something got fixed and a scenario is ready to retire.
 That makes the book a poor plain CI gate, which is what `--report-only` is for:
 it prints every failure and exits 0, so a job can *publish* the book's current
 state rather than block on it. `--summary-file` writes one collapsed
-`<details>` — a visible line carrying the count and a green or orange dot, the
-whole table behind it — for a PR comment or `$GITHUB_STEP_SUMMARY`, and
-`--detail-file` writes the full colour-free trace as an artifact to read when a
+`<details>` element with a visible line carrying the count and a green or orange dot,
+and the whole table behind it, for a PR comment or `$GITHUB_STEP_SUMMARY`.
+`--detail-file` writes the full color-free trace as an artifact to read when a
 number moves. Deliberately nothing above the fold but the count: three are red
 on purpose, so a comment that leads with the failures leads with the part that is
 not news, and grows a wall of text on exactly the PRs that changed nothing. The
@@ -711,15 +712,15 @@ strict, so running it by hand fails loudly.
 |---|---|---|
 | `in-flight-before-decision` (doc-29) | `beginHookDelivery`, committed before the decision is written | none in the SDK. The hole is a live reservation, so re-reading finds it still empty |
 | `in-flight-before-decision-counted` (doc-30) | same tempo, count half of the fence armed | same. Mint-ordered the write never reaches the fence |
-| `in-flight-after-decision` (doc-31) | `beginHookDelivery`, committed after the decision | none in the SDK. Needs an append-tail fence — `assertSlotAboveTail`, `vercel/workflow-server#692` |
+| `in-flight-after-decision` (doc-31) | `beginHookDelivery`, committed after the decision | none in the SDK. Needs an append-tail fence: `assertSlotAboveTail`, `vercel/workflow-server#692` |
 
 Those handles are `ScenarioSpec.id`, and they select: `pnpm sim
 in-flight-after-decision` plays one row of this table.
 
 **There used to be six, and slot-numbered event ids closed half of them.** The
-four that closed — `stale-read-step-count-fork` (doc-23),
+four that closed (`stale-read-step-count-fork` (doc-23),
 `stale-read-equal-step-counts` (doc-25), `step-vs-step-fork` (doc-26),
-`step-vs-step-fork-fenced` (doc-27) — all staged a *read* that was missing an
+`step-vs-step-fork-fenced` (doc-27)) all staged a *read* that was missing an
 event the log already held. Under ULIDs that read was indistinguishable from a
 complete one, and the fence was the only thing that could have caught it, which
 is why their `fix` column used to name a predicate. Under slot ids a missing
@@ -732,8 +733,8 @@ is now a pairing between two green scenarios.
 What is left is the family the audit cannot repair by re-reading, because the
 position really is empty at the moment of the read: a writer has reserved it and
 has not committed. Mint-ordered, doc-29 and doc-30 now fail *loudly* rather than
-silently — the replay refuses a log it cannot follow instead of following it
-into the wrong branch — which is a better outcome than the divergence they used
+silently. The replay refuses a log it cannot follow instead of following it
+into the wrong branch. This outcome is better than the divergence they used
 to produce, and still a failure.
 
 **The append-only log closes all three, and by construction rather than by
@@ -742,13 +743,13 @@ a hook that commits after the timeout genuinely *is* after it. The log records
 the timeout first and the run that settled is the run the log describes.
 
 **No expectation is restated per world, and there is no mechanism to.** The
-first cut of this had one — an `expectAppendOnly` field on three scenarios,
+first cut of this had an `expectAppendOnly` field on three scenarios,
 naming a second correct output. It was the wrong instrument, for a reason worth
 keeping written down. A scenario is one sequence of advances. The only thing a
 world changes is what a read returns. The branch a run ends on is decided by
 what it read, so pinning the branch pins a consequence of the world rather than
 a property of the run, and any expectation that then has to be restated per
-world is evidence the pin was wrong — not evidence that a second answer is
+world is evidence the pin was wrong, not that a second answer is
 needed. The three now assert what holds in both worlds (the run completes) and
 report the branch in the trace.
 
@@ -756,12 +757,12 @@ That costs nothing, because the expectations were never what caught the fault.
 The load-bearing assertion is the invariant: **the log a run wrote must be a log
 the runtime can replay back into that same run**. It is world-independent, on by
 default (`verifyReplay`), and it is what all three reds trip. Measured, not
-assumed: strip every `expect` in the book and the violation counts do not move
-— 3 mint-ordered, 0 append-only, the same three by name. (Pass/fail does move by
+assumed: strip every `expect` in the book and the violation counts do not move:
+3 mint-ordered and 0 append-only, with the same three by name. (Pass/fail moves by
 one, and only for a bookkeeping reason: `hook-never-arrives` expects `stalled`,
 and a stall's reason is reported as a problem unless the scenario said it was
 expecting one.) That also removes
-the one place where the flag's scoreboard rested on a judgement about what the
+the one place where the flag's scoreboard rested on a judgment about what the
 right answer *is* rather than on something the harness checks on its own.
 
 doc-30 is worth a line because it was the third `expectAppendOnly`. Its branch
@@ -770,8 +771,8 @@ pinned output would have turned a scenario red for ending on the world's answer
 rather than on a fault. What makes it distinct from doc-29 was never the branch
 anyway; it is that the fence fires at all. That is asserted directly, matched on
 `PreconditionFailedError` rather than on "something was rejected", since doc-29
-rejects too. The assertion is scoped to the append-only world, because
-mint-ordered the write never reaches the fence — the reservation ahead of it
+rejects too. The assertion is scoped to the append-only world because, in
+mint-ordered mode, the write never reaches the fence. The reservation ahead of it
 makes the log unreadable first.
 
 Two details worth keeping:
@@ -785,7 +786,7 @@ Two details worth keeping:
   fence once the log is append-only, and doc-30's trace is where to see it.
 
 All three are hook-driven, and the two that were not (doc-26 and doc-27, two of
-the run's own `step_completed` events) are the ones the gap audit closed — so
+the run's own `step_completed` events) are the ones the gap audit closed, so
 the book no longer holds an open reproduction that needs no out-of-band event
 type. All the pure hook-timing scenarios pass: placing a hook precisely is what
 works. What fails is a hook whose position is spoken for but whose write has not
@@ -806,8 +807,8 @@ the run makes no writes and so meets no checks. `assertSlotAboveTail` in
 Reaching that would need concurrent delivery with hold points to pin the
 interleaving. The gap matters because it is a real production route:
 `resumeHook` writes `hook_received` *and* enqueues a flow message, so two
-deliveries end up in flight — one writing `wait_completed` and deciding
-no-hook, one seeing the hook and deciding hook-branch — racing to create the
+deliveries end up in flight. One writes `wait_completed` and decides
+no-hook, while the other sees the hook and decides hook-branch. They race to create the
 same ordinal, with every reader holding a perfectly consistent view. Just
 different ones.
 
@@ -822,17 +823,17 @@ it per lookup, so **every real world takes the parallel path**, where the queue
 publish races the `hook_received` write and the consumer re-ensures the event
 through the durable `(runId, resumeId)` claim. The sim advertises neither the
 capability nor a `resumeId` dedupe, so every sim hook delivery takes the
-sequential path — meaning the hook-timing shapes in this book are the *legacy*
+sequential path, meaning the hook-timing shapes in this book are the *legacy*
 shape, not the one production runs. Closing this needs `(runId, resumeId)`
 dedupe in the store plus the capability; it is the largest single gap for a
 package about hook races.
 
-**Also untested:** turbo / optimistic-inline-start, which skip replays and so
-give a stale branch somewhere to hide; and the fence's same-millisecond
-behaviour, where an equal snapshot watermark passes by design as anti-livelock.
+**Also untested:** turbo / optimistic-inline-start, which skip replays and give
+a stale branch somewhere to hide; and the fence's same-millisecond behavior,
+where an equal snapshot watermark passes by design as anti-livelock.
 
-**Not modelled at all:** the concurrency machinery `world-local` needs and this
-store omits — claim files, per-entity locks, staged/promoted hook events,
+**Not modeled at all:** the concurrency machinery `world-local` needs and this
+store omits, including claim files, per-entity locks, staged/promoted hook events,
 canonical event-id pinning after a crash. Bugs in those are invisible here.
 
 ---
@@ -844,5 +845,5 @@ reality. Every simplification in §5 and every limit in §10 is a place where a
 green scenario could be green for the wrong reason. The mitigations are that the
 store keeps every *rejection* the real one performs, that the runtime under test
 is the real `workflowEntrypoint` running real compiled workflow code, and that
-every scenario ends by replaying its own log through that same runtime — but
+every scenario ends by replaying its own log through that same runtime, but
 none of those is a proof, and a red here is worth more than a green.

@@ -9,9 +9,9 @@ related:
   - /docs/api-reference/workflow-runtime/set-world
 ---
 
-Creates a new [World](/docs/api-reference/workflow-runtime/world) instance by invoking the World factory that was statically injected into the bundle at build time. Which implementation that is (for example the local development World or the Vercel production World) is decided when the app is built, via the `WORKFLOW_TARGET_WORLD` environment variable — changing the variable at runtime has no effect.
+Creates a new [World](/docs/api-reference/workflow-runtime/world) instance by invoking the World factory that was statically injected into the bundle at build time. The `WORKFLOW_TARGET_WORLD` environment variable selects the implementation, such as the local development World or the Vercel production World, when the app is built. Changing the variable at runtime has no effect.
 
-Unlike [`getWorld()`](/docs/api-reference/workflow-runtime/get-world), which caches a singleton instance, `createWorld()` constructs a fresh instance on every call. Application code should almost always use `getWorld()` — `createWorld()` is for infrastructure code that manages World lifecycles itself.
+Unlike [`getWorld()`](/docs/api-reference/workflow-runtime/get-world), which caches a singleton instance, `createWorld()` constructs a fresh instance on every call. Application code should almost always use `getWorld()`. `createWorld()` is for infrastructure code that manages World lifecycles itself.
 
 ```typescript lineNumbers
 import { createWorld } from "workflow/runtime";
@@ -19,7 +19,7 @@ import { createWorld } from "workflow/runtime";
 const world = await createWorld(); // [!code highlight]
 ```
 
-## API Signature
+## API signature
 
 ### Parameters
 
@@ -33,7 +33,7 @@ Returns a `Promise<World>` with a newly constructed World instance.
   Tooling that needs to construct a World with explicit (non-environment) configuration should instantiate the specific World implementation directly and register it with [`setWorld()`](/docs/api-reference/workflow-runtime/set-world).
 </Callout>
 
-## Related Functions
+## Related functions
 
-- [`getWorld()`](/docs/api-reference/workflow-runtime/get-world) - Resolve the cached World instance (preferred in application code).
-- [`setWorld()`](/docs/api-reference/workflow-runtime/set-world) - Override the cached World instance.
+- [`getWorld()`](/docs/api-reference/workflow-runtime/get-world): Resolve the cached World instance (preferred in application code).
+- [`setWorld()`](/docs/api-reference/workflow-runtime/set-world): Override the cached World instance.

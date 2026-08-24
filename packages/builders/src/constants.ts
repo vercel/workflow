@@ -101,7 +101,7 @@ export const WORKFLOW_QUEUE_TRIGGER = createWorkflowQueueTrigger();
 /**
  * Returns the queue trigger configuration for workflow (flow) routes.
  *
- * Builds on `createWorkflowQueueTrigger()` — the namespace comes from
+ * Builds on `createWorkflowQueueTrigger()`: the namespace comes from
  * `options` or `WORKFLOW_QUEUE_NAMESPACE`, resolved at call time. When
  * `WORKFLOW_SEQUENTIAL_REPLAYS` is enabled, sets `maxConcurrency: 1` so the
  * queue processes at most one flow invocation per concrete topic at a time.
@@ -111,7 +111,7 @@ export const WORKFLOW_QUEUE_TRIGGER = createWorkflowQueueTrigger();
  * trigger rather than using a separate route.
  *
  * Integrations that write their own flow trigger config instead of calling
- * this must mirror the conditional `maxConcurrency: 1` themselves — the
+ * this must mirror the conditional `maxConcurrency: 1` themselves, since the
  * runtime half (per-run topics) activates from the env var alone, and without
  * the trigger half those topics are not serialized.
  *

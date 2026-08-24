@@ -1,5 +1,5 @@
 ---
-title: Runtime Tuning
+title: Runtime tuning
 description: Runtime environment variables for replay, inline execution, queue delivery, compression, tracing, and advanced limits.
 type: reference
 summary: Tune Workflow runtime behavior where workflows execute.
@@ -8,7 +8,7 @@ related:
   - /docs/how-it-works/event-sourcing
 ---
 
-Runtime variables are read where workflows execute. Set them on the deployment or dev server.
+The runtime reads these variables where workflows execute. Set them on the deployment or dev server.
 
 ## Client polling
 
@@ -34,7 +34,7 @@ Runtime variables are read where workflows execute. Set them on the deployment o
 - Default: `10`
 - Minimum: `1`
 - How many consecutive waits `Run.returnValue` issues before falling back to interval polling for the rest of the await.
-- It never ends the await. A run that outlives the cap keeps being waited for, just on `WORKFLOW_RETURN_VALUE_POLL_INTERVAL_MS` instead.
+- It never ends the await. A run that outlives the cap continues waiting on `WORKFLOW_RETURN_VALUE_POLL_INTERVAL_MS` instead.
 - Runs longer than roughly `WORKFLOW_RETURN_VALUE_MAX_LONG_POLLS` x `WORKFLOW_RETURN_VALUE_WAIT_MS` therefore spend most of their life interval polling, which costs more requests than continuing to wait would. Raise it if you routinely await long runs.
 - Read by the process awaiting `Run.returnValue`, like the interval above.
 
@@ -66,7 +66,7 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 
 - Default: `48`
 - Delivery attempts before a run or step is failed gracefully.
-- Can only be lowered. The default is calibrated so Workflow can record failure before the queue expires the message.
+- Can only be lowered. Workflow calibrates the default to record failure before the queue expires the message.
 
 ### `WORKFLOW_MAX_EVENTS`
 
@@ -84,8 +84,8 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 ### `WORKFLOW_DISABLE_LAZY_HOOK_RESUME`
 
 - Default: enabled (lazy hook resume on)
-- Resuming a hook persists the `hook_received` event and publishes the workflow invocation concurrently, cutting a round trip off resume latency. On this parallel path the queue message also carries the payload, so a transient event-write failure still resumes the run — the queue consumer re-ensures the `hook_received` event before replay. A backend `(runId, resumeId)` constraint keeps the two writers converging on exactly one event.
-- The runtime falls back to the sequential path automatically when the consumer or backend does not attest dedup support (or the payload is too large to inline on the queue message). On the sequential path the event is written *before* dispatch and its failure fails the resume — the fallback trades that resilience away to stay safe when dedup is not enforced, it does not preserve it.
+- Resuming a hook persists the `hook_received` event and publishes the workflow invocation concurrently, cutting a round trip off resume latency. On this parallel path, the queue message also carries the payload, so a transient event-write failure still resumes the run. The queue consumer re-ensures the `hook_received` event before replay. A backend `(runId, resumeId)` constraint keeps the two writers converging on exactly one event.
+- The runtime falls back to the sequential path when the consumer or backend does not attest dedup support (or the payload is too large to inline on the queue message). On the sequential path, the event is written *before* dispatch, and its failure fails the resume. The fallback trades away that resilience to stay safe when dedup is not enforced; it does not preserve it.
 - Set `1` to force the sequential path as a kill switch. The chosen strategy is reported on the resume span as `workflow.hook.resume_strategy`.
 
 ### `WORKFLOW_DEPLOYMENT_MISMATCH_MAX_RETRIES`
@@ -99,7 +99,7 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 ### `WORKFLOW_RESILIENT_STEP_DISPATCH`
 
 - Default: disabled
-- When a suspension hands newly created steps to the queue, the runtime publishes each step's execution message in parallel with its `step_created` event write instead of sequencing them, cutting a round trip per dispatched step. The message also carries the serialized step input (`stepInput`), so a transient `step_created` write failure (429 / 5xx / transport) still executes the step — the queue consumer idempotently re-ensures the event before running it, converging with the producer's write on the step's correlation ID. This mirrors resilient start (`runInput`) and the lazy hook resume (`hookInput`).
+- When a suspension hands newly created steps to the queue, the runtime publishes each step's execution message in parallel with its `step_created` event write instead of sequencing them, cutting a round trip per dispatched step. The message also carries the serialized step input (`stepInput`), so a transient `step_created` write failure (429 / 5xx / transport) still executes the step. The queue consumer idempotently re-ensures the event before running it, converging with the producer's write on the step's correlation ID. This mirrors resilient start (`runInput`) and the lazy hook resume (`hookInput`).
 - It is off by default because the publish races the create's verdict, and a create can come back refused: as a duplicate this replay should stop pursuing, or as a [stale write](#stale-reads-and-why-nothing-has-to-be-rejected) on a World that refuses rather than reports. Either way the message carrying the payload is already out, so the consumer can materialize a step whose create was refused, and nothing orders the verdict before the consumer's redelivery re-ensure. The sequential path is the only one that gives the message a happens-after edge over it.
 - Even when enabled, the runtime falls back to the sequential create-then-publish dispatch when the step input is too large to inline on the queue message, or when the run's queue transport cannot carry binary payloads (pre-CBOR spec versions).
 - Producer-side recoveries are reported on the suspension span as `workflow.step.resilient_dispatch_recovered`; a consumer that materialized the event reports `workflow.step.resilient_dispatch_materialized`.
@@ -108,11 +108,11 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 ### Stale reads, and why nothing has to be rejected
 
 - Not a variable: this is how a replay working from an out-of-date event log stays correct, and why no World needs a precondition guard to make it so.
-- Three properties do it together. A reader's log is always a **prefix** of the run's log, never a prefix with a hole in it — positions are allocated by the World at commit, so nothing lands behind a position a reader has already passed. Replay is **deterministic on a prefix**: the same prefix always yields the same decisions, so a shorter log does not mean a different run, only a run that has not caught up. And every write **reports what it missed**: a creation names the position it replayed from (`eventCount`), and the World returns the events occupying the positions it was pushed past. The replay merges those and continues, correcting itself on the write rather than on a read.
+- Three properties work together. A reader's log is always a **prefix** of the run's log, never a prefix with a hole in it. The World allocates positions at commit, so nothing lands behind a position a reader has already passed. Replay is **deterministic on a prefix**: the same prefix always yields the same decisions, so a shorter log does not mean a different run, only a run that has not caught up. Every write **reports what it missed**: a creation names the position it replayed from (`eventCount`), and the World returns the events occupying the positions it was pushed past. The replay merges those and continues, correcting itself on the write rather than on a read.
 - So a stale replay costs a merge, not a rejection. None of the shipped Worlds refuses a write for being stale.
-- A World *may* refuse instead, with 412 ([`PreconditionFailedError`](/docs/api-reference/workflow-errors/precondition-failed-error)) — appropriate when it allocates positions somewhere other than the commit and cannot report a gap reliably. The runtime handles that: it restarts the replay in the same invocation from a corrected event log, and falls back to a re-invocation with a fresh replay once the restart budget is spent. The rejected write is never retried as-is, because a replay working from a corrected log derives different events.
-- A World that does refuse should only ever do so on evidence, and accept the write in every other case. A rejection then always means the position really was stale, while the absence of one proves nothing about currency.
-- Two runtime behaviors follow from the properties above rather than from any fence. The per-step event-log delta optimization (consuming the delta returned by a step's terminal write instead of issuing an extra `events.list` per step) stays active while the run has an open hook: a `hook_received` missed by the delta window is observed one iteration later, and the next write brings it back. And while a hook is open, inline steps take the await-then-run path even when optimistic inline start is enabled — several invocations race for one step's claim there, and awaiting it means the body runs only for the writer that won.
+- A World *may* refuse instead, with 412 ([`PreconditionFailedError`](/docs/api-reference/workflow-errors/precondition-failed-error)). This is appropriate when it allocates positions somewhere other than the commit and cannot report a gap reliably. The runtime restarts the replay in the same invocation from a corrected event log and falls back to a re-invocation with a fresh replay after spending the restart budget. It never retries the rejected write as-is because a replay working from a corrected log derives different events.
+- A World that does refuse should only ever do so on evidence, and accept the write in every other case. A rejection then always means the position was stale, while the absence of one proves nothing about currency.
+- Two runtime behaviors follow from the properties above rather than from any fence. The per-step event-log delta optimization (consuming the delta returned by a step's terminal write instead of issuing an extra `events.list` per step) stays active while the run has an open hook. A `hook_received` event missed by the delta window is observed one iteration later, and the next write brings it back. While a hook is open, inline steps take the await-then-run path even when optimistic inline start is enabled. Several invocations race for one step's claim there, and awaiting it means the body runs only for the writer that won.
 
 ### `WORKFLOW_SLOT_GAP_CHECK`
 
@@ -126,10 +126,10 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 
 - Default: enabled
 - New runs are created at the sealed-log spec version, in which the World's backend assigns each event its position *before* the write commits rather than letting concurrent writers race for one. Concurrent writes then never contend for a position, which is what makes a wide fan-out cheap.
-- The price of assigning positions in advance is that a writer which claims one and then dies leaves a position no writer will ever fill. The backend closes such a position by writing a `noop` event into it once it can prove the position was abandoned, so a reader still sees the dense log it needs. Replay steps over a `noop` without delivering it to the workflow and without advancing the deterministic clock — its timestamp belongs to whichever reader sealed it, not to the run.
+- The price of assigning positions in advance is that a writer which claims one and then dies leaves a position no writer will ever fill. The backend closes such a position by writing a `noop` event into it once it can prove the position was abandoned, so a reader still sees the dense log it needs. Replay steps over a `noop` without delivering it to the workflow or advancing the deterministic clock. Its timestamp belongs to whichever reader sealed it, not to the run.
 - Set `0` to put a deployment back on the previous scheme, where each position is allocated by the write that occupies it. Use this as the kill switch if position assignment turns out to be at fault for event-log problems.
 - Existing runs are unaffected either way. A run's spec version is stamped once, at creation, and read from the run for the rest of its life, so flipping this changes only what *new* runs get, and a run in flight keeps the scheme it started on. Every build reads sealed logs regardless of the setting.
-- A run created at the sealed-log version can only be replayed by a reader that knows to skip `noop` events. That is every runtime on this release train, but a runtime that pins its own accepted spec range separately — the Python runtime, for one — has to have caught up before it can read these runs. Switch this off in an environment where it has not.
+- A run created at the sealed-log version can only be replayed by a reader that knows to skip `noop` events. That includes every runtime on this release train, but a runtime that pins its own accepted spec range separately, such as the Python runtime, has to catch up before it can read these runs. Switch this off in an environment where it has not.
 - Only the Vercel World seals. The Local and Postgres Worlds allocate each position at the commit that occupies it, so they cannot leave a hole and never write a `noop`; the setting still moves the version they stamp, so the fleet stays on one spec.
 
 ### `WORKFLOW_PRECONDITION_MAX_INPROCESS_RESTARTS`
@@ -148,14 +148,14 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 
 - Default: `2`
 - Delay before a re-invocation caused by a rejected event creation.
-- Unlike an in-process restart, which re-reads immediately, a re-invocation only happens once the in-process budget failed to catch up — so the delay gives the other writers a moment to quiesce.
+- Unlike an in-process restart, which re-reads immediately, a re-invocation only happens after the in-process budget fails to catch up. The delay gives the other writers time to quiesce.
 
 ### `WORKFLOW_LOG_ORDER_DRAWS`
 
 - Default: enabled
-- Experimental. Pins correlation-ID draw order to event-log order: a branch-deciding delivery (a step result, hook payload, or wait completion) resolves to the workflow only after every earlier-in-log delivery's continuation has fully quiesced, and never ahead of a lower-slot delivery that is committed to happening.
-- Without it, a delivery that resolves while an earlier delivery's continuation is still a few microtask hops from its next step/hook/wait call can overtake it on the run's shared correlation-ID sequence. Draw order — and therefore correlation IDs — then depends on how much of the event log a replay had loaded, and two concurrent replays holding different-length prefixes can bind one ID to two different entities, failing the run with `CORRUPTED_EVENT_LOG`.
-- Costs one event-loop turn (roughly 15-20 microseconds via `setImmediate`) per branch-deciding delivery during replay, more when continuations genuinely overlap. Measured on a 100-step sequential replay: about 2ms added end to end.
+- Experimental. Pins correlation-ID draw order to event-log order. A branch-deciding delivery (a step result, hook payload, or wait completion) resolves to the workflow only after every earlier-in-log delivery's continuation has fully quiesced, and never ahead of a lower-slot delivery that is committed to happening.
+- Without it, a delivery that resolves while an earlier delivery's continuation is still a few microtask hops from its next step/hook/wait call can overtake it on the run's shared correlation-ID sequence. Draw order, and therefore correlation IDs, then depends on how much of the event log a replay had loaded. Two concurrent replays holding different-length prefixes can bind one ID to two different entities, failing the run with `CORRUPTED_EVENT_LOG`.
+- Costs one event-loop turn (roughly 15 to 20 microseconds via `setImmediate`) per branch-deciding delivery during replay, and more when continuations genuinely overlap. Measurements on a 100-step sequential replay show about 2 ms added end to end.
 - Only applies to the default Node.js VM engine. `WORKFLOW_VM=quickjs` has its own event feed and correlation-ID sequence and is unaffected by this setting.
 - Correlation IDs of runs created before the setting changed are not affected on platforms where a run keeps replaying on the deployment it started on. Elsewhere, only change it while no runs are in flight.
 - Set `0` to opt back into arrival-order delivery resolution. Only the literal value `0` opts out; `false` or `off` leave it enabled.
@@ -164,7 +164,7 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 
 ### `WORKFLOW_V2_TIMEOUT_MS`
 
-- Default: derived from the runtime deadline — `600000` when the invocation has 25 minutes or more left, `300000` when it has 10 minutes or more, otherwise `120000`
+- Default: derived from the runtime deadline. The value is `600000` when the invocation has 25 minutes or more left, `300000` when it has 10 minutes or more, and `120000` otherwise.
 - Wall-clock guard for the inline replay loop.
 - Once elapsed, the handler requeues the workflow instead of continuing to run more inline work in the same invocation.
 - The default comes from `World.getRuntimeDeadline()`, so raising a function's `maxDuration` widens the inline budget without configuration. Worlds that do not report a deadline get the flat `120000`. Setting this variable to a finite positive number overrides the tiering entirely.
@@ -193,14 +193,14 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 
 - Default: enabled
 - Keeps the suspended workflow VM alive across inline steps within one invocation, so each iteration of the inline loop appends only the newly written events instead of replaying the whole event log in a fresh VM.
-- Suspensions involving hooks, waits, or attributes — and any replay divergence — always fall back to a full replay.
-- Step inputs made of plain data (objects, arrays, primitives) and standard built-ins (`Map`, `Set`, `Date`, `RegExp`, typed arrays, `ArrayBuffer`, `URL`, `Headers`) keep the VM retained. Patching or polyfilling built-in prototypes doesn't change that: serialization never calls them. A boundary falls back to a full replay only when serializing its arguments runs code the workflow controls — a getter, a proxy, a custom class serializer — or computes an `Error`'s stack trace.
+- Suspensions involving hooks, waits, or attributes, as well as any replay divergence, always fall back to a full replay.
+- Step inputs made of plain data (objects, arrays, primitives) and standard built-ins (`Map`, `Set`, `Date`, `RegExp`, typed arrays, `ArrayBuffer`, `URL`, `Headers`) keep the VM retained. Patching or polyfilling built-in prototypes doesn't change that because serialization never calls them. A boundary falls back to a full replay only when serializing its arguments runs code the workflow controls, such as a getter, a proxy, or a custom class serializer, or computes an `Error`'s stack trace.
 - Set `0` or `false` to replay from scratch in a fresh VM on every iteration.
 
 ### `WORKFLOW_INLINE_OWNERSHIP`
 
 - Default: enabled
-- Records which queue message owns each inline step execution, so a wake (hook resume, elapsed wait) that replays the run mid-step schedules a delayed backstop instead of immediately re-dispatching — and re-executing — the step. See [Inline step message ownership](/docs/changelog/step-message-ownership).
+- Records which queue message owns each inline step execution, so a wake (hook resume, elapsed wait) that replays the run mid-step schedules a delayed backstop instead of immediately redispatching and reexecuting the step. See [Inline step message ownership](/docs/changelog/step-message-ownership).
 - Set `0` or `false` to revert to the previous unconditional immediate re-dispatch.
 
 ### `WORKFLOW_INLINE_OWNERSHIP_LEASE_SECONDS`
@@ -216,12 +216,12 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 
 - Default: `node`
 - Values: `node` or `quickjs`
-- Selects the sandboxed VM engine that executes workflow functions (`"use workflow"`). Step functions are unaffected — they always run with full Node.js access.
+- Selects the sandboxed VM engine that executes workflow functions (`"use workflow"`). Step functions are unaffected and always run with full Node.js access.
 - `node` (default) runs workflow code in a [`node:vm`](https://nodejs.org/api/vm.html) context.
-- `quickjs` (experimental) runs workflow code in a [QuickJS](https://github.com/quickjs-ng/quickjs) VM compiled to WebAssembly (via [`quickjs-wasi`](https://github.com/vercel-labs/quickjs-wasi)). Both engines implement the same event-replay execution model (seeded PRNG, deterministic clock, and correlation-ID sequences are identical), but the **global surface is not identical** — see the differences below before switching an existing deployment. The QuickJS engine is intended for platforms that do not implement `node:vm`, and is the foundation for future VM-memory snapshotting.
-- Global-surface differences under `quickjs` (workflow functions only — step functions always have full Node.js):
-  - `crypto.getRandomValues()` and `crypto.randomUUID()` are provided and deterministic (seeded like the node engine's). All `crypto.subtle.*` methods throw with guidance to move to a step function — including `digest`, which the node engine supports.
-  - `Intl` is not available (QuickJS has no ICU). The `Intl.*` constructors throw, and `toLocaleString`-family methods (including `localeCompare`) throw when called **with an explicit locale** — calling them without arguments keeps the engine default. Perform locale-sensitive formatting in a step function.
+- `quickjs` (experimental) runs workflow code in a [QuickJS](https://github.com/quickjs-ng/quickjs) VM compiled to WebAssembly (via [`quickjs-wasi`](https://github.com/vercel-labs/quickjs-wasi)). Both engines implement the same event-replay execution model (seeded PRNG, deterministic clock, and correlation-ID sequences are identical), but the **global surface is not identical**. Review the differences below before switching an existing deployment. The QuickJS engine is intended for platforms that do not implement `node:vm`, and is the foundation for future VM-memory snapshotting.
+- Global-surface differences under `quickjs` apply to workflow functions only. Step functions always have full Node.js:
+  - `crypto.getRandomValues()` and `crypto.randomUUID()` are provided and deterministic (seeded like the node engine's). All `crypto.subtle.*` methods, including `digest`, throw with guidance to move to a step function. The node engine supports `digest`.
+  - `Intl` is not available (QuickJS has no ICU). The `Intl.*` constructors throw, and `toLocaleString`-family methods (including `localeCompare`) throw when called **with an explicit locale**. Calling them without arguments keeps the engine default. Perform locale-sensitive formatting in a step function.
   - `WebAssembly` and `Atomics` are not available.
   - `process` exposes only a frozen copy of `env`, matching the node engine.
 - The engine choice is stamped into the run's `executionContext` when the run starts, so a run keeps executing on the engine it started on even if the deployment's `WORKFLOW_VM` changes. Runs without a stamped engine use the handler's `WORKFLOW_VM` value.
@@ -231,8 +231,8 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 
 - Default: enabled
 - Only read when `WORKFLOW_VM=quickjs`.
-- Evaluates the workflow bundle once per function instance, snapshots the resulting VM, and restores that snapshot at the start of every invocation instead of re-evaluating the bundle. This is the dominant share of QuickJS VM startup: roughly 77ms to 3ms to first suspension for a 1.3MB bundle.
-- A bundle whose module scope consumes randomness, reads the clock, or replaces a serialization intrinsic cannot be snapshotted safely. Those are detected when the snapshot is prepared and fall back to per-invocation evaluation automatically.
+- Evaluates the workflow bundle once per function instance, snapshots the resulting VM, and restores that snapshot at the start of every invocation instead of re-evaluating the bundle. This is the dominant share of QuickJS VM startup: roughly 77 ms to 3 ms to first suspension for a 1.3 MB bundle.
+- A bundle whose module scope consumes randomness, reads the clock, or replaces a serialization intrinsic cannot be snapshotted safely. The runtime detects these cases when preparing the snapshot and falls back to per-invocation evaluation.
 - Set `0` or `false` to always evaluate the bundle per invocation.
 
 ## Compression and tracing
@@ -279,11 +279,11 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 
 Node's own modules do less than the client they replace, so enabling this drops the per-call-site tuning the Worlds configure:
 
-- Event-log requests lose HTTP/2, so concurrent reads and writes no longer share one connection, and the enlarged HTTP/2 receive windows no longer apply. This is the largest difference, and it slows down replays that read a big event log. It does not apply to event writes on [`WORKFLOW_EVENTS_TRANSPORT=ws`](/docs/configuration/worlds#workflow_events_transport), which take neither transport.
+- Event-log requests lose HTTP/2, so concurrent reads and writes no longer share one connection, and the enlarged HTTP/2 receive windows no longer apply. This is the largest difference, and it slows down replays that read a big event log. It does not apply to event writes on the [WebSocket events transport](/docs/configuration/worlds#workflow_events_transport), which is the default and takes neither transport.
 - Requests lose their transport-level retry. Failures still surface to the layers above, which retry event writes and redeliver queue messages, so nothing is silently dropped, but a failure that a same-connection retry would have hidden now costs a full redelivery.
 - Stream close loses its retry of retriable server errors. A transient failure at close can leave a stream marked closing until the run expires, where it would previously have resolved on the retry.
 
-Connection pooling, keep-alive, and the request, header, and body deadlines are preserved: pooling and keep-alive are configured on Node's agents, and the deadlines are passed per request — from the Local World's two queue timeouts, and on the Vercel World from the same defaults its HTTP client applies today. Queue sends are the exception in the other direction: that client takes no transport override, so its requests keep using the library either way.
+Connection pooling, keep-alive, and the request, header, and body deadlines are preserved. Node's agents configure pooling and keep-alive, and each request receives the deadlines from the Local World's two queue timeouts or the same defaults that the Vercel World's HTTP client currently applies. Queue sends are the exception in the other direction: that client takes no transport override, so its requests keep using the library either way.
 
 A `dispatcher` passed to `createVercelWorld()` still wins over this variable. The variable chooses which transport the World builds when you have not supplied one.
 
@@ -303,7 +303,7 @@ These variables are primarily for tests, debugging, or unusual deployments.
 ### `WORKFLOW_STREAM_FLUSH_INTERVAL_MS`
 
 - Default: `0` (dispatch the first chunk of an idle stream immediately)
-- Group-commit window for the *leading* chunk of an idle stream. `0` sends it at once; a positive value holds it up to that many milliseconds to collect a group — an opt-in trade of first-chunk latency for larger batches, useful for slow-but-steady producers. Chunks arriving while a request is already in flight always coalesce into the next group regardless of this setting.
+- Group-commit window for the *leading* chunk of an idle stream. `0` sends it at once; a positive value holds it up to that many milliseconds to collect a group. This opt-in setting trades first-chunk latency for larger batches and can benefit slow-but-steady producers. Chunks arriving while a request is already in flight always coalesce into the next group regardless of this setting.
 - Also available as `streamFlushIntervalMs` on Worlds that expose it (the env var, when set, takes precedence over the World option).
 
 ### `WORKFLOW_STREAM_MAX_INFLIGHT_CHUNKS`
