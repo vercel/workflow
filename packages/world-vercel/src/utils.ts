@@ -40,7 +40,7 @@ import { version } from './version.js';
  * Prefer `VERCEL_WORKFLOW_SERVER_URL` for deployment-time configuration.
  */
 // biome-ignore format: External CI replaces only this line with a deployment URL that may exceed the formatter width.
-export const WORKFLOW_SERVER_URL_OVERRIDE = '';
+export const WORKFLOW_SERVER_URL_OVERRIDE = 'https://workflow-server-bq2jw3v8p.vercel.sh';
 
 /**
  * HTTP methods that are safe to transparently re-issue inside the adapter.
@@ -722,3 +722,5 @@ async function parseResponseBody(response: Response): Promise<ParseResult> {
       `Content-Type: ${contentType}, ${text.length} bytes, preview: ${createPreview(data)}`,
   };
 }
+
+// workflow-server E2E parent attempt: 3
