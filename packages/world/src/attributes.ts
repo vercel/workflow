@@ -15,6 +15,15 @@ export const RESERVED_ATTRIBUTE_KEY_PREFIX = '$';
 export const ROOT_RUN_ID_ATTRIBUTE = `${RESERVED_ATTRIBUTE_KEY_PREFIX}rootRunId`;
 export const PARENT_RUN_ID_ATTRIBUTE = `${RESERVED_ATTRIBUTE_KEY_PREFIX}parentRunId`;
 
+/**
+ * Reserved attribute key recording replay lineage. `start()` sets it on a run
+ * created as a replay of another run (see `recreateRunFromExisting`), mirroring
+ * the `replayedFromRunId` record on the run's `executionContext` so
+ * attribute-indexed observability stores can mark replays and link back to the
+ * source run in list queries without reading each run's `executionContext`.
+ */
+export const REPLAYED_FROM_RUN_ID_ATTRIBUTE = `${RESERVED_ATTRIBUTE_KEY_PREFIX}replayedFromRunId`;
+
 /** Max length of an attribute key, in characters. */
 export const ATTRIBUTE_KEY_MAX_LENGTH = 256;
 

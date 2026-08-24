@@ -6,6 +6,7 @@ import {
   HOOK_RESUME_INPUT_VERSION,
   isLegacySpecVersion,
   PARENT_RUN_ID_ATTRIBUTE,
+  REPLAYED_FROM_RUN_ID_ATTRIBUTE,
   ROOT_RUN_ID_ATTRIBUTE,
   SPEC_VERSION_SUPPORTS_ATTRIBUTES,
   SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
@@ -56,25 +57,38 @@ const CROSS_DEPLOYMENT_CAPABILITY_PROBE_TIMEOUT_MS = 2_000;
 const ulid = monotonicFactory();
 
 /**
- * Cross-run lineage for a run being started from inside another run.
+ * Cross-run lineage attributes for a new run.
  *
- * The ambient step context carries the parent run id and the root of its
- * lineage; the runtime fills both from the run it already has loaded, so this
- * is a pure context read with no I/O. The new run records `$parentRunId` (the
- * edge) and inherits the parent's `$rootRunId` (the parent itself when it is a
- * root), so a daisy chain or fan-out of any depth groups under one root id.
- * Returns `undefined` for a top-level `start()`, which has no context, so
- * standalone runs carry no lineage.
+ * Parent lineage: the ambient step context carries the parent run id and the
+ * root of its lineage; the runtime fills both from the run it already has
+ * loaded, so this is a pure context read with no I/O. The new run records
+ * `$parentRunId` (the edge) and inherits the parent's `$rootRunId` (the
+ * parent itself when it is a root), so a daisy chain or fan-out of any depth
+ * groups under one root id.
+ *
+ * Replay lineage: a run created as a replay records `$replayedFromRunId` — a
+ * queryable mirror of the `executionContext.replayedFromRunId` record, so
+ * attribute-indexed observability stores can serve "which runs are replays"
+ * in list queries.
+ *
+ * Returns `undefined` for a run with no lineage at all (a top-level,
+ * non-replay `start()`), so standalone runs carry no lineage attributes.
  */
-function resolveLineageAttributes(): Record<string, string> | undefined {
+function resolveLineageAttributes(
+  replayedFromRunId: string | undefined
+): Record<string, string> | undefined {
   const store = contextStorage.getStore();
   const parentRunId = store?.workflowMetadata?.workflowRunId;
-  if (!parentRunId) return undefined;
 
-  return {
-    [ROOT_RUN_ID_ATTRIBUTE]: store.rootRunId ?? parentRunId,
-    [PARENT_RUN_ID_ATTRIBUTE]: parentRunId,
-  };
+  const lineage: Record<string, string> = {};
+  if (parentRunId) {
+    lineage[ROOT_RUN_ID_ATTRIBUTE] = store?.rootRunId ?? parentRunId;
+    lineage[PARENT_RUN_ID_ATTRIBUTE] = parentRunId;
+  }
+  if (replayedFromRunId) {
+    lineage[REPLAYED_FROM_RUN_ID_ATTRIBUTE] = replayedFromRunId;
+  }
+  return Object.keys(lineage).length > 0 ? lineage : undefined;
 }
 
 // `deploymentId: 'latest'` is a no-op in Worlds without atomic deployments.
@@ -148,9 +162,11 @@ export interface StartOptionsBase {
   /**
    * The ID of an existing run this run is being replayed from, if any.
    *
-   * Recorded on the new run's `executionContext` as `replayedFromRunId` so
-   * tooling (e.g. the dashboard runs list) can show that a run originated as
-   * a replay and link back to its source. Set automatically by
+   * Recorded on the new run's `executionContext` as `replayedFromRunId` —
+   * and, on worlds with native attributes (spec version 4 and later), also
+   * as the reserved `$replayedFromRunId` attribute — so tooling (e.g. the
+   * dashboard runs list) can show that a run originated as a replay and link
+   * back to its source. Set automatically by
    * {@link recreateRunFromExisting}; there's usually no reason to pass it
    * directly.
    *
@@ -430,13 +446,29 @@ export async function start<TArgs extends unknown[], TResult>(
         );
       }
 
-      // Cross-run lineage: the reserved keys ride on the run's existing
-      // attributes, so they add no extra write. Caller attributes are spread
-      // last, so a caller with allowReservedAttributes can deliberately
-      // re-parent.
+      // `replayedFromRunId` is a foreign key to the source run; reject anything
+      // that isn't a real run ID so the lineage link can't point at garbage.
+      // Validated before the attribute seed below, which mirrors the value.
+      if (
+        opts.replayedFromRunId !== undefined &&
+        !workflowRunIdSchema.safeParse(opts.replayedFromRunId).success
+      ) {
+        throw new WorkflowRuntimeError(
+          `replayedFromRunId must be a run ID (wrun_<ulid>); received ${JSON.stringify(
+            String(opts.replayedFromRunId).slice(0, 64)
+          )}.`
+        );
+      }
+
+      // Cross-run lineage (parent and replay): the reserved keys ride on the
+      // run's existing attributes, so they add no extra write. Runs on
+      // pre-attributes spec versions skip the attributes silently (the
+      // executionContext record below is unconditional) rather than fail the
+      // start. Caller attributes are spread last, so a caller with
+      // allowReservedAttributes can deliberately re-parent.
       const lineage =
         specVersion >= SPEC_VERSION_SUPPORTS_ATTRIBUTES
-          ? resolveLineageAttributes()
+          ? resolveLineageAttributes(opts.replayedFromRunId)
           : undefined;
       const runAttributes = lineage
         ? { ...lineage, ...attributes }
@@ -451,19 +483,6 @@ export async function start<TArgs extends unknown[], TResult>(
               : {}),
           }
         : {};
-
-      // `replayedFromRunId` is a foreign key to the source run; reject anything
-      // that isn't a real run ID so the lineage link can't point at garbage.
-      if (
-        opts.replayedFromRunId !== undefined &&
-        !workflowRunIdSchema.safeParse(opts.replayedFromRunId).success
-      ) {
-        throw new WorkflowRuntimeError(
-          `replayedFromRunId must be a run ID (wrun_<ulid>); received ${JSON.stringify(
-            String(opts.replayedFromRunId).slice(0, 64)
-          )}.`
-        );
-      }
 
       // Resolve encryption key for the new run. The runId has already been
       // generated above (client-generated ULID) and will be used for both
