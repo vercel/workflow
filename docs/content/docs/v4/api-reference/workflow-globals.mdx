@@ -22,29 +22,29 @@ These APIs are available but are **seeded or fixed** to ensure deterministic beh
 
 | API | Behavior |
 |-----|----------|
-| [`Math.random()`](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Math/random) | Seeded random number generator — same seed produces the same sequence every replay |
+| [`Math.random()`](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Math/random) | Seeded random number generator: same seed produces the same sequence every replay |
 | [`Date`](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Date) / `Date.now()` / `new Date()` | Returns a fixed timestamp that advances with the workflow's logical clock |
-| [`crypto.getRandomValues()`](https://developer.mozilla.org/en-US/docs/Web/API/Crypto/getRandomValues) | Seeded — produces deterministic output for a given workflow run |
-| [`crypto.randomUUID()`](https://developer.mozilla.org/en-US/docs/Web/API/Crypto/randomUUID) | Seeded — produces deterministic UUIDs for a given workflow run |
+| [`crypto.getRandomValues()`](https://developer.mozilla.org/en-US/docs/Web/API/Crypto/getRandomValues) | Seeded: produces deterministic output for a given workflow run |
+| [`crypto.randomUUID()`](https://developer.mozilla.org/en-US/docs/Web/API/Crypto/randomUUID) | Seeded: produces deterministic UUIDs for a given workflow run |
 | [`crypto.subtle.digest()`](https://developer.mozilla.org/en-US/docs/Web/API/SubtleCrypto/digest) | Passes through to the real implementation (SHA-256, etc. are deterministic by nature) |
 
 <Callout type="info">
 You can safely use `Math.random()`, `Date.now()`, and `crypto.randomUUID()` in workflow functions. The framework ensures these return the same values across replays.
 </Callout>
 
-## Web Platform APIs
+## Web platform APIs
 
 These standard Web APIs are available in workflow functions:
 
 - [`Headers`](https://developer.mozilla.org/en-US/docs/Web/API/Headers)
 - [`TextEncoder`](https://developer.mozilla.org/en-US/docs/Web/API/TextEncoder) / [`TextDecoder`](https://developer.mozilla.org/en-US/docs/Web/API/TextDecoder)
 - [`URL`](https://developer.mozilla.org/en-US/docs/Web/API/URL) / [`URLSearchParams`](https://developer.mozilla.org/en-US/docs/Web/API/URLSearchParams)
-- [`Request`](https://developer.mozilla.org/en-US/docs/Web/API/Request) / [`Response`](https://developer.mozilla.org/en-US/docs/Web/API/Response) — custom implementations with [special behavior in the workflow context](/docs/foundations/serialization#request--response). Body methods like `.json()` and `.text()` are automatically treated as step invocations.
+- [`Request`](https://developer.mozilla.org/en-US/docs/Web/API/Request) / [`Response`](https://developer.mozilla.org/en-US/docs/Web/API/Response): custom implementations with [special behavior in the workflow context](/docs/foundations/serialization#request--response). Body methods like `.json()` and `.text()` are automatically treated as step invocations.
 - [`console`](https://developer.mozilla.org/en-US/docs/Web/API/console)
 - [`structuredClone`](https://developer.mozilla.org/en-US/docs/Web/API/Window/structuredClone)
 - [`atob`](https://developer.mozilla.org/en-US/docs/Web/API/Window/atob) / [`btoa`](https://developer.mozilla.org/en-US/docs/Web/API/Window/btoa)
 
-## Environment Variables
+## Environment variables
 
 `process.env` is available as a **read-only, frozen** snapshot of the environment variables at the time the workflow was started. You cannot modify it.
 
@@ -53,11 +53,11 @@ export async function myWorkflow() {
   "use workflow";
 
   const apiKey = process.env.API_KEY; // works
-  process.env.FOO = "bar"; // throws — process.env is frozen
+  process.env.FOO = "bar"; // throws: process.env is frozen
 }
 ```
 
-## Binary Data
+## Binary data
 
 Standard JavaScript typed arrays (`Uint8Array`, `Int32Array`, `Float64Array`, etc.) are available in workflow functions.
 
@@ -92,7 +92,7 @@ target.setFromHex("48656c6c6f"); // { read: 10, written: 5 }
 These methods are polyfilled in the workflow environment. When the JavaScript runtime ships native support, the polyfill is automatically bypassed.
 </Callout>
 
-## Not Available
+## Not available
 
 The following are **not available** in workflow functions. Move this logic to [step functions](/docs/foundations/workflows-and-steps#step-functions) instead.
 

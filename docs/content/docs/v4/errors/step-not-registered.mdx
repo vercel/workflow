@@ -12,21 +12,21 @@ related:
 
 This error occurs when the Workflow runtime tries to execute a step function that is not registered in the current deployment. When this happens, the step fails (like a `FatalError`) and control is passed back to the workflow function, which can optionally handle the failure. The runtime surfaces this as a [`StepNotRegisteredError`](/docs/api-reference/workflow-errors/step-not-registered-error).
 
-## Error Message
+## Error message
 
-```
+```text
 Step "<stepName>" is not registered in the current deployment.
 This usually indicates a build or bundling issue that caused the step
 to not be included in the deployment.
 ```
 
-## Why This Happens
+## Why this happens
 
 Workflow runs are pegged to a specific deployment, so this error is not caused by newer deployments overriding the running code. Instead, it means the step function was not included in the deployment's workflow bundle at build time.
 
 This is an **infrastructure error**, not a user code error.
 
-## Common Causes
+## Common causes
 
 ### Build tooling issue
 
@@ -40,7 +40,7 @@ Something went wrong during the build process that caused the step function to n
 
 The step function was deleted or its `"use step"` directive was removed, but the workflow still references it. Ensure all steps referenced by your workflow are present in the codebase.
 
-## How to Resolve
+## How to resolve
 
 1. **Check your build logs:** Look for errors or warnings related to workflow bundling. Ensure the step file contains a valid `"use step"` directive and is properly exported.
 

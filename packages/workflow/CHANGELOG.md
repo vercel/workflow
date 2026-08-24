@@ -1,5 +1,65 @@
 # workflow
 
+## 5.0.0-beta.44
+
+### Minor Changes
+
+- [#3700](https://github.com/vercel/workflow/pull/3700) [`9b1b8c7`](https://github.com/vercel/workflow/commit/9b1b8c711104fd507327aafc8cb965738f315e29) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Pin correlation-ID draw order to event-log order (Node.js VM engine), so two concurrent replays of the same run assign the same IDs even when one loaded a shorter event-log prefix. Set `WORKFLOW_LOG_ORDER_DRAWS=0` to opt back into arrival-order delivery resolution.
+
+### Patch Changes
+
+- Updated dependencies [[`5b5a926`](https://github.com/vercel/workflow/commit/5b5a926f8850ec5d967e090cc0500028fd53e2ef), [`f771585`](https://github.com/vercel/workflow/commit/f771585486b3019c8d68211b158dfeffc9e5ebe8), [`9b1b8c7`](https://github.com/vercel/workflow/commit/9b1b8c711104fd507327aafc8cb965738f315e29), [`f771585`](https://github.com/vercel/workflow/commit/f771585486b3019c8d68211b158dfeffc9e5ebe8), [`f771585`](https://github.com/vercel/workflow/commit/f771585486b3019c8d68211b158dfeffc9e5ebe8), [`9454d51`](https://github.com/vercel/workflow/commit/9454d51db0d52d6be9bafea9c70ab6fc3a1ceba4), [`7b79ba3`](https://github.com/vercel/workflow/commit/7b79ba37cc97e858ceb8b2474e03bbc404b555a0), [`8a2648e`](https://github.com/vercel/workflow/commit/8a2648e35f3ccfdffd275bc37470dd3396981773), [`37ed049`](https://github.com/vercel/workflow/commit/37ed0493e1a46da46333ddfb42428542c39c6537), [`f771585`](https://github.com/vercel/workflow/commit/f771585486b3019c8d68211b158dfeffc9e5ebe8), [`bf9de1c`](https://github.com/vercel/workflow/commit/bf9de1cd81eda1b1721b857364070c0ce70d1e58)]:
+  - @workflow/core@5.0.0-beta.44
+  - @workflow/utils@5.0.0-beta.9
+  - @workflow/nest@5.0.0-beta.44
+  - @workflow/next@5.0.0-beta.44
+  - @workflow/nitro@5.0.0-beta.44
+  - @workflow/sveltekit@5.0.0-beta.44
+  - @workflow/cli@5.0.0-beta.44
+  - @workflow/typescript-plugin@5.0.0-beta.5
+  - @workflow/errors@5.0.0-beta.18
+  - @workflow/astro@5.0.0-beta.44
+  - @workflow/rollup@5.0.0-beta.44
+  - @workflow/nuxt@5.0.0-beta.44
+
+## 5.0.0-beta.43
+
+### Patch Changes
+
+- [#3497](https://github.com/vercel/workflow/pull/3497) [`1321570`](https://github.com/vercel/workflow/commit/13215704645ea487ef6f8821016ec3f13c1cd830) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Log ignored duplicate events at `debug` instead of `info`/`error`, so a straggler no longer prints on every replay of the run.
+
+- [#3554](https://github.com/vercel/workflow/pull/3554) [`707dfe6`](https://github.com/vercel/workflow/commit/707dfe6a063564cd1c146742e90661abc49534b3) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix a replay-determinism gap where branch wake order — and therefore step correlation ids — could depend on how much of the event log an invocation had loaded, corrupting runs under concurrent replays (CORRUPTED_EVENT_LOG).
+
+- Updated dependencies [[`b0adb50`](https://github.com/vercel/workflow/commit/b0adb50bce623b23252735021205e8d870a2b11f), [`37e1d9e`](https://github.com/vercel/workflow/commit/37e1d9e5a9870ef4a35e1875e7054253a9fb89c3), [`ae16375`](https://github.com/vercel/workflow/commit/ae1637502b35c8f635d2b0e103cd8de85b5ffcdd), [`916fcf0`](https://github.com/vercel/workflow/commit/916fcf08339695861c41145970085dea96b99140), [`1321570`](https://github.com/vercel/workflow/commit/13215704645ea487ef6f8821016ec3f13c1cd830), [`234d3dd`](https://github.com/vercel/workflow/commit/234d3dd7b852129e189d321314c4f749f12711d8), [`0b2797b`](https://github.com/vercel/workflow/commit/0b2797bbace75f590897959367aec03300ca6e13), [`707dfe6`](https://github.com/vercel/workflow/commit/707dfe6a063564cd1c146742e90661abc49534b3), [`a074259`](https://github.com/vercel/workflow/commit/a074259166819121579ffbb5b9f8da60853ae57b), [`ac51658`](https://github.com/vercel/workflow/commit/ac51658d39649e7d8e290924c3bf7b2c7df78b00), [`c5f9177`](https://github.com/vercel/workflow/commit/c5f9177be3c58a2b5616f798932061b67e0b54a5), [`880801b`](https://github.com/vercel/workflow/commit/880801bd4521a0cfd76e8c46ebf560c388ecf30c)]:
+  - @workflow/core@5.0.0-beta.43
+  - @workflow/next@5.0.0-beta.43
+  - @workflow/cli@5.0.0-beta.43
+  - @workflow/errors@5.0.0-beta.17
+  - @workflow/nitro@5.0.0-beta.43
+  - @workflow/typescript-plugin@5.0.0-beta.5
+  - @workflow/astro@5.0.0-beta.43
+  - @workflow/nest@5.0.0-beta.43
+  - @workflow/rollup@5.0.0-beta.43
+  - @workflow/sveltekit@5.0.0-beta.43
+  - @workflow/nuxt@5.0.0-beta.43
+
+## 5.0.0-beta.42
+
+### Patch Changes
+
+- Updated dependencies [[`9add9d7`](https://github.com/vercel/workflow/commit/9add9d782d0cbf41ce447175c7b9fe47846d794d), [`dc85865`](https://github.com/vercel/workflow/commit/dc85865718fdf5e4abdb5ad8edf715ec956bf07d), [`efbc408`](https://github.com/vercel/workflow/commit/efbc408c4e98178dc8c8151764f308e9e4b6fd58), [`c041d3d`](https://github.com/vercel/workflow/commit/c041d3d231f8a75236311df56a68bd4ca104be22), [`60dd206`](https://github.com/vercel/workflow/commit/60dd2065f368f10ba5c0b1ae98240749c1d29dc3), [`a0ccfe0`](https://github.com/vercel/workflow/commit/a0ccfe0f50df1e6726b033e91c41257065e20edd), [`3560218`](https://github.com/vercel/workflow/commit/3560218937ab76cf631ffe200489f337ba843a40), [`de2a86c`](https://github.com/vercel/workflow/commit/de2a86c61c843a04c292e54e9c439553b3da02c5), [`dc85865`](https://github.com/vercel/workflow/commit/dc85865718fdf5e4abdb5ad8edf715ec956bf07d), [`dc85865`](https://github.com/vercel/workflow/commit/dc85865718fdf5e4abdb5ad8edf715ec956bf07d), [`7683130`](https://github.com/vercel/workflow/commit/7683130461a1a3de16c13be52d8aee96590b3814), [`b589460`](https://github.com/vercel/workflow/commit/b589460ce873bad3ddd7bda4a9bff147ddccac49), [`c1a5c74`](https://github.com/vercel/workflow/commit/c1a5c74edb2fad84eb5bbc2036bf73cbd16ca28d)]:
+  - @workflow/core@5.0.0-beta.42
+  - @workflow/errors@5.0.0-beta.17
+  - @workflow/cli@5.0.0-beta.42
+  - @workflow/next@5.0.0-beta.42
+  - @workflow/nitro@5.0.0-beta.42
+  - @workflow/typescript-plugin@5.0.0-beta.5
+  - @workflow/astro@5.0.0-beta.42
+  - @workflow/nest@5.0.0-beta.42
+  - @workflow/rollup@5.0.0-beta.42
+  - @workflow/sveltekit@5.0.0-beta.42
+  - @workflow/nuxt@5.0.0-beta.42
+
 ## 5.0.0-beta.41
 
 ### Patch Changes

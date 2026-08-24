@@ -129,13 +129,21 @@ already exported is passed through untouched:
   EVENT_LOG_RACE_REPRO_ATTEMPTS              EVENT_LOG_RACE_REPRO_WATCHDOG_MS
   EVENT_LOG_RACE_REPRO_CONCURRENCY           EVENT_LOG_RACE_REPRO_STEP_DELAY_MS
   EVENT_LOG_RACE_REPRO_BUDGET_MS             EVENT_LOG_RACE_REPRO_POKE_INTERVAL_MS
-  EVENT_LOG_RACE_REPRO_RUN_TIMEOUT_MS        EVENT_LOG_RACE_REPRO_HOOK_RESUME_STAGGER_MS
+  EVENT_LOG_RACE_REPRO_RUN_TIMEOUT_MS        EVENT_LOG_RACE_REPRO_POKE_MAX
+                                             EVENT_LOG_RACE_REPRO_HOOK_RESUME_STAGGER_MS
 
-This script deliberately sets none of them. Their defaults — and the full list —
-live in packages/core/e2e/event-log-race-repro.test.ts, which is the single
-source of truth the CI workflow also defers to.
+This script sets exactly one of them, `EVENT_LOG_RACE_REPRO_RUN_TIMEOUT_MS`,
+and only because that knob does not mean the same thing here as it does on the
+Vercel lane. The same storm takes ~2x as long against a local World — one Node
+process serves every replay of every run, where Vercel spreads them across Fluid
+instances — so `step-storm` lands at ~200s against the harness' 240s default,
+i.e. 83% of its own timeout, and one slow runner turns a lane that reproduces
+into a lane full of `stuck`. It is raised to 480000 here, and anything you export
+wins. Every other default — and the full list — lives in
+packages/core/e2e/event-log-race-repro.test.ts, which is the single source of
+truth the CI workflow also defers to.
 
-The one knob this script does set is the backend's replay concurrency, which
+The other knob this script sets is the backend's replay concurrency, which
 caps how many replays the app and the harness each run at once. Both backends
 default it far too high for one Next.js process on one machine (50 for
 world-postgres, i.e. ~100 replays in flight; 1000 for world-local), which on a
@@ -205,6 +213,13 @@ case "$WORLD" in
 esac
 
 export WORKFLOW_PUBLIC_MANIFEST="1"
+
+# See the note in usage: a local lane runs the same storm ~2x slower than the
+# Vercel lane, so the harness' own 240000 leaves `step-storm` at ~83% of its
+# timeout and one slow runner turns "reproduces" into "stuck". Measured on
+# GitHub's 4-core runners at the default scale: world-local `step-storm`
+# 194-203s, world-postgres 168-175s, against Vercel's 85-100s.
+export EVENT_LOG_RACE_REPRO_RUN_TIMEOUT_MS="${EVENT_LOG_RACE_REPRO_RUN_TIMEOUT_MS:-480000}"
 
 if [ "$WORLD" = "postgres" ]; then
   export WORKFLOW_POSTGRES_URL="${WORKFLOW_POSTGRES_URL:-$DEFAULT_POSTGRES_URL}"
@@ -300,13 +315,21 @@ elif [ "$USE_DOCKER" = "1" ]; then
   docker compose -f "$COMPOSE_FILE" up -d
 
   log "Waiting for Postgres to accept connections"
+  # Probe over TCP, not the unix socket. The image's entrypoint runs a temporary
+  # server for initdb with `listen_addresses=''`, so a socket probe can answer
+  # "ready" during initialization and then answer "not ready" a moment later,
+  # while that server is being swapped for the real one. TCP is only open once
+  # the real server is up, and it is what the app connects over anyway.
+  postgres_ready=0
   for _ in $(seq 1 60); do
-    if docker compose -f "$COMPOSE_FILE" exec -T postgres pg_isready -U world -d world >/dev/null 2>&1; then
+    if docker compose -f "$COMPOSE_FILE" exec -T postgres \
+      pg_isready -h 127.0.0.1 -U world -d world >/dev/null 2>&1; then
+      postgres_ready=1
       break
     fi
     sleep 1
   done
-  docker compose -f "$COMPOSE_FILE" exec -T postgres pg_isready -U world -d world >/dev/null 2>&1 ||
+  [ "$postgres_ready" = "1" ] ||
     die "Postgres did not become ready. Check: docker compose -f $COMPOSE_FILE logs postgres"
 else
   log "Using the Postgres at WORKFLOW_POSTGRES_URL (not managed by this script)"
@@ -458,8 +481,8 @@ fi
 if [ -f "$RESULTS_FILE" ]; then
   log "Summary"
   # Same renderer the CI job uses for its sticky comment; with no --run-url it
-  # just prints the tables.
-  node "$RENDERER" "$RESULTS_FILE"
+  # prints the tables without the comment marker or the stored history.
+  node "$RENDERER" "$RESULTS_FILE" --label "world-$WORLD"
   log "Full results: $RESULTS_FILE / app log: $SERVER_LOG"
 else
   log "No $RESULTS_FILE was written — the harness died before its first checkpoint."

@@ -1,4 +1,9 @@
-import { type Event, entityEventClass, envNumber } from '@workflow/world';
+import {
+  type Event,
+  entityEventClass,
+  envNumber,
+  isSealedNoopEvent,
+} from '@workflow/world';
 import { eventsLogger } from './logger.js';
 
 /**
@@ -58,7 +63,7 @@ const getDeferredCheckDelayMs = (): number =>
  * waits, and tolerating a stray one is the cheaper direction to be wrong in.
  *
  * An allowlist rather than the complement of the ordered set, so a type this
- * file has not been taught about keeps the strict old behaviour.
+ * file has not been taught about keeps the strict old behavior.
  *
  * `hook_disposed` is deliberately absent despite being about a hook: it is
  * written when the workflow's own `using` scope exits, so it is replay-origin.
@@ -149,7 +154,7 @@ export interface EventsConsumerOptions {
    * Callback invoked when an event is skipped because it repeats an event
    * class the walk already consumed for the same entity. `firstEventType` is
    * the type that recorded the class, which is the one the workflow observed.
-   * Diagnostics only: skipping is a normal outcome, not an error — though a
+   * Diagnostics only: skipping is a normal outcome, not an error, though a
    * `firstEventType` differing from `event.eventType` says the two writers
    * decided the entity's outcome differently, which is worth more than an
    * info log.
@@ -169,7 +174,7 @@ export interface EventsConsumerOptions {
    * claimed yet is an event it has not reached yet.
    *
    * Required rather than defaulting to always-idle: always-idle is exactly the
-   * pre-gate behaviour, so a defaulted option would let a construction site opt
+   * pre-gate behavior, so a defaulted option would let a construction site opt
    * a whole replay path back out without saying so. Tests that drive a consumer
    * with no orchestrator context pass `() => true` to keep the pre-existing
    * timing, and say so at the call site.
@@ -234,8 +239,8 @@ export class EventsConsumer {
   /**
    * The oldest event the walk stepped over that no consumer has claimed yet,
    * if any. Parking is a bet that a consumer will be registered later, so at
-   * any point where no consumer ever will be again — the replay finishing is
-   * the definitive one — this answers which event the bet lost on.
+   * any point where no consumer ever will be again (the replay finishing is
+   * the definitive one), this answers which event the bet lost on.
    */
   get strandedEvent(): Event | undefined {
     return this.parked[0]?.event;
@@ -321,7 +326,7 @@ export class EventsConsumer {
     // delivery `resolve()`; none of the callbacks here call `subscribe()`
     // synchronously. So within one pass `this.callbacks` is mutated only by
     // this loop (the `Finished` splice), and the next event's consumer is
-    // either already present (advance now) or not yet registered — in which
+    // either already present (advance now) or not yet registered, in which
     // case no callback consumes the event and we fall through to the
     // cross-VM-safe deferred unconsumed-event check below, exactly as before.
     while (true) {
@@ -331,6 +336,10 @@ export class EventsConsumer {
       // event's by the index it holds.
       this.drainParked();
       const currentEvent = this.events[this.eventIndex] ?? null;
+      if (currentEvent !== null && isSealedNoopEvent(currentEvent)) {
+        this.skipSealedNoop(currentEvent);
+        continue;
+      }
       const consumed = this.offer(currentEvent);
       if (consumed) {
         this.eventIndex++;
@@ -360,7 +369,7 @@ export class EventsConsumer {
         this.scheduleUnconsumedCheck(currentEvent, true);
         return;
       }
-      // A real event was consumed — advance to the next in the same pass.
+      // A real event was consumed, so advance to the next in the same pass.
     }
   };
 
@@ -525,7 +534,7 @@ export class EventsConsumer {
    * ids are minted from a monotonic ULID per body position, so nothing later in
    * the body registers a second consumer under this id. Waiting would cost
    * `getDeferredCheckDelayMs()` per straggler per replay for information that
-   * cannot arrive — 0.75% of production runs carry at least one straggler, and
+   * cannot arrive: 0.75% of production runs carry at least one straggler, and
    * the p99 among those carries 155.
    *
    * The invariant to preserve if hook identity ever becomes caller-supplied
@@ -538,6 +547,24 @@ export class EventsConsumer {
   private firstEventTypeOfClass(event: Event): Event['eventType'] | undefined {
     const key = this.eventClassKey(event);
     return key === undefined ? undefined : this.seenEventClasses.get(key);
+  }
+
+  /**
+   * Steps the walk over a sealed-log `noop` (specVersion >= 7): the World's
+   * backend wrote it to occupy a slot whose writer allocated the position and
+   * died, so the log's density arithmetic holds. It is invisible to the
+   * workflow: no consumer is offered it, no event class is recorded, and the
+   * deterministic clock does not advance, exactly as with
+   * {@link skipDuplicateEvent}, so a log that happens to contain one produces the same
+   * timestamps as a log that does not. (Its `createdAt` is the seal time,
+   * which can even postdate later slots' events; letting it touch the clock
+   * would leak the sealer's wall clock into replay.)
+   */
+  private skipSealedNoop(event: Event) {
+    this.eventIndex++;
+    eventsLogger.debug('Skipping sealed-log noop event', {
+      eventId: event.eventId,
+    });
   }
 
   /** Steps the walk over a repeat of an already-consumed class. */
@@ -567,7 +594,7 @@ export class EventsConsumer {
 
   private handleEndOfLog() {
     // Everything still parked is waiting for a consumer some later replay will
-    // register, which is the whole point of parking — except once the log
+    // register, which is the whole point of parking, except once the log
     // already holds the run's terminal event, because then there is no later
     // replay and no consumer will ever come.
     if (this.parked.length === 0) {
@@ -597,7 +624,7 @@ export class EventsConsumer {
     // Schedule a deferred check. We chain onto the promiseQueue so that any
     // pending async work (e.g., deserialization/decryption that triggers
     // resolve() → user code → subscribe()) completes first. If the event
-    // is still unconsumed after the queue drains, it's truly orphaned — or,
+    // is still unconsumed after the queue drains, it's truly orphaned, or,
     // when its type carries no ordering claim, parked for a later consumer.
     const checkVersion = ++this.unconsumedCheckVersion;
     this.pendingUnconsumedCheck = this.getPromiseQueue()
@@ -647,7 +674,7 @@ export class EventsConsumer {
    * pass that offered it, before this check is ever scheduled, and a class
    * recorded while the check was in flight can only have been recorded by a
    * consumption inside {@link consume}, whose next pass re-offers this event
-   * and steps over it there — leaving the identity guard above to drop the
+   * and steps over it there, leaving the identity guard above to drop the
    * in-flight check.
    */
   private resolveUnconsumedEvent(currentEvent: Event, mayPark: boolean) {
@@ -686,7 +713,7 @@ export class EventsConsumer {
    * loses it, and no measurement of a delivery outrunning 100ms exists either
    * way. So read this as retiring the bet rather than as repairing an observed
    * failure of that number: the delay is a user-settable env override, which
-   * leaves the old behaviour one configuration away from losing on any backend.
+   * leaves the old behavior one configuration away from losing on any backend.
    *
    * Termination is `hasParkedCommittedDelivery`'s: it counts only deliveries
    * that resolve on their own, so nothing here can gate its own retirement. A

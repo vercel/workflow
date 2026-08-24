@@ -33,7 +33,7 @@ export function workflowTransformPlugin(
         // Externalize it ONLY when it isn't installed: otherwise Rollup/Vite
         // fails the build with "failed to resolve import '@opentelemetry/api'"
         // when the peer is absent (observed in SvelteKit's pipeline). When the
-        // peer IS installed we must let it resolve and bundle normally — a
+        // peer IS installed we must let it resolve and bundle normally: a
         // self-contained output (Nitro's `.output/server`, esbuild) ships no
         // node_modules, so forcing it external there strands the runtime
         // `import('@opentelemetry/api')` and crashes the server with
@@ -51,7 +51,7 @@ export function workflowTransformPlugin(
         }
 
         // `ws`'s optional native accelerators. Unlike the OTEL peer above these
-        // are externalized unconditionally, not only when unresolvable — `ws`
+        // are externalized unconditionally, not only when unresolvable: `ws`
         // requires them in a try/catch, so a failed runtime require is the
         // designed path while a partially bundled native module is not. This
         // plugin also runs under Vite, which substitutes a stub for an absent

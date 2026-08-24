@@ -104,6 +104,7 @@ import {
   rebuildLiveHookByTokenFromEventLog,
 } from './hooks-storage.js';
 import { handleLegacyEvent } from './legacy.js';
+import { signalRunTerminal } from './run-status-signal.js';
 import { withRunFileLock } from './runs-storage.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -133,9 +134,9 @@ function getHookRetentionLimitMs(): number {
  * Per-step in-process async mutex. Serializes concurrent `events.create` calls
  * that target the same step, so that the "check terminal state, then write step
  * entity + event" sequence is atomic. Without this, two concurrent step_started
- * calls can both pass the not-terminal check and both write step_started events
- * — or a step_started can land in the log after step_completed has already
- * written, producing unconsumed events on replay.
+ * calls can both pass the not-terminal check and both write step_started
+ * events, or a step_started can land in the log after step_completed has
+ * already written, producing unconsumed events on replay.
  *
  * Duplicate step_started events for a non-terminal step are still allowed
  * (retries legitimately re-start a step), only writes to an already-terminal
@@ -148,17 +149,17 @@ function getHookRetentionLimitMs(): number {
 
 /**
  * Sidecar recovery marker that pins a canonical `hook_created`
- * eventId for a legacy token claim — one written by a version of
+ * eventId for a legacy token claim: one written by a version of
  * this storage that did not yet persist `eventId` inline in the
  * claim file. Without this marker, two cross-process retries
  * reading a legacy claim each generate their own eventId, land
  * their `writeExclusive(eventPath)` calls at different paths, and
  * append two `hook_created` events for the same `(runId, hookId)`.
  *
- * The marker is written via `writeExclusive` — the first retry to
+ * The marker is written via `writeExclusive`: the first retry to
  * land it pins its candidate eventId as canonical, and every
  * subsequent retry reads and adopts that eventId before the common
- * event publish. Schema is just `{ eventId }` because identity is
+ * event publish. The schema is `{ eventId }` because identity is
  * already encoded in the marker's filename hash, so different token
  * lifetimes can never share one marker (see
  * `hookRecoveryMarkerPath`).
@@ -192,7 +193,7 @@ const HookResumeClaimSchema = z.object({
  * a reservation: the allocator is per storage instance, so an instance sharing
  * the directory can publish an unrelated event at the same position first, and
  * the resume then lands somewhere else. An event read back at the claimed id
- * therefore has to be identified, not assumed — returning whatever occupies the
+ * therefore has to be identified, not assumed: returning whatever occupies the
  * position reports a `run_started` as the resume's own event and silently drops
  * the payload.
  */
@@ -248,7 +249,7 @@ async function findCommittedResumeEvent(
  * Whether a token claim held by another `(runId, hookId)` can never become
  * live again and may therefore be released by a new claimant:
  *
- *   - the claimed hook's disposal is committed (its dispose lock exists —
+ *   - the claimed hook's disposal is committed (its dispose lock exists:
  *     the durable release of the claim file just hasn't landed yet, or was
  *     lost to a crash between the lock write and the claim delete), or
  *   - the owning run is terminal and its minimum retention has ended, or
@@ -305,7 +306,7 @@ async function readHookRecoveryMarker(
  * Probe the run's event log for an existing `hook_created` event
  * with the given correlationId. Used by the legacy-claim recovery
  * path to detect "already published by a pre-upgrade write" before
- * pinning a canonical eventId — without this check, a post-upgrade
+ * pinning a canonical eventId: without this check, a post-upgrade
  * retry encountering a legacy claim whose `hook_created` was
  * already written (with the pre-upgrade writer's own eventId) would
  * pin a *different* eventId via the marker and publish a duplicate
@@ -314,7 +315,7 @@ async function readHookRecoveryMarker(
  * The inline-`eventId` fast path does NOT need this probe: the
  * canonical eventId is durable in the claim file, so the existing
  * publish (`writeExclusive(eventPath)`) will fail iff the event
- * already exists at that exact path — which is the correct
+ * already exists at that exact path, which is the correct
  * "already-published" semantic.
  */
 /**
@@ -326,7 +327,7 @@ async function readHookRecoveryMarker(
  * position-addressable, so it wins.
  *
  * Returns `null` for a ULID-numbered run, which falls back to
- * `(createdAt, eventId)` — the two never mix within one run.
+ * `(createdAt, eventId)`. The two never mix within one run.
  */
 function eventSortKey(event: Event): string | null {
   return isSlotEventId(event.eventId) ? event.eventId : null;
@@ -370,17 +371,17 @@ async function findExistingHookCreatedEventId(
 /**
  * Repair an "event-first orphan": the hook entity write is deferred
  * until after the `hook_created` event publish commits (so a failed
- * publish cannot mutate already-committed state — see the comment on
- * the deferred write), which opens the inverse crash window — a
+ * publish cannot mutate already-committed state: see the comment on
+ * the deferred write), which opens the inverse crash window: a
  * crash AFTER the event publish but BEFORE the deferred entity write
  * leaves the event in the log with the hook entity missing. A retry
  * then collides at the event publish and throws
- * `EntityConflictError` (correct — the event IS committed), but
+ * `EntityConflictError` (correct: the event IS committed), but
  * without this repair the entity would stay missing forever and the
  * hook would be unresolvable.
  *
  * The entity MUST be reconstructed from the persisted canonical
- * event's payload — NOT the retry's `eventData` — otherwise a retry
+ * event's payload (NOT the retry's `eventData`). Otherwise a retry
  * carrying different `metadata` / `isWebhook` would silently change
  * committed state. The write uses `writeExclusive` (create-if-absent)
  * so a concurrent writer racing this repair cannot be overwritten;
@@ -418,7 +419,7 @@ async function repairHookEntityFromPersistedEvent(
     tag
   );
   if (existingHook) {
-    // Entity already present — not an orphan, leave it untouched.
+    // Entity already present: not an orphan, leave it untouched.
     return;
   }
   const hook = hookFromCreatedEvent(persistedEvent);
@@ -477,7 +478,7 @@ async function pinCanonicalEventIdForLegacyClaim(
  * In-process per-key async mutex backed by a caller-supplied `Map`.
  * Used by `createEventsStorage` to serialize same-key event writes
  * (`step_*` for the same step, `hook_created` for the same hook).
- * The map is instantiated per-storage-instance — different
+ * The map is instantiated per-storage-instance: different
  * instances do NOT share locks, so two instances sharing one data
  * directory behave exactly like two separate OS processes from the
  * locking standpoint. Cross-instance / cross-process arbitration
@@ -561,6 +562,14 @@ async function writeRunUnderLifecycleLock<T extends WorkflowRun>(
     await writeJSON(taggedPath(basedir, 'runs', runId, tag), next, {
       overwrite: true,
     });
+    // Wake `runs.waitForTerminalStatus` waiters in this process. Emitted after
+    // the file is on disk so a woken waiter re-reads a terminal run, and from
+    // here because every current-spec run-lifecycle write funnels through this
+    // helper. The legacy (specVersion < 2) `run_cancelled` shortcut in
+    // `legacy.ts` writes the run file directly and signals for itself.
+    if (isTerminalWorkflowRunStatus(next.status)) {
+      signalRunTerminal(runId);
+    }
     return next;
   });
 }
@@ -631,7 +640,7 @@ export function createEventsStorage(
   //
   // Runs created before slot ids keep their ULIDs for life. A log may not mix
   // the two schemes (`events.list` sorts on the id, and they do not
-  // interleave), so the ids already on disk are the authoritative pin — no
+  // interleave), so the ids already on disk are the authoritative pin, and no
   // spec-version negotiation is involved. `null` state below means "this run
   // is ULID-numbered".
   //
@@ -639,7 +648,7 @@ export function createEventsStorage(
   // run, never a reservation. A draw reports `published + 1` and leaves the
   // entry alone, so a write rejected anywhere between its draw and its
   // publish costs nothing: the next writer draws the same position. That is
-  // what keeps the log dense, and it is not a rare path — a duplicate
+  // what keeps the log dense, and it is not a rare path: a duplicate
   // `step_started` from a concurrent replay is rejected on every storm.
   //
   // The cost is that two in-flight writers hold the same candidate. The
@@ -684,7 +693,7 @@ export function createEventsStorage(
    * The watermark alone is a lower bound: it only counts publishes this
    * instance made or last scanned for, so another instance sharing the
    * directory can be ahead of it. The candidate is therefore probed upward
-   * until it lands on a free position — one `stat` that returns ENOENT in the
+   * until it lands on a free position: one `stat` that returns ENOENT in the
    * uncontended case. Skipping the probe would be tolerable for an ordinary
    * write (the exclusive publish bumps it), but not for the writes that
    * record their candidate in a durable claim for other writers to converge
@@ -732,7 +741,8 @@ export function createEventsStorage(
    * leaves no trace, which is the whole reason the log has no holes.
    *
    * A no-op for ULID-numbered runs, where ids are not positions, and for runs
-   * this instance has never drawn for — the first draw scans the directory.
+   * this instance has never drawn for, where the first draw scans the
+   * directory.
    */
   function notePublishedSlot(runId: string, eventId: string): void {
     const slot = eventIdToSlot(eventId);
@@ -889,7 +899,7 @@ export function createEventsStorage(
   // Per-instance in-process mutexes. Two storage instances sharing
   // one data directory get independent lock maps, which makes them
   // behave like two separate OS processes from the locking
-  // standpoint — cross-instance arbitration relies on the on-disk
+  // standpoint: cross-instance arbitration relies on the on-disk
   // `writeExclusive` constraint / claim files instead. Tests use
   // this to exercise cross-process convergence without spawning
   // subprocesses.
@@ -959,7 +969,7 @@ export function createEventsStorage(
       // same-hook dedup branch. Without this, two same-tick concurrent
       // callers can race between the winner's `writeExclusive(claim)`
       // and `writeJSON(hook)`, making the second caller momentarily
-      // observe a claim with no matching hook entity — which the
+      // observe a claim with no matching hook entity, which the
       // crash-recovery path below would misinterpret as a prior crash
       // and incorrectly fall through to a second hook entity write.
       // `hook_received` and `hook_disposed` share the same per-hook lock
@@ -967,7 +977,7 @@ export function createEventsStorage(
       // sequence is atomic with respect to the disposer's "write dispose
       // lock, delete entity, then append" sequence. Without this, a
       // resume that passed its existence check before the disposal began
-      // could append its `hook_received` AFTER `hook_disposed` — an
+      // could append its `hook_received` AFTER `hook_disposed`, an
       // ordering that is journaled durably and makes every subsequent
       // replay of the owning run diverge at that event
       // (https://github.com/vercel/workflow/issues/2781).
@@ -1110,7 +1120,7 @@ export function createEventsStorage(
               );
 
               if (created) {
-                // We created the run — also write the run_created event.
+                // We created the run, so also write the run_created event.
                 // Drawn before this invocation's own id so it takes the
                 // earlier slot: it must replay first.
                 const runCreatedEventId = await mintEventId(effectiveRunId);
@@ -1200,8 +1210,8 @@ export function createEventsStorage(
         // ============================================================
 
         // Lazy step start: a step_started carrying step-creation data
-        // (stepName + input) is allowed to arrive with no prior step_created
-        // — it creates the step on the fly (see the materialization block
+        // (stepName + input) is allowed to arrive with no prior step_created:
+        // it creates the step on the fly (see the materialization block
         // below). This mirrors the resilient run_started path. Detect it here
         // so the entity-creation terminal-run guard treats it like a creation
         // and the "step must exist" ordering guard doesn't reject it.
@@ -1249,7 +1259,7 @@ export function createEventsStorage(
           }
 
           // Creating new entities on terminal runs is not allowed. A lazy
-          // step_started creates a step, so it is rejected here too — a bare
+          // step_started creates a step, so it is rejected here too. A bare
           // (non-lazy) step_started falls through to the step-validation
           // block below, which uses RunExpiredError for terminal runs.
           if (createsChildEntity) {
@@ -1280,7 +1290,7 @@ export function createEventsStorage(
             tag
           );
 
-          // Event ordering: step must exist before these events — except on
+          // Event ordering: step must exist before these events, except on
           // the lazy-start path, where step_started creates the step itself.
           if (!validatedStep && !lazyStepStart) {
             throw new WorkflowWorldError(
@@ -1291,7 +1301,7 @@ export function createEventsStorage(
           // Lazy start exactly-once gate: a lazy step_started always CREATES
           // the step (the owned-inline path only sends one for a step whose
           // step_created it deferred). If the step already exists, a concurrent
-          // handler won the create — this caller is a loser and must not start
+          // handler won the create: this caller is a loser and must not start
           // or run the step. Throw EntityConflictError so the runtime's
           // executeStep maps it to `skipped`. This is critical: the plain start
           // transition below permits re-starting a non-terminal step (retries
@@ -1304,7 +1314,7 @@ export function createEventsStorage(
           }
 
           // Step terminal state validation. validatedStep can be null only on
-          // the lazy-start path (no step yet) — there is nothing terminal to
+          // the lazy-start path (no step yet): there is nothing terminal to
           // guard against in that case, so these checks are skipped.
           if (validatedStep) {
             if (isTerminalStepStatus(validatedStep.status)) {
@@ -1329,14 +1339,14 @@ export function createEventsStorage(
           isHookEventRequiringExistence(data.eventType) &&
           data.correlationId
         ) {
-          // Redelivery convergence — checked BEFORE the disposal/existence
+          // Redelivery convergence, checked BEFORE the disposal/existence
           // rejections below: if this resume's `(runId, resumeId)` claim is
           // already committed AND its pinned event is journaled, return that
           // event as success. The claim proves this exact resume was accepted
           // while the hook was alive, and the event is already in the log, so
           // replay observes it either way. Without this, a queue redelivery
           // of the consumer's re-ensure after the workflow disposed the hook
-          // (dispose → sleep) is rejected with HookNotFound — which the
+          // (dispose → sleep) is rejected with HookNotFound, which the
           // consumer treats as "nothing left to resume" and acks, losing
           // whatever continuation the message carried. A claim with a
           // mismatched hookId or payload digest is NOT converged here; it
@@ -1380,7 +1390,7 @@ export function createEventsStorage(
           // delete → `hook_disposed` append, so the hook entity can still
           // exist (or the disposer may have crashed mid-teardown) while
           // disposal is already committed. Re-validate the dispose lock
-          // here — under the per-hook in-process lock taken above — so
+          // here (under the per-hook in-process lock taken above) so
           // acceptance observes the same order replay will: once disposal
           // has committed, the resume is rejected exactly like one that
           // arrived after teardown finished.
@@ -1406,7 +1416,7 @@ export function createEventsStorage(
           // `hook_received` directly AND has the queue consumer re-ensure it,
           // both carrying the same `resumeId`, so both may reach here under the
           // per-hook lock. They must converge on ONE event. Keyed on
-          // `(runId, resumeId)` — NOT on the hookId — because a reusable hook
+          // `(runId, resumeId)` (NOT on the hookId) because a reusable hook
           // receives many distinct resumes and each must record its own event;
           // only the two writers of a single resume collapse. The claim pins
           // the canonical eventId BEFORE the append so a cross-process writer
@@ -1426,7 +1436,7 @@ export function createEventsStorage(
               // the first hook's event for a second hook would attribute a
               // resume to the wrong hook. The two writers of ONE resume always
               // carry the same hookId, so a mismatch can only mean the claim
-              // belongs to another hook — reject, mirroring the server's
+              // belongs to another hook: reject, mirroring the server's
               // `(runId, resumeId)` constraint identity.
               if (claim.hookId !== data.correlationId) {
                 throw new EntityConflictError(
@@ -1434,7 +1444,7 @@ export function createEventsStorage(
                 );
               }
               // A reused resumeId carrying a different payload is a caller bug,
-              // not a benign redelivery — reject it exactly like the server's
+              // not a benign redelivery: reject it exactly like the server's
               // constraint (which keys the digest into the claim).
               if (
                 params.resumePayloadDigest &&
@@ -1471,7 +1481,7 @@ export function createEventsStorage(
               }
               // The resume really is uncommitted: a crash between the claim
               // write and the append. Take over the append. Adopt the claimed
-              // position when it is still free — under ULIDs it always is, and
+              // position when it is still free: under ULIDs it always is, and
               // adopting keeps two takers writing the same path so one loses
               // the exclusive create instead of publishing a second event.
               // When an unrelated event holds it, there is nothing to converge
@@ -1560,11 +1570,11 @@ export function createEventsStorage(
             ? { resumeId: params.resumeId }
             : {}),
         };
-        // Strip eventData from run_started — it belongs on run_created only.
+        // Strip eventData from run_started: it belongs on run_created only.
         if (data.eventType === 'run_started' && 'eventData' in event) {
           delete (event as any).eventData;
         }
-        // Strip only the step `input` from the lazy step_started event row —
+        // Strip only the step `input` from the lazy step_started event row:
         // it belongs on the synthetic step_created written above. stepName is
         // preserved for the client replay consumer's step-name divergence
         // check (packages/core/src/step.ts).
@@ -1603,11 +1613,11 @@ export function createEventsStorage(
         //
         //   1. Publish the durable run-terminal marker. Its existence is
         //      the earliest cross-process evidence that the run can never
-        //      accept a new `hook_received` again — the run-level analogue
+        //      accept a new `hook_received` again, the run-level analogue
         //      of the hook dispose marker.
         //   2. Reap the run's staged (not yet reader-visible) hook_received
-        //      events. A resume publishes in three steps — stage, re-check
-        //      this marker, promote via atomic hard link into `events/` —
+        //      events. A resume publishes in three steps (stage, re-check
+        //      this marker, promote via atomic hard link into `events/`),
         //      so the reap's unlink and the resume's link race on the SAME
         //      staged file and the filesystem decides a single winner:
         //      either the resume's event was already visible before this
@@ -1787,7 +1797,7 @@ export function createEventsStorage(
           // Reuse currentRun from validation (already read above)
           if (currentRun) {
             // The error field is SerializedData (Uint8Array) produced by
-            // dehydrateRunError. We store it verbatim — consumers hydrate it
+            // dehydrateRunError. We store it verbatim. Consumers hydrate it
             // via hydrateRunError to reconstruct the original thrown value.
             run = await writeRunUnderLifecycleLock(
               basedir,
@@ -1912,8 +1922,8 @@ export function createEventsStorage(
           // step_created: Creates step entity with status 'pending', attempt=0, createdAt set.
           // Two concurrent invocations with identical correlationIds (e.g. the
           // snapshot runtime's deterministic correlationIds across replays)
-          // must be deduped — otherwise both writes succeed and the event log
-          // ends up with duplicate step_created entries. The outer
+          // must be deduped, since otherwise both writes succeed and the event
+          // log ends up with duplicate step_created entries. The outer
           // withStepLock mutex serializes within a single process; this
           // The exclusive constraint file additionally protects against
           // cross-process races (two pnpm workers, redelivered queue messages,
@@ -1968,7 +1978,7 @@ export function createEventsStorage(
           // Sets startedAt only on the first start (not updated on retries)
           // Reuse validatedStep from validation (already read above)
 
-          // Lazy step start: no prior step_created — create the step entity
+          // Lazy step start: no prior step_created, so create the step entity
           // and a synthetic step_created event now, then fall through to the
           // start transition below. Mirrors the resilient run_started path:
           // the step entity is claimed atomically (first writer wins) and the
@@ -1993,7 +2003,7 @@ export function createEventsStorage(
               // A concurrent handler already claimed the create for this
               // step. The atomic claim is the exactly-once ownership gate:
               // only the winner runs the step body inline. Throw
-              // EntityConflictError — the runtime's executeStep maps this to
+              // EntityConflictError: the runtime's executeStep maps this to
               // `skipped`, so the loser does not start or run the step. This
               // preserves the same "exactly one handler owns each step"
               // guarantee the separate step_created claim provides today.
@@ -2168,7 +2178,7 @@ export function createEventsStorage(
               );
             }
             // The error field is SerializedData (Uint8Array) produced by
-            // dehydrateStepError. We store it verbatim — consumers hydrate it
+            // dehydrateStepError. We store it verbatim. Consumers hydrate it
             // via hydrateStepError to reconstruct the original thrown value.
             step = {
               ...validatedStep,
@@ -2417,7 +2427,7 @@ export function createEventsStorage(
             claimResult.status === 'owned' ? { overwrite: true } : undefined;
 
           // Index entries before the event publish (see hook-index.ts
-          // crash-ordering invariant). `eventId` is final here — the
+          // crash-ordering invariant). `eventId` is final here: the
           // dedup-recovery branch above already reassigned it to the
           // canonical id when applicable.
           await writeHookCreatedIndexEntries(
@@ -2462,7 +2472,7 @@ export function createEventsStorage(
             tag
           );
           if (existingHook) {
-            // Release the token claim to free up the token for reuse —
+            // Release the token claim to free up the token for reuse,
             // but only if it still points at this hook. A claimant that
             // force-released this hook's stale claim (see
             // `isHookTokenClaimReleasable`) may already hold a fresh
@@ -2565,14 +2575,14 @@ export function createEventsStorage(
             tag
           );
           if (!existingWait) {
-            // Clean up the lock file we just claimed — the wait doesn't exist
+            // Clean up the lock file we just claimed: the wait doesn't exist
             await fs.unlink(lockPath).catch(() => {});
             throw new WorkflowWorldError(
               `Wait "${data.correlationId}" not found`
             );
           }
           // The lock file (writeExclusive above) already prevents concurrent
-          // completions — no additional status check needed.
+          // completions, so no additional status check is needed.
           wait = {
             ...existingWait,
             status: 'completed',
@@ -2594,22 +2604,22 @@ export function createEventsStorage(
         // is the cross-process atomic publish primitive: if the file
         // already exists, returns false instead of overwriting. This
         // is critical for the hook_created dedup-recovery convergence
-        // (above) — two workers that adopt the same canonical eventId
+        // (above): two workers that adopt the same canonical eventId
         // race here; whoever links the file first wins, the loser
         // throws EntityConflictError, and the runtime's existing
         // concurrent-replay catch path at suspension-handler.ts:142
         // swallows it. For all other event types, eventIds are
         // monotonic ULIDs (globally unique by construction) so a
         // collision indicates a real bug and EntityConflictError is
-        // also the right surface — same shape as step_created's
+        // also the right surface, the same shape as step_created's
         // claim-file behavior.
         // Last-instant re-validation for `hook_received` (see the acceptance
         // check above). The per-hook in-process lock already serializes
         // resume vs. dispose within one storage instance; this second check
         // narrows the cross-instance window (independent lock maps, shared
         // filesystem) to the single event write below, matching the
-        // module's convention that the on-disk lock file — not the
-        // in-process mutex — is the durable source of truth.
+        // module's convention that the on-disk lock file (not the
+        // in-process mutex) is the durable source of truth.
         if (
           data.eventType === 'hook_received' &&
           data.correlationId &&
@@ -2635,7 +2645,7 @@ export function createEventsStorage(
          *
          * A slot id is a position in the run's log, not a globally unique
          * token, so losing the publish means another writer took the
-         * position — an ordinary concurrent write. The World's contract is to
+         * position, an ordinary concurrent write. The World's contract is to
          * bump and commit rather than reject: `create` must not fail for a
          * reason its caller could not have avoided. Bumping is refused for:
          *
@@ -2643,7 +2653,7 @@ export function createEventsStorage(
          *   really is a duplicate publish that must surface;
          * - ids pinned by a durable claim (`hook_created`'s canonical id,
          *   `hook_received`'s resume claim), which exist precisely so two
-         *   writers converge on ONE event — bumping would publish a second.
+         *   writers converge on ONE event (bumping would publish a second).
          *
          * A pinned id is only ever read back from a claim its own writer
          * recorded before publishing, and that writer bumps only when the
@@ -2688,13 +2698,13 @@ export function createEventsStorage(
         // the terminal-transition block earlier in this function). In-memory
         // locks cannot close the shared-filesystem race this backend
         // explicitly supports, and a published event file is immediately
-        // visible to `events.list()` in other processes — so it can never be
+        // visible to `events.list()` in other processes, so it can never be
         // "rolled back" after the fact. Instead, the event stays INVISIBLE
         // to readers until a single atomic filesystem operation decides its
         // fate:
         //
-        //   1. (fast path) reject if the run is already terminal — by
-        //      marker, or by run state for runs that predate the marker —
+        //   1. (fast path) reject if the run is already terminal (by
+        //      marker, or by run state for runs that predate the marker)
         //      so the common case never creates a file.
         //   2. STAGE the event at a non-reader-visible path under `.locks`.
         //   3. re-CHECK the terminal marker; reject if present.
@@ -2702,12 +2712,12 @@ export function createEventsStorage(
         //      link; reject if the staged file was reaped (`'missing'`).
         //
         // Correctness: the reap's `unlink` and step 4's `link` target the
-        // same staged file, so the filesystem serializes them — exactly one
+        // same staged file, so the filesystem serializes them: exactly one
         // wins. If the link wins, the event was reader-visible before the
         // reap completed, and therefore before the terminal state and
         // terminal event were written: acceptance happened-before the
         // termination and legitimately precedes it. If the unlink wins,
-        // promotion fails and the event is never visible to any reader —
+        // promotion fails and the event is never visible to any reader:
         // there is nothing to roll back. A resume that stages after the
         // reap has passed necessarily stages after the marker was
         // committed, so step 3 rejects it. Rejections before step 4 unlink
@@ -2779,7 +2789,7 @@ export function createEventsStorage(
               const promoted = await promoteExclusive(stagedPath, eventPath);
               if (promoted === 'missing') {
                 // A terminal transition reaped the staged file between the
-                // check and the link — the atomic loss of the arbitration.
+                // check and the link, the atomic loss of the arbitration.
                 throw new RunExpiredError(
                   `Workflow run "${effectiveRunId}" is already in a terminal state`
                 );
@@ -2812,7 +2822,7 @@ export function createEventsStorage(
           // dense, and replay delivers the resume twice.
           //
           // `converge` above already answers this case with the committed
-          // event — it just could not see it yet, because the other taker had
+          // event. It could not see it yet because the other taker had
           // not published when this attempt read. Answer it the same way. An
           // occupant that is NOT this resume is the unrelated-event collision
           // the bump is for, and still bumps (or conflicts, when pinned).
@@ -2853,7 +2863,7 @@ export function createEventsStorage(
           // leaving an event-first orphan: the event is in the log
           // but the entity is missing and the hook is unresolvable.
           // Repair the entity from the PERSISTED event's payload
-          // (never the retry's — different retry metadata must not
+          // (never the retry's: different retry metadata must not
           // change committed state) before surfacing the benign
           // duplicate to the runtime's concurrent-replay catch path.
           if (data.eventType === 'hook_created' && data.correlationId) {
@@ -2911,7 +2921,7 @@ export function createEventsStorage(
         // branch above) would mutate an already-committed hook
         // entity with the retry's payload before the event publish
         // proved whether this attempt was repairing a missing event
-        // or just colliding with an already-published `hook_created`.
+        // or colliding with an already-published `hook_created`.
         // The branch sets `hookEntityWriteOptions` iff this event
         // type writes an entity.
         if (hook && data.eventType === 'hook_created') {
@@ -2939,17 +2949,17 @@ export function createEventsStorage(
 
         // Inline-delta optimization: a writer can pass `sinceCursor` (the
         // cursor of the event log as it last saw it). We return the delta of
-        // events written strictly after that cursor — exactly what an
+        // events written strictly after that cursor (exactly what an
         // `events.list({ cursor: sinceCursor, sortOrder: 'asc' })` would
-        // return right now — so the caller can skip a redundant round-trip.
+        // return right now) so the caller can skip a redundant round-trip.
         //
         // This is computed against the same on-disk log the list path
         // reads, so it captures everything the fetch would: the event just
         // written, any attr_set a step body wrote, and any in-band events
         // (e.g. hook_received, wait_completed) another writer appended since
-        // the cursor. That equivalence is what makes skipping the fetch safe
-        // — a missed in-band event cannot diverge replay because the delta
-        // is the fetch.
+        // the cursor. That equivalence is what makes skipping the fetch
+        // safe: a missed in-band event cannot diverge replay because the
+        // delta is the fetch.
         //
         // Any event type qualifies. The write itself decides nothing here;
         // whether the delta is worth requesting is the caller's call, and
@@ -2959,8 +2969,8 @@ export function createEventsStorage(
         if (typeof params?.sinceCursor === 'string') {
           // Intentionally no `limit`: this returns a single default-size page,
           // unlike the `events.list` path which loops `while (hasMore)` to
-          // exhaustion. That is safe — and must NOT be "fixed" by paginating
-          // here — because the contract is single-page-or-fallback, not
+          // exhaustion. That is safe, and must NOT be "fixed" by paginating
+          // here, because the contract is single-page-or-fallback, not
           // complete-delta. When the delta overflows one page,
           // paginatedFileSystemQuery sets `hasMore: true` and slices `data` to
           // the page (see fs.ts), which we forward verbatim below. The SDK

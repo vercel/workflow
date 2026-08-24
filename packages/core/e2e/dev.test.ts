@@ -155,6 +155,7 @@ export function createDevTests(config?: DevTestConfig) {
       hot: 'workflow dev hmr: hot rebuild',
       full: 'workflow dev hmr: full rediscovery',
     };
+    const hmrRebuildCompleteMessage = 'workflow dev hmr: rebuild complete';
 
     const fetchWithTimeout = (pathname: string) => {
       if (!deploymentUrl) {
@@ -193,10 +194,58 @@ export function createDevTests(config?: DevTestConfig) {
         .then(decodeDevServerLog)
         .catch(() => '');
     };
-    const readDevServerLogCursor = async () =>
-      devServerLogPath && shouldAssertDevHmrLogs
-        ? (await readDevServerLog()).length
-        : undefined;
+    /**
+     * Wait until the dev server's HMR pipeline is quiescent: every rebuild
+     * the log says started (`hot rebuild` / `full rediscovery`) has logged
+     * `rebuild complete`, and no new HMR line has appeared for a short
+     * window (covering watcher latency for a just-landed write plus the
+     * flush debounce).
+     *
+     * Rebuilds are serialized and can take multi-second on CI, so a write
+     * from a previous case (or a teardown restore) can still be rebuilding
+     * — or sitting in the queue — when the next exact-count window would
+     * open. Draining here keeps those legitimate rebuild lines out of the
+     * next window instead of failing it with over-counts.
+     */
+    const hmrQuiescenceQuietMs = 2_000;
+    const waitForHmrQuiescence = async () => {
+      if (!devServerLogPath || !shouldAssertDevHmrLogs) {
+        return;
+      }
+      let lastCounts = '';
+      let quietSince = Date.now();
+      await pollUntil({
+        description: 'dev server HMR pipeline to go quiescent',
+        timeoutMs: hmrRediscoveryTimeoutMs,
+        intervalMs: 250,
+        check: async () => {
+          const log = await readDevServerLog();
+          const hot = countLogMessage(log, hmrLogMessages.hot);
+          const full = countLogMessage(log, hmrLogMessages.full);
+          const skip = countLogMessage(log, hmrLogMessages.skip);
+          const complete = countLogMessage(log, hmrRebuildCompleteMessage);
+          const counts = `${hot}/${full}/${skip}/${complete}`;
+          if (counts !== lastCounts) {
+            lastCounts = counts;
+            quietSince = Date.now();
+          }
+          expect(complete).toBeGreaterThanOrEqual(hot + full);
+          expect(Date.now() - quietSince).toBeGreaterThanOrEqual(
+            hmrQuiescenceQuietMs
+          );
+        },
+      });
+    };
+
+    // Cursors open exact-count windows, so they only get taken once the
+    // pipeline is drained — every call site writes after taking its cursor.
+    const readDevServerLogCursor = async () => {
+      if (!devServerLogPath || !shouldAssertDevHmrLogs) {
+        return undefined;
+      }
+      await waitForHmrQuiescence();
+      return (await readDevServerLog()).length;
+    };
     const countLogMessage = (log: string, message: string) =>
       log.split(message).length - 1;
     type ExpectedHmrLogCount = number | { min?: number; max?: number };

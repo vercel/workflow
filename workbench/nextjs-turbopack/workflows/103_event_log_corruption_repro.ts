@@ -41,6 +41,10 @@ interface StormInput {
   stepDelayMs?: number;
   stepDelayJitterMs?: number;
   jitterBuckets?: number;
+  /** `blocked-branch`: per-index spacing of the launch step's duration, so the
+   *  branches' launch completions commit one after another and a resume burst
+   *  can land between the second-to-last and the last. */
+  launchStaggerMs?: number;
   betweenRoundSleepMs?: number;
   reconcileBase?: number;
   attrWrites?: number;
@@ -196,6 +200,7 @@ function normalize(input: StormInput) {
     stepDelayMs: input.stepDelayMs ?? 2200,
     stepDelayJitterMs: input.stepDelayJitterMs ?? 250,
     jitterBuckets: input.jitterBuckets ?? 5,
+    launchStaggerMs: input.launchStaggerMs ?? 300,
     betweenRoundSleepMs: input.betweenRoundSleepMs ?? 1000,
     reconcileBase: input.reconcileBase ?? 2,
     attrWrites: input.attrWrites ?? 1,
@@ -348,6 +353,141 @@ export async function hookStormReproWorkflow(
           (async (): Promise<BranchRecord> => {
             const iterator = hook[Symbol.asyncIterator]();
             try {
+              const winner = await Promise.race([
+                iterator.next().then(() => 'settled' as const),
+                sleep(config.watchdogMs).then(() => WATCHDOG),
+              ]);
+
+              if (winner === WATCHDOG) {
+                await recoverStep({
+                  index,
+                  round,
+                  runId: metadata.workflowRunId,
+                });
+                await finalizeStep({
+                  index,
+                  round,
+                  runId: metadata.workflowRunId,
+                  winner: 'watchdog',
+                });
+                return { index, round, winner: 'watchdog' };
+              }
+
+              await finalizeStep({
+                index,
+                round,
+                runId: metadata.workflowRunId,
+                winner: 'settled',
+              });
+              return { index, round, winner: 'settled' };
+            } finally {
+              await releaseStep({
+                index,
+                round,
+                runId: metadata.workflowRunId,
+              });
+            }
+          })()
+        )
+      );
+
+      const stragglers = branches.filter(
+        (branch) => branch.winner === 'watchdog'
+      ).length;
+      const reconciled = await Promise.all(
+        Array.from({ length: config.reconcileBase + stragglers }, (_, index) =>
+          reconcileStep({
+            index,
+            round,
+            runId: metadata.workflowRunId,
+            stragglers,
+          })
+        )
+      );
+
+      ledger.push({
+        branches,
+        reconciled: reconciled.length,
+        round,
+        stragglers,
+      });
+    } finally {
+      for (const hook of hooks) {
+        hook.dispose();
+      }
+    }
+
+    if (config.betweenRoundSleepMs > 0) {
+      await sleep(config.betweenRoundSleepMs);
+    }
+  }
+
+  return {
+    ledger,
+    rounds: config.rounds,
+    runId: metadata.workflowRunId,
+    width: config.width,
+  };
+}
+
+/**
+ * The blocked-branch shape: like `hookStormReproWorkflow`, each branch races an
+ * out-of-band hook delivery against a watchdog — but only after first parking
+ * on a launch step, the way a task launches work and then waits for its
+ * completion callback. That pre-race step is the ingredient the other storms
+ * lack, and it changes what a concurrent replay can be missing.
+ *
+ * A replay woken by one branch's `hook_received` can load a log that ends just
+ * before a sibling's launch `step_completed`. That sibling is then still parked
+ * at its `await` and creates *nothing* — not even the watchdog wait it would
+ * enter the race with — so every correlation ID the woken branch mints after
+ * that point sits one position earlier in the run's ID sequence than in a
+ * replay that saw the completion. The woken branch's `finalizeStep` takes the
+ * exact ordinal a fresher writer hands the blocked sibling's wait: one ID, two
+ * entity kinds, and the run dies `CORRUPTED_EVENT_LOG` on an unconsumable
+ * `step_created`. Unlike the wake-ORDER races the other storms aim at, no
+ * delivery-ordering discipline covers this — the missing branch's IDs are
+ * absent from the shorter replay, not misordered.
+ *
+ * The launch durations are staggered per index so the completions commit
+ * spread out, and the driver aims its resume burst at the tail of that spread.
+ * The watchdog is sized to normally lose to the resumes: its job here is to
+ * put a wait entity into the race, not to fire.
+ */
+export async function blockedBranchReproWorkflow(
+  input: StormInput
+): Promise<StormResult> {
+  'use workflow';
+
+  const metadata = getWorkflowMetadata();
+  const config = normalize(input);
+  const ledger: RoundRecord[] = [];
+
+  for (let round = 0; round < config.rounds; round += 1) {
+    const hooks = Array.from({ length: config.width }, (_, index) =>
+      createHook<WakePayload>({
+        token: `${input.token}:${round}:${index}`,
+      })
+    );
+
+    try {
+      const branches = await Promise.all(
+        hooks.map((hook, index) =>
+          (async (): Promise<BranchRecord> => {
+            const iterator = hook[Symbol.asyncIterator]();
+            try {
+              // The launch: the branch is parked here until its own
+              // `step_completed` arrives, minting nothing in the meantime.
+              // Staggered per index so the round's completions land one by
+              // one instead of in a single batch.
+              await settleStep({
+                attrWrites: config.attrWrites,
+                delayMs: config.stepDelayMs + index * config.launchStaggerMs,
+                index,
+                round,
+                runId: metadata.workflowRunId,
+              });
+
               const winner = await Promise.race([
                 iterator.next().then(() => 'settled' as const),
                 sleep(config.watchdogMs).then(() => WATCHDOG),

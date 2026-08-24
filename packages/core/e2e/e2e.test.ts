@@ -16,11 +16,12 @@ import {
   afterAll,
   assert,
   beforeAll,
-  beforeEach,
   describe,
   expect,
-  test,
+  type TestContext,
+  type test as vitestTest,
 } from 'vitest';
+import { createTaskCollector, getCurrentSuite } from 'vitest/suite';
 import { getTrustedSourcesHeaders } from '../../../scripts/trusted-sources-headers.mjs';
 import type { Run } from '../src/runtime';
 import {
@@ -32,21 +33,34 @@ import {
   resumeHook,
 } from '../src/runtime';
 import {
+  announceTestStart,
+  assertUnsupportedTestsExist,
   cliCancel,
   cliHealthJson,
   cliInspectJson,
   cliInspectJsonUntil,
+  createPerTestState,
+  dumpTrackedRunDiagnostics,
   fetchManifest,
   getCollectedRunIds,
   getWorkflowMetadata,
   hasNestedStepStackFrames,
   hasStepSourceMaps,
   hasWorkflowSourceMaps,
+  isJsApp,
   isLocalDeployment,
-  setupRunTracking,
+  noteTestSettled,
+  noteTestStarted,
+  requireFixture,
+  requireSupported,
+  runInTestState,
   setupWorld,
+  startTracked,
+  summarizeLoad,
   trackRun,
+  warmDeployment,
   writeDiagnosticsSidecar,
+  writeInfraSidecar,
 } from './utils';
 
 const deploymentUrl = process.env.DEPLOYMENT_URL;
@@ -55,7 +69,12 @@ if (!deploymentUrl) {
 }
 
 const DISTRIBUTED_CLOCK_TOLERANCE_MS = 1_000;
-const RACE_WINNER_MAX_DURATION_MS = 5_000;
+// The race winner takes 1s; the loser would take 10s. The bound only has to
+// sit clearly below the loser to catch badly delayed or sequential
+// completion — under the concurrent suite, queue latency pushed the winner's
+// observed duration to ~6.5s on loaded local-dev lanes, so 5s was tight
+// enough to flake without being any better at catching the regression.
+const RACE_WINNER_MAX_DURATION_MS = 8_000;
 const EVENT_POLL_PAGE_SIZE = 100;
 
 function expectElapsedAtLeast(
@@ -72,14 +91,13 @@ function expectElapsedAtLeast(
 
 /**
  * Tracked wrapper around start() that automatically registers runs
- * for diagnostics on test failure and observability metadata collection.
+ * for diagnostics on test failure and observability metadata collection,
+ * and replaces runs the queue never picks up (see startTracked in utils).
  */
 async function start<T>(
   ...args: Parameters<typeof rawStart<T>>
 ): Promise<Run<T>> {
-  const run = await rawStart<T>(...args);
-  trackRun(run);
-  return run;
+  return startTracked<T>(...args);
 }
 
 function getE2EMetadataPath() {
@@ -109,9 +127,119 @@ function writeE2EMetadata() {
 /**
  * Shorthand for looking up workflow metadata from workflows/99_e2e.ts.
  * Usage: `const run = await start(await e2e('addTenWorkflow'), [123]);`
+ *
+ * Doubles as the conformance gate: an app that ships an `e2e-conformance.json`
+ * declaring which fixtures it implements skips the tests whose fixture it does
+ * not. Because every such test already names its fixture here, the gate needs no
+ * per-test annotation. No-op for the JS workbench apps, which ship no
+ * declaration.
  */
-const e2e = (fn: string) =>
-  getWorkflowMetadata(deploymentUrl, 'workflows/99_e2e.ts', fn);
+const e2e = (fn: string) => {
+  requireFixture(fn);
+  return getWorkflowMetadata(deploymentUrl, 'workflows/99_e2e.ts', fn);
+};
+
+/**
+ * Marks a test (or a whole describe) whose subject is the JavaScript
+ * implementation rather than the workflow protocol: JS value and class semantics
+ * (`this`, `.call()`, `WORKFLOW_SERIALIZE`, throwing a non-Error), the JS
+ * toolchain (source maps, `import.meta.url`, tsconfig path aliases), and
+ * JS-shaped platform APIs (`AbortSignal`), and the JS workflow-ID scheme
+ * (`workflow//./{path}//{fn}`). Reimplementing these in another language would
+ * mean testing something else, so a non-JS app skips them instead of carrying
+ * them as gaps.
+ *
+ * A handful of markers are weaker than that: health check, the webhook route, and
+ * app-provided API routes are protocol-level and *ought* to travel, but no other
+ * SDK serves them yet, so there is nothing to conform to. Those sites say so, and
+ * should move back to plain `test` as soon as a second implementation lands.
+ *
+ * Every test not marked here is in scope for cross-language conformance, and is
+ * gated only by `e2e-conformance.json`. No-op for the JS workbench apps.
+ */
+/**
+ * Every test in this suite runs through this handler wrapper, which owns the
+ * per-test harness plumbing the sequential suites do in a `beforeEach`
+ * (announce heartbeat, conformance gates, failure diagnostics).
+ *
+ * The suite runs concurrently, and vitest's `getCurrentTest()` is a plain
+ * module variable that is wrong after any `await`, so nothing per-test can
+ * live in module globals. The wrapper binds a per-test state (name, tracked
+ * runs, the test's own `skip`) via AsyncLocalStorage *around the handler
+ * call itself* — a direct call stack, so the store provably reaches the test
+ * body — and `trackRun`/`recordInfraEvent`/`requireFixture` read it
+ * ambiently with no call-site changes. (A `test.extend` auto fixture cannot
+ * do this: vitest resolves fixtures in a separate async context, so a store
+ * bound around `use()` never reaches the test body.) Failure diagnostics
+ * dump from the bound state, so a failing test reports its own runs, not a
+ * concurrent sibling's.
+ */
+const wrapE2EHandler =
+  (handler: (ctx: TestContext) => unknown) => (ctx: TestContext) => {
+    const state = createPerTestState(ctx.task.name, ctx.skip);
+    announceTestStart(ctx.task.name);
+    ctx.onTestFailed(
+      (result) => dumpTrackedRunDiagnostics(state, result.errors?.[0]?.message),
+      30_000 // Allow 30s for diagnostics fetching (default hookTimeout is 10s)
+    );
+    return runInTestState(state, async () => {
+      // Second conformance gate — inside the bound state so the skip
+      // targets this test.
+      requireSupported(ctx.task.name);
+      // Timed for the per-lane load summary (see summarizeLoad): under
+      // concurrency the interesting number is not pass/fail but how far
+      // per-test latency moved and whether CLI children dominate it.
+      const startedAt = Date.now();
+      noteTestStarted();
+      try {
+        return await handler(ctx);
+      } finally {
+        noteTestSettled(ctx.task.name, Date.now() - startedAt);
+      }
+    });
+  };
+
+/**
+ * Drop-in `test` that wraps every handler with {@link wrapE2EHandler} and
+ * then hands the call to the enclosing suite's own collector — exactly what
+ * vitest's top-level `test` does (`getCurrentSuite().test.fn.call(this, …)`).
+ *
+ * Delegating rather than calling `getCurrentSuite().task()` directly is
+ * load-bearing: the suite collector is where suite options are merged into
+ * each test (`Object.assign({}, suiteOptions, options)`), which is how
+ * `describe.concurrent` reaches its tests. Calling `task()` directly skips
+ * that merge, and the suite silently runs sequentially — caught in CI as
+ * lanes matching the serial baseline minute-for-minute.
+ *
+ * Built on `createTaskCollector`, so the whole chainable surface (`.skip`,
+ * `.only`, `.each`, `.runIf`, `.sequential`, …) keeps working.
+ */
+const test = createTaskCollector(function (
+  this: Record<string, unknown>,
+  name: string,
+  optionsOrFn?: unknown,
+  optionsOrTest?: unknown
+) {
+  let options: unknown = {};
+  let handler: (ctx: TestContext) => unknown = () => {};
+  if (typeof optionsOrTest === 'object' && optionsOrTest !== null) {
+    options = optionsOrTest;
+    handler = optionsOrFn as typeof handler;
+  } else if (typeof optionsOrTest === 'number') {
+    options = { timeout: optionsOrTest };
+    handler = optionsOrFn as typeof handler;
+  } else if (typeof optionsOrFn === 'object' && optionsOrFn !== null) {
+    options = optionsOrFn;
+    handler = optionsOrTest as typeof handler;
+  } else if (typeof optionsOrFn === 'function') {
+    handler = optionsOrFn as typeof handler;
+  }
+
+  getCurrentSuite().test.fn.call(this, name, options, wrapE2EHandler(handler));
+}) as typeof vitestTest;
+
+const testJsOnly = isJsApp() ? test : test.skip;
+const describeJsOnly = isJsApp() ? describe : describe.skip;
 
 const workflowWebhookUrl = (token: string) =>
   createWorkflowUrl(deploymentUrl, { type: 'webhook', token });
@@ -287,27 +415,52 @@ async function startWorkflowViaHttp(
   return run;
 }
 
-// NOTE: Temporarily disabling concurrent tests to avoid flakiness.
-// TODO: Re-enable concurrent tests after conf when we have more time to investigate.
-describe('e2e', () => {
+// Concurrent: ~128 serial tests were the dominant wall-clock cost per matrix
+// entry (~22 of 24 minutes on the Vercel lanes). The known blockers are
+// fixed: per-test attribution is concurrency-safe (see the e2eTracking
+// fixture), abort-fetch tests are hermetic, the fibonacci tree fits the
+// scheduler, and source-map assertions are positive-only. A test that
+// genuinely cannot share a deployment can opt out with `test.sequential`.
+describe.concurrent('e2e', () => {
   // Configure the World for the test runner process so that start() and
   // run.returnValue can communicate with the same backend as the workbench app.
+  // Also warm the target before the first test starts a run: a fresh Vercel
+  // deployment picks up runs long after it answers HTTP, and a local dev
+  // server pays its first flow-route compile on the first delivery. Either
+  // cold window otherwise surfaces as pickup-stall infra events on the
+  // suite's first tests (see warmDeployment). rawStart, not start — probes
+  // manage their own stalls without tripping the per-test watchdog.
   beforeAll(async () => {
     setupWorld(deploymentUrl);
-  });
-
-  // Enable automatic run diagnostics on test failure
-  beforeEach((ctx) => {
-    setupRunTracking(ctx.task.name);
-  });
+    await warmDeployment(async () =>
+      rawStart(
+        await getWorkflowMetadata(
+          deploymentUrl,
+          'workflows/99_e2e.ts',
+          'addTenWorkflow'
+        ),
+        [1]
+      )
+    );
+  }, 150_000);
 
   // Write E2E metadata and diagnostics files
   afterAll(() => {
+    // First, so the numbers reach the log even if a later assertion in this
+    // hook throws.
+    process.stdout.write(summarizeLoad());
     writeE2EMetadata();
     writeDiagnosticsSidecar();
+    writeInfraSidecar();
+    // Last, so a stale exemption is reported without costing the diagnostics.
+    assertUnsupportedTestsExist();
   });
 
-  test.each([
+  // JS-only: asserts the JS workflow-ID scheme (`workflow//./{path}//{fn}`) and
+  // reaches for `98_duplicate_case.ts`, which exists to prove the compiler
+  // dedupes two files declaring the same function name. Neither travels: Python
+  // IDs are `workflow//{module}//{qualname}` and there is no compiler.
+  testJsOnly.each([
     {
       workflowFile: 'workflows/99_e2e.ts',
       workflowFn: 'addTenWorkflow',
@@ -782,16 +935,23 @@ describe('e2e', () => {
     }
   );
 
-  test('webhook route with invalid token', { timeout: 60_000 }, async () => {
-    const res = await fetch(workflowWebhookUrl('invalid'), {
-      method: 'POST',
-      headers: await getTrustedSourcesHeaders(),
-      body: JSON.stringify({}),
-    });
-    expect(res.status).toBe(404);
-    const body = await res.text();
-    expect(body).toBe('');
-  });
+  // JS-only for now: the webhook route is part of the app's HTTP surface, and an
+  // app that serves no webhook route at all would pass this by accident. Move it
+  // out of js-only once another language serves the route.
+  testJsOnly(
+    'webhook route with invalid token',
+    { timeout: 60_000 },
+    async () => {
+      const res = await fetch(workflowWebhookUrl('invalid'), {
+        method: 'POST',
+        headers: await getTrustedSourcesHeaders(),
+        body: JSON.stringify({}),
+      });
+      expect(res.status).toBe(404);
+      const body = await res.text();
+      expect(body).toBe('');
+    }
+  );
 
   test('sleepingWorkflow', { timeout: 60_000 }, async () => {
     const run = await start(await e2e('sleepingWorkflow'), []);
@@ -1227,7 +1387,7 @@ describe('e2e', () => {
   // ==================== ERROR HANDLING TESTS ====================
   describe('error handling', () => {
     describe('error propagation', () => {
-      describe('workflow errors', () => {
+      describeJsOnly('workflow errors', () => {
         test(
           'nested function calls preserve message and stack trace',
           { timeout: 60_000 },
@@ -1293,7 +1453,7 @@ describe('e2e', () => {
         );
       });
 
-      describe('step errors', () => {
+      describeJsOnly('step errors', () => {
         test(
           'basic step error preserves message and stack trace',
           { timeout: 60_000 },
@@ -1308,12 +1468,16 @@ describe('e2e', () => {
             expect(result.stack).toContain('errorStepFn');
             expect(result.stack).not.toContain('evalmachine');
 
-            // Source maps are not supported everywhere. Check the definition
-            // of hasStepSourceMaps() to see where they are supported
+            // Source maps are not supported everywhere — see
+            // hasStepSourceMaps() for the matrix. Only the positive direction
+            // is asserted: where maps are unsupported they still apply
+            // nondeterministically on some lanes (nuxt, nextjs-webpack), so
+            // asserting their absence pinned that nondeterminism as a flake.
+            // A stack resolving to source where none was promised is an
+            // improvement, not a failure — hasStepSourceMaps() is the record
+            // to update when a lane starts mapping reliably.
             if (hasStepSourceMaps()) {
               expect(result.stack).toContain('99_e2e.ts');
-            } else {
-              expect(result.stack).not.toContain('99_e2e.ts');
             }
 
             // Verify step failed via CLI (--withData needed to resolve errorRef)
@@ -1336,12 +1500,10 @@ describe('e2e', () => {
             expect(errorData.stack).toContain('errorStepFn');
             expect(errorData.stack).not.toContain('evalmachine');
 
-            // Source maps are not supported everywhere. Check the definition
-            // of hasStepSourceMaps() to see where they are supported
+            // Positive direction only — see the note on the first source-map
+            // assertion above.
             if (hasStepSourceMaps()) {
               expect(errorData.stack).toContain('99_e2e.ts');
-            } else {
-              expect(errorData.stack).not.toContain('99_e2e.ts');
             }
 
             // Workflow completed (error was caught)
@@ -1370,12 +1532,10 @@ describe('e2e', () => {
             expect(result.stack).toContain('stepThatThrowsFromHelper');
             expect(result.stack).not.toContain('evalmachine');
 
-            // Source maps are not supported everywhere. Check the definition
-            // of hasStepSourceMaps() to see where they are supported
+            // Positive direction only — see the note on the first source-map
+            // assertion above.
             if (hasStepSourceMaps()) {
               expect(result.stack).toContain('helpers.ts');
-            } else {
-              expect(result.stack).not.toContain('helpers.ts');
             }
 
             // Verify step failed via CLI - same stack info available there too (--withData needed to resolve errorRef)
@@ -1394,12 +1554,10 @@ describe('e2e', () => {
             }
             expect(errorData.stack).toContain('stepThatThrowsFromHelper');
             expect(errorData.stack).not.toContain('evalmachine');
-            // Source maps are not supported everywhere. Check the definition
-            // of hasStepSourceMaps() to see where they are supported
+            // Positive direction only — see the note on the first source-map
+            // assertion above.
             if (hasStepSourceMaps()) {
               expect(errorData.stack).toContain('helpers.ts');
-            } else {
-              expect(errorData.stack).not.toContain('helpers.ts');
             }
 
             // Workflow completed (error was caught)
@@ -1594,7 +1752,7 @@ describe('e2e', () => {
         }
       );
 
-      test(
+      testJsOnly(
         'workflow throw of a non-Error value round-trips verbatim as cause',
         { timeout: 60_000 },
         async () => {
@@ -1622,7 +1780,7 @@ describe('e2e', () => {
         }
       );
 
-      test(
+      testJsOnly(
         'step throw of a non-Error value preserves it as cause on the wrapping FatalError',
         { timeout: 60_000 },
         async () => {
@@ -1659,8 +1817,124 @@ describe('e2e', () => {
       );
     });
 
-    describe('not registered', () => {
+    describe('serialization failures', () => {
       test(
+        'step-argument serialization failure is catchable in workflow code',
+        { timeout: 60_000 },
+        async () => {
+          // Passing an unserializable value (a class instance with no serde
+          // model) to a step must fail THAT STEP — step_created +
+          // step_failed — not the whole run, so a try/catch around the step
+          // call observes the SerializationError.
+          const run = await start(
+            await e2e('serializationErrorStepArgsCaught'),
+            []
+          );
+          const result = await run.returnValue;
+
+          expect(result.caught).toBe(true);
+          expect(result.name).toBe('SerializationError');
+          expect(result.messageIncludesStepArguments).toBe(true);
+
+          // The workflow completed (the error was caught) …
+          const { json: runData } = await cliInspectJson(`runs ${run.runId}`);
+          expect(runData.status).toBe('completed');
+
+          // … and the step itself is recorded as failed.
+          const steps = await cliInspectJsonUntil(
+            `steps --runId ${run.runId}`,
+            (json) =>
+              json.some(
+                (s: any) =>
+                  s.stepName.includes('acceptAnyValue') && s.status === 'failed'
+              )
+          );
+          const step = steps.find((s: any) =>
+            s.stepName.includes('acceptAnyValue')
+          );
+          expect(step.status).toBe('failed');
+        }
+      );
+
+      test(
+        'uncaught step-argument serialization failure fails the run as USER_ERROR without redelivery retries',
+        { timeout: 60_000 },
+        async () => {
+          // Regression coverage for the production failure mode where a
+          // step-argument serialization error caused the run to redeliver
+          // until "exceeded max deliveries (49/48)". The run must fail
+          // promptly (well within this test's timeout — 48 redeliveries
+          // with backoff would take many minutes) and classify as
+          // USER_ERROR, not MAX_DELIVERIES_EXCEEDED.
+          const run = await start(
+            await e2e('serializationErrorStepArgsUncaught'),
+            []
+          );
+          const error = await run.returnValue.catch((e: unknown) => e);
+
+          expect(WorkflowRunFailedError.is(error)).toBe(true);
+          assert(WorkflowRunFailedError.is(error));
+          expect(error.errorCode).toBe('USER_ERROR');
+          expect(String(error.message)).toContain(
+            'Failed to serialize step arguments'
+          );
+
+          const { json: runData } = await cliInspectJson(`runs ${run.runId}`);
+          expect(runData.status).toBe('failed');
+          expect(runData.errorCode).toBe('USER_ERROR');
+        }
+      );
+
+      test(
+        'step-return-value serialization failure is catchable in workflow code',
+        { timeout: 60_000 },
+        async () => {
+          // The step executor treats a return-value SerializationError as
+          // fatal (skipping the retry loop) and writes step_failed, so the
+          // workflow's try/catch observes it.
+          const run = await start(
+            await e2e('serializationErrorStepReturnCaught'),
+            []
+          );
+          const result = await run.returnValue;
+
+          expect(result.caught).toBe(true);
+          expect(result.name).toBe('SerializationError');
+          expect(result.messageIncludesReturnValue).toBe(true);
+
+          const { json: runData } = await cliInspectJson(`runs ${run.runId}`);
+          expect(runData.status).toBe('completed');
+        }
+      );
+
+      test(
+        'uncaught step-return-value serialization failure fails the run as USER_ERROR',
+        { timeout: 60_000 },
+        async () => {
+          const run = await start(
+            await e2e('serializationErrorStepReturnUncaught'),
+            []
+          );
+          const error = await run.returnValue.catch((e: unknown) => e);
+
+          expect(WorkflowRunFailedError.is(error)).toBe(true);
+          assert(WorkflowRunFailedError.is(error));
+          expect(error.errorCode).toBe('USER_ERROR');
+          expect(String(error.message)).toContain(
+            'Failed to serialize step return value'
+          );
+
+          const { json: runData } = await cliInspectJson(`runs ${run.runId}`);
+          expect(runData.status).toBe('failed');
+          expect(runData.errorCode).toBe('USER_ERROR');
+        }
+      );
+    });
+
+    describe('not registered', () => {
+      // JS-only: the workflowId is hand-built in the JS scheme, so on another
+      // language it names nothing rather than naming something missing.
+      testJsOnly(
         'WorkflowNotRegisteredError fails the run when workflow does not exist',
         { timeout: 60_000 },
         async () => {
@@ -1734,7 +2008,9 @@ describe('e2e', () => {
   });
   // ==================== END ERROR HANDLING TESTS ====================
 
-  test(
+  // JS-only: `/api/test-direct-step-call` is a route each JS workbench app
+  // hand-writes, not part of the workflow protocol.
+  testJsOnly(
     'stepDirectCallWorkflow - calling step functions directly outside workflow context',
     { timeout: 60_000 },
     async () => {
@@ -2437,7 +2713,7 @@ describe('e2e', () => {
     }
   );
 
-  test(
+  testJsOnly(
     'stepFunctionPassingWorkflow - step function references can be passed as arguments (without closure vars)',
     { timeout: 60_000 },
     async () => {
@@ -2472,7 +2748,7 @@ describe('e2e', () => {
     }
   );
 
-  test(
+  testJsOnly(
     'stepFunctionWithClosureWorkflow - step function with closure variables passed as argument',
     { timeout: 60_000 },
     async () => {
@@ -2497,7 +2773,7 @@ describe('e2e', () => {
     }
   );
 
-  test(
+  testJsOnly(
     'closureVariableWorkflow - nested step functions with closure variables',
     { timeout: 60_000 },
     async () => {
@@ -2556,7 +2832,7 @@ describe('e2e', () => {
     }
   );
 
-  test(
+  testJsOnly(
     'runClassSerializationWorkflow - Run instances serialize across workflow/step boundaries',
     { timeout: 120_000 },
     async () => {
@@ -2621,11 +2897,15 @@ describe('e2e', () => {
     'fibonacciWorkflow - recursive workflow composition via start()',
     { timeout: 180_000 },
     async () => {
-      // fib(6) = 8, spawns a tree of child workflow runs
-      const run = await start(await e2e('fibonacciWorkflow'), [6]);
+      // fib(5) = 5, spawns a tree of 15 runs (~14 concurrent parent polls at
+      // peak). fib(6)'s 25-run tree proved enough to saturate the scheduler
+      // past this test's budget under a concurrent suite (#2083); depth 4
+      // still exercises recursive start() composition with parallel children
+      // at every level, which is the subject here — the tree size is not.
+      const run = await start(await e2e('fibonacciWorkflow'), [5]);
       trackRun(run);
       const returnValue = await run.returnValue;
-      expect(returnValue).toBe(8);
+      expect(returnValue).toBe(5);
     }
   );
 
@@ -2633,7 +2913,12 @@ describe('e2e', () => {
   // For production use on Vercel with Deployment Protection enabled, use the
   // queue-based `healthCheck(world, options)` function instead, which
   // bypasses protection by sending messages through the Queue infrastructure.
-  test.skipIf(!isLocalDeployment())(
+  // JS-only for now, though no longer for want of a second implementation:
+  // vercel-py answers both probes as of vercel-py#292. What it omits is
+  // `workflowCoreVersion`, asserted below, on the grounds that it names a
+  // JavaScript package's version. Moving all three health-check tests out of
+  // js-only together means settling what a non-JS SDK reports there.
+  testJsOnly.skipIf(!isLocalDeployment())(
     'health check endpoint (HTTP) - workflow endpoint responds to __health query parameter',
     { timeout: 30_000 },
     async () => {
@@ -2668,7 +2953,7 @@ describe('e2e', () => {
     }
   );
 
-  test(
+  testJsOnly(
     'health check (queue-based) - workflow endpoint responds to health check messages',
     { timeout: 60_000 },
     async () => {
@@ -2689,7 +2974,7 @@ describe('e2e', () => {
     }
   );
 
-  test(
+  testJsOnly(
     'health check (CLI) - workflow health command reports healthy endpoints',
     { timeout: 60_000 },
     async () => {
@@ -2709,7 +2994,7 @@ describe('e2e', () => {
     }
   );
 
-  test(
+  testJsOnly(
     'pathsAliasWorkflow - TypeScript path aliases resolve correctly',
     { timeout: 60_000 },
     async () => {
@@ -2733,7 +3018,7 @@ describe('e2e', () => {
   // ==================== STATIC METHOD STEP/WORKFLOW TESTS ====================
   // Tests for static methods on classes with "use step" and "use workflow" directives.
 
-  test(
+  testJsOnly(
     'Calculator.calculate - static workflow method using static step methods from another class',
     { timeout: 60_000 },
     async () => {
@@ -2755,7 +3040,7 @@ describe('e2e', () => {
     }
   );
 
-  test(
+  testJsOnly(
     'AllInOneService.processNumber - static workflow method using sibling static step methods',
     { timeout: 60_000 },
     async () => {
@@ -2778,7 +3063,7 @@ describe('e2e', () => {
     }
   );
 
-  test(
+  testJsOnly(
     'ChainableService.processWithThis - static step methods using `this` to reference the class',
     { timeout: 60_000 },
     async () => {
@@ -2812,7 +3097,7 @@ describe('e2e', () => {
     }
   );
 
-  test(
+  testJsOnly(
     'thisSerializationWorkflow - step function invoked with .call() and .apply()',
     { timeout: 60_000 },
     async () => {
@@ -2835,7 +3120,7 @@ describe('e2e', () => {
     }
   );
 
-  test(
+  testJsOnly(
     'customSerializationWorkflow - custom class serialization with WORKFLOW_SERIALIZE/WORKFLOW_DESERIALIZE',
     { timeout: 60_000 },
     async () => {
@@ -2872,7 +3157,7 @@ describe('e2e', () => {
     }
   );
 
-  test(
+  testJsOnly(
     'instanceMethodStepWorkflow - instance methods with "use step" directive',
     { timeout: 60_000 },
     async () => {
@@ -2985,7 +3270,7 @@ describe('e2e', () => {
     }
   );
 
-  test(
+  testJsOnly(
     'crossContextSerdeWorkflow - classes defined in step code are deserializable in workflow context',
     { timeout: 60_000 },
     async () => {
@@ -3038,7 +3323,7 @@ describe('e2e', () => {
     }
   );
 
-  test(
+  testJsOnly(
     'errorSubclassRoundTripWorkflow - first-class Error subclasses survive every serialization boundary',
     { timeout: 60_000 },
     async () => {
@@ -3153,7 +3438,7 @@ describe('e2e', () => {
     }
   );
 
-  test(
+  testJsOnly(
     'stepFunctionAsStartArgWorkflow - step function reference passed as start() argument',
     { timeout: 120_000 },
     async () => {
@@ -3521,7 +3806,7 @@ describe('e2e', () => {
   // AbortController / AbortSignal
   // ==========================================================================
 
-  describe('AbortController', () => {
+  describeJsOnly('AbortController', () => {
     test(
       'abortTimeoutWorkflow: timeout cancels long-running step',
       { timeout: 60_000 },
@@ -3839,7 +4124,7 @@ describe('e2e', () => {
 
         // Include the full returnValue (status + elapsedMs from the step) in
         // the assertion message so a flaky failure surfaces *why* fetch won
-        // the race — e.g. httpbin returning a 5xx in <1s — instead of just
+        // the race — e.g. the loopback fetch erroring in <1s — instead of just
         // "expected 'fetch' to be 'timeout'".
         const summary = JSON.stringify(returnValue);
         expect(returnValue.winner, summary).toBe('timeout');
@@ -4033,7 +4318,7 @@ describe('e2e', () => {
     }
   });
 
-  test(
+  testJsOnly(
     'importMetaUrlWorkflow - import.meta.url is available in step bundles',
     { timeout: 60_000 },
     async () => {
@@ -4096,9 +4381,15 @@ describe('e2e', () => {
         },
       };
 
-      const run = await start(await e2e('addTenWorkflow'), [123], {
-        world: stubbedWorld,
-      });
+      // Bypass the pickup watchdog (startTracked): this run deliberately
+      // has no run_created event, so no run row exists to poll until the
+      // queue delivers — the watchdog would misread that as a pickup stall
+      // and its replacement start would bump createCallCount.
+      const run = trackRun(
+        await rawStart(await e2e('addTenWorkflow'), [123], {
+          world: stubbedWorld,
+        })
+      );
 
       // Verify the stub intercepted the run_created call (only call
       // through the stubbed world — the server-side runtime uses its
@@ -4114,7 +4405,7 @@ describe('e2e', () => {
     }
   );
 
-  test(
+  testJsOnly(
     'getterStepWorkflow - getter functions with "use step" directive',
     { timeout: 60_000 },
     async () => {
@@ -4190,7 +4481,11 @@ describe('e2e', () => {
 
   test(
     'distributedAbortController - TTL expiration triggers signal',
-    { timeout: 30_000 },
+    // Same budget as the sibling distributedAbortController tests: the 3s
+    // TTL is trivial, but cold starts plus queue backlog on a fresh prod
+    // deployment routinely pushed run start + stream delivery past the
+    // tighter 30s this test used to get.
+    { timeout: 60_000 },
     async () => {
       const controllerId = `test-expire-${Math.random().toString(36).slice(2)}`;
 

@@ -10,18 +10,39 @@ on:
         required: false
         type: string
       model:
-        description: 'AI model used for AI-assisted decisions and conflict resolution. Format: `<provider>/<model>` (the `vercel/` prefix is added automatically). Leave blank to use the workflow default.'
+        description: 'AI model used for AI-assisted decisions and conflict resolution, as a `<provider>/<model>` id the Vercel AI Gateway serves (e.g. `anthropic/claude-opus-5` — see https://ai-gateway.vercel.sh/v1/models). The `vercel/` prefix is added automatically, so do not include it. Leave blank to use the workflow default.'
         required: false
         type: string
 
-concurrency: backport-stable
+# One backport at a time per target commit, rather than one across the whole
+# repository. A single global group loses runs: GitHub keeps only one *pending*
+# run per group, so any new run silently cancels a queued one. Observed
+# 2026-08-18: a manual `workflow_dispatch` backport was cancelled by a push to
+# `main`, and a push run for 7027301 was cancelled by the next push, so that
+# commit got no backport evaluation at all. Neither leaves a signal anywhere.
+#
+# Keying on the target commit is safe because runs never push to `stable`
+# itself — each one cherry-picks locally and pushes its own
+# `backport/pr-<n>-to-stable` branch — so two runs for different commits cannot
+# interfere.
+#
+# `github.sha` (not `github.event.after`) is the fallback so a dispatch with a
+# blank `ref` lands in the same group as the push run for that commit: on
+# `workflow_dispatch` it is the HEAD of `main`, which is exactly what the
+# `Resolve commit SHA` step defaults to, and on `push` it is the pushed head
+# commit. Residual gap: a dispatch whose `ref` input is a short SHA or a branch
+# name keys off that literal string, so it can still run alongside the push run
+# for the same commit; pass a full SHA (what the no-backport comment gives you)
+# to stay in the same group.
+concurrency: backport-stable-${{ inputs.ref || github.sha }}
 
 # AI model used by every opencode invocation in this workflow. The
 # `vercel/` provider prefix is added at each use site, so this should
 # be specified as `<provider>/<model>` (e.g. `anthropic/claude-opus-5`).
 # The model slug must match an id the Vercel AI Gateway exposes (see
-# https://ai-gateway.vercel.sh/v1/models), or opencode fails with a
-# `ProviderModelNotFoundError`.
+# https://ai-gateway.vercel.sh/v1/models); the `Validate AI model` step
+# below checks that up front so a bad slug fails fast with a readable
+# error instead of an opaque gateway failure mid-run.
 # Manual `workflow_dispatch` runs may override this via the `model` input.
 env:
   AI_MODEL: ${{ inputs.model || 'anthropic/claude-opus-5' }}
@@ -39,6 +60,90 @@ jobs:
       pull-requests: write
       issues: write
     steps:
+      - name: Validate AI model
+        # Deliberately inline rather than a `.github/scripts/*.js` helper with
+        # unit tests (this repo's usual home for CI logic): `Checkout Repo`
+        # below checks out the *commit being backported*, which for a manual
+        # dispatch of an older SHA can predate any script we add here. Logic
+        # in the workflow file always comes from the workflow ref, so it works
+        # no matter which commit is being backported. Keep it that way.
+        env:
+          # Empty on `push`; non-empty only when a manual run overrode the
+          # model, which lets us word the error for whoever can fix it.
+          MODEL_INPUT: ${{ inputs.model }}
+        run: |
+          set -euo pipefail
+
+          # Every opencode call site runs `--model vercel/${AI_MODEL}`, so
+          # `AI_MODEL` has to be a `<provider>/<model>` id the Vercel AI
+          # Gateway actually serves. When it isn't, the gateway's
+          # `model_not_found` reaches us as an opaque opencode
+          # `UnknownError: Unexpected server error` that never mentions the
+          # model, so we check the slug here instead.
+          #
+          # This matters most for manual `workflow_dispatch` runs: those force
+          # a backport and therefore skip `Decide whether to backport`, the
+          # step that exercises the model cheaply on every push. Without this
+          # check a typo in the `model` input stays latent until conflict
+          # resolution, i.e. after the cherry-pick, and only on the commits
+          # that happen to conflict.
+          MODELS_URL="https://ai-gateway.vercel.sh/v1/models"
+
+          # A pasted value can carry surrounding whitespace, which opencode
+          # would reject. Normalize it for every later step via $GITHUB_ENV
+          # (model ids never contain whitespace, so stripping all of it is
+          # safe).
+          MODEL=$(printf '%s' "$AI_MODEL" | tr -d '[:space:]')
+          if [ -z "$MODEL" ]; then
+            echo "::error::The \`model\` input is blank apart from whitespace. Leave it empty to use the workflow default."
+            exit 1
+          fi
+          if [ "$MODEL" != "$AI_MODEL" ]; then
+            echo "Trimmed whitespace from the AI model: '${AI_MODEL}' -> '${MODEL}'"
+            echo "AI_MODEL=${MODEL}" >> "$GITHUB_ENV"
+          fi
+
+          # Fail open on infra trouble: an unreachable or unparseable model
+          # list must not take down every backport run. We only want to reject
+          # slugs the gateway definitively does not serve.
+          if ! MODELS_JSON=$(curl -sfL --max-time 30 --retry 2 "$MODELS_URL"); then
+            echo "::warning::Could not fetch ${MODELS_URL}; skipping validation of AI model '${MODEL}'."
+            exit 0
+          fi
+          IDS=$(printf '%s' "$MODELS_JSON" | jq -r '.data[]?.id // empty' 2>/dev/null || true)
+          if [ -z "$IDS" ]; then
+            echo "::warning::${MODELS_URL} returned no usable model ids; skipping validation of AI model '${MODEL}'."
+            exit 0
+          fi
+
+          if printf '%s\n' "$IDS" | grep -Fxq -- "$MODEL"; then
+            echo "AI model '${MODEL}' is served by the Vercel AI Gateway."
+            exit 0
+          fi
+
+          # The common mistake is the right model under the wrong provider
+          # prefix (e.g. `claude/claude-opus-5` for
+          # `anthropic/claude-opus-5`), so suggest every id whose model name
+          # matches.
+          MODEL_NAME=${MODEL##*/}
+          SUGGESTIONS=$(printf '%s\n' "$IDS" | while IFS= read -r id; do
+            if [ "${id##*/}" = "$MODEL_NAME" ]; then printf '%s\n' "$id"; fi
+          done)
+          if [ -n "$SUGGESTIONS" ]; then
+            echo "Gateway model ids offering the same model name:"
+            printf '%s\n' "$SUGGESTIONS" | sed 's/^/  /'
+            HINT="Did you mean '$(printf '%s\n' "$SUGGESTIONS" | head -n 1)'?"
+          else
+            HINT="See ${MODELS_URL} for the ids the gateway serves."
+          fi
+
+          if [ -n "$MODEL_INPUT" ]; then
+            echo "::error::The \`model\` input '${MODEL}' is not a model id the Vercel AI Gateway serves. ${HINT} Pass a bare \`<provider>/<model>\` id; the \`vercel/\` prefix is added automatically."
+          else
+            echo "::error::The workflow's default AI model '${MODEL}' is not a model id the Vercel AI Gateway serves. ${HINT} Fix the \`AI_MODEL\` default in .github/workflows/backport.yml."
+          fi
+          exit 1
+
       - name: Resolve commit SHA
         id: resolve
         env:

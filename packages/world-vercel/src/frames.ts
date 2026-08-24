@@ -41,7 +41,7 @@ export function encodeFrame(
 /**
  * Async-iterable parser for a frame stream. Yields one `DecodedFrame`
  * per frame in source order, terminating at the sentinel frame whose
- * meta contains `_end: 1`. The sentinel frame itself IS yielded — the
+ * meta contains `_end: 1`. The sentinel frame itself IS yielded: the
  * caller inspects `meta._end` to detect end-of-stream and reads
  * `meta.next` for the pagination cursor.
  *
@@ -66,14 +66,23 @@ export async function* decodeFrames(
   let buffer = new Uint8Array(0);
 
   const refill = async (needed: number): Promise<boolean> => {
-    while (buffer.byteLength < needed) {
-      const { done, value } = await chunks.next();
-      if (done) return false;
-      if (!value || value.byteLength === 0) continue;
-      const next = new Uint8Array(buffer.byteLength + value.byteLength);
-      next.set(buffer, 0);
-      next.set(value, buffer.byteLength);
-      buffer = next;
+    if (buffer.byteLength >= needed) return true;
+
+    const parts: Uint8Array[] = [buffer];
+    let byteLength = buffer.byteLength;
+    while (byteLength < needed) {
+      const chunk = await chunks.next();
+      if (chunk.done) return false;
+      if (chunk.value.byteLength === 0) continue;
+      parts.push(chunk.value);
+      byteLength += chunk.value.byteLength;
+    }
+
+    buffer = new Uint8Array(byteLength);
+    let offset = 0;
+    for (const part of parts) {
+      buffer.set(part, offset);
+      offset += part.byteLength;
     }
     return true;
   };
@@ -112,7 +121,7 @@ export async function* decodeFrames(
       if (bodyLen > 0 && !(await refill(bodyLen))) {
         throw new Error('decodeFrames: truncated body bytes');
       }
-      // Slice (not subarray) so the yielded body owns its bytes — later
+      // Slice (not subarray) so the yielded body owns its bytes, so later
       // reads into the buffer won't overwrite it; bodyLen 0 yields empty.
       yield { meta, body: buffer.slice(0, bodyLen) };
       take(bodyLen);
@@ -128,7 +137,7 @@ export async function* decodeFrames(
     // can hit the network (an H2 stream reset, or an H1 socket teardown),
     // and awaiting it here would block every early-exit caller (getEventV4,
     // every replay's list read) on that round-trip. Awaiting it previously
-    // hung indefinitely on the Next.js Vercel Function lanes specifically —
+    // hung indefinitely on the Next.js Vercel Function lanes specifically,
     // same class of bug as the abort-stream reader in #2807.
     closeQuietly(() => chunks.return?.());
   }
@@ -157,7 +166,7 @@ async function* readerToIterator(
     }
   } finally {
     // Cancel on early exit so the socket is released, not just unlocked.
-    // Fire-and-forget — see closeQuietly's call site above.
+    // Fire-and-forget; see closeQuietly's call site above.
     closeQuietly(() => reader.cancel());
   }
 }

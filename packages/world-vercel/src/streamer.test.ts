@@ -1,6 +1,18 @@
 import { StreamExpiredError } from '@workflow/errors';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { NODE_HTTP_ENV_VAR } from '@workflow/world';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { encodeMultiChunks, MAX_CHUNKS_PER_REQUEST } from './streamer.js';
+
+// Every request-issuing test in this file observes the streamer through a
+// stubbed `fetch`. The node:http path does not call `fetch`, so the flag is
+// pinned off for all of them.
+beforeEach(() => {
+  vi.stubEnv(NODE_HTTP_ENV_VAR, '0');
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
 
 describe('encodeMultiChunks', () => {
   /**

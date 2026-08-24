@@ -1,8 +1,8 @@
 ---
 title: Vercel World
-description: Fully-managed world for Vercel deployments with automatic storage, queuing, and authentication.
+description: Fully managed World for Vercel deployments with automatic storage, queuing, and authentication.
 type: integration
-summary: Deploy workflows to Vercel with fully-managed storage, queuing, and authentication.
+summary: Deploy workflows to Vercel with fully managed storage, queuing, and authentication.
 prerequisites:
   - /docs/deploying
 related:
@@ -11,9 +11,9 @@ related:
   - /worlds/postgres
 ---
 
-The Vercel World is a fully-managed workflow backend for applications deployed on Vercel. It provides scalable storage, distributed queuing, and automatic authentication with zero configuration.
+The Vercel World is a fully managed workflow backend for applications deployed on Vercel. It provides scalable storage, distributed queuing, and automatic authentication without configuration.
 
-When you deploy to Vercel, workflows automatically use the Vercel World - no setup required.
+When you deploy to Vercel, workflows automatically use the Vercel World without requiring setup.
 
 ## Usage
 
@@ -23,7 +23,7 @@ Deploy your application to Vercel:
 vercel deploy
 ```
 
-That's it. Vercel automatically:
+Vercel automatically:
 
 - Selects the Vercel World backend
 - Configures authentication using OIDC tokens
@@ -36,9 +36,9 @@ That's it. Vercel automatically:
 
 For complete details on pricing, usage limits, and included allotments on Vercel, see the official Vercel documentation:
 
-- **[Vercel Workflow](https://vercel.com/docs/workflows)** — Pricing details, concepts, and observability for Workflow on Vercel
-- **[Vercel limits](https://vercel.com/docs/limits)** — Platform-wide limits including Workflow-specific constraints
-- **[Vercel Hobby plan](https://vercel.com/docs/plans/hobby)** — Free tier included usage for Workflow and other resources
+- **[Vercel Workflow](https://vercel.com/docs/workflows)**: Pricing details, concepts, and observability for Workflow on Vercel
+- **[Vercel limits](https://vercel.com/docs/limits)**: Platform-wide limits, including Workflow-specific constraints
+- **[Vercel Hobby plan](https://vercel.com/docs/plans/hobby)**: Free-tier included usage for Workflow and other resources
 
 For self-hosted deployments, use the [Postgres World](/worlds/postgres). For local development, use the [Local World](/worlds/local).
 
@@ -46,16 +46,16 @@ For self-hosted deployments, use the [Postgres World](/worlds/postgres). For loc
 
 <Callout type="info">
   **Multi-region support is available starting with `workflow` version
-  5.0.0-beta.33.** On 5.x, workflow runs are pinned to the region that creates them —
+  5.0.0.** On 5.x, workflow runs are pinned to the region that creates them, and
   storage, queuing, and streams are served region-locally instead of routing
   through `iad1`. See [Multi-region on the v5 version of this
   page](/v5/worlds/vercel#multi-region). The limitations
   below apply to the 4.x release line, which will not support multi-region.
 </Callout>
 
-- **Single-region deployment** - On the 4.x release line, the backend infrastructure is used only in `iad1`. Applications in other regions will route workflow requests to `iad1`, which may result in higher latency. For best performance, deploy your Vercel apps using Workflow to `iad1` — or upgrade to `workflow` 5.0.0-beta.33+ for multi-region support.
+- **Single-region deployment**: On the 4.x release line, the backend infrastructure is used only in `iad1`. Applications in other regions route workflow requests to `iad1`, which may result in higher latency. For best performance, deploy Vercel apps using Workflow to `iad1`, or upgrade to `workflow` 5.0.0 or later for multi-region support.
 
-- **Data residency** - On the 4.x release line, independently of the deployment location of your application, the data for your workflows will be stored in the `iad1` region.
+- **Data residency**: On the 4.x release line, workflow data is stored in the `iad1` region regardless of your application's deployment location.
 
 ## Observability
 
@@ -92,7 +92,7 @@ npx workflow inspect runs \
 
 Learn more in the [Observability](/docs/observability) documentation.
 
-## Testing & Compatibility
+## Testing & compatibility
 
 <WorldTestingPerformance worldId="vercel" />
 
@@ -188,15 +188,15 @@ Practically, this means:
 - Handlers receive only a message ID that must be retrieved from Vercel's backend, making it impossible to craft custom payloads
 
 <Callout>
-  This configuration is managed entirely by the Workflow SDK build step. You should not need to write this yourself. If you are writing a custom integration, see [Framework Integrations — Security](/docs/how-it-works/framework-integrations#security) for more details.
+  The Workflow SDK build step manages this configuration. If you are writing a custom integration, see [Framework integrations: Security](/docs/how-it-works/framework-integrations#security) for more details.
 </Callout>
 
-## How It Works
+## How it works
 
 The Vercel World uses Vercel's infrastructure for workflow execution:
 
-- **Storage** - Workflow data is stored in Vercel's cloud with automatic replication and [end-to-end encryption](/docs/how-it-works/encryption)
-- **Queuing** - Steps are distributed across serverless functions via [Vercel Queues](https://vercel.com/docs/queues) with automatic retries and [consumer function security](#consumer-function-security)
-- **Authentication** - OIDC tokens provide secure, automatic authentication
+- **Storage**: Workflow data is stored in Vercel's cloud with automatic replication and [end-to-end encryption](/docs/how-it-works/encryption)
+- **Queuing**: Steps are distributed across Vercel Functions through [Vercel Queues](https://vercel.com/docs/queues) with automatic retries and [consumer function security](#consumer-function-security)
+- **Authentication**: OIDC tokens provide secure, automatic authentication
 
 For more details, see the [Vercel Workflow documentation](https://vercel.com/docs/workflows).

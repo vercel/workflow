@@ -14,16 +14,15 @@ related:
 
 This page covers the details for some common patterns when defining tools for AI agents using Workflow SDK.
 
-Using WorkflowAgent, we model most tools as steps. These can be anything from a simple function call to a entire multi-day long workflow.
+Using WorkflowAgent, we model most tools as steps. These can range from a single function call to an entire multi-day workflow.
 
 ## Accessing message context in tools
 
-Just like in regular AI SDK tool definitions, tool in WorkflowAgent are called with a first argument of the tool's input parameters, and a second argument of the tool call context.
+As with regular AI SDK tool definitions, tools in WorkflowAgent receive the tool's input parameters as the first argument and the tool call context as the second.
 
 When you tool needs access to the full message history, you can access it via the `messages` property of the tool call context:
 
 ```typescript title="tools.ts" lineNumbers
-import { Experimental_Agent as Agent } from "ai";
 import type { ModelMessage } from "ai";
 
 async function getWeather(
@@ -34,9 +33,9 @@ async function getWeather(
 }
 ```
 
-## Writing to Streams
+## Writing to streams
 
-As discussed in [Streaming Updates from Tools](/docs/ai/streaming-updates-from-tools), it's common to use a step just to call `getWritable()` for writing custom data parts to the stream.
+As discussed in [Streaming Updates from Tools](/docs/ai/streaming-updates-from-tools), it's common to use a step only to call `getWritable()` for writing custom data parts to the stream.
 
 This can be made generic, by creating a helper step function to write arbitrary data to the stream:
 
@@ -53,7 +52,7 @@ async function writeToStream(data: any) {
 }
 ```
 
-## Step-Level vs Workflow-Level Tools
+## Step-level vs workflow-level tools
 
 Tools can be implemented either at the step level or the workflow level, with different capabilities and constraints.
 

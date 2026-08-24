@@ -18,7 +18,7 @@ import {
  *
  * - `user`: the error came from customer code (a step or workflow function
  *   threw, or a value they passed across a boundary wasn't serializable).
- * - `sdk`: the SDK produced the error itself — an internal invariant broke,
+ * - `sdk`: the SDK produced the error itself: an internal invariant broke,
  *   or a runtime guard rejected the call. These should be rare; when they
  *   happen we want to frame the terminal output as "this is us, not you."
  */
@@ -42,7 +42,7 @@ export interface ErrorDescription {
  *
  * - `errorCode` is typed as `string` rather than `RunErrorCode` because
  *   the value comes from stored JSON/CBOR and may predate the current
- *   enum — callers should not narrow on it blindly. Values that don't
+ *   enum, so callers should not narrow on it blindly. Values that don't
  *   match a known `RUN_ERROR_CODES` entry fall through to USER_ERROR.
  * - `errorName` is the thrown `Error#name`. It is not universally
  *   persisted today; callers that have access to it (either via an
@@ -91,7 +91,7 @@ const DEPLOYMENT_MISMATCH_HINT =
   "The run was delivered to a deployment other than the deployment it is pinned to, and was stopped to protect against code-skew errors after the runtime failed to re-route it there. Verify that the run's deployment is still available and that queue callbacks route to it.";
 
 function normalizeErrorCode(code: string | undefined): RunErrorCode {
-  // Values read back from persisted events are `string | undefined` — we
+  // Values read back from persisted events are `string | undefined`, so we
   // only trust codes that match a known entry in `RUN_ERROR_CODES`.
   const known = Object.values(RUN_ERROR_CODES) as readonly string[];
   if (code && known.includes(code)) {
@@ -102,9 +102,9 @@ function normalizeErrorCode(code: string | undefined): RunErrorCode {
 
 /**
  * Data-driven variant of {@link describeError} that works from persisted
- * event fields instead of a live `Error` instance. Intended for CLI/web
- * renderers that read failure events and no longer have the original
- * thrown object.
+ * event fields instead of a live `Error` instance. Intended for command-line
+ * interface (CLI) and web renderers that read failure events and no longer
+ * have the original thrown object.
  */
 export function describeRunError(
   signal: PersistedErrorSignal
@@ -164,7 +164,7 @@ export function describeRunError(
 }
 
 /**
- * Describe an error for user-facing presentation. Purely informational —
+ * Describe an error for user-facing presentation. Purely informational: it
  * does not change any persisted event data or error classification used by
  * the runtime.
  *
@@ -176,7 +176,7 @@ export function describeRunError(
  * - Context-violation errors (`NotInWorkflowContextError`, etc.) likewise
  *   describe a user mistake.
  * - `WorkflowRuntimeError` (and subclasses like `StepNotRegisteredError`)
- *   indicates an internal SDK invariant broke — surface that as `sdk`.
+ *   indicates an internal SDK invariant broke, so surface that as `sdk`.
  *
  * @param err The error value thrown by the workflow / step.
  * @param errorCode Optional precomputed error code. Callers that already
@@ -214,7 +214,7 @@ export function describeError(
     };
   }
 
-  // Check DEPLOYMENT_MISMATCH before the generic WorkflowRuntimeError branch —
+  // Check DEPLOYMENT_MISMATCH before the generic WorkflowRuntimeError branch:
   // WorkflowDeploymentMismatchError subclasses it, but has its own code + hint.
   if (effectiveCode === RUN_ERROR_CODES.DEPLOYMENT_MISMATCH) {
     return {

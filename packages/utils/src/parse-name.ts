@@ -23,7 +23,7 @@ function parseName(
   }
 
   const functionName = functionNameParts.join('//');
-  // For nested functions like "processOrder/innerStep", get just "innerStep"
+  // For nested functions like "processOrder/innerStep", get "innerStep"
   let shortName = functionName.split('/').at(-1) ?? '';
 
   // Extract a reasonable name for default exports
@@ -110,7 +110,7 @@ export function formatWorkflowName(name: string): string {
  * Best-effort short display name for spans and UI labels. Accepts either the
  * raw machine name (`workflow//./src/jobs/order//processOrder`) or the
  * queue-sanitized form (`workflow----src-jobs-order--processOrder`, where
- * every non-alphanumeric character was replaced with `-`) and returns just
+ * every non-alphanumeric character was replaced with `-`) and returns only
  * the function name (`processOrder`). Falls back to the input unchanged when
  * neither form is recognized.
  */
@@ -122,7 +122,7 @@ export function workflowDisplayName(name: string): string {
   );
 }
 
-/** See {@link workflowDisplayName} — the step-name equivalent. */
+/** See {@link workflowDisplayName}; this is the step-name equivalent. */
 export function stepDisplayName(name: string): string {
   return (
     parseStepName(name)?.shortName ??
@@ -137,7 +137,7 @@ function shortNameFromSanitized(tag: string, name: string): string | null {
   // nested-function `/` became `-`. Function names are mostly dash-free, so
   // the innermost name is the last dash-free segment. This is best-effort:
   // `$` is a valid JS identifier character but is also sanitized to `-`, so
-  // a name like `process$Order` displays as `Order` — accepted limitation.
+  // a name like `process$Order` displays as `Order` (accepted limitation).
   const segments = name.split('--').filter(Boolean);
   const functionPart = segments.at(-1);
   let shortName = functionPart?.split('-').filter(Boolean).at(-1) ?? '';

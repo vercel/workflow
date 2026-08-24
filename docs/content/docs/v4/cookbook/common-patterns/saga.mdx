@@ -20,8 +20,8 @@ Use the saga pattern when a business transaction spans multiple services and you
 ## How it works
 
 1. Each forward step does work and registers a compensation function.
-2. If any step throws `FatalError`, the catch block runs compensations in reverse (LIFO) order to restore consistency.
-3. Regular errors are retried automatically (up to 3x by default). Use `FatalError` only for permanent failures where retrying won't help.
+2. If any step throws `FatalError`, the catch block runs compensations in reverse, or last in, first out (LIFO), order to restore consistency.
+3. Regular errors are retried automatically, up to three times by default. Use `FatalError` only for permanent failures where retrying won't help.
 
 ## Pattern
 
@@ -53,7 +53,7 @@ export async function subscriptionUpgradeSaga(accountId: string, seats: number) 
     const entitlementId = await provisionSeats(accountId, seats);
     compensations.push(() => deprovisionSeats(accountId, entitlementId)); // [!code highlight]
 
-    // No compensation — notifications are fire-and-forget
+    // No compensation: notifications are fire-and-forget
     await sendConfirmation(accountId, invoiceId, entitlementId);
 
     return { status: "completed" };
@@ -70,7 +70,7 @@ export async function subscriptionUpgradeSaga(accountId: string, seats: number) 
 
 ### Step functions
 
-Each step is a `"use step"` function with full Node.js access (fetch, fs, npm packages). Forward steps do the work and throw `FatalError` on permanent failure; compensation steps undo it and must be idempotent — safe to call multiple times if the workflow restarts mid-rollback.
+Each step is a `"use step"` function with full Node.js access (fetch, fs, npm packages). Forward steps do the work and throw `FatalError` on permanent failure; compensation steps undo it and must be idempotent: safe to call multiple times if the workflow restarts mid-rollback.
 
 ```typescript
 import { FatalError } from "workflow";
@@ -122,7 +122,7 @@ async function sendConfirmation(
   });
 }
 
-// Compensation steps — must be idempotent
+// Compensation steps: must be idempotent
 
 async function releaseSeats(accountId: string, reservationId: string): Promise<void> {
   "use step";
@@ -151,7 +151,7 @@ async function deprovisionSeats(accountId: string, entitlementId: string): Promi
 
 ### Streaming step progress (optional)
 
-Use `getWritable()` to stream progress events to a UI so users can see each step execute in real time.
+Use `getWritable()` to stream progress events to a user interface (UI) so users can see each step execute in real time.
 
 ```typescript
 import { FatalError } from "workflow";
@@ -204,7 +204,7 @@ export async function subscriptionUpgradeSaga(accountId: string, seats: number) 
     compensations.push({ name: "Deprovision Seats", execute: () => deprovisionSeats(accountId, entitlementId) });
     await emit({ type: "step_done", step: "Provision Seats", detail: entitlementId });
 
-    // No compensation — notifications are fire-and-forget
+    // No compensation: notifications are fire-and-forget
     await emit({ type: "step_start", step: "Send Confirmation" });
     await sendConfirmation(accountId, invoiceId, entitlementId);
     await emit({ type: "step_done", step: "Send Confirmation", detail: "sent" });
@@ -231,21 +231,21 @@ export async function subscriptionUpgradeSaga(accountId: string, seats: number) 
 ## Adapting to your use case
 
 - Replace the step functions with real API calls. Each `"use step"` function has full Node.js access.
-- Add or remove steps as needed — the pattern scales to any number of steps.
-- Make compensations idempotent — they may be retried if the workflow restarts mid-rollback.
-- The `emit()` calls and `SagaEvent` type are optional — remove them if you don't need real-time UI progress.
+- Add or remove steps as needed; the pattern scales to any number of steps.
+- Make compensations idempotent, since they may be retried if the workflow restarts mid-rollback.
+- The `emit()` calls and `SagaEvent` type are optional; remove them if you don't need real-time UI progress.
 
 ## Tips
 
-- **Use `FatalError` for permanent failures.** Regular errors trigger automatic retries (up to 3 by default). Throw `FatalError` when retrying won't help (e.g., insufficient funds, invalid input).
-- **Make compensations idempotent.** If a compensation step is retried, it should produce the same result. Check whether the resource was already released before releasing it again.
-- **Compensation steps are also `"use step"` functions.** This makes them durable — if the workflow restarts mid-rollback, it resumes where it left off.
-- **Capture values in closures carefully.** Use block-scoped variables or copy values before pushing compensations to avoid referencing stale state.
-- **Notifications don't need compensations.** Fire-and-forget steps like sending emails or Slack messages typically don't register a compensation.
+- **Use `FatalError` for permanent failures**: Regular errors trigger automatic retries, up to three times by default. Throw `FatalError` when retrying won't help, such as for insufficient funds or invalid input.
+- **Make compensations idempotent**: If a compensation step is retried, it should produce the same result. Check whether the resource was already released before releasing it again.
+- **Use `"use step"` functions for compensation steps**: This makes them durable. If the workflow restarts during rollback, it resumes where it left off.
+- **Capture values in closures carefully**: Use block-scoped variables or copy values before pushing compensations to avoid referencing stale state.
+- **Skip compensations for notifications**: Fire-and-forget steps such as sending emails or Slack messages typically don't register a compensation.
 
 ## Key APIs
 
-- [`"use workflow"`](/docs/foundations/workflows-and-steps#workflow-functions) -- declares the orchestrator function
-- [`"use step"`](/docs/foundations/workflows-and-steps#step-functions) -- declares step functions with full Node.js access
-- [`FatalError`](/docs/api-reference/workflow/fatal-error) -- non-retryable error that triggers compensation
-- [`getWritable()`](/docs/api-reference/workflow/get-writable) -- streams data from workflows for real-time UI updates
+- [`"use workflow"`](/docs/foundations/workflows-and-steps#workflow-functions): Declares the orchestrator function.
+- [`"use step"`](/docs/foundations/workflows-and-steps#step-functions): Declares step functions with full Node.js access.
+- [`FatalError`](/docs/api-reference/workflow/fatal-error): Represents a non-retryable error that triggers compensation.
+- [`getWritable()`](/docs/api-reference/workflow/get-writable): Streams data from workflows for real-time UI updates.

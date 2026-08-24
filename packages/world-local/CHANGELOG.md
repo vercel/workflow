@@ -1,5 +1,48 @@
 # @workflow/world-local
 
+## 5.0.0-beta.38
+
+### Minor Changes
+
+- [#3570](https://github.com/vercel/workflow/pull/3570) [`9454d51`](https://github.com/vercel/workflow/commit/9454d51db0d52d6be9bafea9c70ab6fc3a1ceba4) Thanks [@pranaygp](https://github.com/pranaygp)! - Add `world.runs.waitForTerminalStatus(runId, { timeoutMs, signal, resolveData })` method, which long-polls until the run reaches a terminal status. `await run.returnValue` now internally uses this, if the World supports it, instead of using a polling interval.
+
+- [#3634](https://github.com/vercel/workflow/pull/3634) [`7b79ba3`](https://github.com/vercel/workflow/commit/7b79ba37cc97e858ceb8b2474e03bbc404b555a0) Thanks [@pranaygp](https://github.com/pranaygp)! - New runs are created with the sealed-log event identity (specVersion 7). A sealed-log run's event positions are assigned by the backend before each write commits, so concurrent writers never contend for a position. A position whose writer dies is closed by the backend with a `noop` event; replay steps over those without delivering them or advancing the deterministic clock. Set `WORKFLOW_SEALED_LOG=0` to put a deployment back on the previous scheme. Every runtime reads sealed logs either way, and a run's version is fixed at creation, so the setting only affects new runs.
+
+### Patch Changes
+
+- [#3728](https://github.com/vercel/workflow/pull/3728) [`f771585`](https://github.com/vercel/workflow/commit/f771585486b3019c8d68211b158dfeffc9e5ebe8) Thanks [@pranaygp](https://github.com/pranaygp)! - Hold process-wide state (the WebSocket transport registry, HTTP connection pools, ULID factories, caches, log-once latches) on `globalThis` instead of at module scope. This de-duplicates state across bundled packages. Fixes WebSocket transport, which was registered in one module state but looked up in another.
+
+- Updated dependencies [[`f771585`](https://github.com/vercel/workflow/commit/f771585486b3019c8d68211b158dfeffc9e5ebe8), [`f771585`](https://github.com/vercel/workflow/commit/f771585486b3019c8d68211b158dfeffc9e5ebe8), [`9454d51`](https://github.com/vercel/workflow/commit/9454d51db0d52d6be9bafea9c70ab6fc3a1ceba4), [`7b79ba3`](https://github.com/vercel/workflow/commit/7b79ba37cc97e858ceb8b2474e03bbc404b555a0), [`f771585`](https://github.com/vercel/workflow/commit/f771585486b3019c8d68211b158dfeffc9e5ebe8), [`bf9de1c`](https://github.com/vercel/workflow/commit/bf9de1cd81eda1b1721b857364070c0ce70d1e58)]:
+  - @workflow/utils@5.0.0-beta.9
+  - @workflow/world@5.0.0-beta.29
+  - @workflow/errors@5.0.0-beta.18
+
+## 5.0.0-beta.37
+
+### Minor Changes
+
+- [#3461](https://github.com/vercel/workflow/pull/3461) [`04e060a`](https://github.com/vercel/workflow/commit/04e060a0ecc247a3291714d8396430fa9d96bccc) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Add `WORKFLOW_NODE_HTTP` to run the Vercel and Local World HTTP layers on Node's built-in `node:http` and `node:https` modules instead of their usual HTTP client library.
+
+### Patch Changes
+
+- Updated dependencies [[`b0adb50`](https://github.com/vercel/workflow/commit/b0adb50bce623b23252735021205e8d870a2b11f), [`37e1d9e`](https://github.com/vercel/workflow/commit/37e1d9e5a9870ef4a35e1875e7054253a9fb89c3), [`1321570`](https://github.com/vercel/workflow/commit/13215704645ea487ef6f8821016ec3f13c1cd830), [`04e060a`](https://github.com/vercel/workflow/commit/04e060a0ecc247a3291714d8396430fa9d96bccc)]:
+  - @workflow/world@5.0.0-beta.28
+  - @workflow/errors@5.0.0-beta.17
+
+## 5.0.0-beta.36
+
+### Patch Changes
+
+- [#3542](https://github.com/vercel/workflow/pull/3542) [`de2a86c`](https://github.com/vercel/workflow/commit/de2a86c61c843a04c292e54e9c439553b3da02c5) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - **Breaking**: New runs are created at spec version 6, and a World that declares an older spec version is now rejected before the first run rather than failing partway through one.
+
+- [#3519](https://github.com/vercel/workflow/pull/3519) [`dc85865`](https://github.com/vercel/workflow/commit/dc85865718fdf5e4abdb5ad8edf715ec956bf07d) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Slot-numbered event ids are a requirement of the World contract, not a capability. The `slotEventIds` flag is gone, and the conformance suite now fails a World whose event ids are not positions.
+
+- [#3492](https://github.com/vercel/workflow/pull/3492) [`0f4b35f`](https://github.com/vercel/workflow/commit/0f4b35f62945327417013060f6e5de5111fe6ff1) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix `CORRUPTED_EVENT_LOG` after a hook resume that raced another writer or was interrupted mid-write, and deliver a raced resume exactly once instead of duplicating it or reporting a conflict.
+
+- Updated dependencies [[`600b096`](https://github.com/vercel/workflow/commit/600b096d2fa5423b742683fcd047010a1f1bfcd6), [`dc85865`](https://github.com/vercel/workflow/commit/dc85865718fdf5e4abdb5ad8edf715ec956bf07d), [`efbc408`](https://github.com/vercel/workflow/commit/efbc408c4e98178dc8c8151764f308e9e4b6fd58), [`a0ccfe0`](https://github.com/vercel/workflow/commit/a0ccfe0f50df1e6726b033e91c41257065e20edd), [`de2a86c`](https://github.com/vercel/workflow/commit/de2a86c61c843a04c292e54e9c439553b3da02c5), [`dc85865`](https://github.com/vercel/workflow/commit/dc85865718fdf5e4abdb5ad8edf715ec956bf07d), [`7683130`](https://github.com/vercel/workflow/commit/7683130461a1a3de16c13be52d8aee96590b3814), [`dc85865`](https://github.com/vercel/workflow/commit/dc85865718fdf5e4abdb5ad8edf715ec956bf07d), [`b589460`](https://github.com/vercel/workflow/commit/b589460ce873bad3ddd7bda4a9bff147ddccac49), [`c1a5c74`](https://github.com/vercel/workflow/commit/c1a5c74edb2fad84eb5bbc2036bf73cbd16ca28d)]:
+  - @workflow/world@5.0.0-beta.27
+  - @workflow/errors@5.0.0-beta.17
+
 ## 5.0.0-beta.35
 
 ### Patch Changes

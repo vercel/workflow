@@ -58,7 +58,7 @@ type DrizzlishOfType<T extends object> = {
 };
 
 /**
- * Sadly we do `any[]` right now
+ * Serialization currently uses `any[]`.
  */
 export type SerializedContent = any[];
 
@@ -90,8 +90,8 @@ export const runs = schema.table(
     error: Cbor<SerializedData>()('error_cbor'),
     /**
      * The high-level error category (USER_ERROR, RUNTIME_ERROR, etc.) from
-     * a run_failed event. Plaintext metadata for routing — does not require
-     * decryption or hydration.
+     * a run_failed event. Plaintext metadata for routing, so it does not
+     * require decryption or hydration.
      */
     errorCode: varchar('error_code'),
     /**
@@ -108,7 +108,7 @@ export const runs = schema.table(
     /**
      * The run's X25519 public key (base64), stamped at creation by SDKs that
      * support sealed (`encp`) envelopes. Lets cross-run writers seal payloads
-     * to this run without holding its symmetric key. Not secret — the private
+     * to this run without holding its symmetric key. Not secret. The private
      * scalar is re-derived on demand and never stored. Null on runs created by
      * older SDKs, which fall back to the symmetric path.
      */
@@ -162,8 +162,8 @@ export const events = schema.table(
     // by-run lookup and range scan is served by that index already. Keeping one
     // would cost a second write per event on the table's hottest path.
     index().on(tb.correlationId),
-    // Runtime-correlated one-shot events must be unique per (run, correlation)
-    // — without
+    // Runtime-correlated one-shot events must be unique per (run, correlation).
+    // Without
     // this, two concurrent invocations producing identical correlationIds
     // (e.g. the snapshot runtime's deterministic ULIDs across replays) can
     // both insert events, causing duplicate operations in the log.
@@ -179,8 +179,8 @@ export const events = schema.table(
 
 /**
  * Which runs are slot-numbered. A row exists iff the run is, so its absence is
- * exactly the "this run predates slots, keep minting ULIDs" signal — no scan of
- * the event log is needed to tell the two schemes apart.
+ * exactly the "this run predates slots, keep minting ULIDs" signal, so no scan
+ * of the event log is needed to tell the two schemes apart.
  *
  * A marker, not a counter. Positions are allocated by the insert that occupies
  * them (`MAX(slot) + 1` read from the log inside the INSERT), so nothing is
@@ -257,8 +257,8 @@ export const hooks = schema.table(
     // Server-synthesized resume slice. Not carried by the hook_created event,
     // so this backend leaves it null; reads fall back to runs.get.
     resumeContext: Cbor<NonNullable<Hook['resumeContext']>>()('resume_context'),
-    // `resumeCapabilities` is deliberately response-only — attested fresh on
-    // each by-token lookup, never persisted — so it must not become a column.
+    // `resumeCapabilities` is deliberately response-only (attested fresh on
+    // each by-token lookup, never persisted), so it must not become a column.
   } satisfies DrizzlishOfType<
     Cborized<Omit<Hook, 'resumeCapabilities'>, 'metadata'>
   >,

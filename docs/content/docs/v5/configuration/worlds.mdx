@@ -23,16 +23,16 @@ Outside Vercel, Workflow defaults to the Local World. On Vercel, leave `WORKFLOW
 
 The World is selected when your app **runs**, from the environment of the process serving it, so changing `WORKFLOW_TARGET_WORLD` takes effect on the next start without a rebuild. Detection keys off `VERCEL_DEPLOYMENT_ID`, which Vercel sets in every deployed function and nothing else sets: with it, the Vercel World; without it, the Local World.
 
-Broader signals are deliberately ignored. `vercel env pull` writes `VERCEL=1` into `.env.local`, so a dev server or a production server started on your own machine sees it while running against a writable filesystem — where the Local World is the right choice. Set `WORKFLOW_TARGET_WORLD=vercel` explicitly if you want such a process to talk to the Vercel World; starting a run then fails with an error naming the missing `VERCEL_DEPLOYMENT_ID`.
+Broader signals are deliberately ignored. `vercel env pull` writes `VERCEL=1` into `.env.local`, so a dev server or a production server started on your own machine sees it while running against a writable filesystem, where the Local World is the right choice. Set `WORKFLOW_TARGET_WORLD=vercel` explicitly if you want such a process to talk to the Vercel World; starting a run then fails with an error naming the missing `VERCEL_DEPLOYMENT_ID`.
 
 A deployment that pins `WORKFLOW_TARGET_WORLD=local` warns at startup and fails on its first write, because a Vercel deployment's filesystem is read-only.
 
 Set `WORKFLOW_TARGET_WORLD` only when you want to use a custom or self-hosted World:
 
-- `local` - alias for `@workflow/world-local`.
-- `@workflow/world-postgres` - Postgres World package.
-- `./my-world.ts` - local module exporting a World, `createWorld()`, or a default factory.
-- Any package specifier - custom World package.
+- `local`: Alias for `@workflow/world-local`.
+- `@workflow/world-postgres`: Postgres World package.
+- `./my-world.ts`: Local module exporting a World, `createWorld()`, or a default factory.
+- Any package specifier: Custom World package.
 
 The `vercel` alias exists for manual selection and tooling, but deployed Vercel apps do not need to set it.
 
@@ -121,7 +121,12 @@ The Local World is the default outside Vercel and is intended for development.
 
 - Environment variable fallback: `WORKFLOW_STREAM_FLUSH_INTERVAL_MS`
 - Default: `0` (dispatch the leading chunk of an idle stream immediately)
-- Group-commit window for the leading chunk of an idle stream; a positive value trades first-chunk latency for larger groups. The `WORKFLOW_STREAM_FLUSH_INTERVAL_MS` environment variable, when set, overrides this option; otherwise the World option governs, including the very first chunk.
+- Group-commit window for the leading chunk of an idle stream; a positive value trades first-chunk latency for larger groups. The `WORKFLOW_STREAM_FLUSH_INTERVAL_MS` environment variable, when set, overrides this option; otherwise the World option governs, including the first chunk.
+
+### `WORKFLOW_MAX_EVENTS`
+
+- Default: `25000`
+- Per-run event ceiling reported to the runtime. A run whose event log reaches it fails with `MAX_EVENTS_EXCEEDED`, bounding a runaway loop. See [`WORKFLOW_MAX_EVENTS_OVERRIDE`](/docs/configuration/runtime-tuning#workflow_max_events_override) for the runtime-side clamp.
 
 ## Postgres World
 
@@ -184,13 +189,13 @@ The Postgres World is a self-hosted durable backend for long-running server proc
 
 - Environment variable fallback: `WORKFLOW_STREAM_FLUSH_INTERVAL_MS`
 - Default: `0` (dispatch the leading chunk of an idle stream immediately)
-- Group-commit window for the leading chunk of an idle stream; a positive value trades first-chunk latency for larger groups. The `WORKFLOW_STREAM_FLUSH_INTERVAL_MS` environment variable, when set, overrides this option; otherwise the World option governs, including the very first chunk.
+- Group-commit window for the leading chunk of an idle stream; a positive value trades first-chunk latency for larger groups. The `WORKFLOW_STREAM_FLUSH_INTERVAL_MS` environment variable, when set, overrides this option; otherwise the World option governs, including the first chunk.
 
 ## Vercel World
 
 The Vercel World is configured automatically inside Vercel deployments. The platform provides the deployment ID, project ID, request authentication, queue integration, storage, and encryption material.
 
-Most applications should not set `WORKFLOW_VERCEL_*` variables on Vercel. They configure tooling that talks to a Vercel Workflow project from outside a deployment, such as the `workflow` CLI, the web UI, CI, or tests. The runtime warns if these variables are set in a deployed Vercel function because they do not control runtime configuration there.
+Most applications should not set `WORKFLOW_VERCEL_*` variables on Vercel. They configure tooling that talks to a Vercel Workflow project from outside a deployment, such as the Workflow CLI, the web user interface (UI), continuous integration (CI), or tests. The runtime warns if these variables are set in a deployed Vercel Function because they do not control runtime configuration there.
 
 Platform-provided values such as `VERCEL_DEPLOYMENT_ID`, `VERCEL_PROJECT_ID`, and `VERCEL_DEPLOYMENT_KEY` are read by the runtime inside Vercel deployments. Do not set them yourself.
 
@@ -240,7 +245,7 @@ Platform-provided values such as `VERCEL_DEPLOYMENT_ID`, `VERCEL_PROJECT_ID`, an
 
 - Default: disabled
 - Set `1` to serialize orchestrator (flow) invocations per run: each run's replays get their own queue topic and the flow trigger is generated with `maxConcurrency: 1`. Inline step executions get per-step topics and keep full parallelism.
-- Read at **both build time and runtime** — set it as a project-level environment variable so the generated trigger and the runtime queue routing agree.
+- Read at **both build time and runtime**: set it as a project-level environment variable so the generated trigger and the runtime queue routing agree.
 - Routing each run through a dedicated `maxConcurrency: 1` topic might lead to higher queue performance overhead. See [Vercel World](/worlds/vercel#workflow_sequential_replays) for details.
 
 ### `VERCEL_WORKFLOW_SERVER_URL`
@@ -265,7 +270,9 @@ Platform-provided values such as `VERCEL_DEPLOYMENT_ID`, `VERCEL_PROJECT_ID`, an
 - Factory option: none
 - CLI flag: none
 - Default: `60000`
+- Clamp: `10000` to `120000` (values outside are clamped, with a warning)
 - Per-request timeout for Vercel World HTTP calls to workflow-server.
+- At the `10000` floor the run-status long poll disables itself, because its budget is this value minus 10s of headroom.
 
 ### `WORKFLOW_MAX_CHUNKS_PER_REQUEST`
 
@@ -274,10 +281,25 @@ Platform-provided values such as `VERCEL_DEPLOYMENT_ID`, `VERCEL_PROJECT_ID`, an
 - Default: `1000`
 - Maximum stream chunks written in one Vercel World request. Larger batches are split.
 
+### `WORKFLOW_DISABLE_ANALYTICS_READS`
+
+- Factory option: none
+- CLI flag: none
+- Default: disabled
+- Set `1` to turn off the World's metadata-only `analytics` read namespace, forcing `workflow inspect` and web UI list views onto strongly consistent primary storage. Intended for tests and tooling that read entities immediately after writing them.
+
+### `WORKFLOW_BATCH_TRANSITIONS`
+
+- Surface: environment variable
+- Default: on
+- Set to `0` (or `false`) to **disable** batched event writes, the escape hatch that restores the exact prior one-write-per-event path.
+
+When enabled (the default), a suspension's eager `step_created` and `wait_created` writes fold into batched `events.createBatch` calls (one durable write with per-event outcomes) on Worlds that implement the optional batch API. The fold only engages when the World implements `events.createBatch` (the Vercel World does; Local and Postgres do not), the run's spec version supports slot identity (≥ 6), and the suspension carries no attribute writes, hook writes, or resilient step dispatch. Everything else keeps the single-event path unchanged, so disabling is only needed as an operational escape hatch. Batches are capped at 32 events; larger fan-outs commit in successive batches. See the [batched event writes changelog](/docs/changelog/batched-event-writes) for the World API contract.
+
 ### `WORKFLOW_EVENTS_TRANSPORT`
 
 - Factory option: none
 - CLI flag: none
-- Default: `http`
-- Experimental. Set to `ws` to ship workflow run events to the Vercel World over a WebSocket instead of one HTTP request each.
-- Ignored when the World is configured with `projectConfig` and routes through the `api-workflow` proxy — that endpoint is an HTTP-only REST gateway and does not forward a WebSocket upgrade, so events stay on HTTP.
+- Default: `ws`
+- Ships workflow run events to the Vercel World over a WebSocket instead of one HTTP request each. Set to exactly `http` to opt out; any other value, including unset or empty, uses the WebSocket.
+- Ignored when the World is configured with `projectConfig` and routes through the `api-workflow` proxy: that endpoint is an HTTP-only REST gateway and does not forward a WebSocket upgrade, so events stay on HTTP.

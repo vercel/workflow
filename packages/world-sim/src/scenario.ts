@@ -5,7 +5,7 @@
  * writers. Playing it consists of exactly one loop: take the next queue
  * message, jump the virtual clock to its delivery time, hand it to the flow
  * handler, repeat until the queue is empty. Nothing else can advance the world
- * — no timers, no background delivery, no wall-clock waiting — so the sequence
+ * (no timers, no background delivery, no wall-clock waiting), so the sequence
  * of world calls is reproducible.
  *
  * Termination is a hard requirement, and three separate things enforce it:
@@ -13,7 +13,7 @@
  *  - **Virtual time.** A `sleep('30d')` is a queue message dated 30 days out;
  *    delivering it means moving a number, not waiting.
  *  - **Quiescence.** An empty queue ends the loop. If the run has not reached
- *    a terminal state at that point the scenario is *stalled* — reported, with
+ *    a terminal state at that point the scenario is *stalled*: reported, with
  *    the open hooks and waits that explain it, rather than hung.
  *  - **Budgets.** Delivery count, virtual span and wall time are all capped,
  *    so even a workflow that genuinely loops forever ends as a failed scenario
@@ -77,7 +77,7 @@ export interface ScenarioSpec {
   /**
    * When external input arrives and how the run's writers interleave, written
    * as a sequence of writer advances. Runs concurrently with the delivery loop
-   * and starts before the run does, so it can hold the very first world call.
+   * and starts before the run does, so it can hold the first world call.
    *
    * A scenario with no script is a control: the run plays out on the default
    * schedule and the only question is whether the log it leaves reproduces it.
@@ -86,8 +86,8 @@ export interface ScenarioSpec {
   /**
    * Override which queue message is delivered next.
    *
-   * The default is total and deterministic — earliest `readyAt`, then enqueue
-   * order — which is the right model for a queue whose delays are real
+   * The default is total and deterministic (earliest `readyAt`, then enqueue
+   * order), which is the right model for a queue whose delays are real
    * deadlines. Override it to pin an order the default would not produce, e.g.
    * to deliver a later message first and check the run tolerates it. Return a
    * `messageId` from `pending`, or `undefined` to fall back to the default.
@@ -100,7 +100,7 @@ export interface ScenarioSpec {
    */
   verifyReplay?: boolean;
   /**
-   * Assertions about how the run should end — what *correct* looks like, which
+   * Assertions about how the run should end: what *correct* looks like, which
    * is not always what happens today.
    *
    * `status` accepts the non-run outcomes too (`stalled`, `budget-exceeded`),
@@ -115,14 +115,14 @@ export interface ScenarioSpec {
    *
    * There is also deliberately no per-world variant of this field. A scenario
    * is one sequence of advances, and the only thing a world changes is what a
-   * read returns — so an expectation that has to be restated per world is
+   * read returns, so an expectation that has to be restated per world is
    * pinning a consequence of the reads rather than a property of the run. Pin
    * the part that holds in every world; where the branch a run takes is decided
    * by what it read, do not pin the branch. What catches the fault there is the
    * invariant, not the expectation: the log a run wrote must be a log the
    * runtime can replay back into that same run, and that sentence is true in
    * both worlds. `verifyReplay` is on by default for exactly this reason, and
-   * every red in the book is red on the invariant alone — the expectations
+   * every red in the book is red on the invariant alone: the expectations
    * could all be deleted without changing which scenarios fail.
    */
   expect?: ScenarioExpectation;
@@ -138,17 +138,6 @@ export interface ScenarioSpec {
    * `preconditionGuard: true` to model the watermark alone.
    */
   countGuard?: boolean;
-  /**
-   * Run this scenario against an append-only log, where an event takes its
-   * position at commit and a read can therefore be behind but never
-   * self-contradictory. See `SimStoreOptions.appendOnlyLog`.
-   *
-   * Off by default, and no scenario in the book sets it: the interesting use is
-   * as a global override (`RunScenarioOptions.appendOnlyLog`), where the whole
-   * book runs twice and the diff is the answer to "which of these failures are
-   * about the mint-before-commit window, and which are about something else?".
-   */
-  appendOnlyLog?: boolean;
 }
 
 export interface ScenarioExpectation {
@@ -171,18 +160,12 @@ export interface ScenarioResult {
   runId: string;
   outcome: ScenarioOutcome;
   ok: boolean;
-  /**
-   * Which log the run played against — resolved from the spec and the run
-   * option, so a stored result says which world produced it rather than
-   * leaving the reader to remember.
-   */
-  appendOnlyLog: boolean;
   /** Scenario-level failures: unmet expectations, failed checks, script errors. */
   problems: string[];
   /** World-contract violations found by re-deriving state from the log. */
   violations: InvariantViolation[];
   /**
-   * Outcome of the cold-replay check, when it ran. `skipped` carries why —
+   * Outcome of the cold-replay check, when it ran. `skipped` carries why:
    * a cancelled or stalled run has no workflow-derived terminal event for a
    * replay to re-derive.
    */
@@ -208,21 +191,11 @@ export interface RunScenarioOptions {
   /** Workflow function name → machine workflow id, from `buildSimBundle`. */
   workflowIds?: Record<string, string>;
   /**
-   * Force `SimStoreOptions.appendOnlyLog` on or off for this run, overriding
-   * whatever the spec asked for.
-   *
-   * This is the knob a caller flips to play the same book under both worlds —
-   * the CLI's `--append-only`, the page's toggle. `undefined` leaves the
-   * decision to the spec, which is how a book of scenarios written against
-   * production keeps behaving like one.
-   */
-  appendOnlyLog?: boolean;
-  /**
    * Force `SimStoreOptions.preconditionGuard` on or off for this run,
    * overriding whatever the spec asked for.
    *
    * The fence exists to reject a write whose snapshot predates an out-of-band
-   * event — that is, a write an extended prefix invalidated. So turning it off
+   * event, that is, a write an extended prefix invalidated. So turning it off
    * across the whole book answers a question the book cannot otherwise ask: is
    * any scenario relying on it? If none is, then no emitter here is
    * prefix-sensitive and the fence guards against nothing; if one goes red that
@@ -241,7 +214,6 @@ export async function runScenario(
 ): Promise<ScenarioResult> {
   const limits = { ...DEFAULT_LIMITS, ...spec.limits };
   const clock = createVirtualClock();
-  const appendOnlyLog = options.appendOnlyLog ?? spec.appendOnlyLog ?? false;
   // One expectation, whichever world this is. Aliased rather than read inline
   // so the outcome check and the output check below cannot drift apart.
   const expected = spec.expect;
@@ -254,7 +226,6 @@ export async function runScenario(
     clock,
     preconditionGuard,
     countGuard: spec.countGuard ?? preconditionGuard,
-    appendOnlyLog,
   });
 
   const workflowId =
@@ -270,16 +241,15 @@ export async function runScenario(
       )
         .filter((k) => !k.includes('#'))
         .sort()
-        .join(', ')}`,
-      appendOnlyLog
+        .join(', ')}`
     );
   }
 
   const problems: string[] = [];
   /**
    * Problems that are only problems if the scenario did not ask for them. A
-   * scenario may legitimately assert that a run stalls or blows its budget —
-   * those are properties worth pinning down — so the diagnosis is always
+   * scenario may legitimately assert that a run stalls or blows its budget
+   * (those are properties worth pinning down), so the diagnosis is always
    * recorded but only counted as a failure when it was a surprise.
    */
   const outcomeProblems: string[] = [];
@@ -298,7 +268,6 @@ export async function runScenario(
 
   const api: ScenarioApi = {
     world: world.snapshot,
-    appendOnlyLog,
     get runId() {
       return runId;
     },
@@ -315,24 +284,9 @@ export async function runScenario(
       await world.asExternal(() => resumeHook(token, payload));
     },
     async beginHookDelivery(token, payload) {
-      // Take the position now and commit later. This is the handler boundary
-      // split made visible to a script: the receiver has entered `resumeHook`,
-      // its event id is minted and its slot in the log is spoken for, but the
-      // storage write has not happened — so every other writer that commits in
-      // the meantime lands *behind* a position nobody can see yet.
-      //
-      // It has to be an out-of-band writer. An inline step's `step_completed`
-      // held the same way would stall the orchestrator that should misread the
-      // log, because the runtime awaits its promise before deciding anything.
-      const position = world.reservePosition(runId);
       return {
-        eventId: position.eventId,
         async commit() {
-          await world.asExternal(() =>
-            world.withReservedPosition(position, () =>
-              resumeHook(token, payload)
-            )
-          );
+          await world.asExternal(() => resumeHook(token, payload));
         },
       };
     },
@@ -379,8 +333,8 @@ export async function runScenario(
   world.setScenarioApi(() => api);
 
   // The script steers writers by watching world calls, so its machinery must
-  // exist before anything can fire — and it is launched before `start()` so it
-  // can hold the very first world call the run makes.
+  // exist before anything can fire, and it is launched before `start()` so it
+  // can hold the first world call the run makes.
   const controller = createTempo(world, api, {
     runToWallMs: Math.min(limits.maxRunToWallMs, limits.maxWallMs),
   });
@@ -398,7 +352,7 @@ export async function runScenario(
 
   /**
    * Real-time backstop. A parked call blocks the scheduler, so a script that
-   * waits for something that never happens is a hang, not a stall — the one
+   * waits for something that never happens is a hang, not a stall: the one
    * way to lose the termination guarantee. This buys it back, and it has to be
    * wall-clock: the virtual clock is precisely what stops advancing.
    *
@@ -414,9 +368,9 @@ export async function runScenario(
     problems.push(reason);
     controller.abort(reason);
   }, limits.maxWallMs + 250);
-  // Deliberately NOT unref'd. A total deadlock — every writer parked, the
+  // Deliberately NOT unref'd. A total deadlock (every writer parked, the
   // scheduler blocked inside a held call, the script awaiting something that
-  // can never happen — leaves nothing else on the event loop. An unref'd
+  // can never happen) leaves nothing else on the event loop. An unref'd
   // watchdog does not hold the loop open, so Node would empty it and exit with
   // a bare "unsettled top-level await" instead of this timer firing: the
   // watchdog would be absent from the one case it exists for. The `finally`
@@ -442,7 +396,8 @@ export async function runScenario(
 
     // ---- Replay verification ---------------------------------------------
     // Snapshot the run's own virtual span first: the replay reuses the clock
-    // (it has to — `Date.now()` is what tells the runtime a wait has elapsed)
+    // (it has to, since `Date.now()` is what tells the runtime a wait has
+    // elapsed)
     // and would otherwise show up in the scenario's reported timings.
     virtualElapsedMs = clock.elapsed();
     const finished = world.store.allRuns().find((r) => r.runId === runId);
@@ -455,7 +410,7 @@ export async function runScenario(
       finished.status !== 'failed'
     ) {
       // A cancelled run's terminal event came from an operator, not from the
-      // workflow, and a stalled run has none at all — in neither case is there
+      // workflow, and a stalled run has none at all; in neither case is there
       // a workflow-derived answer for a replay to reproduce.
       replay = {
         skipped: `run ended "${finished.status}", which the workflow did not derive`,
@@ -471,7 +426,6 @@ export async function runScenario(
           events: world.store.allEvents(runId),
           handler: options.handler,
           limits,
-          appendOnlyLog,
         });
       } finally {
         uninstallClock = clock.install();
@@ -507,7 +461,7 @@ export async function runScenario(
     clearTimeout(deadline);
 
     // Give the script a bounded moment to unwind from the rejections `abort`
-    // just raised into it. Awaiting it outright would reintroduce the hang
+    // raised into it. Awaiting it outright would reintroduce the hang
     // this whole mechanism exists to prevent: a script parked on a promise
     // that never settles (rather than on the world) is unreachable from here.
     await Promise.race([scriptDone, sleep(SCRIPT_UNWIND_MS)]);
@@ -560,10 +514,7 @@ export async function runScenario(
     ? checkInvariants({
         runId,
         events,
-        // Only meaningful when the world promises commit order is log order.
-        ...(appendOnlyLog
-          ? { eventsInCommitOrder: world.store.allEventsInCommitOrder(runId) }
-          : {}),
+        eventsInCommitOrder: world.store.allEventsInCommitOrder(runId),
         runs: world.store.allRuns(),
         steps: world.store.allSteps(runId),
         waits: world.store.allWaits(runId),
@@ -595,7 +546,6 @@ export async function runScenario(
     runId,
     outcome,
     ok: problems.length === 0 && violations.length === 0 && outcome !== 'error',
-    appendOnlyLog,
     problems,
     violations,
     events,
@@ -678,8 +628,7 @@ function deepEqual(a: unknown, b: unknown): boolean {
 
 function failedBeforeStart(
   spec: ScenarioSpec,
-  problem: string,
-  appendOnlyLog: boolean
+  problem: string
 ): ScenarioResult {
   return {
     id: spec.id,
@@ -688,7 +637,6 @@ function failedBeforeStart(
     runId: '',
     outcome: 'error',
     ok: false,
-    appendOnlyLog,
     problems: [problem],
     violations: [],
     events: [],
