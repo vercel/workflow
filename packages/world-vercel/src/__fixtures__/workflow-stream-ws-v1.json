@@ -1,0 +1,30 @@
+{
+  "protocol": "workflow-stream-ws/v1",
+  "version": 1,
+  "envelope": "u32_be(cbor_meta_length) || cbor_meta || u32_be(body_length) || body_bytes",
+  "frames": [
+    {
+      "direction": "client_to_server",
+      "meta": { "type": "stream_write", "reqId": 7 },
+      "bodyHex": "820102",
+      "frameHex": "0000001cb9000264747970656c73747265616d5f77726974656572657149640700000003820102"
+    },
+    {
+      "direction": "server_to_client",
+      "meta": {
+        "type": "stream_write_ack",
+        "reqId": 7,
+        "status": 200,
+        "nextIndex": 42
+      },
+      "bodyHex": "",
+      "frameHex": "00000035b9000464747970657073747265616d5f77726974655f61636b657265714964076673746174757318c8696e657874496e646578182a00000000"
+    },
+    {
+      "direction": "server_to_client",
+      "meta": { "type": "error", "reqId": 8, "status": 400 },
+      "bodyHex": "",
+      "frameHex": "0000001fb900036474797065656572726f72657265714964086673746174757319019000000000"
+    }
+  ]
+}
