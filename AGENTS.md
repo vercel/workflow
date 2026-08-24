@@ -365,6 +365,8 @@ It reports two numbers per app, because neither app emits an isolable function b
 - **Gated**: what the workflow builders emit for the flow route, before the framework bundles it. Growth beyond `max(2%, 50 KiB)` raw fails the job. Add the `allow-bundle-size-growth` label to accept it.
 - **Informational**: the framework's own build output. Unrelated changes move it, so it never gates.
 
+The comment is a single table showing **gzip** sizes with the change against `main` in parentheses, because that is the number worth reading at a glance. The gate compares **raw** bytes, which is what the runtime parses on a cold start, so a red check can sit next to a small gzip delta. A footnote in the comment says so.
+
 The two are only ever compared against their own baselines, never against each other, and neither alone is the deployed function: the gated bundle is the VM code the route carries as an inline string, while the code hosting it sits in the framework output.
 
 **The gate does not cover the world adapters.** Building `nextjs-turbopack` with `WORKFLOW_TARGET_WORLD=local` and `=vercel` produces byte-identical reports on all three metrics, because every world the app depends on is bundled into the framework output either way and the choice is made at runtime. A change confined to `@workflow/world-vercel` will not move the gated numbers.

@@ -55,6 +55,15 @@ function withMetricRaw(base, id, raw) {
   };
 }
 
+function withMetricGzip(base, id, gzip) {
+  return {
+    ...base,
+    metrics: base.metrics.map((metric) =>
+      metric.id === id ? { ...metric, gzip } : metric
+    ),
+  };
+}
+
 function mapOf(...reports) {
   return new Map(reports.map((r) => [r.app, r]));
 }
@@ -77,7 +86,7 @@ test('no baseline renders sizes and gates nothing', async () => {
     runUrl: 'https://example.test/run',
     thresholds: THRESHOLDS,
   });
-  assert.match(md, /No baseline on `main` yet/);
+  assert.match(md, /No baseline on `main` yet for some rows\./);
 });
 
 test('growth just over the percentage threshold is a regression', async () => {
@@ -151,7 +160,7 @@ test('a fingerprint mismatch suppresses the diff and the gate', async () => {
     runUrl: 'https://example.test/run',
     thresholds: THRESHOLDS,
   });
-  assert.match(md, /Build fingerprint differs/);
+  assert.match(md, /build fingerprint differs from the baseline/);
   assert.match(md, /WORKFLOW_TARGET_WORLD/);
 });
 
@@ -167,9 +176,9 @@ test('a metric missing from the baseline reports no delta and does not gate', as
   assert.strictEqual(row.rawDelta, null);
 });
 
-test('an improvement renders as a negative delta', async () => {
+test('a cell shows the gzip size and a signed gzip delta', async () => {
   const { compareAll, renderComment } = await loadModule();
-  const current = withMetricRaw(report(), 'flow-bundle', 4_000_000);
+  const current = withMetricGzip(report(), 'flow-bundle', 900_000);
   const comparison = compareAll(mapOf(current), mapOf(report()), THRESHOLDS);
 
   assert.deepStrictEqual(comparison.regressions, []);
@@ -179,7 +188,49 @@ test('an improvement renders as a negative delta', async () => {
     runUrl: 'https://example.test/run',
     thresholds: THRESHOLDS,
   });
-  assert.match(md, /-976\.6 KiB \(-20\.00%\)/);
+  // gzip only: 900,000 B shown, down 100,000 B from the baseline's 1,000,000.
+  assert.match(md, /878\.9 KiB \(-97\.7 KiB\)/);
+  // The raw numbers must not leak into the table.
+  assert.doesNotMatch(md, /4\.77 MiB/);
+});
+
+test('an unchanged metric renders as plus-minus zero', async () => {
+  const { compareAll, renderComment } = await loadModule();
+  const comparison = compareAll(mapOf(report()), mapOf(report()), THRESHOLDS);
+  const md = renderComment({
+    comparison,
+    commit: 'abc1234',
+    runUrl: 'https://example.test/run',
+    thresholds: THRESHOLDS,
+  });
+  assert.match(md, /\(\u00b10\)/);
+});
+
+test('the comment is a single table with one row per app and no headings', async () => {
+  const { compareAll, renderComment } = await loadModule();
+  const comparison = compareAll(
+    mapOf(report({ app: 'hono' }), report({ app: 'nextjs-turbopack' })),
+    new Map(),
+    THRESHOLDS
+  );
+  const md = renderComment({
+    comparison,
+    commit: 'abc1234',
+    runUrl: 'https://example.test/run',
+    thresholds: THRESHOLDS,
+  });
+  assert.match(
+    md,
+    /^\| Framework \| Flow route \| Step reg\. \| Framework output \|$/m
+  );
+  // Exactly one header row, one delimiter, two data rows.
+  const rows = md.split('\n').filter((line) => line.startsWith('|'));
+  assert.strictEqual(rows.length, 4);
+  assert.ok(rows[2].startsWith('| hono |'));
+  assert.ok(rows[3].startsWith('| nextjs-turbopack |'));
+  // No markdown headings and no collapsible block.
+  assert.doesNotMatch(md, /^#/m);
+  assert.doesNotMatch(md, /<details>/);
 });
 
 test('loadReports skips unparseable and future-schema files', async () => {
@@ -233,9 +284,8 @@ test('the comment flags regressions and names the override label', async () => {
     runUrl: 'https://example.test/run',
     thresholds: THRESHOLDS,
   });
-  assert.match(md, /1 gated bundle\(s\) grew past the threshold/);
+  assert.match(md, /⚠️ marks growth past the threshold/);
   assert.match(md, /allow-bundle-size-growth/);
-  assert.match(md, /⚠️/);
 });
 
 test('renderComment reports a failed measurement run', async () => {
@@ -266,12 +316,9 @@ test('parseArgs rejects a negative threshold', async () => {
   );
 });
 
-test('formatBytes switches units and keeps the sign in deltas', async () => {
-  const { formatBytes, formatDelta } = await loadModule();
+test('formatBytes switches units', async () => {
+  const { formatBytes } = await loadModule();
   assert.strictEqual(formatBytes(512), '512 B');
   assert.strictEqual(formatBytes(2048), '2.0 KiB');
   assert.strictEqual(formatBytes(5 * 1024 * 1024), '5.00 MiB');
-  assert.strictEqual(formatDelta(0, 100), 'no change');
-  assert.strictEqual(formatDelta(null, 100), '—');
-  assert.strictEqual(formatDelta(1024, 102400), '+1.0 KiB (+1.00%)');
 });

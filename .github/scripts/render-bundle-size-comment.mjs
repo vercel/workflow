@@ -9,6 +9,14 @@
  * regression when a gated metric's raw size grew by more than
  * max(--threshold-pct, --threshold-bytes) against the baseline.
  *
+ * The comment is one table, one row per app, one column per metric, and
+ * nothing else but footnotes. Cells show **gzip** with the change against main
+ * in parentheses. Note the deliberate asymmetry: the cells are gzip because
+ * that is the number worth reading at a glance, while the gate compares raw
+ * bytes, which is what the runtime actually parses on a cold start. A footnote
+ * says so, because otherwise a red check with a small gzip delta next to it
+ * looks like a bug.
+ *
  * Reports whose build fingerprints disagree are never diffed. The fingerprint
  * records the env that changes the measured bytes (target world, sourcemap
  * mode, public manifest, Node major); comparing across a change to any of
@@ -146,14 +154,6 @@ function formatSignedBytes(bytes) {
   return bytes >= 0 ? `+${formatBytes(bytes)}` : `-${formatBytes(-bytes)}`;
 }
 
-export function formatDelta(delta, baseline) {
-  if (delta === null || delta === undefined) return '—';
-  if (delta === 0) return 'no change';
-  const pct = baseline > 0 ? ((delta / baseline) * 100).toFixed(2) : null;
-  const suffix = pct === null ? '' : ` (${delta > 0 ? '+' : ''}${pct}%)`;
-  return `${formatSignedBytes(delta)}${suffix}`;
-}
-
 /**
  * Diffs one app's report against its baseline and decides which gated metrics
  * regressed. A metric absent from the baseline (newly added) is reported with
@@ -228,60 +228,37 @@ export function compareAll(currentReports, baselineReports, thresholds) {
   return { apps, regressions };
 }
 
-function renderAppSection(entry) {
-  const lines = [`### ${entry.app}`, ''];
+/**
+ * Columns of the results table, in order, keyed by metric id so a report
+ * missing a metric renders an empty cell instead of shifting the whole row.
+ */
+const COLUMNS = [
+  { id: 'flow-bundle', label: 'Flow route' },
+  { id: 'step-registrations', label: 'Step reg.' },
+  { id: 'framework-output', label: 'Framework output' },
+];
 
-  if (entry.fingerprintMismatch) {
-    const diff = Object.keys(entry.fingerprintMismatch.current)
-      .filter(
-        (key) =>
-          (entry.fingerprintMismatch.current[key] ?? null) !==
-          (entry.fingerprintMismatch.baseline[key] ?? null)
-      )
-      .map(
-        (key) =>
-          `\`${key}\`: main \`${entry.fingerprintMismatch.baseline[key]}\` → ` +
-          `PR \`${entry.fingerprintMismatch.current[key]}\``
-      );
-    lines.push(
-      '> Build fingerprint differs from the baseline, so sizes are shown ' +
-        'without a comparison. Any delta across this change would be ' +
-        'meaningless.',
-      '>',
-      ...diff.map((line) => `> ${line}`),
-      ''
-    );
-  } else if (!entry.hasBaseline) {
-    lines.push(
-      '> No baseline on `main` yet, so sizes are shown without a comparison.',
-      ''
-    );
+/**
+ * One cell: the gzip size, then the change against main in parentheses. The
+ * parentheses are dropped when there is nothing to compare against, which is
+ * the case on a first run, an expired baseline, and a fingerprint mismatch.
+ */
+function renderCell(row) {
+  if (!row) return '—';
+  const size = formatBytes(row.gzip);
+  const marker = row.regression ? ' ⚠️' : '';
+  if (row.gzipDelta === null || row.gzipDelta === undefined) {
+    return `${size}${marker}`;
   }
+  const delta = row.gzipDelta === 0 ? '±0' : formatSignedBytes(row.gzipDelta);
+  return `${size} (${delta})${marker}`;
+}
 
-  lines.push(
-    '| Metric | Raw | Raw vs main | Gzip | Gzip vs main |',
-    '| --- | ---: | ---: | ---: | ---: |'
+function fingerprintDiffKeys(mismatch) {
+  return Object.keys(mismatch.current).filter(
+    (key) =>
+      (mismatch.current[key] ?? null) !== (mismatch.baseline[key] ?? null)
   );
-  for (const row of entry.rows) {
-    const label = `${row.label}${row.gated ? ' 🔒' : ''}${
-      row.regression ? ' ⚠️' : ''
-    }`;
-    lines.push(
-      `| ${label} | ${formatBytes(row.raw)} | ` +
-        `${formatDelta(row.rawDelta, row.baselineRaw)} | ` +
-        `${formatBytes(row.gzip)} | ` +
-        `${formatDelta(row.gzipDelta, row.baselineGzip)} |`
-    );
-  }
-  lines.push('');
-
-  const notes = entry.rows.filter((row) => row.note);
-  if (notes.length > 0) {
-    for (const row of notes) lines.push(`- ${row.label}: ${row.note}`);
-    lines.push('');
-  }
-
-  return lines;
 }
 
 export function renderComment({
@@ -292,73 +269,63 @@ export function renderComment({
   thresholds,
   skipped = [],
 }) {
-  const lines = [COMMENT_MARKER, '## Flow route bundle size', ''];
-
-  if (status === 'failed') {
-    lines.push(
-      '🔴 One or more measurement jobs failed; the numbers below may be ' +
-        'incomplete. See the [run log](' +
-        `${runUrl}).`,
-      ''
-    );
-  }
+  const lines = [COMMENT_MARKER];
 
   if (comparison.apps.length === 0) {
-    lines.push(
-      'No measurements were produced. See the ' +
-        `[run log](${runUrl}) for what went wrong.`,
-      ''
-    );
+    lines.push(`No measurements were produced. See the [run log](${runUrl}).`);
     return `${lines.join('\n')}\n`;
   }
 
-  if (comparison.regressions.length > 0) {
-    lines.push(
-      `🔴 **${comparison.regressions.length} gated bundle(s) grew past the ` +
-        'threshold.** Add the `allow-bundle-size-growth` label to accept the ' +
-        'growth and pass the check.',
-      ''
-    );
-  }
-
-  for (const entry of comparison.apps) {
-    lines.push(...renderAppSection(entry));
-  }
-
   lines.push(
-    '<details><summary>How to read this</summary>',
+    `| Framework | ${COLUMNS.map((column) => column.label).join(' | ')} |`,
+    `| --- |${COLUMNS.map(() => ' ---: |').join('')}`
+  );
+  for (const entry of comparison.apps) {
+    const byId = new Map(entry.rows.map((row) => [row.id, row]));
+    const cells = COLUMNS.map((column) => renderCell(byId.get(column.id)));
+    lines.push(`| ${entry.app} | ${cells.join(' | ')} |`);
+  }
+
+  // Footnotes carry only what the table cannot say for itself: what the
+  // numbers are, what the parentheses are, and what makes the job fail.
+  const anyBaseline = comparison.apps.some((entry) => entry.hasBaseline);
+  lines.push(
     '',
-    '- 🔒 marks a **gated** metric: the job fails when its raw size grows by ' +
-      `more than ${thresholds.pct}% or ` +
-      `${formatBytes(thresholds.bytes)}, whichever is larger.`,
-    '- **Flow route bundle** and **Step registrations** are what the workflow ' +
-      'builders emit for `/.well-known/workflow/v1/flow` before the framework ' +
-      'bundles them. They move only when the SDK moves, which is why they are ' +
-      'the gated numbers.',
-    "- **Framework output** is the framework's own build output. It is " +
-      'informational: for Next.js the chunks are shared with other routes, and ' +
-      'for nitro the flow handler is inlined into a single server entry, so ' +
-      'unrelated changes move it.',
-    '- The two are **not comparable to each other**, and neither alone is the ' +
-      'deployed function. Each is only ever compared against its own baseline ' +
-      'from `main`.',
-    '- The gated numbers **exclude the world adapters**: every world the app ' +
-      'depends on is bundled into the framework output regardless, and the ' +
-      'choice is made at runtime. A change confined to a world package will ' +
-      'not move them.',
-    '- Raw bytes are what the runtime reads and parses on a cold start; gzip is ' +
-      'the deployment payload. Only raw is gated.',
-    '',
-    '</details>',
-    ''
+    anyBaseline
+      ? 'Sizes are gzip; parentheses show the change against `main`.'
+      : 'Sizes are gzip.',
+    `Flow route and Step reg. gate this job, on raw bytes rather than the gzip ` +
+      `shown, at max(${thresholds.pct}%, ${formatBytes(thresholds.bytes)}). ` +
+      'Framework output is informational.'
   );
 
+  if (status === 'failed') {
+    lines.push('A measurement job failed, so these numbers may be incomplete.');
+  }
+  if (comparison.regressions.length > 0) {
+    lines.push(
+      '⚠️ marks growth past the threshold. Add the ' +
+        '`allow-bundle-size-growth` label to accept it.'
+    );
+  }
+  for (const entry of comparison.apps) {
+    if (entry.fingerprintMismatch) {
+      lines.push(
+        `${entry.app}: build fingerprint differs from the baseline ` +
+          `(${fingerprintDiffKeys(entry.fingerprintMismatch).join(', ')}), ` +
+          'so no change is shown.'
+      );
+    }
+  }
+  if (comparison.apps.some((entry) => !entry.hasBaseline)) {
+    lines.push('No baseline on `main` yet for some rows.');
+  }
   if (skipped.length > 0) {
-    lines.push(`Skipped unreadable reports: ${skipped.join(', ')}.`, '');
+    lines.push(`Skipped unreadable reports: ${skipped.join(', ')}.`);
   }
 
   const shortCommit = commit ? commit.slice(0, 7) : 'unknown';
-  lines.push(`Measured at \`${shortCommit}\` · [run](${runUrl})`);
+  lines.push('', `\`${shortCommit}\` · [run](${runUrl})`);
 
   return `${lines.join('\n')}\n`;
 }
