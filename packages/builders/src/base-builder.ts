@@ -1653,6 +1653,7 @@ ${createWorkflowRouteHandlersCode(`workflowEntrypoint(workflowCode${workflowEntr
     bundleTransitiveLocalStepDependencies,
     sourceStepRegistrationImports,
     discoveredEntries,
+    shardWorkflowBundles = false,
   }: {
     inputFiles: string[];
     /** Output path for the step registrations bundle (side effects only) */
@@ -1666,6 +1667,8 @@ ${createWorkflowRouteHandlersCode(`workflowEntrypoint(workflowCode${workflowEntr
     bundleTransitiveLocalStepDependencies?: boolean;
     sourceStepRegistrationImports?: boolean;
     discoveredEntries?: DiscoveredEntries;
+    /** Build one VM bundle per workflow source graph and select by workflow ID. */
+    shardWorkflowBundles?: boolean;
   }): Promise<{
     manifest: WorkflowManifest;
     stepsContext?: esbuild.BuildContext;
@@ -1724,6 +1727,237 @@ ${createWorkflowRouteHandlersCode(`workflowEntrypoint(workflowCode${workflowEntr
       throw new Error('createWorkflowsBundle did not return interimBundleText');
     }
 
+    const quoteWorkflowCode = (code: string): string =>
+      `\`${code.replace(/[\\`$]/g, '\\$&')}\``;
+    let workflowCodeExpression = quoteWorkflowCode(workflowVMCode);
+
+    if (shardWorkflowBundles && !this.config.watch) {
+      const serdeFiles = [...effectiveDiscoveredEntries.discoveredSerdeFiles];
+      const workflowFiles = [
+        ...effectiveDiscoveredEntries.discoveredWorkflows,
+      ].sort();
+      const shards = await Promise.all(
+        workflowFiles.map(async (workflowFile, index) => {
+          const shardOutfile = `${flowOutfile}.__wf_shard_${index}.js`;
+          const shard = await this.createWorkflowsBundle({
+            inputFiles: [
+              workflowFile,
+              ...serdeFiles.filter((file) => file !== workflowFile),
+            ],
+            outfile: shardOutfile,
+            format,
+            bundleFinalOutput: false,
+            keepInterimBundleContext: false,
+            tsconfigPath,
+          });
+          await shard.interimBundleCtx?.dispose();
+          try {
+            const { unlink } = await import('node:fs/promises');
+            await unlink(shardOutfile);
+          } catch {
+            // Ignore cleanup errors for generated intermediate wrappers.
+          }
+          if (!shard.interimBundleText) {
+            throw new Error(
+              `Workflow shard for ${workflowFile} produced no VM code`
+            );
+          }
+          const workflowIds = Object.values(shard.manifest.workflows ?? {})
+            .flatMap((entries) => Object.values(entries))
+            .map((entry) => entry.workflowId);
+          return { code: shard.interimBundleText, workflowIds };
+        })
+      );
+      const codeByWorkflow = new Map<string, string>();
+      for (const shard of shards) {
+        for (const workflowId of shard.workflowIds) {
+          const current = codeByWorkflow.get(workflowId);
+          if (current === undefined || shard.code.length < current.length) {
+            codeByWorkflow.set(workflowId, shard.code);
+          }
+        }
+      }
+      const bundleKeyByCode = new Map<string, string>();
+      const workflowBundles = [...codeByWorkflow]
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([workflowId, code]) => {
+          let bundleKey = bundleKeyByCode.get(code);
+          if (bundleKey === undefined) {
+            bundleKey = `bundle-${bundleKeyByCode.size}`;
+            bundleKeyByCode.set(code, bundleKey);
+          }
+          return [workflowId, bundleKey] as const;
+        });
+      const { gzipSync } = await import('node:zlib');
+      const { applyBundlePatch, splitLines } = await import(
+        '@workflow/core/runtime/workflow-code'
+      );
+
+      // Delta-encode against the first bundle: shard bundles share their
+      // ~19k-line runtime scaffolding (99.9% of lines) and differ only in
+      // workflow source and scattered identifier lines, so storing every
+      // shard verbatim multiplies deployment size by the workflow count.
+      // A patience diff (unique-line anchors + longest increasing
+      // subsequence, recursing between anchors) produces line-splice ops per
+      // shard; each reconstruction is verified byte-for-byte and any shard
+      // the encoding cannot reproduce exactly is stored verbatim.
+      type PatchOp = { start: number; deleteCount: number; lines: string[] };
+      const diffLineOps = (
+        reference: string[],
+        target: string[]
+      ): PatchOp[] => {
+        const ops: PatchOp[] = [];
+        const emit = (
+          refLo: number,
+          refHi: number,
+          tgtLo: number,
+          tgtHi: number
+        ): void => {
+          if (refLo === refHi && tgtLo === tgtHi) return;
+          ops.push({
+            start: refLo,
+            deleteCount: refHi - refLo,
+            lines: target.slice(tgtLo, tgtHi),
+          });
+        };
+        const walk = (
+          refLo: number,
+          refHi: number,
+          tgtLo: number,
+          tgtHi: number
+        ): void => {
+          while (
+            refLo < refHi &&
+            tgtLo < tgtHi &&
+            reference[refLo] === target[tgtLo]
+          ) {
+            refLo++;
+            tgtLo++;
+          }
+          while (
+            refLo < refHi &&
+            tgtLo < tgtHi &&
+            reference[refHi - 1] === target[tgtHi - 1]
+          ) {
+            refHi--;
+            tgtHi--;
+          }
+          if (refLo === refHi || tgtLo === tgtHi) {
+            emit(refLo, refHi, tgtLo, tgtHi);
+            return;
+          }
+          const refUnique = new Map<string, number>();
+          for (let index = refLo; index < refHi; index++) {
+            const line = reference[index];
+            refUnique.set(line, refUnique.has(line) ? -1 : index);
+          }
+          const tgtUnique = new Map<string, number>();
+          for (let index = tgtLo; index < tgtHi; index++) {
+            const line = target[index];
+            tgtUnique.set(line, tgtUnique.has(line) ? -1 : index);
+          }
+          const anchors: Array<{ ref: number; tgt: number }> = [];
+          for (const [line, refIndex] of refUnique) {
+            if (refIndex < 0) continue;
+            const tgtIndex = tgtUnique.get(line);
+            if (tgtIndex === undefined || tgtIndex < 0) continue;
+            anchors.push({ ref: refIndex, tgt: tgtIndex });
+          }
+          anchors.sort((a, b) => a.ref - b.ref);
+          // Longest increasing subsequence over target positions keeps the
+          // largest set of anchors that appear in the same order both sides.
+          const tails: number[] = [];
+          const tailAnchor: number[] = [];
+          const previous: number[] = new Array(anchors.length).fill(-1);
+          for (let index = 0; index < anchors.length; index++) {
+            const value = anchors[index].tgt;
+            let lo = 0;
+            let hi = tails.length;
+            while (lo < hi) {
+              const mid = (lo + hi) >> 1;
+              if (tails[mid] < value) lo = mid + 1;
+              else hi = mid;
+            }
+            tails[lo] = value;
+            tailAnchor[lo] = index;
+            previous[index] = lo > 0 ? tailAnchor[lo - 1] : -1;
+          }
+          const chain: Array<{ ref: number; tgt: number }> = [];
+          for (
+            let index = tailAnchor[tails.length - 1];
+            index !== undefined && index >= 0;
+            index = previous[index]
+          ) {
+            chain.push(anchors[index]);
+          }
+          chain.reverse();
+          if (chain.length === 0) {
+            emit(refLo, refHi, tgtLo, tgtHi);
+            return;
+          }
+          let refCursor = refLo;
+          let tgtCursor = tgtLo;
+          for (const anchor of chain) {
+            walk(refCursor, anchor.ref, tgtCursor, anchor.tgt);
+            refCursor = anchor.ref + 1;
+            tgtCursor = anchor.tgt + 1;
+          }
+          walk(refCursor, refHi, tgtCursor, tgtHi);
+        };
+        walk(0, reference.length, 0, target.length);
+        return ops;
+      };
+
+      const orderedBundles = [...bundleKeyByCode].map(([code, bundleKey]) => ({
+        code,
+        bundleKey,
+      }));
+      const reference = orderedBundles[0];
+      const referenceLines =
+        reference !== undefined ? splitLines(reference.code) : [];
+      const verbatimBundles: Array<{ code: string; bundleKey: string }> = [];
+      const patchEntries: Array<{
+        bundleKey: string;
+        ops: PatchOp[];
+      }> = [];
+      for (const bundle of orderedBundles) {
+        if (bundle === reference) {
+          verbatimBundles.push(bundle);
+          continue;
+        }
+        const targetLines = splitLines(bundle.code);
+        const ops = diffLineOps(referenceLines, targetLines);
+        if (applyBundlePatch(referenceLines, ops) === bundle.code) {
+          patchEntries.push({ bundleKey: bundle.bundleKey, ops });
+        } else {
+          verbatimBundles.push(bundle);
+        }
+      }
+
+      workflowCodeExpression = `Object.freeze({\n  bundles: Object.freeze({\n${verbatimBundles
+        .map(
+          ({ code, bundleKey }) =>
+            `    ${JSON.stringify(bundleKey)}: ${JSON.stringify(gzipSync(code).toString('base64'))},`
+        )
+        .join(
+          '\n'
+        )}\n  }),\n  workflowBundles: Object.freeze({\n${workflowBundles
+        .map(
+          ([workflowId, bundleKey]) =>
+            `    ${JSON.stringify(workflowId)}: ${JSON.stringify(bundleKey)},`
+        )
+        .join('\n')}\n  }),\n  encoding: 'gzip-base64'${
+        reference !== undefined && patchEntries.length > 0
+          ? `,\n  reference: ${JSON.stringify(reference.bundleKey)},\n  patches: Object.freeze({\n${patchEntries
+              .map(
+                ({ bundleKey, ops }) =>
+                  `    ${JSON.stringify(bundleKey)}: ${JSON.stringify(ops)},`
+              )
+              .join('\n')}\n  })`
+          : ''
+      }\n})`;
+    }
+
     // Clean up the wrapper file
     try {
       const { unlink } = await import('node:fs/promises');
@@ -1734,7 +1968,6 @@ ${createWorkflowRouteHandlersCode(`workflowEntrypoint(workflowCode${workflowEntr
 
     // 3. Generate combined route file
     const stepsRelativePath = `./${basename(stepsOutfile).replace(/\\/g, '/')}`;
-    const escapedVMCode = workflowVMCode.replace(/[\\`$]/g, '\\$&');
     const workflowEntrypointOptionsCode = createWorkflowEntrypointOptionsCode({
       basePath: this.config.basePath,
       routeModuleBodyStartedAt: 'workflowRouteModuleBodyStartedAt',
@@ -1750,7 +1983,7 @@ const workflowRouteModuleBodyStartedAt = Date.now();
 // Prevent rollup from tree-shaking the steps side-effect import
 void __steps_registered;
 
-const workflowCode = \`${escapedVMCode}\`;
+const workflowCode = ${workflowCodeExpression};
 
 ${createWorkflowRouteHandlersCode(`workflowEntrypoint(workflowCode${workflowEntrypointOptionsCode})`)}`;
 

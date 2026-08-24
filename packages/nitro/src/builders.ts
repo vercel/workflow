@@ -130,6 +130,7 @@ export class LocalBuilder extends BaseBuilder {
       // because esbuild wraps CJS require() calls in ESM output.
       bundleFinalOutput: false,
       externalizeNonSteps: true,
+      shardWorkflowBundles: process.env.WORKFLOW_SHARD_VM_BUNDLES === '1',
       // In dev, Nitro dynamically imports the generated workflow files from
       // disk, so there is no later Rollup pass to resolve externalized local
       // TypeScript imports. In prod, Nitro/Rollup handles those imports.

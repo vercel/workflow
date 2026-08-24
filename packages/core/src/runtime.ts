@@ -131,6 +131,10 @@ import {
 } from './runtime/suspension-handler.js';
 import { useQuickJSVm } from './runtime/vm-mode.js';
 import { getWaitContinuationDispatch } from './runtime/wait-continuation.js';
+import {
+  selectWorkflowCode,
+  type WorkflowCode,
+} from './runtime/workflow-code.js';
 import { getWorld } from './runtime/world.js';
 import { dehydrateRunError, type PayloadKey } from './serialization.js';
 import { remapErrorStack } from './source-map.js';
@@ -690,7 +694,7 @@ async function getMaxInlineDurationMs(
  * @returns A function that can be used as a Vercel API route
  */
 export function workflowEntrypoint(
-  workflowCode: string,
+  workflowCode: WorkflowCode,
   options?: {
     namespace?: string;
     routeModuleBodyStartedAt?: number;
@@ -701,6 +705,7 @@ export function workflowEntrypoint(
 
   const namespace = resolveQueueNamespace(options?.namespace);
   const workflowPrefix = getQueueTopicPrefix('workflow', namespace);
+  const decodedWorkflowBundles = new Map<string, string>();
 
   const handler = (worldHandlers: World) =>
     worldHandlers.createQueueHandler(
@@ -777,6 +782,16 @@ export function workflowEntrypoint(
           : undefined;
         const { requestId } = metadata;
         const workflowName = metadata.queueName.slice(workflowPrefix.length);
+        const selectedWorkflowCode = selectWorkflowCode(
+          workflowCode,
+          workflowName,
+          decodedWorkflowBundles
+        );
+        if (selectedWorkflowCode === undefined) {
+          throw new WorkflowRuntimeError(
+            `No workflow VM bundle was generated for "${workflowName}".`
+          );
+        }
 
         // --- Max delivery check ---
         // Enforce max delivery limit before any infrastructure calls.
@@ -990,7 +1005,7 @@ export function workflowEntrypoint(
                       if (compiledWorkflowName !== workflow.workflowName) {
                         compiledWorkflowName = workflow.workflowName;
                         compiledWorkflowScripts = compileWorkflowBundle(
-                          workflowCode,
+                          selectedWorkflowCode,
                           workflow.workflowName
                         );
                         // Terminal runs can return without awaiting compilation.
@@ -3042,7 +3057,7 @@ export function workflowEntrypoint(
                           './runtime/quickjs-entrypoint.js'
                         );
                         const quickjsResult = await runWorkflowWithQuickJS({
-                          workflowCode,
+                          workflowCode: selectedWorkflowCode,
                           workflowName,
                           workflowRun,
                           preloadedEvents:
@@ -3386,7 +3401,7 @@ export function workflowEntrypoint(
                           'Node workflow replay requires compiled scripts'
                         );
                         workflowResult = await replayWorkflow({
-                          workflowCode,
+                          workflowCode: selectedWorkflowCode,
                           workflowRun,
                           events: eventLog.events,
                           encryptionKey: await encryptionKey.value,
@@ -5287,7 +5302,7 @@ export function workflowEntrypoint(
                           errorStack = remapErrorStack(
                             errorStack,
                             filename,
-                            workflowCode
+                            selectedWorkflowCode
                           );
                         }
 
