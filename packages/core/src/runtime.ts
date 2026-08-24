@@ -538,6 +538,22 @@ type RetentionDecision =
  * guarded, so they remain unretainable. A step is required to drive the next
  * inline iteration; hook-only suspensions park normally.
  *
+ * Retaining across an open hook also permits a hook-woken cold replay to race
+ * this invocation. That is safe only because each loaded log is a monotone,
+ * hole-free prefix; replaying a longer prefix preserves all earlier
+ * correlation-ID draws; `step_started` atomically chooses one owner; and an
+ * open hook suppresses optimistic step-body execution until that claim wins.
+ * The generation guard keeps losing same-boundary suspension signals stale,
+ * while a stale-snapshot/412 restart discards the retained session and replays
+ * from the authoritative log. A World that exposes a non-prefix view would
+ * violate this policy's precondition and could bind one ordinal to two logical
+ * branches before the step-ownership claim has a chance to arbitrate them.
+ *
+ * Quiescence assumes workflow code stays inside the sandbox's determinism
+ * contract. Escaping to the host realm (for example, recovering a host
+ * `Function` constructor to schedule real timers) already makes ordinary cold
+ * replay nondeterministic and is not defended here.
+ *
  * `hasOpenWait` is lazy because checking it scans the loaded event log. Keep it
  * last so cheap rejection reasons avoid that work.
  */
@@ -583,6 +599,35 @@ function getRetentionDecision({
     return { retain: false, reason: 'open_wait' };
   }
   return { retain: true };
+}
+
+const SERIALIZATION_BLOCKER_LOG_SAMPLE_LIMIT = 5;
+const SERIALIZATION_BLOCKER_LOG_DETAIL_LIMIT = 160;
+
+/** Keep retention diagnostics useful without emitting unbounded guest data. */
+function serializationBlockerLogMetadata(
+  blockers: SuspensionSerializationBlocker[]
+) {
+  return {
+    serializationBlockerCount: blockers.length,
+    serializationBlockers: blockers
+      .slice(0, SERIALIZATION_BLOCKER_LOG_SAMPLE_LIMIT)
+      .map(({ source, correlationId, kind, detail }) => ({
+        source,
+        correlationId,
+        kind,
+        ...(detail === undefined
+          ? {}
+          : {
+              detail:
+                detail.length > SERIALIZATION_BLOCKER_LOG_DETAIL_LIMIT
+                  ? `${detail.slice(0, SERIALIZATION_BLOCKER_LOG_DETAIL_LIMIT)}…`
+                  : detail,
+            }),
+      })),
+    serializationBlockersTruncated:
+      blockers.length > SERIALIZATION_BLOCKER_LOG_SAMPLE_LIMIT,
+  };
 }
 
 type ReplayEventLog =
@@ -3371,10 +3416,9 @@ export function workflowEntrypoint(
                               }
                             : {}),
                           ...(suspensionResult.serializationBlockers.length > 0
-                            ? {
-                                serializationBlockers:
-                                  suspensionResult.serializationBlockers,
-                              }
+                            ? serializationBlockerLogMetadata(
+                                suspensionResult.serializationBlockers
+                              )
                             : {}),
                         });
 
