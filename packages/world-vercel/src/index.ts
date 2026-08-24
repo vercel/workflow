@@ -1,5 +1,5 @@
 import type { World } from '@workflow/world';
-import { SPEC_VERSION_SUPPORTS_SLOT_IDENTITY } from '@workflow/world';
+import { mintedSpecVersion } from '@workflow/world';
 import { createAnalytics } from './analytics.js';
 import { createRunId, describeRun } from './create-run-id.js';
 import { createGetEncryptionKeyForRun } from './encryption.js';
@@ -30,12 +30,16 @@ export function createWorld(config?: APIConfig): World {
     config?.projectConfig?.projectId || process.env.VERCEL_PROJECT_ID;
 
   return {
-    // Spec v6 adds slot-numbered event ids on top of v5's client-side
-    // zstd/gzip payload compression. The version is what tells the backend
-    // which id scheme a run uses: it is stamped on `run_created` and read back
-    // on every later write, so a run created before v6 keeps its ULIDs even
-    // though this adapter now asks for slots.
-    specVersion: SPEC_VERSION_SUPPORTS_SLOT_IDENTITY,
+    // The version is what tells the backend which id scheme a run uses: it is
+    // stamped on `run_created` and read back on every later write, so a run
+    // created before spec 6 keeps its ULIDs for its whole life even though this
+    // adapter now asks for slot-numbered ids.
+    //
+    // Declared as the runtime's current version rather than as the literal
+    // version that introduced slots: a bump has to move this declaration with
+    // it, or the runtime's compatibility floor rises past the adapter shipped
+    // alongside it and rejects it (see `assertWorldSupportsRuntimeProtocol`).
+    specVersion: mintedSpecVersion(),
     capabilities: {
       hookRetention: { active: true },
       // Vercel Queues supports maxConcurrency-limited consumers, which
@@ -45,8 +49,8 @@ export function createWorld(config?: APIConfig): World {
       // Vercel deployments are atomic and immutable, so a deployment id names
       // one fixed build for its whole lifetime.
       deploymentAffinity: true,
-      // NOTE: the backend half of resumeHook()'s parallel fast path — that
-      // the server enforces the `(runId, resumeId)` dedup constraint — is
+      // NOTE: the backend half of resumeHook()'s parallel fast path (that
+      // the server enforces the `(runId, resumeId)` dedup constraint) is
       // NO LONGER a static world capability here. It is attested per-lookup by
       // the server via `Hook.resumeCapabilities.hookResumeDedupVersion`
       // (response-only, recomputed every by-token read). This lets a server

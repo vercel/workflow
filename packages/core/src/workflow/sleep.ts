@@ -102,7 +102,7 @@ export function createSleep(ctx: WorkflowOrchestratorContext) {
         const eventIndex = ctx.eventsConsumer.eventIndex;
         const barrier = registerDeliveryBarrier(ctx, eventIndex, 'wait');
         // The deferral is captured HERE, while consuming the event, and not
-        // after the queue tail below — same reasoning as step.ts. An earlier
+        // after the queue tail below: same reasoning as step.ts. An earlier
         // step or hook whose hydration slot sits in that tail has usually
         // delivered, and so deregistered its barrier, by the time the tail
         // resolves. Read then, it would be invisible and this wait would skip

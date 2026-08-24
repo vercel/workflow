@@ -1,6 +1,6 @@
 {
   "name": "@workflow/world",
-  "version": "5.0.0-beta.26",
+  "version": "5.0.0-beta.29",
   "description": "The Workflows World interface",
   "type": "module",
   "main": "dist/index.js",
@@ -20,7 +20,8 @@
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
-    "clean": "tsc --build --clean && rm -rf dist"
+    "clean": "tsc --build --clean && rm -rf dist",
+    "test": "vitest run src"
   },
   "dependencies": {
     "ulid": "catalog:",
@@ -29,7 +30,8 @@
   "devDependencies": {
     "@types/node": "catalog:",
     "@workflow/tsconfig": "workspace:*",
-    "typescript": "catalog:"
+    "typescript": "catalog:",
+    "vitest": "catalog:"
   },
   "keywords": [],
   "author": "",

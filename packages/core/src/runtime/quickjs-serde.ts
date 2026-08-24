@@ -6,8 +6,8 @@
  * host code operating on `JSValueHandle`s, using devalue 5.9's pluggable
  * operations (quickjs-wasi's host-side introspection primitives underneath).
  * The serde bundle previously evaluated inside the VM is gone: guest values
- * are read and built through handles, so no serializer code lives in — or
- * can be tampered with from — the guest realm.
+ * are read and built through handles, so no serializer code lives in (or
+ * can be tampered with from) the guest realm.
  *
  * Side-effect discipline mirrors the node:vm engine's hardened codec
  * (serialization/hardened.ts):
@@ -17,7 +17,7 @@
  *   `Symbol.toStringTag`;
  * - extraction goes through intrinsics captured at boot (before any user
  *   code runs) invoked with explicit receivers, or through own-property
- *   descriptor reads — patched prototypes and inherited accessors never
+ *   descriptor reads, so patched prototypes and inherited accessors never
  *   run;
  * - the only guest code serialization can execute is the same code the
  *   previous in-VM codec executed by contract: a class's static
@@ -30,7 +30,7 @@
  * versa).
  *
  * Hybrid value space: reducers return host shapes (plain objects, strings,
- * numbers) whose leaves may be guest handles — exactly how the node:vm
+ * numbers) whose leaves may be guest handles, exactly how the node:vm
  * codec mixes host shapes with sandbox-realm leaves. Every stringify
  * operation therefore dispatches on `JSValueHandle` and falls back to
  * devalue's default host operations for host values. Parse operations
@@ -143,8 +143,8 @@ const BRANDED_SAMPLES = `({
  *
  * Globals installed by the extensions/bootstrap (Headers, Request,
  * Response, ReadableStream, WritableStream, URL, URLSearchParams,
- * DOMException, __WorkflowAbortSignal) are captured defensively — absent
- * ones yield `undefined` and their reducers simply never match, exactly
+ * DOMException, __WorkflowAbortSignal) are captured defensively: absent
+ * ones yield `undefined` and their reducers never match, exactly
  * like the old in-VM reducers' `globalThis.X` probes.
  */
 const CAPTURE_INTRINSICS = `(() => {
@@ -268,7 +268,7 @@ type SymbolName = (typeof SYMBOL_NAMES)[number];
  * created BEFORE the workflow bundle evaluates (capture-before-user-code,
  * same as the fresh path), its handle's box lives in the snapshot's
  * linear memory, and every restored VM re-adopts it BY POINTER
- * (`adoptSerdeRoot`) — so serde initialization executes NO guest code
+ * (`adoptSerdeRoot`), so serde initialization executes NO guest code
  * after user code has run. Anything less lets a module-scope wrapper
  * around e.g. `Object.getOwnPropertyDescriptor` observe (and be mutated
  * by) a post-eval capture, diverging fresh and restored replays.
@@ -288,7 +288,7 @@ ${SYMBOL_NAMES.map(
  * bootstrap and BEFORE any user code. The returned handle owns the
  * container; on the baseline-snapshot path its raw box pointer
  * (`handle.ptr`) is recorded next to the snapshot and re-adopted per
- * restored VM via {@link adoptSerdeRoot} — do NOT dispose the handle
+ * restored VM via {@link adoptSerdeRoot}. Do NOT dispose the handle
  * before the snapshot is taken (the box must stay live in the memory
  * image).
  */
@@ -300,7 +300,7 @@ export function captureSerdeRoot(vm: QuickJS): JSValueHandle {
  * Re-create the capture-root handle in a VM restored from a snapshot
  * taken while the exported root was alive, via quickjs-wasi's
  * snapshot-portable handle tokens (`importHandle` duplicates the
- * underlying value — the returned handle is independently owned and the
+ * underlying value: the returned handle is independently owned and the
  * serde disposes it per restored VM). No guest code executes.
  */
 export function adoptSerdeRoot(vm: QuickJS, token: number): JSValueHandle {
@@ -310,7 +310,7 @@ export function adoptSerdeRoot(vm: QuickJS, token: number): JSValueHandle {
 /**
  * Export the capture root as a snapshot-portable token to record next to
  * the baseline snapshot. The root handle must stay undisposed until the
- * snapshot is taken (its box — and the reference it holds — must be part
+ * snapshot is taken (its box, and the reference it holds, must be part
  * of the memory image).
  */
 export function exportSerdeRoot(vm: QuickJS, root: JSValueHandle): number {
@@ -325,7 +325,7 @@ export interface QuickJSSerde {
   /**
    * The reducer names this codec applies, in registration order. Exposed
    * so tests can assert exhaustiveness against the shared value-space
-   * codec (codec-devalue-vm) — a reducer added there but not here would
+   * codec (codec-devalue-vm): a reducer added there but not here would
    * otherwise silently round-trip values as plain objects.
    */
   reducerKeys: readonly string[];
@@ -333,7 +333,7 @@ export interface QuickJSSerde {
   reviverKeys: readonly string[];
   /**
    * Install `globalThis.process = { env: Object.freeze({...}) }` in the
-   * VM through handles and boot-captured intrinsics only — no guest
+   * VM through handles and boot-captured intrinsics only: no guest
    * source is evaluated, so a module-scope wrapper around JSON.parse /
    * Object.freeze cannot observe the injection. This matters on the
    * baseline-snapshot path, where env injection happens after user code
@@ -355,7 +355,7 @@ export function createQuickJSSerde(
    * Pre-captured serde root (baseline-snapshot path): the container
    * `captureSerdeRoot` created BEFORE user code, re-adopted from the
    * restored memory image via `adoptSerdeRoot`. When omitted, the root
-   * is captured now — callers must guarantee no user code has run yet.
+   * is captured now; callers must guarantee no user code has run yet.
    * Either way, initialization below performs only plain-data property
    * reads and C-level classId reads on the container: NO guest code
    * executes here, so nothing user-patchable can observe or perturb it.
@@ -513,7 +513,7 @@ export function createQuickJSSerde(
    * Guest own-property check through the handle's introspection method.
    * MUST NOT be replaced with `Object.hasOwn`, which would interrogate the
    * host JSValueHandle wrapper object (always false) instead of the guest
-   * value — biome's noPrototypeBuiltins auto-fix does exactly that, which
+   * value; biome's noPrototypeBuiltins auto-fix does exactly that, which
    * is why this is centralized here with the suppression.
    */
   const guestHasOwn = (handle: JSValueHandle, key: string): boolean =>
@@ -522,7 +522,7 @@ export function createQuickJSSerde(
 
   /**
    * Own data-property read. Returns undefined for absent properties AND for
-   * accessor properties — an inherited or own getter is never invoked
+   * accessor properties: an inherited or own getter is never invoked
    * (matching the hardened node:vm codec's descriptor-based reads).
    */
   const own = (
@@ -592,7 +592,7 @@ export function createQuickJSSerde(
   };
 
   /**
-   * Whether `handle` has `prototypeHandle` anywhere on its prototype chain —
+   * Whether `handle` has `prototypeHandle` anywhere on its prototype chain:
    * the trap-free analogue of `instanceof` (which would fire
    * `Symbol.hasInstance`).
    */
@@ -725,8 +725,8 @@ export function createQuickJSSerde(
   };
 
   /**
-   * Extract a guest bigint via the captured `BigInt.prototype.toString` —
-   * `handle.toBigInt()` truncates to 64 bits.
+   * Extract a guest bigint via the captured `BigInt.prototype.toString`,
+   * since `handle.toBigInt()` truncates to 64 bits.
    */
   const guestBigInt = (handle: JSValueHandle): bigint =>
     BigInt(call(i.bigIntToString, handle).consume((h) => h.toString()));
@@ -2116,7 +2116,7 @@ export function createQuickJSSerde(
     serialize(value: JSValueHandle): Uint8Array {
       // Handle scope: reducers and the hybrid operations mint one handle
       // per visited value node (descriptor reads, dup()s, intrinsic call
-      // results) and nothing disposes them individually — without the
+      // results) and nothing disposes them individually. Without the
       // scope each serialize leaks ~one handle per node for the VM's
       // lifetime, which compounds across an inline-loop session's whole
       // batch. Requires quickjs-wasi >= 3.3.1: earlier versions also
@@ -2129,7 +2129,7 @@ export function createQuickJSSerde(
       //
       // `identities` must be cleared per pass ONCE handles are bulk-freed:
       // it keys object identity on the raw guest pointer, and freeing
-      // handles lets QuickJS reuse pointers — a stale entry from an
+      // handles lets QuickJS reuse pointers, so a stale entry from an
       // earlier pass could then alias a different object and corrupt the
       // dedup/cycle detection. Identity only needs stability within one
       // stringify pass.
@@ -2159,7 +2159,7 @@ export function createQuickJSSerde(
       const payload = decoder.decode(data.subarray(FORMAT_PREFIX_LENGTH));
       // Handle scope, mirroring serialize(): revivers mint intermediate
       // handles (children already attached to their parents, intrinsic
-      // call results) that are safe to free once the graph is built —
+      // call results) that are safe to free once the graph is built:
       // guest values are refcounted, so parents keep their children
       // alive. Only the root escapes to the caller.
       return vm.withScope((scope) =>

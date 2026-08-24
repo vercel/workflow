@@ -9,23 +9,28 @@
  * node:util), which is also what made it bundleable into the VM before the
  * serde moved host-side.
  *
- * Produces and consumes the same wire format as the Node.js workflow.ts —
+ * Produces and consumes the same wire format as the Node.js workflow.ts:
  * format-prefixed devalue data ("devl" + devalue.stringify output).
  */
 
+import { globalSingleton } from '@workflow/utils';
 import { devalueVmCodec } from './codec-devalue-vm.js';
 import { isFormatPrefix, SerializationFormat } from './types.js';
 
 const FORMAT_PREFIX_LENGTH = 4;
-let _encoder: { encode(s: string): Uint8Array };
-let _decoder: { decode(d: Uint8Array): string };
-function getEncoder() {
-  if (!_encoder) _encoder = new (globalThis as any).TextEncoder();
-  return _encoder;
+// On `globalThis` (see `globalSingleton`) so one process builds one pair,
+// rather than one per bundler layer this module is compiled into.
+const codecs = globalSingleton('@workflow/core//vmTextCodecs', 1, () => ({
+  encoder: undefined as { encode(s: string): Uint8Array } | undefined,
+  decoder: undefined as { decode(d: Uint8Array): string } | undefined,
+}));
+function getEncoder(): { encode(s: string): Uint8Array } {
+  codecs.encoder ??= new (globalThis as any).TextEncoder();
+  return codecs.encoder as { encode(s: string): Uint8Array };
 }
-function getDecoder() {
-  if (!_decoder) _decoder = new (globalThis as any).TextDecoder();
-  return _decoder;
+function getDecoder(): { decode(d: Uint8Array): string } {
+  codecs.decoder ??= new (globalThis as any).TextDecoder();
+  return codecs.decoder as { decode(d: Uint8Array): string };
 }
 
 /**

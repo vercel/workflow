@@ -575,7 +575,7 @@ export interface DurableAgentStreamOptions<
   /**
    * Whether to include raw chunks from the provider in the stream.
    * When enabled, you will receive raw chunks with type 'raw' that contain the unprocessed data from the provider.
-   * This allows access to cutting-edge provider features not yet wrapped by the AI SDK.
+   * This allows access to provider features not yet wrapped by the AI SDK.
    * Defaults to false.
    */
   includeRawChunks?: boolean;
@@ -763,7 +763,7 @@ export interface DurableAgentStreamResult<
  *
  * DurableAgent enables you to create AI-powered agents that can maintain state
  * across workflow steps, call tools, and gracefully handle interruptions and resumptions.
- * It integrates seamlessly with the AI SDK and the Workflow SDK for
+ * It integrates with the AI SDK and the Workflow SDK for
  * production-grade reliability.
  *
  * @example
@@ -1082,7 +1082,7 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
 
           // Further split non-provider tool calls into executable (has execute function)
           // and client-side (no execute function, needs external resolution)
-          // Note: missing tools (!tool) are left to executeTool which will throw —
+          // Note: missing tools (!tool) are left to executeTool which will throw;
           // only tools that exist but lack execute are treated as client-side.
           const executableToolCalls = nonProviderToolCalls.filter((tc) => {
             const tool = (effectiveTools as ToolSet)[tc.toolName];
@@ -1789,7 +1789,7 @@ async function executeTool(
     attributes: {
       'ai.toolCall.name': toolCall.toolName,
       'ai.toolCall.id': toolCall.toolCallId,
-      // Gate input recording on recordOutputs (AI SDK convention — tool args
+      // Gate input recording on recordOutputs (AI SDK convention: tool args
       // are considered "output" of the model, not user input)
       ...(telemetry?.recordOutputs !== false && {
         'ai.toolCall.args': toolCall.input,

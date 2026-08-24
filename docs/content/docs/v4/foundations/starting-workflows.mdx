@@ -11,7 +11,7 @@ related:
 
 Once you've defined your workflow functions, you need to trigger them to begin execution. This is done using the `start()` function from `workflow/api`, which enqueues a new workflow run and returns a `Run` object that you can use to track its progress.
 
-## The `start()` Function
+## The `start()` function
 
 The [`start()`](/docs/api-reference/workflow-api/start) function is used to programmatically trigger workflow executions from runtime contexts like API routes, Server Actions, or any server-side code.
 
@@ -41,7 +41,7 @@ export async function POST(request: Request) {
 
 **Learn more**: [`start()` API Reference](/docs/api-reference/workflow-api/start)
 
-## The `Run` Object
+## The `Run` object
 
 When you call `start()`, it returns a [`Run`](/docs/api-reference/workflow-api/start#returns) object that provides access to the workflow's status and results.
 
@@ -74,9 +74,9 @@ Most `Run` properties are async getters that return promises. You need to `await
 
 **Learn more**: [`Run` API Reference](/docs/api-reference/workflow-api/start#returns)
 
-## Common Patterns
+## Common patterns
 
-### Fire and Forget
+### Fire and forget
 
 The most common pattern is to start a workflow and immediately return, letting it execute in the background:
 
@@ -96,7 +96,7 @@ export async function POST(request: Request) {
 }
 ```
 
-### Wait for Completion
+### Wait for completion
 
 If you need to wait for the workflow to complete before responding:
 
@@ -118,7 +118,7 @@ export async function POST(request: Request) {
 Be cautious when waiting for `returnValue` - if your workflow takes a long time, your API route may timeout.
 </Callout>
 
-### Stream Updates to Client
+### Stream updates to client
 
 Stream real-time updates from your workflow as it executes, without waiting for completion:
 
@@ -183,7 +183,7 @@ Streams are particularly useful for AI workflows where you want to show progress
 
 **Learn more**: [Streaming in Workflows](/docs/foundations/serialization#streaming)
 
-### Check Status Later
+### Check status later
 
 You can retrieve a workflow run later using its `runId` with [`getRun()`](/docs/api-reference/workflow-api/get-run):
 
@@ -209,7 +209,7 @@ export async function GET(request: Request) {
 }
 ```
 
-## Next Steps
+## Next steps
 
 Now that you understand how to start workflows and track their execution:
 

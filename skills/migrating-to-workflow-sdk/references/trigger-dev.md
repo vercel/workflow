@@ -25,7 +25,7 @@
 
 - `@trigger.dev/sdk` task registration and `client.defineJob` / `task()` wiring
 - `trigger.config.ts` project config, queue config, and machine config
-- `schemaTask()` zod wrapper layer — move validation to the app boundary
+- `schemaTask()` Zod wrapper layer; move validation to the app boundary
 - `tasks.trigger()` / `runs.retrieve()` imports inside task bodies in favor of `start()` / `getRun()`
 - `wait.forToken()` token-issuance plumbing after converting to hooks/webhooks
 - `AbortTaskRunError` imports after converting to `FatalError`
@@ -45,7 +45,7 @@
   - See `references/shared-patterns.md` -> `## Generated callback URL (manual response)`
 - Durable progress writes with `getWritable()` (replaces `metadata.stream()`)
 - Idempotency keys on external writes via `getStepMetadata().stepId`
-- Step-level `RetryableError` + `maxRetries` (replaces `retry.onThrow` and `retry.fetch`). Retry count lives on the step via `myStep.maxRetries = N` (default 3). Control delay between attempts by throwing `new RetryableError(msg, { retryAfter: '5s' })` — there is no built-in exponential helper; compute the delay yourself based on `getStepMetadata().attempt` if you need one.
+- Step-level `RetryableError` + `maxRetries` (replaces `retry.onThrow` and `retry.fetch`). Retry count lives on the step via `myStep.maxRetries = N` (default 3). Control delay between attempts by throwing `new RetryableError(msg, { retryAfter: '5s' })`. There is no built-in exponential helper; compute the delay based on `getStepMetadata().attempt` if needed.
 - `FatalError` at step boundaries (replaces `AbortTaskRunError`)
 - Step-wrapped `start()` / `getRun()` for child runs (replaces `task.triggerAndWait()` and `batch.triggerAndWait()`)
 - Parallel fan-out via `Promise.all()` over step-wrapped `start()` calls (replaces `batch.triggerAndWait()`)

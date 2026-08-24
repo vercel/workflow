@@ -42,7 +42,7 @@ export async function setAttributes(
     try {
       await store.runReadyBarrier;
     } catch {
-      // intentional: ordering barrier only — see above.
+      // intentional: ordering barrier only, see above.
     }
   }
 

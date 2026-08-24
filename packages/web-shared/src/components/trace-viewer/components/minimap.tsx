@@ -200,9 +200,9 @@ export const Minimap = memo(function Minimap({
 
   // Density canvas: one thin line per span across the full run. Sizing is
   // read live and redraws run straight from the ResizeObserver (which fires
-  // before paint), so layout changes — e.g. the detail panel opening — never
+  // before paint), so layout changes (e.g. the detail panel opening) never
   // paint a frame with a stale, stretched bitmap.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: themeVersion is a redraw trigger — the canvas re-resolves its token colors when the theme flips
+  // biome-ignore lint/correctness/useExhaustiveDependencies: themeVersion is a redraw trigger; the canvas re-resolves its token colors when the theme flips
   useLayoutEffect(() => {
     const canvas = canvasRef.current;
     const container = containerRef.current;
@@ -276,7 +276,7 @@ export const Minimap = memo(function Minimap({
         return { mode: 'resize-right' };
       }
       // Panning a full-extent window is a no-op, so let a drag on the brush
-      // start a selection instead — the natural first gesture on the map.
+      // start a selection instead, the natural first gesture on the map.
       const { start, end } = viewportRef.current;
       const isFullExtent =
         start - rootStartMs < rootDurationMs * 0.001 &&

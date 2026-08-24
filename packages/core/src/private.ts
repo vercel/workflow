@@ -138,7 +138,7 @@ export interface WorkflowOrchestratorContext {
   /**
    * Increments when a suspension is accepted and on every retained-session
    * resume. STEP suspension signals capture it when scheduled and no-op if
-   * it moved (see step.ts) — this drops same-boundary sibling signals and
+   * it moved (see step.ts), which drops same-boundary sibling signals and
    * timers queued at boundary N that would fire after the session resumed
    * into boundary N+1. Sleep/hook/attribute signals are intentionally
    * unguarded: their presence makes the boundary unretainable, so a late
@@ -158,6 +158,14 @@ export interface WorkflowOrchestratorContext {
    * whole run and both replays of a run must draw in the same order.
    */
   generateUlid: () => string;
+  /**
+   * Monotone count of correlation-id draws this replay has made. Progress
+   * metric for {@link quiesceEarlierCascades}: a macrotask turn in which it
+   * does not move (and no hydration is in flight) means every woken branch has
+   * run as far as it can without another delivery. Optional so lightweight
+   * test contexts degrade to the single-yield behavior.
+   */
+  readonly mintCount?: number;
   generateNanoid: () => string;
   /**
    * Sequential promise queue that ensures all event-driven promise resolutions
@@ -171,12 +179,12 @@ export interface WorkflowOrchestratorContext {
    * Counter of in-flight async data delivery operations (step result
    * hydration, hook payload hydration, abort signal hydration). Suspensions
    * must wait for this to reach 0 before firing, to avoid preempting data
-   * delivery — e.g. dehydrating a step's arguments while an abort that should
+   * delivery, e.g. dehydrating a step's arguments while an abort that should
    * be reflected in those arguments is still hydrating its reason.
    */
   pendingDeliveries: number;
   /**
-   * Ordered registry of in-flight "branch-deciding" deliveries — the
+   * Ordered registry of in-flight "branch-deciding" deliveries: the
    * resolutions a workflow typically `Promise.race`s on, or awaits from
    * independent concurrent branches: hook payloads (`hook_received`), wait
    * completions (`wait_completed`), and step results (`step_completed` /
@@ -189,7 +197,7 @@ export interface WorkflowOrchestratorContext {
    * costing extra hops; a `wait_completed` resolves with fewer, and a reused
    * sleep can resolve in an entirely earlier loop iteration; a step result is
    * gated on hydration whose cost varies between replays of the SAME
-   * invocation — the first replay pays the full decrypt/decompress/revive,
+   * invocation: the first replay pays the full decrypt/decompress/revive,
    * while later replays sharing the invocation's `ReplayPayloadCache`
    * memo-hit small primitive results and resolve in one or two hops. Either
    * way, the resolution that the committed event log ordered first can lose a
@@ -234,33 +242,39 @@ interface DeliveryBarrierEntry {
    * that already had a waiting consumer when it was consumed.
    *
    * False for a BUFFERED hook payload no consumer has claimed yet: it is
-   * delivered by `claim()`, i.e. whenever the workflow next reads the hook —
+   * delivered by `claim()`, i.e. whenever the workflow next reads the hook,
    * which may be causally *after* a later-in-log delivery. `arm()` flips it
    * once a consumer takes the payload.
    */
   armed: boolean;
+  /**
+   * Retire this entry: resolve `delivered` and remove it from the registry,
+   * exactly as `markDelivered` would. Called only by the context's safety-net
+   * dispenser ({@link ensureBarrierSafetyNet}), and only on the lowest-index
+   * entry at delivery idle. Idempotent.
+   */
+  retire: () => void;
 }
 
 /**
  * Which earlier kinds each delivery kind defers behind. Chosen so that no kind
  * blocks on a peer it does not need to:
  *
- *  - a hook defers behind earlier WAITS and STEPS — not earlier hooks, which
- *    are sequential same-entity payloads and must not block one another;
- *  - a wait defers behind earlier HOOKS and STEPS — not earlier waits, since a
- *    wait never needs to queue behind another wait;
+ *  - a hook defers behind earlier HOOKS, WAITS and STEPS;
+ *  - a wait defers behind earlier HOOKS and STEPS (not earlier waits, since a
+ *    wait never needs to queue behind another wait);
  *  - a step defers behind earlier WAITS, HOOKS and STEPS.
  *
  * The step-behind-step edge is not redundant with the serial `promiseQueue`.
  * The queue fixes the order in which step results are HYDRATED, but a step no
- * longer resolves inside its queue slot — it captures the outcome there and
+ * longer resolves inside its queue slot: it captures the outcome there and
  * resolves from a detached continuation once its barrier clears. Two steps
  * agree on that continuation's ordering only while they defer behind the same
  * set, which holds when they are consumed in the same drain window but not
  * across windows: a step consumed later can miss a wait/hook barrier that an
  * earlier step is still parked on, because the barrier retired in between. The
  * earlier step is then waiting out the macrotask yield below while the later
- * one resolves on microtasks, and overtakes it — see
+ * one resolves on microtasks, and overtakes it. See
  * `delivery-barrier-coverage.test.ts`. Deferring behind earlier steps
  * closes that window structurally: the earlier step's barrier is still
  * registered precisely because it has not delivered yet.
@@ -269,7 +283,7 @@ interface DeliveryBarrierEntry {
  * wait-for graph can never contain a cycle.
  */
 const DEFER_BEHIND: Record<DeliveryKind, readonly DeliveryKind[]> = {
-  hook: ['wait', 'step'],
+  hook: ['hook', 'wait', 'step'],
   wait: ['hook', 'step'],
   step: ['wait', 'hook', 'step'],
 };
@@ -284,6 +298,11 @@ const DEFER_BEHIND: Record<DeliveryKind, readonly DeliveryKind[]> = {
  * Those two MUST agree exactly, and the doc block on
  * {@link awaitEarlierDeliveries} stakes deadlock-freedom on it, so the
  * condition lives here rather than being spelled out twice.
+ *
+ * One deliberate exception: the log-order-draws turnstile in
+ * {@link quiesceEarlierCascades} waits on ANY lower armed entry, a strictly
+ * wider relation than this one. Why that width cannot deadlock the
+ * safety-net dispenser is argued at the turnstile itself.
  */
 function gatesOn(
   kind: DeliveryKind,
@@ -295,14 +314,14 @@ function gatesOn(
     return false;
   }
   // A step skips an UNARMED earlier entry (an unclaimed buffered hook
-  // payload) — see the asymmetry described on `awaitEarlierDeliveries`. The
+  // payload). See the asymmetry described on `awaitEarlierDeliveries`. The
   // skip is direct, never transitive: armed entries are still gated on, even
   // when they are themselves parked behind such a payload.
   return !(kind === 'step' && !other.armed);
 }
 
 /**
- * Whether `entry` will resolve on its own — it is armed, and every earlier
+ * Whether `entry` will resolve on its own: it is armed, and every earlier
  * delivery it actually gates on ({@link gatesOn}) will likewise resolve on its
  * own.
  *
@@ -318,7 +337,7 @@ function gatesOn(
  *
  * Recursion terminates because every edge points to a strictly smaller index.
  * `memo` keeps the walk linear in registry size, and the registry is not small
- * by construction — `EventsConsumer` drains consecutively consumable events
+ * by construction: `EventsConsumer` drains consecutively consumable events
  * synchronously while barriers only retire on microtask-driven deliveries, so
  * a fan-out of `Promise.race([hook, sleep])` branches accumulates one barrier
  * per branch per kind. The memo MUST be per-call: `armed` mutates between
@@ -326,7 +345,7 @@ function gatesOn(
  *
  * The memo is an optimization, not a correctness requirement. It once was one:
  * `awaitEarlierDeliveries` used to run this walk for every earlier entry of a
- * step delivery, with no early exit, which unmemoized is T(n) = Σ T(j) —
+ * step delivery, with no early exit, which unmemoized is T(n) = Σ T(j),
  * measured at 4.3e8 recursive calls (84s) for 40 alternating armed hook/wait
  * barriers. That call site is gone; a step now tests `armed` directly. The one
  * surviving caller, {@link hasParkedCommittedDelivery}, cannot reach that
@@ -378,8 +397,8 @@ function computeResolvesOnItsOwn(
  * earlier in the log than `eventIndex` and that a delivery of `kind` defers
  * behind (see {@link DEFER_BEHIND}), so that this resolution is handed to the
  * workflow only after all relevant earlier-in-log deliveries have been. This
- * is what keeps a `Promise.race` — or the ULID a follow-up `useStep` draws on
- * a concurrent branch — deterministic and aligned with the committed event
+ * is what keeps a `Promise.race` (or the ULID a follow-up `useStep` draws on
+ * a concurrent branch) deterministic and aligned with the committed event
  * log, independent of microtask-hop counts, hydration time, or race-argument
  * order. When this delivery does have to wait, it also yields a macrotask
  * afterwards so the earlier delivery's consumer can run to its own next
@@ -392,10 +411,10 @@ function computeResolvesOnItsOwn(
  * One asymmetry: a STEP result skips any earlier delivery that is UNARMED,
  * i.e. a buffered hook payload no consumer has claimed. Such a payload is
  * delivered only when the workflow next reads the hook, and reaching that read
- * very commonly requires the step result itself (`await stepX()` before the
+ * often requires the step result itself (`await stepX()` before the
  * read). Gating the step on it would stall the workflow until the barrier's
  * idle safety net fires, which then releases every delivery queued behind that
- * payload at once — losing exactly the race this ordering exists to protect.
+ * payload at once, losing exactly the race this ordering exists to protect.
  * Waits and hooks keep gating on unclaimed payloads: for them, waiting for the
  * claim IS the ordering guarantee (a `wait_completed` must not preempt a
  * payload the log ordered first).
@@ -406,36 +425,146 @@ function computeResolvesOnItsOwn(
  * there is: a workflow that creates a hook it does not read on this branch,
  * races `step` against `sleep`, and has the log say the sleep won. The step
  * would then overtake the wait, both branches would swap the correlation ids
- * they draw next, and replay would diverge — see
+ * they draw next, and replay would diverge. See
  * `step-delivery-ordering.test.ts`. Waiting instead is safe because the
  * payload's own idle safety net retires it and the whole chain then delivers
  * in log order; {@link hasParkedCommittedDelivery} deliberately reports such a
  * step as not self-resolving so that idle stays reachable.
  *
- * "The whole chain then delivers in log order" rests on the PAYLOAD's safety
- * net observing idle before the net of the wait parked behind it. If the
- * wait's net fired first, the step's gate would open while the wait was still
- * parked on the payload barrier and the inversion above would reappear. Within
- * one drain window that order is structural, and carried by FIFO of the
- * safety-net polls: nets arm via `setTimeout` in log order during synchronous
- * consumption, each polling round re-arms through `promiseQueue.then(...)` in
- * the order the checks ran, and each net that fires flips
- * {@link hasParkedCommittedDelivery} back to true, re-blocking the rest until
- * the released delivery completes. Replay — where divergence manifests —
- * always consumes the log in one window. Do not "optimize" the net scheduling
- * in a way that breaks that per-window FIFO.
+ * "The whole chain then delivers in log order" rests on the PAYLOAD's barrier
+ * being retired before that of anything parked behind it. That order is
+ * structural: safety-net retirements go through one per-context dispenser that
+ * only ever retires the lowest-index entry at delivery idle, and every
+ * retirement that wakes a chain flips {@link hasParkedCommittedDelivery} back
+ * to true, re-blocking the dispenser until the chain has drained. See
+ * {@link ensureBarrierSafetyNet}. (This used to rest on the FIFO of one idle
+ * poll per barrier, which held for a single parked segment but decayed to
+ * timing noise with several: the release order, and therefore the ULIDs
+ * drawn by the woken branches, then depended on how much log the replay had
+ * loaded. storm-log-replay.test.ts replays a production log corrupted exactly
+ * that way.)
  */
+/**
+ * Whether correlation-id draw order is pinned to event-log order. Default ON:
+ * only the literal string `WORKFLOW_LOG_ORDER_DRAWS=0` opts out. `=false`,
+ * `=off`, and every other value keep it enabled. Read per call so tests can
+ * flip it.
+ *
+ * Off, a delivery that had to defer yields ONE macrotask after its
+ * predecessors resolve. This is enough for short consumers, but a woken branch
+ * whose path to its next draw crosses more hops (a `Promise.race` resolution, a
+ * user-level semaphore, an async-iterator read) can still be overtaken by a
+ * later-in-log delivery's shorter cascade, so the run's draw order, including
+ * its correlation ids, depends on how much log this replay loaded.
+ * On, the yield becomes a fixpoint: the delivery resolves only once every
+ * earlier cascade has quiesced, making the draw sequence a pure function of
+ * the dense log, stable under prefix extension, and concurrent writers'
+ * duplicate creates identical (deduped) instead of colliding.
+ */
+function isLogOrderDrawsEnabled(): boolean {
+  return process.env.WORKFLOW_LOG_ORDER_DRAWS !== '0';
+}
+
+/**
+ * One quiescence turn: lets the entire pending microtask queue drain, then
+ * yields to the event loop once. `setImmediate` (check phase) is used where
+ * available because Node clamps `setTimeout(0)` to ~1ms while `setImmediate`
+ * costs ~20µs. Every branch-deciding delivery pays this turn at least
+ * once, so on a sequential replay the clamp is the whole cost. Timers still
+ * run between consecutive turns (the loop re-enters the event loop each
+ * iteration, passing through the timers phase), so chains parked on the
+ * safety-net dispenser's `setTimeout` cadence are not starved.
+ */
+function quiescenceTurn(delayMs: number): Promise<void> {
+  if (delayMs === 0 && typeof setImmediate === 'function') {
+    return new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  return new Promise<void>((resolve) => setTimeout(resolve, delayMs));
+}
+
+/**
+ * Waits until the workflow can make no further progress without another
+ * delivery: repeated (promise-queue drain + event-loop turn)s until a full
+ * turn passes with no new ULID draws and no hydration in flight.
+ *
+ * Termination: each extra iteration requires a new ULID draw or a hydration
+ * started in the previous turn. `mintCount` counts EVERY draw from the run's
+ * sequence, including correlation ids and serialization-driven draws (stream
+ * ids minted through the `STABLE_ULID` global while dehydrating). This is
+ * conservative in the safe direction: serialization draws only extend the
+ * wait, and both body progress and the serialization work one cascade can
+ * schedule are finite between deliveries, so the fixpoint is reached. The
+ * loop holds this delivery's own barrier registered (its `markDelivered` has
+ * not run), so `isDeliveryIdle` stays false and no suspension can preempt the
+ * cascade being waited out.
+ *
+ * A rejected `promiseQueue` settles immediately and forever, so looping at
+ * the normal cadence on a failed run would degenerate into a busy loop (the
+ * same hazard {@link ensureBarrierSafetyNet} documents). Iterations that
+ * observe the queue rejected back off to a 50ms tick instead.
+ */
+async function quiesceEarlierCascades(
+  ctx: WorkflowOrchestratorContext,
+  eventIndex: number
+): Promise<void> {
+  for (;;) {
+    const mintsBefore = ctx.mintCount ?? 0;
+    const pendingBefore = ctx.pendingDeliveries;
+    // Settled or rejected, the queue snapshot only orders us behind work
+    // already chained; a rejection is the run failing elsewhere.
+    const queueRejected = await ctx.promiseQueue.then(
+      () => false,
+      () => true
+    );
+    await quiescenceTurn(queueRejected ? 50 : 0);
+    if (
+      (ctx.mintCount ?? 0) !== mintsBefore ||
+      pendingBefore !== 0 ||
+      ctx.pendingDeliveries !== 0
+    ) {
+      continue;
+    }
+    // Quiet is not enough on its own: several delivery chains can be sitting
+    // in this loop at once, and letting the first quiet observation resolve
+    // would break the tie by timer arrival. This mode removes that arrival-order
+    // dependence. A lower-index ARMED barrier is a delivery committed to
+    // happening that has not happened yet, so this one keeps waiting. Unarmed
+    // entries (buffered payloads nobody has claimed) do not block, exactly as
+    // in `gatesOn`: their handover is claim-driven, which is body-position
+    // determined and therefore already a function of the prefix.
+    //
+    // This is deliberately a WIDER waits-for relation than `gatesOn` (which,
+    // e.g., excludes wait→wait): under log-order draws EVERY branch-deciding
+    // delivery must resolve in log order, kinds included. The width is safe
+    // against the dispenser deadlock that `resolvesOnItsOwn` guards, because
+    // the one edge the wider relation adds (waiting on an armed entry that
+    // gatesOn does not model) always bottoms out at the same unarmed payload:
+    // a lower armed WAIT is non-self-resolving only when it is (transitively)
+    // parked behind an unclaimed buffered payload, and a wait gates on every
+    // lower hook and step directly, so the spinner here also gates on that
+    // payload through `gatesOn` and is itself reported non-self-resolving.
+    // The dispenser therefore stays unblocked and retires the chain head; see
+    // the parked-chain test in delivery-barrier-coverage.test.ts.
+    let lowerArmed = false;
+    for (const [index, entry] of ctx.pendingDeliveryBarriers ?? []) {
+      if (index < eventIndex && entry.armed) {
+        lowerArmed = true;
+        break;
+      }
+    }
+    if (!lowerArmed) {
+      return;
+    }
+  }
+}
+
 export async function awaitEarlierDeliveries(
   ctx: WorkflowOrchestratorContext,
   eventIndex: number | undefined,
   kind: DeliveryKind
 ): Promise<void> {
   // Defensive: tolerate contexts that predate this field (test harnesses).
-  if (
-    eventIndex === undefined ||
-    !ctx.pendingDeliveryBarriers ||
-    ctx.pendingDeliveryBarriers.size === 0
-  ) {
+  if (eventIndex === undefined || !ctx.pendingDeliveryBarriers) {
     return;
   }
   const barriers = ctx.pendingDeliveryBarriers;
@@ -448,9 +577,22 @@ export async function awaitEarlierDeliveries(
   }
   if (earlier.length > 0) {
     await Promise.all(earlier);
+  }
+  if (isLogOrderDrawsEnabled()) {
+    // Unconditional, not just when a barrier was still registered: an earlier
+    // delivery's barrier deregisters when its resolve() runs, but the branch
+    // it woke may still be hops away from its next draw. A later delivery
+    // consumed after that deregistration sees an empty gate set, and without
+    // this it would resolve mid-cascade and overtake the draw. This is the exact
+    // arrival-order dependence this mode exists to remove. Costs one quiet
+    // macrotask turn when nothing is in flight.
+    await quiesceEarlierCascades(ctx, eventIndex);
+    return;
+  }
+  if (earlier.length > 0) {
     // An earlier delivery being "delivered" only means its `resolve()` ran.
     // The branch it woke may need an arbitrary number of further microtask
-    // hops before it reaches its next `useStep` call and draws a ULID — a
+    // hops before it reaches its next `useStep` call and draws a ULID: a
     // `for await` over a hook, for instance, resumes the generator, settles
     // the promise from `next()`, and only then runs the loop body. Resolving
     // this delivery on a microtask would let it overtake that branch and
@@ -496,12 +638,12 @@ export interface DeliveryBarrier {
  * suspending and never observes it), the barrier auto-resolves at idle.
  *
  * INVARIANT required of every call site: a barrier that is ever `armed` must
- * be paired with a delivery chain that runs unconditionally — attached when
+ * be paired with a delivery chain that runs unconditionally, attached when
  * the event is consumed (waits, step results, waiting-consumer hook payloads,
  * aborts), or by the `claim()` whose invocation is what arms it (buffered
  * hook payloads). The idle check ({@link scheduleWhenIdle}) refuses to
  * observe idle while an armed, self-resolving barrier is undelivered, and the
- * safety net below is itself idle-gated — so an armed barrier with no
+ * safety net below is itself idle-gated, so an armed barrier with no
  * unconditional chain would livelock every idle check in the run, including
  * its own retirement.
  */
@@ -518,12 +660,6 @@ export function registerDeliveryBarrier(
 
   let done = false;
   const { promise, resolve } = withResolvers<void>();
-  const entry: DeliveryBarrierEntry = {
-    kind,
-    delivered: promise,
-    armed: options.armed ?? true,
-  };
-  barriers.set(eventIndex, entry);
 
   const finish = () => {
     if (done) {
@@ -536,12 +672,23 @@ export function registerDeliveryBarrier(
     resolve();
   };
 
+  const entry: DeliveryBarrierEntry = {
+    kind,
+    delivered: promise,
+    armed: options.armed ?? true,
+    retire: finish,
+  };
+  barriers.set(eventIndex, entry);
+
   // Safety net: if this delivery is never delivered to the workflow (its
   // branch was not taken / the run is suspending, or a buffered hook payload
   // is only claimed after a later delivery the workflow is still waiting on),
-  // resolve at idle so a later delivery gated on it cannot deadlock and the
-  // registry cannot leak an entry per abandoned delivery.
-  scheduleWhenIdle(ctx, finish);
+  // it is retired at idle so a later delivery gated on it cannot deadlock and
+  // the registry cannot leak an entry per abandoned delivery. Retirement goes
+  // through the context's single ordered dispenser rather than a per-barrier
+  // idle poll. See {@link ensureBarrierSafetyNet} for why the ORDER of these
+  // retirements is load-bearing.
+  ensureBarrierSafetyNet(ctx);
 
   return {
     markDelivered: finish,
@@ -552,21 +699,134 @@ export function registerDeliveryBarrier(
 }
 
 /**
+ * Contexts whose barrier safety-net dispenser is currently armed. Module-level
+ * so the context interface (constructed literally by many test harnesses)
+ * needs no new field; entries drop with the context.
+ */
+// per-copy-ok: keyed on the orchestrator context object, and a context is armed
+// and observed by the same copy that created it. Entries can never be looked up
+// from another copy because that copy has no reference to the key.
+const activeBarrierSafetyNets = new WeakSet<WorkflowOrchestratorContext>();
+
+/**
+ * The barrier registry's safety net: ONE idle-gated dispenser per context that
+ * retires, at each observation of delivery idle, only the LOWEST-index entry
+ * still registered, then yields so the chain it released can run before the
+ * next retirement is considered.
+ *
+ * Why one ordered dispenser and not a poll per barrier (which is what this
+ * replaced): the order of safety-net retirements decides the delivery order of
+ * every chain parked behind an unclaimed buffered hook payload: a hook the
+ * workflow never reads (a fire-and-forget `createHook`) parks every later
+ * armed wait/hook behind a barrier that only this net can retire. Per-barrier
+ * polls fire in whatever order their re-arm cycles land, and each re-arm
+ * attaches to a `promiseQueue` that grows between checks, so with several
+ * parked segments the release order decays to timing noise. Draws (`useStep`
+ * correlation ids) then depend on which segment happened to release first:
+ * concretely, on how MUCH log the replay loaded, since that decides what is in
+ * the registry. That is the mechanism behind slot-mode CORRUPTED_EVENT_LOG on
+ * storm-shaped runs (see storm-log-replay.test.ts, built from a production
+ * log): two replays of the same run holding different-length prefixes bound
+ * the same correlation ordinal to different steps.
+ *
+ * Retiring lowest-first is not merely tidy, it is the only order that cannot
+ * invert the log: every gate points from a higher index to a strictly lower
+ * one, so at delivery idle the lowest undelivered entry gates on nothing
+ * still registered: it is the head of every parked chain (in practice, the
+ * unclaimed payload itself). Releasing it lets the chain above deliver
+ * through the ordinary barrier order; anything the release wakes flips
+ * {@link hasParkedCommittedDelivery} back to true, which re-blocks this
+ * dispenser until the chain has fully drained. A higher entry must never be
+ * retired while a lower one is registered, which is exactly the inversion
+ * described on {@link awaitEarlierDeliveries}.
+ *
+ * The dispenser goes dormant when the registry empties and is re-armed by the
+ * next registration, so an idle context holds no live timer.
+ */
+function ensureBarrierSafetyNet(ctx: WorkflowOrchestratorContext): void {
+  const barriers = ctx.pendingDeliveryBarriers;
+  if (!barriers || activeBarrierSafetyNets.has(ctx)) {
+    return;
+  }
+  activeBarrierSafetyNets.add(ctx);
+  const rearm = () => {
+    setTimeout(check, 0);
+  };
+  // A rejected promiseQueue settles immediately and forever, so re-arming
+  // through it at the normal cadence would degenerate into a busy loop on an
+  // abandoned context. Back off instead: correctness only needs the dispenser
+  // to still exist, since the registry gates suspension via isDeliveryIdle
+  // and a dead dispenser would wedge the run.
+  const rearmAfterRejection = () => {
+    setTimeout(check, 50);
+  };
+  const check = () => {
+    if (barriers.size === 0) {
+      // Dormant. The next registerDeliveryBarrier re-arms.
+      activeBarrierSafetyNets.delete(ctx);
+      return;
+    }
+    if (!canRetireAbandonedBarriers(ctx)) {
+      // A delivery is hydrating or committed-but-parked on its deferral; let
+      // the queue drain and re-check a tick later (same cadence as
+      // scheduleWhenIdle).
+      ctx.promiseQueue.then(rearm, rearmAfterRejection);
+      return;
+    }
+    // Idle with entries left: nothing remaining delivers on its own, so
+    // release parked chains from the head: lowest index first, one at a
+    // time, re-reading idle between retirements. A retirement that wakes a
+    // chain flips {@link hasParkedCommittedDelivery} synchronously (it is
+    // computed from the registry this loop just mutated), which stops the
+    // sweep so the chain delivers before anything above it is released. A
+    // retirement that wakes nothing (a stale payload no delivery gates on)
+    // keeps the sweep going, so a backlog of those drains in ONE idle
+    // observation, since pacing them one per timer tick would hold
+    // consumed-but-undelivered events hostage long enough to trip the events
+    // consumer's unconsumed-event deadline and fail healthy replays.
+    while (barriers.size > 0 && canRetireAbandonedBarriers(ctx)) {
+      let lowestIndex: number | undefined;
+      let lowestEntry: DeliveryBarrierEntry | undefined;
+      for (const [index, entry] of barriers) {
+        if (lowestIndex === undefined || index < lowestIndex) {
+          lowestIndex = index;
+          lowestEntry = entry;
+        }
+      }
+      lowestEntry?.retire();
+    }
+    setTimeout(check, 0);
+  };
+  setTimeout(check, 0);
+}
+
+/**
+ * Whether the safety-net dispenser may retire abandoned barriers right now:
+ * no hydration in flight and no committed delivery still working through its
+ * detached deferral. This is deliberately WEAKER than {@link isDeliveryIdle}:
+ * the dispenser is what empties the registry, so gating it on registry
+ * emptiness would gate its own work.
+ */
+function canRetireAbandonedBarriers(ctx: WorkflowOrchestratorContext): boolean {
+  return ctx.pendingDeliveries === 0 && !hasParkedCommittedDelivery(ctx);
+}
+
+/**
  * Whether some registered branch-deciding delivery is going to reach the
  * workflow without any further help (it is armed and not transitively parked
- * behind an unclaimed buffered payload — see {@link resolvesOnItsOwn}) but
+ * behind an unclaimed buffered payload, see {@link resolvesOnItsOwn}) but
  * has not been handed over yet.
  *
  * This is the delivery state `pendingDeliveries` cannot see. That counter
  * covers the hydration window inside a serial `promiseQueue` slot and is
  * released there, while the delivery's `resolve()` runs later, from a
- * detached continuation behind {@link awaitEarlierDeliveries} — including its
+ * detached continuation behind {@link awaitEarlierDeliveries}, including its
  * macrotask yield whenever the delivery had to defer. Replaying a batch of N
  * parallel step results consumed in one drain window leaves N-1 of them
  * parked on that yield with `pendingDeliveries` already at 0. An idle check
  * armed during the same window (a pending `sleep()` arms one on every replay)
  * could then observe "idle" mid-deferral and raise a `WorkflowSuspension`
- * BEFORE the workflow's own continuations ran — a suspension carrying none of
+ * BEFORE the workflow's own continuations ran: a suspension carrying none of
  * the follow-up work the batch was about to create, which the runtime
  * dutifully schedules as nothing, leaving the run dormant until an unrelated
  * timer fires (vercel/workflow#3183).
@@ -575,7 +835,7 @@ export function registerDeliveryBarrier(
  * accuracy but for termination: an unclaimed buffered hook payload is retired
  * BY the idle safety net in {@link registerDeliveryBarrier}, so counting it
  * here would gate its own retirement. That reasoning extends to whatever is
- * parked behind such a payload — a wait, and a step gating on that wait — for
+ * parked behind such a payload (a wait, and a step gating on that wait) for
  * the same reason: the whole chain moves only once the net fires, and it
  * cannot fire while the chain is counted. Self-resolving deliveries always
  * deliver from their own chains (see the INVARIANT on
@@ -589,7 +849,7 @@ export function hasParkedCommittedDelivery(
   if (!barriers || barriers.size === 0) {
     return false;
   }
-  // Shared across this call only — see `resolvesOnItsOwn`.
+  // Shared across this call only. See `resolvesOnItsOwn`.
   const selfResolving = new Map<number, boolean>();
   for (const [index, entry] of barriers) {
     if (resolvesOnItsOwn(barriers, index, entry, selfResolving)) {
@@ -605,7 +865,7 @@ export function hasParkedCommittedDelivery(
  * "In flight" is two distinct windows, each with its own guard:
  * `pendingDeliveries > 0` covers hydration inside the serial queue slots, and
  * {@link hasParkedCommittedDelivery} covers the detached gap between a slot
- * releasing that counter and the delivery's `resolve()` actually running —
+ * releasing that counter and the delivery's `resolve()` actually running,
  * deliberately outside `pendingDeliveries` (see step.ts), and invisible to it.
  *
  * Anything that decides a replay is over, or that a replay went wrong, has to
@@ -613,9 +873,24 @@ export function hasParkedCommittedDelivery(
  * what it has and has not done yet says nothing about the run. Two callers
  * read it, for the two such decisions: {@link scheduleWhenIdle} for the
  * suspension, and the events consumer's unconsumed-event check for divergence.
+ *
+ * A non-empty barrier registry counts as in flight, even when every remaining
+ * entry is parked behind an unclaimed buffered payload. Those entries only
+ * move when the safety-net dispenser retires them (lowest-first, see
+ * {@link ensureBarrierSafetyNet}), and the deliveries they release are real
+ * workflow reactions: a suspension raised before they run would be computed
+ * from a VM that has not seen them, scheduling none of their follow-up work
+ * and leaving the run dormant (the vercel/workflow#3183 shape). The dispenser
+ * itself is gated on {@link canRetireAbandonedBarriers}, the weaker predicate
+ * without the registry term, precisely so it can do the draining that this
+ * predicate waits for; registry size strictly decreases at each retirement,
+ * so idle is always reached.
  */
 export function isDeliveryIdle(ctx: WorkflowOrchestratorContext): boolean {
-  return ctx.pendingDeliveries === 0 && !hasParkedCommittedDelivery(ctx);
+  return (
+    ctx.pendingDeliveries === 0 &&
+    (!ctx.pendingDeliveryBarriers || ctx.pendingDeliveryBarriers.size === 0)
+  );
 }
 
 /**

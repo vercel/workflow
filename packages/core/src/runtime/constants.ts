@@ -1,3 +1,4 @@
+import { globalSingleton } from '@workflow/utils';
 import { envNumber } from '@workflow/world';
 import { runtimeLogger } from '../logger.js';
 
@@ -10,15 +11,15 @@ import { runtimeLogger } from '../logger.js';
 // `retry-after` the handler returns (see world-vercel
 // `getHandlerErrorRetryAfterSeconds`) fed through VQS `calculateBackoffDelay`.
 // VQS uses our value for the first 32 attempts (clamped to [5s, 900s]) then
-// applies its own exponential growth — every hop hard-capped at the SQS limit
+// applies its own exponential growth, every hop hard-capped at the SQS limit
 // of 900s. With the backoff ramping toward that 900s ceiling (reached by
 // ~delivery 11), 48 attempts span roughly 9–10 hours of wall-clock (~35,000s),
 // comfortably under the 24-hour message-visibility limit so the failure path
 // runs before the message expires. (A flatter, low-capped backoff exhausts the
 // budget in only a few hours, failing otherwise-healthy runs during a transient
 // backend outage; conversely, spanning the full 24h window would require a
-// substantially higher cap here, not a higher per-hop ceiling — VQS clamps
-// every hop at 900s.)
+// substantially higher cap here, not a higher per-hop ceiling, since VQS
+// clamps every hop at 900s.)
 export const MAX_QUEUE_DELIVERIES = 48;
 
 /**
@@ -40,7 +41,7 @@ export function getMaxQueueDeliveries(): number {
 /**
  * Default maximum time allowed for the *replay* portion of a single workflow
  * handler invocation (in ms). This budget only covers deterministic-replay
- * and workflow-VM execution between step boundaries — inline step bodies
+ * and workflow-VM execution between step boundaries. Inline step bodies
  * (`"use step"` functions invoked via `executeStep`) do NOT count against
  * it. Step bodies are bounded separately by the platform's function
  * `maxDuration` (e.g. 800s on Vercel Pro Fluid) and `NO_INLINE_REPLAY_AFTER_MS`.
@@ -51,7 +52,7 @@ export function getMaxQueueDeliveries(): number {
  * `RUN_ERROR_CODES.REPLAY_TIMEOUT`.
  *
  * Note that on Vercel Hobby (standard functions), the platform `maxDuration`
- * is 60s — well below this budget, so the platform SIGTERM will fire first
+ * is 60s, well below this budget, so the platform SIGTERM will fire first
  * and the queue will re-deliver until the visibility window expires. With
  * Fluid Compute on Hobby the per-function ceiling rises to 300s, still
  * under the default budget.
@@ -73,15 +74,23 @@ export const MAX_REPLAY_TIMEOUT_MS = 780_000;
 
 // Track which raw env var values we've already warned about so the warning
 // log only fires once per process (the function may be called many times).
-const warnedReplayTimeoutValues = new Set<string>();
+//
+// On `globalThis` rather than at module scope so "once per process" survives
+// bundling: this package is compiled into the host application's server build
+// once per bundler layer, and per-copy sets warn once per layer instead.
+const warned = globalSingleton('@workflow/core//envWarnings', 1, () => ({
+  replayTimeoutValues: new Set<string>(),
+  maxInlineStepsValues: new Set<string>(),
+  maxEventsValues: new Set<string>(),
+}));
 
 function warnOnce(
   raw: string,
   message: string,
   data: Record<string, unknown>
 ): void {
-  if (warnedReplayTimeoutValues.has(raw)) return;
-  warnedReplayTimeoutValues.add(raw);
+  if (warned.replayTimeoutValues.has(raw)) return;
+  warned.replayTimeoutValues.add(raw);
   runtimeLogger.warn(message, data);
 }
 
@@ -90,7 +99,7 @@ function warnOnce(
  *
  * Reads `process.env.WORKFLOW_REPLAY_TIMEOUT_MS` lazily so tests and
  * deployments can override per invocation. Invalid / out-of-range values
- * fall back to a safe value (no throw — the env var is an escape hatch,
+ * fall back to a safe value (no throw: the env var is an escape hatch,
  * not a hard requirement) and emit a one-time warning so misconfiguration
  * is observable.
  */
@@ -126,13 +135,13 @@ export function getReplayTimeoutMs(): number {
 }
 
 /**
- * Reset the warn-once cache. Test-only — exported so unit tests can
+ * Reset the warn-once cache. Test-only: exported so unit tests can
  * exercise the warn path repeatedly without sharing state.
  *
  * @internal
  */
 export function _resetReplayTimeoutWarnCacheForTests(): void {
-  warnedReplayTimeoutValues.clear();
+  warned.replayTimeoutValues.clear();
 }
 
 // Number of queue delivery attempts to allow before permanently failing a run
@@ -156,8 +165,8 @@ export function getReplayTimeoutMaxRetries(): number {
 /**
  * Default maximum number of steps the owned-inline path runs inline (in
  * parallel) per suspension. The rest are queued to background handlers. Each
- * inline step is created lazily — its `step_created` is folded into the
- * `step_started` that `executeStep` sends — so inlining N steps saves N queue
+ * inline step is created lazily (its `step_created` is folded into the
+ * `step_started` that `executeStep` sends), so inlining N steps saves N queue
  * round-trips for a `Promise.all`-style fan-out. `1` reproduces the
  * single-inline-step behavior exactly (useful kill-switch).
  *
@@ -175,15 +184,12 @@ export const MIN_MAX_INLINE_STEPS = 1;
  */
 export const MAX_MAX_INLINE_STEPS = 16;
 
-// Warn-once cache for WORKFLOW_MAX_INLINE_STEPS, keyed by raw env value.
-const warnedMaxInlineStepsValues = new Set<string>();
-
 /**
  * Resolve the effective max number of inline steps for the current process.
  *
  * Reads `process.env.WORKFLOW_MAX_INLINE_STEPS` lazily so tests and
  * deployments can override per invocation. Invalid / out-of-range values fall
- * back to a safe value (no throw — the env var is an escape hatch) and emit a
+ * back to a safe value (no throw: the env var is an escape hatch) and emit a
  * one-time warning so misconfiguration is observable.
  */
 export function getMaxInlineSteps(): number {
@@ -191,8 +197,8 @@ export function getMaxInlineSteps(): number {
   if (!raw) return MAX_INLINE_STEPS;
   const parsed = Number(raw);
   if (!Number.isInteger(parsed) || parsed <= 0) {
-    if (!warnedMaxInlineStepsValues.has(raw)) {
-      warnedMaxInlineStepsValues.add(raw);
+    if (!warned.maxInlineStepsValues.has(raw)) {
+      warned.maxInlineStepsValues.add(raw);
       runtimeLogger.warn(
         'Ignoring WORKFLOW_MAX_INLINE_STEPS: not a positive integer; using default',
         { raw, defaultValue: MAX_INLINE_STEPS }
@@ -202,8 +208,8 @@ export function getMaxInlineSteps(): number {
   }
   if (parsed < MIN_MAX_INLINE_STEPS) return MIN_MAX_INLINE_STEPS;
   if (parsed > MAX_MAX_INLINE_STEPS) {
-    if (!warnedMaxInlineStepsValues.has(raw)) {
-      warnedMaxInlineStepsValues.add(raw);
+    if (!warned.maxInlineStepsValues.has(raw)) {
+      warned.maxInlineStepsValues.add(raw);
       runtimeLogger.warn('WORKFLOW_MAX_INLINE_STEPS above maximum; clamped', {
         raw,
         clampedValue: MAX_MAX_INLINE_STEPS,
@@ -243,7 +249,7 @@ export const MAX_RESILIENT_STEP_INPUT_BYTES = 128 * 1024;
  * **Off by default.** Enable via `WORKFLOW_RESILIENT_STEP_DISPATCH=1`.
  *
  * The queue publish races the create's verdict, and a create can come back
- * refused — as a duplicate this replay should stop pursuing, or as a stale
+ * refused: as a duplicate this replay should stop pursuing, or as a stale
  * write on a World that refuses rather than reports. Either way the message
  * carrying the payload is already out, so the consumer can materialize a step
  * whose create was refused, and nothing orders the verdict before the
@@ -254,7 +260,38 @@ export function isResilientStepDispatchEnabled(): boolean {
   return process.env.WORKFLOW_RESILIENT_STEP_DISPATCH === '1';
 }
 
-const warnedMaxEventsValues = new Set<string>();
+/**
+ * Whether batched event transitions are enabled: the suspension handler folds
+ * a clean fan-out's `step_created` + `wait_created` writes into one
+ * `world.events.createBatch` call (one durable write, per-event outcomes)
+ * instead of one write per event. Only engages when the World implements the
+ * optional `events.createBatch` AND the run is on slot identity
+ * (specVersion >= 6) AND the suspension carries no attribute/hook writes and
+ * no resilient step dispatch. Everything else keeps the single-event path
+ * byte-for-byte.
+ *
+ * Reads `process.env.WORKFLOW_BATCH_TRANSITIONS` lazily. Default **ON**;
+ * disabled only by an explicit `'0'` / `'false'` (case-insensitive), the
+ * operator escape hatch that restores the exact prior one-write-per-event
+ * path, mirroring `WORKFLOW_TURBO`'s kill-switch shape.
+ */
+export function isBatchTransitionsEnabled(): boolean {
+  const raw = process.env.WORKFLOW_BATCH_TRANSITIONS;
+  if (raw === undefined || raw === '') return true;
+  return !(raw === '0' || raw.toLowerCase() === 'false');
+}
+
+/**
+ * Ceiling on events per `createBatch` call from the batched fan-out fold.
+ * Mirrors the server's transaction budgets with a comfortable margin: each
+ * fan-out event costs 2 transaction items server-side (entity + event row)
+ * against the 100-item DynamoDB cap, and inline payloads count against a
+ * 768 KB byte budget, so 32 events stays well under both, and a fan-out larger
+ * than this commits in successive batches (split batches lose
+ * cross-batch atomicity, which is exactly today's per-event-write crash
+ * surface, and every batch still converges on retry via per-event 409s).
+ */
+export const MAX_BATCH_FANOUT_EVENTS = 32;
 
 /**
  * Optional client-side override for the server-supplied per-run event ceiling.
@@ -264,15 +301,15 @@ const warnedMaxEventsValues = new Set<string>();
  *
  * Reads `process.env.WORKFLOW_MAX_EVENTS_OVERRIDE` lazily so tests and
  * deployments can override per invocation. Invalid values fall back to unset
- * (no throw — the env var is an escape hatch) and emit a one-time warning.
+ * (no throw: the env var is an escape hatch) and emit a one-time warning.
  */
 export function getMaxEventsOverride(): number | undefined {
   const raw = process.env.WORKFLOW_MAX_EVENTS_OVERRIDE;
   if (!raw) return undefined;
   const parsed = Number(raw);
   if (!Number.isInteger(parsed) || parsed <= 0) {
-    if (!warnedMaxEventsValues.has(raw)) {
-      warnedMaxEventsValues.add(raw);
+    if (!warned.maxEventsValues.has(raw)) {
+      warned.maxEventsValues.add(raw);
       runtimeLogger.warn(
         'Ignoring WORKFLOW_MAX_EVENTS_OVERRIDE: not a positive integer; using server limit',
         { raw }
@@ -290,7 +327,7 @@ export function getMaxEventsOverride(): number | undefined {
  * `step_started` only before the terminal write.
  *
  * This can run a step body more than once when handlers race for the same
- * step's create-claim — both run the body before one wins. That is unsafe for
+ * step's create-claim: both run the body before one wins. That is unsafe for
  * steps with non-idempotent side effects; in particular, two concurrent runs
  * of a step that writes to the workflow stream (e.g. an AI agent streaming
  * tokens) can interleave and corrupt the stream data. So the optimization is
@@ -325,7 +362,7 @@ export function isOptimisticInlineStartExplicitlyDisabled(): boolean {
  * the first invocation* of a run (detected by the entrypoint via `runInput`
  * presence + `metadata.attempt === 1`): it backgrounds the `run_started` event
  * creation, skips the initial event-log load (nothing has been written yet),
- * and forces optimistic inline step start for that invocation — independent of
+ * and forces optimistic inline step start for that invocation, independent of
  * `WORKFLOW_OPTIMISTIC_INLINE_START`.
  *
  * Forcing optimistic start is safe here because the first delivery has no
@@ -348,7 +385,7 @@ export function isTurboEnabled(): boolean {
  * enabled (default ON). When on, the engine hydrates a VM with the
  * workflow bundle once per function instance, snapshots it, and starts
  * every invocation by restoring the snapshot instead of re-evaluating
- * the bundle — skipping the dominant share of VM startup (measured
+ * the bundle, skipping the dominant share of VM startup (measured
  * ~77ms → ~3ms to first suspension for a 1.3MB bundle). Bundles whose
  * module scope consumes randomness, reads the clock, or replaces a
  * serialization intrinsic are detected at hydrate time and
@@ -383,12 +420,12 @@ export function isVmRetentionEnabled(): boolean {
  * Whether inline step ownership is enabled (default ON). When on, the lazy
  * `step_started` that creates an inline step records the owning queue
  * message ID, and wake replays that observe an actively-owned step enqueue a
- * *delayed backstop* message instead of immediately requeueing it — fixing
+ * *delayed backstop* message instead of immediately requeueing it, fixing
  * duplicate inline step execution when a hook/wait wakes a run mid-step
  * (vercel/workflow#2780).
  *
  * `WORKFLOW_INLINE_OWNERSHIP=0` (or `false`) is the kill switch: dispatch
- * reverts to the unconditional immediate requeue. Stamping is unaffected —
+ * reverts to the unconditional immediate requeue. Stamping is unaffected:
  * the recorded ownerMessageId is inert data when the switch is off.
  */
 export function isInlineOwnershipEnabled(): boolean {
@@ -405,16 +442,16 @@ export function isInlineOwnershipEnabled(): boolean {
  * immediately; past it, they enqueue immediately (today's behavior).
  *
  * Why a fixed 860 and not a value derived from the function's `maxDuration`:
- * neither runtime nor build time can see the resolved value — builders emit
+ * neither runtime nor build time can see the resolved value: builders emit
  * `maxDuration: 'max'`, which the platform resolves per-plan at deploy, and
  * no env var or request-context deadline API exposes the result. The bound
  * comes from a platform rule instead: durations above 800s require explicit
  * per-function numeric config, so a builder-emitted `'max'` resolves to at
- * most 800s — 860s therefore dominates any workflow route's invocation
+ * most 800s, and 860s therefore dominates any workflow route's invocation
  * lifetime plus scheduling slack. Revisit when that ceiling moves (the
  * 30-minute duration beta becoming reachable via `'max'` would invalidate
  * the bound). Worlds without an invocation kill bound (world-local,
- * self-hosted) get no death proof from any constant — there the in-process
+ * self-hosted) get no death proof from any constant. There the in-process
  * single-flight layer (step-single-flight.ts) is what makes a backstop
  * firing mid-step harmless.
  *
@@ -428,14 +465,14 @@ export const INLINE_OWNERSHIP_LEASE_SECONDS = 860;
 
 /**
  * Upper bound for the lease env override. 900s is the queue's maximum
- * per-message delay (SQS cap) — a longer lease would need delay chaining
+ * per-message delay (SQS cap). A longer lease would need delay chaining
  * like long waits use; clamp instead so one delayed message always suffices.
  */
 export const MAX_INLINE_OWNERSHIP_LEASE_SECONDS = 900;
 
 /**
  * Effective inline-ownership lease. Override via
- * `WORKFLOW_INLINE_OWNERSHIP_LEASE_SECONDS` — e.g. raise it on self-hosted
+ * `WORKFLOW_INLINE_OWNERSHIP_LEASE_SECONDS`, e.g. raise it on self-hosted
  * multi-instance worlds with long-running steps to widen the window in which
  * a live owner is protected from a concurrent backstop execution.
  */
@@ -487,9 +524,9 @@ export function getPreconditionMaxInProcessRestarts(): number {
 // The in-process budget above is per-invocation, and a re-invocation that
 // enqueues a fresh message also restarts the queue's delivery count, so without
 // a counter carried on the message a permanently fenced run has no run-level
-// bound at all. It can stay fenced without any permanent fault — a full reload
+// bound at all. It can stay fenced without any permanent fault (a full reload
 // is not atomic across pages, so a busy run can acquire a new hole on every
-// reload — so the chain is counted and the run fails once this many
+// reload), so the chain is counted and the run fails once this many
 // re-invocations have been spent on stale-snapshot rejections.
 export const PRECONDITION_MAX_REINVOCATIONS = 5;
 

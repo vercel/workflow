@@ -1,15 +1,15 @@
 /**
  * Rendering a scenario as text.
  *
- * The event stream is the primary artifact — it is the thing a reader checks
+ * The event stream is the primary artifact: it is the thing a reader checks
  * to answer "did the hook really land between `step_started` and the replay
  * that followed it?". So cues, deliveries and notes are interleaved into the
  * same column as events rather than printed as a separate log: the whole
  * point is their position relative to the events around them.
  *
  * **Events are referred to one way and one way only: by log position.** `#12`
- * is the twelfth event in the durable log — the log sorted the way
- * `events.list` sorts it, `(createdAt, eventId)` — and `@7` is a reference to
+ * is the twelfth event in the durable log (the log sorted the way
+ * `events.list` sorts it, `(createdAt, eventId)`), and `@7` is a reference to
  * the resource created at position 7. Raw ULIDs never appear; the ids in
  * violation messages are rewritten to positions on the way out. One scheme,
  * so "the hook is at 7 and `wait_completed` at 8" is a claim a reader can
@@ -21,8 +21,8 @@
  * Those lines are highlighted. That disagreement is the entire subject of the
  * red scenarios, and this is where you see it.
  *
- * Colour is decoration over that: it is applied only when the destination is a
- * terminal, and is off under `NO_COLOR` or `--no-color`. With colour off the
+ * Color is decoration over that: it is applied only when the destination is a
+ * terminal, and is off under `NO_COLOR` or `--no-color`. With color off the
  * output is the same plain ASCII it always was, stable enough to check in as a
  * golden file.
  */
@@ -37,7 +37,7 @@ export interface RenderOptions {
   /** Maximum characters of decoded payload to show per event. */
   payloadWidth?: number;
   /**
-   * ANSI colour. Defaults to "on if stdout is a TTY and `NO_COLOR` is unset",
+   * ANSI color. Defaults to "on if stdout is a TTY and `NO_COLOR` is unset",
    * so piping to a file or a golden-file comparison gets plain ASCII without
    * anyone having to remember a flag.
    */
@@ -48,10 +48,10 @@ const CHECK = 'ok';
 const CROSS = 'FAIL';
 
 // ---------------------------------------------------------------------------
-// Colour
+// Color
 // ---------------------------------------------------------------------------
 
-/** SGR codes, applied through `Paint` so a no-colour render never sees them. */
+/** SGR codes, applied through `Paint` so a no-color render never sees them. */
 const SGR = {
   reset: 0,
   bold: 1,
@@ -71,7 +71,7 @@ type Style = keyof typeof SGR;
  * A `paint(text, ...styles)` function that is either real or the identity.
  *
  * Resolving the on/off decision once, into a function, keeps every call site
- * free of `if (color)` — which matters because getting one of them wrong is
+ * free of `if (color)`, which matters because getting one of them wrong is
  * how escape codes leak into a file that was supposed to be diffable.
  */
 type Paint = (text: string, ...styles: Style[]) => string;
@@ -119,7 +119,7 @@ function eventStyle(eventType: string): Style {
  * Log positions for every event in a trace.
  *
  * Built by sorting the events the way `events.list` does, *not* by the order
- * they were committed in — the two differ exactly when something interesting
+ * they were committed in: the two differ exactly when something interesting
  * happened, and the number has to describe the durable log for a reader to be
  * able to reason about what a replay will see.
  */
@@ -169,7 +169,7 @@ function eventRef(position: number | undefined, width: number): string {
     : `#${String(position).padStart(width)}`;
 }
 
-/** `@7` — the resource created at position 7. */
+/** `@7`: the resource created at position 7. */
 function resourceRef(position: number | undefined): string {
   return position === undefined ? '@?' : `@${position}`;
 }
@@ -313,7 +313,7 @@ export function renderTrace(
   const blank = ' '.repeat(index.width + 1);
   const lines: string[] = [];
   // Highest log position printed so far. A line below it is an event that was
-  // committed after one that outranks it in the log — the disagreement the six
+  // committed after one that outranks it in the log, the disagreement the six
   // red scenarios are about.
   let highWater = -1;
 
@@ -327,7 +327,7 @@ export function renderTrace(
       entry.kind === 'event' || entry.kind === 'hold'
         ? shortWriter(entry.writer)
         : '';
-    // Pad before painting: `padEnd` counts escape bytes, so a coloured column
+    // Pad before painting: `padEnd` counts escape bytes, so a colored column
     // padded afterwards comes out short by however long the escape is.
     const writer =
       entry.kind === 'event' || entry.kind === 'hold'
@@ -414,10 +414,7 @@ export function renderScenario(
       `      run=${result.runId || '(none)'} outcome=${result.outcome} ` +
         `events=${result.events.length} deliveries=${result.deliveries} ` +
         `worldCalls=${result.worldCalls} virtual=${formatDuration(result.virtualElapsedMs)} ` +
-        `wall=${result.wallMs.toFixed(0)}ms replay=${describeReplay(result)}` +
-        // Only when it is on. The default is production, and a line that
-        // repeats "this is the ordinary world" on every scenario says nothing.
-        (result.appendOnlyLog ? ' log=append-only' : ''),
+        `wall=${result.wallMs.toFixed(0)}ms replay=${describeReplay(result)}`,
       'dim'
     )
   );
@@ -492,9 +489,9 @@ export interface MarkdownSummaryOptions {
   title?: string;
   /**
    * Which world produced these results, as short `key=value` chips above the
-   * table — `log=append-only`, `fence=off`. A summary that does not say which
-   * world it ran in is unreadable next to another one, and the whole point of
-   * this book is comparing two runs of it.
+   * table, such as `log=append-only`, `fence=off`. A summary that does not
+   * say which world it ran in is unreadable next to another one, and the
+   * whole point of this book is comparing two runs of it.
    */
   chips?: readonly string[];
   /**
@@ -509,8 +506,8 @@ export interface MarkdownSummaryOptions {
  * PR comment or `$GITHUB_STEP_SUMMARY`.
  *
  * One collapsed `<details>`: a visible line carrying the count and a green or
- * orange dot, and the whole table behind it. Built to be stacked — a CI job
- * plays the book once per world and puts two of these under one heading — so
+ * orange dot, and the whole table behind it. Built to be stacked (a CI job
+ * plays the book once per world and puts two of these under one heading), so
  * it renders no heading of its own, and nothing above the fold but the count.
  *
  * There is deliberately no list of failures. Six of them are red on purpose,
@@ -518,7 +515,7 @@ export interface MarkdownSummaryOptions {
  * news, and it grows a wall of text on exactly the PRs that changed nothing.
  * The count is the signal; the names are one click away.
  *
- * Never coloured — ANSI in a markdown file renders as garbage.
+ * Never colored, since ANSI in a markdown file renders as garbage.
  */
 export function renderMarkdownSummary(
   results: readonly ScenarioResult[],
@@ -528,7 +525,7 @@ export function renderMarkdownSummary(
   const out: string[] = [];
 
   // A dot rather than words: `<summary>` is one line of a collapsed comment,
-  // and markdown has no colour, so this is the only way the two worlds read as
+  // and markdown has no color, so this is the only way the two worlds read as
   // different at a glance without being read at all.
   out.push('<details>');
   out.push(

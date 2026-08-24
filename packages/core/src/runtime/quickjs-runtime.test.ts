@@ -670,6 +670,75 @@ describe('deterministic replay clock', () => {
     });
     expect(unwrapResult(r3.completed!.result)).toEqual(result);
   });
+
+  it('does not let a sealed-log noop move the clock', async () => {
+    // A noop's createdAt is the SEALER's wall clock, and a seal can happen
+    // long after the events at higher positions committed. Feeding it to the
+    // clock would make a log whose hole was sealed replay differently from
+    // the same log whose hole its own writer filled — and, because the clock
+    // is monotonic, would poison every later Date.now() in the run. The
+    // node:vm engine gets this from EventsConsumer's noop skip; this pins the
+    // same rule for the QuickJS event loop, which advances the clock in its
+    // own pass over the log.
+    const run = makeRun();
+
+    const probe = await runQuickJSWorkflow({
+      workflowCode: sleepTimingWorkflow,
+      workflowId: 'workflow//test//workflow',
+      workflowRun: run,
+      events: [],
+    });
+    const waitCid = probe.suspended!.pendingOperations[0].correlationId;
+
+    const waitCreatedAt = new Date('2025-01-01T00:00:01Z');
+    const waitCompletedAt = new Date('2025-01-01T00:00:11Z');
+    const sealedAt = new Date('2025-01-01T01:00:00Z');
+
+    // The hole sits BETWEEN wait_created and wait_completed, which is where a
+    // fanout leaves one: the position was handed out, its writer died, and the
+    // events above it committed on their own clocks.
+    const withSeal = [
+      runCreatedEvent(run),
+      {
+        eventId: 'evnt_002',
+        runId: run.runId,
+        eventType: 'wait_created' as const,
+        correlationId: waitCid,
+        eventData: { resumeAt: waitCompletedAt },
+        createdAt: waitCreatedAt,
+      },
+      {
+        eventId: 'evnt_003',
+        runId: run.runId,
+        eventType: 'noop' as const,
+        correlationId: 'noop_00000000000000000000000003',
+        eventData: { sealed: true },
+        createdAt: sealedAt,
+      },
+      {
+        eventId: 'evnt_004',
+        runId: run.runId,
+        eventType: 'wait_completed' as const,
+        correlationId: waitCid,
+        createdAt: waitCompletedAt,
+      },
+    ];
+
+    const sealed = await runQuickJSWorkflow({
+      workflowCode: sleepTimingWorkflow,
+      workflowId: 'workflow//test//workflow',
+      workflowRun: run,
+      events: withSeal as never,
+    });
+    const result = unwrapResult(sealed.completed!.result) as {
+      startTime: number;
+      endTime: number;
+    };
+
+    // The wait completed at its own timestamp, not the seal's.
+    expect(result.endTime).toBe(+waitCompletedAt);
+    expect(result.endTime).toBeLessThan(+sealedAt);
+  });
 });
 
 describe('AbortController (hook-backed)', () => {

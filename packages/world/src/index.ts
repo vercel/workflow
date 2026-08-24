@@ -27,6 +27,7 @@ export {
 export {
   _resetEnvWarnCacheForTests,
   type EnvNumberOptions,
+  envFlag,
   envNumber,
   getMaxEventsPerRun,
 } from './env-config.js';
@@ -50,6 +51,7 @@ export {
   isHookEventRequiringExistence,
   isHookLifecycleEventType,
   isRunEventType,
+  isSealedNoopEvent,
   isStepEventType,
   isTerminalRunEventType,
   isTerminalStepEventType,
@@ -70,6 +72,14 @@ export {
   HookSchema,
 } from './hooks.js';
 export type * from './interfaces.js';
+// The client this flag selects lives in `./node-http.js`, which is reachable
+// only by subpath: it imports node builtins statically, and this index is also
+// pulled into browser bundles.
+export {
+  isNodeHttpEnabled,
+  NODE_HTTP_DEFAULT,
+  NODE_HTTP_ENV_VAR,
+} from './node-http-flag.js';
 export type * from './queue.js';
 export {
   getQueueTopicPrefix,
@@ -128,7 +138,9 @@ export {
 export type { SpecVersion } from './spec-version.js';
 export {
   isLegacySpecVersion,
+  mintedSpecVersion,
   requiresNewerWorld,
+  SEALED_LOG_ENV_VAR,
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_LEGACY,
   SPEC_VERSION_MAX_SUPPORTED,
@@ -136,6 +148,7 @@ export {
   SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
   SPEC_VERSION_SUPPORTS_COMPRESSION,
   SPEC_VERSION_SUPPORTS_EVENT_SOURCING,
+  SPEC_VERSION_SUPPORTS_SEALED_LOG,
   SPEC_VERSION_SUPPORTS_SLOT_IDENTITY,
 } from './spec-version.js';
 export type * from './steps.js';

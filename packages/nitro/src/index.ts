@@ -87,7 +87,7 @@ export default {
       // Nitro bundles undici (via the world adapter) into the ESM server
       // output. undici loads most node: builtins as ESM imports, but pulls in
       // `node:http2` lazily via a bare `require('node:http2')` inside a
-      // try/catch — which the bundler leaves un-wired, so in the ESM bundle the
+      // try/catch, which the bundler leaves un-wired, so in the ESM bundle the
       // require throws and undici silently falls back to a stub whose
       // `http2.connect` is undefined. That breaks any HTTP/2 request (the
       // workflow flow-route callback fails with "fetch failed", so runs never
@@ -147,7 +147,7 @@ export default {
             // resolution result while forcing `external: true`. Without
             // `pre` here, our `external: false` decision gets overwritten
             // and `@workflow/*` imports end up externalized in the dev
-            // bundle — which means the SWC-injected `static classId` IIFE
+            // bundle, which means the SWC-injected `static classId` IIFE
             // in (e.g.) `@workflow/core/dist/runtime/run.js` is never
             // applied, and step return values that include `Run`
             // instances fail to serialize at runtime.
@@ -172,7 +172,7 @@ export default {
                 // Resolve via other resolvers, skipping ourselves so we
                 // get a path. We don't gate on `resolved.external` because
                 // `nitro:externals` spreads our result and overrides
-                // `external: true` regardless of what we return — we want
+                // `external: true` regardless of what we return; we want
                 // to win that race by returning first under `order: 'pre'`.
                 const resolved = await this.resolve(source, importer, {
                   ...options,
@@ -180,7 +180,7 @@ export default {
                 });
                 if (!resolved) return null;
                 let resolvedId = resolved.id;
-                // Strip file:// protocol if present — Rollup needs a plain
+                // Strip file:// protocol if present, since Rollup needs a plain
                 // filesystem path to load the module. `fileURLToPath`
                 // correctly handles Windows paths (e.g., file:///C:/...
                 // -> C:\...) and percent-decoding.
@@ -253,7 +253,7 @@ export default {
           } catch (error) {
             // During dev, files may be added/removed while the builder
             // is rebuilding (e.g., during test cleanup). Log the error
-            // but don't crash — the next file change will trigger
+            // but don't crash; the next file change will trigger
             // another rebuild with the correct file list.
             console.warn('Warning: Workflow rebuild failed:', error);
           }
@@ -263,7 +263,7 @@ export default {
       // Embedded observability dashboard. Defaults to on in dev / off in prod
       // builds; when disabled nothing is registered, so prod bundles never
       // import @workflow/web. Excluded on Vercel deploys (the on-disk build/
-      // and node_modules import don't survive a serverless bundle — users use
+      // and node_modules import don't survive a serverless bundle; users use
       // the hosted Vercel dashboard there).
       const dashboardOption = nitro.options.workflow?.dashboard;
       const dashboardEnabled =
@@ -286,7 +286,7 @@ export default {
 
       // V2: single combined handler for both workflow and step execution.
       // The step registrations are imported as side effects by the combined
-      // handler — no separate step route needed.
+      // handler, so no separate step route is needed.
       addVirtualHandler(
         nitro,
         '/.well-known/workflow/v1/flow',
@@ -378,15 +378,15 @@ function normalizeDashboardPath(path: string): string {
  * Mount the observability dashboard in-process at `basename` (e.g. `/_workflow`).
  *
  * The entire `@workflow/web` UI (SSR + static client assets + RPC) is served by
- * a single Web-standard fetch handler running inside this Nitro process — no
+ * a single Web-standard fetch handler running inside this Nitro process: no
  * second server, no separate port, no redirect. The handler is framework-
- * neutral; this is just its first consumer.
+ * neutral; this is its first consumer.
  */
 function addDashboardHandler(nitro: Nitro, basename: string) {
   // Resolve `@workflow/web/handler` relative to this module so consumers don't
   // need a direct dependency on `@workflow/web`. Inlined into the virtual
   // handler as a file:// URL and imported with @vite-ignore/webpackIgnore so
-  // Node `import()`s it from node_modules at runtime — keeping @workflow/web's
+  // Node `import()`s it from node_modules at runtime, keeping @workflow/web's
   // (large, React) dependency graph out of the Nitro server bundle.
   const require_ = createRequire(import.meta.url);
   let webHandlerUrl: string;

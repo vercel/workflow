@@ -5,6 +5,7 @@ import { WorkflowRunFailedError } from '@workflow/errors';
 import { beforeAll, describe, expect, test } from 'vitest';
 import type { Run } from '../src/runtime';
 import {
+  cancelRun,
   getHookByToken,
   getWorld,
   start as rawStart,
@@ -56,7 +57,7 @@ const RESULT_PATH = path.resolve(
 const STORM_WORKFLOW_FILE = 'workflows/103_event_log_corruption_repro.ts';
 const CONTROL_WORKFLOW_FILE = 'workflows/101_hook_sleep_repro.ts';
 
-type Scenario = 'step-storm' | 'hook-storm' | 'hook-sleep';
+type Scenario = 'step-storm' | 'hook-storm' | 'blocked-branch' | 'hook-sleep';
 
 type Outcome =
   | 'completed'
@@ -75,6 +76,7 @@ type Outcome =
 interface ReproConfig {
   stepStormAttempts: number;
   hookStormAttempts: number;
+  blockedBranchAttempts: number;
   hookSleepAttempts: number;
   concurrency: number;
   /** Wall-clock budget for *launching* attempts. Once it is spent no new
@@ -102,10 +104,46 @@ interface ReproConfig {
    *  an out-of-band `hook_received` write plus an extra invocation. */
   pokeIntervalMs: number;
   pokeJitterMs: number;
+  /** `step-storm`: how many pokes run at the full {@link pokeIntervalMs}
+   *  cadence before the pump decays to `pokeIntervalMs * pokeDecayFactor`.
+   *
+   *  Unbounded, the pump is a pure wall-clock cadence, so a run accumulates
+   *  pressure in proportion to how long it takes rather than to the work it
+   *  does — and that pressure is not free to carry: every poke appends a
+   *  `hook_received` that each of the run's remaining replays re-reads and
+   *  re-buffers, so a slow run earns more pokes, which makes it slower. On a
+   *  4-core CI runner that ran away to ~270 pokes per run and none of the six
+   *  concurrent runs ever finished.
+   *
+   *  Decaying rather than stopping keeps the loop gain below 1 without leaving
+   *  a slow run's later rounds unpressured — a hard stop at this count left the
+   *  back half of a 160s CI run with no out-of-band writes at all. The budget is
+   *  sized so a healthy 6-round run (35-41 pokes) never reaches it, and the
+   *  decayed rate lands a saturated CI run near the ~2.3s effective cadence the
+   *  Vercel lane already runs at, where each resume pays a network round trip. */
+  pokeMax: number;
+  /** Multiplier applied to {@link pokeIntervalMs} once {@link pokeMax} pokes
+   *  have been sent. 1 disables the decay and restores the runaway. */
+  pokeDecayFactor: number;
   /** `hook-storm`: per-index delay between resumes inside a round's burst. Set
    *  so the burst straddles `watchdogMs` and the straggler count varies. */
   hookResumeStaggerMs: number;
   hookResumeOffsetMs: number;
+  /** `blocked-branch`: per-index spacing of the launch step's duration, so a
+   *  round's launch completions commit spread out instead of in one batch. */
+  launchStaggerMs: number;
+  /** `blocked-branch`: delay from a round's hooks existing to the resume
+   *  burst. Aim it at the tail of the launch-completion spread — the burst has
+   *  to land while a sibling's launch `step_completed` is committing, so a
+   *  hook-woken replay can hold a log that ends just before it. */
+  resumeBurstOffsetMs: number;
+  /** `blocked-branch`: uniform jitter added to the burst offset per round, so
+   *  attempts sweep the window instead of betting on one alignment. */
+  resumeBurstJitterMs: number;
+  /** `blocked-branch`: watchdog for the hook race. Sized to normally LOSE to
+   *  the resume burst — the watchdog's role here is to enter a wait entity
+   *  into the race (the entity whose ordinal gets stolen), not to fire. */
+  blockedBranchWatchdogMs: number;
   /** `hook-sleep` control knobs. */
   iterations: number;
   sleepMs: number;
@@ -137,6 +175,18 @@ interface ReproRunResult {
     resumesFailed: number;
     stragglers?: number;
   };
+  /** How far a `stuck` run actually got, read off its event log when the
+   *  harness gave up on it. This is the difference between "the run is
+   *  progressing, just slower than `runTimeoutMs`" (hundreds of events, a
+   *  `step_started` or `hook_received` last) and "the run is dormant" (a
+   *  handful of events, nothing recent), and reading a lane without it is
+   *  guesswork — the shape that produced this field had six runs reported
+   *  `stuck` where the actual fault was the previous scenario starving them. */
+  progress?: {
+    events: number;
+    lastEventType?: string;
+    truncated?: boolean;
+  };
 }
 
 function envNumber(name: string, fallback: number) {
@@ -161,6 +211,10 @@ function envBoolean(name: string, fallback: boolean) {
 const config: ReproConfig = {
   stepStormAttempts: envNumber('EVENT_LOG_RACE_REPRO_STEP_STORM_ATTEMPTS', 6),
   hookStormAttempts: envNumber('EVENT_LOG_RACE_REPRO_HOOK_STORM_ATTEMPTS', 6),
+  blockedBranchAttempts: envNumber(
+    'EVENT_LOG_RACE_REPRO_BLOCKED_BRANCH_ATTEMPTS',
+    6
+  ),
   hookSleepAttempts: envNumber('EVENT_LOG_RACE_REPRO_ATTEMPTS', 2),
   // Cross-run concurrency is throughput only — the race being reproduced is
   // between concurrent replays *within* one run, driven by `rounds`/`width` and
@@ -192,6 +246,8 @@ const config: ReproConfig = {
   attrWrites: envNumber('EVENT_LOG_RACE_REPRO_ATTR_WRITES', 1),
   pokeIntervalMs: envNumber('EVENT_LOG_RACE_REPRO_POKE_INTERVAL_MS', 750),
   pokeJitterMs: envNumber('EVENT_LOG_RACE_REPRO_POKE_JITTER_MS', 250),
+  pokeMax: envNumber('EVENT_LOG_RACE_REPRO_POKE_MAX', 64),
+  pokeDecayFactor: envNumber('EVENT_LOG_RACE_REPRO_POKE_DECAY_FACTOR', 8),
   hookResumeStaggerMs: envNumber(
     'EVENT_LOG_RACE_REPRO_HOOK_RESUME_STAGGER_MS',
     400
@@ -199,6 +255,23 @@ const config: ReproConfig = {
   hookResumeOffsetMs: envNumber(
     'EVENT_LOG_RACE_REPRO_HOOK_RESUME_OFFSET_MS',
     0
+  ),
+  launchStaggerMs: envNumber('EVENT_LOG_RACE_REPRO_LAUNCH_STAGGER_MS', 300),
+  // Default aim: the last launch completes at roughly
+  // `stepDelayMs + (width - 1) * launchStaggerMs` after the round's suspension
+  // (2200 + 7*300 = 4300ms at the defaults) plus dispatch latency; the jitter
+  // sweeps the burst across that tail.
+  resumeBurstOffsetMs: envNumber(
+    'EVENT_LOG_RACE_REPRO_RESUME_BURST_OFFSET_MS',
+    4000
+  ),
+  resumeBurstJitterMs: envNumber(
+    'EVENT_LOG_RACE_REPRO_RESUME_BURST_JITTER_MS',
+    1200
+  ),
+  blockedBranchWatchdogMs: envNumber(
+    'EVENT_LOG_RACE_REPRO_BLOCKED_BRANCH_WATCHDOG_MS',
+    8000
   ),
   iterations: envNumber('EVENT_LOG_RACE_REPRO_ITERATIONS', 8),
   sleepMs: envNumber('EVENT_LOG_RACE_REPRO_SLEEP_MS', 5000),
@@ -455,11 +528,53 @@ async function pollTerminalRun(
     await sleep(1000);
   }
 
+  // Read how far it got before anything is cancelled, so the artifact says
+  // whether this was a slow run or a dormant one. `resolveData: 'none'` keeps
+  // it to event metadata: the count and the last type are the whole point, and
+  // hydrating payloads for a 300-event storm log is exactly the load this run
+  // is already losing to.
+  let progress: ReproRunResult['progress'];
+  try {
+    const events = await world.events.list({
+      runId: run.runId,
+      resolveData: 'none',
+    });
+    progress = {
+      events: events.data.length,
+      lastEventType: events.data.at(-1)?.eventType,
+      ...(events.hasMore ? { truncated: true } : {}),
+    };
+  } catch {
+    // Diagnostics only: a run whose log cannot be read is still `stuck`.
+  }
+
+  // The harness has given up on this run; the backend has not. Its branches go
+  // on waking and replaying, and on the local lanes every replay of every run
+  // shares ONE app process, so an abandoned storm keeps consuming the queue for
+  // the rest of the job and starves whatever scenario comes next — measured on
+  // world-local, where six abandoned `step-storm` runs left the following
+  // `hook-storm` unable to create a single hook inside its 60s discovery
+  // window, so all six of its runs reported `stuck` having received no hook
+  // payload at all. Cancelling makes later replays find a terminal run and
+  // stop, so the next scenario starts against an idle backend.
+  //
+  // Best-effort: a cancel that fails leaves the same starvation this is meant
+  // to avoid, which the next scenario's numbers will show. It must not turn a
+  // `stuck` classification into a harness error.
+  try {
+    await cancelRun(world, run.runId, {
+      cancelReason: 'event-log-race-repro: abandoned at runTimeoutMs',
+    });
+  } catch {
+    // Ignored by design — see above.
+  }
+
   return {
     ...base,
     outcome: 'stuck',
     status: lastStatus,
     durationMs: Date.now() - startedAt,
+    ...(progress ? { progress } : {}),
   };
 }
 
@@ -592,11 +707,19 @@ async function runStepStormAttempt(attempt: number): Promise<ReproRunResult> {
             round: -1,
             sentAt: Date.now(),
           });
+          // Full cadence until the budget is spent, a slower one after — see
+          // `pokeMax`. The pump never stops while the run is alive, so a run
+          // that outlives its budget still gets out-of-band writes in its
+          // later rounds; it just stops being able to bury itself in them.
+          const interval =
+            driverState.resumesSent >= config.pokeMax
+              ? config.pokeIntervalMs * config.pokeDecayFactor
+              : config.pokeIntervalMs;
           const jitter =
             config.pokeJitterMs > 0
               ? Math.floor(Math.random() * config.pokeJitterMs)
               : 0;
-          await sleep(config.pokeIntervalMs + jitter);
+          await sleep(interval + jitter);
         }
       }
     );
@@ -662,6 +785,106 @@ async function runHookStormAttempt(attempt: number): Promise<ReproRunResult> {
                 await sleep(index * config.hookResumeStaggerMs);
               }
               if (driverState.done) return;
+              let hook: Awaited<ReturnType<typeof getHookByToken>>;
+              try {
+                hook = await waitForHook(
+                  `${token}:${round}:${index}`,
+                  run.runId,
+                  driverState,
+                  5000
+                );
+              } catch {
+                // The branch's watchdog already fired and disposed the hook.
+                driverState.resumesFailed += 1;
+                return;
+              }
+              await tryResume(driverState, hook, {
+                index,
+                round,
+                sentAt: Date.now(),
+              });
+            })
+          );
+        }
+      }
+    );
+
+    return await finishStormAttempt(
+      run,
+      runResult,
+      state,
+      attempt,
+      scenario,
+      token
+    );
+  } catch (err) {
+    return harnessFailure(scenario, attempt, token, startedAt, err);
+  }
+}
+
+/**
+ * `blocked-branch`: each branch parks on a launch step BEFORE racing its hook
+ * against a watchdog, so a hook-woken replay can hold a log that ends just
+ * before a sibling's launch completion — that sibling then contributes zero
+ * correlation-id draws (not even its watchdog wait), and the woken branch's
+ * finalize takes the ordinal a fresher writer gives the sibling's wait. The
+ * driver's job is to land the whole resume burst (no stagger — the production
+ * shape was near-simultaneous callbacks) at the tail of the round's
+ * launch-completion spread, jittered per round so attempts sweep the window.
+ */
+async function runBlockedBranchAttempt(
+  attempt: number
+): Promise<ReproRunResult> {
+  const scenario: Scenario = 'blocked-branch';
+  const startedAt = Date.now();
+  const token = makeToken(scenario, attempt);
+
+  try {
+    const workflow = await getWorkflowMetadata(
+      deploymentUrl,
+      STORM_WORKFLOW_FILE,
+      'blockedBranchReproWorkflow'
+    );
+    const run = await start(
+      scenario,
+      STORM_WORKFLOW_FILE,
+      'blockedBranchReproWorkflow',
+      workflow,
+      [
+        {
+          ...stormInput(token),
+          launchStaggerMs: config.launchStaggerMs,
+          watchdogMs: config.blockedBranchWatchdogMs,
+        },
+      ]
+    );
+
+    const { runResult, state } = await drive(
+      run,
+      startedAt,
+      scenario,
+      async (driverState) => {
+        for (let round = 0; round < config.rounds; round += 1) {
+          if (driverState.done) return;
+
+          // Round `n`'s hooks only exist once round `n - 1` finished, so this
+          // wait doubles as the round barrier. The hooks are created by the
+          // round's first suspension, which is also when the launch steps
+          // dispatch — so the burst offset below is measured from (roughly)
+          // launch dispatch.
+          await waitForHook(`${token}:${round}:0`, run.runId, driverState);
+          const jitter =
+            config.resumeBurstJitterMs > 0
+              ? Math.floor(Math.random() * config.resumeBurstJitterMs)
+              : 0;
+          await sleep(config.resumeBurstOffsetMs + jitter);
+          if (driverState.done) return;
+
+          // One burst, no stagger: every resume both settles a branch and
+          // wakes its own invocation, and the invocations' event loads race
+          // the last launch completions' commits.
+          await Promise.all(
+            Array.from({ length: config.width }, async (_, index) => {
               let hook: Awaited<ReturnType<typeof getHookByToken>>;
               try {
                 hook = await waitForHook(
@@ -896,6 +1119,7 @@ function summarizeByScenario(results: ReproRunResult[]) {
     {
       'step-storm': emptyOutcomeCounts(),
       'hook-storm': emptyOutcomeCounts(),
+      'blocked-branch': emptyOutcomeCounts(),
       'hook-sleep': emptyOutcomeCounts(),
     }
   );
@@ -912,6 +1136,7 @@ const collected: ReproRunResult[] = [];
 const plannedAttempts =
   config.stepStormAttempts +
   config.hookStormAttempts +
+  config.blockedBranchAttempts +
   config.hookSleepAttempts;
 let overallDeadline = Number.POSITIVE_INFINITY;
 let launchDeadline = Number.POSITIVE_INFINITY;
@@ -990,7 +1215,10 @@ async function runScenario(
 // first and no summary is ever rendered.
 const testTimeoutMs = config.budgetMs + config.runTimeoutMs + 60_000;
 
-describe('event log race repro', () => {
+// This harness's failures ARE the signal it exists to produce, and a single
+// pass runs for the whole configured budget — never let the CI-wide e2e
+// retry (vitest.config.ts) re-run it.
+describe('event log race repro', { retry: 0 }, () => {
   beforeAll(() => {
     setupWorld(deploymentUrl);
 
@@ -1027,6 +1255,34 @@ describe('event log race repro', () => {
       );
     }
 
+    // blocked-branch: the burst must land inside the launch-completion spread
+    // (after the first completion, not after the watchdogs), or no replay can
+    // be missing a sibling's completion while holding a woken branch.
+    const lastLaunchMs =
+      config.stepDelayMs + (config.width - 1) * config.launchStaggerMs;
+    if (
+      config.resumeBurstOffsetMs + config.resumeBurstJitterMs <=
+      config.stepDelayMs
+    ) {
+      console.warn(
+        `[event-log-race-repro] blocked-branch resume burst (offset ${config.resumeBurstOffsetMs}ms ` +
+          `+ jitter ${config.resumeBurstJitterMs}ms) always lands before the first launch ` +
+          `completion (~${config.stepDelayMs}ms). No branch can be parked on a completion ` +
+          `the woken replays are missing.`
+      );
+    }
+    if (
+      config.resumeBurstOffsetMs >=
+      lastLaunchMs + config.blockedBranchWatchdogMs
+    ) {
+      console.warn(
+        `[event-log-race-repro] blocked-branch resume burst offset (${config.resumeBurstOffsetMs}ms) ` +
+          `lands after every watchdog deadline (last launch ~${lastLaunchMs}ms + ` +
+          `watchdog ${config.blockedBranchWatchdogMs}ms). Every branch will take the ` +
+          `recovery path and the resumes race nothing.`
+      );
+    }
+
     const sleepBudgetMs = config.iterations * config.sleepMs;
     const resumeCeilingMs = config.resumeDelayMs + config.resumeJitterMs;
     if (resumeCeilingMs >= sleepBudgetMs) {
@@ -1056,6 +1312,11 @@ describe('event log race repro', () => {
         config.hookStormAttempts,
         config.concurrency,
         runHookStormAttempt
+      );
+      await runScenario(
+        config.blockedBranchAttempts,
+        config.concurrency,
+        runBlockedBranchAttempt
       );
       await runScenario(
         config.hookSleepAttempts,

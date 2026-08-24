@@ -15,19 +15,19 @@ related:
 
 This error occurs when you try to import or use Node.js core modules (like `fs`, `http`, `crypto`, `path`, etc.) directly inside a workflow function.
 
-## Error Message
+## Error message
 
-```
+```text
 Cannot use Node.js module "fs" in workflow functions. Move this module to a step function.
 ```
 
-## Why This Happens
+## Why this happens
 
 Workflow functions run in a sandboxed environment without full Node.js runtime access. This restriction is important for maintaining **determinism** - the ability to replay workflows exactly and resume from where they left off after suspensions or failures.
 
 Node.js modules have side effects and non-deterministic behavior that could break workflow replay guarantees.
 
-## Quick Fix
+## Quick fix
 
 Move any code using Node.js modules to a step function. Step functions have full Node.js runtime access.
 
@@ -68,7 +68,7 @@ async function read(filePath: string) {
 }
 ```
 
-## Common Node.js Modules
+## Common Node.js modules
 
 These common Node.js core modules cannot be used in workflow functions:
 

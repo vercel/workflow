@@ -1,5 +1,15 @@
 # @workflow/utils
 
+## 5.0.0-beta.9
+
+### Minor Changes
+
+- [#3728](https://github.com/vercel/workflow/pull/3728) [`f771585`](https://github.com/vercel/workflow/commit/f771585486b3019c8d68211b158dfeffc9e5ebe8) Thanks [@pranaygp](https://github.com/pranaygp)! - Add `globalSingleton()`, which parks a package's process-wide state on `globalThis` so bundled copies of a module in one process share it.
+
+### Patch Changes
+
+- [#3728](https://github.com/vercel/workflow/pull/3728) [`f771585`](https://github.com/vercel/workflow/commit/f771585486b3019c8d68211b158dfeffc9e5ebe8) Thanks [@pranaygp](https://github.com/pranaygp)! - Declare `sideEffects: false` so bundlers can drop the unused parts of the barrel from a host application's build.
+
 ## 5.0.0-beta.8
 
 ### Patch Changes

@@ -2,12 +2,18 @@ import { setTimeout } from 'node:timers/promises';
 import type { Transport } from '@vercel/queue';
 import { createWorkflowUrl } from '@workflow/utils';
 import {
+  isNodeHttpEnabled,
   MessageId,
   parseQueueName,
   type Queue,
   type QueuePrefix,
   ValidQueueName,
 } from '@workflow/world';
+import {
+  createNodeHttpAgents,
+  destroyNodeHttpAgents,
+  nodeHttpFetch,
+} from '@workflow/world/node-http.js';
 import { Sema } from 'async-sema';
 import { monotonicFactory } from 'ulid';
 import { Agent } from 'undici';
@@ -78,6 +84,11 @@ function envTimeoutMs(name: string, fallback: number): number {
  * Bounds a stalled delivery below the queue handler's retry horizon. A
  * transport timeout is retried by the delivery loop with the same durable
  * message; `0` remains available for applications that need unbounded calls.
+ *
+ * Both transports honor every field. Over undici this is the `Agent`'s own
+ * configuration; over `node:http` (`WORKFLOW_NODE_HTTP`) the two timeouts are
+ * passed per request and `connections` / `keepAliveTimeout` size the socket
+ * pool, so the two env vars tune a delivery identically either way.
  */
 export function getQueueAgentOptions() {
   return {
@@ -128,7 +139,17 @@ function isDetachedArrayBufferQueueError(error: unknown): boolean {
 }
 
 export function createQueue(config: Partial<Config>): LocalQueue {
-  const httpAgent = new Agent(getQueueAgentOptions());
+  // Exactly one of these is built, and close() shuts down whichever it is.
+  // Resolved once per queue rather than per delivery so a single queue never
+  // mixes transports mid-flight.
+  const agentOptions = getQueueAgentOptions();
+  const nodeHttpAgents = isNodeHttpEnabled()
+    ? createNodeHttpAgents({
+        maxSockets: agentOptions.connections,
+        keepAliveMs: agentOptions.keepAliveTimeout,
+      })
+    : undefined;
+  const httpAgent = nodeHttpAgents ? undefined : new Agent(agentOptions);
   const transport = new TypedJsonTransport();
   const generateId = monotonicFactory();
   const semaphore = new Sema(WORKFLOW_LOCAL_QUEUE_CONCURRENCY);
@@ -180,7 +201,7 @@ export function createQueue(config: Partial<Config>): LocalQueue {
     (async () => {
       // Honor the caller's requested delivery delay before acquiring a queue
       // slot. Sleeping outside the semaphore so a delayed message doesn't
-      // hold a worker hostage for its delay window — the worker should be
+      // hold a worker hostage for its delay window: the worker should be
       // free to process other (immediate) messages until this one is ready.
       // VQS-side queues honor delaySeconds at the broker, so this brings
       // world-local in line with production behavior.
@@ -198,11 +219,11 @@ export function createQueue(config: Partial<Config>): LocalQueue {
       }
       // Safety limit to prevent infinite loops in the local queue.
       // The actual max delivery enforcement happens in the workflow handler
-      // (at MAX_QUEUE_DELIVERIES = 48), so this just needs to be comfortably higher.
+      // (at MAX_QUEUE_DELIVERIES = 48), so this only needs to be comfortably higher.
       const MAX_LOCAL_SAFETY_LIMIT = 256;
       // Number of times the message has actually reached a handler (returned
-      // ok, a timeoutSeconds re-delivery, or an HTTP error response). This —
-      // not the loop counter — is the attempt the handler sees via
+      // ok, a timeoutSeconds re-delivery, or an HTTP error response). This,
+      // not the loop counter, is the attempt the handler sees via
       // `x-vqs-message-attempt`, which it counts against MAX_QUEUE_DELIVERIES.
       // Failures before response headers do not advance this; body failures do,
       // because the handler has already accepted that delivery.
@@ -231,27 +252,34 @@ export function createQueue(config: Partial<Config>): LocalQueue {
               response = await directHandler(req);
             } else {
               const baseUrl = await resolveBaseUrl(config);
-              // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici v7 dispatcher types don't match @types/node's RequestInit
-              response = await fetch(
-                createWorkflowUrl(baseUrl, { type: 'flow' }),
-                {
-                  method: 'POST',
-                  duplex: 'half',
-                  dispatcher: httpAgent,
-                  headers,
-                  body,
-                } as any
-              );
+              const url = createWorkflowUrl(baseUrl, { type: 'flow' });
+              response = nodeHttpAgents
+                ? await nodeHttpFetch(url, {
+                    method: 'POST',
+                    headers: new Headers(headers),
+                    body,
+                    agents: nodeHttpAgents,
+                    headersTimeoutMs: agentOptions.headersTimeout,
+                    bodyTimeoutMs: agentOptions.bodyTimeout,
+                  })
+                : // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici v7 dispatcher types don't match @types/node's RequestInit
+                  await fetch(url, {
+                    method: 'POST',
+                    duplex: 'half',
+                    dispatcher: httpAgent,
+                    headers,
+                    body,
+                  } as any);
             }
             delivery++;
             text = await response.text();
           } catch (err) {
             // A transport can fail before response headers or while consuming
-            // the body. Both are transient — back off and retry the same
+            // the body. Both are transient: back off and retry the same
             // durable message rather than leaving its run stalled. Two
             // failures are not retryable:
             //  - shutdown: close() aborted the agent / the backoff sleep.
-            //  - a detached-ArrayBuffer proxy misconfig, which never succeeds —
+            //  - a detached-ArrayBuffer proxy misconfig, which never succeeds:
             //    rethrow so the outer catch surfaces the actionable guidance.
             const name = (err as { name?: string } | undefined)?.name;
             if (
@@ -312,7 +340,7 @@ export function createQueue(config: Partial<Config>): LocalQueue {
 
           // 5s linear backoff to approximate VQS retry timing in local dev.
           // VQS uses 5s linear for attempts 1–32, then exponential, but for
-          // local dev linear 5s is sufficient — the handler enforces the real
+          // local dev linear 5s is sufficient: the handler enforces the real
           // cap at MAX_QUEUE_DELIVERIES (48) which keeps total time under ~4min.
           await setTimeout(5000, undefined, { signal: closeSignal });
         }
@@ -433,7 +461,8 @@ export function createQueue(config: Partial<Config>): LocalQueue {
       // may close the queue more than once.
       if (closeSignal.aborted) return;
       closeController.abort();
-      await httpAgent.close();
+      if (nodeHttpAgents) destroyNodeHttpAgents(nodeHttpAgents);
+      await httpAgent?.close();
     },
   };
 }

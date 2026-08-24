@@ -1,6 +1,6 @@
 {
   "name": "@workflow/core",
-  "version": "5.0.0-beta.41",
+  "version": "5.0.0-beta.44",
   "description": "Core runtime and engine for Workflow SDK",
   "type": "module",
   "main": "dist/index.js",
@@ -83,7 +83,7 @@
     "build": "genversion --es6 src/version.ts && node scripts/build-quickjs-assets.js && tsc",
     "dev": "genversion --es6 src/version.ts && tsc --watch",
     "clean": "tsc --build --clean && rm -rf dist src/version.ts docs ||:",
-    "test": "cross-env WORKFLOW_TARGET_WORLD=local vitest run src",
+    "test": "cross-env WORKFLOW_TARGET_WORLD=local vitest run src e2e/utils.test.ts",
     "test:e2e": "vitest run e2e",
     "typecheck": "genversion --es6 src/version.ts && tsc --noEmit",
     "prepack": "mkdir -p docs && cp -r ../../docs/content/docs/v5/foundations ./docs/ && cp -r ../../docs/content/docs/v5/how-it-works ./docs/ && cp -r ../../docs/content/docs/v5/api-reference/workflow ./docs/api-reference",

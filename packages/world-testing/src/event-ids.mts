@@ -1,6 +1,8 @@
 import {
   eventIdToSlot,
   FIRST_EVENT_SLOT,
+  mintedSpecVersion,
+  SPEC_VERSION_MAX_SUPPORTED,
   slotToEventId,
 } from '@workflow/world';
 import { expect, test, vi } from 'vitest';
@@ -34,6 +36,24 @@ export function eventIds(world: string) {
       },
       { interval: 200, timeout: 25_000 }
     );
+
+    // The version the World declared, stamped on the run it created. Slot ids
+    // and this number have to agree: the World allocates the positions, but the
+    // number is what a backend reads to decide which scheme a run uses, and
+    // what the runtime checks before it replays anything. A World that numbers
+    // its events correctly while declaring an older version is rejected at
+    // startup, which reads as a broken install rather than as a stale
+    // constant.
+    //
+    // The floor is `mintedSpecVersion()`, not `SPEC_VERSION_CURRENT`: what a
+    // World is told to stamp is that function (see the building-a-world
+    // guide), and the two differ whenever a version is readable before it is
+    // mintable. Pinning the constant here would fail every World the moment a
+    // spec bump raises the ceiling ahead of the default, which is the normal
+    // mid-bump state rather than a conformance defect.
+    const run = await server.getRun(result.runId);
+    expect(run.specVersion).toBeGreaterThanOrEqual(mintedSpecVersion());
+    expect(run.specVersion).toBeLessThanOrEqual(SPEC_VERSION_MAX_SUPPORTED);
 
     const events = await server.getEvents(result.runId);
     expect(events.length).toBeGreaterThan(0);

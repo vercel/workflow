@@ -3,7 +3,7 @@
  *
  * A codec handles the core serialize/deserialize logic for a specific
  * wire format (devalue, CBOR, JSON, etc.). Each codec is responsible
- * for handling all supported data types internally — the caller only
+ * for handling all supported data types internally; the caller only
  * specifies which serialization mode to use.
  *
  * - **devalue**: Uses custom reducers/revivers for Date, Error, Map, Set,
@@ -78,15 +78,15 @@ export interface CodecOptions {
 
   /**
    * Optional sink populated by the hardened serializer with every
-   * workflow (guest) code execution that serialization could not avoid —
+   * workflow (guest) code execution that serialization could not avoid:
    * getters, proxies, and custom `[WORKFLOW_SERIALIZE]` methods. A non-empty
    * `executions` array means serialization may have perturbed VM state
    * (it runs exactly once per payload and is never replayed, so any side
    * effect it triggers diverges from replay).
    *
    * Every dehydrate path already reports this as span attributes. Passing a
-   * sink is for callers that need the executions *programmatically* — a
-   * retained-VM gate deciding whether the VM is still reusable. No caller
+   * sink is for callers that need the executions *programmatically*, such
+   * as a retained-VM gate deciding whether the VM is still reusable. No caller
    * does that yet, so nothing in the runtime currently passes one.
    *
    * Serialize side only.

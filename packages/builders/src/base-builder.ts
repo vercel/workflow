@@ -43,9 +43,37 @@ import { createSwcPlugin } from './swc-esbuild-plugin.js';
 import { detectWorkflowPatterns } from './transform-utils.js';
 import type { SourcemapMode, WorkflowConfig } from './types.js';
 import { extractWorkflowGraphs } from './workflows-extractor.js';
+import { hasSameContent, writeFileIfChanged } from './write-if-changed.js';
 
 const enhancedResolve = promisify(enhancedResolveOriginal);
 const require = createRequire(import.meta.url);
+
+/**
+ * Order the per-file manifest sections deterministically.
+ *
+ * Entry discovery runs concurrently, so the insertion order of these maps
+ * varies between otherwise identical builds and the serialized manifest comes
+ * out byte-different every time. Sorting makes the manifest reproducible, and
+ * lets the unchanged-write guard in `writeFileIfChanged` actually fire for it.
+ *
+ * Compared by code unit rather than `localeCompare`, whose result depends on
+ * the host locale.
+ */
+function sortManifestEntries<T>(
+  section: Record<string, Record<string, T>>
+): Record<string, Record<string, T>> {
+  const byKey = ([a]: [string, unknown], [b]: [string, unknown]) =>
+    a < b ? -1 : a > b ? 1 : 0;
+
+  return Object.fromEntries(
+    Object.entries(section)
+      .sort(byKey)
+      .map(([file, entries]) => [
+        file,
+        Object.fromEntries(Object.entries(entries).sort(byKey)),
+      ])
+  );
+}
 
 export type { DiscoveredEntries } from './fast-discovery.js';
 
@@ -137,8 +165,8 @@ async function withRealpaths(entries: string[]): Promise<string[]> {
  * virtual-entry imports.
  *
  * If the file resolves to a real package specifier (`workflow/internal/builtins`,
- * `@internal/agent/server`, etc.), we return the bare specifier — version
- * stripped — because esbuild's package resolution will collapse all
+ * `@internal/agent/server`, etc.), we return the bare specifier (version
+ * stripped) because esbuild's package resolution will collapse all
  * importers of that specifier to the same physical module regardless of
  * which on-disk copy (src vs dist) any one importer wrote.
  *
@@ -485,7 +513,7 @@ export abstract class BaseBuilder {
         // If workflow constructs live in sub-paths (e.g. `my-pkg/workflows`),
         // they won't be detected here. The @workflow/serde dep check above
         // partially covers serde cases. This is acceptable as a best-effort
-        // heuristic — the primary fix is auto-removal in withWorkflow().
+        // heuristic; the primary fix is auto-removal in withWorkflow().
         let hasUseStep = false;
         let hasUseWorkflow = false;
         let hasSerde = hasWorkflowSerdeDep;
@@ -548,7 +576,7 @@ export abstract class BaseBuilder {
     // discovers classes like `Run` that live inside SDK packages. Without this,
     // files like `run.js` are only discovered when user code imports them.
     // This is resolved here (rather than in callers) so that the original
-    // `inputs` array reference is preserved for WeakMap caching — callers
+    // `inputs` array reference is preserved for WeakMap caching: callers
     // like createWorkflowsBundle and createStepsBundle can share the same
     // cache entry when they pass the same inputFiles array.
     const resolvedWorkflowRuntime = await enhancedResolve(
@@ -584,15 +612,39 @@ export abstract class BaseBuilder {
   }
 
   /**
+   * Whether a generated write may be skipped when it would not change the
+   * file. Defaults to `true`: the generated routes live inside the directory
+   * the dev server watches, so rewriting identical bytes still invalidates its
+   * watcher and forces a recompile of everything downstream.
+   *
+   * Targets whose consumers treat the mtime of a generated file as a change
+   * signal must override this to `false`, otherwise skipping the write also
+   * suppresses the signal.
+   */
+  protected get skipsUnchangedGeneratedWrites(): boolean {
+    return true;
+  }
+
+  /**
    * Writes generated files atomically where possible. On Windows, Next.js can
    * briefly hold generated route files open while compiling them, which makes
    * rename-over-existing fail with EPERM/EACCES. In that case, fall back to a
    * direct overwrite so watch rebuilds can still make progress.
+   *
+   * Skips writes that would not change the file, unless the target opts out
+   * via {@link skipsUnchangedGeneratedWrites}.
    */
-  private async writeGeneratedFile(
+  protected async writeGeneratedFile(
     targetPath: string,
     content: string
   ): Promise<void> {
+    if (
+      this.skipsUnchangedGeneratedWrites &&
+      (await hasSameContent(targetPath, content))
+    ) {
+      return;
+    }
+
     const tempPath = `${targetPath}.${randomUUID()}.tmp`;
     await writeFile(tempPath, content);
     try {
@@ -990,7 +1042,7 @@ export const __steps_registered = true;
       // Only use relative source paths for workspace symlinks (files
       // outside node_modules in a packages/*/src/ directory). For tarball-
       // installed packages (files inside node_modules/), fall through to
-      // getImportPath which returns package specifiers — this allows the
+      // getImportPath which returns package specifiers; this allows the
       // SWC plugin's externalizeNonSteps to work correctly.
       const isWorkspaceSourceBackedPackageFile =
         normalizedWorkspaceFile.includes('/packages/') &&
@@ -1049,7 +1101,7 @@ export const __steps_registered = true;
     // import lines that resolve to the same physical module. Pre-seed the
     // set with the built-in steps import so a workspace step file at
     // `packages/workflow/src/internal/builtins.ts` doesn't emit a second,
-    // relative-path competing import — esbuild would otherwise transform
+    // relative-path competing import; esbuild would otherwise transform
     // both copies and the swc plugin would generate duplicate step IDs.
     const emittedImportIdentities = new Set<string>([builtInSteps]);
     const buildImports = (files: string[]): string =>
@@ -1317,7 +1369,7 @@ export const __steps_registered = true;
         .join('\n');
 
     // The SWC plugin in workflow mode emits `globalThis.__private_workflows.set(workflowId, fn)`
-    // calls directly, so we just need to import the files (Map is initialized via banner)
+    // calls directly, so we only need to import the files (Map is initialized via banner)
     const workflowImports = buildImports(workflowFiles);
 
     // Include serde-only files for class registration side effects
@@ -1356,7 +1408,7 @@ export const __steps_registered = true;
       treeShaking: true,
       keepNames: true,
       minify: false,
-      // Initialize the workflow registry at the very top of the bundle
+      // Initialize the workflow registry at the beginning of the bundle
       // This must be in banner (not the virtual entry) because esbuild's bundling
       // can reorder code, and the .set() calls need the Map to exist first
       banner: {
@@ -1673,7 +1725,7 @@ ${createWorkflowRouteHandlersCode(`workflowEntrypoint(workflowCode${workflowEntr
         sourceStepRegistrationImports,
         tsconfigPath,
         discoveredEntries: effectiveDiscoveredEntries,
-        // Skip the createRequire banner here — when bundleFinalOutput is true
+        // Skip the createRequire banner here: when bundleFinalOutput is true
         // the outer esbuild pass will inline this bundle and add its own
         // banner. Emitting it twice declares __createRequire twice.
         skipEsmRequireBanner: bundleFinalOutput,
@@ -2004,8 +2056,8 @@ export const HEAD = handler;
 export const OPTIONS = handler;`;
 
     if (!bundle) {
-      // For Next.js, just write the unbundled file
-      await writeFile(outfile, routeContent);
+      // For Next.js, write the unbundled file
+      await writeFileIfChanged(outfile, routeContent);
       return;
     }
 
@@ -2305,16 +2357,24 @@ export const OPTIONS = handler;`;
       );
       const classes = this.convertClassesManifest(manifest.classes);
 
-      const output = { version: '1.0.0', steps, workflows, classes };
+      const output = {
+        version: '1.0.0',
+        steps: sortManifestEntries(steps),
+        workflows: sortManifestEntries(workflows),
+        classes: sortManifestEntries(classes),
+      };
       const manifestJson = JSON.stringify(output, null, 2);
 
       await mkdir(manifestDir, { recursive: true });
-      await writeFile(join(manifestDir, 'manifest.json'), manifestJson);
+      await writeFileIfChanged(
+        join(manifestDir, 'manifest.json'),
+        manifestJson
+      );
 
       const diagnosticsManifestPath = this.getDiagnosticsManifestPath();
       if (diagnosticsManifestPath) {
         await this.ensureDirectory(diagnosticsManifestPath);
-        await writeFile(diagnosticsManifestPath, manifestJson);
+        await writeFileIfChanged(diagnosticsManifestPath, manifestJson);
       }
 
       const stepCount = Object.values(steps).reduce(

@@ -13,26 +13,30 @@ related:
 ---
 
 <Callout type="warn">
-`WorkflowChatTransport` now ships in AI SDK as a 1:1 port — import it from `@ai-sdk/workflow` (the `@workflow/ai` export is deprecated). See [Resumable Streaming with `WorkflowChatTransport`](https://ai-sdk.dev/v7/docs/agents/workflow-agent#resumable-streaming-with-workflowchattransport) for the full reference.
+`WorkflowChatTransport` now ships in AI SDK as a 1:1 port, so import it from `@ai-sdk/workflow` (the `@workflow/ai` export is deprecated). See [Resumable Streaming with `WorkflowChatTransport`](https://ai-sdk.dev/v7/docs/agents/workflow-agent#resumable-streaming-with-workflowchattransport) for the full reference.
 </Callout>
 
-When building chat interfaces, it's common to run into network interruptions, page refreshes, or serverless function timeouts, which can break the connection to an in-progress agent.
+Network interruptions, page refreshes, or Vercel Functions timeouts can break a chat interface's connection to an in-progress agent.
 
-Where a standard chat implementation would require the user to resend their message and wait for the entire response again, workflow runs are durable, and so are the streams attached to them. This means a stream can be resumed at any point, optionally only syncing the data that was missed since the last connection.
+Workflow runs and their attached streams are durable, so users can resume a stream without resending a message or waiting for the entire response again. The client can optionally sync only the data missed since the last connection.
 
-Resumable streams come out of the box with Workflow SDK, however, the client needs to recognize that a stream exists, and needs to know which stream to reconnect to, and needs to know where to start from. For this, Workflow SDK provides the [`WorkflowChatTransport`](/docs/api-reference/workflow-ai/workflow-chat-transport) helper, a drop-in transport for the AI SDK that handles client-side resumption logic for you.
+Workflow SDK supports resumable streams, but the client must identify the stream and the position from which to reconnect. The [`WorkflowChatTransport`](/docs/api-reference/workflow-ai/workflow-chat-transport) helper is a drop-in AI SDK transport that handles this client-side resumption logic.
+
+<Callout type="info">
+When deploying a streaming route to Vercel, enable request cancellation so a browser disconnect terminates that route's abandoned stream reader instead of letting the function run until `FUNCTION_INVOCATION_TIMEOUT`. See [Avoiding Function Timeouts After Client Disconnects](/docs/foundations/streaming#avoiding-function-timeouts-after-client-disconnects).
+</Callout>
 
 ## Implementing stream resumption
 
-Let's add stream resumption to our Flight Booking Agent that we build in the [Building Durable AI Agents](/docs/ai) guide.
+Add stream resumption to the Flight Booking Agent from the [Building Durable AI Agents](/docs/ai) guide.
 
 <Steps>
 
 <Step>
 
-### Return the Run ID from Your API
+### Return the run ID from your API
 
-Modify your chat endpoint to include the workflow run ID in a response header. The Run ID uniquely identifies the run's stream, so it allows the client to know which stream to reconnect to.
+Modify your chat endpoint to include the workflow run ID in a response header. The run ID uniquely identifies the stream so the client knows which stream to reconnect to.
 
 {/*@skip-typecheck: incomplete code sample*/}
 
@@ -58,9 +62,9 @@ export async function POST(req: Request) {
 
 <Step>
 
-### Add a Stream Reconnection Endpoint
+### Add a stream reconnection endpoint
 
-Currently we only have one API endpoint that always creates a new run, so we need to create a new API route that returns the stream for an existing run:
+Create an API route that returns the stream for an existing run. The current endpoint always creates a new run.
 
 ```typescript title="app/api/chat/[id]/stream/route.ts" lineNumbers
 import { createUIMessageStreamResponse } from "ai";
@@ -96,16 +100,16 @@ export async function GET(
 }
 ```
 
-The `startIndex` parameter ensures the client can choose where to resume the stream from. For instance, if the function times out during streaming, the chat transport will use `startIndex` to resume the stream exactly from the last token it received. Negative values are also supported (e.g. `-5` starts 5 chunks before the end), which is useful for custom stream consumers (such as a dashboard showing recent output) that want to show the most recent output without replaying the full stream.
+The `startIndex` parameter lets the client choose where to resume the stream. For example, if the function times out during streaming, the chat transport uses `startIndex` to resume from the last token it received. Negative values are also supported. A value of `-5` starts 5 chunks before the end, which is useful for custom stream consumers that show recent output without replaying the full stream.
 
-When using a negative `startIndex`, your stream endpoint must return a `x-workflow-stream-tail-index` header in order for relative resumption to work. Missing the header will fall back to replaying the entire stream.
+When using a negative `startIndex`, your stream endpoint must return an `x-workflow-stream-tail-index` header for relative resumption. If the header is missing, the transport replays the entire stream.
 </Step>
 
 <Step>
 
-### Use `WorkflowChatTransport` in the Client
+### Use `WorkflowChatTransport` in the client
 
-Replace the default transport in AI-SDK's `useChat` with [`WorkflowChatTransport`](
+Replace the default transport in AI SDK's `useChat` with [`WorkflowChatTransport`](
   /docs/api-reference/workflow-ai/workflow-chat-transport
 ), and update the callbacks to store and use the latest run ID. For now, we'll store the run ID in localStorage. For your own app, this would be stored wherever you store session information.
 
@@ -162,23 +166,23 @@ export default function ChatPage() {
 
 </Steps>
 
-Now try the flight booking example again. Open it up in a separate tab, or spam the refresh button, and see how the client connects to the same chat stream every time.
+Open the flight booking example in another tab or refresh the page repeatedly. The client reconnects to the same chat stream each time.
 
-## How It Works
+## How it works
 
-1. When the user sends a message, `WorkflowChatTransport` makes a POST to `/api/chat`
-2. The API starts a workflow and returns the run ID in the `x-workflow-run-id` header
-3. `onChatSendMessage` stores this run ID in localStorage
-4. If the stream is interrupted before receiving a "finish" chunk, the transport automatically reconnects
-5. `prepareReconnectToStreamRequest` builds the reconnection URL using the stored run ID, pointing to the new endpoint `/api/chat/{runId}/stream`
-6. The reconnection endpoint returns the stream from where the client left off
-7. When the stream completes, `onChatEnd` clears the stored run ID
+1. When the user sends a message, `WorkflowChatTransport` makes a `POST` request to `/api/chat`.
+2. The API starts a workflow and returns the run ID in the `x-workflow-run-id` header.
+3. `onChatSendMessage` stores this run ID in `localStorage`.
+4. If the stream is interrupted before receiving a `finish` chunk, the transport automatically reconnects.
+5. `prepareReconnectToStreamRequest` builds the reconnection URL using the stored run ID and points to `/api/chat/{runId}/stream`.
+6. The reconnection endpoint returns the stream from where the client left off.
+7. When the stream completes, `onChatEnd` clears the stored run ID.
 
-This approach also handles page refreshes, as the client will automatically reconnect to the stream from the last known position when the UI loads with a stored run ID, following the behavior of [AI SDK's stream resumption](https://ai-sdk.dev/docs/ai-sdk-ui/chatbot-resume-streams#chatbot-resume-streams).
+This approach also handles page refreshes, as the client will automatically reconnect to the stream from the last known position when the user interface (UI) loads with a stored run ID, following the behavior of [AI SDK's stream resumption](https://ai-sdk.dev/docs/ai-sdk-ui/chatbot-resume-streams#chatbot-resume-streams).
 
 ### Resuming from the end of the stream
 
-By default, reconnecting replays the entire stream from the beginning (`startIndex: 0`). If you only need to show recent output — for example, when resuming a long conversation after a page refresh — you can set `initialStartIndex` to a negative value to read from the end of the stream instead:
+By default, reconnecting replays the entire stream from the beginning (`startIndex: 0`). If you only need to show recent output (for example, when resuming a long conversation after a page refresh), you can set `initialStartIndex` to a negative value to read from the end of the stream instead:
 
 {/*@skip-typecheck: incomplete code sample*/}
 
@@ -202,8 +206,8 @@ When using a negative `initialStartIndex`, the reconnection endpoint **must** re
 
 A workflow stream is a flat sequence of chunks, but the AI SDK's UI protocol groups chunks into logical parts (`text-*`, `reasoning-*`, `tool-input-*`) that must be opened with a `*-start` before any `*-delta` or `*-end`. A non-zero `startIndex` can land in the middle of an open part. See [`WorkflowChatTransport` → Mid-part resumes](/docs/api-reference/workflow-ai/workflow-chat-transport#mid-part-resumes) for how this is handled and an example of rewinding to a step boundary on the server.
 
-## Related Documentation
+## Related documentation
 
-- [`WorkflowChatTransport` API Reference](/docs/api-reference/workflow-ai/workflow-chat-transport) - Full configuration options
-- [Streaming](/docs/foundations/streaming) - Understanding workflow streams
-- [`getRun()` API Reference](/docs/api-reference/workflow-api/get-run) - Retrieving existing runs
+- [`WorkflowChatTransport` API reference](/docs/api-reference/workflow-ai/workflow-chat-transport): Full configuration options
+- [Streaming](/docs/foundations/streaming): Understanding workflow streams
+- [`getRun()` API reference](/docs/api-reference/workflow-api/get-run): Retrieving existing runs

@@ -8,11 +8,11 @@ import type { Event } from '@workflow/world';
  * beginning to execute. STSO (step-to-step overhead) measures the previous
  * step's terminal event → the next step's body beginning to execute. RSFS
  * (run-started-to-first-step) measures the `run_started` response landing →
- * the first step's start POST being issued — a sub-window of TTFS that
+ * the first step's start POST being issued, a sub-window of TTFS that
  * isolates replay overhead from the run-creation queue hop; `finalSchedulingReplay`
  * is the synchronous workflow-function-execution duration of only the FINAL
  * replay pass within that window (the pass that reached and scheduled the
- * first step) — it is NOT accumulated across earlier pre-first-step passes
+ * first step); it is NOT accumulated across earlier pre-first-step passes
  * (see {@link StepLatencyTracking.replayMs}), so it must not be read as "the
  * replay portion of RSFS". All are attached to the step's terminal
  * event so a backend can emit latency metrics from the event write alone,
@@ -43,7 +43,7 @@ export interface StepLatencyTracking {
    * workflow-body `setAttributes` before the first step
    * resolves through an extra replay (see the `hasAttributeEvents` branch in
    * runtime.ts), so everything from this write until the step body runs is
-   * the duration of the setAttributes call — which is subtracted by ending
+   * the duration of the setAttributes call, which is subtracted by ending
    * the measurement at the point where the step would otherwise have been
    * scheduled.
    */
@@ -60,7 +60,7 @@ export interface StepLatencyTracking {
   eventCount?: number;
   /**
    * Epoch ms the `run_started` response was received/parsed by the SDK.
-   * Present only when the step qualifies for RSFS — the same eligibility as
+   * Present only when the step qualifies for RSFS: the same eligibility as
    * TTFS (see {@link computeStepLatencyTracking}), plus a recoverable
    * anchor. In turbo mode, `run_started` is backgrounded rather than
    * awaited, so this is stamped at the point the runtime synthesizes the
@@ -78,12 +78,12 @@ export interface StepLatencyTracking {
    * event commits, the step's own start POST). Present only alongside
    * `rsfsAnchorMs`.
    *
-   * This is the FINAL replay pass only — the invocation that reached and
+   * This is the FINAL replay pass only: the invocation that reached and
    * scheduled the first step. Valid RSFS paths can replay more than once
    * before the first step (e.g. a workflow-body `setAttributes()` detour
    * replays twice), and a redelivery omits earlier invocations' replay work
    * entirely; this value is not accumulated across those earlier passes.
-   * Do not read it as "the replay portion of RSFS" — RSFS
+   * Do not read it as "the replay portion of RSFS": RSFS
    * ({@link rsfsAnchorMs}) covers the whole run_started-to-first-step
    * window, this covers only the last pass.
    */
@@ -94,8 +94,8 @@ export interface StepLatencyTracking {
 
 /**
  * Most negative raw duration still attributed to cross-machine clock skew
- * (and clamped to 0). Anything more negative means a corrupt anchor — e.g. a
- * mis-decoded run-ID timestamp — and the sample is dropped instead: a
+ * (and clamped to 0). Anything more negative means a corrupt anchor (e.g. a
+ * mis-decoded run-ID timestamp) and the sample is dropped instead: a
  * systematically corrupt anchor would otherwise report an exact-zero latency
  * on every sample, silently dragging entire percentile distributions to 0
  * rather than surfacing as missing data.
@@ -112,7 +112,7 @@ export interface StepLatencyEventData {
   rsfs?: number;
   /**
    * Client-measured wall-clock ms of the FINAL replay pass that scheduled
-   * the first step (see {@link StepLatencyTracking.replayMs}) — not
+   * the first step (see {@link StepLatencyTracking.replayMs}); not
    * accumulated across earlier pre-first-step passes, so it must not be
    * read as "the replay portion of `rsfs`".
    */
@@ -136,7 +136,7 @@ export interface StepLatencyEventData {
  *   {@link StepLatencyTracking.preStepBlockingMs}.
  * - `attr_set` (workflow-body `setAttributes`): resolves through
  *   an extra replay before steps run. Subtracted by ending the measurement at
- *   the first attr write's timestamp instead — see
+ *   the first attr write's timestamp instead; see
  *   {@link StepLatencyTracking.preStepAttrStartMs}.
  */
 const TTFS_DISQUALIFYING_EVENT_TYPES: ReadonlySet<Event['eventType']> = new Set(
@@ -176,13 +176,13 @@ export function computeStepLatencyTracking(params: {
   runCreatedAtMs: number | undefined;
   /**
    * Epoch ms the `run_started` response was received/parsed by the SDK (or,
-   * under turbo, the instant the run was synthesized locally — see
+   * under turbo, the instant the run was synthesized locally; see
    * {@link StepLatencyTracking.rsfsAnchorMs}). Absent disqualifies RSFS.
    */
   runStartedReceivedAtMs: number | undefined;
   /**
    * Wall-clock ms this suspension's `runWorkflow` call spent executing
-   * synchronously before throwing — the FINAL replay pass only, not
+   * synchronously before throwing: the FINAL replay pass only, not
    * accumulated across earlier passes. See
    * {@link StepLatencyTracking.replayMs}.
    */
@@ -193,7 +193,7 @@ export function computeStepLatencyTracking(params: {
    * The accumulator's value as of the suspension that wrote the run's first
    * attr_set (its hook phase runs before its attr writes). When the
    * measurement ends at the attr write, only hook time from before that
-   * point may be subtracted — later hook writes fall outside the measured
+   * point may be subtracted; later hook writes fall outside the measured
    * window. Undefined when no attr suspension happened in this invocation
    * (e.g. the attr_set was loaded from a redelivery's snapshot, where no
    * same-invocation hook time precedes it).
@@ -202,14 +202,14 @@ export function computeStepLatencyTracking(params: {
   /**
    * Whether the suspension that scheduled this batch also created waits.
    * Those `wait_created` writes are not in `events` yet (they were committed
-   * by this very suspension pass), so they must be reported separately. A
+   * by this suspension pass), so they must be reported separately. A
    * wait disqualifies both measurements.
    */
   suspensionHasWaits: boolean;
   /**
    * Whether the suspension that scheduled this batch also created hooks
-   * (also not in `events` yet). Hooks keep TTFS eligible — their measured
-   * write time is subtracted via `preStepBlockingMs` — but disqualify STSO,
+   * (also not in `events` yet). Hooks keep TTFS eligible (their measured
+   * write time is subtracted via `preStepBlockingMs`) but disqualify STSO,
    * which is only meaningful for a pure back-to-back step gap.
    */
   suspensionCreatedHooks: boolean;
@@ -239,7 +239,7 @@ export function computeStepLatencyTracking(params: {
     }
   }
 
-  // STSO: the two steps ran back-to-back — the newest known event is the
+  // STSO: the two steps ran back-to-back, so the newest known event is the
   // previous step's terminal event, with nothing (hook_received, waits,
   // attr_set, ...) in between and this suspension scheduling nothing but
   // steps.
@@ -308,7 +308,7 @@ export function computeStepLatencyTracking(params: {
  * Compute the latency telemetry to attach to the step's terminal event.
  * Called by `executeStep` with the wall-clock timestamp taken immediately
  * before user step code runs. Returns undefined when there is nothing to
- * report (no tracking, or a retry attempt — retries measure neither TTFS nor
+ * report (no tracking, or a retry attempt; retries measure neither TTFS nor
  * STSO).
  */
 export function computeStepLatencyEventData(params: {
@@ -326,6 +326,12 @@ export function computeStepLatencyEventData(params: {
   lazyStepStart: boolean;
   /** Whether the body ran optimistically, without awaiting step_started. */
   optimisticStart: boolean;
+  /**
+   * Whether the step's `step_created` + `step_started` pair was pre-claimed
+   * inside the suspension handler's batched fan-out write (no start POST of
+   * its own at all).
+   */
+  preclaimedStart?: boolean;
 }): StepLatencyEventData | undefined {
   const { tracking } = params;
   if (!tracking || params.attempt !== 1) {
@@ -339,11 +345,11 @@ export function computeStepLatencyEventData(params: {
   // doc comment).
   //
   // A pre-step setAttributes detour ends the measurement at the first attr
-  // write instead of the step's code start — the remainder is the duration
+  // write instead of the step's code start: the remainder is the duration
   // of the setAttributes call (resolved via an extra replay), which is
   // subtracted rather than disqualifying the sample. In that case
   // `tracking.preStepBlockingMs` already holds only the hook time from
-  // BEFORE the attr write — hook writes after the window closed are excluded
+  // BEFORE the attr write; hook writes after the window closed are excluded
   // by computeStepLatencyTracking (see preStepBlockingBeforeAttrMs).
   const ttfsEndMs = tracking.preStepAttrStartMs ?? params.stepCodeStartedAtMs;
   const rawTtfs =
@@ -362,12 +368,12 @@ export function computeStepLatencyEventData(params: {
     rawStso !== undefined && rawStso >= -MAX_CLOCK_SKEW_MS
       ? Math.max(0, rawStso)
       : undefined;
-  // RSFS ends at the actual start-POST instant, not at ttfsEndMs — unlike
+  // RSFS ends at the actual start-POST instant, not at ttfsEndMs: unlike
   // TTFS it is not subject to the pre-step attr-write shortcut, so a
   // pre-step setAttributes detour (rare) makes RSFS include the detour
   // while TTFS excludes it. `finalSchedulingReplay` is a direct passthrough
-  // of `tracking.replayMs` — the FINAL replay pass only (see
-  // StepLatencyTracking.replayMs) — so no further subtraction applies, but
+  // of `tracking.replayMs`, the FINAL replay pass only (see
+  // StepLatencyTracking.replayMs), so no further subtraction applies, but
   // it also means it is NOT accumulated across any earlier pre-first-step
   // passes (e.g. a setAttributes detour) and must not be read as "the
   // replay portion of rsfs"; rsfs covers the whole window.
@@ -396,6 +402,7 @@ export function computeStepLatencyEventData(params: {
   if (tracking.turbo) optimizations.push('turbo');
   if (params.lazyStepStart) optimizations.push('lazyStepStart');
   if (params.optimisticStart) optimizations.push('optimisticStart');
+  if (params.preclaimedStart) optimizations.push('preclaimedStart');
 
   return {
     ...(ttfs !== undefined ? { ttfs } : {}),
