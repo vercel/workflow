@@ -616,14 +616,10 @@ function serializationBlockerLogMetadata(
         source,
         correlationId,
         kind,
-        ...(detail === undefined
-          ? {}
-          : {
-              detail:
-                detail.length > SERIALIZATION_BLOCKER_LOG_DETAIL_LIMIT
-                  ? `${detail.slice(0, SERIALIZATION_BLOCKER_LOG_DETAIL_LIMIT)}…`
-                  : detail,
-            }),
+        detail:
+          detail && detail.length > SERIALIZATION_BLOCKER_LOG_DETAIL_LIMIT
+            ? `${detail.slice(0, SERIALIZATION_BLOCKER_LOG_DETAIL_LIMIT)}…`
+            : detail,
       })),
     serializationBlockersTruncated:
       blockers.length > SERIALIZATION_BLOCKER_LOG_SAMPLE_LIMIT,
