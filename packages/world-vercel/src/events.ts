@@ -522,8 +522,14 @@ export async function getWorkflowRunEvents(
       | 'resolve',
   };
 
+  const runId = 'correlationId' in params ? params.runId : undefined;
   const result = await ('correlationId' in params
-    ? getEventsByCorrelationIdV4(params.correlationId, wirePagination, config)
+    ? getEventsByCorrelationIdV4(
+        params.correlationId,
+        wirePagination,
+        config,
+        runId
+      )
     : getWorkflowRunEventsV4(params.runId, wirePagination, config));
 
   const events = result.events.map((listed) =>
@@ -531,7 +537,12 @@ export async function getWorkflowRunEvents(
   );
 
   return {
-    data: events,
+    // Older servers may ignore the runId query parameter. Keep the client
+    // filter as a compatibility guard until every server honors it.
+    data:
+      runId !== undefined
+        ? events.filter((event) => event.runId === runId)
+        : events,
     cursor: result.next ?? null,
     hasMore: Boolean(result.next),
   } as PaginatedResponse<Event>;

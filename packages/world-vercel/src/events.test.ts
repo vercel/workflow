@@ -679,3 +679,70 @@ describe('getWorkflowRunEvents remoteRefBehavior mapping', () => {
     agent.assertNoPendingInterceptors();
   });
 });
+
+describe('getWorkflowRunEvents correlation run scope', () => {
+  function listResponse(runIds: string[]): Buffer {
+    return Buffer.concat([
+      ...runIds.map((runId, index) =>
+        encodeFrame(
+          {
+            eventId: `evnt_${index}`,
+            runId,
+            eventType: 'step_started',
+            correlationId: 'step_1',
+            createdAt: '2026-06-10T00:00:00.000Z',
+          },
+          new Uint8Array(0)
+        )
+      ),
+      encodeFrame({ _end: 1 }, new Uint8Array(0)),
+    ]);
+  }
+
+  it('sends runId on correlation lookups and filters an older server response', async () => {
+    const agent = mockAgent();
+    agent
+      .get(ORIGIN)
+      .intercept({
+        path: '/api/v4/events',
+        method: 'GET',
+        query: {
+          correlationId: 'step_1',
+          runId: 'wrun_1',
+          remoteRefBehavior: 'resolve',
+        },
+      })
+      .reply(200, listResponse(['wrun_1', 'wrun_other']), {
+        headers: { 'content-type': V4_FRAME_CONTENT_TYPE },
+      });
+
+    const result = await getWorkflowRunEvents(
+      { correlationId: 'step_1', runId: 'wrun_1' },
+      { token: 'test-token', dispatcher: agent }
+    );
+
+    expect(result.data.map((event) => event.runId)).toEqual(['wrun_1']);
+    agent.assertNoPendingInterceptors();
+  });
+
+  it('keeps the legacy correlation request shape without runId', async () => {
+    const agent = mockAgent();
+    agent
+      .get(ORIGIN)
+      .intercept({
+        path: '/api/v4/events',
+        method: 'GET',
+        query: { correlationId: 'step_1', remoteRefBehavior: 'resolve' },
+      })
+      .reply(200, listResponse(['wrun_1']), {
+        headers: { 'content-type': V4_FRAME_CONTENT_TYPE },
+      });
+
+    await getWorkflowRunEvents(
+      { correlationId: 'step_1' },
+      { token: 'test-token', dispatcher: agent }
+    );
+
+    agent.assertNoPendingInterceptors();
+  });
+});

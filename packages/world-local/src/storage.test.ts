@@ -1033,6 +1033,16 @@ describe('Storage', () => {
         expect(result.data[1].runId).toBe(run2.runId);
         expect(result.data[2].eventId).toBe(event3.eventId);
         expect(result.data[2].runId).toBe(testRunId);
+
+        const scopedResult = await storage.events.listByCorrelationId({
+          correlationId,
+          runId: testRunId,
+          pagination: {},
+        });
+        expect(scopedResult.data.map((event) => event.runId)).toEqual([
+          testRunId,
+          testRunId,
+        ]);
       });
 
       it('should return empty list for non-existent correlation ID', async () => {

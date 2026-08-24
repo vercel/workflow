@@ -1632,6 +1632,9 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
         .where(
           and(
             eq(events.correlationId, params.correlationId),
+            params.runId !== undefined
+              ? eq(events.runId, params.runId)
+              : undefined,
             map(params.pagination?.cursor, (c) =>
               order.compare(events.eventId, c)
             )
