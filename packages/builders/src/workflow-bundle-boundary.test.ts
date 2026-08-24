@@ -1,5 +1,4 @@
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { BaseBuilder, type DiscoveredEntries } from './base-builder.js';
@@ -24,6 +23,7 @@ class TestBuilder extends BaseBuilder {
 }
 
 describe('workflow bundle boundary', () => {
+  const repoRoot = resolve(import.meta.dirname, '../../..');
   const outputDirs: string[] = [];
 
   afterEach(() => {
@@ -32,15 +32,15 @@ describe('workflow bundle boundary', () => {
     }
   });
 
-  it('does not bundle world schemas into a workflow without schemas', async () => {
-    const repoRoot = resolve(import.meta.dirname, '../../..');
-    const outputDir = mkdtempSync(join(tmpdir(), 'workflow-pruning-'));
-    outputDirs.push(outputDir);
-    const inputFile = join(outputDir, 'minimal.ts');
-    writeFileSync(
-      inputFile,
-      `export async function minimal() { "use workflow"; return 1; }`
+  async function getWorkflowBundleInputs(source: string): Promise<string[]> {
+    // Keep the fixture beneath this package so its workspace dependencies are
+    // resolved exactly as they are for a real consumer workflow.
+    const outputDir = mkdtempSync(
+      join(import.meta.dirname, '.workflow-pruning-')
     );
+    outputDirs.push(outputDir);
+    const inputFile = join(outputDir, 'workflow.ts');
+    writeFileSync(inputFile, source);
 
     const config: StandaloneConfig = {
       buildTarget: 'standalone',
@@ -68,11 +68,42 @@ describe('workflow bundle boundary', () => {
     );
 
     expect(interimBundleMetafile).toBeDefined();
-    const inputs = Object.keys(interimBundleMetafile?.inputs ?? {}).map(
-      (input) => input.replaceAll('\\', '/')
+    return Object.keys(interimBundleMetafile?.inputs ?? {}).map((input) =>
+      input.replaceAll('\\', '/')
     );
+  }
+
+  function expectNoZodInputs(inputs: string[]): void {
     expect(
       inputs.filter((input) => input.includes('/node_modules/zod/'))
     ).toEqual([]);
+  }
+
+  it('does not bundle world schemas into a minimal workflow', async () => {
+    const inputs = await getWorkflowBundleInputs(
+      `export async function minimal() { "use workflow"; return 1; }`
+    );
+
+    expectNoZodInputs(inputs);
+  });
+
+  it('does not bundle world schemas for core workflow APIs', async () => {
+    const inputs = await getWorkflowBundleInputs(`
+      import { createHook, setAttributes } from '@workflow/core';
+
+      async function basicStep(value: number) {
+        "use step";
+        return value + 1;
+      }
+
+      export async function realisticWorkflow() {
+        "use workflow";
+        await setAttributes({ phase: 'started' });
+        const hook = createHook<number>();
+        return basicStep(await hook);
+      }
+    `);
+
+    expectNoZodInputs(inputs);
   });
 });

@@ -24,7 +24,31 @@ export function isSealedNoopEvent(event: { eventType: string }): boolean {
   return event.eventType === 'noop';
 }
 
-/** Groups events that are mutually exclusive outcomes for one entity. */
+/**
+ * Groups event types into the classes a replay tracks per entity: the entity
+ * named by the event's `correlationId`, or the run itself for run events,
+ * which carry none.
+ *
+ * Types that share a class are the mutually exclusive outcomes of one
+ * decision, so the log records the class once and the first event of it is the
+ * one that counts: a step either completes or fails.
+ *
+ * Classes are independent of each other. A step whose result is in the log has
+ * still recorded exactly one `step_created`, and can still record another
+ * `step_started` if an attempt is running somewhere. What a class bounds is
+ * which events can be *ignored*: a replay may pass over an event whose class
+ * it already recorded for that entity and which no consumer wants (see
+ * `EventsConsumer`), and only then.
+ *
+ * Note the omissions, all of them types a mapping would be dead weight for.
+ * `hook_received` and `hook_conflict` are deliveries whose consumer subscribes
+ * lazily, `attr_set` is written on every attribute write, and `run_created`
+ * precedes every replay. The terminal run types are absent for a different
+ * reason: recording a class requires a consumer to take an event of it, and no
+ * consumer takes `run_completed` / `run_failed` / `run_cancelled`: the runtime
+ * exits before replaying the body once the log holds one, so they never reach a
+ * consumer at all. An entry for them could never match.
+ */
 const ENTITY_EVENT_CLASS_BY_TYPE = {
   step_created: 'step_created',
   step_started: 'step_started',
