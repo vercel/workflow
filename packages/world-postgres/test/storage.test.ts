@@ -1255,7 +1255,105 @@ describe('Storage (Postgres integration)', () => {
           stepName: 'test-step',
           input: new Uint8Array(),
         })
-      ).rejects.toMatchObject({ name: 'EntityConflictError' });
+      ).rejects.toMatchObject({
+        name: 'EntityConflictError',
+        message: `step_created for correlationId "step_seq_dup" already exists in run "${testRunId}"`,
+      });
+    });
+
+    it('recovers an orphaned step row before a plain step_started event', async () => {
+      const stepId = 'step_orphan';
+      await drizzle.insert(DrizzleSchema.steps).values({
+        runId: testRunId,
+        stepId,
+        stepName: 'test-step',
+        input: new Uint8Array(),
+        status: 'pending',
+        attempt: 0,
+        specVersion: SPEC_VERSION_CURRENT,
+      });
+
+      const recovered = await createStep(events, testRunId, {
+        stepId,
+        stepName: 'test-step',
+        input: new Uint8Array(),
+      });
+      expect(recovered.stepId).toBe(stepId);
+
+      await updateStep(events, testRunId, stepId, 'step_started');
+
+      const evts = await events.list({
+        runId: testRunId,
+        pagination: {},
+      });
+      expect(
+        evts.data
+          .filter((event) => event.correlationId === stepId)
+          .map((event) => event.eventType)
+      ).toEqual(['step_created', 'step_started']);
+    });
+
+    it('rolls back the step entity when the matching event insert fails', async () => {
+      await pool.query(`
+        CREATE FUNCTION workflow.reject_step_created_event_for_test()
+        RETURNS trigger
+        LANGUAGE plpgsql
+        AS $$
+        BEGIN
+          IF NEW.type = 'step_created'
+            AND NEW.correlation_id = 'step_partial_write'
+          THEN
+            RAISE EXCEPTION 'forced step_created event insert failure';
+          END IF;
+          RETURN NEW;
+        END;
+        $$;
+
+        CREATE TRIGGER reject_step_created_event_for_test
+        BEFORE INSERT ON workflow.workflow_events
+        FOR EACH ROW
+        EXECUTE FUNCTION workflow.reject_step_created_event_for_test();
+      `);
+
+      try {
+        await expect(
+          createStep(events, testRunId, {
+            stepId: 'step_partial_write',
+            stepName: 'test-step',
+            input: new Uint8Array(),
+          })
+        ).rejects.toMatchObject({
+          cause: {
+            message: expect.stringMatching(
+              /forced step_created event insert failure/
+            ),
+          },
+        });
+
+        const stepRows = await drizzle
+          .select({ stepId: DrizzleSchema.steps.stepId })
+          .from(DrizzleSchema.steps)
+          .where(eq(DrizzleSchema.steps.stepId, 'step_partial_write'));
+        expect(stepRows).toEqual([]);
+
+        const evts = await events.list({
+          runId: testRunId,
+          pagination: {},
+        });
+        expect(
+          evts.data.filter(
+            (event) =>
+              event.eventType === 'step_created' &&
+              event.correlationId === 'step_partial_write'
+          )
+        ).toHaveLength(0);
+      } finally {
+        await pool.query(`
+          DROP TRIGGER reject_step_created_event_for_test
+            ON workflow.workflow_events;
+          DROP FUNCTION workflow.reject_step_created_event_for_test();
+        `);
+      }
     });
 
     it('should reject duplicate wait_created with EntityConflictError', async () => {
