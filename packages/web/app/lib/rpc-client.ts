@@ -128,6 +128,7 @@ export async function fetchEventsByCorrelationId(
   worldEnv: EnvMap,
   correlationId: string,
   params: {
+    runId?: string;
     cursor?: string;
     sortOrder?: 'asc' | 'desc';
     limit?: number;

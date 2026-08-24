@@ -105,7 +105,10 @@ function parseCatalogEntries(yamlPath) {
     }
 
     let key = match[1].trim();
-    if (key.startsWith('"') && key.endsWith('"')) {
+    if (
+      (key.startsWith('"') && key.endsWith('"')) ||
+      (key.startsWith("'") && key.endsWith("'"))
+    ) {
       key = key.slice(1, -1);
     }
     const value = match[2].trim();

@@ -10,3 +10,4 @@ dist
 .vercel
 _workflows.ts
 src/routeTree.gen.ts
+/.swc

@@ -21,18 +21,83 @@
  * bytes — this module stays at the wire-bytes layer.
  */
 
-import {
-  EntityConflictError,
-  RunExpiredError,
-  ThrottleError,
-  TooEarlyError,
-  WorkflowWorldError,
-} from '@workflow/errors';
 import { decode } from 'cbor-x';
-import { type Dispatcher, request } from 'undici';
 import { decodeFrames, encodeFrame, V4_FRAME_CONTENT_TYPE } from './frames.js';
-import { getDispatcher } from './http-client.js';
+import {
+  getEventsDispatcher,
+  noteEventsTransportOutcome,
+} from './http-client.js';
+import {
+  errorForResponse,
+  instrumentedFetch,
+  parseRetryAfter,
+} from './http-core.js';
 import { type APIConfig, getHttpConfig } from './utils.js';
+
+/**
+ * Issue an instrumented v4 request through the global `fetch` — NOT undici's
+ * `request`.
+ *
+ * Vercel's observability "outgoing requests" view instruments the global
+ * `fetch`. Calling `undici.request()` directly bypasses that instrumentation,
+ * so v4 event traffic disappeared from the log viewer while queue traffic
+ * (which uses `fetch`) kept showing. `instrumentedFetch` routes through the
+ * global `fetch` with the custom dispatcher, restoring visibility while also
+ * opening the OTEL client span, injecting trace context, setting the
+ * cache-bust header (see #618), and emitting `DEBUG` logs — the same envelope
+ * the v3 `makeRequest` path has always had.
+ *
+ * The events API uses its own HTTP/2-enabled dispatcher
+ * (`getEventsDispatcher`): these reads/writes are plain request/response (or a
+ * streamed LIST response) and benefit from multiplexing. The default dispatcher
+ * stays on HTTP/1.1 because H2 deadlocks the queue's webhook respondWith
+ * mechanism — see http-client.ts.
+ *
+ * No per-request timeout: a LIST response streams the full event-log page, which
+ * for a large run can legitimately take a while to drain — a whole-request
+ * deadline would abort it mid-stream.
+ */
+async function fetchV4(
+  url: string,
+  init: { method: string; headers: Headers; body?: Uint8Array },
+  config: APIConfig | undefined,
+  opName: string
+): Promise<Response> {
+  const dispatcher = getEventsDispatcher(config);
+  return instrumentedFetch({
+    method: init.method,
+    url,
+    headers: init.headers,
+    body: init.body,
+    dispatcher,
+    // Repeated transport failures retire the shared events pool and the next
+    // request builds a fresh one. undici keeps a black-holed HTTP/2 session in
+    // service indefinitely, so without this every request routed onto it fails
+    // until the compute instance is recycled — see noteEventsTransportOutcome.
+    onTransportOutcome: (error) =>
+      noteEventsTransportOutcome(dispatcher, error),
+    timeoutMs: null,
+    logLabel: opName,
+    buildError: async (response) =>
+      errorFromV4Response(
+        response.status,
+        headersToRecord(response.headers),
+        await response.text(),
+        opName,
+        url
+      ),
+  });
+}
+
+/** Flatten a fetch `Headers` into the record shape throwForErrorResponse
+ *  expects (it mirrors the v3 `makeRequest` error contract). */
+function headersToRecord(headers: Headers): Record<string, string> {
+  const out: Record<string, string> = {};
+  headers.forEach((value, key) => {
+    out[key] = value;
+  });
+  return out;
+}
 
 /**
  * POST surfaces these so callers can read the created eventId without
@@ -84,6 +149,14 @@ export interface CreateEventV4Input {
   /** Arbitrary structured map; rides as a native CBOR object in the
    *  frame meta. Bounded by the server at 2 KB encoded. */
   executionContext?: Record<string, unknown>;
+  /**
+   * Epoch ms (the ULID time of the latest event the runtime has loaded
+   * during replay). Sent by replay-context creates so the backend can
+   * reject the event when a newer out-of-band event was recorded after this
+   * snapshot, enabling an optimistic-concurrency guard. Omitted by callers
+   * without a loaded event log; older servers ignore it entirely.
+   */
+  stateUpdatedAt?: number;
 }
 
 export interface CreateEventV4Result {
@@ -106,6 +179,11 @@ export interface CreateEventV4Result {
     events?: unknown[];
     cursor?: string | null;
     hasMore?: boolean;
+    /**
+     * Server-owned per-run event ceiling, returned on run-lifecycle responses.
+     * Absent from older servers. Threaded into EventResult.maxEvents.
+     */
+    maxEvents?: number;
   };
 }
 
@@ -141,31 +219,28 @@ function buildPostFrameMeta(
   if (input.executionContext !== undefined) {
     meta.executionContext = input.executionContext;
   }
+  if (input.stateUpdatedAt !== undefined) {
+    meta.stateUpdatedAt = input.stateUpdatedAt;
+  }
   return meta;
 }
 
 /**
- * Map a non-2xx response to the same typed-error contract the v3 client's
- * `makeRequest` used. The runtime branches on these types for core control
- * flow, so v4 must preserve every mapping:
- *
- *   - 409 → EntityConflictError (start() dedupe, terminal-state transitions)
- *   - 410 → RunExpiredError (runtime exits without retrying)
- *   - 425 → TooEarlyError + retryAfter (step retry pacing — see #1806 for
- *     what happens when a 425 degrades into an untyped error)
- *   - 429 → ThrottleError + retryAfter
- *   - anything else → WorkflowWorldError with `status` (the hook 404 →
- *     HookNotFoundError translation in events.ts keys off status === 404)
- *
- * Exported for unit tests.
+ * Build the typed error for a non-2xx v4 response. Reuses the shared
+ * `errorForResponse` status → error-type contract (409→EntityConflictError,
+ * 410→RunExpiredError, 412→PreconditionFailedError, 425→TooEarlyError,
+ * 429→ThrottleError, else →WorkflowWorldError) so v3 and v4 stay in lockstep —
+ * only the message *string* is v4-specific (`v4 {opName} failed: HTTP …`,
+ * which the runtime and log tooling key on; the hook 404 →
+ * HookNotFoundError translation in events.ts keys off status === 404).
  */
-export function throwForErrorResponse(
+function errorFromV4Response(
   statusCode: number,
   responseHeaders: Record<string, string | string[] | undefined>,
   errorBody: string,
   opName: string,
   url: string
-): never {
+): Error {
   let message = `v4 ${opName} failed: HTTP ${statusCode}`;
   let code: string | undefined;
   try {
@@ -177,24 +252,37 @@ export function throwForErrorResponse(
     if (errorBody) message += ` ${errorBody}`;
   }
 
-  // Retry-After response header (seconds). Used by 425 and 429.
-  let retryAfter: number | undefined;
-  const retryAfterHeader = readHeader(responseHeaders, 'retry-after');
-  if (retryAfterHeader) {
-    const parsed = parseInt(retryAfterHeader, 10);
-    if (!Number.isNaN(parsed)) retryAfter = parsed;
-  }
-
-  if (statusCode === 409) throw new EntityConflictError(message);
-  if (statusCode === 410) throw new RunExpiredError(message);
-  if (statusCode === 425) throw new TooEarlyError(message, { retryAfter });
-  if (statusCode === 429) throw new ThrottleError(message, { retryAfter });
-  throw new WorkflowWorldError(message, {
-    status: statusCode,
+  const retryAfter = parseRetryAfter(
+    readHeader(responseHeaders, 'retry-after')
+  );
+  // A firewall-challenge 429 is routed to the retryable transport path (not
+  // ThrottleError) so step_started writes back off + cap rather than looping.
+  return errorForResponse(statusCode, message, {
+    retryAfter,
     code,
     url,
-    retryAfter,
+    mitigated: readHeader(responseHeaders, 'x-vercel-mitigated'),
   });
+}
+
+/**
+ * Throwing wrapper around `errorFromV4Response`. Exported for unit tests; the
+ * request paths throw via `instrumentedFetch`'s `buildError`.
+ */
+export function throwForErrorResponse(
+  statusCode: number,
+  responseHeaders: Record<string, string | string[] | undefined>,
+  errorBody: string,
+  opName: string,
+  url: string
+): never {
+  throw errorFromV4Response(
+    statusCode,
+    responseHeaders,
+    errorBody,
+    opName,
+    url
+  );
 }
 
 /**
@@ -226,29 +314,16 @@ export async function createWorkflowRunEventV4(
   );
 
   const url = `${baseUrl}/v4/runs/${encodeURIComponent(input.runId)}/events/${encodeURIComponent(input.eventType)}`;
-  const response = await request(url, {
-    method: 'POST',
-    headers: Object.fromEntries(headers.entries()),
-    body: frame,
-    // getDispatcher() is typed `unknown` (undici's Dispatcher type is
-    // version-specific across @types/node majors); cast to the undici
-    // Dispatcher this module's own `request` expects.
-    dispatcher: getDispatcher(config) as Dispatcher,
-  });
-  if (response.statusCode < 200 || response.statusCode >= 300) {
-    const errorBody = await response.body.text();
-    throwForErrorResponse(
-      response.statusCode,
-      response.headers,
-      errorBody,
-      'createEvent',
-      url
-    );
-  }
+  const response = await fetchV4(
+    url,
+    { method: 'POST', headers, body: frame },
+    config,
+    'createEvent'
+  );
 
-  const eventId = response.headers[V4_RESPONSE_HEADERS.eventId];
-  const runId = response.headers[V4_RESPONSE_HEADERS.runId];
-  const createdAt = response.headers[V4_RESPONSE_HEADERS.createdAt];
+  const eventId = response.headers.get(V4_RESPONSE_HEADERS.eventId);
+  const runId = response.headers.get(V4_RESPONSE_HEADERS.runId);
+  const createdAt = response.headers.get(V4_RESPONSE_HEADERS.createdAt);
   if (
     typeof eventId !== 'string' ||
     typeof runId !== 'string' ||
@@ -258,7 +333,7 @@ export async function createWorkflowRunEventV4(
   }
 
   // Decode the materialized-entity bag from the CBOR response body.
-  const bodyBytes = new Uint8Array(await response.body.arrayBuffer());
+  const bodyBytes = new Uint8Array(await response.arrayBuffer());
   const body =
     bodyBytes.byteLength > 0
       ? (decode(bodyBytes) as CreateEventV4Result['body'])
@@ -314,34 +389,24 @@ export async function getEventV4(
   const { baseUrl, headers } = await getHttpConfig(config);
 
   const url = `${baseUrl}/v4/runs/${encodeURIComponent(runId)}/events/${encodeURIComponent(eventId)}`;
-  const response = await request(url, {
-    method: 'GET',
-    headers: Object.fromEntries(headers.entries()),
-    // getDispatcher() is typed `unknown` (undici's Dispatcher type is
-    // version-specific across @types/node majors); cast to the undici
-    // Dispatcher this module's own `request` expects.
-    dispatcher: getDispatcher(config) as Dispatcher,
-  });
-  if (response.statusCode < 200 || response.statusCode >= 300) {
-    const errorBody = await response.body.text();
-    throwForErrorResponse(
-      response.statusCode,
-      response.headers,
-      errorBody,
-      'getEvent',
-      url
-    );
-  }
-  const contentType = readHeader(response.headers, 'content-type');
+  const response = await fetchV4(
+    url,
+    { method: 'GET', headers },
+    config,
+    'getEvent'
+  );
+  const contentType = response.headers.get('content-type');
   if (!contentType?.startsWith(V4_FRAME_CONTENT_TYPE)) {
     throw new Error(
       `v4 getEvent: expected ${V4_FRAME_CONTENT_TYPE}, got ${contentType ?? '(none)'}`
     );
   }
 
-  // undici's response body is an AsyncIterable of byte chunks — feed it
-  // to decodeFrames directly. Do NOT convert via node:stream
-  // Readable.toWeb: dynamic `import('node:stream')` resolves to an empty
+  // fetch's `Response.body` is a web ReadableStream, which is async-iterable
+  // on Node (readableStream async iteration, since v16.5.0) — feed it straight
+  // to decodeFrames. The cast is only because TS's lib `ReadableStream` type
+  // omits the async iterator. Do NOT round-trip through `node:stream`
+  // Readable.toWeb: a dynamic `import('node:stream')` resolves to an empty
   // module namespace in Next.js webpack server bundles and crashes.
   const chunks = response.body as unknown as AsyncIterable<Uint8Array>;
 
@@ -402,35 +467,21 @@ async function consumeListFrameStream(
   config: APIConfig | undefined,
   opName: string
 ): Promise<ListEventsV4Result> {
-  const response = await request(url, {
-    method: 'GET',
-    headers: Object.fromEntries(headers.entries()),
-    // getDispatcher() is typed `unknown` (undici's Dispatcher type is
-    // version-specific across @types/node majors); cast to the undici
-    // Dispatcher this module's own `request` expects.
-    dispatcher: getDispatcher(config) as Dispatcher,
-  });
-  if (response.statusCode < 200 || response.statusCode >= 300) {
-    const errorBody = await response.body.text();
-    throwForErrorResponse(
-      response.statusCode,
-      response.headers,
-      errorBody,
-      opName,
-      url
-    );
-  }
-  const contentType = readHeader(response.headers, 'content-type');
+  const response = await fetchV4(
+    url,
+    { method: 'GET', headers },
+    config,
+    opName
+  );
+  const contentType = response.headers.get('content-type');
   if (!contentType?.startsWith(V4_FRAME_CONTENT_TYPE)) {
     throw new Error(
       `v4 ${opName}: expected ${V4_FRAME_CONTENT_TYPE}, got ${contentType ?? '(none)'}`
     );
   }
 
-  // undici's response body is an AsyncIterable of byte chunks — feed it
-  // to decodeFrames directly. Do NOT convert via node:stream
-  // Readable.toWeb: dynamic `import('node:stream')` resolves to an empty
-  // module namespace in Next.js webpack server bundles and crashes.
+  // See getEventV4: fetch's web ReadableStream is async-iterable on Node; the
+  // cast only works around TS's lib type omitting the async iterator.
   const chunks = response.body as unknown as AsyncIterable<Uint8Array>;
 
   const events: ListedEventV4[] = [];
@@ -522,11 +573,13 @@ export async function getWorkflowRunEventsV4(
 export async function getEventsByCorrelationIdV4(
   correlationId: string,
   params: ListEventsV4Params = {},
-  config?: APIConfig
+  config?: APIConfig,
+  runId?: string
 ): Promise<ListEventsV4Result> {
   const { baseUrl, headers } = await getHttpConfig(config);
   const sp = new URLSearchParams();
   sp.set('correlationId', correlationId);
+  if (runId !== undefined) sp.set('runId', runId);
   appendListParams(sp, params);
   const url = `${baseUrl}/v4/events?${sp.toString()}`;
   return consumeListFrameStream(

@@ -36,7 +36,7 @@ That's it. Vercel automatically:
 
 For complete details on pricing, usage limits, and included allotments on Vercel, see the official Vercel documentation:
 
-- **[Vercel Workflow](https://vercel.com/docs/workflow)** — Pricing details, concepts, and observability for Workflow on Vercel
+- **[Vercel Workflow](https://vercel.com/docs/workflows)** — Pricing details, concepts, and observability for Workflow on Vercel
 - **[Vercel limits](https://vercel.com/docs/limits)** — Platform-wide limits including Workflow-specific constraints
 - **[Vercel Hobby plan](https://vercel.com/docs/plans/hobby)** — Free tier included usage for Workflow and other resources
 
@@ -113,6 +113,10 @@ Vercel team ID for API requests. Automatically detected.
 
 Custom base URL for the Vercel workflow API. Automatically detected.
 
+### `WORKFLOW_H2_MULTIPLEX`
+
+Enabled by default. Lets concurrent event-log requests share one HTTP/2 connection instead of opening one connection per in-flight request. Set to `0` to take the event-log requests off HTTP/2 entirely, back to one request per HTTP/1.1 connection. Use this as the kill switch if HTTP/2 turns out to be at fault for event delivery problems.
+
 ### Programmatic configuration
 
 {/*@skip-typecheck: incomplete code sample*/}
@@ -180,4 +184,4 @@ The Vercel World uses Vercel's infrastructure for workflow execution:
 - **Queuing** - Steps are distributed across serverless functions via [Vercel Queues](https://vercel.com/docs/queues) with automatic retries and [consumer function security](#consumer-function-security)
 - **Authentication** - OIDC tokens provide secure, automatic authentication
 
-For more details, see the [Vercel Workflow documentation](https://vercel.com/docs/workflow).
+For more details, see the [Vercel Workflow documentation](https://vercel.com/docs/workflows).

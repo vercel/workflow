@@ -22,6 +22,8 @@ import {
   EventSchema,
   HookSchema,
   isLegacySpecVersion,
+  isTerminalStepStatus,
+  isTerminalWorkflowRunStatus,
   requiresNewerWorld,
   SPEC_VERSION_CURRENT,
   StepSchema,
@@ -52,8 +54,24 @@ import {
   hookRecoveryMarkerPath,
   monotonicUlid,
 } from './helpers.js';
-import { deleteAllHooksForRun } from './hooks-storage.js';
+import {
+  deleteAllHooksForRun,
+  rebuildLiveHookByTokenFromEventLog,
+} from './hooks-storage.js';
 import { handleLegacyEvent } from './legacy.js';
+
+/**
+ * Per-run event ceiling the Local World reports on run responses (mirrors the
+ * Vercel World). Overridable via `WORKFLOW_MAX_EVENTS`; defaults to 25,000.
+ */
+const DEFAULT_MAX_EVENTS_PER_RUN = 25_000;
+function getMaxEventsPerRun(): number {
+  const raw = process.env.WORKFLOW_MAX_EVENTS;
+  const parsed = raw !== undefined ? Number(raw) : Number.NaN;
+  return Number.isInteger(parsed) && parsed > 0
+    ? parsed
+    : DEFAULT_MAX_EVENTS_PER_RUN;
+}
 
 const HookTokenClaimSchema = z.object({
   // The token-claim writer below has always persisted `hookId`, but
@@ -229,7 +247,7 @@ async function repairHookEntityFromPersistedEvent(
     environment: 'local',
     createdAt: persistedEvent.createdAt,
     specVersion: persistedEvent.specVersion,
-    isWebhook: eventData.isWebhook ?? false,
+    isWebhook: eventData.isWebhook ?? true,
   };
   await writeExclusive(
     taggedPath(basedir, 'hooks', hookId, tag),
@@ -418,14 +436,6 @@ export function createEventsStorage(
         // specVersion is always sent by the runtime, but we provide a fallback for safety
         const effectiveSpecVersion = data.specVersion ?? SPEC_VERSION_CURRENT;
 
-        // Helper to check if run is in terminal state
-        const isRunTerminal = (status: string) =>
-          ['completed', 'failed', 'cancelled'].includes(status);
-
-        // Helper to check if step is in terminal state
-        const isStepTerminal = (status: string) =>
-          ['completed', 'failed', 'cancelled'].includes(status);
-
         // Get current run state for validation (if not creating a new run)
         // Skip run validation for step_completed and step_retrying - they only operate
         // on running steps, and running steps are always allowed to modify regardless
@@ -557,7 +567,7 @@ export function createEventsStorage(
         // ============================================================
 
         // Run terminal state validation
-        if (currentRun && isRunTerminal(currentRun.status)) {
+        if (currentRun && isTerminalWorkflowRunStatus(currentRun.status)) {
           const runTerminalEvents = [
             'run_started',
             'run_completed',
@@ -587,6 +597,7 @@ export function createEventsStorage(
             return {
               event: stripEventDataRefs(event, resolveData),
               run: currentRun,
+              ...(currentRun ? { maxEvents: getMaxEventsPerRun() } : {}),
             };
           }
 
@@ -647,14 +658,14 @@ export function createEventsStorage(
           }
 
           // Step terminal state validation
-          if (isStepTerminal(validatedStep.status)) {
+          if (isTerminalStepStatus(validatedStep.status)) {
             throw new EntityConflictError(
               `Cannot modify step in terminal state "${validatedStep.status}"`
             );
           }
 
           // On terminal runs: only allow completing/failing in-progress steps
-          if (currentRun && isRunTerminal(currentRun.status)) {
+          if (currentRun && isTerminalWorkflowRunStatus(currentRun.status)) {
             if (validatedStep.status !== 'running') {
               throw new RunExpiredError(
                 `Cannot modify non-running step on run in terminal state "${currentRun.status}"`
@@ -761,7 +772,7 @@ export function createEventsStorage(
             // because this is a rare race-condition path — the runtime
             // falls back to loading events separately.
             if (currentRun.status === 'running') {
-              return { run: currentRun };
+              return { run: currentRun, maxEvents: getMaxEventsPerRun() };
             }
 
             run = {
@@ -949,7 +960,7 @@ export function createEventsStorage(
               StepSchema,
               tag
             );
-            if (freshStep && isStepTerminal(freshStep.status)) {
+            if (freshStep && isTerminalStepStatus(freshStep.status)) {
               throw new EntityConflictError(
                 `Cannot modify step in terminal state "${freshStep.status}"`
               );
@@ -1100,6 +1111,15 @@ export function createEventsStorage(
             'tokens',
             `${hashToken(hookData.token)}.json`
           );
+          // When the claim is absent, the event log is the only durable source
+          // that can distinguish a first hook from a crash-lost token cache.
+          if (!(await readHookTokenClaim(constraintPath))) {
+            await rebuildLiveHookByTokenFromEventLog(
+              basedir,
+              hookData.token,
+              tag
+            );
+          }
           // Persist `eventId` in the claim so concurrent / cross-
           // process retries can converge on a single canonical
           // `hook_created` event path. See the recovery comment
@@ -1573,6 +1593,8 @@ export function createEventsStorage(
           events,
           cursor,
           hasMore,
+          // Per-run event ceiling (mirrors the Vercel World).
+          ...(run ? { maxEvents: getMaxEventsPerRun() } : {}),
         };
       } // end createImpl
     },
@@ -1633,7 +1655,9 @@ export function createEventsStorage(
         directory: path.join(basedir, 'events'),
         schema: EventSchema,
         // No filePrefix - search all events
-        filter: (event) => event.correlationId === correlationId,
+        filter: (event) =>
+          event.correlationId === correlationId &&
+          (params.runId === undefined || event.runId === params.runId),
         // Events in chronological order (oldest first) by default,
         // different from the default for other list calls.
         sortOrder: params.pagination?.sortOrder ?? 'asc',

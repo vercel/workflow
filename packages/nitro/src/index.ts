@@ -1,5 +1,5 @@
-import { createRequire } from 'node:module';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
 import { workflowTransformPlugin } from '@workflow/rollup';
 import type { Nitro, NitroModule, RollupConfig } from 'nitro/types';
@@ -9,39 +9,94 @@ import type { ModuleOptions } from './types';
 
 export type { ModuleOptions };
 
+/**
+ * Prepend a `createRequire`-backed global `require` to every server chunk so
+ * undici's bundled `require('node:http2')` resolves the real builtin instead of
+ * throwing (which would make undici fall back to a stub without
+ * `http2.connect`, breaking HTTP/2). The guard keeps it idempotent across
+ * chunks, and `node:module` is always available in the Node server runtime.
+ *
+ * This is a Node-server-runtime-only shim (callers gate it to the production
+ * server build). Note the deliberate global side effect: defining
+ * `globalThis.require` makes `typeof require` truthy for *every* bundled
+ * dependency in this ESM server output, so any library that feature-detects
+ * `require` will take its CJS path here. That is safe because (a) it never
+ * touches the client bundle, (b) the guard makes it a no-op where a real
+ * `require` already exists, and (c) the `require` we install is a working
+ * `createRequire`, so a library that switches to the require path gets a
+ * functional `require`, not a broken stub. The behavior to watch for is a
+ * bundled lib that, on seeing `require`, does `require()` of an ESM-only
+ * dependency on a Node version without `require(ESM)` support.
+ *
+ * The guard reads `globalThis.require` rather than the bare identifier: a
+ * bundled module may declare its own top-level `const require` (as
+ * `@workflow/core`'s runtime world loader does), and Rollup hoists that
+ * declaration into the chunk's module scope without renaming it, since the
+ * banner isn't part of the module graph it analyzes. `typeof require` would then
+ * read a const in its temporal dead zone and throw
+ * `ReferenceError: Cannot access 'require' before initialization` on the first
+ * line of the server bundle — the server never boots. A property read is safe
+ * regardless of what the chunk declares; a chunk that has its own `require`
+ * keeps using it, because the local binding shadows the global.
+ */
+function addNodeRequireBanner(config: RollupConfig): void {
+  const banner =
+    "import { createRequire as __wkfCreateRequire } from 'node:module'; if (typeof globalThis.require === 'undefined') { globalThis.require = __wkfCreateRequire(import.meta.url); }";
+  const output = config.output;
+  if (output == null) {
+    config.output = { banner };
+    return;
+  }
+  const outputs = Array.isArray(output) ? output : [output];
+  for (const o of outputs) {
+    const existing = o.banner;
+    o.banner =
+      existing == null
+        ? banner
+        : typeof existing === 'function'
+          ? async (chunk: unknown) => `${banner}\n${await existing(chunk)}`
+          : `${banner}\n${existing}`;
+  }
+}
+
 export default {
   name: 'workflow/nitro',
   async setup(nitro: Nitro) {
     const isVercelDeploy =
       !nitro.options.dev && nitro.options.preset === 'vercel';
 
-    // Pre-built workflow bundles directory - must be excluded from re-transformation
-    const workflowBuildDir = join(nitro.options.buildDir, 'workflow');
+    // Nitro build artifacts have already been transformed; exclude the whole
+    // build directory from re-transformation.
+    const nitroBuildDir = `${nitro.options.buildDir.replace(/[\\/]+$/, '')}/`;
 
     // Add transform plugin at the BEGINNING to run before other transforms
     // (especially before class property transforms that rename classes like _ClassName)
     nitro.hooks.hook('rollup:before', (_nitro: Nitro, config: RollupConfig) => {
       (config.plugins as Array<unknown>).unshift(
         workflowTransformPlugin({
-          // Exclude pre-built workflow bundles from re-transformation
-          // These are already processed and re-processing causes issues like
-          // undefined class references when Nitro's bundler renames variables
-          exclude: [workflowBuildDir],
+          // Nitro build artifacts have already been transformed.
+          // Re-processing them can duplicate class registration.
+          exclude: [nitroBuildDir],
         })
       );
+
+      // Nitro bundles undici (via the world adapter) into the ESM server
+      // output. undici loads most node: builtins as ESM imports, but pulls in
+      // `node:http2` lazily via a bare `require('node:http2')` inside a
+      // try/catch — which the bundler leaves un-wired, so in the ESM bundle the
+      // require throws and undici silently falls back to a stub whose
+      // `http2.connect` is undefined. That breaks any HTTP/2 request (the
+      // workflow flow-route callback fails with "fetch failed", so runs never
+      // start). Prepend a working CJS `require` to the server chunks so the
+      // real `node:http2` resolves. Skipped in dev (Vite SSR provides require).
+      if (!nitro.options.dev) {
+        addNodeRequireBanner(config);
+      }
     });
 
     // NOTE: Temporary workaround for debug unenv mock
     if (!nitro.options.workflow?._vite) {
-      nitro.options.alias['debug'] ??= 'debug';
-    }
-
-    // NOTE: Externalize .nitro/workflow to prevent dev reloads
-    if (nitro.options.dev) {
-      nitro.options.externals ||= {};
-      nitro.options.externals.external ||= [];
-      const outDir = join(nitro.options.buildDir, 'workflow');
-      nitro.options.externals.external.push((id) => id.startsWith(outDir));
+      nitro.options.alias.debug ??= 'debug';
     }
 
     // Add tsConfig plugin
@@ -203,7 +258,16 @@ function addDashboardHandler(nitro: Nitro) {
   }
 }
 
-function addVirtualHandler(nitro: Nitro, route: string, buildPath: string) {
+type VirtualHandlerPath =
+  | 'workflow/webhook.mjs'
+  | 'workflow/steps.mjs'
+  | 'workflow/workflows.mjs';
+
+function addVirtualHandler(
+  nitro: Nitro,
+  route: string,
+  buildPath: VirtualHandlerPath
+) {
   nitro.options.handlers.push({
     route,
     handler: `#${buildPath}`,
@@ -215,6 +279,77 @@ function addVirtualHandler(nitro: Nitro, route: string, buildPath: string) {
   const handlerImportPath = JSON.stringify(
     join(nitro.options.buildDir, buildPath)
   );
+  const stepsImportPath = JSON.stringify(
+    join(nitro.options.buildDir, 'workflow/steps.mjs')
+  );
+  const preloadSteps: Record<VirtualHandlerPath, string> = {
+    'workflow/webhook.mjs': '',
+    'workflow/steps.mjs': '',
+    'workflow/workflows.mjs': `await import(/* @vite-ignore */ pathToFileURL(${stepsImportPath}).href + "?t=" + version);`,
+  };
+
+  if (nitro.options.dev) {
+    // Dev mode: load generated workflow bundles from disk at request time.
+    // This keeps `.nitro/workflow/*.mjs` out of Nitro's own bundle graph,
+    // which avoids rebuild loops and stale dependency graphs during HMR.
+    // Cache-bust by file mtime so each successful rebuild loads fresh code.
+    if (!nitro.routing) {
+      nitro.options.virtual[`#${buildPath}`] = /* js */ `
+      import { fromWebHandler } from "h3";
+      import { statSync } from "node:fs";
+      import { pathToFileURL } from "node:url";
+
+      const handlerPath = ${handlerImportPath};
+      let currentVersion = "";
+      let currentImportPath = "";
+
+      async function loadPOST() {
+        const version = String(statSync(handlerPath).mtimeMs);
+        if (version !== currentVersion) {
+          currentVersion = version;
+          currentImportPath = pathToFileURL(handlerPath).href + "?t=" + version;
+          ${preloadSteps[buildPath]}
+        }
+        return (await import(currentImportPath)).POST;
+      }
+
+      export default fromWebHandler(async (request, context) => {
+        const POST = await loadPOST();
+        return POST(request, context);
+      });
+    `;
+    } else {
+      nitro.options.virtual[`#${buildPath}`] = /* js */ `
+      import { statSync } from "node:fs";
+      import { pathToFileURL } from "node:url";
+
+      const handlerPath = ${handlerImportPath};
+      let currentVersion = "";
+      let currentImportPath = "";
+
+      async function loadPOST() {
+        const version = String(statSync(handlerPath).mtimeMs);
+        if (version !== currentVersion) {
+          currentVersion = version;
+          currentImportPath = pathToFileURL(handlerPath).href + "?t=" + version;
+          ${preloadSteps[buildPath]}
+        }
+        return (await import(currentImportPath)).POST;
+      }
+
+      export default async ({ req }) => {
+        try {
+          const POST = await loadPOST();
+          return await POST(req);
+        } catch (error) {
+          console.error('Handler error:', error);
+          return new Response('Internal Server Error', { status: 500 });
+        }
+      };
+    `;
+    }
+    return;
+  }
 
   if (!nitro.routing) {
     // Nitro v2 (legacy)

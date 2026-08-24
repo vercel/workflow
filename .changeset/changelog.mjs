@@ -31,6 +31,19 @@
 // 4. Falls back to plain delegation when no backport is detected, when
 //    the commit has no associated PR, or when any lookup fails — we never
 //    want a flaky network call to break `pnpm changeset version`.
+// 5. Caps how many entries resolve concurrently so the upstream
+//    `@changesets/get-github-info` DataLoader (created with no
+//    `maxBatchSize`) splits its lookups across several small GraphQL
+//    queries instead of one oversized query. With a large release backlog
+//    (hundreds of changesets), a single batched query grows past what
+//    GitHub's GraphQL endpoint will reliably serve — it returns a
+//    truncated/gzip-broken body (which `node-fetch@2` surfaces as
+//    `ERR_STREAM_PREMATURE_CLOSE`) or a 502, aborting the whole release.
+// 6. Wraps the upstream delegation in a try/catch with a network-free
+//    fallback line, so a transient failure on one batch degrades a single
+//    entry instead of failing the release. This finally extends point 4's
+//    "never let a network call break the release" promise to the
+//    delegation path, which previously bypassed it.
 //
 // Note: this file is loaded by `@changesets/apply-release-plan` via a
 // synchronous `require()`. Node 22.12+ supports `require()`'ing ESM
@@ -41,6 +54,72 @@
 import changelogGithub from '@changesets/changelog-github';
 
 const upstream = changelogGithub.default ?? changelogGithub;
+
+// Max number of upstream changelog lines resolved at once. `get-github-info`
+// folds every `getInfo` call made within a single tick into one GraphQL
+// query (its DataLoader has no `maxBatchSize`), so this directly bounds the
+// batch size — and thus the query/response size — to something GitHub can
+// serve reliably. Empirically, batches of this size resolve well within
+// GitHub's limits while batches of a few hundred commits do not.
+const UPSTREAM_CONCURRENCY = 25;
+
+// Minimal promise concurrency limiter (avoids adding a dependency to a file
+// that must be `require()`-able as ESM by the changesets loader). Limiting
+// concurrency here is what splits the DataLoader batch across several ticks.
+function createLimiter(max) {
+  let active = 0;
+  const queue = [];
+  const next = () => {
+    active--;
+    if (queue.length > 0) queue.shift()();
+  };
+  return (fn) =>
+    new Promise((resolve, reject) => {
+      const run = () => {
+        active++;
+        fn().then(resolve, reject).finally(next);
+      };
+      if (active < max) run();
+      else queue.push(run);
+    });
+}
+
+const limitUpstream = createLimiter(UPSTREAM_CONCURRENCY);
+
+// Network-free changelog lines, used only when the upstream GitHub-backed
+// generator throws. They mirror `@changesets/changelog-github`'s output
+// shape but drop the PR/author attribution we can't resolve offline; the
+// commit link is constructed from the SHA without a network call.
+function offlineCommitLink(repo, commit) {
+  if (!commit) return '';
+  const short = commit.slice(0, 7);
+  return repo
+    ? ` [\`${short}\`](https://github.com/${repo}/commit/${commit})`
+    : ` \`${short}\``;
+}
+
+function offlineReleaseLine(changeset, options) {
+  const [firstLine, ...futureLines] = (changeset.summary ?? '')
+    .split('\n')
+    .map((l) => l.trimEnd());
+  const prefix = offlineCommitLink(options?.repo, changeset.commit);
+  return `\n\n-${prefix ? `${prefix} -` : ''} ${firstLine}\n${futureLines
+    .map((l) => `  ${l}`)
+    .join('\n')}`;
+}
+
+function offlineDependencyReleaseLine(changesets, dependenciesUpdated, options) {
+  if (dependenciesUpdated.length === 0) return '';
+  const links = changesets
+    .map((cs) => offlineCommitLink(options?.repo, cs.commit).trim())
+    .filter(Boolean)
+    .join(', ');
+  const changesetLink = `- Updated dependencies${links ? ` [${links}]` : ''}:`;
+  const updated = dependenciesUpdated.map(
+    (dependency) => `  - ${dependency.name}@${dependency.newVersion}`,
+  );
+  return [changesetLink, ...updated].join('\n');
+}
 
 // Match the PR titles and bodies produced by .github/workflows/backport.yml.
 // Title examples:
@@ -258,14 +337,43 @@ export async function getDependencyReleaseLine(
   // For the dependency-updates roll-up line, the upstream generator
   // only renders commit links (no "Thanks" attribution), so we don't
   // need any rewriting here.
-  return upstream.getDependencyReleaseLine(
-    changesets,
-    dependenciesUpdated,
-    options,
-  );
+  try {
+    return await limitUpstream(() =>
+      upstream.getDependencyReleaseLine(
+        changesets,
+        dependenciesUpdated,
+        options,
+      ),
+    );
+  } catch (err) {
+    console.warn(
+      `[changelog] upstream getDependencyReleaseLine failed, using offline fallback: ${formatError(err)}`,
+    );
+    return offlineDependencyReleaseLine(
+      changesets,
+      dependenciesUpdated,
+      options,
+    );
+  }
 }
 
 export async function getReleaseLine(changeset, type, options) {
   const rewritten = await maybeRewriteChangesetForBackport(changeset, options);
-  return upstream.getReleaseLine(rewritten, type, options);
+  try {
+    return await limitUpstream(() =>
+      upstream.getReleaseLine(rewritten, type, options),
+    );
+  } catch (err) {
+    console.warn(
+      `[changelog] upstream getReleaseLine failed, using offline fallback: ${formatError(err)}`,
+    );
+    // Use the ORIGINAL changeset, not `rewritten`. The backport rewrite
+    // prepends `pr:`/`commit:` directive lines that the upstream generator
+    // strips before rendering — but `offlineReleaseLine` renders the summary
+    // verbatim, so feeding it `rewritten` would leak those directives into
+    // the changelog (the entry title would become literally `pr: #N`). The
+    // rewrite only touches `summary`; `changeset.commit` is unchanged, so the
+    // offline commit link is identical either way.
+    return offlineReleaseLine(changeset, options);
+  }
 }

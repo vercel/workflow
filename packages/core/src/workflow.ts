@@ -4,7 +4,7 @@ import {
   WorkflowNotRegisteredError,
   WorkflowRuntimeError,
 } from '@workflow/errors';
-import { withResolvers } from '@workflow/utils';
+import { createWorkflowBaseUrl, withResolvers } from '@workflow/utils';
 import { parseWorkflowName } from '@workflow/utils/parse-name';
 import type { Event, WorkflowRun } from '@workflow/world';
 import * as nanoid from 'nanoid';
@@ -15,6 +15,7 @@ import type { QueueItem } from './global.js';
 import { ENOTSUP, WorkflowSuspension } from './global.js';
 import { runtimeLogger } from './logger.js';
 import type { WorkflowOrchestratorContext } from './private.js';
+import { isDeliveryIdle } from './private.js';
 import { getPortLazy } from './runtime/get-port-lazy.js';
 import {
   dehydrateWorkflowReturnValue,
@@ -110,10 +111,16 @@ export async function runWorkflow(
     // Get the port before creating VM context to avoid async operations
     // affecting the deterministic timestamp
     const isVercel = process.env.VERCEL_URL !== undefined;
-    // The resolved port is cached per process (see get-port-lazy.ts), so this
-    // is cheap on replays after the first — `getPort()` otherwise re-runs OS
-    // port discovery (spawning `lsof` on macOS, ~60ms) on every replay.
-    const port = isVercel ? undefined : await getPortLazy();
+    // Load getPort lazily to prevent Turbopack from tracing get-port's
+    // fs ops (readdir, readFile) into the flow route bundle. The resolved
+    // port is cached per process (see get-port-lazy.ts), so this is cheap
+    // on replays after the first — `getPort()` otherwise re-runs OS port
+    // discovery (spawning `lsof` on macOS, ~60ms) on every replay.
+    const workflowBaseUrl = createWorkflowBaseUrl(
+      isVercel
+        ? `https://${process.env.VERCEL_URL}`
+        : `http://localhost:${(await getPortLazy()) ?? 3000}`
+    );
 
     const {
       context,
@@ -136,6 +143,11 @@ export async function runWorkflow(
     // by step/hook/sleep callbacks as events are processed.
     const promiseQueueHolder = { current: Promise.resolve() };
 
+    // Same reason as the queue holder: the consumer is built before the context
+    // whose delivery state it has to read. Idle until the context exists, which
+    // is before any delivery can be registered against it.
+    const deliveryIdleHolder = { current: (): boolean => true };
+
     const eventsConsumer = new EventsConsumer(events, {
       onConsumedEvent: (event) => {
         updateTimestamp(+event.createdAt);
@@ -149,6 +161,7 @@ export async function runWorkflow(
         );
       },
       getPromiseQueue: () => promiseQueueHolder.current,
+      isDeliveryIdle: () => deliveryIdleHolder.current(),
     });
 
     const workflowContext: WorkflowOrchestratorContext = {
@@ -172,6 +185,8 @@ export async function runWorkflow(
       pendingDeliveryBarriers: new Map(),
       stepHydrationCache,
     };
+
+    deliveryIdleHolder.current = () => isDeliveryIdle(workflowContext);
 
     // Consume run lifecycle events - these are structural events that don't
     // need special handling in the workflow, but must be consumed to advance
@@ -208,18 +223,12 @@ export async function runWorkflow(
     vmGlobalThis[WORKFLOW_GET_STREAM_ID] = (namespace?: string) =>
       getWorkflowRunStreamId(workflowRun.runId, namespace);
 
-    // TODO: there should be a getUrl method on the world interface itself. This
-    // solution only works for vercel + local worlds.
-    const url = isVercel
-      ? `https://${process.env.VERCEL_URL}`
-      : `http://localhost:${port ?? 3000}`;
-
     // For the workflow VM, we store the context in a symbol on the `globalThis` object
     const ctx: WorkflowMetadata = {
       workflowName: workflowRun.workflowName,
       workflowRunId: workflowRun.runId,
       workflowStartedAt: new vmGlobalThis.Date(+startedAt),
-      url,
+      url: workflowBaseUrl,
     };
 
     // @ts-expect-error - `@types/node` says symbol is not valid, but it does work

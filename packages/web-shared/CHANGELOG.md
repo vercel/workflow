@@ -1,5 +1,83 @@
 # @workflow/web-shared
 
+## 4.1.20
+
+### Patch Changes
+
+- Updated dependencies [[`e331cd6`](https://github.com/vercel/workflow/commit/e331cd6aa9c5b578caa9770cb2889e306bd493e6)]:
+  - @workflow/world@4.4.0
+  - @workflow/core@4.8.4
+
+## 4.1.19
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/core@4.8.3
+
+## 4.1.18
+
+### Patch Changes
+
+- Updated dependencies [[`e822a6a`](https://github.com/vercel/workflow/commit/e822a6a173707183325cf76b58f6522df4c5d08e), [`6f301ba`](https://github.com/vercel/workflow/commit/6f301ba396f92181f2982bc901d2f90216450787), [`86bc000`](https://github.com/vercel/workflow/commit/86bc00050fc6ac93e372f753260046b8f64c52ba)]:
+  - @workflow/core@4.8.2
+
+## 4.1.17
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/core@4.8.1
+
+## 4.1.16
+
+### Patch Changes
+
+- Updated dependencies [[`72ea6c8`](https://github.com/vercel/workflow/commit/72ea6c8edefb01a03acd25bef5efd4cdb9e03fa1)]:
+  - @workflow/core@4.8.0
+  - @workflow/world@4.3.1
+
+## 4.1.15
+
+### Patch Changes
+
+- Updated dependencies [[`12e4ef7`](https://github.com/vercel/workflow/commit/12e4ef7ea1777a0af1d69db7cf069a6a5da131c7)]:
+  - @workflow/core@4.7.0
+  - @workflow/world@4.3.0
+
+## 4.1.14
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/core@4.6.2
+
+## 4.1.13
+
+### Patch Changes
+
+- Updated dependencies [[`0422a0e`](https://github.com/vercel/workflow/commit/0422a0e51b3299bbd8570e0055419659b8ba3fe1), [`b1d1a06`](https://github.com/vercel/workflow/commit/b1d1a066a5710fbd5f97b69ae4dd8a4d892b4d57), [`2213c91`](https://github.com/vercel/workflow/commit/2213c91731f6d47373f4ba4c516c39ec2cc0fa94)]:
+  - @workflow/core@4.6.1
+  - @workflow/utils@4.1.4
+
+## 4.1.12
+
+### Patch Changes
+
+- [#2581](https://github.com/vercel/workflow/pull/2581) [`7b4998f`](https://github.com/vercel/workflow/commit/7b4998f1c6f26113fe8fb67c07768d55bedbd39c) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Show event occurrence timestamps in the trace detail panel when present.
+
+- [#2619](https://github.com/vercel/workflow/pull/2619) [`a0c030a`](https://github.com/vercel/workflow/commit/a0c030ad1c37dc194b89b6a5be72f403eac8b5fd) Thanks [@mitul-s](https://github.com/mitul-s)! - Extend `cn` with custom tailwind-merge class groups for the design-system typography and material utilities, and move it to its own `lib/cn` module.
+
+- [#2608](https://github.com/vercel/workflow/pull/2608) [`9b972a7`](https://github.com/vercel/workflow/commit/9b972a7dd36ba71d04c2f5f20f59cbfa8969abbb) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Thread workflow event occurrence timestamps into derived observability entity data.
+
+- [#2328](https://github.com/vercel/workflow/pull/2328) [`161431b`](https://github.com/vercel/workflow/commit/161431b1d08a46767b76ae9389011ae24d4d2ad7) Thanks [@mitul-s](https://github.com/mitul-s)! - Show relative time display card on date hover
+
+- [#2474](https://github.com/vercel/workflow/pull/2474) [`0dd2db8`](https://github.com/vercel/workflow/commit/0dd2db881001687b90c0128b3e723060dbe4ab4c) Thanks [@mitul-s](https://github.com/mitul-s)! - Yse solid gray for queued trace segment
+
+- Updated dependencies [[`f2ad726`](https://github.com/vercel/workflow/commit/f2ad7261b14dd64085c80584b9d472019414b512), [`20a6d73`](https://github.com/vercel/workflow/commit/20a6d73a0aa03b4b2f7318d97e12a5e7818c67d9), [`015452a`](https://github.com/vercel/workflow/commit/015452a70c52044635d24a134b7b984b6d2e1142), [`f9119d4`](https://github.com/vercel/workflow/commit/f9119d4b6a39f93df8d97c338c62eb0b6bccad8d), [`d0e4191`](https://github.com/vercel/workflow/commit/d0e4191b7e4dd4122cc0fdcb123de9b36b9c0237), [`5a4c6cf`](https://github.com/vercel/workflow/commit/5a4c6cff3ec52038a417cb68bc720bfa15f090e0), [`db8a2c4`](https://github.com/vercel/workflow/commit/db8a2c49820530f7a331bb4c1f0a803e03547831), [`170ea96`](https://github.com/vercel/workflow/commit/170ea9659a2b9c26e611bab8bb5131f9c6cdc14d), [`0a5e2aa`](https://github.com/vercel/workflow/commit/0a5e2aa247bc8e4e45d389a2af839110723ce863), [`a4dd59b`](https://github.com/vercel/workflow/commit/a4dd59be8c023dad2c173ad4cf1ed565ced34c56), [`9fba14e`](https://github.com/vercel/workflow/commit/9fba14e409e1393e3abb01bd5ec4f3ebb5295c14), [`67fcf1a`](https://github.com/vercel/workflow/commit/67fcf1a7505d131e6fbcaffc0d28551e4b17b8a7), [`2a688f0`](https://github.com/vercel/workflow/commit/2a688f0a037e8d72bbc7164adc9f3be0924c62a3), [`6dbe2de`](https://github.com/vercel/workflow/commit/6dbe2de33ff95fe16b627d77e9c690582a6857f2), [`87d213c`](https://github.com/vercel/workflow/commit/87d213c096ab88ec2c32c231440a65037f82bbf4)]:
+  - @workflow/core@4.6.0
+  - @workflow/world@4.2.1
+
 ## 4.1.11
 
 ### Patch Changes

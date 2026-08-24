@@ -4,11 +4,12 @@ import path from 'node:path';
 import type { QueuePrefix, World } from '@workflow/world';
 import { reenqueueActiveRuns, SPEC_VERSION_CURRENT } from '@workflow/world';
 import type { Config } from './config.js';
-import { config } from './config.js';
+import { config, resolveRecoverActiveRuns } from './config.js';
 import {
   clearCreatedFilesCache,
   deleteJSON,
   hasTag,
+  isUntagged,
   listTaggedFiles,
   listTaggedFilesByExtension,
   readJSON,
@@ -46,7 +47,7 @@ export type LocalWorld = World & {
  * @param args.dataDir - Directory for storing workflow data (default: `.workflow-data/`)
  * @param args.port - Port override for queue transport (default: auto-detected)
  * @param args.baseUrl - Full base URL override for queue transport (default: `http://localhost:{port}`)
- * @param args.recoverActiveRuns - Whether `start()` should re-enqueue pending/running runs from storage (default: `true`)
+ * @param args.recoverActiveRuns - Whether `start()` should re-enqueue pending/running runs from storage (default: `true`; falls back to the `WORKFLOW_LOCAL_RECOVER_ACTIVE_RUNS` env var when unset)
  * @param args.tag - Optional tag to scope files (e.g., `vitest-0`). When set, files are written
  *   as `{id}.{tag}.json` and `clear()` only deletes files matching this tag.
  * @throws {DataDirAccessError} If the data directory cannot be created or accessed
@@ -62,7 +63,7 @@ export function createLocalWorld(args?: Partial<Config>): LocalWorld {
   const tag = mergedConfig.tag;
   const queue = createQueue(mergedConfig);
   const storage = createStorage(mergedConfig.dataDir, tag);
-  const recoverActiveRuns = mergedConfig.recoverActiveRuns ?? true;
+  const recoverActiveRuns = resolveRecoverActiveRuns(mergedConfig);
   return {
     specVersion: SPEC_VERSION_CURRENT,
     ...queue,
@@ -78,16 +79,24 @@ export function createLocalWorld(args?: Partial<Config>): LocalWorld {
       if (!recoverActiveRuns) {
         return;
       }
-      const recoveryRuns = tag
-        ? {
-            ...storage.runs,
-            list: ((params) =>
-              storage.runs.list({
-                ...params,
-                fileIdFilter: (fileId) => hasTag(fileId, tag),
-              })) as typeof storage.runs.list,
-          }
-        : storage.runs;
+      // Scope recovery to this world's own files. A tagged world recovers only
+      // its tag; an untagged world recovers only untagged files. Without the
+      // untagged filter, an untagged dev server sharing the data directory with
+      // the vitest harness would list tagged runs (list enumerates every file)
+      // and re-enqueue them, but run_started's tagged-or-untagged read can't
+      // resolve a foreign tag — yielding "did not return the run entity" 500s
+      // on startup until the message exhausts its deliveries.
+      const fileIdFilter = tag
+        ? (fileId: string) => hasTag(fileId, tag)
+        : isUntagged;
+      const recoveryRuns = {
+        ...storage.runs,
+        list: ((params) =>
+          storage.runs.list({
+            ...params,
+            fileIdFilter,
+          })) as typeof storage.runs.list,
+      };
       await reenqueueActiveRuns(recoveryRuns, queue.queue, 'world-local');
     },
     async close() {

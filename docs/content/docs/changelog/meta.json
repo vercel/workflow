@@ -1,5 +1,5 @@
 {
   "title": "Changelog",
-  "pages": ["index", "eager-processing", "resilient-start"],
+  "pages": ["index", "resilient-start"],
   "defaultOpen": false
 }

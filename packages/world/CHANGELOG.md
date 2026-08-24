@@ -1,5 +1,39 @@
 # @workflow/world
 
+## 4.4.0
+
+### Minor Changes
+
+- [#3461](https://github.com/vercel/workflow/pull/3461) [`e331cd6`](https://github.com/vercel/workflow/commit/e331cd6aa9c5b578caa9770cb2889e306bd493e6) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Add `WORKFLOW_NODE_HTTP` to run the Vercel and Local World HTTP layers on Node's built-in `node:http` and `node:https` modules instead of their usual HTTP client library.
+
+## 4.3.1
+
+### Patch Changes
+
+- [#2986](https://github.com/vercel/workflow/pull/2986) [`72ea6c8`](https://github.com/vercel/workflow/commit/72ea6c8edefb01a03acd25bef5efd4cdb9e03fa1) Thanks [@shalabhc](https://github.com/shalabhc)! - Enforce a server-supplied per-run event limit (default 25K)
+
+## 4.3.0
+
+### Minor Changes
+
+- [#3079](https://github.com/vercel/workflow/pull/3079) [`12e4ef7`](https://github.com/vercel/workflow/commit/12e4ef7ea1777a0af1d69db7cf069a6a5da131c7) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Add an optimistic-concurrency guard for event creation (on by default; opt out with `WORKFLOW_PRECONDITION_GUARD=0`): replay-context event creations send a `stateUpdatedAt` snapshot timestamp, and the runtime reloads the event log and retries (then falls back to a fresh re-invocation) when the backend reports a newer out-of-band event with a 412 `PreconditionFailedError`. Backends without guard support ignore the snapshot, so this is backward-compatible and fails open.
+
+## 4.2.1
+
+### Patch Changes
+
+- [#2295](https://github.com/vercel/workflow/pull/2295) [`f9119d4`](https://github.com/vercel/workflow/commit/f9119d4b6a39f93df8d97c338c62eb0b6bccad8d) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Fix `world-local` and `world-postgres` turning duplicate processing of the same `hook_created` (same `runId`, `hookId`, and token) into a self-conflict; both worlds now treat same-entity duplicates as idempotent (matching `step_created`), and recover crash-orphaned token claims (`world-local`) and hook rows (`world-postgres`) by completing the partial write instead of incorrectly suppressing it.
+
+- [#2511](https://github.com/vercel/workflow/pull/2511) [`db8a2c4`](https://github.com/vercel/workflow/commit/db8a2c49820530f7a331bb4c1f0a803e03547831) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Emit `workflowName` on per-step events (`step_created`, `step_completed`) so Worlds can access it without additional queries
+
+- [#2580](https://github.com/vercel/workflow/pull/2580) [`9fba14e`](https://github.com/vercel/workflow/commit/9fba14e409e1393e3abb01bd5ec4f3ebb5295c14) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Send optional client-side event occurrence timestamps through world event creation.
+
+- [#2414](https://github.com/vercel/workflow/pull/2414) [`2a688f0`](https://github.com/vercel/workflow/commit/2a688f0a037e8d72bbc7164adc9f3be0924c62a3) Thanks [@github-actions](https://github.com/apps/github-actions)! - New internal API format: separately encode event metadata from user payloads. Eliminates the need for calling separate endpoints for ref resolution, which improves performance especially on longer runs.
+
+- [#2747](https://github.com/vercel/workflow/pull/2747) [`6dbe2de`](https://github.com/vercel/workflow/commit/6dbe2de33ff95fe16b627d77e9c690582a6857f2) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Keep local hooks reachable after a crash or restart by rebuilding lost hook cache files from committed hook creation events, preventing active hook tokens from being reused.
+
+- [#2622](https://github.com/vercel/workflow/pull/2622) [`87d213c`](https://github.com/vercel/workflow/commit/87d213c096ab88ec2c32c231440a65037f82bbf4) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Declare Zod as a runtime dependency so exported schemas are built with the package's own Zod version instead of the consuming application's peer.
+
 ## 4.2.0
 
 ### Minor Changes

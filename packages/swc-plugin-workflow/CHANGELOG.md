@@ -1,5 +1,11 @@
 # @workflow/swc-plugin
 
+## 4.1.2
+
+### Patch Changes
+
+- [#2398](https://github.com/vercel/workflow/pull/2398) [`b357137`](https://github.com/vercel/workflow/commit/b3571378b8ce9964843d76ce1c5b6e5e2c4cf5da) Thanks [@pranaygp](https://github.com/pranaygp)! - Fix dead-code elimination stripping module-scope declarations referenced only by a destructuring-default initializer (e.g. `const { ttl = TTL } = options;`), which caused a runtime `ReferenceError` when the default fired.
+
 ## 4.1.1
 
 ### Patch Changes

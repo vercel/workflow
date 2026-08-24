@@ -27,7 +27,10 @@
  * - `encr` (AES-256-GCM encryption): added in `4.2.0-beta.64`
  *   Commit: 7618ac36 "Wire AES-GCM encryption into serialization layer (#1251)"
  *   https://github.com/vercel/workflow/commit/7618ac36
- * - `framedByteStreams` (wire-level chunk framing for byte streams): added in `4.5.0`
+ * - `framedByteStreams` (wire-level chunk framing for byte streams): added in
+ *   `4.6.0` on the stable line and `5.0.0-beta.15` on the beta line
+ *   Commit: f2ad726 "Add wire-level framing for byte streams (#1853)"
+ *   https://github.com/vercel/workflow/commit/f2ad726
  */
 
 import semver from 'semver';
@@ -75,17 +78,31 @@ const FORMAT_VERSION_TABLE: ReadonlyArray<{
 
 /**
  * Maps non-format capability flags (booleans on `RunCapabilities`) to the
- * minimum `@workflow/core` version that introduced support for them.
+ * semver range of `@workflow/core` versions that support them.
+ *
+ * These are ranges rather than simple minimum versions because published
+ * release lines interleave: every `5.0.0-beta.x` compares above every
+ * `4.x` version, but betas below `5.0.0-beta.15` predate byte-stream
+ * framing. A plain `>= 4.6.0` check would classify those betas as
+ * framing-capable and write framed bytes to a consumer that cannot
+ * unframe them (silent corruption). Classifying a capable version as
+ * incapable is always safe — it merely falls back to the legacy format.
+ *
+ * Ranges are evaluated with `includePrerelease: true` so that future
+ * prereleases above a cutoff (e.g. `5.1.0-beta.0`) are recognized as
+ * capable.
  */
 const CAPABILITY_VERSION_TABLE: ReadonlyArray<{
   capability: keyof Omit<RunCapabilities, 'supportedFormats'>;
-  minVersion: string;
-  // TODO(release): verify this matches the actual version that ships byte-stream
-  // framing. If a "Version Packages (beta)" PR merges before this change, bump
-  // to the next beta. A too-low cutoff makes new producers write framed bytes to
-  // consumers that cannot unframe them (silent corruption); too-high merely
-  // delays the optimization (safe).
-}> = [{ capability: 'framedByteStreams', minVersion: '4.5.0' }];
+  range: string;
+}> = [
+  {
+    capability: 'framedByteStreams',
+    // Stable line: shipped in 4.6.0. Beta line: shipped in 5.0.0-beta.15;
+    // 5.0.0-beta.0 through 5.0.0-beta.14 must read as raw.
+    range: '>=4.6.0 <5.0.0-0 || >=5.0.0-beta.15',
+  },
+];
 
 /**
  * The set of formats supported by all specVersion 2 runs, regardless of
@@ -128,8 +145,10 @@ export function getRunCapabilities(
     framedByteStreams: false,
   };
 
-  for (const { capability, minVersion } of CAPABILITY_VERSION_TABLE) {
-    if (semver.gte(workflowCoreVersion, minVersion)) {
+  for (const { capability, range } of CAPABILITY_VERSION_TABLE) {
+    if (
+      semver.satisfies(workflowCoreVersion, range, { includePrerelease: true })
+    ) {
       result[capability] = true;
     }
   }

@@ -1,5 +1,68 @@
 # @workflow/world-postgres
 
+## 4.3.4
+
+### Patch Changes
+
+- [#3645](https://github.com/vercel/workflow/pull/3645) [`0f7f498`](https://github.com/vercel/workflow/commit/0f7f498c2f51557dcb270a5651785604c8369a46) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Reject a hook resume that races the hook's disposal, instead of journaling it after `hook_disposed` and corrupting the owning run's event log.
+
+- Updated dependencies [[`e331cd6`](https://github.com/vercel/workflow/commit/e331cd6aa9c5b578caa9770cb2889e306bd493e6)]:
+  - @workflow/world-local@4.3.0
+  - @workflow/world@4.4.0
+  - @workflow/errors@4.2.1
+
+## 4.3.3
+
+### Patch Changes
+
+- Updated dependencies [[`72ea6c8`](https://github.com/vercel/workflow/commit/72ea6c8edefb01a03acd25bef5efd4cdb9e03fa1), [`2fe2d88`](https://github.com/vercel/workflow/commit/2fe2d88fd7f5abe72051a18aa9cb1de1b6db65eb)]:
+  - @workflow/errors@4.2.1
+  - @workflow/world@4.3.1
+  - @workflow/world-local@4.2.4
+
+## 4.3.2
+
+### Patch Changes
+
+- Updated dependencies [[`12e4ef7`](https://github.com/vercel/workflow/commit/12e4ef7ea1777a0af1d69db7cf069a6a5da131c7)]:
+  - @workflow/world@4.3.0
+  - @workflow/errors@4.2.0
+  - @workflow/world-local@4.2.3
+
+## 4.3.1
+
+### Patch Changes
+
+- [#2732](https://github.com/vercel/workflow/pull/2732) [`2213c91`](https://github.com/vercel/workflow/commit/2213c91731f6d47373f4ba4c516c39ec2cc0fa94) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Respect framework base paths when routing workflow traffic and expose health checks on generated Next.js workflow routes.
+
+- Updated dependencies [[`2213c91`](https://github.com/vercel/workflow/commit/2213c91731f6d47373f4ba4c516c39ec2cc0fa94)]:
+  - @workflow/utils@4.1.4
+  - @workflow/world-local@4.2.2
+  - @workflow/errors@4.1.5
+
+## 4.3.0
+
+### Minor Changes
+
+- [#2705](https://github.com/vercel/workflow/pull/2705) [`50492d7`](https://github.com/vercel/workflow/commit/50492d760c08c018ac478233c2dd309d3f8d19b2) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Move Workflow Postgres enum types into the workflow schema.
+
+### Patch Changes
+
+- [#2295](https://github.com/vercel/workflow/pull/2295) [`f9119d4`](https://github.com/vercel/workflow/commit/f9119d4b6a39f93df8d97c338c62eb0b6bccad8d) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Fix `world-local` and `world-postgres` turning duplicate processing of the same `hook_created` (same `runId`, `hookId`, and token) into a self-conflict; both worlds now treat same-entity duplicates as idempotent (matching `step_created`), and recover crash-orphaned token claims (`world-local`) and hook rows (`world-postgres`) by completing the partial write instead of incorrectly suppressing it.
+
+- [#2714](https://github.com/vercel/workflow/pull/2714) [`b534da2`](https://github.com/vercel/workflow/commit/b534da2388a3166d6e299b30ae20804ab8596404) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Fix Postgres step lifecycle event ordering so a late concurrent step_started is no longer logged after step_completed.
+
+- [#2580](https://github.com/vercel/workflow/pull/2580) [`9fba14e`](https://github.com/vercel/workflow/commit/9fba14e409e1393e3abb01bd5ec4f3ebb5295c14) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Send optional client-side event occurrence timestamps through world event creation.
+
+- [#2644](https://github.com/vercel/workflow/pull/2644) [`3eb7e97`](https://github.com/vercel/workflow/commit/3eb7e976773910bd4caada4a74158cc42c27270e) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Rename the Postgres setup command to `bootstrap`.
+
+- [#2657](https://github.com/vercel/workflow/pull/2657) [`92ddf7a`](https://github.com/vercel/workflow/commit/92ddf7a435625e6d18b04a70428ff1c0d26c55e9) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Defer loopback worker startup
+
+- Updated dependencies [[`ab24408`](https://github.com/vercel/workflow/commit/ab244082447eb60ad24faaad91ff4745af2481c5), [`f9119d4`](https://github.com/vercel/workflow/commit/f9119d4b6a39f93df8d97c338c62eb0b6bccad8d), [`db8a2c4`](https://github.com/vercel/workflow/commit/db8a2c49820530f7a331bb4c1f0a803e03547831), [`9fba14e`](https://github.com/vercel/workflow/commit/9fba14e409e1393e3abb01bd5ec4f3ebb5295c14), [`b06fa65`](https://github.com/vercel/workflow/commit/b06fa657f5e216fd3281534de96619a1d502ef4c), [`2a688f0`](https://github.com/vercel/workflow/commit/2a688f0a037e8d72bbc7164adc9f3be0924c62a3), [`6dbe2de`](https://github.com/vercel/workflow/commit/6dbe2de33ff95fe16b627d77e9c690582a6857f2), [`af6ff4f`](https://github.com/vercel/workflow/commit/af6ff4f358a4dc008f0044ab2e53a14f79062b7e), [`87d213c`](https://github.com/vercel/workflow/commit/87d213c096ab88ec2c32c231440a65037f82bbf4)]:
+  - @workflow/world-local@4.2.1
+  - @workflow/world@4.2.1
+  - @workflow/errors@4.1.4
+
 ## 4.2.0
 
 ### Minor Changes

@@ -1,5 +1,71 @@
 # @workflow/nest
 
+## 4.0.20
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@4.1.9
+
+## 4.0.19
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@4.1.8
+
+## 4.0.18
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@4.1.7
+
+## 4.0.17
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@4.1.6
+
+## 4.0.16
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@4.1.5
+
+## 4.0.15
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@4.1.4
+
+## 4.0.14
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@4.1.3
+
+## 4.0.13
+
+### Patch Changes
+
+- Updated dependencies [[`f1f7e1d`](https://github.com/vercel/workflow/commit/f1f7e1dc25c7346f2ac65e3e8a0a15a6e4fd7ccd), [`2213c91`](https://github.com/vercel/workflow/commit/2213c91731f6d47373f4ba4c516c39ec2cc0fa94)]:
+  - @workflow/builders@4.1.2
+
+## 4.0.12
+
+### Patch Changes
+
+- [#2546](https://github.com/vercel/workflow/pull/2546) [`ba62f57`](https://github.com/vercel/workflow/commit/ba62f575e249845d762984f75fcb1a7405a3c8fc) Thanks [@ijjk](https://github.com/ijjk)! - Optimize eager workflow discovery and improve default eager build compatibility. Also fixes NestJS builds pulling SDK build-tooling into the runtime steps bundle, which crashed step handlers at runtime.
+
+- Updated dependencies [[`c4bc5a1`](https://github.com/vercel/workflow/commit/c4bc5a1590d4df06a9ed76e93512e1b9082921d1), [`ba62f57`](https://github.com/vercel/workflow/commit/ba62f575e249845d762984f75fcb1a7405a3c8fc), [`504cf88`](https://github.com/vercel/workflow/commit/504cf88465cfe6502c4e8d87b3bcfac2534e22c8), [`578f7e1`](https://github.com/vercel/workflow/commit/578f7e1f1b03d2a7eb39591aa457931b960755cb), [`8bbf331`](https://github.com/vercel/workflow/commit/8bbf3312adf8eb9b910aa6161e578ac83ef293f5), [`a4dd59b`](https://github.com/vercel/workflow/commit/a4dd59be8c023dad2c173ad4cf1ed565ced34c56), [`4c49cc8`](https://github.com/vercel/workflow/commit/4c49cc88957bedcc59f16f2bb4b905a0056d5eff), [`c5d14c8`](https://github.com/vercel/workflow/commit/c5d14c8a89b12cabd6ce9e008afb41780bff2adc), [`b357137`](https://github.com/vercel/workflow/commit/b3571378b8ce9964843d76ce1c5b6e5e2c4cf5da), [`8d1f299`](https://github.com/vercel/workflow/commit/8d1f2993cb8e266e6b688d461160d847011b8393)]:
+  - @workflow/builders@4.1.1
+  - @workflow/swc-plugin@4.1.2
+
 ## 0.0.10
 
 ### Patch Changes

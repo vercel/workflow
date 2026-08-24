@@ -86,17 +86,35 @@ export function createWorkflowQueueTrigger(options?: { namespace?: string }) {
  */
 export function createWorkflowEntrypointOptionsCode(options?: {
   namespace?: string;
+  basePath?: string;
 }) {
   const namespace = resolveQueueNamespace(options?.namespace);
+  const fields: string[] = [];
 
-  if (!namespace) {
+  if (namespace) {
+    // Reuse prefix construction for namespace validation.
+    getQueueTopicPrefix('workflow', namespace);
+    fields.push(`namespace: ${JSON.stringify(namespace)}`);
+  }
+
+  if (options?.basePath !== undefined) {
+    fields.push(`basePath: ${JSON.stringify(options.basePath)}`);
+  }
+
+  if (fields.length === 0) {
     return '';
   }
 
-  // Reuse prefix construction for namespace validation.
-  getQueueTopicPrefix('workflow', namespace);
+  return `, { ${fields.join(', ')} }`;
+}
 
-  return `, { namespace: ${JSON.stringify(namespace)} }`;
+export function createWorkflowRouteHandlersCode(
+  workflowEntrypointCall: string
+) {
+  return `export const POST = ${workflowEntrypointCall};
+export const GET = POST;
+export const HEAD = POST;
+export const OPTIONS = POST;`;
 }
 
 /**

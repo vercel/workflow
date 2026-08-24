@@ -66,8 +66,10 @@ server.post('/api/test-direct-step-call', async (req: any, reply) => {
   return reply.send({ result });
 });
 
-await server.ready();
+// Nitro beta's dev bundler does not handle top-level await in this handler.
+const ready = server.ready();
 
-export default (req: any, res: any) => {
+export default async (req: any, res: any) => {
+  await ready;
   server.server.emit('request', req, res);
 };

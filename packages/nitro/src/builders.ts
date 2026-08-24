@@ -7,12 +7,24 @@ import {
 import type { Nitro } from 'nitro/types';
 import { join } from 'pathe';
 
+const FLOW_ROUTE = '^\\/\\.well-known\\/workflow\\/v1\\/flow$';
+const STEP_ROUTE = '^\\/\\.well-known\\/workflow\\/v1\\/step$';
+
+function getNitroProjectRoot(nitro: Nitro): string {
+  return nitro.options.workspaceDir ?? nitro.options.rootDir;
+}
+
+function getNitroWorkflowDirs(nitro: Nitro): string[] {
+  return nitro.options.workflow?.dirs ?? ['.'];
+}
+
 export class VercelBuilder extends VercelBuildOutputAPIBuilder {
   constructor(nitro: Nitro) {
     super({
       ...createBaseBuilderConfig({
         workingDir: nitro.options.rootDir,
-        dirs: ['.'], // Different apps that use nitro have different directories
+        projectRoot: getNitroProjectRoot(nitro),
+        dirs: getNitroWorkflowDirs(nitro),
         runtime: nitro.options.workflow?.runtime,
       }),
       buildTarget: 'vercel-build-output-api',
@@ -26,7 +38,11 @@ export class VercelBuilder extends VercelBuildOutputAPIBuilder {
     const originalConfig = JSON.parse(await readFile(configPath, 'utf-8'));
     await super.build();
     const newConfig = JSON.parse(await readFile(configPath, 'utf-8'));
-    originalConfig.routes.unshift(...newConfig.routes);
+    originalConfig.routes.unshift(
+      { src: FLOW_ROUTE, dest: '/.well-known/workflow/v1/flow' },
+      { src: STEP_ROUTE, dest: '/.well-known/workflow/v1/step' },
+      ...newConfig.routes
+    );
     await writeFile(configPath, JSON.stringify(originalConfig, null, 2));
   }
 }
@@ -38,8 +54,9 @@ export class LocalBuilder extends BaseBuilder {
     super({
       ...createBaseBuilderConfig({
         workingDir: nitro.options.rootDir,
+        projectRoot: getNitroProjectRoot(nitro),
         watch: nitro.options.dev,
-        dirs: ['.'], // Different apps that use nitro have different directories
+        dirs: getNitroWorkflowDirs(nitro),
       }),
       buildTarget: 'next', // Placeholder, not actually used
     });
@@ -50,23 +67,28 @@ export class LocalBuilder extends BaseBuilder {
     const inputFiles = await this.getInputFiles();
     await mkdir(this.#outDir, { recursive: true });
 
-    const { manifest: workflowsManifest } = await this.createWorkflowsBundle({
-      outfile: join(this.#outDir, 'workflows.mjs'),
-      bundleFinalOutput: false,
-      format: 'esm',
-      inputFiles,
-    });
+    const { manifest: workflowsManifest, interimBundleCtx } =
+      await this.createWorkflowsBundle({
+        outfile: join(this.#outDir, 'workflows.mjs'),
+        bundleFinalOutput: false,
+        format: 'esm',
+        inputFiles,
+      });
 
-    const { manifest: stepsManifest } = await this.createStepsBundle({
-      outfile: join(this.#outDir, 'steps.mjs'),
-      externalizeNonSteps: true,
-      // In dev, Nitro dynamically imports the generated workflow files from
-      // disk, so there is no later Rollup pass to resolve externalized local
-      // TypeScript imports. In prod, Nitro/Rollup handles those imports.
-      bundleTransitiveLocalStepDependencies: this.config.watch,
-      format: 'esm',
-      inputFiles,
-    });
+    const { manifest: stepsManifest, context: stepsContext } =
+      await this.createStepsBundle({
+        outfile: join(this.#outDir, 'steps.mjs'),
+        externalizeNonSteps: true,
+        // In dev, Nitro dynamically imports the generated workflow files from
+        // disk, so there is no later Rollup pass to resolve externalized local
+        // TypeScript imports. In prod, Nitro/Rollup handles those imports.
+        bundleTransitiveLocalStepDependencies: this.config.watch,
+        format: 'esm',
+        inputFiles,
+      });
+
+    // Close the temporary esbuild build contexts once bundling is done.
+    await Promise.all([stepsContext?.dispose(), interimBundleCtx?.dispose()]);
 
     const webhookRouteFile = join(this.#outDir, 'webhook.mjs');
 

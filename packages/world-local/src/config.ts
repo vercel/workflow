@@ -1,3 +1,7 @@
+import {
+  createWorkflowBaseUrl,
+  createWorkflowHealthEndpoint,
+} from '@workflow/utils';
 import { getWorkflowPort } from '@workflow/utils/get-port';
 import { once } from './util.js';
 
@@ -17,8 +21,10 @@ export type Config = {
   baseUrl?: string;
   /**
    * Whether start() should re-enqueue pending/running runs from storage.
-   * Defaults to true. Test harnesses that always start from a clean slate can
-   * disable recovery to avoid replaying stale runs.
+   * Defaults to true; the `WORKFLOW_LOCAL_RECOVER_ACTIVE_RUNS` env var is
+   * used as a fallback when this option is unset. Test harnesses that always
+   * start from a clean slate can disable recovery to avoid replaying stale
+   * runs.
    */
   recoverActiveRuns?: boolean;
   /**
@@ -43,6 +49,35 @@ export const config = once<Config>(() => {
 });
 
 /**
+ * Resolves whether start() should re-enqueue pending/running runs from
+ * storage, following the priority order:
+ * 1. config.recoverActiveRuns (explicit factory option)
+ * 2. WORKFLOW_LOCAL_RECOVER_ACTIVE_RUNS env var (`0`/`false` disables,
+ *    `1`/`true` enables; read lazily to handle late env var setting)
+ * 3. Default: true
+ *
+ * An unrecognized env value falls through to the default — the env var is an
+ * escape hatch, not a hard requirement.
+ */
+export function resolveRecoverActiveRuns(config: Partial<Config>): boolean {
+  if (config.recoverActiveRuns !== undefined) {
+    return config.recoverActiveRuns;
+  }
+  const raw = process.env.WORKFLOW_LOCAL_RECOVER_ACTIVE_RUNS?.toLowerCase();
+  if (raw === '0' || raw === 'false') return false;
+  if (raw === '1' || raw === 'true') return true;
+  return true;
+}
+
+export function resolveDirectBaseUrl(config: Partial<Config>): string {
+  return (
+    config.baseUrl ??
+    process.env.WORKFLOW_LOCAL_BASE_URL ??
+    createWorkflowBaseUrl('http://localhost')
+  );
+}
+
+/**
  * Resolves the base URL for queue requests following the priority order:
  * 1. config.baseUrl (highest priority - full override from args)
  * 2. WORKFLOW_LOCAL_BASE_URL env var (checked directly to handle late env var setting)
@@ -62,16 +97,18 @@ export async function resolveBaseUrl(config: Partial<Config>): Promise<string> {
   }
 
   if (typeof config.port === 'number') {
-    return `http://localhost:${config.port}`;
+    return createWorkflowBaseUrl(`http://localhost:${config.port}`);
   }
 
   if (process.env.PORT) {
-    return `http://localhost:${process.env.PORT}`;
+    return createWorkflowBaseUrl(`http://localhost:${process.env.PORT}`);
   }
 
-  const detectedPort = await getWorkflowPort();
+  const detectedPort = await getWorkflowPort({
+    endpoint: createWorkflowHealthEndpoint(),
+  });
   if (detectedPort) {
-    return `http://localhost:${detectedPort}`;
+    return createWorkflowBaseUrl(`http://localhost:${detectedPort}`);
   }
 
   throw new Error('Unable to resolve base URL for workflow queue.');

@@ -53,13 +53,10 @@ describe('createResolveLatestDeploymentId', () => {
     expect(result).toBe('dpl_latest_xyz789');
     expect(mockFetch).toHaveBeenCalledWith(
       'https://api.vercel.com/v1/workflow/resolve-latest-deployment/dpl_current_abc123',
-      expect.objectContaining({
-        method: 'GET',
-        headers: expect.objectContaining({
-          Authorization: 'Bearer test-token',
-        }),
-      })
+      expect.objectContaining({ method: 'GET' })
     );
+    const headers = mockFetch.mock.calls[0][1].headers as Headers;
+    expect(headers.get('Authorization')).toBe('Bearer test-token');
   });
 
   it('should throw when VERCEL_DEPLOYMENT_ID is not set', async () => {
@@ -112,12 +109,10 @@ describe('createResolveLatestDeploymentId', () => {
     expect(result).toBe('dpl_latest_from_env');
     expect(mockFetch).toHaveBeenCalledWith(
       expect.any(String),
-      expect.objectContaining({
-        headers: expect.objectContaining({
-          Authorization: 'Bearer env-token-123',
-        }),
-      })
+      expect.anything()
     );
+    const headers = mockFetch.mock.calls[0][1].headers as Headers;
+    expect(headers.get('Authorization')).toBe('Bearer env-token-123');
   });
 
   it('should use OIDC token when config token is absent and VERCEL_TOKEN is unset', async () => {
@@ -150,12 +145,10 @@ describe('createResolveLatestDeploymentId', () => {
     expect(result).toBe('dpl_latest_from_oidc');
     expect(mockFetch).toHaveBeenCalledWith(
       expect.any(String),
-      expect.objectContaining({
-        headers: expect.objectContaining({
-          Authorization: 'Bearer oidc-token-456',
-        }),
-      })
+      expect.anything()
     );
+    const headers = mockFetch.mock.calls[0][1].headers as Headers;
+    expect(headers.get('Authorization')).toBe('Bearer oidc-token-456');
   });
 
   it('should throw on non-ok HTTP response', async () => {

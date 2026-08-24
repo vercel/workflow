@@ -13,7 +13,7 @@ import {
 } from '@workflow/world';
 import { decode, encode } from 'cbor-x';
 import { z } from 'zod/v4';
-import { getDispatcher } from './http-client.js';
+import { getQueueDispatcher } from './http-client.js';
 import { type APIConfig, getHeaders, getHttpUrl } from './utils.js';
 
 /**
@@ -135,7 +135,18 @@ const MAX_DELAY_SECONDS = Number(
 );
 
 const HANDLER_ERROR_RETRY_AFTER_SECONDS = 1;
-const HANDLER_ERROR_MAX_RETRY_AFTER_SECONDS = 60;
+// Ceiling for the per-redelivery backoff. This value is the `retry-after` we
+// hand to VQS, which clamps it into [5s, MAX_SQS_DELAY_SECONDS=900s] for the
+// first 32 deliveries and then applies its own exponential growth (also capped
+// at 900s) — see vqs-server `calculateBackoffDelay`. Capping our base at 60s
+// (the old value) wasted that headroom: a run stuck behind a sustained backend
+// outage exhausted its delivery budget in ~3.7h. Ramping to the 900s ceiling
+// instead stretches survival to ~9–10h (across `MAX_QUEUE_DELIVERIES` = 48
+// attempts), so transient outages don't fail otherwise-healthy runs. Spanning
+// the full ~24h message-visibility window would require a higher delivery cap,
+// not a higher ceiling — VQS clamps every hop at 900s, so going above it here
+// is pointless.
+const HANDLER_ERROR_MAX_RETRY_AFTER_SECONDS = 900;
 const HANDLER_ERROR_RETRY_JITTER_RATIO = 0.25;
 
 function getHandlerErrorRetryAfterSeconds(deliveryCount: number): number {
@@ -193,7 +204,7 @@ export function createQueue(config?: APIConfig): Queue {
 
   const clientOptions = {
     region,
-    dispatcher: getDispatcher(config),
+    dispatcher: getQueueDispatcher(config),
     transport: dualTransport,
     ...(usingProxy && {
       // final path will be /queues-proxy/api/v3/topic/...
@@ -317,9 +328,14 @@ export function createQueue(config?: APIConfig): Queue {
         // with jitter so an outage or poison message cannot hot-loop or
         // redrive in lockstep. Workflow handlers are event-sourced and must
         // remain idempotent because queue retries can happen close together.
-        retry: (_error, { deliveryCount }) => ({
-          afterSeconds: getHandlerErrorRetryAfterSeconds(deliveryCount),
-        }),
+        retry: (error, { messageId, deliveryCount }) => {
+          const afterSeconds = getHandlerErrorRetryAfterSeconds(deliveryCount);
+          console.error(
+            `[workflow] Queue handler failed for message "${messageId}" on delivery attempt ${deliveryCount}; retrying in ${afterSeconds}s:`,
+            error
+          );
+          return { afterSeconds };
+        },
       }
     );
 

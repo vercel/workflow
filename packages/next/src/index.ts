@@ -1,4 +1,6 @@
+import { statSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
 import type { NextConfig } from 'next';
 import semver from 'semver';
 import { getNextBuilder } from './builder.js';
@@ -16,6 +18,14 @@ const turbopackWorkflowContentPattern =
 
 const PSEUDO_EXTERNAL_PACKAGES = new Set(['server-only', 'client-only']);
 const warnedAutoRemovedServerExternalPackages = new Set<string>();
+const BASE_PATH_SYMBOL = Symbol.for('@workflow/core/basePath');
+const globalConfig = globalThis as typeof globalThis &
+  Record<symbol, string | undefined>;
+
+// Keep this local: @workflow/next is CommonJS, while @workflow/utils is ESM-only.
+function setWorkflowBasePath(basePath: string | undefined): void {
+  globalConfig[BASE_PATH_SYMBOL] = basePath ?? '';
+}
 
 interface WorkflowPatternMatch {
   hasUseWorkflow: boolean;
@@ -193,6 +203,82 @@ function resolveNextVersion(workingDir: string): string {
   }
 }
 
+function fileExists(path: string): boolean {
+  try {
+    return statSync(path).isFile();
+  } catch {
+    return false;
+  }
+}
+
+function findRootFile(names: string[], workingDir: string): string | undefined {
+  let current = resolve(workingDir);
+
+  while (true) {
+    for (const name of names) {
+      const file = join(current, name);
+      if (fileExists(file)) {
+        return file;
+      }
+    }
+
+    const parent = dirname(current);
+    if (parent === current) {
+      return undefined;
+    }
+    current = parent;
+  }
+}
+
+function findNextRootFile(workingDir: string): string | undefined {
+  return (
+    findRootFile(['pnpm-workspace.yaml'], workingDir) ??
+    findRootFile(
+      [
+        'pnpm-lock.yaml',
+        'package-lock.json',
+        'yarn.lock',
+        'bun.lock',
+        'bun.lockb',
+      ],
+      workingDir
+    )
+  );
+}
+
+function resolveNextProjectRoot(
+  nextConfig: NextConfig,
+  workingDir: string
+): string {
+  const configuredRoot =
+    nextConfig.outputFileTracingRoot ?? nextConfig.turbopack?.root;
+
+  if (configuredRoot) {
+    return isAbsolute(configuredRoot)
+      ? configuredRoot
+      : resolve(workingDir, configuredRoot);
+  }
+
+  let rootFile = findNextRootFile(workingDir);
+  if (!rootFile) {
+    return workingDir;
+  }
+
+  while (true) {
+    const currentDir = dirname(rootFile);
+    const parentDir = dirname(currentDir);
+    if (parentDir === currentDir) {
+      return currentDir;
+    }
+
+    const parentRootFile = findNextRootFile(parentDir);
+    if (!parentRootFile) {
+      return currentDir;
+    }
+    rootFile = parentRootFile;
+  }
+}
+
 export function withWorkflow(
   nextConfigOrFn:
     | NextConfig
@@ -229,6 +315,17 @@ export function withWorkflow(
     phase: string,
     ctx: { defaultConfig: NextConfig }
   ) {
+    if (
+      phase === 'phase-development-server' ||
+      phase === 'phase-production-build'
+    ) {
+      const { prewarmWorkflowSwcPluginCache } = await import(
+        './swc-plugin-cache.js'
+      );
+      // Loader workers inherit this cwd and read from the same SWC cache.
+      prewarmWorkflowSwcPluginCache(process.cwd());
+    }
+
     const loaderPath = require.resolve('./loader');
     let nextConfig: NextConfig;
 
@@ -239,6 +336,8 @@ export function withWorkflow(
     }
     // shallow clone to avoid read-only on top-level
     nextConfig = Object.assign({}, nextConfig);
+    const workflowBasePath = nextConfig.basePath;
+    setWorkflowBasePath(workflowBasePath);
 
     const configuredServerExternalPackages = Array.isArray(
       nextConfig.serverExternalPackages
@@ -288,7 +387,9 @@ export function withWorkflow(
       nextConfig.turbopack.rules = {};
     }
     const existingRules = nextConfig.turbopack.rules as any;
-    const nextVersion = resolveNextVersion(process.cwd());
+    const workingDir = process.cwd();
+    const nextVersion = resolveNextVersion(workingDir);
+    const projectRoot = resolveNextProjectRoot(nextConfig, workingDir);
     const supportsTurboCondition = semver.gte(nextVersion, 'v16.0.0');
 
     const shouldWatch = process.env.NODE_ENV === 'development';
@@ -300,12 +401,19 @@ export function withWorkflow(
           const NextBuilder = await getNextBuilder(nextVersion);
           return new NextBuilder({
             watch: shouldWatch,
-            // discover workflows from pages/app entries
-            dirs: ['pages', 'app', 'src/pages', 'src/app'],
-            projectRoot: nextConfig.outputFileTracingRoot,
-            moduleSpecifierRoot: process.cwd(),
-            workingDir: process.cwd(),
+            // getInputFiles filters the project to Next.js entrypoints
+            dirs: ['.'],
+            pageExtensions: nextConfig.pageExtensions ?? [
+              'tsx',
+              'ts',
+              'jsx',
+              'js',
+            ],
+            projectRoot,
+            moduleSpecifierRoot: workingDir,
+            workingDir,
             distDir: nextConfig.distDir || '.next',
+            basePath: workflowBasePath,
             buildTarget: 'next',
             workflowsBundlePath: '', // not used in base
             stepsBundlePath: '', // not used in base

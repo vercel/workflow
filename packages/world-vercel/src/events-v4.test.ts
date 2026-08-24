@@ -5,15 +5,22 @@ import {
   TooEarlyError,
   WorkflowWorldError,
 } from '@workflow/errors';
-import { encode } from 'cbor-x';
+import { NODE_HTTP_ENV_VAR } from '@workflow/world';
+import { decode, encode } from 'cbor-x';
 import { MockAgent } from 'undici';
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   createWorkflowRunEventV4,
+  getEventV4,
   getWorkflowRunEventsV4,
   throwForErrorResponse,
 } from './events-v4.js';
 import { encodeFrame, V4_FRAME_CONTENT_TYPE } from './frames.js';
+import {
+  EVENTS_RECYCLE_AFTER_CONSECUTIVE_FAILURES,
+  getEventsDispatcher,
+} from './http-client.js';
+import { WORKFLOW_SERVER_URL_OVERRIDE } from './utils.js';
 
 /**
  * The v4 client must preserve the typed-error contract of the v3
@@ -53,6 +60,27 @@ describe('throwForErrorResponse', () => {
     } catch (err) {
       expect(ThrottleError.is(err)).toBe(true);
       expect((err as ThrottleError).retryAfter).toBe(30);
+    }
+  });
+
+  it('maps a firewall challenge (429 + x-vercel-mitigated: challenge) to a retryable TRANSPORT WorkflowWorldError, not ThrottleError', () => {
+    // The hot event-write path (step_started included) must route a challenge
+    // to the TRANSPORT path so the runtime rethrows it to the queue (backoff +
+    // cap) rather than deferring it into an uncapped flat re-enqueue loop.
+    try {
+      call(429, '{"message":"rate limited"}', {
+        'x-vercel-mitigated': 'challenge',
+        'retry-after': '5',
+      });
+      expect.unreachable();
+    } catch (err) {
+      expect(ThrottleError.is(err)).toBe(false);
+      expect(WorkflowWorldError.is(err)).toBe(true);
+      expect((err as WorkflowWorldError).code).toBe('TRANSPORT');
+      expect((err as WorkflowWorldError).status).toBe(429);
+      expect((err as WorkflowWorldError).message).toContain(
+        'x-vercel-mitigated=challenge'
+      );
     }
   });
 
@@ -168,6 +196,52 @@ describe('getWorkflowRunEventsV4 over HTTP', () => {
   });
 });
 
+/**
+ * getEventV4 returns after the first frame. The early return must cancel the
+ * response body (releasing its undici socket) without corrupting the returned
+ * value or hanging — the trailing frame below is never read.
+ */
+describe('getEventV4 over HTTP', () => {
+  it('returns the first frame and stops reading the rest', async () => {
+    const origin = 'https://vercel-workflow.com';
+    const agent = new MockAgent();
+    agent.disableNetConnect();
+
+    const body = new TextEncoder().encode('event-payload');
+    const frames = Buffer.concat([
+      encodeFrame(
+        {
+          eventId: 'evnt_1',
+          runId: 'wrun_1',
+          eventType: 'run_created',
+          createdAt: '2026-06-10T00:00:00.000Z',
+          eventData: {},
+        },
+        body
+      ),
+      // Trailing bytes the reader must never need.
+      encodeFrame({ eventId: 'evnt_unused' }, new Uint8Array(8)),
+    ]);
+
+    agent
+      .get(origin)
+      .intercept({ path: '/api/v4/runs/wrun_1/events/evnt_1', method: 'GET' })
+      .reply(200, frames, {
+        headers: { 'content-type': V4_FRAME_CONTENT_TYPE },
+      });
+
+    const { event, body: returnedBody } = await getEventV4('wrun_1', 'evnt_1', {
+      token: 'test-token',
+      dispatcher: agent,
+    });
+
+    expect(event.eventId).toBe('evnt_1');
+    expect(event.eventType).toBe('run_created');
+    expect(new Uint8Array(returnedBody)).toEqual(body);
+    agent.assertNoPendingInterceptors();
+  });
+});
+
 describe('createWorkflowRunEventV4 over HTTP', () => {
   it('POSTs to the /events/:eventType alias and decodes the response', async () => {
     const origin = 'https://vercel-workflow.com';
@@ -206,5 +280,158 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
     expect(result.createdAt).toBe('2026-06-10T00:00:00.000Z');
     expect(result.body.step).toMatchObject({ stepId: 'step_1' });
     agent.assertNoPendingInterceptors();
+  });
+
+  it('forwards stateUpdatedAt in the frame meta (precondition guard)', async () => {
+    const origin = 'https://vercel-workflow.com';
+    const agent = new MockAgent();
+    agent.disableNetConnect();
+
+    let capturedMeta: Record<string, unknown> | undefined;
+    agent
+      .get(origin)
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events/wait_created',
+        method: 'POST',
+      })
+      .reply(
+        200,
+        (opts: { body?: unknown }) => {
+          const bytes = new Uint8Array(opts.body as ArrayBufferLike);
+          const metaLen = new DataView(
+            bytes.buffer,
+            bytes.byteOffset,
+            bytes.byteLength
+          ).getUint32(0, false);
+          capturedMeta = decode(bytes.subarray(4, 4 + metaLen)) as Record<
+            string,
+            unknown
+          >;
+          return encode({ wait: { waitId: 'wait_1' } });
+        },
+        {
+          headers: {
+            'x-wf-event-id': 'evnt_1',
+            'x-wf-run-id': 'wrun_1',
+            'x-wf-created-at': '2026-06-10T00:00:00.000Z',
+          },
+        }
+      );
+
+    await createWorkflowRunEventV4(
+      {
+        runId: 'wrun_1',
+        eventType: 'wait_created',
+        specVersion: 5,
+        correlationId: 'wait_1',
+        stateUpdatedAt: 1747742400000,
+      },
+      { token: 'test-token', dispatcher: agent }
+    );
+
+    expect(capturedMeta?.eventType).toBe('wait_created');
+    expect(capturedMeta?.stateUpdatedAt).toBe(1747742400000);
+    agent.assertNoPendingInterceptors();
+  });
+
+  it('omits stateUpdatedAt from the frame meta when not set', async () => {
+    const origin = 'https://vercel-workflow.com';
+    const agent = new MockAgent();
+    agent.disableNetConnect();
+
+    let capturedMeta: Record<string, unknown> | undefined;
+    agent
+      .get(origin)
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events/wait_created',
+        method: 'POST',
+      })
+      .reply(
+        200,
+        (opts: { body?: unknown }) => {
+          const bytes = new Uint8Array(opts.body as ArrayBufferLike);
+          const metaLen = new DataView(
+            bytes.buffer,
+            bytes.byteOffset,
+            bytes.byteLength
+          ).getUint32(0, false);
+          capturedMeta = decode(bytes.subarray(4, 4 + metaLen)) as Record<
+            string,
+            unknown
+          >;
+          return encode({ wait: { waitId: 'wait_1' } });
+        },
+        {
+          headers: {
+            'x-wf-event-id': 'evnt_1',
+            'x-wf-run-id': 'wrun_1',
+            'x-wf-created-at': '2026-06-10T00:00:00.000Z',
+          },
+        }
+      );
+
+    await createWorkflowRunEventV4(
+      {
+        runId: 'wrun_1',
+        eventType: 'wait_created',
+        specVersion: 5,
+        correlationId: 'wait_1',
+      },
+      { token: 'test-token', dispatcher: agent }
+    );
+
+    expect(capturedMeta?.eventType).toBe('wait_created');
+    expect('stateUpdatedAt' in (capturedMeta ?? {})).toBe(false);
+    agent.assertNoPendingInterceptors();
+  });
+});
+
+/**
+ * The recycler in http-client only sees transport failures the v4 client
+ * reports to it. This covers that wiring end to end: a `fetch()` that rejects
+ * the way a wedged HTTP/2 session does must retire the shared events pool once
+ * the failures reach the threshold. Without the `onTransportOutcome` hook in
+ * `fetchV4` the recycler is never told anything and the pool lives forever.
+ */
+describe('v4 transport reports failures to the events recycler', () => {
+  // There is only an undici pool to retire while the adapter owns one:
+  // `WORKFLOW_NODE_HTTP` takes the request off undici and makes
+  // getEventsDispatcher return `undefined`, so pin the flag off here.
+  beforeEach(() => {
+    vi.stubEnv(NODE_HTTP_ENV_VAR, '0');
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.restoreAllMocks();
+  });
+
+  // Shape of a wedged-session rejection: `fetch` wraps undici's
+  // InformationalError, so the code the recycler matches on is one `cause` down.
+  const wedgedSessionError = () =>
+    new TypeError('fetch failed', {
+      cause: Object.assign(new Error('HTTP/2: "stream timeout after 300"'), {
+        code: 'UND_ERR_INFO',
+      }),
+    });
+
+  it('rebuilds the shared pool after repeated stream timeouts', async () => {
+    vi.spyOn(globalThis, 'fetch').mockRejectedValue(wedgedSessionError());
+
+    // No `dispatcher` in the config: the request must resolve the shared one,
+    // which is what the recycler owns.
+    const before = getEventsDispatcher({ token: 'test-token' });
+
+    for (let i = 0; i < EVENTS_RECYCLE_AFTER_CONSECUTIVE_FAILURES; i++) {
+      await expect(
+        getWorkflowRunEventsV4('wrun_1', {}, { token: 'test-token' })
+      ).rejects.toThrow();
+      // Still the same pool until the threshold is reached.
+      if (i < EVENTS_RECYCLE_AFTER_CONSECUTIVE_FAILURES - 1) {
+        expect(getEventsDispatcher({ token: 'test-token' })).toBe(before);
+      }
+    }
+
+    expect(getEventsDispatcher({ token: 'test-token' })).not.toBe(before);
   });
 });

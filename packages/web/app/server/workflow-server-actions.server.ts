@@ -738,17 +738,25 @@ export async function fetchEventsByCorrelationId(
   worldEnv: EnvMap,
   correlationId: string,
   params: {
+    runId?: string;
     cursor?: string;
     sortOrder?: 'asc' | 'desc';
     limit?: number;
     withData?: boolean;
   }
 ): Promise<ServerActionResult<PaginatedResult<Event>>> {
-  const { cursor, sortOrder = 'asc', limit = 100, withData = false } = params;
+  const {
+    runId,
+    cursor,
+    sortOrder = 'asc',
+    limit = 100,
+    withData = false,
+  } = params;
   try {
     const world = await getWorldFromEnv(worldEnv);
     const result = await world.events.listByCorrelationId({
       correlationId,
+      runId,
       pagination: { cursor, limit, sortOrder },
       resolveData: withData ? 'all' : 'none',
     });

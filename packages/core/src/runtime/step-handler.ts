@@ -9,8 +9,7 @@ import {
   WorkflowRuntimeError,
   WorkflowWorldError,
 } from '@workflow/errors';
-import { pluralize } from '@workflow/utils';
-import { getPort } from '@workflow/utils/get-port';
+import { createWorkflowBaseUrl, pluralize } from '@workflow/utils';
 import {
   getQueueTopicPrefix,
   resolveQueueNamespace,
@@ -23,6 +22,7 @@ import { runtimeLogger, stepLogger } from '../logger.js';
 import { getStepFunction } from '../private.js';
 import {
   dehydrateStepReturnValue,
+  formatSerializationError,
   hydrateStepArguments,
 } from '../serialization.js';
 import { contextStorage } from '../step/context-storage.js';
@@ -41,6 +41,7 @@ import {
 } from '../types.js';
 
 import { MAX_QUEUE_DELIVERIES } from './constants.js';
+import { getPortLazy } from './get-port-lazy.js';
 import {
   getQueueOverhead,
   getWorkflowQueueName,
@@ -49,6 +50,7 @@ import {
   queueMessage,
   withHealthCheck,
 } from './helpers.js';
+import { isUnserializableStepInputPlaceholder } from './unserializable-step.js';
 import { safeWaitUntil } from './wait-until.js';
 import { getWorld, getWorldHandlers } from './world.js';
 
@@ -158,7 +160,7 @@ const stepHandler = createQueueHandler(
 
       // Resolve local async values concurrently before entering the trace span
       const [port, spanKind] = await Promise.all([
-        isVercel ? undefined : getPort(),
+        isVercel ? undefined : getPortLazy(),
         getSpanKind('CONSUMER'),
       ]);
 
@@ -533,6 +535,21 @@ const stepHandler = createQueueHandler(
 
           const executionStartTime = Date.now();
           try {
+            // Finalization of an unserializable-argument step writes
+            // step_created (placeholder input) and step_failed as two
+            // separate durable writes (see finalizeUnserializableStep in
+            // suspension-handler.ts). A crash or transient failure between
+            // them leaves this step pending with the placeholder stored as
+            // its input, and normal crash recovery then dispatches it here.
+            // NEVER run user code with placeholder arguments — complete the
+            // intended failure instead. FatalError skips the retry loop
+            // below and writes step_failed, exactly what the interrupted
+            // finalization was about to do.
+            if (isUnserializableStepInputPlaceholder(hydratedInput)) {
+              throw new FatalError(
+                formatSerializationError('step arguments', undefined)
+              );
+            }
             result = await trace('step.execute', {}, async () => {
               return await contextStorage.run(
                 {
@@ -548,9 +565,11 @@ const stepHandler = createQueueHandler(
                     workflowStartedAt: new Date(+workflowStartedAt),
                     // TODO: there should be a getUrl method on the world interface itself. This
                     // solution only works for vercel + local worlds.
-                    url: isVercel
-                      ? `https://${process.env.VERCEL_URL}`
-                      : `http://localhost:${port ?? 3000}`,
+                    url: createWorkflowBaseUrl(
+                      isVercel
+                        ? `https://${process.env.VERCEL_URL}`
+                        : `http://localhost:${port ?? 3000}`
+                    ),
                   },
                   workflowDeploymentId: process.env.VERCEL_DEPLOYMENT_ID,
                   ops,

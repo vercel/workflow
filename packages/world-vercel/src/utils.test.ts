@@ -1,3 +1,7 @@
+import { createServer, type RequestListener, type Server } from 'node:http';
+import type { AddressInfo } from 'node:net';
+import { PreconditionFailedError } from '@workflow/errors';
+import { NODE_HTTP_ENV_VAR } from '@workflow/world';
 import { encode } from 'cbor-x';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
@@ -76,6 +80,17 @@ describe('getHeaders', () => {
 
   afterEach(() => {
     process.env = originalEnv;
+  });
+
+  it('appends a caller user-agent token to the world-vercel user-agent', () => {
+    const headers = getHeaders(
+      { headers: { 'User-Agent': 'eve/0.18.1' } },
+      { usingProxy: false }
+    );
+
+    expect(headers.get('User-Agent')).toMatch(
+      /^@workflow\/world-vercel\/\S+ node-\S+ \S+ \([^)]*\)(?: \S+)? eve\/0\.18\.1$/
+    );
   });
 
   it('does not attach x-vercel-trusted-oidc-idp-token (set by getHttpConfig)', () => {
@@ -163,6 +178,9 @@ describe('makeRequest body-parse retry', () => {
     process.env = { ...originalEnv };
     delete process.env.VERCEL_WORKFLOW_SERVER_URL;
     delete process.env.VERCEL_OIDC_TOKEN;
+    // These tests drive the retry loop from a stubbed `fetch`, so they only
+    // reach the code under test while requests go through `fetch`.
+    process.env[NODE_HTTP_ENV_VAR] = '0';
   });
 
   afterEach(() => {
@@ -257,6 +275,44 @@ describe('makeRequest body-parse retry', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  /** A non-2xx CBOR error response with the given status and error code. */
+  function cborErrorResponse(status: number, code: string) {
+    const bytes = encode({ success: false, error: code, code, message: code });
+    return {
+      ok: false,
+      status,
+      statusText: 'ERR',
+      headers: {
+        get: (k: string) =>
+          k.toLowerCase() === 'content-type' ? 'application/cbor' : null,
+      },
+      arrayBuffer: async () =>
+        bytes.buffer.slice(
+          bytes.byteOffset,
+          bytes.byteOffset + bytes.byteLength
+        ),
+    };
+  }
+
+  it('maps a 412 response to PreconditionFailedError', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(cborErrorResponse(412, 'precondition-failed'));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(
+      makeRequest({
+        endpoint: '/v3/runs/wrun_test/events',
+        options: { method: 'POST' },
+        data: { eventType: 'run_completed' },
+        schema,
+      })
+    ).rejects.toBeInstanceOf(PreconditionFailedError);
+
+    // A 412 is a deterministic rejection — no transport retries.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it('includes Vercel correlation headers in HTTP response errors', async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ message: 'upstream timed out' }), {
@@ -279,5 +335,291 @@ describe('makeRequest body-parse retry', () => {
     ).rejects.toThrow(
       'upstream timed out (x-vercel-id=iad1::req-abc; x-vercel-error=FUNCTION_INVOCATION_TIMEOUT)'
     );
+  });
+
+  it('surfaces the firewall x-vercel-mitigated header in HTTP response errors', async () => {
+    // A firewall `deny` arrives as a 403 (not retried by the RetryAgent), so
+    // its mitigation + trace headers reach our response handling.
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ message: 'Forbidden' }), {
+        status: 403,
+        headers: {
+          'content-type': 'application/json',
+          'x-vercel-id': 'sfo1::req-deny',
+          'x-vercel-mitigated': 'deny',
+        },
+      })
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(
+      makeRequest({
+        endpoint: '/v3/runs/wrun_test/events',
+        options: { method: 'GET' },
+        schema,
+      })
+    ).rejects.toThrow('x-vercel-id=sfo1::req-deny; x-vercel-mitigated=deny');
+  });
+
+  it('maps a firewall challenge (429 + x-vercel-mitigated: challenge) to a retryable TRANSPORT error, not ThrottleError', async () => {
+    // A challenge can't be solved by a server-to-server client, so it must NOT
+    // become a ThrottleError (which the step_started path defers by re-enqueuing
+    // a fresh message, resetting the delivery count → uncapped flat loop). It is
+    // routed to the TRANSPORT path so the runtime rethrows it to the queue
+    // (delivery-count backoff + MAX_QUEUE_DELIVERIES cap).
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ message: 'rate limited' }), {
+        status: 429,
+        headers: {
+          'content-type': 'application/json',
+          'x-vercel-id': 'iad1::req-challenge',
+          'x-vercel-mitigated': 'challenge',
+          'retry-after': '5',
+        },
+      })
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const rejection = await makeRequest({
+      endpoint: '/v3/runs/wrun_test/events',
+      options: { method: 'GET' },
+      schema,
+    }).catch((e) => e);
+
+    expect(rejection).toMatchObject({
+      name: 'WorkflowWorldError',
+      code: 'TRANSPORT',
+      status: 429,
+    });
+    // The mitigation + trace headers stay diagnosable in the message.
+    expect(rejection.message).toContain('x-vercel-mitigated=challenge');
+    // Single attempt — the queue redrive is the retry layer, not body-parse.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps a genuine application-level 429 (no challenge mitigation) as a ThrottleError with retryAfter', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ message: 'slow down' }), {
+        status: 429,
+        headers: {
+          'content-type': 'application/json',
+          'retry-after': '12',
+        },
+      })
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const rejection = await makeRequest({
+      endpoint: '/v3/runs/wrun_test/events',
+      options: { method: 'GET' },
+      schema,
+    }).catch((e) => e);
+
+    expect(rejection.name).toBe('ThrottleError');
+    expect(rejection.retryAfter).toBe(12);
+  });
+});
+
+describe('makeRequest transport errors', () => {
+  const schema = z.object({ value: z.string() });
+  const originalEnv = process.env;
+
+  beforeEach(() => {
+    process.env = { ...originalEnv };
+    delete process.env.VERCEL_WORKFLOW_SERVER_URL;
+    delete process.env.VERCEL_OIDC_TOKEN;
+    // The `UND_ERR_*` codes below only ever come out of undici, so these
+    // cases are specific to the `fetch` path. The node:http path raises
+    // Node's own socket codes and is covered separately.
+    process.env[NODE_HTTP_ENV_VAR] = '0';
+  });
+
+  afterEach(() => {
+    process.env = originalEnv;
+    vi.unstubAllGlobals();
+  });
+
+  it('maps an exhausted RetryAgent (UND_ERR_REQ_RETRY in cause) to a TRANSPORT error', async () => {
+    // fetch() wraps the underlying undici error in a `TypeError: fetch failed`
+    // whose `cause` carries the real `.code` — the firewall returning 429/503
+    // that the RetryAgent retried and then gave up on surfaces this way.
+    const cause = Object.assign(new Error('Request failed'), {
+      code: 'UND_ERR_REQ_RETRY',
+    });
+    const fetchErr = Object.assign(new TypeError('fetch failed'), { cause });
+    const fetchMock = vi.fn().mockRejectedValue(fetchErr);
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(
+      makeRequest({
+        endpoint: '/v3/runs/wrun_test/events',
+        options: { method: 'GET' },
+        schema,
+      })
+    ).rejects.toMatchObject({ name: 'WorkflowWorldError', code: 'TRANSPORT' });
+
+    // Transport failures are not body-parse retried inside makeRequest — the
+    // queue redrive is the retry layer, so exactly one attempt is made.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('maps a direct socket error code (ECONNRESET) to TRANSPORT', async () => {
+    const fetchErr = Object.assign(new Error('socket hang up'), {
+      code: 'ECONNRESET',
+    });
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(fetchErr));
+
+    await expect(
+      makeRequest({
+        endpoint: '/v3/runs/wrun_test/events',
+        options: { method: 'GET' },
+        schema,
+      })
+    ).rejects.toMatchObject({ name: 'WorkflowWorldError', code: 'TRANSPORT' });
+  });
+
+  it('preserves the original error as the cause', async () => {
+    const cause = Object.assign(new Error('Request failed'), {
+      code: 'UND_ERR_REQ_RETRY',
+    });
+    const fetchErr = Object.assign(new TypeError('fetch failed'), { cause });
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(fetchErr));
+
+    const rejection = await makeRequest({
+      endpoint: '/v3/runs/wrun_test/events',
+      options: { method: 'GET' },
+      schema,
+    }).catch((e) => e);
+
+    expect(rejection.cause).toBe(fetchErr);
+  });
+
+  it('rethrows a non-transient fetch error unchanged', async () => {
+    const fetchErr = new Error('some unexpected non-network error');
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(fetchErr));
+
+    await expect(
+      makeRequest({
+        endpoint: '/v3/runs/wrun_test/events',
+        options: { method: 'GET' },
+        schema,
+      })
+    ).rejects.toBe(fetchErr);
+  });
+
+  it('maps an AbortSignal timeout to a TIMEOUT error', async () => {
+    const timeoutErr = Object.assign(new Error('The operation timed out'), {
+      name: 'TimeoutError',
+    });
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(timeoutErr));
+
+    await expect(
+      makeRequest({
+        endpoint: '/v3/runs/wrun_test/events',
+        options: { method: 'GET' },
+        schema,
+      })
+    ).rejects.toMatchObject({ name: 'WorkflowWorldError', code: 'TIMEOUT' });
+  });
+});
+
+// The suites above pin the flag off and simulate the transport with a `fetch`
+// stub, which the node:http client never calls. These run against a loopback
+// origin instead, covering the two contracts the runtime branches on: a
+// failed request has to stay retryable, and a typed error status has to keep
+// producing the same typed error whichever transport carried it.
+describe('makeRequest over node:http', () => {
+  const schema = z.object({ value: z.string() });
+  const originalEnv = process.env;
+  let server: Server | undefined;
+
+  beforeEach(() => {
+    process.env = { ...originalEnv };
+    delete process.env.VERCEL_OIDC_TOKEN;
+    process.env[NODE_HTTP_ENV_VAR] = '1';
+  });
+
+  afterEach(async () => {
+    process.env = originalEnv;
+    const toClose = server;
+    server = undefined;
+    if (toClose) {
+      toClose.closeAllConnections();
+      await new Promise((resolve) => toClose.close(resolve));
+    }
+  });
+
+  /** Start a loopback origin and point the client at it. */
+  async function listen(handler: RequestListener): Promise<void> {
+    server = createServer(handler);
+    await new Promise<void>((resolve) =>
+      server?.listen(0, '127.0.0.1', resolve)
+    );
+    const { port } = server.address() as AddressInfo;
+    process.env.VERCEL_WORKFLOW_SERVER_URL = `http://127.0.0.1:${port}`;
+  }
+
+  it('maps a dropped socket to a retryable TRANSPORT error', async () => {
+    await listen((request) => request.socket.destroy());
+
+    // Node raises ECONNRESET on the error itself rather than on a `cause`, so
+    // this only passes if getTransientTransportCode reads the top-level code.
+    await expect(
+      makeRequest({
+        endpoint: '/v3/runs/wrun_test/events',
+        options: { method: 'GET' },
+        schema,
+      })
+    ).rejects.toMatchObject({ name: 'WorkflowWorldError', code: 'TRANSPORT' });
+  });
+
+  it('maps a 412 response to PreconditionFailedError', async () => {
+    await listen((request, response) => {
+      request.resume();
+      response.statusCode = 412;
+      response.setHeader('content-type', 'application/cbor');
+      response.end(
+        encode({
+          success: false,
+          error: 'precondition-failed',
+          code: 'precondition-failed',
+          message: 'precondition-failed',
+        })
+      );
+    });
+
+    await expect(
+      makeRequest({
+        endpoint: '/v3/runs/wrun_test/events',
+        options: { method: 'POST' },
+        data: { eventType: 'run_completed' },
+        schema,
+      })
+    ).rejects.toBeInstanceOf(PreconditionFailedError);
+  });
+
+  it('round-trips a CBOR POST body to the origin', async () => {
+    let seen: { method?: string; length?: string } = {};
+    await listen((request, response) => {
+      seen = {
+        method: request.method,
+        length: request.headers['content-length'],
+      };
+      request.resume();
+      response.setHeader('content-type', 'application/cbor');
+      response.end(encode({ value: 'ok' }));
+    });
+
+    const result = await makeRequest({
+      endpoint: '/v3/runs/wrun_test/events',
+      options: { method: 'POST' },
+      data: { eventType: 'run_completed' },
+      schema,
+    });
+
+    expect(result).toEqual({ value: 'ok' });
+    expect(seen.method).toBe('POST');
+    // A declared length, not a chunked body: some origins reject the latter.
+    expect(Number(seen.length)).toBeGreaterThan(0);
   });
 });

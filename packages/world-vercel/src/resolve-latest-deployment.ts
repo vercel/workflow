@@ -6,9 +6,9 @@
  * deployments) as the provided current deployment.
  */
 
-import { getVercelOidcToken } from '@vercel/oidc';
 import * as z from 'zod';
 import { getDispatcher } from './http-client.js';
+import { instrumentedFetch, resolveVercelApiToken } from './http-core.js';
 import type { APIConfig } from './utils.js';
 
 const ResolveLatestDeploymentResponseSchema = z.object({
@@ -35,14 +35,7 @@ export function createResolveLatestDeploymentId(
       );
     }
 
-    // Authenticate via provided token (CLI/config), VERCEL_TOKEN env var
-    // (external tooling), or OIDC token (runtime) — in that order.
-    // OIDC is last to avoid an unnecessary network call when a token is
-    // already available (e.g. CLI or CI contexts).
-    const token =
-      config?.token ??
-      process.env.VERCEL_TOKEN ??
-      (await getVercelOidcToken().catch(() => null));
+    const token = await resolveVercelApiToken(config);
     if (!token) {
       throw new Error(
         'Cannot resolve latest deployment: no OIDC token or VERCEL_TOKEN available'
@@ -51,27 +44,30 @@ export function createResolveLatestDeploymentId(
 
     const url = `https://api.vercel.com/v1/workflow/resolve-latest-deployment/${encodeURIComponent(currentDeploymentId)}`;
 
-    // 429/5xx retries are handled by the shared RetryAgent from getDispatcher()
-    const response = await fetch(url, {
+    // 429/5xx retries are handled by the shared RetryAgent from getDispatcher().
+    // instrumentedFetch adds the OTEL client span + DEBUG logging the v3/v4
+    // paths have.
+    const response = await instrumentedFetch({
       method: 'GET',
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
-      // @ts-expect-error -- undici dispatcher is accepted by Node.js fetch but not in @types/node's RequestInit
+      url,
+      headers: new Headers({ Authorization: `Bearer ${token}` }),
       dispatcher: getDispatcher(config),
+      peerService: 'vercel-api',
+      // Preserve the prior no-timeout behavior for this Vercel-API call; the
+      // shared RetryAgent still handles transient/5xx retries.
+      timeoutMs: null,
+      buildError: async (res) => {
+        let body: string;
+        try {
+          body = await res.text();
+        } catch {
+          body = '<unable to read response body>';
+        }
+        return new Error(
+          `Failed to resolve latest deployment for ${currentDeploymentId}: HTTP ${res.status} ${res.statusText}${body ? ` — ${body}` : ''}`
+        );
+      },
     });
-
-    if (!response.ok) {
-      let body: string;
-      try {
-        body = await response.text();
-      } catch {
-        body = '<unable to read response body>';
-      }
-      throw new Error(
-        `Failed to resolve latest deployment for ${currentDeploymentId}: HTTP ${response.status} ${response.statusText}${body ? ` — ${body}` : ''}`
-      );
-    }
 
     const data = await response.json();
     const result = ResolveLatestDeploymentResponseSchema.safeParse(data);

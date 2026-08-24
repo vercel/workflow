@@ -213,6 +213,34 @@ export async function parallelSleepWorkflow() {
   return { startTime, endTime };
 }
 
+async function delayMsStep(ms: number, label: string) {
+  'use step';
+  await new Promise((resolve) => setTimeout(resolve, ms));
+  return label;
+}
+
+export async function sleepWinsRaceWorkflow() {
+  'use workflow';
+  const startTime = Date.now();
+  const winner = await Promise.race([
+    delayMsStep(10_000, 'step'),
+    sleep('1s').then(() => 'sleep'),
+  ]);
+  const endTime = Date.now();
+  return { winner, durationMs: endTime - startTime };
+}
+
+export async function stepWinsRaceWorkflow() {
+  'use workflow';
+  const startTime = Date.now();
+  const winner = await Promise.race([
+    delayMsStep(1_000, 'step'),
+    sleep('10s').then(() => 'sleep'),
+  ]);
+  const endTime = Date.now();
+  return { winner, durationMs: endTime - startTime };
+}
+
 //////////////////////////////////////////////////////////
 
 async function nullByteStep() {
@@ -1181,6 +1209,54 @@ export async function errorFatalCatchable() {
   }
 }
 
+// ---
+
+/**
+ * A class instance with no registered serde model cannot cross the
+ * workflow/step boundary — the serializer rejects non-POJO instances.
+ * Used by the serialization-error tests below.
+ */
+class UnserializableValue {
+  secret = 'not-serializable';
+}
+
+async function acceptAnyValue(value: unknown) {
+  'use step';
+  return { received: value !== undefined };
+}
+
+/**
+ * Test: step ARGUMENTS that cannot be serialized. The suspension handler
+ * fails the step (step_created + step_failed) instead of failing the run
+ * from the outside, so a try/catch around the step call observes the
+ * serialization error — same shape as catching a step-body failure.
+ */
+export async function serializationErrorStepArgsCaught() {
+  'use workflow';
+  try {
+    await acceptAnyValue(new UnserializableValue());
+    return { caught: false } as any;
+  } catch (err: any) {
+    return {
+      caught: true,
+      messageIncludesStepArguments:
+        typeof err?.message === 'string' &&
+        err.message.includes('Failed to serialize step arguments'),
+    };
+  }
+}
+
+/**
+ * Test: uncaught step-argument serialization failure fails the run as a
+ * fatal USER_ERROR immediately — no queue-redelivery retry loop.
+ */
+export async function serializationErrorStepArgsUncaught() {
+  'use workflow';
+  // Don't catch — the serialization error propagates and fails the run.
+  await acceptAnyValue(new UnserializableValue());
+  return { caught: false };
+}
+
 // ------------------------------------------------------------
 // SECTION 4: NOT REGISTERED ERRORS
 // Tests for step/workflow not registered in the current deployment
@@ -1759,6 +1835,43 @@ export async function hookWithSleepWorkflow(token: string) {
   }
 
   return results;
+}
+
+//////////////////////////////////////////////////////////
+
+/**
+ * https://github.com/vercel/workflow/pull/1528 Regression test for false-positive
+ * unconsumed event in for-await hook loops with steps: a hook iteration with
+ * an unawaited sleep where the step is only invoked on the final payload.
+ * The replay event log ends up with two `hook_received` events before a
+ * single `step_created`, which is the exact shape that triggered the
+ * false-positive "Corrupted event log" error in production.
+ */
+export async function hookWithSleepFinalStepWorkflow(token: string) {
+  'use workflow';
+
+  type Payload = { type: string; id?: number; done?: boolean };
+
+  using hook = createHook<Payload>({ token });
+
+  // Fire-and-forget timeout — the "concurrent pending entity" that interacts
+  // with the hook iteration during replay.
+  void sleep('1d');
+
+  const seen: number[] = [];
+  let finalResult: any;
+
+  for await (const payload of hook) {
+    if (typeof payload.id === 'number') {
+      seen.push(payload.id);
+    }
+    if (payload.done) {
+      finalResult = await processPayload(payload);
+      break;
+    }
+  }
+
+  return { seen, finalResult };
 }
 
 //////////////////////////////////////////////////////////

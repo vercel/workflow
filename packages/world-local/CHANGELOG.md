@@ -1,5 +1,63 @@
 # @workflow/world-local
 
+## 4.3.0
+
+### Minor Changes
+
+- [#3461](https://github.com/vercel/workflow/pull/3461) [`e331cd6`](https://github.com/vercel/workflow/commit/e331cd6aa9c5b578caa9770cb2889e306bd493e6) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Add `WORKFLOW_NODE_HTTP` to run the Vercel and Local World HTTP layers on Node's built-in `node:http` and `node:https` modules instead of their usual HTTP client library.
+
+### Patch Changes
+
+- Updated dependencies [[`e331cd6`](https://github.com/vercel/workflow/commit/e331cd6aa9c5b578caa9770cb2889e306bd493e6)]:
+  - @workflow/world@4.4.0
+  - @workflow/errors@4.2.1
+
+## 4.2.4
+
+### Patch Changes
+
+- [#3215](https://github.com/vercel/workflow/pull/3215) [`2fe2d88`](https://github.com/vercel/workflow/commit/2fe2d88fd7f5abe72051a18aa9cb1de1b6db65eb) Thanks [@AndrewBarba](https://github.com/AndrewBarba)! - Retry transient `EPERM` unlink failures on Windows when deleting hook and entity JSON files. A concurrent reader briefly holding a file open made `deleteJSON` throw a share-violation `EPERM`, which surfaced as a failed operation — for example a failed `run.cancel()` while `deleteAllHooksForRun` raced hook polling.
+
+- Updated dependencies [[`72ea6c8`](https://github.com/vercel/workflow/commit/72ea6c8edefb01a03acd25bef5efd4cdb9e03fa1)]:
+  - @workflow/errors@4.2.1
+  - @workflow/world@4.3.1
+
+## 4.2.3
+
+### Patch Changes
+
+- Updated dependencies [[`12e4ef7`](https://github.com/vercel/workflow/commit/12e4ef7ea1777a0af1d69db7cf069a6a5da131c7)]:
+  - @workflow/world@4.3.0
+  - @workflow/errors@4.2.0
+
+## 4.2.2
+
+### Patch Changes
+
+- [#2732](https://github.com/vercel/workflow/pull/2732) [`2213c91`](https://github.com/vercel/workflow/commit/2213c91731f6d47373f4ba4c516c39ec2cc0fa94) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Respect framework base paths when routing workflow traffic and expose health checks on generated Next.js workflow routes.
+
+- Updated dependencies [[`2213c91`](https://github.com/vercel/workflow/commit/2213c91731f6d47373f4ba4c516c39ec2cc0fa94)]:
+  - @workflow/utils@4.1.4
+  - @workflow/errors@4.1.5
+
+## 4.2.1
+
+### Patch Changes
+
+- [#2534](https://github.com/vercel/workflow/pull/2534) [`ab24408`](https://github.com/vercel/workflow/commit/ab244082447eb60ad24faaad91ff4745af2481c5) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Update `undici` to 7.28.0.
+
+- [#2295](https://github.com/vercel/workflow/pull/2295) [`f9119d4`](https://github.com/vercel/workflow/commit/f9119d4b6a39f93df8d97c338c62eb0b6bccad8d) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Fix `world-local` and `world-postgres` turning duplicate processing of the same `hook_created` (same `runId`, `hookId`, and token) into a self-conflict; both worlds now treat same-entity duplicates as idempotent (matching `step_created`), and recover crash-orphaned token claims (`world-local`) and hook rows (`world-postgres`) by completing the partial write instead of incorrectly suppressing it.
+
+- [#2508](https://github.com/vercel/workflow/pull/2508) [`b06fa65`](https://github.com/vercel/workflow/commit/b06fa657f5e216fd3281534de96619a1d502ef4c) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Add run IDs on world storage telemetry spans.
+
+- [#2747](https://github.com/vercel/workflow/pull/2747) [`6dbe2de`](https://github.com/vercel/workflow/commit/6dbe2de33ff95fe16b627d77e9c690582a6857f2) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Keep local hooks reachable after a crash or restart by rebuilding lost hook cache files from committed hook creation events, preventing active hook tokens from being reused.
+
+- [#2667](https://github.com/vercel/workflow/pull/2667) [`af6ff4f`](https://github.com/vercel/workflow/commit/af6ff4f358a4dc008f0044ab2e53a14f79062b7e) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Scope untagged startup recovery to untagged runs so a dev server no longer re-enqueues tagged runs (e.g. left behind by the vitest harness in a shared data directory), which previously failed `run_started` with "did not return the run entity".
+
+- Updated dependencies [[`f9119d4`](https://github.com/vercel/workflow/commit/f9119d4b6a39f93df8d97c338c62eb0b6bccad8d), [`db8a2c4`](https://github.com/vercel/workflow/commit/db8a2c49820530f7a331bb4c1f0a803e03547831), [`9fba14e`](https://github.com/vercel/workflow/commit/9fba14e409e1393e3abb01bd5ec4f3ebb5295c14), [`2a688f0`](https://github.com/vercel/workflow/commit/2a688f0a037e8d72bbc7164adc9f3be0924c62a3), [`6dbe2de`](https://github.com/vercel/workflow/commit/6dbe2de33ff95fe16b627d77e9c690582a6857f2), [`87d213c`](https://github.com/vercel/workflow/commit/87d213c096ab88ec2c32c231440a65037f82bbf4)]:
+  - @workflow/world@4.2.1
+  - @workflow/errors@4.1.4
+
 ## 4.2.0
 
 ### Minor Changes

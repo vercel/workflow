@@ -1,7 +1,11 @@
 import { withResolvers } from '@workflow/utils';
 import type { Event } from '@workflow/world';
 import { describe, expect, it, vi } from 'vitest';
-import { EventConsumerResult, EventsConsumer } from './events-consumer.js';
+import {
+  DEFERRED_CHECK_DELAY_MS,
+  EventConsumerResult,
+  EventsConsumer,
+} from './events-consumer.js';
 
 // Helper function to create mock events
 function createMockEvent(overrides: Partial<Event> = {}): Event {
@@ -474,6 +478,85 @@ describe('EventsConsumer', () => {
 
       // The new callback consumed the event, so onUnconsumedEvent should NOT be called
       expect(onUnconsumedEvent).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('delivery-idle gate', () => {
+    // An event nobody claims is only evidence of divergence once the workflow
+    // VM has stopped reacting. While a delivery is in flight the walk is
+    // simply ahead of the code that would register the consumer, so the check
+    // has to wait rather than time out. See `isDeliveryIdle` in private.ts.
+    it('should not fire the unconsumed check while a delivery is in flight', async () => {
+      const event = createMockEvent();
+      const onUnconsumedEvent = vi.fn();
+      let idle = false;
+      const consumer = new EventsConsumer([event], {
+        onUnconsumedEvent,
+        getPromiseQueue: () => Promise.resolve(),
+        isDeliveryIdle: () => idle,
+      });
+
+      consumer.subscribe(
+        vi.fn().mockReturnValue(EventConsumerResult.NotConsumed)
+      );
+
+      // Several times the window the check would otherwise have fired in.
+      await new Promise((resolve) =>
+        setTimeout(resolve, DEFERRED_CHECK_DELAY_MS * 5)
+      );
+      expect(onUnconsumedEvent).not.toHaveBeenCalled();
+
+      idle = true;
+      await vi.waitFor(() => {
+        expect(onUnconsumedEvent).toHaveBeenCalledWith(event);
+      });
+    });
+
+    it('should let a consumer registered during the wait claim the event', async () => {
+      const event = createMockEvent();
+      const onUnconsumedEvent = vi.fn();
+      let idle = false;
+      const consumer = new EventsConsumer([event], {
+        onUnconsumedEvent,
+        getPromiseQueue: () => Promise.resolve(),
+        isDeliveryIdle: () => idle,
+      });
+
+      consumer.subscribe(
+        vi.fn().mockReturnValue(EventConsumerResult.NotConsumed)
+      );
+      await new Promise((resolve) =>
+        setTimeout(resolve, DEFERRED_CHECK_DELAY_MS * 2)
+      );
+
+      // What the in-flight delivery was on its way to doing: resume workflow
+      // code that subscribes the consumer this event belongs to.
+      consumer.subscribe(vi.fn().mockReturnValue(EventConsumerResult.Finished));
+      idle = true;
+
+      await vi.waitFor(() => {
+        expect(consumer.eventIndex).toBe(1);
+      });
+      await new Promise((resolve) =>
+        setTimeout(resolve, DEFERRED_CHECK_DELAY_MS * 2)
+      );
+      expect(onUnconsumedEvent).not.toHaveBeenCalled();
+    });
+
+    it('should fire without delay for an event no delivery is waiting on', async () => {
+      const event = createMockEvent();
+      const unconsumedReceived = withResolvers<Event>();
+      const consumer = new EventsConsumer([event], {
+        onUnconsumedEvent: unconsumedReceived.resolve,
+        getPromiseQueue: () => Promise.resolve(),
+        isDeliveryIdle: () => true,
+      });
+
+      consumer.subscribe(
+        vi.fn().mockReturnValue(EventConsumerResult.NotConsumed)
+      );
+
+      expect(await unconsumedReceived.promise).toEqual(event);
     });
   });
 });

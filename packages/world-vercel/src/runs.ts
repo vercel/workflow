@@ -193,6 +193,7 @@ export async function getWorkflowRun(
       endpoint,
       options: { method: 'GET' },
       config,
+      retryConnectTimeout: true,
       schema: (remoteRefBehavior === 'lazy'
         ? WorkflowRunWireWithRefsSchema
         : WorkflowRunWireSchema) as any,

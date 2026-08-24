@@ -304,7 +304,7 @@ function extractStepDeclarations(
   const stepDeclarations = new Map<string, { stepId: string }>();
 
   const stepPattern =
-    /var (\w+) = globalThis\[Symbol\.for\("WORKFLOW_USE_STEP"\)\]\("([^"]+)"\)/g;
+    /var (\w+) = globalThis\[(?:\/\*.*?\*\/\s*)?Symbol\.for\("WORKFLOW_USE_STEP"\)\]\("([^"]+)"\)/g;
 
   const lines = bundleCode.split('\n');
   for (const line of lines) {

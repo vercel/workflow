@@ -119,20 +119,23 @@ const compilerOptions: ts.CompilerOptions = {
 };
 
 /**
- * Modules that we explicitly resolve via `paths` mappings. A TS2307
- * ("Cannot find module") error for any of these is a real regression and
- * must NOT be silenced.
+ * Modules that we explicitly resolve via `paths` mappings. Missing-module
+ * errors for any of these are real regressions and must NOT be silenced.
  */
 const RESOLVED_MODULES = new Set(Object.keys(compilerOptions.paths ?? {}));
 
 /**
- * Returns true if a TS2307 diagnostic refers to a module we don't expect to
- * resolve (relative imports, framework deps, app aliases, etc.).
+ * Returns true if a missing-module diagnostic refers to a module we don't
+ * expect to resolve (relative imports, framework deps, app aliases, etc.).
  * Returns false for modules in our paths mapping — those failures are real.
  */
 function isExpectedMissingModule(diagnostic: ts.Diagnostic): boolean {
   const msg = ts.flattenDiagnosticMessageText(diagnostic.messageText, '\n');
-  const match = msg.match(/Cannot find module '([^']+)'/);
+  const match =
+    msg.match(/Cannot find module '([^']+)'/) ??
+    msg.match(
+      /Cannot find module or type declarations for side-effect import of '([^']+)'/
+    );
   if (!match) return false;
   const mod = match[1];
   return !RESOLVED_MODULES.has(mod);
@@ -241,7 +244,7 @@ export function typeCheckBatch(
       (d) =>
         !IGNORED_ERROR_CODES.has(d.code) &&
         !expectedErrorSet.has(d.code) &&
-        !(d.code === 2307 && isExpectedMissingModule(d))
+        !([2307, 2882].includes(d.code) && isExpectedMissingModule(d))
     );
 
     const diagnostics = relevantDiagnostics.map((d) =>

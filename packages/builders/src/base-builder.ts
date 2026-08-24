@@ -21,7 +21,10 @@ import {
   applySwcTransform,
   type WorkflowManifest,
 } from './apply-swc-transform.js';
-import { createWorkflowEntrypointOptionsCode } from './constants.js';
+import {
+  createWorkflowEntrypointOptionsCode,
+  createWorkflowRouteHandlersCode,
+} from './constants.js';
 import { getEsbuildTsconfigOptions } from './esbuild-tsconfig.js';
 import {
   fastDiscoverEntries,
@@ -1342,8 +1345,11 @@ export const __steps_registered = true;
         }
       }
 
-      const workflowEntrypointOptionsCode =
-        createWorkflowEntrypointOptionsCode();
+      const workflowEntrypointOptionsCode = createWorkflowEntrypointOptionsCode(
+        {
+          basePath: this.config.basePath,
+        }
+      );
 
       const bundleFinal = async (interimBundle: string) => {
         const workflowBundleCode = interimBundle;
@@ -1354,10 +1360,7 @@ import { workflowEntrypoint } from 'workflow/runtime';
 
 const workflowCode = \`${workflowBundleCode.replace(/[\\`$]/g, '\\$&')}\`;
 
-const handler = workflowEntrypoint(workflowCode${workflowEntrypointOptionsCode});
-
-export const HEAD = handler;
-export const POST = handler;`;
+${createWorkflowRouteHandlersCode(`workflowEntrypoint(workflowCode${workflowEntrypointOptionsCode})`)}`;
 
         // we skip the final bundling step for Next.js so it can bundle itself
         if (!bundleFinalOutput) {

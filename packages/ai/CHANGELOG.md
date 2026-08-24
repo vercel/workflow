@@ -1,5 +1,26 @@
 # @workflow/ai
 
+## 4.2.0
+
+### Minor Changes
+
+- [#2537](https://github.com/vercel/workflow/pull/2537) [`a06f425`](https://github.com/vercel/workflow/commit/a06f4250b1ae35b1a10389b5669e25aed2a4b094) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - `WorkflowChatTransport` now repairs UI message stream part framing, so duplicated or interleaved durable stream writes no longer crash the AI SDK consumer with `Received text-delta for missing text part`.
+
+### Patch Changes
+
+- [#2440](https://github.com/vercel/workflow/pull/2440) [`80ccca0`](https://github.com/vercel/workflow/commit/80ccca023d39c4fb735e72fb7446e95bd6b9eb14) Thanks [@pranaygp](https://github.com/pranaygp)! - Re-release `@workflow/ai` on the 4.x stable line. Versions 5.0.0, 6.0.0, and 7.0.0 were published to the `latest` dist-tag in error: a changesets peer-dependency misconfiguration force-bumped a full major on every `workflow` minor release, even though `@workflow/ai` had no breaking changes. Those versions are deprecated — `^4` remains the correct stable range.
+
+- [#2730](https://github.com/vercel/workflow/pull/2730) [`cfb8f77`](https://github.com/vercel/workflow/commit/cfb8f770ac2318e94c9e36cdcbd0d1f6a155e0c7) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Continue DurableAgent tool loops whenever a model step contains tool calls, regardless of the reported finish reason.
+
+- [#2082](https://github.com/vercel/workflow/pull/2082) [`280a34a`](https://github.com/vercel/workflow/commit/280a34a4038da1c0d275f13ed490683d0a723f50) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - `WorkflowChatTransport` now drops orphan UI chunks (deltas/ends with no matching `*-start` in the resumed window) when reconnecting with an `initialStartIndex` not matching a UI chunk boundary, instead of throwing.
+
+- [#2699](https://github.com/vercel/workflow/pull/2699) [`ef60d31`](https://github.com/vercel/workflow/commit/ef60d31963a517e81616744dd4266036b7ad999a) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - DurableAgent now recovers from invalid tool-call input by returning the validation error to the model instead of aborting the stream.
+
+- [#2635](https://github.com/vercel/workflow/pull/2635) [`cee802d`](https://github.com/vercel/workflow/commit/cee802dd85d5aee5728269a407d2cb4836355d4e) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Suppress chat transport console errors for intentional AbortError stream closes.
+
+- Updated dependencies [[`f2ad726`](https://github.com/vercel/workflow/commit/f2ad7261b14dd64085c80584b9d472019414b512), [`0a5e2aa`](https://github.com/vercel/workflow/commit/0a5e2aa247bc8e4e45d389a2af839110723ce863)]:
+  - workflow@4.6.0
+
 ## 7.0.0
 
 ### Patch Changes

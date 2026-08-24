@@ -14,10 +14,10 @@
   },
   "dependencies": {
     "@node-rs/xxhash": "1.7.6",
-    "@tanstack/react-router": "^1.140.1",
-    "@tanstack/react-start": "^1.140.1",
-    "react": "19.2.4",
-    "react-dom": "19.2.4"
+    "@tanstack/react-router": "^1.170.17",
+    "@tanstack/react-start": "^1.168.27",
+    "react": "19.2.7",
+    "react-dom": "19.2.7"
   },
   "devDependencies": {
     "@types/react": "19.1.13",
@@ -29,7 +29,7 @@
     "lodash.chunk": "^4.2.0",
     "nitro": "catalog:",
     "openai": "^6.1.0",
-    "vite": "^7.3.2",
+    "vite": "^7.3.6",
     "workflow": "workspace:*",
     "zod": "catalog:"
   }

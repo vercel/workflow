@@ -1,9 +1,4 @@
-import {
-  EntityConflictError,
-  ThrottleError,
-  WorkflowRuntimeError,
-  WorkflowWorldError,
-} from '@workflow/errors';
+import { EntityConflictError, WorkflowRuntimeError } from '@workflow/errors';
 import type { WorkflowInvokePayload, World } from '@workflow/world';
 import {
   isLegacySpecVersion,
@@ -12,6 +7,7 @@ import {
 } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
 import { getRunCapabilities } from '../capabilities.js';
+import { isRetryableWorldError } from '../classify-error.js';
 import { importKey } from '../encryption.js';
 import { runtimeLogger } from '../logger.js';
 import type { Serializable } from '../schemas.js';
@@ -342,10 +338,11 @@ export async function start<TArgs extends unknown[], TResult>(
           // the run creation call gets a cold start or other slowdown, and the queue
           // + run_started call completes faster. We expect this to be <=1% of cases.
           // In this case, we can safely return.
-        } else if (isRetryableStartError(err)) {
-          // 429 (ThrottleError) and 5xx (WorkflowWorldError with status >= 500)
-          // are retryable — the run was accepted via the queue and creation
-          // will be re-tried by the runtime when it calls run_started.
+        } else if (isRetryableWorldError(err)) {
+          // 429 (ThrottleError), 5xx, and transient transport failures
+          // (TRANSPORT/TIMEOUT) are retryable — the run was accepted via the
+          // queue and creation will be re-tried by the runtime when it calls
+          // run_started.
           resilientStart = true;
           runtimeLogger.warn(
             'Run creation event failed, but the run was accepted via the queue. ' +
@@ -398,17 +395,4 @@ export async function start<TArgs extends unknown[], TResult>(
       return new Run<TResult>(runId, { resilientStart });
     });
   });
-}
-
-/**
- * Checks if an error from events.create (run_created) is retryable,
- * meaning the queue can re-try creation later via the run_started path.
- * - ThrottleError (429): rate limited, will succeed later
- * - WorkflowWorldError with status >= 500: server error, will succeed later
- */
-function isRetryableStartError(err: unknown): boolean {
-  if (ThrottleError.is(err)) return true;
-  if (WorkflowWorldError.is(err) && err.status && err.status >= 500)
-    return true;
-  return false;
 }

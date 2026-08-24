@@ -1,5 +1,31 @@
 # @workflow/web
 
+## 4.1.20
+
+## 4.1.19
+
+## 4.1.18
+
+## 4.1.17
+
+## 4.1.16
+
+### Patch Changes
+
+- [#3233](https://github.com/vercel/workflow/pull/3233) [`7fd2e4a`](https://github.com/vercel/workflow/commit/7fd2e4a4e0cbe26416f5ea83ed928c07ab9893f5) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix run and event observability pages hanging (~16s) and showing no data in the bundled server build, caused by HTTP/2 requests failing to reach `node:http2`.
+
+## 4.1.15
+
+## 4.1.14
+
+## 4.1.13
+
+## 4.1.12
+
+### Patch Changes
+
+- [#2328](https://github.com/vercel/workflow/pull/2328) [`161431b`](https://github.com/vercel/workflow/commit/161431b1d08a46767b76ae9389011ae24d4d2ad7) Thanks [@mitul-s](https://github.com/mitul-s)! - Show relative time display card on date hover
+
 ## 4.1.11
 
 ## 4.1.10

@@ -10,8 +10,10 @@ import {
 import { join, resolve } from 'node:path';
 import {
   BaseBuilder,
+  createBaseBuilderConfig,
   NORMALIZE_REQUEST_CODE,
   replaceGeneratedRouteExport,
+  resolveProjectRoot,
   type SvelteKitConfig,
 } from '@workflow/builders';
 
@@ -23,24 +25,39 @@ const SVELTEKIT_VIRTUAL_MODULES = [
 ];
 
 export class SvelteKitBuilder extends BaseBuilder {
-  constructor(config?: Partial<SvelteKitConfig>) {
-    const workingDir = config?.workingDir || process.cwd();
+  #routesDir: string;
 
+  constructor(config: Partial<SvelteKitConfig> & { routesDir?: string } = {}) {
+    const workingDir = resolve(config.workingDir || process.cwd());
+    const dirs = config.dirs ?? [
+      'workflows',
+      'src/workflows',
+      'routes',
+      'src/routes',
+    ];
+    const projectRoot = config.projectRoot ?? resolveProjectRoot(workingDir);
+    const routesDir = resolve(workingDir, config.routesDir ?? 'src/routes');
     super({
+      ...createBaseBuilderConfig({
+        workingDir,
+        projectRoot,
+        dirs,
+        watch: config.watch,
+        externalPackages: [...SVELTEKIT_VIRTUAL_MODULES],
+      }),
       ...config,
-      dirs: ['workflows', 'src/workflows', 'routes', 'src/routes'],
+      dirs,
       buildTarget: 'sveltekit' as const,
-      stepsBundlePath: '', // unused in base
-      workflowsBundlePath: '', // unused in base
-      webhookBundlePath: '', // unused in base
       workingDir,
+      projectRoot,
+      moduleSpecifierRoot: config.moduleSpecifierRoot ?? workingDir,
       externalPackages: [...SVELTEKIT_VIRTUAL_MODULES],
     });
+    this.#routesDir = routesDir;
   }
 
   override async build(): Promise<void> {
-    // Find SvelteKit routes directory (src/routes or routes)
-    const routesDir = await this.findRoutesDirectory();
+    const routesDir = await this.loadRoutesDirectory();
     const workflowGeneratedDir = join(routesDir, '.well-known/workflow/v1');
 
     // Ensure output directories exist
@@ -171,15 +188,12 @@ export const POST = handleStepRequest;`,
     // Replace the default export with SvelteKit-compatible handler
     workflowsRouteContent = replaceGeneratedRouteExport(
       workflowsRouteContent,
-      /const handler = workflowEntrypoint\(workflowCode(?<options>[^)]*)\);\s*export const HEAD = handler;\s*export const POST = handler;?\s*$/m,
+      /export const POST = workflowEntrypoint\(workflowCode(?<options>[^)]*)\);?$/m,
       (_match, options = '') => `${NORMALIZE_REQUEST_CODE}
-const handleWorkflowRequest = async ({request}) => {
+export const POST = async ({request}) => {
   const normalRequest = await normalizeRequest(request);
   return workflowEntrypoint(workflowCode${options})(normalRequest);
-};
-
-export const HEAD = handleWorkflowRequest;
-export const POST = handleWorkflowRequest;`,
+};`,
       'Failed to wrap generated SvelteKit workflow route'
     );
     await writeFile(workflowsRouteFile, workflowsRouteContent);
@@ -218,13 +232,16 @@ export const POST = handleWorkflowRequest;`,
       ''
     );
 
-    // Replace all HTTP method exports with SvelteKit-compatible handlers
+    // Replace all HTTP method exports with SvelteKit-compatible handlers.
+    // The `request` from SvelteKit is already a standard `Request`, so it is
+    // handed to the webhook handler as-is. Notably it must NOT be copied via
+    // a normalizer that buffers the body: this is a public route where the
+    // token is checked inside `handler`, so the body must stay unread until
+    // the token has been accepted.
     webhookRouteContent = webhookRouteContent.replace(
       /export const GET = handler;\nexport const POST = handler;\nexport const PUT = handler;\nexport const PATCH = handler;\nexport const DELETE = handler;\nexport const HEAD = handler;\nexport const OPTIONS = handler;/,
-      `${NORMALIZE_REQUEST_CODE}
-const createSvelteKitHandler = (method) => async ({ request, params, platform }) => {
-  const normalRequest = await normalizeRequest(request);
-  const response = await handler(normalRequest, params.token);
+      `const createSvelteKitHandler = (method) => async ({ request, params, platform }) => {
+  const response = await handler(request, params.token);
   return response;
 };
 
@@ -240,34 +257,16 @@ export const OPTIONS = createSvelteKitHandler('OPTIONS');`
     await writeFile(webhookRouteFile, webhookRouteContent);
   }
 
-  private async findRoutesDirectory(): Promise<string> {
-    const routesDir = resolve(this.config.workingDir, 'src/routes');
-    const rootRoutesDir = resolve(this.config.workingDir, 'routes');
+  private async loadRoutesDirectory(): Promise<string> {
+    await assertDirectory(this.#routesDir);
+    return this.#routesDir;
+  }
+}
 
-    // Try src/routes first (standard SvelteKit convention)
-    try {
-      await access(routesDir, constants.F_OK);
-      const routesStats = await stat(routesDir);
-      if (!routesStats.isDirectory()) {
-        throw new Error(`Path exists but is not a directory: ${routesDir}`);
-      }
-      return routesDir;
-    } catch {
-      // Try routes as fallback
-      try {
-        await access(rootRoutesDir, constants.F_OK);
-        const rootRoutesStats = await stat(rootRoutesDir);
-        if (!rootRoutesStats.isDirectory()) {
-          throw new Error(
-            `Path exists but is not a directory: ${rootRoutesDir}`
-          );
-        }
-        return rootRoutesDir;
-      } catch {
-        throw new Error(
-          'Could not find SvelteKit routes directory. Expected either "src/routes" or "routes" to exist.'
-        );
-      }
-    }
+async function assertDirectory(path: string): Promise<void> {
+  await access(path, constants.F_OK);
+  const stats = await stat(path);
+  if (!stats.isDirectory()) {
+    throw new Error(`Path exists but is not a directory: ${path}`);
   }
 }

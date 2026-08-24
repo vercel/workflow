@@ -1,5 +1,70 @@
 # @workflow/nuxt
 
+## 4.0.20
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/nitro@4.1.10
+
+## 4.0.19
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/nitro@4.1.9
+
+## 4.0.18
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/nitro@4.1.8
+
+## 4.0.17
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/nitro@4.1.7
+
+## 4.0.16
+
+### Patch Changes
+
+- Updated dependencies [[`7fd2e4a`](https://github.com/vercel/workflow/commit/7fd2e4a4e0cbe26416f5ea83ed928c07ab9893f5)]:
+  - @workflow/nitro@4.1.6
+
+## 4.0.15
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/nitro@4.1.5
+
+## 4.0.14
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/nitro@4.1.4
+
+## 4.0.13
+
+### Patch Changes
+
+- Updated dependencies [[`8bfee36`](https://github.com/vercel/workflow/commit/8bfee36c31e336b3558fa3f1767b9c6eabbd8808)]:
+  - @workflow/nitro@4.1.3
+
+## 4.0.12
+
+### Patch Changes
+
+- [#2713](https://github.com/vercel/workflow/pull/2713) [`f927d69`](https://github.com/vercel/workflow/commit/f927d6933bd8ac63ccaa3bf3f5ea15b833d5c01a) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Use Nitro's workspace root for workflow module resolution so Nitro and Nuxt monorepo apps can import sibling workspace packages without extra config.
+
+- Updated dependencies [[`db90c40`](https://github.com/vercel/workflow/commit/db90c40a13d214230c5a67fd4411ca09399df1c3), [`980933f`](https://github.com/vercel/workflow/commit/980933fd439fab5e5fa06562f05b56c576ba9b2e), [`af08c04`](https://github.com/vercel/workflow/commit/af08c04da63d5d9ffa119bbfd153f8b516806f11), [`f927d69`](https://github.com/vercel/workflow/commit/f927d6933bd8ac63ccaa3bf3f5ea15b833d5c01a)]:
+  - @workflow/nitro@4.1.2
+
 ## 4.0.11
 
 ### Patch Changes

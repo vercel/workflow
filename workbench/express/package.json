@@ -18,7 +18,7 @@
     "nitro": "catalog:"
   },
   "devDependencies": {
-    "@types/express": "^5.0.5",
+    "@types/express": "^5.0.6",
     "@workflow/world-postgres": "workspace:*",
     "ai": "catalog:",
     "lodash.chunk": "^4.2.0",

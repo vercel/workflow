@@ -1,2 +1,4 @@
 # Default owners for the entire repository
 * @ijjk @vercel/workflow
+
+/docs @ijjk @vercel/workflow @vercel/team-python

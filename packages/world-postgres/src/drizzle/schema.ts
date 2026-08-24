@@ -17,7 +17,6 @@ import {
   integer,
   /** @deprecated: use Cbor instead */
   jsonb,
-  pgEnum,
   pgSchema,
   primaryKey,
   text,
@@ -27,21 +26,23 @@ import {
 } from 'drizzle-orm/pg-core';
 import { Cbor, type Cborized } from './cbor.js';
 
+export const schema = pgSchema('workflow');
+
 function mustBeMoreThanOne<T>(t: T[]) {
   return t as [T, ...T[]];
 }
 
-export const workflowRunStatus = pgEnum(
+export const workflowRunStatus = schema.enum(
   'status',
   mustBeMoreThanOne(WorkflowRunStatusSchema.options)
 );
 
-export const stepStatus = pgEnum(
+export const stepStatus = schema.enum(
   'step_status',
   mustBeMoreThanOne(StepStatusSchema.options)
 );
 
-export const waitStatus = pgEnum(
+export const waitStatus = schema.enum(
   'wait_status',
   mustBeMoreThanOne(WaitStatusSchema.options)
 );
@@ -60,8 +61,6 @@ type DrizzlishOfType<T extends object> = {
  * Sadly we do `any[]` right now
  */
 export type SerializedContent = any[];
-
-export const schema = pgSchema('workflow');
 
 export const runs = schema.table(
   'workflow_runs',

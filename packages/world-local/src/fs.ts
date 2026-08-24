@@ -166,6 +166,19 @@ export function hasTag(fileId: string, tag: string): boolean {
 }
 
 /**
+ * Check whether a fileId carries no tag suffix at all.
+ * `wrun_ABC` → true, `wrun_ABC.vitest-0` → false.
+ *
+ * An untagged world's reads (`readJSONWithFallback`) can only resolve untagged
+ * files, so when it lists entities for recovery it must skip files tagged by
+ * other worlds (e.g. the vitest harness) sharing the same data directory —
+ * otherwise it would re-enqueue runs it cannot subsequently read back.
+ */
+export function isUntagged(fileId: string): boolean {
+  return !TAG_PATTERN.test(fileId);
+}
+
+/**
  * Build the file path for an entity, with optional tag embedded in the filename.
  * `taggedPath('/data', 'runs', 'wrun_ABC', 'vitest-0')` → `/data/runs/wrun_ABC.vitest-0.json`
  * `taggedPath('/data', 'runs', 'wrun_ABC')` → `/data/runs/wrun_ABC.json`
@@ -390,7 +403,12 @@ export async function readFirstByte(
 
 export async function deleteJSON(filePath: string): Promise<void> {
   try {
-    await fs.unlink(filePath);
+    // On Windows, a concurrent reader briefly holding the file open makes
+    // unlink fail with EPERM (share violation), so retry like the other
+    // mutation paths in this module. A reader's window is milliseconds;
+    // without the retry a transient EPERM surfaces as a failed operation
+    // (e.g. run cancellation via deleteAllHooksForRun).
+    await withWindowsRetry(() => fs.unlink(filePath));
   } catch (error) {
     if ((error as any).code !== 'ENOENT') throw error;
   }

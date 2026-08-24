@@ -1,5 +1,96 @@
 # @workflow/world-testing
 
+## 4.1.19
+
+### Patch Changes
+
+- Updated dependencies [[`e331cd6`](https://github.com/vercel/workflow/commit/e331cd6aa9c5b578caa9770cb2889e306bd493e6)]:
+  - @workflow/world@4.4.0
+  - @workflow/cli@4.3.8
+  - @workflow/core@4.8.4
+  - workflow@4.8.4
+
+## 4.1.18
+
+### Patch Changes
+
+- Updated dependencies []:
+  - workflow@4.8.3
+  - @workflow/core@4.8.3
+  - @workflow/cli@4.3.7
+
+## 4.1.17
+
+### Patch Changes
+
+- Updated dependencies [[`e822a6a`](https://github.com/vercel/workflow/commit/e822a6a173707183325cf76b58f6522df4c5d08e), [`6f301ba`](https://github.com/vercel/workflow/commit/6f301ba396f92181f2982bc901d2f90216450787), [`86bc000`](https://github.com/vercel/workflow/commit/86bc00050fc6ac93e372f753260046b8f64c52ba)]:
+  - @workflow/core@4.8.2
+  - @workflow/cli@4.3.6
+  - workflow@4.8.2
+
+## 4.1.16
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/cli@4.3.5
+  - @workflow/core@4.8.1
+  - workflow@4.8.1
+
+## 4.1.15
+
+### Patch Changes
+
+- Updated dependencies [[`72ea6c8`](https://github.com/vercel/workflow/commit/72ea6c8edefb01a03acd25bef5efd4cdb9e03fa1)]:
+  - @workflow/core@4.8.0
+  - @workflow/world@4.3.1
+  - @workflow/cli@4.3.4
+  - workflow@4.8.0
+
+## 4.1.14
+
+### Patch Changes
+
+- [#3055](https://github.com/vercel/workflow/pull/3055) [`c77a82d`](https://github.com/vercel/workflow/commit/c77a82d70806a4949d2e94fa4fb9a62eb7be9aa1) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix flaky Local World tests caused by concurrent test servers sharing one data directory and re-enqueuing each other's in-flight runs on startup
+
+- Updated dependencies [[`12e4ef7`](https://github.com/vercel/workflow/commit/12e4ef7ea1777a0af1d69db7cf069a6a5da131c7)]:
+  - workflow@4.7.0
+  - @workflow/core@4.7.0
+  - @workflow/world@4.3.0
+  - @workflow/cli@4.3.3
+
+## 4.1.13
+
+### Patch Changes
+
+- Updated dependencies []:
+  - workflow@4.6.2
+  - @workflow/core@4.6.2
+  - @workflow/cli@4.3.2
+
+## 4.1.12
+
+### Patch Changes
+
+- [#2916](https://github.com/vercel/workflow/pull/2916) [`ab33490`](https://github.com/vercel/workflow/commit/ab33490cde332e851ec6f99076ce9099dd2805a7) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Update vitest peer dependency range to ^4.1.10
+
+- Updated dependencies [[`0422a0e`](https://github.com/vercel/workflow/commit/0422a0e51b3299bbd8570e0055419659b8ba3fe1), [`b1d1a06`](https://github.com/vercel/workflow/commit/b1d1a066a5710fbd5f97b69ae4dd8a4d892b4d57), [`2213c91`](https://github.com/vercel/workflow/commit/2213c91731f6d47373f4ba4c516c39ec2cc0fa94)]:
+  - @workflow/core@4.6.1
+  - @workflow/cli@4.3.1
+  - workflow@4.6.1
+
+## 4.1.11
+
+### Patch Changes
+
+- [#2462](https://github.com/vercel/workflow/pull/2462) [`e377108`](https://github.com/vercel/workflow/commit/e3771083e04687e58dd689ec92e0f7a98cce1f97) Thanks [@pranaygp](https://github.com/pranaygp)! - Bump the `hono` dependency to 4.12.25 to resolve CVE-2026-54290 (GHSA-88fw-hqm2-52qc, CORS middleware reflects any origin with credentials when origin defaults to the wildcard).
+
+- Updated dependencies [[`f2ad726`](https://github.com/vercel/workflow/commit/f2ad7261b14dd64085c80584b9d472019414b512), [`3bb5de1`](https://github.com/vercel/workflow/commit/3bb5de1669ae79e9536c93a5a46b7304a3c90ce4), [`20a6d73`](https://github.com/vercel/workflow/commit/20a6d73a0aa03b4b2f7318d97e12a5e7818c67d9), [`015452a`](https://github.com/vercel/workflow/commit/015452a70c52044635d24a134b7b984b6d2e1142), [`f9119d4`](https://github.com/vercel/workflow/commit/f9119d4b6a39f93df8d97c338c62eb0b6bccad8d), [`d0e4191`](https://github.com/vercel/workflow/commit/d0e4191b7e4dd4122cc0fdcb123de9b36b9c0237), [`5a4c6cf`](https://github.com/vercel/workflow/commit/5a4c6cff3ec52038a417cb68bc720bfa15f090e0), [`db8a2c4`](https://github.com/vercel/workflow/commit/db8a2c49820530f7a331bb4c1f0a803e03547831), [`170ea96`](https://github.com/vercel/workflow/commit/170ea9659a2b9c26e611bab8bb5131f9c6cdc14d), [`0a5e2aa`](https://github.com/vercel/workflow/commit/0a5e2aa247bc8e4e45d389a2af839110723ce863), [`a4dd59b`](https://github.com/vercel/workflow/commit/a4dd59be8c023dad2c173ad4cf1ed565ced34c56), [`9fba14e`](https://github.com/vercel/workflow/commit/9fba14e409e1393e3abb01bd5ec4f3ebb5295c14), [`67fcf1a`](https://github.com/vercel/workflow/commit/67fcf1a7505d131e6fbcaffc0d28551e4b17b8a7), [`2a688f0`](https://github.com/vercel/workflow/commit/2a688f0a037e8d72bbc7164adc9f3be0924c62a3), [`6dbe2de`](https://github.com/vercel/workflow/commit/6dbe2de33ff95fe16b627d77e9c690582a6857f2), [`87d213c`](https://github.com/vercel/workflow/commit/87d213c096ab88ec2c32c231440a65037f82bbf4)]:
+  - @workflow/core@4.6.0
+  - workflow@4.6.0
+  - @workflow/cli@4.3.0
+  - @workflow/world@4.2.1
+
 ## 4.1.10
 
 ### Patch Changes
