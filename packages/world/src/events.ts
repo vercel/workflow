@@ -482,6 +482,12 @@ export interface ListEventsParams {
 
 export interface ListEventsByCorrelationIdParams {
   correlationId: string;
+  /**
+   * Scopes the lookup to one run. A correlation id is unique within its run,
+   * not across runs; servers that support run-scoping use this to answer from
+   * the run's own event log. Optional on 4.x for backward compatibility.
+   */
+  runId?: string;
   pagination?: PaginationOptions;
   resolveData?: ResolveData;
 }

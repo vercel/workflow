@@ -1655,7 +1655,9 @@ export function createEventsStorage(
         directory: path.join(basedir, 'events'),
         schema: EventSchema,
         // No filePrefix - search all events
-        filter: (event) => event.correlationId === correlationId,
+        filter: (event) =>
+          event.correlationId === correlationId &&
+          (params.runId === undefined || event.runId === params.runId),
         // Events in chronological order (oldest first) by default,
         // different from the default for other list calls.
         sortOrder: params.pagination?.sortOrder ?? 'asc',

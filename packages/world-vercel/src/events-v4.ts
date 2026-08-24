@@ -573,11 +573,13 @@ export async function getWorkflowRunEventsV4(
 export async function getEventsByCorrelationIdV4(
   correlationId: string,
   params: ListEventsV4Params = {},
-  config?: APIConfig
+  config?: APIConfig,
+  runId?: string
 ): Promise<ListEventsV4Result> {
   const { baseUrl, headers } = await getHttpConfig(config);
   const sp = new URLSearchParams();
   sp.set('correlationId', correlationId);
+  if (runId !== undefined) sp.set('runId', runId);
   appendListParams(sp, params);
   const url = `${baseUrl}/v4/events?${sp.toString()}`;
   return consumeListFrameStream(
