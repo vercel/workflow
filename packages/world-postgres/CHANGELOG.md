@@ -1,5 +1,22 @@
 # @workflow/world-postgres
 
+## 4.3.5
+
+### Patch Changes
+
+- [#3575](https://github.com/vercel/workflow/pull/3575) [`e0328a8`](https://github.com/vercel/workflow/commit/e0328a84dd0910dab2e9211451b85240e56a4262) Thanks [@shin4141](https://github.com/shin4141)! - Commit step entities and their `step_created` events atomically.
+
+- [#2888](https://github.com/vercel/workflow/pull/2888) [`699e01e`](https://github.com/vercel/workflow/commit/699e01ed1630af3ecb64a4fd01e712fa80828cc5) Thanks [@ctgowrie](https://github.com/ctgowrie)! - Use the active queue namespace when re-enqueuing workflow runs during world startup recovery.
+
+- [#2983](https://github.com/vercel/workflow/pull/2983) [`2ced7cc`](https://github.com/vercel/workflow/commit/2ced7cc05cbd6e948b898f3a56316cc8d1718436) Thanks [@joeyhotz](https://github.com/joeyhotz)! - Throw `EntityConflictError` when a `run_created` event targets a run that already exists, instead of resolving with no run. This matches `world-local` and `world-vercel`, and stops `start()` from throwing `Missing 'run' in server response for 'run_created' event` when the resilient start path wins the race.
+
+- [#3762](https://github.com/vercel/workflow/pull/3762) [`5fa20ea`](https://github.com/vercel/workflow/commit/5fa20ea20abd7d3b8f4fe960b10390a35b978fe5) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Accept and send an optional `runId` when listing events by correlation ID
+
+- Updated dependencies [[`4c93a5f`](https://github.com/vercel/workflow/commit/4c93a5fe45ec668e41ad8367582d15a361986d16), [`699e01e`](https://github.com/vercel/workflow/commit/699e01ed1630af3ecb64a4fd01e712fa80828cc5), [`0fd781a`](https://github.com/vercel/workflow/commit/0fd781a3e29d0017e1ec2345e90e2e6e788c9609), [`5fa20ea`](https://github.com/vercel/workflow/commit/5fa20ea20abd7d3b8f4fe960b10390a35b978fe5)]:
+  - @workflow/world-local@4.4.0
+  - @workflow/world@4.5.0
+  - @workflow/errors@4.2.1
+
 ## 4.3.4
 
 ### Patch Changes

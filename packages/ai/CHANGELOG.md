@@ -1,5 +1,14 @@
 # @workflow/ai
 
+## 4.2.1
+
+### Patch Changes
+
+- [#1932](https://github.com/vercel/workflow/pull/1932) [`9a9945d`](https://github.com/vercel/workflow/commit/9a9945d444754a84f1ac91cbfc1d1896c0461380) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Reduce DurableAgent step boundary payload by reconstructing `StepResult` outside the step instead of inside.
+
+- Updated dependencies [[`608769d`](https://github.com/vercel/workflow/commit/608769dc5ff856deb41d4ed29713ce05d7a45a54)]:
+  - workflow@4.8.5
+
 ## 4.2.0
 
 ### Minor Changes

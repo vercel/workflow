@@ -1,5 +1,11 @@
 # @workflow/web
 
+## 4.1.21
+
+### Patch Changes
+
+- [#3762](https://github.com/vercel/workflow/pull/3762) [`5fa20ea`](https://github.com/vercel/workflow/commit/5fa20ea20abd7d3b8f4fe960b10390a35b978fe5) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Accept and send an optional `runId` when listing events by correlation ID
+
 ## 4.1.20
 
 ## 4.1.19

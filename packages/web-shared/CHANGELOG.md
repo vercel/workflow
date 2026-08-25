@@ -1,5 +1,13 @@
 # @workflow/web-shared
 
+## 4.1.21
+
+### Patch Changes
+
+- Updated dependencies [[`5556b4c`](https://github.com/vercel/workflow/commit/5556b4cde500aa7d7156be0ed98ff95c61f26ccf), [`699e01e`](https://github.com/vercel/workflow/commit/699e01ed1630af3ecb64a4fd01e712fa80828cc5), [`cd9343b`](https://github.com/vercel/workflow/commit/cd9343b3246df7b0db7dd3a44babf21115075c8d), [`608769d`](https://github.com/vercel/workflow/commit/608769dc5ff856deb41d4ed29713ce05d7a45a54), [`5fa20ea`](https://github.com/vercel/workflow/commit/5fa20ea20abd7d3b8f4fe960b10390a35b978fe5), [`853a316`](https://github.com/vercel/workflow/commit/853a316c79748f14f59f9302e672c56d3d7b7090)]:
+  - @workflow/core@4.8.5
+  - @workflow/world@4.5.0
+
 ## 4.1.20
 
 ### Patch Changes
