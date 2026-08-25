@@ -134,6 +134,7 @@ import {
 import { getErrorName, getErrorStack, normalizeUnknownError } from './types.js';
 import { buildWorkflowSuspensionMessage } from './util.js';
 import {
+  compileWorkflowBundle,
   replayWorkflow,
   resumeWorkflow,
   type WorkflowResumeResult,
@@ -1949,6 +1950,24 @@ export function workflowEntrypoint(
                     }
                   }
 
+                  // Start compilation only after dispatching whichever event
+                  // request supplies the replay snapshot. This avoids merely
+                  // moving synchronous V8 work in front of the request. The
+                  // promise is invocation-scoped and reused by every cold
+                  // replay; evaluation still waits for a fresh VM context.
+                  let compiledWorkflowScripts:
+                    | ReturnType<typeof compileWorkflowBundle>
+                    | undefined;
+                  const startWorkflowCompile = () => {
+                    compiledWorkflowScripts ??= compileWorkflowBundle(
+                      workflowCode,
+                      workflowName
+                    );
+                    // Terminal runs can return without awaiting compilation.
+                    void compiledWorkflowScripts.catch(() => {});
+                    return compiledWorkflowScripts;
+                  };
+
                   // Deployment-affinity pre-check for the lazy hook fast
                   // path below. New lazy-resume messages carry the run's
                   // pinned deployment (`hookInput.deploymentId`), so a
@@ -2052,7 +2071,7 @@ export function workflowEntrypoint(
                       span?.addEvent('workflow.hook_received.create.start', {
                         'workflow.hook_received.preload_events': true,
                       });
-                      const result = await traceReplayLoad('hook_preload', () =>
+                      const replayLoad = traceReplayLoad('hook_preload', () =>
                         createEvent(
                           {
                             eventType: 'hook_received',
@@ -2072,6 +2091,8 @@ export function workflowEntrypoint(
                           }
                         )
                       );
+                      startWorkflowCompile();
+                      const result = await replayLoad;
                       hookEnsured = true;
                       // Note: unlike the re-ensure below, this hoisted write
                       // does NOT set HookResilientResumeMaterialized: it
@@ -2276,6 +2297,7 @@ export function workflowEntrypoint(
                         // wasted list+resolve it would otherwise compute.
                         { requestId, skipPreload: true }
                       );
+                      startWorkflowCompile();
                       runReadyBarrier = startedPromise;
                       // Turbo backgrounds run_started, so the non-turbo
                       // assignment below never runs. Thread the per-run event
@@ -2344,10 +2366,11 @@ export function workflowEntrypoint(
                         span?.addEvent('workflow.run_started.create.start', {
                           'workflow.run_started.skip_preload': false,
                         });
-                        const result = await traceReplayLoad(
-                          'run_started',
-                          () => createEvent(runStartedEvent, { requestId })
+                        const replayLoad = traceReplayLoad('run_started', () =>
+                          createEvent(runStartedEvent, { requestId })
                         );
+                        startWorkflowCompile();
+                        const result = await replayLoad;
                         workflowRun = result.run;
                         maxEventsLimit = clampMaxEvents(result.maxEvents);
                         // Anchors RSFS, see the declaration above.
@@ -3090,6 +3113,7 @@ export function workflowEntrypoint(
                           events: eventLog.events,
                           encryptionKey,
                           replayPayloadCache,
+                          compiledWorkflowScripts: await startWorkflowCompile(),
                           // Turbo: the end-of-run drain inside workflow
                           // execution commits fire-and-forget `*_created`
                           // events before the terminal `awaitRunReady()` below.

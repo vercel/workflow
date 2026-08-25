@@ -1,3 +1,4 @@
+import type { Script } from 'node:vm';
 import type { Span } from '@opentelemetry/api';
 import {
   ERROR_SLUGS,
@@ -130,8 +131,47 @@ interface WorkflowSessionOptions {
   readonly events: Event[];
   readonly encryptionKey: PayloadKey | undefined;
   readonly replayPayloadCache: ReplayPayloadCache;
+  readonly compiledWorkflowScripts?: CompiledWorkflowScripts;
   readonly runReadyBarrier?: Promise<unknown>;
   readonly worldCapabilities?: WorldCapabilities;
+}
+
+/** Context-independent V8 scripts that can be evaluated in any fresh VM. */
+export interface CompiledWorkflowScripts {
+  readonly bundleScript: Script;
+  readonly workflowLookupScript: Script;
+}
+
+/**
+ * Compile the workflow bundle before its run snapshot is available.
+ *
+ * Compilation depends only on the route's bundle string and workflow name,
+ * not the event log or VM context. The runtime starts this promise while
+ * `run_started` loads the replay snapshot, then evaluates the scripts only
+ * after it has created the fresh context.
+ */
+export function compileWorkflowBundle(
+  workflowCode: string,
+  workflowName: string
+): Promise<CompiledWorkflowScripts> {
+  const parsedName = parseWorkflowName(workflowName);
+  const filename = parsedName?.moduleSpecifier || workflowName;
+  const workflowLookupCode = `globalThis.__private_workflows?.get(${JSON.stringify(workflowName)})`;
+
+  return trace('workflow.bundle.compile', async (span) => {
+    const bundle = getCachedWorkflowScript(workflowCode, filename);
+    const lookup = getCachedWorkflowScript(workflowLookupCode, filename);
+    span?.setAttributes({
+      // This attribute intentionally describes the workflow bundle. The tiny
+      // lookup script may miss when another workflow from the same source file
+      // runs, but that does not mean V8 recompiled the application bundle.
+      ...Attribute.WorkflowBundleCompileCacheHit(bundle.cacheHit),
+    });
+    return {
+      bundleScript: bundle.script,
+      workflowLookupScript: lookup.script,
+    };
+  });
 }
 
 /**
@@ -325,6 +365,7 @@ async function createWorkflowSessionInner(
     events,
     encryptionKey,
     replayPayloadCache,
+    compiledWorkflowScripts,
     runReadyBarrier,
     worldCapabilities,
   }: WorkflowSessionOptions,
@@ -1092,34 +1133,12 @@ async function createWorkflowSessionInner(
   ];
   endVmTrace();
 
-  // Get a reference to the user-defined workflow function.
-  // The filename parameter ensures stack traces show a meaningful name
-  // (e.g., "example/workflows/99_e2e.ts") instead of "evalmachine.<anonymous>".
-  const parsedName = parseWorkflowName(workflowRun.workflowName);
-  const filename = parsedName?.moduleSpecifier || workflowRun.workflowName;
-  const workflowLookupCode = `globalThis.__private_workflows?.get(${JSON.stringify(workflowRun.workflowName)})`;
-
   // Reuse compiled scripts by `(code, filename)`: compilation is deterministic
   // and the filename preserves workflow source attribution in stack traces.
   // The bundle registers workflows on `globalThis.__private_workflows`.
-  const { bundleScript, workflowLookupScript } = await trace(
-    'workflow.bundle.compile',
-    async (span) => {
-      const bundle = getCachedWorkflowScript(workflowCode, filename);
-      const lookup = getCachedWorkflowScript(workflowLookupCode, filename);
-      span?.setAttributes({
-        // This attribute intentionally describes the workflow bundle. The
-        // tiny workflow-name lookup script has its own cache entry and may
-        // miss when another workflow from the same source file runs, but that
-        // does not mean V8 recompiled the application bundle.
-        ...Attribute.WorkflowBundleCompileCacheHit(bundle.cacheHit),
-      });
-      return {
-        bundleScript: bundle.script,
-        workflowLookupScript: lookup.script,
-      };
-    }
-  );
+  const { bundleScript, workflowLookupScript } =
+    compiledWorkflowScripts ??
+    (await compileWorkflowBundle(workflowCode, workflowRun.workflowName));
   const workflowFn = await trace('workflow.bundle.evaluate', async () => {
     bundleScript.runInContext(context);
     return workflowLookupScript.runInContext(context);
