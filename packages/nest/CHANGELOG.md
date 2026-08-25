@@ -1,5 +1,15 @@
 # @workflow/nest
 
+## 5.0.0-beta.44
+
+### Patch Changes
+
+- [#3728](https://github.com/vercel/workflow/pull/3728) [`f771585`](https://github.com/vercel/workflow/commit/f771585486b3019c8d68211b158dfeffc9e5ebe8) Thanks [@pranaygp](https://github.com/pranaygp)! - Hold process-wide state on `globalThis` rather than at module scope in the packages that get bundled into the host application's server build, where a bundler compiles one copy of each module per layer. Covers warn-once latches, lazy caches, the VM script and QuickJS asset caches, the dev-server port cache, and step single-flight, whose per-copy map was not actually single-flight. State that is deliberately per-copy is annotated with the reason.
+
+- Updated dependencies [[`f771585`](https://github.com/vercel/workflow/commit/f771585486b3019c8d68211b158dfeffc9e5ebe8), [`8a2648e`](https://github.com/vercel/workflow/commit/8a2648e35f3ccfdffd275bc37470dd3396981773), [`f771585`](https://github.com/vercel/workflow/commit/f771585486b3019c8d68211b158dfeffc9e5ebe8)]:
+  - @workflow/utils@5.0.0-beta.9
+  - @workflow/builders@5.0.0-beta.44
+
 ## 5.0.0-beta.43
 
 ### Patch Changes

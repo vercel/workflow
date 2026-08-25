@@ -233,9 +233,8 @@ assertEventDataWireContractExhaustive<[Unhandled, Stale]>();
  * become the v4 frame body and (b) the metadata fields that become the
  * CBOR-encoded meta block of the same frame.
  *
- * Exported for unit tests (the meta allowlist is the eventData wire
- * contract; see the warning on EVENT_DATA_PAYLOAD_FIELD_BY_EVENT_TYPE in
- * @workflow/world).
+ * Exported for unit tests because the metadata allowlist is the eventData wire
+ * contract and must remain exhaustive with the @workflow/world event schemas.
  */
 export function splitEventDataForV4(data: AnyEventRequest): SplitEventData {
   // Some event types in the AnyEventRequest discriminated union (e.g.

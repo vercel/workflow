@@ -1,7 +1,7 @@
 {
   "name": "@workflow/utils",
   "description": "Utility functions for Workflow SDK",
-  "version": "5.0.0-beta.8",
+  "version": "5.0.0-beta.9",
   "type": "module",
   "sideEffects": false,
   "main": "dist/index.js",

@@ -122,6 +122,80 @@ describe('getWaitContinuationDispatch', () => {
     });
   });
 
+  describe('early delivery re-arms under a fresh key', () => {
+    it('keys attempt 0 exactly as before attempts existed', () => {
+      // The ordinary path must not move: arm once, deliver once, complete.
+      // Every branch keeps its old key at attempt 0.
+      expect(getWaitContinuationDispatch(60, CORR_ID, NOW, 0)).toEqual(
+        getWaitContinuationDispatch(60, CORR_ID, NOW)
+      );
+      expect(getWaitContinuationDispatch(1, CORR_ID, NOW, 0)).toEqual(
+        getWaitContinuationDispatch(1, CORR_ID, NOW)
+      );
+      const hops = WAIT_CONTINUATION_MAX_DELAY_SECONDS * 2;
+      expect(getWaitContinuationDispatch(hops, CORR_ID, NOW, 0)).toEqual(
+        getWaitContinuationDispatch(hops, CORR_ID, NOW)
+      );
+    });
+
+    it('gives a mid-range wait a key it can actually re-arm with', () => {
+      // The bug this closes. A mid-range wait keys on the bare correlationId,
+      // so a continuation delivered before its deadline spends the only key
+      // the wait will ever have: the re-arm is dropped by the dedupe window,
+      // nothing else is scheduled to wake the run, and unlike a step there is
+      // no ownership backstop to catch it. The run sleeps forever.
+      const armed = getWaitContinuationDispatch(60, CORR_ID, NOW);
+      const reArmed = getWaitContinuationDispatch(59, CORR_ID, NOW + 1_000, 1);
+      expect(armed.idempotencyKey).toBe(CORR_ID);
+      expect(reArmed.idempotencyKey).not.toBe(armed.idempotencyKey);
+    });
+
+    it('advances on every further early delivery', () => {
+      // An early delivery can repeat, so the keys have to keep moving rather
+      // than alternate between two values.
+      const keys = [0, 1, 2, 3].map(
+        (attempt) =>
+          getWaitContinuationDispatch(60, CORR_ID, NOW, attempt).idempotencyKey
+      );
+      expect(new Set(keys).size).toBe(keys.length);
+    });
+
+    it('still collapses re-observations within one attempt', () => {
+      // The reason the bare key existed: while a wait is pending, every
+      // suspension pass re-observes it, and each extra message is a spurious
+      // replay plus a reset of the delivery-attempt runaway guard. Passes
+      // within one attempt must still dedupe to a single message.
+      const first = getWaitContinuationDispatch(60, CORR_ID, NOW, 2);
+      const secondPass = getWaitContinuationDispatch(60, CORR_ID, NOW + 250, 2);
+      expect(secondPass.idempotencyKey).toBe(first.idempotencyKey);
+    });
+
+    it('keeps attempts distinct per wait', () => {
+      const a = getWaitContinuationDispatch(60, 'wait_A', NOW, 1);
+      const b = getWaitContinuationDispatch(60, 'wait_B', NOW, 1);
+      expect(a.idempotencyKey).not.toBe(b.idempotencyKey);
+    });
+
+    it('does not change the delay, only the key', () => {
+      // An early delivery means the deadline has NOT moved, so the re-arm must
+      // still wait out the remaining time rather than fire immediately.
+      for (const timeout of [1, 60, WAIT_CONTINUATION_MAX_DELAY_SECONDS * 2]) {
+        expect(
+          getWaitContinuationDispatch(timeout, CORR_ID, NOW, 3).delaySeconds
+        ).toBe(getWaitContinuationDispatch(timeout, CORR_ID, NOW).delaySeconds);
+      }
+    });
+
+    it('composes with the hop suffix on a chained wait', () => {
+      const chained = WAIT_CONTINUATION_MAX_DELAY_SECONDS * 2;
+      const base = getWaitContinuationDispatch(chained, CORR_ID, NOW);
+      const reArmed = getWaitContinuationDispatch(chained, CORR_ID, NOW, 1);
+      expect(base.idempotencyKey).toContain('hop-');
+      expect(reArmed.idempotencyKey).toContain('hop-');
+      expect(reArmed.idempotencyKey).not.toBe(base.idempotencyKey);
+    });
+  });
+
   describe('max-delay override caps the near-elapsed threshold', () => {
     const MAX_DELAY_ENV = 'WORKFLOW_WAIT_CONTINUATION_MAX_DELAY_SECONDS';
 

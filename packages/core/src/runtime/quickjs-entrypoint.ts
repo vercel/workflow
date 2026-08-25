@@ -455,6 +455,13 @@ async function dispatchPendingOps(params: {
         eventType: 'hook_disposed',
         specVersion: SPEC_VERSION_CURRENT,
         correlationId: op.correlationId,
+        // The hook's token, which the node:vm engine has always sent. A world
+        // that keys a hook's token claim separately from the hook itself needs
+        // it to release both, and the only alternative is for it to look the
+        // token up first. Omitted rather than sent as undefined when the op
+        // carries none, so a world that reads it cannot tell the difference
+        // between this engine and a client too old to send one.
+        ...(op.token === undefined ? {} : { eventData: { token: op.token } }),
       });
     } catch (err) {
       if (EntityConflictError.is(err)) return;
@@ -867,6 +874,14 @@ export async function runWorkflowWithQuickJS(params: {
    * invocations to each other and fragment the run view on async queues.
    */
   nextTraceCarrier?: () => Promise<Record<string, string>>;
+  /**
+   * The wait this invocation is the delayed continuation for, if it is one
+   * (`WorkflowInvokePayload.waitContinuation`). Read only to decide the next
+   * continuation's idempotency key: a continuation that finds its own wait
+   * still pending has spent its key, so the re-arm has to advance the attempt
+   * or the world's dedupe window drops it and the wait loses its only timer.
+   */
+  waitContinuation?: { correlationId: string; attempt: number };
 }): Promise<{ timeoutSeconds?: number } | void> {
   const {
     workflowCode,
@@ -881,7 +896,21 @@ export async function runWorkflowWithQuickJS(params: {
     ownerMessageId,
     requestId,
     namespace,
+    waitContinuation,
   } = params;
+
+  /**
+   * Attempt number for the continuation this invocation is about to arm for
+   * `correlationId`. One higher than the incoming continuation's when this
+   * invocation IS that continuation and the wait is still pending — the only
+   * situation in which the previous key is spent. Every other caller, and
+   * every other wait, starts at 0 and keys exactly as it did before attempts
+   * existed.
+   */
+  const nextWaitContinuationAttempt = (correlationId: string): number =>
+    waitContinuation?.correlationId === correlationId
+      ? waitContinuation.attempt + 1
+      : 0;
   // Standalone-caller fallback (tests): without a runtime.ts carrier
   // accessor, fall back to the current invocation context.
   const nextTraceCarrier =
@@ -1531,6 +1560,7 @@ export async function runWorkflowWithQuickJS(params: {
       }
       if (soonestWait) {
         scheduledWaitContinuations.add(soonestWait.correlationId);
+        const attempt = nextWaitContinuationAttempt(soonestWait.correlationId);
         await queueMessage(
           world,
           getWorkflowQueueName(workflowRun.workflowName, namespace),
@@ -1538,15 +1568,22 @@ export async function runWorkflowWithQuickJS(params: {
             runId,
             traceCarrier: await nextTraceCarrier(),
             requestedAt: new Date(),
+            waitContinuation: {
+              correlationId: soonestWait.correlationId,
+              attempt,
+            },
           },
           getWaitContinuationDispatch(
             soonestWait.seconds,
-            soonestWait.correlationId
+            soonestWait.correlationId,
+            Date.now(),
+            attempt
           )
         );
         wfdiag('wait_continuation_scheduled', {
           correlationId: soonestWait.correlationId,
           delaySeconds: soonestWait.seconds,
+          attempt,
         });
       }
 
@@ -1864,6 +1901,7 @@ export async function runWorkflowWithQuickJS(params: {
         waitCorrelationId: soonestWait.correlationId,
       });
       scheduledWaitContinuations.add(soonestWait.correlationId);
+      const attempt = nextWaitContinuationAttempt(soonestWait.correlationId);
       await queueMessage(
         world,
         getWorkflowQueueName(workflowRun.workflowName, namespace),
@@ -1871,10 +1909,16 @@ export async function runWorkflowWithQuickJS(params: {
           runId,
           traceCarrier: await nextTraceCarrier(),
           requestedAt: new Date(),
+          waitContinuation: {
+            correlationId: soonestWait.correlationId,
+            attempt,
+          },
         },
         getWaitContinuationDispatch(
           soonestWait.seconds,
-          soonestWait.correlationId
+          soonestWait.correlationId,
+          Date.now(),
+          attempt
         )
       );
       return;

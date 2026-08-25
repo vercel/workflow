@@ -3015,14 +3015,21 @@ describe('workflowEntrypoint latency telemetry (ttfs / stso)', () => {
     expect(second.eventData.stso).toBeLessThanOrEqual(elapsed);
     expect(second.eventData.stepCount).toBe(1);
     expect(second.eventData.eventCount).toBeGreaterThan(0);
+    // `retained` is per-pass, not per-invocation: the first step's pass built
+    // the VM (a full replay, so no flag above), the second step's pass
+    // resumed the session this same invocation retained.
     expect(second.eventData.optimizations).toEqual([
       'turbo',
       'lazyStepStart',
       'optimisticStart',
+      'retained',
     ]);
-    // STSO-only steps never qualify for RSFS (it shares TTFS eligibility).
+    // STSO-only steps never qualify for RSFS (it shares TTFS eligibility),
+    // but finalSchedulingReplay is ungated — reported for any batch STSO is,
+    // not just the run's first step.
     expect(second.eventData.rsfs).toBeUndefined();
-    expect(second.eventData.finalSchedulingReplay).toBeUndefined();
+    expect(second.eventData.finalSchedulingReplay).toBeGreaterThanOrEqual(0);
+    expect(second.eventData.finalSchedulingReplay).toBeLessThanOrEqual(elapsed);
   });
 
   it('anchors ttfs correctly for a region-tagged run ID (tag bit cleared, not a future timestamp)', async () => {

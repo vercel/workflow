@@ -12,7 +12,7 @@ import {
 } from '@workflow/utils';
 import { parseWorkflowName } from '@workflow/utils/parse-name';
 import type { Event, WorkflowRun, WorldCapabilities } from '@workflow/world';
-import { SPEC_VERSION_SUPPORTS_COMPRESSION } from '@workflow/world';
+import { SPEC_VERSION_SUPPORTS_COMPRESSION } from '@workflow/world/spec-version';
 import * as nanoid from 'nanoid';
 import { monotonicFactory } from 'ulid';
 import { EventConsumerResult, EventsConsumer } from './events-consumer.js';

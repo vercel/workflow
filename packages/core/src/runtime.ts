@@ -676,6 +676,7 @@ export function workflowEntrypoint(
           hookInput,
           stepInput,
           hookResumeTiming,
+          waitContinuation,
         } = WorkflowInvokePayloadSchema.parse(message_);
 
         // --- Hook-resume TTR telemetry (runtime/resume-latency.ts) ---
@@ -2623,6 +2624,10 @@ export function workflowEntrypoint(
                     }
 
                     let replayStart = 0;
+                    // Whether this pass was served by a retained VM session.
+                    // Set at the resume/replay decision below, before
+                    // `retainedSession` is reassigned for the next iteration.
+                    let servedByRetainedSession = false;
                     try {
                       // --- QuickJS VM engine dispatch ---
                       // The QuickJS engine (opt-in via WORKFLOW_VM=quickjs
@@ -2687,6 +2692,11 @@ export function workflowEntrypoint(
                           maxEventsLimit,
                           namespace,
                           nextTraceCarrier,
+                          // Lets the entrypoint recognize itself as the
+                          // continuation for a specific wait, so a delivery
+                          // that arrives before its wait elapses re-arms
+                          // under a fresh key instead of losing the timer.
+                          waitContinuation,
                           // Inline-step ownership plumbing: redeliveries of
                           // this message drive crash recovery for steps an
                           // earlier invocation claimed inline (see the
@@ -2974,6 +2984,15 @@ export function workflowEntrypoint(
                       let workflowResult: WorkflowResumeResult = retainedSession
                         ? await resumeWorkflow(retainedSession, eventLog.events)
                         : { type: 'replay' };
+                      // A retained resume can still report back `{ type:
+                      // 'replay' }` (internal cache miss), in which case this
+                      // pass falls through to a full replay below and is not
+                      // a retained pass. The `workflow.run` span cannot say
+                      // this: it is tagged `retained` when it opens, before
+                      // the resume result is known.
+                      servedByRetainedSession =
+                        retainedSession !== null &&
+                        workflowResult.type !== 'replay';
 
                       if (workflowResult.type === 'replay') {
                         retainedSession = null;
@@ -3652,6 +3671,18 @@ export function workflowEntrypoint(
                           );
                         }
                         if (suspensionResult.waitTimeout) {
+                          // One higher than the incoming continuation's when
+                          // this invocation IS the continuation for this same
+                          // wait and the wait is still pending: that delivery
+                          // spent the key, so re-arming under it would be
+                          // dropped by the world's dedupe window and the wait
+                          // would lose its only timer. Every other case is
+                          // attempt 0 and keys as before.
+                          const waitAttempt =
+                            waitContinuation?.correlationId ===
+                            suspensionResult.waitTimeout.correlationId
+                              ? waitContinuation.attempt + 1
+                              : 0;
                           dispatches.push(
                             queueMessage(
                               world,
@@ -3660,10 +3691,17 @@ export function workflowEntrypoint(
                                 runId,
                                 traceCarrier,
                                 requestedAt: new Date(),
+                                waitContinuation: {
+                                  correlationId:
+                                    suspensionResult.waitTimeout.correlationId,
+                                  attempt: waitAttempt,
+                                },
                               },
                               getWaitContinuationDispatch(
                                 suspensionResult.waitTimeout.seconds,
-                                suspensionResult.waitTimeout.correlationId
+                                suspensionResult.waitTimeout.correlationId,
+                                Date.now(),
+                                waitAttempt
                               )
                             )
                           );
@@ -3956,6 +3994,7 @@ export function workflowEntrypoint(
                           suspensionCreatedHooks:
                             err.hookCount > 0 || suspensionResult.hasHookEvents,
                           turbo,
+                          retained: servedByRetainedSession,
                         });
 
                         // Slot snapshot for the inline step_started claims: the

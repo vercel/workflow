@@ -7,7 +7,7 @@
  */
 
 import { globalSingleton } from '@workflow/utils';
-import { getEventDataRefFields } from '@workflow/world';
+import { getEventDataRefFields } from '@workflow/world/event-metadata';
 import { parse, unflatten } from 'devalue';
 
 // ---------------------------------------------------------------------------
