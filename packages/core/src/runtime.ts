@@ -524,7 +524,7 @@ type RetentionDecision =
       reason:
         | 'disabled'
         | 'serialization_executed_workflow_code'
-        | 'no_step_driver'
+        | 'no_replay_driver'
         | 'unsupported_suspension_item'
         | 'open_wait';
     };
@@ -534,9 +534,9 @@ type RetentionDecision =
  *
  * Every item type accepted here must use the suspension-generation guard when
  * signaling. Otherwise a signal scheduled at boundary N could suspend the VM
- * after it has already resumed into boundary N+1. Waits and attributes are not
- * guarded, so they remain unretainable. A step is required to drive the next
- * inline iteration; hook-only suspensions park normally.
+ * after it has already resumed into boundary N+1. Waits are not guarded, so
+ * they remain unretainable. A step or attribute write is required to drive the
+ * next inline iteration; hook-only suspensions park normally.
  *
  * Retaining across an open hook also permits a hook-woken cold replay to race
  * this invocation. That is safe only because each loaded log is a monotone,
@@ -575,17 +575,17 @@ function getRetentionDecision({
       reason: 'serialization_executed_workflow_code',
     };
   }
-  if (suspension.stepCount === 0) {
-    return { retain: false, reason: 'no_step_driver' };
+  if (suspension.stepCount === 0 && suspension.attributeCount === 0) {
+    return { retain: false, reason: 'no_replay_driver' };
   }
   if (
     !suspension.items.every((item) => {
       switch (item.type) {
         case 'step':
         case 'hook':
+        case 'attribute':
           return true;
         case 'wait':
-        case 'attribute':
           return false;
         default:
           item satisfies never;
@@ -3423,15 +3423,16 @@ export function workflowEntrypoint(
                           return await reinvoke(0);
                         }
 
-                        // Native workflow attribute events are resolved
-                        // through replay: the next loop iteration reloads the
-                        // log (now holding the just-committed attr_set) and
-                        // replays, resolving the setAttributes promise. Skip
-                        // step processing for this pass so that replay decides
-                        // races first: in Promise.race([setAttributes(),
-                        // step()]), the durable attribute event must be able
-                        // to win without executing the losing step. The replay
-                        // happens in-process rather than via a queue
+                        // Native workflow attribute events are resolved by the
+                        // next execution pass: it reloads the log (now holding
+                        // the just-committed attr_set), then either resumes the
+                        // retained VM or performs a cold replay to resolve the
+                        // setAttributes promise. Skip step processing for this
+                        // pass so that the durable event decides races first:
+                        // in Promise.race([setAttributes(), step()]), the
+                        // attribute must be able to win without executing the
+                        // losing step. The next pass happens in-process rather
+                        // than via a queue
                         // re-invocation: unlike hooks and waits, an attr_set
                         // introduces no out-of-band invocation source that the
                         // handler would need to yield the message for, so

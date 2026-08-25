@@ -144,6 +144,14 @@ const concurrentHookWakeWorkflow = `const createHook = globalThis[Symbol.for("WO
   }
   globalThis.__private_workflows = new Map([["workflow", workflow]]);`;
 
+const attributeThenStepWorkflow = `const setAttributes = globalThis[Symbol.for("WORKFLOW_SET_ATTRIBUTES")];
+  const s1 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("r_s1");
+  async function workflow() {
+    await setAttributes([{ key: "phase", value: "ready" }]);
+    return await s1();
+  }
+  globalThis.__private_workflows = new Map([["workflow", workflow]]);`;
+
 // Hook metadata is serialized at the same suspension boundary as step input.
 // A getter mutating workflow state must demote the retained VM just like an
 // unsafe step argument, because a cold replay skips serialization after the
@@ -778,6 +786,24 @@ describe('retained VM through the inline replay loop', () => {
     expect(
       on.durableLog.filter((event) => event.eventType === 'step_completed')
     ).toHaveLength(2);
+    expect(on.durableLog).toEqual(off.durableLog);
+  });
+
+  it('retains one VM across an attribute write and the following step', async () => {
+    process.env.WORKFLOW_RETAINED_VM = '0';
+    const off = await drive(
+      'wrun_retained_attribute_then_step',
+      attributeThenStepWorkflow
+    );
+    createContextSpy.mockClear();
+    delete process.env.WORKFLOW_RETAINED_VM;
+
+    const on = await drive(
+      'wrun_retained_attribute_then_step',
+      attributeThenStepWorkflow
+    );
+    expect(on.result).toBe(10);
+    expect(on.vmBuilds).toBe(1);
     expect(on.durableLog).toEqual(off.durableLog);
   });
 
