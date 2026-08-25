@@ -1,6 +1,6 @@
 import { WorkflowRuntimeError } from '@workflow/errors';
 import { type PromiseWithResolvers, withResolvers } from '@workflow/utils';
-import { envNumber } from '@workflow/world';
+import { envNumber } from '@workflow/world/env-config';
 import { STREAM_DRAIN_SYMBOL } from './symbols.js';
 
 /**
