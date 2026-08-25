@@ -39,10 +39,8 @@ import { version } from './version.js';
  * `main`. It is rewritten by external CI for branch-deployment testing.
  * Prefer `VERCEL_WORKFLOW_SERVER_URL` for deployment-time configuration.
  */
-// TEMPORARY: points at the world-vercel backend preview that emits the
-// terminal `payload-missing` frame this PR consumes. Revert to '' before merge.
 // biome-ignore format: External CI replaces only this line with a deployment URL that may exceed the formatter width.
-export const WORKFLOW_SERVER_URL_OVERRIDE = 'https://workflow-server-git-peter-s3-no-retry-404.vercel.sh';
+export const WORKFLOW_SERVER_URL_OVERRIDE = '';
 
 /**
  * HTTP methods that are safe to transparently re-issue inside the adapter.
