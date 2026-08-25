@@ -3115,11 +3115,13 @@ describe('workflowEntrypoint latency telemetry (ttfs / stso)', () => {
     expect(ttfs).toBeLessThanOrEqual(backdateMs + elapsed);
     expect(stso).toBeUndefined();
     // The attr detour does not end turbo: no resume invocation source
-    // exists, so the forced-optimistic fast path stays engaged.
+    // exists, so the forced-optimistic fast path stays engaged. The live VM
+    // also resumes after the attr write instead of replaying in a fresh VM.
     expect(optimizations).toEqual([
       'turbo',
       'lazyStepStart',
       'optimisticStart',
+      'retained',
     ]);
   });
 
