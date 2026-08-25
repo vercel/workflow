@@ -2624,6 +2624,10 @@ export function workflowEntrypoint(
                     }
 
                     let replayStart = 0;
+                    // Whether this pass was served by a retained VM session.
+                    // Set at the resume/replay decision below, before
+                    // `retainedSession` is reassigned for the next iteration.
+                    let servedByRetainedSession = false;
                     try {
                       // --- QuickJS VM engine dispatch ---
                       // The QuickJS engine (opt-in via WORKFLOW_VM=quickjs
@@ -2980,6 +2984,15 @@ export function workflowEntrypoint(
                       let workflowResult: WorkflowResumeResult = retainedSession
                         ? await resumeWorkflow(retainedSession, eventLog.events)
                         : { type: 'replay' };
+                      // A retained resume can still report back `{ type:
+                      // 'replay' }` (internal cache miss), in which case this
+                      // pass falls through to a full replay below and is not
+                      // a retained pass. The `workflow.run` span cannot say
+                      // this: it is tagged `retained` when it opens, before
+                      // the resume result is known.
+                      servedByRetainedSession =
+                        retainedSession !== null &&
+                        workflowResult.type !== 'replay';
 
                       if (workflowResult.type === 'replay') {
                         retainedSession = null;
@@ -3981,6 +3994,7 @@ export function workflowEntrypoint(
                           suspensionCreatedHooks:
                             err.hookCount > 0 || suspensionResult.hasHookEvents,
                           turbo,
+                          retained: servedByRetainedSession,
                         });
 
                         // Slot snapshot for the inline step_started claims: the
