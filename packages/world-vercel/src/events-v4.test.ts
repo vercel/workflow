@@ -346,7 +346,10 @@ describe('getWorkflowRunEventsV4 over HTTP', () => {
         {},
         { token: 'test-token', dispatcher: agent }
       )
-    ).rejects.toThrow();
+    ).rejects.toMatchObject({
+      name: 'WorkflowWorldError',
+      code: 'SCHEMA_VALIDATION',
+    });
     agent.assertNoPendingInterceptors();
   });
 
@@ -426,57 +429,38 @@ describe('getWorkflowRunEventsV4 over HTTP', () => {
         {},
         { token: 'test-token', dispatcher: agent }
       )
-    ).rejects.toThrow();
+    ).rejects.toMatchObject({
+      name: 'WorkflowWorldError',
+      code: 'SCHEMA_VALIDATION',
+    });
   });
 
-  it('throws when the stream ends without the end sentinel (truncated response)', async () => {
+  it.each([
+    'after a complete frame',
+    'inside a frame',
+  ])('leaves retrying a stream that ends %s to its caller', async (endPosition) => {
     const origin =
       WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
     const agent = new MockAgent();
     agent.disableNetConnect();
-
-    // A complete event frame but NO `{_end: 1}` sentinel — what a response
-    // truncated on a frame boundary looks like. Returning this as a
-    // successful page would silently drop events with hasMore=false.
-    const frames = encodeFrame(
+    const completeFrame = encodeFrame(
       {
         eventId: 'evnt_1',
         runId: 'wrun_1',
         eventType: 'run_created',
-        createdAt: '2026-06-10T00:00:00.000Z',
+        createdAt: CREATED_AT,
         eventData: {
           deploymentId: 'dpl_1',
           workflowName: 'workflow',
           input: null,
         },
       },
-      new Uint8Array(0)
+      new Uint8Array()
     );
-
-    agent
-      .get(origin)
-      .intercept({
-        path: '/api/v4/runs/wrun_1/events?limit=500',
-        method: 'GET',
-      })
-      .reply(200, frames, {
-        headers: { 'content-type': V4_FRAME_CONTENT_TYPE },
-      });
-
-    await expect(
-      getWorkflowRunEventsV4(
-        'wrun_1',
-        { limit: 500 },
-        { token: 'test-token', dispatcher: agent }
-      )
-    ).rejects.toThrow(/end-of-stream sentinel/);
-  });
-
-  it('resumes a truncated full stream after its last accepted event', async () => {
-    const origin =
-      WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
-    const agent = new MockAgent();
-    agent.disableNetConnect();
+    const responseBody =
+      endPosition === 'inside a frame'
+        ? completeFrame.slice(0, -1)
+        : completeFrame;
 
     agent
       .get(origin)
@@ -484,62 +468,19 @@ describe('getWorkflowRunEventsV4 over HTTP', () => {
         path: '/api/v4/runs/wrun_1/events?returnAll=true',
         method: 'GET',
       })
-      .reply(
-        200,
-        encodeFrame(
-          {
-            eventId: 'evnt_1',
-            runId: 'wrun_1',
-            eventType: 'run_created',
-            createdAt: CREATED_AT,
-            eventData: {
-              deploymentId: 'dpl_1',
-              workflowName: 'workflow',
-              input: null,
-            },
-          },
-          new Uint8Array()
-        ),
-        { headers: { 'content-type': V4_FRAME_CONTENT_TYPE } }
-      );
-    agent
-      .get(origin)
-      .intercept({
-        path: '/api/v4/runs/wrun_1/events?returnAll=true&cursor=eid%3Aevnt_1',
-        method: 'GET',
-      })
-      .reply(
-        200,
-        Buffer.concat([
-          encodeFrame(
-            {
-              eventId: 'evnt_2',
-              runId: 'wrun_1',
-              eventType: 'run_started',
-              createdAt: CREATED_AT,
-            },
-            new Uint8Array()
-          ),
-          encodeFrame(
-            { _end: 1, next: 'eid:evnt_2', hasMore: false },
-            new Uint8Array()
-          ),
-        ]),
-        { headers: { 'content-type': V4_FRAME_CONTENT_TYPE } }
-      );
-
-    const result = await getWorkflowRunEventsV4(
-      'wrun_1',
-      {},
-      { token: 'test-token', dispatcher: agent }
-    );
-
-    expect(result.events.map((event) => event.eventId)).toEqual([
-      'evnt_1',
-      'evnt_2',
-    ]);
-    expect(result.cursor).toBe('eid:evnt_2');
-    expect(result.hasMore).toBe(false);
+      .reply(200, responseBody, {
+        headers: { 'content-type': V4_FRAME_CONTENT_TYPE },
+      });
+    await expect(
+      getWorkflowRunEventsV4(
+        'wrun_1',
+        {},
+        { token: 'test-token', dispatcher: agent }
+      )
+    ).rejects.toMatchObject({
+      name: 'WorkflowWorldError',
+      code: 'TRANSPORT',
+    });
     agent.assertNoPendingInterceptors();
   });
 });
@@ -717,6 +658,50 @@ describe('v4 transport uses global fetch (observability)', () => {
 });
 
 describe('createWorkflowRunEventV4 over HTTP', () => {
+  it.each([
+    ['an empty body', () => new Response(), 'PARSE_ERROR'],
+    [
+      'malformed CBOR',
+      () => new Response(new Uint8Array([0xff, 0xfe, 0xfd])),
+      'PARSE_ERROR',
+    ],
+    [
+      'a body read failure',
+      () =>
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.error(new Error('socket closed'));
+            },
+          })
+        ),
+      'TRANSPORT',
+    ],
+  ])('classifies %s', async (_case, response, code) => {
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(response());
+
+    try {
+      await expect(
+        createWorkflowRunEventV4(
+          {
+            runId: 'wrun_1',
+            eventType: 'step_completed',
+            specVersion: 2,
+            correlationId: 'step_1',
+          },
+          { token: 'test-token' }
+        )
+      ).rejects.toMatchObject({
+        name: 'WorkflowWorldError',
+        code,
+      });
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
   it('POSTs to the /events/:eventType alias and decodes the response', async () => {
     const origin =
       WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';

@@ -4,7 +4,7 @@ import type { AnyEventRequest, CreateEventParams } from '@workflow/world';
 import { decode, encode } from 'cbor-x';
 import { ulid } from 'ulid';
 import { MockAgent } from 'undici';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   createWorkflowRunEvent,
   getWorkflowRunEvents,
@@ -1046,6 +1046,52 @@ describe('createWorkflowRunEvent response coercion', () => {
     agent.assertNoPendingInterceptors();
   });
 
+  it('classifies a run_started stream missing lifecycle events as a world schema error', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      new Response(
+        Buffer.concat([
+          encodeFrame(
+            {
+              eventId: 'evnt_1',
+              runId: 'wrun_1',
+              eventType: 'run_started',
+              createdAt: STARTED_AT,
+              specVersion: 5,
+              eventData: {},
+            },
+            new Uint8Array()
+          ),
+          encodeFrame(
+            { _end: 1, next: 'eid:evnt_1', hasMore: false },
+            new Uint8Array()
+          ),
+        ]),
+        {
+          headers: {
+            'content-type': V4_FRAME_CONTENT_TYPE,
+            'x-wf-max-events': '10000',
+          },
+        }
+      )
+    );
+
+    try {
+      await expect(
+        createWorkflowRunEvent(
+          'wrun_1',
+          { eventType: 'run_started', specVersion: 5 },
+          undefined,
+          { token: 'test-token' }
+        )
+      ).rejects.toMatchObject({
+        name: 'WorkflowWorldError',
+        code: 'SCHEMA_VALIDATION',
+      });
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
   it('threads the wait entity through to the EventResult', async () => {
     const agent = mockAgent();
     agent
@@ -1842,7 +1888,7 @@ describe('createWorkflowRunEvent hook_received replay preload', () => {
     agent.assertNoPendingInterceptors();
   });
 
-  it('rejects a truncated preload stream (no end sentinel)', async () => {
+  it('retries a truncated preload by repeating the idempotent POST', async () => {
     const agent = mockAgent();
     agent
       .get(ORIGIN)
@@ -1868,13 +1914,30 @@ describe('createWorkflowRunEvent hook_received replay preload', () => {
         ),
         { headers: { 'content-type': V4_FRAME_CONTENT_TYPE } }
       );
-
-    await expect(
-      createWorkflowRunEvent('wrun_1', hookReceivedRequest(), preloadParams, {
-        token: 'test-token',
-        dispatcher: agent,
+    agent
+      .get(ORIGIN)
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events/hook_received',
+        method: 'POST',
+        headers: { accept: V4_FRAME_CONTENT_TYPE },
       })
-    ).rejects.toThrow(/end-of-stream sentinel/);
+      .reply(200, hookReplayStreamResponse(), {
+        headers: {
+          'content-type': V4_FRAME_CONTENT_TYPE,
+          'x-wf-event-id': 'evnt_4',
+          'x-wf-max-events': '10000',
+        },
+      });
+
+    const result = await createWorkflowRunEvent(
+      'wrun_1',
+      hookReceivedRequest(),
+      preloadParams,
+      { token: 'test-token', dispatcher: agent }
+    );
+
+    expect(result.event?.eventId).toBe('evnt_4');
+    expect(result.events).toHaveLength(4);
     agent.assertNoPendingInterceptors();
   });
 
