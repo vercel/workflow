@@ -105,12 +105,14 @@ async function driveHandler(opts: {
   workflowCode: string;
   traceCarrier?: Record<string, string>;
   routeModuleBodyStartedAt?: number;
+  whileRunStartedPending?: () => Promise<void>;
 }) {
   const workflowRun = await makeRunningRun(opts.runId);
   const queuedMessages: any[] = [];
 
   const eventsCreate = vi.fn(async (_runId: string, data: any) => {
     if (data.eventType === 'run_started') {
+      await opts.whileRunStartedPending?.();
       return { run: workflowRun, events: [] as Event[] };
     }
     return {
@@ -246,6 +248,41 @@ describe('getWorkflowTraceMode', () => {
 });
 
 describe('workflowEntrypoint trace modes', () => {
+  it('compiles while run_started is loading, without evaluating early', async () => {
+    let observedOverlap = false;
+    await driveHandler({
+      runId: 'wrun_trace_compile_overlap',
+      workflowCode: simpleWorkflow,
+      whileRunStartedPending: async () => {
+        expect(
+          exporter
+            .getFinishedSpans()
+            .find((span) => span.name === 'workflow.bundle.evaluate')
+        ).toBeUndefined();
+        await vi.waitFor(() => {
+          expect(
+            exporter
+              .getFinishedSpans()
+              .find((span) => span.name === 'workflow.bundle.compile')
+          ).toBeDefined();
+        });
+        expect(
+          exporter
+            .getFinishedSpans()
+            .find((span) => span.name === 'workflow.bundle.evaluate')
+        ).toBeUndefined();
+        observedOverlap = true;
+      },
+    });
+
+    expect(observedOverlap).toBe(true);
+    expect(
+      exporter
+        .getFinishedSpans()
+        .find((span) => span.name === 'workflow.bundle.evaluate')
+    ).toBeDefined();
+  });
+
   it('linked (default): nests under the flow route context with a link to the run-origin context', async () => {
     const {
       workflowSpan,
