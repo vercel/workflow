@@ -1,4 +1,4 @@
-# Agent Instructions
+# Agent instructions
 
 **CRITICAL RULES:**
 - NEVER push directly to the `main` or `stable` branches
@@ -12,7 +12,7 @@ This repository contains the client-side SDK code for workflows, along with exam
 
 ## Architecture
 
-### Core Components
+### Core components
 
 - **packages/core**: Core workflow runtime and primitives (`@workflow/core`)
 - **packages/next**: Next.js integration (`@workflow/next`)
@@ -24,7 +24,7 @@ This repository contains the client-side SDK code for workflows, along with exam
 - **workbench/example**: Basic workflow examples using the CLI (aka "standalone mode")
 - **workbench/nextjs-turbopack**: Workflow examples using the Next.js integration
 
-### Workflow Execution Model
+### Workflow execution model
 
 Workflows consist of two types of functions:
 
@@ -33,9 +33,9 @@ Workflows consist of two types of functions:
 
 The framework uses compiler transformations to split workflow files into separate bundles for client, workflow, and step execution contexts.
 
-## Development Commands
+## Development commands
 
-### Workspace-level Commands
+### Workspace-level commands
 
 ```bash
 # Build all packages
@@ -60,7 +60,7 @@ pnpm typecheck
 pnpm clean
 ```
 
-### Core Package Testing
+### Core package testing
 
 ```bash
 # Test core functionality
@@ -127,18 +127,21 @@ VERCEL_OIDC_TOKEN="$(grep VERCEL_OIDC_TOKEN workbench/nextjs-turbopack/.env.loca
 pnpm run test:e2e
 ```
 
-### Event Log Race Repro
+### Event log race repro
 
 `packages/core/e2e/event-log-race-repro.test.ts` is a dedicated harness for
-`CORRUPTED_EVENT_LOG`. It drives three scenarios against one deployment:
+`CORRUPTED_EVENT_LOG`. It drives four scenarios against one deployment:
 `step-storm` and `hook-storm` (concurrent replays of a single run racing the
-per-branch watchdog — `hook-storm` is the production shape), plus a `hook-sleep`
-control that provides the calibration baseline. Any outcome other than
-`completed` fails the run, except `infra`, which means the harness could not
-reach the deployment.
+per-branch watchdog; `hook-storm` is the production shape), `blocked-branch`
+(each branch parks on a launch step before its hook race, so a woken replay can
+hold a log that predates a sibling's launch completion and take the ordinal that
+sibling's wait is about to get; it covers the class the wake-order fixes miss),
+plus a `hook-sleep` control that provides the calibration baseline. Any outcome
+other than `completed` fails the run, except `infra`, which means the harness
+could not reach the deployment.
 
-Run it locally against a locally started workbench app — no Vercel deployment,
-no credentials:
+Run it against a locally started workbench app. No Vercel deployment or
+credentials are required:
 
 ```bash
 pnpm run test:e2e:event-log-race-repro:local              # world-postgres
@@ -156,14 +159,14 @@ the container flags (`--skip-db-setup`, `--no-docker`, `--teardown`) do nothing
 under `--world local`, whose only state is a data directory the script clears
 before each run.
 
-Both worlds are worth running, and neither subsumes the other: world-postgres
+Run both worlds because neither subsumes the other: world-postgres
 arbitrates event slots inside one SQL statement, while world-local arbitrates
 them with an exclusive `link(2)` against a directory that two processes (the app
 and the harness) both write to. A slot race a transaction closes is not
 automatically closed by a filesystem.
 
 Scale is controlled entirely by `EVENT_LOG_RACE_REPRO_*` environment variables.
-Their defaults live only in `event-log-race-repro.test.ts` — neither the CI
+Their defaults live only in `event-log-race-repro.test.ts`; neither the CI
 workflow nor the local script defines a second copy. The default scale (14 runs)
 is a per-PR regression check, not a rate measurement; a clean run means "the
 storms did not trip it", not "the rate is below X". To soak for a *rate*, use the
@@ -183,62 +186,95 @@ preview does: on `main`, three 14-run passes failed 8 of their 18 `step-storm`
 attempts with `CORRUPTED_EVENT_LOG` while `hook-storm` and `hook-sleep` stayed
 clean, so the script exits non-zero. That is the harness working, not a broken
 setup, and it is why the local runner is the fast signal while a fix is in
-flight — at 14 runs a green CI job means "the storms did not trip it", nowhere
+flight. At 14 runs, a green CI job means "the storms did not trip it", nowhere
 near "the rate is below X".
 
 That is a *laptop* result, and the distinction matters: `CORRUPTED_EVENT_LOG`
 means the run finished the race, while `stuck` usually means it never got to
 run one. Two dispatches of the local lanes against unmodified `main` on GitHub's
 4-core runners scored, at the default scale, world-postgres 5-6 of 6 `step-storm`
-runs `stuck` at `runTimeoutMs` in both, and world-local 6 and 12 of 14 `stuck` —
-the *same* lane, the same commit, "6/14" and "12/14" one dispatch apart. Read a
+runs `stuck` at `runTimeoutMs` in both, and world-local 6 and 12 of 14 `stuck`.
+The *same* lane, the same commit, "6/14" and "12/14" one dispatch apart. Read a
 single local-lane number as a verdict on a PR and it will mislead you; read
 `pressure.resumesSent` and `progress.events` in the results JSON instead, which
 say whether the run was racing or starving.
 
 Two properties of the harness made that starvation self-sustaining, and both are
-now bounded — if you change either, know what you are giving up:
+now bounded. If you change either, know what you are giving up:
 
-* **The poke pump is capped** (`EVENT_LOG_RACE_REPRO_POKE_MAX`, default 64).
-  `step-storm`'s pressure is a wall-clock cadence, so a slow run collected *more*
-  out-of-band writes per unit of progress than a fast one, and each one appends a
-  `hook_received` that every later replay re-reads. Unbounded on a 4-core runner
-  that reached ~270 pokes per run and no run ever finished; a healthy 6-round run
-  sends 35-41, so the cap clips runaways only.
-* **Runs abandoned at `runTimeoutMs` are cancelled.** They used to keep replaying
+* **The poke pump decays** (`EVENT_LOG_RACE_REPRO_POKE_MAX`, default 64, then
+  `POKE_DECAY_FACTOR`, default 8). `step-storm`'s pressure is a wall-clock
+  cadence, so a slow run collected *more* out-of-band writes per unit of progress
+  than a fast one, and each one appends a `hook_received` that every later replay
+  re-reads. Unbounded on a 4-core runner it reached approximately 270 pokes per
+  run and no run ever finished. A healthy 6-round run sends 35-41 and never
+  reaches the budget. The pump slows rather than stopping, so a saturated run's
+  later rounds still get out-of-band writes; a hard stop left the back half of a
+  160s CI run unpressured. The lanes were never comparable on this axis anyway:
+  each Vercel resume pays a network round trip, so that lane's pump achieves an
+  effective 2.3s interval (35-44 pokes per run) where localhost runs the full
+  750ms, and the decayed rate is what brings the local lanes near it.
+* **Runs abandoned at `runTimeoutMs` are canceled.** They used to keep replaying
   in the same app process for the rest of the job. That is how world-local's
-  `hook-storm` came to report six `stuck` runs with `resumesSent: 0` — every one
+  `hook-storm` came to report six `stuck` runs with `resumesSent: 0`. Every one
   of them starved behind the previous scenario's six abandoned `step-storm` runs
   and never created a hook for the driver to resume, so the scenario measured
   nothing about hooks at all.
 
-One thing about a local run is unlike CI and is worth knowing before you read a
-result: in CI each replay gets its own Fluid invocation, while here every replay
+The local script also raises `EVENT_LOG_RACE_REPRO_RUN_TIMEOUT_MS` to 480000
+(export your own to override). A local lane runs the same storm about twice as
+slowly as the Vercel lane. Measured on 4-core runners at the default scale,
+`step-storm` takes 194-203s on world-local and 168-175s on world-postgres
+against Vercel's 85-100s, so the harness' 240000 default left the local lanes at
+approximately 83% of their own timeout, close enough that a slow runner turns a
+lane that reproduces into a lane full of `stuck`. It is the one scale knob the
+script sets, because it is the one whose meaning depends on everything sharing a
+process.
+
+One difference affects how you read a local result: in CI each replay gets its
+own Fluid invocation, while here every replay
 of every run shares one Next.js process. world-postgres gives that process (and
-the harness process) 50 embedded Graphile Worker slots each, and ~100 replays in
-one heap saturates GC — measured on a 12-core laptop, all 14 attempts came back
+the harness process) 50 embedded Graphile Worker slots each, and approximately
+100 replays in one heap saturates GC. Measured on a 12-core laptop, all 14
+attempts came back
 `stuck` with the server at 6.4 GB RSS and Postgres idle. The script therefore
 sets `WORKFLOW_POSTGRES_WORKER_CONCURRENCY=10` (override by exporting it) and
 raises the app's old-space limit (`--heap-mb`). If a local run reports `stuck`
 rather than `CORRUPTED_EVENT_LOG`, suspect the machine before the SDK.
 world-local saturates the same single process from its own in-process queue,
-which defaults to 1000 deliveries in flight, so the script holds it at the same
+which defaults to 1,000 deliveries in flight, so the script holds it at the same
 number via `WORKFLOW_LOCAL_QUEUE_CONCURRENCY`.
+
+What the local lanes are *not* is a throughput bug in the two Worlds. Under
+saturation world-local logged zero failed deliveries, zero handler errors and
+zero exhausted messages across three 14-run passes: its semaphore parks a
+message *before* the delivery fetch, so queue waiting never consumes the
+transport timeout and there is no retry amplification to find. It is a bounded
+FIFO doing what it says, and the ceiling it hits is one Node process serving
+what the Vercel lane spreads across Fluid instances. Two things about these
+Worlds are nonetheless worth fixing on their own merits, and neither is what
+made the lanes red: world-local defaults to **1000** in-flight deliveries (the
+comment above it says the limit exists to avoid overwhelming the process, and
+the repro script has to override it to 10), world-postgres to 50 embedded
+workers *per process*; and neither World has world-vercel's per-run replay
+serialization, which is itself opt-in there behind
+`WORKFLOW_SEQUENTIAL_REPLAYS` (vercel/workflow#2193), so a run's concurrent
+wakes each replay the whole log.
 
 world-local's storms come out clean far more often than world-postgres's, so the
 default scale says even less there: the corruption it does produce needs a
 `hook_received` to be staged and then rejected, which the harness reaches only
 in a run's terminal moments. Reach for a unit test in
 `packages/world-local/src/storage/` when a suspected filesystem race can be
-staged directly — it costs milliseconds and does not depend on the interleaving
+staged directly. It costs milliseconds and does not depend on the interleaving
 showing up.
 
 In CI the same harness runs from `.github/workflows/event-log-race-repro.yml`,
-triggered by adding the `event-log-race-repro` label to a PR (or by
-`workflow_dispatch`, whose inputs are the soak dial — raise `timeout-minutes` in
-that dispatch's branch if you raise `budget_ms`). Alongside the Vercel lane, the
+triggered by adding the `event-log-race-repro` label to a PR or by
+`workflow_dispatch`, whose inputs are the soak dial. Raise `timeout-minutes` in
+that dispatch's branch if you raise `budget_ms`. Alongside the Vercel lane, the
 workflow runs the local script against world-local and world-postgres as
-parallel lanes. Those two lanes are report-only — the local storms have red
+parallel lanes. Those two lanes are report-only because the local storms have red
 baselines at the default scale (see above), so they publish numbers rather than a
 verdict and fail only when the harness produced no result file at all; the Vercel
 lane remains the gate.
@@ -262,7 +298,7 @@ WORKFLOW_LOCAL_DATA_DIR=workbench/nextjs-turbopack/.next/workflow-data \
   pnpm wf inspect <run-id>
 ```
 
-### Example App Development
+### Example app development
 
 ```bash
 # Build workflow bundles for example app
@@ -273,7 +309,7 @@ cd workbench/example && pnpm workflow [command]
 cd workbench/example && pnpm wf [command]  # shorthand
 ```
 
-### Next.js App Development
+### Next.js app development
 
 ```bash
 # Start Next.js dev server with workflow support
@@ -286,7 +322,7 @@ cd workbench/nextjs-turbopack && pnpm build
 cd workbench/nextjs-turbopack && pnpm start
 ```
 
-## Key Workflow Concepts
+## Key workflow concepts
 
 **These are only relevant when writing code using the Workflow SDK**
 
@@ -296,7 +332,7 @@ cd workbench/nextjs-turbopack && pnpm start
 - Built-in retry semantics for step functions with `FatalError`/`RetryableError` controls
 - Standard JavaScript async patterns work: `Promise.all()`, `Promise.race()`, etc.
 
-## File Structure Conventions
+## File structure conventions
 
 **These are only relevant when writing code using the Workflow SDK**
 
@@ -305,22 +341,22 @@ cd workbench/nextjs-turbopack && pnpm start
 - Workflow files must contain `"use workflow"` or `"use step"` directives to be processed
 - Add `.swc` directory to `.gitignore` for SWC plugin cache artifacts
 
-## Package Manager
+## Package manager
 
 This project uses pnpm with workspace configuration. The required version is specified in `package.json#packageManager`.
 
-## Code Style
+## Code style
 
 - Uses Biome for formatting and linting
 - 2-space indentation, single quotes, trailing commas (ES5)
 - Import type enforcement enabled
 - Explicit `any` is discouraged (Biome's `noExplicitAny` rule is currently disabled); exhaustive dependencies warnings enabled
 
-## Local Checks vs. CI
+## Local checks vs. CI
 
-Linting, formatting, and typechecking (`pnpm lint`, `pnpm format`, `pnpm typecheck`) are all facets of the same static-quality gate, and CI runs them on every PR. Treat them as **advisory** while working locally: run them and fix obvious issues when it's convenient, but a failure in any of them should **not** block you from committing, pushing, or opening a PR. CI is the source of truth and will report anything that matters — don't get stuck iterating locally just to make these pass before handing off.
+Linting, formatting, and typechecking (`pnpm lint`, `pnpm format`, `pnpm typecheck`) are all facets of the same static-quality gate, and CI runs them on every PR. Treat them as **advisory** while working locally: run them and fix obvious issues when it's convenient, but a failure in any of them should **not** block you from committing, pushing, or opening a PR. CI is the source of truth and will report anything that matters. Don't get stuck iterating locally to make these pass before handing off.
 
-## Documentation Standards
+## Documentation standards
 
 - README.md files in each package must accurately reflect the current functionality and purpose of that package
 - READMEs should not contain outdated or incorrect information about package capabilities
@@ -328,34 +364,34 @@ Linting, formatting, and typechecking (`pnpm lint`, `pnpm format`, `pnpm typeche
 - Document every user-configurable environment variable in the docs.
 - When modifying skill files in `skills/`, always bump the `version` field in the frontmatter metadata
 
-### Docs Preview Links in PR Descriptions
+### Docs preview links in PR descriptions
 
 When a PR adds or updates docs pages (anything under `docs/content/`), add a "Docs Preview" section to the PR description with direct links to each changed page on the `workflow-docs` preview deployment:
 
-- Get the preview base URL from the `vercel[bot]` comment on the PR — use the Preview link from the `workflow-docs` project row (e.g. `https://workflow-docs-git-<branch-slug>.vercel.sh`). Don't construct the URL by hand; Vercel's branch-slug normalization is not a simple substitution.
-- Map content paths to routes: `docs/content/docs/v4/<path>.mdx` is served at `/docs/<path>` (v4 is the default/latest version) and `docs/content/docs/v5/<path>.mdx` at `/v5/docs/<path>`.
+- Get the preview base URL from the `vercel[bot]` comment on the PR. Use the Preview link from the `workflow-docs` project row (e.g. `https://workflow-docs-git-<branch-slug>.vercel.sh`). Don't construct the URL by hand because Vercel's branch-slug normalization is not a direct substitution.
+- Map content paths to routes: `docs/content/docs/v5/<path>.mdx` is served at `/docs/<path>` (v5 is the default/latest version) and `docs/content/docs/v4/<path>.mdx` at `/v4/docs/<path>` (v4 is the maintenance version).
 - When a change is scoped to a specific section of a page, link to its heading anchor (e.g. `/docs/foundations/hooks#checking-for-token-conflicts`) and verify the anchor matches a real heading in the MDX.
-- A simple table with one row per page (and one column per docs version, when both v4 and v5 were updated) works well.
-- The preview deployment sits behind deployment protection, so the links require Vercel team access — that's expected; include them anyway for reviewers.
+- A table with one row per page (and one column per docs version, when both v4 and v5 were updated) works well.
+- The preview deployment sits behind deployment protection, so the links require Vercel team access. This is expected; include them anyway for reviewers.
 
-## SWC Plugin
+## SWC plugin
 
 When modifying the SWC compiler plugin (`packages/swc-plugin-workflow`), you must also update the specification document at `packages/swc-plugin-workflow/spec.md` to reflect any changes to the transformation behavior.
 
-## Versioning & Release Strategy
+## Versioning & release strategy
 
 This repository uses a dual-branch release model with [changesets](https://github.com/changesets/changesets) for version management.
 
-### Branch Model
+### Branch model
 
-- **`main`** — Bleeding-edge / beta channel. Changesets are in pre-release mode (`beta` tag). Published packages get the `beta` npm dist-tag (e.g. `5.0.0-beta.3`).
-- **`stable`** — GA / production channel. Changesets are in regular mode. Published packages get the `latest` npm dist-tag (e.g. `4.2.1`).
+- **`main`**: Bleeding-edge / beta channel. Changesets are in pre-release mode (`beta` tag). Published packages get the `beta` npm dist-tag (e.g. `5.0.0-beta.3`).
+- **`stable`**: GA / production channel. Changesets are in regular mode. Published packages get the `latest` npm dist-tag (e.g. `4.2.1`).
 
 Both branches trigger the release workflow (`.github/workflows/release.yml`) on push. The changesets action creates a "Version Packages" PR on each branch when there are pending changesets.
 
 **Important:** Some directories are not fully maintained on the `stable` branch:
 
-- **`docs/`**: Only `docs/content/` is actively maintained on `stable` — the rest of the docs app is a minimal placeholder (documentation is deployed only from `main`). `docs/content/` is kept on `stable` because the markdown files are bundled into npm packages via `prepack` scripts.
+- **`docs/`**: Only `docs/content/` is actively maintained on `stable`; the rest of the docs app is a minimal placeholder (documentation is deployed only from `main`). `docs/content/` is kept on `stable` because the markdown files are bundled into npm packages via `prepack` scripts.
 - **`skills/`**: Not maintained on `stable` at all. Skill files are unrelated to npm packaging, so there is no reason to keep them in sync on the release branch.
 
 When backporting changes to `stable`, any conflicts involving docs app files (outside of `docs/content/`) or `skills/` files should be resolved by keeping the `stable` branch version (discarding the incoming change from `main`). Conflicts in `docs/content/` should be resolved normally. The backport GitHub Action handles this automatically.
@@ -364,13 +400,13 @@ When backporting changes to `stable`, any conflicts involving docs app files (ou
 
 Every Vercel project rooted in this repo sets `git.deploymentEnabled` to `false` for `changeset-release/main` in its `vercel.json`. **When you add a new Vercel project, add that key to its `vercel.json` too.**
 
-The changesets action force-pushes `changeset-release/main`, and it can point at exactly main's HEAD SHA. Vercel keeps one commit status per project per SHA, so a preview deployment of that branch overwrites the production deployment's status for the same commit — and `vercel/wait-for-deployment-action`, which reads the deployment ID out of that status, then hands a production e2e run a preview deployment ID, forking the run across environments.
+The changesets action force-pushes `changeset-release/main`, and it can point at exactly main's HEAD SHA. Vercel keeps one commit status per project per SHA, so a preview deployment of that branch overwrites the production deployment's status for the same commit. `vercel/wait-for-deployment-action`, which reads the deployment ID out of that status, then hands a production e2e run a preview deployment ID, forking the run across environments.
 
-Because those PRs have no deployment of their own, CI treats them specially: the Vercel e2e lanes in `tests.yml` run `vercel/wait-for-deployment-action` a second way — `environment: production` with `sha` pinned to the PR's base SHA — so they test main's production deployment and run as `production`. (The commit-status ID that action reads is unambiguous for main SHAs precisely because this repo no longer deploys `changeset-release/main`, the only branch that ever deployed a commit main also deployed.) The deployment-dependent jobs in `docs-checks.yml`, `tarballs-checks.yml`, and `benchmarks.yml` are skipped. Anything new that waits on a deployment needs the same treatment.
+Because those PRs have no deployment of their own, CI treats them specially: the Vercel e2e lanes in `tests.yml` run `vercel/wait-for-deployment-action` a second way, with `environment: production` and `sha` pinned to the PR's base SHA. They therefore test main's production deployment and run as `production`. (The commit-status ID that action reads is unambiguous for main SHAs precisely because this repo no longer deploys `changeset-release/main`, the only branch that ever deployed a commit main also deployed.) The deployment-dependent jobs in `docs-checks.yml`, `tarballs-checks.yml`, and `benchmarks.yml` are skipped. Anything new that waits on a deployment needs the same treatment.
 
 ### Changesets
 
-- `workflow` and `@workflow/core` use changesets' "fixed" versioning strategy — they always have the same version number
+- `workflow` and `@workflow/core` use changesets' "fixed" versioning strategy, so they always have the same version number
 - Every PR requires a changeset to be included before it will be merged
 - To check if one is needed, run `pnpm changeset status --since=main >/dev/null 2>&1 && echo "no changeset needed" || echo "changeset needed"`
 - Create a changeset using `pnpm changeset add`
@@ -379,13 +415,13 @@ Because those PRs have no deployment of their own, CI treats them specially: the
   - On `main` (pre-release mode), the bump type doesn't affect beta numbering (it always increments `beta.N`) but it **does matter** when changes are backported to `stable`
 - Remember to always build any packages that get changed before running downstream tests like e2e tests in the workbench
 - Remember that changes made to one workbench should propagate to all other workbenches. The workflows should typically only be written once inside the example workbench and symlinked into all the other workbenches
-- When writing changesets (via `pnpm changeset add` from the repo root, as noted above), keep the description terse — one sentence, or two at most. Try to make changesets that are specific to each modified package so they are targeted.
+- When writing changesets (via `pnpm changeset add` from the repo root, as noted above), keep the description terse: one sentence, or two at most. Try to make changesets that are specific to each modified package so they are targeted.
 
 ### Backporting to `stable`
 
-Backports are handled by a GitHub Action (`.github/workflows/backport.yml`) that runs on every push to `main`. For each commit, AI analyzes the change and decides whether to recommend a backport. The action **always opens a PR** against `stable` for human review — it never pushes directly. The changeset file is included in the cherry-pick, so the correct semver bump type is preserved on `stable`.
+Backports are handled by a GitHub Action (`.github/workflows/backport.yml`) that runs on every push to `main`. For each commit, AI analyzes the change and decides whether to recommend a backport. The action **always opens a PR** against `stable` for human review; it never pushes directly. The changeset file is included in the cherry-pick, so the correct semver bump type is preserved on `stable`.
 
-**Decision criteria.** `stable` is a maintenance branch and takes **stability fixes only** — feature work stays on `main`, however small or cleanly it would cherry-pick. AI is instructed to recommend a backport only for:
+**Decision criteria.** `stable` is a maintenance branch and takes **stability fixes only**. Feature work stays on `main`, however small or cleanly it would cherry-pick. AI is instructed to recommend a backport only for:
 
 - Bug fixes to functionality that already exists on `stable`
 - Correctness, data-loss, crash, hang, deadlock, and resource-leak fixes
@@ -399,13 +435,13 @@ AI is told to recommend AGAINST backporting anything else: new features and feat
 
 When in doubt, AI is told to decline: a missed fix can be forced through later via `workflow_dispatch`, while unwanted change on `stable` costs its users the stability they stayed behind for.
 
-**Manual override.** The workflow can be run manually from the GitHub Actions UI via `workflow_dispatch`, which accepts an optional `ref` input (a commit SHA on `main`; defaults to `main` HEAD) and an optional `model` input (the AI model used for AI-assisted decisions and conflict resolution, in `<provider>/<model>` form — defaults to the workflow's current default). Manual dispatch always forces a backport (skipping AI analysis). Use this when AI declined a backport that you want to ship to `stable`.
+**Manual override.** The workflow can be run manually from the GitHub Actions UI via `workflow_dispatch`, which accepts an optional `ref` input (a commit SHA on `main`; defaults to `main` HEAD) and an optional `model` input (the AI model used for AI-assisted decisions and conflict resolution, in `<provider>/<model>` form; defaults to the workflow's current default). Manual dispatch always forces a backport (skipping AI analysis). Use this when AI declined a backport that you want to ship to `stable`.
 
 **No-backport notification.** When AI decides against a backport, it leaves a comment on the source PR (if one is associated with the commit) explaining its reasoning, with instructions for forcing a backport via `workflow_dispatch`.
 
 **Conflict handling.** If the cherry-pick fails due to conflicts, the action first auto-resolves conflicts in directories that are not maintained on `stable` (docs app files under `docs/` except `docs/content/`, and any files under `skills/`) by keeping the `stable` branch version. It also auto-resolves `pnpm-lock.yaml` conflicts by re-running `pnpm install`. Any remaining conflicts are resolved using [opencode](https://opencode.ai) (AI-powered conflict resolution); the resulting backport PR notes that conflicts were AI-resolved and must be reviewed carefully. If AI cannot resolve the conflicts, the action comments on the original PR with instructions for manual resolution.
 
-### Pre-release Lifecycle
+### Pre-release lifecycle
 
 The `main` branch uses changesets' [pre-release mode](https://github.com/changesets/changesets/blob/main/docs/prereleases.md) to publish beta versions.
 
@@ -423,28 +459,67 @@ The `main` branch uses changesets' [pre-release mode](https://github.com/changes
 2. Exit pre-release mode: `pnpm changeset pre exit`
 3. The next "Version Packages" PR will publish the final stable version to npm
 
-## Common Patterns
+## Common patterns
 
-### Build-time Version Injection
+### Build-time version injection
 Use `genversion` to access package version at runtime. See `@workflow/core` and `@workflow/world-vercel` for examples:
 - Add `genversion` as devDependency
 - Update build script: `genversion --es6 src/version.ts && tsc`
 - Add `src/version.ts` to `.gitignore` and `turbo.json` outputs
 
-### Turbo Caching for Generated Files
+### Turbo caching for generated files
 When a build step generates files, add them to the package's `turbo.json` outputs array to ensure proper caching.
 
-## Architecture Notes
+## Architecture notes
 
-### executionContext Field
+### executionContext field
 The `executionContext` field on workflow runs is a flexible JSONB/CBOR object that can store arbitrary data without schema changes. It flows through all worlds (local, postgres, vercel).
 
-### Observability Data Hydration
+### Observability data hydration
 `packages/core/src/observability.ts` contains `hydrateResourceIO` which strips certain fields (like `executionContext`) before UI display. If you need to display data from stripped fields, extract it before the stripping occurs.
 
+### World packages must not hold mutable module state
+
+`@workflow/world-local` and `@workflow/world-vercel` are bundled into the host
+application's server build (see `VERCEL_WORLD_DEPENDENCY_PACKAGES` in
+`packages/next/src/index.ts`). Bundlers key module identity on
+`(resource, layer)`, and Next.js alone compiles `instrument`, app-route, `ssr`
+and `edge` as separate module graphs, so one process holds one copy of every
+module in these packages **per bundler layer**. A top-level `let`, or a `const`
+holding a `Map`, is per-copy state, not the process singleton it reads as. A
+duplicated mutex stops mutually excluding; a duplicated registry is a
+deterministic miss; duplicated ID generators can fork a sequence.
+
+Hold such state on the World instance where it is per-World, or on `globalThis`
+via `globalSingleton()` from `@workflow/utils` where it is genuinely
+process-wide. State that is deliberately per-copy needs a
+`// per-copy-ok: <why>` annotation. `scripts/lint/module-scope-state.mjs`
+enforces this across every published `packages/world-*`, run from
+`@workflow/utils`'s test suite (with a local mirror in each world package), so
+adding a new world package is covered automatically.
+
+Custom worlds loaded through `WORKFLOW_TARGET_WORLD` are deduped by Node's
+module cache and are safe today, but that is a property of how they are loaded,
+not of how they are written, and it changed for world-vercel in #3493. Keep them
+clean too. The author-facing version of this rule is in
+`docs/content/worlds/{v4,v5}/building-a-world.mdx`; keep both versions in sync.
+
+The sweep covers every package that ends up inside the host application's
+server build: all published `packages/world-*` (discovered at runtime, so a new
+world is covered the day it is added) plus `core`, `world`, `ai` and `nest`,
+which are named in `BUNDLED_RUNTIME_PACKAGES` in
+`packages/utils/src/module-scope-state.test.ts`. Adding a package that runs in
+the host server means adding it to that list: "does this run inside the host's
+server bundle" is a judgement, not something to infer from a directory name.
+
+Deliberately outside the sweep, because a single module graph makes the hazard
+impossible: `next`, `builders` and `sveltekit` (build-time code), `cli` (its own
+process), `web` and `web-shared` (the observability UI), `vitest` (the test
+runner's process), and private packages such as `world-sim`.
+
 ### Trace context propagation (world-vercel HTTP requests)
-Every outgoing HTTP request from `@workflow/world-vercel` to workflow-server (or the queue) MUST explicitly inject W3C trace context so the server can parent its spans to the caller and traces stay correlated end to end. Call `injectTraceContextIntoHeaders(headers)` (from `packages/world-vercel/src/telemetry.ts`) on the outgoing headers, inside the client span when one exists — `makeRequest` in `utils.ts` is the reference implementation. It is a no-op when no OpenTelemetry SDK is registered.
+Every outgoing HTTP request from `@workflow/world-vercel` to workflow-server (or the queue) MUST explicitly inject W3C trace context so the server can parent its spans to the caller and traces stay correlated end to end. Call `injectTraceContextIntoHeaders(headers)` (from `packages/world-vercel/src/telemetry.ts`) on the outgoing headers, inside the client span when one exists. `makeRequest` in `utils.ts` is the reference implementation. It is a no-op when no OpenTelemetry SDK is registered.
 
-Do **not** rely on ambient OpenTelemetry auto-instrumentation to do this: world-vercel's request paths use custom undici dispatchers / `global fetch`, which auto-instrumentation does not reliably hook. When you add a new request path or API version (e.g. a future v5 events API), wire the injection in the same place you build the request headers. The v4 events path (`fetchV4` in `events-v4.ts`) regressed cross-service correlation precisely by routing around `makeRequest` and skipping this step — workflow-server spans stopped joining the flow-route invocation trace until the injection was added back. Cover new paths with a test in `trace-propagation.test.ts`.
+Do **not** rely on ambient OpenTelemetry auto-instrumentation to do this: world-vercel's request paths use custom undici dispatchers / `global fetch`, which auto-instrumentation does not reliably hook. When you add a new request path or API version (e.g. a future v5 events API), wire the injection in the same place you build the request headers. The v4 events path (`fetchV4` in `events-v4.ts`) regressed cross-service correlation precisely by routing around `makeRequest` and skipping this step. Workflow-server spans stopped joining the flow-route invocation trace until the injection was added back. Cover new paths with a test in `trace-propagation.test.ts`.
 
-The same rule covers a request path that is not an HTTP request. A non-`fetch` transport must still open the client span callers read a trace through: use `withHttpClientSpan` (`http-core.ts`), the envelope `instrumentedFetch` is built on, so the span carries the same name, kind and attributes rather than a hand-rolled parallel shape. The WS events transport is the worked example — `postEventFrameOverWs` synthesizes an `http POST` span per frame and tags it `workflow.events.transport: 'ws'`, and the handshake gets its own `workflow.events.ws.connect` span (`ws-transport-spans.test.ts`). Adding a transport that writes events without one silently deletes the per-event view of a run.
+The same rule covers a request path that is not an HTTP request. A non-`fetch` transport must still open the client span callers read a trace through: use `withHttpClientSpan` (`http-core.ts`), the envelope `instrumentedFetch` is built on, so the span carries the same name, kind, and attributes rather than a hand-rolled parallel shape. The WS events transport is the worked example. `postEventFrameOverWs` synthesizes an `http POST` span per frame and tags it `workflow.events.transport: 'ws'`, and the handshake gets its own `workflow.events.ws.connect` span (`ws-transport-spans.test.ts`). Adding a transport that writes events without one silently deletes the per-event view of a run.

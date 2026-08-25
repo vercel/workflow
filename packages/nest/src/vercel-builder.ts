@@ -22,7 +22,7 @@ export interface NestVercelBuilderOptions {
   dirs?: string[];
   /**
    * Path (relative to workingDir) to the serverless entry module for the
-   * NestJS app. It must `export default` a Node request handler — e.g. the
+   * NestJS app. It must `export default` a Node request handler, e.g. the
    * Express instance from `app.getHttpAdapter().getInstance()`. Because the
    * NestJS app is compiled by `nest build` first, this typically imports the
    * compiled module from `dist/`.
@@ -57,7 +57,7 @@ export interface NestVercelBuilderOptions {
  *
  * The workflow side (the combined `flow.func` consumer registered with
  * `experimentalTriggers`, the `webhook/[token].func`, the public manifest and
- * routing) is produced by the shared {@link VercelBuildOutputAPIBuilder} —
+ * routing) is produced by the shared {@link VercelBuildOutputAPIBuilder},
  * exactly the same code path the Nitro/Next/etc. integrations use, so the
  * queue consumer is discovered by VQS the same way. This class only adds the
  * NestJS app itself as the catch-all function and merges the routes.
@@ -73,7 +73,7 @@ export class NestVercelBuilder extends VercelBuildOutputAPIBuilder {
     const dirs = options.dirs ?? ['src'];
     // Note: unlike the local-dev NestLocalBuilder (whose bundles run inside the
     // app's node_modules), the Build Output functions must be self-contained,
-    // so we do NOT externalize the target world — it is bundled into flow.func.
+    // so we do NOT externalize the target world; it is bundled into flow.func.
     super({
       ...createBaseBuilderConfig({
         workingDir,
@@ -98,7 +98,7 @@ export class NestVercelBuilder extends VercelBuildOutputAPIBuilder {
 
   override async build(): Promise<void> {
     // 1. Emit the workflow functions (flow.func + webhook + manifest + config)
-    //    via the shared builder — identical to every other integration.
+    //    via the shared builder, identical to every other integration.
     await super.build();
 
     // 2. Bundle the NestJS app as the catch-all function.
@@ -112,7 +112,7 @@ export class NestVercelBuilder extends VercelBuildOutputAPIBuilder {
   /**
    * Build the esbuild `external` list for the app function.
    *
-   * The build toolchain is always external — it is only reachable through
+   * The build toolchain is always external: it is only reachable through
    * WorkflowModule's lazy import when `skipBuild` is false (never on Vercel),
    * so bundling esbuild/SWC/native binaries would only bloat the function.
    *
@@ -130,7 +130,7 @@ export class NestVercelBuilder extends VercelBuildOutputAPIBuilder {
       // Native addons are externalized so esbuild does not fail on a `.node`
       // file it cannot bundle. NOTE: this builder does not trace/copy native
       // artifacts into the .func, so an app that actually loads a native addon
-      // is not yet supported on Vercel — see the limitation called out in the
+      // is not yet supported on Vercel; see the limitation called out in the
       // README's "Deploying to Vercel" section and the changeset.
       '*.node',
       ...resolveAbsentNestPeers(this.#workingDir),

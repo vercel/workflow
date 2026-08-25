@@ -13,7 +13,7 @@ export type MockResponseDescriptor =
 /**
  * Mock model that returns a fixed text response.
  * Same 'use step' pattern as real providers (anthropic, openai, etc.).
- * Only captures `text` (string) — fully serializable across step boundary.
+ * Only captures `text` (string), which is fully serializable across step boundary.
  */
 export function mockTextModel(text: string) {
   return async () => {
@@ -56,7 +56,7 @@ export function mockTextModel(text: string) {
 /**
  * Mock model that plays through a sequence of responses.
  * Determines which response to return by counting assistant messages in the prompt.
- * Only captures `responses` (array of plain objects) — fully serializable.
+ * Only captures `responses` (array of plain objects), which is fully serializable.
  */
 export function mockSequenceModel(responses: MockResponseDescriptor[]) {
   return async () => {

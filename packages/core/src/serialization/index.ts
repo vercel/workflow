@@ -1,5 +1,5 @@
 /**
- * Serialization module — public API.
+ * Serialization module: public API.
  *
  * Re-exports the mode-specific serialize/deserialize functions and
  * the codec/format/encryption abstractions.

@@ -1,11 +1,14 @@
 import { z } from 'zod';
 import { AttributeChangesSchema } from './attributes.js';
+import { getEventDataRefFields } from './event-metadata.js';
 import type { Hook } from './hooks.js';
 import type { StartedWorkflowRun, WorkflowRun } from './runs.js';
 import { SerializedDataSchema } from './serialization.js';
 import type { PaginationOptions, ResolveData } from './shared.js';
 import type { StartedStep, Step } from './steps.js';
 import type { Wait } from './waits.js';
+
+export * from './event-metadata.js';
 
 // Event type enum
 export const EventTypeSchema = z.enum([
@@ -31,6 +34,10 @@ export const EventTypeSchema = z.enum([
   // Wait lifecycle events
   'wait_created',
   'wait_completed',
+  // Sealed-log filler (specVersion >= 7): written ONLY by the World's backend
+  // to occupy a slot whose writer allocated it and died. Carries no workflow
+  // meaning; replay skips it (see EventsConsumer). Never user-creatable.
+  'noop',
 ]);
 export type EventType = z.infer<typeof EventTypeSchema>;
 
@@ -87,59 +94,6 @@ export function isTerminalStepEventType(
   eventType: string
 ): eventType is TerminalStepEventType {
   return TERMINAL_STEP_EVENT_TYPES.includes(eventType as TerminalStepEventType);
-}
-
-/**
- * Groups event types into the classes a replay tracks per entity: the entity
- * named by the event's `correlationId`, or the run itself for run events,
- * which carry none.
- *
- * Types that share a class are the mutually exclusive outcomes of one
- * decision, so the log records the class once and the first event of it is the
- * one that counts: a step either completes or fails.
- *
- * Classes are independent of each other. A step whose result is in the log has
- * still recorded exactly one `step_created`, and can still record another
- * `step_started` if an attempt is running somewhere. What a class bounds is
- * which events can be *ignored*: a replay may pass over an event whose class
- * it already recorded for that entity and which no consumer wants (see
- * `EventsConsumer`), and only then.
- *
- * Note the omissions, all of them types a mapping would be dead weight for.
- * `hook_received` and `hook_conflict` are deliveries whose consumer subscribes
- * lazily, `attr_set` is written on every attribute write, and `run_created`
- * precedes every replay. The terminal run types are absent for a different
- * reason: recording a class requires a consumer to take an event of it, and no
- * consumer takes `run_completed` / `run_failed` / `run_cancelled` — the runtime
- * exits before replaying the body once the log holds one, so they never reach a
- * consumer at all. An entry for them could never match.
- */
-const ENTITY_EVENT_CLASS_BY_TYPE = {
-  step_created: 'step_created',
-  step_started: 'step_started',
-  step_retrying: 'step_retrying',
-  step_completed: 'step_terminal',
-  step_failed: 'step_terminal',
-  wait_created: 'wait_created',
-  wait_completed: 'wait_completed',
-  hook_created: 'hook_created',
-  hook_disposed: 'hook_disposed',
-  run_started: 'run_started',
-} as const satisfies Partial<Record<EventType, string>>;
-
-export type EntityEventClass =
-  (typeof ENTITY_EVENT_CLASS_BY_TYPE)[keyof typeof ENTITY_EVENT_CLASS_BY_TYPE];
-
-/**
- * The per-entity class `eventType` belongs to, or `undefined` when it belongs
- * to none. See {@link ENTITY_EVENT_CLASS_BY_TYPE}.
- */
-export function entityEventClass(
-  eventType: string
-): EntityEventClass | undefined {
-  return (
-    ENTITY_EVENT_CLASS_BY_TYPE as Record<string, EntityEventClass | undefined>
-  )[eventType];
 }
 
 const HookLifecycleEventTypeSchema = EventTypeSchema.extract([
@@ -209,53 +163,6 @@ export function isChildEntityCreationEventType(
 }
 
 /**
- * Field within eventData that carries the opaque user payload for event types
- * that have one. V4 worlds split this field into the wire body while keeping
- * the remaining eventData fields in metadata.
- */
-export const EVENT_DATA_PAYLOAD_FIELD_BY_EVENT_TYPE = {
-  run_created: 'input',
-  run_started: 'input',
-  run_completed: 'output',
-  run_failed: 'error',
-  step_created: 'input',
-  step_started: 'input',
-  step_completed: 'result',
-  step_failed: 'error',
-  step_retrying: 'error',
-  hook_created: 'metadata',
-  hook_received: 'payload',
-} as const satisfies Partial<Record<EventType, string>>;
-
-export type EventDataPayloadField =
-  (typeof EVENT_DATA_PAYLOAD_FIELD_BY_EVENT_TYPE)[keyof typeof EVENT_DATA_PAYLOAD_FIELD_BY_EVENT_TYPE];
-
-/**
- * Fields within eventData that hold ref/payload data per event type.
- * When resolveData is 'none', only these fields are stripped — all other
- * metadata (stepName, workflowName, etc.) is preserved.
- */
-export const EVENT_DATA_REF_FIELDS = Object.fromEntries(
-  Object.entries(EVENT_DATA_PAYLOAD_FIELD_BY_EVENT_TYPE).map(
-    ([eventType, field]) => [eventType, [field]]
-  )
-) as Record<string, readonly EventDataPayloadField[]>;
-
-export function getEventDataRefFields(eventType: string): readonly string[] {
-  return EVENT_DATA_REF_FIELDS[eventType] ?? [];
-}
-
-export function getEventDataPayloadField(
-  eventType: string
-): EventDataPayloadField | undefined {
-  return (
-    EVENT_DATA_PAYLOAD_FIELD_BY_EVENT_TYPE as Partial<
-      Record<string, EventDataPayloadField>
-    >
-  )[eventType];
-}
-
-/**
  * Strip ref/payload fields from eventData based on resolveData setting.
  * When resolveData is 'none', removes only large data fields (refs) from
  * eventData while preserving metadata like stepName, workflowName, etc.
@@ -292,7 +199,7 @@ export function stripEventDataRefs(
 // TODO: Event data on all specific event schemas can actually be undefined,
 // as the world may omit eventData when resolveData is set to 'none'.
 // Changing the type here will mainly improve type safety for o11y consumers.
-// Note: specVersion is optional for backwards compatibility with legacy data in storage,
+// Note: specVersion is optional for backward compatibility with legacy data in storage,
 // but is always sent by the runtime on new events.
 export const BaseEventSchema = z.object({
   eventType: EventTypeSchema,
@@ -332,7 +239,7 @@ const stepLatencyTelemetryFields = {
   rsfs: z.number().optional(),
   // Synchronous workflow-function replay duration of only the FINAL replay
   // pass within the rsfs window (the pass that scheduled the first step),
-  // excluding awaited network I/O — not accumulated across earlier
+  // excluding awaited network I/O. Not accumulated across earlier
   // pre-first-step passes, so it is not "the replay portion of rsfs". Only
   // present alongside rsfs, and only for the run's first step.
   finalSchedulingReplay: z.number().optional(),
@@ -415,7 +322,7 @@ const StepStartedEventSchema = BaseEventSchema.extend({
       // handler is executing this step's body inline. Stamped on the lazy
       // step_started (and re-stamped on an owner-recovery bare start) so
       // that a wake replay can tell "this attempt is in flight in a live
-      // invocation" apart from "this attempt died with its process" — the
+      // invocation" apart from "this attempt died with its process": the
       // owner's queue message doubles as the liveness lease (a crash means
       // the queue redelivers that same messageId, which is allowed to
       // re-execute). Ownership derives from the step's LATEST step_started:
@@ -496,6 +403,25 @@ const HookConflictEventSchema = BaseEventSchema.extend({
   }),
 });
 
+/**
+ * Sealed-log filler event (specVersion >= 7). Written ONLY by the World's
+ * backend when it seals a slot whose writer allocated the position and died
+ * before committing (see `SPEC_VERSION_SUPPORTS_SEALED_LOG`). It occupies its
+ * slot, so density arithmetic and cursors count it, but carries no workflow
+ * meaning: replay steps over it without delivering it to any consumer and
+ * without advancing the deterministic clock. NOT user-creatable, and absent
+ * from `CreateEventSchema` for that reason.
+ */
+const NoopEventSchema = BaseEventSchema.extend({
+  eventType: z.literal('noop'),
+  eventData: z
+    .object({
+      sealed: z.boolean().optional(),
+    })
+    .passthrough()
+    .optional(),
+});
+
 const WaitCreatedEventSchema = BaseEventSchema.extend({
   eventType: z.literal('wait_created'),
   correlationId: z.string(),
@@ -560,7 +486,7 @@ const RunCreatedEventSchema = BaseEventSchema.extend({
      * The run's X25519 public key (base64), stamped by SDKs that support
      * sealed (`encp`) envelopes. Persisted onto the run entity so that
      * cross-run writers can seal payloads to this run without holding its
-     * symmetric key. Not secret — see `WorkflowRunBaseSchema`.
+     * symmetric key. Not secret. See `WorkflowRunBaseSchema`.
      */
     encryptionPublicKey: z.string().optional(),
   }),
@@ -690,10 +616,11 @@ const AllEventsSchema = z.discriminatedUnion('eventType', [
   // Wait lifecycle events
   WaitCreatedEventSchema,
   WaitCompletedEventSchema,
+  NoopEventSchema, // World-only: sealed-log filler for an abandoned slot
 ]);
 
 // Server response includes runId, eventId, and createdAt
-// specVersion is optional in database for backwards compatibility
+// specVersion is optional in database for backward compatibility
 export const EventSchema = AllEventsSchema.and(
   z.object({
     runId: z.string(),
@@ -787,7 +714,7 @@ export interface CreateEventParams {
   resumePayloadDigest?: string;
   /**
    * Marks a `step_created` create as the queue consumer's re-ensure of a
-   * resilient step dispatch (a step message carrying `stepInput` — see
+   * resilient step dispatch (a step message carrying `stepInput`, see
    * `WorkflowInvokePayload.stepInput`): the producer's direct write was
    * parallelized with the queue publish and may have failed. Only meaningful
    * for `step_created`.
@@ -799,9 +726,9 @@ export interface CreateEventParams {
    * this flag to narrow it: refuse the re-ensure (world-vercel surfaces the
    * backend's 410 as `RunExpiredError`, which the consumer treats as "nothing
    * left to execute" and acks the message) when it has recorded a refusal for
-   * this correlation id and no step entity exists. Best-effort by nature — a
+   * this correlation id and no step entity exists. Best-effort by nature (a
    * marker written at refusal time cannot be ordered before the redelivery it
-   * is meant to stop — so it hardens, and does not close, the window. Worlds
+   * is meant to stop), so it hardens, and does not close, the window. Worlds
    * may ignore this flag entirely.
    */
   viaStepDispatch?: boolean;
@@ -816,16 +743,16 @@ export interface CreateEventParams {
   computeInstanceId?: string;
   /**
    * How many events the writer held in its loaded log when it decided to write
-   * this one — equivalently, the slot it expects to land on minus one. Sent by
+   * this one: equivalently, the slot it expects to land on minus one. Sent by
    * every replay-context create; omitted by callers with no loaded log to be
    * stale against.
    *
    * A World's slots are dense and 1-based (see `Storage.events`), so a count
    * and a position are the same number. An id that is not a position does not
-   * produce a count here — it throws, since the runtime cannot state a
+   * produce a count here: it throws, since the runtime cannot state a
    * snapshot for a log it cannot place. Such a World attempts
    * `eventCount + 1`, and on contention **bumps** to the next free slot and
-   * commits there anyway — a stale count never rejects a write. What it does
+   * commits there anyway: a stale count never rejects a write. What it does
    * instead is report: when the committed slot is higher than the one asked
    * for, the events occupying the skipped slots come back on the success
    * response in {@link EventResult.events} / `cursor` / `hasMore`, so the
@@ -863,7 +790,7 @@ export interface CreateEventParams {
   /**
    * Inline-delta optimization (opt-in). When set, the World MAY return,
    * on the resulting {@link EventResult}, the first page of events written
-   * strictly after this cursor (via `events`/`cursor`/`hasMore`) — the
+   * strictly after this cursor (via `events`/`cursor`/`hasMore`): the
    * same page an `events.list({ cursor: sinceCursor, sortOrder: 'asc' })`
    * call would return immediately after this write. Outside turbo mode the
    * runtime sets this on every write it makes from the orchestrator loop
@@ -871,7 +798,7 @@ export interface CreateEventParams {
    * carries the log forward and the loop reads it back for free: instead of
    * re-reading its own just-written events (and any events interleaved
    * in-band, such as `hook_received`), it consumes the authoritative delta
-   * the write already had to compute. Turbo mode does not set it — the
+   * the write already had to compute. Turbo mode does not set it: the
    * point there is to keep the first invocation's writes as cheap as
    * possible, and it has no loaded log to extend.
    *
@@ -882,7 +809,7 @@ export interface CreateEventParams {
    * `hasMore: true` rather than paginating to exhaustion. The runtime
    * consumes that page and continues from its cursor, so it never reads the
    * returned prefix again.
-   * Returning these fields at all is OPTIONAL — a World that omits them is
+   * Returning these fields at all is OPTIONAL: a World that omits them is
    * fully supported; the runtime falls back to `events.list`. This
    * preserves the same divergence guarantees as the fetch path because the
    * delta is computed atomically against the same log the fetch would read.
@@ -894,7 +821,7 @@ export interface CreateEventParams {
    * (`events`/`cursor`/`hasMore`) so the runtime can skip its initial
    * `events.list`. The turbo first invocation backgrounds `run_started`
    * purely as a write barrier and never reads that preload, so it sets this
-   * to tell the World to skip the wasted list+resolve — trimming the
+   * to tell the World to skip the wasted list+resolve, trimming the
    * `run_started` round-trip that the chained first `step_started` waits on.
    * A World that ignores it (or doesn't preload) remains fully correct: the
    * runtime falls back to `events.list` whenever it actually needs the log.
@@ -906,7 +833,7 @@ export interface CreateEventParams {
    */
   skipPreload?: true;
   /**
-   * Replay-log preload opt-in (advisory) — the `hook_received` dual of
+   * Replay-log preload opt-in (advisory): the `hook_received` dual of
    * {@link skipPreload}. Set only by the queue consumer's idempotent
    * `hook_received` re-ensure on a lazy hook resume (alongside
    * {@link resumeId} + {@link resumePayloadDigest}). A World MAY return the
@@ -916,15 +843,15 @@ export interface CreateEventParams {
    * `run_started` write and the initial `events.list`.
    *
    * The runtime trusts a returned preload as replay input ONLY when all of
-   * the following hold — a World that cannot guarantee them should return
-   * its normal {@link EventResult} instead:
+   * the following hold (a World that cannot guarantee them should return
+   * its normal {@link EventResult} instead):
    *
    * - `events` is the COMPLETE log with `hasMore: false` (the runtime has no
    *   cursor-continuation machinery on this path; a bounded page is
    *   rejected).
    * - `cursor` is a valid non-null resume point matching `events.list`
    *   semantics (present even on the final page).
-   * - `run` (with `run.startedAt`) and `maxEvents` are present — this
+   * - `run` (with `run.startedAt`) and `maxEvents` are present: this
    *   response plays `run_started`'s role, including the event-ceiling
    *   handshake.
    * - The log contains `run_created`, `run_started`, and the canonical
@@ -935,7 +862,7 @@ export interface CreateEventParams {
    *   omitted from the replay input.
    *
    * Anything less and the runtime observes that no usable replay preload
-   * came back and falls back to the existing `run_started` setup — a World
+   * came back and falls back to the existing `run_started` setup. A World
    * that ignores the param entirely remains fully correct. Only meaningful
    * for `hook_received`; ignored for other event types. Producer-side
    * `resumeHook()` must not set it.
@@ -965,7 +892,7 @@ export type EventResult<T extends EventType = EventType> = {
    * step-creation data atomically *created* the step on this call (the
    * caller won the create-claim), as opposed to transitioning a step that
    * already existed. The owned-inline runtime path uses this as the
-   * exactly-once ownership signal — it runs the step body inline only when
+   * exactly-once ownership signal: it runs the step body inline only when
    * it created the step, so a concurrent handler that lost the create race
    * (and gets `EntityConflictError`/skipped) never double-executes. Absent
    * (undefined) on the legacy path and from older servers/worlds, which is
@@ -993,7 +920,7 @@ export type EventResult<T extends EventType = EventType> = {
        * - On any response whose committed slot came out higher than the one
        *   {@link CreateEventParams.eventCount} asked for:
        *   the events occupying the slots that were skipped over, in slot
-       *   order. This is the "report" half of bump-and-report — the write
+       *   order. This is the "report" half of bump-and-report: the write
        *   succeeded, and these are the events the writer had not seen when it
        *   decided to make it.
        */
@@ -1019,7 +946,7 @@ export type EventResult<T extends EventType = EventType> = {
 
 /**
  * One event of a batch write ({@link Storage.events.createBatch}), in request
- * order — which is the order the events land in the run's log.
+ * order, which is the order the events land in the run's log.
  */
 export interface BatchEventRequest {
   /** The event, same discriminated union the single `create` takes. */
@@ -1027,7 +954,7 @@ export interface BatchEventRequest {
   /**
    * Client event time for this event. Under slot identity this is the source
    * of the durable event's `createdAt` (a slot id carries no time), so the
-   * timestamp a replay observes is the one the writer chose — set it to the
+   * timestamp a replay observes is the one the writer chose: set it to the
    * instant the event logically occurred.
    */
   occurredAt?: Date;
@@ -1065,7 +992,7 @@ export interface CreateEventBatchParams {
  * - rejection → the status code and error code the single create would have
  *   failed with, so callers reuse their single-path conflict handling per
  *   event. A `409`/`conflict` means the entity was not in the prior state
- *   the event requires — most commonly because an earlier delivery already
+ *   the event requires, most commonly because an earlier delivery already
  *   applied the same event, but possibly because the entity reached a
  *   DIFFERENT state (e.g. `step_completed` conflicting because the step
  *   failed). A 409 alone does not prove the equivalent effect was applied;
@@ -1077,10 +1004,10 @@ export interface CreateEventBatchParams {
  * can return a mix of 200s and 409s from one call.
  *
  * Retry semantics: a transport retry of a committed batch converges to
- * per-event 409s ONLY for entity-conditioned events — creates and terminal
+ * per-event 409s ONLY for entity-conditioned events: creates and terminal
  * transitions. A standalone bare `step_started` or a `step_retrying`
  * re-patches its step on every attempt and does NOT converge, and
- * `hook_received` appends a new row per attempt — `world-vercel` rejects
+ * `hook_received` appends a new row per attempt, so `world-vercel` rejects
  * `hook_received` in a batch outright and only auto-retries batches whose
  * every event is retry-convergent.
  *
@@ -1137,7 +1064,7 @@ export interface ListEventsByCorrelationIdParams {
    * run, not globally: a slot-numbered run counts its own steps and waits, so
    * `step_…001` names the first step of *every* such run. Naming the run is
    * what makes the answer that run's events, and it is what makes the
-   * pagination cursor unambiguous — `(runId, eventId)` is a key where an
+   * pagination cursor unambiguous: `(runId, eventId)` is a key where an
    * event id alone is not.
    */
   runId: string;

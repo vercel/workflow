@@ -3,14 +3,14 @@
  *
  * The workflow orchestrator runs from a *code string* inside a VM
  * (`workflowEntrypoint(workflowCode)`), so there is no way to hand the runtime
- * a live function reference — a scenario needs the same compiled combined
+ * a live function reference. A scenario needs the same compiled combined
  * bundle a real deployment would serve. This mirrors what `@workflow/vitest`
  * does in its global setup, with one addition: the build's manifest is
  * returned, which is how a scenario can name a workflow by its plain function
  * name instead of importing a client-transformed reference.
  *
  * This module reaches SWC and esbuild through `@workflow/builders`, so it is
- * deliberately *not* part of the package's main entry — see `load.ts`. Import
+ * deliberately *not* part of the package's main entry. See `load.ts`. Import
  * it as `@workflow/world-sim/build`, and only from something that compiles.
  */
 
@@ -38,7 +38,7 @@ export interface SimBundle {
   /**
    * Workflow function name → machine workflow id, flattened from the manifest.
    * Ambiguous short names (same function name in two files) are omitted in
-   * favour of their `<file>#<fn>` keys, which are always present.
+   * favor of their `<file>#<fn>` keys, which are always present.
    */
   workflowIds: Record<string, string>;
 }
@@ -70,7 +70,7 @@ class SimBuilder extends BaseBuilder {
       format: 'esm',
       bundleFinalOutput: false,
       externalizeNonSteps: true,
-      // Nothing downstream bundles this output — Node imports it directly — so
+      // Nothing downstream bundles this output (Node imports it directly), so
       // project-local imports have to be inlined rather than left as bare `.ts`
       // specifiers.
       bundleTransitiveLocalStepDependencies: true,

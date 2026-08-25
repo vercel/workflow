@@ -23,6 +23,7 @@ import {
   runTerminalMarkerPath,
 } from './helpers.js';
 import { deleteAllHooksForRun } from './hooks-storage.js';
+import { signalRunTerminal } from './run-status-signal.js';
 
 /**
  * Terminal-run guard + publish for a legacy `hook_received`, mirroring the
@@ -57,7 +58,7 @@ async function publishLegacyHookReceived(
     }
     const promoted = await promoteExclusive(stagedPath, eventPath);
     if (promoted !== 'linked') {
-      // 'missing': a terminal transition reaped the staged file — the
+      // 'missing': a terminal transition reaped the staged file, the
       // atomic loss of the arbitration. 'exists' cannot happen for a
       // freshly generated ULID; treat it the same way rather than report
       // a publish that did not happen.
@@ -129,6 +130,11 @@ export async function handleLegacyEvent(
       };
       const runPath = resolveWithinBase(basedir, 'runs', `${runId}.json`);
       await writeJSON(runPath, run, { overwrite: true });
+      // Wake `runs.waitForTerminalStatus` waiters. This shortcut writes the
+      // run directly rather than through `writeRunUnderLifecycleLock`, so
+      // without this a legacy run's cancellation is only noticed by the
+      // backstop re-read.
+      signalRunTerminal(runId);
       await deleteAllHooksForRun(basedir, runId);
       // Return without event (legacy behavior skips event storage)
       // Type assertion: EventResult expects WorkflowRun, filterRunData may return WorkflowRunWithoutData
@@ -142,7 +148,7 @@ export async function handleLegacyEvent(
     case 'hook_received': {
       // Legacy: Store event only (no entity mutation)
       // - wait_completed: for replay purposes
-      // - hook_received: hooks exist via old system, just record the event
+      // - hook_received: hooks exist via the old system; record the event
       const eventId = `evnt_${monotonicUlid()}`;
       const now = new Date();
       const event: Event = {

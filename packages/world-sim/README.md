@@ -10,7 +10,7 @@ real World they are races:
 > durable but *before* the workflow gets control back?
 
 In `@workflow/world-local` you would answer that by polling in a loop and
-hoping. Here you state it, and it is what happens — every time, byte for byte.
+hoping. Here you state it, and it happens the same way every time, byte for byte.
 
 <!-- @skip-typecheck: four lines out of a scenario's `script`, so `sim` is
 unbound here. The same calls appear in full, type-checked form further down. -->
@@ -24,7 +24,7 @@ await wf.release();
 
 The resulting event stream:
 
-```
+```text
   0     +0ms  wf                run_created       approvalWorkflow input=<17B>
   1     +0ms  wf                run_started
   2     +0ms  wf                hook_created     hook_…KX  token="approval:doc-1"
@@ -39,13 +39,13 @@ The resulting event stream:
 The second column names the writer. The indented `hook_received` is written by
 the scenario (`ext`) from *inside* the `events.create` call that committed
 `step_started`, while the orchestrator is held in it. Advance a different
-writer instead — `sim.writer.step('reserveInventory')` — and the same workflow,
-same input and same output produce a different log, which is the point.
+writer instead, such as `sim.writer.step('reserveInventory')`, and the same workflow,
+same input, and same output produce a different log, which is the point.
 
 ---
 
-For how it is built — the interception model, the store's guards, the
-determinism machinery, and the test status — see [DESIGN.md](./DESIGN.md).
+For details about the interception model, the store's guards, the determinism
+machinery, and the test status, see [DESIGN.md](./DESIGN.md).
 
 ---
 
@@ -59,19 +59,19 @@ the awaiting caller is resumed. Since the World API is the only channel between
 the runtime and the outside, that is a complete set of injection points.
 
 **2. Nothing happens on its own.** `queue()` records a message and returns; it
-never dispatches. The scheduler picks the next message — always the minimum by
-`(readyAt, enqueueSeq)` — hands it to the flow handler, and waits for it to
+never dispatches. The scheduler picks the next message (always the minimum by
+`(readyAt, enqueueSeq)`), hands it to the flow handler, and waits for it to
 finish before looking again. One delivery is in flight at a time.
 
 **3. Time is a number the scheduler assigns.** `sleep('30d')` becomes a queue
 message dated 30 days out; delivering it means moving the clock, not waiting.
 `Date.now()` and `new Date()` read the virtual clock while a scenario runs
-(timers are left alone — the runtime uses zero-delay macrotasks as ordering
+(timers are left alone because the runtime uses zero-delay macrotasks as ordering
 barriers, and faking those would change the interleavings we came to observe).
 
 Consequence: **scenarios terminate**. A month-long sleep costs microseconds. A
 hook nobody delivers drains the queue and is reported as a *stall*, naming the
-token that was never sent, instead of hanging. Delivery count, virtual span and
+token that was never sent, instead of hanging. Delivery count, virtual span, and
 wall time are all capped as a backstop.
 
 ## Consistency checking
@@ -81,7 +81,7 @@ re-derived from it. `checkInvariants` verifies, among others:
 
 | Rule | What it means |
 | --- | --- |
-| `log.monotonic-order` | Append order equals `(createdAt, eventId)` sort order — replay sees what happened |
+| `log.monotonic-order` | Append order equals `(createdAt, eventId)` sort order, so replay sees what happened |
 | `run.created-first`, `run.created-once`, `run.terminal-is-last` | Run lifecycle shape (a step already running may still close out after termination) |
 | `step.no-restart-after-terminal`, `step.terminal-once` | A finished step stays finished |
 | `step.entity-matches-log`, `step.attempt-matches-log`, `run.entity-matches-log` | Materialized rows are a pure fold of the log |
@@ -121,24 +121,24 @@ every *validation* is kept, because rejections are the observable contract.
 
 ## World behaviors
 
-**Event log** — positions are assigned at commit. Two things follow:
+**Event log:** Positions are assigned at commit. Two things follow:
 
 - Log order is commit order. Nothing is inserted behind a row a reader has
   already seen, so no two reads can disagree about the past.
-- Every read is a *prefix* of the log. A read can be short — missing a write
-  that has not committed yet — but never self-inconsistent. Staleness collapses
+- Every read is a *prefix* of the log. A read can be short, missing a write
+  that has not committed yet, but never self-inconsistent. Staleness collapses
   into lag, and lag is what an optimistic-concurrency fence can see; a hole is
   what it cannot.
 
 `withholdNextEvent` models a lagging replica by truncating the visible tail;
 `StaleRead` reports `{ eventId, hidden, truncated }` for that read.
 
-**Precondition fence** (`preconditionGuard: true`) — rejects a write whose
+**Precondition fence** (`preconditionGuard: true`): Rejects a write whose
 snapshot is strictly older than the newest externally originated event. It is a
 high-water mark, so it sees a log truncated at the end and is blind to a hole in
 the middle.
 
-**Count guard** (`countGuard: true`) — adds the other half: how many events the
+**Count guard** (`countGuard: true`): Adds the other half, which is how many events the
 log holds at or below that watermark, against how many the caller loaded. It
 closes the hole a watermark cannot see. It is evaluated inside the fence's
 predicate, so it is only live when the fence is.
@@ -147,7 +147,7 @@ Both halves read one snapshot, and the sim reconstructs it rather than reading
 it off the wire: a client on slot-numbered event IDs sends a slot count, the sim
 mints ULIDs, so the facade derives `{ updatedAt, count }` from the pages the
 writer actually read, within the delivery that read them. The derivation is the
-client's own — newest loaded position, and how many loaded events sit at or
+client's own: the newest loaded position and how many loaded events sit at or
 below it. A write the facade attached no snapshot to did not come from a replay
 context and is never fenced.
 
@@ -193,7 +193,7 @@ const spec: ScenarioSpec = {
   // The prose `name` beside it is free to be reworded.
   id: 'b-lands-first',
   name: 'stepB lands in the log before stepA',
-  // Named from the build manifest — no client transform needed.
+  // Named from the build manifest; no client transform is needed.
   workflow: 'twoStepsWorkflow',
   input: ['x'],
   script: async (sim) => {
@@ -201,7 +201,7 @@ const spec: ScenarioSpec = {
     const b = sim.writer.step('stepB');
 
     // Calling an advance starts watching for its point; awaiting it waits for
-    // the writer to get there. Start both watches, then await both — asking
+    // the writer to get there. Start both watches, then await both. Asking
     // for a point that has already gone by is an error, not a wait.
     const watchA = a.runToEventProduced('step_completed');
     const watchB = b.runToEventCommitted('step_completed');
@@ -215,8 +215,8 @@ const spec: ScenarioSpec = {
 };
 ```
 
-`stepA` is held before it takes a position, so `stepB` gets the earlier one —
-`#6 stepB`, `#7 stepA` — on every run, in either order the runtime would
+`stepA` is held before it takes a position, so `stepB` gets the earlier one
+(`#6 stepB`, `#7 stepA`) on every run, in either order the runtime would
 otherwise have picked.
 
 Playing it needs the compiled bundle, because the orchestrator runs from a code
@@ -253,7 +253,7 @@ stays red until the runtime delivers it, because a suite that goes green by
 recording the bug gives no signal on the day someone fixes it.
 
 [`workbench/sim-world`](../../workbench/sim-world/README.md) is the worked
-example — a book of scenarios, a CLI that plays them, and a guide to adding
+example, with a book of scenarios, a CLI that plays them, and a guide to adding
 one.
 
 ## Reading the output
@@ -262,25 +262,25 @@ Events are referred to one way and one way only: **by log position**, so a claim
 about the output is one a reader can check against it.
 
 `#12` is the twelfth event in the log sorted the way `events.list` sorts it,
-`(createdAt, eventId)`; `@7` is the resource created at position 7. Ids in
+`(createdAt, eventId)`; `@7` is the resource created at position 7. IDs in
 violation messages are rewritten to positions on the way out.
 
 The trace prints in **commit** order and is numbered in **log** order, so a run
 whose log disagrees with the order its writers committed in shows up as
 positions counting backwards:
 
-```
+```text
 # 8    +1.0m  wf   wait_completed   @6
 # 7    +1.0m  ext    hook_received  @2   token="count:doc-29"
 # 9    +1.0m  wf   step_created     @9   settle
 ```
 
 The hook owns position 7, the timeout at 8 was committed first, and the branch
-at 9 went with the timeout. Out-of-order positions are highlighted when colour
+at 9 went with the timeout. Out-of-order positions are highlighted when color
 is on.
 
-Colour is applied only when stdout is a terminal, and is off under `NO_COLOR`
-or `--no-color`; pass `{ color: true }` to force it. With colour off the output
+Color is applied only when stdout is a terminal and is off under `NO_COLOR`
+or `--no-color`; pass `{ color: true }` to force it. With color off, the output
 is plain ASCII, stable enough to check in as a golden file.
 
 ## API reference
@@ -295,20 +295,20 @@ A run is not one program: several writers append to one event log, and each
 write crosses the world boundary, is assigned a position in the event log, and
 is committed to storage.
 
-| writer | handle | what it is | what it writes |
+| Writer | Handle | What it is | What it writes |
 | --- | --- | --- | --- |
 | `orchestrator` | `sim.writer.orchestrator()` | The workflow function and the runtime around it, committing at a suspension point. One per queue delivery. | the run lifecycle, `step_created` / `step_started`, `hook_created`, `wait_*` |
 | `step:<name>` | `sim.writer.step('<name>')` | One step body, running inline with full Node access. Two steps sharing a function name share the writer. | its own `step_completed` / `step_failed` / `step_retrying`, and any `attr_set` from step context |
-| `external` | none — see [Withholdings](#withholdings) | The scenario, acting as a webhook receiver or an operator | `hook_received`, `run_cancelled` |
+| `external` | none (see [Withholdings](#withholdings)) | The scenario, acting as a webhook receiver or an operator | `hook_received`, `run_cancelled` |
 
 Two step bodies in a *single* delivery are already two writers racing to the
 same log: no second invocation and no real threads are required. That is why the
 vocabulary is per-writer rather than per-invocation.
 
 `sim.writer.anyStep()` and `sim.writer.any()` are handles that match more than
-one writer — whichever reaches the advance first. A handle is a *name*, not a
+one writer, whichever reaches the advance first. A handle is a *name*, not a
 live object, so `sim.writer.step('slow')` can be taken before that step exists.
-`sim.writer.seen()` lists the ids observed so far, in first-appearance order.
+`sim.writer.seen()` lists the IDs observed so far, in first-appearance order.
 
 ### Advances
 
@@ -330,7 +330,7 @@ const script: ScenarioScript = async (sim) => {
   const reserve = sim.writer.step('reserveInventory');
 
   // Hold just after step_started is committed and before the orchestrator is
-  // resumed — the window the whole instrument exists for.
+  // resumed, which is the window the whole instrument exists for.
   await wf.runToEventCommitted('step_started', 'reserveInventory');
   sim.check('no payload yet', !sim.world.events().some((e) => e.eventType === 'hook_received'));
   await sim.deliverHook('approval:doc-1', { approved: true });
@@ -345,9 +345,9 @@ const script: ScenarioScript = async (sim) => {
 };
 ```
 
-| method | writer | description |
+| Method | Writer | Description |
 | --- | --- | --- |
-| `wf.runToEventProduced(type, opts?)` | any | Hold once the event has crossed the world boundary — formed, attributed, in the trace — and before it is assigned a position in the event log. Anything committed to storage during the hold sorts *ahead* of it. |
+| `wf.runToEventProduced(type, opts?)` | any | Hold once the event has crossed the world boundary (formed, attributed, and in the trace) and before it is assigned a position in the event log. Anything committed to storage during the hold sorts *ahead* of it. |
 | `wf.runToEventCommitted(type, opts?)` | any | Hold once the event is committed to storage, before the writer resumes. |
 | `wf.release()` | the held one | Let the writer go. Idempotent; awaiting it yields the event loop, so the writer has really moved by the time it resolves. |
 | `wf.isHeld()` / `wf.history()` | — | Is it held / where it has been. |
@@ -369,7 +369,7 @@ watchdog (`limits.maxRunToWallMs`) whose timeout reports where *every* writer
 was standing, which is a diagnosis rather than the scenario's global budget
 running out.
 
-Two mistakes are worth knowing, and the errors name both:
+Two common mistakes produce errors that name the problem:
 
 - **Watching too late.** Releasing writer A before B's watch has started. B's
   step body may already be in flight and commit during the release.
@@ -381,7 +381,7 @@ handles are built from. Fields are ANDed; `eventType` implies `events.create`,
 `stepName` accepts the machine name or the plain function name, `where` covers
 what the declarative fields cannot say, and `phase` defaults to `'after'`:
 
-```
+```text
 { call: 'events.create' | 'queue' | 'runs.get' | … , phase: 'before' | 'after',
   eventType, stepName, correlationId, token, runId, writer, failed, where }
 ```
@@ -390,7 +390,7 @@ Reach for them when the point is a *state* rather than a name. `where` is the
 one thing a level-triggered `runTo` cannot re-check against history, so a
 `where` wait is edge-triggered and leans on its timeout.
 
-The park/permit model — and the word *tempo* for the resulting order — is lifted
+The park/permit model, and the word *tempo* for the resulting order, is lifted
 from [`blanket`](https://bernat.tech/posts/blanket-deterministic-threading/),
 which does this for Python's `threading` primitives. The mapping is direct: a
 world call is a transaction, the `after` phase is its parking state, and
@@ -410,7 +410,7 @@ A withholding hides something from readers without holding the writer that
 produced it. An advance stops one thread; a withholding lets every thread run
 and changes what storage answers.
 
-| method | writer | description |
+| Method | Writer | Description |
 | --- | --- | --- |
 | `sim.withholdNextEvent(reads?)` | whichever commits next | Hide the next event committed to storage from the next `reads` event-log reads (default 1). Call it immediately before the write to hide. |
 | `sim.beginHookDelivery(token, payload)` | `external` | Begin an external hook delivery and return `commit()`, which writes it at the log tail. |
@@ -428,7 +428,7 @@ wrong.
 
 | | |
 | --- | --- |
-| `deliverHook(token, payload)` | Runs the real `resumeHook()` — the same code an out-of-band webhook receiver would |
+| `deliverHook(token, payload)` | Runs the real `resumeHook()`, the same code an out-of-band webhook receiver would |
 | `cancelRun(reason?)` | Cancel the run under test |
 | `advanceTime(ms)` | Jump the virtual clock |
 | `deliverQueued(select?)` | Deliver one queued message now, concurrently with a held writer |
@@ -443,7 +443,7 @@ schedule, and the only question is whether the log it leaves reproduces it.
 The scheduler is strictly serial: one message at a time, and the clock only
 moves when it picks the next one up. So a held writer freezes virtual time
 along with everything else, and a whole family of interleavings is simply
-unreachable from the advances above — anything of the form *a timer fires while
+unreachable from the advances above, including anything of the form *a timer fires while
 a step result is outstanding*. Both halves need to be in flight at once, and the
 loop will only ever have one.
 
@@ -453,7 +453,7 @@ there in the script, so it runs alongside the held writer rather than after it.
 two are different deliveries running concurrently, not a race for one.
 
 That concurrency is real, and so is its fallout. Two flow deliveries for one run
-will collide the way they do in production — expect `EntityConflictError` and
+will collide the way they do in production. Expect `EntityConflictError` and
 `HookNotFoundError` in the rejection list once both branches finish. Those are
 the deliveries losing races they are supposed to lose, not violations.
 
@@ -471,53 +471,53 @@ const fired = sim.deliverQueued(
 );
 ```
 
-Note the missing `await` — awaiting it here would wait for the delivery to
+Note the missing `await`. Awaiting it here would wait for the delivery to
 *finish*, which defeats the purpose. Arm a hold on the writer that delivery will
 wake, fire it, await the hold, and the two are now interleaved. Await the
 returned promise at the end to assert it found something.
 
 ## Extending the simulator
 
-Changing the instrument itself, routed by task — adding a *scenario* needs none
-of it, and is
+The following table routes changes to the instrument itself by task. Adding a
+*scenario* needs none of it and is covered in
 [`workbench/sim-world/README.md`](../../workbench/sim-world/README.md#adding-a-scenario).
 The module map is [DESIGN.md §1](./DESIGN.md#1-module-map).
 
 | I want to… | Change | Read first |
 | --- | --- | --- |
-| let scripts hold at a point the API can't name | `world.ts` — the call-point wrapper, and `CallMatch` in `types.ts` | [§3 Interception](./DESIGN.md#3-interception) |
+| let scripts hold at a point the API can't name | `world.ts` (the call-point wrapper) and `CallMatch` in `types.ts` | [§3 Interception](./DESIGN.md#3-interception) |
 | add a phase to an existing call | `CallPhase` in `types.ts`, where `world.ts` parks on it, plus the writer op that names it | [§3 Two phases](./DESIGN.md#two-phases-and-a-third-hold-that-is-not-one) |
 | add a rule the log must satisfy | `invariants.ts`, plus the rule table above | [§8 Consistency checking](./DESIGN.md#8-consistency-checking) |
 | add or change a writer kind | `writers.ts` for the handles, `world.ts` for attribution | [§3 Writer attribution](./DESIGN.md#writer-attribution-is-derived-not-instrumented) |
-| add a fault injector | `store.ts` — next to `withholdNextEvent` and the guards | [§5 Fault injection](./DESIGN.md#fault-injection) |
+| add a fault injector | `store.ts`, next to `withholdNextEvent` and the guards | [§5 Fault injection](./DESIGN.md#fault-injection) |
 | change what a read returns | `store.ts` `applyWithhold` | [§5 The store](./DESIGN.md#5-the-store) |
 | change where an event lands | `store.ts` `positionAtCommit` / `mintEvent` | [World behaviors](#world-behaviors) above |
 | add a spec field | `ScenarioSpec` in `scenario.ts`, `RunScenarioOptions` beside it, then `run.ts` for the CLI flag | [§6 Spec](./DESIGN.md#spec) |
 | change the replay check | `replay.ts` | [§8 Replay verification](./DESIGN.md#replay-verification) |
-| change the output | `report.ts` — `renderScenario`, `renderSummary`, `renderMarkdownSummary` | [Reading the output](#reading-the-output) above |
+| change the output | `report.ts`: `renderScenario`, `renderSummary`, `renderMarkdownSummary` | [Reading the output](#reading-the-output) above |
 
 Four things worth knowing before you start:
 
 **The package entry is the scenario surface, not the whole package.**
-`index.ts` exports what it takes to write a scenario, play it and render the
-result. The construction kit — `createSimWorld`, `createSimStore`, `driveQueue`,
-`verifyReplay`, `checkInvariants`, the clock — is imported from its own module,
+`index.ts` exports what it takes to write a scenario, play it, and render the
+result. The construction kit (`createSimWorld`, `createSimStore`, `driveQueue`,
+`verifyReplay`, `checkInvariants`, and the clock) is imported from its own module,
 so adding an option to one of them is not a change to the package's public
 signature. Promote a name to the entry when something outside the package needs
 it, not before.
 
 **Anything a scenario can observe has to survive replay.** `verifyReplay`
-re-plays the log in a fresh world, so a store rule that is not applied there
+replays the log in a fresh world, so a store rule that is not applied there
 turns every scenario using it red for the wrong reason.
 
-**Tests come in two shapes.** `src/*.test.ts` are vitest units against the
- pieces in isolation — copy `store.test.ts` for anything that changes what the
+**Tests come in two shapes.** `src/*.test.ts` are Vitest units against the
+ pieces in isolation. Copy `store.test.ts` for anything that changes what the
  log looks like. The scenario book is the integration test; run it before and
  after and diff the counts.
 
 ## What this does *not* give you
 
-Worth being explicit, because the guarantees are narrower than "deterministic":
+The guarantees are narrower than "deterministic":
 
 - **Determinism is world-level.** Step bodies are ordinary Node code. A step
   that calls `Math.random()`, reads a file, or hits the network is as
@@ -535,7 +535,7 @@ Worth being explicit, because the guarantees are narrower than "deterministic":
 - **"Before the workflow resumes" is about the log, not the CPU.** The hook is
   committed before the intercepted call returns, so it is in the log before the
   runtime's next read of it. Whether the runtime *observes* it on the next
-  replay depends on optimizations that can skip a re-read — visible in the
+  replay depends on optimizations that can skip a re-read, as shown in the
   trace.
 - **One scenario at a time per process.** The virtual clock and the World are
   process-global singletons.

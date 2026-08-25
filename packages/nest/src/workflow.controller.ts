@@ -13,6 +13,7 @@ import {
   Res,
 } from '@nestjs/common';
 import type { ApplicationConfig } from '@nestjs/core';
+import { globalSingleton } from '@workflow/utils';
 import { join } from 'pathe';
 import {
   getWorkflowBasePath,
@@ -29,8 +30,18 @@ import {
 /**
  * Fallback output directory for apps still calling the deprecated
  * {@link configureWorkflowController}. Injected options take precedence.
+ *
+ * On `globalThis` rather than at module scope because a bundler can compile
+ * this module into the host application's build more than once (see
+ * `globalSingleton`), and the copy that `configureWorkflowController()` writes
+ * would then not be the copy the request path reads, leaving the fallback
+ * empty for the life of the process.
  */
-let configuredOutDir: string | null = null;
+const controllerConfig = globalSingleton(
+  '@workflow/nest//controllerConfig',
+  1,
+  () => ({ outDir: null as string | null })
+);
 
 /**
  * Point the controller at the directory holding the generated bundles.
@@ -42,7 +53,7 @@ let configuredOutDir: string | null = null;
  * keep working.
  */
 export function configureWorkflowController(outDir: string): void {
-  configuredOutDir = outDir;
+  controllerConfig.outDir = outDir;
 }
 
 /**
@@ -50,7 +61,7 @@ export function configureWorkflowController(outDir: string): void {
  * @internal
  */
 export function resetWorkflowControllerGlobal(): void {
-  configuredOutDir = null;
+  controllerConfig.outDir = null;
 }
 
 type BundleName =
@@ -86,7 +97,7 @@ export class WorkflowController {
   ) {}
 
   #outDir(): string {
-    const outDir = this.options?.outDir ?? configuredOutDir;
+    const outDir = this.options?.outDir ?? controllerConfig.outDir;
     if (!outDir) {
       throw new Error(
         'WorkflowController is not configured. Register it through ' +

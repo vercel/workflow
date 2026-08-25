@@ -16,7 +16,7 @@ export interface StepInvocationQueueItem {
    * during replay: the queue message ID stamped by the invocation running
    * the step inline, or undefined when the latest start was unstamped (a
    * retry attempt driven by a queued step message, or an older runtime).
-   * Latest start wins — an unstamped bare start clears a previous stamp; an
+   * Latest start wins: an unstamped bare start clears a previous stamp; an
    * owner-recovery re-stamped start restores it.
    */
   ownerMessageId?: string;

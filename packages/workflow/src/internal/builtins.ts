@@ -1,7 +1,7 @@
 /**
- * These are the built-in steps that are "automatically available" in the workflow scope. They are
- * similar to "stdlib" except that are not meant to be imported by users, but are instead "just available"
- * alongside user defined steps. They are used internally by the runtime
+ * Built-in steps available in the workflow scope. Like a standard library,
+ * they are available alongside user-defined steps, but users do not import
+ * them. The runtime uses these steps internally.
  */
 
 export async function __builtin_response_array_buffer(
@@ -44,7 +44,7 @@ function formatUnknownError(error: unknown) {
  * runs in normal Node context with full world access.
  *
  * The dispatch reads the world and current run id directly from
- * `globalThis` symbols populated by the workflow/step runtime — this
+ * `globalThis` symbols populated by the workflow/step runtime. This
  * intentionally avoids importing `@workflow/core` so the Next.js
  * deferred-entries discoverer can't walk a chain into world adapters
  * and `@vercel/queue` from this step file.
@@ -86,7 +86,7 @@ export async function __builtin_set_attributes(
       }
     | undefined;
   if (typeof world?.runs?.experimentalSetAttributes !== 'function') {
-    // World adapter doesn't implement attributes yet — no-op the call,
+    // World adapter doesn't implement attributes yet, so no-op the call,
     // but emit one process-wide warning so users know their writes are
     // being dropped. The VM-side validation already ran so the input
     // is well-formed.

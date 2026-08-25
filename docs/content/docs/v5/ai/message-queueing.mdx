@@ -15,7 +15,7 @@ When using [multi-turn workflows](/docs/ai/chat-session-modeling#multi-turn-work
 
 `WorkflowAgent`'s `prepareStep` callback enables this by running before each step in the agent loop, giving you a chance to inject queued messages into the conversation. `prepareStep` also allows you to modify the model choice and existing messages mid-turn, see AI SDK's [prepareStep callback](https://ai-sdk.dev/docs/agents/loop-control#prepare-step) for more details.
 
-## When to Use This
+## When to use this
 
 Message queueing is useful when:
 
@@ -24,10 +24,10 @@ Message queueing is useful when:
 - You want messages to influence the agent's next step rather than waiting for the current turn to complete
 
 <Callout type="info">
-If you just need basic multi-turn conversations where messages arrive between turns, see [Chat Session Modeling](/docs/ai/chat-session-modeling). This guide covers the more advanced case of injecting messages *during* turns.
+If you need basic multi-turn conversations where messages arrive between turns, see [Chat Session Modeling](/docs/ai/chat-session-modeling). This guide covers the more advanced case of injecting messages *during* turns.
 </Callout>
 
-## The `prepareStep` Callback
+## The `prepareStep` callback
 
 The `prepareStep` callback runs before each step in the agent loop. It receives the current state and can modify the messages sent to the model:
 
@@ -47,7 +47,7 @@ interface PrepareStepResult {
 }
 ```
 
-## Injecting Queued Messages
+## Injecting queued messages
 
 Once you have a [multi-turn workflow](/docs/ai/chat-session-modeling#multi-turn-workflows), you can combine a message queue with `prepareStep` to inject messages that arrive during processing:
 
@@ -106,7 +106,7 @@ Messages sent via `chatMessageHook.resume()` accumulate in the queue and get inj
 The `prepareStep` callback receives messages in `ModelMessage[]` format (with content arrays), which is the internal format used by the AI SDK.
 </Callout>
 
-## Combining with Multi-Turn Sessions
+## Combining with multi-turn sessions
 
 You can also combine message queueing with the standard multi-turn pattern:
 
@@ -169,7 +169,7 @@ export async function chat(initialMessages: ModelMessage[]) {
 }
 ```
 
-## Related Documentation
+## Related documentation
 
 - [Chat Session Modeling](/docs/ai/chat-session-modeling) - Single-turn vs multi-turn patterns
 - [Building Durable AI Agents](/docs/ai) - Complete guide to creating durable agents

@@ -36,7 +36,7 @@ export const MAX_CHUNKS_PER_REQUEST = 1000;
 
 /**
  * Effective max chunks per write request. Override via
- * `WORKFLOW_MAX_CHUNKS_PER_REQUEST` — lower it (paired with the server's
+ * `WORKFLOW_MAX_CHUNKS_PER_REQUEST`. Lower it (paired with the server's
  * `MAX_CHUNKS_PER_BATCH` override) to exercise the batch-splitting path.
  */
 const getMaxChunksPerRequest = (): number =>
@@ -47,7 +47,8 @@ const getMaxChunksPerRequest = (): number =>
 
 // All stream requests share the instrumented envelope (`instrumentedFetch`):
 // an OTEL client span, trace-context injection, `DEBUG` logging, and the
-// x-vercel diagnostic headers — the same coverage the v3/v4 paths have.
+// x-vercel diagnostic headers, which provide the same coverage the v3/v4 paths
+// have.
 //
 // Writes (the PUT write/close path) go through the H2 stream dispatcher (see
 // getStreamDispatcher): they send a fully-buffered body (or none), so they
@@ -55,11 +56,11 @@ const getMaxChunksPerRequest = (): number =>
 // long-lived live-read (GET) on the global dispatcher. Because stream appends
 // aren't idempotent, that stream dispatcher uses a deliberately narrowed retry
 // policy (see STREAM_RETRY_OPTIONS): it retries only on transient connection
-// errors and HTTP 429 — both of which guarantee the chunk was never persisted —
+// errors and HTTP 429 (both of which guarantee the chunk was never persisted)
 // and never on 5xx, so a retry can't duplicate an already-applied write.
 // Snapshot reads (chunks/info) go through makeRequest (default H1 dispatcher);
 // the live-read (GET) and list keep the global dispatcher (no custom retry) and
-// no request timeout — the live read is long-lived and a whole-request deadline
+// no request timeout. The live read is long-lived and a whole-request deadline
 // would truncate it.
 
 // Writes (PUT) and stream completion use the v2 stream endpoint.
@@ -75,7 +76,7 @@ function getStreamUrl(name: string, runId: string, httpConfig: HttpConfig) {
 // (`createReconnectingFramedStream`) resume from the next chunk rather than
 // treating the timeout as end-of-stream. Reading from v2 would silently
 // truncate long-lived streams at the server's 2-minute limit. Only the live
-// read is affected by the timeout — writes, completion, and snapshot reads
+// read is affected by the timeout. Writes, completion, and snapshot reads
 // (chunks/info/list) stay on v2.
 function getStreamReadUrl(name: string, runId: string, httpConfig: HttpConfig) {
   return new URL(
@@ -86,7 +87,7 @@ function getStreamReadUrl(name: string, runId: string, httpConfig: HttpConfig) {
 /**
  * Stream-operation attributes layered onto the shared HTTP client span (see
  * instrumentedFetch). These make stream writes/reads sliceable by run, stream
- * name, and operation — beyond the generic `http PUT`/`http GET` verb — and
+ * name, and operation (beyond the generic `http PUT`/`http GET` verb) and
  * are no-ops when no OTEL SDK is registered (the span is undefined).
  */
 function streamSpanAttributes(args: {
@@ -186,7 +187,7 @@ const StreamInfoResponseSchema = z.object({
 /**
  * Zod schema for the paginated stream chunks response from the server.
  * When using CBOR (the default for makeRequest), chunk data arrives as
- * native Uint8Array byte strings — no base64 decoding required.
+ * native Uint8Array byte strings, so no base64 decoding is required.
  */
 const StreamChunksResponseSchema = z.object({
   data: z.array(
@@ -253,7 +254,7 @@ export function createStreamer(config?: APIConfig): Streamer {
 
         // Send in pages of MAX_CHUNKS_PER_REQUEST to stay within the
         // server's per-batch limit (MAX_CHUNKS_PER_BATCH).
-        // Note: for batches spanning multiple pages, atomicity is relaxed —
+        // Note: for batches spanning multiple pages, atomicity is relaxed.
         // earlier pages may persist while a later page fails. The caller
         // retains the full buffer on error, so chunks from successful pages
         // will be re-sent on retry, producing duplicates. This is acceptable
@@ -299,7 +300,7 @@ export function createStreamer(config?: APIConfig): Streamer {
           url: url.toString(),
           headers: httpConfig.headers,
           // Close is idempotent (unlike chunk appends), so its dispatcher
-          // retries 5xx — required by the server's close-barrier protocol,
+          // retries 5xx, as required by the server's close-barrier protocol,
           // which surfaces transient reconciliation states as retriable
           // 503s with the stream left durably closing.
           dispatcher: getStreamCloseDispatcher(config),

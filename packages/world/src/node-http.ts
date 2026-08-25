@@ -405,7 +405,7 @@ export function nodeHttpFetch(
     // spent waiting for one is the pool being busy, not the origin being slow:
     // undici starts its `headersTimeout` at the equivalent point (once the
     // request is written, in `writeH1`), and a deadline that counted the queue
-    // wait would expire deliveries the origin never saw — a redelivery storm
+    // wait would expire deliveries the origin never saw: a redelivery storm
     // sourced entirely from local concurrency. The pool wait is left unbounded
     // for the same reason it is in undici; a caller that needs a ceiling on the
     // whole call passes `signal`.

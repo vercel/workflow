@@ -14,7 +14,7 @@
  *
  * The one thing that does *not* survive: a slot id's leading characters are
  * zeros, so decoding it as a ULID timestamp yields the Unix epoch. Nothing may
- * derive a time from an event id without first ruling out a slot id — see
+ * derive a time from an event id without first ruling out a slot id. See
  * {@link isSlotBody} and the guard in `ulidToDate`.
  */
 
@@ -27,7 +27,7 @@ export const EVENT_ID_BODY_LENGTH = 26;
  * This is the discriminator against a ULID: a ULID's first 10 characters
  * encode milliseconds since the epoch, and `ulid()` never mints a zero
  * timestamp. Requiring the same 10 characters to be `0` therefore separates
- * the two schemes with no ambiguity, and caps a slot at 10^16 - 1 — far above
+ * the two schemes with no ambiguity, and caps a slot at 10^16 - 1, far above
  * any run's event count, and reduced further below to stay in safe-integer
  * range.
  */
@@ -78,7 +78,7 @@ export function isSlotEventId(eventId: string): boolean {
 /**
  * Formats a slot as a prefixed event id.
  *
- * @throws if the slot is outside the representable range — a caller that
+ * @throws if the slot is outside the representable range: a caller that
  * overflows must fail loudly rather than mint an id that sorts wrong.
  */
 export function slotToEventId(slot: number): string {
@@ -106,7 +106,7 @@ export function eventIdToSlot(eventId: string): number | null {
  * Separate from {@link eventIdToSlot} because the two failures are different
  * problems. A caller that can act on either scheme asks the question and takes
  * `null` as an answer; a caller whose whole computation is positional (a
- * precondition snapshot, a density audit) has no correct behaviour to fall back
+ * precondition snapshot, a density audit) has no correct behavior to fall back
  * on, and silently skipping the id would make it report a position it never
  * verified. Throwing names the id instead.
  *

@@ -1,6 +1,7 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { EntityConflictError, WorkflowWorldError } from '@workflow/errors';
+import { globalSingleton } from '@workflow/utils';
 import type { PaginatedResponse } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
 import { z } from 'zod';
@@ -9,7 +10,24 @@ import {
   UnwritableDataDirError,
 } from './build-target-mismatch.js';
 
-const ulid = monotonicFactory(() => Math.random());
+/**
+ * Temp-file suffixes for atomic writes, and the write-path caches below.
+ *
+ * On `globalThis` rather than at module scope because a bundler can put several
+ * copies of this file in one process (see `globalSingleton`): per-copy monotonic
+ * factories can hand two writers the same suffix in the same millisecond, and
+ * per-copy caches make the syscalls they exist to skip happen once per copy.
+ */
+const fsState = globalSingleton('@workflow/world-local//fs', 1, () => ({
+  ulid: monotonicFactory(() => Math.random()),
+  // In-memory cache of created files to avoid expensive fs.access() calls.
+  // Safe because we only write once per file path (no overwrites without an
+  // explicit flag).
+  createdFilesCache: new Set<string>(),
+  // Writes repeatedly target a small fixed set of entity directories. Once one
+  // exists in this process, avoid another recursive mkdir syscall per event.
+  createdDirectoriesCache: new Set<string>(),
+}));
 
 /**
  * Truncate a possibly-untrusted value for inclusion in an error message.
@@ -129,19 +147,12 @@ export async function withWindowsRetry<T>(
   throw new Error('Retry loop exited unexpectedly');
 }
 
-// In-memory cache of created files to avoid expensive fs.access() calls
-// This is safe because we only write once per file path (no overwrites without explicit flag)
-const createdFilesCache = new Set<string>();
-// Writes repeatedly target a small fixed set of entity directories. Once one
-// exists in this process, avoid another recursive mkdir syscall per event.
-const createdDirectoriesCache = new Set<string>();
-
 /**
  * Clear write-path caches. Useful for testing or when files are deleted externally.
  */
 export function clearCreatedFilesCache(): void {
-  createdFilesCache.clear();
-  createdDirectoriesCache.clear();
+  fsState.createdFilesCache.clear();
+  fsState.createdDirectoriesCache.clear();
 }
 
 export { ulidToDate } from '@workflow/world';
@@ -179,8 +190,8 @@ export function hasTag(fileId: string, tag: string): boolean {
  *
  * An untagged world's reads (`readJSONWithFallback`) can only resolve untagged
  * files, so when it lists entities for recovery it must skip files tagged by
- * other worlds (e.g. the vitest harness) sharing the same data directory —
- * otherwise it would re-enqueue runs it cannot subsequently read back.
+ * other worlds (e.g. the vitest harness) sharing the same data directory.
+ * Otherwise it would re-enqueue runs it cannot subsequently read back.
  */
 export function isUntagged(fileId: string): boolean {
   return !TAG_PATTERN.test(fileId);
@@ -274,16 +285,16 @@ export async function listTaggedFilesByExtension(
 
 export async function ensureDir(dirPath: string): Promise<void> {
   const resolvedPath = path.resolve(dirPath);
-  if (createdDirectoriesCache.has(resolvedPath)) {
+  if (fsState.createdDirectoriesCache.has(resolvedPath)) {
     return;
   }
   try {
     await fs.mkdir(resolvedPath, { recursive: true });
-    createdDirectoriesCache.add(resolvedPath);
+    fsState.createdDirectoriesCache.add(resolvedPath);
   } catch (error) {
     // A filesystem that refuses the directory outright will refuse every write
     // into it too, and the caller's write would surface as a confusing ENOENT
-    // on the file rather than a missing directory. Report it here instead —
+    // on the file rather than a missing directory. Report it here instead,
     // unless the directory turns out to exist, in which case the failure was
     // incidental (a race, or an unsearchable parent that reads fine) and the
     // historical "ignore if already exists" behavior applies.
@@ -320,7 +331,7 @@ async function withEnsuredDirectory<T>(
 
     // A dev server may outlive an external cleanup of its data directory.
     // Forget the cached directory and retry once after recreating it.
-    createdDirectoriesCache.delete(path.resolve(dirPath));
+    fsState.createdDirectoriesCache.delete(path.resolve(dirPath));
     await ensureDir(dirPath);
     return operation();
   }
@@ -370,8 +381,8 @@ export async function writeJSON(
 /**
  * Writes data to a file using atomic write-rename pattern.
  *
- * Note: While this function uses temp files to avoid partial writes,
- * it does not provide protection against concurrent writes from multiple
+ * This function uses temporary files to avoid partial writes, but it does not
+ * protect against concurrent writes from multiple
  * processes. In a multi-writer scenario, the last writer wins.
  * For production use with multiple writers, consider using a proper
  * database or locking mechanism.
@@ -384,7 +395,7 @@ export async function write(
   if (!opts?.overwrite) {
     // Fast path: check in-memory cache first to avoid expensive fs.access() calls
     // This provides significant performance improvement when creating many files
-    if (createdFilesCache.has(filePath)) {
+    if (fsState.createdFilesCache.has(filePath)) {
       throw new EntityConflictError(
         `File ${filePath} already exists and 'overwrite' is false`
       );
@@ -394,7 +405,7 @@ export async function write(
     try {
       await fs.access(filePath);
       // File exists on disk, add to cache for future checks
-      createdFilesCache.add(filePath);
+      fsState.createdFilesCache.add(filePath);
       throw new EntityConflictError(
         `File ${filePath} already exists and 'overwrite' is false`
       );
@@ -406,7 +417,7 @@ export async function write(
     }
   }
 
-  const tempPath = `${filePath}.tmp.${ulid()}`;
+  const tempPath = `${filePath}.tmp.${fsState.ulid()}`;
   let tempFileCreated = false;
   try {
     await withEnsuredDirectory(path.dirname(filePath), async () => {
@@ -415,7 +426,7 @@ export async function write(
       await withWindowsRetry(() => fs.rename(tempPath, filePath));
     });
     // Track this file in cache so future writes know it exists
-    createdFilesCache.add(filePath);
+    fsState.createdFilesCache.add(filePath);
   } catch (error) {
     // Only try to clean up temp file if it was actually created
     if (tempFileCreated) {
@@ -482,7 +493,7 @@ export async function writeExclusive(
   filePath: string,
   data: string
 ): Promise<boolean> {
-  const tempPath = `${filePath}.tmp.${ulid()}`;
+  const tempPath = `${filePath}.tmp.${fsState.ulid()}`;
   let tempFileCreated = false;
 
   try {
@@ -512,15 +523,15 @@ export async function writeExclusive(
  * to its visible destination via a hard link. The single `link(2)` call is
  * the linearization point:
  *
- *   - `'linked'`  — this call made the destination visible.
- *   - `'exists'`  — another writer published the destination first
+ *   - `'linked'`:  this call made the destination visible.
+ *   - `'exists'`:  another writer published the destination first
  *                   (same meaning as `writeExclusive` returning false).
- *   - `'missing'` — the staged file was concurrently unlinked, so the
+ *   - `'missing'`: the staged file was concurrently unlinked, so the
  *                   promotion atomically lost to whoever removed it and
  *                   the destination was never made visible.
  *
  * The staged file is left in place on success; callers unlink it
- * themselves (a leftover staged file is harmless — it is not at a
+ * themselves (a leftover staged file is harmless: it is not at a
  * reader-visible path).
  */
 export async function promoteExclusive(
@@ -606,8 +617,8 @@ interface PaginatedFileSystemQueryConfig<T> {
 }
 
 // Cursor formats:
-//   "timestamp|id"  — createdAt order, id for tie-breaking
-//   "key:<sortKey>" — sort-key order (see getSortKey)
+//   "timestamp|id":  createdAt order, id for tie-breaking
+//   "key:<sortKey>": sort-key order (see getSortKey)
 // A run never mixes the two, so a cursor never has to cross formats mid-scan.
 export const SORT_KEY_CURSOR_PREFIX = 'key:';
 
@@ -668,8 +679,8 @@ export async function paginatedFileSystemQuery<T extends { createdAt: Date }>(
 
   // Validate filePrefix (typically `${runId}-`) so request-derived prefixes
   // consistently reject unsafe characters. filePrefix is only used below to
-  // filter readdir() results by prefix — it doesn't participate in path
-  // construction — but keeping the validation rule uniform across the
+  // filter readdir() results by prefix (it doesn't participate in path
+  // construction), but keeping the validation rule uniform across the
   // storage layer avoids special cases and catches bad values earlier.
   if (filePrefix !== undefined) {
     assertSafeEntityId('filePrefix', filePrefix);
@@ -762,7 +773,7 @@ export async function paginatedFileSystemQuery<T extends { createdAt: Date }>(
           // We don't expect zod errors to happen, but if the JSON does get malformed,
           // we skip the item. Preferably, we'd have a way to mark items as malformed,
           // so that the UI can display them as such, with richer messaging. In the meantime,
-          // we just log a warning and skip the item.
+          // we log a warning and skip the item.
           if (error instanceof z.ZodError) {
             console.warn(
               `Skipping item ${fileId} due to malformed JSON: ${error.message}`
@@ -783,7 +794,7 @@ export async function paginatedFileSystemQuery<T extends { createdAt: Date }>(
       if (parsedCursor?.sortKey) {
         // Sort-key cursor: the key alone is the total order, so there is no
         // tie to break. An item without a key cannot be placed relative to
-        // the cursor at all — that would mean a run mixed the two schemes —
+        // the cursor at all (that would mean a run mixed the two schemes),
         // so keep it and let the comparator below order it.
         if (itemSortKey) {
           const comparison = itemSortKey.localeCompare(parsedCursor.sortKey);

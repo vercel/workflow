@@ -102,7 +102,7 @@ async function isTerminalRunCache(
  * The liveness checks below subsume the old scan's in-log closure
  * replay: the dispose lock is written before `hook_disposed` is
  * appended, the run entity is terminal before any terminal run event
- * is appended, and neither is ever deleted — so any closure visible
+ * is appended, and neither is ever deleted, so any closure visible
  * in the log is also visible to these checks.
  */
 async function findAvailableHookCreatedEvent(
@@ -129,7 +129,7 @@ async function findAvailableHookCreatedEvent(
   }
 
   // A committed disposal (dispose lock on disk) closes the hook even when
-  // its `hook_disposed` event has not landed in the log yet — the disposer
+  // its `hook_disposed` event has not landed in the log yet: the disposer
   // writes the lock, releases the token claim and hook entity, and only
   // then appends the event. Rebuilding the caches from the log in that
   // window would resurrect a claim for a hook that is being torn down.
@@ -368,7 +368,7 @@ export async function deleteAllHooksForRun(
         ) {
           continue;
         }
-        // Release the claim only if it still points at this hook — a
+        // Release the claim only if it still points at this hook, since a
         // claimant may already hold a fresh claim for the token (see
         // `isHookTokenClaimReleasable`).
         await releaseHookTokenClaimIfOwnedBy(

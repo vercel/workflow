@@ -1,5 +1,19 @@
 # @workflow/cli
 
+## 5.0.0-beta.44
+
+### Patch Changes
+
+- Updated dependencies [[`5b5a926`](https://github.com/vercel/workflow/commit/5b5a926f8850ec5d967e090cc0500028fd53e2ef), [`f771585`](https://github.com/vercel/workflow/commit/f771585486b3019c8d68211b158dfeffc9e5ebe8), [`9b1b8c7`](https://github.com/vercel/workflow/commit/9b1b8c711104fd507327aafc8cb965738f315e29), [`f771585`](https://github.com/vercel/workflow/commit/f771585486b3019c8d68211b158dfeffc9e5ebe8), [`d012bf0`](https://github.com/vercel/workflow/commit/d012bf0fe3b2a1ebdb77c8066b9272ecd23e9523), [`f771585`](https://github.com/vercel/workflow/commit/f771585486b3019c8d68211b158dfeffc9e5ebe8), [`9454d51`](https://github.com/vercel/workflow/commit/9454d51db0d52d6be9bafea9c70ab6fc3a1ceba4), [`7b79ba3`](https://github.com/vercel/workflow/commit/7b79ba37cc97e858ceb8b2474e03bbc404b555a0), [`8a2648e`](https://github.com/vercel/workflow/commit/8a2648e35f3ccfdffd275bc37470dd3396981773), [`f771585`](https://github.com/vercel/workflow/commit/f771585486b3019c8d68211b158dfeffc9e5ebe8), [`bf9de1c`](https://github.com/vercel/workflow/commit/bf9de1cd81eda1b1721b857364070c0ce70d1e58), [`f771585`](https://github.com/vercel/workflow/commit/f771585486b3019c8d68211b158dfeffc9e5ebe8), [`dc68611`](https://github.com/vercel/workflow/commit/dc68611fbf8e9c66a34bca627f63b12518f1191a), [`dc68611`](https://github.com/vercel/workflow/commit/dc68611fbf8e9c66a34bca627f63b12518f1191a)]:
+  - @workflow/core@5.0.0-beta.44
+  - @workflow/utils@5.0.0-beta.9
+  - @workflow/world@5.0.0-beta.29
+  - @workflow/world-vercel@5.0.0-beta.40
+  - @workflow/world-local@5.0.0-beta.38
+  - @workflow/builders@5.0.0-beta.44
+  - @workflow/web@5.0.0-beta.44
+  - @workflow/errors@5.0.0-beta.18
+
 ## 5.0.0-beta.43
 
 ### Patch Changes

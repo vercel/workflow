@@ -231,7 +231,7 @@ function TraceViewerContent({
     [root.startTime, root.endTime]
   );
 
-  // Pan (keeping the current zoom) so `timeMs` is centered in view — used by the
+  // Pan (keeping the current zoom) so `timeMs` is centered in view; used by the
   // off-screen marker indicators to scroll their marker into view.
   const handleRevealTime = useCallback(
     (timeMs: number) => {
@@ -307,7 +307,7 @@ function TraceViewerContent({
 
   // Bring a row into view when keyboard/button navigation lands on a span that
   // sits outside the shared scroll container's visible area. The list is
-  // windowed, so an off-screen row has no DOM node to `scrollIntoView` —
+  // windowed, so an off-screen row has no DOM node to `scrollIntoView`;
   // `scrollRowIntoView` computes the target offset from the span's index.
   const scrollSpanIntoView = useCallback(
     (spanId: string) => {

@@ -50,7 +50,7 @@ function createWorkflowPlugins(builder: SvelteKitBuilder): Plugin[] {
       // SvelteKit bundles the server (including undici, via the world adapter)
       // into ESM output. undici loads most node: builtins as ESM imports, but
       // pulls in `node:http2` lazily via a bare `require('node:http2')` inside a
-      // try/catch — which the bundler leaves un-wired, so in the ESM bundle the
+      // try/catch, which the bundler leaves un-wired, so in the ESM bundle the
       // require throws and undici silently falls back to a stub whose
       // `http2.connect` is undefined. That breaks any HTTP/2 request (observed
       // as the workflow flow-route callback failing with "fetch failed" ->

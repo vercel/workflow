@@ -1,6 +1,6 @@
 # @workflow/ai
 
-[Workflow SDK](https://workflow-sdk.dev) compatible helper library for the [AI SDK](https://ai-sdk.dev/).
+A helper library that makes [Workflow SDK](https://workflow-sdk.dev) compatible with the [AI SDK](https://ai-sdk.dev/).
 
 ## Installation
 
@@ -8,7 +8,7 @@
 npm install @workflow/ai
 ```
 
-## AI SDK Compatibility
+## AI SDK compatibility
 
 This package supports both **AI SDK v5** and **AI SDK v6**. The `ai` package is a peer dependency, so you control which version to use:
 
@@ -20,16 +20,16 @@ npm install ai
 npm install ai@5
 ```
 
-### Version Differences
+### Version differences
 
 | Feature | AI SDK v5 | AI SDK v6 |
 |---------|-----------|-----------|
 | Model interface | `LanguageModelV2` | `LanguageModelV3` |
 | Provider package | `@ai-sdk/provider@2.x` | `@ai-sdk/provider@3.x` |
 
-Both versions work seamlessly with `@workflow/ai` - the package handles the differences internally through a compatibility layer.
+Both versions work with `@workflow/ai`. The package handles their differences through an internal compatibility layer.
 
-### Provider Packages
+### Provider packages
 
 If you use the provider wrappers (e.g., `@workflow/ai/anthropic`, `@workflow/ai/openai`), install the corresponding provider packages:
 

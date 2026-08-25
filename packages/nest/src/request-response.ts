@@ -10,6 +10,8 @@
  * only survives if it is never decoded to a string.
  */
 
+import { globalSingleton } from '@workflow/utils';
+
 /** Minimal structural view of the Node request objects we accept. */
 type NodeRequestLike = {
   method?: string;
@@ -58,14 +60,26 @@ const METHODS_WITHOUT_BODY = new Set([
   'CONNECT',
 ]);
 
-let warnedAboutReserializedBody = false;
+/**
+ * Latch for the once-per-process re-serialization warning.
+ *
+ * On `globalThis` rather than at module scope because a bundler can compile
+ * this module into the host application's build more than once, and a
+ * per-copy latch would print the same paragraph once per layer. The message
+ * is identical from every copy, so those repeats are pure noise.
+ */
+const warnings = globalSingleton(
+  '@workflow/nest//requestConversionWarnings',
+  1,
+  () => ({ reserializedBody: false })
+);
 
 /**
  * Reset the once-per-process warning latch. Test-only.
  * @internal
  */
 export function resetRequestConversionWarnings(): void {
-  warnedAboutReserializedBody = false;
+  warnings.reserializedBody = false;
 }
 
 function isFastifyReply(res: NodeResponseLike): boolean {
@@ -159,8 +173,8 @@ async function resolveRequestBody(
 
   if (body === undefined || body === null) return undefined;
 
-  if (!warnedAboutReserializedBody) {
-    warnedAboutReserializedBody = true;
+  if (!warnings.reserializedBody) {
+    warnings.reserializedBody = true;
     console.warn(
       '[@workflow/nest] A workflow request body had already been parsed into an ' +
         'object by a body parser, so the raw bytes are no longer available and ' +

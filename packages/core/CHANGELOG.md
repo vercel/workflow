@@ -1,5 +1,32 @@
 # @workflow/core
 
+## 5.0.0-beta.44
+
+### Minor Changes
+
+- [#3700](https://github.com/vercel/workflow/pull/3700) [`9b1b8c7`](https://github.com/vercel/workflow/commit/9b1b8c711104fd507327aafc8cb965738f315e29) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Pin correlation-ID draw order to event-log order (Node.js VM engine), so two concurrent replays of the same run assign the same IDs even when one loaded a shorter event-log prefix. Set `WORKFLOW_LOG_ORDER_DRAWS=0` to opt back into arrival-order delivery resolution.
+
+- [#3570](https://github.com/vercel/workflow/pull/3570) [`9454d51`](https://github.com/vercel/workflow/commit/9454d51db0d52d6be9bafea9c70ab6fc3a1ceba4) Thanks [@pranaygp](https://github.com/pranaygp)! - Add `world.runs.waitForTerminalStatus(runId, { timeoutMs, signal, resolveData })` method, which long-polls until the run reaches a terminal status. `await run.returnValue` now internally uses this, if the World supports it, instead of using a polling interval.
+
+- [#3634](https://github.com/vercel/workflow/pull/3634) [`7b79ba3`](https://github.com/vercel/workflow/commit/7b79ba37cc97e858ceb8b2474e03bbc404b555a0) Thanks [@pranaygp](https://github.com/pranaygp)! - New runs are created with the sealed-log event identity (specVersion 7). A sealed-log run's event positions are assigned by the backend before each write commits, so concurrent writers never contend for a position. A position whose writer dies is closed by the backend with a `noop` event; replay steps over those without delivering them or advancing the deterministic clock. Set `WORKFLOW_SEALED_LOG=0` to put a deployment back on the previous scheme. Every runtime reads sealed logs either way, and a run's version is fixed at creation, so the setting only affects new runs.
+
+### Patch Changes
+
+- [#3675](https://github.com/vercel/workflow/pull/3675) [`5b5a926`](https://github.com/vercel/workflow/commit/5b5a926f8850ec5d967e090cc0500028fd53e2ef) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Step-argument serialization failures now fail the step with a catchable `SerializationError` (via a `step_failed` event, like a step-body failure) instead of failing the run from outside the workflow, and when uncaught they fail the run immediately as a `USER_ERROR` rather than retrying until max queue deliveries.
+
+- [#3728](https://github.com/vercel/workflow/pull/3728) [`f771585`](https://github.com/vercel/workflow/commit/f771585486b3019c8d68211b158dfeffc9e5ebe8) Thanks [@pranaygp](https://github.com/pranaygp)! - Hold process-wide state on `globalThis` rather than at module scope in the packages that get bundled into the host application's server build, where a bundler compiles one copy of each module per layer. Covers warn-once latches, lazy caches, the VM script and QuickJS asset caches, the dev-server port cache, and step single-flight, whose per-copy map was not actually single-flight. State that is deliberately per-copy is annotated with the reason.
+
+- [#3728](https://github.com/vercel/workflow/pull/3728) [`f771585`](https://github.com/vercel/workflow/commit/f771585486b3019c8d68211b158dfeffc9e5ebe8) Thanks [@pranaygp](https://github.com/pranaygp)! - Build the workflow entrypoint's queue handler from the runtime World (`getWorld()`) instead of `getWorldHandlers()`, so a process creates one World rather than two. A stateful World no longer gets duplicate connection pools or queue workers.
+
+- [#3743](https://github.com/vercel/workflow/pull/3743) [`bf9de1c`](https://github.com/vercel/workflow/commit/bf9de1cd81eda1b1721b857364070c0ce70d1e58) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - A wait-continuation delivered before its wait elapses now re-arms under a fresh idempotency key instead of losing the wait's timer. Previously the re-enqueue reused a key the early delivery had already spent, so the world's dedupe window dropped it and the run slept indefinitely with nothing scheduled to wake it.
+
+- Updated dependencies [[`f771585`](https://github.com/vercel/workflow/commit/f771585486b3019c8d68211b158dfeffc9e5ebe8), [`f771585`](https://github.com/vercel/workflow/commit/f771585486b3019c8d68211b158dfeffc9e5ebe8), [`d012bf0`](https://github.com/vercel/workflow/commit/d012bf0fe3b2a1ebdb77c8066b9272ecd23e9523), [`9454d51`](https://github.com/vercel/workflow/commit/9454d51db0d52d6be9bafea9c70ab6fc3a1ceba4), [`7b79ba3`](https://github.com/vercel/workflow/commit/7b79ba37cc97e858ceb8b2474e03bbc404b555a0), [`f771585`](https://github.com/vercel/workflow/commit/f771585486b3019c8d68211b158dfeffc9e5ebe8), [`bf9de1c`](https://github.com/vercel/workflow/commit/bf9de1cd81eda1b1721b857364070c0ce70d1e58), [`f771585`](https://github.com/vercel/workflow/commit/f771585486b3019c8d68211b158dfeffc9e5ebe8), [`dc68611`](https://github.com/vercel/workflow/commit/dc68611fbf8e9c66a34bca627f63b12518f1191a), [`dc68611`](https://github.com/vercel/workflow/commit/dc68611fbf8e9c66a34bca627f63b12518f1191a)]:
+  - @workflow/utils@5.0.0-beta.9
+  - @workflow/world@5.0.0-beta.29
+  - @workflow/world-vercel@5.0.0-beta.40
+  - @workflow/world-local@5.0.0-beta.38
+  - @workflow/errors@5.0.0-beta.18
+
 ## 5.0.0-beta.43
 
 ### Patch Changes

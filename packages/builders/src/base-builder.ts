@@ -165,8 +165,8 @@ async function withRealpaths(entries: string[]): Promise<string[]> {
  * virtual-entry imports.
  *
  * If the file resolves to a real package specifier (`workflow/internal/builtins`,
- * `@internal/agent/server`, etc.), we return the bare specifier — version
- * stripped — because esbuild's package resolution will collapse all
+ * `@internal/agent/server`, etc.), we return the bare specifier (version
+ * stripped) because esbuild's package resolution will collapse all
  * importers of that specifier to the same physical module regardless of
  * which on-disk copy (src vs dist) any one importer wrote.
  *
@@ -513,7 +513,7 @@ export abstract class BaseBuilder {
         // If workflow constructs live in sub-paths (e.g. `my-pkg/workflows`),
         // they won't be detected here. The @workflow/serde dep check above
         // partially covers serde cases. This is acceptable as a best-effort
-        // heuristic — the primary fix is auto-removal in withWorkflow().
+        // heuristic; the primary fix is auto-removal in withWorkflow().
         let hasUseStep = false;
         let hasUseWorkflow = false;
         let hasSerde = hasWorkflowSerdeDep;
@@ -576,7 +576,7 @@ export abstract class BaseBuilder {
     // discovers classes like `Run` that live inside SDK packages. Without this,
     // files like `run.js` are only discovered when user code imports them.
     // This is resolved here (rather than in callers) so that the original
-    // `inputs` array reference is preserved for WeakMap caching — callers
+    // `inputs` array reference is preserved for WeakMap caching: callers
     // like createWorkflowsBundle and createStepsBundle can share the same
     // cache entry when they pass the same inputFiles array.
     const resolvedWorkflowRuntime = await enhancedResolve(
@@ -1042,7 +1042,7 @@ export const __steps_registered = true;
       // Only use relative source paths for workspace symlinks (files
       // outside node_modules in a packages/*/src/ directory). For tarball-
       // installed packages (files inside node_modules/), fall through to
-      // getImportPath which returns package specifiers — this allows the
+      // getImportPath which returns package specifiers; this allows the
       // SWC plugin's externalizeNonSteps to work correctly.
       const isWorkspaceSourceBackedPackageFile =
         normalizedWorkspaceFile.includes('/packages/') &&
@@ -1101,7 +1101,7 @@ export const __steps_registered = true;
     // import lines that resolve to the same physical module. Pre-seed the
     // set with the built-in steps import so a workspace step file at
     // `packages/workflow/src/internal/builtins.ts` doesn't emit a second,
-    // relative-path competing import — esbuild would otherwise transform
+    // relative-path competing import; esbuild would otherwise transform
     // both copies and the swc plugin would generate duplicate step IDs.
     const emittedImportIdentities = new Set<string>([builtInSteps]);
     const buildImports = (files: string[]): string =>
@@ -1286,6 +1286,7 @@ export const __steps_registered = true;
     outfile,
     bundleFinalOutput = true,
     keepInterimBundleContext = this.config.watch,
+    includeMetafile = false,
     tsconfigPath,
     discoveredEntries,
   }: {
@@ -1295,6 +1296,7 @@ export const __steps_registered = true;
     format?: 'cjs' | 'esm';
     bundleFinalOutput?: boolean;
     keepInterimBundleContext?: boolean;
+    includeMetafile?: boolean;
     discoveredEntries?: DiscoveredEntries;
   }): Promise<{
     manifest: WorkflowManifest;
@@ -1302,6 +1304,8 @@ export const __steps_registered = true;
     bundleFinal?: (interimBundleResult: string) => Promise<void>;
     /** The raw workflow VM code (before wrapping with entrypoint) */
     interimBundleText?: string;
+    /** The initial workflow VM build graph, when requested by a caller. */
+    interimBundleMetafile?: esbuild.Metafile;
   }> {
     const discovered =
       discoveredEntries ??
@@ -1369,7 +1373,7 @@ export const __steps_registered = true;
         .join('\n');
 
     // The SWC plugin in workflow mode emits `globalThis.__private_workflows.set(workflowId, fn)`
-    // calls directly, so we just need to import the files (Map is initialized via banner)
+    // calls directly, so we only need to import the files (Map is initialized via banner)
     const workflowImports = buildImports(workflowFiles);
 
     // Include serde-only files for class registration side effects
@@ -1408,7 +1412,8 @@ export const __steps_registered = true;
       treeShaking: true,
       keepNames: true,
       minify: false,
-      // Initialize the workflow registry at the very top of the bundle
+      metafile: includeMetafile,
+      // Initialize the workflow registry at the beginning of the bundle
       // This must be in banner (not the virtual entry) because esbuild's bundling
       // can reorder code, and the .set() calls need the Map to exist first
       banner: {
@@ -1639,9 +1644,14 @@ ${createWorkflowRouteHandlersCode(`workflowEntrypoint(workflowCode${workflowEntr
           interimBundleCtx,
           bundleFinal,
           interimBundleText,
+          interimBundleMetafile: interimBundle.metafile,
         };
       }
-      return { manifest: workflowManifest, interimBundleText };
+      return {
+        manifest: workflowManifest,
+        interimBundleText,
+        interimBundleMetafile: interimBundle.metafile,
+      };
     } catch (error) {
       shouldDisposeInterimBundleCtx = true;
       throw error;
@@ -1728,7 +1738,7 @@ ${createWorkflowRouteHandlersCode(`workflowEntrypoint(workflowCode${workflowEntr
         sourceStepRegistrationImports,
         tsconfigPath,
         discoveredEntries: effectiveDiscoveredEntries,
-        // Skip the createRequire banner here — when bundleFinalOutput is true
+        // Skip the createRequire banner here: when bundleFinalOutput is true
         // the outer esbuild pass will inline this bundle and add its own
         // banner. Emitting it twice declares __createRequire twice.
         skipEsmRequireBanner: bundleFinalOutput,
@@ -2062,7 +2072,7 @@ export const HEAD = handler;
 export const OPTIONS = handler;`;
 
     if (!bundle) {
-      // For Next.js, just write the unbundled file
+      // For Next.js, write the unbundled file
       await writeFileIfChanged(outfile, routeContent);
       return;
     }
