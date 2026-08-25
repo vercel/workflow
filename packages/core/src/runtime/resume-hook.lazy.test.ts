@@ -10,7 +10,7 @@ import {
 } from '@workflow/world';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { dehydrateStepReturnValue } from '../serialization.js';
-import { resumeHook, resumeWebhook } from './resume-hook.js';
+import { resumeHook, resumeHookDurable, resumeWebhook } from './resume-hook.js';
 import { setWorld } from './world.js';
 
 vi.mock('@vercel/functions', () => ({ waitUntil: vi.fn() }));
@@ -215,6 +215,50 @@ describe('resumeHook (lazy path)', () => {
         HookNotFoundError.is(e) && (e as HookNotFoundError).token === hook.token
     );
     expect(createEvent).not.toHaveBeenCalled();
+    expect(queue).not.toHaveBeenCalled();
+  });
+
+  it('resumeHookDurable writes the event before resolving, even when every lazy precondition passes', async () => {
+    // The runtime resumes a hook to record a step-issued abort in the event
+    // log, and that write is an ordering barrier: it must be committed before
+    // the aborting step completes, or the continuation `step_completed`
+    // enqueues can dispatch the next step with a stale, non-aborted signal.
+    // Publishing is not enough, so this entry point forces the eager write.
+    const hook = { ...baseHook, resumeContext: lazyContext } satisfies Hook;
+    const { createEvent, queue } = makeWorld(hook);
+
+    await resumeHookDurable(hook.token, { aborted: true });
+
+    expect(createEvent).toHaveBeenCalledTimes(1);
+    const [, eventArg, optsArg] = createEvent.mock.calls[0];
+    expect(eventArg).toMatchObject({
+      eventType: 'hook_received',
+      correlationId: hook.hookId,
+    });
+    // Sequential shape: no idempotency key on the write, no hookInput on the
+    // message. The payload rides the event log.
+    expect(optsArg.resumeId).toBeUndefined();
+    const [, payloadArg] = queue.mock.calls[0];
+    expect(payloadArg.hookInput).toBeUndefined();
+    expect(payloadArg.hookResumeTiming.strategy).toBe('sequential');
+  });
+
+  it('resumeHookDurable surfaces a terminal-run rejection as HookNotFoundError', async () => {
+    // The barrier path keeps the older loud contract precisely because it
+    // writes: a resume recording an abort against an ended run must not look
+    // like it landed.
+    const hook = { ...baseHook, resumeContext: lazyContext } satisfies Hook;
+    const createEvent = vi
+      .fn()
+      .mockRejectedValue(new RunExpiredError('run has expired'));
+    const { queue } = makeWorld(hook, { createEvent });
+
+    await expect(
+      resumeHookDurable(hook.token, { aborted: true })
+    ).rejects.toSatisfy(
+      (e: unknown) =>
+        HookNotFoundError.is(e) && (e as HookNotFoundError).token === hook.token
+    );
     expect(queue).not.toHaveBeenCalled();
   });
 

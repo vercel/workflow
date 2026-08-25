@@ -2604,15 +2604,22 @@ function reviveAbortController(
         // completion) rather than `ops` (best-effort, background). The stream
         // write above stays in `ops`: it must fire ASAP to reach an in-flight
         // sibling step and is not the durable record.
+        //
+        // `resumeHookDurable`, not `resumeHook`: awaiting the latter only
+        // guarantees the resume was published, since the lazy path leaves the
+        // event write to the queue consumer. That would satisfy
+        // `preCompletionOps` while leaving the very race this ordering exists
+        // to prevent.
+        //
         // Swallow errors here so the promise can only ever enforce ordering
         // when awaited (see the no-reject contract on
         // StepContext.preCompletionOps); a failed resume retries on next replay.
         const hookResume = (async () => {
           try {
-            const { resumeHook: resumeHookFn } = await import(
+            const { resumeHookDurable } = await import(
               './runtime/resume-hook.js'
             );
-            await resumeHookFn(value.hookToken, {
+            await resumeHookDurable(value.hookToken, {
               aborted: true,
               reason,
             });

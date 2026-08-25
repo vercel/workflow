@@ -264,7 +264,42 @@ export async function resumeHook<T = any>(
     payload,
     encryptionKeyOverride,
     false,
-    Date.now()
+    Date.now(),
+    false
+  );
+}
+
+/**
+ * {@link resumeHook} with the `hook_received` event written BEFORE this
+ * resolves, for the one caller that needs the resume to be durable at that
+ * instant rather than merely dispatched.
+ *
+ * The lazy path leaves the write to the queue consumer, so a normal
+ * `resumeHook()` resolves while the event is still in flight. That is fine for
+ * an external resume, whose caller has nothing racing it. It is NOT fine for a
+ * resume the runtime itself issues as a barrier: a step that aborts a shared
+ * `AbortController` resumes the hook that records the abort in the event log,
+ * and that write has to land before the step completes, or the workflow
+ * continuation `step_completed` enqueues can dispatch the next step with a
+ * stale, non-aborted signal (see `reviveAbortController` in serialization.ts).
+ *
+ * Forcing the eager write costs the round trip the lazy path removes, which is
+ * the right trade here: this is an internal ordering barrier, not the
+ * latency-sensitive external resume the optimization targets. The resume span
+ * reports `resume_fallback_reason: durable_required`.
+ */
+export async function resumeHookDurable<T = any>(
+  tokenOrHook: string | Hook,
+  payload: T,
+  encryptionKeyOverride?: PayloadKey
+): Promise<ResumedHook> {
+  return resumeHookImpl(
+    tokenOrHook,
+    payload,
+    encryptionKeyOverride,
+    false,
+    Date.now(),
+    true
   );
 }
 
@@ -284,13 +319,16 @@ export async function resumeHook<T = any>(
  *   resolution that hydrates hook metadata, and the `respondWith` setup) and
  *   stamping locally would silently exclude all of it, so the two entry points
  *   would report the same metric over different windows.
+ * @param requireDurableWrite - Force the sequential path so `hook_received` is
+ *   committed before this resolves. See {@link resumeHookDurable}.
  */
 async function resumeHookImpl<T = any>(
   tokenOrHook: string | Hook,
   payload: T,
   encryptionKeyOverride: PayloadKey | undefined,
   hookFreshlyLookedUp: boolean,
-  resumeRequestedAtMs: number
+  resumeRequestedAtMs: number,
+  requireDurableWrite: boolean
 ): Promise<ResumedHook> {
   return await waitedUntil(() => {
     return trace('hook.resume', async (span) => {
@@ -490,24 +528,30 @@ async function resumeHookImpl<T = any>(
             ? (hook.resumeCapabilities?.hookResumeDedupVersion ?? 0)
             : 0) >= HOOK_RESUME_DEDUP_VERSION ||
           world.capabilities?.hookResumeDedup === true;
-        const fallbackReason: string | null = lazyResumeDisabled
-          ? 'disabled'
-          : !backendDedupSupported
-            ? 'backend_unsupported'
-            : (resumeContext.hookResumeInputVersion ?? 0) <
-                HOOK_RESUME_INPUT_VERSION
-              ? 'consumer_unsupported'
-              : v1Compat
-                ? 'legacy'
-                : (resumeContext.runSpecVersion ?? 0) <
-                    SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT
-                  ? 'non_cbor_transport'
-                  : !(dehydratedPayload instanceof Uint8Array)
-                    ? 'non_bytes'
-                    : dehydratedPayload.byteLength >
-                        MAX_INLINE_RESUME_PAYLOAD_BYTES
-                      ? 'oversized'
-                      : null;
+        const fallbackReason: string | null = requireDurableWrite
+          ? // An internal caller needs the event committed before this
+            // resolves (an ordering barrier), which only the eager write
+            // provides. Checked first so the span names the real reason
+            // rather than whichever gate happens to fail alongside it.
+            'durable_required'
+          : lazyResumeDisabled
+            ? 'disabled'
+            : !backendDedupSupported
+              ? 'backend_unsupported'
+              : (resumeContext.hookResumeInputVersion ?? 0) <
+                  HOOK_RESUME_INPUT_VERSION
+                ? 'consumer_unsupported'
+                : v1Compat
+                  ? 'legacy'
+                  : (resumeContext.runSpecVersion ?? 0) <
+                      SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT
+                    ? 'non_cbor_transport'
+                    : !(dehydratedPayload instanceof Uint8Array)
+                      ? 'non_bytes'
+                      : dehydratedPayload.byteLength >
+                          MAX_INLINE_RESUME_PAYLOAD_BYTES
+                        ? 'oversized'
+                        : null;
         const useLazyResume = fallbackReason === null;
 
         span?.setAttributes({
@@ -759,7 +803,14 @@ export async function resumeWebhook(
   // backend. Call the internal implementation with the fresh attestation so
   // the lazy path stays available without a second GET. (The public
   // `resumeHook` never sets this, so a caller cannot forge it.)
-  await resumeHookImpl(hook, request, encryptionKey, true, resumeRequestedAtMs);
+  await resumeHookImpl(
+    hook,
+    request,
+    encryptionKey,
+    true,
+    resumeRequestedAtMs,
+    false
+  );
 
   if (responseReadable) {
     // Wait for the readable stream to emit one chunk,
