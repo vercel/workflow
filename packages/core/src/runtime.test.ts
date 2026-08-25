@@ -3088,11 +3088,11 @@ describe('workflowEntrypoint latency telemetry (ttfs / stso)', () => {
     }${latXform('workflow')}`;
 
   it('reports ttfs across a pre-step setAttributes, resolved in-process without a re-invoke', async () => {
-    // A workflow-body setAttributes before the first step resolves through
-    // an in-process replay: the same delivery commits attr_set, replays, and
-    // runs the step — no queue interaction. TTFS ends at the attr write, so
-    // the setAttributes call's duration is subtracted; here that detour is
-    // milliseconds, keeping ttfs ≈ the run's ULID backdate.
+    // A workflow-body setAttributes before the first step resolves in-process:
+    // the same delivery commits attr_set, reloads it, and advances the workflow
+    // by resuming or replaying — no queue interaction. TTFS ends at the attr
+    // write, so the setAttributes call's duration is subtracted. That detour is
+    // only milliseconds here, keeping ttfs ≈ the run's ULID backdate.
     const backdateMs = 10_000;
     const before = Date.now();
     const first = await driveLatency({
