@@ -286,11 +286,12 @@ export function renderComment({
     lines.push(`| ${entry.app} | ${cells.join(' | ')} |`);
   }
 
-  // Footnotes carry only what the table cannot say for itself: what the
-  // numbers are, what the parentheses are, and what makes the job fail.
+  // Everything that is not the table lives in the accordion: the table is the
+  // whole comment at a glance, and the notes are one click away when a number
+  // needs explaining.
+  const notes = [];
   const anyBaseline = comparison.apps.some((entry) => entry.hasBaseline);
-  lines.push(
-    '',
+  notes.push(
     anyBaseline
       ? 'Sizes are gzip; parentheses show the change against `main`.'
       : 'Sizes are gzip.',
@@ -300,17 +301,17 @@ export function renderComment({
   );
 
   if (status === 'failed') {
-    lines.push('A measurement job failed, so these numbers may be incomplete.');
+    notes.push('A measurement job failed, so these numbers may be incomplete.');
   }
   if (comparison.regressions.length > 0) {
-    lines.push(
+    notes.push(
       '⚠️ marks growth past the threshold. Add the ' +
         '`allow-bundle-size-growth` label to accept it.'
     );
   }
   for (const entry of comparison.apps) {
     if (entry.fingerprintMismatch) {
-      lines.push(
+      notes.push(
         `${entry.app}: build fingerprint differs from the baseline ` +
           `(${fingerprintDiffKeys(entry.fingerprintMismatch).join(', ')}), ` +
           'so no change is shown.'
@@ -318,14 +319,20 @@ export function renderComment({
     }
   }
   if (comparison.apps.some((entry) => !entry.hasBaseline)) {
-    lines.push('No baseline on `main` yet for some rows.');
+    notes.push('No baseline on `main` yet for some rows.');
   }
   if (skipped.length > 0) {
-    lines.push(`Skipped unreadable reports: ${skipped.join(', ')}.`);
+    notes.push(`Skipped unreadable reports: ${skipped.join(', ')}.`);
   }
 
   const shortCommit = commit ? commit.slice(0, 7) : 'unknown';
-  lines.push('', `\`${shortCommit}\` · [run](${runUrl})`);
+  notes.push('', `\`${shortCommit}\` · [run](${runUrl})`);
+
+  // A blank line after </summary> is what makes GitHub render the body as
+  // markdown rather than as one literal paragraph.
+  lines.push('', '<details>', '<summary>About these numbers</summary>', '');
+  lines.push(...notes);
+  lines.push('', '</details>');
 
   return `${lines.join('\n')}\n`;
 }

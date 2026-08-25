@@ -206,8 +206,8 @@ test('an unchanged metric renders as plus-minus zero', async () => {
   assert.match(md, /\(\u00b10\)/);
 });
 
-test('the comment is a single table with one row per app and no headings', async () => {
-  const { compareAll, renderComment } = await loadModule();
+test('the table is the only thing outside the accordion', async () => {
+  const { COMMENT_MARKER, compareAll, renderComment } = await loadModule();
   const comparison = compareAll(
     mapOf(report({ app: 'hono' }), report({ app: 'nextjs-turbopack' })),
     new Map(),
@@ -228,9 +228,23 @@ test('the comment is a single table with one row per app and no headings', async
   assert.strictEqual(rows.length, 4);
   assert.ok(rows[2].startsWith('| hono |'));
   assert.ok(rows[3].startsWith('| nextjs-turbopack |'));
-  // No markdown headings and no collapsible block.
   assert.doesNotMatch(md, /^#/m);
-  assert.doesNotMatch(md, /<details>/);
+
+  // Nothing but the marker and the table may precede the accordion, and
+  // everything after the table must be inside it.
+  const [above, below] = md.split('<details>');
+  assert.ok(below, 'expected a <details> block');
+  const visible = above
+    .split('\n')
+    .filter((line) => line.trim() !== '' && line !== COMMENT_MARKER);
+  assert.deepStrictEqual(visible, rows);
+  assert.match(below, /^\n<summary>[^<]+<\/summary>\n\n/);
+  assert.match(below.trimEnd(), /<\/details>$/);
+  // The notes the table cannot carry are all in there.
+  assert.match(below, /Sizes are gzip/);
+  assert.match(below, /gate this job/);
+  assert.match(below, /No baseline on `main` yet/);
+  assert.match(below, /`abc1234` · \[run\]/);
 });
 
 test('loadReports skips unparseable and future-schema files', async () => {
