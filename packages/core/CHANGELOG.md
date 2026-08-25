@@ -1,5 +1,23 @@
 # @workflow/core
 
+## 5.0.0-beta.45
+
+### Patch Changes
+
+- [#3550](https://github.com/vercel/workflow/pull/3550) [`d62b444`](https://github.com/vercel/workflow/commit/d62b44473b43e183e71386fe84b33f5e7bb5445c) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Keep schema-only World modules out of workflow VM bundles, prevent unknown attribute deletions from offsetting new keys, and safely ignore prototype-like event type names.
+
+- [#3773](https://github.com/vercel/workflow/pull/3773) [`27cab14`](https://github.com/vercel/workflow/commit/27cab14adcc6f748500fca19cf78feeb60a125e7) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Send the disposed hook's token on `hook_disposed` from the QuickJS engine, matching the node:vm engine
+
+- [#3490](https://github.com/vercel/workflow/pull/3490) [`f7fb012`](https://github.com/vercel/workflow/commit/f7fb0126528fac2168492c3143fe0379b6f5ef1a) Thanks [@shalabhc](https://github.com/shalabhc)! - Report replay cost for every step-to-step transition, not just a run's first step, and flag whether a retained VM served the batch
+
+- [#3682](https://github.com/vercel/workflow/pull/3682) [`5841558`](https://github.com/vercel/workflow/commit/584155897f75e712a1c2bc199d6d12027cd18dab) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fail the dev HMR e2e cleanup when a deleted workflow fixture is still imported by the generated step registrations, restoring the fixture so the dev server keeps serving the rest of the suite.
+
+- Updated dependencies [[`d62b444`](https://github.com/vercel/workflow/commit/d62b44473b43e183e71386fe84b33f5e7bb5445c)]:
+  - @workflow/world@5.0.0-beta.30
+  - @workflow/errors@5.0.0-beta.18
+  - @workflow/world-local@5.0.0-beta.39
+  - @workflow/world-vercel@5.0.0-beta.41
+
 ## 5.0.0-beta.44
 
 ### Minor Changes
