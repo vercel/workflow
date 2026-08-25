@@ -11,22 +11,24 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createHook, createRun, updateRun } from '../test-helpers.js';
 import { createStorage } from './index.js';
 
-// End-to-end coverage of the lazy hook resume's TWO writers against the
+// End-to-end coverage of the lazy hook resume's repeated writers against the
 // world-local backend (the dev World that advertises `hookResumeDedup`).
 //
-// On the parallel fast path, `resumeHook()` (the PRODUCER) writes the
-// `hook_received` event directly AND publishes a queue message carrying the
-// same `resumeId`; the queue consumer's re-ensure (the CONSUMER) writes the
-// same `hook_received` again before replay. Whichever lands first, the backend
-// must converge both onto exactly ONE committed event so replay never sees a
-// duplicated resume — the same guarantee the Vercel server enforces with its
-// `(runId, resumeId)` constraint.
+// On the lazy path, `resumeHook()` publishes a queue message carrying the
+// `resumeId` and writes nothing itself; the consumer materializes
+// `hook_received` from that message before replay. Every delivery of the
+// message repeats that write with the same `resumeId`, and a run's own
+// deployment-affinity re-route or a queue redelivery can therefore issue it
+// more than once. The backend must converge them onto exactly ONE committed
+// event so replay never sees a duplicated resume — the same guarantee the
+// Vercel server enforces with its `(runId, resumeId)` constraint. The same
+// convergence still covers an older producer that raced its own direct write
+// against the publish, which is why both orderings are exercised below.
 //
 // These tests drive `storage.events.create` with the exact arguments the real
-// producer (packages/core/src/runtime/resume-hook.ts) and consumer
-// (packages/core/src/runtime.ts) pass, so they exercise the convergence,
-// ordering, concurrency, and terminal-run behavior that the mocked core unit
-// tests (resume-hook.parallel.test.ts) cannot.
+// consumer (packages/core/src/runtime.ts) passes, so they exercise the
+// convergence, ordering, concurrency, and terminal-run behavior that the
+// mocked core unit tests (resume-hook.lazy.test.ts) cannot.
 describe('world-local lazy hook resume: producer/consumer convergence', () => {
   let testDir: string;
   let storage: Storage;

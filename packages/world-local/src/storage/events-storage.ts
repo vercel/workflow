@@ -1412,16 +1412,18 @@ export function createEventsStorage(
             throw new HookNotFoundError(data.correlationId);
           }
 
-          // Lazy hook resume idempotency: the parallel fast path writes this
-          // `hook_received` directly AND has the queue consumer re-ensure it,
-          // both carrying the same `resumeId`, so both may reach here under the
-          // per-hook lock. They must converge on ONE event. Keyed on
-          // `(runId, resumeId)` (NOT on the hookId) because a reusable hook
+          // Lazy hook resume idempotency: the queue consumer writes this
+          // `hook_received` from the message's `hookInput`, so every delivery
+          // of one resume's message repeats the write with the same
+          // `resumeId` and several may reach here under the per-hook lock (a
+          // redelivery, a deployment-affinity re-route, or an older producer
+          // that also wrote directly). They must converge on ONE event. Keyed
+          // on `(runId, resumeId)` (NOT on the hookId) because a reusable hook
           // receives many distinct resumes and each must record its own event;
-          // only the two writers of a single resume collapse. The claim pins
-          // the canonical eventId BEFORE the append so a cross-process writer
-          // converges too. Gated on `resumeId` so the historical single-write
-          // path is untouched.
+          // only the repeated writers of a single resume collapse. The claim
+          // pins the canonical eventId BEFORE the append so a cross-process
+          // writer converges too. Gated on `resumeId` so the historical
+          // single-write path is untouched.
           if (data.eventType === 'hook_received' && params?.resumeId) {
             const claimPath = hookResumeClaimPath(
               basedir,

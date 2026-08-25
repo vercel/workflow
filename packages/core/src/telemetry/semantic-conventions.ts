@@ -430,6 +430,11 @@ export const HookFound = SemanticConvention<boolean>('workflow.hook.found');
  * `hook_received` write failed transiently but the queue dispatch succeeded, so
  * the resume is recovered via the consumer's re-ensure. Corresponds to
  * `ResumedHook.resilientResume === true`.
+ *
+ * No longer emitted: the lazy path writes no event to fail, and the sequential
+ * path has no queue-delivered payload to recover from. Retained so dashboards
+ * and queries built on the attribute keep resolving while older producers are
+ * still deployed.
  */
 export const HookResilientResume = SemanticConvention<boolean>(
   'workflow.hook.resilient_resume'
@@ -438,8 +443,8 @@ export const HookResilientResume = SemanticConvention<boolean>(
 /**
  * Consumer-side signal (on the workflow execution span) that this replay
  * materialized the `hook_received` event from the queue message's `hookInput`
- * because the producer's direct write had not landed, which completes the
- * recovery path {@link HookResilientResume} began.
+ * because no committed event was found, which completes the recovery path
+ * {@link HookResilientResume} began.
  *
  * Legacy / non-atomic re-ensure signal only. Atomic lazy resumes
  * (resumeId + digest) go through the hoisted preload write instead, whose
@@ -568,10 +573,14 @@ export const ResumeTrigger = SemanticConvention<'hook'>(
   'workflow.resume.trigger'
 );
 
-/** Which `resumeHook()` dispatch path produced this resume. */
-export const ResumeStrategy = SemanticConvention<'parallel' | 'sequential'>(
-  'workflow.resume.strategy'
-);
+/**
+ * Which `resumeHook()` dispatch path produced this resume. `parallel` only
+ * appears for messages published by an older producer, which wrote
+ * `hook_received` itself in parallel with the publish.
+ */
+export const ResumeStrategy = SemanticConvention<
+  'lazy' | 'parallel' | 'sequential'
+>('workflow.resume.strategy');
 
 /**
  * How the consuming invocation initialized replay state. Distinct from the

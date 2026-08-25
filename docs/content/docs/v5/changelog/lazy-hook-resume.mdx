@@ -1,0 +1,39 @@
+---
+title: Lazy hook resume
+description: resumeHook() no longer writes hook_received itself. The queue consumer materializes the event from the message, so a resume costs one round trip.
+---
+
+# Lazy hook resume
+
+## Motivation
+
+[Resilient hook resume](/docs/changelog/resilient-resume) made `resumeHook()` write the `hook_received` event and publish the workflow queue message concurrently, with the queue consumer re-ensuring the event from the message's `hookInput` before replay. Both sides then wrote the same event, and a `(runId, resumeId)` constraint collapsed them onto one.
+
+Running the two concurrently removed the second round trip from the critical path, but the write itself stayed: every resume still spent a request on an event the consumer was about to write anyway, and the producer still had to classify its outcome (conflict, throttle, terminal run) to decide whether the resume had survived.
+
+This change drops the producer's write entirely. On the lazy path `resumeHook()` publishes the queue message and nothing else.
+
+## Design
+
+- `resumeHook()` publishes one message carrying `hookInput`: the dehydrated payload, a client-minted `resumeId`, the hook token, and a payload digest. It writes no event.
+- The queue consumer materializes `hook_received` from `hookInput` before replay, keyed by `resumeId`. This is the same write it already performed; it is now the only one.
+- The `(runId, resumeId)` constraint still matters: a queue redelivery, or a delivery re-routed for deployment affinity, repeats the write with the same key, and the backend collapses those onto exactly one committed event.
+- **A failed publish fails the resume.** The message carries both the trigger and the only copy of the payload, so `resumeHook()` throws and nothing is persisted for a later delivery to pick up. This replaces the previous rule where a failed event write could still be recovered through the queue.
+- `ResumedHook.resilientResume` is retained on the type but is never set: with a single writer there is no partial outcome to report. The `workflow.hook.resilient_resume` span attribute is likewise no longer emitted.
+- The resume span reports `workflow.hook.resume_strategy: lazy` (previously `parallel`).
+
+## Behavior change: resumes against an ended run
+
+`resumeHook()` learned that a run had ended by having its `hook_received` write rejected. With no write, the lazy path cannot observe that rejection, so **a resume targeting an ended run resolves instead of throwing `HookNotFoundError`** whenever the resume also skipped reading the run.
+
+That is the normal case: a hook lookup returns the run's resume context inline, so nothing reads the run's status. Resumes that do fall back to a run read keep their existing terminal pre-check, as does the sequential path, so a resume on either of those still fails loudly.
+
+Nothing resumes either way. The consumer's write is rejected the same way and the delivery is consumed, so the ended run is untouched. Only the producer's report changes: an accepted publish means the resume was dispatched, not that the run was still live when it arrived. A [webhook](/docs/api-reference/workflow-api/resume-webhook) whose run has ended can answer `202` rather than surfacing an error.
+
+Callers that need the distinction have to read the run.
+
+## Compatibility
+
+The gating is unchanged: the lazy path activates only when the target run's queue consumer and the live backend both attest support, re-checked on every resume. Oversized payloads, legacy runs, non-CBOR transports, and `WORKFLOW_DISABLE_LAZY_HOOK_RESUME=1` fall back to the sequential write-then-publish path.
+
+Consumers still accept a message from an older producer that wrote the event itself: such a message reports `strategy: parallel`, and the consumer's write converges on the producer's committed event exactly as before. No coordinated deploy is needed in either direction.

@@ -5,6 +5,14 @@ description: resumeHook() now tolerates transient event storage failures when th
 
 # Resilient `resumeHook()`
 
+<Callout type="info">
+  Superseded by [lazy hook resume](/docs/changelog/lazy-hook-resume):
+  `resumeHook()` no longer writes the `hook_received` event at all on the fast
+  path, so the two-writer design and the `resilientResume` flag described below
+  are historical. The `(runId, resumeId)` constraint and the queue-carried
+  payload remain.
+</Callout>
+
 ## Motivation
 
 `resumeHook()` used to write the `hook_received` event and dispatch the workflow queue message strictly one after the other, so every resume paid two sequential round trips and a transient event-storage failure failed the whole resume even when the queue was healthy. This change runs both writes **concurrently** (cutting a round trip off resume latency) and, on the same path, brings `resumeHook()` to parity with [resilient `start()`](/docs/changelog/resilient-start): a transient event-write failure no longer fails the resume when the payload can still be delivered through the queue.

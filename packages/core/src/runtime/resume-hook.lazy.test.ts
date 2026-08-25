@@ -1,15 +1,11 @@
-import {
-  EntityConflictError,
-  HookNotFoundError,
-  RunExpiredError,
-  ThrottleError,
-} from '@workflow/errors';
+import { HookNotFoundError, RunExpiredError } from '@workflow/errors';
 import {
   HOOK_RESUME_DEDUP_VERSION,
   HOOK_RESUME_INPUT_VERSION,
   type Hook,
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
+  type WorkflowRun,
   type World,
 } from '@workflow/world';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -23,9 +19,9 @@ vi.mock('../telemetry.js', () => ({
   trace: vi.fn((_name, fn) => fn(undefined)),
 }));
 // Return raw bytes from dehydration so `dehydratedPayload instanceof Uint8Array`
-// is true and the parallel resume strategy activates. The sibling
+// is true and the lazy resume strategy activates. The sibling
 // `resume-hook.fast-path.test.ts` returns a string and thus stays sequential;
-// this file exercises the complementary parallel branch.
+// this file exercises the complementary lazy branch.
 const PAYLOAD_BYTES = new Uint8Array([1, 2, 3, 4]);
 vi.mock('../serialization.js', async (importActual) => {
   const actual = await importActual<typeof import('../serialization.js')>();
@@ -36,27 +32,27 @@ vi.mock('../serialization.js', async (importActual) => {
   };
 });
 
-describe('resumeHook (parallel fast path)', () => {
+describe('resumeHook (lazy path)', () => {
   afterEach(() => setWorld(undefined));
 
   const baseHook = {
-    runId: 'wrun_par',
-    hookId: 'hook_par',
-    token: 'order:par',
+    runId: 'wrun_lazy',
+    hookId: 'hook_lazy',
+    token: 'order:lazy',
     ownerId: 'owner_1',
     projectId: 'project_1',
     environment: 'production',
     createdAt: new Date(),
-    // Non-legacy run: v1Compat is false, so the parallel path is eligible.
+    // Non-legacy run: v1Compat is false, so the lazy path is eligible.
     specVersion: SPEC_VERSION_CURRENT,
   } satisfies Hook;
 
   // The run carries an explicit `hookResumeInputVersion` marker (its creating
-  // deployment re-ensures from `hookInput`). Combined with a backend that
-  // declares `hookResumeDedup`, a CBOR-transport spec version, and a raw-byte
-  // payload, resumeHook takes the parallel path.
-  const parallelContext = {
-    deploymentId: 'deployment_par',
+  // deployment materializes the event from `hookInput`). Combined with a
+  // backend that declares `hookResumeDedup`, a CBOR-transport spec version, and
+  // a raw-byte payload, resumeHook takes the lazy path.
+  const lazyContext = {
+    deploymentId: 'deployment_lazy',
     workflowName: 'processOrder',
     runSpecVersion: SPEC_VERSION_CURRENT,
     workflowCoreVersion: '5.0.0',
@@ -83,48 +79,53 @@ describe('resumeHook (parallel fast path)', () => {
     return { createEvent, queue, getByToken };
   };
 
-  it('dispatches the event write and queue publish concurrently with a shared resumeId + digest', async () => {
-    const hook = { ...baseHook, resumeContext: parallelContext } satisfies Hook;
+  it('publishes the resume on the queue and writes no hook_received event', async () => {
+    const hook = { ...baseHook, resumeContext: lazyContext } satisfies Hook;
     const { createEvent, queue } = makeWorld(hook);
 
     const result = await resumeHook(hook.token, { foo: 'bar' });
-    // Happy path (direct write landed): no resilience flag on the ResumedHook.
+    // The flag is retained on the type but no longer produced by any path.
     expect(result.resilientResume).toBeUndefined();
 
-    expect(createEvent).toHaveBeenCalledTimes(1);
-    const [runIdArg, eventArg, optsArg] = createEvent.mock.calls[0];
-    expect(runIdArg).toBe(hook.runId);
-    expect(eventArg).toMatchObject({
-      eventType: 'hook_received',
-      correlationId: hook.hookId,
-    });
-    // Both writers must carry the same idempotency key and content digest.
-    const resumeId = optsArg.resumeId as string;
-    const digest = optsArg.resumePayloadDigest as string;
-    expect(resumeId).toEqual(expect.any(String));
-    expect(digest).toMatch(/^[0-9a-f]{64}$/);
-    // The replay-log preload is the consumer re-ensure's opt-in only: the
-    // producer never reads the log, so it must not ask the World (and, on
-    // world-vercel, the server) to assemble one.
-    expect(optsArg.preloadEvents).toBeUndefined();
+    // The whole point of the lazy path: the producer performs no event write,
+    // so the resume costs one round trip. The consumer materializes
+    // `hook_received` from `hookInput` before it replays.
+    expect(createEvent).not.toHaveBeenCalled();
 
     expect(queue).toHaveBeenCalledTimes(1);
     const [, payloadArg] = queue.mock.calls[0];
     expect(payloadArg.runId).toBe(hook.runId);
     expect(payloadArg.hookInput).toEqual({
-      resumeId,
+      // Idempotency key for the consumer's write: a redelivery of this message
+      // converges on the one committed event via (runId, resumeId).
+      resumeId: expect.any(String),
       hookId: hook.hookId,
       token: hook.token,
       payload: PAYLOAD_BYTES,
-      payloadDigest: digest,
+      payloadDigest: expect.stringMatching(/^[0-9a-f]{64}$/),
       // The run's pinned deployment from the resume context, for the
       // consumer's cheap pre-write affinity check.
-      deploymentId: 'deployment_par',
+      deploymentId: 'deployment_lazy',
     });
   });
 
+  it('mints a distinct resumeId per resume of the same hook', async () => {
+    // Two resumes of a reusable hook must not collide on the dedup constraint,
+    // or the second would be swallowed as a redelivery of the first and the
+    // run would only ever see one payload.
+    const hook = { ...baseHook, resumeContext: lazyContext } satisfies Hook;
+    const { queue } = makeWorld(hook);
+
+    await resumeHook(hook.token, { foo: 'one' });
+    await resumeHook(hook.token, { foo: 'two' });
+
+    const [, first] = queue.mock.calls[0];
+    const [, second] = queue.mock.calls[1];
+    expect(first.hookInput.resumeId).not.toBe(second.hookInput.resumeId);
+  });
+
   it('stamps the resume TTR window on the queue message', async () => {
-    const hook = { ...baseHook, resumeContext: parallelContext } satisfies Hook;
+    const hook = { ...baseHook, resumeContext: lazyContext } satisfies Hook;
     const { queue } = makeWorld(hook);
 
     const before = Date.now();
@@ -133,7 +134,7 @@ describe('resumeHook (parallel fast path)', () => {
 
     const [, payloadArg] = queue.mock.calls[0];
     const timing = payloadArg.hookResumeTiming;
-    expect(timing.strategy).toBe('parallel');
+    expect(timing.strategy).toBe('lazy');
     // T0 is entry into resumeHook and T1 the publish request, so both fall
     // inside this call and in that order.
     expect(timing.resumeRequestedAtMs).toBeGreaterThanOrEqual(before);
@@ -146,8 +147,10 @@ describe('resumeHook (parallel fast path)', () => {
     expect(timing.setupSource).toBeUndefined();
   });
 
-  it('always throws when the queue publish fails', async () => {
-    const hook = { ...baseHook, resumeContext: parallelContext } satisfies Hook;
+  it('throws when the queue publish fails', async () => {
+    // The message carries both the trigger and the only copy of the payload,
+    // so a failed publish is a failed resume with nothing persisted behind it.
+    const hook = { ...baseHook, resumeContext: lazyContext } satisfies Hook;
     const queueErr = new Error('queue unavailable');
     const { queue } = makeWorld(hook, {
       queue: vi.fn().mockRejectedValue(queueErr),
@@ -157,139 +160,80 @@ describe('resumeHook (parallel fast path)', () => {
     expect(queue).toHaveBeenCalledTimes(1);
   });
 
-  it('swallows a retryable event-write failure because the queue consumer re-ensures the event', async () => {
-    // 429/5xx/transport on the direct write is resilient: the run WAS
-    // re-triggered via the queue, whose consumer idempotently re-ensures the
-    // hook_received event before replay. resumeHook must not fail the caller.
-    const hook = { ...baseHook, resumeContext: parallelContext } satisfies Hook;
+  it('accepts a resume against an ended run instead of throwing HookNotFoundError', async () => {
+    // Contract change from the write-then-publish paths: this resume runs off
+    // a stored `resumeContext`, so it never reads the run, and it never
+    // writes, so it cannot observe the server's rejection of `hook_received`
+    // for a terminal run either. It resolves. Nothing resumes — the consumer's
+    // own write is rejected the same way and the delivery is consumed. A World
+    // whose events.create would reject is never consulted. The complementary
+    // run-fallback case is the test below.
+    const hook = { ...baseHook, resumeContext: lazyContext } satisfies Hook;
     const createEvent = vi
       .fn()
-      .mockRejectedValue(new ThrottleError('slow down'));
-    const queue = vi.fn().mockResolvedValue({ messageId: 'm_1' });
-    makeWorld(hook, { createEvent, queue });
+      .mockRejectedValue(new RunExpiredError('run has expired'));
+    const { queue } = makeWorld(hook, { createEvent });
 
-    const result = await resumeHook(hook.token, { foo: 'bar' });
-    // Recovered via the queue: the ResumedHook carries resilientResume=true so
-    // callers/telemetry can distinguish the fallback from the happy path.
-    expect(result).toMatchObject({
-      hookId: hook.hookId,
-      resilientResume: true,
-    });
-    expect(createEvent).toHaveBeenCalledTimes(1);
-    expect(queue).toHaveBeenCalledTimes(1);
-    // The payload rode the queue message so the consumer can materialize it.
-    const [, payloadArg] = queue.mock.calls[0];
-    expect(payloadArg.hookInput).toMatchObject({
-      hookId: hook.hookId,
-      token: hook.token,
-      payload: PAYLOAD_BYTES,
-    });
-  });
-
-  it('re-keys a terminal-run rejection from the event write to HookNotFoundError(token)', async () => {
-    // The queue publish succeeds, but the run has genuinely ended: the direct
-    // write rejects with a terminal "hook gone" error and resumeHook surfaces
-    // the pre-fast-path contract (HookNotFoundError keyed on the token). The
-    // queue consumer's re-ensure will also no-op against the terminal run.
-    for (const err of [
-      new HookNotFoundError(baseHook.hookId),
-      new RunExpiredError('run has expired'),
-    ]) {
-      const hook = {
-        ...baseHook,
-        resumeContext: parallelContext,
-      } satisfies Hook;
-      const createEvent = vi.fn().mockRejectedValue(err);
-      const queue = vi.fn().mockResolvedValue({ messageId: 'm_1' });
-      makeWorld(hook, { createEvent, queue });
-
-      await expect(resumeHook(hook.token, { foo: 'bar' })).rejects.toSatisfy(
-        (e: unknown) =>
-          HookNotFoundError.is(e) &&
-          (e as HookNotFoundError).token === hook.token
-      );
-      setWorld(undefined);
-    }
-  });
-
-  it('rethrows a non-retryable, non-terminal event-write failure (e.g. a 400) even though the queue publish succeeded', async () => {
-    // Not every event-write rejection is recoverable: a genuine client error
-    // (400 / validation) is neither a terminal "hook gone" (re-keyed to
-    // HookNotFoundError) nor a transient failure (swallowed). It falls through
-    // to the default branch and surfaces to the caller unchanged — the queue
-    // message went out, but the caller must see the real error.
-    const hook = { ...baseHook, resumeContext: parallelContext } satisfies Hook;
-    const badRequest = new Error('invalid event payload');
-    const createEvent = vi.fn().mockRejectedValue(badRequest);
-    const queue = vi.fn().mockResolvedValue({ messageId: 'm_1' });
-    makeWorld(hook, { createEvent, queue });
-
-    await expect(resumeHook(hook.token, { foo: 'bar' })).rejects.toBe(
-      badRequest
+    await expect(resumeHook(hook.token, { foo: 'bar' })).resolves.toMatchObject(
+      { hookId: hook.hookId }
     );
-    expect(createEvent).toHaveBeenCalledTimes(1);
+    expect(createEvent).not.toHaveBeenCalled();
     expect(queue).toHaveBeenCalledTimes(1);
   });
 
-  it('prioritizes the queue error when both the event write and the queue publish fail', async () => {
-    // Queue failure is always fatal (no consumer will re-ensure), and it is
-    // checked before the event-write result — so even a recoverable-looking
-    // event error is superseded by the queue rejection the caller must see.
-    const hook = { ...baseHook, resumeContext: parallelContext } satisfies Hook;
-    const queueErr = new Error('queue unavailable');
-    const createEvent = vi
-      .fn()
-      .mockRejectedValue(new ThrottleError('slow down'));
-    const queue = vi.fn().mockRejectedValue(queueErr);
-    makeWorld(hook, { createEvent, queue });
+  it('still rejects an ended run when the hook carries no resumeContext', async () => {
+    // The lazy path removes the producer's write, not the run-fallback
+    // terminal pre-check. A World that serves no `resumeContext` on its hooks
+    // (world-local) makes every resume fetch the run, so an ended run is
+    // caught locally and throws before anything is published — even though
+    // that World statically attests dedup and would otherwise go lazy.
+    const hook = { ...baseHook } satisfies Hook;
+    const run = {
+      runId: hook.runId,
+      status: 'completed',
+      deploymentId: 'deployment_lazy',
+      workflowName: 'processOrder',
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      attributes: {},
+      specVersion: SPEC_VERSION_CURRENT,
+    } as unknown as WorkflowRun;
+    const createEvent = vi.fn();
+    const queue = vi.fn();
+    setWorld({
+      specVersion: SPEC_VERSION_CURRENT,
+      capabilities: { hookResumeDedup: true },
+      hooks: { getByToken: vi.fn().mockResolvedValue(hook) },
+      runs: { get: vi.fn().mockResolvedValue(run) },
+      events: { create: createEvent },
+      getEncryptionKeyForRun: vi.fn().mockResolvedValue(undefined),
+      queue,
+    } as unknown as World);
 
-    await expect(resumeHook(hook.token, { foo: 'bar' })).rejects.toBe(queueErr);
-    expect(createEvent).toHaveBeenCalledTimes(1);
-    expect(queue).toHaveBeenCalledTimes(1);
-  });
-
-  it('swallows an EntityConflict (409) from the event write on the parallel path', async () => {
-    // Unlike the sequential path, a 409 here is NOT "hook gone": the parallel
-    // write raced its own re-ensuring queue consumer (or a redrive) on the
-    // shared resumeId. The run was re-triggered via the queue, whose consumer
-    // converges on the single committed event, so resumeHook must resolve
-    // rather than re-key to HookNotFoundError.
-    const hook = { ...baseHook, resumeContext: parallelContext } satisfies Hook;
-    const createEvent = vi
-      .fn()
-      .mockRejectedValue(new EntityConflictError('resumeId already claimed'));
-    const queue = vi.fn().mockResolvedValue({ messageId: 'm_1' });
-    makeWorld(hook, { createEvent, queue });
-
-    const result = await resumeHook(hook.token, { foo: 'bar' });
-    // A 409 here is expected concurrency, recovered via the queue consumer, so
-    // it is surfaced as a resilient resume rather than an error.
-    expect(result).toMatchObject({
-      hookId: hook.hookId,
-      resilientResume: true,
-    });
-    expect(createEvent).toHaveBeenCalledTimes(1);
-    expect(queue).toHaveBeenCalledTimes(1);
+    await expect(resumeHook(hook.token, { foo: 'bar' })).rejects.toSatisfy(
+      (e: unknown) =>
+        HookNotFoundError.is(e) && (e as HookNotFoundError).token === hook.token
+    );
+    expect(createEvent).not.toHaveBeenCalled();
+    expect(queue).not.toHaveBeenCalled();
   });
 
   it('forces the sequential path when WORKFLOW_DISABLE_LAZY_HOOK_RESUME=1 despite every other precondition passing', async () => {
-    // The operational kill switch must win over an otherwise fully fast-path-
+    // The operational kill switch must win over an otherwise fully lazy-
     // eligible resume (marker present, dedup-capable backend, CBOR transport,
     // raw-byte payload). Follows the SDK convention of other disable flags
     // (e.g. WORKFLOW_DISABLE_COMPRESSION): enabled by default, strict '1'.
     const ORIG = process.env.WORKFLOW_DISABLE_LAZY_HOOK_RESUME;
     process.env.WORKFLOW_DISABLE_LAZY_HOOK_RESUME = '1';
     try {
-      const hook = {
-        ...baseHook,
-        resumeContext: parallelContext,
-      } satisfies Hook;
+      const hook = { ...baseHook, resumeContext: lazyContext } satisfies Hook;
       const { createEvent, queue } = makeWorld(hook);
 
       await resumeHook(hook.token, { foo: 'bar' });
 
-      // Sequential: no shared idempotency key on the write, no hookInput on the
-      // queue message — the payload rides the event log.
+      // Sequential: the event is written before the publish, with no
+      // idempotency key, and the queue message carries no hookInput — the
+      // payload rides the event log.
       expect(createEvent).toHaveBeenCalledTimes(1);
       const [, , optsArg] = createEvent.mock.calls[0];
       expect(optsArg.resumeId).toBeUndefined();
@@ -309,20 +253,16 @@ describe('resumeHook (parallel fast path)', () => {
 
   it('does NOT force sequential for values other than the exact string "1"', async () => {
     // Strict comparison: only '1' disables. A stray 'true'/'0'/'' must leave
-    // the fast path enabled, matching the other WORKFLOW_DISABLE_* flags.
+    // the lazy path enabled, matching the other WORKFLOW_DISABLE_* flags.
     const ORIG = process.env.WORKFLOW_DISABLE_LAZY_HOOK_RESUME;
     process.env.WORKFLOW_DISABLE_LAZY_HOOK_RESUME = 'true';
     try {
-      const hook = {
-        ...baseHook,
-        resumeContext: parallelContext,
-      } satisfies Hook;
+      const hook = { ...baseHook, resumeContext: lazyContext } satisfies Hook;
       const { createEvent, queue } = makeWorld(hook);
 
       await resumeHook(hook.token, { foo: 'bar' });
 
-      const [, , optsArg] = createEvent.mock.calls[0];
-      expect(optsArg.resumeId).toEqual(expect.any(String));
+      expect(createEvent).not.toHaveBeenCalled();
       const [, payloadArg] = queue.mock.calls[0];
       expect(payloadArg.hookInput).toBeDefined();
     } finally {
@@ -335,14 +275,13 @@ describe('resumeHook (parallel fast path)', () => {
   });
 
   it('falls back to the sequential path when the payload exceeds the inline queue bound', async () => {
-    // A payload larger than the queue's inline ceiling would fail the oversized
-    // publish on the parallel path, persisting hook_received but never
-    // re-triggering the run. The size gate must instead select the sequential
-    // path, whose queue message carries only the run ID (no resumeId / no
-    // hookInput) — the payload rides the event log.
+    // A payload larger than the queue's inline ceiling would fail the publish
+    // on the lazy path, and with no eager write there would be nothing left of
+    // the resume. The size gate must instead select the sequential path, whose
+    // queue message carries only the run ID — the payload rides the event log.
     const oversized = new Uint8Array(256 * 1024).fill(7);
     vi.mocked(dehydrateStepReturnValue).mockResolvedValueOnce(oversized);
-    const hook = { ...baseHook, resumeContext: parallelContext } satisfies Hook;
+    const hook = { ...baseHook, resumeContext: lazyContext } satisfies Hook;
     const { createEvent, queue } = makeWorld(hook);
 
     await resumeHook(hook.token, { foo: 'bar' });
@@ -366,15 +305,15 @@ describe('resumeHook (parallel fast path)', () => {
 
   it('falls back to the sequential path when the run lacks the hookResumeInput marker', async () => {
     // The run's creating deployment did not stamp `hookResumeInputVersion`, so
-    // its queue consumer will NOT re-ensure hook_received from hookInput. Even
-    // with a dedup-capable backend, raw-byte payloads, and CBOR transport,
-    // resumeHook writes then publishes and carries neither resumeId nor
-    // hookInput — the payload rides the event log.
+    // its queue consumer will NOT materialize hook_received from hookInput.
+    // Without an eager write the resume would be lost outright, so even with a
+    // dedup-capable backend, raw-byte payloads, and CBOR transport, resumeHook
+    // writes then publishes and carries neither resumeId nor hookInput.
     expect(SPEC_VERSION_CURRENT).toBeGreaterThanOrEqual(
       SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT
     );
     const { hookResumeInputVersion: _omit, ...contextWithoutMarker } =
-      parallelContext;
+      lazyContext;
     const hook = {
       ...baseHook,
       resumeContext: contextWithoutMarker,
@@ -394,14 +333,14 @@ describe('resumeHook (parallel fast path)', () => {
   });
 
   it('falls back to the sequential path for a legacy (v1Compat) run', async () => {
-    // A legacy run omits `token` from the producer's event body, but the queue
-    // consumer's re-ensure always includes it — the two writers would disagree
-    // on the event body. Legacy runs must stay sequential regardless of every
-    // other precondition.
+    // A legacy run omits `token` from the eagerly written event body, but the
+    // consumer's write always includes it — the same resume would produce a
+    // different event depending on which side wrote it. Legacy runs must stay
+    // sequential regardless of every other precondition.
     const hook = {
       ...baseHook,
       specVersion: 1,
-      resumeContext: parallelContext,
+      resumeContext: lazyContext,
     } satisfies Hook;
     const { createEvent, queue } = makeWorld(hook);
 
@@ -421,8 +360,9 @@ describe('resumeHook (parallel fast path)', () => {
     // The target runtime supports lazy resume (marker present, CBOR transport,
     // raw bytes) but the World backend has not opted in — e.g. Postgres, which
     // has no (runId, resumeId) dedup. resumeHook must fail closed to the
-    // sequential path so the two writers can never diverge.
-    const hook = { ...baseHook, resumeContext: parallelContext } satisfies Hook;
+    // sequential path, or a queue redelivery would commit a second
+    // hook_received.
+    const hook = { ...baseHook, resumeContext: lazyContext } satisfies Hook;
     const { createEvent, queue } = makeWorld(
       hook,
       {},
@@ -441,25 +381,21 @@ describe('resumeHook (parallel fast path)', () => {
     expect(payloadArg.hookInput).toBeUndefined();
   });
 
-  it('takes the parallel path on a dynamic backend attestation (resumeCapabilities) with no static capability', async () => {
+  it('takes the lazy path on a dynamic backend attestation (resumeCapabilities) with no static capability', async () => {
     // world-vercel no longer declares the static `hookResumeDedup`; it attests
     // dedup support FRESH per by-token lookup via the response-only
-    // `resumeCapabilities`. The parallel path must engage on that signal alone,
+    // `resumeCapabilities`. The lazy path must engage on that signal alone,
     // with an otherwise-empty World capability set.
     const hook = {
       ...baseHook,
-      resumeContext: parallelContext,
+      resumeContext: lazyContext,
       resumeCapabilities: { hookResumeDedupVersion: HOOK_RESUME_DEDUP_VERSION },
     } satisfies Hook;
     const { createEvent, queue } = makeWorld(hook, {}, {});
 
     await resumeHook(hook.token, { foo: 'bar' });
 
-    expect(createEvent).toHaveBeenCalledTimes(1);
-    const [, , optsArg] = createEvent.mock.calls[0];
-    expect(optsArg.resumeId).toEqual(expect.any(String));
-    expect(optsArg.resumePayloadDigest).toMatch(/^[0-9a-f]{64}$/);
-
+    expect(createEvent).not.toHaveBeenCalled();
     expect(queue).toHaveBeenCalledTimes(1);
     const [, payloadArg] = queue.mock.calls[0];
     expect(payloadArg.hookInput).toBeDefined();
@@ -469,8 +405,8 @@ describe('resumeHook (parallel fast path)', () => {
     // A rolled-back or kill-switched server returns a hook with no
     // `resumeCapabilities`, and world-vercel declares no static capability.
     // With both attestations absent, resumeHook must fail closed — every new
-    // resume degrades to the single-writer path with no stranded hooks.
-    const hook = { ...baseHook, resumeContext: parallelContext } satisfies Hook;
+    // resume degrades to the eager write with no stranded hooks.
+    const hook = { ...baseHook, resumeContext: lazyContext } satisfies Hook;
     const { createEvent, queue } = makeWorld(hook, {}, {});
 
     await resumeHook(hook.token, { foo: 'bar' });
@@ -489,12 +425,12 @@ describe('resumeHook (parallel fast path)', () => {
     // The response-only `resumeCapabilities` is only trustworthy when fetched
     // during THIS resume. A public caller passing a pre-fetched Hook object —
     // e.g. one cached before a server rollback or kill switch, still carrying
-    // `hookResumeDedupVersion` — must NOT reactivate the parallel path against
-    // a backend that no longer dedups. Passing a Hook (not a token) skips the
+    // `hookResumeDedupVersion` — must NOT reactivate the lazy path against a
+    // backend that no longer dedups. Passing a Hook (not a token) skips the
     // by-token lookup, so its capability is stale by construction and ignored.
     const hook = {
       ...baseHook,
-      resumeContext: parallelContext,
+      resumeContext: lazyContext,
       resumeCapabilities: { hookResumeDedupVersion: HOOK_RESUME_DEDUP_VERSION },
     } satisfies Hook;
     // Empty world capabilities (world-vercel: no static hookResumeDedup) and
@@ -503,7 +439,8 @@ describe('resumeHook (parallel fast path)', () => {
 
     await resumeHook(hook, { foo: 'bar' });
 
-    // Sequential: no shared idempotency key, no hookInput on the queue message.
+    // Sequential: eager write with no idempotency key, no hookInput on the
+    // queue message.
     expect(createEvent).toHaveBeenCalledTimes(1);
     const [, , optsArg] = createEvent.mock.calls[0];
     expect(optsArg.resumeId).toBeUndefined();
@@ -512,19 +449,19 @@ describe('resumeHook (parallel fast path)', () => {
     expect(payloadArg.hookInput).toBeUndefined();
   });
 
-  it('resumeWebhook takes the parallel path via its internal fresh attestation on a dynamic-only backend', async () => {
+  it('resumeWebhook takes the lazy path via its internal fresh attestation on a dynamic-only backend', async () => {
     // The complement to the "caller supplies a stale Hook" fail-closed test:
     // `resumeWebhook` fetches the hook by token in-line (`getHookByTokenWithKey`)
     // during this resume, then calls the private `resumeHookImpl` with the
     // freshness attestation set. That is the ONLY path allowed to trust the
     // response-only `resumeCapabilities` on a Hook object, so with no static
-    // world capability the parallel path must still engage — proving the
+    // world capability the lazy path must still engage — proving the
     // attestation flows through the webhook entry point (which cannot be
     // exercised through the public three-arg `resumeHook`).
     const hook = {
       ...baseHook,
       isWebhook: true,
-      resumeContext: parallelContext,
+      resumeContext: lazyContext,
       resumeCapabilities: { hookResumeDedupVersion: HOOK_RESUME_DEDUP_VERSION },
     } satisfies Hook;
     const { createEvent, queue } = makeWorld(hook, {}, {});
@@ -533,11 +470,8 @@ describe('resumeHook (parallel fast path)', () => {
     // Default webhook (no `respondWith`) resolves to a 202.
     expect(response.status).toBe(202);
 
-    // Parallel: shared idempotency key + hookInput on the queue message.
-    expect(createEvent).toHaveBeenCalledTimes(1);
-    const [, , optsArg] = createEvent.mock.calls[0];
-    expect(optsArg.resumeId).toEqual(expect.any(String));
-    expect(optsArg.resumePayloadDigest).toMatch(/^[0-9a-f]{64}$/);
+    // Lazy: no event write, hookInput on the queue message.
+    expect(createEvent).not.toHaveBeenCalled();
     const [, payloadArg] = queue.mock.calls[0];
     expect(payloadArg.hookInput).toBeDefined();
   });
@@ -555,7 +489,7 @@ describe('resumeHook (parallel fast path)', () => {
       const hook = {
         ...baseHook,
         isWebhook: true,
-        resumeContext: parallelContext,
+        resumeContext: lazyContext,
       } satisfies Hook;
       const { queue } = makeWorld(hook, {
         // The lookup takes 500ms of wall clock.
@@ -581,10 +515,10 @@ describe('resumeHook (parallel fast path)', () => {
   it('ignores a stale resumeCapabilities below the required dedup version', async () => {
     // Forward-compat: a future server that lowers its attested version (or a
     // corrupted/old field below HOOK_RESUME_DEDUP_VERSION) must not engage the
-    // parallel path — the version gate is a floor, not a mere presence check.
+    // lazy path — the version gate is a floor, not a mere presence check.
     const hook = {
       ...baseHook,
-      resumeContext: parallelContext,
+      resumeContext: lazyContext,
       resumeCapabilities: {
         hookResumeDedupVersion: HOOK_RESUME_DEDUP_VERSION - 1,
       },
@@ -593,6 +527,7 @@ describe('resumeHook (parallel fast path)', () => {
 
     await resumeHook(hook.token, { foo: 'bar' });
 
+    expect(createEvent).toHaveBeenCalledTimes(1);
     const [, , optsArg] = createEvent.mock.calls[0];
     expect(optsArg.resumeId).toBeUndefined();
     const [, payloadArg] = queue.mock.calls[0];

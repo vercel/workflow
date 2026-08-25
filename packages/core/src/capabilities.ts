@@ -40,8 +40,8 @@
  * - Lazy hook resume ("consumer re-ensures `hook_received` from `hookInput`"):
  *   deliberately NOT tracked here. Rather than predict a release cutoff, the
  *   run's creating deployment stamps an explicit `hookResumeInputVersion`
- *   execution-context marker; `resumeHook()` gates the parallel fast path on
- *   that marker (mirrored onto the hook's resumeContext by the server).
+ *   execution-context marker; `resumeHook()` gates the lazy path on that
+ *   marker (mirrored onto the hook's resumeContext by the server).
  */
 
 import semver from 'semver';
@@ -120,7 +120,7 @@ const CAPABILITY_VERSION_TABLE: ReadonlyArray<{
   // version-compare against a predicted release cutoff is a guess; instead the
   // run's creating deployment stamps an explicit `hookResumeInputVersion`
   // marker into its execution context, which the server mirrors onto the hook's
-  // resumeContext. `resumeHook()` gates the parallel fast path on that marker.
+  // resumeContext. `resumeHook()` gates the lazy path on that marker.
 ];
 
 /**
