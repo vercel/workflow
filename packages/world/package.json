@@ -6,6 +6,22 @@
   "main": "dist/index.js",
   "exports": {
     ".": "./dist/index.js",
+    "./attributes-validation": {
+      "types": "./dist/attributes-validation.d.ts",
+      "default": "./dist/attributes-validation.js"
+    },
+    "./env-config": {
+      "types": "./dist/env-config.d.ts",
+      "default": "./dist/env-config.js"
+    },
+    "./event-metadata": {
+      "types": "./dist/event-metadata.d.ts",
+      "default": "./dist/event-metadata.js"
+    },
+    "./spec-version": {
+      "types": "./dist/spec-version.d.ts",
+      "default": "./dist/spec-version.js"
+    },
     "./*": "./dist/*"
   },
   "publishConfig": {

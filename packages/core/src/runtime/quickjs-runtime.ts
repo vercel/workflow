@@ -2621,6 +2621,12 @@ function collectDrainOperations(
           toDispose.push({
             type: "hook_dispose",
             correlationId: p.correlationId,
+            // Carried, not dropped: the entrypoint sends it on hook_disposed,
+            // and the node:vm engine does the same for this case — its
+            // completion drain marks the system hook disposed and reuses the
+            // queue item, token and all. Synthesizing a fresh object here is
+            // what makes it easy to lose.
+            token: p.token,
             hasCreatedEvent: false,
           });
         }

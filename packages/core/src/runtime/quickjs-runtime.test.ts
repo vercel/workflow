@@ -868,6 +868,86 @@ describe('AbortController (hook-backed)', () => {
     expect(value.observed).toEqual(['listener:stop it']);
   });
 
+  it('carries the system hook token into the completion-drain disposal', async () => {
+    // The completion drain synthesizes a `hook_dispose` for a durable system
+    // hook the workflow never aborted, and the entrypoint turns that op into a
+    // `hook_disposed` event. The op therefore has to carry the token: the
+    // node:vm engine sends one here (its drain marks the queue item disposed
+    // and reuses it, token included), and a world that releases a hook's token
+    // claim alongside the hook needs to be told which token this is.
+    const code = `
+      var checkStep = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//test//check");
+      async function workflow() {
+        // Never aborted and never explicitly disposed: exactly the hook the
+        // completion drain has to clean up.
+        var controller = new AbortController();
+        await checkStep(1);
+        return controller.signal.aborted;
+      }
+      workflow.workflowId = "workflow//test//workflow";
+      globalThis.__private_workflows.set("workflow//test//workflow", workflow);
+    `;
+    const run = makeRun();
+
+    const r1 = await runQuickJSWorkflow({
+      workflowCode: code,
+      workflowId: 'workflow//test//workflow',
+      workflowRun: run,
+      events: [],
+    });
+    const hookOp = r1.suspended!.pendingOperations.find(
+      (o) => o.type === 'hook'
+    ) as any;
+    const stepOp = r1.suspended!.pendingOperations.find(
+      (o) => o.type === 'step'
+    ) as any;
+    expect(hookOp.isSystem).toBe(true);
+    expect(hookOp.token).toBeTruthy();
+
+    // Replay with the hook durably created and the step done, so the workflow
+    // returns and the drain runs.
+    const r2 = await runQuickJSWorkflow({
+      workflowCode: code,
+      workflowId: 'workflow//test//workflow',
+      workflowRun: run,
+      events: [
+        runCreatedEvent(run),
+        {
+          eventId: 'evnt_001',
+          runId: run.runId,
+          eventType: 'hook_created',
+          correlationId: hookOp.correlationId,
+          eventData: { token: hookOp.token, isWebhook: false, isSystem: true },
+          createdAt: new Date('2025-01-01T00:00:01Z'),
+        },
+        {
+          eventId: 'evnt_002',
+          runId: run.runId,
+          eventType: 'step_created',
+          correlationId: stepOp.correlationId,
+          eventData: { stepName: 'step//test//check' },
+          createdAt: new Date('2025-01-01T00:00:02Z'),
+        },
+        {
+          eventId: 'evnt_003',
+          runId: run.runId,
+          eventType: 'step_completed',
+          correlationId: stepOp.correlationId,
+          eventData: { output: serialize(1) },
+          createdAt: new Date('2025-01-01T00:00:03Z'),
+        },
+      ],
+    });
+
+    expect(r2.completed).toBeDefined();
+    const disposal = r2.completed!.drainOperations?.find(
+      (o) => o.type === 'hook_dispose'
+    ) as any;
+    expect(disposal).toBeDefined();
+    expect(disposal.correlationId).toBe(hookOp.correlationId);
+    expect(disposal.token).toBe(hookOp.token);
+  });
+
   it('AbortSignal statics work in the VM', async () => {
     const result = await runQuickJSWorkflow({
       workflowCode: `
