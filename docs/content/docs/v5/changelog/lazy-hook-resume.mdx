@@ -22,11 +22,21 @@ This change drops the producer's write entirely. On the lazy path `resumeHook()`
 - `ResumedHook.resilientResume` is retained on the type but is never set: with a single writer there is no partial outcome to report. The `workflow.hook.resilient_resume` span attribute is likewise no longer emitted.
 - The resume span reports `workflow.hook.resume_strategy: lazy` (previously `parallel`).
 
+## Behavior change: the event is not visible when `resumeHook()` returns
+
+`resumeHook()` used to await its own `hook_received` write, so by the time it resolved the event was in the log. It no longer writes, so **resolving means the message was published, not that the event exists**. The event appears when the run picks the resume up.
+
+Code that reads the run back immediately after resuming now races. The pattern that breaks is a loop that resumes and then looks for the next thing to resume, keying off "this hook has no `hook_received` yet": it can be handed back the hook it just resumed and deliver a second payload to it. Wait for something that implies the run made progress instead. `waitForHook()` in `@workflow/vitest` takes a `notHookId` option for exactly this.
+
+Nothing about delivery changes. The payload is on the queue message and reaches the workflow exactly once.
+
 ## Behavior change: resumes against an ended run
 
-`resumeHook()` learned that a run had ended by having its `hook_received` write rejected. With no write, the lazy path cannot observe that rejection, so **a resume targeting an ended run resolves instead of throwing `HookNotFoundError`** whenever the resume also skipped reading the run.
+The hook lookup is unchanged: `resumeHook(token, ...)` still resolves the token through `hooks.getByToken()`, which throws `HookNotFoundError` when no hook holds it. Hook existence, and the token's binding to a run, are still validated before anything is published.
 
-That is the normal case: a hook lookup returns the run's resume context inline, so nothing reads the run's status. Resumes that do fall back to a run read keep their existing terminal pre-check, as does the sequential path, so a resume on either of those still fails loudly.
+What the lookup does not carry is the run's *mutable* status. `HookResumeContext` is deliberately an immutable slice of the run, so a resume that runs off it never learns whether the run is still live. That used to be caught by the `hook_received` write being rejected. With no write, **a resume against an ended run resolves instead of throwing `HookNotFoundError`**.
+
+This is only reachable when the hook record outlives its run, since otherwise the lookup itself fails: a hook kept by `experimental_minRetention`, or one whose token has not been released yet. Resumes that fall back to reading the run keep their terminal pre-check, as does the sequential path, so a resume on either of those still fails loudly.
 
 Nothing resumes either way. The consumer's write is rejected the same way and the delivery is consumed, so the ended run is untouched. Only the producer's report changes: an accepted publish means the resume was dispatched, not that the run was still live when it arrived. A [webhook](/docs/api-reference/workflow-api/resume-webhook) whose run has ended can answer `202` rather than surfacing an error.
 

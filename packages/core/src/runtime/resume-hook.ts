@@ -600,16 +600,25 @@ async function resumeHookImpl<T = any>(
         // of it converges on the one committed event via the backend's
         // `(runId, resumeId)` constraint (the precondition gated above).
         //
-        // Terminal runs: this path performs no write, so it cannot observe the
-        // server's rejection of `hook_received` against an ended run. When the
-        // resume also skipped the run read (a stored `resumeContext`, which is
-        // the common case on world-vercel), nothing checks the run's status at
-        // all and the call resolves instead of throwing `HookNotFoundError`.
-        // Nothing resumes: the consumer's write is rejected the same way and
-        // the delivery is consumed. Callers that must distinguish "accepted"
-        // from "the run is still live" have to read the run. The two paths
-        // that do observe it are unchanged: the `run_fallback` terminal
-        // pre-check above, and the sequential path's own write.
+        // Two things a caller could previously infer from a resolved resume,
+        // and can no longer:
+        //
+        //  - Visibility. This returns once the publish is accepted, not once
+        //    `hook_received` exists, so a caller that reads the run back
+        //    immediately can see a log without it. Delivery is unaffected: the
+        //    payload is on the message.
+        //  - The run still being live. The hook lookup above still validates
+        //    that a hook holds the token (and which run it belongs to), but
+        //    `resumeContext` is an immutable slice and carries no status, and
+        //    with no write there is no server rejection to observe. A resume
+        //    against an ended run therefore resolves rather than throwing
+        //    HookNotFoundError. It is reachable only while the hook outlives
+        //    its run (minimum retention, or before the token is released);
+        //    otherwise the lookup itself fails. Nothing resumes either way:
+        //    the consumer's write is rejected the same way and the delivery is
+        //    consumed. The paths that do observe the status are unchanged: the
+        //    `run_fallback` terminal pre-check above, and the sequential
+        //    path's own write.
         const resumeId = generateResumeId();
         const payloadDigest = await computeResumePayloadDigest(
           dehydratedPayload as Uint8Array
