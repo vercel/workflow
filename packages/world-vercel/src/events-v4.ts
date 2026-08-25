@@ -42,6 +42,7 @@ import {
   type DecodedFrame,
   decodeFrames,
   encodeFrame,
+  IncompleteFrameError,
   V4_FRAME_CONTENT_TYPE,
 } from './frames.js';
 import {
@@ -809,7 +810,9 @@ export async function createWorkflowRunEventV4<T extends EventType>(
 
   const contentType = response.headers.get('content-type');
   if (contentType?.startsWith(V4_FRAME_CONTENT_TYPE)) {
-    throw new Error('v4 createEvent: unexpected event page');
+    throw new WorkflowWorldError('v4 createEvent: unexpected event page', {
+      code: 'SCHEMA_VALIDATION',
+    });
   }
 
   return decodeCreateEventResponse(response, input.eventType);
@@ -822,9 +825,19 @@ async function decodeCreateEventResponse<T extends EventType>(
   response: FrameResponseLike,
   eventType: T
 ): Promise<EventResult<T> & { event: Event }> {
-  const bodyBytes = new Uint8Array(await response.arrayBuffer());
+  let bodyBytes: Uint8Array;
+  try {
+    bodyBytes = new Uint8Array(await response.arrayBuffer());
+  } catch (cause) {
+    throw new WorkflowWorldError(
+      'v4 createEvent: failed to read response body',
+      { code: 'TRANSPORT', cause }
+    );
+  }
   if (bodyBytes.byteLength === 0) {
-    throw new Error('v4 createEvent: empty response body');
+    throw new WorkflowWorldError('v4 createEvent: empty response body', {
+      code: 'PARSE_ERROR',
+    });
   }
   const schema: z.ZodType<EventResult<T> & { event: Event }> =
     CreateEventV4BodySchemas[eventType].refine(
@@ -833,7 +846,16 @@ async function decodeCreateEventResponse<T extends EventType>(
         (eventType === 'hook_created' && event.eventType === 'hook_conflict'),
       { path: ['event', 'eventType'] }
     );
-  const parsedBody = schema.safeParse(decode(bodyBytes));
+  let decoded: unknown;
+  try {
+    decoded = decode(bodyBytes);
+  } catch (cause) {
+    throw new WorkflowWorldError('v4 createEvent: invalid CBOR response body', {
+      code: 'PARSE_ERROR',
+      cause,
+    });
+  }
+  const parsedBody = schema.safeParse(decoded);
   if (!parsedBody.success) {
     throw new WorkflowWorldError('v4 createEvent: invalid response body', {
       code: 'SCHEMA_VALIDATION',
@@ -852,9 +874,13 @@ export async function createWorkflowRunStartedEventV4(
     'event-stream',
     config
   );
-  const events: Event[] = [];
-  const page = await consumeEventFrameStream(response, 'createEvent', events);
-  assert(page.cursor, 'v4 createEvent: event stream missing cursor');
+  const page = await consumeEventFrameStream(response, 'createEvent');
+  if (!page.cursor) {
+    throw new WorkflowWorldError(
+      'v4 createEvent: event stream missing cursor',
+      { code: 'SCHEMA_VALIDATION' }
+    );
+  }
   const maxEvents = MaxEventsHeaderSchema.safeParse(
     response.headers.get(MAX_EVENTS_HEADER)
   );
@@ -865,7 +891,7 @@ export async function createWorkflowRunStartedEventV4(
     });
   }
 
-  return { events, ...page, maxEvents: maxEvents.data };
+  return { ...page, maxEvents: maxEvents.data };
 }
 
 /** One event of a v4 batch POST, index-aligned with the response results. */
@@ -1308,14 +1334,12 @@ export async function createHookReceivedPreloadEventV4(
     };
   }
 
-  const events: Event[] = [];
-  const page = await consumeEventFrameStream(response, 'createEvent', events);
+  const page = await consumeEventFrameStream(response, 'createEvent');
   const maxEvents = MaxEventsHeaderSchema.safeParse(
     response.headers.get(MAX_EVENTS_HEADER)
   );
   return {
     kind: 'stream',
-    events,
     ...page,
     canonicalEventId: response.headers.get(EVENT_ID_HEADER) ?? undefined,
     maxEvents: maxEvents.success ? maxEvents.data : undefined,
@@ -1447,35 +1471,58 @@ function streamErrorFrameToError(
 
 async function consumeEventFrameStream(
   response: Response,
-  opName: string,
-  events: Event[]
-): Promise<Pick<ListEventsV4Result, 'cursor' | 'hasMore'>> {
+  opName: string
+): Promise<ListEventsV4Result> {
   const contentType = response.headers.get('content-type');
   if (!contentType?.startsWith(V4_FRAME_CONTENT_TYPE)) {
-    throw new Error(
-      `v4 ${opName}: expected ${V4_FRAME_CONTENT_TYPE}, got ${contentType ?? '(none)'}`
+    throw new WorkflowWorldError(
+      `v4 ${opName}: expected ${V4_FRAME_CONTENT_TYPE}, got ${contentType ?? '(none)'}`,
+      { code: 'SCHEMA_VALIDATION' }
+    );
+  }
+  if (!response.body) {
+    throw new WorkflowWorldError(`v4 ${opName}: response body is missing`, {
+      code: 'TRANSPORT',
+    });
+  }
+
+  const events: Event[] = [];
+  try {
+    for await (const frame of decodeFrames(response.body)) {
+      if (frame.meta._end === 1) {
+        const end = EventStreamEndSchema.parse(frame.meta);
+        return {
+          events,
+          cursor: end.next ?? null,
+          hasMore: end.hasMore,
+        };
+      }
+      if (frame.meta._error === 1) {
+        throw streamErrorFrameToError(frame.meta, opName);
+      }
+      if (Object.keys(frame.meta).some((key) => key.startsWith('_'))) {
+        throw new Error(`v4 ${opName}: unexpected control frame`);
+      }
+      events.push(decodeEventFrame(frame));
+    }
+  } catch (cause) {
+    if (CorruptedEventLogError.is(cause) || WorkflowWorldError.is(cause)) {
+      throw cause;
+    }
+    const incomplete = cause instanceof IncompleteFrameError;
+    throw new WorkflowWorldError(
+      `v4 ${opName}: ${incomplete ? 'incomplete' : 'invalid'} event frame stream`,
+      {
+        code: incomplete ? 'TRANSPORT' : 'SCHEMA_VALIDATION',
+        cause,
+      }
     );
   }
 
-  const chunks = response.body as unknown as AsyncIterable<Uint8Array>;
-
-  for await (const frame of decodeFrames(chunks)) {
-    if (frame.meta._end === 1) {
-      const end = EventStreamEndSchema.parse(frame.meta);
-      return { cursor: end.next ?? null, hasMore: end.hasMore };
-    }
-    if (frame.meta._error === 1) {
-      throw streamErrorFrameToError(frame.meta, opName);
-    }
-    if (Object.keys(frame.meta).some((key) => key.startsWith('_'))) {
-      throw new Error(`v4 ${opName}: unexpected control frame`);
-    }
-    events.push(decodeEventFrame(frame));
-  }
-
-  throw new Error(
+  throw new WorkflowWorldError(
     `v4 ${opName}: frame stream ended without the end-of-stream sentinel ` +
-      `(${events.length} events read) — truncated response?`
+      `(${events.length} events read)`,
+    { code: 'TRANSPORT' }
   );
 }
 
@@ -1492,16 +1539,15 @@ async function consumeListFrameStream(
   url: string,
   headers: Headers,
   config: APIConfig | undefined,
-  opName: string,
-  events: Event[]
-): Promise<Pick<ListEventsV4Result, 'cursor' | 'hasMore'>> {
+  opName: string
+): Promise<ListEventsV4Result> {
   const response = await fetchV4(
     url,
     { method: 'GET', headers },
     config,
     opName
   );
-  return consumeEventFrameStream(response, opName, events);
+  return consumeEventFrameStream(response, opName);
 }
 
 /**
@@ -1533,8 +1579,8 @@ function paginationToQuery(params: ListEventsV4Params): string {
  * cursor from the sentinel frame.
  *
  * Eagerly drains the stream into memory to match the existing
- * `getWorkflowRunEvents` contract. A truncated full response resumes
- * after its last validated event instead of downloading accepted frames again.
+ * `getWorkflowRunEvents` contract. An incomplete response is a transport
+ * failure; the caller owns retrying the operation.
  */
 export async function getWorkflowRunEventsV4(
   runId: string,
@@ -1542,37 +1588,10 @@ export async function getWorkflowRunEventsV4(
   config?: APIConfig
 ): Promise<ListEventsV4Result> {
   const { baseUrl, headers } = await getHttpConfig(config);
-  const events: Event[] = [];
-  let cursor = params.cursor;
-
-  while (true) {
-    const url =
-      `${baseUrl}/v4/runs/${encodeURIComponent(runId)}/events` +
-      paginationToQuery({ ...params, cursor });
-    try {
-      const page = await consumeListFrameStream(
-        url,
-        headers,
-        config,
-        'listEvents',
-        events
-      );
-      return { events, ...page };
-    } catch (error) {
-      if (CorruptedEventLogError.is(error) || WorkflowWorldError.is(error)) {
-        throw error;
-      }
-      const lastEvent = events.at(-1);
-      if (
-        params.limit !== undefined ||
-        !lastEvent ||
-        `eid:${lastEvent.eventId}` === cursor
-      ) {
-        throw error;
-      }
-      cursor = `eid:${lastEvent.eventId}`;
-    }
-  }
+  const url =
+    `${baseUrl}/v4/runs/${encodeURIComponent(runId)}/events` +
+    paginationToQuery(params);
+  return consumeListFrameStream(url, headers, config, 'listEvents');
 }
 
 /**
@@ -1601,13 +1620,10 @@ export async function getEventsByCorrelationIdV4(
   sp.set('runId', runId);
   appendListParams(sp, params);
   const url = `${baseUrl}/v4/events?${sp.toString()}`;
-  const events: Event[] = [];
-  const page = await consumeListFrameStream(
+  return consumeListFrameStream(
     url,
     headers,
     config,
-    'listEventsByCorrelationId',
-    events
+    'listEventsByCorrelationId'
   );
-  return { events, ...page };
 }
