@@ -1135,8 +1135,8 @@ async function createWorkflowSessionInner(
   // workflow function subscribing its first step callbacks.
   let args: unknown[] = [];
   workflowContext.promiseQueue = workflowContext.promiseQueue.then(async () => {
-    // Include any residual preparation that did not finish while the event log
-    // was streaming, plus VM-local deserialization, in the blocking boundary.
+    // Include any residual payload preparation plus VM-local deserialization
+    // in the blocking boundary.
     args = await trace('workflow.input.hydrate', async () => {
       const prepared =
         await replayPayloadCache.prepareWorkflowInput(workflowRun);
