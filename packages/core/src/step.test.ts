@@ -154,6 +154,9 @@ describe('createUseStep', () => {
     expect([...ctx.invocationsQueue.values()]).toEqual(
       (error as WorkflowSuspension).items
     );
+    expect((error as WorkflowSuspension).steps).toBe(
+      (error as WorkflowSuspension).items
+    );
     expect((error as WorkflowSuspension).items).toMatchInlineSnapshot(`
       [
         {

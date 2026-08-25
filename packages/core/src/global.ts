@@ -78,6 +78,8 @@ export type QueueItem =
  */
 export class WorkflowSuspension extends Error {
   items: QueueItem[];
+  /** @deprecated Use `items` instead. */
+  steps: QueueItem[];
   globalThis: typeof globalThis;
   stepCount: number;
   hookCount: number;
@@ -164,6 +166,7 @@ export class WorkflowSuspension extends Error {
     super(description);
     this.name = 'WorkflowSuspension';
     this.items = items;
+    this.steps = items;
     this.globalThis = global;
     this.stepCount = stepCount;
     this.hookCount = hookCount;
