@@ -248,7 +248,8 @@ async function recordCompression(
  * `recordCompression` above.
  */
 async function recordGuestCodeExecutions(stats: GuestCodeStats): Promise<void> {
-  if (stats.executions.length === 0) return;
+  const totalExecutions = stats.totalExecutions ?? stats.executions.length;
+  if (totalExecutions === 0) return;
   try {
     const span = await getActiveSpan();
     if (!span) return;
@@ -260,7 +261,7 @@ async function recordGuestCodeExecutions(stats: GuestCodeStats): Promise<void> {
       ),
     ];
     span.setAttributes({
-      ...Attr.SerializationGuestCodeExecutions(stats.executions.length),
+      ...Attr.SerializationGuestCodeExecutions(totalExecutions),
       ...Attr.SerializationGuestCodeDetails(details),
     });
   } catch {
@@ -3594,12 +3595,11 @@ export async function dehydrateWorkflowReturnValue(
   v1Compat = false,
   compression = false,
   /**
-   * Optional sink receiving every workflow-code execution serialization could
-   * not avoid, for callers that need them programmatically (e.g. a
-   * retained-VM gate deciding whether the VM is still reusable). The
-   * executions are emitted as span attributes either way, so omitting this
-   * loses nothing observability-wise. The retained-VM gate in
-   * runtime/suspension-handler.ts passes one for step-input dehydration.
+   * Optional sink receiving the first five samples and exact total count of
+   * workflow-code executions serialization could not avoid. The diagnostics
+   * are emitted as span attributes either way, so omitting this loses nothing
+   * observability-wise. The retained-VM gate in runtime/suspension-handler.ts
+   * passes one for step-input dehydration.
    */
   guestCodeStatsOut?: GuestCodeStats
 ): Promise<Uint8Array | unknown> {

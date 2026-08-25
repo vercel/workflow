@@ -15,7 +15,7 @@ import {
   type World,
 } from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { WorkflowSuspension } from '../global.js';
+import { type QueueItem, WorkflowSuspension } from '../global.js';
 import { hydrateStepArguments, hydrateStepError } from '../serialization.js';
 import { COMPUTE_INSTANCE_ID } from './compute-instance.js';
 import { maxEventSlot, stepDispatchIdempotencyKey } from './helpers.js';
@@ -837,21 +837,7 @@ describe('resilient step dispatch', () => {
   });
 });
 
-describe('retainedStepInputsSafe (serialization passivity gate)', () => {
-  function stepPending(args: unknown[]) {
-    return new Map([
-      [
-        'step_1',
-        {
-          type: 'step' as const,
-          correlationId: 'step_1',
-          stepName: 'someStep',
-          args,
-        },
-      ],
-    ]);
-  }
-
+describe('serializationBlockers', () => {
   /** An object with a VM-realm getter — exactly what the sink records. */
   function vmGetterObject() {
     return runInNewContext(
@@ -864,20 +850,32 @@ describe('retainedStepInputsSafe (serialization passivity gate)', () => {
     );
   }
 
-  async function runSuspension(args: unknown[]) {
+  async function runSuspension(item: QueueItem) {
     const eventsCreate = vi
       .fn()
       .mockImplementation(async (_runId, event) => ({ event }));
     const world = createWorld(eventsCreate);
     return handleSuspension({
-      suspension: new WorkflowSuspension(stepPending(args), globalThis),
+      suspension: new WorkflowSuspension(
+        new Map([[item.correlationId, item]]),
+        globalThis
+      ),
       world,
       run,
     });
   }
 
-  it('reports safe for plain data and supported built-ins', async () => {
-    const result = await runSuspension([
+  function runStep(args: Extract<QueueItem, { type: 'step' }>['args']) {
+    return runSuspension({
+      type: 'step',
+      correlationId: 'step_1',
+      stepName: 'someStep',
+      args,
+    });
+  }
+
+  it('reports no blockers for plain data and supported built-ins', async () => {
+    const result = await runStep([
       { nested: [{ ok: true }, 'text', 42n], flag: false },
       new Map([['k', new Set([1])]]),
       new Date(1700000000000),
@@ -885,33 +883,95 @@ describe('retainedStepInputsSafe (serialization passivity gate)', () => {
       /pattern/gi,
       new URL('https://example.com/'),
     ]);
-    expect(result.retainedStepInputsSafe).toBe(true);
+    expect(result.serializationBlockers).toEqual([]);
   });
 
-  it('reports unsafe for an Error argument (stack materialization)', async () => {
+  it('reports the blocker for an Error argument (stack materialization)', async () => {
     // Serializing an error reads `stack`, an own engine accessor whose first
     // invocation formats-and-caches the trace and runs any
     // `Error.prepareStackTrace` — neither is repeated by a cold replay, so
     // the boundary must demote.
-    const result = await runSuspension([new Error('lazy stack')]);
-    expect(result.retainedStepInputsSafe).toBe(false);
+    const result = await runStep([new Error('lazy stack')]);
+    expect(result.serializationBlockers).toContainEqual({
+      source: 'step_input',
+      correlationId: 'step_1',
+      kind: 'getter',
+      detail: 'stack',
+    });
   });
 
-  it('reports unsafe when serializing an argument executes a getter', async () => {
-    const value = vmGetterObject();
-    const result = await runSuspension([{ deep: [value] }]);
-    expect(result.retainedStepInputsSafe).toBe(false);
+  it('reports every getter executed while serializing step input', async () => {
+    const result = await runStep([
+      { deep: [vmGetterObject(), vmGetterObject()] },
+    ]);
+    expect(result.serializationBlockers).toEqual([
+      {
+        source: 'step_input',
+        correlationId: 'step_1',
+        kind: 'getter',
+        detail: 'lazy',
+      },
+      {
+        source: 'step_input',
+        correlationId: 'step_1',
+        kind: 'getter',
+        detail: 'lazy',
+      },
+    ]);
   });
 
-  it('reports unsafe when an argument is a proxy', async () => {
-    const result = await runSuspension([new Proxy({ a: 1 }, {})]);
-    expect(result.retainedStepInputsSafe).toBe(false);
+  it('reports a proxy encountered in step input', async () => {
+    const result = await runStep([new Proxy({ a: 1 }, {})]);
+    expect(result.serializationBlockers).toContainEqual({
+      source: 'step_input',
+      correlationId: 'step_1',
+      kind: 'proxy',
+    });
+  });
+
+  it.each([
+    [
+      'hook metadata',
+      {
+        type: 'hook',
+        correlationId: 'hook_unsafe_metadata',
+        token: 'unsafe-metadata',
+        metadata: vmGetterObject(),
+      },
+    ],
+    [
+      'a hook abort reason',
+      {
+        type: 'hook',
+        correlationId: 'hook_unsafe_abort',
+        token: 'unsafe-abort',
+        hasCreatedEvent: true,
+        abortRequested: true,
+        abortReason: vmGetterObject(),
+      },
+    ],
+  ] satisfies [
+    string,
+    QueueItem,
+  ][])('reports the serialization source for %s', async (_, item) => {
+    const result = await runSuspension(item);
+    expect(result.serializationBlockers).toContainEqual(
+      expect.objectContaining({
+        source:
+          item.correlationId === 'hook_unsafe_metadata'
+            ? 'hook_metadata'
+            : 'hook_abort',
+        correlationId: item.correlationId,
+        kind: 'getter',
+        detail: 'lazy',
+      })
+    );
   });
 
   it('still serializes recorded inputs successfully (bytes are unaffected)', async () => {
     const value = vmGetterObject();
-    const result = await runSuspension([value]);
-    expect(result.retainedStepInputsSafe).toBe(false);
+    const result = await runStep([value]);
+    expect(result.serializationBlockers).not.toEqual([]);
     // The step is still prepared for execution as usual (a single uncreated
     // step always lands in the lazy inline slice).
     expect(result.lazyInlineSteps).toHaveLength(1);
