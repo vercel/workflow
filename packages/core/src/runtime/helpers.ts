@@ -597,108 +597,108 @@ export async function loadWorkflowRunEvents(
   afterCursor?: string
 ): Promise<LoadedEventLog> {
   const incremental = afterCursor !== undefined;
-  return trace(
-    incremental ? 'workflow.loadNewEvents' : 'workflow.loadEvents',
-    async (span) => {
-      span?.setAttributes({
-        ...Attribute.WorkflowRunId(runId),
-      });
+  return trace('workflow.replay.load', async (span) => {
+    span?.setAttributes({
+      ...Attribute.WorkflowRunId(runId),
+      ...Attribute.WorkflowReplayLoadSource(
+        incremental ? 'events_list_incremental' : 'events_list'
+      ),
+    });
 
-      const loadedEvents: Event[] = [];
-      const loadedEventIds = new Set<string>();
-      const requestedCursors = new Set<string>();
-      let cursor: string | null = afterCursor ?? null;
-      let hasMore = true;
-      let pagesLoaded = 0;
-      let retriedWithoutCursor = false;
+    const loadedEvents: Event[] = [];
+    const loadedEventIds = new Set<string>();
+    const requestedCursors = new Set<string>();
+    let cursor: string | null = afterCursor ?? null;
+    let hasMore = true;
+    let pagesLoaded = 0;
+    let retriedWithoutCursor = false;
 
-      const world = await getWorldLazy();
-      const loadStart = Date.now();
-      while (hasMore) {
-        // TODO: we're currently loading all the data with resolveRef behavior. We need to update this
-        // to lazyload the data from the world instead so that we can optimize and make the event log loading
-        // much faster and memory efficient
-        const pageStart = Date.now();
-        const requestedCursor = cursor;
-        recordRequestedEventCursor(runId, requestedCursor, requestedCursors);
+    const world = await getWorldLazy();
+    const loadStart = Date.now();
+    while (hasMore) {
+      // TODO: we're currently loading all the data with resolveRef behavior. We need to update this
+      // to lazyload the data from the world instead so that we can optimize and make the event log loading
+      // much faster and memory efficient
+      const pageStart = Date.now();
+      const requestedCursor = cursor;
+      recordRequestedEventCursor(runId, requestedCursor, requestedCursors);
 
-        let response: Awaited<ReturnType<typeof world.events.list>>;
-        try {
-          response = await world.events.list({
-            runId,
-            pagination: {
-              sortOrder: 'asc',
-              cursor: requestedCursor ?? undefined,
-            },
-          });
-        } catch (error) {
-          if (
-            shouldRetryWithoutEventCursor(
-              error,
-              requestedCursor,
-              retriedWithoutCursor
-            )
-          ) {
-            runtimeLogger.warn(
-              'Event cursor was rejected; retrying with a full event reload.',
-              { workflowRunId: runId }
-            );
-            loadedEvents.length = 0;
-            loadedEventIds.clear();
-            requestedCursors.clear();
-            cursor = null;
-            retriedWithoutCursor = true;
-            continue;
-          }
-          throw error;
-        }
-
-        appendUniqueEvents(loadedEvents, response.data, loadedEventIds);
-        hasMore = response.hasMore;
-        assertEventPaginationProgress(
+      let response: Awaited<ReturnType<typeof world.events.list>>;
+      try {
+        response = await world.events.list({
           runId,
-          hasMore,
-          response.cursor,
-          requestedCursors
-        );
-        // Preserve the last non-null cursor across pages. A World may
-        // legitimately return `{ data: [], cursor: null, hasMore: false }`
-        // on a trailing empty page, for example when the previous page's
-        // underlying DB query hit the limit exactly and returned a
-        // precautionary `LastEvaluatedKey`. Overwriting with that null
-        // would lose the position past the last real event we loaded and
-        // force the runtime into the "no cursor after initial load" full-
-        // reload fallback on every subsequent replay iteration.
-        cursor = response.cursor ?? cursor;
-        pagesLoaded++;
-
-        runtimeLogger.debug('Loaded event page', {
-          workflowRunId: runId,
-          incremental,
-          page: pagesLoaded,
-          pageEvents: response.data.length,
-          totalEvents: loadedEvents.length,
-          hasMore,
-          pageMs: Date.now() - pageStart,
+          pagination: {
+            sortOrder: 'asc',
+            cursor: requestedCursor ?? undefined,
+          },
         });
+      } catch (error) {
+        if (
+          shouldRetryWithoutEventCursor(
+            error,
+            requestedCursor,
+            retriedWithoutCursor
+          )
+        ) {
+          runtimeLogger.warn(
+            'Event cursor was rejected; retrying with a full event reload.',
+            { workflowRunId: runId }
+          );
+          loadedEvents.length = 0;
+          loadedEventIds.clear();
+          requestedCursors.clear();
+          cursor = null;
+          retriedWithoutCursor = true;
+          continue;
+        }
+        throw error;
       }
 
-      runtimeLogger.debug('Event load complete', {
+      appendUniqueEvents(loadedEvents, response.data, loadedEventIds);
+      hasMore = response.hasMore;
+      assertEventPaginationProgress(
+        runId,
+        hasMore,
+        response.cursor,
+        requestedCursors
+      );
+      // Preserve the last non-null cursor across pages. A World may
+      // legitimately return `{ data: [], cursor: null, hasMore: false }`
+      // on a trailing empty page, for example when the previous page's
+      // underlying DB query hit the limit exactly and returned a
+      // precautionary `LastEvaluatedKey`. Overwriting with that null
+      // would lose the position past the last real event we loaded and
+      // force the runtime into the "no cursor after initial load" full-
+      // reload fallback on every subsequent replay iteration.
+      cursor = response.cursor ?? cursor;
+      pagesLoaded++;
+
+      runtimeLogger.debug('Loaded event page', {
         workflowRunId: runId,
         incremental,
+        page: pagesLoaded,
+        pageEvents: response.data.length,
         totalEvents: loadedEvents.length,
-        pagesLoaded,
-        totalMs: Date.now() - loadStart,
+        hasMore,
+        pageMs: Date.now() - pageStart,
       });
-
-      span?.setAttributes({
-        ...Attribute.WorkflowEventsCount(loadedEvents.length),
-        ...Attribute.WorkflowEventsPagesLoaded(pagesLoaded),
-      });
-
-      return { events: loadedEvents, cursor };
     }
-  );
+
+    runtimeLogger.debug('Event load complete', {
+      workflowRunId: runId,
+      incremental,
+      totalEvents: loadedEvents.length,
+      pagesLoaded,
+      totalMs: Date.now() - loadStart,
+    });
+
+    span?.setAttributes({
+      ...Attribute.WorkflowEventsCount(loadedEvents.length),
+      ...Attribute.WorkflowEventsPagesLoaded(pagesLoaded),
+    });
+
+    return { events: loadedEvents, cursor };
+  });
 }
 
 /**

@@ -87,6 +87,15 @@ export const WorkflowBundleCompileCacheHit = SemanticConvention<boolean>(
   'workflow.bundle.compile.cache_hit'
 );
 
+/** Operation that supplied events to the current replay. */
+export type WorkflowReplayLoadSource =
+  | 'run_started'
+  | 'hook_preload'
+  | 'events_list'
+  | 'events_list_incremental';
+export const WorkflowReplayLoadSource =
+  SemanticConvention<WorkflowReplayLoadSource>('workflow.replay.load.source');
+
 /**
  * Events the replay walked past that no consumer claimed, still held when the
  * replay stopped.
