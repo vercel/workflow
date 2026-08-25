@@ -175,9 +175,8 @@ const mixedBatchWorkflow = `const s1 = globalThis[Symbol.for("WORKFLOW_USE_STEP"
   }
   globalThis.__private_workflows = new Map([["workflow", workflow]]);`;
 
-// Produces more serialization blockers than the diagnostic log retains, with
-// one deliberately long detail. The retention decision still receives the
-// complete internal list; only its debug representation is bounded.
+// Produces more serialization blockers than the diagnostic sample retains,
+// with one deliberately long detail. The exact count still demotes retention.
 const manySerializationBlockersWorkflow = `const s1 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("r_s1");
   async function workflow() {
     const longKey = "x".repeat(300);

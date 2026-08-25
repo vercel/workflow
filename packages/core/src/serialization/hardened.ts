@@ -76,8 +76,8 @@ export interface GuestCodeExecution {
 
 /**
  * Mutable sink recording workflow-code execution serialization could not
- * avoid. `executions` is a bounded sample; `totalExecutions` is the exact
- * count.
+ * avoid. `executions` contains the first five samples and `totalExecutions`
+ * is the exact count.
  */
 export interface GuestCodeStats {
   executions: GuestCodeExecution[];

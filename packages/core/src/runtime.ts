@@ -559,17 +559,17 @@ type RetentionDecision =
  */
 function getRetentionDecision({
   suspension,
-  serializationBlockers,
+  serializationBlockerCount,
   hasOpenWait,
 }: {
   suspension: WorkflowSuspension;
-  serializationBlockers: SuspensionSerializationBlocker[];
+  serializationBlockerCount: number;
   hasOpenWait: () => boolean;
 }): RetentionDecision {
   if (!isVmRetentionEnabled()) {
     return { retain: false, reason: 'disabled' };
   }
-  if (serializationBlockers.length > 0) {
+  if (serializationBlockerCount > 0) {
     return {
       retain: false,
       reason: 'serialization_executed_workflow_code',
@@ -3372,8 +3372,8 @@ export function workflowEntrypoint(
                         const retentionDecision = retainedSession
                           ? getRetentionDecision({
                               suspension: err,
-                              serializationBlockers:
-                                suspensionResult.serializationBlockers,
+                              serializationBlockerCount:
+                                suspensionResult.serializationBlockerCount,
                               hasOpenWait: () => openHookWait.value.openWait,
                             })
                           : undefined;
@@ -3410,7 +3410,7 @@ export function workflowEntrypoint(
                                   retentionDecision.reason,
                               }
                             : {}),
-                          ...(suspensionResult.serializationBlockers.length > 0
+                          ...(suspensionResult.serializationBlockerCount > 0
                             ? serializationBlockerLogMetadata(
                                 suspensionResult.serializationBlockers,
                                 suspensionResult.serializationBlockerCount
