@@ -1,9 +1,10 @@
 ---
 name: migrating-world-v4-to-v5
-description: Upgrades a custom Workflow SDK World implementation from the v4 spec to v5. Use when a package implements the `World` interface from `@workflow/world` and is moving to 5.x — event IDs that are ULIDs rather than slot positions, `Event id is not slot-numbered` at replay time, a `specVersion` the runtime refuses, `writeToStream` / `closeStream` / `readFromStream` as top-level World methods, `steps.get` or `events.listByCorrelationId` without a `runId`, a `'step'` queue kind or `__wkf_step_*` topics, a `preconditionGuard` capability, or a `createLocalWorld` / `createVercelWorld` factory.
+description: >-
+  Upgrades a custom Workflow SDK World implementation from the v4 spec to v5. Use when a package implements the `World` interface from `@workflow/world` and is moving to 5.x — event IDs that are ULIDs rather than slot positions, `Event id is not slot-numbered` at replay time, a `specVersion` the runtime refuses, `writeToStream` / `closeStream` / `readFromStream` as top-level World methods, `steps.get` or `events.listByCorrelationId` without a `runId`, a `'step'` queue kind or `__wkf_step_*` topics, a `preconditionGuard` capability, or a `createLocalWorld` / `createVercelWorld` factory.
 metadata:
   author: Vercel Inc.
-  version: '0.3.0'
+  version: '0.3.1'
 ---
 
 # Migrating a World from the v4 spec to v5
