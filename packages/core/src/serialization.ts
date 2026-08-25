@@ -248,7 +248,8 @@ async function recordCompression(
  * `recordCompression` above.
  */
 async function recordGuestCodeExecutions(stats: GuestCodeStats): Promise<void> {
-  if (stats.executions.length === 0) return;
+  const totalExecutions = stats.totalExecutions ?? stats.executions.length;
+  if (totalExecutions === 0) return;
   try {
     const span = await getActiveSpan();
     if (!span) return;
@@ -260,7 +261,7 @@ async function recordGuestCodeExecutions(stats: GuestCodeStats): Promise<void> {
       ),
     ];
     span.setAttributes({
-      ...Attr.SerializationGuestCodeExecutions(stats.executions.length),
+      ...Attr.SerializationGuestCodeExecutions(totalExecutions),
       ...Attr.SerializationGuestCodeDetails(details),
     });
   } catch {

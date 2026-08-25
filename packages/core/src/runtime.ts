@@ -601,18 +601,17 @@ function getRetentionDecision({
   return { retain: true };
 }
 
-const SERIALIZATION_BLOCKER_LOG_SAMPLE_LIMIT = 5;
 const SERIALIZATION_BLOCKER_LOG_DETAIL_LIMIT = 160;
 
 /** Keep retention diagnostics useful without emitting unbounded guest data. */
 function serializationBlockerLogMetadata(
-  blockers: SuspensionSerializationBlocker[]
+  blockers: SuspensionSerializationBlocker[],
+  count: number
 ) {
   return {
-    serializationBlockerCount: blockers.length,
-    serializationBlockers: blockers
-      .slice(0, SERIALIZATION_BLOCKER_LOG_SAMPLE_LIMIT)
-      .map(({ source, correlationId, kind, detail }) => ({
+    serializationBlockerCount: count,
+    serializationBlockers: blockers.map(
+      ({ source, correlationId, kind, detail }) => ({
         source,
         correlationId,
         kind,
@@ -620,9 +619,9 @@ function serializationBlockerLogMetadata(
           detail && detail.length > SERIALIZATION_BLOCKER_LOG_DETAIL_LIMIT
             ? `${detail.slice(0, SERIALIZATION_BLOCKER_LOG_DETAIL_LIMIT)}…`
             : detail,
-      })),
-    serializationBlockersTruncated:
-      blockers.length > SERIALIZATION_BLOCKER_LOG_SAMPLE_LIMIT,
+      })
+    ),
+    serializationBlockersTruncated: count > blockers.length,
   };
 }
 
@@ -3413,7 +3412,8 @@ export function workflowEntrypoint(
                             : {}),
                           ...(suspensionResult.serializationBlockers.length > 0
                             ? serializationBlockerLogMetadata(
-                                suspensionResult.serializationBlockers
+                                suspensionResult.serializationBlockers,
+                                suspensionResult.serializationBlockerCount
                               )
                             : {}),
                         });

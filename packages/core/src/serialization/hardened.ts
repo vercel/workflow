@@ -75,14 +75,16 @@ export interface GuestCodeExecution {
 }
 
 /**
- * Mutable sink recording every workflow-code execution serialization could
- * not avoid. Pass via `CodecOptions.guestCodeStats`; consumers that retain
- * the VM across steps can use a non-empty `executions` array as a signal
- * that the VM state may have been perturbed by serialization.
+ * Mutable sink recording workflow-code execution serialization could not
+ * avoid. `executions` is a bounded sample; `totalExecutions` is the exact
+ * count.
  */
 export interface GuestCodeStats {
   executions: GuestCodeExecution[];
+  totalExecutions?: number;
 }
+
+export const GUEST_CODE_EXECUTION_SAMPLE_LIMIT = 5;
 
 // per-copy-ok: both are set and cleared by `withGuestCodeStats` around a single
 // synchronous call, so the sink is only ever read by the same copy that armed
@@ -152,6 +154,11 @@ export function recordGuestCode(
   detail?: string
 ): void {
   if (!activeStats) return;
+  activeStats.totalExecutions =
+    (activeStats.totalExecutions ?? activeStats.executions.length) + 1;
+  if (activeStats.executions.length >= GUEST_CODE_EXECUTION_SAMPLE_LIMIT) {
+    return;
+  }
   const execution: GuestCodeExecution = { kind };
   if (detail !== undefined) execution.detail = detail;
   activeStats.executions.push(execution);

@@ -34,9 +34,10 @@ import type {
   WorkflowSuspension,
 } from '../global.js';
 import { runtimeLogger } from '../logger.js';
-import type {
-  GuestCodeExecution,
-  GuestCodeStats,
+import {
+  GUEST_CODE_EXECUTION_SAMPLE_LIMIT,
+  type GuestCodeExecution,
+  type GuestCodeStats,
 } from '../serialization/hardened.js';
 import {
   dehydrateStepArguments,
@@ -287,11 +288,9 @@ export interface SuspensionHandlerResult {
    * durably creating the user's hooks doesn't count as runtime overhead.
    */
   hookCreationMs: number;
-  /**
-   * Every workflow-code execution observed while serializing suspension data.
-   * A non-empty array means the retained VM may have diverged from cold replay
-   * and must be discarded. Keep the complete report for retention diagnostics.
-   */
+  /** Exact number of workflow-code executions observed during serialization. */
+  serializationBlockerCount: number;
+  /** Bounded sample used only for retention diagnostics. */
   serializationBlockers: SuspensionSerializationBlocker[];
 }
 
@@ -541,6 +540,7 @@ export async function handleSuspension({
   const compression =
     (run.specVersion ?? 0) >= SPEC_VERSION_SUPPORTS_COMPRESSION;
 
+  let serializationBlockerCount = 0;
   const serializationBlockers: SuspensionSerializationBlocker[] = [];
   async function dehydrateInput(
     value: unknown,
@@ -558,11 +558,15 @@ export async function handleSuspension({
         stats
       )) as SerializedData;
     } finally {
+      serializationBlockerCount +=
+        stats.totalExecutions ?? stats.executions.length;
       serializationBlockers.push(
-        ...stats.executions.map((execution) => ({
-          ...context,
-          ...execution,
-        }))
+        ...stats.executions
+          .slice(
+            0,
+            GUEST_CODE_EXECUTION_SAMPLE_LIMIT - serializationBlockers.length
+          )
+          .map((execution) => ({ ...context, ...execution }))
       );
     }
   }
@@ -1842,6 +1846,7 @@ export async function handleSuspension({
     hasAttributeEvents: attributeItems.length > 0,
     hasHookEvents: hooksNeedingCreation.length > 0,
     hookCreationMs,
+    serializationBlockerCount,
     serializationBlockers,
     reportedEventCount: reportedEvents,
   };
