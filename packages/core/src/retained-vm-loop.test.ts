@@ -790,12 +790,21 @@ describe('retained VM through the inline replay loop', () => {
   });
 
   it('retains one VM across an attribute write and the following step', async () => {
-    const { vmBuilds, result } = await drive(
+    process.env.WORKFLOW_RETAINED_VM = '0';
+    const off = await drive(
       'wrun_retained_attribute_then_step',
       attributeThenStepWorkflow
     );
-    expect(result).toBe(10);
-    expect(vmBuilds).toBe(1);
+    createContextSpy.mockClear();
+    delete process.env.WORKFLOW_RETAINED_VM;
+
+    const on = await drive(
+      'wrun_retained_attribute_then_step',
+      attributeThenStepWorkflow
+    );
+    expect(on.result).toBe(10);
+    expect(on.vmBuilds).toBe(1);
+    expect(on.durableLog).toEqual(off.durableLog);
   });
 
   it('matches cold replay when hook metadata serialization mutates workflow state', async () => {
