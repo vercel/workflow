@@ -15,6 +15,28 @@ export const RESERVED_ATTRIBUTE_KEY_PREFIX = '$';
 export const ROOT_RUN_ID_ATTRIBUTE = `${RESERVED_ATTRIBUTE_KEY_PREFIX}rootRunId`;
 export const PARENT_RUN_ID_ATTRIBUTE = `${RESERVED_ATTRIBUTE_KEY_PREFIX}parentRunId`;
 
+/**
+ * Reserved attribute key carrying the run's data-retention preference, set
+ * from `start({ retention })`. Absent means "no preference" — the World
+ * applies whatever default it would have applied anyway.
+ *
+ * Riding on run attributes rather than a dedicated field is deliberate: the
+ * value must be readable by the World at run-finish time, and attributes are
+ * already materialized onto the run entity and seeded on both the
+ * `run_created` event and the resilient-start queue message.
+ */
+export const RETENTION_ATTRIBUTE = `${RESERVED_ATTRIBUTE_KEY_PREFIX}retention`;
+
+/**
+ * The two retention values the World spec assigns meaning to. Any other
+ * string is passed through to the World untouched.
+ *
+ * - `'default'` is indistinguishable from omission: no attribute is written.
+ * - `'none'` asks the World to drop user data as soon as the run is done.
+ */
+export const RETENTION_DEFAULT = 'default';
+export const RETENTION_NONE = 'none';
+
 /** Max length of an attribute key, in characters. */
 export const ATTRIBUTE_KEY_MAX_LENGTH = 256;
 

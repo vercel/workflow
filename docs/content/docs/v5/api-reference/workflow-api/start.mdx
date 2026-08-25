@@ -60,6 +60,7 @@ Learn more about [`WorkflowReadableStreamOptions`](/docs/api-reference/workflow-
 * All arguments must be [serializable](/docs/foundations/serialization).
 * When `deploymentId` is provided, the argument types and return type become `unknown` since there is no guarantee the workflow function's types will be consistent across different deployments.
 * `attributes` seeds plaintext run metadata as part of creation and requires a World implementing spec version 4 or later. Keys that start with `$` are reserved for framework and library code; framework-level callers can pass `allowReservedAttributes: true` to seed reserved keys, with the same semantics as the [`setAttributes`](/docs/api-reference/workflow/set-attributes) option of the same name.
+* `retention` records a data-retention preference on the run for the World to apply once the run ends. It is carried as a reserved run attribute, so it also requires a World implementing spec version 4 or later.
 
 <Callout type="info">
 If `start()` throws `'start' received an invalid workflow function. Ensure the Workflow SDK is configured correctly and the function includes a 'use workflow' directive.`, the passed function was not transformed as a workflow. The two most common causes are a missing `"use workflow"` directive or missing framework integration. See [start-invalid-workflow-function](/docs/errors/start-invalid-workflow-function).
@@ -87,6 +88,28 @@ const run = await start(myWorkflow, ["arg1", "arg2"], { // [!code highlight]
   attributes: { source: "checkout" } // [!code highlight]
 }); // [!code highlight]
 ```
+
+### Setting Data Retention
+
+Set a preference for data retention after run completion.
+
+Worlds control the retention of user data (event payloads and stream chunks), the event log, and any analytics data. Options are:
+- `'default'`: same as omission, the World will decide. On Vercel, this is based on your team's plan.
+- `'none'`: if supported, data is deleted immediately after your run completes/fails. On Vercel, user data is deleted, but metadata may be persist for your plan's default retention period.
+- `string`: Custom value to pass to the World. Refer to your World's documentation on which values are supported. Not currently supported on Vercel.
+
+```typescript
+import { start } from "workflow/api";
+import { processPaymentWorkflow } from "./workflows/process-payment";
+
+const run = await start(processPaymentWorkflow, [payload], { // [!code highlight]
+  retention: "none" // [!code highlight]
+}); // [!code highlight]
+```
+
+<Callout type="info">
+`retention` states a preference; the World decides what it can honor. A World that does not recognize the value applies its own default, so treat it as a best-effort request rather than a guarantee. Because the preference is carried as the reserved `$retention` run attribute, a World that does not support run attributes (spec version 3 or earlier) cannot carry it at all and `start()` throws rather than silently retaining data you asked to have dropped.
+</Callout>
 
 ### Using `deploymentId: "latest"`
 

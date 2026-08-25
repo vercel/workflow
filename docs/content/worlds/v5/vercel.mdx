@@ -88,10 +88,23 @@ const run = await start(myWorkflow, [input], { region: "sfo1" });
 - Runs created by 4.x SDKs (and any runs that existed before you upgraded) live in `iad1` and are unaffected by an upgrade; there is no migration.
 - **Hook tokens are currently stored in `iad1`** for every run, regardless of the run's region: the token-to-run mapping that powers [`getHookByToken()`](/docs/api-reference/workflow-api/get-hook-by-token) and [`resumeHook()`](/docs/api-reference/workflow-api/resume-hook) lives there so tokens — which carry no region information — can always be resolved. Hook *payloads* are not affected: a received payload is recorded on the run's event log, which lives in the run's region like all other run data. This token placement may become a project-level setting in the future.
 
+## Data retention
+
+By default, how long a finished run's data is kept is decided by your team's plan. [`start({ retention })`](/docs/api-reference/workflow-api/start#setting-data-retention) states a per-run preference:
+
+```typescript
+const run = await start(myWorkflow, [input], { retention: "none" });
+```
+
+- `"default"` (or omitting the option) applies your plan's retention period.
+- `"none"` deletes user data — step and event payloads, and stream chunks — as soon as the run completes or fails. The run, step, and event records themselves are kept for your plan's default period, so a finished run stays visible in observability with its payloads gone.
+- Any other value is not supported and is ignored: the run keeps your plan's default retention.
+
 ## Limitations
 
 - **No run migration** - A run's region is fixed at creation. Existing runs cannot be moved to a different region.
 - **Hook minimum retention** - [`experimental_minRetention`](/docs/api-reference/workflow/create-hook#keep-a-token-unavailable-after-the-run-ends) cannot exceed 30 days.
+- **Custom retention values** - [`start({ retention })`](/docs/api-reference/workflow-api/start#setting-data-retention) supports `"default"` and `"none"`; any other value falls back to your plan's default retention.
 
 ## Observability
 

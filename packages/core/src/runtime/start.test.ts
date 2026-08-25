@@ -509,6 +509,125 @@ describe('start', () => {
     });
   });
 
+  describe('retention', () => {
+    let mockEventsCreate: ReturnType<typeof vi.fn>;
+    let mockQueue: ReturnType<typeof vi.fn>;
+
+    const validWorkflow = Object.assign(() => Promise.resolve('result'), {
+      workflowId: 'test-workflow',
+    });
+
+    beforeEach(() => {
+      mockEventsCreate = vi.fn().mockImplementation((runId) => {
+        return Promise.resolve({
+          run: { runId: runId ?? 'wrun_test123', status: 'pending' },
+        });
+      });
+      mockQueue = vi.fn().mockResolvedValue(undefined);
+
+      setWorld({
+        specVersion: SPEC_VERSION_CURRENT,
+        getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
+        events: { create: mockEventsCreate },
+        queue: mockQueue,
+      });
+    });
+
+    afterEach(() => {
+      setWorld(undefined);
+      vi.clearAllMocks();
+    });
+
+    const seededAttributes = () =>
+      mockEventsCreate.mock.calls[0]?.[1].eventData.attributes;
+
+    it("seeds $retention on both payloads for 'none'", async () => {
+      await start(validWorkflow, [], { retention: 'none' });
+
+      expect(seededAttributes()).toEqual({ $retention: 'none' });
+      // Reserved keys need the escape hatch on both payloads so server-side
+      // validation accepts them on the run_created write and on a resilient
+      // start bootstrapped from the queue message.
+      expect(
+        mockEventsCreate.mock.calls[0]?.[1].eventData.allowReservedAttributes
+      ).toBe(true);
+      expect(mockQueue.mock.calls[0]?.[1].runInput.attributes).toEqual({
+        $retention: 'none',
+      });
+      expect(
+        mockQueue.mock.calls[0]?.[1].runInput.allowReservedAttributes
+      ).toBe(true);
+    });
+
+    it('passes a World-specific string through verbatim', async () => {
+      await start(validWorkflow, [], { retention: '7d' });
+
+      expect(seededAttributes()).toEqual({ $retention: '7d' });
+    });
+
+    it("writes no attribute for 'default' or omission", async () => {
+      await start(validWorkflow, [], { retention: 'default' });
+      await start(validWorkflow, []);
+
+      for (const call of mockEventsCreate.mock.calls) {
+        expect(call[1].eventData).not.toHaveProperty('attributes');
+        expect(call[1].eventData).not.toHaveProperty('allowReservedAttributes');
+      }
+      for (const call of mockQueue.mock.calls) {
+        expect(call[1].runInput).not.toHaveProperty('attributes');
+      }
+    });
+
+    it('merges alongside caller attributes', async () => {
+      await start(validWorkflow, [], {
+        retention: 'none',
+        attributes: { tenant: 't1' },
+      });
+
+      expect(seededAttributes()).toEqual({
+        $retention: 'none',
+        tenant: 't1',
+      });
+    });
+
+    it('wins over a hand-written $retention attribute', async () => {
+      // A framework caller can re-parent a run through raw reserved
+      // attributes, but must not be able to silently weaken the retention
+      // preference the typed option asked for.
+      await start(validWorkflow, [], {
+        retention: 'none',
+        attributes: { $retention: 'default' },
+        allowReservedAttributes: true,
+      });
+
+      expect(seededAttributes()).toEqual({ $retention: 'none' });
+    });
+
+    it('rejects retention for pre-v4 runs', async () => {
+      await expect(
+        start(validWorkflow, [], {
+          specVersion: SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
+          retention: 'none',
+        })
+      ).rejects.toThrow(/spec version 4/);
+      expect(mockEventsCreate).not.toHaveBeenCalled();
+    });
+
+    it('rejects empty, non-string, and oversized retention values', async () => {
+      await expect(start(validWorkflow, [], { retention: '' })).rejects.toThrow(
+        /non-empty string/
+      );
+      await expect(
+        start(validWorkflow, [], { retention: 30 as any })
+      ).rejects.toThrow(/non-empty string/);
+      await expect(
+        start(validWorkflow, [], { retention: 'v'.repeat(257) })
+      ).rejects.toThrow(/exceeds limit 256/);
+
+      expect(mockEventsCreate).not.toHaveBeenCalled();
+    });
+  });
+
   describe('encryption', () => {
     let mockEventsCreate: ReturnType<typeof vi.fn>;
     let mockQueue: ReturnType<typeof vi.fn>;
