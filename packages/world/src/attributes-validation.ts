@@ -7,6 +7,20 @@ export interface AttributeChange {
 export const RESERVED_ATTRIBUTE_KEY_PREFIX = '$';
 export const ROOT_RUN_ID_ATTRIBUTE = `${RESERVED_ATTRIBUTE_KEY_PREFIX}rootRunId`;
 export const PARENT_RUN_ID_ATTRIBUTE = `${RESERVED_ATTRIBUTE_KEY_PREFIX}parentRunId`;
+/**
+ * Reserved attribute carrying the caller's data-retention preference, seeded
+ * by `start({ retention })`. Worlds read it when a run reaches a terminal
+ * state to decide how long user data is kept. Absent means "the World
+ * decides", which is also what `'default'` requests.
+ */
+export const RETENTION_ATTRIBUTE = `${RESERVED_ATTRIBUTE_KEY_PREFIX}retention`;
+
+/**
+ * Value of {@link RETENTION_ATTRIBUTE}. `'none'` and `'default'` are the two
+ * World-independent values; any other string is passed through untouched for
+ * Worlds that define their own retention vocabulary.
+ */
+export type RunRetention = 'none' | 'default' | (string & {});
 export const ATTRIBUTE_KEY_MAX_LENGTH = 256;
 export const ATTRIBUTE_VALUE_MAX_BYTES = 256;
 export const ATTRIBUTE_MAX_PER_RUN = 64;

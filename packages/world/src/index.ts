@@ -21,7 +21,9 @@ export {
   applyAttributeChanges,
   PARENT_RUN_ID_ATTRIBUTE,
   RESERVED_ATTRIBUTE_KEY_PREFIX,
+  RETENTION_ATTRIBUTE,
   ROOT_RUN_ID_ATTRIBUTE,
+  type RunRetention,
   validateAttributeChanges,
 } from './attributes.js';
 export {

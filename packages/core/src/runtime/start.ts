@@ -1,11 +1,16 @@
 import { EntityConflictError, WorkflowRuntimeError } from '@workflow/errors';
 import { globalSingleton } from '@workflow/utils';
 import { workflowDisplayName } from '@workflow/utils/parse-name';
-import type { WorkflowInvokePayload, World } from '@workflow/world';
+import type {
+  RunRetention,
+  WorkflowInvokePayload,
+  World,
+} from '@workflow/world';
 import {
   HOOK_RESUME_INPUT_VERSION,
   isLegacySpecVersion,
   PARENT_RUN_ID_ATTRIBUTE,
+  RETENTION_ATTRIBUTE,
   ROOT_RUN_ID_ATTRIBUTE,
   SPEC_VERSION_SUPPORTS_ATTRIBUTES,
   SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
@@ -144,6 +149,27 @@ export interface StartOptionsBase {
    * the `setAttributes` option of the same name.
    */
   allowReservedAttributes?: boolean;
+
+  /**
+   * Set a preference for data retention after run completion.
+   *
+   * Worlds control the retention of user data (event payloads and stream
+   * chunks), the event log, and any analytics data. Options are:
+   * - `'default'`: same as omission, the World will decide. On Vercel, this
+   *   is based on your team's plan.
+   * - `'none'`: if supported, data is deleted immediately after your run
+   *   completes/fails. On Vercel, user data is deleted, but metadata may
+   *   persist for your plan's default retention period.
+   * - `string`: Custom value to pass to the World. Refer to your World's
+   *   documentation on which values are supported. Not currently supported
+   *   on Vercel.
+   *
+   * Recorded on the run as the reserved `$retention` attribute, so it
+   * requires a World implementing spec version 4 or later. `'default'` is
+   * not written at all, keeping it exactly equivalent to omitting the
+   * option.
+   */
+  retention?: RunRetention;
 
   /**
    * The ID of an existing run this run is being replayed from, if any.
@@ -430,23 +456,57 @@ export async function start<TArgs extends unknown[], TResult>(
         );
       }
 
+      // `retention` is the typed spelling of the reserved `$retention`
+      // attribute. `'default'` means "let the World decide", which is
+      // already what an absent attribute means, so it is not written: that
+      // keeps `'default'` exactly equivalent to omitting the option and
+      // spends none of the per-run attribute budget.
+      let retentionAttribute: Record<string, string> | undefined;
+      if (opts.retention !== undefined && opts.retention !== 'default') {
+        if (specVersion < SPEC_VERSION_SUPPORTS_ATTRIBUTES) {
+          throw new WorkflowRuntimeError(
+            'start({ retention }) requires a World that supports spec version 4 or later.'
+          );
+        }
+        if (typeof opts.retention !== 'string' || opts.retention === '') {
+          throw new WorkflowRuntimeError(
+            `start({ retention }) must be a non-empty string; received ${JSON.stringify(
+              opts.retention
+            )}.`
+          );
+        }
+        // Run through the same validation as caller attributes so an
+        // oversized custom World value fails here, with the attribute
+        // error message, rather than at the World boundary.
+        retentionAttribute = Object.fromEntries(
+          normalizeAttributeChanges(
+            { [RETENTION_ATTRIBUTE]: opts.retention },
+            { allowReservedAttributes: true }
+          ).map(({ key, value }) => [key, value as string])
+        );
+      }
+
       // Cross-run lineage: the reserved keys ride on the run's existing
       // attributes, so they add no extra write. Caller attributes are spread
       // last, so a caller with allowReservedAttributes can deliberately
-      // re-parent.
+      // re-parent. `retention` is spread after those: it is the supported
+      // spelling, so it wins over a hand-written `$retention` attribute.
       const lineage =
         specVersion >= SPEC_VERSION_SUPPORTS_ATTRIBUTES
           ? resolveLineageAttributes()
           : undefined;
-      const runAttributes = lineage
-        ? { ...lineage, ...attributes }
-        : attributes;
+      const runAttributes =
+        lineage || retentionAttribute
+          ? { ...lineage, ...attributes, ...retentionAttribute }
+          : attributes;
 
       // Shared by the run_created event and the resilient-start queue input.
       const attributeSeed = runAttributes
         ? {
             attributes: runAttributes,
-            ...(allowReservedAttributes || lineage != null
+            ...(allowReservedAttributes ||
+            lineage != null ||
+            retentionAttribute != null
               ? { allowReservedAttributes: true as const }
               : {}),
           }
