@@ -1,5 +1,15 @@
 # @workflow/world-vercel
 
+## 4.7.1
+
+### Patch Changes
+
+- [#3762](https://github.com/vercel/workflow/pull/3762) [`5fa20ea`](https://github.com/vercel/workflow/commit/5fa20ea20abd7d3b8f4fe960b10390a35b978fe5) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Accept and send an optional `runId` when listing events by correlation ID
+
+- Updated dependencies [[`699e01e`](https://github.com/vercel/workflow/commit/699e01ed1630af3ecb64a4fd01e712fa80828cc5), [`5fa20ea`](https://github.com/vercel/workflow/commit/5fa20ea20abd7d3b8f4fe960b10390a35b978fe5)]:
+  - @workflow/world@4.5.0
+  - @workflow/errors@4.2.1
+
 ## 4.7.0
 
 ### Minor Changes

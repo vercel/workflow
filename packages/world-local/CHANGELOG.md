@@ -1,5 +1,23 @@
 # @workflow/world-local
 
+## 4.4.0
+
+### Minor Changes
+
+- [#2914](https://github.com/vercel/workflow/pull/2914) [`4c93a5f`](https://github.com/vercel/workflow/commit/4c93a5fe45ec668e41ad8367582d15a361986d16) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Add `WORKFLOW_LOCAL_RECOVER_ACTIVE_RUNS` env var as a fallback for the `recoverActiveRuns` option, so re-enqueueing of pending/running runs on startup can be disabled without a custom world module.
+
+### Patch Changes
+
+- [#2888](https://github.com/vercel/workflow/pull/2888) [`699e01e`](https://github.com/vercel/workflow/commit/699e01ed1630af3ecb64a4fd01e712fa80828cc5) Thanks [@ctgowrie](https://github.com/ctgowrie)! - Use the active queue namespace when re-enqueuing workflow runs during world startup recovery.
+
+- [#2152](https://github.com/vercel/workflow/pull/2152) [`0fd781a`](https://github.com/vercel/workflow/commit/0fd781a3e29d0017e1ec2345e90e2e6e788c9609) Thanks [@pranaygp](https://github.com/pranaygp)! - Reduce local sequential-step replay I/O with bounded recent-event and storage-directory caches.
+
+- [#3762](https://github.com/vercel/workflow/pull/3762) [`5fa20ea`](https://github.com/vercel/workflow/commit/5fa20ea20abd7d3b8f4fe960b10390a35b978fe5) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Accept and send an optional `runId` when listing events by correlation ID
+
+- Updated dependencies [[`699e01e`](https://github.com/vercel/workflow/commit/699e01ed1630af3ecb64a4fd01e712fa80828cc5), [`5fa20ea`](https://github.com/vercel/workflow/commit/5fa20ea20abd7d3b8f4fe960b10390a35b978fe5)]:
+  - @workflow/world@4.5.0
+  - @workflow/errors@4.2.1
+
 ## 4.3.0
 
 ### Minor Changes

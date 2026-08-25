@@ -1,5 +1,18 @@
 # @workflow/nitro
 
+## 4.1.11
+
+### Patch Changes
+
+- [#2908](https://github.com/vercel/workflow/pull/2908) [`2cf8838`](https://github.com/vercel/workflow/commit/2cf8838f7b0f2e6e0e975c14372d3eb78822cedc) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Clean up temporary Nitro Vite servers and Workflow build contexts after builds.
+
+- Updated dependencies [[`5556b4c`](https://github.com/vercel/workflow/commit/5556b4cde500aa7d7156be0ed98ff95c61f26ccf), [`cd9343b`](https://github.com/vercel/workflow/commit/cd9343b3246df7b0db7dd3a44babf21115075c8d), [`608769d`](https://github.com/vercel/workflow/commit/608769dc5ff856deb41d4ed29713ce05d7a45a54), [`5fa20ea`](https://github.com/vercel/workflow/commit/5fa20ea20abd7d3b8f4fe960b10390a35b978fe5), [`853a316`](https://github.com/vercel/workflow/commit/853a316c79748f14f59f9302e672c56d3d7b7090)]:
+  - @workflow/core@4.8.5
+  - @workflow/web@4.1.21
+  - @workflow/builders@4.1.10
+  - @workflow/rollup@4.0.20
+  - @workflow/vite@4.0.20
+
 ## 4.1.10
 
 ### Patch Changes

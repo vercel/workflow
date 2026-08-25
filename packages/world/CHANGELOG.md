@@ -1,5 +1,15 @@
 # @workflow/world
 
+## 4.5.0
+
+### Minor Changes
+
+- [#3762](https://github.com/vercel/workflow/pull/3762) [`5fa20ea`](https://github.com/vercel/workflow/commit/5fa20ea20abd7d3b8f4fe960b10390a35b978fe5) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Accept and send an optional `runId` when listing events by correlation ID
+
+### Patch Changes
+
+- [#2888](https://github.com/vercel/workflow/pull/2888) [`699e01e`](https://github.com/vercel/workflow/commit/699e01ed1630af3ecb64a4fd01e712fa80828cc5) Thanks [@ctgowrie](https://github.com/ctgowrie)! - Use the active queue namespace when re-enqueuing workflow runs during world startup recovery.
+
 ## 4.4.0
 
 ### Minor Changes
