@@ -11,6 +11,13 @@ export interface Logger {
   warn: LogFn;
   error: LogFn;
   /**
+   * Whether `debug` calls currently produce output. Hot paths that log per
+   * replayed event use this to skip building call-site metadata entirely:
+   * the disabled-logging fast path inside the log functions is allocation
+   * free, but the metadata object literal at the call site is not.
+   */
+  debugEnabled: () => boolean;
+  /**
    * Returns a child logger that merges the given metadata into every call.
    * Useful for attaching stable context (e.g. `workflowRunId`, `workflowName`,
    * `stepId`) so callers don't have to repeat it on every log.
@@ -76,10 +83,35 @@ function createLogger(namespace: string, options: LoggerOptions = {}): Logger {
     const getDebugNamespace = (level: string) =>
       options.debugNamespace ?? `workflow:${namespace}:${level}`;
 
-    const logger = (level: string): LogFn => {
+    const logger = (level: string) => {
       const debugNamespace = getDebugNamespace(level);
 
-      return (message, metadata) => {
+      // Memoize the DEBUG pattern match keyed on the pattern string itself.
+      // The disabled path runs O(registered steps × replayed events) inside
+      // the replay hot loop; splitting the pattern list and building RegExps
+      // per call measured ~12% of raw app CPU at fanout(50). Keying on the
+      // string preserves runtime toggling (tests stub DEBUG mid-process).
+      let cachedPattern: string | undefined;
+      let cachedPatternValid = false;
+      let cachedEnabled = false;
+      const isEnabled = () => {
+        const pattern = process.env.DEBUG;
+        if (!cachedPatternValid || pattern !== cachedPattern) {
+          cachedPattern = pattern;
+          cachedPatternValid = true;
+          cachedEnabled = matchesDebugNamespace(debugNamespace, pattern);
+        }
+        return cachedEnabled;
+      };
+
+      const log: LogFn = (message, metadata) => {
+        const alwaysOut = level === 'error' || level === 'warn';
+        const debugEnabled = isEnabled();
+        // Fast path: nothing will be emitted, so build nothing. The merged
+        // metadata spread and the Object.keys probes below allocate on every
+        // call otherwise, which feeds minor GC from the replay hot loop.
+        if (!alwaysOut && !debugEnabled) return;
+
         const hasParent = Object.keys(parentMetadata).length > 0;
         const hasCallSite = metadata && Object.keys(metadata).length > 0;
         const merged =
@@ -96,15 +128,10 @@ function createLogger(namespace: string, options: LoggerOptions = {}): Logger {
         // a JSON-y object dump. The framing line stays at the top with the
         // structured fields right under it; the stack body (with framework
         // internal frames collapsed) sits at the bottom. See log-format.ts.
-        if (level === 'error' || level === 'warn') {
+        if (alwaysOut) {
           const out = level === 'error' ? console.error : console.warn;
           out(composeLogLine('[workflow-sdk]', message, merged));
         }
-
-        const debugEnabled = matchesDebugNamespace(
-          debugNamespace,
-          process.env.DEBUG
-        );
 
         if (debugEnabled) {
           console.debug(`[${debugNamespace}] ${message}`, merged ?? '');
@@ -117,13 +144,16 @@ function createLogger(namespace: string, options: LoggerOptions = {}): Logger {
             });
         }
       };
+      return { log, isEnabled };
     };
 
+    const debug = logger('debug');
     return {
-      debug: logger('debug'),
-      info: logger('info'),
-      warn: logger('warn'),
-      error: logger('error'),
+      debug: debug.log,
+      debugEnabled: debug.isEnabled,
+      info: logger('info').log,
+      warn: logger('warn').log,
+      error: logger('error').log,
       child: (metadata) => build({ ...parentMetadata, ...metadata }),
       forRun: (workflowRunId, workflowName, extra) =>
         build({

@@ -59,6 +59,42 @@ describe('logger', () => {
     expect(debugSpy).toHaveBeenCalledTimes(1);
   });
 
+  test('debugEnabled() tracks DEBUG changes made at runtime', () => {
+    expect(buildLogger.debugEnabled()).toBe(false);
+
+    vi.stubEnv('DEBUG', 'workflow:build');
+    expect(buildLogger.debugEnabled()).toBe(true);
+    // Repeated calls with an unchanged pattern hit the memoized result.
+    expect(buildLogger.debugEnabled()).toBe(true);
+
+    vi.stubEnv('DEBUG', 'workflow:*,-workflow:build');
+    expect(buildLogger.debugEnabled()).toBe(false);
+
+    vi.unstubAllEnvs();
+    expect(buildLogger.debugEnabled()).toBe(false);
+  });
+
+  test('disabled debug returns before touching metadata', () => {
+    // A getter-backed metadata object observes whether the logger read it.
+    let touched = false;
+    const metadata = {};
+    Object.defineProperty(metadata, 'probe', {
+      enumerable: true,
+      get: () => {
+        touched = true;
+        return 'value';
+      },
+    });
+    runtimeLogger.debug('quiet', metadata);
+    expect(touched).toBe(false);
+    expect(debugSpy).not.toHaveBeenCalled();
+
+    vi.stubEnv('DEBUG', 'workflow:runtime:debug');
+    runtimeLogger.debug('loud', metadata);
+    expect(touched).toBe(true);
+    expect(debugSpy).toHaveBeenCalledTimes(1);
+  });
+
   test('child() merges parent metadata into every call', () => {
     const child = runtimeLogger.child({ workflowRunId: 'run-1' });
     child.error('boom', { stepId: 'step-1' });
