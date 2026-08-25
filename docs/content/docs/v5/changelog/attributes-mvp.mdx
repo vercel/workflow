@@ -273,7 +273,7 @@ If you need behavior the MVP does not provide (read, list, filter, initial attri
 Unit tests in `@workflow/world` (validation surface) and `@workflow/core` (VM-side dispatch + host-side stub):
 
 - Validation rules: key length, value byte cap, `$` prefix, per-batch duplicates, post-merge count cap (with `existingKeys` so updates of present keys don't falsely trip the cap)
-- Reserved `$` namespace: rejected by default, accepted when `allowReservedAttributes: true` is passed (both for `validateAttributeKey` and at the batch level via `validateAttributeChanges`)
+- Reserved `$` namespace: rejected by default and accepted by the contextual `validateAttributeChanges` check when `allowReservedAttributes: true` is passed
 - `experimental_setAttributes({})` is a no-op (no dispatch, no events)
 - `undefined` value normalizes to a `null`-valued change on the wire
 - The `{ allowReservedAttributes: true }` opt-in is forwarded through the step bridge so the world receives the flag
@@ -367,7 +367,7 @@ For the MVP the endpoint reuses the existing `WORKFLOW_EVENT` fact with `eventTy
 
 ### Validation rules are shared between SDK and world
 
-Validation lives in a single helper exported from `@workflow/world` (`validateAttributeChanges`, `validateAttributeKey`, `validateAttributeValue`). Both the SDK `experimental_setAttributes` helper and the `world-local` / `world-postgres` implementations call it; the `world-vercel` backing service applies the same rules independently. The shared module is the authoritative spec for the limits (256-char keys, 256-byte values, max 64 attributes per run, `$`-prefixed keys reserved), so any future change goes through one file.
+Context-free validation lives in the exported Zod schemas (`AttributeKeySchema`, `AttributeValueSchema`, `AttributeChangeSchema`, and `AttributeChangesSchema`). The schema-free `validateAttributeChanges` helper adds rules that depend on caller context, including the post-merge count and reserved `$` namespace. Both the SDK `experimental_setAttributes` helper and the `world-local` / `world-postgres` implementations call it; the `world-vercel` backing service applies the same rules independently. The shared module remains the authoritative spec for the limits (256-char keys, 256-byte values, max 64 attributes per run, `$`-prefixed keys reserved).
 
 ### Run row reconstruction had to thread `attributes` through
 

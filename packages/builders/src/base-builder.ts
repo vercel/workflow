@@ -1286,6 +1286,7 @@ export const __steps_registered = true;
     outfile,
     bundleFinalOutput = true,
     keepInterimBundleContext = this.config.watch,
+    includeMetafile = false,
     tsconfigPath,
     discoveredEntries,
   }: {
@@ -1295,6 +1296,7 @@ export const __steps_registered = true;
     format?: 'cjs' | 'esm';
     bundleFinalOutput?: boolean;
     keepInterimBundleContext?: boolean;
+    includeMetafile?: boolean;
     discoveredEntries?: DiscoveredEntries;
   }): Promise<{
     manifest: WorkflowManifest;
@@ -1302,6 +1304,8 @@ export const __steps_registered = true;
     bundleFinal?: (interimBundleResult: string) => Promise<void>;
     /** The raw workflow VM code (before wrapping with entrypoint) */
     interimBundleText?: string;
+    /** The initial workflow VM build graph, when requested by a caller. */
+    interimBundleMetafile?: esbuild.Metafile;
   }> {
     const discovered =
       discoveredEntries ??
@@ -1408,6 +1412,7 @@ export const __steps_registered = true;
       treeShaking: true,
       keepNames: true,
       minify: false,
+      metafile: includeMetafile,
       // Initialize the workflow registry at the beginning of the bundle
       // This must be in banner (not the virtual entry) because esbuild's bundling
       // can reorder code, and the .set() calls need the Map to exist first
@@ -1636,9 +1641,14 @@ ${createWorkflowRouteHandlersCode(`workflowEntrypoint(workflowCode${workflowEntr
           interimBundleCtx,
           bundleFinal,
           interimBundleText,
+          interimBundleMetafile: interimBundle.metafile,
         };
       }
-      return { manifest: workflowManifest, interimBundleText };
+      return {
+        manifest: workflowManifest,
+        interimBundleText,
+        interimBundleMetafile: interimBundle.metafile,
+      };
     } catch (error) {
       shouldDisposeInterimBundleCtx = true;
       throw error;
