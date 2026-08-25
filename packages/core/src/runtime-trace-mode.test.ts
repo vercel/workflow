@@ -109,16 +109,34 @@ async function driveHandler(opts: {
   workflowCode: string;
   traceCarrier?: Record<string, string>;
   routeModuleBodyStartedAt?: number;
-  includeRunInput?: boolean;
   executionContext?: WorkflowRun['executionContext'];
-  whileRunStartedPending?: () => Promise<void>;
+  streamRunCreatedBeforeResponse?: boolean;
+  whileRunStartedPending?: (state: {
+    getEncryptionKeyForRun: ReturnType<typeof vi.fn>;
+  }) => Promise<void>;
 }) {
   const workflowRun = await makeRunningRun(opts.runId, opts.executionContext);
   const queuedMessages: any[] = [];
+  const getEncryptionKeyForRun = vi.fn(async () => undefined);
 
-  const eventsCreate = vi.fn(async (_runId: string, data: any) => {
+  const eventsCreate = vi.fn(async (_runId: string, data: any, params: any) => {
     if (data.eventType === 'run_started') {
-      await opts.whileRunStartedPending?.();
+      if (opts.streamRunCreatedBeforeResponse) {
+        params?.onEvent?.({
+          eventId: 'evnt_run_created',
+          runId: workflowRun.runId,
+          eventType: 'run_created',
+          specVersion: SPEC_VERSION_CURRENT,
+          createdAt: workflowRun.createdAt,
+          eventData: {
+            deploymentId: workflowRun.deploymentId,
+            workflowName: workflowRun.workflowName,
+            input: workflowRun.input,
+            executionContext: workflowRun.executionContext,
+          },
+        });
+      }
+      await opts.whileRunStartedPending?.({ getEncryptionKeyForRun });
       return { run: workflowRun, events: [] as Event[] };
     }
     return {
@@ -144,23 +162,10 @@ async function driveHandler(opts: {
               runId: workflowRun.runId,
               requestedAt: new Date('2024-01-01T00:00:00.000Z'),
               traceCarrier: opts.traceCarrier,
-              ...(opts.includeRunInput
-                ? {
-                    runInput: {
-                      input: workflowRun.input,
-                      deploymentId: workflowRun.deploymentId,
-                      workflowName: workflowRun.workflowName,
-                      specVersion: SPEC_VERSION_CURRENT,
-                      executionContext: workflowRun.executionContext,
-                    },
-                  }
-                : {}),
             },
             {
               requestId: 'req_test',
-              // Keep this trace harness on the awaited run_started path even
-              // when a test supplies runInput for pre-response VM selection.
-              attempt: opts.includeRunInput ? 2 : 1,
+              attempt: 1,
               queueName: '__wkf_workflow_workflow',
               messageId: 'msg_test',
             }
@@ -184,7 +189,7 @@ async function driveHandler(opts: {
       queuedMessages.push(message);
       return { messageId: null };
     }),
-    getEncryptionKeyForRun: vi.fn(async () => undefined),
+    getEncryptionKeyForRun,
   } as any);
 
   const handler = workflowEntrypoint(
@@ -230,6 +235,7 @@ async function driveHandler(opts: {
     getWorldSpan,
     deliverySpan,
     queuedMessages,
+    getEncryptionKeyForRun,
   };
 }
 
@@ -267,12 +273,28 @@ describe('getWorkflowTraceMode', () => {
 });
 
 describe('workflowEntrypoint trace modes', () => {
+  it('starts key resolution from a streamed run_created frame', async () => {
+    await driveHandler({
+      runId: 'wrun_trace_streamed_key',
+      workflowCode: simpleWorkflow,
+      streamRunCreatedBeforeResponse: true,
+      whileRunStartedPending: async ({ getEncryptionKeyForRun }) => {
+        await vi.waitFor(() => {
+          expect(getEncryptionKeyForRun).toHaveBeenCalledWith(
+            'wrun_trace_streamed_key',
+            { deploymentId: 'test-deployment' }
+          );
+        });
+      },
+    });
+  });
+
   it('compiles while run_started is loading, without evaluating early', async () => {
     let observedOverlap = false;
     await driveHandler({
       runId: 'wrun_trace_compile_overlap',
       workflowCode: simpleWorkflow,
-      includeRunInput: true,
+      streamRunCreatedBeforeResponse: true,
       whileRunStartedPending: async () => {
         expect(
           exporter
@@ -307,7 +329,7 @@ describe('workflowEntrypoint trace modes', () => {
     await driveHandler({
       runId: 'wrun_trace_quickjs_compile',
       workflowCode: simpleWorkflow,
-      includeRunInput: true,
+      streamRunCreatedBeforeResponse: true,
       executionContext: { workflowVm: 'quickjs' },
     });
 

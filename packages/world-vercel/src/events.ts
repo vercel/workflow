@@ -53,7 +53,7 @@ import {
   validateUlidTimestamp,
   type WorkflowRun,
 } from '@workflow/world';
-import { withEventPostRetry } from './event-retry.js';
+import { EventObserverError, withEventPostRetry } from './event-retry.js';
 import {
   createHookReceivedPreloadEventV4,
   createWorkflowRunEventsBatchV4,
@@ -637,6 +637,7 @@ export async function createWorkflowRunEvent<T extends AnyEventRequest>(
     }
     return result as EventResult<T['eventType']>;
   } catch (err) {
+    if (err instanceof EventObserverError) throw err.error;
     // 404 on hook_disposed / hook_received → already-disposed hook.
     if (
       isHookEventRequiringExistence(data.eventType) &&
@@ -751,7 +752,11 @@ async function createWorkflowRunEventInner(
   };
 
   if (data.eventType === 'run_started' && !params?.skipPreload) {
-    const result = await createWorkflowRunStartedEventV4(input, config);
+    const result = await createWorkflowRunStartedEventV4(
+      input,
+      config,
+      params?.onEvent
+    );
     const runCreated = result.events.find(
       (event) => event.eventType === 'run_created'
     );
@@ -820,7 +825,8 @@ async function createWorkflowRunEventInner(
     // an S3-backed hook payload the runtime would discard anyway.
     const outcome = await createHookReceivedPreloadEventV4(
       { ...input, remoteRefBehavior: 'lazy' },
-      config
+      config,
+      params.onEvent
     );
     if (outcome.kind === 'materialized') {
       // Older server (or optimization declined): the write still succeeded

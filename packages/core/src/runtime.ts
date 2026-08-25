@@ -14,7 +14,7 @@ import {
   WorkflowRuntimeError,
   WorkflowWorldError,
 } from '@workflow/errors';
-import { once, setWorkflowBasePath } from '@workflow/utils';
+import { once, setWorkflowBasePath, withResolvers } from '@workflow/utils';
 import {
   parseWorkflowName,
   workflowDisplayName,
@@ -82,6 +82,7 @@ import {
   parseHealthCheckPayload,
   preconditionEventDelta,
   queueMessage,
+  resolveRunEncryptionKey,
   type SlotSnapshotParams,
   settleEventSlotGap,
   slotSnapshotParams,
@@ -631,6 +632,21 @@ type ReplayEventLog =
   | ({ type: 'ready' } & LoadedEventLog)
   | ({ type: 'loadAfter'; cursor: string } & LoadedEventLog);
 
+type ReplayEncryptionKeySource =
+  | { type: 'run'; run: WorkflowRun }
+  | { type: 'deployment'; deploymentId: string };
+
+function replayLifecycleContext(event: Event):
+  | {
+      deploymentId?: string;
+      executionContext?: WorkflowRun['executionContext'];
+    }
+  | undefined {
+  if (event.eventType === 'run_created' || event.eventType === 'run_started') {
+    return event.eventData;
+  }
+}
+
 function nextEventLogLoad(log: LoadedEventLog): ReplayEventLog {
   if (log.cursor === null) {
     return { type: 'loadAll' };
@@ -969,6 +985,42 @@ export function workflowEntrypoint(
                     void compiledWorkflowScripts.catch(() => {});
                     return compiledWorkflowScripts;
                   };
+                  const encryptionKeySource =
+                    withResolvers<ReplayEncryptionKeySource>();
+                  const provideEncryptionKeySource = (
+                    source: ReplayEncryptionKeySource
+                  ): void => {
+                    encryptionKeySource.resolve(source);
+                  };
+                  const encryptionKeyPromise = encryptionKeySource.promise.then(
+                    (source) =>
+                      source.type === 'run'
+                        ? resolveRunEncryptionKey(world, source.run)
+                        : resolveRunEncryptionKey(world, runId, {
+                            deploymentId: source.deploymentId,
+                          })
+                  );
+                  // Streaming/turbo setup can resolve the source well before
+                  // the ordered replay consumer awaits the key. Keep speculative
+                  // failures handled without changing the later await's result.
+                  void encryptionKeyPromise.catch(() => {});
+                  const replayPayloadCache = new ReplayPayloadCache(
+                    encryptionKeyPromise
+                  );
+                  let replayObservedEventCount = 0;
+                  const onReplayEvent = (event: Event): void => {
+                    replayObservedEventCount++;
+                    replayPayloadCache.prepareEvent(event);
+                    const runContext = replayLifecycleContext(event);
+                    if (!runContext) return;
+                    if (runContext.deploymentId) {
+                      provideEncryptionKeySource({
+                        type: 'deployment',
+                        deploymentId: runContext.deploymentId,
+                      });
+                    }
+                    startWorkflowCompile(runContext);
+                  };
                   // Every write this loop makes carries the cursor of the log
                   // it was computed against, and folds a complete returned
                   // delta into that log.
@@ -995,17 +1047,27 @@ export function workflowEntrypoint(
                     load: () => Promise<T>
                   ): Promise<T> =>
                     trace('workflow.replay.load', async (loadSpan) => {
+                      const observedAtStart = replayObservedEventCount;
+                      let eventsCount = 0;
                       loadSpan?.setAttributes({
                         ...Attribute.WorkflowRunId(runId),
                         ...Attribute.WorkflowReplayLoadSource(source),
                       });
-                      const result = await load();
-                      loadSpan?.setAttributes(
-                        Attribute.WorkflowEventsCount(
-                          result.events?.length ?? 0
-                        )
-                      );
-                      return result;
+                      try {
+                        const result = await load();
+                        eventsCount = result.events?.length ?? 0;
+                        return result;
+                      } finally {
+                        // A failed frame stream has no materialized result, but
+                        // its observer count still tells us how far it got.
+                        eventsCount = Math.max(
+                          eventsCount,
+                          replayObservedEventCount - observedAtStart
+                        );
+                        loadSpan?.setAttributes(
+                          Attribute.WorkflowEventsCount(eventsCount)
+                        );
+                      }
                     });
 
                   /**
@@ -2095,6 +2157,7 @@ export function workflowEntrypoint(
                             resumeId: hookResumeInput.resumeId,
                             resumePayloadDigest: hookResumeInput.payloadDigest,
                             preloadEvents: true,
+                            onEvent: onReplayEvent,
                           }
                         )
                       );
@@ -2304,6 +2367,10 @@ export function workflowEntrypoint(
                         // wasted list+resolve it would otherwise compute.
                         { requestId, skipPreload: true }
                       );
+                      provideEncryptionKeySource({
+                        type: 'deployment',
+                        deploymentId: runInput.deploymentId,
+                      });
                       startWorkflowCompile(runInput);
                       runReadyBarrier = startedPromise;
                       // Turbo backgrounds run_started, so the non-turbo
@@ -2374,12 +2441,11 @@ export function workflowEntrypoint(
                           'workflow.run_started.skip_preload': false,
                         });
                         const replayLoad = traceReplayLoad('run_started', () =>
-                          createEvent(runStartedEvent, { requestId })
+                          createEvent(runStartedEvent, {
+                            requestId,
+                            onEvent: onReplayEvent,
+                          })
                         );
-                        // Initial deliveries carry runInput, so Node compilation
-                        // can overlap this load without guessing the VM engine.
-                        // Continuations learn the engine from result.run below.
-                        startWorkflowCompile(runInput);
                         const result = await replayLoad;
                         workflowRun = result.run;
                         maxEventsLimit = clampMaxEvents(result.maxEvents);
@@ -2665,31 +2731,21 @@ export function workflowEntrypoint(
                       // do we fall back to reloading the complete log.
                       if (eventLog.type !== 'loadAll' && ensuredEvent) {
                         insertEventByEventId(eventLog.events, ensuredEvent);
+                        onReplayEvent(ensuredEvent);
                       } else {
                         eventLog = { type: 'loadAll' };
                       }
                     } // end else (re-ensure needed)
                   }
 
-                  // Resolve the encryption key for this run's deployment.
-                  // Used eagerly here since both workflow execution (input
-                  // hydration / hook payload decryption) and the run_failed
-                  // dehydrate path below need it. Memoized accessor: first
-                  // call triggers the actual fetch / HKDF derivation,
-                  // subsequent calls await the cached promise.
-                  const getEncryptionKey = memoizeEncryptionKey(
-                    world,
-                    workflowRun
-                  );
-                  const encryptionKey = await getEncryptionKey();
-
-                  // Invocation-scoped cache of VM-independent prepared payloads
-                  // and immutable final values. It survives the fresh workflow
-                  // VM created by each inline replay, but never crosses runs or
-                  // queue deliveries.
-                  const replayPayloadCache = new ReplayPayloadCache(
-                    encryptionKey
-                  );
+                  // A streamed run_created frame normally starts this lookup.
+                  // Worlds without event observation fall back to the complete
+                  // materialized run, preserving the previous behavior.
+                  provideEncryptionKeySource({
+                    type: 'run',
+                    run: workflowRun,
+                  });
+                  const encryptionKey = await encryptionKeyPromise;
 
                   // The live VM parked at the previous boundary, when the
                   // retention decision kept it. null → this iteration cold-

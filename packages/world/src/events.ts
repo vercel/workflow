@@ -868,6 +868,13 @@ export interface CreateEventParams {
    * `resumeHook()` must not set it.
    */
   preloadEvents?: true;
+  /**
+   * Synchronously observes each validated event in a streamed replay-log
+   * response. A retried request may observe the same event again; observers
+   * must therefore be idempotent. Throwing aborts the operation and the World
+   * must surface the original error without retrying or reclassifying it.
+   */
+  onEvent?: (event: Event) => void;
 }
 
 /**

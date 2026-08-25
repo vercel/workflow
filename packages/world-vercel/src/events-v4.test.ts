@@ -1117,12 +1117,14 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
         }
       );
 
+    const onEvent = vi.fn();
     const result = await createWorkflowRunStartedEventV4(
       {
         runId: 'wrun_1',
         specVersion: 5,
       },
-      { token: 'test-token', dispatcher: agent }
+      { token: 'test-token', dispatcher: agent },
+      onEvent
     );
 
     expect(result.maxEvents).toBe(10000);
@@ -1130,6 +1132,10 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
     expect(result.events[0]).toMatchObject({ eventData: { input } });
     expect(result.cursor).toBe('eid:evnt_2');
     expect(result.hasMore).toBe(false);
+    expect(onEvent.mock.calls.map(([event]) => event.eventId)).toEqual([
+      'evnt_1',
+      'evnt_2',
+    ]);
     agent.assertNoPendingInterceptors();
   });
 

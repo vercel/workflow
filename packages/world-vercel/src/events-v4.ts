@@ -38,6 +38,7 @@ import {
 } from '@workflow/world';
 import { decode } from 'cbor-x';
 import { z } from 'zod';
+import { EventObserverError } from './event-retry.js';
 import {
   type DecodedFrame,
   decodeFrames,
@@ -867,14 +868,20 @@ async function decodeCreateEventResponse<T extends EventType>(
 
 export async function createWorkflowRunStartedEventV4(
   input: CreateEventV4InputBase,
-  config?: APIConfig
+  config?: APIConfig,
+  onEvent?: (event: Event) => void
 ) {
   const response = await postWorkflowRunEventV4(
     { ...input, eventType: 'run_started' },
     'event-stream',
     config
   );
-  const page = await consumeReplayLogResponse(response, input.runId, config);
+  const page = await consumeReplayLogResponse(
+    response,
+    input.runId,
+    config,
+    onEvent
+  );
   if (!page.cursor) {
     throw new WorkflowWorldError(
       'v4 createEvent: event stream missing cursor',
@@ -1319,7 +1326,8 @@ export type HookReceivedPreloadV4Result =
  */
 export async function createHookReceivedPreloadEventV4(
   input: CreateEventV4InputBase,
-  config?: APIConfig
+  config?: APIConfig,
+  onEvent?: (event: Event) => void
 ): Promise<HookReceivedPreloadV4Result> {
   const response = await postWorkflowRunEventV4(
     { ...input, eventType: 'hook_received' },
@@ -1335,7 +1343,12 @@ export async function createHookReceivedPreloadEventV4(
     };
   }
 
-  const page = await consumeReplayLogResponse(response, input.runId, config);
+  const page = await consumeReplayLogResponse(
+    response,
+    input.runId,
+    config,
+    onEvent
+  );
   const maxEvents = MaxEventsHeaderSchema.safeParse(
     response.headers.get(MAX_EVENTS_HEADER)
   );
@@ -1487,7 +1500,8 @@ function partialEventFrameStream(
 
 async function consumeEventFrameStream(
   response: Response,
-  opName: string
+  opName: string,
+  onEvent?: (event: Event) => void
 ): Promise<EventFrameStreamResult> {
   const contentType = response.headers.get('content-type');
   if (!contentType?.startsWith(V4_FRAME_CONTENT_TYPE)) {
@@ -1519,22 +1533,15 @@ async function consumeEventFrameStream(
       if (Object.keys(frame.meta).some((key) => key.startsWith('_'))) {
         throw new Error(`v4 ${opName}: unexpected control frame`);
       }
-      events.push(decodeEventFrame(frame));
+      const event = decodeEventFrame(frame);
+      events.push(event);
+      notifyEventObserver(onEvent, event);
     }
   } catch (cause) {
-    if (CorruptedEventLogError.is(cause) || WorkflowWorldError.is(cause)) {
-      throw cause;
-    }
-    const incomplete = cause instanceof IncompleteFrameError;
-    const error = new WorkflowWorldError(
-      `v4 ${opName}: ${incomplete ? 'incomplete' : 'invalid'} event frame stream`,
-      {
-        code: incomplete ? 'TRANSPORT' : 'SCHEMA_VALIDATION',
-        cause,
-      }
+    return partialEventFrameStream(
+      events,
+      partialEventFrameStreamError(opName, cause)
     );
-    if (!incomplete) throw error;
-    return partialEventFrameStream(events, error);
   }
 
   return partialEventFrameStream(
@@ -1555,9 +1562,10 @@ async function consumeEventFrameStream(
 async function consumeReplayLogResponse(
   response: Response,
   runId: string,
-  config?: APIConfig
+  config?: APIConfig,
+  onEvent?: (event: Event) => void
 ): Promise<ListEventsV4Result> {
-  const page = await consumeEventFrameStream(response, 'createEvent');
+  const page = await consumeEventFrameStream(response, 'createEvent', onEvent);
   if (!page.hasMore) return page;
   if (!page.cursor) {
     if (page.partialError) throw page.partialError;
@@ -1570,13 +1578,49 @@ async function consumeReplayLogResponse(
   const suffix = await getWorkflowRunEventsV4(
     runId,
     { cursor: page.cursor, remoteRefBehavior: 'resolve' },
-    config
+    config,
+    onEvent
   );
   return {
     events: [...page.events, ...suffix.events],
     cursor: suffix.cursor ?? page.cursor,
     hasMore: suffix.hasMore,
   };
+}
+
+function notifyEventObserver(
+  observer: ((event: Event) => void) | undefined,
+  event: Event
+): void {
+  if (!observer) return;
+  try {
+    observer(event);
+  } catch (error) {
+    throw new EventObserverError(error);
+  }
+}
+
+function partialEventFrameStreamError(
+  opName: string,
+  cause: unknown
+): WorkflowWorldError {
+  if (
+    cause instanceof EventObserverError ||
+    CorruptedEventLogError.is(cause) ||
+    WorkflowWorldError.is(cause)
+  ) {
+    throw cause;
+  }
+  if (!(cause instanceof IncompleteFrameError)) {
+    throw new WorkflowWorldError(`v4 ${opName}: invalid event frame stream`, {
+      code: 'SCHEMA_VALIDATION',
+      cause,
+    });
+  }
+  return new WorkflowWorldError(`v4 ${opName}: incomplete event frame stream`, {
+    code: 'TRANSPORT',
+    cause,
+  });
 }
 
 /**
@@ -1592,7 +1636,8 @@ async function consumeListFrameStream(
   url: string,
   headers: Headers,
   config: APIConfig | undefined,
-  opName: string
+  opName: string,
+  onEvent?: (event: Event) => void
 ): Promise<EventFrameStreamResult> {
   const response = await fetchV4(
     url,
@@ -1600,7 +1645,7 @@ async function consumeListFrameStream(
     config,
     opName
   );
-  return consumeEventFrameStream(response, opName);
+  return consumeEventFrameStream(response, opName, onEvent);
 }
 
 /**
@@ -1640,7 +1685,8 @@ function paginationToQuery(params: ListEventsV4Params): string {
 export async function getWorkflowRunEventsV4(
   runId: string,
   params: ListEventsV4Params = {},
-  config?: APIConfig
+  config?: APIConfig,
+  onEvent?: (event: Event) => void
 ): Promise<ListEventsV4Result> {
   const { baseUrl, headers } = await getHttpConfig(config);
   const events: Event[] = [];
@@ -1652,7 +1698,13 @@ export async function getWorkflowRunEventsV4(
     const url =
       `${baseUrl}/v4/runs/${encodeURIComponent(runId)}/events` +
       paginationToQuery({ ...params, cursor: cursor ?? undefined });
-    consumed = await consumeListFrameStream(url, headers, config, 'listEvents');
+    consumed = await consumeListFrameStream(
+      url,
+      headers,
+      config,
+      'listEvents',
+      onEvent
+    );
     const cursorAdvanced = !!consumed.cursor && consumed.cursor !== cursor;
     if (consumed.partialError) {
       if (
