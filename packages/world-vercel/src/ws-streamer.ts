@@ -9,7 +9,7 @@ import { getHttpConfig, getHttpUrl } from './utils.js';
 import { version } from './version.js';
 
 const EMPTY = new Uint8Array(0);
-const MAX_IN_FLIGHT_BATCHES = 5;
+const MAX_IN_FLIGHT_BATCHES = 1;
 const IDLE_TIMEOUT_MS = 30_000;
 
 type Reply = { meta: Record<string, unknown>; body: Uint8Array };
