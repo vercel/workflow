@@ -26,6 +26,7 @@ import {
   createStep,
   createWait,
   disposeHook,
+  permissionEnforcement,
   updateRun,
   updateStep,
 } from './test-helpers.js';
@@ -5399,8 +5400,10 @@ describe('Storage', () => {
     });
 
     // chmod-based permission simulation is a no-op for directories on
-    // Windows, so these two abort-path tests only run on POSIX platforms.
-    it.skipIf(process.platform === 'win32')(
+    // Windows, and is bypassed outright by root / CAP_DAC_OVERRIDE, so these
+    // two abort-path tests only run where the permission bits are actually
+    // enforced — see `permissionEnforcement`.
+    it.skipIf(!permissionEnforcement.write)(
       'should abort the terminal transition when the staging reap fails',
       async () => {
         // The reap is the correctness-critical half of the arbitration: if
@@ -5449,7 +5452,7 @@ describe('Storage', () => {
       }
     );
 
-    it.skipIf(process.platform === 'win32')(
+    it.skipIf(!permissionEnforcement.read)(
       'should abort the terminal transition when the dominance scan fails',
       async () => {
         // mintRunDominantEventKey's ordering guarantee depends on seeing
