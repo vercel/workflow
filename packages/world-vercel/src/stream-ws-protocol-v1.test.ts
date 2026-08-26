@@ -9,6 +9,8 @@ import {
   getStreamWsProtocolV1Url,
   parseStreamWsReply,
   STREAM_WS_PROTOCOL_V1,
+  STREAM_WS_V1_MAX_CHUNK_BYTES,
+  STREAM_WS_V1_MAX_CHUNKS_PER_WRITE,
   StreamWriterIdSchema,
   StreamWsCloseRequestMetaSchema,
   StreamWsRequestMetaSchema,
@@ -46,6 +48,8 @@ describe('workflow-stream-ws/v1 contract', () => {
     const fixtureBytes = await readFile(
       new URL('./__fixtures__/workflow-stream-ws-v1.json', import.meta.url)
     );
+    // Canonical source: workflow-server#848
+    // test/fixtures/workflow-stream-ws-v1.json
     expect(createHash('sha256').update(fixtureBytes).digest('hex')).toBe(
       'deaa70651a43039322eb0eb5700c8daaa1cb8efbd8c9f5cbf25f671a78b0e38d'
     );
@@ -107,6 +111,36 @@ describe('workflow-stream-ws/v1 contract', () => {
     ).toThrow('declares 2 chunks but received 1');
   });
 
+  it('bounds request work at 1000 chunks rather than 1000 writes/second', () => {
+    expect(STREAM_WS_V1_MAX_CHUNKS_PER_WRITE).toBe(1000);
+    expect(
+      StreamWsWriteRequestMetaSchema.safeParse({
+        type: 'write',
+        reqId: 1,
+        chunkSeq: 0,
+        numChunks: 1000,
+      }).success
+    ).toBe(true);
+    expect(
+      StreamWsWriteRequestMetaSchema.safeParse({
+        type: 'write',
+        reqId: 1,
+        chunkSeq: 0,
+        numChunks: 1001,
+      }).success
+    ).toBe(false);
+  });
+
+  it('rejects chunks over the shared 10 MiB per-chunk limit', () => {
+    expect(STREAM_WS_V1_MAX_CHUNK_BYTES).toBe(10 * 1024 * 1024);
+    expect(() =>
+      encodeStreamWsWriteRequest(
+        { type: 'write', reqId: 1, chunkSeq: 0, numChunks: 1 },
+        [new Uint8Array(STREAM_WS_V1_MAX_CHUNK_BYTES + 1)]
+      )
+    ).toThrow('maximum is 10485760');
+  });
+
   it('encodes close with an empty body', async () => {
     await expect(
       decodeOne(encodeStreamWsCloseRequest({ type: 'close', reqId: 2 }))
@@ -155,6 +189,30 @@ describe('workflow-stream-ws/v1 contract', () => {
     ).toBe(false);
   });
 
+  it('treats duplicate and discontinuous writer-local sequences as observational', () => {
+    const first = {
+      type: 'write' as const,
+      reqId: 1,
+      chunkSeq: 0,
+      numChunks: 2,
+    };
+    expect(StreamWsWriteRequestMetaSchema.parse(first)).toEqual(first);
+    expect(
+      StreamWsWriteRequestMetaSchema.parse({
+        ...first,
+        reqId: 2,
+        chunkSeq: 0,
+      })
+    ).toEqual({ ...first, reqId: 2, chunkSeq: 0 });
+    expect(
+      StreamWsWriteRequestMetaSchema.parse({
+        ...first,
+        reqId: 3,
+        chunkSeq: 99,
+      })
+    ).toEqual({ ...first, reqId: 3, chunkSeq: 99 });
+  });
+
   it('validates request counters as nonnegative integers', () => {
     expect(
       StreamWsWriteRequestMetaSchema.safeParse({
@@ -182,19 +240,26 @@ describe('workflow-stream-ws/v1 contract', () => {
     ).toBe(false);
   });
 
-  it('validates and encodes the observational writer id', () => {
+  it('validates and encodes the non-fencing observational writer id', () => {
     const writerId = 'wrtr_01ARZ3NDEKTSV4RRFFQ69G5FAV';
     expect(StreamWriterIdSchema.parse(writerId)).toBe(writerId);
+    const url = getStreamWsProtocolV1Url(
+      'https://example.test/api/',
+      'run/1',
+      'stream name',
+      writerId
+    );
+    expect(url.toString()).toBe(
+      'wss://example.test/api/websockets/v1/runs/run%2F1/streams/stream%20name?writerId=wrtr_01ARZ3NDEKTSV4RRFFQ69G5FAV'
+    );
     expect(
       getStreamWsProtocolV1Url(
         'https://example.test/api/',
         'run/1',
         'stream name',
         writerId
-      ).toString()
-    ).toBe(
-      'wss://example.test/api/websockets/v1/runs/run%2F1/streams/stream%20name?writerId=wrtr_01ARZ3NDEKTSV4RRFFQ69G5FAV'
-    );
+      ).searchParams.get('writerId')
+    ).toBe(writerId);
     expect(StreamWriterIdSchema.safeParse(writerId.toLowerCase()).success).toBe(
       false
     );

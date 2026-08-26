@@ -25,7 +25,10 @@ import {
   getVercelDiagnostics,
   instrumentedFetch,
 } from './http-core.js';
-import { encodeMultiChunks } from './stream-chunks.js';
+import {
+  encodeMultiChunks,
+  MAX_CHUNKS_PER_STREAM_WRITE,
+} from './stream-chunks.js';
 import {
   WorkflowRunId,
   WorkflowStreamName,
@@ -43,7 +46,7 @@ import {
  * Maximum number of chunks per request, matching the server-side
  * MAX_CHUNKS_PER_BATCH. Larger batches are split into multiple requests.
  */
-export const MAX_CHUNKS_PER_REQUEST = 1000;
+export const MAX_CHUNKS_PER_REQUEST = MAX_CHUNKS_PER_STREAM_WRITE;
 
 /**
  * Effective max chunks per write request. Override via
