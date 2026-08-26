@@ -8,11 +8,12 @@ import {
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { BaseBuilder, type DiscoveredEntries } from './base-builder.js';
+import { BaseBuilder } from './base-builder.js';
 import {
   importGraphHasChild,
   parentHasChild,
 } from './discover-entries-esbuild-plugin.js';
+import type { CompleteDiscoveredEntries } from './fast-discovery.js';
 import type { StandaloneConfig } from './types.js';
 
 class TestBuilder extends BaseBuilder {
@@ -24,7 +25,7 @@ class TestBuilder extends BaseBuilder {
     inputs: string[],
     outdir: string,
     tsconfigPath?: string
-  ): Promise<DiscoveredEntries> {
+  ): Promise<CompleteDiscoveredEntries> {
     return this.discoverEntries(inputs, outdir, tsconfigPath);
   }
 

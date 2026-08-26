@@ -319,6 +319,7 @@ export function createDevTests(config?: DevTestConfig) {
       log.split(message).length - 1;
     type ExpectedHmrLogCount =
       | number
+      | { kind: 'at-least'; min: number }
       | { kind: 'range'; min: number; max: number };
     type ExpectedHmrLogCounts = {
       skip?: ExpectedHmrLogCount;
@@ -334,6 +335,9 @@ export function createDevTests(config?: DevTestConfig) {
         return;
       }
       switch (expected.kind) {
+        case 'at-least':
+          expect(actual).toBeGreaterThanOrEqual(expected.min);
+          return;
         case 'range':
           expect(actual).toBeGreaterThanOrEqual(expected.min);
           expect(actual).toBeLessThanOrEqual(expected.max);
@@ -1270,7 +1274,7 @@ export function hmrFuzzWorkflowHelper(value: HmrFuzzBox) {
           {
             file: files.serde,
             kind: 'serde',
-            expectedLogCounts: { hot: 1 },
+            expectedLogCounts: { full: 1 },
             source: (iteration: number) => `export class HmrFuzzBox {
   static classId = 'HmrFuzzBox';
 
@@ -1335,10 +1339,15 @@ export function hmrFuzzWorkflowHelper(value: HmrFuzzBox) {
           await expectHmrLogCounts(logCursor, testCase.expectedLogCounts);
         }
 
+        // Watchers may deliver the same edit during consecutive builds. The
+        // manifest and execution assertions below verify eventual convergence.
+        const expectedFullRediscovery = {
+          full: { kind: 'at-least', min: 1 },
+        } as const;
         const fullCases = [
           {
             description: 'workflow import graph change',
-            expectedLogCounts: { full: 1 },
+            expectedLogCounts: expectedFullRediscovery,
             write: async () => {
               await fs.writeFile(
                 files.workflow,
@@ -1372,7 +1381,7 @@ export async function hmrFuzzWorkflow() {
           },
           {
             description: 'step definition added',
-            expectedLogCounts: { full: 1 },
+            expectedLogCounts: expectedFullRediscovery,
             write: async (iteration: number) => {
               await fs.writeFile(
                 files.step,
@@ -1407,7 +1416,7 @@ export async function hmrFuzzAddedStep() {
           },
           {
             description: 'workflow definition added',
-            expectedLogCounts: { full: 1 },
+            expectedLogCounts: expectedFullRediscovery,
             write: async (iteration: number) => {
               await fs.writeFile(
                 files.workflow,
@@ -1449,9 +1458,7 @@ export async function hmrFuzzAddedWorkflow() {
           },
           {
             description: 'workflow file added through API import',
-            expectedLogCounts: {
-              full: { kind: 'range', min: 1, max: 2 },
-            },
+            expectedLogCounts: expectedFullRediscovery,
             write: async (iteration: number) => {
               await fs.writeFile(
                 files.addedWorkflow,
@@ -1485,9 +1492,7 @@ ${apiFileContent}`
           },
           {
             description: 'workflow file removed from API import',
-            expectedLogCounts: {
-              full: { kind: 'range', min: 1, max: 2 },
-            },
+            expectedLogCounts: expectedFullRediscovery,
             write: async () => {
               await fs.rm(files.addedWorkflow, { force: true });
               await fs.writeFile(
