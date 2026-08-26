@@ -8,6 +8,18 @@ import { getWebRevivers } from '../src/lib/hydration.js';
 
 const REVIVERS = getWebRevivers();
 
+class TestIterable implements Iterable<string | [string, string]> {
+  constructor(private readonly items: Array<string | [string, string]>) {}
+
+  *[Symbol.iterator]() {
+    yield* this.items;
+  }
+}
+
+function* generateValue(value: string) {
+  yield value;
+}
+
 function hydrateHeaders(entries: [string, string][]): Headers {
   return REVIVERS.Headers(entries) as Headers;
 }
@@ -16,7 +28,7 @@ function hydrateSearchParams(value: string): URLSearchParams {
   return REVIVERS.URLSearchParams(value) as URLSearchParams;
 }
 
-describe('DataInspector Web API iterables', () => {
+describe('DataInspector iterables', () => {
   let container: HTMLDivElement;
   let root: Root;
 
@@ -83,6 +95,22 @@ describe('DataInspector Web API iterables', () => {
     expect(row.textContent).toContain('"created"');
   });
 
+  it('expands custom Symbol.iterator implementations', () => {
+    render(new TestIterable(['first', ['named', 'second']]));
+    const row = getExpandableRow();
+
+    act(() => {
+      row.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+
+    expect(row.getAttribute('aria-expanded')).toBe('true');
+    expect(row.textContent).toContain('TestIterable');
+    expect(row.textContent).toContain('0:');
+    expect(row.textContent).toContain('"first"');
+    expect(row.textContent).toContain('named:');
+    expect(row.textContent).toContain('"second"');
+  });
+
   it('updates when a distinct Headers instance has different entries', () => {
     render(hydrateHeaders([['x-version', 'one']]), 1);
     expect(container.textContent).toContain('"one"');
@@ -101,5 +129,29 @@ describe('DataInspector Web API iterables', () => {
 
     expect(container.textContent).toContain('"2"');
     expect(container.textContent).not.toContain('"1"');
+  });
+
+  it('updates when distinct generic iterables yield different values', () => {
+    render(new TestIterable(['one']), 1);
+    expect(container.textContent).toContain('"one"');
+
+    render(new TestIterable(['two']), 1);
+
+    expect(container.textContent).toContain('"two"');
+    expect(container.textContent).not.toContain('"one"');
+  });
+
+  it('preserves and updates self-iterating iterators', () => {
+    const first = generateValue('one');
+    render(first, 1);
+    expect(container.textContent).toContain('"one"');
+
+    render(first, 1);
+    expect(container.textContent).toContain('"one"');
+
+    render(generateValue('two'), 1);
+
+    expect(container.textContent).toContain('"two"');
+    expect(container.textContent).not.toContain('"one"');
   });
 });

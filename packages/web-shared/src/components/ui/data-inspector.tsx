@@ -344,7 +344,7 @@ function BytesDisplayValue({ display }: { display: BytesDisplay }) {
 // Tree renderer
 // ---------------------------------------------------------------------------
 
-type Entry = [field: string | undefined, value: unknown];
+type Entry = [field: string | undefined, value: unknown, key?: string | number];
 
 interface NodeContext {
   level: number;
@@ -357,10 +357,46 @@ function formatField(field: string): string {
   return field === '' ? '""' : field;
 }
 
+function isGenericIterable(
+  value: unknown
+): value is object & Iterable<unknown> {
+  if (
+    value === null ||
+    (typeof value !== 'object' && typeof value !== 'function') ||
+    Array.isArray(value) ||
+    value instanceof Map ||
+    value instanceof Set
+  ) {
+    return false;
+  }
+  return (
+    typeof (value as { [Symbol.iterator]?: unknown })[Symbol.iterator] ===
+    'function'
+  );
+}
+
+function getIterableEntries(value: Iterable<unknown>): Entry[] {
+  const entries: Entry[] = [];
+  let index = 0;
+  for (const item of value) {
+    if (Array.isArray(item) && item.length === 2) {
+      entries.push([String(item[0]), collapseRefs(item[1]), index]);
+    } else {
+      entries.push([String(index), collapseRefs(item), index]);
+    }
+    index += 1;
+  }
+  return entries;
+}
+
+function isSelfIterableIterator(value: object & Iterable<unknown>): boolean {
+  return value[Symbol.iterator]() === value;
+}
+
 /**
  * Describe an object/array/iterable as an expandable container. Returns null
  * for values that should render as a primitive. `prefix` carries a class name
- * shown before the opening bracket (Map/Set, Web API iterables, and named class
+ * shown before the opening bracket (Map/Set, generic iterables, and named class
  * instances).
  */
 function describeContainer(
@@ -392,20 +428,14 @@ function describeContainer(
       prefix: 'Set',
     };
   }
-  if (value instanceof Headers) {
+  if (isGenericIterable(value)) {
+    const name = (value as { constructor?: { name?: string } }).constructor
+      ?.name;
     return {
-      entries: Array.from(value.entries(), ([key, val]): Entry => [key, val]),
+      entries: getIterableEntries(value),
       open: '{',
       close: '}',
-      prefix: 'Headers',
-    };
-  }
-  if (value instanceof URLSearchParams) {
-    return {
-      entries: Array.from(value.entries(), ([key, val]): Entry => [key, val]),
-      open: '{',
-      close: '}',
-      prefix: 'URLSearchParams',
+      prefix: name && name !== 'Object' ? name : undefined,
     };
   }
   if (value !== null && typeof value === 'object') {
@@ -633,9 +663,9 @@ function ExpandableContainer({
       {expanded ? (
         // biome-ignore lint/a11y/useSemanticElements: ARIA tree group is the correct role here
         <ul id={contentsId} className={CLS.childFields} role="group">
-          {entries.map(([childField, childValue], index) => (
+          {entries.map(([childField, childValue, entryKey], index) => (
             <DataRender
-              key={childField ?? index}
+              key={entryKey ?? childField ?? index}
               field={childField}
               value={childValue}
               isLast={index === lastIndex}
@@ -660,6 +690,8 @@ interface NodeProps {
 }
 
 function DataRender({ field, value, isLast, ctx }: NodeProps) {
+  const container = useMemo(() => describeContainer(value), [value]);
+
   if (isBytesDisplay(value)) {
     return (
       <LeafRow field={field} isLast={isLast}>
@@ -713,7 +745,6 @@ function DataRender({ field, value, isLast, ctx }: NodeProps) {
     );
   }
 
-  const container = describeContainer(value);
   if (container) {
     return (
       <ExpandableContainer
@@ -744,7 +775,10 @@ function ClassInstanceNode({
   isLast: boolean;
   ctx: NodeContext;
 }) {
-  const container = describeContainer(instance.data);
+  const container = useMemo(
+    () => describeContainer(instance.data),
+    [instance.data]
+  );
   if (container) {
     return (
       <ExpandableContainer
@@ -837,8 +871,8 @@ function makeBytesDisplay(display: FormattedStreamChunkDisplay): unknown {
  * non-expandable versions so the renderer doesn't show their internals.
  * Only recurses into plain objects and arrays to avoid stripping class
  * instances (Date, Error, URL, Headers, etc.) that have their own rendering.
- * Map and Set containers are preserved while their contents are prepared for
- * display.
+ * Map and Set contents are prepared here; other iterable contents are prepared
+ * when the renderer traverses them.
  *
  * Exported for testing the typed-array detection path used by hydrated
  * AI agent stream chunks (e.g. `{ delta: new Uint8Array(...) }`).
@@ -979,19 +1013,21 @@ function isSameBytesDisplay(a: BytesDisplay, b: BytesDisplay): boolean {
   );
 }
 
-function haveSameStringEntries(
-  a: Headers | URLSearchParams,
-  b: Headers | URLSearchParams
+function haveSameIterableValues(
+  a: Iterable<unknown>,
+  b: Iterable<unknown>,
+  seen: WeakMap<object, object>
 ): boolean {
-  const aEntries = Array.from(a.entries());
-  const bEntries = Array.from(b.entries());
-  return (
-    aEntries.length === bEntries.length &&
-    aEntries.every(
-      ([key, value], index) =>
-        key === bEntries[index][0] && value === bEntries[index][1]
-    )
-  );
+  const aIterator = a[Symbol.iterator]();
+  const bIterator = b[Symbol.iterator]();
+  while (true) {
+    const aResult = aIterator.next();
+    const bResult = bIterator.next();
+    if (aResult.done || bResult.done) {
+      return aResult.done === bResult.done;
+    }
+    if (!isDeepEqual(aResult.value, bResult.value, seen)) return false;
+  }
 }
 
 function isDeepEqual(a: unknown, b: unknown, seen = new WeakMap()): boolean {
@@ -1009,20 +1045,13 @@ function isDeepEqual(a: unknown, b: unknown, seen = new WeakMap()): boolean {
     return a.source === b.source && a.flags === b.flags;
   }
 
-  if (a instanceof Headers || b instanceof Headers) {
-    return (
-      a instanceof Headers &&
-      b instanceof Headers &&
-      haveSameStringEntries(a, b)
-    );
-  }
-
-  if (a instanceof URLSearchParams || b instanceof URLSearchParams) {
-    return (
-      a instanceof URLSearchParams &&
-      b instanceof URLSearchParams &&
-      haveSameStringEntries(a, b)
-    );
+  if (isGenericIterable(a) || isGenericIterable(b)) {
+    if (!isGenericIterable(a) || !isGenericIterable(b)) return false;
+    if (Object.getPrototypeOf(a) !== Object.getPrototypeOf(b)) return false;
+    if (isSelfIterableIterator(a) || isSelfIterableIterator(b)) return false;
+    if (seen.get(a) === b) return true;
+    seen.set(a, b);
+    return haveSameIterableValues(a, b, seen);
   }
 
   if (a instanceof Map && b instanceof Map) {

@@ -2,4 +2,4 @@
 '@workflow/web-shared': patch
 ---
 
-Render hydrated Headers and URLSearchParams entries in the data inspector.
+Render iterable values such as Headers and URLSearchParams in the data inspector.
