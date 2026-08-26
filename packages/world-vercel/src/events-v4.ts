@@ -1535,12 +1535,32 @@ async function consumeEventFrameStream(
       }
       const event = decodeEventFrame(frame);
       events.push(event);
-      notifyReplayEventObserver(replayEventObserver, event);
+      try {
+        replayEventObserver?.(event);
+      } catch (error) {
+        throw new ReplayEventObserverError(error);
+      }
     }
   } catch (cause) {
+    if (
+      cause instanceof ReplayEventObserverError ||
+      CorruptedEventLogError.is(cause) ||
+      WorkflowWorldError.is(cause)
+    ) {
+      throw cause;
+    }
+    if (!(cause instanceof IncompleteFrameError)) {
+      throw new WorkflowWorldError(`v4 ${opName}: invalid event frame stream`, {
+        code: 'SCHEMA_VALIDATION',
+        cause,
+      });
+    }
     return partialEventFrameStream(
       events,
-      partialEventFrameStreamError(opName, cause)
+      new WorkflowWorldError(`v4 ${opName}: incomplete event frame stream`, {
+        code: 'TRANSPORT',
+        cause,
+      })
     );
   }
 
@@ -1590,41 +1610,6 @@ async function consumeReplayLogResponse(
     cursor: suffix.cursor ?? page.cursor,
     hasMore: suffix.hasMore,
   };
-}
-
-function notifyReplayEventObserver(
-  observer: ((event: Event) => void) | undefined,
-  event: Event
-): void {
-  if (!observer) return;
-  try {
-    observer(event);
-  } catch (error) {
-    throw new ReplayEventObserverError(error);
-  }
-}
-
-function partialEventFrameStreamError(
-  opName: string,
-  cause: unknown
-): WorkflowWorldError {
-  if (
-    cause instanceof ReplayEventObserverError ||
-    CorruptedEventLogError.is(cause) ||
-    WorkflowWorldError.is(cause)
-  ) {
-    throw cause;
-  }
-  if (!(cause instanceof IncompleteFrameError)) {
-    throw new WorkflowWorldError(`v4 ${opName}: invalid event frame stream`, {
-      code: 'SCHEMA_VALIDATION',
-      cause,
-    });
-  }
-  return new WorkflowWorldError(`v4 ${opName}: incomplete event frame stream`, {
-    code: 'TRANSPORT',
-    cause,
-  });
 }
 
 /**

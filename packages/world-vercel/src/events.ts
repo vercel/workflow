@@ -758,9 +758,9 @@ async function createWorkflowRunEventInner(
       params?.replayEventObserver
     );
     const replayRun = reconstructRunFromReplayEvents(result.events);
-    if (replayRun.kind === 'missing') {
+    if (!replayRun) {
       throw new WorkflowWorldError(
-        `v4 createEvent: run_started stream is missing ${replayRun.eventType}`,
+        'v4 createEvent: run_started stream is missing lifecycle events',
         { code: 'SCHEMA_VALIDATION' }
       );
     }
@@ -811,7 +811,7 @@ async function createWorkflowRunEventInner(
     const replayRun = reconstructRunFromReplayEvents(events);
     return {
       ...(canonicalEvent ? { event: canonicalEvent } : {}),
-      ...(replayRun.kind === 'complete' ? { run: replayRun.run } : {}),
+      ...(replayRun ? { run: replayRun.run } : {}),
       events,
       cursor,
       hasMore,
@@ -830,21 +830,16 @@ async function createWorkflowRunEventInner(
 /**
  * Reconstruct the run entity from a streamed replay log: identity and input
  * from `run_created`, start time from `run_started`, later `attr_set` events
- * folded into `attributes`/`updatedAt`. Returns the missing lifecycle event
- * when reconstruction is incomplete so each caller can choose whether that is
- * fatal. The reconstructed status is always `running`: a terminal event
+ * folded into `attributes`/`updatedAt`. Returns undefined when reconstruction
+ * is incomplete so each caller can choose whether that is fatal. The
+ * reconstructed status is always `running`: a terminal event
  * committed concurrently still rides in the log itself, and the runtime's
  * replay-time terminal detection handles it.
  */
 function reconstructRunFromReplayEvents(events: Event[]) {
   const runCreated = events.find((event) => event.eventType === 'run_created');
-  if (!runCreated) {
-    return { kind: 'missing' as const, eventType: 'run_created' as const };
-  }
   const runStarted = events.find((event) => event.eventType === 'run_started');
-  if (!runStarted) {
-    return { kind: 'missing' as const, eventType: 'run_started' as const };
-  }
+  if (!runCreated || !runStarted) return;
 
   let attributes = runCreated.eventData.attributes ?? {};
   let updatedAt = runStarted.createdAt;
@@ -856,7 +851,6 @@ function reconstructRunFromReplayEvents(events: Event[]) {
   }
 
   return {
-    kind: 'complete' as const,
     event: runStarted,
     run: {
       runId: runCreated.runId,

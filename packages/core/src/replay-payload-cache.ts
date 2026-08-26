@@ -41,7 +41,6 @@ export class ReplayPayloadCache {
     Promise<PreparedReplayPayload>
   >();
   private readonly primitiveStepResults = new Map<string, unknown>();
-  private nextUnscannedEventIndex = 0;
 
   constructor(
     private readonly encryptionKey:
@@ -66,48 +65,19 @@ export class ReplayPayloadCache {
    */
   async prewarm(workflowRun: WorkflowRun, events: Event[]): Promise<void> {
     const preparations: Promise<PreparedReplayPayload>[] = [];
-    // Each replay scans the full event log, so awaiting cached promises here
-    // would add O(N^2) promise reactions over an N-step invocation. Only wait
-    // for preparations first discovered by this prewarm pass.
     const workflowInput = this.startPreparation(
       this.workflowInputKey(workflowRun.runId),
       workflowRun.input
     );
     if (workflowInput) preparations.push(workflowInput);
-    // This cache is scoped to one invocation. Incremental loads and write
-    // response deltas only ever append, so the scanned length locates the
-    // events added since the previous replay. A reload that can insert events
-    // BELOW that length (a stale-snapshot restart replacing the log with a
-    // corrected one) must call `resetScan()` first, or the inserted events are
-    // never scanned. Prepared entries stay valid across that: they are keyed by
-    // event id, not by position.
-    for (
-      let index = this.nextUnscannedEventIndex;
-      index < events.length;
-      index++
-    ) {
-      const preparation = this.prepareEventIfMissing(events[index]);
+    for (const event of events) {
+      const preparation = this.prepareEventIfMissing(event);
       if (preparation) preparations.push(preparation);
     }
-    this.nextUnscannedEventIndex = events.length;
 
     // Prewarming is speculative and must not fail replay before the matching
     // event is consumed. allSettled also attaches rejection handlers eagerly.
     await Promise.allSettled(preparations);
-  }
-
-  /**
-   * Forget how much of the event log has been scanned, so the next
-   * {@link prewarm} walks it from the start again.
-   *
-   * Required before a replay whose event log was reloaded rather than extended:
-   * a corrected log inserts the events the previous load was missing, which
-   * shifts every later position, so a positional resume would skip exactly the
-   * events the reload was for. Already-prepared payloads are kept: they are
-   * keyed by event id, so re-scanning re-observes them for free.
-   */
-  resetScan(): void {
-    this.nextUnscannedEventIndex = 0;
   }
 
   /** Return the workflow input after shared host-side preparation. */

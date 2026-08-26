@@ -114,7 +114,6 @@ async function driveHandler(opts: {
   persistedWorkflowName?: string;
   includeRunInput?: boolean;
   streamRunCreatedBeforeResponse?: boolean;
-  duplicateStreamedRunCreated?: boolean;
   whileRunStartedPending?: (state: {
     getEncryptionKeyForRun: ReturnType<typeof vi.fn>;
   }) => Promise<void>;
@@ -145,17 +144,11 @@ async function driveHandler(opts: {
           },
         };
         params?.replayEventObserver?.(streamedRunCreated);
-        if (opts.duplicateStreamedRunCreated) {
-          params?.replayEventObserver?.(streamedRunCreated);
-        }
       }
       await opts.whileRunStartedPending?.({ getEncryptionKeyForRun });
       return {
         run: workflowRun,
-        events:
-          streamedRunCreated && opts.duplicateStreamedRunCreated
-            ? [streamedRunCreated]
-            : ([] as Event[]),
+        events: streamedRunCreated ? [streamedRunCreated] : ([] as Event[]),
       };
     }
     return {
@@ -304,35 +297,23 @@ describe('getWorkflowTraceMode', () => {
 });
 
 describe('workflowEntrypoint trace modes', () => {
-  it('starts current-deployment key resolution before run_started returns', async () => {
-    await driveHandler({
-      runId: 'wrun_trace_streamed_key',
-      workflowCode: simpleWorkflow,
+  it('starts Node replay work while loading the authoritative run', async () => {
+    vi.stubEnv('WORKFLOW_TURBO', '0');
+    const persistedWorkflowCode = `async function persistedWorkflow() {
+      return 'done';
+    }${getWorkflowTransformCode('persistedWorkflow')}`;
+
+    const { eventsCreate, workflowSpan } = await driveHandler({
+      runId: 'wrun_trace_persisted_workflow',
+      workflowCode: persistedWorkflowCode,
+      persistedWorkflowName: 'persistedWorkflow',
+      includeRunInput: true,
       streamRunCreatedBeforeResponse: true,
       whileRunStartedPending: async ({ getEncryptionKeyForRun }) => {
-        await vi.waitFor(() => {
-          expect(getEncryptionKeyForRun).toHaveBeenCalledWith(
-            'wrun_trace_streamed_key',
-            undefined
-          );
-        });
-      },
-    });
-  });
-
-  it('compiles while run_started is loading, without evaluating early', async () => {
-    vi.stubEnv('WORKFLOW_TURBO', '0');
-    let observedOverlap = false;
-    const { workflowSpan } = await driveHandler({
-      runId: 'wrun_trace_compile_overlap',
-      workflowCode: simpleWorkflow,
-      includeRunInput: true,
-      whileRunStartedPending: async () => {
-        expect(
-          exporter
-            .getFinishedSpans()
-            .find((span) => span.name === 'workflow.bundle.evaluate')
-        ).toBeUndefined();
+        expect(getEncryptionKeyForRun).toHaveBeenCalledWith(
+          'wrun_trace_persisted_workflow',
+          undefined
+        );
         await vi.waitFor(() => {
           expect(
             exporter
@@ -345,40 +326,7 @@ describe('workflowEntrypoint trace modes', () => {
             .getFinishedSpans()
             .find((span) => span.name === 'workflow.bundle.evaluate')
         ).toBeUndefined();
-        observedOverlap = true;
       },
-    });
-
-    expect(observedOverlap).toBe(true);
-    expect(
-      exporter
-        .getFinishedSpans()
-        .find((span) => span.name === 'workflow.bundle.evaluate')
-    ).toBeDefined();
-    const compileSpan = exporter
-      .getFinishedSpans()
-      .find((span) => span.name === 'workflow.bundle.compile');
-    const replayLoadSpan = exporter
-      .getFinishedSpans()
-      .find((span) => span.name === 'workflow.replay.load');
-    expect(compileSpan?.parentSpanId).toBe(workflowSpan?.spanContext().spanId);
-    expect(compileSpan?.parentSpanId).not.toBe(
-      replayLoadSpan?.spanContext().spanId
-    );
-  });
-
-  it('replaces a wrong initial workflow-name compile with the persisted one', async () => {
-    vi.stubEnv('WORKFLOW_TURBO', '0');
-    const persistedWorkflowCode = `async function persistedWorkflow() {
-      return 'done';
-    }${getWorkflowTransformCode('persistedWorkflow')}`;
-
-    const { eventsCreate } = await driveHandler({
-      runId: 'wrun_trace_persisted_workflow',
-      workflowCode: persistedWorkflowCode,
-      persistedWorkflowName: 'persistedWorkflow',
-      includeRunInput: true,
-      streamRunCreatedBeforeResponse: true,
     });
 
     expect(
@@ -391,21 +339,20 @@ describe('workflowEntrypoint trace modes', () => {
         ([, event]) => event.eventType === 'run_failed'
       )
     ).toBe(false);
+    const compileSpans = exporter
+      .getFinishedSpans()
+      .filter((span) => span.name === 'workflow.bundle.compile');
+    expect(compileSpans).toHaveLength(2);
+    expect(
+      compileSpans.every(
+        (span) => span.parentSpanId === workflowSpan?.spanContext().spanId
+      )
+    ).toBe(true);
     expect(
       exporter
         .getFinishedSpans()
-        .filter((span) => span.name === 'workflow.bundle.compile')
-    ).toHaveLength(2);
-  });
-
-  it('counts materialized replay events once after observer redelivery', async () => {
-    await driveHandler({
-      runId: 'wrun_trace_replay_retry_count',
-      workflowCode: simpleWorkflow,
-      streamRunCreatedBeforeResponse: true,
-      duplicateStreamedRunCreated: true,
-    });
-
+        .find((span) => span.name === 'workflow.bundle.evaluate')
+    ).toBeDefined();
     const replayLoadSpan = exporter
       .getFinishedSpans()
       .find((span) => span.name === 'workflow.replay.load');

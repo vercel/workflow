@@ -138,7 +138,6 @@ interface WorkflowSessionOptions {
 
 /** Context-independent V8 scripts that can be evaluated in any fresh VM. */
 export interface CompiledWorkflowScripts {
-  readonly workflowName: string;
   readonly bundleScript: Script;
   readonly workflowLookupScript: Script;
 }
@@ -169,7 +168,6 @@ export function compileWorkflowBundle(
       ...Attribute.WorkflowBundleCompileCacheHit(bundle.cacheHit),
     });
     return {
-      workflowName,
       bundleScript: bundle.script,
       workflowLookupScript: lookup.script,
     };
@@ -1138,15 +1136,9 @@ async function createWorkflowSessionInner(
   // Reuse compiled scripts by `(code, filename)`: compilation is deterministic
   // and the filename preserves workflow source attribution in stack traces.
   // The bundle registers workflows on `globalThis.__private_workflows`.
-  const compiled =
+  const { bundleScript, workflowLookupScript } =
     compiledWorkflowScripts ??
     (await compileWorkflowBundle(workflowCode, workflowRun.workflowName));
-  if (compiled.workflowName !== workflowRun.workflowName) {
-    throw new WorkflowRuntimeError(
-      `Compiled workflow ${JSON.stringify(compiled.workflowName)} does not match run workflow ${JSON.stringify(workflowRun.workflowName)}`
-    );
-  }
-  const { bundleScript, workflowLookupScript } = compiled;
   const workflowFn = await trace('workflow.bundle.evaluate', async () => {
     bundleScript.runInContext(context);
     return workflowLookupScript.runInContext(context);
