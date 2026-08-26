@@ -5,6 +5,7 @@ import {
   WorkflowRuntimeError,
 } from '@workflow/errors';
 import { once } from '@workflow/utils';
+import type { StreamWriteSession } from '@workflow/world';
 import { envNumber } from '@workflow/world/env-config';
 import { parse, stringify, unflatten } from 'devalue';
 import { monotonicFactory } from 'ulid';
@@ -1237,6 +1238,17 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
       }
     };
 
+    // One stable identity and sequence space per in-memory sink. Start session
+    // construction as soon as the run-ready barrier permits, so transports may
+    // negotiate eagerly without allowing a write to overtake run creation.
+    const writerId = `wrtr_${defaultUlid()}` as const;
+    const writeSessionPromise: Promise<StreamWriteSession | undefined> =
+      ensureRunReady().then(async () => {
+        const world = await worldPromise;
+        return world.streams.createWriteSession?.(runId, name, { writerId });
+      });
+    let nextChunkSeq = 0;
+
     // ------------------------------------------------------------------
     // Group-commit buffering.
     //
@@ -1354,8 +1366,14 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
     ): Promise<void> => {
       await ensureRunReady();
       const world = await worldPromise;
+      const session = await writeSessionPromise;
       const dispatchAt = Date.now();
-      if (typeof world.streams.writeMulti === 'function' && group.length > 1) {
+      if (session) {
+        await session.write(nextChunkSeq, group);
+      } else if (
+        typeof world.streams.writeMulti === 'function' &&
+        group.length > 1
+      ) {
         await world.streams.writeMulti(runId, name, group);
       } else {
         // Fall back to sequential writes
@@ -1363,6 +1381,7 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
           await world.streams.write(runId, name, chunk);
         }
       }
+      nextChunkSeq += group.length;
       if (groupT0 !== undefined) {
         recordStreamWriteFlush(
           groupT0,
@@ -1562,8 +1581,13 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
         await ensureRunReady();
 
         const world = await worldPromise;
+        const session = await writeSessionPromise;
         const closeStart = Date.now();
-        await world.streams.close(runId, name);
+        if (session) {
+          await session.close();
+        } else {
+          await world.streams.close(runId, name);
+        }
         recordStreamClose(closeStart, runId, name);
       },
       async abort(reason) {
@@ -1598,6 +1622,11 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
         // Reject blocked writers and drain waiters so nothing leaks or
         // hangs on a promise whose timer was just cleared.
         rejectWaiters(sinkError);
+        // Abort is transport cleanup, not semantic stream completion. A
+        // stateful World releases its socket without sending close; stateless
+        // Worlds keep the existing no-op behavior.
+        const session = await writeSessionPromise.catch(() => undefined);
+        await session?.dispose?.();
       },
     });
 
