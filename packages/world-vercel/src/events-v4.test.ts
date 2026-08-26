@@ -583,23 +583,26 @@ describe('getWorkflowRunEventsV4 over HTTP', () => {
       })
       .reply(
         200,
-        Buffer.concat([
-          encodeFrame(
-            {
-              eventId: 'evnt_2',
-              runId: 'wrun_1',
-              eventType: 'run_started',
-              createdAt: CREATED_AT,
-            },
-            new Uint8Array()
-          ),
-          encodeFrame(
-            { _end: 1, next: 'eid:evnt_2', hasMore: false },
-            new Uint8Array()
-          ),
-        ]),
+        encodeFrame(
+          {
+            eventId: 'evnt_2',
+            runId: 'wrun_1',
+            eventType: 'run_started',
+            createdAt: CREATED_AT,
+          },
+          new Uint8Array()
+        ),
         { headers: { 'content-type': V4_FRAME_CONTENT_TYPE } }
       );
+    agent
+      .get(origin)
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events?returnAll=true&cursor=eid%3Aevnt_2',
+        method: 'GET',
+      })
+      .reply(200, encodeFrame({ _end: 1, hasMore: false }, new Uint8Array()), {
+        headers: { 'content-type': V4_FRAME_CONTENT_TYPE },
+      });
 
     const result = await getWorkflowRunEventsV4(
       'wrun_1',
@@ -1134,6 +1137,7 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
   it.each([
     ['continues a truncated run_started replay', 'eid:evnt_2', true],
     ['rejects a continuation without its trailing cursor', undefined, false],
+    ['rejects an empty continuation cursor', '', false],
     ['rejects a non-advancing continuation cursor', 'eid:evnt_1', false],
   ])('%s', async (_name, suffixCursor, succeeds) => {
     const origin =
@@ -1192,7 +1196,7 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
           encodeFrame(
             {
               _end: 1,
-              ...(suffixCursor ? { next: suffixCursor } : {}),
+              ...(suffixCursor !== undefined ? { next: suffixCursor } : {}),
               hasMore: false,
             },
             new Uint8Array()

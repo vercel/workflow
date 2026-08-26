@@ -1480,7 +1480,7 @@ function isAdvancingCursor(
   cursor: string | null,
   previousCursor: string | null
 ): cursor is string {
-  return cursor !== null && cursor !== previousCursor;
+  return cursor !== null && cursor.length > 0 && cursor !== previousCursor;
 }
 
 function partialEventFrameStream(
@@ -1686,7 +1686,11 @@ async function getWorkflowRunEventsV4WithRecovery(
     }
   } while (consumed.partialError);
 
-  return { events, cursor: consumed.cursor, hasMore: consumed.hasMore };
+  return {
+    events,
+    cursor: consumed.cursor ?? cursor,
+    hasMore: consumed.hasMore,
+  };
 }
 
 export function getWorkflowRunEventsV4(
