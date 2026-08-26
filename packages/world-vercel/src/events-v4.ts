@@ -1649,30 +1649,29 @@ export async function getWorkflowRunEventsV4(
   const { baseUrl, headers } = await getHttpConfig(config);
   const events: Event[] = [];
   let cursor = params.cursor ?? null;
+  let consumed: EventFrameStreamResult;
 
-  for (;;) {
+  do {
     const url =
       `${baseUrl}/v4/runs/${encodeURIComponent(runId)}/events` +
       paginationToQuery({ ...params, cursor: cursor ?? undefined });
-    const consumed = await consumeListFrameStream(
-      url,
-      headers,
-      config,
-      'listEvents'
-    );
-    events.push(...consumed.events);
-    if (!consumed.partialError) {
-      return { events, cursor: consumed.cursor, hasMore: consumed.hasMore };
+    consumed = await consumeListFrameStream(url, headers, config, 'listEvents');
+    for (const event of consumed.events) {
+      events.push(event);
     }
-    if (
-      params.limit !== undefined ||
-      !consumed.cursor ||
-      consumed.cursor === cursor
-    ) {
-      throw consumed.partialError;
+    if (consumed.partialError) {
+      if (
+        params.limit !== undefined ||
+        !consumed.cursor ||
+        consumed.cursor === cursor
+      ) {
+        throw consumed.partialError;
+      }
+      cursor = consumed.cursor;
     }
-    cursor = consumed.cursor;
-  }
+  } while (consumed.partialError);
+
+  return { events, cursor: consumed.cursor, hasMore: consumed.hasMore };
 }
 
 /**
