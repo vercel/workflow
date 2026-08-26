@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { encodeFrame } from './frames.js';
-import { encodeMultiChunks } from './streamer.js';
+import { encodeMultiChunks } from './stream-chunks.js';
 
 /**
  * The independently versioned WebSocket protocol for stream writes.
