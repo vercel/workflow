@@ -3,15 +3,15 @@ import { createHash } from 'node:crypto';
 
 export const WORKFLOW_BUNDLE_DIRECTORY = 'workflow-bundles';
 
-const WORKFLOW_BUNDLE_FILE = /^\d+(?:-[a-f0-9]{16})?\.mjs$/;
+const WORKFLOW_BUNDLE_FILE = /^[a-f0-9]{64}\.mjs$/;
 
 export function isWorkflowBundleFileName(fileName: string): boolean {
   return WORKFLOW_BUNDLE_FILE.test(fileName);
 }
 
-export function workflowBundleFileName(index: number, code: string): string {
-  const hash = createHash('sha256').update(code).digest('hex').slice(0, 16);
-  return `${index}-${hash}.mjs`;
+export function workflowBundleFileName(code: string): string {
+  const hash = createHash('sha256').update(code).digest('hex');
+  return `${hash}.mjs`;
 }
 
 export function encodeWorkflowBundle(code: string): string {

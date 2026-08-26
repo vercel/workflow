@@ -44,8 +44,6 @@ import { createSwcPlugin } from './swc-esbuild-plugin.js';
 import { detectWorkflowPatterns } from './transform-utils.js';
 import type { SourcemapMode, WorkflowConfig } from './types.js';
 import {
-  encodeWorkflowBundle,
-  isWorkflowBundleFileName,
   serializeWorkflowBundle,
   WORKFLOW_BUNDLE_DIRECTORY,
   workflowBundleFileName,
@@ -100,7 +98,7 @@ const VALID_SOURCEMAP_STRINGS = new Set([
   'external',
   'both',
 ]);
-const WORKFLOW_ROUTE_EXTERNALS = [
+const COMBINED_ROUTE_EXTERNALS = [
   '@aws-sdk/credential-provider-web-identity',
   `./${WORKFLOW_BUNDLE_DIRECTORY}/*`,
 ];
@@ -221,25 +219,23 @@ type WorkflowBundleBuild = {
   startedAt: number;
 };
 
+type WorkflowBundlePublication = {
+  bundles: WorkflowBundle[];
+  removeObsolete: () => Promise<void>;
+};
+
 function getWorkflowIds(manifest: WorkflowManifest): string[] {
   return Object.values(manifest.workflows ?? {}).flatMap((workflows) =>
     Object.values(workflows).map(({ workflowId }) => workflowId)
   );
 }
 
-function createWorkflowBundleLoaders(
-  bundles: WorkflowBundle[],
-  source: 'module' | 'inline'
-): string {
+function createWorkflowBundleLoaders(bundles: WorkflowBundle[]): string {
   const loaders = bundles
-    .map(({ code, fileName }, index) => {
+    .map(({ fileName }, index) => {
       const modulePath = `./${WORKFLOW_BUNDLE_DIRECTORY}/${fileName}`;
-      if (source === 'module') {
-        return `let workflowBundlePromise${index};
+      return `let workflowBundlePromise${index};
 const loadWorkflowBundle${index} = () => workflowBundlePromise${index} ??= import('${modulePath}').then((module) => Buffer.from(module.default, 'base64').toString('utf8'));`;
-      }
-      return `let workflowBundle${index};
-const loadWorkflowBundle${index} = () => Promise.resolve(workflowBundle${index} ??= Buffer.from(${JSON.stringify(encodeWorkflowBundle(code))}, 'base64').toString('utf8'));`;
     })
     .join('\n');
   const entries = bundles
@@ -1388,31 +1384,35 @@ export const __steps_registered = true;
 
   private createWorkflowBundlePublisher(
     outfile: string
-  ): (bundles: WorkflowBundle[]) => Promise<void> {
+  ): (bundles: WorkflowBundle[]) => Promise<() => Promise<void>> {
     const workflowBundleDir = join(dirname(outfile), WORKFLOW_BUNDLE_DIRECTORY);
-    let shouldResetWorkflowBundleDir = true;
     return async (bundles) => {
-      await mkdir(dirname(outfile), { recursive: true });
       await mkdir(workflowBundleDir, { recursive: true });
-      if (shouldResetWorkflowBundleDir || this.config.watch) {
-        const generatedFiles = (await readdir(workflowBundleDir)).filter(
-          isWorkflowBundleFileName
-        );
-        await Promise.all(
-          generatedFiles.map((file) =>
-            rm(join(workflowBundleDir, file), { force: true })
-          )
-        );
-        shouldResetWorkflowBundleDir = false;
-      }
+      const desiredBundles = new Map(
+        bundles.map(({ code, fileName }) => [fileName, code])
+      );
+      const generatedFiles = (await readdir(workflowBundleDir)).filter((file) =>
+        file.endsWith('.mjs')
+      );
       await Promise.all(
-        bundles.map(({ code, fileName }) =>
+        [...desiredBundles].map(([fileName, code]) =>
           this.writeGeneratedFile(
             join(workflowBundleDir, fileName),
             serializeWorkflowBundle(code)
           )
         )
       );
+
+      const obsoleteFiles = generatedFiles.filter(
+        (file) => !desiredBundles.has(file)
+      );
+      return async () => {
+        await Promise.all(
+          obsoleteFiles.map((file) =>
+            rm(join(workflowBundleDir, file), { force: true })
+          )
+        );
+      };
     };
   }
 
@@ -1578,10 +1578,11 @@ export const __steps_registered = true;
       manifest,
       startedAt,
       readBundles(result) {
+        const outputFiles = new Map(
+          result.outputFiles?.map((output) => [basename(output.path), output])
+        );
         return bundleEntries.map((_, index) => {
-          const output = result.outputFiles?.find(
-            ({ path }) => basename(path) === `workflow-${index}.js`
-          );
+          const output = outputFiles.get(`workflow-${index}.js`);
           if (!output) {
             throw new WorkflowBuildError(
               `No output generated for workflow bundle ${index}`
@@ -1598,7 +1599,7 @@ export const __steps_registered = true;
           }
           return {
             code: output.text,
-            fileName: workflowBundleFileName(index, output.text),
+            fileName: workflowBundleFileName(output.text),
             workflowIds,
           };
         });
@@ -1629,8 +1630,9 @@ export const __steps_registered = true;
     interimBundleCtx?: esbuild.BuildContext;
     bundleFinal?: (
       interimBundleResult: esbuild.BuildResult
-    ) => Promise<WorkflowBundle[]>;
+    ) => Promise<WorkflowBundlePublication>;
     workflowBundles: WorkflowBundle[];
+    removeObsoleteWorkflowBundles: () => Promise<void>;
     /** The initial workflow VM build graph, when requested by a caller. */
     interimBundleMetafile?: esbuild.Metafile;
   }> {
@@ -1671,10 +1673,11 @@ export const __steps_registered = true;
       await this.warnAboutSerdeCompliance(workflowManifest, workflowBundles);
       const bundleFinal = async (result: esbuild.BuildResult) => {
         const bundles = readWorkflowBundles(result);
-        await writeWorkflowBundles(bundles);
-        return bundles;
+        const removeObsolete = await writeWorkflowBundles(bundles);
+        return { bundles, removeObsolete };
       };
-      await writeWorkflowBundles(workflowBundles);
+      const removeObsoleteWorkflowBundles =
+        await writeWorkflowBundles(workflowBundles);
 
       if (keepInterimBundleContext) {
         shouldDisposeInterimBundleCtx = false;
@@ -1683,12 +1686,14 @@ export const __steps_registered = true;
           interimBundleCtx,
           bundleFinal,
           workflowBundles,
+          removeObsoleteWorkflowBundles,
           interimBundleMetafile: interimBundle.metafile,
         };
       }
       return {
         manifest: workflowManifest,
         workflowBundles,
+        removeObsoleteWorkflowBundles,
         interimBundleMetafile: interimBundle.metafile,
       };
     } catch (error) {
@@ -1810,7 +1815,7 @@ const workflowRouteModuleBodyStartedAt = Date.now();
 // Prevent rollup from tree-shaking the steps side-effect import
 void __steps_registered;
 
-${createWorkflowBundleLoaders(bundles, this.config.watch ? 'inline' : 'module')}
+${createWorkflowBundleLoaders(bundles)}
 
 ${createWorkflowRouteHandlersCode(`workflowEntrypoint(workflowCode${workflowEntrypointOptionsCode})`)}`;
     const combinedFunctionCode = createCombinedFunctionCode(
@@ -1848,7 +1853,7 @@ ${createWorkflowRouteHandlersCode(`workflowEntrypoint(workflowCode${workflowEntr
         keepNames: true,
         minify: false,
         define: importMetaDefine,
-        external: WORKFLOW_ROUTE_EXTERNALS,
+        external: COMBINED_ROUTE_EXTERNALS,
       });
       this.logEsbuildMessages(finalResult, 'combined bundle', true);
       this.logBaseBuilderInfo(
@@ -1856,6 +1861,7 @@ ${createWorkflowRouteHandlersCode(`workflowEntrypoint(workflowCode${workflowEntr
         `${Date.now() - bundleStartTime}ms`
       );
     }
+    await workflowsResult.removeObsoleteWorkflowBundles();
 
     // Merge manifests
     const manifest: WorkflowManifest = {
@@ -1875,11 +1881,13 @@ ${createWorkflowRouteHandlersCode(`workflowEntrypoint(workflowCode${workflowEntr
       if (!workflowsResult.bundleFinal) {
         throw new Error('Invariant: missing workflow bundle finalizer');
       }
-      const bundles = await workflowsResult.bundleFinal(interimBundle);
+      const { bundles, removeObsolete } =
+        await workflowsResult.bundleFinal(interimBundle);
       await this.writeGeneratedFile(
         flowOutfile,
         createCombinedFunctionCode(bundles)
       );
+      await removeObsolete();
     };
 
     if (this.config.watch) {
@@ -2428,16 +2436,18 @@ export const OPTIONS = handler;`;
           })
         );
       }
-      this.resetWorkflowBuildTimer();
-
       return manifestJson;
     } catch (error) {
+      if (WorkflowBuildError.is(error)) {
+        throw error;
+      }
       console.warn(
         'Failed to create manifest:',
         error instanceof Error ? error.message : String(error)
       );
-      this.resetWorkflowBuildTimer();
       return undefined;
+    } finally {
+      this.resetWorkflowBuildTimer();
     }
   }
 

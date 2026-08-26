@@ -16,6 +16,7 @@ import { BaseBuilder, type DiscoveredEntries } from './base-builder.js';
 import type { StandaloneConfig } from './types.js';
 import {
   deserializeWorkflowBundle,
+  isWorkflowBundleFileName,
   serializeWorkflowBundle,
 } from './workflow-bundle-module.js';
 import { extractWorkflowGraphs } from './workflows-extractor.js';
@@ -131,6 +132,16 @@ describe('workflow bundle boundary', () => {
     expect(deserializeWorkflowBundle(moduleCode)).toBe(code);
   });
 
+  it('recognizes only content-addressed workflow bundle files', () => {
+    expect(
+      isWorkflowBundleFileName(
+        '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef.mjs'
+      )
+    ).toBe(true);
+    expect(isWorkflowBundleFileName('0.mjs')).toBe(false);
+    expect(isWorkflowBundleFileName('0-0123456789abcdef.mjs')).toBe(false);
+  });
+
   async function getWorkflowBundleInputs(source: string): Promise<string[]> {
     // Keep the fixture beneath this package so its workspace dependencies are
     // resolved exactly as they are for a real consumer workflow.
@@ -230,6 +241,8 @@ export async function alsoFirst() { "use workflow"; return 2; }`
     writeWorkflowBuiltinsFixture(outputDir);
     mkdirSync(workflowBundleDir);
     writeFileSync(join(workflowBundleDir, 'keep.txt'), 'user-owned');
+    writeFileSync(join(workflowBundleDir, '0.mjs'), 'stale');
+    writeFileSync(join(workflowBundleDir, '0-0123456789abcdef.mjs'), 'stale');
 
     await new TestBuilder(config).createCombinedWorkflowBundle(
       [first, second],
@@ -242,9 +255,9 @@ export async function alsoFirst() { "use workflow"; return 2; }`
       .filter((file) => file.endsWith('.mjs'))
       .sort();
     expect(bundleFiles).toHaveLength(2);
-    expect(
-      bundleFiles.every((file) => /^\d+-[a-f0-9]{16}\.mjs$/.test(file))
-    ).toBe(true);
+    expect(bundleFiles.every((file) => /^[a-f0-9]{64}\.mjs$/.test(file))).toBe(
+      true
+    );
     expect(readFileSync(join(workflowBundleDir, 'keep.txt'), 'utf8')).toBe(
       'user-owned'
     );
@@ -265,6 +278,52 @@ export async function alsoFirst() { "use workflow"; return 2; }`
     expect(firstCode).toContain('lazy-first-marker');
     expect(firstCode).not.toContain('lazy-second-marker');
     expect(secondCode).toContain('HybridSerde');
+  });
+
+  it('keeps unchanged sidecar names when an earlier source is added', async () => {
+    const workingDir = join(repoRoot, 'workbench/nextjs-turbopack');
+    const outputDir = mkdtempSync(join(workingDir, '.workflow-stable-names-'));
+    outputDirs.push(outputDir);
+    const middle = join(outputDir, 'middle.ts');
+    const later = join(outputDir, 'later.ts');
+    const earlier = join(outputDir, 'earlier.ts');
+    writeFileSync(
+      middle,
+      `export async function middle() { "use workflow"; return "middle"; }`
+    );
+    writeFileSync(
+      later,
+      `export async function later() { "use workflow"; return "later"; }`
+    );
+    writeFileSync(
+      earlier,
+      `export async function earlier() { "use workflow"; return "earlier"; }`
+    );
+    writeWorkflowBuiltinsFixture(outputDir);
+    const config = createConfig(repoRoot, outputDir, outputDir, false);
+    const workflowBundleDir = join(outputDir, 'workflow-bundles');
+    const build = async (workflowFiles: string[]) => {
+      await new TestBuilder(config).createCombinedWorkflowBundle(
+        workflowFiles,
+        config.stepsBundlePath,
+        config.workflowsBundlePath,
+        {
+          discoveredSteps: new Set(),
+          discoveredWorkflows: new Set(workflowFiles),
+          discoveredSerdeFiles: new Set(),
+        }
+      );
+      return new Set(readdirSync(workflowBundleDir));
+    };
+
+    const originalFiles = await build([middle, later]);
+    const updatedFiles = await build([earlier, middle, later]);
+
+    expect(originalFiles.size).toBe(2);
+    expect(updatedFiles.size).toBe(3);
+    for (const file of originalFiles) {
+      expect(updatedFiles.has(file)).toBe(true);
+    }
   });
 
   it('refreshes the generated VM bundle after a watch rebuild', async () => {
@@ -301,6 +360,15 @@ export async function removedAfterWatch() { "use workflow"; return "remove-me"; 
         file.endsWith('.mjs')
       );
       assert(oldFile);
+      const oldBundlePath = join(workflowBundleDir, oldFile);
+      const oldBundleTimestamp = new Date('2001-01-01T00:00:00.000Z');
+      utimesSync(oldBundlePath, oldBundleTimestamp, oldBundleTimestamp);
+      const unchangedRebuild = await result.interimBundleCtx.rebuild();
+      await result.bundleFinal(unchangedRebuild);
+      expect(statSync(oldBundlePath).mtimeMs).toBe(
+        oldBundleTimestamp.getTime()
+      );
+
       const oldStats = statSync(workflowFile);
       writeFileSync(
         workflowFile,
@@ -322,7 +390,8 @@ export async function renamedAfterWatch() { "use workflow"; return "rename-me"; 
       const currentFile = currentFiles[0];
       assert(currentFile);
       expect(currentFile).not.toBe(oldFile);
-      expect(route).toContain('Promise.resolve');
+      expect(route).toContain('import(');
+      expect(route).not.toContain('Promise.resolve');
       expect(route).toContain('renamedAfterWatch');
       expect(route).not.toContain('removedAfterWatch');
       expect(route).not.toContain('after--watch');

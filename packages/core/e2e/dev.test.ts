@@ -253,10 +253,15 @@ export function createDevTests(config?: DevTestConfig) {
       actual: number,
       expected: ExpectedHmrLogCount | undefined
     ) => {
+      if (expected === undefined) {
+        expect(actual).toBe(0);
+        return;
+      }
       if (typeof expected === 'number') {
         // Canary webpack can emit duplicate watcher events for one edit; keep
-        // stable exact while treating canary counts as lower bounds.
-        if (finalConfig.canary) {
+        // stable exact while treating positive canary counts as lower bounds.
+        // Zero always means that rebuild kind must not occur.
+        if (finalConfig.canary && expected > 0) {
           expect(actual).toBeGreaterThanOrEqual(expected);
           return;
         }
@@ -1107,10 +1112,9 @@ ${apiFileContent}`
         };
 
         let snapshot = await waitForGeneratedArtifactStability();
-        // Webpack can deliver a delayed duplicate event from fixture setup
-        // after the log cursor opens, causing an unrelated full rebuild in
-        // the same window. The classifier unit tests own the exact decision;
-        // these cases require the skip proving this body edit was observed.
+        // readDevServerLogCursor() drains delayed setup events before opening
+        // each exact-count window. These cases require a skip and implicitly
+        // assert zero hot/full rebuilds.
         const cases = [
           {
             file: files.step,

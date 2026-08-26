@@ -14,6 +14,7 @@ import type {
   VariableDeclaration,
 } from '@swc/core';
 import { parseSync } from '@swc/core';
+import { WorkflowBuildError } from '@workflow/errors';
 import {
   deserializeWorkflowBundle,
   isWorkflowBundleFileName,
@@ -239,54 +240,73 @@ export async function extractWorkflowGraphs(bundlePath: string): Promise<{
     [workflowName: string]: ManifestWorkflowEntry;
   };
 }> {
-  try {
-    const lazyBundleDir = join(dirname(bundlePath), WORKFLOW_BUNDLE_DIRECTORY);
-    const lazyBundleFiles = await readdir(lazyBundleDir)
-      .then((files) => files.filter(isWorkflowBundleFileName))
-      .catch((error: NodeJS.ErrnoException) => {
-        if (error.code === 'ENOENT') return [];
-        throw error;
-      });
-    lazyBundleFiles.sort(
-      (left, right) => Number.parseInt(left, 10) - Number.parseInt(right, 10)
-    );
-    const graphs: Record<string, Record<string, ManifestWorkflowEntry>> = {};
-    const mergeWorkflowCode = (workflowCode: string) => {
-      const ast = parseSync(workflowCode, {
-        syntax: 'ecmascript',
-        target: 'es2022',
-      });
-      const stepDeclarations = extractStepDeclarations(workflowCode);
-      const bundleGraphs = extractWorkflows(
-        ast,
-        stepDeclarations,
-        buildFunctionMap(ast, stepDeclarations),
-        buildVariableMap(ast)
+  const lazyBundleDir = join(dirname(bundlePath), WORKFLOW_BUNDLE_DIRECTORY);
+  const lazyBundleFiles = await readdir(lazyBundleDir)
+    .then((files) => files.filter(isWorkflowBundleFileName).sort())
+    .catch((error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') return [];
+      throw new WorkflowBuildError(
+        `Failed to read lazy workflow bundle directory "${lazyBundleDir}"`,
+        { cause: error }
       );
-      for (const [filePath, workflows] of Object.entries(bundleGraphs)) {
-        graphs[filePath] = { ...graphs[filePath], ...workflows };
-      }
-    };
+    });
+  const graphs: Record<string, Record<string, ManifestWorkflowEntry>> = {};
+  const mergeWorkflowCode = (workflowCode: string) => {
+    const ast = parseSync(workflowCode, {
+      syntax: 'ecmascript',
+      target: 'es2022',
+    });
+    const stepDeclarations = extractStepDeclarations(workflowCode);
+    const bundleGraphs = extractWorkflows(
+      ast,
+      stepDeclarations,
+      buildFunctionMap(ast, stepDeclarations),
+      buildVariableMap(ast)
+    );
+    for (const [filePath, workflows] of Object.entries(bundleGraphs)) {
+      graphs[filePath] = { ...graphs[filePath], ...workflows };
+    }
+  };
 
-    if (lazyBundleFiles.length === 0) {
+  if (lazyBundleFiles.length === 0) {
+    try {
       const bundleCode = await readFile(bundlePath, 'utf8');
       const bundleAst = parseSync(bundleCode, {
         syntax: 'ecmascript',
         target: 'es2022',
       });
       mergeWorkflowCode(extractWorkflowCodeFromBundle(bundleAst) ?? bundleCode);
-    } else {
-      for (const file of lazyBundleFiles) {
-        const moduleCode = await readFile(join(lazyBundleDir, file), 'utf8');
-        mergeWorkflowCode(deserializeWorkflowBundle(moduleCode));
+    } catch (error) {
+      console.error('Failed to extract workflow graphs from bundle:', error);
+      return {};
+    }
+  } else {
+    const lazyBundles = await Promise.all(
+      lazyBundleFiles.map(async (file) => {
+        try {
+          const moduleCode = await readFile(join(lazyBundleDir, file), 'utf8');
+          return { file, code: deserializeWorkflowBundle(moduleCode) };
+        } catch (error) {
+          throw new WorkflowBuildError(
+            `Failed to extract workflow graph from lazy bundle "${file}"`,
+            { cause: error }
+          );
+        }
+      })
+    );
+    for (const { file, code } of lazyBundles) {
+      try {
+        mergeWorkflowCode(code);
+      } catch (error) {
+        throw new WorkflowBuildError(
+          `Failed to extract workflow graph from lazy bundle "${file}"`,
+          { cause: error }
+        );
       }
     }
-
-    return graphs;
-  } catch (error) {
-    console.error('Failed to extract workflow graphs from bundle:', error);
-    return {};
   }
+
+  return graphs;
 }
 
 /**
