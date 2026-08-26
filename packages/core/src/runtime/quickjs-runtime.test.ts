@@ -1633,6 +1633,30 @@ describe('baseline snapshot startup optimization', () => {
     __clearBaselineSnapshotCacheForTests();
   });
 
+  it('rebuilds a cached baseline when its serializer registry changes', async () => {
+    __clearBaselineSnapshotCacheForTests();
+    const workflowCode = `
+      globalThis.__workflowBundleReady = true;
+      async function workflow() { return globalThis.__registryVersion; }
+      workflow.workflowId = "workflow//test//workflow";
+      globalThis.__private_workflows.set("workflow//test//workflow", workflow);
+    `;
+    for (const version of ['first', 'second']) {
+      const result = await runQuickJSWorkflow({
+        serializerRegistryCode: `
+          if (!globalThis.__workflowBundleReady) throw new Error("wrong evaluation order");
+          globalThis.__registryVersion = ${JSON.stringify(version)};
+        `,
+        workflowCode,
+        workflowId: 'workflow//test//workflow',
+        workflowRun: makeRun(),
+        events: [],
+      });
+      expect(unwrapResult(result.completed!.result)).toBe(version);
+    }
+    __clearBaselineSnapshotCacheForTests();
+  });
+
   it('gates out bundles whose module scope throws, and the fresh path surfaces the error', async () => {
     __clearBaselineSnapshotCacheForTests();
     const throwingCode = 'throw new Error("boom at module scope");';

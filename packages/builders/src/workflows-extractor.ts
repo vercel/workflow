@@ -242,7 +242,11 @@ export async function extractWorkflowGraphs(bundlePath: string): Promise<{
   try {
     const lazyBundleDir = join(dirname(bundlePath), WORKFLOW_BUNDLE_DIRECTORY);
     const lazyBundleFiles = await readdir(lazyBundleDir)
-      .then((files) => files.filter(isWorkflowBundleFileName))
+      .then((files) =>
+        files.filter(
+          (file) => isWorkflowBundleFileName(file) && /^\d/.test(file)
+        )
+      )
       .catch((error: NodeJS.ErrnoException) => {
         if (error.code === 'ENOENT') return [];
         throw error;

@@ -219,22 +219,29 @@ describe('workflowEntrypoint replay guards', () => {
 
   it('loads only the bundle for the delivered workflow', async () => {
     const workflowRun = await misroutedRun();
+    const loadSerializerRegistry = vi.fn(
+      async () => `globalThis.__serializerRegistryReady = true;`
+    );
     const loadWorkflow = vi.fn(
       async () => `async function workflow() {
+      if (!globalThis.__serializerRegistryReady) throw new Error('missing registry');
       return 'done';
     }${getWorkflowTransformCode('workflow')}`
     );
     const loadOtherWorkflow = vi.fn(async () => '');
+    const workflowCode = {
+      workflow: loadWorkflow,
+      otherWorkflow: loadOtherWorkflow,
+      __serializerRegistry: loadSerializerRegistry,
+    };
 
     const createdEvents = await runWorkflowHandlerWithEvents(
-      {
-        workflow: loadWorkflow,
-        otherWorkflow: loadOtherWorkflow,
-      },
+      workflowCode,
       workflowRun,
       []
     );
 
+    expect(loadSerializerRegistry).toHaveBeenCalledOnce();
     expect(loadWorkflow).toHaveBeenCalledOnce();
     expect(loadOtherWorkflow).not.toHaveBeenCalled();
     expect(createdEvents).toContainEqual(

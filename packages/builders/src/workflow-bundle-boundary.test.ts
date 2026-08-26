@@ -13,6 +13,7 @@ import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import { BaseBuilder, type DiscoveredEntries } from './base-builder.js';
+import { importParents } from './discover-entries-esbuild-plugin.js';
 import type { StandaloneConfig } from './types.js';
 import {
   deserializeWorkflowBundle,
@@ -104,9 +105,17 @@ function writeWorkflowBuiltinsFixture(root: string): void {
   );
   writeFileSync(
     join(serdePackageDir, 'index.js'),
-    `export const WORKFLOW_SERIALIZE = Symbol.for('workflow.serialize');
-export const WORKFLOW_DESERIALIZE = Symbol.for('workflow.deserialize');\n`
+    `export const WORKFLOW_SERIALIZE = Symbol.for('workflow-serialize');
+export const WORKFLOW_DESERIALIZE = Symbol.for('workflow-deserialize');\n`
   );
+}
+
+function serializerSource(name: string, dependency = ''): string {
+  return `import { WORKFLOW_DESERIALIZE, WORKFLOW_SERIALIZE } from '@workflow/serde';
+${dependency}export class ${name} {
+  static [WORKFLOW_SERIALIZE](value) { return { value: value.value }; }
+  static [WORKFLOW_DESERIALIZE](data) { return new ${name}(data.value); }
+}`;
 }
 
 describe('workflow bundle boundary', () => {
@@ -114,6 +123,7 @@ describe('workflow bundle boundary', () => {
   const outputDirs: string[] = [];
 
   afterEach(() => {
+    importParents.clear();
     for (const outputDir of outputDirs) {
       rmSync(outputDir, { recursive: true, force: true });
     }
@@ -148,9 +158,10 @@ describe('workflow bundle boundary', () => {
       discoveredSerdeFiles: new Set(),
     };
 
-    const { workflowBundles, interimBundleMetafile } = await new TestBuilder(
-      config
-    ).createWorkflowBundle(
+    const {
+      bundles: { workflowBundles },
+      interimBundleMetafile,
+    } = await new TestBuilder(config).createWorkflowBundle(
       inputFile,
       config.workflowsBundlePath,
       discoveredEntries
@@ -230,6 +241,7 @@ export async function alsoFirst() { "use workflow"; return 2; }`
     writeWorkflowBuiltinsFixture(outputDir);
     mkdirSync(workflowBundleDir);
     writeFileSync(join(workflowBundleDir, 'keep.txt'), 'user-owned');
+    writeFileSync(join(workflowBundleDir, 'serializer.mjs'), 'user-owned');
 
     await new TestBuilder(config).createCombinedWorkflowBundle(
       [first, second],
@@ -239,7 +251,7 @@ export async function alsoFirst() { "use workflow"; return 2; }`
     );
 
     const bundleFiles = readdirSync(workflowBundleDir)
-      .filter((file) => file.endsWith('.mjs'))
+      .filter((file) => /^\d.*\.mjs$/.test(file))
       .sort();
     expect(bundleFiles).toHaveLength(2);
     expect(
@@ -248,6 +260,9 @@ export async function alsoFirst() { "use workflow"; return 2; }`
     expect(readFileSync(join(workflowBundleDir, 'keep.txt'), 'utf8')).toBe(
       'user-owned'
     );
+    expect(
+      readFileSync(join(workflowBundleDir, 'serializer.mjs'), 'utf8')
+    ).toBe('user-owned');
     const route = readFileSync(config.workflowsBundlePath, 'utf8');
     expect(route).toContain(`workflow-bundles/${bundleFiles[0]}`);
     expect(route).toContain(`workflow-bundles/${bundleFiles[1]}`);
@@ -267,26 +282,166 @@ export async function alsoFirst() { "use workflow"; return 2; }`
     expect(secondCode).toContain('HybridSerde');
   });
 
-  it('refreshes the generated VM bundle after a watch rebuild', async () => {
+  it('shares only dependency-isolated serializer registration', async () => {
+    const repoRoot = resolve(import.meta.dirname, '../../..');
+    const workingDir = join(repoRoot, 'workbench/nextjs-turbopack');
+    const outputDir = mkdtempSync(join(workingDir, '.workflow-bootstrap-'));
+    outputDirs.push(outputDir);
+    const first = join(outputDir, 'first.ts');
+    const second = join(outputDir, 'second.ts');
+    const earlySerializer = join(outputDir, 'a-early-point.ts');
+    const serializer = join(outputDir, 'r-point.ts');
+    const dependentSerializer = join(outputDir, 'dependent-point.ts');
+    const importedSerializer = join(outputDir, 'imported-point.ts');
+    const hybridSerializer = join(outputDir, 'q-hybrid-point.ts');
+    const isolatedSerializer = join(outputDir, 'z-isolated-point.ts');
+    const step = join(outputDir, 'point-step.ts');
+    const sharedState = join(outputDir, 'shared-state.ts');
+    writeFileSync(sharedState, `export const sharedValue = 'shared-state';`);
+    writeFileSync(
+      earlySerializer,
+      `${serializerSource('EarlyPoint')}
+globalThis.__earlySerializerMarker = 'early-serializer-marker';`
+    );
+    writeFileSync(
+      first,
+      `import { sharedValue } from './shared-state';
+import { ImportedPoint } from './imported-point';
+import { createPoint, pointType } from './point-step';
+export async function first() { "use workflow"; await createPoint(); return "first-workflow-marker" + sharedValue + pointType; }`
+    );
+    writeFileSync(
+      second,
+      `export async function second() { "use workflow"; return "second-workflow-marker"; }`
+    );
+    writeFileSync(
+      serializer,
+      `${serializerSource('SharedPoint')}
+globalThis.__sharedSerializerMarker = 'shared-serializer-marker';`
+    );
+    writeFileSync(
+      dependentSerializer,
+      `${serializerSource('DependentPoint', "import { sharedValue } from './shared-state';\n")}
+globalThis.__dependentSerializerMarker = sharedValue;`
+    );
+    writeFileSync(importedSerializer, serializerSource('ImportedPoint'));
+    writeFileSync(hybridSerializer, serializerSource('HybridPoint'));
+    writeFileSync(
+      isolatedSerializer,
+      `${serializerSource('IsolatedPoint')}
+globalThis.__isolatedSerializerMarker = 'isolated-serializer-marker';`
+    );
+    writeFileSync(
+      step,
+      `import { HybridPoint } from './q-hybrid-point';
+import { SharedPoint } from './r-point';
+export const pointType = HybridPoint.name;
+export async function createPoint() { "use step"; return new SharedPoint(); }`
+    );
+    importParents.set(first, new Set([importedSerializer, step]));
+    importParents.set(step, new Set([hybridSerializer, serializer]));
+
+    const config = createConfig(repoRoot, outputDir, outputDir, false);
+    const discoveredEntries: DiscoveredEntries = {
+      discoveredSteps: new Set([step]),
+      discoveredWorkflows: new Set([first, second]),
+      discoveredSerdeFiles: new Set([
+        earlySerializer,
+        serializer,
+        dependentSerializer,
+        importedSerializer,
+        hybridSerializer,
+        isolatedSerializer,
+      ]),
+    };
+    writeWorkflowBuiltinsFixture(outputDir);
+
+    await new TestBuilder(config).createCombinedWorkflowBundle(
+      [first, second],
+      config.stepsBundlePath,
+      config.workflowsBundlePath,
+      discoveredEntries
+    );
+
+    const workflowBundleDir = join(outputDir, 'workflow-bundles');
+    const files = readdirSync(workflowBundleDir).filter((file) =>
+      file.endsWith('.mjs')
+    );
+    const decoded = files.map((file) => ({
+      file,
+      code: deserializeWorkflowBundle(
+        readFileSync(join(workflowBundleDir, file), 'utf8')
+      ),
+    }));
+    const registry = decoded.filter(({ code }) =>
+      code.includes('shared-serializer-marker')
+    );
+    const workflows = decoded.filter(({ code }) =>
+      code.includes('workflow-marker')
+    );
+
+    expect(files).toHaveLength(3);
+    expect(registry).toHaveLength(1);
+    expect(registry[0]?.code).toContain('workflow-class-registry');
+    expect(registry[0]?.code).not.toContain('EarlyPoint');
+    expect(registry[0]?.code).not.toContain('DependentPoint');
+    expect(registry[0]?.code).not.toContain('HybridPoint');
+    expect(registry[0]?.code).not.toContain('ImportedPoint');
+    expect(registry[0]?.code).toContain('IsolatedPoint');
+    expect(workflows).toHaveLength(2);
+    expect(workflows.every(({ code }) => !code.includes('SharedPoint'))).toBe(
+      true
+    );
+    expect(workflows.every(({ code }) => !code.includes('IsolatedPoint'))).toBe(
+      true
+    );
+    expect(workflows.every(({ code }) => code.includes('DependentPoint'))).toBe(
+      true
+    );
+    expect(workflows.every(({ code }) => code.includes('ImportedPoint'))).toBe(
+      true
+    );
+    expect(workflows.every(({ code }) => code.includes('EarlyPoint'))).toBe(
+      true
+    );
+    expect(workflows.every(({ code }) => code.includes('HybridPoint'))).toBe(
+      true
+    );
+    const route = readFileSync(config.workflowsBundlePath, 'utf8');
+    expect(route).toContain(`workflow-bundles/${registry[0]?.file}`);
+    expect(route).toContain('serializerRegistry');
+  });
+
+  it('refreshes generated VM bundles after a watch rebuild', async () => {
     const repoRoot = resolve(import.meta.dirname, '../../..');
     const workingDir = join(repoRoot, 'workbench/nextjs-turbopack');
     const outputDir = mkdtempSync(join(workingDir, '.workflow-watch-'));
     outputDirs.push(outputDir);
     const workflowFile = join(outputDir, 'watched.ts');
+    const stableWorkflowFile = join(outputDir, 'z-stable.ts');
+    const serializerFile = join(outputDir, 'watched-point.ts');
     writeFileSync(
       workflowFile,
       `export async function watched() { "use workflow"; return "before-watch"; }
 export async function removedAfterWatch() { "use workflow"; return "remove-me"; }`
     );
+    writeFileSync(
+      stableWorkflowFile,
+      `export async function stableWorkflow() { "use workflow"; return "stable"; }`
+    );
+    writeFileSync(
+      serializerFile,
+      `globalThis.__watchedSerializerMarker = 'before-watch-serde';`
+    );
     const config = createConfig(repoRoot, outputDir, outputDir, true);
     writeWorkflowBuiltinsFixture(outputDir);
     const discoveredEntries: DiscoveredEntries = {
       discoveredSteps: new Set(),
-      discoveredWorkflows: new Set([workflowFile]),
-      discoveredSerdeFiles: new Set(),
+      discoveredWorkflows: new Set([workflowFile, stableWorkflowFile]),
+      discoveredSerdeFiles: new Set([serializerFile]),
     };
     const result = await new TestBuilder(config).createCombinedWorkflowBundle(
-      [workflowFile],
+      [workflowFile, stableWorkflowFile],
       config.stepsBundlePath,
       config.workflowsBundlePath,
       discoveredEntries
@@ -297,15 +452,24 @@ export async function removedAfterWatch() { "use workflow"; return "remove-me"; 
 
     try {
       const workflowBundleDir = join(outputDir, 'workflow-bundles');
-      const oldFile = readdirSync(workflowBundleDir).find((file) =>
+      const oldFiles = readdirSync(workflowBundleDir).filter((file) =>
         file.endsWith('.mjs')
       );
-      assert(oldFile);
+      const oldWorkflowFile = oldFiles.find((file) => /^0-/.test(file));
+      assert(oldWorkflowFile);
+      expect(oldFiles).toHaveLength(2);
+      expect(oldFiles.some((file) => file.startsWith('serializer-'))).toBe(
+        false
+      );
       const oldStats = statSync(workflowFile);
       writeFileSync(
         workflowFile,
         `export async function watched() { "use workflow"; return "after--watch"; }
 export async function renamedAfterWatch() { "use workflow"; return "rename-me"; }`
+      );
+      writeFileSync(
+        serializerFile,
+        `globalThis.__watchedSerializerMarker = 'after--watch-serde';`
       );
       // Reproduce a coalesced watcher update that is indistinguishable to the
       // legacy size/mtime manifest cache while esbuild rebuilds new code.
@@ -318,19 +482,23 @@ export async function renamedAfterWatch() { "use workflow"; return "rename-me"; 
       const currentFiles = readdirSync(workflowBundleDir).filter((file) =>
         file.endsWith('.mjs')
       );
-      expect(currentFiles).toHaveLength(1);
-      const currentFile = currentFiles[0];
-      assert(currentFile);
-      expect(currentFile).not.toBe(oldFile);
+      expect(currentFiles).toHaveLength(2);
+      const currentWorkflowFile = currentFiles.find((file) => /^0-/.test(file));
+      assert(currentWorkflowFile);
+      expect(currentWorkflowFile).not.toBe(oldWorkflowFile);
+      expect(route).not.toContain('serializerRegistry');
       expect(route).toContain('Promise.resolve');
       expect(route).toContain('renamedAfterWatch');
       expect(route).not.toContain('removedAfterWatch');
       expect(route).not.toContain('after--watch');
       const currentBundle = await import(
-        pathToFileURL(join(workflowBundleDir, currentFile)).href
+        pathToFileURL(join(workflowBundleDir, currentWorkflowFile)).href
       );
       expect(Buffer.from(currentBundle.default, 'base64').toString()).toContain(
         'after--watch'
+      );
+      expect(Buffer.from(currentBundle.default, 'base64').toString()).toContain(
+        'after--watch-serde'
       );
       const graphs = await extractWorkflowGraphs(config.workflowsBundlePath);
       expect(JSON.stringify(graphs)).toContain('watched');
