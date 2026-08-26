@@ -14,7 +14,7 @@ import {
   WorkflowRuntimeError,
   WorkflowWorldError,
 } from '@workflow/errors';
-import { once, setWorkflowBasePath, withResolvers } from '@workflow/utils';
+import { once, setWorkflowBasePath } from '@workflow/utils';
 import {
   parseWorkflowName,
   workflowDisplayName,
@@ -123,6 +123,7 @@ import { dehydrateRunError } from './serialization.js';
 import { remapErrorStack } from './source-map.js';
 import * as Attribute from './telemetry/semantic-conventions.js';
 import {
+  bindActiveTraceContext,
   buildInvocationSpanLinks,
   getNextTraceCarrier,
   getSpanKind,
@@ -632,21 +633,6 @@ type ReplayEventLog =
   | ({ type: 'ready' } & LoadedEventLog)
   | ({ type: 'loadAfter'; cursor: string } & LoadedEventLog);
 
-type ReplayEncryptionKeySource =
-  | { type: 'run'; run: WorkflowRun }
-  | { type: 'deployment'; deploymentId: string };
-
-function replayLifecycleContext(event: Event):
-  | {
-      deploymentId?: string;
-      executionContext?: WorkflowRun['executionContext'];
-    }
-  | undefined {
-  if (event.eventType === 'run_created' || event.eventType === 'run_started') {
-    return event.eventData;
-  }
-}
-
 function nextEventLogLoad(log: LoadedEventLog): ReplayEventLog {
   if (log.cursor === null) {
     return { type: 'loadAll' };
@@ -973,53 +959,49 @@ export function workflowEntrypoint(
                   let compiledWorkflowScripts:
                     | ReturnType<typeof compileWorkflowBundle>
                     | undefined;
-                  const startWorkflowCompile = (
-                    workflow?: Pick<WorkflowRun, 'executionContext'>
-                  ) => {
-                    if (!workflow || useQuickJSVm(workflow)) return;
-                    compiledWorkflowScripts ??= compileWorkflowBundle(
-                      workflowCode,
-                      workflowName
-                    );
-                    // Terminal runs can return without awaiting compilation.
-                    void compiledWorkflowScripts.catch(() => {});
-                    return compiledWorkflowScripts;
-                  };
-                  const encryptionKeySource =
-                    withResolvers<ReplayEncryptionKeySource>();
-                  const provideEncryptionKeySource = (
-                    source: ReplayEncryptionKeySource
-                  ): void => {
-                    encryptionKeySource.resolve(source);
-                  };
-                  const encryptionKeyPromise = encryptionKeySource.promise.then(
-                    (source) =>
-                      source.type === 'run'
-                        ? resolveRunEncryptionKey(world, source.run)
-                        : resolveRunEncryptionKey(world, runId, {
-                            deploymentId: source.deploymentId,
-                          })
+                  const startWorkflowCompile = await bindActiveTraceContext(
+                    (
+                      workflow?: Pick<
+                        WorkflowRun,
+                        'workflowName' | 'executionContext'
+                      >
+                    ) => {
+                      if (!workflow || useQuickJSVm(workflow)) return;
+                      compiledWorkflowScripts ??= compileWorkflowBundle(
+                        workflowCode,
+                        workflow.workflowName
+                      );
+                      // Terminal runs can return without awaiting compilation.
+                      void compiledWorkflowScripts.catch(() => {});
+                      return compiledWorkflowScripts;
+                    }
                   );
-                  // Streaming/turbo setup can resolve the source well before
-                  // the ordered replay consumer awaits the key. Keep speculative
-                  // failures handled without changing the later await's result.
+                  // This handler executes in the deployment that owns the run,
+                  // so the World's run-id overload resolves the current
+                  // deployment key without waiting for a materialized run.
+                  const encryptionKeyPromise = resolveRunEncryptionKey(
+                    world,
+                    runId
+                  );
+                  // Key resolution is speculative. Preserve its rejection for
+                  // the ordered replay consumer without an unhandled rejection.
                   void encryptionKeyPromise.catch(() => {});
                   const replayPayloadCache = new ReplayPayloadCache(
                     encryptionKeyPromise
                   );
-                  let replayObservedEventCount = 0;
-                  const onReplayEvent = (event: Event): void => {
-                    replayObservedEventCount++;
+                  const prepareReplayEvent = (event: Event): void => {
                     replayPayloadCache.prepareEvent(event);
-                    const runContext = replayLifecycleContext(event);
-                    if (!runContext) return;
-                    if (runContext.deploymentId) {
-                      provideEncryptionKeySource({
-                        type: 'deployment',
-                        deploymentId: runContext.deploymentId,
+                    if (event.eventType === 'run_created') {
+                      startWorkflowCompile(event.eventData);
+                    } else if (
+                      event.eventType === 'run_started' &&
+                      event.eventData?.workflowName
+                    ) {
+                      startWorkflowCompile({
+                        workflowName: event.eventData.workflowName,
+                        executionContext: event.eventData.executionContext,
                       });
                     }
-                    startWorkflowCompile(runContext);
                   };
                   // Every write this loop makes carries the cursor of the log
                   // it was computed against, and folds a complete returned
@@ -1044,28 +1026,29 @@ export function workflowEntrypoint(
 
                   const traceReplayLoad = <T extends { events?: Event[] }>(
                     source: Attribute.WorkflowReplayLoadSource,
-                    load: () => Promise<T>
+                    load: (
+                      replayEventObserver: (event: Event) => void
+                    ) => Promise<T>
                   ): Promise<T> =>
                     trace('workflow.replay.load', async (loadSpan) => {
-                      const observedAtStart = replayObservedEventCount;
-                      let eventsCount = 0;
+                      const observedEventIds = new Set<string>();
+                      let eventsCount: number | undefined;
                       loadSpan?.setAttributes({
                         ...Attribute.WorkflowRunId(runId),
                         ...Attribute.WorkflowReplayLoadSource(source),
                       });
                       try {
-                        const result = await load();
-                        eventsCount = result.events?.length ?? 0;
+                        const result = await load((event) => {
+                          observedEventIds.add(event.eventId);
+                          prepareReplayEvent(event);
+                        });
+                        eventsCount = result.events?.length;
                         return result;
                       } finally {
-                        // A failed frame stream has no materialized result, but
-                        // its observer count still tells us how far it got.
-                        eventsCount = Math.max(
-                          eventsCount,
-                          replayObservedEventCount - observedAtStart
-                        );
                         loadSpan?.setAttributes(
-                          Attribute.WorkflowEventsCount(eventsCount)
+                          Attribute.WorkflowEventsCount(
+                            eventsCount ?? observedEventIds.size
+                          )
                         );
                       }
                     });
@@ -1179,6 +1162,16 @@ export function workflowEntrypoint(
                   // `ready` can replay once without a read. The other states
                   // describe the next load exactly.
                   let eventLog: ReplayEventLog = { type: 'loadAll' };
+                  const replaceEventLog = <T extends ReplayEventLog>(
+                    replacement: T
+                  ): T => {
+                    // A replacement may insert events below the prefix already
+                    // scanned for payload preparation. The cached payloads are
+                    // event-id keyed and remain valid; only the scan position
+                    // must restart.
+                    replayPayloadCache.resetScan();
+                    return replacement;
+                  };
 
                   // Shared state: set by either the background step path
                   // or the run_started setup below.
@@ -1499,11 +1492,7 @@ export function workflowEntrypoint(
                       // position this replay had already read past. An
                       // incremental load starts above the hole and never
                       // returns it.
-                      eventLog = { type: 'loadAll' };
-                      // The corrected log inserts the missing events BELOW the
-                      // length already scanned for payload prewarming, shifting
-                      // every later position. Only a full rescan sees them.
-                      replayPayloadCache.resetScan();
+                      eventLog = replaceEventLog({ type: 'loadAll' });
                     }
                     runtimeLogger.warn(
                       'Event creation rejected as stale; restarting replay in-process',
@@ -1917,7 +1906,7 @@ export function workflowEntrypoint(
                         // Use cursor-based loading so the main loop can continue
                         // incrementally from here.
                         const loaded = await loadWorkflowRunEvents(runId);
-                        eventLog = nextEventLogLoad(loaded);
+                        eventLog = replaceEventLog(nextEventLogLoad(loaded));
 
                         // Check for pending steps: any step_created without
                         // a matching step_completed or step_failed.
@@ -2140,26 +2129,29 @@ export function workflowEntrypoint(
                       span?.addEvent('workflow.hook_received.create.start', {
                         'workflow.hook_received.preload_events': true,
                       });
-                      const replayLoad = traceReplayLoad('hook_preload', () =>
-                        createEvent(
-                          {
-                            eventType: 'hook_received',
-                            specVersion: SPEC_VERSION_CURRENT,
-                            correlationId: hookResumeInput.hookId,
-                            eventData: {
-                              token: hookResumeInput.token,
-                              payload: hookResumeInput.payload,
+                      const replayLoad = traceReplayLoad(
+                        'hook_preload',
+                        (replayEventObserver) =>
+                          createEvent(
+                            {
+                              eventType: 'hook_received',
+                              specVersion: SPEC_VERSION_CURRENT,
+                              correlationId: hookResumeInput.hookId,
+                              eventData: {
+                                token: hookResumeInput.token,
+                                payload: hookResumeInput.payload,
+                              },
                             },
-                          },
-                          {
-                            requestId,
-                            occurredAt,
-                            resumeId: hookResumeInput.resumeId,
-                            resumePayloadDigest: hookResumeInput.payloadDigest,
-                            preloadEvents: true,
-                            onEvent: onReplayEvent,
-                          }
-                        )
+                            {
+                              requestId,
+                              occurredAt,
+                              resumeId: hookResumeInput.resumeId,
+                              resumePayloadDigest:
+                                hookResumeInput.payloadDigest,
+                              preloadEvents: true,
+                              replayEventObserver,
+                            }
+                          )
                       );
                       const result = await replayLoad;
                       hookEnsured = true;
@@ -2259,11 +2251,11 @@ export function workflowEntrypoint(
                         if (resumeTracking) {
                           resumeTracking.setupSource = 'hook_preload';
                         }
-                        eventLog = {
+                        eventLog = replaceEventLog({
                           type: 'ready',
                           events: result.events,
                           cursor: result.cursor,
-                        };
+                        });
                         workflowStartedAt = +result.run.startedAt;
                         span?.setAttributes({
                           ...Attribute.WorkflowRunStatus(result.run.status),
@@ -2367,10 +2359,6 @@ export function workflowEntrypoint(
                         // wasted list+resolve it would otherwise compute.
                         { requestId, skipPreload: true }
                       );
-                      provideEncryptionKeySource({
-                        type: 'deployment',
-                        deploymentId: runInput.deploymentId,
-                      });
                       startWorkflowCompile(runInput);
                       runReadyBarrier = startedPromise;
                       // Turbo backgrounds run_started, so the non-turbo
@@ -2394,11 +2382,11 @@ export function workflowEntrypoint(
                       // the no-load preloaded branch; iteration 2 then takes the
                       // existing post-preloaded full reload to pick up a cursor
                       // without a spurious "cursor missing" warning.
-                      eventLog = {
+                      eventLog = replaceEventLog({
                         type: 'ready',
                         events: [],
                         cursor: null,
-                      };
+                      });
                       const now = new Date();
                       workflowRun = {
                         runId,
@@ -2440,11 +2428,13 @@ export function workflowEntrypoint(
                         span?.addEvent('workflow.run_started.create.start', {
                           'workflow.run_started.skip_preload': false,
                         });
-                        const replayLoad = traceReplayLoad('run_started', () =>
-                          createEvent(runStartedEvent, {
-                            requestId,
-                            onEvent: onReplayEvent,
-                          })
+                        const replayLoad = traceReplayLoad(
+                          'run_started',
+                          (replayEventObserver) =>
+                            createEvent(runStartedEvent, {
+                              requestId,
+                              replayEventObserver,
+                            })
                         );
                         const result = await replayLoad;
                         workflowRun = result.run;
@@ -2464,9 +2454,11 @@ export function workflowEntrypoint(
                             events: [...result.events],
                             cursor: result.cursor ?? null,
                           };
-                          eventLog = result.hasMore
-                            ? nextEventLogLoad(loaded)
-                            : { ...loaded, type: 'ready' };
+                          eventLog = replaceEventLog(
+                            result.hasMore
+                              ? nextEventLogLoad(loaded)
+                              : { ...loaded, type: 'ready' }
+                          );
                         }
                         workflowStartedAt = +result.run.startedAt;
                         span?.setAttributes({
@@ -2731,20 +2723,13 @@ export function workflowEntrypoint(
                       // do we fall back to reloading the complete log.
                       if (eventLog.type !== 'loadAll' && ensuredEvent) {
                         insertEventByEventId(eventLog.events, ensuredEvent);
-                        onReplayEvent(ensuredEvent);
+                        prepareReplayEvent(ensuredEvent);
                       } else {
-                        eventLog = { type: 'loadAll' };
+                        eventLog = replaceEventLog({ type: 'loadAll' });
                       }
                     } // end else (re-ensure needed)
                   }
 
-                  // A streamed run_created frame normally starts this lookup.
-                  // Worlds without event observation fall back to the complete
-                  // materialized run, preserving the previous behavior.
-                  provideEncryptionKeySource({
-                    type: 'run',
-                    run: workflowRun,
-                  });
                   const encryptionKey = await encryptionKeyPromise;
 
                   // The live VM parked at the previous boundary, when the
@@ -2912,7 +2897,10 @@ export function workflowEntrypoint(
                           appendEventLog(eventLog, page);
                           eventLog = { ...eventLog, type: 'ready' };
                         } else {
-                          eventLog = { ...page, type: 'ready' };
+                          eventLog = replaceEventLog({
+                            ...page,
+                            type: 'ready',
+                          });
                         }
                       }
                       assert(eventLog.type === 'ready');
@@ -3043,16 +3031,16 @@ export function workflowEntrypoint(
                           if (sawAllWaitCompletions) {
                             appendEventLog(eventLog, page);
                           } else {
-                            eventLog = {
+                            eventLog = replaceEventLog({
                               ...(await loadWorkflowRunEvents(runId)),
                               type: 'ready',
-                            };
+                            });
                           }
                         } else {
-                          eventLog = {
+                          eventLog = replaceEventLog({
                             ...(await loadWorkflowRunEvents(runId)),
                             type: 'ready',
-                          };
+                          });
                         }
                       }
 
@@ -3072,7 +3060,10 @@ export function workflowEntrypoint(
                           events: eventLog.events,
                           cursor: eventLog.cursor,
                         });
-                        eventLog = { ...settled.log, type: 'ready' };
+                        eventLog = replaceEventLog({
+                          ...settled.log,
+                          type: 'ready',
+                        });
                         if (settled.gap !== undefined) {
                           throw new CorruptedEventLogError(
                             `Event log for run ${runId} has a hole at slot ${settled.gap.firstMissingSlot}: ${settled.gap.missingCount} of the ${settled.gap.maxSlot} slots up to the log's maximum hold no event.`

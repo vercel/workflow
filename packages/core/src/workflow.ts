@@ -138,6 +138,7 @@ interface WorkflowSessionOptions {
 
 /** Context-independent V8 scripts that can be evaluated in any fresh VM. */
 export interface CompiledWorkflowScripts {
+  readonly workflowName: string;
   readonly bundleScript: Script;
   readonly workflowLookupScript: Script;
 }
@@ -145,10 +146,10 @@ export interface CompiledWorkflowScripts {
 /**
  * Compile the workflow bundle before its run snapshot is available.
  *
- * Compilation depends only on the route's bundle string and workflow name,
- * not the event log or VM context. The runtime starts this promise while
- * `run_started` loads the replay snapshot, then evaluates the scripts only
- * after it has created the fresh context.
+ * Compilation depends only on the route's bundle string and the workflow name
+ * persisted on the run, not the event log or VM context. The runtime starts
+ * this promise while `run_started` loads the replay snapshot, then evaluates
+ * the scripts only after it has created the fresh context.
  */
 export function compileWorkflowBundle(
   workflowCode: string,
@@ -168,6 +169,7 @@ export function compileWorkflowBundle(
       ...Attribute.WorkflowBundleCompileCacheHit(bundle.cacheHit),
     });
     return {
+      workflowName,
       bundleScript: bundle.script,
       workflowLookupScript: lookup.script,
     };
@@ -1136,9 +1138,15 @@ async function createWorkflowSessionInner(
   // Reuse compiled scripts by `(code, filename)`: compilation is deterministic
   // and the filename preserves workflow source attribution in stack traces.
   // The bundle registers workflows on `globalThis.__private_workflows`.
-  const { bundleScript, workflowLookupScript } =
+  const compiled =
     compiledWorkflowScripts ??
     (await compileWorkflowBundle(workflowCode, workflowRun.workflowName));
+  if (compiled.workflowName !== workflowRun.workflowName) {
+    throw new WorkflowRuntimeError(
+      `Compiled workflow ${JSON.stringify(compiled.workflowName)} does not match run workflow ${JSON.stringify(workflowRun.workflowName)}`
+    );
+  }
+  const { bundleScript, workflowLookupScript } = compiled;
   const workflowFn = await trace('workflow.bundle.evaluate', async () => {
     bundleScript.runInContext(context);
     return workflowLookupScript.runInContext(context);

@@ -329,6 +329,14 @@ export async function startTraceSpan(spanName: string) {
   };
 }
 
+/** Bind work to the currently active span even when it starts from a child. */
+export async function bindActiveTraceContext<Args extends unknown[], Result>(
+  fn: (...args: Args) => Result
+): Promise<(...args: Args) => Result> {
+  const otel = await OtelApi.value;
+  return otel ? otel.context.bind(otel.context.active(), fn) : fn;
+}
+
 /** Keeps a parked workflow's ambient trace context aligned with each resume. */
 export async function createRefreshableTraceContext() {
   const otel = await OtelApi.value;

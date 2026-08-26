@@ -72,11 +72,11 @@ import {
 import type { EventTypeSchema } from '@workflow/world';
 import type { z } from 'zod';
 
-/** Keeps caller-owned observer failures out of transport retry/classification. */
-export class EventObserverError extends Error {
+/** Keeps caller-owned replay observer failures out of retry/classification. */
+export class ReplayEventObserverError extends Error {
   constructor(readonly error: unknown) {
-    super('Event observer failed', { cause: error });
-    this.name = 'EventObserverError';
+    super('Replay event observer failed', { cause: error });
+    this.name = 'ReplayEventObserverError';
   }
 }
 
@@ -262,7 +262,7 @@ export function isRetryableEventPostError(err: unknown): boolean {
   // Observer code is caller-owned and runs only after a response frame has
   // been validated. Its errors are never evidence of a failed transport, even
   // when the original error happens to carry a retryable-looking code.
-  if (err instanceof EventObserverError) return false;
+  if (err instanceof ReplayEventObserverError) return false;
 
   // Definitive, server-considered outcomes, never retried as *transient*.
   // (425 is left to the runtime's retry-after handling; 429 has its own

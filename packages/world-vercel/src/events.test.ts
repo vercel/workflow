@@ -805,7 +805,7 @@ describe('createWorkflowRunEvent response coercion', () => {
         'wrun_1',
         { eventType: 'run_started', specVersion: 2 } as AnyEventRequest,
         {
-          onEvent: () => {
+          replayEventObserver: () => {
             throw observerError;
           },
         },

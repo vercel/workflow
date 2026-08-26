@@ -874,7 +874,7 @@ export interface CreateEventParams {
    * must therefore be idempotent. Throwing aborts the operation and the World
    * must surface the original error without retrying or reclassifying it.
    */
-  onEvent?: (event: Event) => void;
+  replayEventObserver?: (event: Event) => void;
 }
 
 /**

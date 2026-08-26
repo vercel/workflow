@@ -38,7 +38,7 @@ import {
 } from '@workflow/world';
 import { decode } from 'cbor-x';
 import { z } from 'zod';
-import { EventObserverError } from './event-retry.js';
+import { ReplayEventObserverError } from './event-retry.js';
 import {
   type DecodedFrame,
   decodeFrames,
@@ -869,7 +869,7 @@ async function decodeCreateEventResponse<T extends EventType>(
 export async function createWorkflowRunStartedEventV4(
   input: CreateEventV4InputBase,
   config?: APIConfig,
-  onEvent?: (event: Event) => void
+  replayEventObserver?: (event: Event) => void
 ) {
   const response = await postWorkflowRunEventV4(
     { ...input, eventType: 'run_started' },
@@ -880,7 +880,7 @@ export async function createWorkflowRunStartedEventV4(
     response,
     input.runId,
     config,
-    onEvent
+    replayEventObserver
   );
   if (!page.cursor) {
     throw new WorkflowWorldError(
@@ -1327,7 +1327,7 @@ export type HookReceivedPreloadV4Result =
 export async function createHookReceivedPreloadEventV4(
   input: CreateEventV4InputBase,
   config?: APIConfig,
-  onEvent?: (event: Event) => void
+  replayEventObserver?: (event: Event) => void
 ): Promise<HookReceivedPreloadV4Result> {
   const response = await postWorkflowRunEventV4(
     { ...input, eventType: 'hook_received' },
@@ -1347,7 +1347,7 @@ export async function createHookReceivedPreloadEventV4(
     response,
     input.runId,
     config,
-    onEvent
+    replayEventObserver
   );
   const maxEvents = MaxEventsHeaderSchema.safeParse(
     response.headers.get(MAX_EVENTS_HEADER)
@@ -1501,7 +1501,7 @@ function partialEventFrameStream(
 async function consumeEventFrameStream(
   response: Response,
   opName: string,
-  onEvent?: (event: Event) => void
+  replayEventObserver?: (event: Event) => void
 ): Promise<EventFrameStreamResult> {
   const contentType = response.headers.get('content-type');
   if (!contentType?.startsWith(V4_FRAME_CONTENT_TYPE)) {
@@ -1535,7 +1535,7 @@ async function consumeEventFrameStream(
       }
       const event = decodeEventFrame(frame);
       events.push(event);
-      notifyEventObserver(onEvent, event);
+      notifyReplayEventObserver(replayEventObserver, event);
     }
   } catch (cause) {
     return partialEventFrameStream(
@@ -1563,9 +1563,13 @@ async function consumeReplayLogResponse(
   response: Response,
   runId: string,
   config?: APIConfig,
-  onEvent?: (event: Event) => void
+  replayEventObserver?: (event: Event) => void
 ): Promise<ListEventsV4Result> {
-  const page = await consumeEventFrameStream(response, 'createEvent', onEvent);
+  const page = await consumeEventFrameStream(
+    response,
+    'createEvent',
+    replayEventObserver
+  );
   if (!page.hasMore) return page;
   if (!page.cursor) {
     if (page.partialError) throw page.partialError;
@@ -1579,7 +1583,7 @@ async function consumeReplayLogResponse(
     runId,
     { cursor: page.cursor, remoteRefBehavior: 'resolve' },
     config,
-    onEvent
+    replayEventObserver
   );
   return {
     events: [...page.events, ...suffix.events],
@@ -1588,7 +1592,7 @@ async function consumeReplayLogResponse(
   };
 }
 
-function notifyEventObserver(
+function notifyReplayEventObserver(
   observer: ((event: Event) => void) | undefined,
   event: Event
 ): void {
@@ -1596,7 +1600,7 @@ function notifyEventObserver(
   try {
     observer(event);
   } catch (error) {
-    throw new EventObserverError(error);
+    throw new ReplayEventObserverError(error);
   }
 }
 
@@ -1605,7 +1609,7 @@ function partialEventFrameStreamError(
   cause: unknown
 ): WorkflowWorldError {
   if (
-    cause instanceof EventObserverError ||
+    cause instanceof ReplayEventObserverError ||
     CorruptedEventLogError.is(cause) ||
     WorkflowWorldError.is(cause)
   ) {
@@ -1637,7 +1641,7 @@ async function consumeListFrameStream(
   headers: Headers,
   config: APIConfig | undefined,
   opName: string,
-  onEvent?: (event: Event) => void
+  replayEventObserver?: (event: Event) => void
 ): Promise<EventFrameStreamResult> {
   const response = await fetchV4(
     url,
@@ -1645,7 +1649,7 @@ async function consumeListFrameStream(
     config,
     opName
   );
-  return consumeEventFrameStream(response, opName, onEvent);
+  return consumeEventFrameStream(response, opName, replayEventObserver);
 }
 
 /**
@@ -1686,7 +1690,7 @@ export async function getWorkflowRunEventsV4(
   runId: string,
   params: ListEventsV4Params = {},
   config?: APIConfig,
-  onEvent?: (event: Event) => void
+  replayEventObserver?: (event: Event) => void
 ): Promise<ListEventsV4Result> {
   const { baseUrl, headers } = await getHttpConfig(config);
   const events: Event[] = [];
@@ -1703,7 +1707,7 @@ export async function getWorkflowRunEventsV4(
       headers,
       config,
       'listEvents',
-      onEvent
+      replayEventObserver
     );
     const cursorAdvanced = !!consumed.cursor && consumed.cursor !== cursor;
     if (consumed.partialError) {

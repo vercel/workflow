@@ -83,11 +83,12 @@ const simpleWorkflow = `async function workflow() {
 
 async function makeRunningRun(
   runId: string,
-  executionContext?: WorkflowRun['executionContext']
+  executionContext?: WorkflowRun['executionContext'],
+  workflowName = 'workflow'
 ): Promise<WorkflowRun> {
   return {
     runId,
-    workflowName: 'workflow',
+    workflowName,
     status: 'running',
     input: await dehydrateWorkflowArguments([], runId, undefined, []),
     createdAt: new Date('2024-01-01T00:00:00.000Z'),
@@ -110,20 +111,27 @@ async function driveHandler(opts: {
   traceCarrier?: Record<string, string>;
   routeModuleBodyStartedAt?: number;
   executionContext?: WorkflowRun['executionContext'];
+  persistedWorkflowName?: string;
   streamRunCreatedBeforeResponse?: boolean;
+  duplicateStreamedRunCreated?: boolean;
   whileRunStartedPending?: (state: {
     getEncryptionKeyForRun: ReturnType<typeof vi.fn>;
   }) => Promise<void>;
 }) {
-  const workflowRun = await makeRunningRun(opts.runId, opts.executionContext);
+  const workflowRun = await makeRunningRun(
+    opts.runId,
+    opts.executionContext,
+    opts.persistedWorkflowName
+  );
   const queuedMessages: any[] = [];
   const getEncryptionKeyForRun = vi.fn(async () => undefined);
 
   const eventsCreate = vi.fn(async (_runId: string, data: any, params: any) => {
     if (data.eventType === 'run_started') {
+      let streamedRunCreated: Event | undefined;
       if (opts.streamRunCreatedBeforeResponse) {
-        params?.onEvent?.({
-          eventId: 'evnt_run_created',
+        streamedRunCreated = {
+          eventId: 'evnt_00000000000000000000000001',
           runId: workflowRun.runId,
           eventType: 'run_created',
           specVersion: SPEC_VERSION_CURRENT,
@@ -134,10 +142,20 @@ async function driveHandler(opts: {
             input: workflowRun.input,
             executionContext: workflowRun.executionContext,
           },
-        });
+        };
+        params?.replayEventObserver?.(streamedRunCreated);
+        if (opts.duplicateStreamedRunCreated) {
+          params?.replayEventObserver?.(streamedRunCreated);
+        }
       }
       await opts.whileRunStartedPending?.({ getEncryptionKeyForRun });
-      return { run: workflowRun, events: [] as Event[] };
+      return {
+        run: workflowRun,
+        events:
+          streamedRunCreated && opts.duplicateStreamedRunCreated
+            ? [streamedRunCreated]
+            : ([] as Event[]),
+      };
     }
     return {
       event: {
@@ -235,6 +253,7 @@ async function driveHandler(opts: {
     getWorldSpan,
     deliverySpan,
     queuedMessages,
+    eventsCreate,
     getEncryptionKeyForRun,
   };
 }
@@ -273,16 +292,15 @@ describe('getWorkflowTraceMode', () => {
 });
 
 describe('workflowEntrypoint trace modes', () => {
-  it('starts key resolution from a streamed run_created frame', async () => {
+  it('starts current-deployment key resolution before run_started returns', async () => {
     await driveHandler({
       runId: 'wrun_trace_streamed_key',
       workflowCode: simpleWorkflow,
-      streamRunCreatedBeforeResponse: true,
       whileRunStartedPending: async ({ getEncryptionKeyForRun }) => {
         await vi.waitFor(() => {
           expect(getEncryptionKeyForRun).toHaveBeenCalledWith(
             'wrun_trace_streamed_key',
-            { deploymentId: 'test-deployment' }
+            undefined
           );
         });
       },
@@ -291,7 +309,7 @@ describe('workflowEntrypoint trace modes', () => {
 
   it('compiles while run_started is loading, without evaluating early', async () => {
     let observedOverlap = false;
-    await driveHandler({
+    const { workflowSpan } = await driveHandler({
       runId: 'wrun_trace_compile_overlap',
       workflowCode: simpleWorkflow,
       streamRunCreatedBeforeResponse: true,
@@ -323,6 +341,54 @@ describe('workflowEntrypoint trace modes', () => {
         .getFinishedSpans()
         .find((span) => span.name === 'workflow.bundle.evaluate')
     ).toBeDefined();
+    const compileSpan = exporter
+      .getFinishedSpans()
+      .find((span) => span.name === 'workflow.bundle.compile');
+    const replayLoadSpan = exporter
+      .getFinishedSpans()
+      .find((span) => span.name === 'workflow.replay.load');
+    expect(compileSpan?.parentSpanId).toBe(workflowSpan?.spanContext().spanId);
+    expect(compileSpan?.parentSpanId).not.toBe(
+      replayLoadSpan?.spanContext().spanId
+    );
+  });
+
+  it('speculatively compiles the workflow recorded on the run', async () => {
+    const persistedWorkflowCode = `async function persistedWorkflow() {
+      return 'done';
+    }${getWorkflowTransformCode('persistedWorkflow')}`;
+
+    const { eventsCreate } = await driveHandler({
+      runId: 'wrun_trace_persisted_workflow',
+      workflowCode: persistedWorkflowCode,
+      persistedWorkflowName: 'persistedWorkflow',
+      streamRunCreatedBeforeResponse: true,
+    });
+
+    expect(
+      eventsCreate.mock.calls.some(
+        ([, event]) => event.eventType === 'run_completed'
+      )
+    ).toBe(true);
+    expect(
+      eventsCreate.mock.calls.some(
+        ([, event]) => event.eventType === 'run_failed'
+      )
+    ).toBe(false);
+  });
+
+  it('counts materialized replay events once after observer redelivery', async () => {
+    await driveHandler({
+      runId: 'wrun_trace_replay_retry_count',
+      workflowCode: simpleWorkflow,
+      streamRunCreatedBeforeResponse: true,
+      duplicateStreamedRunCreated: true,
+    });
+
+    const replayLoadSpan = exporter
+      .getFinishedSpans()
+      .find((span) => span.name === 'workflow.replay.load');
+    expect(replayLoadSpan?.attributes['workflow.events.count']).toBe(1);
   });
 
   it('does not compile a Node bundle for a known QuickJS run', async () => {
