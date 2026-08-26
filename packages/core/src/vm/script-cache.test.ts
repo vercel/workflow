@@ -1,5 +1,5 @@
 import { runInContext } from 'node:vm';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createContext } from './index.js';
 import {
   clearWorkflowScriptCache,
@@ -40,6 +40,7 @@ function buildBundle(marker: string, workflowCount = 12): string {
 describe('script-cache', () => {
   afterEach(() => {
     clearWorkflowScriptCache();
+    vi.unstubAllEnvs();
   });
 
   it('returns the same compiled Script for identical (code, filename)', () => {
@@ -61,15 +62,18 @@ describe('script-cache', () => {
   });
 
   it('produces a byte-identical workflow result vs. uncached runInContext', async () => {
-    // Cached path: run the bundle then look up the workflow, mirroring
-    // runWorkflow's two-step evaluation.
-    const { context: cachedCtx } = createContext({ seed, fixedTimestamp });
+    // Cached path: evaluate the bundle, then read its registry through the VM
+    // global, mirroring runWorkflow.
+    const { context: cachedCtx, globalThis: cachedGlobal } = createContext({
+      seed,
+      fixedTimestamp,
+    });
     runCachedWorkflowScript(SAMPLE_BUNDLE, 'workflows/a.ts', cachedCtx);
-    const cachedFn = runCachedWorkflowScript(
-      `globalThis.__private_workflows?.get('my/workflow')`,
-      'workflows/a.ts',
-      cachedCtx
-    );
+    const cachedFn = (
+      cachedGlobal as typeof globalThis & {
+        __private_workflows?: Map<string, unknown>;
+      }
+    ).__private_workflows?.get('my/workflow');
     expect(cachedFn).toBeTypeOf('function');
     const cachedResult = await (cachedFn as (n: string) => Promise<string>)(
       'world'
@@ -133,6 +137,26 @@ describe('script-cache', () => {
     expect(getCachedWorkflowScript(latest, filename)).toBe(
       getCachedWorkflowScript(latest, filename)
     );
+  });
+
+  it('retains the current bundle for every workflow source in development', () => {
+    const firstCode = buildBundle('source-0');
+    const firstScript = getCachedWorkflowScript(firstCode, 'source-0.ts');
+
+    for (let i = 1; i < 12; i++) {
+      getCachedWorkflowScript(buildBundle(`source-${i}`), `source-${i}.ts`);
+    }
+
+    expect(workflowScriptCacheSize()).toBe(12);
+    expect(getCachedWorkflowScript(firstCode, 'source-0.ts')).toBe(firstScript);
+  });
+
+  it('retains every immutable source bundle in production', () => {
+    vi.stubEnv('NODE_ENV', 'production');
+    for (let i = 0; i < 12; i++) {
+      getCachedWorkflowScript(buildBundle(`source-${i}`), `source-${i}.ts`);
+    }
+    expect(workflowScriptCacheSize()).toBe(12);
   });
 
   it('keeps the most-recently-used bundle and evicts the stale one', () => {

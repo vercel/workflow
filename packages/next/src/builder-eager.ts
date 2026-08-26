@@ -237,14 +237,7 @@ export async function getNextBuilderEager(
           }
 
           const workflowResult = await workflowsCtx.interimBundleCtx.rebuild();
-          const workflowOutput = workflowResult.outputFiles?.[0]?.text;
-          if (!workflowOutput) {
-            throw new Error(
-              'Invariant: expected workflow output from hot rebuild'
-            );
-          }
-
-          await workflowsCtx.bundleFinal(workflowOutput);
+          await workflowsCtx.bundleFinal(workflowResult);
           await writeManifest(mergeCombinedManifest(stepsManifest));
         };
 
@@ -264,6 +257,11 @@ export async function getNextBuilderEager(
             sourceSnapshots,
             rebuild: async () => {
               this.clearDiscoveredEntriesCache();
+              // A definition-level change can preserve both file size and an
+              // effectively identical mtime on fast/coalesced dev writes. A
+              // full rediscovery must never reuse manifests from the previous
+              // graph.
+              this.clearManifestTransformCache();
               const newInputFiles = await this.getInputFiles();
               options.inputFiles = newInputFiles;
 
@@ -286,8 +284,9 @@ export async function getNextBuilderEager(
                 bundleFinal: newCombined.bundleFinal,
               };
 
-              await writeManifest(newCombined.manifest);
               await refreshSourceSnapshots();
+              await refreshKnownFiles();
+              await writeManifest(newCombined.manifest);
             },
           });
 
@@ -466,10 +465,9 @@ export async function getNextBuilderEager(
             return;
           }
           if (decision.kind === 'full') {
-            logDevHmr('workflow dev hmr: full rediscovery');
             try {
               await fullRebuild();
-              await refreshKnownFiles();
+              logDevHmr('workflow dev hmr: full rediscovery');
             } finally {
               // Lets a log reader tell "quiet" from "rebuild in flight".
               // The e2e HMR tests drain-to-quiet before counting lines.
@@ -478,14 +476,14 @@ export async function getNextBuilderEager(
             return;
           }
 
-          logDevHmr(
-            `workflow dev hmr: hot rebuild${decision.refreshStepRegistrations ? ' with step registration refresh' : ''}`
-          );
           try {
             await hotRebuild(decision.refreshStepRegistrations);
             for (const [file, snapshot] of decision.snapshots) {
               sourceSnapshots.set(file, snapshot);
             }
+            logDevHmr(
+              `workflow dev hmr: hot rebuild${decision.refreshStepRegistrations ? ' with step registration refresh' : ''}`
+            );
           } finally {
             // See the matching line on the full path above.
             logDevHmr('workflow dev hmr: rebuild complete');

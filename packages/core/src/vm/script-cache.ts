@@ -8,9 +8,8 @@ import { globalSingleton } from '@workflow/utils';
  * ---------------
  * Replaying a workflow re-evaluates the workflow bundle against a fresh VM
  * context on every iteration of the inline replay loop (see
- * `runWorkflow` in `../workflow.ts`). The bundle is a single string that
- * contains every workflow function in the app and registers them on
- * `globalThis.__private_workflows`. Previously each replay called
+ * `runWorkflow` in `../workflow.ts`). Each source bundle registers its
+ * workflow functions on `globalThis.__private_workflows`. Previously each replay called
  * `vm.runInContext(workflowCode, context, { filename })`, which RE-PARSES and
  * RE-COMPILES the entire bundle every time: O(N) full re-parses for a
  * sequential workflow of N steps, plus the same parse cost repeated across
@@ -26,72 +25,60 @@ import { globalSingleton } from '@workflow/utils';
  *
  * Keying
  * ------
- * Keyed by `code` then `filename`. The `filename` is part of the key on
+ * Keyed by `filename` then `code`. The `filename` is part of the key on
  * purpose, NOT as a dedupe key: it is baked into the compiled script's source
  * attribution and surfaces in stack traces, where `remapErrorStack` keys on it
- * to map frames back to the user's source. Two workflows in the same bundle
- * share the same `code` but have different `filename`s, so they intentionally
- * compile to distinct `Script`s; collapsing them onto a single shared `Script`
- * would misattribute one workflow's stack frames to another file. The cost of
- * keeping them distinct is that the whole bundle is compiled once per distinct
- * `filename` (not once per bundle); in practice that is bounded by the number
- * of source files that define a workflow, and because V8 lazily compiles
- * function bodies the duplicated work is the (cheap) top-level parse, not full
- * per-workflow codegen.
+ * to map frames back to the user's source. A legacy monolithic bundle can use
+ * the same `code` under several source filenames, so those combinations must
+ * compile to distinct `Script`s; collapsing them would misattribute stack
+ * frames. Per-source bundles normally have one filename each.
  *
- * We use a nested Map (code -> filename -> Script) so that evicting a bundle
- * (e.g. a new deployment/hot-reload producing a different `code`) drops the old
- * code string and all of its per-filename scripts together.
+ * We use a nested Map (filename -> code -> Script) so development builds can
+ * retain the current bundle for every workflow source while independently
+ * bounding the historical versions created by hot reloads.
  *
  * Bounding
  * --------
- * The top-level (`code`-keyed) map is an insertion-ordered LRU capped at
- * `MAX_BUNDLES` entries. In production this bound is never reached: a
- * deployment is its own process serving exactly one build-time bundle literal
- * (skew protection runs old versions as separate processes), so there is a
- * single `code` key for the process lifetime. The bound exists for dev/watch
- * mode, where the dev route re-reads `workflowCode` from disk and re-invokes
- * the entrypoint on every edit: each edit produces a NEW bundle string, which
- * without a bound would pin every historical version forever (~0.8MB per edit,
- * growing monotonically with edit count). The dev path only ever needs the
- * latest bundle, so an LRU that keeps the few most-recent bundles and evicts
- * the rest preserves the pre-cache GC behaviour while still serving the
- * steady-state single-bundle case for free. The per-`filename` inner map is not
- * separately bounded: it is naturally bounded by the (small) number of workflow
- * source files in a bundle and is dropped wholesale when its parent `code`
- * entry is evicted.
+ * In production, a deployment's immutable set of source bundles naturally
+ * bounds this cache. In dev/watch mode, each source's `code` map is an
+ * insertion-ordered LRU capped at `MAX_DEV_BUNDLE_VERSIONS_PER_SOURCE`: every
+ * edit produces a new bundle string, but unrelated workflow sources must not
+ * evict one another. This bounds hot-reload history without making an app with
+ * more than eight workflow sources recompile on every replay.
  */
 // On `globalThis` (see `globalSingleton`): compiling a bundle is the expensive
 // part this cache exists to skip, and per-copy caches would pay it once per
 // bundler layer that compiles a workflow.
-const scripts = globalSingleton('@workflow/core//vmScriptCache', 1, () => ({
-  byCode: new Map<string, Map<string, Script>>(),
+const scripts = globalSingleton('@workflow/core//vmScriptCache', 2, () => ({
+  byFilename: new Map<string, Map<string, Script>>(),
 }));
 
 /**
- * Max number of distinct bundle (`code`) versions to retain. One is enough for
- * production; a handful covers pathological dev hot-reload / repeated-rebuild
- * churn within a single long-lived process (e.g. a watch session or a test
- * file) without unbounded growth. Kept deliberately small: there is no value
- * in retaining stale bundles, only a memory cost.
+ * Max number of distinct bundle versions retained per source outside
+ * production. There is no value in pinning every stale dev build.
  */
-const MAX_BUNDLES = 8;
+const MAX_DEV_BUNDLE_VERSIONS_PER_SOURCE = 8;
 
 /**
- * Looks up the per-filename map for `code`, marking it most-recently-used.
+ * Looks up a compiled script for `(filename, code)`, marking that code version
+ * most-recently-used within its source.
  * Relies on `Map` preserving insertion order: deleting and re-inserting an
  * existing key moves it to the end (newest), so the first key is always the
  * least-recently-used eviction candidate.
  */
-function touchBundle(code: string): Map<string, Script> | undefined {
-  const byFilename = scripts.byCode.get(code);
-  if (byFilename === undefined) {
+function touchScript(filename: string, code: string): Script | undefined {
+  const byCode = scripts.byFilename.get(filename);
+  if (byCode === undefined) {
+    return undefined;
+  }
+  const script = byCode.get(code);
+  if (script === undefined) {
     return undefined;
   }
   // Move to the most-recently-used position (end of insertion order).
-  scripts.byCode.delete(code);
-  scripts.byCode.set(code, byFilename);
-  return byFilename;
+  byCode.delete(code);
+  byCode.set(code, script);
+  return script;
 }
 
 /**
@@ -108,24 +95,29 @@ export function getCachedWorkflowScript(
   code: string,
   filename: string
 ): Script {
-  let byFilename = touchBundle(code);
-  if (byFilename === undefined) {
-    byFilename = new Map<string, Script>();
-    scripts.byCode.set(code, byFilename);
-    // Evict the least-recently-used bundle(s) when over the cap. New bundles
-    // are appended at the end, so the oldest live at the front.
-    while (scripts.byCode.size > MAX_BUNDLES) {
-      const oldest = scripts.byCode.keys().next().value;
+  let script = touchScript(filename, code);
+  if (script !== undefined) {
+    return script;
+  }
+
+  let byCode = scripts.byFilename.get(filename);
+  if (byCode === undefined) {
+    byCode = new Map<string, Script>();
+    scripts.byFilename.set(filename, byCode);
+  }
+  script = new Script(code, { filename });
+  byCode.set(code, script);
+
+  // Evict least-recently-used hot-reload versions for this source. New code is
+  // appended at the end, so the oldest version lives at the front.
+  if (process.env.NODE_ENV !== 'production') {
+    while (byCode.size > MAX_DEV_BUNDLE_VERSIONS_PER_SOURCE) {
+      const oldest = byCode.keys().next().value;
       if (oldest === undefined) {
         break;
       }
-      scripts.byCode.delete(oldest);
+      byCode.delete(oldest);
     }
-  }
-  let script = byFilename.get(filename);
-  if (script === undefined) {
-    script = new Script(code, { filename });
-    byFilename.set(filename, script);
   }
   return script;
 }
@@ -147,13 +139,17 @@ export function runCachedWorkflowScript(
  * compile-vs-cache behaviour in isolation; not used on the hot path.
  */
 export function clearWorkflowScriptCache(): void {
-  scripts.byCode.clear();
+  scripts.byFilename.clear();
 }
 
 /**
- * Number of distinct bundle (`code`) versions currently retained. Exposed for
- * tests asserting the LRU bound; not used on the hot path.
+ * Number of compiled `(filename, code)` scripts currently retained. Exposed
+ * for tests asserting the LRU bound; not used on the hot path.
  */
 export function workflowScriptCacheSize(): number {
-  return scripts.byCode.size;
+  let size = 0;
+  for (const byCode of scripts.byFilename.values()) {
+    size += byCode.size;
+  }
+  return size;
 }
