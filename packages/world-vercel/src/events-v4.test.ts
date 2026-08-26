@@ -616,6 +616,53 @@ describe('getWorkflowRunEventsV4 over HTTP', () => {
     agent.assertNoPendingInterceptors();
   });
 
+  it('limits truncated full-stream recovery to three continuations', async () => {
+    const origin =
+      WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
+    const agent = new MockAgent();
+    agent.disableNetConnect();
+
+    for (const [cursor, eventId] of [
+      [undefined, 'evnt_1'],
+      ['eid:evnt_1', 'evnt_2'],
+      ['eid:evnt_2', 'evnt_3'],
+      ['eid:evnt_3', 'evnt_4'],
+    ] as const) {
+      agent
+        .get(origin)
+        .intercept({
+          path:
+            '/api/v4/runs/wrun_1/events?returnAll=true' +
+            (cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''),
+          method: 'GET',
+        })
+        .reply(
+          200,
+          encodeFrame(
+            {
+              eventId,
+              runId: 'wrun_1',
+              eventType: 'run_started',
+              createdAt: CREATED_AT,
+            },
+            new Uint8Array()
+          ),
+          { headers: { 'content-type': V4_FRAME_CONTENT_TYPE } }
+        );
+    }
+
+    await expect(
+      getWorkflowRunEventsV4(
+        'wrun_1',
+        {},
+        { token: 'test-token', dispatcher: agent }
+      )
+    ).rejects.toThrow(
+      'frame stream ended without the end-of-stream sentinel (1 events read)'
+    );
+    agent.assertNoPendingInterceptors();
+  });
+
   it('surfaces a truncated stream that provides no recovery cursor', async () => {
     const origin =
       WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';

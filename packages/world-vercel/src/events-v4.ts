@@ -1474,6 +1474,8 @@ type EventFrameStreamResult = ListEventsV4Result & {
   partialError?: WorkflowWorldError;
 };
 
+const MAX_PARTIAL_STREAM_CONTINUATIONS = 3;
+
 function partialEventFrameStream(
   events: Event[],
   partialError: WorkflowWorldError
@@ -1637,9 +1639,9 @@ function paginationToQuery(params: ListEventsV4Params): string {
  *
  * Eagerly drains the stream into memory to match the existing
  * `getWorkflowRunEvents` contract. A truncated full response resumes after its
- * last validated event until the sentinel arrives. A forward-progress guard
- * prevents retry loops. Explicitly paginated requests retain their one-page
- * contract and surface truncation to the caller.
+ * last validated event until the sentinel arrives, for up to three continuation
+ * requests. A forward-progress guard prevents retry loops. Explicitly paginated
+ * requests retain their one-page contract and surface truncation to the caller.
  */
 export async function getWorkflowRunEventsV4(
   runId: string,
@@ -1649,6 +1651,7 @@ export async function getWorkflowRunEventsV4(
   const { baseUrl, headers } = await getHttpConfig(config);
   const events: Event[] = [];
   let cursor = params.cursor ?? null;
+  let partialContinuations = 0;
   let consumed: EventFrameStreamResult;
 
   do {
@@ -1663,10 +1666,12 @@ export async function getWorkflowRunEventsV4(
       if (
         params.limit !== undefined ||
         !consumed.cursor ||
-        consumed.cursor === cursor
+        consumed.cursor === cursor ||
+        partialContinuations === MAX_PARTIAL_STREAM_CONTINUATIONS
       ) {
         throw consumed.partialError;
       }
+      partialContinuations++;
       cursor = consumed.cursor;
     }
   } while (consumed.partialError);
