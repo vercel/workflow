@@ -1,3 +1,4 @@
+import assert from 'node:assert';
 import { randomUUID } from 'node:crypto';
 import {
   mkdir,
@@ -27,13 +28,16 @@ import {
   createWorkflowEntrypointOptionsCode,
   createWorkflowRouteHandlersCode,
 } from './constants.js';
-import { importParents as legacyImportParents } from './discover-entries-esbuild-plugin.js';
 import { getEsbuildTsconfigOptions } from './esbuild-tsconfig.js';
 import {
   type CompleteDiscoveredEntries,
   type DiscoveredEntries,
   fastDiscoverEntries,
 } from './fast-discovery.js';
+import {
+  importGraphHasChild,
+  importParents as legacyImportParents,
+} from './discover-entries-esbuild-plugin.js';
 import {
   getImportPath,
   resolveModuleSpecifier,
@@ -438,9 +442,31 @@ export abstract class BaseBuilder {
    */
   private discoveredEntries: WeakMap<string[], CompleteDiscoveredEntries> =
     new WeakMap();
+  private latestDiscoveredEntries: CompleteDiscoveredEntries | undefined;
 
   public clearDiscoveredEntriesCache(): void {
     this.discoveredEntries = new WeakMap();
+  }
+
+  public fileAffectsWorkflowBuild(file: string): boolean {
+    const discovered = this.latestDiscoveredEntries;
+    assert(discovered, 'Invariant: expected completed workflow discovery');
+
+    const normalizedFile = resolve(this.config.workingDir, file).replace(
+      /\\/g,
+      '/'
+    );
+    const roots = [
+      ...discovered.discoveredSteps,
+      ...discovered.discoveredWorkflows,
+      ...discovered.discoveredSerdeFiles,
+    ];
+    return roots.some(
+      (root) =>
+        root === normalizedFile ||
+        importGraphHasChild(discovered.importParents, root, normalizedFile) ||
+        importGraphHasChild(discovered.importParents, normalizedFile, root)
+    );
   }
 
   public clearManifestTransformCache(): void {
@@ -563,6 +589,7 @@ export abstract class BaseBuilder {
     const previousResult = this.discoveredEntries.get(inputs);
 
     if (previousResult) {
+      this.latestDiscoveredEntries = previousResult;
       return previousResult;
     }
     const state: CompleteDiscoveredEntries = {
@@ -611,6 +638,7 @@ export abstract class BaseBuilder {
     await this.warnAboutExternalWorkflowPackages();
 
     this.discoveredEntries.set(inputs, state);
+    this.latestDiscoveredEntries = state;
     return state;
   }
 

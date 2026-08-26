@@ -91,7 +91,8 @@ describe('fast workflow discovery', () => {
 `
     );
 
-    const discovered = await createBuilder(testRoot).discoverEntriesPublic(
+    const builder = createBuilder(testRoot);
+    const discovered = await builder.discoverEntriesPublic(
       [entryFile],
       join(testRoot, 'out')
     );
@@ -107,6 +108,11 @@ describe('fast workflow discovery', () => {
     expect(parentHasChild(normalize(entryFile), normalize(stepFile))).toBe(
       true
     );
+    expect(builder.fileAffectsWorkflowBuild(stepFile)).toBe(true);
+    expect(builder.fileAffectsWorkflowBuild(entryFile)).toBe(true);
+    expect(
+      builder.fileAffectsWorkflowBuild(join(testRoot, 'unrelated.ts'))
+    ).toBe(false);
   });
 
   it('replaces the import graph on rediscovery', async () => {
