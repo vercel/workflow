@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
+import { extname } from 'node:path';
 
 export interface DiscoveredEntriesLike {
   discoveredSteps: Set<string>;
@@ -40,6 +41,19 @@ const importSpecifierPatterns = [
   /\brequire\s*\(\s*['"]([^'"]+)['"]\s*\)/g,
 ];
 const defaultNormalizePath = (pathname: string) => pathname.replace(/\\/g, '/');
+const sourceExtensions = new Set([
+  '.js',
+  '.jsx',
+  '.ts',
+  '.tsx',
+  '.mts',
+  '.cts',
+  '.cjs',
+  '.mjs',
+]);
+
+export const isSourceFile = (file: string) =>
+  sourceExtensions.has(extname(file));
 
 const REGEX_PREFIX_CHARS = new Set([
   '(',
@@ -206,11 +220,21 @@ export const createSourceSnapshot = async ({
 }: {
   file: string;
   detectWorkflowPatterns: SourcePatternDetector;
-}): Promise<SourceSnapshot> =>
-  createSourceSnapshotFromSource(
-    await readFile(file, 'utf8'),
-    detectWorkflowPatterns
-  );
+}): Promise<SourceSnapshot> => {
+  const contents = await readFile(file);
+  if (isSourceFile(file)) {
+    return createSourceSnapshotFromSource(
+      contents.toString('utf8'),
+      detectWorkflowPatterns
+    );
+  }
+  return {
+    sourceHash: createHash('sha256').update(contents).digest('base64url'),
+    importSignature: '',
+    hasDirective: false,
+    hasSerde: false,
+  };
+};
 
 export const getRelevantFiles = ({
   discoveredEntries,
@@ -416,6 +440,10 @@ export const classifyRebuild = async ({
   });
   const snapshots = new Map<string, SourceSnapshot>();
   for (const file of files) {
+    if (relevantFiles.has(file) && !isSourceFile(file)) {
+      return { kind: 'full' };
+    }
+
     let nextSnapshot: SourceSnapshot;
     try {
       nextSnapshot = await readSnapshot(file);

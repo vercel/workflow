@@ -13,6 +13,7 @@ import {
   createRebuildScheduler,
   createSourceSnapshot,
   getRelevantFiles,
+  isSourceFile,
   readSourceSnapshots,
   type SourceSnapshot,
   sourceSnapshotsMatch,
@@ -151,16 +152,6 @@ export async function getNextBuilderEager(
           ).replace(/\\/g, '/');
         let sourceSnapshots = new Map<string, SourceSnapshot>();
 
-        const watchableExtensions = new Set([
-          '.js',
-          '.jsx',
-          '.ts',
-          '.tsx',
-          '.mts',
-          '.cts',
-          '.cjs',
-          '.mjs',
-        ]);
         const normalizedGeneratedDir = workflowGeneratedDir.replace(/\\/g, '/');
         const normalizedDistDir = normalizePath(this.config.distDir);
 
@@ -284,7 +275,7 @@ export async function getNextBuilderEager(
           normalizePath,
         });
         const isWatchableFile = (path: string) =>
-          watchableExtensions.has(extname(path)) || relevantFiles.has(path);
+          isSourceFile(path) || relevantFiles.has(path);
 
         const readKnownFileAliases = async () => {
           const aliases = new Map<string, string>();
@@ -476,7 +467,7 @@ export async function getNextBuilderEager(
                 return false;
               }
               const extension = extname(normalizedPath);
-              if (extension && !watchableExtensions.has(extension)) {
+              if (extension && !isSourceFile(normalizedPath)) {
                 return true;
               }
               return hasIgnoredPathFragment(normalizedPath);
