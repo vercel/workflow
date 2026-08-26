@@ -253,6 +253,52 @@ describe('queue timeout re-enqueue', () => {
   });
 });
 
+describe('queue shutdown', () => {
+  let server: Server | undefined;
+
+  afterEach(async () => {
+    if (server !== undefined) {
+      const toClose = server;
+      server = undefined;
+      toClose.closeAllConnections();
+      await new Promise((resolve) => toClose.close(resolve));
+    }
+    vi.restoreAllMocks();
+  });
+
+  it('aborts an in-flight delivery when the queue closes', async () => {
+    let requestReceived = false;
+    server = createServer(() => {
+      requestReceived = true;
+    });
+    await new Promise<void>((resolve) => {
+      server?.listen(0, '127.0.0.1', resolve);
+    });
+    const { port } = server.address() as AddressInfo;
+
+    const localQueue = createQueue({
+      baseUrl: `http://127.0.0.1:${port}`,
+    });
+
+    await localQueue.queue('__wkf_step_test' as any, stepPayload);
+    await vi.waitFor(() => expect(requestReceived).toBe(true));
+    const closePromise = localQueue.close();
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    const outcome = await Promise.race([
+      closePromise.then(() => 'closed' as const),
+      new Promise<'timed-out'>((resolve) => {
+        timeout = setTimeout(() => resolve('timed-out'), 1_000);
+      }),
+    ]);
+    clearTimeout(timeout);
+    if (outcome === 'timed-out') {
+      server.closeAllConnections();
+      await closePromise;
+    }
+    expect(outcome).toBe('closed');
+  });
+});
+
 describe('node:http mode', () => {
   let server: Server | undefined;
 

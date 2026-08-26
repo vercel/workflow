@@ -141,6 +141,13 @@ export function createQueue(config: Partial<Config>): LocalQueue {
   const generateId = monotonicFactory();
   const semaphore = new Sema(WORKFLOW_LOCAL_QUEUE_CONCURRENCY);
 
+  // Aborted by close(): cancels in-flight deliveries so shutdown isn't held
+  // hostage by a request the agent is still waiting on, and no delivery is
+  // attempted against the closed agent. The resulting AbortError is silently
+  // dropped by the isAbortError check in the delivery catch handler.
+  const closeController = new AbortController();
+  const closeSignal = closeController.signal;
+
   /**
    * holds inflight messages by idempotency key to ensure
    * that we don't queue the same message multiple times
@@ -224,6 +231,7 @@ export function createQueue(config: Partial<Config>): LocalQueue {
                   headers: new Headers(headers),
                   body,
                   agents: nodeHttpAgents,
+                  signal: closeSignal,
                   headersTimeoutMs: agentOptions.headersTimeout,
                   bodyTimeoutMs: agentOptions.bodyTimeout,
                 })
@@ -234,6 +242,7 @@ export function createQueue(config: Partial<Config>): LocalQueue {
                   dispatcher: httpAgent,
                   headers,
                   body,
+                  signal: closeSignal,
                 } as any);
           }
 
@@ -389,6 +398,10 @@ export function createQueue(config: Partial<Config>): LocalQueue {
       directHandlers.set(prefix, handler);
     },
     async close() {
+      // Idempotent: shutdown paths (CLI signal handlers, test teardown)
+      // may close the queue more than once.
+      if (closeSignal.aborted) return;
+      closeController.abort();
       if (nodeHttpAgents) destroyNodeHttpAgents(nodeHttpAgents);
       await httpAgent?.close();
     },
