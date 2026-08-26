@@ -151,7 +151,8 @@ export async function getNextBuilderEager(
       let watchGeneration = 0;
       let handleWatchEvent = async (_event: WatchEvent) => {};
       const attachWatchEvents = (
-        currentWatcher: ReturnType<typeof chokidar.watch>
+        currentWatcher: ReturnType<typeof chokidar.watch>,
+        mode: 'source' | 'dependencies'
       ) => {
         currentWatcher.on('all', (kind, pathname) => {
           if (
@@ -161,6 +162,12 @@ export async function getNextBuilderEager(
             kind === 'ready'
           ) {
             throw new Error(`Unknown watch event: ${kind}`);
+          }
+          if (
+            mode === 'source' &&
+            (kind === 'addDir' || kind === 'unlinkDir')
+          ) {
+            return;
           }
           watchGeneration++;
           void handleWatchEvent({ kind, pathname }).catch((error) => {
@@ -197,7 +204,7 @@ export async function getNextBuilderEager(
         }
       };
       if (watcher) {
-        attachWatchEvents(watcher);
+        attachWatchEvents(watcher, 'source');
         watcher.on('error', (error) => {
           console.error('Workflow dev watcher error', error);
         });
@@ -306,7 +313,7 @@ export async function getNextBuilderEager(
             ignoreInitial: true,
             followSymlinks: true,
           });
-          attachWatchEvents(nextWatcher);
+          attachWatchEvents(nextWatcher, 'dependencies');
           nextWatcher.on('error', (error) => {
             console.error('Workflow dev watcher error', error);
           });
