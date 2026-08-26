@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { BaseBuilder, type DiscoveredEntries } from './base-builder.js';
-import { parentHasChild } from './discover-entries-esbuild-plugin.js';
+import { importGraphHasChild } from './discover-entries-esbuild-plugin.js';
 import type { StandaloneConfig } from './types.js';
 
 class TestBuilder extends BaseBuilder {
@@ -94,7 +94,7 @@ describe('fast workflow discovery', () => {
 
     expect(discovered.discoveredSteps).toEqual(new Set([normalize(stepFile)]));
     expect(
-      parentHasChild(
+      importGraphHasChild(
         discovered.importParents,
         normalize(entryFile),
         normalize(stepFile)
@@ -118,7 +118,7 @@ describe('fast workflow discovery', () => {
       join(testRoot, 'out')
     );
     expect(
-      parentHasChild(
+      importGraphHasChild(
         first.importParents,
         normalize(entryFile),
         normalize(workflowFile)
@@ -132,7 +132,7 @@ describe('fast workflow discovery', () => {
       join(testRoot, 'out')
     );
     expect(
-      parentHasChild(
+      importGraphHasChild(
         second.importParents,
         normalize(entryFile),
         normalize(workflowFile)
@@ -163,7 +163,7 @@ describe('fast workflow discovery', () => {
       new Set([normalize(workflowFile)])
     );
     expect(
-      parentHasChild(
+      importGraphHasChild(
         discovered.importParents,
         normalize(entryFile),
         normalize(workflowFile)
@@ -208,7 +208,7 @@ describe('fast workflow discovery', () => {
       new Set([normalize(packageWorkflow)])
     );
     expect(
-      parentHasChild(
+      importGraphHasChild(
         discovered.importParents,
         normalize(packageIndex),
         normalize(packageWorkflow)
@@ -288,7 +288,7 @@ describe('fast workflow discovery', () => {
       expect(discovered.discoveredFiles.has(normalize(file))).toBe(false);
     }
     expect(
-      parentHasChild(
+      importGraphHasChild(
         discovered.importParents,
         normalize(entryFile),
         normalize(packageIndex)
@@ -335,7 +335,7 @@ describe('fast workflow discovery', () => {
       true
     );
     expect(
-      parentHasChild(
+      importGraphHasChild(
         discovered.importParents,
         normalize(packageIndex),
         normalize(packageWorkflow)
@@ -385,7 +385,7 @@ export const allWorkflows = { workflow };
       new Set([normalize(workflowFile)])
     );
     expect(
-      parentHasChild(
+      importGraphHasChild(
         discovered.importParents,
         normalize(entryFile),
         normalize(workflowFile)

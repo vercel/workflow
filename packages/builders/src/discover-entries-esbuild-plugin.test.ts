@@ -20,6 +20,8 @@ vi.mock('./apply-swc-transform.js', () => ({
 
 import {
   createDiscoverEntriesPlugin,
+  importGraphHasChild,
+  importParents as legacyImportParents,
   parentHasChild,
 } from './discover-entries-esbuild-plugin.js';
 
@@ -42,6 +44,7 @@ describe('createDiscoverEntriesPlugin projectRoot', () => {
   beforeEach(() => {
     testRoot = mkdtempSync(join(realTmpdir, 'workflow-discover-plugin-'));
     importParents.clear();
+    legacyImportParents.clear();
     applySwcTransformMock.mockReset();
     applySwcTransformMock.mockImplementation(
       async (filename: string, source: string) => {
@@ -139,7 +142,6 @@ describe('createDiscoverEntriesPlugin projectRoot', () => {
       discoveredSteps: new Set<string>(),
       discoveredWorkflows: new Set<string>(),
       discoveredSerdeFiles: new Set<string>(),
-      importParents,
     };
 
     const result = await esbuild.build({
@@ -189,7 +191,6 @@ describe('createDiscoverEntriesPlugin projectRoot', () => {
       discoveredSteps: new Set<string>(),
       discoveredWorkflows: new Set<string>(),
       discoveredSerdeFiles: new Set<string>(),
-      importParents,
     };
 
     const result = await esbuild.build({
@@ -209,18 +210,20 @@ describe('createDiscoverEntriesPlugin projectRoot', () => {
     const normalizedSerde = normalizeSlashes(serdeFile);
 
     // entry.ts -> bare-pkg/index.js should be tracked
-    const entryChildren = importParents.get(normalizedEntry);
+    const entryChildren = legacyImportParents.get(normalizedEntry);
     expect(entryChildren).toBeDefined();
     expect(entryChildren!.has(normalizedPkgIndex)).toBe(true);
 
     // bare-pkg/index.js -> bare-pkg/serde.js should be tracked
-    const pkgChildren = importParents.get(normalizedPkgIndex);
+    const pkgChildren = legacyImportParents.get(normalizedPkgIndex);
     expect(pkgChildren).toBeDefined();
     expect(pkgChildren!.has(normalizedSerde)).toBe(true);
 
     // parentHasChild should transitively find serde.js from entry.ts
+    expect(parentHasChild(normalizedEntry, normalizedSerde)).toBe(true);
+
     expect(
-      parentHasChild(importParents, normalizedEntry, normalizedSerde)
+      importGraphHasChild(legacyImportParents, normalizedEntry, normalizedSerde)
     ).toBe(true);
   });
 });
