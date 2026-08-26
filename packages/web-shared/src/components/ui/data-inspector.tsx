@@ -358,9 +358,10 @@ function formatField(field: string): string {
 }
 
 /**
- * Describe an object/array/map/set as an expandable container. Returns null for
- * values that should render as a primitive. `prefix` carries a class name shown
- * before the opening bracket (Map/Set and named class instances).
+ * Describe an object/array/iterable as an expandable container. Returns null
+ * for values that should render as a primitive. `prefix` carries a class name
+ * shown before the opening bracket (Map/Set, Web API iterables, and named class
+ * instances).
  */
 function describeContainer(
   value: unknown
@@ -389,6 +390,22 @@ function describeContainer(
       open: '[',
       close: ']',
       prefix: 'Set',
+    };
+  }
+  if (value instanceof Headers) {
+    return {
+      entries: Array.from(value.entries(), ([key, val]): Entry => [key, val]),
+      open: '{',
+      close: '}',
+      prefix: 'Headers',
+    };
+  }
+  if (value instanceof URLSearchParams) {
+    return {
+      entries: Array.from(value.entries(), ([key, val]): Entry => [key, val]),
+      open: '{',
+      close: '}',
+      prefix: 'URLSearchParams',
     };
   }
   if (value !== null && typeof value === 'object') {
@@ -962,6 +979,21 @@ function isSameBytesDisplay(a: BytesDisplay, b: BytesDisplay): boolean {
   );
 }
 
+function haveSameStringEntries(
+  a: Headers | URLSearchParams,
+  b: Headers | URLSearchParams
+): boolean {
+  const aEntries = Array.from(a.entries());
+  const bEntries = Array.from(b.entries());
+  return (
+    aEntries.length === bEntries.length &&
+    aEntries.every(
+      ([key, value], index) =>
+        key === bEntries[index][0] && value === bEntries[index][1]
+    )
+  );
+}
+
 function isDeepEqual(a: unknown, b: unknown, seen = new WeakMap()): boolean {
   if (Object.is(a, b)) return true;
 
@@ -975,6 +1007,22 @@ function isDeepEqual(a: unknown, b: unknown, seen = new WeakMap()): boolean {
 
   if (a instanceof RegExp && b instanceof RegExp) {
     return a.source === b.source && a.flags === b.flags;
+  }
+
+  if (a instanceof Headers || b instanceof Headers) {
+    return (
+      a instanceof Headers &&
+      b instanceof Headers &&
+      haveSameStringEntries(a, b)
+    );
+  }
+
+  if (a instanceof URLSearchParams || b instanceof URLSearchParams) {
+    return (
+      a instanceof URLSearchParams &&
+      b instanceof URLSearchParams &&
+      haveSameStringEntries(a, b)
+    );
   }
 
   if (a instanceof Map && b instanceof Map) {

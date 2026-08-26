@@ -1298,6 +1298,9 @@ importers:
       ai:
         specifier: 'catalog:'
         version: 6.0.116(zod@4.4.3)
+      jsdom:
+        specifier: ^26.1.0
+        version: 26.1.0
       typescript:
         specifier: 'catalog:'
         version: 6.0.3

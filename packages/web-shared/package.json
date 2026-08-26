@@ -76,6 +76,7 @@
     "@workflow/errors": "workspace:*",
     "@workflow/tsconfig": "workspace:*",
     "ai": "catalog:",
+    "jsdom": "^26.1.0",
     "typescript": "catalog:",
     "vitest": "catalog:"
   }
