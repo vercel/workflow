@@ -13,6 +13,7 @@ import {
   type ReadableSpan,
   SimpleSpanProcessor,
 } from '@opentelemetry/sdk-trace-base';
+import { RUN_ERROR_CODES } from '@workflow/errors';
 import {
   type Event,
   SPEC_VERSION_CURRENT,
@@ -114,6 +115,7 @@ async function driveHandler(opts: {
   persistedWorkflowName?: string;
   includeRunInput?: boolean;
   streamRunCreatedBeforeResponse?: boolean;
+  onRunStartedRequest?: () => void;
   whileRunStartedPending?: (state: {
     getEncryptionKeyForRun: ReturnType<typeof vi.fn>;
   }) => Promise<void>;
@@ -128,6 +130,7 @@ async function driveHandler(opts: {
 
   const eventsCreate = vi.fn(async (_runId: string, data: any, params: any) => {
     if (data.eventType === 'run_started') {
+      opts.onRunStartedRequest?.();
       let streamedRunCreated: Event | undefined;
       if (opts.streamRunCreatedBeforeResponse) {
         streamedRunCreated = {
@@ -309,6 +312,13 @@ describe('workflowEntrypoint trace modes', () => {
       persistedWorkflowName: 'persistedWorkflow',
       includeRunInput: true,
       streamRunCreatedBeforeResponse: true,
+      onRunStartedRequest: () => {
+        expect(
+          exporter
+            .getFinishedSpans()
+            .find((span) => span.name === 'workflow.bundle.compile')
+        ).toBeUndefined();
+      },
       whileRunStartedPending: async ({ getEncryptionKeyForRun }) => {
         expect(getEncryptionKeyForRun).toHaveBeenCalledWith(
           'wrun_trace_persisted_workflow',
@@ -357,6 +367,30 @@ describe('workflowEntrypoint trace modes', () => {
       .getFinishedSpans()
       .find((span) => span.name === 'workflow.replay.load');
     expect(replayLoadSpan?.attributes['workflow.events.count']).toBe(1);
+  });
+
+  it.each([
+    '0',
+    '1',
+  ])('records invalid VM configuration as setup failure with turbo=%s', async (turbo) => {
+    vi.stubEnv('WORKFLOW_TURBO', turbo);
+    const { eventsCreate } = await driveHandler({
+      runId: `wrun_trace_invalid_vm_${turbo}`,
+      workflowCode: simpleWorkflow,
+      includeRunInput: true,
+      executionContext: { workflowVm: 'bogus' },
+    });
+
+    expect(eventsCreate).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        eventType: 'run_failed',
+        eventData: expect.objectContaining({
+          errorCode: RUN_ERROR_CODES.RUNTIME_ERROR,
+        }),
+      }),
+      expect.anything()
+    );
   });
 
   it('does not compile a Node bundle for a known QuickJS run', async () => {

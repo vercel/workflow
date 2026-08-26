@@ -990,18 +990,13 @@ export function workflowEntrypoint(
                     workflow?: Pick<WorkflowRun, 'executionContext'>
                   ) => {
                     if (!workflow || useQuickJSVm(workflow)) return;
-                    return (replayPayloadCache ??= new ReplayPayloadCache(
-                      encryptionKey.value
-                    ));
+                    if (!replayPayloadCache) {
+                      replayPayloadCache = new ReplayPayloadCache(
+                        encryptionKey.value
+                      );
+                    }
+                    return replayPayloadCache;
                   };
-                  // A first-delivery queue payload already carries both the
-                  // workflow name and engine. Start Node-only work before the
-                  // setup request; streamed lifecycle events below replace a
-                  // wrong speculative workflow-name compile with the persisted
-                  // one. Continuations learn both from their first lifecycle
-                  // frame instead.
-                  startWorkflowCompile(runInput);
-                  startReplayPayloadCache(runInput);
                   const prepareReplayEvent = (event: Event): void => {
                     if (event.eventType === 'run_created') {
                       startReplayPayloadCache(event.eventData);
@@ -1262,6 +1257,25 @@ export function workflowEntrypoint(
                         // intentional: ordering barrier only, see above.
                       }
                     }
+                  };
+
+                  const recordWorkflowSetupFailure = async (
+                    err: unknown,
+                    orderAfterRunStarted = false
+                  ): Promise<boolean> => {
+                    const errorCode = getWorkflowSetupErrorCode(err);
+                    if (!errorCode) return false;
+                    if (orderAfterRunStarted) await awaitRunReady();
+                    await recordFatalRunError({
+                      world,
+                      workflowRun,
+                      runId,
+                      requestId,
+                      err,
+                      errorCode,
+                      logMessage: 'Fatal runtime error during workflow setup',
+                    });
+                    return true;
                   };
 
                   // Re-invoke the orchestrator. Outside turbo this returns
@@ -2290,6 +2304,10 @@ export function workflowEntrypoint(
                         );
                         return;
                       }
+                      if (WorkflowRuntimeError.is(err)) {
+                        await recordWorkflowSetupFailure(err);
+                        return;
+                      }
                       throw err;
                     }
                   }
@@ -2353,6 +2371,15 @@ export function workflowEntrypoint(
                         { requestId, skipPreload: true }
                       );
                       runReadyBarrier = startedPromise;
+                      try {
+                        startWorkflowCompile(runInput);
+                        startReplayPayloadCache(runInput);
+                      } catch (err) {
+                        if (!(await recordWorkflowSetupFailure(err, true))) {
+                          throw err;
+                        }
+                        return;
+                      }
                       // Turbo backgrounds run_started, so the non-turbo
                       // assignment below never runs. Thread the per-run event
                       // ceiling off the backgrounded response here instead.
@@ -2428,6 +2455,8 @@ export function workflowEntrypoint(
                               replayEventObserver,
                             })
                         );
+                        startWorkflowCompile(runInput);
+                        startReplayPayloadCache(runInput);
                         const result = await replayLoad;
                         workflowRun = result.run;
                         maxEventsLimit = clampMaxEvents(result.maxEvents);
@@ -2490,20 +2519,9 @@ export function workflowEntrypoint(
                           );
                           return;
                         } else {
-                          const errorCode = getWorkflowSetupErrorCode(err);
-                          if (!errorCode) {
+                          if (!(await recordWorkflowSetupFailure(err))) {
                             throw err;
                           }
-                          await recordFatalRunError({
-                            world,
-                            workflowRun,
-                            runId,
-                            requestId,
-                            err,
-                            errorCode,
-                            logMessage:
-                              'Fatal runtime error during workflow setup',
-                          });
                           return;
                         }
                       }

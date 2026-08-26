@@ -31,9 +31,9 @@ function isMemoizablePrimitive(value: unknown): boolean {
  * those replays. Deserialization still runs against each VM's globals so every
  * replay receives fresh object graphs and correctly revived Workflow objects.
  *
- * Successful prepared plaintext remains resident for the invocation lifetime.
- * Its memory cost is the sum of decrypted and decompressed payload sizes, but
- * it never crosses workflow runs or queue deliveries.
+ * Successful prepared plaintext and memoized primitive step results remain
+ * resident for the invocation lifetime. Their memory never crosses workflow
+ * runs or queue deliveries.
  */
 export class ReplayPayloadCache {
   private readonly preparedPayloads = new Map<
