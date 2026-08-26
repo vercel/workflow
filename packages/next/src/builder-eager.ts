@@ -2,7 +2,7 @@ import assert from 'node:assert';
 import { once } from 'node:events';
 import { constants } from 'node:fs';
 import { access, mkdir, realpath, rm, stat } from 'node:fs/promises';
-import { isAbsolute, join, relative, resolve } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import type {
   NextConfig as BuilderNextConfig,
   WorkflowManifest,
@@ -132,22 +132,12 @@ export async function getNextBuilderEager(
       let relevantFiles = new Set<string>();
       const isWatchableFile = (path: string) =>
         isSourceFile(path) || relevantFiles.has(path);
-      const normalizedGeneratedDir = workflowGeneratedDir.replace(/\\/g, '/');
       const normalizedDistDir = normalizePath(this.config.distDir);
       const isIgnoredWatchPath = createWatchIgnorePredicate({
         workingDir: this.config.workingDir,
         projectRoot: this.transformProjectRoot,
-        extraFragments: [normalizedGeneratedDir],
+        extraFragments: [workflowGeneratedDir.replace(/\\/g, '/')],
       });
-      const hasIgnoredPathFragment = (normalizedPath: string) => {
-        if (
-          normalizedPath === normalizedDistDir ||
-          normalizedPath.startsWith(`${normalizedDistDir}/`)
-        ) {
-          return true;
-        }
-        return isIgnoredWatchPath(normalizedPath);
-      };
       const logDevHmr = (...args: unknown[]) => {
         if (process.env.WORKFLOW_DEV_HMR_LOGS === '1') {
           console.log(...args);
@@ -155,7 +145,7 @@ export async function getNextBuilderEager(
       };
 
       type WatchEvent = {
-        kind: 'add' | 'change' | 'unlink';
+        kind: 'add' | 'addDir' | 'change' | 'unlink' | 'unlinkDir';
         pathname: string;
       };
       let watchGeneration = 0;
@@ -163,21 +153,20 @@ export async function getNextBuilderEager(
       const attachWatchEvents = (
         currentWatcher: ReturnType<typeof chokidar.watch>
       ) => {
-        const dispatch = (event: WatchEvent) => {
+        currentWatcher.on('all', (kind, pathname) => {
+          if (
+            kind === 'all' ||
+            kind === 'error' ||
+            kind === 'raw' ||
+            kind === 'ready'
+          ) {
+            throw new Error(`Unknown watch event: ${kind}`);
+          }
           watchGeneration++;
-          void handleWatchEvent(event).catch((error) => {
+          void handleWatchEvent({ kind, pathname }).catch((error) => {
             console.error('Failed to process file change', error);
           });
-        };
-        currentWatcher.on('add', (pathname) =>
-          dispatch({ kind: 'add', pathname })
-        );
-        currentWatcher.on('change', (pathname) =>
-          dispatch({ kind: 'change', pathname })
-        );
-        currentWatcher.on('unlink', (pathname) =>
-          dispatch({ kind: 'unlink', pathname })
-        );
+        });
       };
       // Chokidar 4 registers an fs.watch per directory, so prune ignored trees
       // before it walks the project.
@@ -187,7 +176,11 @@ export async function getNextBuilderEager(
             followSymlinks: true,
             ignored: (pathname, stats) => {
               const normalizedPath = normalizePath(String(pathname));
-              if (hasIgnoredPathFragment(normalizedPath)) {
+              if (
+                normalizedPath === normalizedDistDir ||
+                normalizedPath.startsWith(`${normalizedDistDir}/`) ||
+                isIgnoredWatchPath(normalizedPath)
+              ) {
                 return true;
               }
               return stats?.isFile() === true && !isSourceFile(normalizedPath);
@@ -305,7 +298,11 @@ export async function getNextBuilderEager(
         });
 
         const replaceDependencyWatcher = async () => {
-          const nextWatcher = chokidar.watch([...relevantFiles], {
+          const dependencyDirectories = new Set(
+            [...relevantFiles].map(dirname)
+          );
+          const nextWatcher = chokidar.watch([...dependencyDirectories], {
+            depth: 0,
             ignoreInitial: true,
             followSymlinks: true,
           });
@@ -424,8 +421,6 @@ export async function getNextBuilderEager(
           );
         };
 
-        sourceSnapshots = await closeWatcherOnError(snapshotSources());
-
         const runFullRebuild = async () => {
           const generation = watchGeneration;
           logDevHmr('workflow dev hmr: full rediscovery');
@@ -520,6 +515,10 @@ export async function getNextBuilderEager(
             case 'add':
             case 'unlink':
               scheduleFullRebuild(event.pathname);
+              return;
+            case 'addDir':
+            case 'unlinkDir':
+              scheduleRebuild({ kind: 'full' });
               return;
             case 'change':
               await handleFileChanged(event.pathname);
