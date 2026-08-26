@@ -1,5 +1,11 @@
 # @workflow/world
 
+## 5.0.0-beta.31
+
+### Patch Changes
+
+- [#3794](https://github.com/vercel/workflow/pull/3794) [`d9e0777`](https://github.com/vercel/workflow/commit/d9e0777eb8b1ce5f3be3fe865bc5a17fdbdb9d5d) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Document that `hookInput` and the `(runId, resumeId)` dedup contract now cover repeated deliveries of one resume rather than a producer/consumer race, and accept `lazy` as a hook-resume strategy.
+
 ## 5.0.0-beta.30
 
 ### Major Changes
