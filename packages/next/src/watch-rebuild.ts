@@ -214,11 +214,7 @@ const getHotRebuildTarget = ({
   changedFiles: string[];
   discoveredEntries: DiscoveredEntriesLike;
   normalizePath: (path: string) => string;
-  parentHasChild: (
-    parent: string,
-    child: string,
-    options?: { excludedRoots?: Iterable<string> }
-  ) => boolean;
+  parentHasChild: (parent: string, child: string) => boolean;
 }): HotRebuildTarget | undefined => {
   const workflowEntryFiles = [...discoveredEntries.discoveredWorkflows].map(
     normalizePath
@@ -243,13 +239,10 @@ const getHotRebuildTarget = ({
     }
     if (stepEntryFiles.includes(changedFile)) {
       rebuildSteps = true;
-      continue;
     }
     if (
       workflowEntryFiles.some((workflowFile) =>
-        parentHasChild(workflowFile, changedFile, {
-          excludedRoots: stepEntryFiles,
-        })
+        parentHasChild(workflowFile, changedFile)
       )
     ) {
       rebuildWorkflows = true;
@@ -280,11 +273,7 @@ export const classifyRebuild = async ({
   discoveredEntries: DiscoveredEntriesLike;
   inputFiles: string[];
   normalizePath?: (path: string) => string;
-  parentHasChild: (
-    parent: string,
-    child: string,
-    options?: { excludedRoots?: Iterable<string> }
-  ) => boolean;
+  parentHasChild: (parent: string, child: string) => boolean;
   readSnapshot: (file: string) => Promise<SourceSnapshot>;
   sourceSnapshots: Map<string, SourceSnapshot>;
 }): Promise<RebuildDecision> => {

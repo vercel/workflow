@@ -319,7 +319,6 @@ export function createDevTests(config?: DevTestConfig) {
       log.split(message).length - 1;
     type ExpectedHmrLogCount =
       | number
-      | { kind: 'at-least'; min: number }
       | { kind: 'range'; min: number; max: number };
     type ExpectedHmrLogCounts = {
       skip?: ExpectedHmrLogCount;
@@ -334,18 +333,8 @@ export function createDevTests(config?: DevTestConfig) {
         expect(actual).toBe(expected ?? 0);
         return;
       }
-      switch (expected.kind) {
-        case 'at-least':
-          expect(actual).toBeGreaterThanOrEqual(expected.min);
-          return;
-        case 'range':
-          expect(actual).toBeGreaterThanOrEqual(expected.min);
-          expect(actual).toBeLessThanOrEqual(expected.max);
-          return;
-        default:
-          expected satisfies never;
-          throw new Error('Unknown HMR log count expectation');
-      }
+      expect(actual).toBeGreaterThanOrEqual(expected.min);
+      expect(actual).toBeLessThanOrEqual(expected.max);
     };
     const expectHmrLogCounts = async (
       cursor: number | undefined,
@@ -1188,11 +1177,15 @@ ${apiFileContent}`
         };
 
         let snapshot = await waitForGeneratedArtifactStability();
+        const expectedHotRebuild: ExpectedHmrLogCounts = {
+          hot: { kind: 'range', min: 1, max: 2 },
+          skip: { kind: 'range', min: 0, max: 1 },
+        };
         const cases = [
           {
             file: files.step,
-            kind: 'full',
-            expectedLogCounts: { full: 1 },
+            kind: 'step',
+            expectedLogCounts: expectedHotRebuild,
             expectedStepValue: (iteration: number) => `step-only-${iteration}`,
             source: (
               iteration: number
@@ -1207,8 +1200,8 @@ export async function hmrFuzzStep() {
           },
           {
             file: files.stepHelper,
-            kind: 'skip',
-            expectedLogCounts: { skip: 1 },
+            kind: 'workflow',
+            expectedLogCounts: expectedHotRebuild,
             expectedStepValue: (iteration: number) =>
               `step-helper-only-${iteration}`,
             source: (
@@ -1220,8 +1213,8 @@ export async function hmrFuzzStep() {
           },
           {
             file: files.workflow,
-            kind: 'full',
-            expectedLogCounts: { full: 1 },
+            kind: 'workflow',
+            expectedLogCounts: expectedHotRebuild,
             expectedWorkflowValue: (iteration: number) =>
               `workflow-body-${iteration}`,
             source: (
@@ -1244,7 +1237,7 @@ export async function hmrFuzzWorkflow() {
           {
             file: files.workflowHelper,
             kind: 'workflow',
-            expectedLogCounts: { hot: 1 },
+            expectedLogCounts: expectedHotRebuild,
             expectedWorkflowValue: (iteration: number) =>
               `workflow-helper-body-${iteration}`,
             source: (
@@ -1259,7 +1252,7 @@ export function hmrFuzzWorkflowHelper(value: HmrFuzzBox) {
           {
             file: files.sharedHelper,
             kind: 'workflow',
-            expectedLogCounts: { hot: 1 },
+            expectedLogCounts: expectedHotRebuild,
             expectedStepValue: (iteration: number) =>
               `shared-body-${iteration}`,
             expectedWorkflowValue: (iteration: number) =>
@@ -1274,7 +1267,7 @@ export function hmrFuzzWorkflowHelper(value: HmrFuzzBox) {
           {
             file: files.serde,
             kind: 'serde',
-            expectedLogCounts: { full: 1 },
+            expectedLogCounts: expectedHotRebuild,
             source: (iteration: number) => `export class HmrFuzzBox {
   static classId = 'HmrFuzzBox';
 
@@ -1339,11 +1332,9 @@ export function hmrFuzzWorkflowHelper(value: HmrFuzzBox) {
           await expectHmrLogCounts(logCursor, testCase.expectedLogCounts);
         }
 
-        // Watchers may deliver the same edit during consecutive builds. The
-        // manifest and execution assertions below verify eventual convergence.
-        const expectedFullRediscovery = {
-          full: { kind: 'at-least', min: 1 },
-        } as const;
+        const expectedFullRediscovery: ExpectedHmrLogCounts = {
+          full: { kind: 'range', min: 1, max: 3 },
+        };
         const fullCases = [
           {
             description: 'workflow import graph change',
@@ -1381,7 +1372,7 @@ export async function hmrFuzzWorkflow() {
           },
           {
             description: 'step definition added',
-            expectedLogCounts: expectedFullRediscovery,
+            expectedLogCounts: expectedHotRebuild,
             write: async (iteration: number) => {
               await fs.writeFile(
                 files.step,
@@ -1416,7 +1407,7 @@ export async function hmrFuzzAddedStep() {
           },
           {
             description: 'workflow definition added',
-            expectedLogCounts: expectedFullRediscovery,
+            expectedLogCounts: expectedHotRebuild,
             write: async (iteration: number) => {
               await fs.writeFile(
                 files.workflow,
@@ -1492,7 +1483,10 @@ ${apiFileContent}`
           },
           {
             description: 'workflow file removed from API import',
-            expectedLogCounts: expectedFullRediscovery,
+            expectedLogCounts: {
+              skip: { kind: 'range', min: 0, max: 1 },
+              full: { kind: 'range', min: 1, max: 2 },
+            },
             write: async () => {
               await fs.rm(files.addedWorkflow, { force: true });
               await fs.writeFile(
@@ -1530,12 +1524,15 @@ ${apiFileContent}`
         const unrelatedLogCursor = await readDevServerLogCursor();
         await fs.writeFile(files.unrelated, 'export const unrelated = true;\n');
         snapshot = await expectGeneratedArtifactsUnchanged(snapshot);
-        await expectHmrLogCounts(unrelatedLogCursor, { skip: 1 });
+        await expectHmrLogCounts(unrelatedLogCursor, expectedFullRediscovery);
 
         const unrelatedRemovalLogCursor = await readDevServerLogCursor();
         await fs.unlink(files.unrelated);
         snapshot = await expectGeneratedArtifactsUnchanged(snapshot);
-        await expectHmrLogCounts(unrelatedRemovalLogCursor, { skip: 1 });
+        await expectHmrLogCounts(
+          unrelatedRemovalLogCursor,
+          expectedFullRediscovery
+        );
       }
     );
   });

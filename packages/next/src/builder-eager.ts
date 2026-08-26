@@ -1,3 +1,4 @@
+import assert from 'node:assert';
 import { constants } from 'node:fs';
 import { access, mkdir, realpath, rm, stat } from 'node:fs/promises';
 import { extname, isAbsolute, join, relative, resolve } from 'node:path';
@@ -319,6 +320,7 @@ export async function getNextBuilderEager(
         };
 
         sourceSnapshots = await snapshotSources();
+        let watchGeneration = 0;
 
         const refreshKnownFiles = async () => {
           relevantFiles = getRelevantFiles({
@@ -330,12 +332,11 @@ export async function getNextBuilderEager(
         };
 
         const runFullRebuild = async () => {
-          // The build and watcher cannot read the filesystem atomically. Keep
-          // rebuilding until one complete build window observes no changes.
-          do {
-            logDevHmr('workflow dev hmr: full rediscovery');
-          } while (!(await fullRebuild()));
+          const generation = watchGeneration;
+          logDevHmr('workflow dev hmr: full rediscovery');
+          const buildWasStable = await fullRebuild();
           await refreshKnownFiles();
+          return buildWasStable && generation === watchGeneration;
         };
 
         const processFileChanges = async (files: string[]) => {
@@ -344,12 +345,11 @@ export async function getNextBuilderEager(
             discoveredEntries,
             inputFiles: options.inputFiles,
             normalizePath,
-            parentHasChild: (parent, child, options) =>
+            parentHasChild: (parent, child) =>
               importGraphHasChild(
                 discoveredEntries.importParents,
                 parent,
-                child,
-                options
+                child
               ),
             readSnapshot: readSourceSnapshot,
             sourceSnapshots,
@@ -363,7 +363,7 @@ export async function getNextBuilderEager(
               await hotRebuild(decision.target);
               break;
             case 'full':
-              await runFullRebuild();
+              scheduleRebuild({ kind: 'full' });
               return;
             default:
               decision satisfies never;
@@ -382,7 +382,9 @@ export async function getNextBuilderEager(
                   await processFileChanges(request.files);
                   return;
                 case 'full':
-                  await runFullRebuild();
+                  if (!(await runFullRebuild())) {
+                    scheduleRebuild({ kind: 'full' });
+                  }
                   return;
                 default:
                   request satisfies never;
@@ -395,6 +397,7 @@ export async function getNextBuilderEager(
           () => logDevHmr('workflow dev hmr: idle')
         );
         const handleFileChanged = async (pathname: string) => {
+          watchGeneration++;
           const normalizedPath = normalizePath(pathname);
           if (!isWatchableFile(normalizedPath)) {
             return;
@@ -410,6 +413,7 @@ export async function getNextBuilderEager(
         };
 
         const scheduleFullRebuild = (pathname: string) => {
+          watchGeneration++;
           const normalizedPath = normalizePath(pathname);
           if (!isWatchableFile(normalizedPath)) {
             return;
@@ -518,7 +522,7 @@ export async function getNextBuilderEager(
       const flowRouteDir = join(workflowGeneratedDir, 'flow');
       await mkdir(flowRouteDir, { recursive: true });
 
-      return await this.createCombinedBundle({
+      const result = await this.createCombinedBundle({
         format: 'esm',
         inputFiles,
         stepsOutfile: join(flowRouteDir, '__step_registrations.js'),
@@ -528,6 +532,11 @@ export async function getNextBuilderEager(
         sourceStepRegistrationImports: true,
         tsconfigPath,
       });
+      assert(
+        result.stepsContext === undefined,
+        'Invariant: source step registrations must not create an esbuild context'
+      );
+      return result;
     }
 
     private async buildWebhookRoute({

@@ -324,6 +324,44 @@ export const allWorkflows = {} as const;
     });
   });
 
+  test('also rebuilds workflows that import a step module', async () => {
+    const stepFile = '/app/workflows/step.ts';
+    const workflowFile = '/app/workflows/workflow.ts';
+    const previousSnapshot = createSourceSnapshotFromSource(
+      `export const value = 'before';
+export async function step() { 'use step'; }
+`,
+      detectWorkflowPatterns
+    );
+    const nextSnapshot = createSourceSnapshotFromSource(
+      `export const value = 'after';
+export async function step() { 'use step'; }
+`,
+      detectWorkflowPatterns
+    );
+
+    await expect(
+      classifyRebuild({
+        discoveredEntries: {
+          discoveredSteps: new Set([stepFile]),
+          discoveredWorkflows: new Set([workflowFile]),
+          discoveredSerdeFiles: new Set(),
+          discoveredFiles: new Set([stepFile, workflowFile]),
+        },
+        files: [stepFile],
+        inputFiles: [],
+        parentHasChild: (parent, child) =>
+          parent === workflowFile && child === stepFile,
+        readSnapshot: async () => nextSnapshot,
+        sourceSnapshots: new Map([[stepFile, previousSnapshot]]),
+      })
+    ).resolves.toEqual({
+      kind: 'hot',
+      target: 'both',
+      snapshots: new Map([[stepFile, nextSnapshot]]),
+    });
+  });
+
   test('hot rebuilds serde body changes in both contexts', async () => {
     const serdeFile = '/app/workflows/value.ts';
     const previousSnapshot = createSourceSnapshotFromSource(
