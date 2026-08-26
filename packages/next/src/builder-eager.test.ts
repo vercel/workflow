@@ -29,6 +29,8 @@ describe('isNextEntrypoint', () => {
     'src/app/_draft/loading.tsx',
     'app/blog/global-error.tsx',
     'app/blog/robots.ts',
+    'pages/types.d.ts',
+    'app/page.d.ts',
     'src/random.ts',
     'app/page.vue',
   ])('excludes %s', (entry) => {

@@ -60,6 +60,8 @@ export function isNextEntrypoint(
   entry: string,
   pageExtensions: readonly string[]
 ): boolean {
+  if (entry.endsWith('.d.ts')) return false;
+
   const path = entry.split('/');
   const filename = path.at(-1)!;
   const inSrc = path[0] === 'src';
