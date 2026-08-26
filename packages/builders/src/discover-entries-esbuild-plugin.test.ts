@@ -20,9 +20,10 @@ vi.mock('./apply-swc-transform.js', () => ({
 
 import {
   createDiscoverEntriesPlugin,
-  importParents,
   parentHasChild,
 } from './discover-entries-esbuild-plugin.js';
+
+const importParents = new Map<string, Set<string>>();
 
 const realTmpdir = realpathSync(tmpdir());
 
@@ -104,6 +105,7 @@ describe('createDiscoverEntriesPlugin projectRoot', () => {
       discoveredSteps: new Set<string>(),
       discoveredWorkflows: new Set<string>(),
       discoveredSerdeFiles: new Set<string>(),
+      importParents,
     };
 
     const result = await esbuild.build({
@@ -137,6 +139,7 @@ describe('createDiscoverEntriesPlugin projectRoot', () => {
       discoveredSteps: new Set<string>(),
       discoveredWorkflows: new Set<string>(),
       discoveredSerdeFiles: new Set<string>(),
+      importParents,
     };
 
     const result = await esbuild.build({
@@ -186,6 +189,7 @@ describe('createDiscoverEntriesPlugin projectRoot', () => {
       discoveredSteps: new Set<string>(),
       discoveredWorkflows: new Set<string>(),
       discoveredSerdeFiles: new Set<string>(),
+      importParents,
     };
 
     const result = await esbuild.build({
@@ -215,6 +219,8 @@ describe('createDiscoverEntriesPlugin projectRoot', () => {
     expect(pkgChildren!.has(normalizedSerde)).toBe(true);
 
     // parentHasChild should transitively find serde.js from entry.ts
-    expect(parentHasChild(normalizedEntry, normalizedSerde)).toBe(true);
+    expect(
+      parentHasChild(importParents, normalizedEntry, normalizedSerde)
+    ).toBe(true);
   });
 });

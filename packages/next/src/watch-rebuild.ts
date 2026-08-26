@@ -5,7 +5,7 @@ export interface DiscoveredEntriesLike {
   discoveredSteps: Set<string>;
   discoveredWorkflows: Set<string>;
   discoveredSerdeFiles: Set<string>;
-  discoveredFiles?: Set<string>;
+  discoveredFiles: Set<string>;
 }
 
 export type ScheduledRebuild =
@@ -15,7 +15,6 @@ export type ScheduledRebuild =
 export interface SourceSnapshot {
   sourceHash: string;
   importSignature: string;
-  serdeSignature: string;
   hasDirective: boolean;
   hasSerde: boolean;
 }
@@ -40,9 +39,6 @@ const importSpecifierPatterns = [
   /\bimport\s*\(\s*['"]([^'"]+)['"]\s*\)/g,
   /\brequire\s*\(\s*['"]([^'"]+)['"]\s*\)/g,
 ];
-const serdeClassPattern =
-  /\bclass\s+([A-Za-z_$][\w$]*)[\s\S]*?(?:static\s+classId\s*=\s*['"]([^'"]+)['"]|Symbol\.for\s*\(\s*['"]workflow-(?:serialize|deserialize)['"]\s*\)|\[\s*WORKFLOW_(?:SERIALIZE|DESERIALIZE)\s*\])/g;
-
 const defaultNormalizePath = (pathname: string) => pathname.replace(/\\/g, '/');
 
 const REGEX_PREFIX_CHARS = new Set([
@@ -189,15 +185,6 @@ export const extractImportSignature = (source: string) =>
     ? collectImportSpecifiers(source)
     : '';
 
-export const extractSerdeSignature = (source: string) => {
-  const definitions: string[] = [];
-  serdeClassPattern.lastIndex = 0;
-  for (const match of source.matchAll(serdeClassPattern)) {
-    definitions.push(`serde:${match[2] ?? match[1]}`);
-  }
-  return definitions.sort().join('\n');
-};
-
 export const createSourceSnapshotFromSource = (
   source: string,
   detectWorkflowPatterns: SourcePatternDetector
@@ -208,7 +195,6 @@ export const createSourceSnapshotFromSource = (
   return {
     sourceHash: createHash('sha256').update(source).digest('base64url'),
     importSignature: extractImportSignature(sourceWithoutComments),
-    serdeSignature: extractSerdeSignature(sourceWithoutComments),
     hasDirective: patterns.hasDirective,
     hasSerde: patterns.hasSerde,
   };
@@ -236,13 +222,7 @@ export const getRelevantFiles = ({
   normalizePath?: (path: string) => string;
 }) =>
   new Set(
-    [
-      ...inputFiles,
-      ...discoveredEntries.discoveredSteps,
-      ...discoveredEntries.discoveredWorkflows,
-      ...discoveredEntries.discoveredSerdeFiles,
-      ...(discoveredEntries.discoveredFiles || []),
-    ].map(normalizePath)
+    [...inputFiles, ...discoveredEntries.discoveredFiles].map(normalizePath)
   );
 
 export const readSourceSnapshots = async ({
@@ -276,12 +256,28 @@ export const readSourceSnapshots = async ({
 const requiresFullRediscovery = (
   previousSnapshot: SourceSnapshot,
   nextSnapshot: SourceSnapshot
+) => {
+  if (previousSnapshot.hasDirective || nextSnapshot.hasDirective) {
+    return true;
+  }
+
+  // Serde edits can change the generated class manifest. Rediscover all of
+  // them instead of approximating JavaScript class structure with a regex.
+  if (previousSnapshot.hasSerde || nextSnapshot.hasSerde) {
+    return true;
+  }
+
+  return previousSnapshot.importSignature !== nextSnapshot.importSignature;
+};
+
+export const sourceSnapshotsMatch = (
+  left: Map<string, SourceSnapshot>,
+  right: Map<string, SourceSnapshot>
 ) =>
-  previousSnapshot.hasDirective ||
-  nextSnapshot.hasDirective ||
-  previousSnapshot.importSignature !== nextSnapshot.importSignature ||
-  previousSnapshot.serdeSignature !== nextSnapshot.serdeSignature ||
-  previousSnapshot.hasSerde !== nextSnapshot.hasSerde;
+  left.size === right.size &&
+  [...left].every(
+    ([file, snapshot]) => snapshot.sourceHash === right.get(file)?.sourceHash
+  );
 
 export const createRebuildScheduler = (
   rebuild: (request: ScheduledRebuild) => Promise<void>,
