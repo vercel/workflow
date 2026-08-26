@@ -1,5 +1,6 @@
 ---
 '@workflow/next': patch
+'@workflow/builders': patch
 ---
 
-Preserve source changes made during Next.js development rebuilds for the next HMR pass.
+Keep Next.js development rebuilds consistent with source and import-graph changes.

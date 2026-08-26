@@ -568,6 +568,7 @@ export abstract class BaseBuilder {
       discoveredWorkflows: new Set(),
       discoveredSerdeFiles: new Set(),
       discoveredFiles: new Set(),
+      importParents: new Map(),
     };
 
     const discoverStart = Date.now();
@@ -1206,6 +1207,7 @@ export const __steps_registered = true;
         createPseudoPackagePlugin(),
         createSwcPlugin({
           mode: 'step',
+          importParents: discovered.importParents,
           entriesToBundle: normalizedEntriesToBundle,
           outdir: outfile ? dirname(outfile) : undefined,
           projectRoot: this.transformProjectRoot,
@@ -1447,6 +1449,7 @@ export const __steps_registered = true;
         createPseudoPackagePlugin(),
         createSwcPlugin({
           mode: 'workflow',
+          importParents: discovered.importParents,
           projectRoot: this.transformProjectRoot,
           moduleSpecifierRoot: this.moduleSpecifierRoot,
           workflowManifest,
@@ -1748,9 +1751,27 @@ ${createWorkflowRouteHandlersCode(`workflowEntrypoint(workflowCode${workflowEntr
       outfile: tempWorkflowOutfile,
       format,
       bundleFinalOutput: false,
+      includeMetafile: this.config.watch,
       tsconfigPath,
       discoveredEntries: effectiveDiscoveredEntries,
     });
+
+    if (this.config.watch) {
+      const metafile = workflowsResult.interimBundleMetafile;
+      if (!metafile) {
+        throw new Error('Invariant: expected workflow build inputs');
+      }
+      for (const input of Object.keys(metafile.inputs)) {
+        const file = resolve(this.config.workingDir, input).replace(/\\/g, '/');
+        if (
+          input !== 'virtual-entry.js' &&
+          !file.includes('/node_modules/') &&
+          !file.includes('/.pnpm/')
+        ) {
+          effectiveDiscoveredEntries.discoveredFiles.add(file);
+        }
+      }
+    }
 
     const workflowVMCode = workflowsResult.interimBundleText;
     if (!workflowVMCode) {
@@ -1915,10 +1936,8 @@ ${createWorkflowRouteHandlersCode(`workflowEntrypoint(workflowCode${workflowEntr
     // Discover serde files from the input files' dependency tree for cross-context class registration.
     // Classes need to be registered in the client bundle so they can be serialized
     // when passing data to workflows via start() and deserialized when receiving workflow results.
-    const { discoveredSerdeFiles } = await this.discoverEntries(
-      inputFiles,
-      outputDir
-    );
+    const discoveredEntries = await this.discoverEntries(inputFiles, outputDir);
+    const { discoveredSerdeFiles } = discoveredEntries;
 
     // Identify serde files that aren't in the inputFiles (deduplicated)
     const inputFilesNormalized = new Set(
@@ -2002,6 +2021,7 @@ ${createWorkflowRouteHandlersCode(`workflowEntrypoint(workflowCode${workflowEntr
       plugins: [
         createSwcPlugin({
           mode: 'step',
+          importParents: discoveredEntries.importParents,
           projectRoot: this.transformProjectRoot,
           moduleSpecifierRoot: this.moduleSpecifierRoot,
           onAfterTransform: this.config.onAfterTransform,

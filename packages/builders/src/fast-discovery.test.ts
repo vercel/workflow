@@ -9,10 +9,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { BaseBuilder, type DiscoveredEntries } from './base-builder.js';
-import {
-  importParents,
-  parentHasChild,
-} from './discover-entries-esbuild-plugin.js';
+import { parentHasChild } from './discover-entries-esbuild-plugin.js';
 import type { StandaloneConfig } from './types.js';
 
 class TestBuilder extends BaseBuilder {
@@ -68,11 +65,9 @@ describe('fast workflow discovery', () => {
 
   beforeEach(() => {
     testRoot = mkdtempSync(join(realTmpdir, 'workflow-fast-discovery-'));
-    importParents.clear();
   });
 
   afterEach(() => {
-    importParents.clear();
     rmSync(testRoot, { recursive: true, force: true });
   });
 
@@ -98,9 +93,51 @@ describe('fast workflow discovery', () => {
     );
 
     expect(discovered.discoveredSteps).toEqual(new Set([normalize(stepFile)]));
-    expect(parentHasChild(normalize(entryFile), normalize(stepFile))).toBe(
-      true
+    expect(
+      parentHasChild(
+        discovered.importParents,
+        normalize(entryFile),
+        normalize(stepFile)
+      )
+    ).toBe(true);
+  });
+
+  it('replaces the import graph on rediscovery', async () => {
+    const entryFile = join(testRoot, 'src', 'entry.ts');
+    const workflowFile = join(testRoot, 'src', 'workflow.ts');
+    const builder = createBuilder(testRoot);
+    const inputFiles = [entryFile];
+
+    writeFile(entryFile, `import './workflow';\n`);
+    writeFile(
+      workflowFile,
+      `export async function run() { 'use workflow'; }\n`
     );
+    const first = await builder.discoverEntriesPublic(
+      inputFiles,
+      join(testRoot, 'out')
+    );
+    expect(
+      parentHasChild(
+        first.importParents,
+        normalize(entryFile),
+        normalize(workflowFile)
+      )
+    ).toBe(true);
+
+    writeFile(entryFile, `export const value = 1;\n`);
+    builder.clearDiscoveredEntriesCache();
+    const second = await builder.discoverEntriesPublic(
+      inputFiles,
+      join(testRoot, 'out')
+    );
+    expect(
+      parentHasChild(
+        second.importParents,
+        normalize(entryFile),
+        normalize(workflowFile)
+      )
+    ).toBe(false);
   });
 
   it('discovers relative JS imports whose basename includes .step', async () => {
@@ -125,9 +162,13 @@ describe('fast workflow discovery', () => {
     expect(discovered.discoveredWorkflows).toEqual(
       new Set([normalize(workflowFile)])
     );
-    expect(parentHasChild(normalize(entryFile), normalize(workflowFile))).toBe(
-      true
-    );
+    expect(
+      parentHasChild(
+        discovered.importParents,
+        normalize(entryFile),
+        normalize(workflowFile)
+      )
+    ).toBe(true);
   });
 
   it('discovers workflow files reached through an imported package re-export', async () => {
@@ -167,7 +208,11 @@ describe('fast workflow discovery', () => {
       new Set([normalize(packageWorkflow)])
     );
     expect(
-      parentHasChild(normalize(packageIndex), normalize(packageWorkflow))
+      parentHasChild(
+        discovered.importParents,
+        normalize(packageIndex),
+        normalize(packageWorkflow)
+      )
     ).toBe(true);
   });
 
@@ -240,11 +285,15 @@ describe('fast workflow discovery', () => {
     // descended into at all, so none of them show up as discovered files and
     // the parent edge into the package is not recorded.
     for (const file of [packageIndex, packageWorkflow, packageStep]) {
-      expect(discovered.discoveredFiles?.has(normalize(file))).toBe(false);
+      expect(discovered.discoveredFiles.has(normalize(file))).toBe(false);
     }
-    expect(parentHasChild(normalize(entryFile), normalize(packageIndex))).toBe(
-      false
-    );
+    expect(
+      parentHasChild(
+        discovered.importParents,
+        normalize(entryFile),
+        normalize(packageIndex)
+      )
+    ).toBe(false);
   });
 
   it('still follows imports within node_modules so seeded package entries resolve their subtree', async () => {
@@ -286,7 +335,11 @@ describe('fast workflow discovery', () => {
       true
     );
     expect(
-      parentHasChild(normalize(packageIndex), normalize(packageWorkflow))
+      parentHasChild(
+        discovered.importParents,
+        normalize(packageIndex),
+        normalize(packageWorkflow)
+      )
     ).toBe(true);
   });
 
@@ -331,9 +384,13 @@ export const allWorkflows = { workflow };
     expect(discovered.discoveredWorkflows).toEqual(
       new Set([normalize(workflowFile)])
     );
-    expect(parentHasChild(normalize(entryFile), normalize(workflowFile))).toBe(
-      true
-    );
+    expect(
+      parentHasChild(
+        discovered.importParents,
+        normalize(entryFile),
+        normalize(workflowFile)
+      )
+    ).toBe(true);
   });
 
   it('discovers dotted files reached through tsconfig path aliases', async () => {

@@ -5,6 +5,7 @@ import {
   createRebuildScheduler,
   createSourceSnapshotFromSource,
   extractImportSignature,
+  sourceSnapshotsMatch,
   type SourceSnapshot,
   stripCommentsFromSource,
 } from './watch-rebuild.js';
@@ -104,6 +105,33 @@ export async function commentedStep() { 'use step'; }
     );
 
     expect(snapshot.hasDirective).toBe(false);
+  });
+
+  test('detects files added or changed during a full rebuild', () => {
+    const before = createSourceSnapshotFromSource(
+      `export const value = 'before';\n`,
+      detectWorkflowPatterns
+    );
+    const after = createSourceSnapshotFromSource(
+      `export const value = 'after';\n`,
+      detectWorkflowPatterns
+    );
+
+    expect(
+      sourceSnapshotsMatch(
+        new Map([['/app/workflow.ts', before]]),
+        new Map([['/app/workflow.ts', after]])
+      )
+    ).toBe(false);
+    expect(
+      sourceSnapshotsMatch(
+        new Map([['/app/workflow.ts', before]]),
+        new Map([
+          ['/app/workflow.ts', before],
+          ['/app/helper.ts', before],
+        ])
+      )
+    ).toBe(false);
   });
 
   test('commenting out a registry import requires full rediscovery', async () => {
@@ -271,6 +299,38 @@ export const allWorkflows = {} as const;
         parentHasChild: () => false,
         readSnapshot: async () => nextSnapshot,
         sourceSnapshots: new Map([[stepFile, previousSnapshot]]),
+      })
+    ).resolves.toEqual({ kind: 'full' });
+  });
+
+  test('fully rebuilds every serde file change', async () => {
+    const serdeFile = '/app/workflows/value.ts';
+    const previousSnapshot = createSourceSnapshotFromSource(
+      `export class Value {
+  static [Symbol.for('workflow-serialize')]() { return 'before'; }
+}\n`,
+      detectWorkflowPatterns
+    );
+    const nextSnapshot = createSourceSnapshotFromSource(
+      `export class Value {
+  static [Symbol.for('workflow-serialize')]() { return 'after'; }
+}\n`,
+      detectWorkflowPatterns
+    );
+
+    await expect(
+      classifyRebuild({
+        discoveredEntries: {
+          discoveredSteps: new Set(),
+          discoveredWorkflows: new Set(),
+          discoveredSerdeFiles: new Set([serdeFile]),
+          discoveredFiles: new Set([serdeFile]),
+        },
+        files: [serdeFile],
+        inputFiles: [],
+        parentHasChild: () => false,
+        readSnapshot: async () => nextSnapshot,
+        sourceSnapshots: new Map([[serdeFile, previousSnapshot]]),
       })
     ).resolves.toEqual({ kind: 'full' });
   });

@@ -14,6 +14,7 @@ import {
   createSourceSnapshot,
   getRelevantFiles,
   readSourceSnapshots,
+  sourceSnapshotsMatch,
   type SourceSnapshot,
 } from './watch-rebuild.js';
 
@@ -271,18 +272,22 @@ export async function getNextBuilderEager(
 
           await writeManifest(newCombined.manifest);
           sourceSnapshots = nextSourceSnapshots;
+          return sourceSnapshotsMatch(
+            nextSourceSnapshots,
+            await snapshotSources()
+          );
         };
 
+        let relevantFiles = getRelevantFiles({
+          discoveredEntries,
+          inputFiles: options.inputFiles,
+          normalizePath,
+        });
         const isWatchableFile = (path: string) =>
-          watchableExtensions.has(extname(path));
+          watchableExtensions.has(extname(path)) || relevantFiles.has(path);
 
         const readKnownFileAliases = async () => {
           const aliases = new Map<string, string>();
-          const relevantFiles = getRelevantFiles({
-            discoveredEntries,
-            inputFiles: options.inputFiles,
-            normalizePath,
-          });
 
           const addKnownFile = async (filePath: string) => {
             let realFilePath = filePath;
@@ -340,6 +345,7 @@ export async function getNextBuilderEager(
           };
 
           await visit(this.config.workingDir);
+          await Promise.all([...relevantFiles].map(addKnownFile));
           return { aliases, addKnownFile };
         };
 
@@ -354,14 +360,23 @@ export async function getNextBuilderEager(
           await readKnownFileAliases();
 
         const refreshKnownFiles = async () => {
+          relevantFiles = getRelevantFiles({
+            discoveredEntries,
+            inputFiles: options.inputFiles,
+            normalizePath,
+          });
           const nextKnown = await readKnownFileAliases();
           knownFileAliases = nextKnown.aliases;
           rememberKnownFile = nextKnown.addKnownFile;
+          await watcher.add([...relevantFiles]);
         };
 
         const runFullRebuild = async () => {
-          logDevHmr('workflow dev hmr: full rediscovery');
-          await fullRebuild();
+          // The build and watcher cannot read the filesystem atomically. Keep
+          // rebuilding until one complete build window observes no changes.
+          do {
+            logDevHmr('workflow dev hmr: full rediscovery');
+          } while (!(await fullRebuild()));
           await refreshKnownFiles();
         };
 
@@ -371,7 +386,13 @@ export async function getNextBuilderEager(
             discoveredEntries,
             inputFiles: options.inputFiles,
             normalizePath,
-            parentHasChild,
+            parentHasChild: (parent, child, options) =>
+              parentHasChild(
+                discoveredEntries.importParents,
+                parent,
+                child,
+                options
+              ),
             readSnapshot: readSourceSnapshot,
             sourceSnapshots,
           });
@@ -444,18 +465,24 @@ export async function getNextBuilderEager(
           scheduleFileChange(canonicalPath);
         };
 
-        const watcher = chokidar.watch(this.config.workingDir, {
-          ignoreInitial: true,
-          followSymlinks: true,
-          ignored: (pathname) => {
-            const normalizedPath = normalizePath(String(pathname));
-            const extension = extname(normalizedPath);
-            if (extension && !watchableExtensions.has(extension)) {
-              return true;
-            }
-            return hasIgnoredPathFragment(normalizedPath);
-          },
-        });
+        const watcher = chokidar.watch(
+          [this.config.workingDir, ...relevantFiles],
+          {
+            ignoreInitial: true,
+            followSymlinks: true,
+            ignored: (pathname) => {
+              const normalizedPath = normalizePath(String(pathname));
+              if (relevantFiles.has(normalizedPath)) {
+                return false;
+              }
+              const extension = extname(normalizedPath);
+              if (extension && !watchableExtensions.has(extension)) {
+                return true;
+              }
+              return hasIgnoredPathFragment(normalizedPath);
+            },
+          }
+        );
 
         watcher.on('add', handleFileWritten);
         watcher.on('change', handleFileWritten);

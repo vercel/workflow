@@ -5,7 +5,7 @@ import { promisify } from 'node:util';
 import enhancedResolveOriginal from 'enhanced-resolve';
 import { findUp } from 'find-up';
 import JSON5 from 'json5';
-import { importParents } from './discover-entries-esbuild-plugin.js';
+import type { ImportParents } from './discover-entries-esbuild-plugin.js';
 import { detectWorkflowPatterns } from './transform-utils.js';
 
 const FAST_DISCOVERY_SOURCE_EXTENSIONS = [
@@ -49,12 +49,9 @@ export interface DiscoveredEntries {
   discoveredSteps: Set<string>;
   discoveredWorkflows: Set<string>;
   discoveredSerdeFiles: Set<string>;
-  /**
-   * All JS/TS files visited while walking the workflow import graph.
-   * Watch-mode integrations use this to distinguish relevant HMR changes from
-   * unrelated application file edits.
-   */
-  discoveredFiles?: Set<string>;
+  importParents: ImportParents;
+  /** Source files visited by discovery or consumed by the workflow bundle. */
+  discoveredFiles: Set<string>;
 }
 
 interface FastDiscoverEntriesOptions {
@@ -240,7 +237,11 @@ function isNodeModulesPath(filePath: string): boolean {
   );
 }
 
-function addImportParent(parent: string, child: string): void {
+function addImportParent(
+  importParents: ImportParents,
+  parent: string,
+  child: string
+): void {
   const normalizedParent = normalizePath(parent);
   const normalizedChild = normalizePath(child);
   let children = importParents.get(normalizedParent);
@@ -959,7 +960,7 @@ export async function fastDiscoverEntries({
       return;
     }
 
-    addImportParent(filePath, resolved);
+    addImportParent(state.importParents, filePath, resolved);
     if (!isJsTsFile(resolved) || isGeneratedBuildArtifactPath(resolved)) {
       return;
     }

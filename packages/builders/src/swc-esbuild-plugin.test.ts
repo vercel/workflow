@@ -18,11 +18,15 @@ vi.mock('./apply-swc-transform.js', () => ({
   applySwcTransform: applySwcTransformMock,
 }));
 
+import { createDiscoverEntriesPlugin } from './discover-entries-esbuild-plugin.js';
 import {
-  createDiscoverEntriesPlugin,
-  importParents,
-} from './discover-entries-esbuild-plugin.js';
-import { createSwcPlugin } from './swc-esbuild-plugin.js';
+  createSwcPlugin as createSwcPluginWithGraph,
+  type SwcPluginOptions,
+} from './swc-esbuild-plugin.js';
+
+const importParents = new Map<string, Set<string>>();
+const createSwcPlugin = (options: Omit<SwcPluginOptions, 'importParents'>) =>
+  createSwcPluginWithGraph({ ...options, importParents });
 
 const realTmpdir = realpathSync(tmpdir());
 
@@ -577,6 +581,7 @@ export const client = { provider: providerName };`
       discoveredSteps: new Set<string>(),
       discoveredWorkflows: new Set<string>(),
       discoveredSerdeFiles: new Set<string>(),
+      importParents,
     };
     await esbuild.build({
       entryPoints: [stepFile],
@@ -635,6 +640,7 @@ export const client = { provider: providerName };`
       discoveredSteps: new Set<string>(),
       discoveredWorkflows: new Set<string>(),
       discoveredSerdeFiles: new Set<string>(),
+      importParents,
     };
     await esbuild.build({
       entryPoints: [stepFile],
@@ -691,6 +697,7 @@ export const client = { provider: providerName };`
       discoveredSteps: new Set<string>(),
       discoveredWorkflows: new Set<string>(),
       discoveredSerdeFiles: new Set<string>(),
+      importParents,
     };
     await esbuild.build({
       entryPoints: [stepFile],
@@ -748,6 +755,7 @@ export const client = { provider: providerName };`
       discoveredSteps: new Set<string>(),
       discoveredWorkflows: new Set<string>(),
       discoveredSerdeFiles: new Set<string>(),
+      importParents,
     };
     await esbuild.build({
       entryPoints: [stepFile],

@@ -52,13 +52,13 @@ function isGeneratedBuildArtifactPath(filePath: string): boolean {
   );
 }
 
-// parent -> children relationship (a file can import multiple files)
-export const importParents = new Map<string, Set<string>>();
+export type ImportParents = Map<string, Set<string>>;
 
 // check if a parent has a child in its import chain
 // e.g. if a dependency needs to be bundled because it has
 // a 'use workflow/'use step' directive in it
 export function parentHasChild(
+  importParents: ImportParents,
   parent: string,
   childToFind: string,
   {
@@ -103,6 +103,7 @@ export function createDiscoverEntriesPlugin(
     discoveredSteps: Set<string>;
     discoveredWorkflows: Set<string>;
     discoveredSerdeFiles: Set<string>;
+    importParents: ImportParents;
   },
   projectRoot?: string
 ): Plugin {
@@ -123,10 +124,10 @@ export function createDiscoverEntriesPlugin(
             const normalizedImporter = args.importer.replace(/\\/g, '/');
             const normalizedResolved = resolved.replace(/\\/g, '/');
             // A file can import multiple files, so we store a Set of children
-            let children = importParents.get(normalizedImporter);
+            let children = state.importParents.get(normalizedImporter);
             if (!children) {
               children = new Set<string>();
-              importParents.set(normalizedImporter, children);
+              state.importParents.set(normalizedImporter, children);
             }
             children.add(normalizedResolved);
           }
