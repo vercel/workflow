@@ -390,7 +390,7 @@ function getIterableEntries(value: Iterable<unknown>): Entry[] {
 }
 
 function isSelfIterableIterator(value: object & Iterable<unknown>): boolean {
-  return value[Symbol.iterator]() === value;
+  return Object.is(value[Symbol.iterator](), value);
 }
 
 /**
