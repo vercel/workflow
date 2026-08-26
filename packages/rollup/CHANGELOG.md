@@ -1,5 +1,12 @@
 # @workflow/rollup
 
+## 5.0.0-beta.45
+
+### Patch Changes
+
+- Updated dependencies [[`d62b444`](https://github.com/vercel/workflow/commit/d62b44473b43e183e71386fe84b33f5e7bb5445c)]:
+  - @workflow/builders@5.0.0-beta.45
+
 ## 5.0.0-beta.44
 
 ### Patch Changes
