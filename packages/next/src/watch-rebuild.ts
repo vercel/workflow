@@ -16,30 +16,29 @@ export type ScheduledRebuild =
 export interface SourceSnapshot {
   sourceHash: string;
   importSignature: string;
-  hasDirective: boolean;
+  hasUseWorkflow: boolean;
+  hasUseStep: boolean;
   hasSerde: boolean;
 }
+
+export type HotRebuildTarget = 'workflows' | 'steps' | 'both';
 
 export type RebuildDecision =
   | { kind: 'skip'; snapshots: Map<string, SourceSnapshot> }
   | {
       kind: 'hot';
-      refreshStepRegistrations: boolean;
+      target: HotRebuildTarget;
       snapshots: Map<string, SourceSnapshot>;
     }
   | { kind: 'full' };
 
-export type SourcePatternDetector = (source: string) => {
-  hasDirective: boolean;
+export type SourceAnalyzer = (source: string) => {
+  hasUseWorkflow: boolean;
+  hasUseStep: boolean;
   hasSerde: boolean;
+  importSpecifiers: string[];
 };
 
-const importSpecifierPatterns = [
-  /\bfrom\s+['"]([^'"]+)['"]/g,
-  /(?:^|[;\n])\s*import\s+['"]([^'"]+)['"]/g,
-  /\bimport\s*\(\s*['"]([^'"]+)['"]\s*\)/g,
-  /\brequire\s*\(\s*['"]([^'"]+)['"]\s*\)/g,
-];
 const defaultNormalizePath = (pathname: string) => pathname.replace(/\\/g, '/');
 const sourceExtensions = new Set([
   '.js',
@@ -55,183 +54,40 @@ const sourceExtensions = new Set([
 export const isSourceFile = (file: string) =>
   sourceExtensions.has(extname(file));
 
-const REGEX_PREFIX_CHARS = new Set([
-  '(',
-  '{',
-  '[',
-  '=',
-  ':',
-  ',',
-  ';',
-  '!',
-  '?',
-  '&',
-  '|',
-  '+',
-  '-',
-  '*',
-  '~',
-  '^',
-  '<',
-  '>',
-  '%',
-]);
-const REGEX_PREFIX_KEYWORDS =
-  /\b(?:return|throw|case|delete|void|typeof|instanceof|in|yield|await)$/;
-
-const canStartRegexLiteral = (output: string) => {
-  const previous = output.trimEnd();
-  if (previous.length === 0) {
-    return true;
-  }
-  const previousChar = previous[previous.length - 1];
-  return (
-    REGEX_PREFIX_CHARS.has(previousChar) || REGEX_PREFIX_KEYWORDS.test(previous)
-  );
-};
-
-// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Keep the string/comment/regex scanner local and allocation-light.
-export const stripCommentsFromSource = (source: string) => {
-  let output = '';
-  let index = 0;
-  let quote: '"' | "'" | '`' | undefined;
-  let regex = false;
-  let regexCharClass = false;
-  let escaped = false;
-
-  while (index < source.length) {
-    const char = source[index];
-    const next = source[index + 1];
-
-    if (quote || regex) {
-      output += char;
-      index++;
-
-      if (escaped) {
-        escaped = false;
-      } else if (char === '\\') {
-        escaped = true;
-      } else if (quote && char === quote) {
-        quote = undefined;
-      } else if (regex && char === '[') {
-        regexCharClass = true;
-      } else if (regex && char === ']') {
-        regexCharClass = false;
-      } else if (regex && char === '/' && !regexCharClass) {
-        regex = false;
-      }
-      continue;
-    }
-
-    if (char === '"' || char === "'" || char === '`') {
-      quote = char;
-      output += char;
-      index++;
-      continue;
-    }
-
-    if (
-      char === '/' &&
-      next !== '/' &&
-      next !== '*' &&
-      canStartRegexLiteral(output)
-    ) {
-      regex = true;
-      output += char;
-      index++;
-      continue;
-    }
-
-    if (char === '/' && next === '/') {
-      output += '  ';
-      index += 2;
-      while (index < source.length && source[index] !== '\n') {
-        output += ' ';
-        index++;
-      }
-      continue;
-    }
-
-    if (char === '/' && next === '*') {
-      output += '  ';
-      index += 2;
-      while (index < source.length) {
-        const blockChar = source[index];
-        const blockNext = source[index + 1];
-        if (blockChar === '*' && blockNext === '/') {
-          output += '  ';
-          index += 2;
-          break;
-        }
-        output += blockChar === '\n' ? '\n' : ' ';
-        index++;
-      }
-      continue;
-    }
-
-    output += char;
-    index++;
-  }
-
-  return output;
-};
-
-const sourceMayContainImportSpecifiers = (source: string) =>
-  source.includes('import') ||
-  source.includes('require') ||
-  source.includes('from');
-
-const collectImportSpecifiers = (source: string) => {
-  const specifiers = new Set<string>();
-  for (const pattern of importSpecifierPatterns) {
-    pattern.lastIndex = 0;
-    for (const match of source.matchAll(pattern)) {
-      if (match[1]) {
-        specifiers.add(match[1]);
-      }
-    }
-  }
-  return [...specifiers].sort().join('\n');
-};
-
-export const extractImportSignature = (source: string) =>
-  sourceMayContainImportSpecifiers(source)
-    ? collectImportSpecifiers(source)
-    : '';
-
 export const createSourceSnapshotFromSource = (
   source: string,
-  detectWorkflowPatterns: SourcePatternDetector
+  analyzeWorkflowSource: SourceAnalyzer
 ): SourceSnapshot => {
-  const sourceWithoutComments = stripCommentsFromSource(source);
-  const patterns = detectWorkflowPatterns(sourceWithoutComments);
+  const analysis = analyzeWorkflowSource(source);
 
   return {
     sourceHash: createHash('sha256').update(source).digest('base64url'),
-    importSignature: extractImportSignature(sourceWithoutComments),
-    hasDirective: patterns.hasDirective,
-    hasSerde: patterns.hasSerde,
+    importSignature: [...analysis.importSpecifiers].sort().join('\n'),
+    hasUseWorkflow: analysis.hasUseWorkflow,
+    hasUseStep: analysis.hasUseStep,
+    hasSerde: analysis.hasSerde,
   };
 };
 
 export const createSourceSnapshot = async ({
   file,
-  detectWorkflowPatterns,
+  analyzeWorkflowSource,
 }: {
   file: string;
-  detectWorkflowPatterns: SourcePatternDetector;
+  analyzeWorkflowSource: SourceAnalyzer;
 }): Promise<SourceSnapshot> => {
   const contents = await readFile(file);
   if (isSourceFile(file)) {
     return createSourceSnapshotFromSource(
       contents.toString('utf8'),
-      detectWorkflowPatterns
+      analyzeWorkflowSource
     );
   }
   return {
     sourceHash: createHash('sha256').update(contents).digest('base64url'),
     importSignature: '',
-    hasDirective: false,
+    hasUseWorkflow: false,
+    hasUseStep: false,
     hasSerde: false,
   };
 };
@@ -259,7 +115,7 @@ export const readSourceSnapshots = async ({
   inputFiles: string[];
   normalizePath?: (path: string) => string;
   readSnapshot: (file: string) => Promise<SourceSnapshot>;
-}) => {
+}): Promise<Map<string, SourceSnapshot>> => {
   const snapshots = new Map<string, SourceSnapshot>();
   await Promise.all(
     [
@@ -280,19 +136,11 @@ export const readSourceSnapshots = async ({
 const requiresFullRediscovery = (
   previousSnapshot: SourceSnapshot,
   nextSnapshot: SourceSnapshot
-) => {
-  if (previousSnapshot.hasDirective || nextSnapshot.hasDirective) {
-    return true;
-  }
-
-  // Serde edits can change the generated class manifest. Rediscover all of
-  // them instead of approximating JavaScript class structure with a regex.
-  if (previousSnapshot.hasSerde || nextSnapshot.hasSerde) {
-    return true;
-  }
-
-  return previousSnapshot.importSignature !== nextSnapshot.importSignature;
-};
+) =>
+  previousSnapshot.importSignature !== nextSnapshot.importSignature ||
+  previousSnapshot.hasUseWorkflow !== nextSnapshot.hasUseWorkflow ||
+  previousSnapshot.hasUseStep !== nextSnapshot.hasUseStep ||
+  previousSnapshot.hasSerde !== nextSnapshot.hasSerde;
 
 export const sourceSnapshotsMatch = (
   left: Map<string, SourceSnapshot>,
@@ -334,9 +182,7 @@ export const createRebuildScheduler = (
   return (request: ScheduledRebuild) => {
     switch (request.kind) {
       case 'files':
-        if (rebuilding) {
-          pending = { kind: 'full' };
-        } else if (pending?.kind !== 'full') {
+        if (pending?.kind !== 'full') {
           pending = {
             kind: 'files',
             files: [...new Set([...(pending?.files ?? []), ...request.files])],
@@ -359,7 +205,7 @@ export const createRebuildScheduler = (
   };
 };
 
-const workflowEntryFilesChanged = ({
+const getHotRebuildTarget = ({
   changedFiles,
   discoveredEntries,
   normalizePath,
@@ -373,43 +219,52 @@ const workflowEntryFilesChanged = ({
     child: string,
     options?: { excludedRoots?: Iterable<string> }
   ) => boolean;
-}) => {
-  const workflowEntryFiles = [
-    ...discoveredEntries.discoveredWorkflows,
-    ...discoveredEntries.discoveredSerdeFiles,
-  ].map(normalizePath);
+}): HotRebuildTarget | undefined => {
+  const workflowEntryFiles = [...discoveredEntries.discoveredWorkflows].map(
+    normalizePath
+  );
   const stepEntryFiles = [...discoveredEntries.discoveredSteps].map(
     normalizePath
   );
-
-  return changedFiles.some((changedFile) => {
-    if (workflowEntryFiles.includes(changedFile)) {
-      return true;
-    }
-    if (stepEntryFiles.includes(changedFile)) {
-      return false;
-    }
-    return workflowEntryFiles.some((workflowFile) =>
-      parentHasChild(workflowFile, changedFile, {
-        excludedRoots: stepEntryFiles,
-      })
-    );
-  });
-};
-
-const stepRegistrationsNeedRefresh = ({
-  changedFiles,
-  discoveredEntries,
-  normalizePath,
-}: {
-  changedFiles: string[];
-  discoveredEntries: DiscoveredEntriesLike;
-  normalizePath: (path: string) => string;
-}) => {
   const serdeFiles = new Set(
     [...discoveredEntries.discoveredSerdeFiles].map(normalizePath)
   );
-  return changedFiles.some((file) => serdeFiles.has(file));
+  let rebuildWorkflows = false;
+  let rebuildSteps = false;
+
+  for (const changedFile of changedFiles) {
+    if (serdeFiles.has(changedFile)) {
+      rebuildWorkflows = true;
+      rebuildSteps = true;
+      continue;
+    }
+    if (workflowEntryFiles.includes(changedFile)) {
+      rebuildWorkflows = true;
+    }
+    if (stepEntryFiles.includes(changedFile)) {
+      rebuildSteps = true;
+      continue;
+    }
+    if (
+      workflowEntryFiles.some((workflowFile) =>
+        parentHasChild(workflowFile, changedFile, {
+          excludedRoots: stepEntryFiles,
+        })
+      )
+    ) {
+      rebuildWorkflows = true;
+    }
+  }
+
+  if (rebuildWorkflows && rebuildSteps) {
+    return 'both';
+  }
+  if (rebuildWorkflows) {
+    return 'workflows';
+  }
+  if (rebuildSteps) {
+    return 'steps';
+  }
 };
 
 export const classifyRebuild = async ({
@@ -459,7 +314,8 @@ export const classifyRebuild = async ({
       if (
         relevantFiles.has(file) ||
         nextSnapshot.importSignature ||
-        nextSnapshot.hasDirective ||
+        nextSnapshot.hasUseWorkflow ||
+        nextSnapshot.hasUseStep ||
         nextSnapshot.hasSerde
       ) {
         return { kind: 'full' };
@@ -470,26 +326,19 @@ export const classifyRebuild = async ({
       return { kind: 'full' };
     }
     if (previousSnapshot.sourceHash === nextSnapshot.sourceHash) {
-      return { kind: 'full' };
+      continue;
     }
     snapshots.set(file, nextSnapshot);
   }
 
   const changedFiles = [...snapshots.keys()];
-  return workflowEntryFilesChanged({
+  const target = getHotRebuildTarget({
     changedFiles,
     discoveredEntries,
     normalizePath,
     parentHasChild,
-  })
-    ? {
-        kind: 'hot',
-        refreshStepRegistrations: stepRegistrationsNeedRefresh({
-          changedFiles,
-          discoveredEntries,
-          normalizePath,
-        }),
-        snapshots,
-      }
+  });
+  return target
+    ? { kind: 'hot', target, snapshots }
     : { kind: 'skip', snapshots };
 };

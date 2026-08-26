@@ -381,8 +381,7 @@ function stripCommentsFromSource(source: string): string {
   return output;
 }
 
-function extractImportSpecifiers(source: string): string[] {
-  const sourceWithoutComments = stripCommentsFromSource(source);
+function collectImportSpecifiers(sourceWithoutComments: string): string[] {
   if (
     !sourceWithoutComments.includes('import') &&
     !sourceWithoutComments.includes('require') &&
@@ -403,6 +402,14 @@ function extractImportSpecifiers(source: string): string[] {
   }
 
   return Array.from(specifiers);
+}
+
+export function analyzeWorkflowSource(source: string) {
+  const sourceWithoutComments = stripCommentsFromSource(source);
+  return {
+    ...detectWorkflowPatterns(sourceWithoutComments),
+    importSpecifiers: collectImportSpecifiers(sourceWithoutComments),
+  };
 }
 
 function hasWorkflowDependency(dependencies: unknown): boolean {
@@ -992,7 +999,7 @@ export async function fastDiscoverEntries({
       return;
     }
 
-    const patterns = detectWorkflowPatterns(source);
+    const patterns = analyzeWorkflowSource(source);
     if (patterns.hasUseWorkflow) {
       state.discoveredWorkflows.add(filePath);
     }
@@ -1012,7 +1019,7 @@ export async function fastDiscoverEntries({
       return;
     }
 
-    const specifiers = extractImportSpecifiers(source);
+    const specifiers = patterns.importSpecifiers;
     if (specifiers.length === 0) {
       return;
     }

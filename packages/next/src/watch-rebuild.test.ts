@@ -1,14 +1,12 @@
-import { detectWorkflowPatterns } from '@workflow/builders';
+import { analyzeWorkflowSource as detectWorkflowPatterns } from '@workflow/builders';
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import {
   classifyRebuild,
   createRebuildScheduler,
   createSourceSnapshotFromSource,
-  extractImportSignature,
   isSourceFile,
   type SourceSnapshot,
   sourceSnapshotsMatch,
-  stripCommentsFromSource,
 } from './watch-rebuild.js';
 
 afterEach(() => {
@@ -40,7 +38,7 @@ describe('watch-rebuild scheduling', () => {
     });
   });
 
-  test('fully rebuilds after files change during a rebuild', async () => {
+  test('preserves file changes that arrive during a rebuild', async () => {
     vi.useFakeTimers();
     const firstBuild = Promise.withResolvers<void>();
     const fullBuild = Promise.withResolvers<void>();
@@ -66,8 +64,20 @@ describe('watch-rebuild scheduling', () => {
     await fullBuild.promise;
     await idle.promise;
 
-    expect(requests).toEqual(['files', 'full']);
+    expect(requests).toEqual(['files', 'files']);
     expect(onIdle).toHaveBeenCalledOnce();
+  });
+
+  test('lets a full rebuild replace pending file changes', async () => {
+    vi.useFakeTimers();
+    const rebuild = vi.fn(async () => {});
+    const schedule = createRebuildScheduler(rebuild, () => {});
+
+    schedule({ kind: 'files', files: ['/app/workflow.ts'] });
+    schedule({ kind: 'full' });
+    await vi.advanceTimersByTimeAsync(100);
+
+    expect(rebuild).toHaveBeenCalledWith({ kind: 'full' });
   });
 });
 
@@ -75,28 +85,6 @@ describe('watch-rebuild source snapshots', () => {
   test('only treats JavaScript and TypeScript files as source', () => {
     expect(isSourceFile('/app/workflow.ts')).toBe(true);
     expect(isSourceFile('/app/workflow.json')).toBe(false);
-  });
-
-  test('ignores imports inside line and block comments', () => {
-    const source = stripCommentsFromSource(`
-import * as active from './workflows/active';
-// import * as commentedLine from './workflows/commented-line';
-/*
-import * as commentedBlock from './workflows/commented-block';
-*/
-`);
-
-    expect(extractImportSignature(source)).toBe('./workflows/active');
-  });
-
-  test('does not treat regex literals as comments', () => {
-    const source = stripCommentsFromSource(`
-const commentStartChars = /[/*]/;
-const protocol = /https?:\\/\\//;
-import * as active from './workflows/active';
-`);
-
-    expect(extractImportSignature(source)).toBe('./workflows/active');
   });
 
   test('ignores directives inside comments', () => {
@@ -110,7 +98,8 @@ export async function commentedStep() { 'use step'; }
       detectWorkflowPatterns
     );
 
-    expect(snapshot.hasDirective).toBe(false);
+    expect(snapshot.hasUseWorkflow).toBe(false);
+    expect(snapshot.hasUseStep).toBe(false);
   });
 
   test('detects files added or changed during a full rebuild', () => {
@@ -246,7 +235,7 @@ export const allWorkflows = {} as const;
     ).resolves.toEqual({ kind: 'full' });
   });
 
-  test('fully rebuilds byte-identical relevant notifications', async () => {
+  test('skips byte-identical relevant notifications', async () => {
     const workflowFile = '/app/workflows/helper.ts';
     const source = "export const value = 'unchanged';\n";
     const snapshot = createSourceSnapshotFromSource(
@@ -268,7 +257,7 @@ export const allWorkflows = {} as const;
         readSnapshot: async () => snapshot,
         sourceSnapshots: new Map([[workflowFile, snapshot]]),
       })
-    ).resolves.toEqual({ kind: 'full' });
+    ).resolves.toEqual({ kind: 'skip', snapshots: new Map() });
   });
 
   test('rebuilds relevant files without snapshots', async () => {
@@ -295,7 +284,7 @@ export const allWorkflows = {} as const;
     ).resolves.toEqual({ kind: 'full' });
   });
 
-  test('fully rebuilds every directive file change', async () => {
+  test('hot rebuilds step body changes', async () => {
     const stepFile = '/app/workflows/step.ts';
     const previousSnapshot = createSourceSnapshotFromSource(
       `export let example = async () => {
@@ -328,10 +317,14 @@ export const allWorkflows = {} as const;
         readSnapshot: async () => nextSnapshot,
         sourceSnapshots: new Map([[stepFile, previousSnapshot]]),
       })
-    ).resolves.toEqual({ kind: 'full' });
+    ).resolves.toEqual({
+      kind: 'hot',
+      target: 'steps',
+      snapshots: new Map([[stepFile, nextSnapshot]]),
+    });
   });
 
-  test('fully rebuilds every serde file change', async () => {
+  test('hot rebuilds serde body changes in both contexts', async () => {
     const serdeFile = '/app/workflows/value.ts';
     const previousSnapshot = createSourceSnapshotFromSource(
       `export class Value {
@@ -360,7 +353,11 @@ export const allWorkflows = {} as const;
         readSnapshot: async () => nextSnapshot,
         sourceSnapshots: new Map([[serdeFile, previousSnapshot]]),
       })
-    ).resolves.toEqual({ kind: 'full' });
+    ).resolves.toEqual({
+      kind: 'hot',
+      target: 'both',
+      snapshots: new Map([[serdeFile, nextSnapshot]]),
+    });
   });
 
   test('rebuilds new files that can introduce graph entries', async () => {
@@ -415,7 +412,7 @@ export const allWorkflows = {} as const;
       })
     ).resolves.toEqual({
       kind: 'hot',
-      refreshStepRegistrations: false,
+      target: 'workflows',
       snapshots: new Map([[helperFile, nextHelperSnapshot]]),
     });
   });

@@ -1,5 +1,5 @@
-import { constants, type Dirent } from 'node:fs';
-import { access, mkdir, readdir, realpath, rm, stat } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { access, mkdir, realpath, rm, stat } from 'node:fs/promises';
 import { extname, isAbsolute, join, relative, resolve } from 'node:path';
 import type {
   NextConfig as BuilderNextConfig,
@@ -13,6 +13,7 @@ import {
   createRebuildScheduler,
   createSourceSnapshot,
   getRelevantFiles,
+  type HotRebuildTarget,
   isSourceFile,
   readSourceSnapshots,
   type SourceSnapshot,
@@ -78,8 +79,8 @@ export async function getNextBuilderEager(
 
   const {
     BaseBuilder: BaseBuilderClass,
+    analyzeWorkflowSource,
     getWorkflowQueueTrigger,
-    detectWorkflowPatterns,
     importGraphHasChild,
     writeFileIfChanged,
   } = buildersModule ??
@@ -171,9 +172,6 @@ export async function getNextBuilderEager(
           );
         }
 
-        // Step registrations may be emitted as source imports without an
-        // esbuild context when externalizeNonSteps is enabled.
-        let stepsCtx = combinedResult.stepsContext;
         let workflowsCtx = {
           interimBundleCtx: combinedResult.interimBundleCtx,
           bundleFinal: combinedResult.bundleFinal,
@@ -221,7 +219,7 @@ export async function getNextBuilderEager(
         };
 
         const readSourceSnapshot = (file: string) =>
-          createSourceSnapshot({ file, detectWorkflowPatterns });
+          createSourceSnapshot({ file, analyzeWorkflowSource });
 
         const snapshotSources = () =>
           readSourceSnapshots({
@@ -245,29 +243,29 @@ export async function getNextBuilderEager(
           },
         });
 
-        const hotRebuild = async (refreshStepRegistrations: boolean) => {
-          if (refreshStepRegistrations) {
-            if (stepsCtx) {
-              await stepsCtx.rebuild();
-            } else {
-              stepsManifest = await this.createStepSourceRegistrationFile({
-                inputFiles: options.inputFiles,
-                outfile: stepsOutfile,
-                tsconfigPath,
-                discoveredEntries,
-              });
+        const hotRebuild = async (target: HotRebuildTarget) => {
+          if (target !== 'workflows') {
+            stepsManifest = await this.createStepSourceRegistrationFile({
+              inputFiles: options.inputFiles,
+              outfile: stepsOutfile,
+              tsconfigPath,
+              discoveredEntries,
+            });
+          }
+
+          if (target !== 'steps') {
+            const workflowResult =
+              await workflowsCtx.interimBundleCtx.rebuild();
+            const workflowOutput = workflowResult.outputFiles?.[0]?.text;
+            if (!workflowOutput) {
+              throw new Error(
+                'Invariant: expected workflow output from hot rebuild'
+              );
             }
+
+            await workflowsCtx.bundleFinal(workflowOutput);
           }
 
-          const workflowResult = await workflowsCtx.interimBundleCtx.rebuild();
-          const workflowOutput = workflowResult.outputFiles?.[0]?.text;
-          if (!workflowOutput) {
-            throw new Error(
-              'Invariant: expected workflow output from hot rebuild'
-            );
-          }
-
-          await workflowsCtx.bundleFinal(workflowOutput);
           await writeManifest(mergeCombinedManifest(stepsManifest));
         };
 
@@ -287,9 +285,7 @@ export async function getNextBuilderEager(
             );
           }
 
-          const previousStepsCtx = stepsCtx;
           const previousWorkflowsCtx = workflowsCtx.interimBundleCtx;
-          stepsCtx = newCombined.stepsContext;
           discoveredEntries = newCombined.discoveredEntries;
           stepsManifest = newCombined.stepsManifest;
           workflowsManifest = newCombined.workflowsManifest;
@@ -298,10 +294,7 @@ export async function getNextBuilderEager(
             bundleFinal: newCombined.bundleFinal,
           };
 
-          await Promise.all([
-            previousStepsCtx?.dispose(),
-            previousWorkflowsCtx.dispose(),
-          ]);
+          await previousWorkflowsCtx.dispose();
 
           await writeManifest(newCombined.manifest);
           sourceSnapshots = nextSourceSnapshots;
@@ -319,69 +312,6 @@ export async function getNextBuilderEager(
         const isWatchableFile = (path: string) =>
           isSourceFile(path) || relevantFiles.has(path);
 
-        const readKnownFileAliases = async () => {
-          const aliases = new Map<string, string>();
-
-          const addKnownFile = async (filePath: string) => {
-            let realFilePath = filePath;
-            try {
-              realFilePath = normalizePath(await realpath(filePath));
-            } catch {}
-
-            const canonicalPath = relevantFiles.has(realFilePath)
-              ? realFilePath
-              : filePath;
-            aliases.set(filePath, canonicalPath);
-            aliases.set(realFilePath, canonicalPath);
-            return canonicalPath;
-          };
-
-          const visit = async (directory: string): Promise<void> => {
-            let dirents: Dirent<string>[];
-            try {
-              dirents = await readdir(directory, { withFileTypes: true });
-            } catch {
-              return;
-            }
-
-            await Promise.all(
-              dirents.map(async (dirent) => {
-                const filePath = normalizePath(join(directory, dirent.name));
-                if (hasIgnoredPathFragment(filePath)) {
-                  return;
-                }
-
-                if (dirent.isDirectory()) {
-                  await visit(filePath);
-                  return;
-                }
-
-                let stats: Awaited<ReturnType<typeof stat>>;
-                try {
-                  stats = await stat(filePath);
-                } catch {
-                  return;
-                }
-
-                if (stats.isDirectory()) {
-                  await visit(filePath);
-                  return;
-                }
-
-                if (!stats.isFile() || !isWatchableFile(filePath)) {
-                  return;
-                }
-
-                await addKnownFile(filePath);
-              })
-            );
-          };
-
-          await visit(this.config.workingDir);
-          await Promise.all([...relevantFiles].map(addKnownFile));
-          return { aliases, addKnownFile };
-        };
-
         const logDevHmr = (...args: unknown[]) => {
           if (process.env.WORKFLOW_DEV_HMR_LOGS === '1') {
             console.log(...args);
@@ -389,8 +319,6 @@ export async function getNextBuilderEager(
         };
 
         sourceSnapshots = await snapshotSources();
-        let { aliases: knownFileAliases, addKnownFile: rememberKnownFile } =
-          await readKnownFileAliases();
 
         const refreshKnownFiles = async () => {
           relevantFiles = getRelevantFiles({
@@ -398,9 +326,6 @@ export async function getNextBuilderEager(
             inputFiles: options.inputFiles,
             normalizePath,
           });
-          const nextKnown = await readKnownFileAliases();
-          knownFileAliases = nextKnown.aliases;
-          rememberKnownFile = nextKnown.addKnownFile;
           await watcher.add([...relevantFiles]);
         };
 
@@ -434,10 +359,8 @@ export async function getNextBuilderEager(
               logDevHmr('workflow dev hmr: skip');
               break;
             case 'hot':
-              logDevHmr(
-                `workflow dev hmr: hot rebuild${decision.refreshStepRegistrations ? ' with step registration refresh' : ''}`
-              );
-              await hotRebuild(decision.refreshStepRegistrations);
+              logDevHmr(`workflow dev hmr: hot rebuild ${decision.target}`);
+              await hotRebuild(decision.target);
               break;
             case 'full':
               await runFullRebuild();
@@ -471,31 +394,27 @@ export async function getNextBuilderEager(
           },
           () => logDevHmr('workflow dev hmr: idle')
         );
-        const scheduleFileChange = (file: string) => {
-          scheduleRebuild({ kind: 'files', files: [file] });
-        };
-        const handleFileWritten = async (pathname: string) => {
+        const handleFileChanged = async (pathname: string) => {
           const normalizedPath = normalizePath(pathname);
           if (!isWatchableFile(normalizedPath)) {
             return;
           }
 
-          const canonicalPath =
-            knownFileAliases.get(normalizedPath) ??
-            (await rememberKnownFile(normalizedPath));
-          scheduleFileChange(canonicalPath);
+          const realFilePath = normalizePath(await realpath(normalizedPath));
+          scheduleRebuild({
+            kind: 'files',
+            files: [
+              relevantFiles.has(realFilePath) ? realFilePath : normalizedPath,
+            ],
+          });
         };
 
-        const handleFileRemoved = (pathname: string) => {
+        const scheduleFullRebuild = (pathname: string) => {
           const normalizedPath = normalizePath(pathname);
           if (!isWatchableFile(normalizedPath)) {
             return;
           }
-
-          const canonicalPath =
-            knownFileAliases.get(normalizedPath) ?? normalizedPath;
-          knownFileAliases.delete(normalizedPath);
-          scheduleFileChange(canonicalPath);
+          scheduleRebuild({ kind: 'full' });
         };
 
         const watcher = chokidar.watch(
@@ -517,9 +436,9 @@ export async function getNextBuilderEager(
           }
         );
 
-        watcher.on('add', handleFileWritten);
-        watcher.on('change', handleFileWritten);
-        watcher.on('unlink', handleFileRemoved);
+        watcher.on('add', scheduleFullRebuild);
+        watcher.on('change', handleFileChanged);
+        watcher.on('unlink', scheduleFullRebuild);
         watcher.on('error', (error) => {
           console.error('Workflow dev watcher error', error);
         });
