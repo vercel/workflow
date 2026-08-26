@@ -629,7 +629,6 @@ describe('getWorkflowRunEventsV4 over HTTP', () => {
       [undefined, 'evnt_1'],
       ['eid:evnt_1', 'evnt_2'],
       ['eid:evnt_2', 'evnt_3'],
-      ['eid:evnt_3', 'evnt_4'],
     ] as const) {
       agent
         .get(origin)

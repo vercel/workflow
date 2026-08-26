@@ -1474,24 +1474,7 @@ type EventFrameStreamResult = ListEventsV4Result & {
   partialError?: WorkflowWorldError;
 };
 
-const MAX_PARTIAL_STREAM_CONTINUATIONS = 3;
-
-function isAdvancingCursor(
-  cursor: string | null,
-  previousCursor: string | null
-): cursor is string {
-  return cursor !== null && cursor.length > 0 && cursor !== previousCursor;
-}
-
-function hasRequiredCursorProgress(
-  page: ListEventsV4Result,
-  previousCursor: string | null
-): boolean {
-  return (
-    (page.events.length === 0 && !page.hasMore) ||
-    isAdvancingCursor(page.cursor, previousCursor)
-  );
-}
+const MAX_PARTIAL_STREAM_RETRIES = 2;
 
 function partialEventFrameStream(
   events: Event[],
@@ -1584,11 +1567,10 @@ async function consumeReplayLogResponse(
     );
   }
 
-  const suffix = await getWorkflowRunEventsV4WithRecovery(
+  const suffix = await getWorkflowRunEventsV4(
     runId,
     { cursor: page.cursor, remoteRefBehavior: 'resolve' },
-    config,
-    1
+    config
   );
   return {
     events: [...page.events, ...suffix.events],
@@ -1651,19 +1633,19 @@ function paginationToQuery(params: ListEventsV4Params): string {
  *
  * Eagerly drains the stream into memory to match the existing
  * `getWorkflowRunEvents` contract. A truncated full response resumes after its
- * last validated event until the sentinel arrives, for up to three continuation
- * requests. A forward-progress guard prevents retry loops. Explicitly paginated
- * requests retain their one-page contract and surface truncation to the caller.
+ * last validated event until the sentinel arrives, for up to two retries. A
+ * forward-progress guard prevents retry loops. Explicitly paginated requests
+ * retain their one-page contract and surface truncation to the caller.
  */
-async function getWorkflowRunEventsV4WithRecovery(
+export async function getWorkflowRunEventsV4(
   runId: string,
-  params: ListEventsV4Params,
-  config: APIConfig | undefined,
-  partialContinuations: number
+  params: ListEventsV4Params = {},
+  config?: APIConfig
 ): Promise<ListEventsV4Result> {
   const { baseUrl, headers } = await getHttpConfig(config);
   const events: Event[] = [];
   let cursor = params.cursor ?? null;
+  let partialStreamRetries = 0;
   let consumed: EventFrameStreamResult;
 
   do {
@@ -1671,40 +1653,35 @@ async function getWorkflowRunEventsV4WithRecovery(
       `${baseUrl}/v4/runs/${encodeURIComponent(runId)}/events` +
       paginationToQuery({ ...params, cursor: cursor ?? undefined });
     consumed = await consumeListFrameStream(url, headers, config, 'listEvents');
+    const cursorAdvanced = !!consumed.cursor && consumed.cursor !== cursor;
     if (consumed.partialError) {
       if (
         params.limit !== undefined ||
-        !isAdvancingCursor(consumed.cursor, cursor) ||
-        partialContinuations === MAX_PARTIAL_STREAM_CONTINUATIONS
+        !cursorAdvanced ||
+        partialStreamRetries === MAX_PARTIAL_STREAM_RETRIES
       ) {
         throw consumed.partialError;
       }
-      partialContinuations++;
+      assert(consumed.cursor);
+      partialStreamRetries++;
       cursor = consumed.cursor;
-    } else if (!hasRequiredCursorProgress(consumed, cursor)) {
+    } else if (
+      !cursorAdvanced &&
+      (consumed.events.length > 0 || consumed.hasMore)
+    ) {
       throw new WorkflowWorldError(
         'v4 listEvents: response did not advance cursor',
         { code: 'SCHEMA_VALIDATION' }
       );
     }
-    for (const event of consumed.events) {
-      events.push(event);
-    }
+    events.push(...consumed.events);
   } while (consumed.partialError);
 
   return {
     events,
-    cursor: consumed.cursor || (events.length > 0 ? cursor : null),
+    cursor: consumed.cursor || (partialStreamRetries > 0 ? cursor : null),
     hasMore: consumed.hasMore,
   };
-}
-
-export function getWorkflowRunEventsV4(
-  runId: string,
-  params: ListEventsV4Params = {},
-  config?: APIConfig
-): Promise<ListEventsV4Result> {
-  return getWorkflowRunEventsV4WithRecovery(runId, params, config, 0);
 }
 
 /**
