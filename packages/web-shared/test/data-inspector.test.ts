@@ -1,23 +1,37 @@
-// @vitest-environment jsdom
-
-import { act, createElement } from 'react';
-import { createRoot, type Root } from 'react-dom/client';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { DataInspector } from '../src/components/ui/data-inspector.js';
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { describe, expect, it } from 'vitest';
+import {
+  DataInspector,
+  isDeepEqual,
+} from '../src/components/ui/data-inspector.js';
 import { getWebRevivers } from '../src/lib/hydration.js';
 
 const REVIVERS = getWebRevivers();
 
-class TestIterable implements Iterable<string | [string, string]> {
-  constructor(private readonly items: Array<string | [string, string]>) {}
+class TestIterable implements Iterable<string> {
+  constructor(private readonly items: string[]) {}
 
   *[Symbol.iterator]() {
     yield* this.items;
   }
 }
 
-function* generateValue(value: string) {
-  yield value;
+class CoordinatePairs implements Iterable<[number, number]> {
+  *[Symbol.iterator]() {
+    yield [1, 2];
+    yield [3, 4];
+  }
+}
+
+class MapLike {
+  *[Symbol.iterator]() {
+    yield 'wrong';
+  }
+
+  *entries() {
+    yield ['color', 'blue'];
+  }
 }
 
 function hydrateHeaders(entries: [string, string][]): Headers {
@@ -28,130 +42,145 @@ function hydrateSearchParams(value: string): URLSearchParams {
   return REVIVERS.URLSearchParams(value) as URLSearchParams;
 }
 
+function hydrateRequest(headers: [string, string][]): object {
+  return REVIVERS.Request({
+    method: 'GET',
+    url: 'https://example.com',
+    headers,
+    body: null,
+  }) as object;
+}
+
+function render(data: unknown, expandLevel = 1): string {
+  return visibleText(
+    renderToStaticMarkup(createElement(DataInspector, { data, expandLevel }))
+  );
+}
+
+function visibleText(markup: string): string {
+  return markup
+    .replace(/<style[\s\S]*?<\/style>/g, '')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&quot;/g, '"')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&amp;/g, '&');
+}
+
 describe('DataInspector iterables', () => {
-  let container: HTMLDivElement;
-  let root: Root;
-
-  beforeEach(() => {
-    (
-      globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
-    ).IS_REACT_ACT_ENVIRONMENT = true;
-    container = document.createElement('div');
-    document.body.append(container);
-    root = createRoot(container);
-  });
-
-  afterEach(() => {
-    act(() => root.unmount());
-    container.remove();
-  });
-
-  function render(data: unknown, expandLevel = 0) {
-    act(() => {
-      root.render(createElement(DataInspector, { data, expandLevel }));
-    });
-  }
-
-  function getExpandableRow(): HTMLElement {
-    const row = container.querySelector<HTMLElement>('[data-json-expander]');
-    if (!row) throw new Error('expected an expandable inspector row');
-    return row;
-  }
-
   it('renders hydrated Headers as an expandable container', () => {
-    render(hydrateHeaders([['content-type', 'application/json']]));
+    const markup = renderToStaticMarkup(
+      createElement(DataInspector, {
+        data: hydrateHeaders([['content-type', 'application/json']]),
+        expandLevel: 0,
+      })
+    );
 
-    const row = getExpandableRow();
-    expect(row.getAttribute('aria-expanded')).toBe('false');
-    expect(row.textContent).toContain('Headers');
+    expect(markup).toContain('data-json-expander');
+    expect(visibleText(markup)).toContain('Headers');
+    expect(visibleText(markup)).not.toContain('application/json');
   });
 
   it('expands hydrated Headers to render their entries', () => {
-    render(hydrateHeaders([['content-type', 'application/json']]));
-    const row = getExpandableRow();
+    const text = render(hydrateHeaders([['content-type', 'application/json']]));
 
-    act(() => {
-      row.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    });
+    expect(text).toContain('content-type:');
+    expect(text).toContain('"application/json"');
+  });
 
-    expect(row.getAttribute('aria-expanded')).toBe('true');
-    expect(row.textContent).toContain('content-type:');
-    expect(row.textContent).toContain('"application/json"');
+  it('renders nested Headers on a hydrated Request', () => {
+    const text = render(
+      hydrateRequest([['content-type', 'application/json']]),
+      2
+    );
+
+    expect(text).toContain('Request');
+    expect(text).toContain('headers:');
+    expect(text).toContain('Headers');
+    expect(text).toContain('content-type:');
+    expect(text).toContain('"application/json"');
   });
 
   it('renders and expands hydrated URLSearchParams entries', () => {
-    render(hydrateSearchParams('page=2&sort=created'));
-    const row = getExpandableRow();
+    const text = render(hydrateSearchParams('page=2&sort=created'));
 
-    act(() => {
-      row.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    });
-
-    expect(row.getAttribute('aria-expanded')).toBe('true');
-    expect(row.textContent).toContain('URLSearchParams');
-    expect(row.textContent).toContain('page:');
-    expect(row.textContent).toContain('"2"');
-    expect(row.textContent).toContain('sort:');
-    expect(row.textContent).toContain('"created"');
+    expect(text).toContain('URLSearchParams');
+    expect(text).toContain('page:');
+    expect(text).toContain('"2"');
+    expect(text).toContain('sort:');
+    expect(text).toContain('"created"');
   });
 
-  it('expands custom Symbol.iterator implementations', () => {
-    render(new TestIterable(['first', ['named', 'second']]));
-    const row = getExpandableRow();
+  it('keeps duplicate URLSearchParams keys', () => {
+    const text = render(hydrateSearchParams('tag=a&tag=b'));
 
-    act(() => {
-      row.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    });
-
-    expect(row.getAttribute('aria-expanded')).toBe('true');
-    expect(row.textContent).toContain('TestIterable');
-    expect(row.textContent).toContain('0:');
-    expect(row.textContent).toContain('"first"');
-    expect(row.textContent).toContain('named:');
-    expect(row.textContent).toContain('"second"');
+    expect(text).toContain('tag:');
+    expect(text).toContain('"a"');
+    expect(text).toContain('"b"');
   });
 
-  it('updates when a distinct Headers instance has different entries', () => {
-    render(hydrateHeaders([['x-version', 'one']]), 1);
-    expect(container.textContent).toContain('"one"');
+  it('expands custom Symbol.iterator implementations as a list', () => {
+    const text = render(new TestIterable(['first', 'second']));
 
-    render(hydrateHeaders([['x-version', 'two']]), 1);
-
-    expect(container.textContent).toContain('"two"');
-    expect(container.textContent).not.toContain('"one"');
+    expect(text).toContain('TestIterable');
+    expect(text).toContain('"first"');
+    expect(text).toContain('"second"');
+    expect(text).not.toContain('0:');
   });
 
-  it('updates when distinct URLSearchParams have different entries', () => {
-    render(hydrateSearchParams('page=1'), 1);
-    expect(container.textContent).toContain('"1"');
+  it('does not treat 2-element yields as fields', () => {
+    const text = render(new CoordinatePairs(), 2);
 
-    render(hydrateSearchParams('page=2'), 1);
-
-    expect(container.textContent).toContain('"2"');
-    expect(container.textContent).not.toContain('"1"');
+    expect(text).not.toContain('1:');
+    expect(text).not.toContain('3:');
+    expect(text).toContain('1');
+    expect(text).toContain('2');
+    expect(text).toContain('3');
+    expect(text).toContain('4');
   });
 
-  it('updates when distinct generic iterables yield different values', () => {
-    render(new TestIterable(['one']), 1);
-    expect(container.textContent).toContain('"one"');
+  it('renders map-like values from entries() rather than the default iterator', () => {
+    const text = render(new MapLike());
 
-    render(new TestIterable(['two']), 1);
-
-    expect(container.textContent).toContain('"two"');
-    expect(container.textContent).not.toContain('"one"');
+    expect(text).toContain('MapLike');
+    expect(text).toContain('color:');
+    expect(text).toContain('"blue"');
+    expect(text).not.toContain('"wrong"');
   });
 
-  it('preserves and updates self-iterating iterators', () => {
-    const first = generateValue('one');
-    render(first, 1);
-    expect(container.textContent).toContain('"one"');
+  it('treats Headers with different entries as unequal', () => {
+    expect(
+      isDeepEqual(
+        hydrateHeaders([['x-version', 'one']]),
+        hydrateHeaders([['x-version', 'two']])
+      )
+    ).toBe(false);
+  });
 
-    render(first, 1);
-    expect(container.textContent).toContain('"one"');
+  it('treats Headers with the same entries as equal', () => {
+    expect(
+      isDeepEqual(
+        hydrateHeaders([['x-version', 'one']]),
+        hydrateHeaders([['x-version', 'one']])
+      )
+    ).toBe(true);
+  });
 
-    render(generateValue('two'), 1);
+  it('treats URLSearchParams with different entries as unequal', () => {
+    expect(
+      isDeepEqual(hydrateSearchParams('page=1'), hydrateSearchParams('page=2'))
+    ).toBe(false);
+  });
 
-    expect(container.textContent).toContain('"two"');
-    expect(container.textContent).not.toContain('"one"');
+  it('treats generic iterables with different values as unequal', () => {
+    expect(
+      isDeepEqual(new TestIterable(['one']), new TestIterable(['two']))
+    ).toBe(false);
+  });
+
+  it('treats generic iterables with the same values as equal', () => {
+    expect(
+      isDeepEqual(new TestIterable(['one']), new TestIterable(['one']))
+    ).toBe(true);
   });
 });

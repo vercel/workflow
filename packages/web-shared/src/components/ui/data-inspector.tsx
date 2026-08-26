@@ -1030,7 +1030,11 @@ function haveSameIterableValues(
   }
 }
 
-function isDeepEqual(a: unknown, b: unknown, seen = new WeakMap()): boolean {
+export function isDeepEqual(
+  a: unknown,
+  b: unknown,
+  seen = new WeakMap()
+): boolean {
   if (Object.is(a, b)) return true;
 
   if (isBytesDisplay(a) || isBytesDisplay(b)) {
