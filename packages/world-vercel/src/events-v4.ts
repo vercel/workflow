@@ -874,7 +874,7 @@ export async function createWorkflowRunStartedEventV4(
     'event-stream',
     config
   );
-  const page = await consumeEventFrameStream(response, 'createEvent');
+  const page = await consumeReplayLogResponse(response, input.runId, config);
   if (!page.cursor) {
     throw new WorkflowWorldError(
       'v4 createEvent: event stream missing cursor',
@@ -1312,9 +1312,10 @@ export type HookReceivedPreloadV4Result =
  * A server that supports the lazy-hook replay stream answers the consumer's
  * idempotent re-ensure with the run's complete replay log as v4 frames:
  * the same event-frame sequence LIST uses, ending with the `_end` sentinel.
- * A truncated stream (EOF without the sentinel) throws; the write is
- * deduplicated by the server's `(runId, resumeId)` constraint, so retrying
- * the whole request is safe and converges on the same canonical event.
+ * A truncated stream resumes after its last validated event. If it ends before
+ * any event is available to form a cursor, the write is deduplicated by the
+ * server's `(runId, resumeId)` constraint, so retrying the whole request is
+ * still safe and converges on the same canonical event.
  */
 export async function createHookReceivedPreloadEventV4(
   input: CreateEventV4InputBase,
@@ -1334,7 +1335,7 @@ export async function createHookReceivedPreloadEventV4(
     };
   }
 
-  const page = await consumeEventFrameStream(response, 'createEvent');
+  const page = await consumeReplayLogResponse(response, input.runId, config);
   const maxEvents = MaxEventsHeaderSchema.safeParse(
     response.headers.get(MAX_EVENTS_HEADER)
   );
@@ -1469,10 +1470,30 @@ function streamErrorFrameToError(
   );
 }
 
+const MAX_PARTIAL_EVENT_STREAM_RETRIES = 3;
+
+type EventFrameStreamResult =
+  | ({ kind: 'complete' } & ListEventsV4Result)
+  | {
+      kind: 'partial';
+      events: Event[];
+      error: WorkflowWorldError;
+    };
+
+function decodeStreamEventFrame(frame: DecodedFrame, opName: string): Event {
+  if (frame.meta._error === 1) {
+    throw streamErrorFrameToError(frame.meta, opName);
+  }
+  if (Object.keys(frame.meta).some((key) => key.startsWith('_'))) {
+    throw new Error(`v4 ${opName}: unexpected control frame`);
+  }
+  return decodeEventFrame(frame);
+}
+
 async function consumeEventFrameStream(
   response: Response,
   opName: string
-): Promise<ListEventsV4Result> {
+): Promise<EventFrameStreamResult> {
   const contentType = response.headers.get('content-type');
   if (!contentType?.startsWith(V4_FRAME_CONTENT_TYPE)) {
     throw new WorkflowWorldError(
@@ -1492,38 +1513,85 @@ async function consumeEventFrameStream(
       if (frame.meta._end === 1) {
         const end = EventStreamEndSchema.parse(frame.meta);
         return {
+          kind: 'complete',
           events,
           cursor: end.next ?? null,
           hasMore: end.hasMore,
         };
       }
-      if (frame.meta._error === 1) {
-        throw streamErrorFrameToError(frame.meta, opName);
-      }
-      if (Object.keys(frame.meta).some((key) => key.startsWith('_'))) {
-        throw new Error(`v4 ${opName}: unexpected control frame`);
-      }
-      events.push(decodeEventFrame(frame));
+      events.push(decodeStreamEventFrame(frame, opName));
     }
   } catch (cause) {
     if (CorruptedEventLogError.is(cause) || WorkflowWorldError.is(cause)) {
       throw cause;
     }
     const incomplete = cause instanceof IncompleteFrameError;
-    throw new WorkflowWorldError(
+    const error = new WorkflowWorldError(
       `v4 ${opName}: ${incomplete ? 'incomplete' : 'invalid'} event frame stream`,
       {
         code: incomplete ? 'TRANSPORT' : 'SCHEMA_VALIDATION',
         cause,
       }
     );
+    if (!incomplete) throw error;
+    return { kind: 'partial', events, error };
   }
 
-  throw new WorkflowWorldError(
-    `v4 ${opName}: frame stream ended without the end-of-stream sentinel ` +
-      `(${events.length} events read)`,
-    { code: 'TRANSPORT' }
+  return {
+    kind: 'partial',
+    events,
+    error: new WorkflowWorldError(
+      `v4 ${opName}: frame stream ended without the end-of-stream sentinel ` +
+        `(${events.length} events read)`,
+      { code: 'TRANSPORT' }
+    ),
+  };
+}
+
+/**
+ * Finish a replay-log POST without throwing away frames that were already
+ * validated. A graceful partial page and a transport-truncated body both
+ * continue with the ordinary GET endpoint from the response's last cursor.
+ */
+async function consumeReplayLogResponse(
+  response: Response,
+  runId: string,
+  config?: APIConfig
+): Promise<ListEventsV4Result> {
+  const consumed = await consumeEventFrameStream(response, 'createEvent');
+  if (consumed.kind === 'complete' && !consumed.hasMore) {
+    return {
+      events: consumed.events,
+      cursor: consumed.cursor,
+      hasMore: consumed.hasMore,
+    };
+  }
+
+  const lastEvent = consumed.events.at(-1);
+  const cursor =
+    consumed.kind === 'complete'
+      ? consumed.cursor
+      : lastEvent
+        ? `eid:${lastEvent.eventId}`
+        : null;
+  if (!cursor) {
+    if (consumed.kind === 'partial') throw consumed.error;
+    throw new WorkflowWorldError(
+      'v4 createEvent: partial event stream missing cursor',
+      { code: 'SCHEMA_VALIDATION' }
+    );
+  }
+
+  const suffix = await getWorkflowRunEventsV4(
+    runId,
+    { cursor, remoteRefBehavior: 'resolve' },
+    config
   );
+  return {
+    events: [...consumed.events, ...suffix.events],
+    cursor: suffix.cursor ?? cursor,
+    hasMore: suffix.hasMore,
+  };
 }
 
 /**
@@ -1540,7 +1608,7 @@ async function consumeListFrameStream(
   headers: Headers,
   config: APIConfig | undefined,
   opName: string
-): Promise<ListEventsV4Result> {
+): Promise<EventFrameStreamResult> {
   const response = await fetchV4(
     url,
     { method: 'GET', headers },
@@ -1579,8 +1647,10 @@ function paginationToQuery(params: ListEventsV4Params): string {
  * cursor from the sentinel frame.
  *
  * Eagerly drains the stream into memory to match the existing
- * `getWorkflowRunEvents` contract. An incomplete response is a transport
- * failure; the caller owns retrying the operation.
+ * `getWorkflowRunEvents` contract. A truncated full response resumes after its
+ * last validated event, with a bounded retry count and a forward-progress
+ * guard. Explicitly paginated requests retain their one-page contract and
+ * surface truncation to the caller.
  */
 export async function getWorkflowRunEventsV4(
   runId: string,
@@ -1588,10 +1658,36 @@ export async function getWorkflowRunEventsV4(
   config?: APIConfig
 ): Promise<ListEventsV4Result> {
   const { baseUrl, headers } = await getHttpConfig(config);
-  const url =
-    `${baseUrl}/v4/runs/${encodeURIComponent(runId)}/events` +
-    paginationToQuery(params);
-  return consumeListFrameStream(url, headers, config, 'listEvents');
+  const events: Event[] = [];
+  let cursor = params.cursor ?? null;
+
+  for (let partialRetries = 0; ; partialRetries++) {
+    const url =
+      `${baseUrl}/v4/runs/${encodeURIComponent(runId)}/events` +
+      paginationToQuery({ ...params, cursor: cursor ?? undefined });
+    const consumed = await consumeListFrameStream(
+      url,
+      headers,
+      config,
+      'listEvents'
+    );
+    events.push(...consumed.events);
+    if (consumed.kind === 'complete') {
+      return { events, cursor: consumed.cursor, hasMore: consumed.hasMore };
+    }
+
+    const lastEvent = events.at(-1);
+    const nextCursor = lastEvent ? `eid:${lastEvent.eventId}` : null;
+    if (
+      params.limit !== undefined ||
+      partialRetries === MAX_PARTIAL_EVENT_STREAM_RETRIES ||
+      !nextCursor ||
+      nextCursor === cursor
+    ) {
+      throw consumed.error;
+    }
+    cursor = nextCursor;
+  }
 }
 
 /**
@@ -1620,10 +1716,16 @@ export async function getEventsByCorrelationIdV4(
   sp.set('runId', runId);
   appendListParams(sp, params);
   const url = `${baseUrl}/v4/events?${sp.toString()}`;
-  return consumeListFrameStream(
+  const consumed = await consumeListFrameStream(
     url,
     headers,
     config,
     'listEventsByCorrelationId'
   );
+  if (consumed.kind === 'partial') throw consumed.error;
+  return {
+    events: consumed.events,
+    cursor: consumed.cursor,
+    hasMore: consumed.hasMore,
+  };
 }

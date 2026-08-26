@@ -1603,8 +1603,8 @@ describe('createWorkflowRunEvent hook_received replay preload', () => {
     return out;
   }
 
-  function hookReplayStreamResponse(): Uint8Array {
-    return concatFrames([
+  function hookReplayFrames(): Uint8Array[] {
+    return [
       encodeFrame(
         {
           eventId: 'evnt_1',
@@ -1660,7 +1660,11 @@ describe('createWorkflowRunEvent hook_received replay preload', () => {
         { _end: 1, next: 'eid:evnt_4', hasMore: false },
         new Uint8Array()
       ),
-    ]);
+    ];
+  }
+
+  function hookReplayStreamResponse(): Uint8Array {
+    return concatFrames(hookReplayFrames());
   }
 
   it('decodes a streamed replay log into event + reconstructed run + page', async () => {
@@ -1888,7 +1892,7 @@ describe('createWorkflowRunEvent hook_received replay preload', () => {
     agent.assertNoPendingInterceptors();
   });
 
-  it('retries a truncated preload by repeating the idempotent POST', async () => {
+  it('continues a truncated preload after its last validated event', async () => {
     const agent = mockAgent();
     agent
       .get(ORIGIN)
@@ -1897,35 +1901,22 @@ describe('createWorkflowRunEvent hook_received replay preload', () => {
         method: 'POST',
         headers: { accept: V4_FRAME_CONTENT_TYPE },
       })
-      .reply(
-        200,
-        encodeFrame(
-          {
-            eventId: 'evnt_4',
-            runId: 'wrun_1',
-            eventType: 'hook_received',
-            correlationId: 'hook_1',
-            createdAt: new Date('2026-06-10T00:00:03.000Z'),
-            specVersion: 2,
-            resumeId: RESUME_ID,
-            eventData: { token: 'tok-preload' },
-          },
-          PAYLOAD
-        ),
-        { headers: { 'content-type': V4_FRAME_CONTENT_TYPE } }
-      );
-    agent
-      .get(ORIGIN)
-      .intercept({
-        path: '/api/v4/runs/wrun_1/events/hook_received',
-        method: 'POST',
-        headers: { accept: V4_FRAME_CONTENT_TYPE },
-      })
-      .reply(200, hookReplayStreamResponse(), {
+      .reply(200, concatFrames(hookReplayFrames().slice(0, 2)), {
         headers: {
           'content-type': V4_FRAME_CONTENT_TYPE,
           'x-wf-event-id': 'evnt_4',
           'x-wf-max-events': '10000',
+        },
+      });
+    agent
+      .get(ORIGIN)
+      .intercept({
+        path: /\/api\/v4\/runs\/wrun_1\/events\?.*cursor=eid%3Aevnt_2/,
+        method: 'GET',
+      })
+      .reply(200, concatFrames(hookReplayFrames().slice(2)), {
+        headers: {
+          'content-type': V4_FRAME_CONTENT_TYPE,
         },
       });
 
@@ -1938,6 +1929,7 @@ describe('createWorkflowRunEvent hook_received replay preload', () => {
 
     expect(result.event?.eventId).toBe('evnt_4');
     expect(result.events).toHaveLength(4);
+    expect(result.maxEvents).toBe(10000);
     agent.assertNoPendingInterceptors();
   });
 
