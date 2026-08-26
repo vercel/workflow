@@ -1219,7 +1219,7 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
     } else {
       await expect(request).rejects.toMatchObject({
         code: 'SCHEMA_VALIDATION',
-        message: 'v4 createEvent: continuation did not advance cursor',
+        message: 'v4 listEvents: response did not advance cursor',
       });
     }
     agent.assertNoPendingInterceptors();

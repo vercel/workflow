@@ -1483,6 +1483,16 @@ function isAdvancingCursor(
   return cursor !== null && cursor.length > 0 && cursor !== previousCursor;
 }
 
+function hasRequiredCursorProgress(
+  page: ListEventsV4Result,
+  previousCursor: string | null
+): boolean {
+  return (
+    (page.events.length === 0 && !page.hasMore) ||
+    isAdvancingCursor(page.cursor, previousCursor)
+  );
+}
+
 function partialEventFrameStream(
   events: Event[],
   partialError: WorkflowWorldError
@@ -1580,15 +1590,6 @@ async function consumeReplayLogResponse(
     config,
     1
   );
-  if (
-    (suffix.events.length > 0 || suffix.hasMore) &&
-    !isAdvancingCursor(suffix.cursor, page.cursor)
-  ) {
-    throw new WorkflowWorldError(
-      'v4 createEvent: continuation did not advance cursor',
-      { code: 'SCHEMA_VALIDATION' }
-    );
-  }
   return {
     events: [...page.events, ...suffix.events],
     cursor: suffix.cursor ?? page.cursor,
@@ -1670,9 +1671,6 @@ async function getWorkflowRunEventsV4WithRecovery(
       `${baseUrl}/v4/runs/${encodeURIComponent(runId)}/events` +
       paginationToQuery({ ...params, cursor: cursor ?? undefined });
     consumed = await consumeListFrameStream(url, headers, config, 'listEvents');
-    for (const event of consumed.events) {
-      events.push(event);
-    }
     if (consumed.partialError) {
       if (
         params.limit !== undefined ||
@@ -1683,12 +1681,20 @@ async function getWorkflowRunEventsV4WithRecovery(
       }
       partialContinuations++;
       cursor = consumed.cursor;
+    } else if (!hasRequiredCursorProgress(consumed, cursor)) {
+      throw new WorkflowWorldError(
+        'v4 listEvents: response did not advance cursor',
+        { code: 'SCHEMA_VALIDATION' }
+      );
+    }
+    for (const event of consumed.events) {
+      events.push(event);
     }
   } while (consumed.partialError);
 
   return {
     events,
-    cursor: consumed.cursor ?? cursor,
+    cursor: consumed.cursor || (events.length > 0 ? cursor : null),
     hasMore: consumed.hasMore,
   };
 }
