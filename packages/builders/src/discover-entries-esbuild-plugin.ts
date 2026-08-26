@@ -55,7 +55,7 @@ function isGeneratedBuildArtifactPath(filePath: string): boolean {
 export type ImportParents = Map<string, Set<string>>;
 
 // Kept for compatibility with the exported discovery helpers. BaseBuilder
-// passes a per-discovery graph instead.
+// replaces it with the last completed discovery graph.
 export const importParents: ImportParents = new Map();
 
 // check if a parent has a child in its import chain
