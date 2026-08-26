@@ -37,7 +37,7 @@ export async function getNextBuilderEager(
     BaseBuilder: BaseBuilderClass,
     getWorkflowQueueTrigger,
     detectWorkflowPatterns,
-    parentHasChild,
+    importGraphHasChild,
     writeFileIfChanged,
   } = buildersModule ??
   (await importEsm<typeof import('@workflow/builders')>('@workflow/builders'));
@@ -387,7 +387,7 @@ export async function getNextBuilderEager(
             inputFiles: options.inputFiles,
             normalizePath,
             parentHasChild: (parent, child, options) =>
-              parentHasChild(
+              importGraphHasChild(
                 discoveredEntries.importParents,
                 parent,
                 child,

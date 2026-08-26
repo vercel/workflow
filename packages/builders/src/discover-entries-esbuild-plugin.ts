@@ -54,10 +54,14 @@ function isGeneratedBuildArtifactPath(filePath: string): boolean {
 
 export type ImportParents = Map<string, Set<string>>;
 
+// Kept for compatibility with the exported discovery helpers. BaseBuilder
+// passes a per-discovery graph instead.
+export const importParents: ImportParents = new Map();
+
 // check if a parent has a child in its import chain
 // e.g. if a dependency needs to be bundled because it has
 // a 'use workflow/'use step' directive in it
-export function parentHasChild(
+export function importGraphHasChild(
   importParents: ImportParents,
   parent: string,
   childToFind: string,
@@ -98,18 +102,29 @@ export function parentHasChild(
   return false;
 }
 
+export function parentHasChild(
+  parent: string,
+  childToFind: string,
+  options: { excludedRoots?: Iterable<string> } = {}
+): boolean {
+  return importGraphHasChild(importParents, parent, childToFind, options);
+}
+
 export function createDiscoverEntriesPlugin(
   state: {
     discoveredSteps: Set<string>;
     discoveredWorkflows: Set<string>;
     discoveredSerdeFiles: Set<string>;
-    importParents: ImportParents;
+    importParents?: ImportParents;
   },
   projectRoot?: string
 ): Plugin {
   return {
     name: 'discover-entries-esbuild-plugin',
     setup(build) {
+      const currentImportParents = state.importParents ?? importParents;
+      build.onStart(() => currentImportParents.clear());
+
       // Track parent→child import relationships for ALL imports (not just
       // those with file extensions) so that `parentHasChild()` can correctly
       // identify transitive parents of serde/step files even when the
@@ -124,10 +139,10 @@ export function createDiscoverEntriesPlugin(
             const normalizedImporter = args.importer.replace(/\\/g, '/');
             const normalizedResolved = resolved.replace(/\\/g, '/');
             // A file can import multiple files, so we store a Set of children
-            let children = state.importParents.get(normalizedImporter);
+            let children = currentImportParents.get(normalizedImporter);
             if (!children) {
               children = new Set<string>();
-              state.importParents.set(normalizedImporter, children);
+              currentImportParents.set(normalizedImporter, children);
             }
             children.add(normalizedResolved);
           }

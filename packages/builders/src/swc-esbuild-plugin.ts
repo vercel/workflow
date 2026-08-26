@@ -9,9 +9,10 @@ import {
   type WorkflowManifest,
 } from './apply-swc-transform.js';
 import {
+  importGraphHasChild,
+  importParents,
   type ImportParents,
   jsTsRegex,
-  parentHasChild,
 } from './discover-entries-esbuild-plugin.js';
 import { resolveModuleSpecifier } from './module-specifier.js';
 import { resolveWorkflowAliasRelativePath } from './workflow-alias.js';
@@ -31,7 +32,7 @@ export type WorkflowAfterTransformHook = (
 
 export interface SwcPluginOptions {
   mode: 'step' | 'workflow';
-  importParents: ImportParents;
+  importParents?: ImportParents;
   entriesToBundle?: string[];
   outdir?: string;
   projectRoot?: string;
@@ -190,6 +191,7 @@ function mergeWorkflowManifest(
 }
 
 export function createSwcPlugin(options: SwcPluginOptions): Plugin {
+  const currentImportParents = options.importParents ?? importParents;
   return {
     name: 'swc-workflow-plugin',
     setup(build) {
@@ -356,8 +358,8 @@ export function createSwcPlugin(options: SwcPluginOptions): Plugin {
               // to be bundled then it needs to also be bundled so
               // that the child can have our transform applied
               if (
-                parentHasChild(
-                  options.importParents,
+                importGraphHasChild(
+                  currentImportParents,
                   normalizedResolvedPath,
                   normalizedEntry
                 )
@@ -377,8 +379,8 @@ export function createSwcPlugin(options: SwcPluginOptions): Plugin {
                   normalizedResolvedPath,
                   moduleSpecifierRoot
                 ) &&
-                parentHasChild(
-                  options.importParents,
+                importGraphHasChild(
+                  currentImportParents,
                   normalizedEntry,
                   normalizedResolvedPath
                 )
