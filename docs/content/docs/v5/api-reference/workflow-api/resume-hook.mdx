@@ -12,9 +12,9 @@ related:
 
 Resumes a workflow run by sending a payload to a hook identified by its token.
 
-It creates a `hook_received` event and re-triggers the workflow to continue execution.
+It publishes a workflow invocation carrying the payload; the runtime creates the `hook_received` event and continues execution from it.
 
-A Hook kept by `experimental_minRetention` after its workflow ends cannot be resumed. `resumeHook()` throws `HookNotFoundError` in that case.
+`resumeHook()` throws `HookNotFoundError` when no hook holds the token. A run that has already ended cannot be resumed, including one whose Hook is kept by `experimental_minRetention`, but whether the call reports that depends on the path it takes: a resume dispatched without reading the run resolves and the ended state is only detected once the payload arrives, while one that reads the run, or that falls back to writing the event up front, throws `HookNotFoundError`. See [lazy hook resume](/docs/changelog/lazy-hook-resume).
 
 <Callout type="warn">
 `resumeHook` is a runtime function that must be called from outside a workflow function.
@@ -50,7 +50,7 @@ showSections={["parameters"]}
 
 ### Returns
 
-Returns a `Promise<ResumedHook>`, a `Hook` extended with an optional `resilientResume` flag. Resolving means the resume was accepted and the workflow will continue, whether the `hook_received` event was written directly or, on the parallel fast path, delivered through the workflow queue for the runtime to materialize (see the [lazy hook resume changelog](/docs/changelog/resilient-resume)). `resilientResume` is `true` only when the direct event write failed transiently and the resume was recovered through the queue; on the happy path it is absent. The resolved hook:
+Returns a `Promise<ResumedHook>`, a `Hook` extended with an optional `resilientResume` flag. Resolving means the resume was accepted for delivery: the payload rides the workflow queue message and the runtime materializes the `hook_received` event from it before replaying (see the [lazy hook resume changelog](/docs/changelog/lazy-hook-resume)). `resilientResume` is retained for source compatibility and is no longer set by any path. The resolved hook:
 
 <TSDoc
 definition={`
