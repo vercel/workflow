@@ -1039,7 +1039,7 @@ ${apiFileContent}`
           await Promise.all([
             fs.writeFile(
               files.workflow,
-              `import { HmrFuzzBox } from './hmr-fuzz-serde';
+              `import { HmrFuzzBox, hmrFuzzSerdeStep } from './hmr-fuzz-serde';
 import { hmrFuzzSharedHelper } from './hmr-fuzz-shared-helper';
 import { hmrFuzzStep } from './hmr-fuzz-step';
 import { hmrFuzzWorkflowHelper } from './hmr-fuzz-workflow-helper';
@@ -1050,7 +1050,8 @@ export async function hmrFuzzWorkflow() {
   const workflowValue = hmrFuzzWorkflowHelper(
     new HmrFuzzBox(hmrFuzzSharedHelper('workflow-${iteration}'))
   );
-  return { stepValue, workflowValue: new HmrFuzzBox(workflowValue) };
+  const roundTripped = await hmrFuzzSerdeStep(new HmrFuzzBox(workflowValue));
+  return { stepValue, workflowValue: roundTripped.label };
 }
 `
             ),
@@ -1103,6 +1104,11 @@ export async function hmrFuzzStep() {
     return new HmrFuzzBox(value.label);
   }
 }
+
+export async function hmrFuzzSerdeStep(value: HmrFuzzBox) {
+  'use step';
+  return value;
+}
 `
             ),
             fs.writeFile(
@@ -1154,7 +1160,7 @@ ${apiFileContent}`
         const runWorkflow = async () => {
           const run = await start<
             [],
-            { stepValue: string; workflowValue: { label: string } }
+            { stepValue: string; workflowValue: string }
           >(workflow, []);
           return await run.returnValue;
         };
@@ -1180,11 +1186,11 @@ ${apiFileContent}`
                   expect(result.stepValue).toContain(expected.value);
                   return;
                 case 'workflow':
-                  expect(result.workflowValue.label).toContain(expected.value);
+                  expect(result.workflowValue).toContain(expected.value);
                   return;
                 case 'both':
                   expect(result.stepValue).toContain(expected.stepValue);
-                  expect(result.workflowValue.label).toContain(
+                  expect(result.workflowValue).toContain(
                     expected.workflowValue
                   );
                   return;
@@ -1249,7 +1255,7 @@ export async function hmrFuzzStep() {
               }) satisfies ExpectedWorkflowResult,
             source: (
               iteration: number
-            ) => `import { HmrFuzzBox } from './hmr-fuzz-serde';
+            ) => `import { HmrFuzzBox, hmrFuzzSerdeStep } from './hmr-fuzz-serde';
 import { hmrFuzzSharedHelper } from './hmr-fuzz-shared-helper';
 import { hmrFuzzStep } from './hmr-fuzz-step';
 import { hmrFuzzWorkflowHelper } from './hmr-fuzz-workflow-helper';
@@ -1260,7 +1266,8 @@ export async function hmrFuzzWorkflow() {
   const workflowValue = hmrFuzzWorkflowHelper(
     new HmrFuzzBox(hmrFuzzSharedHelper('workflow-body-${iteration}'))
   );
-  return { stepValue, workflowValue: new HmrFuzzBox(workflowValue) };
+  const roundTripped = await hmrFuzzSerdeStep(new HmrFuzzBox(workflowValue));
+  return { stepValue, workflowValue: roundTripped.label };
 }
 `,
           },
@@ -1321,6 +1328,11 @@ export function hmrFuzzWorkflowHelper(value: HmrFuzzBox) {
     return new HmrFuzzBox(value.label);
   }
 }
+
+export async function hmrFuzzSerdeStep(value: HmrFuzzBox) {
+  'use step';
+  return value;
+}
 `,
           },
         ] as const;
@@ -1364,7 +1376,7 @@ export function hmrFuzzWorkflowHelper(value: HmrFuzzBox) {
               await fs.writeFile(
                 files.workflow,
                 `import { hmrFuzzImportedValue } from './hmr-fuzz-import-helper';
-import { HmrFuzzBox } from './hmr-fuzz-serde';
+import { HmrFuzzBox, hmrFuzzSerdeStep } from './hmr-fuzz-serde';
 import { hmrFuzzSharedHelper } from './hmr-fuzz-shared-helper';
 import { hmrFuzzStep } from './hmr-fuzz-step';
 import { hmrFuzzWorkflowHelper } from './hmr-fuzz-workflow-helper';
@@ -1375,7 +1387,8 @@ export async function hmrFuzzWorkflow() {
   const workflowValue = hmrFuzzWorkflowHelper(
     new HmrFuzzBox(hmrFuzzSharedHelper(hmrFuzzImportedValue))
   );
-  return { stepValue, workflowValue: new HmrFuzzBox(workflowValue) };
+  const roundTripped = await hmrFuzzSerdeStep(new HmrFuzzBox(workflowValue));
+  return { stepValue, workflowValue: roundTripped.label };
 }
 `
               );
@@ -1416,7 +1429,7 @@ export async function hmrFuzzWorkflow() {
               await fs.writeFile(
                 files.workflow,
                 `import hmrFuzzBuildInput from './hmr-fuzz-build-input.json';
-import { HmrFuzzBox } from './hmr-fuzz-serde';
+import { HmrFuzzBox, hmrFuzzSerdeStep } from './hmr-fuzz-serde';
 import { hmrFuzzSharedHelper } from './hmr-fuzz-shared-helper';
 import { hmrFuzzStep } from './hmr-fuzz-step';
 import { hmrFuzzWorkflowHelper } from './hmr-fuzz-workflow-helper';
@@ -1427,7 +1440,8 @@ export async function hmrFuzzWorkflow() {
   const workflowValue = hmrFuzzWorkflowHelper(
     new HmrFuzzBox(hmrFuzzSharedHelper(hmrFuzzBuildInput.value))
   );
-  return { stepValue, workflowValue: new HmrFuzzBox(workflowValue) };
+  const roundTripped = await hmrFuzzSerdeStep(new HmrFuzzBox(workflowValue));
+  return { stepValue, workflowValue: roundTripped.label };
 }
 `
               );
@@ -1498,8 +1512,8 @@ export async function hmrFuzzAddedStep() {
             write: async (iteration: number) => {
               await fs.writeFile(
                 files.workflow,
-                `import { hmrFuzzImportedValue } from './hmr-fuzz-import-helper';
-import { HmrFuzzBox } from './hmr-fuzz-serde';
+                `import hmrFuzzBuildInput from './hmr-fuzz-build-input.json';
+import { HmrFuzzBox, hmrFuzzSerdeStep } from './hmr-fuzz-serde';
 import { hmrFuzzSharedHelper } from './hmr-fuzz-shared-helper';
 import { hmrFuzzStep } from './hmr-fuzz-step';
 import { hmrFuzzWorkflowHelper } from './hmr-fuzz-workflow-helper';
@@ -1508,9 +1522,10 @@ export async function hmrFuzzWorkflow() {
   'use workflow';
   const stepValue = await hmrFuzzStep();
   const workflowValue = hmrFuzzWorkflowHelper(
-    new HmrFuzzBox(hmrFuzzSharedHelper(hmrFuzzImportedValue))
+    new HmrFuzzBox(hmrFuzzSharedHelper(hmrFuzzBuildInput.value))
   );
-  return { stepValue, workflowValue: new HmrFuzzBox(workflowValue) };
+  const roundTripped = await hmrFuzzSerdeStep(new HmrFuzzBox(workflowValue));
+  return { stepValue, workflowValue: roundTripped.label };
 }
 
 export async function hmrFuzzAddedWorkflow() {
