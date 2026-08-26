@@ -375,18 +375,22 @@ function isGenericIterable(
   );
 }
 
-function getIterableEntries(value: Iterable<unknown>): Entry[] {
-  const entries: Entry[] = [];
-  let index = 0;
-  for (const item of value) {
-    if (Array.isArray(item) && item.length === 2) {
-      entries.push([String(item[0]), collapseRefs(item[1]), index]);
-    } else {
-      entries.push([String(index), collapseRefs(item), index]);
+function isEntryIterable(
+  value: object & Iterable<unknown>
+): value is object & Iterable<unknown> & { entries(): Iterable<unknown> } {
+  return typeof (value as { entries?: unknown }).entries === 'function';
+}
+
+function collectEntries(
+  iterable: Iterable<unknown>,
+  asPairs: boolean
+): Entry[] {
+  return Array.from(iterable, (item, index) => {
+    if (asPairs && Array.isArray(item) && item.length >= 2) {
+      return [String(item[0]), collapseRefs(item[1]), index];
     }
-    index += 1;
-  }
-  return entries;
+    return [undefined, collapseRefs(item), index];
+  });
 }
 
 function isSelfIterableIterator(value: object & Iterable<unknown>): boolean {
@@ -431,11 +435,20 @@ function describeContainer(
   if (isGenericIterable(value)) {
     const name = (value as { constructor?: { name?: string } }).constructor
       ?.name;
+    const prefix = name && name !== 'Object' ? name : undefined;
+    if (isEntryIterable(value)) {
+      return {
+        entries: collectEntries(value.entries(), true),
+        open: '{',
+        close: '}',
+        prefix,
+      };
+    }
     return {
-      entries: getIterableEntries(value),
-      open: '{',
-      close: '}',
-      prefix: name && name !== 'Object' ? name : undefined,
+      entries: collectEntries(value, false),
+      open: '[',
+      close: ']',
+      prefix,
     };
   }
   if (value !== null && typeof value === 'object') {
@@ -690,8 +703,6 @@ interface NodeProps {
 }
 
 function DataRender({ field, value, isLast, ctx }: NodeProps) {
-  const container = useMemo(() => describeContainer(value), [value]);
-
   if (isBytesDisplay(value)) {
     return (
       <LeafRow field={field} isLast={isLast}>
@@ -745,6 +756,7 @@ function DataRender({ field, value, isLast, ctx }: NodeProps) {
     );
   }
 
+  const container = describeContainer(value);
   if (container) {
     return (
       <ExpandableContainer
@@ -775,10 +787,7 @@ function ClassInstanceNode({
   isLast: boolean;
   ctx: NodeContext;
 }) {
-  const container = useMemo(
-    () => describeContainer(instance.data),
-    [instance.data]
-  );
+  const container = describeContainer(instance.data);
   if (container) {
     return (
       <ExpandableContainer
@@ -1055,6 +1064,12 @@ export function isDeepEqual(
     if (isSelfIterableIterator(a) || isSelfIterableIterator(b)) return false;
     if (seen.get(a) === b) return true;
     seen.set(a, b);
+    const aHasEntries = isEntryIterable(a);
+    const bHasEntries = isEntryIterable(b);
+    if (aHasEntries !== bHasEntries) return false;
+    if (aHasEntries && bHasEntries) {
+      return haveSameIterableValues(a.entries(), b.entries(), seen);
+    }
     return haveSameIterableValues(a, b, seen);
   }
 

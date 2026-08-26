@@ -2,4 +2,4 @@
 '@workflow/web-shared': patch
 ---
 
-Render iterable values such as Headers and URLSearchParams in the data inspector.
+Render Headers, URLSearchParams, and other iterables in the data inspector. Map-like values use `entries()`; other iterables render as lists.
