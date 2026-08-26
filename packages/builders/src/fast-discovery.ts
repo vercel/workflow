@@ -6,8 +6,8 @@ import enhancedResolveOriginal from 'enhanced-resolve';
 import { findUp } from 'find-up';
 import JSON5 from 'json5';
 import {
-  importParents as legacyImportParents,
   type ImportParents,
+  importParents as legacyImportParents,
 } from './discover-entries-esbuild-plugin.js';
 import { detectWorkflowPatterns } from './transform-utils.js';
 
@@ -52,14 +52,19 @@ export interface DiscoveredEntries {
   discoveredSteps: Set<string>;
   discoveredWorkflows: Set<string>;
   discoveredSerdeFiles: Set<string>;
-  importParents: ImportParents;
+  importParents?: ImportParents;
   /** Source files visited by discovery or consumed by the workflow bundle. */
+  discoveredFiles?: Set<string>;
+}
+
+export interface CompleteDiscoveredEntries extends DiscoveredEntries {
+  importParents: ImportParents;
   discoveredFiles: Set<string>;
 }
 
 interface FastDiscoverEntriesOptions {
   entryPoints: string[];
-  state: DiscoveredEntries;
+  state: CompleteDiscoveredEntries;
   defaultTsconfigPath: string | undefined;
   workingDir: string;
   /**

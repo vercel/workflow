@@ -5,8 +5,8 @@ import {
   createRebuildScheduler,
   createSourceSnapshotFromSource,
   extractImportSignature,
-  sourceSnapshotsMatch,
   type SourceSnapshot,
+  sourceSnapshotsMatch,
   stripCommentsFromSource,
 } from './watch-rebuild.js';
 

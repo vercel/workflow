@@ -8,9 +8,9 @@ import {
   type WorkflowManifest,
 } from './apply-swc-transform.js';
 import {
+  type ImportParents,
   importGraphHasChild,
   importParents,
-  type ImportParents,
   jsTsRegex,
 } from './discover-entries-esbuild-plugin.js';
 import {

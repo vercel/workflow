@@ -20,8 +20,8 @@ export {
 } from './constants.js';
 export {
   createDiscoverEntriesPlugin,
-  importGraphHasChild,
   type ImportParents,
+  importGraphHasChild,
   parentHasChild,
 } from './discover-entries-esbuild-plugin.js';
 export {

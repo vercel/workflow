@@ -14,8 +14,8 @@ import {
   createSourceSnapshot,
   getRelevantFiles,
   readSourceSnapshots,
-  sourceSnapshotsMatch,
   type SourceSnapshot,
+  sourceSnapshotsMatch,
 } from './watch-rebuild.js';
 
 let CachedNextBuilderEager: any;

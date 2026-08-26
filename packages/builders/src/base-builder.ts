@@ -27,8 +27,10 @@ import {
   createWorkflowEntrypointOptionsCode,
   createWorkflowRouteHandlersCode,
 } from './constants.js';
+import { importParents as legacyImportParents } from './discover-entries-esbuild-plugin.js';
 import { getEsbuildTsconfigOptions } from './esbuild-tsconfig.js';
 import {
+  type CompleteDiscoveredEntries,
   type DiscoveredEntries,
   fastDiscoverEntries,
 } from './fast-discovery.js';
@@ -376,7 +378,7 @@ export abstract class BaseBuilder {
    * This cache is invalidated automatically when the inputs array reference changes
    * (e.g., when files are added/removed during watch mode).
    */
-  private discoveredEntries: WeakMap<string[], DiscoveredEntries> =
+  private discoveredEntries: WeakMap<string[], CompleteDiscoveredEntries> =
     new WeakMap();
 
   public clearDiscoveredEntriesCache(): void {
@@ -499,13 +501,13 @@ export abstract class BaseBuilder {
     inputs: string[],
     outdir: string,
     tsconfigPath?: string
-  ): Promise<DiscoveredEntries> {
+  ): Promise<CompleteDiscoveredEntries> {
     const previousResult = this.discoveredEntries.get(inputs);
 
     if (previousResult) {
       return previousResult;
     }
-    const state: DiscoveredEntries = {
+    const state: CompleteDiscoveredEntries = {
       discoveredSteps: new Set(),
       discoveredWorkflows: new Set(),
       discoveredSerdeFiles: new Set(),
@@ -1648,18 +1650,24 @@ ${createWorkflowRouteHandlersCode(`workflowEntrypoint(workflowCode${workflowEntr
     stepsContext?: esbuild.BuildContext;
     interimBundleCtx?: esbuild.BuildContext;
     bundleFinal?: (interimBundleResult: string) => Promise<void>;
-    discoveredEntries: DiscoveredEntries;
+    discoveredEntries: CompleteDiscoveredEntries;
     stepsManifest: WorkflowManifest;
     workflowsManifest: WorkflowManifest;
   }> {
     this.startWorkflowBuildTimer();
-    const effectiveDiscoveredEntries =
-      discoveredEntries ??
-      (await this.discoverEntries(
-        inputFiles,
-        dirname(flowOutfile),
-        tsconfigPath
-      ));
+    const effectiveDiscoveredEntries: CompleteDiscoveredEntries =
+      discoveredEntries === undefined
+        ? await this.discoverEntries(
+            inputFiles,
+            dirname(flowOutfile),
+            tsconfigPath
+          )
+        : {
+            ...discoveredEntries,
+            importParents:
+              discoveredEntries.importParents ?? legacyImportParents,
+            discoveredFiles: discoveredEntries.discoveredFiles ?? new Set(),
+          };
 
     // 1. Build step registrations bundle (used as separate file for
     // bundleFinalOutput: false, or read back for inline content when true)
