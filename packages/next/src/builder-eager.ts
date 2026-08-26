@@ -433,10 +433,11 @@ export async function getNextBuilderEager(
           logDevHmr('workflow dev hmr: full rediscovery');
           const buildWasStable = await fullRebuild();
           await replaceDependencyWatcher();
+          const finalSnapshots = await snapshotSources();
           return (
             buildWasStable &&
-            generation === watchGeneration &&
-            sourceSnapshotsMatch(sourceSnapshots, await snapshotSources())
+            sourceSnapshotsMatch(sourceSnapshots, finalSnapshots) &&
+            generation === watchGeneration
           );
         };
 
@@ -536,7 +537,9 @@ export async function getNextBuilderEager(
           }
         };
         logDevHmr('workflow dev hmr: ready');
-        if (!startupWasStable) {
+        if (startupWasStable) {
+          logDevHmr('workflow dev hmr: idle');
+        } else {
           scheduleRebuild({ kind: 'full' });
         }
       }
