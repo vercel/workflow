@@ -130,7 +130,8 @@ export function workflowHotUpdatePlugin(
       }
 
       if (!rebuild) return;
-      if (handledTimestamp === timestamp) return;
+      if (handledTimestamp !== undefined && timestamp <= handledTimestamp)
+        return;
       handledTimestamp = timestamp;
 
       console.log('Workflow file changed, rebuilding...');

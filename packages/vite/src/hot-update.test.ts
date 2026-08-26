@@ -174,6 +174,27 @@ describe('workflowHotUpdatePlugin', () => {
     expect(build).toHaveBeenCalledOnce();
   });
 
+  it('ignores an older environment update after a newer event', async () => {
+    const build = vi.fn();
+    const { hotUpdate } = hooks(
+      workflowHotUpdatePlugin({ builder: builder(build, true) })
+    );
+    const update = (timestamp: number) =>
+      hotUpdate({
+        type: 'update',
+        file: '/app/helper.ts',
+        modules: [],
+        read: () => 'export const value = 2;',
+        timestamp,
+      });
+
+    await update(1);
+    await update(2);
+    await update(1);
+
+    expect(build).toHaveBeenCalledTimes(2);
+  });
+
   it('uses builder discovery for dependencies absent from Vite', async () => {
     const build = vi.fn();
     const { hotUpdate } = hooks(
