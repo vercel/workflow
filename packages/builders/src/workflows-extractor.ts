@@ -269,6 +269,8 @@ export async function extractWorkflowGraphs(bundlePath: string): Promise<{
   };
 
   if (lazyBundleFiles.length === 0) {
+    // Current builders always emit a sidecar, even for an empty/serde-only
+    // build. This preserves the extractor's older raw/wrapper-bundle input.
     try {
       const bundleCode = await readFile(bundlePath, 'utf8');
       const bundleAst = parseSync(bundleCode, {

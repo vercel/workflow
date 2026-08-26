@@ -98,6 +98,9 @@ const VALID_SOURCEMAP_STRINGS = new Set([
   'external',
   'both',
 ]);
+
+// Keep lazy VM sidecars out of the final route bundle. The generated import()
+// calls must remain runtime boundaries so a replay loads only its source file.
 const COMBINED_ROUTE_EXTERNALS = [
   '@aws-sdk/credential-provider-web-identity',
   `./${WORKFLOW_BUNDLE_DIRECTORY}/*`,
@@ -207,11 +210,15 @@ type CachedManifestTransform = {
 };
 
 type WorkflowBundle = {
+  /** JavaScript evaluated inside the workflow VM. */
   code: string;
+  /** Content-addressed sidecar filename derived from `code`. */
   fileName: string;
+  /** Workflow IDs registered when this source bundle is evaluated. */
   workflowIds: string[];
 };
 
+/** State shared between the initial build and subsequent watch rebuilds. */
 type WorkflowBundleBuild = {
   context: esbuild.BuildContext;
   manifest: WorkflowManifest;
@@ -221,6 +228,7 @@ type WorkflowBundleBuild = {
 
 type WorkflowBundlePublication = {
   bundles: WorkflowBundle[];
+  /** Remove files made obsolete by this publication after its route is live. */
   removeObsolete: () => Promise<void>;
 };
 
@@ -230,6 +238,10 @@ function getWorkflowIds(manifest: WorkflowManifest): string[] {
   );
 }
 
+/**
+ * Generate the small route-side lookup from workflow ID to lazy VM code.
+ * Workflows from the same source share one memoized import/decode promise.
+ */
 function createWorkflowBundleLoaders(bundles: WorkflowBundle[]): string {
   const loaders = bundles
     .map(({ fileName }, index) => {
@@ -1388,9 +1400,16 @@ export const __steps_registered = true;
     const workflowBundleDir = join(dirname(outfile), WORKFLOW_BUNDLE_DIRECTORY);
     return async (bundles) => {
       await mkdir(workflowBundleDir, { recursive: true });
+
+      // A filename is the hash of its code, so a matching file is already the
+      // exact artifact we need and writeGeneratedFile can leave it untouched.
       const desiredBundles = new Map(
         bundles.map(({ code, fileName }) => [fileName, code])
       );
+
+      // Snapshot the old generation before publishing the new one. Cleanup is
+      // deliberately returned to the caller: it must update the route first so
+      // an in-flight watch rebuild never points at a sidecar already removed.
       const generatedFiles = (await readdir(workflowBundleDir)).filter((file) =>
         file.endsWith('.mjs')
       );
@@ -1427,6 +1446,8 @@ export const __steps_registered = true;
     includeMetafile: boolean;
     tsconfigPath?: string;
   }): Promise<WorkflowBundleBuild> {
+    // Discovery can report the same module through a symlink, package export,
+    // or direct path. Build each canonical module only once.
     const uniqueFiles = (files: string[], excluded = new Set<string>()) => {
       const identities = new Set(excluded);
       return files.filter((file) => {
@@ -1456,6 +1477,9 @@ export const __steps_registered = true;
 
     const createImport = (file: string) =>
       `import '${this.createRouteImportSpecifier(file, this.config.workingDir)}';`;
+
+    // esbuild needs at least one entry point. The placeholder entry also runs
+    // serde-only imports through SWC so their class metadata is still emitted.
     const bundleFiles = workflowFiles.length > 0 ? workflowFiles : [undefined];
     const bundleEntries = bundleFiles.map((workflowFile) => {
       const workflowImport = workflowFile ? createImport(workflowFile) : '';
@@ -1483,6 +1507,9 @@ export const __steps_registered = true;
       ...workflowFiles,
       ...serdeFiles,
     ]);
+
+    // Give esbuild one virtual entry per workflow source. The entry imports its
+    // workflow plus every serializer registration required inside a fresh VM.
     const entryPoints = Object.fromEntries(
       bundleEntries.map((_, index) => [
         `workflow-${index}`,
@@ -1554,6 +1581,8 @@ export const __steps_registered = true;
           moduleSpecifierRoot: this.moduleSpecifierRoot,
           workflowManifest: manifest,
           onAfterTransform: async (result) => {
+            // SWC assigns workflow IDs while transforming the source. Record
+            // which virtual entry owns them so the route can select one loader.
             const sourceIdentity = moduleIdentityKey(
               result.absolutePath,
               this.moduleSpecifierRoot
@@ -1578,6 +1607,8 @@ export const __steps_registered = true;
       manifest,
       startedAt,
       readBundles(result) {
+        // Convert esbuild's in-memory outputs into stable, content-addressed
+        // sidecars and attach the workflow IDs collected during transformation.
         const outputFiles = new Map(
           result.outputFiles?.map((output) => [basename(output.path), output])
         );
@@ -1651,6 +1682,8 @@ export const __steps_registered = true;
     const writeWorkflowBundles = this.createWorkflowBundlePublisher(outfile);
     let shouldDisposeInterimBundleCtx = !keepInterimBundleContext;
     try {
+      // The intermediate build produces raw VM JavaScript in memory; publishing
+      // it as sidecars is a separate step so the route stays small.
       const interimBundle = await interimBundleCtx.rebuild();
 
       this.logEsbuildMessages(
@@ -1671,6 +1704,9 @@ export const __steps_registered = true;
 
       const workflowBundles = readWorkflowBundles(interimBundle);
       await this.warnAboutSerdeCompliance(workflowManifest, workflowBundles);
+
+      // Watch mode reuses the esbuild context. Each rebuild gets a new artifact
+      // set and a cleanup callback whose ordering is controlled by the caller.
       const bundleFinal = async (result: esbuild.BuildResult) => {
         const bundles = readWorkflowBundles(result);
         const removeObsolete = await writeWorkflowBundles(bundles);
@@ -1823,6 +1859,8 @@ ${createWorkflowRouteHandlersCode(`workflowEntrypoint(workflowCode${workflowEntr
     );
 
     if (!bundleFinalOutput) {
+      // Framework bundlers consume this source route themselves. Its sidecar
+      // imports stay dynamic and are resolved relative to the generated route.
       await this.writeGeneratedFile(flowOutfile, combinedFunctionCode);
     } else {
       // Bundle the combined code for standalone use
@@ -1853,6 +1891,7 @@ ${createWorkflowRouteHandlersCode(`workflowEntrypoint(workflowCode${workflowEntr
         keepNames: true,
         minify: false,
         define: importMetaDefine,
+        // Preserve lazy sidecar imports while bundling the route and runtime.
         external: COMBINED_ROUTE_EXTERNALS,
       });
       this.logEsbuildMessages(finalResult, 'combined bundle', true);
@@ -1861,6 +1900,9 @@ ${createWorkflowRouteHandlersCode(`workflowEntrypoint(workflowCode${workflowEntr
         `${Date.now() - bundleStartTime}ms`
       );
     }
+
+    // The initial route now references the newly published generation, so no
+    // live route can still require the obsolete sidecars from this build.
     await workflowsResult.removeObsoleteWorkflowBundles();
 
     // Merge manifests
@@ -1883,6 +1925,9 @@ ${createWorkflowRouteHandlersCode(`workflowEntrypoint(workflowCode${workflowEntr
       }
       const { bundles, removeObsolete } =
         await workflowsResult.bundleFinal(interimBundle);
+
+      // Publish sidecars first, then atomically replace the route, and only then
+      // remove the previous generation. This is the watch-mode commit sequence.
       await this.writeGeneratedFile(
         flowOutfile,
         createCombinedFunctionCode(bundles)
