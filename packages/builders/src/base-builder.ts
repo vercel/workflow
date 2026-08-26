@@ -31,6 +31,12 @@ import {
   type DiscoveredEntries,
 } from './fast-discovery.js';
 import {
+  hashManifestSource,
+  type ManifestEntryLocation,
+  mergeWorkflowManifest,
+  WorkflowBuildError,
+} from './manifest-ids.js';
+import {
   getImportPath,
   resolveModuleSpecifier,
   stripPackageVersion,
@@ -57,31 +63,6 @@ export interface DiscoveredEntriesInput {
   discoveredSteps: string[] | Set<string>;
   discoveredWorkflows: string[] | Set<string>;
   discoveredSerdeFiles: string[] | Set<string>;
-}
-
-interface WorkflowBuildErrorOptions extends ErrorOptions {
-  /**
-   * An optional actionable hint appended to the main message, explaining how
-   * the user can resolve the failure.
-   */
-  hint?: string;
-}
-
-/**
- * Thrown when the workflow build pipeline (esbuild, SWC transform, file
- * discovery, bundler integration) fails in a way the user can act on.
- */
-class WorkflowBuildError extends Error {
-  readonly hint?: string;
-
-  constructor(message: string, options?: WorkflowBuildErrorOptions) {
-    const body = options?.hint
-      ? `${message}\n\nhint: ${options.hint}`
-      : message;
-    super(body, { cause: options?.cause });
-    this.name = 'WorkflowBuildError';
-    this.hint = options?.hint;
-  }
 }
 
 /**
@@ -143,75 +124,6 @@ function moduleIdentityKey(file: string, moduleSpecifierRoot: string): string {
     return stripPackageVersion(moduleSpecifier);
   }
   return file.replace(/\\/g, '/');
-}
-
-type ManifestEntryLocation = {
-  filePath: string;
-  name: string;
-};
-
-function formatIdLocation(location: ManifestEntryLocation): string {
-  return `${location.filePath}#${location.name}`;
-}
-
-function assertUniqueManifestIds<TEntry>(
-  entriesByFile: Record<string, Record<string, TEntry>> | undefined,
-  ids: Map<string, ManifestEntryLocation>,
-  getId: (entry: TEntry) => string,
-  label: 'step' | 'workflow'
-): void {
-  for (const [filePath, entries] of Object.entries(entriesByFile || {})) {
-    for (const [name, data] of Object.entries(entries)) {
-      const id = getId(data);
-      const existing = ids.get(id);
-      const current = { filePath, name };
-      if (
-        existing &&
-        (existing.filePath !== current.filePath ||
-          existing.name !== current.name)
-      ) {
-        const idName = label === 'step' ? 'workflow step ID' : 'workflow ID';
-        const functionName = `${label} function`;
-        const capitalizedLabel = label === 'step' ? 'Step' : 'Workflow';
-        throw new WorkflowBuildError(
-          `Duplicate ${idName} "${id}" generated for ${formatIdLocation(existing)} and ${formatIdLocation(current)}.`,
-          {
-            hint:
-              `${capitalizedLabel} IDs must be unique across a build. ` +
-              `If you own one of the colliding files, rename the ${functionName} or export ` +
-              `the package file through a unique package subpath. If the collision is in a ` +
-              `transitive dependency you don't control, file an issue with the upstream ` +
-              `package or pin to a non-colliding version.`,
-          }
-        );
-      }
-      ids.set(id, current);
-    }
-  }
-}
-
-function mergeWorkflowManifest(
-  target: WorkflowManifest,
-  incoming: WorkflowManifest,
-  stepIds: Map<string, ManifestEntryLocation>,
-  workflowIds: Map<string, ManifestEntryLocation>
-): void {
-  assertUniqueManifestIds(
-    incoming.steps,
-    stepIds,
-    (data) => data.stepId,
-    'step'
-  );
-  assertUniqueManifestIds(
-    incoming.workflows,
-    workflowIds,
-    (data) => data.workflowId,
-    'workflow'
-  );
-
-  target.workflows = Object.assign(target.workflows || {}, incoming.workflows);
-  target.steps = Object.assign(target.steps || {}, incoming.steps);
-  target.classes = Object.assign(target.classes || {}, incoming.classes);
 }
 
 /**
@@ -793,11 +705,17 @@ export const __steps_registered = true;
           this.transformProjectRoot,
           this.moduleSpecifierRoot
         );
+        // Fingerprint the source so equivalent duplicate copies of the same
+        // module (e.g. pnpm peer-dependency variants of one package version)
+        // can be deduplicated instead of failing the build with a
+        // duplicate-ID error.
+        const contentHash = hashManifestSource(source);
         mergeWorkflowManifest(
           workflowManifest,
           fileManifest,
           stepIds,
-          workflowIds
+          workflowIds,
+          contentHash
         );
       })
     );
