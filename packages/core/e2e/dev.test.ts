@@ -1017,6 +1017,11 @@ ${apiFileContent}`
             workflowsDir,
             'hmr-fuzz-import-helper.ts'
           ),
+          buildInput: path.join(
+            appPath,
+            workflowsDir,
+            'hmr-fuzz-build-input.json'
+          ),
           addedWorkflow: path.join(
             appPath,
             workflowsDir,
@@ -1153,14 +1158,16 @@ ${apiFileContent}`
           >(workflow, []);
           return await run.returnValue;
         };
+        type ExpectedWorkflowResult =
+          | { kind: 'step'; value: string }
+          | { kind: 'workflow'; value: string }
+          | { kind: 'both'; stepValue: string; workflowValue: string };
         const expectWorkflowResult = async ({
           description,
-          stepValue,
-          workflowValue,
+          expected,
         }: {
           description: string;
-          stepValue?: string;
-          workflowValue?: string;
+          expected: ExpectedWorkflowResult;
         }) => {
           await pollUntil({
             description,
@@ -1168,11 +1175,22 @@ ${apiFileContent}`
             intervalMs: 500,
             check: async () => {
               const result = await runWorkflow();
-              if (stepValue) {
-                expect(result.stepValue).toContain(stepValue);
-              }
-              if (workflowValue) {
-                expect(result.workflowValue).toContain(workflowValue);
+              switch (expected.kind) {
+                case 'step':
+                  expect(result.stepValue).toContain(expected.value);
+                  return;
+                case 'workflow':
+                  expect(result.workflowValue).toContain(expected.value);
+                  return;
+                case 'both':
+                  expect(result.stepValue).toContain(expected.stepValue);
+                  expect(result.workflowValue).toContain(
+                    expected.workflowValue
+                  );
+                  return;
+                default:
+                  expected satisfies never;
+                  throw new Error('Unknown workflow result expectation');
               }
             },
           });
@@ -1188,7 +1206,11 @@ ${apiFileContent}`
             file: files.step,
             kind: 'step',
             expectedLogCounts: expectedHotRebuild,
-            expectedStepValue: (iteration: number) => `step-only-${iteration}`,
+            expectedResult: (iteration: number) =>
+              ({
+                kind: 'step',
+                value: `step-only-${iteration}`,
+              }) satisfies ExpectedWorkflowResult,
             source: (
               iteration: number
             ) => `import { hmrFuzzSharedHelper } from './hmr-fuzz-shared-helper';
@@ -1204,8 +1226,11 @@ export async function hmrFuzzStep() {
             file: files.stepHelper,
             kind: 'workflow',
             expectedLogCounts: expectedHotRebuild,
-            expectedStepValue: (iteration: number) =>
-              `step-helper-only-${iteration}`,
+            expectedResult: (iteration: number) =>
+              ({
+                kind: 'step',
+                value: `step-helper-only-${iteration}`,
+              }) satisfies ExpectedWorkflowResult,
             source: (
               iteration: number
             ) => `export function hmrFuzzStepHelper() {
@@ -1217,8 +1242,11 @@ export async function hmrFuzzStep() {
             file: files.workflow,
             kind: 'workflow',
             expectedLogCounts: expectedHotRebuild,
-            expectedWorkflowValue: (iteration: number) =>
-              `workflow-body-${iteration}`,
+            expectedResult: (iteration: number) =>
+              ({
+                kind: 'workflow',
+                value: `workflow-body-${iteration}`,
+              }) satisfies ExpectedWorkflowResult,
             source: (
               iteration: number
             ) => `import { HmrFuzzBox } from './hmr-fuzz-serde';
@@ -1240,8 +1268,11 @@ export async function hmrFuzzWorkflow() {
             file: files.workflowHelper,
             kind: 'workflow',
             expectedLogCounts: expectedHotRebuild,
-            expectedWorkflowValue: (iteration: number) =>
-              `workflow-helper-body-${iteration}`,
+            expectedResult: (iteration: number) =>
+              ({
+                kind: 'workflow',
+                value: `workflow-helper-body-${iteration}`,
+              }) satisfies ExpectedWorkflowResult,
             source: (
               iteration: number
             ) => `import { HmrFuzzBox } from './hmr-fuzz-serde';
@@ -1255,10 +1286,12 @@ export function hmrFuzzWorkflowHelper(value: HmrFuzzBox) {
             file: files.sharedHelper,
             kind: 'workflow',
             expectedLogCounts: expectedHotRebuild,
-            expectedStepValue: (iteration: number) =>
-              `shared-body-${iteration}`,
-            expectedWorkflowValue: (iteration: number) =>
-              `shared-body-${iteration}`,
+            expectedResult: (iteration: number) =>
+              ({
+                kind: 'both',
+                stepValue: `shared-body-${iteration}`,
+                workflowValue: `shared-body-${iteration}`,
+              }) satisfies ExpectedWorkflowResult,
             source: (
               iteration: number
             ) => `export function hmrFuzzSharedHelper(value: string) {
@@ -1270,6 +1303,12 @@ export function hmrFuzzWorkflowHelper(value: HmrFuzzBox) {
             file: files.serde,
             kind: 'serde',
             expectedLogCounts: expectedHotRebuild,
+            expectedResult: () =>
+              ({
+                kind: 'both',
+                stepValue: 'shared-body-5',
+                workflowValue: 'shared-body-5',
+              }) satisfies ExpectedWorkflowResult,
             source: (iteration: number) => `export class HmrFuzzBox {
   static classId = 'HmrFuzzBox';
 
@@ -1295,14 +1334,7 @@ export function hmrFuzzWorkflowHelper(value: HmrFuzzBox) {
 
           await expectWorkflowResult({
             description: `${testCase.kind} HMR update to affect workflow execution`,
-            stepValue:
-              'expectedStepValue' in testCase
-                ? testCase.expectedStepValue(iteration)
-                : undefined,
-            workflowValue:
-              'expectedWorkflowValue' in testCase
-                ? testCase.expectedWorkflowValue(iteration)
-                : undefined,
+            expected: testCase.expectedResult(iteration),
           });
 
           if (testCase.kind === 'skip') {
@@ -1325,7 +1357,7 @@ export function hmrFuzzWorkflowHelper(value: HmrFuzzBox) {
         const expectedFullRediscovery: ExpectedHmrLogCounts = {
           full: { kind: 'range', min: 1, max: 3 },
         };
-        const fullCases = [
+        const rebuildCases = [
           {
             description: 'workflow import graph change',
             expectedLogCounts: expectedFullRediscovery,
@@ -1353,13 +1385,13 @@ export async function hmrFuzzWorkflow() {
               await expectWorkflowResult({
                 description:
                   'workflow import graph full rediscovery to affect execution',
-                workflowValue: 'imported-stable',
+                expected: { kind: 'workflow', value: 'imported-stable' },
               });
             },
           },
           {
             description: 'new workflow dependency body change',
-            expectedLogCounts: { full: 1 },
+            expectedLogCounts: expectedHotRebuild,
             write: async () => {
               await fs.writeFile(
                 files.importHelper,
@@ -1370,7 +1402,59 @@ export async function hmrFuzzWorkflow() {
               await expectWorkflowResult({
                 description:
                   'new workflow dependency body change to affect execution',
-                workflowValue: 'imported-updated',
+                expected: { kind: 'workflow', value: 'imported-updated' },
+              });
+            },
+          },
+          {
+            description: 'non-source workflow dependency added',
+            expectedLogCounts: expectedFullRediscovery,
+            write: async () => {
+              await fs.writeFile(
+                files.buildInput,
+                JSON.stringify({ value: 'json-stable' })
+              );
+              await fs.writeFile(
+                files.workflow,
+                `import hmrFuzzBuildInput from './hmr-fuzz-build-input.json';
+import { HmrFuzzBox } from './hmr-fuzz-serde';
+import { hmrFuzzSharedHelper } from './hmr-fuzz-shared-helper';
+import { hmrFuzzStep } from './hmr-fuzz-step';
+import { hmrFuzzWorkflowHelper } from './hmr-fuzz-workflow-helper';
+
+export async function hmrFuzzWorkflow() {
+  'use workflow';
+  const stepValue = await hmrFuzzStep();
+  const workflowValue = hmrFuzzWorkflowHelper(
+    new HmrFuzzBox(hmrFuzzSharedHelper(hmrFuzzBuildInput.value))
+  );
+  return { stepValue, workflowValue };
+}
+`
+              );
+            },
+            assert: async () => {
+              await expectWorkflowResult({
+                description:
+                  'non-source dependency rediscovery to affect execution',
+                expected: { kind: 'workflow', value: 'json-stable' },
+              });
+            },
+          },
+          {
+            description: 'non-source workflow dependency body change',
+            expectedLogCounts: expectedHotRebuild,
+            write: async () => {
+              await fs.writeFile(
+                files.buildInput,
+                JSON.stringify({ value: 'json-updated' })
+              );
+            },
+            assert: async () => {
+              await expectWorkflowResult({
+                description:
+                  'non-source dependency body change to affect execution',
+                expected: { kind: 'workflow', value: 'json-updated' },
               });
             },
           },
@@ -1488,8 +1572,8 @@ ${apiFileContent}`
           {
             description: 'workflow file removed from API import',
             expectedLogCounts: {
-              skip: { kind: 'range', min: 0, max: 1 },
-              full: { kind: 'range', min: 1, max: 2 },
+              skip: { min: 0, max: 1 },
+              full: { min: 1, max: 2 },
             },
             write: async () => {
               await fs.rm(files.addedWorkflow, { force: true });
@@ -1516,12 +1600,12 @@ ${apiFileContent}`
           },
         ] as const;
 
-        for (let index = 0; index < fullCases.length; index++) {
-          const fullCase = fullCases[index];
+        for (let index = 0; index < rebuildCases.length; index++) {
+          const rebuildCase = rebuildCases[index];
           const logCursor = await readDevServerLogCursor();
-          await fullCase.write(index + 1);
-          await fullCase.assert(index + 1);
-          await expectHmrLogCounts(logCursor, fullCase.expectedLogCounts);
+          await rebuildCase.write(index + 1);
+          await rebuildCase.assert();
+          await expectHmrLogCounts(logCursor, rebuildCase.expectedLogCounts);
           snapshot = await waitForGeneratedArtifactStability();
         }
 
