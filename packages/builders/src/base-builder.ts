@@ -1,4 +1,3 @@
-import assert from 'node:assert';
 import { randomUUID } from 'node:crypto';
 import {
   mkdir,
@@ -28,16 +27,16 @@ import {
   createWorkflowEntrypointOptionsCode,
   createWorkflowRouteHandlersCode,
 } from './constants.js';
+import {
+  importGraphHasChild,
+  importParents as legacyImportParents,
+} from './discover-entries-esbuild-plugin.js';
 import { getEsbuildTsconfigOptions } from './esbuild-tsconfig.js';
 import {
   type CompleteDiscoveredEntries,
   type DiscoveredEntries,
   fastDiscoverEntries,
 } from './fast-discovery.js';
-import {
-  importGraphHasChild,
-  importParents as legacyImportParents,
-} from './discover-entries-esbuild-plugin.js';
 import {
   getImportPath,
   resolveModuleSpecifier,
@@ -50,6 +49,15 @@ import { detectWorkflowPatterns } from './transform-utils.js';
 import type { SourcemapMode, WorkflowConfig } from './types.js';
 import { extractWorkflowGraphs } from './workflows-extractor.js';
 import { hasSameContent, writeFileIfChanged } from './write-if-changed.js';
+
+export type WorkflowFileInfo =
+  | { kind: 'untracked' }
+  | { kind: 'asset' }
+  | {
+      kind: 'source';
+      affectsBuild: boolean;
+      importSignature: string;
+    };
 
 const enhancedResolve = promisify(enhancedResolveOriginal);
 const require = createRequire(import.meta.url);
@@ -446,11 +454,12 @@ export abstract class BaseBuilder {
 
   public clearDiscoveredEntriesCache(): void {
     this.discoveredEntries = new WeakMap();
+    this.latestDiscoveredEntries = undefined;
   }
 
-  public fileAffectsWorkflowBuild(file: string): boolean {
+  public getWorkflowFileInfo(file: string): WorkflowFileInfo {
     const discovered = this.latestDiscoveredEntries;
-    assert(discovered, 'Invariant: expected completed workflow discovery');
+    if (!discovered) return { kind: 'untracked' };
 
     const normalizedFile = resolve(this.config.workingDir, file).replace(
       /\\/g,
@@ -461,12 +470,17 @@ export abstract class BaseBuilder {
       ...discovered.discoveredWorkflows,
       ...discovered.discoveredSerdeFiles,
     ];
-    return roots.some(
+    const affectsBuild = roots.some(
       (root) =>
         root === normalizedFile ||
         importGraphHasChild(discovered.importParents, root, normalizedFile) ||
         importGraphHasChild(discovered.importParents, normalizedFile, root)
     );
+    const importSignature = discovered.importSignatures.get(normalizedFile);
+    if (importSignature !== undefined) {
+      return { kind: 'source', affectsBuild, importSignature };
+    }
+    return affectsBuild ? { kind: 'asset' } : { kind: 'untracked' };
   }
 
   public clearManifestTransformCache(): void {
@@ -598,6 +612,7 @@ export abstract class BaseBuilder {
       discoveredSerdeFiles: new Set(),
       discoveredFiles: new Set(),
       importParents: new Map(),
+      importSignatures: new Map(),
     };
 
     const discoverStart = Date.now();
@@ -1753,6 +1768,7 @@ ${createWorkflowRouteHandlersCode(`workflowEntrypoint(workflowCode${workflowEntr
             ...discoveredEntries,
             importParents:
               discoveredEntries.importParents ?? legacyImportParents,
+            importSignatures: discoveredEntries.importSignatures ?? new Map(),
             discoveredFiles: discoveredEntries.discoveredFiles ?? new Set(),
           };
 

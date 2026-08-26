@@ -53,12 +53,14 @@ export interface DiscoveredEntries {
   discoveredWorkflows: Set<string>;
   discoveredSerdeFiles: Set<string>;
   importParents?: ImportParents;
+  importSignatures?: Map<string, string>;
   /** Source files visited by discovery or consumed by the workflow bundle. */
   discoveredFiles?: Set<string>;
 }
 
 export interface CompleteDiscoveredEntries extends DiscoveredEntries {
   importParents: ImportParents;
+  importSignatures: Map<string, string>;
   discoveredFiles: Set<string>;
 }
 
@@ -381,7 +383,7 @@ function stripCommentsFromSource(source: string): string {
   return output;
 }
 
-function extractImportSpecifiers(source: string): string[] {
+export function extractImportSpecifiers(source: string): string[] {
   const sourceWithoutComments = stripCommentsFromSource(source);
   if (
     !sourceWithoutComments.includes('import') &&
@@ -402,7 +404,7 @@ function extractImportSpecifiers(source: string): string[] {
     }
   }
 
-  return Array.from(specifiers);
+  return Array.from(specifiers).sort();
 }
 
 function hasWorkflowDependency(dependencies: unknown): boolean {
@@ -1013,6 +1015,7 @@ export async function fastDiscoverEntries({
     }
 
     const specifiers = extractImportSpecifiers(source);
+    state.importSignatures.set(filePath, specifiers.join('\n'));
     if (specifiers.length === 0) {
       return;
     }

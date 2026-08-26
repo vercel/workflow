@@ -1022,6 +1022,9 @@ importers:
       vite:
         specifier: 7.3.6
         version: 7.3.6(@types/node@22.19.0)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.44.0)(tsx@4.20.6)(yaml@2.9.0)
+      vitest:
+        specifier: 'catalog:'
+        version: 4.1.10(@opentelemetry/api@1.9.1)(@types/node@22.19.0)(@vitest/coverage-v8@4.1.10)(jsdom@26.1.0)(vite@7.3.6(@types/node@22.19.0)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.44.0)(tsx@4.20.6)(yaml@2.9.0))
 
   packages/vitest:
     dependencies:
@@ -20839,7 +20842,7 @@ snapshots:
       '@types/shimmer': 1.2.0
       import-in-the-middle: 1.15.0
       require-in-the-middle: 7.5.2
-      semver: 7.8.2
+      semver: 7.8.5
       shimmer: 1.2.1
     transitivePeerDependencies:
       - supports-color
@@ -32505,7 +32508,7 @@ snapshots:
 
   node-abi@3.89.0:
     dependencies:
-      semver: 7.8.2
+      semver: 7.8.5
     optional: true
 
   node-abort-controller@3.1.1: {}
@@ -34778,8 +34781,7 @@ snapshots:
 
   semver@7.8.2: {}
 
-  semver@7.8.5:
-    optional: true
+  semver@7.8.5: {}
 
   send@1.2.0:
     dependencies:

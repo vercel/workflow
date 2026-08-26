@@ -1,6 +1,6 @@
 export type { WorkflowManifest } from './apply-swc-transform.js';
 export { applySwcTransform } from './apply-swc-transform.js';
-export { BaseBuilder } from './base-builder.js';
+export { BaseBuilder, type WorkflowFileInfo } from './base-builder.js';
 export { createBuildQueue } from './build-queue.js';
 export {
   createBaseBuilderConfig,
@@ -24,6 +24,7 @@ export {
   importGraphHasChild,
   parentHasChild,
 } from './discover-entries-esbuild-plugin.js';
+export { extractImportSpecifiers } from './fast-discovery.js';
 export {
   clearModuleSpecifierCache,
   getImportPath,
