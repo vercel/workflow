@@ -1443,7 +1443,7 @@ export async function hmrFuzzWorkflow() {
           },
           {
             description: 'non-source workflow dependency body change',
-            expectedLogCounts: expectedHotRebuild,
+            expectedLogCounts: expectedFullRediscovery,
             write: async () => {
               await fs.writeFile(
                 files.buildInput,
@@ -1572,8 +1572,8 @@ ${apiFileContent}`
           {
             description: 'workflow file removed from API import',
             expectedLogCounts: {
-              skip: { min: 0, max: 1 },
-              full: { min: 1, max: 2 },
+              skip: { kind: 'range', min: 0, max: 1 },
+              full: { kind: 'range', min: 1, max: 2 },
             },
             write: async () => {
               await fs.rm(files.addedWorkflow, { force: true });
