@@ -1159,6 +1159,77 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
     agent.assertNoPendingInterceptors();
   });
 
+  it('rejects a non-empty run_started continuation without its trailing cursor', async () => {
+    const origin =
+      WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
+    const agent = new MockAgent();
+    agent.disableNetConnect();
+
+    agent
+      .get(origin)
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events/run_started',
+        method: 'POST',
+        headers: { accept: V4_FRAME_CONTENT_TYPE },
+      })
+      .reply(
+        200,
+        encodeFrame(
+          {
+            eventId: 'evnt_1',
+            runId: 'wrun_1',
+            eventType: 'run_created',
+            createdAt: CREATED_AT,
+            eventData: {
+              deploymentId: 'dpl_1',
+              workflowName: 'workflow',
+              input: null,
+            },
+          },
+          new Uint8Array()
+        ),
+        {
+          headers: {
+            'content-type': V4_FRAME_CONTENT_TYPE,
+            'x-wf-max-events': '10000',
+          },
+        }
+      );
+    agent
+      .get(origin)
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events?returnAll=true&cursor=eid%3Aevnt_1&remoteRefBehavior=resolve',
+        method: 'GET',
+      })
+      .reply(
+        200,
+        Buffer.concat([
+          encodeFrame(
+            {
+              eventId: 'evnt_2',
+              runId: 'wrun_1',
+              eventType: 'run_started',
+              createdAt: CREATED_AT,
+            },
+            new Uint8Array()
+          ),
+          encodeFrame({ _end: 1, hasMore: false }, new Uint8Array()),
+        ]),
+        { headers: { 'content-type': V4_FRAME_CONTENT_TYPE } }
+      );
+
+    await expect(
+      createWorkflowRunStartedEventV4(
+        { runId: 'wrun_1', specVersion: 5 },
+        { token: 'test-token', dispatcher: agent }
+      )
+    ).rejects.toMatchObject({
+      code: 'SCHEMA_VALIDATION',
+      message: 'v4 createEvent: non-empty continuation missing cursor',
+    });
+    agent.assertNoPendingInterceptors();
+  });
+
   it('requires the event-stream response requested by run_started', async () => {
     const origin =
       WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';

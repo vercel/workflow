@@ -1587,6 +1587,12 @@ async function consumeReplayLogResponse(
     { cursor, remoteRefBehavior: 'resolve' },
     config
   );
+  if (suffix.events.length > 0 && !suffix.cursor) {
+    throw new WorkflowWorldError(
+      'v4 createEvent: non-empty continuation missing cursor',
+      { code: 'SCHEMA_VALIDATION' }
+    );
+  }
   return {
     events: [...consumed.events, ...suffix.events],
     cursor: suffix.cursor ?? cursor,
