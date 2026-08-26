@@ -1050,7 +1050,7 @@ export async function hmrFuzzWorkflow() {
   const workflowValue = hmrFuzzWorkflowHelper(
     new HmrFuzzBox(hmrFuzzSharedHelper('workflow-${iteration}'))
   );
-  return { stepValue, workflowValue };
+  return { stepValue, workflowValue: new HmrFuzzBox(workflowValue) };
 }
 `
             ),
@@ -1154,7 +1154,7 @@ ${apiFileContent}`
         const runWorkflow = async () => {
           const run = await start<
             [],
-            { stepValue: string; workflowValue: string }
+            { stepValue: string; workflowValue: { label: string } }
           >(workflow, []);
           return await run.returnValue;
         };
@@ -1180,11 +1180,11 @@ ${apiFileContent}`
                   expect(result.stepValue).toContain(expected.value);
                   return;
                 case 'workflow':
-                  expect(result.workflowValue).toContain(expected.value);
+                  expect(result.workflowValue.label).toContain(expected.value);
                   return;
                 case 'both':
                   expect(result.stepValue).toContain(expected.stepValue);
-                  expect(result.workflowValue).toContain(
+                  expect(result.workflowValue.label).toContain(
                     expected.workflowValue
                   );
                   return;
@@ -1260,7 +1260,7 @@ export async function hmrFuzzWorkflow() {
   const workflowValue = hmrFuzzWorkflowHelper(
     new HmrFuzzBox(hmrFuzzSharedHelper('workflow-body-${iteration}'))
   );
-  return { stepValue, workflowValue };
+  return { stepValue, workflowValue: new HmrFuzzBox(workflowValue) };
 }
 `,
           },
@@ -1303,11 +1303,10 @@ export function hmrFuzzWorkflowHelper(value: HmrFuzzBox) {
             file: files.serde,
             kind: 'serde',
             expectedLogCounts: expectedHotRebuild,
-            expectedResult: () =>
+            expectedResult: (iteration: number) =>
               ({
-                kind: 'both',
-                stepValue: 'shared-body-5',
-                workflowValue: 'shared-body-5',
+                kind: 'workflow',
+                value: `serde-body-${iteration}`,
               }) satisfies ExpectedWorkflowResult,
             source: (iteration: number) => `export class HmrFuzzBox {
   static classId = 'HmrFuzzBox';
@@ -1344,7 +1343,7 @@ export function hmrFuzzWorkflowHelper(value: HmrFuzzBox) {
           }
 
           snapshot = await waitForGeneratedArtifactStability();
-          if (testCase.kind === 'workflow') {
+          if (testCase.kind === 'workflow' || testCase.kind === 'step') {
             expect(snapshot.stepMtimeMs).toBe(previousSnapshot.stepMtimeMs);
           } else {
             expect(snapshot.stepMtimeMs).toBeGreaterThanOrEqual(
@@ -1376,7 +1375,7 @@ export async function hmrFuzzWorkflow() {
   const workflowValue = hmrFuzzWorkflowHelper(
     new HmrFuzzBox(hmrFuzzSharedHelper(hmrFuzzImportedValue))
   );
-  return { stepValue, workflowValue };
+  return { stepValue, workflowValue: new HmrFuzzBox(workflowValue) };
 }
 `
               );
@@ -1428,7 +1427,7 @@ export async function hmrFuzzWorkflow() {
   const workflowValue = hmrFuzzWorkflowHelper(
     new HmrFuzzBox(hmrFuzzSharedHelper(hmrFuzzBuildInput.value))
   );
-  return { stepValue, workflowValue };
+  return { stepValue, workflowValue: new HmrFuzzBox(workflowValue) };
 }
 `
               );
@@ -1511,7 +1510,7 @@ export async function hmrFuzzWorkflow() {
   const workflowValue = hmrFuzzWorkflowHelper(
     new HmrFuzzBox(hmrFuzzSharedHelper(hmrFuzzImportedValue))
   );
-  return { stepValue, workflowValue };
+  return { stepValue, workflowValue: new HmrFuzzBox(workflowValue) };
 }
 
 export async function hmrFuzzAddedWorkflow() {
