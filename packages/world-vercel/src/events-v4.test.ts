@@ -1132,9 +1132,10 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
   });
 
   it.each([
-    ['continues a truncated run_started replay', 'eid:evnt_2'],
-    ['rejects a continuation without its trailing cursor', undefined],
-  ])('%s', async (_name, suffixCursor) => {
+    ['continues a truncated run_started replay', 'eid:evnt_2', true],
+    ['rejects a continuation without its trailing cursor', undefined, false],
+    ['rejects a non-advancing continuation cursor', 'eid:evnt_1', false],
+  ])('%s', async (_name, suffixCursor, succeeds) => {
     const origin =
       WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
     const agent = new MockAgent();
@@ -1204,7 +1205,7 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
       { runId: 'wrun_1', specVersion: 5 },
       { token: 'test-token', dispatcher: agent }
     );
-    if (suffixCursor) {
+    if (succeeds) {
       const result = await request;
       expect(result.events.map((event) => event.eventId)).toEqual([
         'evnt_1',
@@ -1214,9 +1215,85 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
     } else {
       await expect(request).rejects.toMatchObject({
         code: 'SCHEMA_VALIDATION',
-        message: 'v4 createEvent: non-empty continuation missing cursor',
+        message: 'v4 createEvent: continuation did not advance cursor',
       });
     }
+    agent.assertNoPendingInterceptors();
+  });
+
+  it('shares the three-continuation limit with a partial run_started POST', async () => {
+    const origin =
+      WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
+    const agent = new MockAgent();
+    agent.disableNetConnect();
+
+    agent
+      .get(origin)
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events/run_started',
+        method: 'POST',
+        headers: { accept: V4_FRAME_CONTENT_TYPE },
+      })
+      .reply(
+        200,
+        encodeFrame(
+          {
+            eventId: 'evnt_1',
+            runId: 'wrun_1',
+            eventType: 'run_created',
+            createdAt: CREATED_AT,
+            eventData: {
+              deploymentId: 'dpl_1',
+              workflowName: 'workflow',
+              input: null,
+            },
+          },
+          new Uint8Array()
+        ),
+        {
+          headers: {
+            'content-type': V4_FRAME_CONTENT_TYPE,
+            'x-wf-max-events': '10000',
+          },
+        }
+      );
+
+    for (const [cursor, eventId] of [
+      ['eid:evnt_1', 'evnt_2'],
+      ['eid:evnt_2', 'evnt_3'],
+      ['eid:evnt_3', 'evnt_4'],
+    ] as const) {
+      agent
+        .get(origin)
+        .intercept({
+          path:
+            '/api/v4/runs/wrun_1/events?returnAll=true' +
+            `&cursor=${encodeURIComponent(cursor)}&remoteRefBehavior=resolve`,
+          method: 'GET',
+        })
+        .reply(
+          200,
+          encodeFrame(
+            {
+              eventId,
+              runId: 'wrun_1',
+              eventType: 'run_started',
+              createdAt: CREATED_AT,
+            },
+            new Uint8Array()
+          ),
+          { headers: { 'content-type': V4_FRAME_CONTENT_TYPE } }
+        );
+    }
+
+    await expect(
+      createWorkflowRunStartedEventV4(
+        { runId: 'wrun_1', specVersion: 5 },
+        { token: 'test-token', dispatcher: agent }
+      )
+    ).rejects.toThrow(
+      'frame stream ended without the end-of-stream sentinel (1 events read)'
+    );
     agent.assertNoPendingInterceptors();
   });
 

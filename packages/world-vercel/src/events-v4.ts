@@ -1476,6 +1476,13 @@ type EventFrameStreamResult = ListEventsV4Result & {
 
 const MAX_PARTIAL_STREAM_CONTINUATIONS = 3;
 
+function isAdvancingCursor(
+  cursor: string | null,
+  previousCursor: string | null
+): cursor is string {
+  return cursor !== null && cursor !== previousCursor;
+}
+
 function partialEventFrameStream(
   events: Event[],
   partialError: WorkflowWorldError
@@ -1567,14 +1574,18 @@ async function consumeReplayLogResponse(
     );
   }
 
-  const suffix = await getWorkflowRunEventsV4(
+  const suffix = await getWorkflowRunEventsV4WithRecovery(
     runId,
     { cursor: page.cursor, remoteRefBehavior: 'resolve' },
-    config
+    config,
+    1
   );
-  if (suffix.events.length > 0 && !suffix.cursor) {
+  if (
+    (suffix.events.length > 0 || suffix.hasMore) &&
+    !isAdvancingCursor(suffix.cursor, page.cursor)
+  ) {
     throw new WorkflowWorldError(
-      'v4 createEvent: non-empty continuation missing cursor',
+      'v4 createEvent: continuation did not advance cursor',
       { code: 'SCHEMA_VALIDATION' }
     );
   }
@@ -1643,15 +1654,15 @@ function paginationToQuery(params: ListEventsV4Params): string {
  * requests. A forward-progress guard prevents retry loops. Explicitly paginated
  * requests retain their one-page contract and surface truncation to the caller.
  */
-export async function getWorkflowRunEventsV4(
+async function getWorkflowRunEventsV4WithRecovery(
   runId: string,
-  params: ListEventsV4Params = {},
-  config?: APIConfig
+  params: ListEventsV4Params,
+  config: APIConfig | undefined,
+  partialContinuations: number
 ): Promise<ListEventsV4Result> {
   const { baseUrl, headers } = await getHttpConfig(config);
   const events: Event[] = [];
   let cursor = params.cursor ?? null;
-  let partialContinuations = 0;
   let consumed: EventFrameStreamResult;
 
   do {
@@ -1665,8 +1676,7 @@ export async function getWorkflowRunEventsV4(
     if (consumed.partialError) {
       if (
         params.limit !== undefined ||
-        !consumed.cursor ||
-        consumed.cursor === cursor ||
+        !isAdvancingCursor(consumed.cursor, cursor) ||
         partialContinuations === MAX_PARTIAL_STREAM_CONTINUATIONS
       ) {
         throw consumed.partialError;
@@ -1677,6 +1687,14 @@ export async function getWorkflowRunEventsV4(
   } while (consumed.partialError);
 
   return { events, cursor: consumed.cursor, hasMore: consumed.hasMore };
+}
+
+export function getWorkflowRunEventsV4(
+  runId: string,
+  params: ListEventsV4Params = {},
+  config?: APIConfig
+): Promise<ListEventsV4Result> {
+  return getWorkflowRunEventsV4WithRecovery(runId, params, config, 0);
 }
 
 /**
