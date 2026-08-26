@@ -1260,12 +1260,10 @@ export function workflowEntrypoint(
                   };
 
                   const recordWorkflowSetupFailure = async (
-                    err: unknown,
-                    orderAfterRunStarted = false
+                    err: unknown
                   ): Promise<boolean> => {
                     const errorCode = getWorkflowSetupErrorCode(err);
                     if (!errorCode) return false;
-                    if (orderAfterRunStarted) await awaitRunReady();
                     await recordFatalRunError({
                       world,
                       workflowRun,
@@ -2375,7 +2373,8 @@ export function workflowEntrypoint(
                         startWorkflowCompile(runInput);
                         startReplayPayloadCache(runInput);
                       } catch (err) {
-                        if (!(await recordWorkflowSetupFailure(err, true))) {
+                        await awaitRunReady();
+                        if (!(await recordWorkflowSetupFailure(err))) {
                           throw err;
                         }
                         return;
@@ -2744,7 +2743,6 @@ export function workflowEntrypoint(
                   let retainedSession: WorkflowSession | null = null;
 
                   // Main replay loop
-                  // biome-ignore lint/correctness/noConstantCondition: intentional loop
                   while (true) {
                     loopIteration++;
 
