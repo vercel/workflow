@@ -1228,7 +1228,10 @@ describe('getWorkflowRunEvents remoteRefBehavior mapping', () => {
         },
         body
       ),
-      encodeFrame({ _end: 1, hasMore: false }, new Uint8Array(0)),
+      encodeFrame(
+        { _end: 1, next: 'eid:evnt_1', hasMore: false },
+        new Uint8Array(0)
+      ),
     ]);
   }
 
@@ -1375,7 +1378,10 @@ describe('getWorkflowRunEvents legacy structured-error compatibility', () => {
         },
         body
       ),
-      encodeFrame({ _end: 1, hasMore: false }, new Uint8Array(0)),
+      encodeFrame(
+        { _end: 1, next: 'eid:evnt_1', hasMore: false },
+        new Uint8Array(0)
+      ),
     ]);
   }
 
