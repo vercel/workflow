@@ -9,7 +9,10 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { BaseBuilder, type DiscoveredEntries } from './base-builder.js';
-import { importGraphHasChild } from './discover-entries-esbuild-plugin.js';
+import {
+  importGraphHasChild,
+  parentHasChild,
+} from './discover-entries-esbuild-plugin.js';
 import type { StandaloneConfig } from './types.js';
 
 class TestBuilder extends BaseBuilder {
@@ -100,6 +103,9 @@ describe('fast workflow discovery', () => {
         normalize(stepFile)
       )
     ).toBe(true);
+    expect(parentHasChild(normalize(entryFile), normalize(stepFile))).toBe(
+      true
+    );
   });
 
   it('replaces the import graph on rediscovery', async () => {
@@ -138,6 +144,9 @@ describe('fast workflow discovery', () => {
         normalize(workflowFile)
       )
     ).toBe(false);
+    expect(parentHasChild(normalize(entryFile), normalize(workflowFile))).toBe(
+      false
+    );
   });
 
   it('discovers relative JS imports whose basename includes .step', async () => {

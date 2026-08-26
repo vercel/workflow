@@ -5,7 +5,10 @@ import { promisify } from 'node:util';
 import enhancedResolveOriginal from 'enhanced-resolve';
 import { findUp } from 'find-up';
 import JSON5 from 'json5';
-import type { ImportParents } from './discover-entries-esbuild-plugin.js';
+import {
+  importParents as legacyImportParents,
+  type ImportParents,
+} from './discover-entries-esbuild-plugin.js';
 import { detectWorkflowPatterns } from './transform-utils.js';
 
 const FAST_DISCOVERY_SOURCE_EXTENSIONS = [
@@ -1045,4 +1048,9 @@ export async function fastDiscoverEntries({
   }
 
   state.discoveredFiles = processedFiles;
+
+  legacyImportParents.clear();
+  for (const [parent, children] of state.importParents) {
+    legacyImportParents.set(parent, new Set(children));
+  }
 }
