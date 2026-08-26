@@ -112,6 +112,7 @@ async function driveHandler(opts: {
   routeModuleBodyStartedAt?: number;
   executionContext?: WorkflowRun['executionContext'];
   persistedWorkflowName?: string;
+  includeRunInput?: boolean;
   streamRunCreatedBeforeResponse?: boolean;
   duplicateStreamedRunCreated?: boolean;
   whileRunStartedPending?: (state: {
@@ -180,6 +181,17 @@ async function driveHandler(opts: {
               runId: workflowRun.runId,
               requestedAt: new Date('2024-01-01T00:00:00.000Z'),
               traceCarrier: opts.traceCarrier,
+              ...(opts.includeRunInput
+                ? {
+                    runInput: {
+                      input: workflowRun.input,
+                      deploymentId: workflowRun.deploymentId,
+                      workflowName: 'workflow',
+                      specVersion: SPEC_VERSION_CURRENT,
+                      executionContext: opts.executionContext,
+                    },
+                  }
+                : {}),
             },
             {
               requestId: 'req_test',
@@ -296,6 +308,7 @@ describe('workflowEntrypoint trace modes', () => {
     await driveHandler({
       runId: 'wrun_trace_streamed_key',
       workflowCode: simpleWorkflow,
+      streamRunCreatedBeforeResponse: true,
       whileRunStartedPending: async ({ getEncryptionKeyForRun }) => {
         await vi.waitFor(() => {
           expect(getEncryptionKeyForRun).toHaveBeenCalledWith(
@@ -308,11 +321,12 @@ describe('workflowEntrypoint trace modes', () => {
   });
 
   it('compiles while run_started is loading, without evaluating early', async () => {
+    vi.stubEnv('WORKFLOW_TURBO', '0');
     let observedOverlap = false;
     const { workflowSpan } = await driveHandler({
       runId: 'wrun_trace_compile_overlap',
       workflowCode: simpleWorkflow,
-      streamRunCreatedBeforeResponse: true,
+      includeRunInput: true,
       whileRunStartedPending: async () => {
         expect(
           exporter
@@ -353,7 +367,8 @@ describe('workflowEntrypoint trace modes', () => {
     );
   });
 
-  it('speculatively compiles the workflow recorded on the run', async () => {
+  it('replaces a wrong initial workflow-name compile with the persisted one', async () => {
+    vi.stubEnv('WORKFLOW_TURBO', '0');
     const persistedWorkflowCode = `async function persistedWorkflow() {
       return 'done';
     }${getWorkflowTransformCode('persistedWorkflow')}`;
@@ -362,6 +377,7 @@ describe('workflowEntrypoint trace modes', () => {
       runId: 'wrun_trace_persisted_workflow',
       workflowCode: persistedWorkflowCode,
       persistedWorkflowName: 'persistedWorkflow',
+      includeRunInput: true,
       streamRunCreatedBeforeResponse: true,
     });
 
@@ -375,6 +391,11 @@ describe('workflowEntrypoint trace modes', () => {
         ([, event]) => event.eventType === 'run_failed'
       )
     ).toBe(false);
+    expect(
+      exporter
+        .getFinishedSpans()
+        .filter((span) => span.name === 'workflow.bundle.compile')
+    ).toHaveLength(2);
   });
 
   it('counts materialized replay events once after observer redelivery', async () => {
@@ -392,9 +413,10 @@ describe('workflowEntrypoint trace modes', () => {
   });
 
   it('does not compile a Node bundle for a known QuickJS run', async () => {
-    await driveHandler({
+    const { getEncryptionKeyForRun } = await driveHandler({
       runId: 'wrun_trace_quickjs_compile',
       workflowCode: simpleWorkflow,
+      includeRunInput: true,
       streamRunCreatedBeforeResponse: true,
       executionContext: { workflowVm: 'quickjs' },
     });
@@ -404,6 +426,11 @@ describe('workflowEntrypoint trace modes', () => {
         .getFinishedSpans()
         .find((span) => span.name === 'workflow.bundle.compile')
     ).toBeUndefined();
+    expect(getEncryptionKeyForRun).toHaveBeenCalledTimes(1);
+    expect(getEncryptionKeyForRun).not.toHaveBeenCalledWith(
+      'wrun_trace_quickjs_compile',
+      undefined
+    );
   });
 
   it('linked (default): nests under the flow route context with a link to the run-origin context', async () => {

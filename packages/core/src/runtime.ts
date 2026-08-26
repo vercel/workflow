@@ -959,6 +959,7 @@ export function workflowEntrypoint(
                   let compiledWorkflowScripts:
                     | ReturnType<typeof compileWorkflowBundle>
                     | undefined;
+                  let compiledWorkflowName: string | undefined;
                   const startWorkflowCompile = await bindActiveTraceContext(
                     (
                       workflow?: Pick<
@@ -967,41 +968,84 @@ export function workflowEntrypoint(
                       >
                     ) => {
                       if (!workflow || useQuickJSVm(workflow)) return;
-                      compiledWorkflowScripts ??= compileWorkflowBundle(
-                        workflowCode,
-                        workflow.workflowName
-                      );
-                      // Terminal runs can return without awaiting compilation.
-                      void compiledWorkflowScripts.catch(() => {});
+                      if (compiledWorkflowName !== workflow.workflowName) {
+                        compiledWorkflowName = workflow.workflowName;
+                        compiledWorkflowScripts = compileWorkflowBundle(
+                          workflowCode,
+                          workflow.workflowName
+                        );
+                        // Terminal runs can return without awaiting compilation.
+                        void compiledWorkflowScripts.catch(() => {});
+                      }
                       return compiledWorkflowScripts;
                     }
                   );
-                  // This handler executes in the deployment that owns the run,
-                  // so the World's run-id overload resolves the current
-                  // deployment key without waiting for a materialized run.
-                  const encryptionKeyPromise = resolveRunEncryptionKey(
-                    world,
-                    runId
-                  );
-                  // Key resolution is speculative. Preserve its rejection for
-                  // the ordered replay consumer without an unhandled rejection.
-                  void encryptionKeyPromise.catch(() => {});
-                  const replayPayloadCache = new ReplayPayloadCache(
-                    encryptionKeyPromise
-                  );
+                  let nodeReplayPreparation:
+                    | {
+                        encryptionKeyPromise: ReturnType<
+                          typeof resolveRunEncryptionKey
+                        >;
+                        replayPayloadCache: ReplayPayloadCache;
+                      }
+                    | undefined;
+                  let encryptionKeyPromise:
+                    | ReturnType<typeof resolveRunEncryptionKey>
+                    | undefined;
+                  const getEncryptionKeyPromise = () => {
+                    if (!encryptionKeyPromise) {
+                      encryptionKeyPromise = resolveRunEncryptionKey(
+                        world,
+                        runId
+                      );
+                      // Resolution is speculative for Node replay and lazy for
+                      // error serialization. Preserve rejection for the
+                      // ordered consumer without an unhandled one.
+                      void encryptionKeyPromise.catch(() => {});
+                    }
+                    return encryptionKeyPromise;
+                  };
+                  const startNodeReplayPreparation = (
+                    workflow?: Pick<WorkflowRun, 'executionContext'>
+                  ) => {
+                    if (!workflow || useQuickJSVm(workflow)) return;
+                    if (!nodeReplayPreparation) {
+                      // This handler executes in the deployment that owns the
+                      // run, so the run-id overload resolves the current
+                      // deployment key without materializing the run again.
+                      const key = getEncryptionKeyPromise();
+                      nodeReplayPreparation = {
+                        encryptionKeyPromise: key,
+                        replayPayloadCache: new ReplayPayloadCache(key),
+                      };
+                    }
+                    return nodeReplayPreparation;
+                  };
+                  // A first-delivery queue payload already carries both the
+                  // workflow name and engine. Start Node-only work before the
+                  // setup request; streamed lifecycle events below replace a
+                  // wrong speculative workflow-name compile with the persisted
+                  // one. Continuations learn both from their first lifecycle
+                  // frame instead.
+                  startWorkflowCompile(runInput);
+                  startNodeReplayPreparation(runInput);
                   const prepareReplayEvent = (event: Event): void => {
-                    replayPayloadCache.prepareEvent(event);
                     if (event.eventType === 'run_created') {
+                      startNodeReplayPreparation(event.eventData);
                       startWorkflowCompile(event.eventData);
                     } else if (
                       event.eventType === 'run_started' &&
                       event.eventData?.workflowName
                     ) {
-                      startWorkflowCompile({
+                      const workflow = {
                         workflowName: event.eventData.workflowName,
                         executionContext: event.eventData.executionContext,
-                      });
+                      };
+                      startNodeReplayPreparation(workflow);
+                      startWorkflowCompile(workflow);
                     }
+                    nodeReplayPreparation?.replayPayloadCache.prepareEvent(
+                      event
+                    );
                   };
                   // Every write this loop makes carries the cursor of the log
                   // it was computed against, and folds a complete returned
@@ -1169,7 +1213,7 @@ export function workflowEntrypoint(
                     // scanned for payload preparation. The cached payloads are
                     // event-id keyed and remain valid; only the scan position
                     // must restart.
-                    replayPayloadCache.resetScan();
+                    nodeReplayPreparation?.replayPayloadCache.resetScan();
                     return replacement;
                   };
 
@@ -2359,7 +2403,6 @@ export function workflowEntrypoint(
                         // wasted list+resolve it would otherwise compute.
                         { requestId, skipPreload: true }
                       );
-                      startWorkflowCompile(runInput);
                       runReadyBarrier = startedPromise;
                       // Turbo backgrounds run_started, so the non-turbo
                       // assignment below never runs. Thread the per-run event
@@ -2729,8 +2772,6 @@ export function workflowEntrypoint(
                       }
                     } // end else (re-ensure needed)
                   }
-
-                  const encryptionKey = await encryptionKeyPromise;
 
                   // The live VM parked at the previous boundary, when the
                   // retention decision kept it. null → this iteration cold-
@@ -3146,6 +3187,13 @@ export function workflowEntrypoint(
                       // Crypto work overlaps VM setup on the replay path and
                       // the appended events' consumption on the resume path;
                       // consumers still deserialize and resolve in event order.
+                      const replayPreparation =
+                        startNodeReplayPreparation(workflowRun);
+                      assert(
+                        replayPreparation,
+                        'Node workflow replay requires payload preparation'
+                      );
+                      const { replayPayloadCache } = replayPreparation;
                       const payloadPrewarm = replayPayloadCache.prewarm(
                         workflowRun,
                         eventLog.events
@@ -3174,7 +3222,8 @@ export function workflowEntrypoint(
                           workflowCode,
                           workflowRun,
                           events: eventLog.events,
-                          encryptionKey,
+                          encryptionKey:
+                            await replayPreparation.encryptionKeyPromise,
                           replayPayloadCache,
                           compiledWorkflowScripts: await compiled,
                           // Turbo: the end-of-run drain inside workflow
@@ -3417,7 +3466,7 @@ export function workflowEntrypoint(
                                   error: await dehydrateRunError(
                                     suspensionError,
                                     runId,
-                                    encryptionKey,
+                                    await getEncryptionKeyPromise(),
                                     globalThis,
                                     (workflowRun?.specVersion ?? 0) >=
                                       SPEC_VERSION_SUPPORTS_COMPRESSION
@@ -3463,7 +3512,7 @@ export function workflowEntrypoint(
                           // The cursor is deliberately left alone: the report
                           // is a lower bound on what was skipped, so the next
                           // incremental read still has to cover the same range.
-                          replayPayloadCache.resetScan();
+                          nodeReplayPreparation?.replayPayloadCache.resetScan();
                         }
 
                         // Open hooks/waits in the log as loaded for this
@@ -4802,7 +4851,7 @@ export function workflowEntrypoint(
                                 error: await dehydrateRunError(
                                   terminalError,
                                   runId,
-                                  encryptionKey,
+                                  await getEncryptionKeyPromise(),
                                   globalThis,
                                   (workflowRun?.specVersion ?? 0) >=
                                     SPEC_VERSION_SUPPORTS_COMPRESSION
