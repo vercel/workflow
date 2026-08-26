@@ -23,6 +23,79 @@ const importEsm = new Function('specifier', 'return import(specifier)') as <T>(
   specifier: string
 ) => Promise<T>;
 
+const appEntrypoints = new Set([
+  'page',
+  'route',
+  'layout',
+  'default',
+  'error',
+  'loading',
+  'template',
+  'not-found',
+  'forbidden',
+  'unauthorized',
+  'sitemap',
+  'icon',
+  'apple-icon',
+  'opengraph-image',
+  'twitter-image',
+]);
+const appRootEntrypoints = new Set([
+  'global-error',
+  'global-not-found',
+  'robots',
+  'manifest',
+]);
+const rootEntrypoints = new Set([
+  'instrumentation',
+  'instrumentation-client',
+  'middleware',
+  'proxy',
+]);
+const numberedMetadataEntrypoint =
+  /^(?:icon|apple-icon|opengraph-image|twitter-image)\d+$/;
+const mdxComponentsEntrypoint = /^mdx-components\.[jt]sx?$/;
+
+export function isNextEntrypoint(
+  entry: string,
+  pageExtensions: readonly string[]
+): boolean {
+  const path = entry.split('/');
+  const filename = path.at(-1)!;
+  const inSrc = path[0] === 'src';
+  const rootDepth = inSrc ? 2 : 1;
+  if (path.length === rootDepth && mdxComponentsEntrypoint.test(filename)) {
+    return true;
+  }
+
+  const extension = [...pageExtensions]
+    .sort((a, b) => b.length - a.length)
+    .find((extension) => entry.endsWith(`.${extension}`));
+  if (!extension) return false;
+
+  const name = filename.slice(0, -extension.length - 1);
+  const directory = path[inSrc ? 1 : 0];
+
+  if (directory === 'pages') return true;
+
+  if (directory === 'app') {
+    const segments = path.slice(inSrc ? 2 : 1, -1);
+    if (segments.some((segment) => segment.startsWith('_'))) return false;
+
+    if (appEntrypoints.has(name) || numberedMetadataEntrypoint.test(name)) {
+      return true;
+    }
+    const appRootDepth = inSrc ? 3 : 2;
+    return path.length === appRootDepth && appRootEntrypoints.has(name);
+  }
+
+  if (path.length === rootDepth) {
+    return rootEntrypoints.has(name);
+  }
+
+  return false;
+}
+
 // Create the eager Next builder dynamically by extending the ESM BaseBuilder.
 // Exported as getNextBuilderEager() to allow CommonJS modules to import from
 // the ESM @workflow/builders package via dynamic import at runtime.
@@ -622,31 +695,12 @@ export async function getNextBuilderEager(
 
     protected async getInputFiles(): Promise<string[]> {
       const inputFiles = await super.getInputFiles();
-      return inputFiles.filter((file) => {
-        const entry = relative(this.config.workingDir, file).replaceAll(
-          '\\',
-          '/'
-        );
-
-        // Match App Router route, page, and layout entrypoints in app/ or src/app/.
-        if (/^(?:app|src\/app)\/(?:.*\/)?(?:route|page|layout)\./.test(entry)) {
-          return true;
-        }
-
-        // Match every Pages Router entrypoint in pages/ or src/pages/.
-        if (/^(?:pages|src\/pages)\//.test(entry)) {
-          return true;
-        }
-
-        // Match Next.js root entrypoints at the project root or under src/.
-        return ['instrumentation', 'middleware', 'proxy'].some((name) =>
-          this.config.pageExtensions.some(
-            (extension) =>
-              entry === `${name}.${extension}` ||
-              entry === `src/${name}.${extension}`
-          )
-        );
-      });
+      return inputFiles.filter((file) =>
+        isNextEntrypoint(
+          relative(this.config.workingDir, file).replaceAll('\\', '/'),
+          this.config.pageExtensions
+        )
+      );
     }
 
     private async writeFunctionsConfig(outputDir: string) {
