@@ -5,6 +5,7 @@ import {
   createRebuildScheduler,
   createSourceSnapshotFromSource,
   extractImportSignature,
+  isSourceFile,
   type SourceSnapshot,
   sourceSnapshotsMatch,
   stripCommentsFromSource,
@@ -71,6 +72,11 @@ describe('watch-rebuild scheduling', () => {
 });
 
 describe('watch-rebuild source snapshots', () => {
+  test('only treats JavaScript and TypeScript files as source', () => {
+    expect(isSourceFile('/app/workflow.ts')).toBe(true);
+    expect(isSourceFile('/app/workflow.json')).toBe(false);
+  });
+
   test('ignores imports inside line and block comments', () => {
     const source = stripCommentsFromSource(`
 import * as active from './workflows/active';
@@ -213,6 +219,28 @@ export const allWorkflows = {} as const;
             sources.get(file) ?? '',
             detectWorkflowPatterns
           ),
+        sourceSnapshots: new Map(),
+      })
+    ).resolves.toEqual({ kind: 'full' });
+  });
+
+  test('non-source build inputs require full rediscovery', async () => {
+    const buildInput = '/app/workflow.json';
+
+    await expect(
+      classifyRebuild({
+        discoveredEntries: {
+          discoveredSteps: new Set(),
+          discoveredWorkflows: new Set(),
+          discoveredSerdeFiles: new Set(),
+          discoveredFiles: new Set([buildInput]),
+        },
+        files: [buildInput],
+        inputFiles: [],
+        parentHasChild: () => false,
+        readSnapshot: async () => {
+          throw new Error('Non-source inputs are not hot rebuilt');
+        },
         sourceSnapshots: new Map(),
       })
     ).resolves.toEqual({ kind: 'full' });
