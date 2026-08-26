@@ -1,5 +1,15 @@
 # @workflow/builders
 
+## 5.0.0-beta.46
+
+### Patch Changes
+
+- [#3795](https://github.com/vercel/workflow/pull/3795) [`f806f8c`](https://github.com/vercel/workflow/commit/f806f8c258fb9ba45fec8b0e4919f55b0bf81a3f) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Deduplicate identical pnpm peer-variant copies of a package instead of failing the build with a duplicate step/workflow ID error. Different implementations that map to the same ID still fail.
+
+- Updated dependencies [[`d9e0777`](https://github.com/vercel/workflow/commit/d9e0777eb8b1ce5f3be3fe865bc5a17fdbdb9d5d), [`d9e0777`](https://github.com/vercel/workflow/commit/d9e0777eb8b1ce5f3be3fe865bc5a17fdbdb9d5d), [`82e2678`](https://github.com/vercel/workflow/commit/82e267893917e06f5d3ce316baefc27cd024a912), [`556f3f0`](https://github.com/vercel/workflow/commit/556f3f080a33f8673cf3c08805997dba4e4d865e)]:
+  - @workflow/core@5.0.0-beta.46
+  - @workflow/errors@5.0.0-beta.18
+
 ## 5.0.0-beta.45
 
 ### Patch Changes

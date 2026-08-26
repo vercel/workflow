@@ -1,5 +1,16 @@
 # @workflow/astro
 
+## 5.0.0-beta.46
+
+### Patch Changes
+
+- [#3688](https://github.com/vercel/workflow/pull/3688) [`0750fe8`](https://github.com/vercel/workflow/commit/0750fe8958f50ee354cd24fe3f02a37c801bc4dc) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Stop rewriting generated files whose content is unchanged, so a no-op rebuild no longer invalidates them in the dev server.
+
+- Updated dependencies [[`f806f8c`](https://github.com/vercel/workflow/commit/f806f8c258fb9ba45fec8b0e4919f55b0bf81a3f)]:
+  - @workflow/builders@5.0.0-beta.46
+  - @workflow/rollup@5.0.0-beta.46
+  - @workflow/vite@5.0.0-beta.46
+
 ## 5.0.0-beta.45
 
 ### Patch Changes

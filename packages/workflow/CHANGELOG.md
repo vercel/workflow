@@ -1,5 +1,22 @@
 # workflow
 
+## 5.0.0-beta.46
+
+### Patch Changes
+
+- Updated dependencies [[`0750fe8`](https://github.com/vercel/workflow/commit/0750fe8958f50ee354cd24fe3f02a37c801bc4dc), [`d9e0777`](https://github.com/vercel/workflow/commit/d9e0777eb8b1ce5f3be3fe865bc5a17fdbdb9d5d), [`d9e0777`](https://github.com/vercel/workflow/commit/d9e0777eb8b1ce5f3be3fe865bc5a17fdbdb9d5d), [`82e2678`](https://github.com/vercel/workflow/commit/82e267893917e06f5d3ce316baefc27cd024a912), [`556f3f0`](https://github.com/vercel/workflow/commit/556f3f080a33f8673cf3c08805997dba4e4d865e)]:
+  - @workflow/astro@5.0.0-beta.46
+  - @workflow/sveltekit@5.0.0-beta.46
+  - @workflow/core@5.0.0-beta.46
+  - @workflow/cli@5.0.0-beta.46
+  - @workflow/nest@5.0.0-beta.46
+  - @workflow/next@5.0.0-beta.46
+  - @workflow/nitro@5.0.0-beta.46
+  - @workflow/rollup@5.0.0-beta.46
+  - @workflow/typescript-plugin@5.0.0-beta.5
+  - @workflow/errors@5.0.0-beta.18
+  - @workflow/nuxt@5.0.0-beta.46
+
 ## 5.0.0-beta.45
 
 ### Patch Changes

@@ -1,5 +1,18 @@
 # @workflow/vitest
 
+## 5.0.0-beta.46
+
+### Patch Changes
+
+- [#3794](https://github.com/vercel/workflow/pull/3794) [`d9e0777`](https://github.com/vercel/workflow/commit/d9e0777eb8b1ce5f3be3fe865bc5a17fdbdb9d5d) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - `waitForHook()` accepts `notHookId` to skip a hook the caller already resumed, whose `hook_received` may not be written yet.
+
+- Updated dependencies [[`f806f8c`](https://github.com/vercel/workflow/commit/f806f8c258fb9ba45fec8b0e4919f55b0bf81a3f), [`d9e0777`](https://github.com/vercel/workflow/commit/d9e0777eb8b1ce5f3be3fe865bc5a17fdbdb9d5d), [`d9e0777`](https://github.com/vercel/workflow/commit/d9e0777eb8b1ce5f3be3fe865bc5a17fdbdb9d5d), [`d9e0777`](https://github.com/vercel/workflow/commit/d9e0777eb8b1ce5f3be3fe865bc5a17fdbdb9d5d), [`82e2678`](https://github.com/vercel/workflow/commit/82e267893917e06f5d3ce316baefc27cd024a912), [`556f3f0`](https://github.com/vercel/workflow/commit/556f3f080a33f8673cf3c08805997dba4e4d865e)]:
+  - @workflow/builders@5.0.0-beta.46
+  - @workflow/core@5.0.0-beta.46
+  - @workflow/world@5.0.0-beta.31
+  - @workflow/rollup@5.0.0-beta.46
+  - @workflow/world-local@5.0.0-beta.40
+
 ## 5.0.0-beta.45
 
 ### Patch Changes

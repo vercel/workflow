@@ -1,5 +1,23 @@
 # @workflow/core
 
+## 5.0.0-beta.46
+
+### Patch Changes
+
+- [#3794](https://github.com/vercel/workflow/pull/3794) [`d9e0777`](https://github.com/vercel/workflow/commit/d9e0777eb8b1ce5f3be3fe865bc5a17fdbdb9d5d) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Keep the eager `hook_received` write for the internal resume that records a step-issued abort, so it stays committed before the step completes.
+
+- [#3794](https://github.com/vercel/workflow/pull/3794) [`d9e0777`](https://github.com/vercel/workflow/commit/d9e0777eb8b1ce5f3be3fe865bc5a17fdbdb9d5d) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - `resumeHook()` no longer writes the `hook_received` event itself on the lazy path: the queue consumer creates it from the queue message, so a resume costs one round trip. A resume against an already-ended run now resolves instead of throwing `HookNotFoundError`.
+
+- [#3609](https://github.com/vercel/workflow/pull/3609) [`82e2678`](https://github.com/vercel/workflow/commit/82e267893917e06f5d3ce316baefc27cd024a912) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Retain workflow VMs across workflow attribute writes.
+
+- [#3604](https://github.com/vercel/workflow/pull/3604) [`556f3f0`](https://github.com/vercel/workflow/commit/556f3f080a33f8673cf3c08805997dba4e4d865e) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Retain workflow VMs across safe step boundaries that also contain open hooks, and bound guest-code serialization diagnostics to five samples plus an exact count.
+
+- Updated dependencies [[`d9e0777`](https://github.com/vercel/workflow/commit/d9e0777eb8b1ce5f3be3fe865bc5a17fdbdb9d5d)]:
+  - @workflow/world@5.0.0-beta.31
+  - @workflow/errors@5.0.0-beta.18
+  - @workflow/world-local@5.0.0-beta.40
+  - @workflow/world-vercel@5.0.0-beta.42
+
 ## 5.0.0-beta.45
 
 ### Patch Changes
