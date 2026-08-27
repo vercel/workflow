@@ -393,6 +393,37 @@ describe('workflowEntrypoint trace modes', () => {
     );
   });
 
+  it('does not leak a streamed replay-load rejection after synchronous setup failure', async () => {
+    vi.stubEnv('WORKFLOW_TURBO', '0');
+    const unhandledRejection = vi.fn();
+    process.on('unhandledRejection', unhandledRejection);
+
+    try {
+      const { eventsCreate } = await driveHandler({
+        runId: 'wrun_trace_streamed_invalid_vm',
+        workflowCode: simpleWorkflow,
+        includeRunInput: true,
+        streamRunCreatedBeforeResponse: true,
+        executionContext: { workflowVm: 'bogus' },
+      });
+
+      expect(eventsCreate).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({
+          eventType: 'run_failed',
+          eventData: expect.objectContaining({
+            errorCode: RUN_ERROR_CODES.RUNTIME_ERROR,
+          }),
+        }),
+        expect.anything()
+      );
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(unhandledRejection).not.toHaveBeenCalled();
+    } finally {
+      process.off('unhandledRejection', unhandledRejection);
+    }
+  });
+
   it('does not compile a Node bundle for a known QuickJS run', async () => {
     const { getEncryptionKeyForRun } = await driveHandler({
       runId: 'wrun_trace_quickjs_compile',

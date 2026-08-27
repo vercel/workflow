@@ -2302,10 +2302,7 @@ export function workflowEntrypoint(
                         );
                         return;
                       }
-                      if (WorkflowRuntimeError.is(err)) {
-                        await recordWorkflowSetupFailure(err);
-                        return;
-                      }
+                      if (await recordWorkflowSetupFailure(err)) return;
                       throw err;
                     }
                   }
@@ -2454,8 +2451,18 @@ export function workflowEntrypoint(
                               replayEventObserver,
                             })
                         );
-                        startWorkflowCompile(runInput);
-                        startReplayPayloadCache(runInput);
+                        try {
+                          startWorkflowCompile(runInput);
+                          startReplayPayloadCache(runInput);
+                        } catch (setupError) {
+                          try {
+                            await replayLoad;
+                          } catch {
+                            // Preserve the synchronous setup error after
+                            // observing the in-flight replay load.
+                          }
+                          throw setupError;
+                        }
                         const result = await replayLoad;
                         workflowRun = result.run;
                         maxEventsLimit = clampMaxEvents(result.maxEvents);

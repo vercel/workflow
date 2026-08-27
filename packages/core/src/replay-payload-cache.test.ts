@@ -123,6 +123,7 @@ describe('ReplayPayloadCache', () => {
     const events = makeEvents(payloads.slice(1));
 
     const warming = cache.prewarm(run, events);
+    await Promise.resolve();
     expect(preparer).toHaveBeenCalledTimes(4);
     for (const resolve of resolvers.reverse()) resolve();
     await warming;

@@ -8,14 +8,6 @@ import {
 
 type ReplayPayloadField = 'result' | 'error' | 'payload';
 
-function isPromiseLike<T>(value: unknown): value is PromiseLike<T> {
-  return (
-    typeof value === 'object' &&
-    value !== null &&
-    typeof (value as PromiseLike<T>).then === 'function'
-  );
-}
-
 function isMemoizablePrimitive(value: unknown): boolean {
   if (value === null) return true;
   const type = typeof value;
@@ -157,13 +149,7 @@ export class ReplayPayloadCache {
 
   /** Normalize synchronous and asynchronous preparers to one promise contract. */
   private async runPreparation(value: unknown): Promise<PreparedReplayPayload> {
-    const encryptionKey = this.encryptionKey;
-    return this.preparer(
-      value,
-      isPromiseLike<PayloadKey | undefined>(encryptionKey)
-        ? await encryptionKey
-        : encryptionKey
-    );
+    return this.preparer(value, await this.encryptionKey);
   }
 
   /** Start one event's binary payload unless another path already did. */
