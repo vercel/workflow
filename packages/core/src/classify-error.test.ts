@@ -130,6 +130,16 @@ describe('classifyRunError', () => {
     expect(classifyRunError(native)).toBe(RUN_ERROR_CODES.USER_ERROR);
   });
 
+  it('classifies an explicit world contract error as WORLD_CONTRACT_ERROR', () => {
+    expect(
+      classifyRunError(
+        new WorkflowWorldError('unknown terminal event stream error', {
+          code: 'WORLD_CONTRACT_ERROR',
+        })
+      )
+    ).toBe(RUN_ERROR_CODES.WORLD_CONTRACT_ERROR);
+  });
+
   it('classifies a TRANSPORT error as WORLD_CONTRACT_ERROR (backend fault, not USER_ERROR)', () => {
     // Transport blips are normally redelivered via the queue (see
     // isRetryableWorldError); if one ever reaches terminal classification it is
@@ -184,6 +194,18 @@ describe('isRetryableWorldError', () => {
         new WorkflowWorldError('timed out after 60000ms', { code: 'TIMEOUT' })
       )
     ).toBe(true);
+  });
+
+  it('does NOT treat a lost event payload as retryable', () => {
+    // The world layer raises this when the backend reports that an event's
+    // stored payload is gone (`payload-missing` terminal frame). Redelivering
+    // re-reads the same absent object forever, which is what turned one lost
+    // payload into 12,932 reads of the same run in 26 minutes.
+    expect(
+      isRetryableWorldError(
+        new CorruptedEventLogError('payload no longer exists in storage')
+      )
+    ).toBe(false);
   });
 
   it('does NOT treat 4xx (other than 429) as retryable', () => {

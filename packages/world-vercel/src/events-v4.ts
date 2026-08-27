@@ -21,7 +21,9 @@
  * bytes — this module stays at the wire-bytes layer.
  */
 
+import { CorruptedEventLogError, WorkflowWorldError } from '@workflow/errors';
 import { decode } from 'cbor-x';
+import { z } from 'zod';
 import { decodeFrames, encodeFrame, V4_FRAME_CONTENT_TYPE } from './frames.js';
 import {
   getEventsDispatcher,
@@ -371,6 +373,67 @@ function readHeader(
 }
 
 /**
+ * Terminal error frame. The backend sends this when it cannot finish a frame
+ * stream and retrying will not help — the response already committed to `200`
+ * with its first byte, so there is no status code left to carry the failure.
+ */
+const EventStreamErrorSchema = z.object({
+  _error: z.literal(1),
+  code: z.string(),
+  message: z.string().optional(),
+});
+
+/**
+ * An event's payload object is gone from the backend's blob storage. The
+ * event row still references it, so every later read of this log fails the
+ * same way.
+ */
+const PAYLOAD_MISSING_ERROR_CODE = 'payload-missing';
+
+/**
+ * Turn a terminal error frame into the error the runtime should act on.
+ *
+ * `payload-missing` means an event's stored payload is gone, so this run can
+ * never replay: it must fail, not retry. That distinction is the whole point
+ * of the frame. Without it a permanent failure arrived as a truncated body,
+ * which is what a dropped socket looks like too, so the runtime kept
+ * redelivering the same doomed replay (one production run re-read a single
+ * missing payload 12,932 times in 26 minutes).
+ *
+ * `CorruptedEventLogError` is the right shape for it: the log references a
+ * payload nothing can produce, `isRetryableWorldError` leaves it alone, and
+ * `classifyRunError` already maps it to `CORRUPTED_EVENT_LOG`.
+ *
+ * An unrecognized code keeps the conservative reading — a `WorkflowWorldError`
+ * with no retryable code, so it is terminal rather than a redelivery loop, and
+ * a future code can be handled explicitly without a client release being
+ * required first.
+ */
+function streamErrorFrameToError(
+  meta: Record<string, unknown>,
+  opName: string
+): Error {
+  const parsed = EventStreamErrorSchema.safeParse(meta);
+  if (!parsed.success) {
+    return new WorkflowWorldError(
+      `v4 ${opName}: malformed terminal error frame`,
+      { code: 'SCHEMA_VALIDATION', cause: parsed.error }
+    );
+  }
+  const { code, message } = parsed.data;
+  const detail = message ?? '(no detail)';
+  if (code === PAYLOAD_MISSING_ERROR_CODE) {
+    return new CorruptedEventLogError(
+      `the event log references a payload that no longer exists in storage: ${detail}`
+    );
+  }
+  return new WorkflowWorldError(
+    `v4 ${opName}: stream ended with terminal error "${code}": ${detail}`,
+    { code: 'WORLD_CONTRACT_ERROR' }
+  );
+}
+
+/**
  * GET /api/v4/runs/:runId/events/:eventId
  *
  * Returns one v4 frame: the full event entity (CBOR-decoded from the
@@ -413,6 +476,12 @@ export async function getEventV4(
   // GET emits a single frame (no sentinel); decodeFrames returns at EOF
   // after yielding it.
   for await (const frame of decodeFrames(chunks)) {
+    if (frame.meta._error === 1) {
+      throw streamErrorFrameToError(frame.meta, 'getEvent');
+    }
+    if (Object.keys(frame.meta).some((key) => key.startsWith('_'))) {
+      throw new Error('v4 getEvent: unexpected control frame');
+    }
     return { event: frame.meta as unknown as DecodedV4Event, body: frame.body };
   }
   throw new Error(`v4 getEvent: empty frame stream for ${eventId}`);
@@ -492,6 +561,9 @@ async function consumeListFrameStream(
       if (typeof frame.meta.next === 'string') next = frame.meta.next;
       sawEndSentinel = true;
       break;
+    }
+    if (frame.meta._error === 1) {
+      throw streamErrorFrameToError(frame.meta, opName);
     }
     events.push({
       event: frame.meta as unknown as DecodedV4Event,

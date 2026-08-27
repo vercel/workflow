@@ -1,4 +1,5 @@
 import {
+  CorruptedEventLogError,
   EntityConflictError,
   RunExpiredError,
   ThrottleError,
@@ -160,6 +161,109 @@ describe('getWorkflowRunEventsV4 over HTTP', () => {
     agent.assertNoPendingInterceptors();
   });
 
+  // A permanently missing payload arrives as a terminal frame rather than a
+  // truncated body, because a truncated body is what a dropped socket looks
+  // like: the runtime cannot tell "retry me" from "this can never work" and
+  // redelivers forever. One production run re-read a single missing payload
+  // 12,932 times in 26 minutes before this frame existed.
+  it('fails the run on a terminal payload-missing frame instead of retrying', async () => {
+    const origin =
+      WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
+    const agent = new MockAgent();
+    agent.disableNetConnect();
+
+    agent
+      .get(origin)
+      .intercept({ path: '/api/v4/runs/wrun_1/events', method: 'GET' })
+      .reply(
+        200,
+        Buffer.concat([
+          encodeFrame(
+            {
+              eventId: 'evnt_1',
+              runId: 'wrun_1',
+              eventType: 'run_created',
+              createdAt: '2026-06-10T00:00:00.000Z',
+              eventData: {
+                deploymentId: 'dpl_1',
+                workflowName: 'workflow',
+                input: null,
+              },
+            },
+            new Uint8Array(0)
+          ),
+          encodeFrame(
+            {
+              _error: 1,
+              code: 'payload-missing',
+              message:
+                'Event payload object is missing from storage: s3rf:t:p:production:wrun_1:wf:01ABC',
+            },
+            new Uint8Array(0)
+          ),
+        ]),
+        { headers: { 'content-type': V4_FRAME_CONTENT_TYPE } }
+      );
+
+    const error = await getWorkflowRunEventsV4(
+      'wrun_1',
+      {},
+      { token: 'test-token', dispatcher: agent }
+    ).then(
+      () => undefined,
+      (err: unknown) => err
+    );
+
+    expect(CorruptedEventLogError.is(error)).toBe(true);
+    expect((error as Error).message).toContain('s3rf:t:p:production:wrun_1');
+    // The classification is what makes it terminal: the runtime only
+    // redelivers a `WorkflowWorldError` with a 5xx status or a TRANSPORT /
+    // TIMEOUT code (see `isRetryableWorldError`), and it maps
+    // `CorruptedEventLogError` straight to the CORRUPTED_EVENT_LOG run
+    // failure. Asserted in `packages/core` rather than here, since core is
+    // not a dependency of this package.
+    expect(WorkflowWorldError.is(error)).toBe(false);
+    agent.assertNoPendingInterceptors();
+  });
+
+  it('treats an unknown terminal error code as terminal, not retryable', async () => {
+    // Forward compatibility: a code this client has never heard of must not
+    // become a redelivery loop just because it is unrecognized.
+    const origin =
+      WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
+    const agent = new MockAgent();
+    agent.disableNetConnect();
+
+    agent
+      .get(origin)
+      .intercept({ path: '/api/v4/runs/wrun_1/events', method: 'GET' })
+      .reply(
+        200,
+        encodeFrame(
+          { _error: 1, code: 'some-future-condition', message: 'nope' },
+          new Uint8Array(0)
+        ),
+        { headers: { 'content-type': V4_FRAME_CONTENT_TYPE } }
+      );
+
+    const error = await getWorkflowRunEventsV4(
+      'wrun_1',
+      {},
+      { token: 'test-token', dispatcher: agent }
+    ).then(
+      () => undefined,
+      (err: unknown) => err
+    );
+
+    expect(WorkflowWorldError.is(error)).toBe(true);
+    expect((error as Error).message).toContain('some-future-condition');
+    // Neither a 5xx status nor a retryable code, so the runtime fails the run
+    // rather than redelivering it.
+    expect((error as WorkflowWorldError).status).toBeUndefined();
+    expect((error as WorkflowWorldError).code).toBe('WORLD_CONTRACT_ERROR');
+    agent.assertNoPendingInterceptors();
+  });
+
   it('throws when the stream ends without the end sentinel (truncated response)', async () => {
     const origin = 'https://vercel-workflow.com';
     const agent = new MockAgent();
@@ -202,6 +306,40 @@ describe('getWorkflowRunEventsV4 over HTTP', () => {
  * value or hanging — the trailing frame below is never read.
  */
 describe('getEventV4 over HTTP', () => {
+  it('reports a terminal payload-missing frame as a corrupted event log', async () => {
+    const origin =
+      WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
+    const agent = new MockAgent();
+    agent.disableNetConnect();
+
+    agent
+      .get(origin)
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events/evnt_1',
+        method: 'GET',
+      })
+      .reply(
+        200,
+        encodeFrame(
+          {
+            _error: 1,
+            code: 'payload-missing',
+            message: 'Event payload object is missing from storage: ref_1',
+          },
+          new Uint8Array(0)
+        ),
+        { headers: { 'content-type': V4_FRAME_CONTENT_TYPE } }
+      );
+
+    await expect(
+      getEventV4('wrun_1', 'evnt_1', {
+        token: 'test-token',
+        dispatcher: agent,
+      })
+    ).rejects.toSatisfy(CorruptedEventLogError.is);
+    agent.assertNoPendingInterceptors();
+  });
+
   it('returns the first frame and stops reading the rest', async () => {
     const origin = 'https://vercel-workflow.com';
     const agent = new MockAgent();

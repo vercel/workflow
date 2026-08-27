@@ -1,35 +1,44 @@
 ---
 title: corrupted-event-log
-description: The workflow's event log contains an event that no consumer can process, indicating corruption or invalid state.
+description: The workflow's event log contains an event that cannot be processed or a stored payload that cannot be read.
 type: troubleshooting
-summary: Resolve corrupted event log errors caused by duplicate or orphaned events.
+summary: Resolve corrupted event log errors caused by duplicate or orphaned events, or unreadable stored payloads.
 prerequisites:
   - /docs/foundations/workflows-and-steps
 related:
   - /docs/foundations/errors-and-retries
 ---
 
-This error occurs when the Workflow runtime repeatedly cannot replay events in the event log. This usually means the event log is in an invalid state, such as duplicate or orphaned events, or that a runtime determinism bug persists across retry attempts.
+This error occurs when the Workflow runtime cannot safely replay the event log. This usually means the event log is in an invalid state, such as duplicate or orphaned events, or that a runtime determinism bug persists across retry attempts. It can also mean the log references a stored payload that the World can no longer read.
 
-This is a **workflow-level fatal error**. It cannot be caught or handled inside your workflow code. The runtime first retries transient replay divergence automatically; it marks the run as failed with this error only after replay still cannot recover.
+This is a **workflow-level fatal error**. It cannot be caught or handled inside your workflow code. The runtime first retries transient replay divergence automatically; it marks the run as failed with this error only after replay still cannot recover. An unreadable stored payload is terminal immediately, because replaying cannot restore it.
 
 ## Error Message
 
+For replay divergence:
+
 ```
 Workflow replay diverged <n> times after automatic recovery replays; latest divergent event was <eventId>. Last divergence: <details>
+```
+
+For an unreadable stored payload:
+
+```
+the event log references a payload that no longer exists in storage: <details>
 ```
 
 ## Why This Happens
 
 Workflows persist their progress as an ordered event log. During replay, the runtime processes each event in sequence — every event must be consumed by a matching callback (e.g., a step or sleep waiting for its result). When an event has no matching consumer, the runtime cannot advance past it, which would block all subsequent events and hang the workflow indefinitely.
 
-Instead of silently hanging, the runtime retries a divergent replay before failing the workflow and surfacing this terminal error.
+Instead of silently hanging, the runtime retries a divergent replay before failing the workflow and surfacing this terminal error. It does not retry a payload that the World reports as permanently missing.
 
 Common scenarios that produce this error:
 
 1. **Duplicate completion events** — Two `wait_completed` events for a single `wait_created`, or two `step_completed` events for the same step. The first is consumed normally, but the second has no consumer.
 2. **Orphaned events** — A `step_completed` or `wait_completed` event whose `correlationId` doesn't match any step or sleep in the workflow code.
 3. **Events after terminal state** — An event that arrives after its corresponding step or wait has already reached a terminal state (e.g., `step_retrying` after `step_completed`).
+4. **An unreadable stored payload** — An event still references a stored payload, but the World reports that the object no longer exists in its storage. The same log would fail on every replay, so the run fails immediately instead of retrying forever.
 
 ## What To Do
 
@@ -45,7 +54,7 @@ npm install workflow@latest
 
 ### 2. Retry the failed run
 
-If this error is displayed, automatic replay recovery has already been exhausted and the run has been marked as `failed`. You can re-run it using the **Re-run** button in the Workflow Dashboard.
+If this error reports replay divergence, automatic replay recovery has already been exhausted. If it reports an unreadable payload, recovery cannot recreate that payload. In either case, the run has been marked as `failed`. You can re-run the workflow using the **Re-run** button in the Workflow Dashboard; a re-run starts a new run with a new event log.
 
 ### 3. Report the issue
 
@@ -53,7 +62,7 @@ If the error persists after upgrading, please [open an issue on GitHub](https://
 
 - The version of the `workflow` package you are using
 - The run ID(s) of the affected workflow run(s)
-- The error message (including `eventType`, `correlationId`, and `eventId`)
+- The complete error message, including any `eventType`, `correlationId`, `eventId`, or payload details
 - Any details about the event log or the workflow that triggered the error
 
 ## This Error Cannot Be Caught
