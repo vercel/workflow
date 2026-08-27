@@ -305,10 +305,24 @@ export abstract class BaseBuilder {
    * for Node.js builtins (e.g. debug → require('tty')) break because esbuild's
    * CJS-to-ESM __require shim doesn't have access to a real require function.
    * This banner provides one via createRequire so bundled CJS code works in ESM.
+   *
+   * Likewise, esbuild leaves the CJS globals `__dirname`/`__filename` as free
+   * identifiers when inlining CJS modules into ESM output, so dependencies that
+   * reference them at module scope (e.g. google-gax, Prisma's runtime) crash
+   * with `ReferenceError: __dirname is not defined in ES module scope` before
+   * any workflow code runs. The banner defines them from `import.meta.url`,
+   * pointing at the bundle location (the function root at runtime).
    */
   private getEsmRequireBanner(format: string): string {
     if (format !== 'esm') return '';
-    return 'import { createRequire as __createRequire } from "node:module";\nvar require = __createRequire(import.meta.url);\n';
+    return (
+      'import { createRequire as __createRequire } from "node:module";\n' +
+      'import { fileURLToPath as __fileURLToPath } from "node:url";\n' +
+      'import { dirname as __pathDirname } from "node:path";\n' +
+      'var require = __createRequire(import.meta.url);\n' +
+      'var __filename = __fileURLToPath(import.meta.url);\n' +
+      'var __dirname = __pathDirname(__filename);\n'
+    );
   }
 
   /**
