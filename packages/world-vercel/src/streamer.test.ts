@@ -1,4 +1,4 @@
-import { StreamExpiredError } from '@workflow/errors';
+import { StreamError, StreamExpiredError } from '@workflow/errors';
 import { NODE_HTTP_ENV_VAR } from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { encodeMultiChunks, MAX_CHUNKS_PER_REQUEST } from './streamer.js';
@@ -314,9 +314,14 @@ describe('streams.write error diagnostics', () => {
 
     const streamer = await getStreamer();
 
-    await expect(
-      streamer.streams.write('wrun_test', 'user', 'chunk')
-    ).rejects.toThrow(
+    const error = await streamer.streams
+      .write('wrun_test', 'user', 'chunk')
+      .catch((cause: unknown) => cause);
+
+    expect(StreamError.is(error)).toBe(true);
+    expect(error).toMatchObject({ status: 500, code: 'STREAM_ERROR' });
+    expect(error).toHaveProperty(
+      'message',
       'Stream write failed: HTTP 500 (PUT https://test.example.com/v2/runs/wrun_test/stream/user; x-vercel-id=sfo1::abc; x-vercel-error=FUNCTION_INVOCATION_FAILED): Internal Server Error\nrequest-token'
     );
   });

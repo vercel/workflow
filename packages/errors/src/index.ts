@@ -1,6 +1,7 @@
 import { parseDurationToDate, pluralize } from '@workflow/utils';
 
 import type { StringValue } from 'ms';
+import { RUN_ERROR_CODES } from './error-codes.js';
 
 // Note: `Ansi` helpers live under the `@workflow/errors/ansi` subpath so the
 // main entry point doesn't pull `chalk` (and its ESM machinery) into every
@@ -790,6 +791,29 @@ export class RunExpiredError extends WorkflowWorldError {
 }
 
 /**
+ * Thrown when Workflow's stream infrastructure fails to read or write data.
+ * The failure is attributable to the Workflow service rather than user code.
+ */
+export class StreamError extends WorkflowWorldError {
+  constructor(
+    message: string,
+    options?: { cause?: unknown; url?: string; status?: number }
+  ) {
+    super(message, {
+      code: RUN_ERROR_CODES.STREAM_ERROR,
+      cause: options?.cause,
+      url: options?.url,
+      status: options?.status,
+    });
+    this.name = 'StreamError';
+  }
+
+  static is(value: unknown): value is StreamError {
+    return isError(value) && value.name === 'StreamError';
+  }
+}
+
+/**
  * Thrown when a stream is no longer readable because its owning run passed its
  * storage-retention boundary. This is terminal: retrying cannot restore data.
  *
@@ -1070,6 +1094,7 @@ const HOOK_CONFLICT_ERROR_KEY = Symbol.for(
 const RUNTIME_DECRYPTION_ERROR_KEY = Symbol.for(
   '@workflow/errors//RuntimeDecryptionError'
 );
+const STREAM_ERROR_KEY = Symbol.for('@workflow/errors//StreamError');
 
 if (typeof globalThis !== 'undefined') {
   if (!Object.hasOwn(globalThis, FATAL_ERROR_KEY)) {
@@ -1099,6 +1124,14 @@ if (typeof globalThis !== 'undefined') {
   if (!Object.hasOwn(globalThis, RUNTIME_DECRYPTION_ERROR_KEY)) {
     Object.defineProperty(globalThis, RUNTIME_DECRYPTION_ERROR_KEY, {
       value: RuntimeDecryptionError,
+      writable: false,
+      enumerable: false,
+      configurable: false,
+    });
+  }
+  if (!Object.hasOwn(globalThis, STREAM_ERROR_KEY)) {
+    Object.defineProperty(globalThis, STREAM_ERROR_KEY, {
+      value: StreamError,
       writable: false,
       enumerable: false,
       configurable: false,

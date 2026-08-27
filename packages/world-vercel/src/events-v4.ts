@@ -22,7 +22,11 @@
  */
 
 import assert from 'node:assert/strict';
-import { CorruptedEventLogError, WorkflowWorldError } from '@workflow/errors';
+import {
+  CorruptedEventLogError,
+  StreamError,
+  WorkflowWorldError,
+} from '@workflow/errors';
 import {
   type Event,
   type EventResult,
@@ -52,6 +56,7 @@ import {
 } from './http-client.js';
 import {
   errorForResponse,
+  getTransientTransportCode,
   headersToRecord,
   httpLog,
   instrumentedFetch,
@@ -111,7 +116,7 @@ async function fetchV4(
   attributes?: Record<string, string | number | string[]>
 ): Promise<Response> {
   const dispatcher = getEventsDispatcher(config);
-  return instrumentedFetch({
+  const response = await instrumentedFetch({
     method: init.method,
     url,
     headers: init.headers,
@@ -122,9 +127,13 @@ async function fetchV4(
     // request builds a fresh one. undici keeps a black-holed HTTP/2 session in
     // service indefinitely, so without this every request routed onto it fails
     // until the compute instance is recycled. See noteEventsTransportOutcome.
-    onTransportOutcome: (error) =>
-      noteEventsTransportOutcome(dispatcher, error),
+    onTransportOutcome: (error) => {
+      // A response header is not a successful streamed request yet. Only report
+      // failures here; the wrapped body below reports success after clean EOF.
+      if (error !== undefined) noteEventsTransportOutcome(dispatcher, error);
+    },
     timeoutMs: null,
+    transportErrorCode: 'STREAM_ERROR',
     logLabel: opName,
     // Read the body as bytes, not text: a CBOR error body (the fence 412
     // carries event payloads back) does not survive a UTF-8 decode.
@@ -136,6 +145,45 @@ async function fetchV4(
         opName,
         url
       ),
+  });
+
+  if (!response.body) {
+    noteEventsTransportOutcome(dispatcher);
+    return response;
+  }
+  const reader = response.body.getReader();
+  const body = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      try {
+        const chunk = await reader.read();
+        if (chunk.done) {
+          noteEventsTransportOutcome(dispatcher);
+          controller.close();
+        } else {
+          controller.enqueue(chunk.value);
+        }
+      } catch (cause) {
+        noteEventsTransportOutcome(dispatcher, cause);
+        const transportCode = getTransientTransportCode(cause);
+        controller.error(
+          transportCode
+            ? new StreamError(
+                `v4 ${opName}: response stream transport failure (${transportCode})`,
+                { cause, url }
+              )
+            : cause
+        );
+      }
+    },
+    cancel(reason) {
+      noteEventsTransportOutcome(dispatcher);
+      return reader.cancel(reason);
+    },
+  });
+  return new Response(body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: response.headers,
   });
 }
 

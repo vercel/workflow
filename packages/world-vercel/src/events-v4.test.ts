@@ -4,6 +4,7 @@ import {
   EntityConflictError,
   PreconditionFailedError,
   RunExpiredError,
+  StreamError,
   ThrottleError,
   TooEarlyError,
   WorkflowWorldError,
@@ -1942,7 +1943,7 @@ describe('v4 transport reports failures to the events recycler', () => {
       }),
     });
 
-  it('rebuilds the shared pool after repeated stream timeouts', async () => {
+  it('rebuilds the shared pool after repeated pre-header stream timeouts', async () => {
     vi.spyOn(globalThis, 'fetch').mockRejectedValue(wedgedSessionError());
 
     // No `dispatcher` in the config: the request must resolve the shared one,
@@ -1952,11 +1953,36 @@ describe('v4 transport reports failures to the events recycler', () => {
     for (let i = 0; i < EVENTS_RECYCLE_AFTER_CONSECUTIVE_FAILURES; i++) {
       await expect(
         getWorkflowRunEventsV4('wrun_1', {}, { token: 'test-token' })
-      ).rejects.toThrow();
+      ).rejects.toSatisfy(StreamError.is);
       // Still the same pool until the threshold is reached.
       if (i < EVENTS_RECYCLE_AFTER_CONSECUTIVE_FAILURES - 1) {
         expect(getEventsDispatcher({ token: 'test-token' })).toBe(before);
       }
+    }
+
+    expect(getEventsDispatcher({ token: 'test-token' })).not.toBe(before);
+  });
+
+  it('classifies post-header stream timeouts and rebuilds the shared pool', async () => {
+    const now = Date.now();
+    vi.spyOn(Date, 'now').mockReturnValue(now + 10_000);
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
+      const body = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          controller.error(wedgedSessionError());
+        },
+      });
+      return new Response(body, {
+        status: 200,
+        headers: { 'content-type': V4_FRAME_CONTENT_TYPE },
+      });
+    });
+
+    const before = getEventsDispatcher({ token: 'test-token' });
+    for (let i = 0; i < EVENTS_RECYCLE_AFTER_CONSECUTIVE_FAILURES; i++) {
+      await expect(
+        getWorkflowRunEventsV4('wrun_1', {}, { token: 'test-token' })
+      ).rejects.toSatisfy(StreamError.is);
     }
 
     expect(getEventsDispatcher({ token: 'test-token' })).not.toBe(before);
