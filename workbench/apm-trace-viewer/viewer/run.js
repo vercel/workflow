@@ -1,4 +1,9 @@
-import { applyReparent, spanAttr, wsReparentPlan } from './analysis.js';
+import {
+  applyReparent,
+  datadogSpanUrl,
+  spanAttr,
+  wsReparentPlan,
+} from './analysis.js';
 import {
   CAT_LABEL,
   categoryOf,
@@ -276,7 +281,15 @@ function barHtml(startMs, durMs, events) {
 function rowHtml(r, i) {
   if (r.traceHead) {
     const t = r.traceHead;
-    return `<div class="trace-head"><span>trace</span><span class="mono">${esc(t.traceId)}</span>· ${t.count} spans · root ${esc(t.service || '')}</div>`;
+    const url = datadogSpanUrl(run, {
+      trace: t.traceId,
+      startMs: 0,
+      durMs: wallMs,
+    });
+    const link = url
+      ? ` <a class="ddlink" href="${esc(url)}" target="_blank" rel="noreferrer noopener">Datadog ↗</a>`
+      : '';
+    return `<div class="trace-head"><span>trace</span><span class="mono">${esc(t.traceId)}</span>· ${t.count} spans · root ${esc(t.service || '')}${link}</div>`;
   }
   if (r.group) {
     const indent = 6 + r.depth * 13;
@@ -374,6 +387,15 @@ function openDetail(s, rowEl) {
   });
   rowEl?.classList.add('sel');
   dTitle.textContent = s.name;
+  // Link back to the same span in Datadog. noreferrer: the URL carries trace and span
+  // ids, and there is no reason to leak this page's address alongside them.
+  const ddUrl = datadogSpanUrl(run, s);
+  dTitle.insertAdjacentHTML(
+    'beforeend',
+    ddUrl
+      ? ` <a class="ddlink" href="${esc(ddUrl)}" target="_blank" rel="noreferrer noopener">Datadog ↗</a>`
+      : ''
+  );
   const cat = categoryOf(s);
   const kv = (k, v, mono) =>
     v == null || v === ''

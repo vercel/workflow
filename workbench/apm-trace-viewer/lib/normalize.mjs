@@ -179,6 +179,9 @@ const topService = (counts) =>
  * @param {string} o.id      - dataset id (url-safe)
  * @param {string} o.title   - human title for the landing page
  * @param {string} o.source  - 'axiom' | 'datadog' | ...
+ * @param {object} [o.vendor]  - source-specific metadata the viewer needs to build
+ *   deep links back to the tool the spans came from (e.g. `{ site }` for Datadog).
+ *   Persisted verbatim; the viewer treats an unknown shape as "no link available".
  * @param {Array}  o.spans   - canonical input spans (must carry `group`)
  * @param {object} [o.metricsByGroup] - { [group]: [{ key, label, value, unit?, markerOffsetMs? }] }
  * @param {object} [o.labelByGroup]   - { [group]: string }
@@ -188,6 +191,7 @@ export function buildDataset({
   id,
   title,
   source,
+  vendor = null,
   spans,
   metricsByGroup = {},
   labelByGroup = {},
@@ -279,6 +283,7 @@ export function buildDataset({
       id: gid,
       label: labelByGroup[gid] ?? gid,
       source,
+      vendor,
       originIso: nsToIso(originNs),
       totalMs: round(maxEnd),
       spanCount: gspans.length,
@@ -320,7 +325,7 @@ export function buildDataset({
   merged.sort((a, b) => a.label.localeCompare(b.label));
   writeFileSync(
     indexPath,
-    `${JSON.stringify({ source, title, traces: merged }, null, 2)}\n`
+    `${JSON.stringify({ source, vendor, title, traces: merged }, null, 2)}\n`
   );
   registerDataset(outDir, {
     id,

@@ -135,3 +135,12 @@ td.run a.altview:hover { color: var(--accent); border-color: var(--border-strong
 .gnames .par { color: #f5a623; font-size: 10px; margin-left: 2px; }
 .stso-sum .warn { color: #f5a623; }
 .zoomhint { color: var(--fg-faint); font-size: 11px; margin-right: 4px; }
+
+/* deep link back to the source vendor's own UI */
+a.ddlink {
+  font-size: 10px; color: var(--fg-faint); border: 1px solid var(--border);
+  border-radius: 4px; padding: 1px 6px; margin-left: 8px; white-space: nowrap;
+}
+a.ddlink:hover { color: #a78bfa; border-color: #6d5bb0; text-decoration: none; }
+.bhead a.ddlink { margin-left: auto; }
+.bhead a.ddlink + .backb { margin-left: 8px; }

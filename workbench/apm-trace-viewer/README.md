@@ -78,6 +78,15 @@ to select a range, breadcrumbs and `Esc` to go back, click a frame for its attri
 Wheel gestures deliberately do not push breadcrumbs - a crumb per notch would bury the
 gap and span entries worth stepping back to.
 
+### Deep links back to Datadog
+
+A span's detail panel, and each trace head in the waterfall, carry a **Datadog ↗** link
+to the same span in APM. Datadog resolves a trace id only within a time window, so the
+link carries `start`/`end` derived from the group origin plus the span's offset (padded
+a minute either side). The Datadog site is recorded at import time from `--site`/
+`$DD_SITE`; datasets imported before that was captured fall back to `datadoghq.com`, so
+re-import to pin a different one. Non-Datadog datasets simply show no link.
+
 ### Reparenting WebSocket spans
 
 When the SDK ships events over the WS transport it synthesizes one client `http POST`

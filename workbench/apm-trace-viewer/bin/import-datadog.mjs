@@ -255,6 +255,9 @@ const count = buildDataset({
   id: datasetId,
   title,
   source: 'datadog',
+  // Recorded so the viewer can deep-link a span back to this org's Datadog. An
+  // offline `--input` import has no site of its own, so it takes --site/$DD_SITE.
+  vendor: { site },
   spans,
 });
 console.log(

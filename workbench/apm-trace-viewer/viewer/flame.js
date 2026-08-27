@@ -6,6 +6,7 @@
 import {
   applyReparent,
   buildForest,
+  datadogSpanUrl,
   spanEnd,
   stsoGaps,
   userStepExecutes,
@@ -358,7 +359,7 @@ framesEl.addEventListener('mousemove', (e) => {
     (s.wsReparented
       ? `<div class="tl rpnote"><span>reparented</span><span>to its WS frame</span></div>`
       : '') +
-    `<div class="tl hint2"><span>click</span><span>details · dbl-click zooms</span></div>`;
+    `<div class="tl hint2"><span>click</span><span>details${datadogSpanUrl(run, s) ? ' + Datadog link' : ''} · dbl-click zooms</span></div>`;
   tip.style.display = 'block';
   const pad = 14;
   const w = tip.offsetWidth;
@@ -388,6 +389,15 @@ framesEl.addEventListener('dblclick', (e) => {
   setView(s.startMs - pad, spanEnd(s) + pad, (s.name ?? 'span').slice(0, 28));
 });
 
+// A link back to the same span in Datadog. `rel=noreferrer` because the URL carries the
+// trace and span ids and there is no reason to leak this page's address alongside them.
+function ddLink(s) {
+  const url = datadogSpanUrl(run, s);
+  return url
+    ? `<a class="ddlink" href="${esc(url)}" target="_blank" rel="noreferrer noopener">Datadog ↗</a>`
+    : '';
+}
+
 function showSpanDetail(s) {
   const attrs = Object.entries(s.attrs ?? {})
     .flatMap(function walk([k, v]) {
@@ -398,6 +408,7 @@ function showSpanDetail(s) {
     .sort((a, b) => a[0].localeCompare(b[0]));
   breakdownEl.innerHTML = `
     <div class="bhead">${esc(s.name ?? '')} <span class="hint">${fmtMs(s.durMs)} · +${fmtMs(s.startMs)} · ${esc(s.service ?? '')}${s.wsReparented ? ' · reparented to its WS frame' : ''}</span>
+      ${ddLink(s)}
       <button class="backb" id="backToBreakdown">◂ window breakdown</button></div>
     <div class="attrs">${attrs
       .map(

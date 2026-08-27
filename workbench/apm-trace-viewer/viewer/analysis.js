@@ -299,3 +299,38 @@ export function windowBreakdown(spans, fromMs, toMs, kids) {
   }
   return [...rows.values()].sort((a, b) => b.selfMs - a.selfMs);
 }
+
+// ---------------------------------------------------------------------------
+// Deep links back to the source tool
+// ---------------------------------------------------------------------------
+// Datadog locates a trace by id *within a time window*, so a link without start/end
+// lands on an empty view for anything older than the default range. Span offsets in a
+// dataset are relative to the group origin, so absolute epoch ms comes from
+// originIso + startMs. The window is padded generously: it only has to contain the
+// trace, and being loose costs nothing.
+const DD_PAD_MS = 60_000;
+
+/**
+ * Datadog APM URL for one span, or null when the dataset did not come from Datadog.
+ * Parameter shape mirrors a real Datadog APM permalink: the trace id is passed as both
+ * `trace` and `traceID` because the APM view reads them in different places.
+ */
+export function datadogSpanUrl(run, span) {
+  if (run?.source !== 'datadog' || !span?.trace) return null;
+  // Datasets imported before the site was recorded fall back to the commercial US
+  // site, which is right for most orgs; re-import to pin a different one.
+  const site = run.vendor?.site ?? 'datadoghq.com';
+  const originMs = Date.parse(run.originIso);
+  if (!Number.isFinite(originMs)) return null;
+  const at = originMs + (span.startMs ?? 0);
+  const q = new URLSearchParams({
+    trace: span.trace,
+    traceID: span.trace,
+    start: String(Math.round(at - DD_PAD_MS)),
+    end: String(Math.round(at + (span.durMs ?? 0) + DD_PAD_MS)),
+    graphType: 'flamegraph',
+    view: 'traces',
+  });
+  if (span.id) q.set('spanID', span.id);
+  return `https://app.${site}/apm/traces?${q}`;
+}
