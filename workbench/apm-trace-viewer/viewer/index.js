@@ -120,8 +120,10 @@ async function renderTraceTable(dsId) {
       .map((t) => {
         const tds = cols
           .map((c) => {
-            if (c.key === 'label')
-              return `<td class="run"><a href="run.html?dataset=${encodeURIComponent(dsId)}&run=${encodeURIComponent(t.id)}">${esc(t.label)}</a></td>`;
+            if (c.key === 'label') {
+              const q = `dataset=${encodeURIComponent(dsId)}&run=${encodeURIComponent(t.id)}`;
+              return `<td class="run"><a href="run.html?${q}">${esc(t.label)}</a> <a class="altview" href="flame.html?${q}" title="flame graph + STSO">flame</a></td>`;
+            }
             return `<td class="num">${esc(cellValue(t, c))}</td>`;
           })
           .join('');

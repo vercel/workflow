@@ -1,4 +1,4 @@
-import { spanAttr } from './analysis.js';
+import { applyReparent, spanAttr, wsReparentPlan } from './analysis.js';
 import {
   CAT_LABEL,
   categoryOf,
@@ -105,29 +105,44 @@ document.getElementById('chips').innerHTML = [
   chip('AI spans', run.aiSpanCount),
 ].join('');
 
-// ---------- per-trace tree structure (built once) ----------
-const byId = new Map(run.spans.map((s) => [s.id, s]));
+// ---------- per-trace tree structure ----------
+// Rebuilt whenever WS reparenting is toggled: that moves server spans between
+// subtrees, so every parent/child index derived here goes stale with it.
+const wsPlan = wsReparentPlan(run.spans);
+let reparent = false;
+let spansView = run.spans;
+let byId = new Map();
+let traceStruct = [];
 const byStart = (a, b) => a.startMs - b.startMs;
-const traceStruct = run.traces.map((tr) => {
-  const spans = run.spans.filter((s) => s.trace === tr.traceId);
-  const kids = new Map();
-  const roots = [];
-  for (const s of spans) {
-    if (
-      s.parent &&
-      byId.has(s.parent) &&
-      byId.get(s.parent).trace === s.trace
-    ) {
-      if (!kids.has(s.parent)) kids.set(s.parent, []);
-      kids.get(s.parent).push(s);
-    } else {
-      roots.push(s);
+
+function rebuildTree() {
+  spansView = reparent ? applyReparent(run.spans, wsPlan.map) : run.spans;
+  byId = new Map(spansView.map((s) => [s.id, s]));
+  traceStruct = buildTraceStruct();
+}
+
+function buildTraceStruct() {
+  return run.traces.map((tr) => {
+    const spans = spansView.filter((s) => s.trace === tr.traceId);
+    const kids = new Map();
+    const roots = [];
+    for (const s of spans) {
+      if (
+        s.parent &&
+        byId.has(s.parent) &&
+        byId.get(s.parent).trace === s.trace
+      ) {
+        if (!kids.has(s.parent)) kids.set(s.parent, []);
+        kids.get(s.parent).push(s);
+      } else {
+        roots.push(s);
+      }
     }
-  }
-  roots.sort(byStart);
-  for (const arr of kids.values()) arr.sort(byStart);
-  return { tr, kids, roots };
-});
+    roots.sort(byStart);
+    for (const arr of kids.values()) arr.sort(byStart);
+    return { tr, kids, roots };
+  });
+}
 
 // ---------- state ----------
 let zoom = 1;
@@ -460,6 +475,22 @@ window.addEventListener('resize', () => {
   if (zoom === 1) render();
 });
 
+// ---------- WS reparenting toggle ----------
+const rpEl = document.getElementById('reparent');
+document.getElementById('rpStat').textContent = wsPlan.matched
+  ? `(${wsPlan.matched}${wsPlan.unmatched ? ` of ${wsPlan.matched + wsPlan.unmatched}` : ''})`
+  : '(none found)';
+if (!wsPlan.matched) rpEl.disabled = true;
+rpEl.addEventListener('change', (e) => {
+  reparent = e.target.checked;
+  rebuildTree();
+  closeDrawer();
+  render();
+});
+
+document.getElementById('toFlame').href =
+  `flame.html?dataset=${encodeURIComponent(dataset)}&run=${encodeURIComponent(runId)}`;
+
 // ---------- hover crosshair (viewport-fixed line + live time readout) ----------
 const crosshair = document.getElementById('crosshair');
 const ctime = crosshair.querySelector('.ctime');
@@ -493,7 +524,7 @@ const markerLegend = MARKERS.map(
     `<span><i style="border-left:2px dashed ${m.color};width:0;background:none"></i>${esc(m.label)}</span>`
 ).join('');
 const legendEntries = new Map();
-for (const s of run.spans) {
+for (const s of spansView) {
   const c = categoryOf(s);
   const key = c === 'service' ? `svc:${s.service}` : c;
   if (!legendEntries.has(key))
@@ -528,4 +559,5 @@ document.getElementById('legend').innerHTML =
     )
     .join('');
 
+rebuildTree();
 render();

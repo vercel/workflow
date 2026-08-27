@@ -5,11 +5,13 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Trace waterfall</title>
   <link rel="stylesheet" href="app.css" />
+  <link rel="stylesheet" href="flame.css" />
 </head>
 <body>
   <div class="topbar">
     <a href="index.html">← traces</a>
     <h1><span class="run-id" id="runId">…</span></h1>
+    <a class="viewswitch" id="toFlame">flame graph ↗</a>
     <span class="spacer"></span>
     <span id="origin" class="sub" style="margin:0"></span>
   </div>
@@ -19,6 +21,7 @@
   <div class="controls">
     <input type="search" id="filter" placeholder="filter by name / host / vendor…" />
     <label><input type="checkbox" id="groupOther" checked /> group 3rd-party HTTP</label>
+    <label title="Reattach each server-side event write to the client WS frame that caused it"><input type="checkbox" id="reparent" /> reparent WS spans <span class="rp-stat" id="rpStat"></span></label>
     <label><input type="checkbox" id="onlyOurs" /> only ours (workflow + AI)</label>
     <span class="zoom">zoom
       <button id="zoomOut" title="zoom out">−</button>

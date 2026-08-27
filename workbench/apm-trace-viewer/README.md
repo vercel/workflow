@@ -37,6 +37,63 @@ waterfall. (Run from `workbench/apm-trace-viewer/`, or `pnpm --filter workflow-a
   vertical line; the hover crosshair shows a live timestamp; zoom (±) for dense regions;
   click any span for full attributes + events.
 
+## Flame graph + STSO
+
+Every trace group has a second view (`flame` on the landing page, or **flame graph** in
+the waterfall's top bar): a Datadog-style flame graph, x = wall time, y = tree depth.
+It exists to answer one question - where does **STSO** go?
+
+**STSO** (step-to-step overhead) is the stretch between one step's **user code**
+finishing and the next step's user code starting: the stream flushes, the
+`step_completed` POST and its server-side work, `getNewEvents`, the `workflow.run`
+replay, the `step_created` / `step_started` writes.
+
+Which span you measure from matters. The SDK emits a nested pair per step - an outer
+`step.execute <name>` and an inner unnamed `step.execute` - and only the inner one is the
+user's own code. The outer also covers the SDK work bracketing it, most importantly the
+blocking `step_completed` POST at its tail (61-495ms on the traces this was built
+against). STSO is measured between **inner** spans so that POST falls inside the gap
+where you can see it, instead of hiding inside the previous step's bar; on the reference
+run that is the difference between a p50 of 109ms and the real 381ms. In the graph those
+user-code frames are outlined and labelled `<step> (user code)`, taking the name from
+their outer parent since the inner span carries none.
+
+An outer span with no inner child is a **replay**: the invocation re-created the step
+span, wrote `step_started`, found the step already done and ran no user code. Those are
+excluded - they are not a step boundary - and the sidebar says how many were skipped. The left sidebar lists every gap in the run, sortable **by time** or **by size**,
+with p50 / p90 / total across the run. Click one and the graph zooms to it (padded so the
+two bracketing steps stay visible), the gap is shaded, and the panel underneath rolls up
+what ran inside it by **self time** - time not covered by a child, which is the row
+actually costing you. `[` and `]` step between gaps; `?gap=N` deep-links to one.
+
+Two details keep the numbers honest. Steps that run in parallel (`Promise.all`) are
+merged into one cluster first, so a gap always means "no step body was running" rather
+than a meaningless negative from subtracting overlapping spans. And gaps are computed
+per trace, because a boundary between traces is a durable suspend/resume, not overhead.
+
+Elsewhere in that view: double-click a frame to zoom to it, drag across the ruler to zoom
+to any range, breadcrumbs and `Esc` to go back, click a frame for its attributes.
+
+### Reparenting WebSocket spans
+
+When the SDK ships events over the WS transport it synthesizes one client `http POST`
+span per frame, but a frame carries no W3C traceparent - only the handshake does. So the
+server-side write for every frame parents to the long-lived handshake span instead of to
+the frame that caused it. The trace is still connected, but per-frame correlation is
+gone: server work piles up under the connection, and (when the handshake span itself is
+missing from the window) some server spans have no parent at all.
+
+**reparent WS spans**, on by default in both views, reconstructs the pairing. Client
+frames carry `workflow.event.type` and server event spans `workflow.event_type`; within
+one trace both sides see the same event sequence in the same order, so they are bucketed
+by (trace, type) and paired in order, admitting a pair only when the server span starts
+inside the frame's window allowing for cross-host clock skew. Anything that fails the
+check is left alone rather than guessed at, and the control shows how many of the
+candidates were matched. Reparented spans carry a cyan underline in the flame graph.
+
+This is a **display-time** correction: it never touches the imported data, and toggling
+it off restores exactly what the vendor sent.
+
 ## Importers
 
 ### Axiom (JSONL dump)
@@ -93,6 +150,26 @@ pnpm import:datadog --query '<spans query>' --from now-1h --to now \
 forces *everything* into a single group (handy when you've already narrowed to a set of
 correlated trace_ids).
 
+#### Fetching with pup (no API keys)
+
+If you use [pup](https://github.com/DataDog/pup), its OAuth session works without
+provisioning keys. Note `pup traces search` caps out at `--limit 1000` and exposes no
+cursor, so it silently truncates anything bigger; page the Spans API yourself through
+pup's raw-request escape hatch and feed the result to `--input`, which accepts an array
+of pages:
+
+```bash
+pup --no-agent api -X POST v2/spans/events/search --input - <<'JSON'
+{"data":{"type":"search_request","attributes":{
+  "filter":{"from":"2026-08-27T18:00:00Z","to":"2026-08-27T19:00:00Z","query":"trace_id:<id>"},
+  "sort":"timestamp","page":{"limit":1000}}}}
+JSON
+```
+
+Follow `meta.page.after` for the next cursor. To view a whole run this way, first find
+its traces with `@workflow.run.id:<runId>`, then fetch `trace_id:A OR trace_id:B ...` and
+import with `--input pages.json --group <runId>`.
+
 #### Offline / alternate fetch
 
 `--input <file>` imports a saved Spans API payload instead of calling the network — a JSON
@@ -117,7 +194,9 @@ pnpm import:datadog --input spans.json --dataset mytrace [--group <runId>]
 ```
 lib/normalize.mjs   shared: duration/timestamp parsing, host classification, dataset writer
 bin/import-axiom.mjs, bin/import-datadog.mjs, bin/serve.mjs
-viewer/             static app (index.html + run.html + common.js/index.js/run.js + app.css)
+viewer/             static app: index/run/flame .html + .js, app.css + flame.css
+viewer/common.js    presentation helpers (category, color, formatting)
+viewer/analysis.js  trace reshaping: WS reparenting, tree/depth, STSO gaps, window rollup
 fixtures/           tiny synthetic sample trace (the only trace data in git)
 viewer/data/        generated datasets — GIT-IGNORED (may contain customer/production data)
 ```
