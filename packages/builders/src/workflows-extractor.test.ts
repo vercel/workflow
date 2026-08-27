@@ -54,6 +54,46 @@ describe('extractWorkflowGraphs', () => {
     });
   });
 
+  it('extracts step nodes when step proxies include pure annotations', async () => {
+    tempDir = await mkdtemp(join(tmpdir(), 'workflow-builders-'));
+    const bundlePath = join(tempDir, 'workflow-bundle.js');
+    const bundlesDir = join(tempDir, 'workflow-bundles');
+    await mkdir(bundlesDir);
+    await writeFile(bundlePath, 'const workflowCode = {};');
+
+    const code = [
+      'var stepOne = globalThis[/* @__PURE__ */ Symbol.for("WORKFLOW_USE_STEP")]("step//./input.ts//stepOne");',
+      'async function testWorkflow(input) {',
+      '  const output = await stepOne(input);',
+      '  return output;',
+      '}',
+      'testWorkflow.workflowId = "workflow//./input.ts//testWorkflow";',
+    ].join('\n');
+    await writeFile(
+      join(bundlesDir, workflowBundleFileName(code)),
+      serializeWorkflowBundle(code)
+    );
+
+    await expect(extractWorkflowGraphs(bundlePath)).resolves.toEqual({
+      './input.ts': {
+        testWorkflow: expect.objectContaining({
+          workflowId: 'workflow//./input.ts//testWorkflow',
+          graph: expect.objectContaining({
+            nodes: expect.arrayContaining([
+              expect.objectContaining({
+                type: 'step',
+                data: expect.objectContaining({
+                  label: 'stepOne',
+                  stepId: 'step//./input.ts//stepOne',
+                }),
+              }),
+            ]),
+          }),
+        }),
+      },
+    });
+  });
+
   it('rejects a missing lazy workflow bundle set', async () => {
     tempDir = await mkdtemp(join(tmpdir(), 'workflow-builders-'));
     const bundlePath = join(tempDir, 'workflow-bundle.js');
