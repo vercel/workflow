@@ -101,6 +101,18 @@ The `deploymentId` option is currently a Vercel-specific feature. Other Worlds m
 In Worlds without atomic, immutable deployments (such as local development or self-hosted Postgres), there is no notion of multiple deployments to resolve between, so `deploymentId: "latest"` has no effect: the SDK logs a warning and the run targets the current deployment. This means a workflow that opts into `"latest"` on Vercel still runs unchanged in local development.
 </Callout>
 
+<Callout type="info">
+Resolving `"latest"` is the one `start()` path that calls the Vercel API, so it
+needs an identity that can see the calling deployment. Inside a Vercel
+deployment the SDK authenticates with the deployment's own OIDC token, which
+carries the owning team, and this takes precedence over a `VERCEL_TOKEN` set in
+the function's environment. A `VERCEL_TOKEN` belongs to a *user* and carries no
+team, so authenticating with it scopes the lookup to that user's default team
+and fails with a 404 whenever that is not the team that owns the deployment.
+Outside a deployment (CLI, CI, the dashboard) `VERCEL_TOKEN` is still used;
+configure the World's `teamId` so the request is scoped explicitly.
+</Callout>
+
 <Callout type="warn">
 When using `deploymentId: "latest"`, the workflow run will execute on a potentially different deployment than the one calling `start()`. Be mindful of forward and backward compatibility:
 
