@@ -1,5 +1,17 @@
 # @workflow/world
 
+## 5.0.0-beta.31
+
+### Patch Changes
+
+- [#3794](https://github.com/vercel/workflow/pull/3794) [`d9e0777`](https://github.com/vercel/workflow/commit/d9e0777eb8b1ce5f3be3fe865bc5a17fdbdb9d5d) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Document that `hookInput` and the `(runId, resumeId)` dedup contract now cover repeated deliveries of one resume rather than a producer/consumer race, and accept `lazy` as a hook-resume strategy.
+
+## 5.0.0-beta.30
+
+### Major Changes
+
+- [#3550](https://github.com/vercel/workflow/pull/3550) [`d62b444`](https://github.com/vercel/workflow/commit/d62b44473b43e183e71386fe84b33f5e7bb5445c) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Keep schema-only World modules out of workflow VM bundles, prevent unknown attribute deletions from offsetting new keys, and safely ignore prototype-like event type names.
+
 ## 5.0.0-beta.29
 
 ### Minor Changes

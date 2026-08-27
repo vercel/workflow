@@ -34,6 +34,11 @@ import {
   fastDiscoverEntries,
 } from './fast-discovery.js';
 import {
+  hashManifestSource,
+  type ManifestEntryLocation,
+  mergeWorkflowManifest,
+} from './manifest-ids.js';
+import {
   getImportPath,
   resolveModuleSpecifier,
   stripPackageVersion,
@@ -198,15 +203,16 @@ function moduleIdentityKey(file: string, moduleSpecifierRoot: string): string {
   return file.replace(/\\/g, '/');
 }
 
-type ManifestEntryLocation = {
-  filePath: string;
-  name: string;
-};
-
 type CachedManifestTransform = {
   size: number;
   mtimeMs: number;
   manifest: WorkflowManifest;
+  /**
+   * Fingerprint of the source contents that produced `manifest`, used to
+   * deduplicate equivalent copies of the same module across files (see
+   * `mergeWorkflowManifest` in `manifest-ids.ts`).
+   */
+  contentHash: string;
 };
 
 type WorkflowBundle = {
@@ -260,70 +266,6 @@ const loadWorkflowBundle${index} = () => workflowBundlePromise${index} ??= impor
     .join('\n');
 
   return `${loaders}\nconst workflowCode = {\n${entries}\n};`;
-}
-
-function formatIdLocation(location: ManifestEntryLocation): string {
-  return `${location.filePath}#${location.name}`;
-}
-
-function assertUniqueManifestIds<TEntry>(
-  entriesByFile: Record<string, Record<string, TEntry>> | undefined,
-  ids: Map<string, ManifestEntryLocation>,
-  getId: (entry: TEntry) => string,
-  label: 'step' | 'workflow'
-): void {
-  for (const [filePath, entries] of Object.entries(entriesByFile || {})) {
-    for (const [name, data] of Object.entries(entries)) {
-      const id = getId(data);
-      const existing = ids.get(id);
-      const current = { filePath, name };
-      if (
-        existing &&
-        (existing.filePath !== current.filePath ||
-          existing.name !== current.name)
-      ) {
-        const idName = label === 'step' ? 'workflow step ID' : 'workflow ID';
-        const functionName = `${label} function`;
-        const capitalizedLabel = label === 'step' ? 'Step' : 'Workflow';
-        throw new WorkflowBuildError(
-          `Duplicate ${idName} "${id}" generated for ${formatIdLocation(existing)} and ${formatIdLocation(current)}.`,
-          {
-            hint:
-              `${capitalizedLabel} IDs must be unique across a build. ` +
-              `If you own one of the colliding files, rename the ${functionName} or export ` +
-              `the package file through a unique package subpath. If the collision is in a ` +
-              `transitive dependency you don't control, file an issue with the upstream ` +
-              `package or pin to a non-colliding version.`,
-          }
-        );
-      }
-      ids.set(id, current);
-    }
-  }
-}
-
-function mergeWorkflowManifest(
-  target: WorkflowManifest,
-  incoming: WorkflowManifest,
-  stepIds: Map<string, ManifestEntryLocation>,
-  workflowIds: Map<string, ManifestEntryLocation>
-): void {
-  assertUniqueManifestIds(
-    incoming.steps,
-    stepIds,
-    (data) => data.stepId,
-    'step'
-  );
-  assertUniqueManifestIds(
-    incoming.workflows,
-    workflowIds,
-    (data) => data.workflowId,
-    'workflow'
-  );
-
-  target.workflows = Object.assign(target.workflows || {}, incoming.workflows);
-  target.steps = Object.assign(target.steps || {}, incoming.steps);
-  target.classes = Object.assign(target.classes || {}, incoming.classes);
 }
 
 /**
@@ -850,7 +792,7 @@ export abstract class BaseBuilder {
   private async getCachedManifestTransform(
     file: string,
     mode: 'workflow' | 'step'
-  ): Promise<WorkflowManifest> {
+  ): Promise<{ manifest: WorkflowManifest; contentHash: string }> {
     const stats = await stat(file);
     const cacheKey = `${mode}:${file}`;
     const cached = this.manifestTransformCache.get(cacheKey);
@@ -859,7 +801,7 @@ export abstract class BaseBuilder {
       cached.size === stats.size &&
       cached.mtimeMs === stats.mtimeMs
     ) {
-      return cached.manifest;
+      return { manifest: cached.manifest, contentHash: cached.contentHash };
     }
 
     const source = await readFile(file, 'utf8');
@@ -872,12 +814,14 @@ export abstract class BaseBuilder {
       this.transformProjectRoot,
       this.moduleSpecifierRoot
     );
+    const contentHash = hashManifestSource(source);
     this.manifestTransformCache.set(cacheKey, {
       size: stats.size,
       mtimeMs: stats.mtimeMs,
       manifest: workflowManifest,
+      contentHash,
     });
-    return workflowManifest;
+    return { manifest: workflowManifest, contentHash };
   }
 
   protected createRouteImportSpecifier(file: string, routeDir: string): string {
@@ -978,15 +922,14 @@ export const __steps_registered = true;
     const workflowIds = new Map<string, ManifestEntryLocation>();
     await Promise.all(
       manifestFiles.map(async (file) => {
-        const fileManifest = await this.getCachedManifestTransform(
-          file,
-          'step'
-        );
+        const { manifest: fileManifest, contentHash } =
+          await this.getCachedManifestTransform(file, 'step');
         mergeWorkflowManifest(
           workflowManifest,
           fileManifest,
           stepIds,
-          workflowIds
+          workflowIds,
+          contentHash
         );
       })
     );
@@ -1305,10 +1248,8 @@ export const __steps_registered = true;
     await Promise.all(
       workflowOnlyFiles.map(async (workflowFile) => {
         try {
-          const fileManifest = await this.getCachedManifestTransform(
-            workflowFile,
-            'workflow'
-          );
+          const { manifest: fileManifest } =
+            await this.getCachedManifestTransform(workflowFile, 'workflow');
           if (fileManifest.workflows) {
             workflowManifest.workflows = Object.assign(
               workflowManifest.workflows || {},

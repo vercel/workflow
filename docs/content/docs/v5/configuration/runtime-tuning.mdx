@@ -84,8 +84,9 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 ### `WORKFLOW_DISABLE_LAZY_HOOK_RESUME`
 
 - Default: enabled (lazy hook resume on)
-- Resuming a hook persists the `hook_received` event and publishes the workflow invocation concurrently, cutting a round trip off resume latency. On this parallel path, the queue message also carries the payload, so a transient event-write failure still resumes the run. The queue consumer re-ensures the `hook_received` event before replay. A backend `(runId, resumeId)` constraint keeps the two writers converging on exactly one event.
-- The runtime falls back to the sequential path when the consumer or backend does not attest dedup support (or the payload is too large to inline on the queue message). On the sequential path, the event is written *before* dispatch, and its failure fails the resume. The fallback trades away that resilience to stay safe when dedup is not enforced; it does not preserve it.
+- Resuming a hook publishes the workflow invocation and writes no event, so the resume costs one round trip. The queue message carries the payload, and the consumer creates the `hook_received` event from it before replay. A backend `(runId, resumeId)` constraint keeps redeliveries of that message converging on exactly one event. Because the message is the only copy of the payload, a failed publish fails the resume.
+- The runtime falls back to the sequential path when the consumer or backend does not attest dedup support (or the payload is too large to inline on the queue message). On the sequential path, the event is written *before* dispatch, and its failure fails the resume.
+- The two paths differ on ended runs: the sequential write is rejected and surfaces as `HookNotFoundError`, while the lazy path resolves because it never writes. Neither resumes the run.
 - Set `1` to force the sequential path as a kill switch. The chosen strategy is reported on the resume span as `workflow.hook.resume_strategy`.
 
 ### `WORKFLOW_DEPLOYMENT_MISMATCH_MAX_RETRIES`
@@ -193,7 +194,7 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 
 - Default: enabled
 - Keeps the suspended workflow VM alive across inline steps within one invocation, so each iteration of the inline loop appends only the newly written events instead of replaying the whole event log in a fresh VM.
-- Suspensions involving hooks, waits, or attributes, as well as any replay divergence, always fall back to a full replay.
+- A step-driven suspension can keep the VM retained even when hooks are open or created at the same boundary. Hook-only suspensions park the invocation. Suspensions involving waits or attributes, runs with an open wait, and any replay divergence fall back to a full replay.
 - Step inputs made of plain data (objects, arrays, primitives) and standard built-ins (`Map`, `Set`, `Date`, `RegExp`, typed arrays, `ArrayBuffer`, `URL`, `Headers`) keep the VM retained. Patching or polyfilling built-in prototypes doesn't change that because serialization never calls them. A boundary falls back to a full replay only when serializing its arguments runs code the workflow controls, such as a getter, a proxy, or a custom class serializer, or computes an `Error`'s stack trace.
 - Set `0` or `false` to replay from scratch in a fresh VM on every iteration.
 

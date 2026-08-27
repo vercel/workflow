@@ -320,6 +320,13 @@ export async function waitForSleep(
  * filter that hasn't had a `hook_received` event. Returns the matching hook,
  * which you can then resume with `resumeHook(hook.token, data)`.
  *
+ * `resumeHook()` resolving does NOT mean the `hook_received` event is visible:
+ * on the lazy resume path the consuming invocation writes it, so the event
+ * appears once the run picks the resume up. A loop that resumes and then
+ * immediately calls this again can therefore be handed back the hook it just
+ * resumed. Pass `notHookId` with the hook you resumed to wait for the NEXT
+ * one, or await something that implies the run made progress.
+ *
  * @example
  * ```ts
  * const run = await start(myWorkflow, ["doc-1"]);
@@ -330,7 +337,7 @@ export async function waitForSleep(
  */
 export async function waitForHook(
   run: Run<any>,
-  options?: WaitOptions & { token?: string }
+  options?: WaitOptions & { token?: string; notHookId?: string }
 ): Promise<Hook> {
   const w = getWorldOrThrow();
   const timeout = options?.timeout ?? 30_000;
@@ -352,7 +359,12 @@ export async function waitForHook(
     const pendingHook = hooks.find(
       (h) =>
         !receivedCorrelationIds.has(h.hookId) &&
-        (!options?.token || h.token === options.token)
+        (!options?.token || h.token === options.token) &&
+        // Skip a hook the caller has already resumed. Its `hook_received` may
+        // not be written yet (the lazy resume path defers that to the
+        // consuming invocation), so "no hook_received" alone cannot tell a
+        // fresh hook from one whose payload is still in flight.
+        (!options?.notHookId || h.hookId !== options.notHookId)
     );
 
     if (pendingHook) return pendingHook;
@@ -361,6 +373,6 @@ export async function waitForHook(
   }
 
   throw new Error(
-    `waitForHook timed out after ${timeout}ms: no pending hook found for run ${run.runId}${options?.token ? ` with token "${options.token}"` : ''}`
+    `waitForHook timed out after ${timeout}ms: no pending hook found for run ${run.runId}${options?.token ? ` with token "${options.token}"` : ''}${options?.notHookId ? ` other than "${options.notHookId}"` : ''}`
   );
 }

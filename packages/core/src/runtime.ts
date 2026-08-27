@@ -112,7 +112,10 @@ import {
   stepLeaseRemainingSeconds,
 } from './runtime/step-ownership.js';
 import { runStepSingleFlight } from './runtime/step-single-flight.js';
-import { handleSuspension } from './runtime/suspension-handler.js';
+import {
+  handleSuspension,
+  type SuspensionSerializationBlocker,
+} from './runtime/suspension-handler.js';
 import { useQuickJSVm } from './runtime/vm-mode.js';
 import { getWaitContinuationDispatch } from './runtime/wait-continuation.js';
 import { getWorld, type WorldHandlers } from './runtime/world.js';
@@ -483,11 +486,8 @@ function rootRunIdFrom(
  * `wait_completed`, which the wait timer can resolve with
  * `wait_completed`).
  *
- * This gates VM retention, the inline-delta fast path, and turbo's forced
- * optimistic start. A terminal-step delta can omit an event appended
- * concurrently after that write. With no open hook or wait, only cancellation
- * can do so, and observing it one replay late is safe because the next entity
- * write is rejected.
+ * Open waits block VM retention and inline deltas. Open hooks and waits block
+ * turbo's optimistic start; hooks also require a `step_started` claim.
  *
  * Step-body `attr_set` writes are NOT a concern: they land before the
  * step's terminal write and are therefore already inside the returned
@@ -518,6 +518,114 @@ function openHookAndWaitState(events: Event[]): {
   return { openHook: hooks.size > 0, openWait: waits.size > 0 };
 }
 
+type RetentionDecision =
+  | { retain: true }
+  | {
+      retain: false;
+      reason:
+        | 'disabled'
+        | 'serialization_executed_workflow_code'
+        | 'no_replay_driver'
+        | 'unsupported_suspension_item'
+        | 'open_wait';
+    };
+
+/**
+ * The complete retained-VM policy for a suspension boundary.
+ *
+ * Every item type accepted here must use the suspension-generation guard when
+ * signaling. Otherwise a signal scheduled at boundary N could suspend the VM
+ * after it has already resumed into boundary N+1. Waits are not guarded, so
+ * they remain unretainable. A step or attribute write is required to drive the
+ * next inline iteration; hook-only suspensions park normally.
+ *
+ * Retaining across an open hook also permits a hook-woken cold replay to race
+ * this invocation. That is safe only because each loaded log is a monotone,
+ * hole-free prefix; replaying a longer prefix preserves all earlier
+ * correlation-ID draws; `step_started` atomically chooses one owner; and an
+ * open hook suppresses optimistic step-body execution until that claim wins.
+ * The generation guard keeps losing same-boundary suspension signals stale,
+ * while a stale-snapshot/412 restart discards the retained session and replays
+ * from the authoritative log. A World that exposes a non-prefix view would
+ * violate this policy's precondition and could bind one ordinal to two logical
+ * branches before the step-ownership claim has a chance to arbitrate them.
+ *
+ * Quiescence assumes workflow code stays inside the sandbox's determinism
+ * contract. Escaping to the host realm (for example, recovering a host
+ * `Function` constructor to schedule real timers) already makes ordinary cold
+ * replay nondeterministic and is not defended here.
+ *
+ * `hasOpenWait` is lazy because checking it scans the loaded event log. Keep it
+ * last so cheap rejection reasons avoid that work.
+ */
+function getRetentionDecision({
+  suspension,
+  serializationBlockerCount,
+  hasOpenWait,
+}: {
+  suspension: WorkflowSuspension;
+  serializationBlockerCount: number;
+  hasOpenWait: () => boolean;
+}): RetentionDecision {
+  if (!isVmRetentionEnabled()) {
+    return { retain: false, reason: 'disabled' };
+  }
+  if (serializationBlockerCount > 0) {
+    return {
+      retain: false,
+      reason: 'serialization_executed_workflow_code',
+    };
+  }
+  if (suspension.stepCount === 0 && suspension.attributeCount === 0) {
+    return { retain: false, reason: 'no_replay_driver' };
+  }
+  if (
+    !suspension.items.every((item) => {
+      switch (item.type) {
+        case 'step':
+        case 'hook':
+        case 'attribute':
+          return true;
+        case 'wait':
+          return false;
+        default:
+          item satisfies never;
+          throw new Error('Unknown workflow suspension item');
+      }
+    })
+  ) {
+    return { retain: false, reason: 'unsupported_suspension_item' };
+  }
+  if (hasOpenWait()) {
+    return { retain: false, reason: 'open_wait' };
+  }
+  return { retain: true };
+}
+
+const SERIALIZATION_BLOCKER_LOG_DETAIL_LIMIT = 160;
+
+/** Keep retention diagnostics useful without emitting unbounded guest data. */
+function serializationBlockerLogMetadata(
+  blockers: SuspensionSerializationBlocker[],
+  count: number
+) {
+  return {
+    serializationBlockerCount: count,
+    serializationBlockers: blockers.map(
+      ({ source, correlationId, kind, detail }) => ({
+        source,
+        correlationId,
+        kind,
+        detail:
+          detail && detail.length > SERIALIZATION_BLOCKER_LOG_DETAIL_LIMIT
+            ? `${detail.slice(0, SERIALIZATION_BLOCKER_LOG_DETAIL_LIMIT)}…`
+            : detail,
+      })
+    ),
+    serializationBlockersTruncated: count > blockers.length,
+  };
+}
+
 type ReplayEventLog =
   | { type: 'loadAll' }
   | ({ type: 'ready' } & LoadedEventLog)
@@ -537,47 +645,6 @@ function nextEventLogLoad(log: LoadedEventLog): ReplayEventLog {
 function appendEventLog(log: LoadedEventLog, appended: LoadedEventLog): void {
   appendUniqueEvents(log.events, appended.events);
   log.cursor = appended.cursor ?? log.cursor;
-}
-
-/**
- * The whole retention predicate: keep the session only for a pure step
- * boundary (every suspension item is a step: any other item type, present
- * or future, is unretainable by default) whose new step inputs serialized
- * without executing workflow code, with no out-of-band continuation source:
- * attributes require replay; hooks and waits can wake another invocation.
- * `WORKFLOW_RETAINED_VM=0` disables retention entirely.
- *
- * The open hook/wait scan is O(events), so it is taken through a lazy getter
- * and consulted last, after every cheap check has passed.
- *
- * INVARIANT this predicate leans on: every suspension signaler that does NOT
- * carry the step-consumer generation guard (sleep, hook, attribute, see
- * `suspensionGeneration` in private.ts) must be unretainable here, either via
- * a non-step queue item or the open hook/wait scan. A new signaler that
- * satisfies neither would let a stale signal be accepted as a fresh
- * suspension on a resumed session.
- *
- * Quiescence assumes workflow code stays inside the sandbox's determinism
- * contract. Escaping to the host realm (e.g. recovering the host `Function`
- * constructor from an exposed host class to schedule real timers) makes a
- * workflow nondeterministic under ordinary replay too, and is not defended
- * here.
- */
-function canRetainWorkflowSession(
-  suspension: WorkflowSuspension,
-  stepInputsSafe: boolean,
-  openHookWait: { value: ReturnType<typeof openHookAndWaitState> }
-): boolean {
-  if (
-    !isVmRetentionEnabled() ||
-    !stepInputsSafe ||
-    suspension.steps.length === 0 ||
-    !suspension.steps.every((item) => item.type === 'step')
-  ) {
-    return false;
-  }
-  const { openHook, openWait } = openHookWait.value;
-  return !openHook && !openWait;
 }
 
 /**
@@ -3326,33 +3393,25 @@ export function workflowEntrypoint(
                         }
 
                         // Open hooks/waits in the log as loaded for this
-                        // replay. This suspension's own hook/wait writes are
-                        // NOT in it: they never reach retention anyway,
-                        // because a suspension containing a non-step item
-                        // fails canRetainWorkflowSession's type check before
-                        // the scan is consulted. Computed
-                        // lazily, at most once, and shared between the
-                        // retention decision here and the delta/turbo gates
-                        // below, since the attr-detour and hook-conflict paths
-                        // return/continue before the gates and usually
-                        // short-circuit before ever scanning the log.
+                        // replay. Computed lazily, at most once, and shared
+                        // between the retention decision here and the
+                        // delta/turbo gates below — the attr-detour and
+                        // hook-conflict paths return/continue before the
+                        // gates and usually short-circuit before scanning.
                         const openHookWait = once(() => {
                           assert(eventLog.type === 'ready');
                           return openHookAndWaitState(eventLog.events);
                         });
 
-                        // The single retention decision: keep the parked
-                        // session only across a pure step boundary with no
-                        // out-of-band continuation source and provably
-                        // passive step inputs.
-                        if (
-                          retainedSession &&
-                          !canRetainWorkflowSession(
-                            err,
-                            suspensionResult.retainedStepInputsSafe,
-                            openHookWait
-                          )
-                        ) {
+                        const retentionDecision = retainedSession
+                          ? getRetentionDecision({
+                              suspension: err,
+                              serializationBlockerCount:
+                                suspensionResult.serializationBlockerCount,
+                              hasOpenWait: () => openHookWait.value.openWait,
+                            })
+                          : undefined;
+                        if (retentionDecision?.retain === false) {
                           retainedSession = null;
                         }
                         preStepBlockingMs += suspensionResult.hookCreationMs;
@@ -3372,6 +3431,25 @@ export function workflowEntrypoint(
                             suspensionResult.hasAwaitedHookCreation,
                           hasAttributeEvents:
                             suspensionResult.hasAttributeEvents,
+                          ...(retentionDecision
+                            ? {
+                                workflowVmRetention: retentionDecision.retain
+                                  ? 'retained'
+                                  : 'replay',
+                              }
+                            : {}),
+                          ...(retentionDecision?.retain === false
+                            ? {
+                                workflowVmRetentionReason:
+                                  retentionDecision.reason,
+                              }
+                            : {}),
+                          ...(suspensionResult.serializationBlockerCount > 0
+                            ? serializationBlockerLogMetadata(
+                                suspensionResult.serializationBlockers,
+                                suspensionResult.serializationBlockerCount
+                              )
+                            : {}),
                         });
 
                         // Hook conflict: break loop, re-invoke via queue
@@ -3379,15 +3457,16 @@ export function workflowEntrypoint(
                           return await reinvoke(0);
                         }
 
-                        // Native workflow attribute events are resolved
-                        // through replay: the next loop iteration reloads the
-                        // log (now holding the just-committed attr_set) and
-                        // replays, resolving the setAttributes promise. Skip
-                        // step processing for this pass so that replay decides
-                        // races first: in Promise.race([setAttributes(),
-                        // step()]), the durable attribute event must be able
-                        // to win without executing the losing step. The replay
-                        // happens in-process rather than via a queue
+                        // Native workflow attribute events are resolved by the
+                        // next execution pass: it reloads the log (now holding
+                        // the just-committed attr_set), then either resumes the
+                        // retained VM or performs a cold replay to resolve the
+                        // setAttributes promise. Skip step processing for this
+                        // pass so that the durable event decides races first:
+                        // in Promise.race([setAttributes(), step()]), the
+                        // attribute must be able to win without executing the
+                        // losing step. The next pass happens in-process rather
+                        // than via a queue
                         // re-invocation: unlike hooks and waits, an attr_set
                         // introduces no out-of-band invocation source that the
                         // handler would need to yield the message for, so

@@ -341,7 +341,7 @@ describe('createCreateHook', () => {
     expect(workflowError).toBeInstanceOf(WorkflowSuspension);
     if (WorkflowSuspension.is(workflowError)) {
       expect(workflowError.hookCount).toBe(1);
-      expect(workflowError.steps[0]).toMatchObject({
+      expect(workflowError.items[0]).toMatchObject({
         type: 'hook',
         hasConflictAwaiter: true,
       });

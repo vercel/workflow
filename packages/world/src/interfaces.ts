@@ -494,14 +494,15 @@ export interface WorldCapabilities {
    * The World's `events.create` deduplicates concurrent `hook_received` writes
    * that carry the same `(runId, resumeId)`, collapsing them onto a single
    * committed event and returning the canonical one to every caller. This is
-   * the backend half of `resumeHook()`'s parallel fast path: the producer's
-   * direct write and the queue consumer's re-ensure both write the same
-   * `resumeId`, and exactly one event must survive or the run replays a
+   * the backend half of `resumeHook()`'s lazy path: every delivery of one
+   * resume's queue message writes the same `resumeId` (a redelivery, a
+   * deployment-affinity re-route, or an older producer's direct write racing
+   * its own consumer), and exactly one event must survive or the run replays a
    * duplicated `hook_received`.
    *
-   * The core runtime fails closed on this: the parallel path is taken ONLY
-   * when the World declares `hookResumeDedup === true` AND the target run's
-   * deployment can re-ensure from `hookInput` (see the execution-context
+   * The core runtime fails closed on this: the lazy path is taken ONLY when
+   * the World declares `hookResumeDedup === true` AND the target run's
+   * deployment can materialize from `hookInput` (see the execution-context
    * marker `hookResumeInputVersion`). A World that accepts a `resumeId` but
    * does not enforce the `(runId, resumeId)` constraint must leave this unset
    * so the runtime keeps the sequential single-writer path.

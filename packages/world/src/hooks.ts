@@ -30,8 +30,8 @@ export const HookResumeContextSchema = z.object({
   // Feature marker: the version of the lazy-hook-resume consumer protocol the
   // run's creating deployment supports. Present (>= 1) means that deployment's
   // `@workflow/core` re-ensures the `hook_received` event from the queue
-  // message's `hookInput` on replay, so `resumeHook()`'s parallel fast path is
-  // safe to use. Because a run is pinned to its creating deployment, this
+  // message's `hookInput` on replay, so `resumeHook()`'s lazy path is safe to
+  // use. Because a run is pinned to its creating deployment, this
   // marker is a reliable per-run attestation, unlike inferring support from a
   // version compare against a predicted release cutoff. Absent on runs created
   // before the marker existed (fall back to the sequential path).
@@ -45,18 +45,18 @@ export type HookResumeContext = z.infer<typeof HookResumeContextSchema>;
  * deployment stamps this into its execution context (and the server mirrors it
  * onto `HookResumeContext.hookResumeInputVersion`) to attest that its
  * `@workflow/core` re-ensures the `hook_received` event from a queue message's
- * `hookInput`. `resumeHook()`'s parallel fast path requires the target run's
- * marker to be at least this value. Bump only on a breaking change to the
+ * `hookInput`. `resumeHook()`'s lazy path requires the target run's marker to
+ * be at least this value. Bump only on a breaking change to the
  * `hookInput` re-ensure contract.
  */
 export const HOOK_RESUME_INPUT_VERSION = 1;
 
 /**
  * Current version of the backend lazy-hook-resume dedup contract: the live
- * backend enforces a `(runId, resumeId)` constraint so the direct write and the
- * queue consumer's re-ensure converge on exactly one `hook_received`.
- * `resumeHook()`'s parallel fast path requires the backend to attest at least
- * this version. Bump only on a breaking change to the constraint semantics.
+ * backend enforces a `(runId, resumeId)` constraint so repeated deliveries of
+ * one resume's queue message converge on exactly one `hook_received`.
+ * `resumeHook()`'s lazy path requires the backend to attest at least this
+ * version. Bump only on a breaking change to the constraint semantics.
  */
 export const HOOK_RESUME_DEDUP_VERSION = 1;
 
@@ -116,7 +116,7 @@ export const HookSchema = z.object({
   // lookup: RESPONSE-ONLY and TRANSIENT. Never persisted on the hook entity
   // and never part of `resumeContext`, so a server rollback or kill switch
   // takes effect on the next lookup (the field stops appearing).
-  // `resumeHook()` gates its parallel fast path on this being present and
+  // `resumeHook()` gates its lazy path on this being present and
   // current. Absent against an older/rolled-back server or when the kill switch
   // is active.
   resumeCapabilities: HookResumeCapabilitiesSchema.optional(),
