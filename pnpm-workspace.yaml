@@ -43,7 +43,7 @@ overrides:
   # spans were silently dropped this way while core's flowed (#2900).
   '@opentelemetry/api': 1.9.1
   rfc6902: 5.1.2
-  devalue: 5.9.0
+  devalue: 5.9.2
   '@sveltejs/acorn-typescript': 1.0.10
   # postcss < 8.5.18 is vulnerable to CVE-2026-45623 and GHSA-r28c-9q8g-f849
   # (arbitrary file read / .map disclosure via attacker-controlled
@@ -64,6 +64,7 @@ minimumReleaseAgeExclude:
   - '@esbuild/*'
   - '@sveltejs/load-config'
   - 'quickjs-wasi'
+  - 'devalue'
   # The CI canary lanes pin `next` to a fresh canary at install time
   # (see "Setup canary" in .github/workflows/tests.yml); canaries are
   # usually younger than the 48h gate, and next and its @next/* companion
