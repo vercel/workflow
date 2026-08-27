@@ -210,6 +210,12 @@ Writes and close requests execute serially. The first operation waits up to 250 
 
 Before routine authentication expiry or server max duration, the server sends a v1 `drain` control. The client stops sending, lets an already-admitted request receive its reply, and reconnects after the server closes with code 1001. Authentication drains re-resolve a fresh bearer. A request that was sent but receives no reply before close still has an unknown outcome and is never replayed.
 
+### `WORKFLOW_STREAM_READS_TRANSPORT`
+
+Experimental WebSocket stream reads. Default: `http`. Set `WORKFLOW_STREAM_READS_TRANSPORT=ws` to attempt the dedicated `workflow-stream-read-ws/v1` endpoint. The server authoritatively accepts or declines each upgrade; pre-open declines and recoverable interruptions use indexed HTTP pages with server-authoritative start-position resolution, so an interrupted body cannot be mistaken for completion.
+
+After the WebSocket resolves an absolute position, the logical reader owns recovery: indexed chunks are delivered contiguously, duplicates are ignored, gaps and recoverable ends reconnect from the next expected index, and only explicit verified EOF completes the stream. After bounded WebSocket retries it uses indexed HTTP pages rather than inferring durable chunk indexes from raw network read boundaries. Reads never share writer or event sockets.
+
 ### `WORKFLOW_EVENTS_TRANSPORT`
 
 Workflow run events ship to the Vercel World over a WebSocket instead of one HTTP request each. Default: `ws`.
