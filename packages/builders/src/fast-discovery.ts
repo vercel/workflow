@@ -21,13 +21,6 @@ const FAST_DISCOVERY_SOURCE_EXTENSIONS = [
 const FAST_DISCOVERY_SOURCE_EXTENSION_SET = new Set(
   FAST_DISCOVERY_SOURCE_EXTENSIONS
 );
-const fastDiscoveryResolve = promisify(
-  enhancedResolveOriginal.create({
-    extensions: [...FAST_DISCOVERY_SOURCE_EXTENSIONS, '.json', '.node'],
-    fullySpecified: false,
-    conditionNames: ['node', 'import', 'require'],
-  })
-);
 const require = createRequire(import.meta.url);
 
 const FAST_DISCOVERY_READ_CONCURRENCY = 32;
@@ -50,7 +43,7 @@ export interface DiscoveredEntries {
   discoveredWorkflows: Set<string>;
   discoveredSerdeFiles: Set<string>;
   /**
-   * All JS/TS files visited while walking the workflow import graph.
+   * All source files visited while walking the workflow import graph.
    * Watch-mode integrations use this to distinguish relevant HMR changes from
    * unrelated application file edits.
    */
@@ -649,6 +642,18 @@ export async function fastDiscoverEntries({
   workingDir,
   discoverWorkflowsInNodeModules = true,
 }: FastDiscoverEntriesOptions): Promise<void> {
+  const sourceExtensionSet = new Set(FAST_DISCOVERY_SOURCE_EXTENSIONS);
+  for (const entryPoint of entryPoints) {
+    sourceExtensionSet.add(extname(entryPoint));
+  }
+  const sourceExtensions = [...sourceExtensionSet];
+  const fastDiscoveryResolve = promisify(
+    enhancedResolveOriginal.create({
+      extensions: [...sourceExtensions, '.json', '.node'],
+      fullySpecified: false,
+      conditionNames: ['node', 'import', 'require'],
+    })
+  );
   const readLimit = createLimiter(FAST_DISCOVERY_READ_CONCURRENCY);
   const resolveLimit = createLimiter(FAST_DISCOVERY_RESOLVE_CONCURRENCY);
   const resolveCache = new Map<string, Promise<string | null>>();
@@ -669,7 +674,7 @@ export async function fastDiscoverEntries({
     if (
       queuedFiles.has(normalizedPath) ||
       processedFiles.has(normalizedPath) ||
-      !isJsTsFile(normalizedPath) ||
+      !sourceExtensionSet.has(extname(normalizedPath)) ||
       isGeneratedBuildArtifactPath(normalizedPath)
     ) {
       return;
@@ -752,15 +757,15 @@ export async function fastDiscoverEntries({
       ? strippedSpecifier
       : resolve(dirname(importer), strippedSpecifier);
     const extension = extname(basePath);
-    if (FAST_DISCOVERY_SOURCE_EXTENSION_SET.has(extension)) {
+    if (sourceExtensionSet.has(extension)) {
       return (await fileExists(basePath)) ? normalizePath(basePath) : null;
     }
 
     for (const candidate of [
-      ...FAST_DISCOVERY_SOURCE_EXTENSIONS.map(
+      ...sourceExtensions.map(
         (candidateExtension) => `${basePath}${candidateExtension}`
       ),
-      ...FAST_DISCOVERY_SOURCE_EXTENSIONS.map((candidateExtension) =>
+      ...sourceExtensions.map((candidateExtension) =>
         join(basePath, `index${candidateExtension}`)
       ),
     ]) {
@@ -928,6 +933,22 @@ export async function fastDiscoverEntries({
     return packageInfo?.hasWorkflowDependency === true;
   };
 
+  const recordWorkflowPatterns = (filePath: string, source: string) => {
+    if (!isJsTsFile(filePath)) return false;
+
+    const patterns = detectWorkflowPatterns(source);
+    if (patterns.hasUseWorkflow) {
+      state.discoveredWorkflows.add(filePath);
+    }
+    if (patterns.hasUseStep) {
+      state.discoveredSteps.add(filePath);
+    }
+    if (patterns.hasSerde && hasLikelySerdeClass(source)) {
+      state.discoveredSerdeFiles.add(filePath);
+    }
+    return patterns.hasDirective || patterns.hasSerde;
+  };
+
   const processImportSpecifier = async (
     filePath: string,
     specifier: string,
@@ -960,12 +981,10 @@ export async function fastDiscoverEntries({
     }
 
     addImportParent(filePath, resolved);
-    if (!isJsTsFile(resolved) || isGeneratedBuildArtifactPath(resolved)) {
-      return;
-    }
-
-    if (specifier.startsWith('.')) {
-      enqueueFile(resolved);
+    if (
+      !sourceExtensionSet.has(extname(resolved)) ||
+      isGeneratedBuildArtifactPath(resolved)
+    ) {
       return;
     }
 
@@ -983,18 +1002,7 @@ export async function fastDiscoverEntries({
       return;
     }
 
-    const patterns = detectWorkflowPatterns(source);
-    if (patterns.hasUseWorkflow) {
-      state.discoveredWorkflows.add(filePath);
-    }
-    if (patterns.hasUseStep) {
-      state.discoveredSteps.add(filePath);
-    }
-    if (patterns.hasSerde && hasLikelySerdeClass(source)) {
-      state.discoveredSerdeFiles.add(filePath);
-    }
-
-    const forceFollowImports = patterns.hasDirective || patterns.hasSerde;
+    const forceFollowImports = recordWorkflowPatterns(filePath, source);
     const shouldFollow = await shouldFollowImportsFromFile(
       filePath,
       forceFollowImports
