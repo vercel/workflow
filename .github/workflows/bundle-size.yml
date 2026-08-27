@@ -230,11 +230,9 @@ jobs:
       - name: Enforce size threshold
         if: github.event_name == 'pull_request'
         env:
+          GH_TOKEN: ${{ github.token }}
           MEASURE_RESULT: ${{ needs.measure.result }}
-          # The label list is compared against $OVERRIDE_LABEL in the script
-          # below rather than in a `contains()` expression here, so the label
-          # name is defined exactly once, at the top of this workflow.
-          PR_LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           if [ "$MEASURE_RESULT" != "success" ]; then
             echo "Measurement job did not succeed ($MEASURE_RESULT); it reports its own failure."
@@ -251,6 +249,10 @@ jobs:
           jq -r '.regressions[] | "  \(.app) \(.id): +\(.rawDelta) bytes (threshold \(.threshold | floor) bytes)"' \
             "$RUNNER_TEMP/gate.json"
 
+          # Reruns keep the original event payload, so fetch the current label
+          # list instead of reading a stale github.event.pull_request snapshot.
+          PR_LABELS=$(gh api "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}" \
+            --jq '[.labels[].name]')
           if jq -e --arg label "$OVERRIDE_LABEL" 'index($label) != null' \
             <<< "$PR_LABELS" > /dev/null; then
             echo "The '${OVERRIDE_LABEL}' label is present; accepting the growth."
