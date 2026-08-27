@@ -336,15 +336,31 @@ describe('getWorkflowRunEventsV4 over HTTP', () => {
       })
       .reply(
         200,
-        encodeFrame(
-          {
-            _error: 1,
-            code: 'payload-missing',
-            message:
-              'Event payload object is missing from storage: s3rf:t:p:production:wrun_1:wf:01ABC',
-          },
-          new Uint8Array(0)
-        ),
+        Buffer.concat([
+          encodeFrame(
+            {
+              eventId: 'evnt_1',
+              runId: 'wrun_1',
+              eventType: 'run_created',
+              createdAt: CREATED_AT,
+              eventData: {
+                deploymentId: 'dpl_1',
+                workflowName: 'workflow',
+                input: null,
+              },
+            },
+            new Uint8Array(0)
+          ),
+          encodeFrame(
+            {
+              _error: 1,
+              code: 'payload-missing',
+              message:
+                'Event payload object is missing from storage: s3rf:t:p:production:wrun_1:wf:01ABC',
+            },
+            new Uint8Array(0)
+          ),
+        ]),
         { headers: { 'content-type': V4_FRAME_CONTENT_TYPE } }
       );
 
@@ -406,7 +422,7 @@ describe('getWorkflowRunEventsV4 over HTTP', () => {
     // Neither a 5xx status nor a retryable code, so the runtime fails the run
     // rather than redelivering it.
     expect((error as WorkflowWorldError).status).toBeUndefined();
-    expect((error as WorkflowWorldError).code).toBe('INVALID_RESPONSE');
+    expect((error as WorkflowWorldError).code).toBe('WORLD_CONTRACT_ERROR');
     agent.assertNoPendingInterceptors();
   });
 
@@ -709,6 +725,40 @@ describe('getEventsByCorrelationIdV4 over HTTP', () => {
  * value or hanging — the trailing frame below is never read.
  */
 describe('getEventV4 over HTTP', () => {
+  it('reports a terminal payload-missing frame as a corrupted event log', async () => {
+    const origin =
+      WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
+    const agent = new MockAgent();
+    agent.disableNetConnect();
+
+    agent
+      .get(origin)
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events/evnt_1?remoteRefBehavior=resolve',
+        method: 'GET',
+      })
+      .reply(
+        200,
+        encodeFrame(
+          {
+            _error: 1,
+            code: 'payload-missing',
+            message: 'Event payload object is missing from storage: ref_1',
+          },
+          new Uint8Array(0)
+        ),
+        { headers: { 'content-type': V4_FRAME_CONTENT_TYPE } }
+      );
+
+    await expect(
+      getEventV4('wrun_1', 'evnt_1', 'resolve', {
+        token: 'test-token',
+        dispatcher: agent,
+      })
+    ).rejects.toSatisfy(CorruptedEventLogError.is);
+    agent.assertNoPendingInterceptors();
+  });
+
   it('returns the first frame and stops reading the rest', async () => {
     const origin =
       WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';

@@ -1373,6 +1373,12 @@ export async function getEventV4(
   // GET emits a single frame (no sentinel); decodeFrames returns at EOF
   // after yielding it.
   for await (const frame of decodeFrames(chunks)) {
+    if (frame.meta._error === 1) {
+      throw streamErrorFrameToError(frame.meta, 'getEvent');
+    }
+    if (Object.keys(frame.meta).some((key) => key.startsWith('_'))) {
+      throw new Error('v4 getEvent: unexpected control frame');
+    }
     return decodeEventFrame(frame);
   }
   throw new Error(`v4 getEvent: empty frame stream for ${eventId}`);
@@ -1435,7 +1441,7 @@ function streamErrorFrameToError(
   }
   return new WorkflowWorldError(
     `v4 ${opName}: stream ended with terminal error "${code}": ${detail}`,
-    { code: 'INVALID_RESPONSE' }
+    { code: 'WORLD_CONTRACT_ERROR' }
   );
 }
 
@@ -1553,6 +1559,9 @@ export async function getWorkflowRunEventsV4(
       );
       return { events, ...page };
     } catch (error) {
+      if (CorruptedEventLogError.is(error) || WorkflowWorldError.is(error)) {
+        throw error;
+      }
       const lastEvent = events.at(-1);
       if (
         params.limit !== undefined ||

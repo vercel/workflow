@@ -143,6 +143,16 @@ describe('classifyRunError', () => {
     expect(classifyRunError(native)).toBe(RUN_ERROR_CODES.USER_ERROR);
   });
 
+  it('classifies an explicit world contract error as WORLD_CONTRACT_ERROR', () => {
+    expect(
+      classifyRunError(
+        new WorkflowWorldError('unknown terminal event stream error', {
+          code: 'WORLD_CONTRACT_ERROR',
+        })
+      )
+    ).toBe(RUN_ERROR_CODES.WORLD_CONTRACT_ERROR);
+  });
+
   it('classifies a TRANSPORT error as WORLD_CONTRACT_ERROR (backend fault, not USER_ERROR)', () => {
     // Transport blips are normally redelivered via the queue (see
     // isRetryableWorldError); if one ever reaches terminal classification it is
