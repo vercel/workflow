@@ -2489,7 +2489,17 @@ export function workflowEntrypoint(
                             event.eventType === 'hook_disposed' &&
                             event.correlationId === hookResume.hookId
                         );
-                      if (permanentlyRefused) return;
+                      if (permanentlyRefused) {
+                        runtimeLogger.warn(
+                          'Producer-committed hook wake was permanently refused',
+                          {
+                            workflowRunId: runId,
+                            hookId: hookResume.hookId,
+                            resumeId: hookResume.resumeId,
+                          }
+                        );
+                        return;
+                      }
 
                       throw new WorkflowWorldError(
                         `Hook resume ${hookResume.resumeId} is not committed yet`,

@@ -765,16 +765,26 @@ describe('lazy hook resume consumer preload', () => {
   });
 
   it('consumes a permanently refused producer-committed wake', async () => {
-    const { handlerError, hookReceivedCreates, runCompletedCreates } =
-      await runResumeConsumerScenario({
-        preloadHasHookReceived: false,
-        producerCommittedWake: true,
-        logHasDisposedEvent: true,
-      });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const { handlerError, hookReceivedCreates, runCompletedCreates } =
+        await runResumeConsumerScenario({
+          preloadHasHookReceived: false,
+          producerCommittedWake: true,
+          logHasDisposedEvent: true,
+        });
 
-    expect(handlerError).toBeUndefined();
-    expect(hookReceivedCreates).toHaveLength(0);
-    expect(runCompletedCreates).toHaveLength(0);
+      expect(handlerError).toBeUndefined();
+      expect(hookReceivedCreates).toHaveLength(0);
+      expect(runCompletedCreates).toHaveLength(0);
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining(
+          'Producer-committed hook wake was permanently refused'
+        )
+      );
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('does not lose a resume when disposal commits after publish', async () => {

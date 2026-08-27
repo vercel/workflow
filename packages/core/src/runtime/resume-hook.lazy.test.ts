@@ -25,7 +25,27 @@ vi.mock('../serialization.js', async (importActual) => {
   const actual = await importActual<typeof import('../serialization.js')>();
   return {
     ...actual,
-    dehydrateStepReturnValue: vi.fn(async () => PAYLOAD_BYTES),
+    dehydrateStepReturnValue: vi.fn(
+      async (
+        value: unknown,
+        _runId: string,
+        _key: unknown,
+        ops: Promise<unknown>[] = []
+      ) => {
+        if (
+          typeof value === 'object' &&
+          value !== null &&
+          'payloadOpRejection' in value
+        ) {
+          ops.push(
+            Promise.reject(
+              (value as { payloadOpRejection: unknown }).payloadOpRejection
+            )
+          );
+        }
+        return PAYLOAD_BYTES;
+      }
+    ),
     hydrateStepArguments: vi.fn(async (value: unknown) => value),
   };
 });
@@ -153,6 +173,31 @@ describe('resumeHook durable resume', () => {
     expect(createEvent.mock.calls[0][2].resumeId).not.toBe(
       createEvent.mock.calls[1][2].resumeId
     );
+  });
+
+  it('preserves the webhook bundle tolerance for undefined payload-op rejections', async () => {
+    const hook = { ...baseHook, resumeContext: currentContext } satisfies Hook;
+    const { createEvent, queue } = makeWorld(hook);
+
+    await expect(
+      resumeHook(hook.token, { payloadOpRejection: undefined })
+    ).resolves.toBeDefined();
+
+    expect(createEvent).toHaveBeenCalledTimes(1);
+    expect(queue).toHaveBeenCalledTimes(1);
+  });
+
+  it('surfaces non-undefined payload-op rejections before writing or waking', async () => {
+    const hook = { ...baseHook, resumeContext: currentContext } satisfies Hook;
+    const payloadError = new Error('payload upload failed');
+    const { createEvent, queue } = makeWorld(hook);
+
+    await expect(
+      resumeHook(hook.token, { payloadOpRejection: payloadError })
+    ).rejects.toBe(payloadError);
+
+    expect(createEvent).not.toHaveBeenCalled();
+    expect(queue).not.toHaveBeenCalled();
   });
 
   it('does not report success when the durable write rejects a disposed or ended hook', async () => {

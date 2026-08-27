@@ -351,9 +351,11 @@ export const WorkflowInvokePayloadSchema = z.object({
   /**
    * Producer-committed hook wake. Unlike `hookInput`, this carries no payload:
    * the producer writes `hook_received`, and the consumer only verifies that
-   * the matching event is visible before replay.
+   * the matching event is visible before replay. This intentionally fails the
+   * whole message parse for unknown versions: dropping the marker would skip
+   * the barrier and acknowledge a wake whose event is still in flight.
    */
-  hookResume: HookResumeWakeSchema.optional().catch(undefined),
+  hookResume: HookResumeWakeSchema.optional(),
   /**
    * Resilient step dispatch data, only present alongside `stepId` when the
    * producer parallelized the `step_created` write with this queue publish. A

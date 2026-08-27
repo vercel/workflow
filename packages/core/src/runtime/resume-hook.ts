@@ -427,7 +427,16 @@ async function resumeHookImpl<T = any>(
         );
         // A hook_received event is not durable while its payload still points
         // at stream uploads in flight. Finish them before committing the event.
-        await Promise.all(ops);
+        // A rejection with `undefined` is an expected artifact of the webhook
+        // bundle and was historically ignored by the background flush. Keep
+        // that tolerance now that the flush is awaited inline.
+        await Promise.all(
+          ops.map((op) =>
+            op.catch((error) => {
+              if (error !== undefined) throw error;
+            })
+          )
+        );
 
         span?.setAttributes({
           ...Attribute.WorkflowName(resumeContext.workflowName),

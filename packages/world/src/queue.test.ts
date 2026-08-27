@@ -175,13 +175,21 @@ describe('QueuePayloadSchema', () => {
     ).toEqual({ runId: 'wrun_01ABC', hookResume });
   });
 
-  it('drops a malformed hook wake instead of wedging the delivery', () => {
+  it.each([
+    ['an unknown version', { version: 2 }],
+    ['a missing version', {}],
+  ])('rejects a hook wake with %s', (_name, versionFields) => {
     expect(
-      QueuePayloadSchema.parse({
+      QueuePayloadSchema.safeParse({
         runId: 'wrun_01ABC',
-        hookResume: { resumeId: 'resume_1', strategy: 'unknown' },
-      })
-    ).toEqual({ runId: 'wrun_01ABC', hookResume: undefined });
+        hookResume: {
+          resumeId: 'resume_1',
+          hookId: 'hook_1',
+          strategy: 'producer_committed',
+          ...versionFields,
+        },
+      }).success
+    ).toBe(false);
   });
 
   // Resilient step dispatch: a step message may carry `stepInput` with the
