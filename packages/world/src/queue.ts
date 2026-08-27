@@ -218,13 +218,15 @@ export type HookResumeInput = z.infer<typeof HookResumeInputSchema>;
 /**
  * Wake emitted while the producer's durable `hook_received` write is in
  * flight. A hook-resume protocol v2 consumer waits for the matching event
- * before replaying. The wake envelope itself is version 1.
+ * before replaying. Current producers emit envelope version 1. The schema
+ * accepts future numeric versions so the run-aware consumer barrier can reject
+ * them with useful context instead of throwing an opaque payload-parse error.
  */
 export const HookResumeWakeSchema = z.object({
   resumeId: z.string(),
   hookId: z.string(),
   strategy: z.literal('producer_committed'),
-  version: z.literal(1),
+  version: z.number().int().positive(),
 });
 export type HookResumeWake = z.infer<typeof HookResumeWakeSchema>;
 
@@ -351,9 +353,9 @@ export const WorkflowInvokePayloadSchema = z.object({
   /**
    * Producer-committed hook wake. Unlike `hookInput`, this carries no payload:
    * the producer writes `hook_received`, and the consumer only verifies that
-   * the matching event is visible before replay. This intentionally fails the
-   * whole message parse for unknown versions: dropping the marker would skip
-   * the barrier and acknowledge a wake whose event is still in flight.
+   * the matching event is visible before replay. The nested schema accepts
+   * numeric future versions, but the run-aware barrier rejects unsupported
+   * versions before replay. Malformed or missing versions fail message parsing.
    */
   hookResume: HookResumeWakeSchema.optional(),
   /**

@@ -2469,6 +2469,16 @@ export function workflowEntrypoint(
                   // marker attests this barrier; legacy hookInput messages keep
                   // their materialization path below.
                   if (hookResume?.strategy === 'producer_committed') {
+                    if (hookResume.version !== 1) {
+                      throw new WorkflowWorldError(
+                        `Workflow run ${runId} received hook wake ${hookResume.resumeId} for ${hookResume.hookId} with unsupported version ${hookResume.version}`,
+                        {
+                          status: 503,
+                          code: 'hook-resume-wake-version-unsupported',
+                        }
+                      );
+                    }
+
                     const matchesResume = (event: Event): boolean =>
                       event.eventType === 'hook_received' &&
                       event.resumeId === hookResume.resumeId;

@@ -149,6 +149,8 @@ async function runResumeConsumerScenario(options: {
   disposeAfterLazyPublish?: boolean;
   /** Deliver the new payload-less producer-committed wake shape. */
   producerCommittedWake?: boolean;
+  /** Override the producer-committed wake envelope version. */
+  hookResumeVersion?: number;
   /** Put a durable hook_disposed in the log before delivery. */
   logHasDisposedEvent?: boolean;
   /**
@@ -405,7 +407,7 @@ async function runResumeConsumerScenario(options: {
           hookId: hookCorrelationId,
           resumeId,
           strategy: 'producer_committed',
-          version: 1,
+          version: options.hookResumeVersion ?? 1,
         },
       }
     : {
@@ -749,6 +751,26 @@ describe('lazy hook resume consumer preload', () => {
       code: 'hook-resume-event-pending',
       status: 503,
     });
+    expect(runCompletedCreates).toHaveLength(0);
+  });
+
+  it('rejects an unsupported wake version with run-aware diagnostics', async () => {
+    const { handlerError, listEvents, runCompletedCreates } =
+      await runResumeConsumerScenario({
+        preloadHasHookReceived: false,
+        producerCommittedWake: true,
+        hookResumeVersion: 2,
+      });
+
+    expect(handlerError).toMatchObject({
+      code: 'hook-resume-wake-version-unsupported',
+      status: 503,
+      message: expect.stringContaining(
+        'Workflow run wrun_resume_consumer_preload'
+      ),
+    });
+    expect((handlerError as Error).message).toContain('unsupported version 2');
+    expect(listEvents).not.toHaveBeenCalled();
     expect(runCompletedCreates).toHaveLength(0);
   });
 

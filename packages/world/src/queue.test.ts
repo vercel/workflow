@@ -175,10 +175,21 @@ describe('QueuePayloadSchema', () => {
     ).toEqual({ runId: 'wrun_01ABC', hookResume });
   });
 
-  it.each([
-    ['an unknown version', { version: 2 }],
-    ['a missing version', {}],
-  ])('rejects a hook wake with %s', (_name, versionFields) => {
+  it('preserves a future numeric hook wake version for contextual rejection', () => {
+    expect(
+      QueuePayloadSchema.parse({
+        runId: 'wrun_01ABC',
+        hookResume: {
+          resumeId: 'resume_1',
+          hookId: 'hook_1',
+          strategy: 'producer_committed',
+          version: 2,
+        },
+      })
+    ).toMatchObject({ hookResume: { version: 2 } });
+  });
+
+  it('rejects a hook wake with a missing version', () => {
     expect(
       QueuePayloadSchema.safeParse({
         runId: 'wrun_01ABC',
@@ -186,7 +197,6 @@ describe('QueuePayloadSchema', () => {
           resumeId: 'resume_1',
           hookId: 'hook_1',
           strategy: 'producer_committed',
-          ...versionFields,
         },
       }).success
     ).toBe(false);
