@@ -71,8 +71,12 @@ merged into one cluster first, so a gap always means "no step body was running" 
 than a meaningless negative from subtracting overlapping spans. And gaps are computed
 per trace, because a boundary between traces is a durable suspend/resume, not overhead.
 
-Elsewhere in that view: double-click a frame to zoom to it, drag across the ruler to zoom
-to any range, breadcrumbs and `Esc` to go back, click a frame for its attributes.
+Navigating it: **scroll to zoom** at the pointer, **shift-scroll** (or a horizontal
+trackpad swipe) to pan, **alt-scroll** to fall through to native vertical scrolling on
+traces deep enough to overflow. Double-click a frame to zoom to it, drag across the ruler
+to select a range, breadcrumbs and `Esc` to go back, click a frame for its attributes.
+Wheel gestures deliberately do not push breadcrumbs - a crumb per notch would bury the
+gap and span entries worth stepping back to.
 
 ### Reparenting WebSocket spans
 

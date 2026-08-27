@@ -79,11 +79,35 @@ function rebuild() {
 let view = { from: 0, to: wallMs };
 const history = [];
 
+const MIN_SPAN_MS = 0.05; // ~50us; below this the ruler stops meaning anything
+
+// Clamp a window into [0, wallMs] while preserving its width, so zooming or panning
+// against an edge slides the window instead of silently shrinking it.
+function clampView(from, span) {
+  const w = Math.min(Math.max(span, MIN_SPAN_MS), wallMs);
+  const f = Math.max(0, Math.min(from, wallMs - w));
+  return { from: f, to: f + w };
+}
+
 function setView(from, to, label) {
-  const span = Math.max(to - from, 0.05); // never zoom past ~50µs of width
   history.push({ ...view, label });
-  view = { from: Math.max(0, from), to: Math.min(wallMs, from + span) };
+  view = clampView(from, to - from);
   render();
+}
+
+// Zoom about a fixed point: the wall time under the cursor must not move, which is what
+// makes wheel zoom feel like it tracks the pointer instead of the window centre.
+// Deliberately does not touch `history` - a breadcrumb per wheel notch would bury the
+// gap and span entries that are actually worth stepping back to.
+function zoomAt(frac, factor) {
+  const span = view.to - view.from;
+  const anchor = view.from + span * frac;
+  const next = Math.min(Math.max(span * factor, MIN_SPAN_MS), wallMs);
+  view = clampView(anchor - (anchor - view.from) * (next / span), next);
+}
+
+function panBy(dtMs) {
+  view = clampView(view.from + dtMs, view.to - view.from);
 }
 function popView() {
   if (!history.length) return;
@@ -290,6 +314,26 @@ function render() {
   renderStso();
 }
 
+// Wheel events arrive far faster than a repaint is worth, so coalesce to one per frame.
+// The breakdown is a full pass over every span, so it trails the gesture rather than
+// running inside it; and it is skipped entirely while a span's attributes are on show,
+// which would otherwise be clobbered mid-scroll.
+let viewportRaf = 0;
+let breakdownTimer = 0;
+function renderViewport() {
+  if (!viewportRaf) {
+    viewportRaf = requestAnimationFrame(() => {
+      viewportRaf = 0;
+      renderRuler();
+      renderFlame();
+    });
+  }
+  clearTimeout(breakdownTimer);
+  breakdownTimer = setTimeout(() => {
+    if (!selectedSpan) renderBreakdown();
+  }, 90);
+}
+
 // ---------- interaction ----------
 const tip = document.getElementById('tip');
 framesEl.addEventListener('mousemove', (e) => {
@@ -367,6 +411,38 @@ function showSpanDetail(s) {
     renderFlame();
   };
 }
+
+// Wheel zooms at the pointer. The flame graph is the point of this page, so it claims
+// the gesture rather than scrolling the document; Shift (or a horizontal wheel/trackpad
+// swipe) pans, and Alt falls through to native scrolling for traces deep enough to
+// overflow vertically.
+flameEl.addEventListener(
+  'wheel',
+  (e) => {
+    if (e.altKey) return; // let the browser scroll the frame stack
+    e.preventDefault();
+    const r = framesEl.getBoundingClientRect();
+    const w = Math.max(r.width, 1);
+    // deltaMode is lines (1) or pages (2) on some browsers; normalise to pixels or a
+    // single notch would zoom by orders of magnitude there.
+    const unit =
+      e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? r.height || 400 : 1;
+    const dy = e.deltaY * unit;
+    const dx = e.deltaX * unit;
+
+    if (e.shiftKey || Math.abs(dx) > Math.abs(dy)) {
+      panBy((view.to - view.from) * ((e.shiftKey ? dy : dx) / w));
+    } else {
+      const frac = Math.min(Math.max((e.clientX - r.left) / w, 0), 1);
+      // exp() makes every notch a constant ratio, so zooming in and back out lands
+      // where you started; the clamp keeps one violent trackpad flick from jumping
+      // the whole run in a single event.
+      zoomAt(frac, Math.exp(Math.min(Math.max(dy, -240), 240) * 0.0022));
+    }
+    renderViewport();
+  },
+  { passive: false }
+);
 
 // Drag across the ruler to zoom to an arbitrary range.
 let dragFrom = null;

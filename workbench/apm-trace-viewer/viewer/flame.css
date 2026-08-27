@@ -134,3 +134,4 @@ td.run a.altview { font-size: 10px; color: var(--fg-faint); border: 1px solid va
 td.run a.altview:hover { color: var(--accent); border-color: var(--border-strong); text-decoration: none; }
 .gnames .par { color: #f5a623; font-size: 10px; margin-left: 2px; }
 .stso-sum .warn { color: #f5a623; }
+.zoomhint { color: var(--fg-faint); font-size: 11px; margin-right: 4px; }
