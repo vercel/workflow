@@ -371,7 +371,7 @@ function TraceViewerContent({
     [setActiveSpan, scrollSpanIntoView, cancelPendingZoom, focusViewportOnSpan]
   );
 
-  const { altHeld, setAltHeldFromPointer } = useAltHeld();
+  const { altHeld } = useAltHeld();
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent): void => {
@@ -395,7 +395,6 @@ function TraceViewerContent({
 
   const handleTimelineMouseMove = useCallback(
     (e: React.MouseEvent<HTMLDivElement>) => {
-      setAltHeldFromPointer(e.altKey);
       const el = timelineRef.current;
       if (!el) return;
       const rect = el.getBoundingClientRect();
@@ -413,7 +412,7 @@ function TraceViewerContent({
         rowIndex: Math.floor((e.clientY - rect.top) / ROW_HEIGHT_PX),
       });
     },
-    [setAltHeldFromPointer]
+    []
   );
 
   const handleTimelineMouseLeave = useCallback(() => {
