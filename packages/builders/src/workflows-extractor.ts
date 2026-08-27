@@ -1,4 +1,4 @@
-import { readdir, readFile } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import type {
   ArrowFunctionExpression,
@@ -17,7 +17,7 @@ import { parseSync } from '@swc/core';
 import { WorkflowBuildError } from '@workflow/errors';
 import {
   deserializeWorkflowBundle,
-  isWorkflowBundleFileName,
+  referencedWorkflowBundleFileNames,
   WORKFLOW_BUNDLE_DIRECTORY,
 } from './workflow-bundle-module.js';
 
@@ -241,19 +241,34 @@ export async function extractWorkflowGraphs(bundlePath: string): Promise<{
   };
 }> {
   const lazyBundleDir = join(dirname(bundlePath), WORKFLOW_BUNDLE_DIRECTORY);
-  const lazyBundleFiles = await readdir(lazyBundleDir)
-    .then((files) => files.filter(isWorkflowBundleFileName).sort())
-    .catch((error: NodeJS.ErrnoException) => {
+  const routeCode = await readFile(bundlePath, 'utf8').catch(
+    (error: NodeJS.ErrnoException) => {
       throw new WorkflowBuildError(
-        `Failed to read lazy workflow bundle directory "${lazyBundleDir}"`,
+        `Failed to read workflow route "${bundlePath}"`,
         { cause: error }
       );
-    });
+    }
+  );
+  const lazyBundleFiles = referencedWorkflowBundleFileNames(routeCode);
   if (lazyBundleFiles.length === 0) {
     throw new WorkflowBuildError(
-      `No lazy workflow bundles found in "${lazyBundleDir}"`
+      `No lazy workflow bundles referenced by "${bundlePath}"`
     );
   }
+
+  const lazyBundles = await Promise.all(
+    lazyBundleFiles.map(async (file) => {
+      try {
+        const moduleCode = await readFile(join(lazyBundleDir, file), 'utf8');
+        return { file, code: deserializeWorkflowBundle(moduleCode) };
+      } catch (error) {
+        throw new WorkflowBuildError(
+          `Failed to extract workflow graph from lazy bundle "${file}"`,
+          { cause: error }
+        );
+      }
+    })
+  );
 
   const graphs: Record<string, Record<string, ManifestWorkflowEntry>> = {};
   const mergeWorkflowCode = (workflowCode: string) => {
@@ -273,19 +288,6 @@ export async function extractWorkflowGraphs(bundlePath: string): Promise<{
     }
   };
 
-  const lazyBundles = await Promise.all(
-    lazyBundleFiles.map(async (file) => {
-      try {
-        const moduleCode = await readFile(join(lazyBundleDir, file), 'utf8');
-        return { file, code: deserializeWorkflowBundle(moduleCode) };
-      } catch (error) {
-        throw new WorkflowBuildError(
-          `Failed to extract workflow graph from lazy bundle "${file}"`,
-          { cause: error }
-        );
-      }
-    })
-  );
   for (const { file, code } of lazyBundles) {
     try {
       mergeWorkflowCode(code);

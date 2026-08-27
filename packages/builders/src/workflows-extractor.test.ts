@@ -11,6 +11,11 @@ import { extractWorkflowGraphs } from './workflows-extractor.js';
 describe('extractWorkflowGraphs', () => {
   let tempDir: string | undefined;
 
+  const routeFor = (files: string[]) =>
+    files
+      .map((file) => `const load = () => import('./workflow-bundles/${file}');`)
+      .join('\n');
+
   afterEach(async () => {
     if (tempDir) {
       await rm(tempDir, { recursive: true, force: true });
@@ -23,22 +28,26 @@ describe('extractWorkflowGraphs', () => {
     const bundlePath = join(tempDir, 'workflow-bundle.js');
     const bundlesDir = join(tempDir, 'workflow-bundles');
     await mkdir(bundlesDir);
-    await writeFile(
-      bundlePath,
-      'const routeDoesNotNeedToDescribeItsLazyBundles = true;'
-    );
 
     const bundle = (file: string, name: string) =>
       `function ${name}() { return ${JSON.stringify(file)}; }\n${name}.workflowId = "workflow//${file}//${name}";`;
-    await Promise.all(
-      ['./first.ts', './second.ts'].map((file, index) => {
+    const bundleFiles = await Promise.all(
+      ['./first.ts', './second.ts'].map(async (file, index) => {
         const code = bundle(file, `workflow${index}`);
-        return writeFile(
-          join(bundlesDir, workflowBundleFileName(code)),
+        const bundleFile = workflowBundleFileName(code);
+        await writeFile(
+          join(bundlesDir, bundleFile),
           serializeWorkflowBundle(code)
         );
+        return bundleFile;
       })
     );
+    const staleCode = bundle('./stale.ts', 'staleWorkflow');
+    await writeFile(
+      join(bundlesDir, workflowBundleFileName(staleCode)),
+      serializeWorkflowBundle(staleCode)
+    );
+    await writeFile(bundlePath, routeFor(bundleFiles));
 
     await expect(extractWorkflowGraphs(bundlePath)).resolves.toEqual({
       './first.ts': {
@@ -59,8 +68,6 @@ describe('extractWorkflowGraphs', () => {
     const bundlePath = join(tempDir, 'workflow-bundle.js');
     const bundlesDir = join(tempDir, 'workflow-bundles');
     await mkdir(bundlesDir);
-    await writeFile(bundlePath, 'const workflowCode = {};');
-
     const code = [
       'var stepOne = globalThis[/* @__PURE__ */ Symbol.for("WORKFLOW_USE_STEP")]("step//./input.ts//stepOne");',
       'async function testWorkflow(input) {',
@@ -69,10 +76,12 @@ describe('extractWorkflowGraphs', () => {
       '}',
       'testWorkflow.workflowId = "workflow//./input.ts//testWorkflow";',
     ].join('\n');
+    const bundleFile = workflowBundleFileName(code);
     await writeFile(
-      join(bundlesDir, workflowBundleFileName(code)),
+      join(bundlesDir, bundleFile),
       serializeWorkflowBundle(code)
     );
+    await writeFile(bundlePath, routeFor([bundleFile]));
 
     await expect(extractWorkflowGraphs(bundlePath)).resolves.toEqual({
       './input.ts': {
@@ -94,14 +103,26 @@ describe('extractWorkflowGraphs', () => {
     });
   });
 
-  it('rejects a missing lazy workflow bundle set', async () => {
+  it('rejects a route without lazy workflow bundle references', async () => {
     tempDir = await mkdtemp(join(tmpdir(), 'workflow-builders-'));
     const bundlePath = join(tempDir, 'workflow-bundle.js');
     await writeFile(bundlePath, 'const route = true;');
     await mkdir(join(tempDir, 'workflow-bundles'));
 
     await expect(extractWorkflowGraphs(bundlePath)).rejects.toThrow(
-      'No lazy workflow bundles found'
+      'No lazy workflow bundles referenced'
+    );
+  });
+
+  it('rejects a referenced lazy workflow bundle that is missing', async () => {
+    tempDir = await mkdtemp(join(tmpdir(), 'workflow-builders-'));
+    const bundlePath = join(tempDir, 'workflow-bundle.js');
+    const missingBundleFile = `${'0'.repeat(64)}.mjs`;
+    await writeFile(bundlePath, routeFor([missingBundleFile]));
+    await mkdir(join(tempDir, 'workflow-bundles'));
+
+    await expect(extractWorkflowGraphs(bundlePath)).rejects.toThrow(
+      `Failed to extract workflow graph from lazy bundle "${missingBundleFile}"`
     );
   });
 
@@ -110,10 +131,10 @@ describe('extractWorkflowGraphs', () => {
     const bundlePath = join(tempDir, 'workflow-bundle.js');
     const bundlesDir = join(tempDir, 'workflow-bundles');
     await mkdir(bundlesDir);
-    await writeFile(bundlePath, 'const workflowCode = {};');
     const malformedBundleFile =
       '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef.mjs';
     await writeFile(join(bundlesDir, malformedBundleFile), 'malformed');
+    await writeFile(bundlePath, routeFor([malformedBundleFile]));
 
     await expect(extractWorkflowGraphs(bundlePath)).rejects.toThrow(
       `Failed to extract workflow graph from lazy bundle "${malformedBundleFile}"`

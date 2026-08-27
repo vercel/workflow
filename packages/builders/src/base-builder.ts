@@ -232,12 +232,6 @@ type WorkflowBundleBuild = {
   startedAt: number;
 };
 
-type WorkflowBundlePublication = {
-  bundles: WorkflowBundle[];
-  /** Remove files made obsolete by this publication after its route is live. */
-  removeObsolete: () => Promise<void>;
-};
-
 function getWorkflowIds(manifest: WorkflowManifest): string[] {
   return Object.values(manifest.workflows ?? {}).flatMap((workflows) =>
     Object.values(workflows).map(({ workflowId }) => workflowId)
@@ -1310,7 +1304,8 @@ export const __steps_registered = true;
     const { analyzeSerdeCompliance } = await import('./serde-checker.js');
     const serdeResult = analyzeSerdeCompliance({
       sourceCode: '',
-      workflowCode: bundles.map(({ code }) => code).join('\n'),
+      // Every source bundle registers the complete serializer set.
+      workflowCode: bundles[0]?.code ?? '',
       manifest,
     });
     const issuesToClasses = new Map<string, Set<string>>();
@@ -1337,43 +1332,44 @@ export const __steps_registered = true;
 
   private createWorkflowBundlePublisher(
     outfile: string
-  ): (bundles: WorkflowBundle[]) => Promise<() => Promise<void>> {
+  ): (bundles: WorkflowBundle[]) => Promise<void> {
     const workflowBundleDir = join(dirname(outfile), WORKFLOW_BUNDLE_DIRECTORY);
+    const publishedFiles = new Set<string>();
     return async (bundles) => {
       await mkdir(workflowBundleDir, { recursive: true });
 
       // A filename is the hash of its code, so a matching file is already the
-      // exact artifact we need and writeGeneratedFile can leave it untouched.
-      const desiredBundles = new Map(
-        bundles.map(({ code, fileName }) => [fileName, code])
-      );
-
-      // Snapshot the old generation before publishing the new one. Cleanup is
-      // deliberately returned to the caller: it must update the route first so
-      // an in-flight watch rebuild never points at a sidecar already removed.
-      const generatedFiles = (await readdir(workflowBundleDir)).filter((file) =>
-        file.endsWith('.mjs')
-      );
+      // exact immutable artifact we need. Once this publisher has verified a
+      // hash, later watch rebuilds can skip its encode/stat/read work entirely.
       await Promise.all(
-        [...desiredBundles].map(([fileName, code]) =>
-          this.writeGeneratedFile(
+        bundles.map(async ({ fileName, code }) => {
+          if (publishedFiles.has(fileName)) return;
+          await this.writeGeneratedFile(
             join(workflowBundleDir, fileName),
             serializeWorkflowBundle(code)
-          )
-        )
+          );
+          publishedFiles.add(fileName);
+        })
       );
-
-      const obsoleteFiles = generatedFiles.filter(
-        (file) => !desiredBundles.has(file)
-      );
-      return async () => {
-        await Promise.all(
-          obsoleteFiles.map((file) =>
-            rm(join(workflowBundleDir, file), { force: true })
-          )
-        );
-      };
     };
+  }
+
+  private async removeObsoleteWorkflowBundles(
+    outfile: string,
+    bundles: WorkflowBundle[]
+  ): Promise<void> {
+    if (this.config.watch) return;
+
+    const workflowBundleDir = join(dirname(outfile), WORKFLOW_BUNDLE_DIRECTORY);
+    const desiredFiles = new Set(bundles.map(({ fileName }) => fileName));
+    const generatedFiles = (await readdir(workflowBundleDir)).filter((file) =>
+      file.endsWith('.mjs')
+    );
+    await Promise.all(
+      generatedFiles
+        .filter((file) => !desiredFiles.has(file))
+        .map((file) => rm(join(workflowBundleDir, file), { force: true }))
+    );
   }
 
   private async prepareWorkflowBundleBuild({
@@ -1602,9 +1598,8 @@ export const __steps_registered = true;
     interimBundleCtx?: esbuild.BuildContext;
     bundleFinal?: (
       interimBundleResult: esbuild.BuildResult
-    ) => Promise<WorkflowBundlePublication>;
+    ) => Promise<WorkflowBundle[]>;
     workflowBundles: WorkflowBundle[];
-    removeObsoleteWorkflowBundles: () => Promise<void>;
     /** The initial workflow VM build graph, when requested by a caller. */
     interimBundleMetafile?: esbuild.Metafile;
   }> {
@@ -1646,15 +1641,14 @@ export const __steps_registered = true;
       const workflowBundles = readWorkflowBundles(interimBundle);
       await this.warnAboutSerdeCompliance(workflowManifest, workflowBundles);
 
-      // Watch mode reuses the esbuild context. Each rebuild gets a new artifact
-      // set and a cleanup callback whose ordering is controlled by the caller.
+      // Watch mode reuses the esbuild context. Each rebuild publishes any new
+      // immutable hashes before returning their route metadata to the caller.
       const bundleFinal = async (result: esbuild.BuildResult) => {
         const bundles = readWorkflowBundles(result);
-        const removeObsolete = await writeWorkflowBundles(bundles);
-        return { bundles, removeObsolete };
+        await writeWorkflowBundles(bundles);
+        return bundles;
       };
-      const removeObsoleteWorkflowBundles =
-        await writeWorkflowBundles(workflowBundles);
+      await writeWorkflowBundles(workflowBundles);
 
       if (keepInterimBundleContext) {
         shouldDisposeInterimBundleCtx = false;
@@ -1663,14 +1657,12 @@ export const __steps_registered = true;
           interimBundleCtx,
           bundleFinal,
           workflowBundles,
-          removeObsoleteWorkflowBundles,
           interimBundleMetafile: interimBundle.metafile,
         };
       }
       return {
         manifest: workflowManifest,
         workflowBundles,
-        removeObsoleteWorkflowBundles,
         interimBundleMetafile: interimBundle.metafile,
       };
     } catch (error) {
@@ -1842,9 +1834,13 @@ ${createWorkflowRouteHandlersCode(`workflowEntrypoint(workflowCode${workflowEntr
       );
     }
 
-    // The initial route now references the newly published generation, so no
-    // live route can still require the obsolete sidecars from this build.
-    await workflowsResult.removeObsoleteWorkflowBundles();
+    // Cold builds have no prior route generation to preserve. Watch builds
+    // retain immutable old hashes because framework module retirement is not
+    // observable here and an old handler may start its lazy import later.
+    await this.removeObsoleteWorkflowBundles(
+      flowOutfile,
+      workflowsResult.workflowBundles
+    );
 
     // Merge manifests
     const manifest: WorkflowManifest = {
@@ -1864,16 +1860,13 @@ ${createWorkflowRouteHandlersCode(`workflowEntrypoint(workflowCode${workflowEntr
       if (!workflowsResult.bundleFinal) {
         throw new Error('Invariant: missing workflow bundle finalizer');
       }
-      const { bundles, removeObsolete } =
-        await workflowsResult.bundleFinal(interimBundle);
+      const bundles = await workflowsResult.bundleFinal(interimBundle);
 
-      // Publish sidecars first, then atomically replace the route, and only then
-      // remove the previous generation. This is the watch-mode commit sequence.
+      // Sidecars are published before the route and retained for old handlers.
       await this.writeGeneratedFile(
         flowOutfile,
         createCombinedFunctionCode(bundles)
       );
-      await removeObsolete();
     };
 
     if (this.config.watch) {

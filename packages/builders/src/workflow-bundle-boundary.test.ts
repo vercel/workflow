@@ -17,6 +17,7 @@ import type { StandaloneConfig } from './types.js';
 import {
   deserializeWorkflowBundle,
   isWorkflowBundleFileName,
+  referencedWorkflowBundleFileNames,
   serializeWorkflowBundle,
 } from './workflow-bundle-module.js';
 import { extractWorkflowGraphs } from './workflows-extractor.js';
@@ -386,10 +387,12 @@ export async function renamedAfterWatch() { "use workflow"; return "rename-me"; 
       const currentFiles = readdirSync(workflowBundleDir).filter((file) =>
         file.endsWith('.mjs')
       );
-      expect(currentFiles).toHaveLength(1);
-      const currentFile = currentFiles[0];
+      expect(currentFiles).toHaveLength(2);
+      expect(currentFiles).toContain(oldFile);
+      const [currentFile] = referencedWorkflowBundleFileNames(route);
       assert(currentFile);
       expect(currentFile).not.toBe(oldFile);
+      expect(currentFiles).toContain(currentFile);
       expect(route).toContain('import(');
       expect(route).not.toContain('Promise.resolve');
       expect(route).toContain('renamedAfterWatch');
@@ -400,6 +403,12 @@ export async function renamedAfterWatch() { "use workflow"; return "rename-me"; 
       );
       expect(Buffer.from(currentBundle.default, 'base64').toString()).toContain(
         'after--watch'
+      );
+      const oldBundle = await import(
+        `${pathToFileURL(oldBundlePath).href}?after-rebuild`
+      );
+      expect(Buffer.from(oldBundle.default, 'base64').toString()).toContain(
+        'before-watch'
       );
       const graphs = await extractWorkflowGraphs(config.workflowsBundlePath);
       expect(JSON.stringify(graphs)).toContain('watched');

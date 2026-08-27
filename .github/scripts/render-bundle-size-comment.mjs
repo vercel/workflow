@@ -233,7 +233,7 @@ export function compareAll(currentReports, baselineReports, thresholds) {
  * missing a metric renders an empty cell instead of shifting the whole row.
  */
 const COLUMNS = [
-  { id: 'flow-bundle', label: 'Flow route' },
+  { id: 'flow-bundle', label: 'Cold replay' },
   { id: 'step-registrations', label: 'Step reg.' },
   { id: 'framework-output', label: 'Framework output' },
 ];
@@ -295,9 +295,10 @@ export function renderComment({
     anyBaseline
       ? 'Sizes are gzip; parentheses show the change against `main`.'
       : 'Sizes are gzip.',
-    `Flow route and Step reg. gate this job, on raw bytes rather than the gzip ` +
-      `shown, at max(${thresholds.pct}%, ${formatBytes(thresholds.bytes)}). ` +
-      'Framework output is informational.'
+    `Cold replay and Step reg. gate this job, on raw bytes rather than the ` +
+      `gzip shown, at max(${thresholds.pct}%, ${formatBytes(
+        thresholds.bytes
+      )}). Framework output is informational.`
   );
 
   if (status === 'failed') {

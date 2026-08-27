@@ -1,15 +1,16 @@
 #!/usr/bin/env node
 /**
- * Measures the size of a workbench app's `/.well-known/workflow/v1/flow` route
- * after that app has been built, and writes a JSON report consumed by
- * render-bundle-size-comment.mjs.
+ * Measures the generated artifacts for a workbench app's
+ * `/.well-known/workflow/v1/flow` route after that app has been built, and
+ * writes a JSON report consumed by render-bundle-size-comment.mjs.
  *
  * Two tiers are reported, because neither supported app emits an isolable
  * function bundle for the flow route:
  *
- *   Tier 1 (gated) - the bundle the workflow builders emit before the
- *     framework bundles it. One file per metric, deterministic, and it moves
- *     only when the SDK moves. This is what the CI gate compares.
+ *   Tier 1 (gated) - the route plus its largest active VM sidecar, and the step
+ *     registrations emitted by the workflow builders before the framework
+ *     bundles them. These are deterministic and move only when the SDK or
+ *     application workflows move.
  *
  *   Tier 2 (informational) - the framework's own deployable output. For
  *     Next.js the built route file is a ~1 KB turbopack chunk loader, so the
@@ -20,9 +21,10 @@
  *     output is reported.
  *
  * The two tiers are NOT comparable to each other, and neither alone is the
- * deployed flow function. Tier 1 is the VM bundle the route carries as an
- * inline string; the code that hosts it, including the world adapter, lives in
- * Tier 2. Each tier is only ever compared against its own baseline.
+ * deployed flow function. Tier 1 approximates the largest builder-owned input
+ * one cold replay loads: the generated route plus its selected VM sidecar. The
+ * framework code hosting those artifacts, including the world adapter, lives
+ * in Tier 2. Each metric is compared only with its own baseline.
  *
  * What Tier 1 therefore does NOT cover: the world adapters. Measured on
  * nextjs-turbopack, building with WORKFLOW_TARGET_WORLD=local and =vercel
@@ -98,6 +100,8 @@ const BUILD_STAMPS = {
 
 /** How far a Tier-1 bundle may predate the build stamp before we call it stale. */
 const STALENESS_SLACK_MS = 60 * 60 * 1000;
+const WORKFLOW_BUNDLE_REFERENCE =
+  /import\(\s*['"]\.\/workflow-bundles\/([a-f0-9]{64}\.mjs)['"]\s*\)/g;
 
 class MeasureError extends Error {}
 
@@ -167,6 +171,46 @@ function measureFiles(appDir, relPaths) {
   }
   if (files.length === 0) fail(`No files to measure under ${appDir}`);
   return total(files);
+}
+
+function measureFlowArtifacts(appDir, flowRel) {
+  const flowAbs = path.join(appDir, flowRel);
+  let routeCode;
+  try {
+    routeCode = fs.readFileSync(flowAbs, 'utf8');
+  } catch (error) {
+    fail(`Could not read ${flowRel} (${flowAbs}): ${error.message}`);
+  }
+
+  const bundleFiles = [
+    ...new Set(
+      [...routeCode.matchAll(WORKFLOW_BUNDLE_REFERENCE)].map(
+        (match) => match[1]
+      )
+    ),
+  ].sort();
+  if (bundleFiles.length === 0) {
+    fail(
+      `Flow route ${flowRel} does not reference any content-addressed workflow sidecars.`
+    );
+  }
+
+  const flowDir = path.dirname(flowRel);
+  const sidecars = bundleFiles.map((file) => {
+    const rel = path.join(flowDir, 'workflow-bundles', file);
+    return measureFile(
+      path.join(appDir, rel),
+      path.relative(REPO_ROOT, path.join(appDir, rel))
+    );
+  });
+  const route = measureFile(flowAbs, path.relative(REPO_ROOT, flowAbs));
+  const largestSidecar = sidecars.reduce((largest, file) =>
+    file.raw > largest.raw ? file : largest
+  );
+
+  return total([route, largestSidecar], {
+    note: `route + largest of ${sidecars.length} active VM sidecars`,
+  });
 }
 
 function walkFiles(dir) {
@@ -394,14 +438,15 @@ function measureApp(app) {
   const stepsRel = entry.generatedStepRegistrationPath;
 
   assertFresh(app, appDir, [flowRel, stepsRel]);
+  const flowBundle = measureFlowArtifacts(appDir, flowRel);
 
   const metrics = [
     {
       id: 'flow-bundle',
-      label: 'Flow route bundle',
+      label: 'Cold replay bundle',
       tier: 1,
       gated: true,
-      ...measureFiles(appDir, [flowRel]),
+      ...flowBundle,
     },
     {
       id: 'step-registrations',

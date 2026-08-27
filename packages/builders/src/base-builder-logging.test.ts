@@ -104,11 +104,16 @@ describe('base builder logging', () => {
     const manifestDir = join(testRoot, '.well-known/workflow/v1');
     mkdirSync(manifestDir, { recursive: true });
     mkdirSync(workflowBundleDir, { recursive: true });
-    writeFileSync(workflowBundlePath, '', 'utf-8');
     const workflowCode = `async function run() {}
 run.workflowId = "workflow//src/workflow.ts//run";`;
+    const workflowBundleFile = workflowBundleFileName(workflowCode);
     writeFileSync(
-      join(workflowBundleDir, workflowBundleFileName(workflowCode)),
+      workflowBundlePath,
+      `const load = () => import('./${WORKFLOW_BUNDLE_DIRECTORY}/${workflowBundleFile}');`,
+      'utf-8'
+    );
+    writeFileSync(
+      join(workflowBundleDir, workflowBundleFile),
       serializeWorkflowBundle(workflowCode),
       'utf-8'
     );

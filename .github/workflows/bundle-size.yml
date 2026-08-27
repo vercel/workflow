@@ -1,14 +1,13 @@
 name: Bundle Size
 
-# Tracks the size of the /.well-known/workflow/v1/flow route for two workbench
-# apps and compares it against main. The flow route carries the whole workflow
-# runtime, so it is the cold-start payload for every invocation; without this
-# job a lost tree-shake or a new transitive dependency only shows up as TTFS
-# drift in the benchmark workflow weeks later.
+# Tracks the generated /.well-known/workflow/v1/flow artifacts for two workbench
+# apps and compares them against main. The route and largest active VM sidecar
+# approximate the biggest builder-owned cold-replay input; without this job a
+# lost tree-shake or new transitive dependency only shows up as TTFS drift later.
 #
-# Two numbers per app (see .github/scripts/measure-flow-bundle.mjs for why
-# neither app emits an isolable function bundle):
-#   - Tier 1, GATED: what the workflow builders emit for the flow route.
+# Metrics per app (see .github/scripts/measure-flow-bundle.mjs for why neither
+# app emits an isolable function bundle):
+#   - Tier 1, GATED: route + largest active sidecar, and step registrations.
 #   - Tier 2, informational: the framework's own build output.
 #
 # PR runs download the most recent main baseline and fail when a gated bundle

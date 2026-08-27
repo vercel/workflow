@@ -705,6 +705,10 @@ async function loadWorkflowCode(
   workflowName: string
 ): Promise<string> {
   if (typeof workflowCode === 'string') return workflowCode;
+  // Avoid treating Object.prototype members as lazy workflow loaders.
+  if (!Object.hasOwn(workflowCode, workflowName)) {
+    throw new WorkflowNotRegisteredError(workflowName);
+  }
   const load = workflowCode[workflowName];
   if (!load) throw new WorkflowNotRegisteredError(workflowName);
   return load();

@@ -4,6 +4,8 @@ import { createHash } from 'node:crypto';
 export const WORKFLOW_BUNDLE_DIRECTORY = 'workflow-bundles';
 
 const WORKFLOW_BUNDLE_FILE = /^[a-f0-9]{64}\.mjs$/;
+const WORKFLOW_BUNDLE_REFERENCE =
+  /import\(\s*['"]\.\/workflow-bundles\/([a-f0-9]{64}\.mjs)['"]\s*\)/g;
 
 export function isWorkflowBundleFileName(fileName: string): boolean {
   return WORKFLOW_BUNDLE_FILE.test(fileName);
@@ -12,6 +14,17 @@ export function isWorkflowBundleFileName(fileName: string): boolean {
 export function workflowBundleFileName(code: string): string {
   const hash = createHash('sha256').update(code).digest('hex');
   return `${hash}.mjs`;
+}
+
+/** Content-addressed sidecars referenced by the generated flow route. */
+export function referencedWorkflowBundleFileNames(routeCode: string): string[] {
+  return [
+    ...new Set(
+      [...routeCode.matchAll(WORKFLOW_BUNDLE_REFERENCE)].map(
+        (match) => match[1]
+      )
+    ),
+  ].sort();
 }
 
 export function encodeWorkflowBundle(code: string): string {
