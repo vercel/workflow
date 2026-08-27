@@ -85,13 +85,20 @@ export interface StreamChunk {
 export interface GetChunksOptions {
   /** Maximum number of chunks to return per page (default: 100, max: 1000) */
   limit?: number;
-  /** Opaque cursor from a previous response to fetch the next page */
+  /** Opaque cursor from a previous response; mutually exclusive with startIndex. */
   cursor?: string;
+  /** Absolute first chunk index for an initial page; mutually exclusive with cursor. */
+  startIndex?: number;
 }
 
 /**
  * Metadata about a stream, returned by {@link Streamer.getStreamInfo}.
  */
+export interface GetStreamInfoOptions {
+  /** Resolve this requested position using the server's authoritative state. */
+  startIndex?: number;
+}
+
 export interface StreamInfoResponse {
   /**
    * The index of the last known chunk (0-based).
@@ -100,6 +107,8 @@ export interface StreamInfoResponse {
   tailIndex: number;
   /** Whether the stream is fully complete (closed). */
   done: boolean;
+  /** Authoritative absolute position when a startIndex was requested. */
+  resolvedStartIndex?: number;
 }
 
 /**

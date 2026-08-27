@@ -235,6 +235,20 @@ describe('session HTTP fallback', () => {
   });
 });
 
+describe('streams.getChunks', () => {
+  it('rejects cursor/startIndex conflicts before issuing a request', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    const { createStreamer } = await import('./streamer.js');
+    await expect(
+      createStreamer().streams.getChunks?.('run-123', 'stream', {
+        cursor: 'opaque',
+        startIndex: 42,
+      })
+    ).rejects.toThrow('mutually exclusive');
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+});
+
 describe('streams.get', () => {
   async function getStreamer() {
     const { createStreamer } = await import('./streamer.js');
