@@ -348,7 +348,7 @@ export async function start<TArgs extends unknown[], TResult>(
       let framedByteStreams: boolean;
       let targetSupportsCompression: boolean;
       // The consumer's hook-resume protocol version, stamped onto the new run
-      // so a later `resumeHook()` gates its lazy path on the deployment that
+      // so a later `resumeHook()` gates its parallel path on the deployment that
       // will actually consume the queue message. `undefined` means "could
       // not attest" and fails the gate closed.
       let targetHookResumeInputVersion: number | undefined;
@@ -365,8 +365,8 @@ export async function start<TArgs extends unknown[], TResult>(
         framedByteStreams = false;
         targetSupportsCompression = false;
         // No probe channel to the target, so we cannot attest the consumer
-        // honors `hookInput`; leave the marker off (fail closed to
-        // sequential).
+        // honors the producer-committed wake barrier; leave the marker off
+        // (fail closed to sequential).
         targetHookResumeInputVersion = undefined;
       } else {
         // Ask for this run's public key while we're here. The probe already
@@ -561,8 +561,9 @@ export async function start<TArgs extends unknown[], TResult>(
         traceCarrier,
         workflowCoreVersion,
         features: { encryption: !!encryptionKey },
-        // Attest that the *consumer* deployment's runtime re-ensures a
-        // `hook_received` event from a queue message's `hookInput` on replay.
+        // Attest the *consumer* deployment's hook-resume protocol version.
+        // Version 2 fences a producer-committed wake until its matching
+        // `hook_received` event is visible.
         // A resume of this run reads the marker (mirrored onto the hook's
         // resumeContext by the server) to decide whether the parallel fast
         // path is safe. For a cross-deployment start the consumer is the

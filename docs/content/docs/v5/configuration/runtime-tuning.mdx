@@ -83,10 +83,10 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 
 ### `WORKFLOW_DISABLE_LAZY_HOOK_RESUME`
 
-- Default: enabled (lazy hook resume on)
-- Resuming a hook publishes the workflow invocation and writes no event, so the resume costs one round trip. The queue message carries the payload, and the consumer creates the `hook_received` event from it before replay. A backend `(runId, resumeId)` constraint keeps redeliveries of that message converging on exactly one event. Because the message is the only copy of the payload, a failed publish fails the resume.
-- The runtime falls back to the sequential path when the consumer or backend does not attest dedup support (or the payload is too large to inline on the queue message). On the sequential path, the event is written *before* dispatch, and its failure fails the resume.
-- The two paths differ on ended runs: the sequential write is rejected and surfaces as `HookNotFoundError`, while the lazy path resolves because it never writes. Neither resumes the run.
+- Default: enabled (parallel durable hook resume on)
+- Resuming a hook durably writes `hook_received` and publishes a payload-less workflow wake in parallel. The consumer waits for the matching event before replaying or acknowledging the wake. `resumeHook()` resolves only after both operations succeed.
+- The runtime falls back to write-then-publish when the consumer does not advertise the wake barrier or the backend does not attest atomic `(runId, resumeId)` claims.
+- A refused event write, including disposal or an ended run, surfaces as `HookNotFoundError` and the call does not report success.
 - Set `1` to force the sequential path as a kill switch. The chosen strategy is reported on the resume span as `workflow.hook.resume_strategy`.
 
 ### `WORKFLOW_DEPLOYMENT_MISMATCH_MAX_RETRIES`

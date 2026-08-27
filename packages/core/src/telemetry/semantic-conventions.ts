@@ -431,10 +431,9 @@ export const HookFound = SemanticConvention<boolean>('workflow.hook.found');
  * the resume is recovered via the consumer's re-ensure. Corresponds to
  * `ResumedHook.resilientResume === true`.
  *
- * No longer emitted: the lazy path writes no event to fail, and the sequential
- * path has no queue-delivered payload to recover from. Retained so dashboards
- * and queries built on the attribute keep resolving while older producers are
- * still deployed.
+ * No longer emitted: current producers require the durable event write to
+ * succeed. Retained so dashboards and queries built on the attribute keep
+ * resolving while older producers are still deployed.
  */
 export const HookResilientResume = SemanticConvention<boolean>(
   'workflow.hook.resilient_resume'
@@ -446,7 +445,7 @@ export const HookResilientResume = SemanticConvention<boolean>(
  * because no committed event was found, which completes the recovery path
  * {@link HookResilientResume} began.
  *
- * Legacy / non-atomic re-ensure signal only. Atomic lazy resumes
+ * Legacy / non-atomic re-ensure signal only. Legacy atomic lazy resumes
  * (resumeId + digest) go through the hoisted preload write instead, whose
  * response cannot tell whether the producer or the consumer won the
  * `(runId, resumeId)` claim, so this attribute is deliberately NOT emitted

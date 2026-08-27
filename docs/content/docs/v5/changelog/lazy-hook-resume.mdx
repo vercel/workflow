@@ -1,51 +1,51 @@
 ---
-title: Lazy hook resume
-description: resumeHook() no longer writes hook_received itself. The queue consumer materializes the event from the message, so a resume costs one round trip.
+title: Durable hook resume
+description: resumeHook() makes hook_received durable before it resolves while retaining a parallel fast path for compatible consumers.
 ---
 
-# Lazy hook resume
+# Durable hook resume
 
 ## Motivation
 
-[Resilient hook resume](/docs/changelog/resilient-resume) made `resumeHook()` write the `hook_received` event and publish the workflow queue message concurrently, with the queue consumer re-ensuring the event from the message's `hookInput` before replay. Both sides then wrote the same event, and a `(runId, resumeId)` constraint collapsed them onto one.
+The previous lazy path published the serialized hook payload on the workflow
+queue and left the queue consumer to create `hook_received`. If the hook was
+disposed after `resumeHook()` returned but before the consumer write committed,
+that write was rejected and the acknowledged queue delivery could not resume the
+workflow.
 
-Running the two concurrently removed the second round trip from the critical path, but the write itself stayed: every resume still spent a request on an event the consumer was about to write anyway, and the producer still had to classify its outcome (conflict, throttle, terminal run) to decide whether the resume had survived.
-
-This change drops the producer's write entirely. On the lazy path `resumeHook()` publishes the queue message and nothing else.
+`resumeHook()` now resolves only after both the durable event write and the
+workflow wake have succeeded.
 
 ## Design
 
-- `resumeHook()` publishes one message carrying `hookInput`: the dehydrated payload, a client-minted `resumeId`, the hook token, and a payload digest. It writes no event.
-- The queue consumer materializes `hook_received` from `hookInput` before replay, keyed by `resumeId`. This is the same write it already performed; it is now the only one.
-- The `(runId, resumeId)` constraint still matters: a queue redelivery, or a delivery re-routed for deployment affinity, repeats the write with the same key, and the backend collapses those onto exactly one committed event.
-- **A failed publish fails the resume.** The message carries both the trigger and the only copy of the payload, so `resumeHook()` throws and nothing is persisted for a later delivery to pick up. This replaces the previous rule where a failed event write could still be recovered through the queue.
-- `ResumedHook.resilientResume` is retained on the type but is never set: with a single writer there is no partial outcome to report. The `workflow.hook.resilient_resume` span attribute is likewise no longer emitted.
-- The resume span reports `workflow.hook.resume_strategy: lazy` (previously `parallel`).
+- The producer always writes `hook_received`, including a client-minted
+  `resumeId` and payload digest when the backend supports atomic resume claims.
+- A compatible producer publishes a payload-less wake in parallel with that
+  write. The wake identifies the expected `resumeId` and hook.
+- The consumer does not replay or acknowledge a producer-committed wake until
+  the matching durable event is visible. If the event is still in flight, the
+  delivery fails transiently so the queue redelivers it.
+- If the durable log proves the run ended or the hook was disposed without the
+  matching event, the consumer safely consumes the permanently refused wake.
+- Queue publication is retried a bounded number of times. A publish failure is
+  still returned to the caller, but the committed event is retained.
+- `ResumedHook.resilientResume` remains on the type for source compatibility and
+  is no longer set. The internal `resumeHookDurable()` entry point is deprecated
+  because `resumeHook()` now provides the same guarantee.
 
-## Behavior change: the event is not visible when `resumeHook()` returns
-
-`resumeHook()` used to await its own `hook_received` write, so by the time it resolved the event was in the log. It no longer writes, so **resolving means the message was published, not that the event exists**. The event appears when the run picks the resume up.
-
-Code that reads the run back immediately after resuming now races. The pattern that breaks is a loop that resumes and then looks for the next thing to resume, keying off "this hook has no `hook_received` yet": it can be handed back the hook it just resumed and deliver a second payload to it. Wait for something that implies the run made progress instead. `waitForHook()` in `@workflow/vitest` takes a `notHookId` option for exactly this.
-
-The runtime has one caller that needs the old guarantee. A step that aborts a shared `AbortController` resumes a hook to record the abort in the event log, and that write is an ordering barrier: it must land before the step completes, or the continuation `step_completed` enqueues can dispatch the next step with a stale, non-aborted signal. That path uses an internal durable resume which keeps the eager write and reports `resume_fallback_reason: durable_required`.
-
-Nothing about delivery changes. The payload is on the queue message and reaches the workflow exactly once.
-
-## Behavior change: resumes against an ended run
-
-The hook lookup is unchanged: `resumeHook(token, ...)` still resolves the token through `hooks.getByToken()`, which throws `HookNotFoundError` when no hook holds it. Hook existence, and the token's binding to a run, are still validated before anything is published.
-
-What the lookup does not carry is the run's *mutable* status. `HookResumeContext` is deliberately an immutable slice of the run, so a resume that runs off it never learns whether the run is still live. That used to be caught by the `hook_received` write being rejected. With no write, **a resume against an ended run resolves instead of throwing `HookNotFoundError`**.
-
-This is only reachable when the hook record outlives its run, since otherwise the lookup itself fails: a hook kept by `experimental_minRetention`, or one whose token has not been released yet. Resumes that fall back to reading the run keep their terminal pre-check, as does the sequential path, so a resume on either of those still fails loudly.
-
-Nothing resumes either way. The consumer's write is rejected the same way and the delivery is consumed, so the ended run is untouched. Only the producer's report changes: an accepted publish means the resume was dispatched, not that the run was still live when it arrived. A [webhook](/docs/api-reference/workflow-api/resume-webhook) whose run has ended can answer `202` rather than surfacing an error.
-
-Callers that need the distinction have to read the run.
+A resolved call proves that the event is durable and the wake was accepted.
+`HookNotFoundError` proves this invocation committed no event. Any other thrown
+error is ambiguous: the event may be durable already, and a fresh invocation
+mints a new `resumeId`, so blindly retrying can append another delivery.
 
 ## Compatibility
 
-The gating is unchanged: the lazy path activates only when the target run's queue consumer and the live backend both attest support, re-checked on every resume. Oversized payloads, legacy runs, non-CBOR transports, and `WORKFLOW_DISABLE_LAZY_HOOK_RESUME=1` fall back to the sequential write-then-publish path.
+The parallel path requires both an atomic `(runId, resumeId)` backend claim and
+a target run whose consumer advertises the producer-committed wake barrier.
+Existing runs advertise the older consumer protocol and continue to use
+write-then-publish. Legacy runs, unsupported Worlds, and
+`WORKFLOW_DISABLE_LAZY_HOOK_RESUME=1` also use write-then-publish.
 
-Consumers still accept a message from an older producer that wrote the event itself: such a message reports `strategy: parallel`, and the consumer's write converges on the producer's committed event exactly as before. No coordinated deploy is needed in either direction.
+Consumers continue to accept legacy `hookInput` messages from older producers,
+materializing their payload before replay. This permits rolling upgrades without
+a coordinated producer, consumer, and backend deployment.

@@ -741,6 +741,7 @@ export function workflowEntrypoint(
           deploymentMismatchRetryCount,
           runInput,
           hookInput,
+          hookResume,
           stepInput,
           hookResumeTiming,
           waitContinuation,
@@ -1979,6 +1980,7 @@ export function workflowEntrypoint(
                           async () => ({
                             ...(await replayMessage()),
                             hookInput,
+                            ...(hookResume ? { hookResume } : {}),
                             // Forwarded UNMODIFIED (in particular without
                             // this delivery's entry time) so the misrouted
                             // hop is attributed to `queue_delivery` and T2
@@ -2449,6 +2451,7 @@ export function workflowEntrypoint(
                       async () => ({
                         ...(await replayMessage()),
                         ...(hookInput ? { hookInput } : {}),
+                        ...(hookResume ? { hookResume } : {}),
                         // See the pre-check re-route above: forwarded as
                         // received, so the extra hop is queue delivery.
                         ...(hookResumeTiming ? { hookResumeTiming } : {}),
@@ -2459,13 +2462,49 @@ export function workflowEntrypoint(
                     return;
                   }
 
-                  // Lazy hook resume: the producer (resumeHook fast path)
-                  // parallelized the `hook_received` write with this queue
-                  // publish, so the event may not be persisted yet. Idempotently
-                  // ensure it before replay, keyed by `resumeId` so a
-                  // concurrent producer write converges on exactly one event
-                  // (the server resolves a matching claim as success, not an
-                  // error). `hookInput` never rides a turbo first-delivery
+                  // A producer-committed hook wake may arrive while its
+                  // hook_received transaction is still in flight. Never replay
+                  // or acknowledge it until the matching event is visible.
+                  // New producers only send this shape to consumers whose run
+                  // marker attests this barrier; legacy hookInput messages keep
+                  // their materialization path below.
+                  if (hookResume?.strategy === 'producer_committed') {
+                    const matchesResume = (event: Event): boolean =>
+                      event.eventType === 'hook_received' &&
+                      event.resumeId === hookResume.resumeId;
+                    let barrierEvents =
+                      eventLog.type === 'loadAll' ? undefined : eventLog.events;
+
+                    if (!barrierEvents?.some(matchesResume)) {
+                      const loaded = await loadWorkflowRunEvents(runId);
+                      eventLog = { ...loaded, type: 'ready' };
+                      barrierEvents = loaded.events;
+                    }
+
+                    if (!barrierEvents.some(matchesResume)) {
+                      const permanentlyRefused =
+                        hasRecordedTerminalRunEvent(barrierEvents, runId) ||
+                        barrierEvents.some(
+                          (event) =>
+                            event.eventType === 'hook_disposed' &&
+                            event.correlationId === hookResume.hookId
+                        );
+                      if (permanentlyRefused) return;
+
+                      throw new WorkflowWorldError(
+                        `Hook resume ${hookResume.resumeId} is not committed yet`,
+                        {
+                          status: 503,
+                          code: 'hook-resume-event-pending',
+                        }
+                      );
+                    }
+                  }
+
+                  // Legacy lazy hook resume: idempotently ensure the event from
+                  // the payload-bearing `hookInput` before replay, keyed by
+                  // `resumeId` so redeliveries converge on exactly one event.
+                  // `hookInput` never rides a turbo first-delivery
                   // (that path carries `runInput`, not `hookInput`), so this
                   // only runs on the normal load-and-replay path. Skipped
                   // entirely when the fast path above already ensured the

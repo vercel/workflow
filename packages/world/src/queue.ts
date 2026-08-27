@@ -135,12 +135,11 @@ export const RunInputSchema = z.object({
 export type RunInput = z.infer<typeof RunInputSchema>;
 
 /**
- * Lazy hook resume data carried through the queue alongside a workflow
- * invocation. Present only when `resumeHook()` takes the lazy path, where the
- * producer publishes this invocation and writes no event of its own. On
- * receipt, a consumer that understands `hookInput` idempotently ensures the
- * `hook_received` event exists (keyed by `resumeId`) before replaying, so
- * repeated deliveries of the same message converge on exactly one event.
+ * Legacy lazy hook resume data carried through the queue alongside a workflow
+ * invocation. Older producers publish this invocation and write no event of
+ * their own. On receipt, a consumer that understands `hookInput` idempotently
+ * ensures the `hook_received` event exists (keyed by `resumeId`) before
+ * replaying, so repeated deliveries converge on exactly one event.
  *
  * The `payload` is the already-serialized (and possibly encrypted) resume
  * payload, and on this path the queue message is its only carrier. Every write
@@ -217,6 +216,19 @@ export const HookResumeInputSchema = z.object({
 export type HookResumeInput = z.infer<typeof HookResumeInputSchema>;
 
 /**
+ * Wake emitted while the producer's durable `hook_received` write is in
+ * flight. A hook-resume protocol v2 consumer waits for the matching event
+ * before replaying. The wake envelope itself is version 1.
+ */
+export const HookResumeWakeSchema = z.object({
+  resumeId: z.string(),
+  hookId: z.string(),
+  strategy: z.literal('producer_committed'),
+  version: z.literal(1),
+});
+export type HookResumeWake = z.infer<typeof HookResumeWakeSchema>;
+
+/**
  * Wall-clock boundaries of a hook-triggered resume, carried on the queue
  * message so the SDK can report end-to-end time-to-resume (TTR, entry into
  * `resumeHook()` through to the first line of the next durable step) and its
@@ -251,8 +263,8 @@ export const HookResumeTimingSchema = z.object({
   /** Epoch ms immediately before the queue publish was requested. */
   queuePublishRequestedAtMs: z.number(),
   /**
-   * Which `resumeHook()` dispatch path ran: `lazy` or `sequential` (`parallel`
-   * from producers predating lazy-only resume).
+   * Which `resumeHook()` dispatch path ran. Current producers use `parallel`
+   * or `sequential`; older producers may report `lazy`.
    */
   strategy: z.string().optional(),
   /** Epoch ms the final consumer's queue handler was entered. */
@@ -331,11 +343,17 @@ export const WorkflowInvokePayloadSchema = z.object({
   /** Run creation data, only present on the first queue delivery from start() */
   runInput: RunInputSchema.optional(),
   /**
-   * Lazy hook resume data, only present when `resumeHook()` takes the parallel
-   * fast path. A consumer that understands this field idempotently ensures the
-   * `hook_received` event exists (keyed by `resumeId`) before replaying.
+   * Legacy lazy hook resume data. A consumer that understands this field
+   * idempotently ensures the `hook_received` event exists (keyed by `resumeId`)
+   * before replaying.
    */
   hookInput: HookResumeInputSchema.optional(),
+  /**
+   * Producer-committed hook wake. Unlike `hookInput`, this carries no payload:
+   * the producer writes `hook_received`, and the consumer only verifies that
+   * the matching event is visible before replay.
+   */
+  hookResume: HookResumeWakeSchema.optional().catch(undefined),
   /**
    * Resilient step dispatch data, only present alongside `stepId` when the
    * producer parallelized the `step_created` write with this queue publish. A
@@ -345,7 +363,7 @@ export const WorkflowInvokePayloadSchema = z.object({
   stepInput: StepDispatchInputSchema.optional(),
   /**
    * Hook-resume TTR timing. Present on both `resumeHook()` dispatch paths
-   * (unlike `hookInput`, which only rides the lazy path), and
+   * (unlike legacy `hookInput`), and
    * forwarded onto a dispatched step message when the resuming invocation
    * hands the next durable step to another invocation. Purely observational.
    * See {@link HookResumeTimingSchema}.
