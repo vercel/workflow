@@ -30,8 +30,12 @@ import {
   type HttpConfig,
   makeRequest,
 } from './utils.js';
+import { createStreamReadWsSession } from './ws-stream-read-session.js';
 import { createStreamWriteSession } from './ws-stream-session.js';
-import { isWsStreamsTransportEnabled } from './ws-transport-enabled.js';
+import {
+  isWsStreamReadsTransportEnabled,
+  isWsStreamsTransportEnabled,
+} from './ws-transport-enabled.js';
 
 /**
  * Maximum number of chunks per request, matching the server-side
@@ -232,6 +236,89 @@ export async function closeStreamSessionOverHttp(
   await response.text();
 }
 
+async function getStreamOverHttp(
+  runId: string,
+  name: string,
+  startIndex: number | undefined,
+  config: APIConfig | undefined
+): Promise<ReadableStream<Uint8Array>> {
+  const httpConfig = await getHttpConfig(config);
+  httpConfig.headers.set('Accept', 'application/json');
+  const url = getStreamReadUrl(name, runId, httpConfig);
+  if (typeof startIndex === 'number') {
+    url.searchParams.set('startIndex', String(startIndex));
+  }
+  const response = await instrumentedFetch({
+    method: 'GET',
+    url: url.toString(),
+    headers: httpConfig.headers,
+    dispatcher: undefined,
+    timeoutMs: null,
+    logLabel: url.pathname,
+    spanName: 'workflow.stream.read.connect',
+    attributes: streamSpanAttributes({
+      runId,
+      name,
+      operation: 'read',
+      startIndex,
+    }),
+    buildError: createStreamReadError,
+  });
+  if (!response.body) throw new Error('No response body for stream');
+  return response.body as ReadableStream<Uint8Array>;
+}
+
+async function getStreamChunksOverHttp(
+  runId: string,
+  name: string,
+  options: GetChunksOptions | undefined,
+  config: APIConfig | undefined
+): Promise<StreamChunksResponse> {
+  const params = new URLSearchParams();
+  if (options?.limit != null) params.set('limit', String(options.limit));
+  if (options?.cursor && options.startIndex !== undefined) {
+    throw new Error(
+      'stream chunks cursor and startIndex are mutually exclusive'
+    );
+  }
+  if (options?.cursor) params.set('cursor', options.cursor);
+  if (options?.startIndex !== undefined) {
+    if (!Number.isSafeInteger(options.startIndex) || options.startIndex < 0) {
+      throw new Error(
+        'stream chunks startIndex must be a nonnegative safe integer'
+      );
+    }
+    params.set('startIndex', String(options.startIndex));
+  }
+  const qs = params.toString();
+  const endpoint = `/v2/runs/${encodeURIComponent(runId)}/streams/${encodeURIComponent(name)}/chunks${qs ? `?${qs}` : ''}`;
+  return makeRequest({
+    endpoint,
+    config,
+    schema: StreamChunksResponseSchema,
+  });
+}
+
+async function getStreamInfoOverHttp(
+  runId: string,
+  name: string,
+  options: GetStreamInfoOptions | undefined,
+  config: APIConfig | undefined
+): Promise<StreamInfoResponse> {
+  if (
+    options?.startIndex !== undefined &&
+    !Number.isSafeInteger(options.startIndex)
+  ) {
+    throw new Error('stream info startIndex must be a safe integer');
+  }
+  const query =
+    options?.startIndex === undefined
+      ? ''
+      : `?startIndex=${encodeURIComponent(String(options.startIndex))}`;
+  const endpoint = `/v2/runs/${encodeURIComponent(runId)}/streams/${encodeURIComponent(name)}/info${query}`;
+  return makeRequest({ endpoint, config, schema: StreamInfoResponseSchema });
+}
+
 /** Creates the HTTP-backed streamer that talks to workflow-server. */
 export function createStreamer(config?: APIConfig): Streamer {
   return {
@@ -368,80 +455,48 @@ export function createStreamer(config?: APIConfig): Streamer {
       },
 
       async get(runId: string, name: string, startIndex?: number) {
-        const httpConfig = await getHttpConfig(config);
-        // Stream bytes themselves are untyped binary, but any pre-header error
-        // is a JSON envelope. Asking explicitly avoids a CBOR 410 that this
-        // binary response path cannot decode while leaving successful stream
-        // bodies unchanged.
-        httpConfig.headers.set('Accept', 'application/json');
-        const url = getStreamReadUrl(name, runId, httpConfig);
-        if (typeof startIndex === 'number') {
-          url.searchParams.set('startIndex', String(startIndex));
-        }
-        // The `.connect` span covers dispatch → response headers (the
-        // network-connect portion). The end-to-end time-to-first-chunk span
-        // (`workflow.stream.read`) is emitted from the core reader
-        // (`WorkflowServerReadableStream`) when the first chunk reaches the
-        // consumer, so it includes deframing and doesn't need a wrapper here.
-        // Live read: keep the global dispatcher and no request timeout so the
-        // long-lived, reconnecting read isn't truncated.
-        const response = await instrumentedFetch({
-          method: 'GET',
-          url: url.toString(),
-          headers: httpConfig.headers,
-          dispatcher: undefined,
-          timeoutMs: null,
-          logLabel: url.pathname,
-          spanName: 'workflow.stream.read.connect',
-          attributes: streamSpanAttributes({
-            runId,
-            name,
-            operation: 'read',
-            startIndex,
-          }),
-          buildError: createStreamReadError,
-        });
-        if (!response.body) {
-          throw new Error('No response body for stream');
-        }
-        return response.body as ReadableStream<Uint8Array>;
+        return getStreamOverHttp(runId, name, startIndex, config);
       },
+
+      ...(isWsStreamReadsTransportEnabled()
+        ? {
+            async getResumable(runId: string, name: string, startIndex = 0) {
+              return createStreamReadWsSession(
+                runId,
+                name,
+                startIndex,
+                config,
+                {
+                  resolveStartIndex: async (index) => {
+                    const info = await getStreamInfoOverHttp(
+                      runId,
+                      name,
+                      { startIndex: index },
+                      config
+                    );
+                    if (info.resolvedStartIndex === undefined) {
+                      throw new Error(
+                        'stream info omitted resolvedStartIndex for indexed fallback'
+                      );
+                    }
+                    return info.resolvedStartIndex;
+                  },
+                  getChunks: (options) =>
+                    getStreamChunksOverHttp(runId, name, options, config),
+                  getInfo: () =>
+                    getStreamInfoOverHttp(runId, name, undefined, config),
+                }
+              );
+            },
+          }
+        : {}),
 
       async getChunks(
         runId: string,
         name: string,
         options?: GetChunksOptions
       ): Promise<StreamChunksResponse> {
-        const params = new URLSearchParams();
-        if (options?.limit != null) {
-          params.set('limit', String(options.limit));
-        }
-        if (options?.cursor && options.startIndex !== undefined) {
-          throw new Error(
-            'stream chunks cursor and startIndex are mutually exclusive'
-          );
-        }
-        if (options?.cursor) {
-          params.set('cursor', options.cursor);
-        }
-        if (options?.startIndex !== undefined) {
-          if (
-            !Number.isSafeInteger(options.startIndex) ||
-            options.startIndex < 0
-          ) {
-            throw new Error(
-              'stream chunks startIndex must be a nonnegative safe integer'
-            );
-          }
-          params.set('startIndex', String(options.startIndex));
-        }
-        const qs = params.toString();
-        const endpoint = `/v2/runs/${encodeURIComponent(runId)}/streams/${encodeURIComponent(name)}/chunks${qs ? `?${qs}` : ''}`;
-        return makeRequest({
-          endpoint,
-          config,
-          schema: StreamChunksResponseSchema,
-        });
+        return getStreamChunksOverHttp(runId, name, options, config);
       },
 
       async getInfo(
@@ -449,16 +504,7 @@ export function createStreamer(config?: APIConfig): Streamer {
         name: string,
         options?: GetStreamInfoOptions
       ): Promise<StreamInfoResponse> {
-        const query =
-          options?.startIndex === undefined
-            ? ''
-            : `?startIndex=${encodeURIComponent(String(options.startIndex))}`;
-        const endpoint = `/v2/runs/${encodeURIComponent(runId)}/streams/${encodeURIComponent(name)}/info${query}`;
-        return makeRequest({
-          endpoint,
-          config,
-          schema: StreamInfoResponseSchema,
-        });
+        return getStreamInfoOverHttp(runId, name, options, config);
       },
 
       async list(runId: string) {

@@ -125,6 +125,17 @@ export interface Streamer {
       startIndex?: number
     ): Promise<ReadableStream<Uint8Array>>;
 
+    /**
+     * Optional logical reader that owns transport interruption recovery and
+     * closes only at verified stream completion. Core must not wrap it in a
+     * second reconnect owner.
+     */
+    getResumable?(
+      runId: string,
+      name: string,
+      startIndex?: number
+    ): Promise<ReadableStream<Uint8Array>>;
+
     list(runId: string): Promise<string[]>;
 
     /**

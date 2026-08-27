@@ -17,6 +17,7 @@ import {
 import { injectTraceContextIntoHeaders } from './telemetry.js';
 import type { APIConfig } from './utils.js';
 import { getHttpConfig } from './utils.js';
+import { beginNormalWsClose } from './ws-stream-connect.js';
 
 export const STREAM_READ_WS_CONNECT_BUDGET_MS = 250;
 export const STREAM_READ_WS_CANCEL_BUDGET_MS = 250;
@@ -212,7 +213,11 @@ export function createStreamReadWsSession(
     if (meta.type === 'eof') {
       if (expected >= meta.nextIndex) {
         terminal = true;
-        closeSocket('stream complete');
+        const closingSocket = socket;
+        socket = undefined;
+        if (closingSocket) {
+          beginNormalWsClose(closingSocket, 'stream complete');
+        }
         controller.close();
         notifyPull();
       } else {
@@ -315,8 +320,15 @@ export function createStreamReadWsSession(
             if (!settled) {
               if (socket === ws) fallback();
               else finish();
-            } else if (!cancelled && !terminal && socket === ws) {
-              void recover().catch((error) => controller.error(error));
+            } else {
+              // A peer may queue EOF immediately before close. Let every frame
+              // already delivered by this socket decode before deciding that
+              // the logical reader needs recovery.
+              void inbound.then(() => {
+                if (!cancelled && !terminal && socket === ws) {
+                  return recover().catch((error) => controller.error(error));
+                }
+              });
             }
           });
           ws.on('message', (raw) => {
@@ -360,7 +372,11 @@ export function createStreamReadWsSession(
       })
     );
     await Promise.race([acknowledged, wait(STREAM_READ_WS_CANCEL_BUDGET_MS)]);
-    closeSocket('reader cancelled');
+    const closingSocket = socket;
+    socket = undefined;
+    if (closingSocket) {
+      beginNormalWsClose(closingSocket, 'reader cancelled');
+    }
   };
 
   return new ReadableStream<Uint8Array>(

@@ -208,6 +208,12 @@ This setting does not own tenant rollout policy and does not infer server suppor
 
 Writes and close requests execute serially. The first operation waits up to 250 ms for an opted-in socket to open; this is an implementation-level measurement knob, not protocol semantics. If the budget expires, or the upgrade fails or is declined before acceptance, the writer uses HTTP without racing the same operation over both transports. After the socket accepts a write, a missing acknowledgement has an unknown outcome: the writer fails rather than replaying the write over HTTP and risking a duplicate append. There is no v1 drain/de-opt control frame, so an accepted connection never proactively switches transports.
 
+### `WORKFLOW_STREAM_READS_TRANSPORT`
+
+Experimental WebSocket stream reads. Default: `http`. Set `WORKFLOW_STREAM_READS_TRANSPORT=ws` to attempt the dedicated `workflow-stream-read-ws/v1` endpoint. The server authoritatively accepts or declines each upgrade; pre-open declines and recoverable interruptions use indexed HTTP pages with server-authoritative start-position resolution, so an interrupted body cannot be mistaken for completion.
+
+After the WebSocket resolves an absolute position, the logical reader owns recovery: indexed chunks are delivered contiguously, duplicates are ignored, gaps and recoverable ends reconnect from the next expected index, and only explicit verified EOF completes the stream. After bounded WebSocket retries it uses indexed HTTP pages rather than inferring durable chunk indexes from raw network read boundaries. Reads never share writer or event sockets.
+
 ### `WORKFLOW_EVENTS_TRANSPORT`
 
 Workflow run events ship to the Vercel World over a WebSocket instead of one HTTP request each. Default: `ws`.
