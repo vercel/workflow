@@ -1,3 +1,4 @@
+import { spanAttr } from './analysis.js';
 import {
   CAT_LABEL,
   categoryOf,
@@ -39,27 +40,41 @@ const MARKERS = metrics
   }))
   .filter((m) => Number.isFinite(m.offsetMs));
 
+// A group can hold more than this run's own spans: `--run`/`--group` folds whole traces
+// in, so a child workflow started mid-run rides along with its own `workflow.start` and
+// its own steps. Scope the TTFS anchors to spans actually tagged with this run id, or the
+// anchor lands on the child's start() and the marker reads as a large negative duration.
+const ownSpans = /^wrun_/.test(run.id ?? '')
+  ? run.spans.filter((s) => spanAttr(s, 'workflow.run.id') === run.id)
+  : [];
+const ttfsSpans = ownSpans.length ? ownSpans : run.spans;
+
 const firstStepMs = Math.min(
-  ...run.spans
+  ...ttfsSpans
     .filter((s) => (s.name ?? '').startsWith('step.execute'))
     .map((s) => s.startMs)
 );
 // start() anchor: the `workflow.start` span (the start() call), else the run_created
 // write, else the group origin (0).
 const startCall =
-  run.spans
+  ttfsSpans
     .filter((s) => (s.name ?? '').startsWith('workflow.start'))
     .sort((a, b) => a.startMs - b.startMs)[0] ??
-  run.spans
+  ttfsSpans
     .filter((s) => (s.name ?? '').includes('run_created'))
     .sort((a, b) => a.startMs - b.startMs)[0];
 const startMs = startCall ? startCall.startMs : 0;
 
 if (Number.isFinite(firstStepMs)) {
+  // No anchor (the run began before the import window) means there is no TTFS to state.
+  // Keep the line — the first step is a real landmark — but label it for what it is
+  // rather than reporting a duration measured from something that isn't this run's start.
+  const ttfsMs = startCall ? firstStepMs - startMs : null;
+  const haveTtfs = ttfsMs != null && ttfsMs >= 0;
   MARKERS.push({
-    label: 'TTFS',
+    label: haveTtfs ? 'TTFS' : 'first step',
     offsetMs: firstStepMs, // line sits at the first step
-    valueMs: firstStepMs - startMs, // …but the label is the time since start()
+    valueMs: haveTtfs ? ttfsMs : null, // …but the label is the time since start()
     color: '#f5a623',
   });
 }
