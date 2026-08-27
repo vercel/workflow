@@ -248,7 +248,8 @@ async function recordCompression(
  * `recordCompression` above.
  */
 async function recordGuestCodeExecutions(stats: GuestCodeStats): Promise<void> {
-  if (stats.executions.length === 0) return;
+  const totalExecutions = stats.totalExecutions ?? stats.executions.length;
+  if (totalExecutions === 0) return;
   try {
     const span = await getActiveSpan();
     if (!span) return;
@@ -260,7 +261,7 @@ async function recordGuestCodeExecutions(stats: GuestCodeStats): Promise<void> {
       ),
     ];
     span.setAttributes({
-      ...Attr.SerializationGuestCodeExecutions(stats.executions.length),
+      ...Attr.SerializationGuestCodeExecutions(totalExecutions),
       ...Attr.SerializationGuestCodeDetails(details),
     });
   } catch {
@@ -2604,15 +2605,22 @@ function reviveAbortController(
         // completion) rather than `ops` (best-effort, background). The stream
         // write above stays in `ops`: it must fire ASAP to reach an in-flight
         // sibling step and is not the durable record.
+        //
+        // `resumeHookDurable`, not `resumeHook`: awaiting the latter only
+        // guarantees the resume was published, since the lazy path leaves the
+        // event write to the queue consumer. That would satisfy
+        // `preCompletionOps` while leaving the very race this ordering exists
+        // to prevent.
+        //
         // Swallow errors here so the promise can only ever enforce ordering
         // when awaited (see the no-reject contract on
         // StepContext.preCompletionOps); a failed resume retries on next replay.
         const hookResume = (async () => {
           try {
-            const { resumeHook: resumeHookFn } = await import(
+            const { resumeHookDurable } = await import(
               './runtime/resume-hook.js'
             );
-            await resumeHookFn(value.hookToken, {
+            await resumeHookDurable(value.hookToken, {
               aborted: true,
               reason,
             });
@@ -3594,12 +3602,11 @@ export async function dehydrateWorkflowReturnValue(
   v1Compat = false,
   compression = false,
   /**
-   * Optional sink receiving every workflow-code execution serialization could
-   * not avoid, for callers that need them programmatically (e.g. a
-   * retained-VM gate deciding whether the VM is still reusable). The
-   * executions are emitted as span attributes either way, so omitting this
-   * loses nothing observability-wise. The retained-VM gate in
-   * runtime/suspension-handler.ts passes one for step-input dehydration.
+   * Optional sink receiving the first five samples and exact total count of
+   * workflow-code executions serialization could not avoid. The diagnostics
+   * are emitted as span attributes either way, so omitting this loses nothing
+   * observability-wise. The retained-VM gate in runtime/suspension-handler.ts
+   * passes one for step-input dehydration.
    */
   guestCodeStatsOut?: GuestCodeStats
 ): Promise<Uint8Array | unknown> {

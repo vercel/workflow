@@ -367,18 +367,17 @@ async function createWorkflowSession({
         state = WorkflowSuspension.is(error)
           ? { type: 'suspended', suspension: error }
           : { type: 'replay' };
-        // Each parked step consumer schedules its own (identical) suspension
-        // signal; the first one lands here, and bumping the generation makes
-        // the step-consumer guard drop the rest at fire time.
+        // Step, hook, and attribute consumers can schedule the same suspension.
+        // The first signal advances the generation so the rest no-op.
         workflowContext.suspensionGeneration++;
         interruption.reject(error);
         return;
       }
       case 'suspended':
         // Same-boundary duplicates were staled by the generation bump above,
-        // so anything landing here is out-of-band: an unguarded sleep/hook/
-        // attribute signal or a divergence. Those boundaries are unretainable
-        // (the runtime demotes them too), so fall back to replay.
+        // so anything landing here is out-of-band — an unguarded sleep signal
+        // or a divergence. Those boundaries are unretainable (the runtime
+        // demotes them too), so fall back to replay.
         state = { type: 'replay' };
         return;
       case 'replay':

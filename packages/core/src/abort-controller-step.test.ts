@@ -30,6 +30,14 @@ const mockStreamReads = vi.hoisted(() => ({
 }));
 
 const mockResumeHook = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
+// The abort path must use the DURABLE entry point: a plain `resumeHook` only
+// guarantees the resume was published (the lazy path defers the event write to
+// the queue consumer), which would satisfy preCompletionOps while leaving the
+// stale-signal race it exists to prevent. Mocked separately so a regression to
+// `resumeHook` shows up as this staying uncalled.
+const mockResumeHookDurable = vi.hoisted(() =>
+  vi.fn().mockResolvedValue(undefined)
+);
 
 // Mock version module
 vi.mock('./version.js', () => ({ version: '0.0.0-test' }));
@@ -84,6 +92,7 @@ vi.mock('./runtime/get-world-lazy.js', () => ({
 // Mock resume-hook
 vi.mock('./runtime/resume-hook.js', () => ({
   resumeHook: mockResumeHook,
+  resumeHookDurable: mockResumeHookDurable,
 }));
 
 // ============================================================================
@@ -164,7 +173,7 @@ function reviveAbortController(opts: {
       if (opts.hookToken) {
         ctx.ops.push(
           (async () => {
-            await mockResumeHook(opts.hookToken, {
+            await mockResumeHookDurable(opts.hookToken, {
               aborted: true,
               reason,
             });
@@ -422,7 +431,7 @@ describe('AbortSignal deserialized in step context', () => {
 
       await Promise.allSettled(stepCtx.ops);
 
-      expect(mockResumeHook).toHaveBeenCalledWith('abrt_test9', {
+      expect(mockResumeHookDurable).toHaveBeenCalledWith('abrt_test9', {
         aborted: true,
         reason: 'hook-resume-test',
       });
@@ -615,10 +624,17 @@ describe('AbortSignal deserialized in step context', () => {
  * flake). The hook resume must land in `ctx.preCompletionOps`, which the step
  * handler awaits before writing `step_completed`. The real-time stream write
  * (which reaches an in-flight sibling) stays in the background `ctx.ops`.
+ *
+ * Routing alone stopped being sufficient once `resumeHook()` went lazy: it
+ * resolves when the resume is PUBLISHED, leaving the event write to the queue
+ * consumer, so awaiting it in `preCompletionOps` would re-open the same race.
+ * The abort path therefore calls `resumeHookDurable()`, which forces the eager
+ * write, and this suite pins both the routing and the entry point.
  */
 describe('step-initiated abort: durable hook resume is committed before completion', () => {
   beforeEach(() => {
     mockResumeHook.mockClear();
+    mockResumeHookDurable.mockClear();
     mockStreamReads.readResults.clear();
     mockStreamReads.writeLog = [];
     mockStreamReads.closeLog = [];
@@ -708,10 +724,14 @@ describe('step-initiated abort: durable hook resume is committed before completi
     // Draining preCompletionOps (what the step executor awaits before
     // step_completed) actually fires the resume with the correct payload.
     await Promise.all(preCompletionOps);
-    expect(mockResumeHook).toHaveBeenCalledTimes(1);
-    expect(mockResumeHook).toHaveBeenCalledWith('abrt_pre_completion', {
+    expect(mockResumeHookDurable).toHaveBeenCalledTimes(1);
+    expect(mockResumeHookDurable).toHaveBeenCalledWith('abrt_pre_completion', {
       aborted: true,
       reason: 'aborted from step',
     });
+    // Routing is only half of it: the plain entry point would resolve as soon
+    // as the resume was published, so draining preCompletionOps would prove
+    // nothing about the event existing.
+    expect(mockResumeHook).not.toHaveBeenCalled();
   });
 });

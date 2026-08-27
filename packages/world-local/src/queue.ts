@@ -259,6 +259,7 @@ export function createQueue(config: Partial<Config>): LocalQueue {
                     headers: new Headers(headers),
                     body,
                     agents: nodeHttpAgents,
+                    signal: closeSignal,
                     headersTimeoutMs: agentOptions.headersTimeout,
                     bodyTimeoutMs: agentOptions.bodyTimeout,
                   })
@@ -269,6 +270,7 @@ export function createQueue(config: Partial<Config>): LocalQueue {
                     dispatcher: httpAgent,
                     headers,
                     body,
+                    signal: closeSignal,
                   } as any);
             }
             delivery++;

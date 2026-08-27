@@ -348,8 +348,8 @@ export async function start<TArgs extends unknown[], TResult>(
       let framedByteStreams: boolean;
       let targetSupportsCompression: boolean;
       // The consumer's hook-resume protocol version, stamped onto the new run
-      // so a later `resumeHook()` gates its parallel path on the deployment
-      // that will actually consume the queue message. `undefined` means "could
+      // so a later `resumeHook()` gates its lazy path on the deployment that
+      // will actually consume the queue message. `undefined` means "could
       // not attest" and fails the gate closed.
       let targetHookResumeInputVersion: number | undefined;
       // Public key of the target run, when the capability probe was able to

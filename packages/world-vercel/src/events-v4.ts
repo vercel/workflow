@@ -193,10 +193,10 @@ interface CreateEventV4InputBase {
   hookIsWebhook?: boolean;
   hookIsSystem?: boolean;
   /** Lazy hook resume idempotency key. Set only on a `hook_received` written
-   *  by `resumeHook()`'s parallel fast path; routes the event through the
-   *  server's `(runId, resumeId)` constraint so the direct write and the
-   *  queue consumer's re-ensure converge on one event. Older servers ignore
-   *  it (the deduplication then falls to the sequential path). */
+   *  from a queue message's `hookInput`; routes the event through the
+   *  server's `(runId, resumeId)` constraint so repeated deliveries of one
+   *  resume converge on one event. Older servers ignore it (the resume then
+   *  falls to the sequential path, which writes the event eagerly). */
   resumeId?: string;
   errorCode?: string;
   /** run_cancelled's optional free-text cancellation reason. Small plaintext

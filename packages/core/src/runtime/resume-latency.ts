@@ -24,10 +24,13 @@ import * as Attribute from '../telemetry/semantic-conventions.js';
  * T7 immediately before stepFn.apply()
  * ```
  *
- * The producer's direct `hook_received` POST races the queue publish on the
- * parallel fast path, so it deliberately has no phase of its own: the two
- * overlap, and representing both as additive phases would double-count. It
- * remains visible as a contextual span (`hook.resume`).
+ * On the lazy path the producer writes no `hook_received` at all (the
+ * consumer materializes it from `hookInput`), so the window has no producer
+ * write phase. On the sequential path that write is awaited inside
+ * `producer_prep`, and for messages from an older producer, which raced the
+ * write against the publish, it overlapped `producer_prep` rather than adding
+ * to it. Either way it has no phase of its own; it remains visible as a
+ * contextual span (`hook.resume`).
  *
  * T0/T1 are stamped on the producer's machine and T2..T7 on the consumer's, so
  * the measurement is subject to cross-machine clock skew. Rather than clamp
@@ -39,8 +42,15 @@ import * as Attribute from '../telemetry/semantic-conventions.js';
 /** What caused the resumption being measured. Only hooks are measured today. */
 export type ResumeTrigger = 'hook';
 
-/** Which `resumeHook()` dispatch path produced this resume. */
-export type ResumeStrategy = 'parallel' | 'sequential';
+/**
+ * Which `resumeHook()` dispatch path produced this resume.
+ *
+ * `parallel` is only ever received from an older producer, which raced its own
+ * `hook_received` write against the publish. Current producers send `lazy` (no
+ * producer write: the consumer materializes the event from `hookInput`) or
+ * `sequential`.
+ */
+export type ResumeStrategy = 'lazy' | 'parallel' | 'sequential';
 
 /**
  * How the consuming invocation initialized its replay state:
@@ -125,7 +135,9 @@ export function resumeTrackingFromMessage(
   }
   return {
     trigger: 'hook',
-    ...(timing.strategy === 'parallel' || timing.strategy === 'sequential'
+    ...(timing.strategy === 'lazy' ||
+    timing.strategy === 'parallel' ||
+    timing.strategy === 'sequential'
       ? { strategy: timing.strategy }
       : {}),
     resumeRequestedAtMs: timing.resumeRequestedAtMs,
