@@ -1,4 +1,4 @@
 # Default owners for the entire repository
 * @vercel/workflow
 
-./docs/**/python.mdx @vercel/workflow @msullivan @fantix
+/docs/**/python.mdx @vercel/workflow @msullivan @fantix
