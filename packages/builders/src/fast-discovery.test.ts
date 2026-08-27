@@ -103,39 +103,6 @@ describe('fast workflow discovery', () => {
     );
   });
 
-  it('follows imports from custom source extensions', async () => {
-    const entryFile = join(testRoot, 'app', 'page.mdx');
-    const componentFile = join(testRoot, 'app', 'component.mdx');
-    const workflowFile = join(testRoot, 'app', 'workflow.ts');
-
-    writeFile(
-      entryFile,
-      `import Component from './component';\n<Component />\n`
-    );
-    writeFile(
-      componentFile,
-      `import { run } from './workflow';\n\n"use workflow"\n\n{run.name}\n`
-    );
-    writeFile(
-      workflowFile,
-      `export async function run() {
-  'use workflow';
-  return 'ok';
-}
-`
-    );
-
-    const discovered = await createBuilder(testRoot).discoverEntriesPublic(
-      [entryFile],
-      join(testRoot, 'out')
-    );
-
-    expect(discovered.discoveredWorkflows).toEqual(
-      new Set([normalize(workflowFile)])
-    );
-    expect(discovered.discoveredFiles).toContain(normalize(componentFile));
-  });
-
   it('discovers relative JS imports whose basename includes .step', async () => {
     const entryFile = join(testRoot, 'src', 'entry.ts');
     const workflowFile = join(testRoot, 'src', 'hello.step.js');

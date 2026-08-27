@@ -1,24 +1,12 @@
-import assert from 'node:assert';
-import type { Dirent } from 'node:fs';
-import { mkdir, readdir, realpath, rm, stat } from 'node:fs/promises';
-import {
-  basename,
-  dirname,
-  extname,
-  isAbsolute,
-  join,
-  relative,
-  resolve,
-} from 'node:path';
+import { constants, type Dirent } from 'node:fs';
+import { access, mkdir, readdir, realpath, rm, stat } from 'node:fs/promises';
+import { extname, isAbsolute, join, relative, resolve } from 'node:path';
 import type {
   NextConfig as BuilderNextConfig,
   WorkflowManifest,
 } from '@workflow/builders';
 import chokidar from 'chokidar';
 import type { NextConfig as ProjectNextConfig } from 'next';
-import { findDir, findPagesDir } from 'next/dist/lib/find-pages-dir';
-import { recursiveReadDir } from 'next/dist/lib/recursive-readdir';
-import { createValidFileMatcher } from 'next/dist/server/lib/find-page-file';
 import { createWatchIgnorePredicate } from './watch-ignore.js';
 import {
   classifyRebuild,
@@ -35,116 +23,79 @@ const importEsm = new Function('specifier', 'return import(specifier)') as <T>(
   specifier: string
 ) => Promise<T>;
 
-const appConventionNames = [
+const appEntrypoints = new Set([
+  'page',
+  'route',
+  'layout',
+  'default',
   'error',
   'loading',
   'template',
   'not-found',
   'forbidden',
   'unauthorized',
-] as const;
-const appRootConventionNames = ['global-error', 'global-not-found'] as const;
-const rootConventionNames = [
+  'sitemap',
+  'icon',
+  'apple-icon',
+  'opengraph-image',
+  'twitter-image',
+]);
+const appRootEntrypoints = new Set([
+  'global-error',
+  'global-not-found',
+  'robots',
+  'manifest',
+]);
+const rootEntrypoints = new Set([
   'instrumentation',
   'instrumentation-client',
   'middleware',
   'proxy',
-] as const;
-const mdxComponentsFile = /^mdx-components\.[jt]sx?$/;
+]);
+const numberedMetadataEntrypoint =
+  /^(?:icon|apple-icon|opengraph-image|twitter-image)\d+$/;
+const mdxComponentsEntrypoint = /^mdx-components\.[jt]sx?$/;
 
-export async function findNextEntrypoints({
-  workingDir,
-  pageExtensions,
-}: {
-  workingDir: string;
-  pageExtensions: string[];
-}): Promise<string[]> {
-  const { appDir, pagesDir } = findPagesDir(workingDir);
-  const routerDir = pagesDir ?? appDir;
-  assert(routerDir);
+export function isNextEntrypoint(
+  entry: string,
+  pageExtensions: readonly string[]
+): boolean {
+  if (entry.endsWith('.d.ts')) return false;
 
-  const rootDir = dirname(routerDir);
-  const validFileMatcher = createValidFileMatcher(pageExtensions, appDir);
-  const extensionSuffixes = pageExtensions.map((extension) => `.${extension}`);
-  const conventionFiles = (names: readonly string[]) =>
-    new Set(
-      names.flatMap((name) =>
-        pageExtensions.map((extension) => `${name}.${extension}`)
-      )
-    );
-  const appConventionFiles = conventionFiles(appConventionNames);
-  const appRootConventionFiles = conventionFiles(appRootConventionNames);
-  const rootConventionFiles = conventionFiles(rootConventionNames);
+  const path = entry.split('/');
+  const filename = path.at(-1)!;
+  const inSrc = path[0] === 'src';
+  const rootDepth = inSrc ? 2 : 1;
+  if (path.length === rootDepth && mdxComponentsEntrypoint.test(filename)) {
+    return true;
+  }
 
-  const relativeTo = (directory: string, file: string) => {
-    const entry = relative(directory, file).replaceAll('\\', '/');
-    if (entry === '..' || entry.startsWith('../') || isAbsolute(entry)) {
-      return undefined;
-    }
-    return entry;
-  };
+  const extension = [...pageExtensions]
+    .sort((a, b) => b.length - a.length)
+    .find((extension) => entry.endsWith(`.${extension}`));
+  if (!extension) return false;
 
-  const isAppEntrypoint = (file: string, filename: string) => {
-    assert(appDir);
-    const appEntry = relativeTo(appDir, file);
-    if (appEntry === undefined) return false;
-    if (!appEntry.includes('/') && appRootConventionFiles.has(filename)) {
+  const name = filename.slice(0, -extension.length - 1);
+  const directory = path[inSrc ? 1 : 0];
+
+  if (directory === 'pages') return true;
+
+  if (directory === 'app') {
+    const segments = path.slice(inSrc ? 2 : 1, -1);
+    if (segments.some((segment) => segment.startsWith('_'))) return false;
+
+    if (appEntrypoints.has(name) || numberedMetadataEntrypoint.test(name)) {
       return true;
     }
-    return (
-      validFileMatcher.isAppRouterPage(file) ||
-      validFileMatcher.isAppLayoutPage(file) ||
-      validFileMatcher.isAppDefaultPage(file) ||
-      appConventionFiles.has(filename)
-    );
-  };
+    const appRootDepth = inSrc ? 3 : 2;
+    return path.length === appRootDepth && appRootEntrypoints.has(name);
+  }
 
-  const isEntrypoint = (file: string) => {
-    if (file.endsWith('.d.ts')) return false;
+  if (path.length === rootDepth) {
+    return rootEntrypoints.has(name);
+  }
 
-    const filename = basename(file);
-    if (dirname(file) === rootDir) {
-      return (
-        mdxComponentsFile.test(filename) || rootConventionFiles.has(filename)
-      );
-    }
-
-    const hasPageExtension = extensionSuffixes.some((extension) =>
-      file.endsWith(extension)
-    );
-    if (!hasPageExtension) return false;
-
-    if (pagesDir && relativeTo(pagesDir, file) !== undefined) {
-      return validFileMatcher.isPageFile(file);
-    }
-
-    return appDir ? isAppEntrypoint(file, filename) : false;
-  };
-
-  const [appFiles, pagesFiles, rootEntries] = await Promise.all([
-    appDir
-      ? recursiveReadDir(appDir, {
-          pathnameFilter: isEntrypoint,
-          ignorePartFilter: (part) => part.startsWith('_'),
-          ignoreFilter: (pathname) =>
-            pathname === join(appDir, '.well-known/workflow'),
-          relativePathnames: false,
-        })
-      : [],
-    pagesDir
-      ? recursiveReadDir(pagesDir, {
-          pathnameFilter: isEntrypoint,
-          relativePathnames: false,
-        })
-      : [],
-    readdir(rootDir, { withFileTypes: true }),
-  ]);
-  const rootFiles = rootEntries
-    .filter((entry) => !entry.isDirectory())
-    .map((entry) => join(rootDir, entry.name))
-    .filter(isEntrypoint);
-
-  return [...appFiles, ...pagesFiles, ...rootFiles].sort();
+  return false;
 }
 
 // Create the eager Next builder dynamically by extending the ESM BaseBuilder.
@@ -284,9 +235,6 @@ export async function getNextBuilderEager(
           '.cts',
           '.cjs',
           '.mjs',
-          ...this.config.pageExtensions.map((extension) =>
-            extname(`file.${extension}`)
-          ),
         ]);
         const normalizedGeneratedDir = workflowGeneratedDir.replace(/\\/g, '/');
         const normalizedDistDir = normalizePath(this.config.distDir);
@@ -748,10 +696,13 @@ export async function getNextBuilderEager(
     }
 
     protected async getInputFiles(): Promise<string[]> {
-      return findNextEntrypoints({
-        workingDir: this.config.workingDir,
-        pageExtensions: this.config.pageExtensions,
-      });
+      const inputFiles = await super.getInputFiles();
+      return inputFiles.filter((file) =>
+        isNextEntrypoint(
+          relative(this.config.workingDir, file).replaceAll('\\', '/'),
+          this.config.pageExtensions
+        )
+      );
     }
 
     private async writeFunctionsConfig(outputDir: string) {
@@ -820,14 +771,49 @@ export async function getNextBuilderEager(
     }
 
     private async findAppDirectory(): Promise<string> {
-      const appDir = findDir(this.config.workingDir, 'app');
-      if (appDir) return appDir;
+      const appDir = resolve(this.config.workingDir, 'app');
+      const srcAppDir = resolve(this.config.workingDir, 'src/app');
+      const pagesDir = resolve(this.config.workingDir, 'pages');
+      const srcPagesDir = resolve(this.config.workingDir, 'src/pages');
 
-      const pagesDir = findDir(this.config.workingDir, 'pages');
-      if (pagesDir) {
-        const outputDir = join(dirname(pagesDir), 'app');
-        await mkdir(outputDir, { recursive: true });
-        return outputDir;
+      // Helper to check if a path exists and is a directory
+      const isDirectory = async (path: string): Promise<boolean> => {
+        try {
+          await access(path, constants.F_OK);
+          const stats = await stat(path);
+          if (!stats.isDirectory()) {
+            throw new Error(`Path exists but is not a directory: ${path}`);
+          }
+          return true;
+        } catch (e) {
+          if (e instanceof Error && e.message.includes('not a directory')) {
+            throw e;
+          }
+          return false;
+        }
+      };
+
+      // Check if app directory exists
+      if (await isDirectory(appDir)) {
+        return appDir;
+      }
+
+      // Check if src/app directory exists
+      if (await isDirectory(srcAppDir)) {
+        return srcAppDir;
+      }
+
+      // If no app directory exists, check for pages directory and create app next to it
+      if (await isDirectory(pagesDir)) {
+        // Create app directory next to pages directory
+        await mkdir(appDir, { recursive: true });
+        return appDir;
+      }
+
+      if (await isDirectory(srcPagesDir)) {
+        // Create src/app directory next to src/pages directory
+        await mkdir(srcAppDir, { recursive: true });
+        return srcAppDir;
       }
 
       throw new Error(
